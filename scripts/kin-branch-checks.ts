@@ -165,13 +165,13 @@ export const KIN_COPY_DIRS = {
   web: "apps/web/src/kin",
   phone: "apps/mobile/src/features",
 } as const;
-const MIN_WORDS = 4;
+const MIN_WORDS = 3;
 const HOLE = /\$\{(?:[^{}`]|`[^`]*`|\{[^{}]*\})*\}/;
 const TEMPLATE = /`((?:[^`\\$]|\\.|\$(?!\{)|\$\{(?:[^{}`]|`[^`]*`|\{[^{}]*\})*\})*)`/g;
 
 /**
  * The sentences a source file shows people: string literals and JSX text, split at sentence ends,
- * kept when they start with a capital and have four or more words.
+ * kept when they start with a capital and have three or more words.
  */
 export const kinSentences = (source: string) => {
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -201,25 +201,46 @@ export const kinSentences = (source: string) => {
     );
 };
 
+/** Words typed into both Kin clients on purpose, each for a reason. */
+export const KIN_COPY_IN_BOTH: Readonly<Record<string, string>> = {
+  "New Computer Modern":
+    "a font's name, matched against the brand's font, not words a person reads",
+  "A link in “":
+    "web shows the address in a box under the sentence; the phone's alert writes it into the sentence",
+};
+
+/** One key for a sentence and its drifted twin: end punctuation, capitals, "Could not", "...". */
+const copyKey = (sentence: string) =>
+  sentence
+    .toLowerCase()
+    .replace(/\bcould not\b/g, "couldn't")
+    .replace(/\.\.\./g, "…")
+    .replace(/[.!?:…]+$/, "");
+
 /** A sentence typed into both Kin clients belongs in client-runtime, which both render. */
 export const checkSharedCopy = (
   web: ReadonlyMap<string, string>,
   phone: ReadonlyMap<string, string>,
 ) => {
   const where = (files: ReadonlyMap<string, string>) => {
-    const found = new Map<string, string>();
+    const found = new Map<string, { readonly sentence: string; readonly file: string }>();
     for (const [file, source] of files)
-      for (const sentence of kinSentences(source))
-        if (!found.has(sentence)) found.set(sentence, file);
+      for (const sentence of kinSentences(source)) {
+        const key = copyKey(sentence);
+        if (!(sentence in KIN_COPY_IN_BOTH) && !found.has(key)) found.set(key, { sentence, file });
+      }
     return found;
   };
   const onPhone = where(phone);
-  return [...where(web)]
-    .filter(([sentence]) => onPhone.has(sentence))
-    .map(
-      ([sentence, file]) =>
-        `kin copy: "${sentence}" is typed into ${file} and ${onPhone.get(sentence)}; move it into a client-runtime/src/kin presentation module and render it from both.`,
-    );
+  return [...where(web)].flatMap(([key, { sentence, file }]) => {
+    const twin = onPhone.get(key);
+    if (twin === undefined) return [];
+    const words =
+      twin.sentence === sentence ? `"${sentence}"` : `"${sentence}" / "${twin.sentence}"`;
+    return [
+      `kin copy: ${words} is typed into ${file} and ${twin.file}; move it into a client-runtime/src/kin presentation module and render it from both.`,
+    ];
+  });
 };
 
 export const KIN_SHARED_HOOKS_DIR = "packages/client-runtime/src/kin/react";

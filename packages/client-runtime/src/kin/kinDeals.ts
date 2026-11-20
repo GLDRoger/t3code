@@ -53,6 +53,7 @@ export function kinDealsMatching(deals: ReadonlyArray<KinDealRow>, text: string)
 
 /** Every word Deals shows, on the web and the phone alike. */
 export const KIN_DEALS = {
+  stagesFailed: "Stages didn't load",
   title: "Deals",
   newDeal: "New deal",
   search: "Search deals",

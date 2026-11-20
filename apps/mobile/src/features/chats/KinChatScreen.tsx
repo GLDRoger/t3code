@@ -848,7 +848,7 @@ function KinChatStateView(props: {
           <EmptyState
             variant="plain"
             {...kinChatGoneCopy(state.reason)}
-            actionLabel="Back to chats"
+            actionLabel={KIN_CHAT_COPY.back}
             onAction={() =>
               resetRootStack(navigation, (stack) =>
                 kinStackWithoutChat(stack, props.chatId, kinListRoute()),
@@ -1473,7 +1473,7 @@ function KinChatFeed(props: {
             icon="chevron.up"
             label={
               loading
-                ? "Loading earlier messages…"
+                ? KIN_CHAT_COPY.loadingEarlier
                 : paging.error === null
                   ? "Load earlier"
                   : "Retry"
@@ -1516,11 +1516,11 @@ function KinChatFeed(props: {
             retiredEmpty !== null
               ? retiredEmpty.title
               : props.agentName !== null
-                ? `Say hello to ${props.agentName}.`
+                ? KIN_CHAT_COPY.sayHello(props.agentName)
                 : props.direct
                   ? // Until this phone learns the agent's name.
                     "Say hello to get started"
-                  : "No messages yet"
+                  : KIN_CHAT_COPY.none
           }
           detail={
             retiredEmpty !== null

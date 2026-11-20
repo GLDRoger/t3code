@@ -60,6 +60,8 @@ export function kinAgentPageCan(viewer: {
 }
 
 export const KIN_AGENT_PAGE = {
+  changeFailed: "Couldn't change that.",
+  charterNone: "Nothing written yet. Add a few lines so it knows what to focus on.",
   loadFailed: "Couldn't load this agent",
   ownerLevelOnly: "Only the owner and co-owners see this agent's details.",
   notTeamAgent:

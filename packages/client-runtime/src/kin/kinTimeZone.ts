@@ -13,6 +13,8 @@ import type { AtomCommandResult } from "../state/runtime.ts";
 import { createKinRpcCommand } from "./kinAccess.ts";
 import { kinNowMs } from "./kinNow.ts";
 
+export const KIN_TIME_ZONE_PLACEHOLDER = "City or region";
+
 /** Whether two zone names are one zone: `Asia/Calcutta` is `Asia/Kolkata`. */
 export const kinSameTimeZone = (a: string, b: string) => {
   try {

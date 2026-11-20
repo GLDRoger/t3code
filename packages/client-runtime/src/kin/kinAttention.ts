@@ -545,6 +545,7 @@ export function kinSetAsideDays(now: Date) {
 // Goals
 
 export const KIN_GOALS = {
+  unitPlaceholder: "For example: hires",
   saveFailed: "Couldn't save the goal.",
   title: "Goals",
   add: "Add goal",

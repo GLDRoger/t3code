@@ -2,7 +2,7 @@ import { KIN_MARKETING, kinContactListOfClients } from "@t3tools/client-runtime/
 import type { KinMarketing } from "@t3tools/contracts";
 import { KIN_IMPORT } from "@t3tools/client-runtime/kin/kinImport";
 import { useKinClientsStart, useKinSeesClients, useKinViewerScope } from "./state/kinChatOnly";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
@@ -276,7 +276,7 @@ function NamedList(props: {
               <View className="items-start gap-2 px-5 py-4">
                 <Text textRole="footnote" className="text-foreground-muted">
                   {state.moreFailed
-                    ? "Couldn't load more."
+                    ? KIN_MORE_FAILED
                     : `Showing ${props.shown} of ${state.total ?? props.shown}`}
                 </Text>
                 <Button

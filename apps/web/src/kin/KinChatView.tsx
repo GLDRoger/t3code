@@ -2,7 +2,7 @@ import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { kinAwayLine } from "@t3tools/client-runtime/kin/kinAway";
 import { openKinProfile } from "./KinProfileSheet";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_HOST_OFFLINE, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinOwnsDirectChat } from "@t3tools/client-runtime/kin/kinClearChat";
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
@@ -40,6 +40,7 @@ import {
   type KinInboxState,
 } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
+  kinIntroSendsTo,
   KIN_INTRO_COUNTRY,
   KIN_INTRO_PROMPTS,
   KIN_INTRO_START_HINT,
@@ -442,7 +443,7 @@ function KinChatHeader(props: {
       <Button
         size="icon-sm"
         variant="ghost"
-        aria-label="Back to chats"
+        aria-label={KIN_CHAT_COPY.back}
         className="md:hidden"
         render={<Link to="/kin" />}
       >
@@ -475,7 +476,7 @@ const STATE_COPY: Record<
   { readonly title: string; readonly detail: string }
 > = {
   offline: {
-    title: "Kin is offline",
+    title: KIN_HOST_OFFLINE,
     detail: "This chat loads when the Kin environment reconnects.",
   },
   noHost: {
@@ -993,7 +994,7 @@ function KinChatFeed(props: {
         >
           {loading ? <Spinner /> : <ChevronUpIcon />}
           {loading
-            ? "Loading earlier messages…"
+            ? KIN_CHAT_COPY.loadingEarlier
             : paging.error === null
               ? "Load earlier"
               : "Retry loading earlier"}
@@ -1017,8 +1018,8 @@ function KinChatFeed(props: {
               {retiredEmpty !== null
                 ? retiredEmpty.title
                 : props.agentName === null
-                  ? "No messages yet"
-                  : `Say hello to ${props.agentName}`}
+                  ? KIN_CHAT_COPY.none
+                  : KIN_CHAT_COPY.sayHello(props.agentName)}
             </EmptyTitle>
             <EmptyDescription>
               {retiredEmpty !== null
@@ -1168,7 +1169,7 @@ function KinPresenceLine(props: {
             </span>
           )}
           <KinStopButton
-            label={props.stop === "failed" ? "Try stopping again" : "Stop"}
+            label={props.stop === "failed" ? KIN_CHAT_COPY.stopAgain : "Stop"}
             tooltip={props.stop === "failed" ? KIN_RETRY : "Stop"}
             disabled={props.stop === "stopping"}
             onClick={onStop}
@@ -1194,7 +1195,7 @@ function KinIntro(props: {
   return (
     <Empty size="compact">
       <EmptyHeader>
-        <EmptyTitle>Say hello to {props.agentName}</EmptyTitle>
+        <EmptyTitle>{KIN_CHAT_COPY.sayHello(props.agentName)}</EmptyTitle>
         <EmptyDescription>
           {props.charter ??
             `Ask for what you need in plain words. ${props.agentName} replies here, and asks you when a decision is yours.`}
@@ -1212,7 +1213,7 @@ function KinIntro(props: {
               key={prompt.text}
               size="sm"
               variant="outline"
-              title={`Sends this to ${props.agentName}`}
+              title={kinIntroSendsTo(props.agentName)}
               onClick={() => props.onSend(prompt.text)}
             >
               {prompt.label}

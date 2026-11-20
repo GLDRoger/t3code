@@ -122,7 +122,7 @@ describe("kin branch checks", () => {
     );
   });
 
-  it("refuses a sentence of four or more words typed into both Kin clients", () => {
+  it("refuses a sentence of three or more words typed into both Kin clients, or its twin", () => {
     const web = `
       // Comments are not copy: Couldn't load the rates.
       export const Rates = (props: { host: string }) => (
@@ -132,24 +132,35 @@ describe("kin branch checks", () => {
       );
       const done = "Saved.";
       const label = \`Open the chat with \${props.host}\`;
+      const font = "New Computer Modern";
     `;
     const phone = `
       const title = "Couldn't load the rates";
       const fragment = \`\${host}\${unicode === null ? "" : \`(shown as \${unicode})\`}\\n\\nThis visual asks to load from it.\`;
       const done = "Saved.";
       const label = \`Open the chat with \${title}\`;
+      const font = "New Computer Modern";
     `;
     assert.deepStrictEqual(kinSentences(web).toSorted(), [
       "Couldn't load the rates.",
+      "New Computer Modern",
       "Open the chat with",
       "This visual asks to load from",
     ]);
     const said = checkSharedCopy(new Map([["web.tsx", web]]), new Map([["phone.tsx", phone]]));
-    // The same words with different punctuation, and short words, are left alone.
+    // A twin differing only in its full stop counts; short words and a listed one are left alone.
     assert.deepStrictEqual(
-      said.map((problem) => problem.split('"')[1]),
-      ["Open the chat with"],
+      said.map((problem) => problem.split(" is typed")[0]),
+      [
+        'kin copy: "Open the chat with"',
+        'kin copy: "Couldn\'t load the rates." / "Couldn\'t load the rates"',
+      ],
     );
+    const more = checkSharedCopy(
+      new Map([["web.tsx", `const more = "Couldn't load more.";`]]),
+      new Map([["phone.tsx", `const more = "Could not load more";`]]),
+    );
+    assert.strictEqual(more.length, 1);
   });
 
   it("keeps each Kin data hook in one shared factory, by file and hook name", () => {

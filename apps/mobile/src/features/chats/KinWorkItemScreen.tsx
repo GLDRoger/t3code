@@ -670,7 +670,7 @@ function KinWorkItemBody(props: ItemTarget) {
             </View>
           </ListSection>
           {[
-            moved?.title == null ? null : `It now says: ${moved.title}`,
+            moved?.title == null ? null : KIN_WORK_COPY.nowSays(moved.title),
             moved?.notes == null ? null : `The brief now says: ${moved.notes}`,
           ].map((line) =>
             line === null ? null : (
@@ -894,7 +894,7 @@ function KinWorkItemBody(props: ItemTarget) {
                       tone="text"
                       size="compact"
                       label={KIN_TASK_RECORD.edit}
-                      accessibilityLabel="Edit the brief"
+                      accessibilityLabel={KIN_TASK_RECORD.editBrief}
                       onPress={() => changes.startEdit(item)}
                     />
                   ),
@@ -1132,7 +1132,7 @@ function KinCommentBody(props: {
             tone="text"
             size="compact"
             label={KIN_TASK_NOTE_COPY.remove}
-            accessibilityLabel="Remove this note"
+            accessibilityLabel={KIN_TASK_NOTE_COPY.removeLabel}
             onPress={props.onRemove}
           />
         </View>

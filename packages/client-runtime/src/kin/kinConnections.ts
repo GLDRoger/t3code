@@ -184,6 +184,8 @@ export interface KinConnectionStatus {
 
 /** The outside websites visuals may load from: rarely needed, so folded under Advanced. */
 export const KIN_VISUAL_HOSTS = {
+  allowFailed: "Couldn't allow it.",
+  openLink: "Open this link?",
   advanced: "Advanced",
   title: "Websites charts can load from",
   count: (count: number) => (count === 0 ? "None" : String(count)),

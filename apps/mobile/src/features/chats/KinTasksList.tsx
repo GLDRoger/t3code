@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
 import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_SEARCH } from "@t3tools/client-runtime/kin/kinDocs";
 import {
   KIN_TASK_GROUP_BY,
@@ -424,7 +424,7 @@ export function KinTasksList(
               {footer === null ? null : (
                 <View className="items-start gap-2 px-5 py-4">
                   <Text textRole="footnote" className="text-foreground-muted">
-                    {listState.moreFailed ? "Couldn't load more." : footer}
+                    {listState.moreFailed ? KIN_MORE_FAILED : footer}
                   </Text>
                   <Button
                     tone="secondary"

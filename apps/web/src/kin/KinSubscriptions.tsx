@@ -231,7 +231,7 @@ export function KinSubscriptionsPage(
       </div>
     ) : (
       <KinLoadFailed
-        what={"Couldn't load subscriptions"}
+        what={KIN_SUBSCRIPTIONS.loadFailed}
         cause={lists.state._tag === "failed" ? lists.state.cause : null}
         onRetry={lists.refresh}
         className="mx-auto w-full max-w-3xl p-4"
@@ -333,7 +333,7 @@ function KinSubscriptionsBody(
               <Button
                 size="xs"
                 variant="ghost"
-                onClick={() => agent.ask("About our subscriptions: ")}
+                onClick={() => agent.ask(KIN_SUBSCRIPTIONS.askAbout)}
               >
                 <MessageSquareIcon />
                 Ask {agent.name}
