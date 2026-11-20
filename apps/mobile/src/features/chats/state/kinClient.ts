@@ -24,7 +24,10 @@ import { Atom, AtomRegistry } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
+import { kinOutboxIdentity } from "@t3tools/client-runtime/kin/kinOutbox";
+
 import { clearKinCache, syncKinCacheIdentity, withKinCache, withKinCacheStream } from "./kinCache";
+import { syncKinOutboxIdentity } from "./kinOutboxRemoval";
 
 export type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 
@@ -96,7 +99,9 @@ const kin = makeKinClient(connectionAtomRuntime, appAtomRegistry, {
     environmentId: EnvironmentId,
     result: KinOrgsListResult,
   ) {
-    yield* syncKinCacheIdentity(environmentId, result.me[0]?.personId ?? null);
+    const identity = kinOutboxIdentity(result) ?? null;
+    const changed = yield* syncKinCacheIdentity(environmentId, identity);
+    yield* Effect.promise(() => syncKinOutboxIdentity(environmentId, identity, changed));
     yield* withKinCache(orgsCache.save(environmentId, ORGS_CACHE_KEY, result));
     appAtomRegistry.refresh(kinCachedOrgsAtom(environmentId));
   }),
