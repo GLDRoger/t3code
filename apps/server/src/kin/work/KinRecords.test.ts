@@ -2949,7 +2949,7 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     assert.deepStrictEqual(
       (yield* OwnerDocs.search([mate], { orgId, text: "Priya" })).hits.map((hit) => [
         hit.key,
-        "client" in hit ? hit.client : undefined,
+        "clientKey" in hit ? hit.clientKey : undefined,
       ]),
       [[priya.row.key, client.key]],
     );

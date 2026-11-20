@@ -24,7 +24,7 @@ export type Hit = {
   readonly snippet: string;
   readonly section?: { readonly id: string; readonly title: string };
   /** A contact's client. */
-  readonly client?: string;
+  readonly clientKey?: string;
   readonly sensitive: boolean;
   readonly closed: boolean;
   readonly updatedAt: number;
@@ -38,7 +38,6 @@ type Row = {
   readonly state: string;
   readonly updatedAt: number;
   readonly sensitive: number;
-  readonly clientKey: string | null;
   readonly part: "public" | "sensitive";
   readonly snippet: string;
 };
@@ -113,9 +112,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
     seenBy(sql, input.scope),
   ];
   const columns = sql`r.record_id AS "recordId", r.register_id AS "registerId", r.key, r.title,
-    r.state, r.updated_at AS "updatedAt", CASE WHEN r.register_id = 'contacts'
-      THEN (SELECT p.key FROM kin_records p WHERE p.org_id = r.org_id
-        AND p.record_id = r.party_id) END AS "clientKey", CASE WHEN r.register_id IN ${sql.in([...MONEY])}
+    r.state, r.updated_at AS "updatedAt", CASE WHEN r.register_id IN ${sql.in([...MONEY])}
       THEN ${inheritedSensitive(sql)} ELSE ${sensitiveNow(sql)} END AS sensitive`;
   const find = (any: boolean) =>
     indexed
@@ -144,6 +141,18 @@ export const search = Effect.fn("KinSearch.search")(function* (
   const docs = yield* latestOf(
     orgId,
     shown.filter((row) => listOf(row.registerId) === "docs").map((row) => row.recordId),
+  );
+  // A contact has no page of its own: its client's, where the viewer sees that client.
+  const contacts = shown.filter((row) => row.registerId === "contacts").map((row) => row.recordId);
+  const clientOf = new Map(
+    contacts.length === 0
+      ? []
+      : (yield* sql<{ readonly recordId: string; readonly clientKey: string }>`
+          SELECT c.record_id AS "recordId", r.key AS "clientKey"
+          FROM kin_records c JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.party_id
+          WHERE c.org_id = ${orgId} AND c.record_id IN ${sql.in(contacts)}
+            AND ${seenBy(sql, input.scope)}
+          ORDER BY c.record_id`).map((row) => [row.recordId, row.clientKey]),
   );
   const hits = shown.map((row): Hit => {
     const body = docs.get(row.recordId)?.body;
@@ -174,7 +183,9 @@ export const search = Effect.fn("KinSearch.search")(function* (
       ...(section === undefined || section.id === "top"
         ? {}
         : { section: { id: section.id, title: section.title } }),
-      ...(row.clientKey === null ? {} : { client: row.clientKey }),
+      ...((clientKey) => (clientKey === undefined ? {} : { clientKey }))(
+        clientOf.get(row.recordId),
+      ),
       sensitive: row.sensitive === 1 || row.part === "sensitive",
       closed: row.state === "done" || row.state === "dropped",
       updatedAt: row.updatedAt,
