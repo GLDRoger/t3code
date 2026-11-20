@@ -65,7 +65,7 @@ export const KinDocumentToolkit = Toolkit.make(
   Tool.make("kin_recipes", {
     ...shared,
     description:
-      "List the recipes this company's files are made from: each one's name, what it makes, the list it is for, whether it is numbered or confidential, and the inputs you give (agentInputs). Pass recipe to read one in full: every input, the fields Kin computes and its output files. Read-only.",
+      "List the recipes this company's files are made from: each one's name, what it makes, the list it is for, whether it is numbered or confidential, and the inputs you give (agentInputs: each one's type, whether it is required, its rules and a table's columns). Pass recipe to read one in full: every input, the fields Kin computes and its output files. Read-only.",
     parameters: Documents.RecipesInput,
     success: Documents.RecipesResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

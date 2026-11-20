@@ -112,6 +112,7 @@ const RecipeInputRow = Schema.Struct({
   description: Schema.optional(Schema.String),
   columns: Schema.optional(Schema.Array(Schema.String)),
 });
+const AgentInputRow = RecipeInputRow.mapFields(({ from: _from, ...fields }) => fields);
 export const RecipesInput = Schema.Struct({
   recipe: Schema.optional(recipeName).annotate({
     description:
@@ -128,8 +129,8 @@ export const RecipesResult = Schema.Struct({
       numbered: Schema.Boolean,
       /** Starts only from an owner-only turn, and makes a sensitive doc. */
       confidential: Schema.Boolean,
-      /** The inputs the agent gives, by name. */
-      agentInputs: Schema.Array(Schema.String),
+      /** The inputs the agent gives, with their rules and table columns. */
+      agentInputs: Schema.Array(AgentInputRow),
       /** The one to use for its list unless the owner asks for another. */
       default: Schema.optional(Schema.Literal(true)),
       /** Only when one recipe is read. */
@@ -154,31 +155,36 @@ export const recipes = leadTool("KinDocuments.recipes", (lead, input: typeof Rec
     const labelled = yield* Effect.forEach(stored, (recipe) => recipeLabelled(lead.orgId, recipe));
     const defaults = yield* defaultRecipes(lead.orgId, all);
     return {
-      recipes: stored.map((recipe, index) => ({
-        name: recipe.name,
-        title: recipe.title,
-        description: recipe.description,
-        list: recipe.list,
-        numbered: recipe.numbered,
-        confidential: recipe.sensitive || labelled[index] === true,
-        agentInputs: recipe.inputs.filter((one) => one.from === "agent").map((one) => one.name),
-        ...(defaults.has(recipe.name) ? { default: true as const } : {}),
-        ...(input.recipe === undefined
-          ? {}
-          : {
-              kind: recipe.kind,
-              inputs: recipe.inputs.map((one) => ({
-                name: one.name,
-                type: one.type,
-                from: one.from,
-                required: one.required,
-                ...(one.description === undefined ? {} : { description: one.description }),
-                ...(one.type === "table" ? { columns: Object.keys(one.columns) } : {}),
-              })),
-              computed: recipe.computed.map(([name]) => name),
-              outputs: [...recipe.outputs],
-            }),
-      })),
+      recipes: stored.map((recipe, index) => {
+        const inputs = recipe.inputs.map((one) => ({
+          name: one.name,
+          type: one.type,
+          from: one.from,
+          required: one.required,
+          ...(one.description === undefined ? {} : { description: one.description }),
+          ...(one.type === "table" ? { columns: Object.keys(one.columns) } : {}),
+        }));
+        return {
+          name: recipe.name,
+          title: recipe.title,
+          description: recipe.description,
+          list: recipe.list,
+          numbered: recipe.numbered,
+          confidential: recipe.sensitive || labelled[index] === true,
+          agentInputs: inputs
+            .filter((one) => one.from === "agent")
+            .map(({ from: _from, ...row }) => row),
+          ...(defaults.has(recipe.name) ? { default: true as const } : {}),
+          ...(input.recipe === undefined
+            ? {}
+            : {
+                kind: recipe.kind,
+                inputs,
+                computed: recipe.computed.map(([name]) => name),
+                outputs: [...recipe.outputs],
+              }),
+        };
+      }),
     };
   }),
 );
