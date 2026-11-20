@@ -92,6 +92,7 @@ export const cash = Effect.fn("KinMoneyAnswers.rpc.cash")(function* (
         estimate: estimate === null ? null : signed(estimate, one.currency),
       };
     }),
+    bankKnown: { through: view.bank.through },
   };
 }, workFailure);
 

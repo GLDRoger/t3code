@@ -7,6 +7,13 @@ describe("kinAskRecordDraft", () => {
   it.each([
     ["a project", { key: "P-3", title: "Website relaunch" }, "About P-3 (Website relaunch): "],
     ["a record with no name", { key: "P-4", title: "  " }, "About P-4: "],
+    [
+      "an issued invoice",
+      { key: "INV-1", title: "Retainer", number: "INV/26-27/004" },
+      "About INV/26-27/004 (INV-1) (Retainer): ",
+    ],
+    ["a draft invoice", { key: "INV-2", title: "Retainer" }, "About INV-2 (Retainer): "],
+    ["an issued quote", { key: "Q-3", title: "", number: "2026-17" }, "About 2026-17 (Q-3): "],
   ])("names %s by key and name", (_name, record, expected) => {
     expect(kinAskRecordDraft(record)).toBe(expected);
   });

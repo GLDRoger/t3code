@@ -601,7 +601,7 @@ export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
   const { invoice } = props;
   if (invoice.void) return <p className="text-sm text-muted-foreground">{KIN_INVOICES.voidNote}</p>;
   if (invoice.balance === null) return null;
-  return (
+  const figures = (
     <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
       <div className="flex flex-col">
         <dt className="text-xs text-muted-foreground">{KIN_INVOICES.balance}</dt>
@@ -620,6 +620,14 @@ export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
         </div>
       )}
     </dl>
+  );
+  return invoice.bank === null ? (
+    figures
+  ) : (
+    <>
+      {figures}
+      <p className="text-xs text-muted-foreground">{invoice.bank}</p>
+    </>
   );
 }
 
@@ -658,11 +666,12 @@ export function KinInvoicePayments(
                   >
                     {payment.amount}
                   </span>
-                  <span className="truncate text-xs text-muted-foreground">
+                  <span className="text-xs break-words text-muted-foreground">
                     {[
                       payment.tds ? KIN_INVOICES.tdsDeducted : null,
                       payment.when,
                       payment.note,
+                      payment.source,
                       payment.voided ? KIN_INVOICES.takenBack : null,
                     ]
                       .filter((part) => part !== null)
