@@ -26,6 +26,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Deals from "./deals.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as Clients from "./ownerClients.ts";
+import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import { presetDefinition } from "./registers.ts";
 import { teamSeesKey } from "./teamView.ts";
@@ -815,6 +816,36 @@ it.effect(
       });
       assert.isUndefined(off.deal.quote);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a deal is found by its key and its title by whoever sees it, and by nobody else", () =>
+  Effect.gen(function* () {
+    const { corran, hush } = yield* seed;
+    const open = yield* Deals.create(
+      [owner],
+      newDeal(corran, "Invented scheduling pilot", { owner: asZoya }),
+    );
+    const kept = yield* Deals.create([owner], newDeal(hush, "Invented confidential pilot"));
+    const found = (who: typeof owner, text: string) =>
+      OwnerDocs.search([who], { orgId, text }).pipe(
+        Effect.map((result) => result.hits.map((hit) => `${hit.key} ${hit.kind}: ${hit.snippet}`)),
+      );
+    // Its stored fields (a stage id, a value in minor units) are no one's words to show.
+    const shown = `${open.deal.key} work: Invented scheduling pilot`;
+    for (const text of [open.deal.key, open.deal.key.toLowerCase(), "scheduling pilot"]) {
+      assert.deepStrictEqual(yield* found(owner, text), [shown], `owner: ${text}`);
+      assert.deepStrictEqual(yield* found(zoya, text), [shown], `zoya: ${text}`);
+      // Dev, with Clients off, sees no deals anywhere.
+      assert.deepStrictEqual(yield* found(dev, text), [], `dev: ${text}`);
+    }
+    // Under a client kept private, the owner level finds it and a teammate doesn't.
+    for (const text of [kept.deal.key, "confidential"]) {
+      assert.deepStrictEqual(yield* found(owner, text), [
+        `${kept.deal.key} work: Invented confidential pilot`,
+      ]);
+      assert.deepStrictEqual(yield* found(zoya, text), []);
+    }
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("an older client reads a deal as a Work entry, with its true list beside it", () =>

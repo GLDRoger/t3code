@@ -88,6 +88,8 @@ export const search = Effect.fn("KinSearch.search")(function* (
     readonly scope: KinViewer;
     /** With nothing that has every word, look again for any of them (`widened`). */
     readonly widen?: boolean;
+    /** Deals among `work`, and a deal by its exact key: a person's own search box asks. */
+    readonly deals?: boolean;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -95,9 +97,11 @@ export const search = Effect.fn("KinSearch.search")(function* (
   const indexed = yield* searchIndexed();
   if (words.length === 0) return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
   const kinds = input.kinds === undefined || input.kinds.length === 0 ? KINDS : input.kinds;
+  const registers: ReadonlyArray<string> =
+    input.deals === true && kinds.includes("work") ? [...kinds, "deals"] : kinds;
   const where = [
     sql`r.org_id = ${orgId}`,
-    sql`r.register_id IN ${sql.in(kinds)}`,
+    sql`r.register_id IN ${sql.in(registers)}`,
     ...(input.closed === true ? [] : [sql`r.state NOT IN ('done', 'dropped')`]),
     // A money list labels every entry private, so a teammate finds what Money shows them.
     ...(input.viewer === "team"
@@ -119,9 +123,16 @@ export const search = Effect.fn("KinSearch.search")(function* (
         ORDER BY bm25(kin_search, 4.0, 1.0), r.updated_at DESC, r.record_id
         LIMIT ${input.limit * 2}`
       : scan(sql, words, any, where, columns, input.viewer, input.limit * 2);
+  // No index holds a key; a deal's, typed whole, finds that deal first.
+  const typed = input.text.trim().toUpperCase();
+  const keyed =
+    input.deals === true && /^DL-\d{1,9}$/.test(typed)
+      ? yield* sql<Row>`SELECT ${columns}, 'public' AS part, r.title AS snippet FROM kin_records r
+          WHERE ${sql.and([...where, sql`r.register_id = 'deals'`, sql`r.key = ${typed}`])}`
+      : [];
   const every = yield* find(false);
   const widened = every.length === 0 && words.length > 1 && input.widen === true;
-  const rows = widened ? yield* find(true) : every;
+  const rows = [...keyed, ...(widened ? yield* find(true) : every)];
   const seen = new Set<string>();
   const best = rows.filter((row) => !seen.has(row.recordId) && seen.add(row.recordId));
   const shown = best.slice(0, input.limit);
@@ -148,9 +159,11 @@ export const search = Effect.fn("KinSearch.search")(function* (
             listOf(row.registerId),
           ),
       title: row.title,
-      // A project's notes carry its price and terms, which only its lead and the owner read.
+      // A project's notes carry its price and terms, which only its lead and the owner read; a
+      // deal's fields (a stage id, a value in minor units) are no one's words.
       snippet:
-        input.viewer === "team" && listOf(row.registerId) === "projects"
+        (input.viewer === "team" && listOf(row.registerId) === "projects") ||
+        row.registerId === "deals"
           ? row.title
           : ((said) => (said === "" ? row.title : said))(withoutIds(row.snippet)),
       ...(section === undefined || section.id === "top"
