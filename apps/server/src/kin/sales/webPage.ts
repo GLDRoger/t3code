@@ -9,7 +9,10 @@ import * as Predicate from "effect/Predicate";
 import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/http/HttpClient";
 
+import { normalizeHostname } from "@t3tools/shared/hostClassification";
+
 import { guardedLookup, urlRefusal } from "../connections/EgressGuard.ts";
+import { ownHosts } from "../publicAddress.ts";
 import { clean } from "../connections/ResultText.ts";
 import {
   PAGE_NOT_HTTPS,
@@ -57,8 +60,8 @@ const lookupRefused = (error: unknown, depth = 0): boolean =>
 
 /**
  * Reads one public https page for an agent. Every address, the first and each redirect's, passes
- * `urlRefusal`, and every socket resolves through `guardedLookup`, so no hop reaches this machine,
- * its networks or a metadata address. Kin follows a few redirects itself; the client follows none.
+ * `urlRefusal`, port 443 and Kin's own hosts, and every socket resolves through `guardedLookup`,
+ * so no hop reaches this machine, its networks, a metadata address or Kin's public front door. Kin follows a few redirects itself; the client follows none.
  */
 export class KinWebPages extends Context.Service<
   KinWebPages,
@@ -72,6 +75,8 @@ type Hop =
 const make = Effect.gen(function* () {
   // Each hop's response, body and all, is released when that hop's scope closes.
   const client = HttpClient.withScope(yield* HttpClient.HttpClient);
+  // Read where Kin keeps its public address, with the setting and T3 Connect as built.
+  const own = ownHosts().pipe(Effect.provideContext(yield* Effect.context<never>()));
   const hop = Effect.fn("KinWebPages.hop")(function* (url: URL, last: boolean) {
     const response = yield* client
       .get(url.href, {
@@ -144,10 +149,14 @@ const make = Effect.gen(function* () {
     function* (address: string) {
       if (!URL.canParse(address)) return yield* notRead(PAGE_NOT_HTTPS);
       let url = new URL(address);
+      const self = new Set(yield* own);
       for (let count = 0; ; count += 1) {
         url.hash = "";
         if (url.protocol !== "https:") return yield* notRead(PAGE_NOT_HTTPS);
         if (urlRefusal(url) !== undefined) return yield* notRead(PAGE_REFUSED);
+        // https on 443 only (the parser drops an explicit 443), and never Kin itself.
+        if (url.port !== "" || self.has(normalizeHostname(url.hostname)))
+          return yield* notRead(PAGE_REFUSED);
         const answer = yield* hop(url, count >= REDIRECTS_MAX);
         if (answer._tag === "page") return answer.page;
         url = answer.to;

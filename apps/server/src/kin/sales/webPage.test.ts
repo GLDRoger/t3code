@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { KinChatError } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -7,6 +8,7 @@ import * as Schema from "effect/Schema";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import { CloudLink } from "../../cloud/CloudLink.ts";
 import {
   PAGE_NOT_HTTPS,
   PAGE_NOT_TEXT,
@@ -30,7 +32,7 @@ type Answer = {
  * A fake web: each address's answer, every address Kin asked for in order, the headers each
  * request carried, and how many requests Kin released (their signal aborted when done with).
  */
-const web = (site: Record<string, Answer | "hang">) => {
+const web = (site: Record<string, Answer | "hang">, own: Record<string, string> = {}) => {
   const asked: Array<string> = [];
   const headers: Array<Headers> = [];
   const released = { count: 0 };
@@ -61,7 +63,21 @@ const web = (site: Record<string, Answer | "hang">) => {
     released,
     layer: layerFromClient.pipe(
       Layer.provide(
-        FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch))),
+        Layer.mergeAll(
+          FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch))),
+          ConfigProvider.layer(ConfigProvider.fromUnknown(own)),
+          Layer.mock(CloudLink)({
+            linkState: () =>
+              Effect.succeed({
+                linked: true,
+                cloudUserId: "invented-user",
+                relayUrl: "wss://relay.example.test",
+                relayIssuer: null,
+                publishAgentActivity: false,
+                tunnelHostname: "ambermill.tunnel.example.test",
+              }),
+          }),
+        ),
       ),
     ),
   };
@@ -232,5 +248,46 @@ it.effect("reads a megabyte of unclosed tags, comments and scripts in one pass",
       assert.strictEqual(page.text, "Before it.", path);
       assert.deepStrictEqual(page.links, [], path);
     }
+  }).pipe(Effect.provide(site.layer));
+});
+
+it.effect("reads https on its own port only, and never Kin's own public address", () => {
+  const site = web(
+    {
+      "https://corran.example/port": {
+        status: 302,
+        headers: { location: "https://corran.example:8443/" },
+      },
+      "https://corran.example/kin": {
+        status: 302,
+        headers: { location: "https://KIN.ambermill.example.test./api/kin" },
+      },
+      "https://corran.example/tunnel": {
+        status: 302,
+        headers: { location: "https://ambermill.tunnel.example.test/" },
+      },
+      "https://corran.example/": { body: "<title>Invented Corran</title>" },
+    },
+    { KIN_PUBLIC_URL: "https://kin.ambermill.example.test" },
+  );
+  return Effect.gen(function* () {
+    for (const address of [
+      "https://corran.example:8443/",
+      "https://corran.example:80/",
+      "https://kin.ambermill.example.test/",
+      "https://ambermill.tunnel.example.test/oauth",
+      "https://corran.example/port",
+      "https://corran.example/kin",
+      "https://corran.example/tunnel",
+    ])
+      assert.strictEqual(yield* refusedWith(address), PAGE_REFUSED, address);
+    // Only the three redirecting pages were asked; none of their targets.
+    assert.deepStrictEqual(site.asked, [
+      "https://corran.example/port",
+      "https://corran.example/kin",
+      "https://corran.example/tunnel",
+    ]);
+    // 443 said out loud is 443.
+    assert.strictEqual((yield* read("https://corran.example:443/")).title, "Invented Corran");
   }).pipe(Effect.provide(site.layer));
 });
