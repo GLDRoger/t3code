@@ -94,6 +94,7 @@ import {
 import { createKinOwnerTimeZoneSync } from "./kinTimeZone.ts";
 import {
   createKinWorkRefreshTriggers,
+  KIN_WORK_DEAL_LISTS,
   KIN_WORK_LABEL,
   KIN_WORK_NOT_TASKS,
   kinDocsListLean,
@@ -1330,8 +1331,7 @@ export function makeKinClient<R, ER>(
         return yield* readWorkDeals(input);
       }),
       staleTimeMs: 30_000,
-      // A deal, its follow-ups and the client it makes all move these.
-      refreshTrigger: kinWorkRefreshOn(["work", "deals", "clients"]),
+      refreshTrigger: kinWorkRefreshOn(KIN_WORK_DEAL_LISTS),
     }),
     /** One deal's page. */
     workDeal: createKinQueryAtomFamily(runtime, {
@@ -1340,7 +1340,7 @@ export function makeKinClient<R, ER>(
         return yield* readWorkDeal(input);
       }),
       staleTimeMs: 30_000,
-      refreshTrigger: kinWorkRefreshOn(["work", "deals", "clients"]),
+      refreshTrigger: kinWorkRefreshOn(KIN_WORK_DEAL_LISTS),
     }),
     /** The company's stages, for Settings → Deals. */
     workDealStages: createKinQueryAtomFamily(runtime, {
