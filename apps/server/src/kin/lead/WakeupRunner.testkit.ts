@@ -180,6 +180,8 @@ type HarnessOptions = {
   readonly realProjects?: Queue.Queue<string | null>;
   /** Each thread a whole-history projection read was made of, in order. */
   readonly wholeThreadReads?: Array<ThreadId>;
+  /** Called each time the runner subscribes to T3's domain events. */
+  readonly onDomainSubscribe?: () => void;
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -192,6 +194,12 @@ export function harness(options: HarnessOptions = {}) {
         Effect.sync(() => options.wholeThreadReads?.push(threadId)).pipe(
           Effect.andThen(service.getThreadProjection(threadId)),
         ),
+      streamDomainEvents: Stream.unwrap(
+        Effect.sync(() => {
+          options.onDomainSubscribe?.();
+          return service.streamDomainEvents;
+        }),
+      ),
     })),
   );
   return WakeupRunner.layer.pipe(

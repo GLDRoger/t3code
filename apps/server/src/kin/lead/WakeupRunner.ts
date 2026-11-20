@@ -371,18 +371,20 @@ const make = Effect.gen(function* () {
     readonly agentId: KinAgentId;
     readonly wakeupId: KinWakeupId;
   }) => aborted(row).pipe(provideSql);
-  const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
+  const leadThreadIds = Effect.fn("WakeupRunner.leadThreadIds")(function* (orgId: KinOrgId) {
     const rows = yield* sql<{
       threadId: string;
     }>`SELECT thread_id AS "threadId" FROM kin_leads WHERE org_id = ${orgId} AND thread_id IS NOT NULL ORDER BY thread_id`;
-    const leadThreads = new Set(rows.map((row) => row.threadId));
+    return new Set(rows.map((row) => row.threadId));
+  });
+  /** What on a lead's thread can free it or change what it is owed: a run update, a turn's end. */
+  const isLeadActivity = (event: Stream.Success<typeof threads.streamDomainEvents>) =>
+    event.type === "run.updated" ||
+    (event.type === "provider-turn.updated" && event.payload.completedAt !== null);
+  const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
+    const leadThreads = yield* leadThreadIds(orgId);
     return yield* threads.streamDomainEvents.pipe(
-      Stream.filter(
-        (event) =>
-          leadThreads.has(event.threadId) &&
-          (event.type === "run.updated" ||
-            (event.type === "provider-turn.updated" && event.payload.completedAt !== null)),
-      ),
+      Stream.filter((event) => leadThreads.has(event.threadId) && isLeadActivity(event)),
       Stream.runHead,
     );
   });
@@ -1573,12 +1575,22 @@ const make = Effect.gen(function* () {
           freed = Deferred.makeUnsafe<void>();
           return Deferred.succeed(signal, undefined);
         }).pipe(Effect.asVoid);
-        yield* Effect.gen(function* () {
+        // One subscription per company for its loop's life: activity on a lead's thread ends a
+        // pass's wait, as `freed` does.
+        let stirred = Deferred.makeUnsafe<void>();
+        let leadThreads = new Set<string>();
+        // A pass after a run ended, or after a quiet wait, recovers wake-ups left running.
+        let recoverNext = true;
+        const pass = Effect.gen(function* () {
           const changed = yield* queue.changes(orgId);
           // Taken before any read, so a run that finishes mid-pass still ends this pass's wait.
           const finished = Deferred.await(freed);
+          stirred = Deferred.makeUnsafe<void>();
+          const stir = Deferred.await(stirred);
+          leadThreads = yield* leadThreadIds(orgId);
           const active = activeOf(orgId);
-          yield* recoverOrg(orgId, active, wake, true);
+          if (recoverNext) yield* recoverOrg(orgId, active, wake, true);
+          recoverNext = false;
           const rows = yield* sql<{
             agentId: string;
           }>`SELECT l.agent_id AS "agentId" FROM kin_leads l
@@ -1606,19 +1618,40 @@ const make = Effect.gen(function* () {
               Effect.forkScoped,
             );
           }
-          yield* Effect.raceAllFirst([changed, finished, threadActivity(orgId)]).pipe(
+          recoverNext = yield* Effect.raceAllFirst([
+            changed.pipe(Effect.as(false)),
+            finished.pipe(Effect.as(true)),
+            stir.pipe(Effect.as(false)),
+          ]).pipe(
             Effect.timeoutOrElse({
               duration: orgLoopWaitMs(ready, active, now),
-              orElse: () => Effect.void,
+              orElse: () => Effect.succeed(true),
             }),
           );
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logError("Kin runner iteration failed", { orgId, cause }).pipe(
-              Effect.andThen(Effect.sleep("1 second")),
+        });
+        yield* Effect.gen(function* () {
+          yield* threads.streamDomainEvents.pipe(
+            Stream.runForEach((event) =>
+              leadThreads.has(event.threadId) && isLeadActivity(event)
+                ? Deferred.succeed(stirred, undefined)
+                : Effect.void,
             ),
-          ),
-          Effect.forever,
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin lead activity stream failed", { orgId, cause }),
+            ),
+            Effect.andThen(Effect.sleep("1 second")),
+            Effect.forever,
+            Effect.forkChild,
+          );
+          return yield* pass.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError("Kin runner iteration failed", { orgId, cause }).pipe(
+                Effect.andThen(Effect.sleep("1 second")),
+              ),
+            ),
+            Effect.forever,
+          );
+        }).pipe(
           Effect.catchCause((cause) => Effect.logError("Kin org loop failed", { orgId, cause })),
           Effect.ensuring(Effect.sync(() => organizations.delete(orgId))),
           Effect.forkScoped,

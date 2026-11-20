@@ -166,6 +166,7 @@ describe("WakeupRunner", () => {
       const commitRelease = Deferred.makeUnsafe<void>();
       let commits = 0;
       let readyCalls = 0;
+      let subscriptions = 0;
       const writer = Layer.succeed(
         Writer.MemoryWriter,
         Writer.MemoryWriter.of({
@@ -210,6 +211,9 @@ describe("WakeupRunner", () => {
           const settled = readyCalls;
           yield* TestClock.adjust("30 seconds");
           assert.strictEqual(readyCalls, settled);
+          // Every pass shares the loop's one subscription to T3's events.
+          assert.isAbove(readyCalls, 1);
+          assert.strictEqual(subscriptions, 1);
           yield* Deferred.succeed(commitRelease, undefined);
           // The finish wakes the loop at once: the queued event is claimed with no clock advance,
           // where a missed wake would wait for the 60-second cap.
@@ -238,6 +242,9 @@ describe("WakeupRunner", () => {
             writer,
             onReadyLeads: () => {
               readyCalls++;
+            },
+            onDomainSubscribe: () => {
+              subscriptions++;
             },
           }),
         ),
