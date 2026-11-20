@@ -2857,6 +2857,8 @@ const make = Effect.gen(function* () {
           }),
       );
     }),
+    // Nested in the caller's transaction when there is one, so every tick waits for the outermost
+    // commit (screens read on readers) and a rollback tells no one.
     announce: Effect.fn("KinRecords.announce")(function* (orgId, recordIds) {
       const moved =
         recordIds === undefined
@@ -2895,13 +2897,9 @@ const make = Effect.gen(function* () {
             if (pair.recordId === one.recordId && number !== undefined)
               team.set(pair.personId, number);
           }
-          yield* PubSub.publish(ticks, {
-            orgId,
-            seq,
-            key: one.key,
-            registerId: one.registerId,
-            team,
-          });
+          yield* sql.afterCommit(
+            PubSub.publish(ticks, { orgId, seq, key: one.key, registerId: one.registerId, team }),
+          );
         }
         return;
       }
@@ -2917,9 +2915,8 @@ const make = Effect.gen(function* () {
           everyone.map((one) => one.personId),
         ).pipe(provideSql),
       );
-      // Screens read on readers, which see this only once it commits.
       yield* sql.afterCommit(PubSub.publish(ticks, { orgId, seq, team }));
-    }),
+    }, transaction),
     peopleMoved: Effect.fn("KinRecords.peopleMoved")(function* (orgId, personIds) {
       if (personIds.length === 0) return;
       const team = yield* failed(bumpTeamSeqs(orgId, personIds).pipe(provideSql));
