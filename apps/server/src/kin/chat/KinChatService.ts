@@ -207,6 +207,8 @@ export class KinChatService extends Context.Service<
       readonly silent?: true;
       /** The time `body` names, which each reader's client puts on their own clock. */
       readonly when?: KinMessageWhen;
+      /** A page Kin wrote under the reader's greeting, such as a teammate's morning page. */
+      readonly form?: "brief";
     }) => Effect.Effect<
       { readonly message: KinMessage; readonly waiting: KinWaitingItem | null },
       ServiceError
@@ -1719,6 +1721,7 @@ const make = Effect.gen(function* () {
         ...(input.discussionId === undefined ? {} : { discussionId: input.discussionId }),
         ...(input.silent === undefined ? {} : { silent: input.silent }),
         ...(input.when === undefined ? {} : { when: input.when }),
+        ...(input.form === undefined ? {} : { form: input.form }),
         intent: null,
         mentions: [],
         replyTo: null,

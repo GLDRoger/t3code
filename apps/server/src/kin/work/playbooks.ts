@@ -42,6 +42,8 @@ const PLAYBOOK_KEYS = {
   renewal_heads_up_days: { unit: "days", min: 1, max: 120, default: 14, client: true },
   // Inside the heads-up, a renewal is only mentioned until this many days before it: then drafted.
   renewal_draft_days: { unit: "days", min: 1, max: 120, default: 7, client: true },
+  // How long an open deal goes with no contact, note, stage move or next-step change before it is quiet.
+  deal_quiet_days: { unit: "days", min: 1, max: 365, default: 14 },
   // How far under the straight line to its target a goal may fall before it counts as behind.
   goal_behind_percent: { unit: "percent", min: 1, max: 90, default: 20 },
 } as const satisfies Record<string, KeyDef>;

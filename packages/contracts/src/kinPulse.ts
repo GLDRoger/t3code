@@ -46,12 +46,20 @@ const KIN_PULSE_SENSES = [
   "meeting_passed",
   "meeting_soon",
   "holder_removed",
+  "deal_no_next_step",
+  "deal_quiet",
+  "deal_date_passed",
 ] as const;
 /**
  * Senses newer than the first phones: a screen read sends them only to a client that lists them
  * in `acceptSenses`, so an older client never meets a sense it can't decode.
  */
-export const KIN_PULSE_LATER_SENSES = ["holder_removed"] as const;
+export const KIN_PULSE_LATER_SENSES = [
+  "holder_removed",
+  "deal_no_next_step",
+  "deal_quiet",
+  "deal_date_passed",
+] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;
 

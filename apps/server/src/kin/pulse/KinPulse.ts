@@ -33,8 +33,9 @@ import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/org
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { matchName } from "../work/nameMatch.ts";
-import { viewSees } from "../work/teamView.ts";
+import { crmVisible, viewSees } from "../work/teamView.ts";
 import { clientSenses } from "./senses/clients.ts";
+import { DEAL_SENSES, dealSenses } from "./senses/deals.ts";
 import { goalSenses } from "./senses/goals.ts";
 import { moneySenses } from "./senses/money.ts";
 import { projectSenses } from "./senses/projects.ts";
@@ -44,6 +45,7 @@ import { workSenses } from "./senses/work.ts";
 import { fromConnections, noOutside, poll } from "./outside.ts";
 import { DAY_MS } from "./thresholds.ts";
 import { tellHolder } from "./holderNotice.ts";
+import { morningPages } from "./personMorning.ts";
 import { agentParty, forHolder, markTold, untold } from "./told.ts";
 import {
   asideOf,
@@ -109,6 +111,7 @@ const senseIn = Effect.fn("KinPulse.sense")(function* (ctx: SenseContext) {
     ...(yield* clientSenses(ctx)),
     ...(yield* goalSenses(ctx)),
     ...(yield* projectSenses(ctx)),
+    ...(yield* dealSenses(ctx)),
   ];
   return facts.toSorted(
     (a, b) =>
@@ -228,15 +231,17 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
   facts: ReadonlyArray<SensedFact>,
 ) {
   if (viewer._tag === "owner") return facts;
+  const deals = yield* dealsHeardBy(orgId, viewer, facts);
   // Who holds a task after their access went is the owner's to settle, not a teammate's.
   const candidates = facts.filter(
     (fact) =>
       fact.family === "work" &&
       fact.sense !== "holder_removed" &&
+      !DEAL_SENSES.has(fact.sense) &&
       !fact.sensitive &&
       fact.subject.recordId !== undefined,
   );
-  if (candidates.length === 0 || viewer.people.length === 0) return [];
+  if (candidates.length === 0 || viewer.people.length === 0) return deals;
   const sql = yield* SqlClient.SqlClient;
   const ids = [...new Set(candidates.map((fact) => fact.subject.recordId!))];
   const seen = new Set<string>();
@@ -286,7 +291,7 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
       WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(scopeKeys.slice(start, start + 500))}
         AND ${viewSees(sql, viewer.people)} ORDER BY r.key`)
       named.add(row.key);
-  return shown.map((fact) => {
+  const work = shown.map((fact) => {
     const { projectKey, projectTitle, clientKey, clientTitle, ...rest } = fact.scope;
     return {
       ...fact,
@@ -297,6 +302,34 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
       },
     };
   });
+  return [...work, ...deals];
+});
+
+/**
+ * A deal's or prospect's fact reaches one person: the one it is for (`actor`), reading alone,
+ * while their Clients switch still shows them the record. Nobody else on the team hears it.
+ */
+const dealsHeardBy = Effect.fn("KinPulse.dealsHeardBy")(function* (
+  orgId: KinOrgId,
+  viewer: Extract<Viewer, { _tag: "people" }>,
+  facts: ReadonlyArray<SensedFact>,
+) {
+  const [person] = viewer.people;
+  if (viewer.people.length !== 1 || person === undefined) return [];
+  const theirs = facts.filter(
+    (fact) =>
+      DEAL_SENSES.has(fact.sense) &&
+      fact.actor._tag === "person" &&
+      fact.actor.personId === person &&
+      fact.subject.recordId !== undefined,
+  );
+  if (theirs.length === 0) return [];
+  const seen = yield* crmVisible(
+    orgId,
+    person,
+    theirs.map((fact) => fact.subject.recordId!),
+  );
+  return theirs.filter((fact) => seen.has(fact.subject.recordId!));
 });
 
 /** The facts that need attention as of `at`, for one viewer, filtered by scope. */
@@ -596,10 +629,17 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
         woken.push(fact.key);
       }
+      // A teammate's page first: what it tells, the holder notice after it doesn't repeat.
+      const pages = yield* morningPages({
+        ctx,
+        open: facts.filter((fact) => handledOf(stored.get(fact.key), at) === null),
+        holds,
+        sees: (personId) => visibleTo(orgId, { _tag: "people", people: [personId] }, facts),
+      });
       const told = yield* tellHolders(ctx, facts, stored, holds);
       if (moved > 0 || sensedMoved) yield* refreshes.touch(orgId, "pulse");
       yield* sql.afterCommit(Effect.sync(() => lastSensed.set(orgId, sensedNow)));
-      return { facts: facts.length, cleared: cleared.length, woken, told };
+      return { facts: facts.length, cleared: cleared.length, woken, told, pages };
     }),
   );
 });

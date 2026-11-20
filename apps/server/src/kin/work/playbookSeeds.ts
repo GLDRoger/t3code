@@ -172,6 +172,8 @@ The owner can reassign anything; people can hand back work they can't do.
 ] as const;
 
 const SEED_ORIGIN = "kin-playbook-seed:";
+/** Winning customers, which holds `deal_quiet_days` until the company moves it. */
+export const WINNING_CUSTOMERS_ORIGIN = `${SEED_ORIGIN}winning-customers`;
 
 /**
  * The default set, once per company: a seed whose origin key exists is never made again, so a

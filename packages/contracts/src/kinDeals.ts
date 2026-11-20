@@ -226,8 +226,18 @@ export const KinDealStagesResult = Schema.Struct({
   can: Schema.Boolean,
   /** Open deals in each stage, by stage id, of every deal in the company. */
   open: Schema.Record(Schema.String, NonNegativeInt),
+  /** Days with no contact, note, stage move or next-step change before a deal is quiet; absent from older hosts. */
+  quietDays: Schema.optional(NonNegativeInt),
 });
 export type KinDealStagesResult = typeof KinDealStagesResult.Type;
+
+export const KIN_DEAL_QUIET_DAYS_MAX = 365;
+/** "A deal goes quiet after N days": written to the playbook that sets it. Owner and co-owners. */
+export const KinDealQuietDaysSetInput = Schema.Struct({
+  orgId: KinOrgId,
+  days: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: KIN_DEAL_QUIET_DAYS_MAX })),
+});
+export type KinDealQuietDaysSetInput = typeof KinDealQuietDaysSetInput.Type;
 /**
  * The whole list in its new order: a stage without an id is new. A stage left out is removed, and
  * its open deals move to `moveTo[id]`, each logged.
@@ -251,6 +261,7 @@ const KIN_DEAL_WS_METHODS = {
   dealStep: "kin.work.dealStep",
   dealStages: "kin.work.dealStages",
   setDealStages: "kin.work.setDealStages",
+  setDealQuietDays: "kin.work.setDealQuietDays",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -287,6 +298,11 @@ export const KinDealRpcs = [
     success: KinDealStagesResult,
     error,
   }),
+  Rpc.make(KIN_DEAL_WS_METHODS.setDealQuietDays, {
+    payload: KinDealQuietDaysSetInput,
+    success: KinDealStagesResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_DEAL_RPC_SCOPES = {
@@ -299,4 +315,5 @@ export const KIN_DEAL_RPC_SCOPES = {
   [KIN_DEAL_WS_METHODS.dealStep]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.dealStages]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.setDealStages]: AuthKinChatScope,
+  [KIN_DEAL_WS_METHODS.setDealQuietDays]: AuthKinChatScope,
 } as const;

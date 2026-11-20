@@ -16,6 +16,7 @@ import {
   KinDealStage as KinDealStageSchema,
   type KinDealStagesResult,
   type KinDealStagesSetInput,
+  type KinDealQuietDaysSetInput,
   type KinDealStepInput,
   type KinDealUpdateInput,
   type KinMoney,
@@ -37,6 +38,9 @@ import type * as Statement from "effect/sql/Statement";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { DEFAULT_STAGES, stageLine, stageMove, stagesOf } from "./dealStages.ts";
+import * as Docs from "./docs.ts";
+import { WINNING_CUSTOMERS_ORIGIN } from "./playbookSeeds.ts";
+import { playbookThreshold } from "./playbooks.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
 import { fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
 import { dueMillis, ownerWriter, viewerOf } from "./ownerWork.ts";
@@ -957,7 +961,71 @@ export const stages = Effect.fn("KinDeals.rpc.stages")(function* (
     can: !viewer.teammate,
     // Counts of other people's deals are the owner level's; a teammate needs none to read.
     open: viewer.teammate ? {} : yield* openByStage(input.orgId).pipe(workFailure),
+    quietDays: (yield* playbookThreshold(input.orgId, "deal_quiet_days").pipe(workFailure)).value,
   } satisfies KinDealStagesResult;
+});
+
+const QUIET_LINE = /^(\s*)deal_quiet_days\s*:\s*\d+(?:\s+[a-z]+)?\s*$/;
+const KIN_FENCE = /^\s*(`{3,}|~{3,})\s*kin\s*$/;
+/** The playbook's text with `deal_quiet_days` set to `days`: its line changed, else one added. */
+export const withQuietDays = (body: string, days: number) => {
+  const lines = body.split("\n");
+  const at = lines.findIndex((line) => QUIET_LINE.test(line));
+  if (at !== -1) {
+    lines[at] = lines[at]!.replace(QUIET_LINE, `$1deal_quiet_days: ${days}`);
+    return lines.join("\n");
+  }
+  const fence = lines.findIndex((line) => KIN_FENCE.test(line));
+  if (fence !== -1) {
+    lines.splice(fence + 1, 0, `deal_quiet_days: ${days}`);
+    return lines.join("\n");
+  }
+  return `${body.trimEnd()}\n\n## Thresholds\n\`\`\`kin\ndeal_quiet_days: ${days}\n\`\`\`\n`;
+};
+
+/**
+ * Settings, Deals: "A deal goes quiet after N days", written into the playbook that sets it, else
+ * into Winning customers, as a new version its history keeps. The owner level only.
+ */
+export const setQuietDays = Effect.fn("KinDeals.setQuietDays")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinDealQuietDaysSetInput,
+) {
+  const viewer = yield* viewerOf(people, input.orgId);
+  if (viewer.teammate)
+    return yield* refused("Only the owner or a co-owner sets when a deal goes quiet.");
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  const found = yield* playbookThreshold(input.orgId, "deal_quiet_days").pipe(workFailure);
+  const [doc] =
+    found.from._tag === "playbook"
+      ? [{ key: found.from.key }]
+      : // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- owner level only, checked above.
+        yield* sql<{ key: string }>`SELECT key FROM kin_records WHERE org_id = ${input.orgId}
+          AND register_id = 'docs' AND origin_key = ${WINNING_CUSTOMERS_ORIGIN}
+          AND state <> 'dropped' ORDER BY key LIMIT 1`.pipe(workFailure);
+  if (doc === undefined)
+    return yield* invalid(
+      "No playbook sets this: bring Winning customers back in Docs, or add deal_quiet_days to a company playbook.",
+    );
+  // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- owner level only, checked above.
+  const [latest] = yield* sql<{ body: string }>`SELECT v.body FROM kin_doc_versions v
+    JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
+    WHERE r.org_id = ${input.orgId} AND r.key = ${doc.key} AND v.body_kind = 'markdown'
+    ORDER BY v.version DESC LIMIT 1`.pipe(workFailure);
+  if (latest === undefined) return yield* invalid(`${doc.key} has no text to set it in.`);
+  yield* Docs.replaceBody(
+    input.orgId,
+    { actor: { _tag: "person", personId: viewer.person.personId }, via: "owner" },
+    {},
+    { key: doc.key },
+    {
+      body: withQuietDays(latest.body, input.days),
+      summary: `A deal goes quiet after ${input.days} ${input.days === 1 ? "day" : "days"}`,
+      originKey: `kin-deal-quiet-days:${input.orgId}:${now}`,
+    },
+  );
+  return yield* stages(people, { orgId: input.orgId });
 });
 
 const encodeStages = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(KinDealStageSchema)));

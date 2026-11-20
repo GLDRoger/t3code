@@ -145,6 +145,10 @@ export const noticeHolder = Effect.fn("KinPulse.noticeHolder")(function* (input:
   readonly agentId: KinAgentId;
   readonly body: string;
   readonly key: string;
+  /** Drawn as a page under the reader's greeting (`KinMessage.form`). */
+  readonly form?: "brief";
+  /** In their quiet hours, while away or outside their hours: post nothing, hold nothing. */
+  readonly onlyIfFree?: true;
 }) {
   const { orgId, personId, body } = input;
   const chats = yield* Effect.serviceOption(KinChatService);
@@ -174,6 +178,7 @@ export const noticeHolder = Effect.fn("KinPulse.noticeHolder")(function* (input:
   if (chatId === undefined) return undefined;
   const messageId = KinMessageId.make(`${HOLDER_ID}${input.key}`);
   const held = yield* holdFor({ orgId, personId, chatId });
+  if (held !== undefined && input.onlyIfFree === true) return undefined;
   if (held !== undefined) {
     yield* holdLine({
       orgId,
@@ -187,7 +192,14 @@ export const noticeHolder = Effect.fn("KinPulse.noticeHolder")(function* (input:
     return messageId;
   }
   const posted = yield* chats.value
-    .notice({ orgId, chatId, messageId, audience: "chat", body })
+    .notice({
+      orgId,
+      chatId,
+      messageId,
+      audience: "chat",
+      body,
+      ...(input.form === undefined ? {} : { form: input.form }),
+    })
     .pipe(
       Effect.as(true),
       Effect.catch((cause) =>

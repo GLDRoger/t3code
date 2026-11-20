@@ -20,6 +20,7 @@ const state = vi.hoisted(() => ({
   move: null as unknown as (...args: Array<unknown>) => unknown,
   update: null as unknown as (...args: Array<unknown>) => unknown,
   setStages: null as unknown as (...args: Array<unknown>) => unknown,
+  setQuietDays: null as unknown as (...args: Array<unknown>) => unknown,
 }));
 
 vi.mock(import("./useKinDeals"), () => {
@@ -46,6 +47,10 @@ vi.mock(import("./useKinDeals"), () => {
     })) as never,
     useKinDealStagesSet: (() => async (input: unknown) => {
       state.setStages(input);
+      return { ok: true, value: state.stages };
+    }) as never,
+    useKinDealQuietDaysSet: (() => async (days: unknown) => {
+      state.setQuietDays(days);
       return { ok: true, value: state.stages };
     }) as never,
   };
@@ -124,7 +129,13 @@ function setup(input: {
   state.move = vi.fn();
   state.update = vi.fn();
   state.setStages = vi.fn();
-  return { move: state.move, update: state.update, setStages: state.setStages };
+  state.setQuietDays = vi.fn();
+  return {
+    move: state.move,
+    update: state.update,
+    setStages: state.setStages,
+    setQuietDays: state.setQuietDays,
+  };
 }
 
 const board = () => (
@@ -390,6 +401,7 @@ describe("Settings → Deals", () => {
     rev: 5,
     can,
     open: can ? { new: 3, "in-talks": 4, proposal: 2, deciding: 2 } : {},
+    quietDays: 14,
   });
 
   it("lets the owner rename, add and remove a stage, moving its open deals first", async () => {
@@ -420,6 +432,29 @@ describe("Settings → Deals", () => {
     });
   });
 
+  it("lets the owner set when a deal goes quiet, on its own Save", async () => {
+    const { setQuietDays, setStages } = setup({ stages: held(true) });
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinDealStagesSettings {...target} />
+      </AppAtomRegistryProvider>,
+    );
+    const days = page.getByRole("spinbutton", { name: "Days before a deal is quiet" });
+    await expect.element(days).toHaveValue(14);
+    const save = page.getByRole("region", { name: "A deal goes quiet after" }).getByRole("button", {
+      name: "Save",
+    });
+    await expect.element(save).toBeDisabled();
+    await userEvent.clear(days);
+    await userEvent.type(days, "0");
+    await expect.element(page.getByText("Say a whole number of days, 1 to 365.")).toBeVisible();
+    await userEvent.clear(days);
+    await userEvent.type(days, "21");
+    await userEvent.click(save);
+    expect(setQuietDays).toHaveBeenCalledWith(21);
+    expect(setStages).not.toHaveBeenCalled();
+  });
+
   it("shows a teammate the stages to read, not change", async () => {
     setup({ stages: held(false) });
     await using _screen = await render(
@@ -432,5 +467,7 @@ describe("Settings → Deals", () => {
       .toBeVisible();
     expect(page.getByRole("textbox").elements()).toHaveLength(0);
     expect(page.getByRole("button", { name: "Save stages" }).elements()).toHaveLength(0);
+    await expect.element(page.getByText("14 days")).toBeVisible();
+    expect(page.getByRole("spinbutton").elements()).toHaveLength(0);
   });
 });
