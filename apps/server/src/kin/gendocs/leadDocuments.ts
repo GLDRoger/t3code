@@ -106,7 +106,7 @@ export const DocumentResult = Schema.Struct({
 const RecipeInputRow = Schema.Struct({
   name: Schema.String,
   type: Schema.String,
-  /** `agent` when the agent gives it; otherwise where Kin reads it. */
+  /** Where Kin reads it. */
   from: Schema.String,
   required: Schema.Boolean,
   description: Schema.optional(Schema.String),
@@ -116,7 +116,7 @@ const AgentInputRow = RecipeInputRow.mapFields(({ from: _from, ...fields }) => f
 export const RecipesInput = Schema.Struct({
   recipe: Schema.optional(recipeName).annotate({
     description:
-      "One recipe to read in full: its inputs (from is agent for the ones you give, else where Kin reads it), the fields Kin computes and its output files.",
+      "One recipe to read in full: adds the inputs Kin reads itself (from is where), the fields Kin computes and its output files.",
   }),
 });
 export const RecipesResult = Schema.Struct({
@@ -135,7 +135,7 @@ export const RecipesResult = Schema.Struct({
       default: Schema.optional(Schema.Literal(true)),
       /** Only when one recipe is read. */
       kind: Schema.optional(Schema.String),
-      inputs: Schema.optional(Schema.Array(RecipeInputRow)),
+      storedInputs: Schema.optional(Schema.Array(RecipeInputRow)),
       computed: Schema.optional(Schema.Array(Schema.String)),
       outputs: Schema.optional(Schema.Array(Schema.String)),
     }),
@@ -179,7 +179,7 @@ export const recipes = leadTool("KinDocuments.recipes", (lead, input: typeof Rec
             ? {}
             : {
                 kind: recipe.kind,
-                inputs,
+                storedInputs: inputs.filter((one) => one.from !== "agent"),
                 computed: recipe.computed.map(([name]) => name),
                 outputs: [...recipe.outputs],
               }),

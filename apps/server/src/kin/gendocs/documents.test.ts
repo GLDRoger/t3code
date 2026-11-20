@@ -536,7 +536,7 @@ describe("recipe documents", () => {
   );
 
   it.effect(
-    "are listed to the agent with only the inputs it gives, which one recipe's read gives in full",
+    "are listed to the agent with only the inputs it gives, and one recipe's read adds the rest once",
     () =>
       Effect.gen(function* () {
         yield* seed;
@@ -556,7 +556,7 @@ describe("recipe documents", () => {
           "rate",
         ]);
         for (const row of listed.recipes) {
-          assert.notProperty(row, "inputs", row.name);
+          assert.notProperty(row, "storedInputs", row.name);
           assert.notProperty(row, "computed", row.name);
         }
         const read = yield* LeadDocuments.recipes(scope, { recipe: "invoice" });
@@ -564,13 +564,13 @@ describe("recipe documents", () => {
           read.recipes.map((one) => one.name),
           ["invoice"],
         );
-        const inputs = read.recipes[0]?.inputs ?? [];
-        assert.strictEqual(inputs.find((input) => input.name === "billTo")?.from, "agent");
-        assert.isTrue(inputs.some((input) => input.from !== "agent"));
-        assert.deepStrictEqual(
-          inputs.filter((input) => input.from === "agent").map((input) => input.name),
-          invoiceRow?.agentInputs.map((one) => one.name),
-        );
+        const [one] = read.recipes;
+        assert.deepStrictEqual(one?.agentInputs, invoiceRow?.agentInputs);
+        const stored = one?.storedInputs ?? [];
+        assert.isNotEmpty(stored);
+        assert.isTrue(stored.every((input) => input.from !== "agent"));
+        assert.isNotEmpty(one?.computed ?? []);
+        assert.isNotEmpty(one?.outputs ?? []);
         const unknown = yield* LeadDocuments.recipes(scope, { recipe: "nothing" }).pipe(
           Effect.flip,
         );
