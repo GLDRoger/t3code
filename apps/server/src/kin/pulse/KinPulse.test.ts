@@ -184,6 +184,27 @@ const seed = Effect.gen(function* () {
     partyId: "r-C-1",
   });
   yield* insert({ id: "W-10", dueAt: B + 5 * DAY, partyId: "r-C-1", category: "obligation" });
+  // An agent's suggestions nobody confirmed: no chase, no contact, no goal, no brief figure,
+  // even with a payment an older build let it take.
+  yield* insert({
+    id: "INV-7",
+    list: "invoices",
+    state: "waiting",
+    amount: 177_000_00,
+    dueAt: B + 2 * DAY,
+    dateAt: B - 5 * DAY,
+    partyId: "r-C-1",
+    confirmed: 0,
+    createdAt: B - 5 * DAY,
+  });
+  yield* insert({
+    id: "QT-2",
+    list: "quotes",
+    state: "waiting",
+    amount: 300_000_00,
+    confirmed: 0,
+    createdAt: B,
+  });
   yield* insert({ id: "DT-1", list: "dates", category: "renewal", dueAt: B + 40 * DAY });
   yield* insert({
     id: "EXP-1",
@@ -211,7 +232,8 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor, currency,
       paid_on, origin_key, created_at, created_by_kind, voided_at)
     VALUES (${orgId}, 'pay-1', 'r-INV-6', 1_00_000_00, 'INR', '2026-11-02', 'pay-1', 0, 'person', NULL),
-      (${orgId}, 'pay-2', 'r-INV-6', 50_000_00, 'INR', '2026-11-02', 'pay-2', 0, 'person', 1)`;
+      (${orgId}, 'pay-2', 'r-INV-6', 50_000_00, 'INR', '2026-11-02', 'pay-2', 0, 'person', 1),
+      (${orgId}, 'pay-3', 'r-INV-7', 10_000_00, 'INR', '2026-11-02', 'pay-3', 0, 'person', NULL)`;
   const goal = (id: string, fields: object) =>
     insert({
       id,
@@ -401,6 +423,22 @@ describe("KinPulse", () => {
         VALUES ('held', ${orgId}, ${chief}, 'github', 'P2', '{}', 0, 0, 1)`;
       assert.lengthOf(keyed((yield* read(B)).facts, "work_held", chief), 1);
 
+      // A suggested one on the same day is still a day to know, with no fee of its own, and
+      // stands for no renewal that was kept.
+      yield* insert({
+        id: "DT-3",
+        list: "dates",
+        category: "renewal",
+        projectId: "P-1",
+        amount: 9_999_00,
+        confirmed: 0,
+        dueAt: Date.UTC(2026, 11, 20, 23, 59, 59, 999),
+      });
+      const guessed = (yield* read(B + 40 * DAY)).facts.filter(
+        (fact) => fact.sense === "renewal_due" && fact.scope.projectKey === "P-1",
+      );
+      assert.deepStrictEqual(guessed.map((fact) => fact.subject.key).toSorted(), ["DT-3", "P-1"]);
+      assert.notInclude(guessed.find((fact) => fact.subject.key === "DT-3")!.consequence, "9,999");
       // The same renewal kept in Dates for the project too is one fact, not two.
       yield* insert({
         id: "DT-2",
@@ -412,10 +450,19 @@ describe("KinPulse", () => {
       const renewals = (yield* read(B + 40 * DAY)).facts.filter(
         (fact) => fact.sense === "renewal_due" && fact.scope.projectKey === "P-1",
       );
-      assert.deepStrictEqual(
-        renewals.map((fact) => fact.subject.key),
-        ["DT-2"],
-      );
+      assert.deepStrictEqual(renewals.map((fact) => fact.subject.key).toSorted(), ["DT-2", "DT-3"]);
+      // A suggested repeating invoice's next draft names no amount and waits on Keep.
+      yield* insert({
+        id: "INV-17",
+        list: "invoices",
+        amount: 12_345_00,
+        confirmed: 0,
+        repeat: '{"every":"month"}',
+        dateAt: B + 15 * DAY,
+      });
+      const [retainer] = keyed((yield* read(B + 10 * DAY)).facts, "retainer_due", "INV-17");
+      assert.match(retainer!.consequence, /; it is still a draft that waits on Keep\.$/);
+      assert.notInclude(retainer!.consequence, "12,345");
 
       // V27: our own task under a client is a late task, not something we owe the client.
       yield* insert({ id: "W-15", dueAt: B, partyId: "r-C-2", category: "task" });
@@ -430,8 +477,11 @@ describe("KinPulse", () => {
         "No contact for 30 days (calls, meetings, mail, invoices and payments count; the last was an invoice), and nothing open with them.",
       );
 
-      // A void invoice never counts; a moved due date is a new episode, so a new key.
-      assert.lengthOf(keyed((yield* read(B + 60 * DAY)).facts, "invoice_overdue", "INV-2"), 0);
+      // A void invoice never counts, nor a suggestion; a moved due date is a new episode, so a new key.
+      const later = (yield* read(B + 60 * DAY)).facts;
+      assert.lengthOf(keyed(later, "invoice_overdue", "INV-2"), 0);
+      assert.lengthOf(keyed(later, "invoice_overdue", "INV-7"), 0);
+      assert.lengthOf(keyed(later, "quote_unanswered", "QT-2"), 0);
       const [before] = keyed((yield* read(B + 11 * DAY)).facts, "task_late", "W-1");
       yield* sql`UPDATE kin_records SET due_at = ${B + 10 * DAY + HOUR} WHERE record_id = 'r-W-1'`;
       const [after] = keyed((yield* read(B + 11 * DAY)).facts, "task_late", "W-1");
@@ -1048,10 +1098,24 @@ describe("KinPulse", () => {
       const people = (yield* read(at, { _tag: "people", people: [mate] })).facts;
       assert.isFalse(people.some((fact) => fact.sense === "goal_behind"));
 
+      // Next week's dues: a suggested task is still due, a suggested invoice is owed nowhere.
+      yield* insert({ id: "W-20", dueAt: at + 3 * DAY, confirmed: 0 });
+      yield* insert({
+        id: "INV-8",
+        list: "invoices",
+        state: "waiting",
+        amount: 5_000_00,
+        dueAt: at + 3 * DAY,
+        confirmed: 0,
+      });
+      const nextWeek = (yield* buildWeeklySection({ orgId, now: at })).nextWeek;
+      assert.isTrue(nextWeek.some((line) => line.includes("W-20")));
       // The weekly brief's figures lead with goals, then overdue money from the same rows.
       const week = yield* weeklyFigures({ orgId, now: at });
       assert.match(week, /^Goals:\n- G-1 .*₹1,00,000 of ₹10,00,000.*behind$/m);
       assert.match(week, /^- INV-1:.*unpaid, overdue for \d+ days; no mail with it on record$/m);
+      assert.notMatch(week, /INV-7|INV-8/);
+      assert.match(week, /^- Still to come in: ₹1,97,000\.00$/m);
       // Run 4: the brief called a reminder sent 45 s earlier a draft. Its lines read the record.
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,

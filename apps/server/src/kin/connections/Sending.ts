@@ -20,6 +20,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { chatReaders, keysIn } from "../chat/messageLinks.ts";
 import { readStoredFile } from "../gendocs/brand.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import type { TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { formatMoney } from "../work/money.ts";
@@ -44,6 +45,8 @@ const Attachment = Schema.Struct({
   bytes: Schema.Number,
   label: Schema.NullOr(Schema.String),
   entryRecordId: Schema.NullOr(Schema.String),
+  /** The entry's revision when the card was drawn: a Confirm approves that, not a later edit. */
+  entryRev: Schema.optionalKey(Schema.Number),
 });
 export type Attachment = typeof Attachment.Type;
 const From = Schema.Struct({ address: Schema.String, name: Schema.NullOr(Schema.String) });
@@ -187,7 +190,8 @@ export const attachmentOf = Effect.fn("KinSending.attachment")(function* (
           registerId: string;
           amountMinor: number | null;
           currency: string | null;
-        }>`SELECT register_id AS "registerId", amount_minor AS "amountMinor", currency
+          rev: number;
+        }>`SELECT register_id AS "registerId", amount_minor AS "amountMinor", currency, rev
           FROM kin_records WHERE org_id = ${orgId} AND record_id = ${version.entryId}`;
   const noun = entry === undefined ? undefined : docLabels[entry.registerId];
   const label =
@@ -212,6 +216,7 @@ export const attachmentOf = Effect.fn("KinSending.attachment")(function* (
     bytes: file.bytes,
     label,
     entryRecordId: version.entryId,
+    ...(entry === undefined ? {} : { entryRev: entry.rev }),
   } satisfies Attachment;
 });
 
@@ -838,34 +843,58 @@ export const sentToClient = Effect.fn("KinSending.sentToClient")(function* (sent
     });
 });
 
-/** A quote attached to a sent mail went out: a draft one now reads as sent. */
+/**
+ * A mail carrying a quote or invoice went out on a person's Confirm. An agent's suggestion among
+ * them is kept when the one who pressed is owner-level now and the entry is as the card showed it
+ * (same revision, not dropped); then a draft quote reads sent. Numbers are left as they are.
+ */
 export const markQuotesSent = Effect.fn("KinSending.markQuotesSent")(function* (
   records: KinRecords["Service"],
   sent: {
     readonly orgId: KinOrgId;
+    /** Who pressed Confirm (`decidedBy`): never the agent's owner by default. */
     readonly personId: string;
-    /** The turn whose ask was confirmed: not a person's own edit to `keptForPerson`. */
     readonly wakeupId: string;
-    readonly entryRecordIds: ReadonlyArray<string>;
+    readonly attachments: ReadonlyArray<Attachment>;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
-  if (sent.entryRecordIds.length === 0) return;
-  const drafts = yield* sql<{ key: string }>`SELECT key FROM kin_records
-    WHERE org_id = ${sent.orgId} AND register_id = 'quotes' AND state = 'open'
-      AND record_id IN ${sql.in([...new Set(sent.entryRecordIds)])}
+  const pinned = new Map<string, number | undefined>();
+  for (const one of sent.attachments)
+    if (one.entryRecordId !== null) pinned.set(one.entryRecordId, one.entryRev);
+  if (pinned.size === 0) return;
+  const entries = yield* sql<{
+    key: string;
+    recordId: string;
+    registerId: string;
+    state: string;
+    rev: number;
+    confirmed: number;
+  }>`
+    SELECT key, record_id AS "recordId", register_id AS "registerId", state, rev, confirmed
+    FROM kin_records WHERE org_id = ${sent.orgId} AND register_id IN ('quotes', 'invoices')
+      AND record_id IN ${sql.in([...pinned.keys()])}
     ORDER BY key`;
-  for (const { key } of drafts)
-    yield* records.update(
-      sent.orgId,
-      {
-        actor: { _tag: "person", personId: KinPersonId.make(sent.personId) },
-        via: "owner",
-        wakeupId: sent.wakeupId,
-      },
-      key,
-      { state: "waiting" },
-    );
+  const writer = {
+    actor: { _tag: "person", personId: KinPersonId.make(sent.personId) },
+    via: "owner",
+    wakeupId: sent.wakeupId,
+  } as const;
+  const ownerLevelNow = yield* ownerLevel(sent.orgId, KinPersonId.make(sent.personId));
+  for (const entry of entries) {
+    let kept = entry.confirmed === 1;
+    if (
+      !kept &&
+      ownerLevelNow &&
+      entry.state !== "dropped" &&
+      pinned.get(entry.recordId) === entry.rev
+    ) {
+      yield* records.update(sent.orgId, writer, entry.key, { confirmed: true });
+      kept = (yield* records.get(sent.orgId, entry.key))?.confirmed === 1;
+    }
+    if (kept && entry.registerId === "quotes" && entry.state === "open")
+      yield* records.update(sent.orgId, writer, entry.key, { state: "waiting" });
+  }
 });
 
 const decodeSentPayload = Schema.decodeUnknownOption(PreparedJson);

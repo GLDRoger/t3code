@@ -52,6 +52,7 @@ export const invoiceFromQuote = Effect.fn("KinQuotes.invoiceFrom")(function* (
   const { row } = yield* records.create(orgId, writer, {
     list: "invoices",
     originKey: `quote:${quote.recordId}`,
+    from: quote.recordId,
     title: quote.title,
     owner,
     state: "open",

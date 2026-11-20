@@ -23,10 +23,14 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "gendocs/receiptProposals.ts": 1,
   // The columns every read selects, with an entry's own paid and withheld; one entry's payments.
   "work/recordRows.ts": 2,
+  // Money's suggestions: the entries its figures leave out, listed one by one, nothing summed.
+  "work/moneyViews.ts": 1,
   // One entry's payments, read to check a retry and to void one; a totals query's has-amount filter.
   "work/KinRecords.ts": 3,
   // The columns each pulse sense selects; every sense that reads money applies the rule itself.
   "pulse/senses/shared.ts": 1,
+  // Quiet projects: a project's last move, read whole, no amount of it used.
+  "pulse/senses/projects.ts": 1,
   // Download everything: each entry's own amount and payments, copied out as they are, never summed.
   "work/exportBundle.ts": 2,
   // One settlement's parts, read to check a retry.
