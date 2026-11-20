@@ -190,13 +190,18 @@ export type KinConnectionRef = typeof KinConnectionRef.Type;
 /** Why a bank alert from a counted sender wasn't counted. */
 export const KinBankAlertNotCounted = Schema.Literals([
   "unreadable",
+  "not_moved",
+  "reply",
   "other_account",
   "other_currency",
+  "not_in_text",
   "future",
+  "before_start",
   "covered",
   "repeat",
   "failed_check",
   "not_checked",
+  "stopped",
 ]);
 export type KinBankAlertNotCounted = typeof KinBankAlertNotCounted.Type;
 /**
@@ -210,6 +215,9 @@ export const KinConnectionBankAlerts = Schema.Struct({
       account: Schema.String.check(Schema.isMaxLength(8)),
       counting: Schema.Boolean,
       counted: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      currency: Schema.optional(Schema.String.check(Schema.isMaxLength(8))),
+      /** Someone said No on its card: Ask me again takes that back. Absent from older hosts. */
+      declined: Schema.optional(Schema.Literal(true)),
     }),
   ).check(Schema.isMaxLength(50)),
   notCounted: Schema.Array(
@@ -308,13 +316,18 @@ export const KinConnectionSetReachInput = Schema.Struct({
 });
 export type KinConnectionSetReachInput = typeof KinConnectionSetReachInput.Type;
 
-/** Stop counting a confirmed bank alert sender on this mailbox, or count it again. */
+/**
+ * Stop counting a confirmed bank alert sender on this mailbox, or count it again; `askAgain`
+ * takes back a No, so its next alert asks afresh.
+ */
 export const KinConnectionSetBankAlertsInput = Schema.Struct({
   orgId: KinOrgId,
   connectionId: KinConnectionId,
   address: Schema.String.check(Schema.isMaxLength(320)),
   account: Schema.String.check(Schema.isPattern(/^\d{4}$/)),
   counting: Schema.Boolean,
+  currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))),
+  askAgain: Schema.optional(Schema.Literal(true)),
 });
 export type KinConnectionSetBankAlertsInput = typeof KinConnectionSetBankAlertsInput.Type;
 

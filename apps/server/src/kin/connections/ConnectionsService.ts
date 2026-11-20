@@ -154,6 +154,10 @@ import { KinGitHubLogin } from "./GitHubLogin.ts";
 import { textLocale } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { alertSenders, setAlertSender } from "../work/statements/alertSenders.ts";
+import { closeAlertCards, type Unusable } from "../work/statements/bankAlerts.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import type { SenderCheck } from "./MailAuth.ts";
 
 export const SHARED_CONNECTIONS =
   "I don't use the company's connected services in chats with other people.";
@@ -317,16 +321,17 @@ export const KinConnectionNoteResult = Schema.Struct({ note: Schema.String });
 
 type People = ReadonlyArray<PersonIdentity>;
 
-/** One message of a confirmed bank sender, as `alertMessages` returns it. */
+/** One message of a counted bank sender, as `alertMail` returns it. */
 export type KinAlertMessage = {
-  /** Its Message-ID, else the vendor's thread and the date. */
-  readonly key: string;
-  readonly threadId: string;
-  readonly fromAddress: string;
-  readonly date: string | null;
+  /** The vendor's own id of the message in this mailbox. */
+  readonly messageId: string;
+  readonly receivedAt: number | null;
   readonly subject: string;
   readonly text: string;
-  readonly authResults: ReadonlyArray<string>;
+  readonly inReplyTo: string | null;
+  readonly references: string | null;
+  /** The receiving service's own verdict on its From mailbox (`MailAuth.ts`). */
+  readonly sender: SenderCheck;
 };
 
 /**
@@ -607,16 +612,22 @@ export class KinConnections extends Context.Service<
       connectionId: string,
     ) => Effect.Effect<KinConnectionActivity, KinChatError>;
     /**
-     * Server use only (bank alerts, never an agent tool): the messages of one thread that came from
-     * `address` exactly, with their text and the receiving server's sender checks. Read only where
-     * the owner marked reading a thread Read; mail from anyone else in the thread is never returned.
+     * Server use only (bank alerts, never an agent tool): the next of `address`'s own messages since
+     * `since`, at most `max`, with their text. Only mail whose From is that address is listed and
+     * only its bodies are read; only where the owner marked reading a thread Read.
      */
-    readonly alertMessages: (
+    readonly alertMail: (
       orgId: KinOrgId,
       connectionId: string,
-      threadId: string,
-      address: string,
-    ) => Effect.Effect<ReadonlyArray<KinAlertMessage>, KinChatError>;
+      query: { readonly address: string; readonly since: number; readonly max: number },
+    ) => Effect.Effect<
+      {
+        readonly messages: ReadonlyArray<KinAlertMessage>;
+        readonly through: number | null;
+        readonly more: boolean;
+      },
+      KinChatError
+    >;
     /** Moves the cursor forward to `until` of an `activity` answer once it was handled. */
     readonly activitySeen: (
       orgId: KinOrgId,
@@ -773,6 +784,25 @@ const make = Effect.gen(function* () {
   const records = yield* KinRecords;
   // GitHub is the owner's own host login (GitHubLogin.ts), not a gateway connection.
   const githubLogin = yield* Effect.serviceOption(KinGitHubLogin);
+  // Where the chat is part of this server, a Stop or a disconnect closes the bank alert cards it
+  // made unusable at once; the poll closes any left (`closeUnusableCards`).
+  const chatRepo = yield* Effect.serviceOption(KinChatRepository);
+  const chatHub = yield* Effect.serviceOption(KinChatHub);
+  const closeCards = (
+    orgId: KinOrgId,
+    where: Parameters<typeof closeAlertCards>[1],
+    why: Unusable,
+  ) =>
+    Option.isSome(chatRepo) && Option.isSome(chatHub)
+      ? sql.withTransaction(closeAlertCards(orgId, where, why)).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(KinChatRepository, chatRepo.value),
+          Effect.provideService(KinChatHub, chatHub.value),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't close bank alert cards", { orgId, cause }),
+          ),
+        )
+      : Effect.void;
   const githubAccount = Option.isSome(githubLogin)
     ? githubLogin.value.account()
     : Effect.succeed(null);
@@ -815,6 +845,8 @@ const make = Effect.gen(function* () {
                 account: one.account,
                 counting: one.state === "counted",
                 counted: one.counted,
+                currency: one.currency,
+                ...(one.state === "declined" ? { declined: true as const } : {}),
               })),
               notCounted: alerts.notCounted.map((one) => ({
                 address: one.address,
@@ -1423,6 +1455,8 @@ const make = Effect.gen(function* () {
           paused_at = ${input.paused === undefined ? sql`paused_at` : input.paused ? sql`COALESCE(paused_at, ${now})` : null}
         WHERE org_id = ${input.orgId} AND connection_id = ${input.connectionId}
           AND removed_at IS NULL`;
+      if (input.paused === true)
+        yield* closeCards(input.orgId, { connectionId: input.connectionId }, "disconnected");
       yield* touched(input.orgId);
       return yield* detail(input.orgId, input.connectionId);
     }),
@@ -1447,15 +1481,17 @@ const make = Effect.gen(function* () {
     yield* owner(people, input.orgId);
     const caller = people.find((person) => person.orgId === input.orgId)!;
     yield* live(input.orgId, input.connectionId);
-    yield* setAlertSender({
+    const stopped = yield* setAlertSender({
       orgId: input.orgId,
       connectionId: input.connectionId,
       address: input.address,
       account: input.account,
-      counting: input.counting,
+      currency: input.currency,
+      to: input.askAgain === true ? "ask_again" : input.counting ? "counted" : "stopped",
       personId: caller.personId,
       now: yield* Clock.currentTimeMillis,
     }).pipe(provideSql);
+    yield* closeCards(input.orgId, { senderIds: stopped }, "stopped");
     yield* touched(input.orgId);
     yield* refresh.touch(input.orgId, "moneyStatements");
     return yield* detail(input.orgId, input.connectionId);
@@ -1471,6 +1507,11 @@ const make = Effect.gen(function* () {
           AND removed_at IS NULL`;
       yield* sql`DELETE FROM kin_connection_cursors
         WHERE org_id = ${input.orgId} AND connection_id = ${input.connectionId}`;
+      // A removed mailbox has no page left to stop its bank alert senders from: they stop with it.
+      yield* sql`UPDATE kin_bank_alert_senders SET state = 'stopped', decided_at = ${now}
+        WHERE org_id = ${input.orgId} AND connection_id = ${input.connectionId}
+          AND state = 'counted'`;
+      yield* closeCards(input.orgId, { connectionId: input.connectionId }, "disconnected");
       yield* touched(input.orgId);
       yield* gateway.invalidate(input.connectionId);
       yield* secrets.remove(input.connectionId);
@@ -1892,42 +1933,36 @@ const make = Effect.gen(function* () {
     return { _tag: "unsupported", connectionId: row.connectionId } as const;
   }, settle);
 
-  const alertMessages = Effect.fn("KinConnections.alertMessages")(function* (
+  const alertMail = Effect.fn("KinConnections.alertMail")(function* (
     orgId: KinOrgId,
     connectionId: string,
-    threadId: string,
-    address: string,
+    query: { readonly address: string; readonly since: number; readonly max: number },
   ) {
     const row = yield* live(orgId, connectionId);
     const provider = mailProviderOf(row);
-    if (provider === undefined || row.pausedAt !== null || row.state !== "active") return [];
+    const none = { messages: [], through: null, more: false };
+    if (provider === undefined || row.pausedAt !== null || row.state !== "active") return none;
     const reads = (yield* toolsOf(orgId, row.connectionId).pipe(provideSql)).some(
       (tool) => tool.name === MAIL_TOOL.read && tool.mode === "read" && tool.removedAt === null,
     );
-    if (!reads) return [];
-    const messages = yield* withSignIn(orgId, row, (force) =>
-      signInOf(orgId, row, force).pipe(
-        Effect.flatMap((secret) =>
-          provider.messages(http, secret.accessToken, mailboxOf(row), threadId),
-        ),
+    if (!reads) return none;
+    const signed = <A>(run: (token: string) => Effect.Effect<A, KinGatewayError>) =>
+      withSignIn(orgId, row, (force) => tokenOf(orgId, row, force).pipe(Effect.flatMap(run)));
+    const page = yield* signed((token) => provider.senderMail(http, token, mailboxOf(row), query));
+    const messages = yield* Effect.forEach(page.ids, (id) =>
+      signed((token) => provider.messageById(http, token, mailboxOf(row), id)).pipe(
+        Effect.map((message): KinAlertMessage => ({
+          messageId: id,
+          receivedAt: message.receivedAt,
+          subject: message.subject,
+          text: message.body?.text ?? message.preview,
+          inReplyTo: message.inReplyTo,
+          references: message.references,
+          sender: message.sender,
+        })),
       ),
     );
-    const wanted = address.toLowerCase();
-    return messages.flatMap((message): ReadonlyArray<KinAlertMessage> =>
-      message.fromAddress?.toLowerCase() === wanted
-        ? [
-            {
-              key: message.messageId ?? `${message.threadId}:${message.date ?? ""}`,
-              threadId: message.threadId,
-              fromAddress: wanted,
-              date: message.date,
-              subject: message.subject,
-              text: message.body?.text ?? message.preview,
-              authResults: message.authResults,
-            },
-          ]
-        : [],
-    );
+    return { messages, through: page.through, more: page.more };
   }, settle);
 
   const activitySeen = Effect.fn("KinConnections.activitySeen")(function* (
@@ -4098,7 +4133,7 @@ const make = Effect.gen(function* () {
     setSignInClient,
     setSendFrom,
     activity,
-    alertMessages,
+    alertMail,
     activitySeen,
     tools,
     call,

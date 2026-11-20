@@ -32,7 +32,7 @@ import {
   rowTitle,
 } from "./bankList.ts";
 import { settleAlerts, unsettleAlerts } from "./alertLines.ts";
-import { reaskAfterStatement } from "./bankAlerts.ts";
+import { bindApprovals, closeAlertCards } from "./bankAlerts.ts";
 import { changeSelection, decisionsOf, reviewCard, rowsOf } from "./statementCard.ts";
 import { SALARIES } from "./statementMatch.ts";
 import {
@@ -582,8 +582,13 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
       yield* sql`UPDATE kin_bank_statements SET applied_at = ${input.now}, applied_by = ${input.personId},
           undone_at = NULL
         WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
+      yield* bindApprovals(input.orgId);
       const alerts = yield* settleAlerts(input.orgId, input.statementId, statement);
-      yield* reaskAfterStatement(input.orgId, alerts.replaced);
+      yield* closeAlertCards(
+        input.orgId,
+        { alertIds: [...alerts.replaced, ...alerts.missing.map((one) => one.alertId)] },
+        "covered",
+      );
       yield* (yield* KinRefreshObserver).touch(input.orgId, "moneyStatements");
       const kept = [...held.keys()].filter((row) => review.matches.has(row)).length;
       const unexplained = yield* unexplainedCount(

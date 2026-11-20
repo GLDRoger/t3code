@@ -148,8 +148,16 @@ export const KinBankKnown = Schema.Struct({
         balance: Schema.optional(
           Schema.Struct({ minor: Schema.Int, on: KinDay, estimate: Schema.Boolean }),
         ),
+        /** The company has more than one account in statements or alerts: name this one. */
+        named: Schema.optional(Schema.Literal(true)),
       }),
     ).check(Schema.isMaxLength(50)),
+  ),
+  /** Mailboxes whose bank alerts stopped counting when they were disconnected, and the day. */
+  alertsStopped: Schema.optional(
+    Schema.Array(
+      Schema.Struct({ mailbox: Schema.String.check(Schema.isMaxLength(320)), on: KinDay }),
+    ).check(Schema.isMaxLength(20)),
   ),
 });
 export type KinBankKnown = typeof KinBankKnown.Type;

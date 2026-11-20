@@ -32,6 +32,8 @@ const fold = (bank: string | null) => {
   const folded = (bank ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
   return folded === "" ? null : folded;
 };
+/** A bank's name as `sameAccounts` compares it; "" when none is printed. */
+export const bankKey = (bank: string | null) => fold(bank) ?? "";
 const agree = <T>(a: T | null, b: T | null) => a === null || b === null || a === b;
 const sameRead = (a: AccountRead, b: AccountRead) =>
   a.from === b.from && a.on === b.on && a.opening === b.opening && a.closing === b.closing;

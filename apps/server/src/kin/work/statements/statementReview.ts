@@ -37,7 +37,7 @@ import { homeCurrency } from "../companyProfile.ts";
 import { dayIn } from "../money.ts";
 import { keptEntry, ownerZone } from "../recordRows.ts";
 import { listDef } from "../registers.ts";
-import { alertsNotOn } from "./alertLines.ts";
+import { alertsOnReview } from "./alertLines.ts";
 import { bankStates, directionOf, findBankList, type KnownRow, knownRows } from "./bankList.ts";
 import type { FileOutcome } from "./statementFiles.ts";
 import { readIsolated } from "./statementReader.ts";
@@ -430,9 +430,29 @@ export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
     return had === undefined || (states !== undefined && had.state === states.open);
   });
   const results = matchRows(open, yield* candidates(orgId, statement, statementId));
+  const alerts = yield* alertsOnReview(orgId, statement);
   // A possible duplicate is the owner's call: nothing is ticked or matched for it.
   const judged = open.map((row, index): RowMatch => {
     const like = found.possible.get(row.index);
+    // The owner already recorded this line's money from its bank alert's card: it is that payment.
+    const recorded = alerts.recorded.get(row.index);
+    if (recorded !== undefined)
+      return {
+        group: "matched",
+        candidates: [
+          {
+            kind: "invoice",
+            recordId: recorded.recordId,
+            key: recorded.key,
+            title: recorded.title,
+            fit: "recorded",
+            paymentId: recorded.paymentId,
+            score: 100,
+            why: ["already recorded from its bank alert"],
+          },
+        ],
+        suggestion: results[index]!.suggestion,
+      };
     return like === undefined
       ? results[index]!
       : {
@@ -444,7 +464,7 @@ export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
           },
         };
   });
-  const alertsMissing = yield* alertsNotOn(orgId, statement);
+  const alertsMissing = alerts.missing;
   return {
     statement,
     format,

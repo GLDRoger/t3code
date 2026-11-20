@@ -12,7 +12,10 @@ import {
   type MailEvent,
   type MailMessage,
   type MailVendor,
+  type SenderPage,
+  type SenderQuery,
 } from "./MailProvider.ts";
+import { gmailOwn, oneMailbox, senderCheckOf } from "./MailAuth.ts";
 import { htmlToText, messageBody } from "./MailText.ts";
 import { mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
@@ -118,7 +121,16 @@ const messageOf =
     unread: list(field(message, "labelIds")).includes("UNREAD"),
     messageId: header(message, "Message-ID"),
     references: header(message, "References"),
+    inReplyTo: header(message, "In-Reply-To"),
+    receivedAt: ((at) => (Number.isSafeInteger(at) ? at : null))(
+      Number(text(field(message, "internalDate")) ?? Number.NaN),
+    ),
     authResults: headerValues(message, "Authentication-Results"),
+    sender: senderCheckOf(
+      headerValues(message, "Authentication-Results"),
+      headerValues(message, "From"),
+      gmailOwn,
+    ),
     body: full ? messageBody(field(message, "payload")) : null,
   });
 
@@ -148,6 +160,52 @@ const threadsOf = Effect.fn("KinGoogle.threads")(function* (
     { concurrency: 5 },
   );
   return { threads, nextPage: text(field(page, "nextPageToken")) ?? null };
+});
+
+const SENDER_PAGES = 2;
+/**
+ * One sender's messages since a time: Gmail lists newest first, so the oldest `max` of what it
+ * lists are taken, and each is read as metadata first so another sender's body is never fetched.
+ */
+const fromSender = Effect.fn("KinGoogle.fromSender")(function* (
+  context: MailContext,
+  query: SenderQuery,
+) {
+  const ids: Array<string> = [];
+  let pageToken: string | undefined;
+  for (let page = 0; page < SENDER_PAGES; page++) {
+    const listed = yield* api(context, `${GMAIL}/messages`, {
+      q: `from:${query.address} after:${Math.max(0, Math.floor(query.since / 1000) - 1)}`,
+      maxResults: "500",
+      pageToken,
+    });
+    ids.push(...list(field(listed, "messages")).flatMap((one) => text(field(one, "id")) ?? []));
+    pageToken = text(field(listed, "nextPageToken"));
+    if (pageToken === undefined) break;
+  }
+  const oldest = ids.toReversed().slice(0, query.max);
+  const heads = yield* Effect.forEach(
+    oldest,
+    (id) =>
+      api(context, `${GMAIL}/messages/${encodeURIComponent(id)}`, {
+        format: "metadata",
+        metadataHeaders: ["From"],
+      }).pipe(Effect.map((message) => ({ id, message: messageOf(false)(message) }))),
+    { concurrency: 5 },
+  );
+  const times = heads.flatMap((one) => one.message.receivedAt ?? []);
+  return {
+    ids: heads
+      .filter(
+        (one) =>
+          (one.message.receivedAt ?? 0) >= query.since &&
+          oneMailbox(one.message.from) === query.address.toLowerCase(),
+      )
+      .toSorted((a, b) => (a.message.receivedAt ?? 0) - (b.message.receivedAt ?? 0))
+      .map((one) => one.id),
+    through: times.length === 0 ? null : Math.max(...times),
+    more: ids.length > query.max || pageToken !== undefined,
+  } satisfies SenderPage;
 });
 
 const eventOf = (event: unknown): MailCalendarEvent => ({
@@ -310,6 +368,11 @@ const google: MailVendor = {
         events: list(field(events, "items")).map(eventOf),
         cursor: null,
       })),
+    ),
+  fromSender,
+  message: (context, id) =>
+    api(context, `${GMAIL}/messages/${encodeURIComponent(id)}`, { format: "full" }).pipe(
+      Effect.map(messageOf(true)),
     ),
   account: (http, token) =>
     api({ http, token }, `${GMAIL}/profile`).pipe(

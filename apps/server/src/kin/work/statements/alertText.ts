@@ -1,4 +1,11 @@
-import { isKinCurrency, kinCurrency, parseKinMoney } from "@t3tools/contracts";
+import {
+  isKinCurrency,
+  type KinBankAlertNotCounted,
+  kinCurrency,
+  parseKinMoney,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { parseDay } from "./statementTable.ts";
@@ -29,7 +36,6 @@ export const AlertRead = Schema.Struct({
   balanceMinor: Schema.NullOr(Minor),
   reference: Schema.NullOr(Schema.String.check(Schema.isMaxLength(40))),
 });
-export const decodeAlertRead = Schema.decodeUnknownOption(AlertRead);
 
 /** The mail as a reader gets it: its words only, and the day it arrived in the company's zone. */
 export type AlertMail = {
@@ -244,18 +250,76 @@ export const alertSigns = (text: string, home: string) => {
   };
 };
 
-const DAY_MS = 86_400_000;
-const distance = (a: string, b: string) =>
-  Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / DAY_MS;
+/** Money that hasn't moved, or no money at all: the plain reader leaves these to a reader that understands them. */
+const NOT_MOVED = wordsPattern([
+  "declined",
+  "decline",
+  "failed",
+  "failure",
+  "unsuccessful",
+  "rejected",
+  "reversed",
+  "cancelled",
+  "canceled",
+  "pending",
+  "scheduled",
+  "will be",
+  "due",
+  "authorisation",
+  "authorization",
+  "hold",
+  "otp",
+  "one-time",
+  "one time",
+  "verification",
+  "code",
+  "statement",
+  "rechazada",
+  "rechazado",
+  "denegada",
+  "pendiente",
+  "programado",
+  "refusé",
+  "refusée",
+  "en attente",
+  "abgelehnt",
+  "ausstehend",
+  "vorgemerkt",
+  "recusada",
+  "pendente",
+  "rifiutato",
+  "in sospeso",
+  "geweigerd",
+  "ditolak",
+  "अस्वीकृत",
+  "拒否",
+  "失败",
+]);
 
-/** The day the alert names, read either way round, nearest the day it arrived; else that day. */
-const namedDay = (text: string, mailDay: string) => {
-  const days = DATES.flatMap((pattern) =>
-    [...text.matchAll(pattern)].flatMap((match) =>
-      (["dmy", "mdy"] as const).flatMap((order) => parseDay(match[0], order) ?? []),
-    ),
+const ACCOUNTS = [
+  new RegExp(MASKED.source, "gu"),
+  new RegExp(ENDING.source, "giu"),
+  new RegExp(ACCOUNT.source, "giu"),
+];
+const accountsIn = (text: string) =>
+  new Set(
+    ACCOUNTS.flatMap((pattern) => [...text.matchAll(pattern)].flatMap((one) => one[1] ?? [])),
   );
-  return days.toSorted((a, b) => distance(a, mailDay) - distance(b, mailDay))[0] ?? mailDay;
+
+/** The one real calendar day the text names, undefined when it names none, null when it can't be told. */
+const namedDay = (text: string): string | null | undefined => {
+  const days = new Set<string>();
+  for (const pattern of DATES)
+    for (const match of text.matchAll(pattern)) {
+      const read = new Set(
+        (["dmy", "mdy"] as const).flatMap((order) => parseDay(match[0], order) ?? []),
+      );
+      // A date that is no real day, or one read two ways, can't be told.
+      if (read.size !== 1) return null;
+      days.add([...read][0]!);
+    }
+  if (days.size > 1) return null;
+  return [...days][0];
 };
 
 const partyIn = (text: string, direction: Direction, after: number) => {
@@ -275,94 +339,113 @@ const partyIn = (text: string, direction: Direction, after: number) => {
 };
 
 /**
- * The plain reader: one alert's fields from its words, or undefined when its amount, direction
- * or account isn't there. A balance it states and a reference are taken only when labelled.
+ * The plain reader: one alert's fields only when its words leave no doubt. Exactly one amount (a
+ * balance aside), one direction, one account, at most one real day, and nothing saying the money
+ * didn't move; anything else is left unread for a reader that understands it. Never a guess.
  */
 export const readAlertText = (mail: AlertMail): AlertRead | undefined => {
   const text = `${mail.subject}\n${mail.text}`.slice(0, TEXT_CHARS);
+  const plain = text.replace(CARD_WORDS, " ");
+  if (NOT_MOVED.test(plain)) return undefined;
   const mentions = mentionsIn(text, mail.home);
-  const amount = mentions.find((one) => !one.balance);
-  const direction = directionIn(text);
-  const account = accountIn(text);
-  if (amount === undefined || direction === undefined || account === undefined) return undefined;
-  const balance = mentions.find((one) => one.balance && one.currency === amount.currency);
+  const amounts = mentions.filter((one) => !one.balance);
+  const amount = amounts[0];
+  if (
+    amount === undefined ||
+    amounts.some((one) => one.minor !== amount.minor || one.currency !== amount.currency)
+  )
+    return undefined;
+  const credit = CREDIT.test(plain);
+  const debit = DEBIT.test(plain);
+  if (credit === debit) return undefined;
+  const direction = credit ? "credit" : "debit";
+  const accounts = accountsIn(text);
+  if (accounts.size !== 1) return undefined;
+  const day = namedDay(text);
+  if (day === null) return undefined;
+  const balances = mentions.filter((one) => one.balance && one.currency === amount.currency);
   const reference = REFERENCE.exec(text)?.[1];
   return {
     amountMinor: amount.minor,
     currency: amount.currency,
     direction,
-    day: namedDay(text, mail.mailDay),
-    account,
+    day: day ?? mail.mailDay,
+    account: [...accounts][0]!,
     party: partyIn(text, direction, amount.end),
-    balanceMinor: balance?.minor ?? null,
+    balanceMinor: balances.length === 1 ? balances[0]!.minor : null,
     reference:
       reference !== undefined && /\d/.test(reference) ? reference.toUpperCase().slice(0, 40) : null,
   };
 };
 
 /** Why an alert isn't counted; the owner reads each in Settings, in client words. */
-export type AlertReason =
-  | "unreadable"
-  | "other_account"
-  | "other_currency"
-  | "future"
-  | "covered"
-  | "repeat"
-  | "failed_check"
-  | "not_checked";
+export type AlertReason = KinBankAlertNotCounted;
+
+/** Whether `minor` of `currency` is written in the text, in any way it may be printed. */
+const amountWritten = (text: string, minor: number, currency: string) =>
+  [...text.matchAll(new RegExp(NUMBER, "gu"))].some((match) => {
+    const read = parseKinMoney(
+      `${match[0].replace(/[\u00a0\u202f' ]/gu, "")} ${currency}`,
+      currency,
+    );
+    return "money" in read && read.money.minor === minor;
+  });
+
+const realDay = (day: string) =>
+  DateTime.make(`${day}T00:00:00Z`).pipe(
+    Option.match({
+      onNone: () => false,
+      onSome: (at) => DateTime.formatIsoDate(at) === day,
+    }),
+  );
 
 /**
- * The server's checks on one read alert, over stored rows: the account the owner confirmed for
- * this sender, its currency, a day that has come and that no confirmed statement already covers.
+ * The server's checks on one reading, whoever read it, against the mail's own text and stored
+ * rows: its account and currency are the approval's, its amount and digits are in the mail, and
+ * its day is real, has come, is not before the sender counted and no confirmed statement covers it.
  */
 export const judgeAlert = (
   read: AlertRead,
-  sender: {
+  mail: { readonly text: string },
+  approval: {
     readonly account: string;
     readonly currency: string;
     readonly today: string;
-    readonly coveredThrough: string | null;
+    readonly since: string;
+    readonly covered: (day: string) => boolean;
   },
 ): AlertReason | undefined => {
-  if (read.account !== sender.account) return "other_account";
-  if (read.currency !== sender.currency) return "other_currency";
-  if (read.day > sender.today) return "future";
-  if (sender.coveredThrough !== null && read.day <= sender.coveredThrough) return "covered";
-  return undefined;
-};
-
-/**
- * Whether the receiving mail server checked the sender. Only the topmost Authentication-Results
- * is the receiver's own: a sender can write any below it. DMARC must pass for the From's own
- * domain, or DKIM must pass signed by it.
- */
-export const alertSenderCheck = (
-  results: ReadonlyArray<string>,
-  address: string,
-): "passed" | "failed" | "not checked" => {
-  const top = (results[0] ?? "").toLowerCase();
-  const domain = address.slice(address.lastIndexOf("@") + 1).toLowerCase();
-  const aligned = (name: string) => name === domain || domain.endsWith(`.${name}`);
-  const dmarc = /\bdmarc=(\w+)([^;]*)/.exec(top);
-  if (dmarc !== null) {
-    const from = /header\.from=([^\s;]+)/.exec(dmarc[2] ?? "")?.[1];
-    if (dmarc[1] === "pass") return from === undefined || from === domain ? "passed" : "failed";
-    if (dmarc[1] === "fail") return "failed";
-  }
-  const signed = [...top.matchAll(/\bdkim=(\w+)([^;]*)/g)];
+  if (read.account !== approval.account) return "other_account";
+  if (read.currency !== approval.currency) return "other_currency";
   if (
-    signed.some(
-      (one) =>
-        one[1] === "pass" &&
-        aligned(/header\.(?:d|i)=@?([^\s;]+)/.exec(one[2] ?? "")?.[1] ?? "\u0000"),
-    )
+    !new RegExp(`(?<!\\d)${read.account}(?!\\d)`).test(mail.text) ||
+    !amountWritten(mail.text, read.amountMinor, read.currency)
   )
-    return "passed";
-  if (signed.some((one) => one[1] === "fail") || /\bspf=fail\b/.test(top)) return "failed";
-  return "not checked";
+    return "not_in_text";
+  if (!realDay(read.day)) return "unreadable";
+  if (read.day > approval.today) return "future";
+  if (read.day < approval.since) return "before_start";
+  if (approval.covered(read.day)) return "covered";
+  return undefined;
 };
 
 const REPLY_OR_FORWARD =
   /^\s*(?:(?:re|fwd?|aw|wg|tr|rv|sv|vs|antw|enc|res|doorst|vb|r|i)\s*(?:\[\d+\])?\s*[:：]\s*)+/iu;
-/** A reply or a forward is someone writing about an alert, not the bank's alert. */
-export const isReplyOrForward = (subject: string) => REPLY_OR_FORWARD.test(subject);
+/** A reply or a forward is someone writing about an alert, never the bank's alert itself. */
+export const isReplyOrForward = (mail: {
+  readonly subject: string;
+  readonly inReplyTo?: string | null;
+  readonly references?: string | null;
+}) =>
+  REPLY_OR_FORWARD.test(mail.subject) ||
+  (mail.inReplyTo ?? "").trim() !== "" ||
+  (mail.references ?? "").trim() !== "";
+
+// Where quoted or forwarded text starts: a `>` line, a reply's "On … wrote:", a forward's header.
+const QUOTE_START =
+  /^(?:\s*>|\s*-{2,}\s*(?:original message|forwarded message|mensaje original|message d'origine|ursprüngliche nachricht|mensagem original|messaggio originale)|\s*_{5,}\s*$|\s*(?:from|de|von|da|van|dari)\s*:\s.+@|.*\b(?:wrote|escribió|a écrit|schrieb|escreveu|ha scritto|schreef|menulis)\s*:\s*$)/imu;
+/** The mail's own words only: everything from the first quoted or forwarded line on is cut. */
+export const cutQuoted = (text: string) => {
+  const at = QUOTE_START.exec(text)?.index;
+  return (at === undefined ? text : text.slice(0, at)).trimEnd();
+};

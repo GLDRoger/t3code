@@ -165,7 +165,11 @@ export type ChoiceAnswerHandler = (input: {
   readonly widget: KinWidget;
   readonly personId: KinPersonId;
   readonly memberId: KinMemberId;
-  readonly option: { readonly label: string; readonly kind?: "yes" | "no" | undefined };
+  readonly option: {
+    readonly optionId?: string;
+    readonly label: string;
+    readonly kind?: "yes" | "no" | undefined;
+  };
   /** The fixed action the option runs, sealed when the card was drawn (`cardActions.ts`). */
   readonly plan?: CardPlans.CardPlan;
   readonly via: "tap" | "reaction";

@@ -23,6 +23,7 @@ import { logTouch } from "../work/touches.ts";
 import {
   type AlertCandidate,
   type AlertMailbox,
+  closeUnusableCards,
   noticeAlerts,
 } from "../work/statements/bankAlerts.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
@@ -44,8 +45,8 @@ export interface OutsideSource {
   readonly read: (orgId: KinOrgId) => Effect.Effect<OutsideRead>;
   /** Moves each cursor on, once a check-in carried what came before it. */
   readonly seen: (orgId: KinOrgId, seen: OutsideRead["seen"]) => Effect.Effect<void>;
-  /** A confirmed bank sender's messages of a thread (`noticeAlerts`). */
-  readonly alertMessages?: AlertMailbox;
+  /** A counted bank sender's own mail since its cursor (`noticeAlerts`). */
+  readonly alertMail?: AlertMailbox;
 }
 
 export const noOutside: OutsideSource = {
@@ -178,8 +179,7 @@ export const fromConnections = (
           ),
       { discard: true },
     ),
-  alertMessages: (orgId, connectionId, threadId, address) =>
-    connections.alertMessages(orgId, connectionId, threadId, address),
+  alertMail: (orgId, connectionId, query) => connections.alertMail(orgId, connectionId, query),
 });
 
 const ADDRESS = /<([^<>\s]+@[^<>\s]+)>|([^\s<>,;"]+@[^\s<>,;"]+)/;
@@ -332,19 +332,33 @@ export const poll = Effect.fn("KinPulseOutside.poll")(function* (
   at: number,
   source: OutsideSource,
 ) {
-  const sql = yield* SqlClient.SqlClient;
-  const queue = yield* KinEventQueue.KinEventQueue;
   const read = yield* source.read(orgId);
   const { lines } = read;
-  // Kin's bank alert cards need the chat; a poll run without one notices none.
+  const woke = yield* wakeMatched(orgId, at, lines);
+  // Kin's bank alert cards need the chat; a poll run without one notices none. After the
+  // watches, so their matching never waits on it, and a failure here stays here.
   const repo = yield* Effect.serviceOption(KinChatRepository);
   const hub = yield* Effect.serviceOption(KinChatHub);
   if (Option.isSome(repo) && Option.isSome(hub))
-    yield* noticeAlerts(orgId, read.mail ?? [], at, source.alertMessages).pipe(
+    yield* Effect.all([
+      noticeAlerts(orgId, read.mail ?? [], at, source.alertMail),
+      closeUnusableCards(orgId),
+    ]).pipe(
       Effect.provideService(KinChatRepository, repo.value),
       Effect.provideService(KinChatHub, hub.value),
       Effect.catchCause((cause) => Effect.logWarning("Kin couldn't notice bank alerts", { cause })),
     );
+  return woke;
+});
+
+/** Wakes an agent once per line a watch matched; returns the lines it woke one for. */
+const wakeMatched = Effect.fn("KinPulseOutside.wake")(function* (
+  orgId: KinOrgId,
+  at: number,
+  lines: ReadonlyArray<KinPulseOutsideLine>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const queue = yield* KinEventQueue.KinEventQueue;
   const matched = yield* matchLines(orgId, lines);
   if (matched.length === 0) return [];
   const chief = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });

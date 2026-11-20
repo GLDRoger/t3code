@@ -394,9 +394,19 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
           : lower(`${message.subject} ${message.body} ${message.from}`).includes(lower(word));
       });
 
-  const gmailMessage = (message: FakeMailMessage) => ({
+  /** Every message whose body Kin was handed, by id, in order: what a test asserts was read. */
+  const bodies: Array<string> = [];
+  const gmailMessage = (message: FakeMailMessage, format = "full") => {
+    if (format === "full") bodies.push(message.id);
+    const full = gmailFull(message);
+    return format === "full"
+      ? full
+      : { ...full, payload: { mimeType: full.payload.mimeType, headers: full.payload.headers } };
+  };
+  const gmailFull = (message: FakeMailMessage) => ({
     id: message.id,
     threadId: message.threadId,
+    internalDate: String(message.at),
     labelIds: message.sent ? ["SENT"] : ["INBOX", ...(message.unread ? ["UNREAD"] : [])],
     snippet: message.body.slice(0, 100),
     payload: {
@@ -410,6 +420,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         { name: "Date", value: rfc2822(message.at) },
         { name: "Message-ID", value: message.messageId },
         ...(message.references === null ? [] : [{ name: "References", value: message.references }]),
+        ...(message.inReplyTo === null ? [] : [{ name: "In-Reply-To", value: message.inReplyTo }]),
         ...(message.authResults ?? []).map((value) => ({ name: "Authentication-Results", value })),
       ],
       ...((message.files ?? []).length === 0
@@ -541,7 +552,37 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       if (thread !== undefined) {
         const messages = mine.filter((one) => one.threadId === decodeURIComponent(thread));
         if (messages.length === 0) return json({ error: { code: 404 } }, 404);
-        return json({ id: messages[0]!.threadId, messages: messages.map(gmailMessage) });
+        const format = url.searchParams.get("format") ?? "full";
+        return json({
+          id: messages[0]!.threadId,
+          messages: messages.map((one) => gmailMessage(one, format)),
+        });
+      }
+      if (path === `${GMAIL}/messages` && request.method === "GET") {
+        const q = url.searchParams.get("q") ?? "";
+        const after = Number(/after:(\d+)/.exec(q)?.[1] ?? 0);
+        const from = /from:(\S+)/.exec(q)?.[1];
+        const found = mine
+          .filter(
+            (one) =>
+              !one.sent &&
+              one.at > after * 1000 &&
+              (from === undefined || lower(one.from).includes(lower(from))),
+          )
+          .toSorted((a, b) => b.at - a.at);
+        const start = Number(url.searchParams.get("pageToken") ?? 0);
+        const size = Number(url.searchParams.get("maxResults") ?? 100);
+        const page = found.slice(start, start + size);
+        return json({
+          messages: page.map((one) => ({ id: one.id, threadId: one.threadId })),
+          ...(start + size < found.length ? { nextPageToken: String(start + size) } : {}),
+        });
+      }
+      const messageAt = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(path)?.[1];
+      if (messageAt !== undefined && request.method === "GET") {
+        const message = mine.find((one) => one.id === decodeURIComponent(messageAt));
+        if (message === undefined) return json({ error: { code: 404 } }, 404);
+        return json(gmailMessage(message, url.searchParams.get("format") ?? "full"));
       }
       if (path === `${GMAIL}/messages/send` && request.method === "POST") {
         const { raw, threadId } = body as { raw: string; threadId?: string };
@@ -586,7 +627,13 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       ...(nameIn(address) ? { name: nameIn(address) } : {}),
     },
   });
-  const graphMessage = (message: FakeMailMessage) => ({
+  /** A read that selected the body (or selected nothing, so got it) is logged as a body read. */
+  const graphMessage = (message: FakeMailMessage, select: string | null = null) => {
+    const fields = select === null ? undefined : new Set(select.split(","));
+    if (fields === undefined || fields.has("body")) bodies.push(message.id);
+    return graphFull(message);
+  };
+  const graphFull = (message: FakeMailMessage) => ({
     id: message.id,
     conversationId: message.threadId,
     subject: message.subject,
@@ -600,7 +647,9 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     hasAttachments: (message.files ?? []).length > 0,
     body: { contentType: "text", content: message.body },
     internetMessageHeaders: [
+      { name: "From", value: message.from },
       ...(message.references === null ? [] : [{ name: "References", value: message.references }]),
+      ...(message.inReplyTo === null ? [] : [{ name: "In-Reply-To", value: message.inReplyTo }]),
       ...(message.authResults ?? []).map((value) => ({ name: "Authentication-Results", value })),
     ],
   });
@@ -627,29 +676,48 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
             ...account.aliases.map((alias) => `smtp:${alias}`),
           ],
         });
+      const select = url.searchParams.get("$select");
       if (path === `${GRAPH}/mailFolders/inbox/messages`) {
         const since = odata(filter, "receivedDateTime");
         return json({
           value: mine
             .filter((one) => !one.sent && (since === undefined || iso(one.at) >= since))
-            .map(graphMessage),
+            .map((one) => graphMessage(one, select)),
         });
       }
       if (path === `${GRAPH}/messages` && request.method === "GET") {
         const conversation = odata(filter, "conversationId");
         const internet = odata(filter, "internetMessageId");
+        const sender = /from\/emailAddress\/address eq '((?:[^']|'')*)'/
+          .exec(filter)?.[1]
+          ?.replaceAll("''", "'");
+        const since = /receivedDateTime ge (\S+)/.exec(filter)?.[1];
         const search = url.searchParams.get("$search")?.replace(/^"|"$/g, "");
+        const top = Number(url.searchParams.get("$top") ?? 1000);
+        const ordered =
+          url.searchParams.get("$orderby") === "receivedDateTime asc" ? mine.toReversed() : mine;
         return json({
-          value: mine
+          value: ordered
             .filter((one) =>
-              conversation !== undefined
-                ? one.threadId === conversation
-                : internet !== undefined
-                  ? one.messageId === internet
-                  : search === undefined || matches(one, search),
+              sender !== undefined
+                ? !one.sent &&
+                  plain(one.from) === lower(sender) &&
+                  (since === undefined || iso(one.at) >= since)
+                : conversation !== undefined
+                  ? one.threadId === conversation
+                  : internet !== undefined
+                    ? one.messageId === internet
+                    : search === undefined || matches(one, search),
             )
-            .map(graphMessage),
+            .slice(0, top)
+            .map((one) => graphMessage(one, select)),
         });
+      }
+      const graphMessageAt = /^\/v1\.0\/me\/messages\/([^/]+)$/.exec(path)?.[1];
+      if (graphMessageAt !== undefined && request.method === "GET") {
+        const message = mine.find((one) => one.id === decodeURIComponent(graphMessageAt));
+        if (message === undefined) return json({ error: { code: "ErrorItemNotFound" } }, 404);
+        return json(graphMessage(message, select));
       }
       const attachmentsOf = /^\/v1\.0\/me\/messages\/([^/]+)\/attachments$/.exec(path)?.[1];
       if (attachmentsOf !== undefined) {
@@ -783,6 +851,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     putEvent,
     sent,
     handle,
+    bodies: () => [...bodies],
     load: store.load,
   };
 };

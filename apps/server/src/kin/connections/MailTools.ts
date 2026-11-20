@@ -482,8 +482,8 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
       call(vendor, { http, token, mailbox }, tool, args, now),
     activity: (http, token, mailbox, since, cursor) =>
       activity(vendor, { http, token, mailbox }, since, cursor),
-    messages: (http, token, mailbox, threadId) =>
-      vendor.thread({ http, token, mailbox }, threadId, false),
+    senderMail: (http, token, mailbox, query) => vendor.fromSender({ http, token, mailbox }, query),
+    messageById: (http, token, mailbox, id) => vendor.message({ http, token, mailbox }, id),
     replyTarget: (http, token, mailbox, threadId) =>
       replyTarget(vendor, { http, token, mailbox }, threadId),
     sendMessage: vendor.sendMessage,

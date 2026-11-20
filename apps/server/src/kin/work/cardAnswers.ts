@@ -71,7 +71,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
       orgId: input.orgId,
       widgetId: input.widget.widgetId,
       personId: input.personId,
-      label: input.option.label,
+      optionId: input.option.optionId ?? "",
       via: input.via,
       now: input.now,
     },

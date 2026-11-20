@@ -8,7 +8,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { dayIn, formatMinor } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
-import { openingOf, sameAccounts } from "./bankAccounts.ts";
+import { bankKey, openingOf, sameAccounts } from "./bankAccounts.ts";
+import { connectedNow } from "./alertSql.ts";
 
 /**
  * How far Kin sees the bank, computed when read from the statements the owner confirmed. Kin
@@ -41,6 +42,8 @@ export interface BankCoverage {
   /** Its last four digits, which a bank alert names; its closing balance on `through`. */
   readonly digits?: string | null;
   readonly closingMinor?: number | null;
+  /** The bank its statements name, as printed; null when none does. */
+  readonly bank?: string | null;
 }
 
 export interface BankAccountKnown {
@@ -53,6 +56,7 @@ export interface BankAccountKnown {
   /** Its lines end within `KEPT_UP_DAYS` of the newest account's: it counts for the company. */
   readonly keptUp: boolean;
   readonly digits?: string | null;
+  readonly bank?: string | null;
   /** The last day any confirmed statement of it covers, and its closing balance when that one ends the run. */
   readonly lastEnd?: string;
   readonly closingMinor?: number | null;
@@ -74,11 +78,15 @@ export interface BankAlertReach {
   readonly out: number;
   /** The newest alert's own stated balance, else the last closing balance plus and minus the alerts since. */
   readonly balance?: { readonly minor: number; readonly on: string; readonly estimate: boolean };
+  /** The company has more than one account in statements or alerts: say which this is. */
+  readonly named?: true;
 }
 
-export interface BankKnown extends Omit<KinBankKnown, "alerts"> {
+export interface BankKnown extends Omit<KinBankKnown, "alerts" | "alertsStopped"> {
   readonly accounts: ReadonlyArray<BankAccountKnown>;
   readonly alerts: ReadonlyArray<BankAlertReach>;
+  /** Mailboxes whose counted alerts stopped when they were disconnected, and the day they did. */
+  readonly alertsStopped: ReadonlyArray<{ readonly mailbox: string; readonly on: string }>;
 }
 
 /**
@@ -113,6 +121,7 @@ export const knownThrough = (coverage: ReadonlyArray<BankCoverage>, today: strin
       from: first.from,
       through,
       ...(first.digits === undefined ? {} : { digits: first.digits }),
+      ...(first.bank === undefined ? {} : { bank: first.bank }),
       lastEnd: last.through,
       ...(last.through === through && last.closingMinor !== undefined
         ? { closingMinor: last.closingMinor }
@@ -137,7 +146,7 @@ export const knownThrough = (coverage: ReadonlyArray<BankCoverage>, today: strin
       (earliest, one) => (earliest === null || one.through < earliest ? one.through : earliest),
       null,
     );
-  return { through, accounts, alerts: [] };
+  return { through, accounts, alerts: [], alertsStopped: [] };
 };
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -155,10 +164,10 @@ const decodeRow = Schema.decodeUnknownOption(RowJson);
 
 /**
  * Coverage from the bank-account statements the owner confirmed and has not undone, one account
- * per `sameAccounts`. A statement whose totals don't check out still counts: its lines were
+ * per `sameAccounts`: the coverage-only read an alert's checks use. A statement whose totals don't check out still counts: its lines were
  * confirmed. Cards never receive what clients pay, so they cover nothing here.
  */
-const confirmedCoverage = Effect.fn("KinBankKnown.coverage")(function* (orgId: KinOrgId) {
+export const bankCoverage = Effect.fn("KinBankKnown.coverage")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
     bank: string | null;
@@ -232,90 +241,130 @@ const confirmedCoverage = Effect.fn("KinBankKnown.coverage")(function* (orgId: K
       through: read.on,
       digits: account.digits,
       closingMinor: read.closing,
+      bank: account.bank,
     }));
   });
 });
 
+type ReachApproval = {
+  readonly senderId: string;
+  readonly account: string;
+  readonly currency: string;
+  readonly bound: string;
+  readonly boundBank: string | null;
+  readonly connected: number;
+  readonly mailbox: string;
+  readonly offAt: number;
+};
+type ReachAlert = {
+  readonly senderId: string;
+  readonly direction: "credit" | "debit";
+  readonly amountMinor: number;
+  readonly day: string;
+  readonly balanceMinor: number | null;
+};
+
 /**
- * Counted bank alerts per account, after the day its statements reach. Only alerts of senders
- * still counted; one currency each, never summed across.
+ * Counted bank alerts per approval, after the day its own account's statements reach; only
+ * approvals counted now, in a mailbox connected now. One currency each, never summed across.
  */
 const alertReach = (
   accounts: ReadonlyArray<BankAccountKnown>,
-  alerts: ReadonlyArray<{
-    readonly account: string;
-    readonly currency: string;
-    readonly direction: "credit" | "debit";
-    readonly amountMinor: number;
-    readonly day: string;
-    readonly balanceMinor: number | null;
-  }>,
+  approvals: ReadonlyArray<ReachApproval>,
+  alerts: ReadonlyArray<ReachAlert>,
 ): ReadonlyArray<BankAlertReach> => {
-  const groups = new Map<string, Array<(typeof alerts)[number]>>();
-  for (const alert of alerts) {
-    const key = `${alert.account}\u0000${alert.currency}`;
-    groups.set(key, [...(groups.get(key) ?? []), alert]);
-  }
-  return [...groups.values()].flatMap((group): ReadonlyArray<BankAlertReach> => {
-    const { account: digits, currency } = group[0]!;
-    const known = accounts.filter((one) => one.digits === digits && one.currency === currency);
-    const statement = known.length === 1 ? known[0] : undefined;
-    const since =
-      known.length === 0
-        ? null
-        : known.reduce((latest, one) => (one.through > latest ? one.through : latest), "");
-    const after = group.filter((one) => since === null || one.day > since);
-    const newest = after.at(-1);
-    if (newest === undefined) return [];
-    const credits = after.filter((one) => one.direction === "credit");
-    const moved = after.reduce(
-      (sum, one) => sum + (one.direction === "credit" ? one.amountMinor : -one.amountMinor),
-      0,
-    );
-    const balance =
-      newest.balanceMinor !== null
-        ? { minor: newest.balanceMinor, on: newest.day, estimate: false }
-        : statement?.closingMinor != null && Number.isSafeInteger(statement.closingMinor + moved)
-          ? { minor: statement.closingMinor + moved, on: newest.day, estimate: true }
+  const reaches = approvals
+    .filter((approval) => approval.connected === 1)
+    .flatMap((approval) => {
+      const statement =
+        approval.bound === "bound"
+          ? accounts.find(
+              (one) =>
+                one.digits === approval.account &&
+                one.currency === approval.currency &&
+                ((key) => key === "" || approval.boundBank === "" || key === approval.boundBank)(
+                  bankKey(one.bank ?? null),
+                ),
+            )
           : undefined;
-    return [
-      {
-        account: statement?.label ?? `Account ••${digits}`,
-        digits,
-        currency,
-        since,
-        seenThrough: newest.day,
-        in: credits.length,
-        out: after.length - credits.length,
-        ...(balance === undefined ? {} : { balance }),
-      },
-    ];
-  });
+      const since = statement === undefined ? null : (statement.lastEnd ?? statement.through);
+      const after = alerts.filter(
+        (one) => one.senderId === approval.senderId && (since === null || one.day > since),
+      );
+      const newest = after.at(-1);
+      if (newest === undefined) return [];
+      const credits = after.filter((one) => one.direction === "credit");
+      const moved = after.reduce(
+        (sum, one) => sum + (one.direction === "credit" ? one.amountMinor : -one.amountMinor),
+        0,
+      );
+      const closing = statement?.closingMinor;
+      const balance =
+        newest.balanceMinor !== null
+          ? { minor: newest.balanceMinor, on: newest.day, estimate: false }
+          : closing != null && Number.isSafeInteger(closing + moved)
+            ? { minor: closing + moved, on: newest.day, estimate: true }
+            : undefined;
+      return [
+        {
+          statement: statement?.account,
+          reach: {
+            account: statement?.label ?? `Account ••${approval.account}`,
+            digits: approval.account,
+            currency: approval.currency,
+            since,
+            seenThrough: newest.day,
+            in: credits.length,
+            out: after.length - credits.length,
+            ...(balance === undefined ? {} : { balance }),
+          } satisfies BankAlertReach,
+        },
+      ];
+    });
+  const counted = new Set([
+    ...accounts.map((one) => one.account),
+    ...reaches.map((one, index) => one.statement ?? `alert:${index}`),
+  ]);
+  return reaches.map((one) =>
+    counted.size > 1 ? { ...one.reach, named: true as const } : one.reach,
+  );
 };
 
 /**
  * The one read every money surface uses: how far Kin sees the bank at `at` (now, unless given),
- * never past that day in the owner's zone.
+ * never past that day in the owner's zone; and what the owner's bank alerts add beside it.
  */
 export const bankKnown = Effect.fn("KinBankKnown.read")(function* (orgId: KinOrgId, at?: number) {
   const sql = yield* SqlClient.SqlClient;
-  const today = dayIn(at ?? (yield* Clock.currentTimeMillis), yield* ownerZone(orgId));
-  const known = knownThrough(yield* confirmedCoverage(orgId), today);
-  const alerts = yield* sql<{
-    account: string;
-    currency: string;
-    direction: "credit" | "debit";
-    amountMinor: number;
-    day: string;
-    balanceMinor: number | null;
-  }>`SELECT a.account, a.currency, a.direction, a.amount_minor AS "amountMinor", a.day,
-      a.balance_minor AS "balanceMinor"
+  const now = at ?? (yield* Clock.currentTimeMillis);
+  const zone = yield* ownerZone(orgId);
+  const known = knownThrough(yield* bankCoverage(orgId), dayIn(now, zone));
+  const approvals = yield* sql<ReachApproval>`SELECT s.sender_id AS "senderId", s.account,
+      s.currency, s.bound, s.bound_bank AS "boundBank", ${connectedNow(sql, "s")} AS connected,
+      COALESCE(c.account_label, c.label, '') AS mailbox,
+      COALESCE(c.removed_at, c.paused_at, c.updated_at, 0) AS "offAt"
+    FROM kin_bank_alert_senders s
+    LEFT JOIN kin_connections c ON c.org_id = s.org_id AND c.connection_id = s.connection_id
+    WHERE s.org_id = ${orgId} AND s.state = 'counted'
+    ORDER BY s.connection_id, s.address, s.account, s.currency`;
+  const alerts = yield* sql<ReachAlert>`SELECT a.sender_id AS "senderId", a.direction,
+      a.amount_minor AS "amountMinor", a.day, a.balance_minor AS "balanceMinor"
     FROM kin_bank_alerts a
-    JOIN kin_bank_alert_senders s ON s.org_id = a.org_id AND s.connection_id = a.connection_id
-      AND s.address = a.address AND s.account = a.account
-    WHERE a.org_id = ${orgId} AND a.state = 'counted' AND s.state = 'counted'
-    ORDER BY a.account, a.currency, a.day, a.received_at, a.alert_id`;
-  return { ...known, alerts: alertReach(known.accounts, alerts) };
+    WHERE a.org_id = ${orgId} AND a.state = 'counted'
+    ORDER BY a.sender_id, a.day, a.received_at, a.alert_id`;
+  const stopped = new Map<string, string>();
+  for (const approval of approvals)
+    if (
+      approval.connected !== 1 &&
+      alerts.some((one) => one.senderId === approval.senderId) &&
+      !stopped.has(approval.mailbox)
+    )
+      stopped.set(approval.mailbox, dayIn(approval.offAt, zone));
+  return {
+    ...known,
+    alerts: alertReach(known.accounts, approvals, alerts),
+    alertsStopped: [...stopped].map(([mailbox, on]) => ({ mailbox, on })),
+  };
 });
 
 /** `bankAnswer` in a tool's result. */

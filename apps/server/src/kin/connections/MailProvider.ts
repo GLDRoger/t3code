@@ -3,6 +3,7 @@ import type { McpSchema } from "effect/ai";
 import type * as Effect from "effect/Effect";
 import type * as HttpClient from "effect/http/HttpClient";
 
+import type { SenderCheck } from "./MailAuth.ts";
 import type { KinGatewayError } from "./McpGateway.ts";
 import type { AuthServer } from "./OAuth.ts";
 import type { ListedTool } from "./Pinning.ts";
@@ -125,7 +126,12 @@ export type MailMessage = {
   readonly unread: boolean;
   readonly messageId: string | null;
   readonly references: string | null;
+  readonly inReplyTo: string | null;
+  /** When the account's mailbox received it, by the vendor's own clock; null when not given. */
+  readonly receivedAt: number | null;
   readonly authResults: ReadonlyArray<string>;
+  /** The receiving service's own verdict on the From mailbox, as this vendor documents it. */
+  readonly sender: SenderCheck;
   /** Only on a whole read of the thread. */
   readonly body: { readonly text: string; readonly attachments: ReadonlyArray<MailFile> } | null;
 };
@@ -148,6 +154,19 @@ export type MailCalendarEvent = {
   readonly notes: string;
   readonly meeting: string | null;
   readonly updated: string | null;
+};
+
+export type SenderQuery = {
+  readonly address: string;
+  readonly since: number;
+  readonly max: number;
+};
+export type SenderPage = {
+  readonly ids: ReadonlyArray<string>;
+  /** The newest receipt time among what was looked at; null when nothing was. */
+  readonly through: number | null;
+  /** More from this sender after `through`, for the next read. */
+  readonly more: boolean;
 };
 
 /** Threads, newest first, each with its messages oldest first. */
@@ -243,6 +262,13 @@ export interface MailVendor {
     readonly events: ReadonlyArray<MailCalendarEvent>;
     readonly cursor: string | null;
   }>;
+  /**
+   * Server use only: metadata of messages whose From is `address`, received from `since` on,
+   * oldest first, at most `max`; `through` is the newest time looked at.
+   */
+  readonly fromSender: (context: MailContext, query: SenderQuery) => Call<SenderPage>;
+  /** Server use only: one message by its id, body included. */
+  readonly message: (context: MailContext, id: string) => Call<MailMessage>;
   readonly account: MailProvider["account"];
   readonly sendAs: MailProvider["sendAs"];
   readonly sendMessage: MailProvider["sendMessage"];
@@ -299,13 +325,20 @@ export interface MailProvider {
     since: number,
     cursor: string | null,
   ) => Call<MailActivity>;
-  /** Server use only: a thread's messages with their bodies, as the vendor maps them. */
-  readonly messages: (
+  /** Server use only (bank alerts): one sender's messages by id, metadata only (`fromSender`). */
+  readonly senderMail: (
     http: HttpClient.HttpClient,
     token: string,
     mailbox: Mailbox,
-    threadId: string,
-  ) => Call<ReadonlyArray<MailMessage>>;
+    query: SenderQuery,
+  ) => Call<SenderPage>;
+  /** Server use only (bank alerts): one message by id, its body included. */
+  readonly messageById: (
+    http: HttpClient.HttpClient,
+    token: string,
+    mailbox: Mailbox,
+    id: string,
+  ) => Call<MailMessage>;
   /** A thread of another account is not found: a reply stays in its own account. */
   readonly replyTarget: (
     http: HttpClient.HttpClient,

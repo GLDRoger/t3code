@@ -14,7 +14,10 @@ import {
   type MailEvent,
   type MailMessage,
   type MailVendor,
+  type SenderPage,
+  type SenderQuery,
 } from "./MailProvider.ts";
+import { exchangeOwn, senderCheckOf } from "./MailAuth.ts";
 import { htmlToText } from "./MailText.ts";
 import { answeredWith, failure, mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
@@ -128,6 +131,14 @@ const internetHeader = (message: unknown, name: string) =>
     .filter((one) => text(field(one, "name"))?.toLowerCase() === name.toLowerCase())
     .flatMap((one) => text(field(one, "value")) ?? []);
 
+/** The From header when Graph returns it, else Graph's own structured sender; never both differing. */
+const fromHeaders = (message: unknown) => {
+  const headers = internetHeader(message, "From");
+  const structured = addressOf(field(message, "from"));
+  if (headers.length > 0) return headers;
+  return structured === null ? [] : [structured];
+};
+
 const bodyText = (message: unknown) => {
   const content = text(field(message, "body", "content")) ?? "";
   return text(field(message, "body", "contentType"))?.toLowerCase() === "text"
@@ -154,7 +165,21 @@ const messageOf = (message: unknown, files?: unknown): MailMessage => ({
   unread: field(message, "isRead") === false,
   messageId: text(field(message, "internetMessageId")) ?? null,
   references: internetHeader(message, "References")[0] ?? null,
+  inReplyTo: internetHeader(message, "In-Reply-To")[0] ?? null,
+  receivedAt: ((at) => (Number.isFinite(at) ? at : null))(
+    Date.parse(text(field(message, "receivedDateTime")) ?? ""),
+  ),
   authResults: internetHeader(message, "Authentication-Results"),
+  sender: ((check) =>
+    check.address !== null && check.address !== addressOf(field(message, "from"))?.toLowerCase()
+      ? { verdict: "not_checked" as const, address: null }
+      : check)(
+    senderCheckOf(
+      internetHeader(message, "Authentication-Results"),
+      fromHeaders(message),
+      exchangeOwn,
+    ),
+  ),
   body:
     field(message, "body") === undefined
       ? null
@@ -255,6 +280,35 @@ const conversation = (context: MailContext, threadId: string, files: boolean) =>
       ),
     ),
   );
+
+/**
+ * One sender's messages since a time, oldest first: Graph filters on the structured From address
+ * itself, and the receipt time comes first in the filter so it may order by it.
+ */
+const fromSender = Effect.fn("KinMicrosoft.fromSender")(function* (
+  context: MailContext,
+  query: SenderQuery,
+) {
+  const answer = yield* api(context, `${GRAPH}/messages`, {
+    params: {
+      $filter: `receivedDateTime ge ${iso(query.since)} and from/emailAddress/address eq ${odata(query.address.toLowerCase())}`,
+      $orderby: "receivedDateTime asc",
+      $select: "id,receivedDateTime",
+      $top: String(query.max + 1),
+    },
+  });
+  const found = list(field(answer, "value")).flatMap((one) => {
+    const id = text(field(one, "id"));
+    const at = Date.parse(text(field(one, "receivedDateTime")) ?? "");
+    return id === undefined || !Number.isFinite(at) ? [] : [{ id, at }];
+  });
+  const taken = found.slice(0, query.max);
+  return {
+    ids: taken.map((one) => one.id),
+    through: taken.at(-1)?.at ?? null,
+    more: found.length > query.max,
+  } satisfies SenderPage;
+});
 
 /**
  * Changed, cancelled and deleted events, each occurrence of a series on its own: Graph's delta of
@@ -554,6 +608,12 @@ const microsoft: MailVendor = {
         cursor: calendar.cursor,
       })),
     ),
+  fromSender,
+  message: (context, id) =>
+    api(context, `${GRAPH}/messages/${encodeURIComponent(id)}`, {
+      params: { $select: FULL },
+      prefer: 'outlook.body-content-type="html"',
+    }).pipe(Effect.map((message) => messageOf(message))),
   account: (http, token) => profile(http, token).pipe(Effect.map(accountOf)),
   sendAs: microsoftSendAs,
   sendMessage,

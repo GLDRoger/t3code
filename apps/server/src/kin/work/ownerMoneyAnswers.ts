@@ -105,7 +105,15 @@ export const cash = Effect.fn("KinMoneyAnswers.rpc.cash")(function* (
               in: one.in,
               out: one.out,
               ...(one.balance === undefined ? {} : { balance: one.balance }),
+              ...(one.named === undefined ? {} : { named: one.named }),
             })),
+          }),
+      ...(view.bank.alertsStopped.length === 0
+        ? {}
+        : {
+            alertsStopped: view.bank.alertsStopped
+              .slice(0, 20)
+              .map((one) => ({ mailbox: one.mailbox.slice(0, 320), on: one.on })),
           }),
     },
   };

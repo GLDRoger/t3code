@@ -54,7 +54,6 @@ import {
   SHARED_CONNECTIONS,
 } from "./ConnectionsService.ts";
 import * as Connections from "./ConnectionsService.ts";
-import { alertSenderCheck } from "../work/statements/alertText.ts";
 import { guarded } from "./EgressGuard.ts";
 import { type FakeMail, makeFakeMail } from "./FakeMail.ts";
 import * as McpGateway from "./McpGateway.ts";
@@ -2281,54 +2280,92 @@ describe("Kin mail end to end, on a fake mailbox", () => {
   );
 
   it.effect(
-    "reads a bank sender's own messages with each vendor's sender checks, and nobody else's",
+    "reads only a bank sender's own messages, a page at a time, with each vendor's own verdict",
     () =>
       setUp((fake) =>
         Effect.gen(function* () {
           const connections = yield* KinConnections;
           const bank = "alerts@harbourtrust.example";
-          const passed = [
-            "mx.invented.example; dkim=pass header.d=harbourtrust.example; dmarc=pass header.from=harbourtrust.example",
-          ];
+          // Each vendor's own stamp, in the shape its documentation gives.
+          const stamps = {
+            google:
+              "mx.google.com; dkim=pass header.i=@harbourtrust.example; dmarc=pass (p=REJECT) header.from=harbourtrust.example",
+            microsoft:
+              "spf=pass smtp.mailfrom=harbourtrust.example; dkim=pass header.d=harbourtrust.example;dmarc=pass action=none header.from=harbourtrust.example;compauth=pass reason=100",
+          };
           for (const [service, to] of [
             ["google", ACCOUNTS],
             ["microsoft", HELLO],
           ] as const) {
             const connection = yield* connect(fake, service, to);
             yield* TestClock.adjust("1 minute");
+            const at = yield* Clock.currentTimeMillis;
             const real = fake.deliver({
               to,
               from: `Harbour Trust <${bank}>`,
               subject: "Account alert",
               body: "NZD 50.00 debited from your account ••4821 at CORNER CAFE",
-              at: (yield* Clock.currentTimeMillis) - 1000,
-              authResults: passed,
+              at: at - 5000,
+              authResults: [stamps[service]],
             });
-            // The bank's address as the name of another sender, in the same thread.
+            // In the same conversation: the bank's address as another sender's name, then a reply.
             fake.deliver({
               to,
               from: `"${bank}" <payouts@elsewhere.example>`,
               subject: "Account alert",
               body: "NZD 900.00 credited to your account ••4821",
               threadId: real.threadId,
-              at: (yield* Clock.currentTimeMillis) - 500,
-              authResults: ["mx.invented.example; dkim=pass header.d=elsewhere.example"],
+              at: at - 4000,
             });
-            const activity = yield* connections.activity(orgId, connection);
-            assert.strictEqual(activity._tag, "mail");
-            if (activity._tag !== "mail") return;
-            assert.include(activity.mail[0]?.preview, "NZD");
-            const messages = yield* connections.alertMessages(
-              orgId,
-              connection,
-              real.threadId,
-              bank,
-            );
+            fake.deliver({
+              to,
+              from: CLIENT,
+              subject: "Re: Account alert",
+              body: "Is this the payment?",
+              threadId: real.threadId,
+              at: at - 3000,
+            });
+            const before = fake.bodies().length;
+            const first = yield* connections.alertMail(orgId, connection, {
+              address: bank,
+              since: at - 60_000,
+              max: 20,
+            });
             assert.deepStrictEqual(
-              messages.map((one) => [one.fromAddress, one.text.slice(0, 9), one.authResults]),
-              [[bank, "NZD 50.00", passed]],
+              first.messages.map((one) => [one.text.slice(0, 9), one.sender]),
+              [["NZD 50.00", { verdict: "passed", address: bank }]],
             );
-            assert.strictEqual(alertSenderCheck(messages[0]!.authResults, bank), "passed");
+            // Only the bank's own message had its body fetched; nobody else's was downloaded.
+            assert.deepStrictEqual(fake.bodies().slice(before), [first.messages[0]!.messageId]);
+            // More alerts than one page: the rest come from where the first page stopped.
+            for (const offset of [2000, 1000, 500])
+              fake.deliver({
+                to,
+                from: `Harbour Trust <${bank}>`,
+                subject: "Account alert",
+                body: `NZD ${offset}.00 debited from your account ••4821`,
+                at: at - offset,
+                authResults: [stamps[service]],
+              });
+            const read: Array<string> = [];
+            let since = at - 60_000;
+            for (let page = 0; page < 5; page++) {
+              const next = yield* connections.alertMail(orgId, connection, {
+                address: bank,
+                since,
+                max: 2,
+              });
+              read.push(...next.messages.map((one) => one.text.slice(0, 9).trim()));
+              if (!next.more) break;
+              assert.isAtMost(next.messages.length, 2);
+              since = next.through!;
+            }
+            assert.deepStrictEqual([...new Set(read)].toSorted(), [
+              "NZD 1000.",
+              "NZD 2000.",
+              "NZD 50.00",
+              "NZD 500.0",
+            ]);
           }
         }),
       ),

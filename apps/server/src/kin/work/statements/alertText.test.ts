@@ -1,12 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import {
-  alertSenderCheck,
-  alertSigns,
-  isReplyOrForward,
-  judgeAlert,
-  readAlertText,
-} from "./alertText.ts";
+import { alertSigns, cutQuoted, isReplyOrForward, judgeAlert, readAlertText } from "./alertText.ts";
 
 /** Three invented banks' alert styles: a sentence, labelled lines, and Spanish with a comma. */
 const SENTENCE = {
@@ -105,50 +99,79 @@ describe("bank alert text", () => {
     });
   });
 
+  // The plain reader takes a mail only when it can't be read another way; the rest wait for a reader.
+  it.each([
+    ["a declined debit", "Debit declined: NZD 50.00 from account ••4821 at CORNER CAFE"],
+    ["a pending credit", "NZD 950.00 credit pending to account ••4821"],
+    ["a one-time code", "Your one-time code for NZD 50.00 from account ••4821 is 482113"],
+    ["two amounts", "NZD 50.00 debited from account ••4821, and a fee of NZD 2.50"],
+    ["both directions", "NZD 50.00 debited from account ••4821 and credited to ••9050"],
+    ["two accounts", "NZD 50.00 debited from account ••4821 to account ••9050"],
+    ["an impossible date", "NZD 50.00 debited from account ••4821 on 31/02/2026"],
+    ["a date read two ways", "NZD 50.00 debited from account ••4821 on 05/11/2026"],
+    ["two dates", "NZD 50.00 debited from account ••4821 on 2026-11-17, posted 2026-11-18"],
+  ])("leaves unread %s", (_name, text) => {
+    expect(
+      readAlertText({ subject: "Alert", text, mailDay: "2026-11-18", home: "NZD" }),
+    ).toBeUndefined();
+  });
+
   const read = readAlertText({ ...SENTENCE, mailDay: "2026-11-18", home: "INR" })!;
-  const sender = {
+  const mail = { text: `${SENTENCE.subject}\n${SENTENCE.text}` };
+  const approval = {
     account: "4821",
     currency: "INR",
     today: "2026-11-18",
-    coveredThrough: "2026-10-31",
+    since: "2026-11-01",
+    covered: (day: string) => day <= "2026-10-31",
   };
   it.each([
-    ["counted", read, sender, undefined],
-    ["another account", { ...read, account: "9999" }, sender, "other_account"],
-    ["another currency", { ...read, currency: "USD" }, sender, "other_currency"],
-    ["a day not come yet", { ...read, day: "2026-11-19" }, sender, "future"],
-    ["a day a statement covers", { ...read, day: "2026-10-31" }, sender, "covered"],
-    ["no statement yet", read, { ...sender, coveredThrough: null }, undefined],
+    ["counted", read, approval, undefined],
+    ["another account", { ...read, account: "9999" }, approval, "other_account"],
+    ["another currency", { ...read, currency: "USD" }, approval, "other_currency"],
+    [
+      "an amount the mail doesn't print",
+      { ...read, amountMinor: 9_600_000 },
+      approval,
+      "not_in_text",
+    ],
+    ["an impossible day", { ...read, day: "2026-02-30" }, approval, "unreadable"],
+    ["a day not come yet", { ...read, day: "2026-11-19" }, approval, "future"],
+    [
+      "a day before the sender counted",
+      { ...read, day: "2026-10-31" },
+      { ...approval, since: "2026-11-05", covered: () => false },
+      "before_start",
+    ],
+    [
+      "a day a statement covers",
+      { ...read, day: "2026-11-02" },
+      { ...approval, covered: () => true },
+      "covered",
+    ],
   ] as const)("judges %s", (_name, alert, who, reason) => {
-    expect(judgeAlert(alert, who)).toBe(reason);
+    expect(judgeAlert(alert, mail, who)).toBe(reason);
   });
 
   it.each([
-    ["dmarc passes for the sender", ["mx.example; dmarc=pass header.from=bank.example"], "passed"],
-    [
-      "dmarc passes for another domain",
-      ["mx.example; dmarc=pass header.from=evil.example"],
-      "failed",
-    ],
-    ["dmarc fails", ["mx.example; spf=pass; dmarc=fail header.from=bank.example"], "failed"],
-    ["dkim signed by the sender", ["mx.example; dkim=pass header.d=bank.example"], "passed"],
-    ["dkim signed by someone else", ["mx.example; dkim=pass header.d=evil.example"], "not checked"],
-    [
-      "a forged result below the receiver's own",
-      ["mx.example; spf=softfail", "forged; dmarc=pass header.from=bank.example"],
-      "not checked",
-    ],
-    ["nothing to go on", [], "not checked"],
-  ] as const)("sender check: %s", (_name, results, verdict) => {
-    expect(alertSenderCheck(results, "alerts@bank.example")).toBe(verdict);
+    [{ subject: "Fwd: Account credited" }, true],
+    [{ subject: "RE: Account credited" }, true],
+    [{ subject: "WG: Gutschrift" }, true],
+    [{ subject: "Account credited", inReplyTo: "<a@bank.example>" }, true],
+    [{ subject: "Account credited", references: "<a@bank.example>" }, true],
+    [{ subject: "Account credited", inReplyTo: null, references: null }, false],
+  ])("a reply or forward: %o", (mail, is) => {
+    expect(isReplyOrForward(mail)).toBe(is);
   });
 
   it.each([
-    ["Fwd: Account credited", true],
-    ["RE: Account credited", true],
-    ["WG: Gutschrift", true],
-    ["Account credited", false],
-  ])("a reply or forward: %s", (subject, is) => {
-    expect(isReplyOrForward(subject)).toBe(is);
+    [
+      "a reply's quote",
+      "Thanks\n\nOn Tue, 17 Nov 2026, Harbour Trust wrote:\n> NZD 900.00 credited",
+    ],
+    ["a quoted line", "Seen this?\n> NZD 900.00 credited to account ••4821"],
+    ["a forward's header", "FYI\n---------- Forwarded message ---------\nNZD 900.00 credited"],
+  ])("cuts %s", (_name, text) => {
+    expect(cutQuoted(text)).not.toContain("900.00");
   });
 });

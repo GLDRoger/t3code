@@ -651,16 +651,23 @@ describe("bank statements", () => {
         const later = DateTime.formatIsoDate(
           DateTime.makeUnsafe(Date.parse(`${credit.date}T00:00:00Z`) + 86_400_000),
         );
-        yield* sql`INSERT INTO kin_bank_alert_senders (org_id, connection_id, address, account,
-            currency, state, widget_id, asked_at)
-          VALUES (${orgId}, 'mailbox', 'alerts@lakebank.example', ${statement.account}, 'INR',
-            'counted', 'w-sender', 0)`;
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+            url_host, auth, reach, state, created_at, updated_at)
+          VALUES (${orgId}, 'mailbox', 'google', 'Gmail', 'builtin', 'gmail.googleapis.com',
+            'oauth', 'open', 'active', 0, 0)`;
+        yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
+            definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at)
+          VALUES (${orgId}, 'mailbox', 'mail_read_thread', '{}', 'pin', 'read', 'read', 0, 0)`;
+        yield* sql`INSERT INTO kin_bank_alert_senders (org_id, sender_id, connection_id, address,
+            account, currency, state, widget_id, asked_at, since_at, cursor_at)
+          VALUES (${orgId}, 'bs-lake', 'mailbox', 'alerts@lakebank.example', ${statement.account},
+            'INR', 'counted', 'w-sender', 0, 0, 0)`;
         const alertAt = (id: string, direction: string, minor: number, day: string) =>
-          sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, address, mail_key,
-              thread_id, subject, received_at, state, account, currency, direction, amount_minor,
+          sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, message_id, address,
+              sender_id, subject, received_at, state, account, currency, direction, amount_minor,
               day, created_at)
-            VALUES (${orgId}, ${id}, 'mailbox', 'alerts@lakebank.example', ${id}, 't', 'Alert', 0,
-              'counted', ${statement.account}, 'INR', ${direction}, ${minor}, ${day}, 0)`;
+            VALUES (${orgId}, ${id}, 'mailbox', ${id}, 'alerts@lakebank.example', 'bs-lake',
+              'Alert', 0, 'counted', ${statement.account}, 'INR', ${direction}, ${minor}, ${day}, 0)`;
         // The statement's credit, a day off as an alert may be; a debit the statement hasn't.
         yield* alertAt("ba_in", "credit", 11_800_000, later);
         yield* alertAt("ba_out", "debit", 12_345, statement.from);
@@ -669,7 +676,8 @@ describe("bank statements", () => {
           paidOn: later,
           originKey: "bank-alert:ba_in",
         });
-        yield* sql`UPDATE kin_bank_alerts SET pay_state = 'paid', payment_id = ${paid.paymentId}
+        yield* sql`UPDATE kin_bank_alerts SET pay_state = 'paid', pay_widget_id = 'w-pay',
+            payment_id = ${paid.paymentId}
           WHERE alert_id = 'ba_in'`;
         const source = () =>
           Effect.map(records.get(orgId, keys.exact), (row) =>
@@ -691,6 +699,8 @@ describe("bank statements", () => {
             {},
           ),
         );
+        // A sender stopped since: a statement settles its alerts all the same.
+        yield* sql`UPDATE kin_bank_alert_senders SET state = 'stopped'`;
         yield* LeadStatements.read(scope, {
           sourceEventId: "event-2",
           attachment: "hdfc-account.pdf",
@@ -700,6 +710,12 @@ describe("bank statements", () => {
         assert.isTrue(
           card.summary.some((line) => line.startsWith("In an alert, not on the statement: ")),
         );
+        // The line the owner already recorded from its alert's card is that payment, and is
+        // offered for no other invoice.
+        assert.deepStrictEqual(
+          card.matched.filter((one) => one.target.key === keys.exact).map((one) => one.target.note),
+          ["Payment already recorded: this links the bank row to it"],
+        );
         const applied = yield* OwnerStatements.apply(people, yield* confirmAll(card));
         const states = () =>
           sql<{ id: string; state: string }>`SELECT alert_id AS id, state FROM kin_bank_alerts
@@ -708,6 +724,12 @@ describe("bank statements", () => {
           { id: "ba_in", state: "replaced" },
           { id: "ba_out", state: "not_on_statement" },
         ]);
+        const [line] = yield* sql<{ line: number | null }>`SELECT statement_line AS line
+          FROM kin_bank_alerts WHERE alert_id = 'ba_in'`;
+        assert.strictEqual(
+          line!.line,
+          statement.rows.findIndex((row) => row === credit),
+        );
         assert.includeMembers(applied.card.result!, [
           "1 bank alert is replaced by this statement's lines.",
         ]);
@@ -722,6 +744,9 @@ describe("bank statements", () => {
         assert.deepStrictEqual(yield* states(), [
           { id: "ba_in", state: "counted" },
           { id: "ba_out", state: "counted" },
+        ]);
+        assert.deepStrictEqual(yield* source(), [
+          { _tag: "person", personId: ownerId, bankAlert: true },
         ]);
       }).pipe(Effect.provide(layer)),
   );
