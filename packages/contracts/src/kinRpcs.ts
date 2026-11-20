@@ -384,6 +384,10 @@ const KIN_RPC_ACCESS = {
   "kin.work.projectPeople": "person",
   "kin.work.logTouch": "person",
   "kin.work.removeTouch": "person",
+  // Marketing's reads and the list export: each reader gets what they see in Clients.
+  "kin.work.marketing": "person",
+  "kin.work.contactList": "person",
+  "kin.work.exportContacts": "person",
   // Deals: a teammate reads and changes theirs; the service decides. Stages are owner level.
   "kin.work.deals": "person",
   "kin.work.deal": "person",
@@ -676,6 +680,9 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.projectPeople": "kin-work",
   "kin.work.logTouch": "kin-work",
   "kin.work.removeTouch": "kin-work",
+  "kin.work.marketing": "kin-work",
+  "kin.work.contactList": "kin-work",
+  "kin.work.exportContacts": "kin-work",
   "kin.work.deals": "kin-work",
   "kin.work.deal": "kin-work",
   "kin.work.createDeal": "kin-work",

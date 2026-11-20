@@ -1,3 +1,5 @@
+import { KIN_MARKETING, kinContactListOfClients } from "@t3tools/client-runtime/kin/kinMarketing";
+import type { KinMarketing } from "@t3tools/contracts";
 import { useKinClientsStart, useKinSeesClients, useKinViewerScope } from "./state/kinChatOnly";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
@@ -12,6 +14,7 @@ import {
   KIN_PROJECT_VIEWS,
   kinClientRow,
   kinClientsLookedAfterChoices,
+  kinClientsQuery,
   kinClientsNothing,
   type KinClientsFilter,
   kinProjectsByClient,
@@ -57,6 +60,7 @@ import {
 } from "./state/useKinWork";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { KinDealsView } from "./KinDealsList";
+import { useKinExportList, useKinMarketing } from "./KinMarketing";
 
 const HEALTH_TONE: Record<KinHealthView["tone"], string> = {
   good: "text-foreground-muted",
@@ -351,6 +355,8 @@ function clientsMenu(
   onShow: (showing: Showing) => void,
   names: KinWorkNames,
   seesClients: boolean,
+  marketing: KinMarketing,
+  onExport: () => void,
 ): AppBarMenu["items"] {
   const { clients } = showing;
   const pick = (lookedAfter: KinClientsFilter["lookedAfter"]) =>
@@ -417,7 +423,45 @@ function clientsMenu(
                   ]),
             ],
           },
+          {
+            id: "cameFrom",
+            title: KIN_MARKETING.cameFrom,
+            items: [
+              {
+                id: "cameFrom:anywhere",
+                title: KIN_MARKETING.cameFromAnywhere,
+                selected: clients.cameFrom == null,
+                onPress: () => onShow({ ...showing, clients: { ...clients, cameFrom: null } }),
+              },
+              ...marketing.cameFrom.map((one) => ({
+                id: `cameFrom:${one.source}`,
+                title: one.campaign ? `${one.label} (${KIN_MARKETING.campaign})` : one.label,
+                selected: clients.cameFrom === one.source,
+                onPress: () =>
+                  onShow({ ...showing, clients: { ...clients, cameFrom: one.source } }),
+              })),
+            ],
+          },
+          {
+            id: "tag",
+            title: KIN_MARKETING.tag,
+            items: [
+              {
+                id: "tag:any",
+                title: KIN_MARKETING.anyTag,
+                selected: clients.tag == null,
+                onPress: () => onShow({ ...showing, clients: { ...clients, tag: null } }),
+              },
+              ...marketing.tags.map((tag) => ({
+                id: `tag:${tag}`,
+                title: tag,
+                selected: clients.tag === tag,
+                onPress: () => onShow({ ...showing, clients: { ...clients, tag } }),
+              })),
+            ],
+          },
         ]),
+    { id: "export", title: KIN_MARKETING.exportList, onPress: onExport },
   ];
 }
 
@@ -428,13 +472,15 @@ function showMenu(
   onShow: (showing: Showing) => void,
   names: KinWorkNames,
   seesClients: boolean,
+  marketing: KinMarketing,
+  onExport: () => void,
 ): AppBarMenu {
   return {
     title: KIN_WORK_HOME.show,
     icon: "line.3.horizontal.decrease.circle",
     items:
       tab === "clients"
-        ? clientsMenu(showing, onShow, names, seesClients)
+        ? clientsMenu(showing, onShow, names, seesClients, marketing, onExport)
         : KIN_PROJECT_VIEWS.map((view) => ({
             id: view.id,
             title: view.label,
@@ -458,6 +504,8 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
     clients: { show: start.show, lookedAfter: start.lookedAfter },
     view: "open",
   }));
+  const marketing = useKinMarketing(props);
+  const exporter = useKinExportList(props);
   const agent = useKinAskAgent(props, "clients");
   const ask =
     agent === null
@@ -468,7 +516,18 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
           onPress: () => agent.ask(kinWorkAskDraft("clients")),
         };
   const view = {
-    menu: showMenu(tab, showing, setShowing, props.directory.names, seesClients),
+    menu: showMenu(
+      tab,
+      showing,
+      setShowing,
+      props.directory.names,
+      seesClients,
+      marketing,
+      () =>
+        void exporter.run(
+          kinContactListOfClients(kinClientsQuery(props.orgId, { ...showing.clients, text: "" })),
+        ),
+    ),
     ask,
     header: (
       <SegmentedControl
@@ -499,7 +558,7 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
         showing.clients.lookedAfter === "anyone"
           ? "anyone"
           : kinWorkPrincipalKey(showing.clients.lookedAfter)
-      }`}
+      }:${showing.clients.cameFrom ?? ""}:${showing.clients.tag ?? ""}`}
       {...props}
       {...view}
       showing={showing.clients}

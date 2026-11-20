@@ -88,6 +88,8 @@ const MEMBER = [
   "kin.work.comment",
   "kin.work.commentRemove",
   "kin.work.comments",
+  // Marketing's reads: `ownerMarketing.ts` shows what they see in Clients and refuses Clients off.
+  "kin.work.contactList",
   "kin.work.create",
   // The light CRM's: the gate lets a person through, and `ownerClients.ts` decides the rest.
   "kin.work.createContact",
@@ -99,6 +101,7 @@ const MEMBER = [
   "kin.work.dealStages",
   "kin.work.dealStep",
   "kin.work.deals",
+  "kin.work.exportContacts",
   "kin.work.get",
   "kin.work.handBack",
   "kin.work.handOver",
@@ -108,6 +111,7 @@ const MEMBER = [
   "kin.work.list",
   "kin.work.lists",
   "kin.work.logTouch",
+  "kin.work.marketing",
   "kin.work.money",
   "kin.work.moveDeal",
   "kin.work.nudge",

@@ -283,6 +283,8 @@ export const KinTurnChange = Schema.Struct({
   key: KinRefKey,
   // Absent from an older host.
   kind: Schema.optional(KinRecordLinkKind),
+  /** A contact's client, whose page lists it, when this reader sees it; absent from an older host. */
+  party: Schema.optional(KinRefKey),
   title: Schema.String,
   what: Schema.String,
   change: Schema.Struct({ agentId: KinAgentId, seq: PositiveInt }),

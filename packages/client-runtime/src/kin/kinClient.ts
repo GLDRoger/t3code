@@ -48,6 +48,8 @@ import {
   type KinSocialInput,
   type KinGitHubInput,
   type KinProjectPageInput,
+  type KinContactListInput,
+  type KinMarketingInput,
   type KinDealsInput,
   type KinDealPageInput,
   type KinDealStagesInput,
@@ -343,6 +345,15 @@ export function makeKinClient<R, ER>(
     tag: "kin.work.project",
   });
   const readWorkProject = kinGuardedRead(workProjectRead);
+  const readWorkMarketing = kinGuardedRead(
+    createKinRpcCommand(runtime, { label: "kin:work:marketing:read", tag: "kin.work.marketing" }),
+  );
+  const readWorkContactList = kinGuardedRead(
+    createKinRpcCommand(runtime, {
+      label: "kin:work:contact-list:read",
+      tag: "kin.work.contactList",
+    }),
+  );
   const readWorkDeals = kinGuardedRead(
     createKinRpcCommand(runtime, { label: "kin:work:deals:read", tag: "kin.work.deals" }),
   );
@@ -1777,6 +1788,28 @@ export function makeKinClient<R, ER>(
     exportLink: createKinRpcCommand(runtime, {
       label: "kin:export",
       tag: "kin.work.exportLink",
+    }),
+    /** The tags and the places "Came from" offers, as far as the reader sees them. */
+    workMarketing: createKinQueryAtomFamily(runtime, {
+      label: "kin:work:marketing",
+      execute: Effect.fn("KinClient.workMarketing")(function* (input: KinMarketingInput) {
+        return yield* readWorkMarketing(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinWorkRefreshOn(["clients", "contacts", "projects"]),
+    }),
+    /** A list: the contacts with a tag, a campaign's audience, or at what a Clients filter shows. */
+    workContactList: createKinQueryAtomFamily(runtime, {
+      label: "kin:work:contact-list",
+      execute: Effect.fn("KinClient.workContactList")(function* (input: KinContactListInput) {
+        return yield* readWorkContactList(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinWorkRefreshOn(["clients", "contacts", "projects"]),
+    }),
+    workContactsExport: createKinRpcCommand(runtime, {
+      label: "kin:work:contacts:export",
+      tag: "kin.work.exportContacts",
     }),
     companyProfileSet: createKinRpcCommand(runtime, {
       label: "kin:company:set",

@@ -25,8 +25,10 @@ import {
   kinContactDraftCheck,
   kinContactDraftOf,
   kinContactUpdateInput,
+  kinProjectCreateInput,
   kinProjectDraftCheck,
   kinProjectDraftOf,
+  kinProjectUpdateInput,
   kinProjectTargetHint,
   kinTaskProjectMenu,
   kinWorkFormMoved,
@@ -267,6 +269,23 @@ describe("createKinWorkPageWatch", () => {
     expect([rereads(), asked()]).toEqual([1, 0]);
     watch.changed({ changed: { "W-5": 11 }, unnamed: 12 }, page);
     expect(rereads()).toBe(2);
+  });
+
+  it("reads a campaign's page for any client, contact or deal, which its counts read", () => {
+    let rereads = 0;
+    const watch = createKinWorkPageWatch({
+      own: "P-3" as KinRecordKey,
+      reread: () => {
+        rereads += 1;
+      },
+      newest: () => Promise.resolve(null),
+    });
+    const page = { seq: 10, held: new Set(["P-3", "C-*", "CT-*", "DL-*"]) };
+    watch.changed({ changed: { "P-9": 11 }, unnamed: 0 }, page);
+    expect(rereads).toBe(0);
+    watch.changed({ changed: { "CT-40": 12 }, unnamed: 0 }, page);
+    watch.changed({ changed: { "CT-40": 12, "DL-2": 13 }, unnamed: 0 }, page);
+    expect(rereads).toBe(2);
   });
 
   it("asks about a task it doesn't hold, and reads only when it turns out to be this client's", async () => {
@@ -524,5 +543,33 @@ describe("a contact's several emails and phones", () => {
       emails: ["Ravi@example.com"],
     });
     expect(kinContactUpdateInput({ name: "Ravi Rao" })).toEqual({ name: "Ravi Rao" });
+  });
+
+  it("sends a contact's tags whole on an edit, empty to clear them, and none when it has none", () => {
+    expect(kinContactDraftOf({ ...read, tags: ["harbour"] }).tags).toEqual(["harbour"]);
+    expect(kinContactCreateInput({ ...kinContactDraftOf(read), tags: [] })).not.toHaveProperty(
+      "tags",
+    );
+    expect(kinContactCreateInput({ ...kinContactDraftOf(read), tags: ["harbour"] })).toMatchObject({
+      tags: ["harbour"],
+    });
+    expect(kinContactUpdateInput({ tags: ["harbour", "clinics"] })).toEqual({
+      tags: ["harbour", "clinics"],
+    });
+    expect(kinContactUpdateInput({ tags: [] })).toEqual({ tags: [] });
+  });
+});
+
+describe("a campaign", () => {
+  const draft = kinProjectDraftOf();
+  it("is sent with its audience only when it is one, and turned back into a project", () => {
+    expect(kinProjectCreateInput({ ...draft, name: "Fair", audience: "harbour" })).toEqual({
+      name: "Fair",
+    });
+    expect(
+      kinProjectCreateInput({ ...draft, name: "Fair", campaign: true, audience: " harbour " }),
+    ).toEqual({ name: "Fair", campaign: true, audience: "harbour" });
+    expect(kinProjectUpdateInput({ campaign: false }, "EUR")).toEqual({ campaign: false });
+    expect(kinProjectUpdateInput({ audience: " " }, "EUR")).toEqual({ audience: null });
   });
 });

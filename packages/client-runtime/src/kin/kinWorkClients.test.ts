@@ -199,6 +199,13 @@ describe("the clients list's Show and Looked after by", () => {
     expect(
       kinClientsQuery(orgId, { show: "prospects", lookedAfter: arjun, text: " Fen " }),
     ).toEqual({ orgId, prospect: true, owner: arjun, text: "Fen" });
+    expect(
+      kinClientsQuery(orgId, {
+        ...KIN_CLIENTS_DEFAULT_FILTER,
+        cameFrom: "campaign:P-3",
+        tag: "harbour",
+      }),
+    ).toEqual({ orgId, source: "campaign:P-3", tag: "harbour" });
   });
 
   it("offers someone who reads names only no choice that tells a prospect from a client", () => {

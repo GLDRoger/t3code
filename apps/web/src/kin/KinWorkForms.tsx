@@ -1,4 +1,5 @@
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
 import {
   KIN_CLIENTS,
   KIN_PROJECT_PEOPLE,
@@ -69,6 +70,7 @@ import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinCountryFirstField } from "./KinCountryFirst";
+import { KinCameFromField, KinTagEditor, useKinMarketing } from "./KinMarketing";
 import { useKinCompanyCountry, useKinHomeCurrency } from "./useKinMoney.ts";
 import { KinProjectPeoplePicker } from "./KinProjectPeople";
 import { KinWorkPrivateMark, KinWorkProblem } from "./KinWorkParts";
@@ -352,6 +354,7 @@ export function KinClientDialog(
   // Said on the field itself: on the owner's long form the problem line sits below the fold.
   const nameMissing = state.problem?.text === COPY.party.contactNameMissing;
   const india = kinIndiaFields(useKinCompanyCountry(props));
+  const marketing = useKinMarketing(props);
   const gstinNote = kinClientGstinNote(draft);
   const place = draft.abroad ? ABROAD : draft.placeOfSupply || NO_PLACE;
   const save = async () => {
@@ -409,13 +412,12 @@ export function KinClientDialog(
       )}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field id={ids.source} label={COPY.party.source} moved={moved.source}>
-          <Input
+          <KinCameFromField
             id={ids.source}
             value={draft.source}
-            maxLength={120}
+            choices={marketing.cameFrom}
             placeholder={COPY.party.sourcePlaceholder}
-            autoComplete="off"
-            onChange={(event) => form.edit({ source: event.target.value })}
+            onChange={(source) => form.edit({ source })}
           />
         </Field>
         <Field id={ids.tags} label={COPY.party.tags} moved={moved.tags}>
@@ -675,7 +677,15 @@ export function KinContactDialog(
   }, [form, editing]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
-  const ids = { name: useId(), role: useId(), email: useId(), phone: useId(), notes: useId() };
+  const ids = {
+    name: useId(),
+    role: useId(),
+    email: useId(),
+    phone: useId(),
+    tags: useId(),
+    notes: useId(),
+  };
+  const marketing = useKinMarketing(props);
   const save = async () => {
     if ((await form.save()).saved) props.onSaved();
   };
@@ -758,6 +768,19 @@ export function KinContactDialog(
         />
       </div>
       <p className="text-xs text-muted-foreground">{COPY.contact.detailsHint}</p>
+      <Field
+        id={ids.tags}
+        label={KIN_MARKETING.tags}
+        moved={moved.tags === undefined ? undefined : moved.tags.join(", ")}
+      >
+        <KinTagEditor
+          id={ids.tags}
+          tags={draft.tags ?? []}
+          company={marketing.tags}
+          disabled={state.saving}
+          onChange={(tags) => form.edit({ tags })}
+        />
+      </Field>
       <Field id={ids.notes} label={COPY.contact.notes} moved={moved.notes}>
         <Textarea
           id={ids.notes}
@@ -853,7 +876,9 @@ export function KinProjectDialog(
     value: useId(),
     startsOn: useId(),
     renewsOn: useId(),
+    audience: useId(),
   };
+  const marketing = useKinMarketing(props);
   const save = async () => {
     const outcome = await form.save();
     if (!outcome.saved) return;
@@ -993,6 +1018,36 @@ export function KinProjectDialog(
             />
           </div>
         </div>
+      ) : null}
+      <PrivateSwitch
+        label={KIN_MARKETING.campaign}
+        note={KIN_MARKETING.campaignHint}
+        checked={draft.campaign}
+        disabled={state.saving}
+        onChange={(campaign) => form.edit({ campaign })}
+      />
+      {draft.campaign ? (
+        <Field
+          id={ids.audience}
+          label={KIN_MARKETING.audience}
+          hint={KIN_MARKETING.audienceHint}
+          moved={moved.audience}
+        >
+          <Input
+            id={ids.audience}
+            list={`${ids.audience}-tags`}
+            value={draft.audience}
+            maxLength={60}
+            placeholder={KIN_MARKETING.audiencePlaceholder}
+            autoComplete="off"
+            onChange={(event) => form.edit({ audience: event.target.value })}
+          />
+          <datalist id={`${ids.audience}-tags`}>
+            {marketing.tags.map((tag) => (
+              <option key={tag} value={tag} />
+            ))}
+          </datalist>
+        </Field>
       ) : null}
       <Field id={ids.repos} label={COPY.project.repos} moved={moved.repos}>
         <Textarea

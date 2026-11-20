@@ -35,6 +35,7 @@ import { KinLeadScreen } from "./KinLeadScreen";
 import { KinMemoryScreen } from "./KinMemoryScreen";
 import { KinRatesScreen } from "./KinMoneyEstimate";
 import { KinSubscriptionsScreen } from "./KinSubscriptions";
+import { KinMarketingListScreen } from "./KinMarketingListScreen";
 import { KinProjectLeadScreen } from "./KinProjectLeadScreen";
 import { KinProjectPeopleScreen } from "./KinProjectPeopleScreen";
 import { KinProjectScreen } from "./KinProjectScreen";
@@ -284,6 +285,10 @@ export const KIN_SCREENS = {
     screen: KinTeamScreen,
     linking: "kin/:environmentId/:orgId/team",
     options: pageRoute({ title: "Team" }),
+  }),
+  KinMarketingList: createNativeStackScreen({
+    screen: KinMarketingListScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinProjectLead: createNativeStackScreen({
     screen: KinProjectLeadScreen,

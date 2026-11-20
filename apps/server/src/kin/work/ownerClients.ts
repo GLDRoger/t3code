@@ -79,7 +79,7 @@ import * as Touches from "./touches.ts";
  */
 
 /** The read model's SQL failures reach a client as Work being unavailable, logged here. */
-const read = <A, E, R>(effect: Effect.Effect<A, E | SqlError, R>) =>
+export const read = <A, E, R>(effect: Effect.Effect<A, E | SqlError, R>) =>
   effect.pipe(
     Effect.catchIf(isSqlError, (cause) =>
       Effect.logWarning("Kin Work read failed", { message: cause.message }).pipe(
@@ -102,7 +102,7 @@ const noClients = new KinChatError({
   message: "Only the owner or a co-owner can open Clients for you.",
 });
 /** The caller; for anyone besides the owner, only with a Clients place or a project they lead. */
-const reader = Effect.fn("KinWork.crm.reader")(function* (
+export const reader = Effect.fn("KinWork.crm.reader")(function* (
   people: ReadonlyArray<PersonIdentity>,
   orgId: KinOrgId,
 ) {
@@ -113,7 +113,7 @@ const reader = Effect.fn("KinWork.crm.reader")(function* (
   return viewerOfPeople([viewer.person.personId]);
 });
 /** Whether this member's Clients switch is on: a project they lead alone reaches names. */
-const switchedOn = Effect.fn("KinWork.crm.switchedOn")(function* (
+export const switchedOn = Effect.fn("KinWork.crm.switchedOn")(function* (
   orgId: KinOrgId,
   viewer: KinViewer,
 ) {
@@ -167,8 +167,16 @@ export const parties = Effect.fn("KinWork.parties")(function* (
   const viewer = yield* reader(people, input.orgId);
   const works = yield* switchedOn(input.orgId, viewer);
   const { now, seq } = yield* asOf(input.orgId, viewer);
-  // Kinds and who looks after a client are Clients' own; a lead without it filters by neither.
-  const { kind: _kind, prospect: _prospect, owner: _owner, ...plain } = input;
+  // Kinds, who looks after a client, where it came from and tags are Clients' own; a lead
+  // without it filters by none of them.
+  const {
+    kind: _kind,
+    prospect: _prospect,
+    owner: _owner,
+    source: _source,
+    tag: _tag,
+    ...plain
+  } = input;
   const page = yield* read(Crm.parties(input.orgId, now, works ? input : plain, viewer));
   return {
     parties: works ? page.rows : page.rows.map(nameOnly),
@@ -320,9 +328,15 @@ export const project = Effect.fn("KinWork.project")(function* (
   const leads =
     row.ownerKind === "person" && row.ownerId === person.person.personId && row.sensitive === 0;
   const note = yield* read(projectNoteOf(input.orgId, row.recordId));
+  // A campaign's results are Clients' own: counted for those who read Clients, as they see it.
+  const results =
+    row.category === "campaign" && (yield* switchedOn(input.orgId, viewer))
+      ? yield* read(Crm.campaignResults(input.orgId, row, viewer))
+      : undefined;
   return {
     ...page,
     ...(note === undefined ? {} : { note }),
+    ...(results === undefined ? {} : { results }),
     can: { people: !person.teammate || leads, note: !person.teammate },
   };
 });
@@ -457,6 +471,7 @@ const detailsOf = (input: KinContactCreateInput | KinContactUpdateInput) => ({
   phone: input.phone,
   emails: input.emails,
   phones: input.phones,
+  tags: input.tags === undefined ? undefined : input.tags.length === 0 ? null : input.tags,
 });
 const activeState = (active: boolean | undefined) =>
   active === undefined ? {} : { state: active ? ("open" as const) : ("dropped" as const) };
@@ -618,9 +633,7 @@ export const memberChangesContact = Effect.fn("KinWork.crm.memberChangesContact"
   input: { readonly ownersFields: boolean },
 ) {
   if (!(yield* switchedOn(orgId, viewerOfPeople([personId])))) return yield* ownerOnly;
-  const contact = yield* inList(orgId, key, "contacts").pipe(
-    Effect.mapError(() => notFound(key)),
-  );
+  const contact = yield* inList(orgId, key, "contacts").pipe(Effect.mapError(() => notFound(key)));
   // A contact labelled itself or through its client is one they never saw.
   const seen = yield* read(crmVisible(orgId, personId, [contact.recordId]));
   if (contact.partyId === null || !seen.has(contact.recordId)) return yield* notFound(key);
@@ -859,7 +872,11 @@ const spineFields = (input: KinProjectCreateInput | KinProjectUpdateInput) => ({
   startsOn: input.startsOn,
   renewsOn: input.renewsOn,
   members: input.members?.map(principalText),
+  audience: input.audience,
 });
+/** A campaign is a project's one category; `false` makes it an ordinary project again. */
+const campaignOf = (campaign: boolean | undefined) =>
+  campaign === undefined ? {} : { category: campaign ? "campaign" : null };
 
 const PEOPLE_REFUSED = new KinChatError({
   reason: "not_allowed",
@@ -945,6 +962,7 @@ export const createProject = Effect.fn("KinWork.createProject")(function* (
     ...(yield* targetOf(input.orgId, input.targetAt, input.targetAllDay)),
     ...(input.notes === undefined ? {} : { notes: input.notes }),
     ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
+    ...(input.campaign === true ? { category: "campaign" } : {}),
     fields: fieldsOf({ repos: input.repos, ...spineFields(input) }),
   });
   yield* tellMoved(person, undefined, row);
@@ -978,6 +996,7 @@ export const updateProject = Effect.fn("KinWork.updateProject")(function* (
         partyId,
       }),
       ...(yield* targetOf(input.orgId, input.targetAt, input.targetAllDay)),
+      ...campaignOf(input.campaign),
       fields: fieldsOf({ repos: input.repos, ...spineFields(input) }),
     },
     input.rev,

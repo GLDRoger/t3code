@@ -1,4 +1,5 @@
 import {
+  KIN_CAMPAIGN_SOURCE,
   KinChatError,
   type KinDealAddStepInput,
   type KinDealCan,
@@ -15,6 +16,7 @@ import {
   type KinDealPageInput,
   type KinDealQuote,
   type KinDealRow,
+  type KinRecordRef,
   type KinDealsInput,
   type KinDealsResult,
   type KinDealStage,
@@ -43,6 +45,7 @@ import type * as Statement from "effect/sql/Statement";
 
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
+import { campaignsNamed, dealsFromCampaign, sourceShown } from "./crm.ts";
 import { DEFAULT_STAGES, stageLine, stageMove, stagesOf } from "./dealStages.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
 import { fieldList, fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
@@ -679,6 +682,7 @@ const dealOf = (
   viewer: KinViewer,
   steps: ReadonlyArray<KinDealNext> | undefined,
   quote: KinDealQuote | undefined,
+  campaigns: ReadonlyMap<string, KinRecordRef> = new Map(),
 ): KinDealRow => {
   const fields = parseFields(row.fieldsJson);
   const value = fields.value;
@@ -701,7 +705,7 @@ const dealOf = (
       ...(row.partyCategory === "prospect" ? { prospect: true as const } : {}),
     },
     owner: ownerOf(row),
-    ...(source === null ? {} : { source: source as KinDealRow["title"] }),
+    ...(source === null ? {} : { source: sourceShown(source, campaigns).source! }),
     ...(lostReason === null || row.state !== "dropped"
       ? {}
       : { lostReason: lostReason as KinDealRow["title"] }),
@@ -727,7 +731,14 @@ const dealsOut = Effect.fn("KinDeals.out")(function* (
   const ids = rows.map((row) => row.recordId);
   const steps = yield* stepsFor(orgId, viewer, ids, now);
   const quotes = yield* quotesFor(orgId, viewer, ids);
-  return rows.map((row) => dealOf(row, viewer, steps.get(row.recordId), quotes.get(row.recordId)));
+  const campaigns = yield* campaignsNamed(
+    orgId,
+    rows.map((row) => fieldText(parseFields(row.fieldsJson), "source")),
+    viewer,
+  );
+  return rows.map((row) =>
+    dealOf(row, viewer, steps.get(row.recordId), quotes.get(row.recordId), campaigns),
+  );
 });
 
 /**
@@ -1208,6 +1219,17 @@ export const deals = Effect.fn("KinDeals.list")(function* (
   const sql = yield* SqlClient.SqlClient;
   const party =
     input.party === undefined ? undefined : yield* seenParty(actor, input.party).pipe(workFailure);
+  // A campaign they can't see in Clients answers as one never there.
+  if (
+    input.campaign !== undefined &&
+    !(yield* campaignsNamed(input.orgId, [`${KIN_CAMPAIGN_SOURCE}${input.campaign}`], viewer).pipe(
+      workFailure,
+    )).has(input.campaign)
+  )
+    return yield* new KinChatError({
+      reason: "not_found",
+      message: `No campaign ${input.campaign.slice(0, 40)}.`,
+    });
   const state = input.state ?? (party === undefined ? "open" : undefined);
   const stored =
     state === undefined
@@ -1222,6 +1244,9 @@ export const deals = Effect.fn("KinDeals.list")(function* (
     sql`r.register_id = 'deals'`,
     crmSeenBy(sql, viewer),
     ...(party === undefined ? [] : [sql`r.party_id = ${party.recordId}`]),
+    ...(input.campaign === undefined
+      ? []
+      : [dealsFromCampaign(sql, input.orgId, input.campaign, viewer)]),
     ...(input.owner === undefined
       ? []
       : [
