@@ -1230,7 +1230,7 @@ const make = Effect.gen(function* () {
       limit: 200,
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const fact = facts.facts.find((one) => one.key === input.fact);
-    if (fact === undefined)
+    if (fact === undefined || fact.aside !== undefined)
       return yield* refuse(
         "That fact isn't open now: pulse_read lists the open ones. Nothing was passed on.",
       );

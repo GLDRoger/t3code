@@ -1207,6 +1207,7 @@ export class KinLeadPrompt extends Context.Service<
                 now,
                 wokeFor: pulseWoke,
                 checkIn,
+                checkInEvents,
               }).pipe(
                 Effect.tap((section) =>
                   section?.byProject.some((group) => group.facts.some((fact) => fact.sensitive))

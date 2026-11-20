@@ -4,10 +4,11 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail, type SentMail } from "../connections/Sending.ts";
-import { timeIn } from "../work/money.ts";
+import { dayIn, timeIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { clientHistory } from "./clientHistory.ts";
 import { headStarts } from "./headStart.ts";
+import { covers, endedHolds, holdNames } from "./holds.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { teamHoursNow } from "./nudge.ts";
 
@@ -34,8 +35,10 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   readonly agentId: KinAgentId;
   readonly now: number;
   readonly wokeFor: ReadonlyArray<string>;
-  /** A check-in: the facts it was given to tell (`kin_pulse_told`), held ones too. */
+  /** A check-in: the facts it was given to tell (`kin_pulse_told`). */
   readonly checkIn?: ReadonlySet<string> | undefined;
+  /** The check-in events, so a fact first told since its hold ended says it was set aside. */
+  readonly checkInEvents?: ReadonlyArray<string> | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const tell = input.checkIn;
@@ -45,7 +48,6 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     at: input.now,
     viewer: { _tag: "owner" },
     limit: 200,
-    includeHandled: checkIn,
   });
   const all =
     tell === undefined ? read : { ...read, facts: read.facts.filter((fact) => tell.has(fact.key)) };
@@ -96,6 +98,9 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
       );
   const starts = yield* headStarts(input.orgId, shown);
   const zone = yield* ownerZone(input.orgId);
+  const ended = checkIn
+    ? yield* asideEnded(input.orgId, input.agentId, input.now, shown, input.checkInEvents ?? [])
+    : new Map<string, string>();
   const row = (fact: KinPulseFact) => ({
     key: fact.key,
     about: `${fact.subject.key === fact.subject.title ? fact.subject.title : `${fact.subject.key} ${fact.subject.title}`}`,
@@ -123,11 +128,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         ? { sentIn: "no mail with it on record" }
         : {}),
     ...starts.byFact.get(fact.key),
-    ...(fact.handled === null
-      ? {}
-      : {
-          inHand: `${who(fact.handled.by)}${fact.handled.until === null ? ", not a problem" : ` until ${timeIn(DateTime.toEpochMillis(fact.handled.until), zone)}`}${fact.handled.note === null ? "" : `: ${fact.handled.note}`}`,
-        }),
+    ...(ended.has(fact.key) ? { setAsideEnded: ended.get(fact.key) } : {}),
     ...(fact.sensitive ? { sensitive: true } : {}),
     ...(woke.has(fact.key) ? { wokeYou: true } : {}),
     ...(fact.subject.recordId !== undefined && histories.has(fact.subject.recordId)
@@ -154,6 +155,52 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     byProject: [...groups].map(([project, facts]) => ({ project, facts })),
     ...(gone.length === 0 ? {} : { wokeForButHandledOrNoLongerTrue: gone }),
   };
+});
+
+/** How far back a hold's end still explains a fact told now. */
+const ENDED_WITHIN_MS = 60 * 24 * 60 * 60_000;
+
+/**
+ * For facts a check-in tells for the first time since a hold on them ended: "set aside by Finance
+ * on Rhea's word on 2026-11-20 until 2026-12-17; that day came" (or "lifted by Rhea on …").
+ */
+const asideEnded = Effect.fn("KinLeadPrompt.asideEnded")(function* (
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  now: number,
+  facts: ReadonlyArray<KinPulseFact>,
+  events: ReadonlyArray<string>,
+) {
+  const lines = new Map<string, string>();
+  if (facts.length === 0) return lines;
+  const holds = yield* endedHolds(orgId, now - ENDED_WITHIN_MS, now);
+  if (holds.length === 0) return lines;
+  const sql = yield* SqlClient.SqlClient;
+  const [agent] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner FROM kin_agents
+    WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+  const names = yield* holdNames(orgId);
+  const zone = yield* ownerZone(orgId);
+  const name = (id: string | null) => (id === null ? undefined : names.get(id));
+  for (const fact of facts) {
+    const hold = holds.find((one) => covers(one, fact));
+    if (hold === undefined || hold.endedAt === null || agent === undefined) continue;
+    const since = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_pulse_told
+      WHERE org_id = ${orgId} AND person_id = ${agent.owner} AND fact_key = ${fact.key}
+        AND told_at >= ${hold.endedAt}
+        ${events.length === 0 ? sql`` : sql`AND event_id NOT IN ${sql.in(events)}`}
+      LIMIT 1`;
+    if (since.length > 0) continue;
+    const word = hold.onWordOf === null ? "" : ` on ${name(hold.onWordOf) ?? "a person"}'s word`;
+    const end =
+      hold.liftedById === null
+        ? "that day came"
+        : `lifted by ${name(hold.liftedById) ?? "someone"} on ${dayIn(hold.endedAt, zone)}`;
+    lines.set(
+      fact.key,
+      `set aside by ${name(hold.byId) ?? "someone"}${word} on ${dayIn(hold.setAt, zone)}${hold.until === null ? "" : ` until ${dayIn(hold.until, zone)}`}; ${end}`,
+    );
+  }
+  return lines;
 });
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
