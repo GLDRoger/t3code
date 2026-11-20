@@ -70,6 +70,7 @@ import { GOOGLE_SCOPES } from "./Google.ts";
 import { challengeOf } from "./OAuth.ts";
 import { promptLine } from "./ConnectionRows.ts";
 import { staleAsksStranded } from "./strandedAsks.ts";
+import * as KinEventQueue from "../lead/KinEventQueue.ts";
 
 // Invented org, people and services only; no request leaves the process.
 const orgId = KinOrgId.make("org");
@@ -373,6 +374,7 @@ const layerFor = (
         touch: (_org, topic) => Effect.sync(() => void touches.push(topic)),
       }),
     ),
+    Layer.provide(KinEventQueue.layer),
     Layer.provideMerge(KinPersistence.layer),
     Layer.provideMerge(Sqlite.layerMemory),
     Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
@@ -814,9 +816,10 @@ describe("KinConnections", () => {
               Effect.provide(context),
             );
           hooks.beforeCard = tap(beta, true);
-          assert.strictEqual((yield* flag()).note, Connections.DRAFTED);
+          const replaced = `${Connections.DRAFTED} ${Connections.REPLACED(1)}`;
+          assert.strictEqual((yield* flag()).note, replaced);
           hooks.beforeCard = tap(gamma, false);
-          assert.strictEqual((yield* flagged("gamma")).note, Connections.DRAFTED);
+          assert.strictEqual((yield* flagged("gamma")).note, replaced);
           assert.deepStrictEqual(raced, ["widget_changed", "widget_changed"]);
           assert.strictEqual((yield* flag()).note, Connections.DRAFTED);
           assert.lengthOf(cards, 6);

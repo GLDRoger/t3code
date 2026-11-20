@@ -191,7 +191,8 @@ const seed = Effect.gen(function* () {
   yield* waiting({ id: "wait-send", person: rhea, chat: "chat-rhea", reason: "question" });
   yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name, pin_digest,
       payload_json, agent_id, wakeup_id, chat_id, widget_id, entry_record_id, state, proposed_at)
-    VALUES (${orgId}, 'ask-1', 'conn-1', 'send', 'p', '{}', ${finance}, 'wake-1', 'chat-rhea',
+    VALUES (${orgId}, 'ask-1', 'conn-1', 'send', 'p',
+      '{"attachments":[{"entryRecordId":"r-INV-2"}]}', ${finance}, 'wake-1', 'chat-rhea',
       'g-wait-send', 'r-INV-2', 'open', ${NOW - DAY})`;
   yield* waiting({ id: "wait-answered", person: rhea, chat: "chat-rhea" });
   yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
