@@ -52,9 +52,11 @@ const match = (
   rows: ReadonlyArray<StatementRow>,
   invoices: ReadonlyArray<InvoiceCandidate> = [],
   expenses: ReadonlyArray<ExpenseCandidate> = [],
+  withholdsAtSource = true,
 ) =>
   matchRows(rows, {
     currency: "INR",
+    withholdsAtSource,
     invoices,
     expenses,
     ownAccounts: ["7710"],
@@ -86,6 +88,20 @@ describe("statement matching", () => {
       expenses: [],
       group: "matched",
       fit: "tds",
+    },
+    {
+      name: "the same short credit for a company whose country withholds no tax at source",
+      rows: [
+        row({
+          description: "NEFT CR-UTIB0000002-NORTHWIND RETAIL PVT LTD",
+          amountMinor: 9_000_000,
+        }),
+      ],
+      invoices: [invoice({ amountMinor: 10_000_000, client: "Northwind Retail Pvt Ltd" })],
+      expenses: [],
+      withholds: false,
+      group: "choose",
+      fit: "part",
     },
     {
       name: "TDS on the amount before GST",
@@ -187,8 +203,8 @@ describe("statement matching", () => {
       group: "unmatched",
       fit: undefined,
     },
-  ] as const)("$name", ({ rows, invoices, expenses, group, fit }) => {
-    const [result] = match(rows, invoices, expenses);
+  ] as const)("$name", ({ rows, invoices, expenses, group, fit, ...rest }) => {
+    const [result] = match(rows, invoices, expenses, "withholds" in rest ? rest.withholds : true);
     assert.strictEqual(result!.group, group);
     assert.strictEqual(result!.candidates[0]?.fit, fit);
   });
