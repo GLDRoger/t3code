@@ -1070,8 +1070,13 @@ export const summary = Effect.fn("KinDeals.summary")(function* (
   const wonThisMonth = yield* sumsOf([...where, closedIn(sql, "done", days.monthAt, nextMonthAt)]);
   const openSums = yield* sumsOf([...where, sql`r.state = 'open'`]);
   const late = yield* lateOf(orgId, where, viewer, days.todayAt);
+  const lostThisMonth = yield* sumsOf([
+    ...where,
+    closedIn(sql, "dropped", days.monthAt, nextMonthAt),
+  ]);
+  // A person whose only deal was lost this month keeps their row, at zero.
   const people = new Map<string, { kind: string; id: string }>();
-  for (const row of [...openSums, ...wonThisMonth, ...late])
+  for (const row of [...openSums, ...wonThisMonth, ...lostThisMonth, ...late])
     if (row.kind !== null && row.id !== null)
       people.set(ownerKey(row.kind, row.id), { kind: row.kind, id: row.id });
   if (one !== undefined) people.set(ownerKey("person", one), { kind: "person", id: one });
@@ -1129,9 +1134,7 @@ export const summary = Effect.fn("KinDeals.summary")(function* (
     wonLastMonth: totalsOf(
       yield* sumsOf([...where, closedIn(sql, "done", days.lastMonthAt, days.monthAt)]),
     ),
-    lostThisMonth: totalsOf(
-      yield* sumsOf([...where, closedIn(sql, "dropped", days.monthAt, nextMonthAt)]),
-    ),
+    lostThisMonth: totalsOf(lostThisMonth),
     lostLastMonth: totalsOf(
       yield* sumsOf([...where, closedIn(sql, "dropped", days.lastMonthAt, days.monthAt)]),
     ),
