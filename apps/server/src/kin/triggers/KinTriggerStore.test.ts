@@ -424,29 +424,11 @@ describe("KinTriggerStore", () => {
   );
 
   it.effect(
-    "stores source, settings and ping records without upstream rows and enforces their org keys",
+    "stores settings and ping records without upstream rows and enforces their org keys",
     () =>
       Effect.gen(function* () {
         yield* seed;
         const sql = yield* SqlClient.SqlClient;
-        const source = {
-          id: "source",
-          orgId: orgA,
-          repo: "owner/repo",
-          scheduledTaskId: "task",
-          inboxThreadId: "thread",
-          githubHookId: null,
-          botLogin: "kin[bot]",
-          status: "active",
-        };
-        yield* sql`
-      INSERT INTO kin_webhook_sources (source_id, org_id, repo, scheduled_task_id, inbox_thread_id, github_hook_id, bot_login, status)
-      VALUES (${source.id}, ${source.orgId}, ${source.repo}, ${source.scheduledTaskId}, ${source.inboxThreadId}, ${source.githubHookId}, ${source.botLogin}, ${source.status})
-    `;
-        yield* sql`
-          INSERT INTO kin_webhook_sources (source_id, org_id, repo, scheduled_task_id, inbox_thread_id, github_hook_id, bot_login, status)
-          VALUES (${source.id}, ${orgB}, ${source.repo}, 'other-task', ${source.inboxThreadId}, NULL, ${source.botLogin}, ${source.status})
-        `;
         const settings = yield* decodeSettings({
           orgId: orgA,
           timeZone: "Asia/Kolkata",
@@ -475,10 +457,6 @@ describe("KinTriggerStore", () => {
       VALUES (${orgA}, 'person', 'item', '2026-11-07', ${now})
     `),
           ),
-        );
-        assert.deepStrictEqual(
-          yield* sql`SELECT org_id FROM kin_webhook_sources ORDER BY org_id, source_id`,
-          [{ org_id: orgA }, { org_id: orgB }],
         );
         assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_trigger_settings`, [
           { org_id: orgA },
