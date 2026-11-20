@@ -872,7 +872,7 @@ describe("choice cards", () => {
     });
     // A mail whose account needs signing in: which one, that nothing went, where to sign in.
     const signedOut =
-      "hello@ambermill.example needs signing in again in Settings › Connections. Nothing was sent; tap Confirm again once it's back.";
+      "hello@ambermill.example needs signing in again in Settings › Connections. Nothing was sent; send it again once it's back.";
     expect(refusal("unavailable", signedOut)).toEqual({ kind: "error", text: signedOut });
     expect(
       kinSendEditFailure(new KinChatError({ reason: "unavailable", message: signedOut })),

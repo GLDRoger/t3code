@@ -2165,7 +2165,7 @@ const make = Effect.gen(function* () {
             if (Option.isNone(updated))
               return yield* new KinChatError({
                 reason: "widget_changed",
-                message: "Widget revision changed.",
+                message: "This card changed or was answered. Look at it again.",
               });
             return updated.value;
           }),

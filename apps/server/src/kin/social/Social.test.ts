@@ -677,15 +677,16 @@ const preview: {
     SqlClient.TransactionConnection,
     SqlClient.TransactionConnection.Service
   > | null;
-  rendered: Deferred.Deferred<boolean> | null;
+  rendered: Deferred.Deferred<{ inside: boolean; day: string }> | null;
 } = { transaction: null, rendered: null };
 const probeRenderer = Layer.mock(KinDocRenderer)({
-  sheet: () =>
+  sheet: (input) =>
     Effect.gen(function* () {
       const inside =
         preview.transaction !== null &&
         Option.isSome(yield* Effect.serviceOption(preview.transaction));
-      if (preview.rendered !== null) yield* Deferred.succeed(preview.rendered, inside);
+      if (preview.rendered !== null)
+        yield* Deferred.succeed(preview.rendered, { inside, day: input.day });
       return yield* new KinChatError({ reason: "unavailable", message: "Invented: no preview." });
     }),
 });
@@ -781,10 +782,15 @@ it.effect(
         });
         yield* social.week(scope, { group: "Lumen Studio" });
         preview.transaction = sql.transactionService;
-        preview.rendered = yield* Deferred.make<boolean>();
+        preview.rendered = yield* Deferred.make<{ inside: boolean; day: string }>();
+        // 21:00 UTC on the 16th is already the 17th for a company in India.
+        yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Asia/Kolkata' WHERE org_id = ${orgId}`;
+        yield* at(Date.parse("2026-11-16T21:00:00.000Z"));
         const [card] = yield* weekCard;
         yield* tap(card!, "preview", null);
-        assert.isFalse(yield* Deferred.await(preview.rendered), "rendered inside a transaction");
+        const rendered = yield* Deferred.await(preview.rendered);
+        assert.isFalse(rendered.inside, "rendered inside a transaction");
+        assert.strictEqual(rendered.day, "2026-11-17");
       }),
     );
   },

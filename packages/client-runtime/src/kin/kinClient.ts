@@ -63,7 +63,12 @@ import {
   createEnvironmentQueryAtomFamily,
   createEnvironmentSubscriptionAtomFamily,
 } from "../state/runtime.ts";
-import { createKinQueryAtomFamily, createKinRpcCommand, retryKinAccess } from "./kinAccess.ts";
+import {
+  createKinQueryAtomFamily,
+  createKinRpcCommand,
+  refreshKinAccessMe,
+  retryKinAccess,
+} from "./kinAccess.ts";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "./kinDocsStream.ts";
 import type { KinChatState } from "./kinInboxModel.ts";
 import { KIN_MONEY_LIVE_LABEL, kinMoneyLiveStream } from "./kinMoneyStream.ts";
@@ -1806,6 +1811,9 @@ export function makeKinClient<R, ER>(
   const retryAccess = (environmentId: EnvironmentId) =>
     retryKinAccess(runtime, registry, environmentId);
 
+  const refreshAccessMe = (environmentId: EnvironmentId) =>
+    refreshKinAccessMe(runtime, registry, environmentId);
+
   return {
     kinClient,
     refreshKinAgents,
@@ -1813,6 +1821,7 @@ export function makeKinClient<R, ER>(
     markKinHostKnown,
     retryKinWorkLive,
     retryAccess,
+    refreshAccessMe,
   };
 }
 

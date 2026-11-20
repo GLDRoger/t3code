@@ -1278,7 +1278,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
                   : null,
               })),
             files,
-            day: iso(yield* Clock.currentTimeMillis).slice(0, 10),
+            day: dayIn(yield* Clock.currentTimeMillis, yield* ownerZone(orgId)),
           }),
         );
     let preview: KinSocialMedia | null = null;

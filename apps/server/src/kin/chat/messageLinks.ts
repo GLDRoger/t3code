@@ -237,6 +237,21 @@ export type NamedKey = (typeof NamedKeys.Type)[number];
 const decodeNames = Schema.decodeUnknownOption(Schema.fromJsonString(NamedKeys));
 export const encodeNames = Schema.encodeSync(Schema.fromJsonString(NamedKeys));
 
+/** What every person in the chat may see: owner level only when all of them are. */
+export const chatReaders = Effect.fn("KinMessageLinks.chatReaders")(function* (
+  orgId: KinOrgId,
+  chatId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const members = yield* sql<{ personId: KinPersonId }>`SELECT person_id AS "personId"
+    FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chatId}
+      AND principal_kind = 'person' AND left_at IS NULL ORDER BY person_id`;
+  const restricted: Array<KinPersonId> = [];
+  for (const { personId } of members)
+    if (!(yield* ownerLevel(orgId, personId))) restricted.push(personId);
+  return restricted.length === 0 ? KIN_OWNER_LEVEL : viewerOfPeople(restricted);
+});
+
 /**
  * An agent's message for people with each bare entry key (W-3, EXP-12) written as people name
  * it: the entry's printed number, else its title. Only keys every person in the chat may see
@@ -250,13 +265,7 @@ export const nameKeys = Effect.fn("KinMessageLinks.nameKeys")(function* (
   const keys = keysIn(body);
   if (keys.length === 0) return { body, names: [] as ReadonlyArray<NamedKey> };
   const sql = yield* SqlClient.SqlClient;
-  const members = yield* sql<{ personId: KinPersonId }>`SELECT person_id AS "personId"
-    FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chatId}
-      AND principal_kind = 'person' AND left_at IS NULL ORDER BY person_id`;
-  const restricted: Array<KinPersonId> = [];
-  for (const { personId } of members)
-    if (!(yield* ownerLevel(orgId, personId))) restricted.push(personId);
-  const viewer = restricted.length === 0 ? KIN_OWNER_LEVEL : viewerOfPeople(restricted);
+  const viewer = yield* chatReaders(orgId, chatId);
   const rows = yield* sql<{ key: string; title: string; number: string | null }>`SELECT r.key,
       r.title, json_extract(r.fields_json, '$.number') AS number FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(keys)} AND ${seenBy(sql, viewer)}`;

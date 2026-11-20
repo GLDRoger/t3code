@@ -26,6 +26,7 @@ import * as RetiredActions from "../approvals/retiredActions.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as Provision from "../lead/KinLeadProvision.ts";
 import * as KinRecords from "../work/KinRecords.ts";
+import * as WorkStream from "../work/workStream.ts";
 import { newCompanyProfileJson, setProfile } from "../work/companyProfile.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import * as RefreshHub from "./KinRefreshHub.ts";
@@ -283,6 +284,17 @@ describe("KinRefreshHub", () => {
         assert.strictEqual(announced.seq, created.seq + 1);
         // Everyone's own number moves too, so a viewer who resumes later reads again.
         assert.deepStrictEqual([...(announced.team?.keys() ?? [])], [me.personId]);
+        // An owner's open Work screens read again only once the number they were told moves.
+        const rows = yield* WorkStream.makeWorkStream([me], { orgId: me.orgId, acceptRows: true });
+        yield* rows.start(created.seq);
+        const told = yield* rows.batch(rows.pendingOf(announced));
+        assert.deepStrictEqual(
+          told.map((event) => [event._tag, event.seq]),
+          [
+            ["snapshot-required", announced.seq],
+            ["counts", announced.seq],
+          ],
+        );
         const someone = { ...me, personId: KinPersonId.make("someone") };
         assert.include(
           yield* announceRefreshes([someone], {
