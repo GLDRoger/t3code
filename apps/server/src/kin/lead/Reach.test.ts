@@ -117,6 +117,11 @@ it.effect(
         ],
       );
 
+      // Lifted and restricted again in the same moment: restricted.
+      yield* limit("rhea", p("dev"), p("zoya"), false);
+      assert.deepStrictEqual(yield* limit("rhea", p("dev"), p("zoya")), { _tag: "changed" });
+      assert.strictEqual(yield* reach(p("zoya"), p("dev")), "restricted");
+
       // Someone removed, or an agent retired, is reached by no one.
       yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = 'zoya'`;
       assert.strictEqual(yield* reach(a("chief"), p("zoya")), "removed");

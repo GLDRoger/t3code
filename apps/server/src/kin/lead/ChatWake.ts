@@ -30,6 +30,7 @@ import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { RETIRED_NOTICE_PREFIX, retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
 import * as LeadAccess from "./LeadAccess.ts";
+import * as Reach from "./Reach.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
@@ -96,9 +97,9 @@ const make = Effect.gen(function* () {
   );
 
   /**
-   * A teammate wakes a lead (in a direct chat, only while its owner allows them) for at most
-   * `dailyTurns` turns in any 24 hours across every chat: the owner pays for each. Past that the
-   * chat says so once. Run in the transaction that enqueues, so the count and the turn are one step.
+   * A teammate wakes a lead (never across a restricted pair, `Reach`) for at most `dailyTurns`
+   * turns in any 24 hours across every chat: the owner pays for each. Past that the chat says so
+   * once. Run in the transaction that enqueues, so the count and the turn are one step.
    */
   const admitted = Effect.fn("KinChatWake.admitted")(function* (
     message: KinMessage,
@@ -111,7 +112,14 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${message.orgId} AND dedupe_key = ${dedupeKey} LIMIT 1`;
     if (known.length > 0) return true;
     const access = Effect.provideService(SqlClient.SqlClient, sql);
-    if (target.direct && !(yield* LeadAccess.allowed(pair).pipe(access))) return false;
+    if (
+      !(yield* Reach.reaches(
+        message.orgId,
+        Reach.person(personId),
+        Reach.agent(target.agentId),
+      ).pipe(access))
+    )
+      return false;
     const used = yield* LeadAccess.recentTurns({
       ...pair,
       now: yield* Clock.currentTimeMillis,

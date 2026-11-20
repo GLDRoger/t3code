@@ -112,6 +112,7 @@ import { KinAttachmentStore } from "./KinAttachmentStore.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as Reactions from "./reactions.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { memberReads } from "./sharing.ts";
 
@@ -1782,14 +1783,15 @@ const make = Effect.gen(function* () {
         Effect.fn("KinChatService.org")(function* (identity) {
           const org = yield* requireRecord(repo.getOrg(identity));
           const agents = yield* repo.listAgents(identity);
-          // The agents this person owns (the owner owns every one), may message, or shares a chat
-          // with; the rest only by name, so a task's holder is never "an agent".
+          // The agents this person owns (the owner owns every one), may message (any not
+          // restricted for them), or shares a chat with; the rest only by name, so a task's holder
+          // is never "an agent".
           const visible = yield* sql<{ agentId: string }>`SELECT a.agent_id AS "agentId"
             FROM kin_agents a WHERE a.org_id = ${identity.orgId} AND (
               a.owner_person_id = ${identity.personId}
-              OR EXISTS (SELECT 1 FROM kin_lead_access x WHERE x.org_id = a.org_id
-                AND x.agent_id = a.agent_id AND x.person_id = ${identity.personId}
-                AND x.revoked_at IS NULL)
+              OR NOT EXISTS (SELECT 1 FROM kin_people p0 WHERE p0.org_id = a.org_id
+                AND p0.person_id = ${identity.personId}
+                AND ${sql.literal(Reach.restrictedSql("a.org_id", "a.agent_id", "p0.person_id"))})
               OR EXISTS (SELECT 1 FROM kin_chat_members p JOIN kin_chat_members m
                 ON m.org_id = p.org_id AND m.chat_id = p.chat_id AND m.principal_kind = 'agent'
                   AND m.agent_id = a.agent_id AND m.left_at IS NULL
@@ -2230,16 +2232,13 @@ const make = Effect.gen(function* () {
       if (identity.orgId !== input.orgId) return yield* notFound;
       const person = yield* requireRecord(repo.getPerson(identity));
       const agent = yield* requireRecord(repo.getAgent(input));
-      if (agent.retiredAt !== null) return yield* notAllowed;
       const own = ownsAgent(agent, person.personId);
-      // Someone else's lead: a co-owner messages every one, anyone else while its owner allows.
       if (
-        !own &&
-        !(yield* ownerLevel(input.orgId, person.personId).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.mapError(toPersistenceSqlError("KinChatService.createDirect")),
-        )) &&
-        !(yield* LeadAccess.allowed({ ...input, personId: person.personId }).pipe(
+        !(yield* Reach.reaches(
+          input.orgId,
+          Reach.person(person.personId),
+          Reach.agent(agent.agentId),
+        ).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError(toPersistenceSqlError("KinChatService.createDirect")),
         ))

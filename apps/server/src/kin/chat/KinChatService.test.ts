@@ -66,6 +66,7 @@ import * as Service from "./KinChatService.ts";
 import * as VisualHosts from "./KinVisualHosts.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as LevelGate from "../lead/LevelGate.ts";
+import * as Reach from "../lead/Reach.ts";
 import {
   attachChangeCard,
   proposeChange,
@@ -566,12 +567,20 @@ describe("KinChatService", () => {
       });
       const mate = { _tag: "person", orgId: person.orgId, personId: mateId } as const;
       const lead = { orgId: person.orgId, agentId };
-      // Not hers to start until the owner allows it.
+      // Hers to start with no grant, unless the pair is restricted.
+      const limit = (restricted: boolean) =>
+        Reach.setLimit({
+          orgId: person.orgId,
+          by: person.personId,
+          a: Reach.person(mateId),
+          b: Reach.agent(agentId),
+          restricted,
+        });
+      yield* limit(true);
       assert.include(yield* service.createDirect(mate, lead).pipe(Effect.flip), {
         reason: "not_allowed",
       });
-      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
-        VALUES (${person.orgId}, ${agentId}, ${mateId}, ${person.personId}, 0)`;
+      yield* limit(false);
       const theirs = yield* service.createDirect(mate, lead);
       // Someone besides the owner reads it from the start, so it is shared from its first seq.
       assert.deepStrictEqual(
@@ -652,15 +661,18 @@ describe("KinChatService", () => {
         .pipe(Stream.take(1), Stream.runDrain);
       yield* service.subscribeChats(members, {}).pipe(Stream.take(1), Stream.runDrain);
       assert.equal((yield* service.orgs(members)).me[0]!.personId, me.personId);
-      // A teammate sees only the agents they own, may message, or share a chat with.
+      // A teammate sees every agent but one restricted for them, unless they share a chat with it.
       const seen = Effect.map(service.orgs(members), (result) =>
         result.orgs[0]!.agents.map((agent) => agent.agentId),
       );
-      assert.deepStrictEqual(yield* seen, [ownAgent]);
-      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
-        VALUES (${person.orgId}, ${agentId}, ${memberId}, ${person.personId}, 0)`;
       assert.deepStrictEqual(yield* seen, [agentId, ownAgent]);
-      yield* sql`UPDATE kin_lead_access SET revoked_at = 1 WHERE person_id = ${memberId}`;
+      yield* Reach.setLimit({
+        orgId: person.orgId,
+        by: person.personId,
+        a: Reach.person(memberId),
+        b: Reach.agent(agentId),
+        restricted: true,
+      });
       assert.deepStrictEqual(yield* seen, [ownAgent]);
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
         VALUES ('shared-group', ${person.orgId}, 'team_group', 0, ${timestamp})`;

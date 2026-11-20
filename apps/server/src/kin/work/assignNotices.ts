@@ -20,11 +20,11 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { awayBackOn, heldUntil, holdFor, holdLine } from "../triggers/quietHold.ts";
 import { textLocale, type TextClock } from "./companyProfile.ts";
 import { parseFields } from "./lists.ts";
 import { byId, isClosed, ownerZone, type RecordRow } from "./recordRows.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
 
 /**
  * What a turn did to one person's task: gave it to them, took it from them, or gave it back; or
@@ -324,10 +324,11 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
         AND left_at IS NULL LIMIT 1`;
       if (reading.length > 0) continue;
     }
-    const mayMessage =
-      agent.owner === person ||
-      (yield* ownerLevel(turn.orgId, person)) ||
-      (yield* LeadAccess.allowed({ orgId: turn.orgId, agentId: turn.agentId, personId: person }));
+    const mayMessage = yield* Reach.reaches(
+      turn.orgId,
+      Reach.person(person),
+      Reach.agent(turn.agentId),
+    );
     const via = mayMessage ? turn.agentId : teamAgent;
     if (via === null) continue;
     const [open] = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId" FROM kin_chats c

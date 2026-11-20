@@ -113,6 +113,13 @@ describe("KinRefreshHub", () => {
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
           VALUES ('priya', ${me.orgId}, 'priya', 'Priya', '2026-11-09T00:00:00.000Z')`;
         const priya = { ...me, personId: KinPersonId.make("priya") };
+        // She already has her chat with Finance, as anyone may.
+        yield* Provision.allow({
+          editor: owner,
+          orgId: me.orgId,
+          agentId: finance.agentId,
+          personId: priya.personId,
+        });
         // A company created now, its country not chosen yet.
         yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
             updated_by_kind, updated_by_id)
@@ -136,7 +143,7 @@ describe("KinRefreshHub", () => {
           streams: KIN_STREAMS,
         });
 
-        // Things only the owner reads: the company, and a lead Priya can't message.
+        // Things only the owner reads: the company, and a lead's charter.
         yield* setProfile(
           me.orgId,
           { _tag: "person", personId: me.personId },
@@ -165,8 +172,9 @@ describe("KinRefreshHub", () => {
           workLists: (start.workLists ?? 0) + 1,
         });
 
-        // Priya may now message Finance: her list changed, so hers is the next thing she hears.
-        yield* Provision.allow({
+        // The owner restricts Priya from Finance: her chat with it closes and her list changed, so
+        // hers is the next thing she hears.
+        yield* Provision.disallow({
           editor: owner,
           orgId: me.orgId,
           agentId: finance.agentId,

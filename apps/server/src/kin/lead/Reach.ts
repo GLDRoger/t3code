@@ -31,11 +31,16 @@ const ordered = (a: KinParty, b: KinParty) => {
 
 export type Reach = "allowed" | "restricted" | "removed" | "unknown" | "self";
 
-/** The one sentence an agent reads when a restricted pair is tried; nothing was sent. */
-export const restrictedLine = (name: string, agentName: string, asker?: string) =>
+/**
+ * What an agent reads when a restricted pair is tried; nothing was sent. `asker` is who to tell,
+ * or null when the owner asked, who can lift it.
+ */
+export const restrictedLine = (name: string, agentName: string, asker?: string | null) =>
   `${name} and ${agentName} can't message each other here, so nothing was sent. ${
-    asker === undefined ? "Ask" : `Tell ${asker} in one line, and ask`
-  } the owner if it matters.`;
+    asker === null
+      ? "The owner can lift that."
+      : `${asker === undefined ? "Ask" : `Tell ${asker} in one line, and ask`} the owner if it matters.`
+  }`;
 
 export const UNRESTRICTABLE = "Owners and co-owners can message everyone.";
 export const OWN_AGENT = "An agent's own owner can always message it.";
@@ -71,13 +76,17 @@ const standing = Effect.fn("KinReach.standing")(function* (orgId: KinOrgId, part
             ${sql.literal(accessSql("p"))} IN ('owner', 'co_owner') AS "ownerLevel", NULL AS owner
           FROM kin_people p WHERE p.org_id = ${orgId} AND p.person_id = ${party.personId}`
       : yield* sql<{ live: number; ownerLevel: number; owner: string | null }>`SELECT
-            (a.role = 'lead' AND a.retired_at IS NULL) AS live, 0 AS "ownerLevel",
+            a.retired_at IS NULL AS live, 0 AS "ownerLevel",
             a.owner_person_id AS owner
           FROM kin_agents a WHERE a.org_id = ${orgId} AND a.agent_id = ${party.agentId}`;
   const found: Standing =
     row === undefined
       ? { _tag: "unknown" }
-      : { _tag: row.live === 1 ? "live" : "gone", ownerLevel: row.ownerLevel === 1, owner: row.owner };
+      : {
+          _tag: row.live === 1 ? "live" : "gone",
+          ownerLevel: row.ownerLevel === 1,
+          owner: row.owner,
+        };
   return found;
 });
 
@@ -179,10 +188,14 @@ export const setLimit = Effect.fn("KinReach.setLimit")(function* (input: {
       RETURNING limit_id`;
     return result({ _tag: lifted.length > 0 ? "changed" : "unchanged" });
   }
+  // One row per restriction of the pair, numbered: lifted rows stay as its history.
+  const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_reach_limits
+    WHERE org_id = ${orgId} AND one_kind = ${one.kind} AND one_id = ${one.id}
+      AND other_kind = ${other.kind} AND other_id = ${other.id}`;
   const limitId = `reach-${NodeCrypto.createHash("sha256")
-    .update(`${orgId}:${one.kind}:${one.id}:${other.kind}:${other.id}:${now}`)
+    .update(`${orgId}:${one.kind}:${one.id}:${other.kind}:${other.id}`)
     .digest("hex")
-    .slice(0, 24)}`;
+    .slice(0, 24)}-${(count?.n ?? 0) + 1}`;
   const set = yield* sql`INSERT INTO kin_reach_limits (limit_id, org_id, one_kind, one_id,
       other_kind, other_id, set_by_person_id, set_at)
     VALUES (${limitId}, ${orgId}, ${one.kind}, ${one.id}, ${other.kind}, ${other.id},

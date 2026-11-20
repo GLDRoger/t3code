@@ -30,7 +30,7 @@ import * as Groups from "../chat/KinGroups.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { destination, turnAudience, turnPeople } from "../lead/Audience.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
-import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { readPeople } from "../lead/peopleRead.ts";
 import { buildSeat } from "../lead/seat.ts";
 import * as ChatWake from "../lead/ChatWake.ts";
@@ -1433,11 +1433,8 @@ it.effect(
           (member) => member.leftAt !== null,
         ),
       );
-      assert.deepStrictEqual(
-        yield* sql`SELECT 1 FROM kin_lead_access WHERE person_id = ${mira.person.personId}
-          AND revoked_at IS NULL`,
-        [],
-      );
+      const reach = Reach.mayReach(orgId, Reach.person(mira.person.personId), Reach.agent(tech));
+      assert.strictEqual(yield* reach, "removed");
       assert.deepStrictEqual(
         yield* sql`SELECT 1 FROM kin_push_devices WHERE person_id = ${mira.person.personId}`,
         [],
@@ -1482,11 +1479,7 @@ it.effect(
           .map((member) => member.chatId),
         [direct.chatId, group.chatId],
       );
-      assert.lengthOf(
-        yield* sql`SELECT 1 FROM kin_lead_access WHERE person_id = ${mira.person.personId}
-          AND revoked_at IS NULL`,
-        1,
-      );
+      assert.strictEqual(yield* reach, "allowed");
       const said = (chatId: KinChatId) =>
         chats
           .history([mira.person], { chatId, beforeSeq: 1_000, limit: 100 })
@@ -1586,6 +1579,19 @@ it.effect(
         "reason",
         "not_allowed",
       );
+      // Whether each has signed in to Kin: a teammate who joined has; one only listed has not.
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('listed-only', ${orgId}, 'listed', 'Listed Only', '1970-01-01T00:00:00.000Z')`;
+      const listed = (yield* readPeople({
+        orgId,
+        agentId: KinAgentId.make("none"),
+        wakeupId: "none",
+      })).quoted;
+      const signedIn = (personId: string) =>
+        new RegExp(`"personId":"${personId}"[^}]*"signedIn":(true|false)`).exec(listed)?.[1];
+      assert.strictEqual(signedIn(asha.person.personId), "true");
+      assert.strictEqual(signedIn("listed-only"), "false");
+      yield* sql`DELETE FROM kin_people WHERE person_id = 'listed-only'`;
       yield* TestClock.setTime(Date.parse("2026-11-16T12:00:00.000Z"));
       const away = yield* service.updateProfile(ownerSession, {
         orgId,
@@ -1718,7 +1724,7 @@ it.effect(
 );
 
 it.effect(
-  "the team agent: every teammate gets a chat that wakes it at their view; switching leaves old chats readable, switching back reopens them, and it turns off",
+  "the team agent: every teammate gets a chat that wakes it at their view; switching or turning it off leaves every chat open",
   () =>
     Effect.gen(function* () {
       const service = yield* People.KinPeople;
@@ -1775,10 +1781,10 @@ it.effect(
           WHERE c.org_id = ${orgId} AND c.direct_key = ${`${personId}:${agentId}`}`;
       const asha = yield* join("Asha");
 
-      // Off until the owner picks one.
+      // No chat until the owner picks one, though she may message every agent already.
       assert.deepStrictEqual(yield* contacts(asha.person), []);
-      assert.isFalse(
-        yield* LeadAccess.allowed({ orgId, agentId: chief, personId: asha.person.personId }),
+      assert.isTrue(
+        yield* Reach.reaches(orgId, Reach.person(asha.person.personId), Reach.agent(chief)),
       );
       assert.propertyVal(
         yield* setTeamAgent(asha.session, chief).pipe(Effect.flip),
@@ -1843,17 +1849,13 @@ it.effect(
       assert.deepStrictEqual((yield* turnPeople(turn))?.people, [asha.person.personId]);
       yield* queue.finish({ orgId, wakeupId, status: "completed" });
 
-      // Switching: Asha's old chat stays readable and says where to go; Ravi never wrote, so
-      // his leaves the list.
+      // Switching opens the new one's chats and leaves the old ones as they were, with no line.
       yield* setTeamAgent(ownerSession, ops);
-      assert.deepStrictEqual(yield* contacts(asha.person), ["Ops"]);
-      assert.isFalse(
-        yield* LeadAccess.allowed({ orgId, agentId: chief, personId: asha.person.personId }),
-      );
+      assert.deepStrictEqual(yield* contacts(asha.person), ["Chief of staff", "Ops"]);
+      assert.deepStrictEqual(yield* contacts(ravi.person), ["Chief of staff", "Ops"]);
       assert.deepStrictEqual(yield* role(asha.person.personId, chief), [
-        { role: "guest", leftAt: null },
+        { role: "member", leftAt: null },
       ]);
-      assert.strictEqual((yield* role(ravi.person.personId, chief))[0]?.leftAt === null, false);
       const history = yield* chats.history([asha.person], {
         chatId: ashaChief.chatId,
         beforeSeq: 1_000,
@@ -1863,26 +1865,18 @@ it.effect(
         history.messages
           .map((message) => message.body)
           .filter((body) => !body.startsWith("Invented")),
-        ["The team agent is now Ops. Message Ops instead."],
+        [],
       );
-
-      // Switching back reopens the old chats; off closes them again.
-      yield* setTeamAgent(ownerSession, chief);
-      assert.deepStrictEqual(yield* contacts(asha.person), ["Chief of staff"]);
+      yield* setTeamAgent(ownerSession, null);
+      assert.deepStrictEqual(yield* contacts(asha.person), ["Chief of staff", "Ops"]);
       assert.deepStrictEqual(yield* role(asha.person.personId, chief), [
         { role: "member", leftAt: null },
-      ]);
-      assert.deepStrictEqual(yield* contacts(ravi.person), ["Chief of staff"]);
-      yield* setTeamAgent(ownerSession, null);
-      assert.deepStrictEqual(yield* contacts(asha.person), []);
-      assert.deepStrictEqual(yield* role(asha.person.personId, chief), [
-        { role: "guest", leftAt: null },
       ]);
     }).pipe(Effect.provide(teamLayer)),
 );
 
 it.effect(
-  "a co-owner made a member, now or while removed, writes only to the agents a member was let message, and promoting again reopens the rest",
+  "a co-owner made a member, now or while removed, writes to every agent but one restricted for them, and promoting again reopens it",
   () =>
     Effect.gen(function* () {
       const service = yield* People.KinPeople;
@@ -1997,52 +1991,50 @@ it.effect(
         return wakeupId;
       });
 
-      // Granted, made co-owner, the grant removed, then made a member again; and never granted.
+      // Restricted from Finance as a member, then made a co-owner: the restriction binds again
+      // once she is a member.
       const meera = yield* join("Meera");
-      yield* LeadProvision.allow({ ...grant, personId: meera.personId });
-      yield* access(meera, "co_owner");
       yield* LeadProvision.disallow({ ...grant, personId: meera.personId });
-      const dev = yield* join("Dev");
-      yield* access(dev, "co_owner");
-      for (const person of [meera, dev]) {
-        const { chatId } = yield* chatWith(person, finance);
-        const asked = yield* say(person, chatId);
+      yield* access(meera, "co_owner");
+      {
+        const { chatId } = yield* chatWith(meera, finance);
+        const asked = yield* say(meera, chatId);
         const running = yield* wake();
-        const waiting = yield* say(person, chatId);
+        const waiting = yield* say(meera, chatId);
         assert.deepStrictEqual(yield* state(asked), ["claimed"]);
         assert.deepStrictEqual(yield* state(waiting), ["queued"]);
 
-        yield* access(person, "member");
-        assert.include(yield* chatWith(person, finance), { role: "guest", leftAt: null });
-        assert.propertyVal(yield* send(person, chatId).pipe(Effect.flip), "reason", "not_allowed");
+        yield* access(meera, "member");
+        assert.include(yield* chatWith(meera, finance), { role: "guest", leftAt: null });
+        assert.propertyVal(yield* send(meera, chatId).pipe(Effect.flip), "reason", "not_allowed");
         assert.include(stopped, running);
         yield* queue.finish({ orgId, wakeupId: running, status: "completed" });
         assert.deepStrictEqual(yield* state(asked), ["expired"]);
         assert.deepStrictEqual(yield* state(waiting), ["expired"]);
-        // The team agent is everyone's.
-        assert.include(yield* chatWith(person, chief), { role: "member", leftAt: null });
+        // Nothing restricts her and the team agent.
+        assert.include(yield* chatWith(meera, chief), { role: "member", leftAt: null });
 
         // Made a co-owner again: the same chat, open again.
-        yield* access(person, "co_owner");
-        assert.deepStrictEqual(yield* chatWith(person, finance), {
+        yield* access(meera, "co_owner");
+        assert.deepStrictEqual(yield* chatWith(meera, finance), {
           chatId,
           role: "member",
           leftAt: null,
         });
-        yield* access(person, "member");
+        yield* access(meera, "member");
       }
-      // Granted again: open again.
+      // Lifted: open again.
       yield* LeadProvision.allow({ ...grant, personId: meera.personId });
       assert.include(yield* chatWith(meera, finance), { role: "member", leftAt: null });
 
-      // A live grant of their own keeps it open.
-      const zoya = yield* join("Zoya");
-      yield* LeadProvision.allow({ ...grant, personId: zoya.personId });
-      yield* access(zoya, "co_owner");
-      yield* access(zoya, "member");
-      const kept = yield* chatWith(zoya, finance);
-      assert.include(kept, { role: "member", leftAt: null });
-      yield* say(zoya, kept.chatId);
+      // Never restricted: a co-owner made a member keeps writing to every agent.
+      const dev = yield* join("Dev");
+      yield* access(dev, "co_owner");
+      const devs = (yield* chatWith(dev, finance)).chatId;
+      yield* say(dev, devs);
+      yield* access(dev, "member");
+      assert.include(yield* chatWith(dev, finance), { role: "member", leftAt: null });
+      yield* say(dev, devs);
 
       // Removed, the level edited while away, then let back in by a new link.
       const ops = yield* lead("ops", "Operations");
@@ -2069,9 +2061,9 @@ it.effect(
         assert.include(chat, { role: "member", leftAt: null });
         yield* send(person, chat.chatId);
       });
-      // A co-owner with no grant for Finance comes back a member, as a member.
+      // A co-owner restricted from Finance while a member comes back a member, restricted.
       const arjun = yield* join("Arjun");
-      yield* LeadProvision.allow({ editor, orgId, agentId: ops, personId: arjun.personId });
+      yield* LeadProvision.disallow({ ...grant, personId: arjun.personId });
       yield* access(arjun, "co_owner");
       const arjunFinance = (yield* chatWith(arjun, finance)).chatId;
       yield* send(arjun, arjunFinance);

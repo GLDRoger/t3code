@@ -356,14 +356,17 @@ describe("ChatWake", () => {
   );
 
   it.effect(
-    "a member's direct chat wakes the lead while they are a co-owner, and stops once demoted",
+    "a restricted member's direct chat wakes the lead while they are a co-owner, and stops once demoted",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* seed("a");
-        // A member with no grant to this lead: only promotion lets their direct chat wake it.
+        // A member restricted from this lead: only promotion lets their direct chat wake it.
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
           VALUES ('mate-a', 'a', 'mate', 'Mate', ${createdAt}, 'member')`;
+        yield* sql`INSERT INTO kin_reach_limits (limit_id, org_id, one_kind, one_id, other_kind,
+            other_id, set_by_person_id, set_at)
+          VALUES ('limit-mate-a', 'a', 'agent', 'lead-a', 'person', 'mate-a', 'owner-a', 0)`;
         yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
           VALUES ('mate-chat-a', 'a', 'direct', 'direct-mate-a', 0, ${createdAt})`;
         yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
@@ -635,7 +638,7 @@ describe("ChatWake", () => {
     ]);
   });
   it.effect(
-    "wakes a lead for another person's direct message only while its owner allows it, a bounded number of times a day",
+    "wakes a lead for another person's direct message unless the pair is restricted, a bounded number of times a day",
     () =>
       Effect.gen(function* () {
         yield* seed("a");
@@ -663,13 +666,19 @@ describe("ChatWake", () => {
         const notices = sql<{ body: string }>`SELECT body FROM kin_messages
           WHERE org_id = 'a' AND chat_id = 'mate-chat' AND author_kind = 'system' ORDER BY seq`;
 
-        // Being in the chat is not enough: the owner has not allowed it.
+        const restrict = (limitId: string) =>
+          sql`INSERT INTO kin_reach_limits (limit_id, org_id, one_kind, one_id, other_kind,
+              other_id, set_by_person_id, set_at)
+            VALUES (${limitId}, 'a', 'agent', 'lead-a', 'person', 'mate', 'owner-a', 0)`;
+        // Being in the chat is not enough while the pair is restricted, whatever grant is stored.
+        yield* restrict("limit-1");
+        yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+          VALUES ('a', 'lead-a', 'mate', 'owner-a', 0)`;
         yield* say("uninvited", 1);
         yield* settle;
         assert.deepStrictEqual(keys(attempts), []);
 
-        yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
-          VALUES ('a', 'lead-a', 'mate', 'owner-a', 0)`;
+        yield* sql`UPDATE kin_reach_limits SET lifted_at = 1, lifted_by_person_id = 'owner-a'`;
         for (const [index, id] of ["first", "second", "third", "fourth"].entries())
           yield* say(id, index + 2);
         // The owner's own chat is never counted.
@@ -693,7 +702,7 @@ describe("ChatWake", () => {
         yield* settle;
         assert.include(keys(attempts), "chat-message:next-day:lead-a");
 
-        yield* sql`UPDATE kin_lead_access SET revoked_at = 1 WHERE person_id = 'mate'`;
+        yield* restrict("limit-2");
         yield* say("after", 7);
         yield* settle;
         assert.notInclude(keys(attempts), "chat-message:after:lead-a");
