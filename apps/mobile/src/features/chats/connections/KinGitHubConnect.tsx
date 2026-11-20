@@ -124,7 +124,7 @@ export function KinGitHubSection(props: {
   return (
     <View className="gap-2">
       {problem === null ? null : <ErrorBanner message={problem} />}
-      <ListSection title={COPY.title} footer={row.action === "connect" ? undefined : COPY.intro}>
+      <ListSection title={COPY.title} footer={row.action === "connect" ? row.detail : COPY.intro}>
         <ListRow
           icon={
             row.tone === "error"
@@ -134,7 +134,7 @@ export function KinGitHubSection(props: {
                 : "link"
           }
           label={row.title}
-          description={row.detail}
+          description={row.action === "connect" ? undefined : row.detail}
           detail={row.label}
           onPress={() =>
             row.action === "disconnect"
