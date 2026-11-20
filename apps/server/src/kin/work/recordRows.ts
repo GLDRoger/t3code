@@ -209,8 +209,8 @@ export const keptEntry = (sql: SqlClient.SqlClient) => sql`r.confirmed = 1`;
  */
 export const suggestedStateLabel = (list: string, state: string, label: string) =>
   state === "open" && (list === "quotes" || list === "invoices")
-    ? `${label}, suggested, not kept yet`
-    : "Suggested, not kept yet";
+    ? `${label}, suggested: waits for the owner or a co-owner to keep it`
+    : "Suggested: waits for the owner or a co-owner to keep it";
 /** The one refusal for anything done to a suggestion before it is kept, whoever asks. */
 export const stillSuggestion = (key: string) =>
   `${key} is still a suggestion: the owner or a co-owner hasn't kept it. They keep it with Keep on its page, or by asking you to keep it themselves. Nothing changed.`;

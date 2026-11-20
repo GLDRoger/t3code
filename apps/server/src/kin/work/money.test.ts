@@ -1113,7 +1113,7 @@ describe("invoices", () => {
         // The agent reads it as a suggestion, and it waits on a person with the right.
         assert.include(yield* LeadWork.get(scope, { key: "INV-2" }), {
           suggested: true,
-          stateLabel: "Draft, suggested, not kept yet",
+          stateLabel: "Draft, suggested: waits for the owner or a co-owner to keep it",
         });
         const section = moneySection(yield* OwnerMoney.money(people, { orgId }), "Asia/Kolkata");
         assert.deepStrictEqual(
@@ -1173,8 +1173,12 @@ describe("invoices", () => {
         yield* OwnerWork.decline(people, { orgId, key: "INV-4", rev: yield* rev("INV-4") });
         // It started as a draft, so kept it is a draft: owed once it is issued.
         assert.deepStrictEqual((yield* owed).owed, inr(4_720_000));
+        const balanceOf = (key: string) =>
+          LeadWork.get(scope, { key }).pipe(Effect.map((one) => [one.amount, one.balance]));
+        assert.deepStrictEqual(yield* balanceOf("INV-2"), ["₹47,200.00", undefined]);
         for (const key of ["INV-2", "INV-3"])
           yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make(key) });
+        assert.deepStrictEqual(yield* balanceOf("INV-2"), ["₹47,200.00", "₹47,200.00"]);
         assert.deepStrictEqual(yield* owed, {
           owed: inr(14_160_000),
           overdue: inr(14_160_000),
@@ -2177,8 +2181,8 @@ describe("the owner's taps", () => {
         assert.deepStrictEqual(
           told.dates.filter((one) => one.key === "INV-1").map((one) => [one.what, one.state]),
           [
-            ["Date", "Draft, suggested, not kept yet"],
-            ["Due", "Draft, suggested, not kept yet"],
+            ["Date", "Draft, suggested: waits for the owner or a co-owner to keep it"],
+            ["Due", "Draft, suggested: waits for the owner or a co-owner to keep it"],
           ],
         );
         assert.deepStrictEqual(
@@ -2585,7 +2589,7 @@ describe("who keeps a suggestion", () => {
       });
       assert.deepInclude(made.records[0], {
         state: "open",
-        stateLabel: "Draft, suggested, not kept yet",
+        stateLabel: "Draft, suggested: waits for the owner or a co-owner to keep it",
         suggested: true,
       });
       const started = [];

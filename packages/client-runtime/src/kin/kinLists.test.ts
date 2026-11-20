@@ -355,6 +355,29 @@ describe("a list by its definition", () => {
     ]);
     expect(entry.payments[0]).toMatchObject({ amount: "₹40,000.00", note: null, voided: false });
     expect(kinListRow(detail, invoices, context).owed).toBe("₹60,000 still owed");
+    // An Invoices draft nothing came in on leaves Left empty, and Mark paid still pays its amount;
+    // issued or paid, Left is as it was, and another list's open entry owes as before.
+    const amount = { minor: 10_000_000, currency: "INR" };
+    const billed = { ...detail, list: KinListId.make("invoices"), payments: [] };
+    const drafted = { ...billed, state: "open" as const, balance: amount };
+    expect(kinListRow(drafted, invoices, context).cells.owed).toBeUndefined();
+    expect(kinListEntryView(drafted, invoices, context).finish?.pays).toEqual(amount);
+    // A list of nothing but such drafts has no Left column; one issued invoice brings it back.
+    const columnIds = (rows: ReadonlyArray<KinRecord>) =>
+      kinListColumns(invoices, rows).map((column) => column.id);
+    expect(columnIds([drafted])).not.toContain("owed");
+    expect(columnIds([drafted, billed])).toContain("owed");
+    expect(kinListRow(billed, invoices, context).cells.owed).toBe("₹60,000.00");
+    expect(
+      kinListRow(
+        { ...billed, state: "done", balance: { minor: 0, currency: "INR" } },
+        invoices,
+        context,
+      ).cells.owed,
+    ).toBe("₹0.00");
+    expect(kinListRow({ ...drafted, list: undefined }, invoices, context).cells.owed).toBe(
+      "₹1,00,000.00",
+    );
     // Named by its key until it is issued, then by its number.
     expect(kinListRow(detail, invoices, context).line).toMatch(/^EQ-1 · /);
     // Its due day wraps as one piece, the state before it staying on the first line.

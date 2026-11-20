@@ -998,7 +998,12 @@ describe("recipe documents", () => {
       const read = yield* LeadWork.get(scope, { key: kept.key });
       assert.deepStrictEqual(
         [read.amount, read.fields, read.stateLabel, read.suggested],
-        ["₹2,360.00", { tax: "₹360.00" }, "Draft, suggested, not kept yet", true],
+        [
+          "₹2,360.00",
+          { tax: "₹360.00" },
+          "Draft, suggested: waits for the owner or a co-owner to keep it",
+          true,
+        ],
       );
       // Drafts and a suggestion, priced, are owed by nobody: in no Money or outlook figure.
       const summary = yield* moneySummary(orgId, now, KIN_OWNER_LEVEL);
