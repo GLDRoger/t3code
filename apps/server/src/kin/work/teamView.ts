@@ -743,9 +743,10 @@ const promiseParts = Effect.fn("KinTeamView.promiseParts")(function* (
   write: TeamWrite,
 ) {
   const { input } = write;
-  const { fields, links, ...rest } = input;
+  const { fields, links, list, ...rest } = input;
   if (write.row !== undefined || typeof input.partyId !== "string") return input;
-  if ((typeof input.list === "string" ? input.list : "work") !== "work") return input;
+  if ((typeof list === "string" ? list : "work") !== "work") return input;
+  if (fields === undefined && links === undefined) return input;
   const fromOnly =
     fields === undefined ||
     (typeof fields === "object" &&
