@@ -5,7 +5,14 @@ import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId, KinTrimmedText } from "./kinChat.ts";
 import { KinSacCode } from "./kinFinance.ts";
-import { KinCurrency, KinDay, KinMoney, KinMoneyTotals, KinSignedMoney } from "./kinMoney.ts";
+import {
+  KinBankKnown,
+  KinCurrency,
+  KinDay,
+  KinMoney,
+  KinMoneyTotals,
+  KinSignedMoney,
+} from "./kinMoney.ts";
 import { KinRecordKey } from "./kinWork.ts";
 
 /**
@@ -74,6 +81,8 @@ export const KinCash = Schema.Struct({
     }),
   ),
   byCurrency: Schema.Array(KinCashCurrency),
+  /** Absent from older hosts. */
+  bankKnown: Schema.optional(KinBankKnown),
 });
 export type KinCash = typeof KinCash.Type;
 export const KinCashInput = Schema.Struct({ orgId: KinOrgId });

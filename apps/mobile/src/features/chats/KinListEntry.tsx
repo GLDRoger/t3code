@@ -2,6 +2,7 @@ import { KIN_QUOTES_LIST, kinQuoteRow } from "@t3tools/client-runtime/kin/kinMon
 import { useAtomValue } from "@effect/atom-react";
 import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
+import { kinAskRecordDraft } from "@t3tools/client-runtime/kin/kinAskRecord";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
 import {
@@ -261,7 +262,9 @@ export function KinListEntryBody(
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
-  const invoice = kinIsInvoice(item) ? kinInvoiceView(item, def, props.now) : null;
+  const invoice = kinIsInvoice(item)
+    ? kinInvoiceView(item, def, props.now, props.directory.names)
+    : null;
   const quote = item.list === KIN_QUOTES_LIST ? kinQuoteRow(item, null, props.now) : null;
   const money = useKinMoneyActions(props);
   const rates = useKinRates(props, invoice !== null || quote !== null);
@@ -811,6 +814,7 @@ export function KinListEntryBody(
               const detail = [
                 payment.when,
                 payment.note,
+                payment.source,
                 payment.voided ? KIN_LISTS.entry.takenBack : null,
               ]
                 .filter((part) => part !== null)
@@ -864,7 +868,13 @@ export function KinListEntryBody(
           label={KIN_LISTS.entry.askChange}
           onPress={() => {
             navigation.goBack();
-            agent.ask(`About ${item.key} (${item.title}): `);
+            agent.ask(
+              kinAskRecordDraft({
+                key: item.key,
+                title: item.title,
+                number: item.fields?.number,
+              }),
+            );
           }}
         />
       )}

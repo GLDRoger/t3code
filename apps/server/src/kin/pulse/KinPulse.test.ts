@@ -32,6 +32,8 @@ import { wordOf } from "./holds.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { headStarts } from "./headStart.ts";
 import { buildPulseSection } from "./prompt.ts";
+import { screenFacts } from "./people.ts";
+import { factSig } from "./told.ts";
 import { projectLastMoved } from "./senses/projects.ts";
 import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } from "./weekly.ts";
 
@@ -1302,8 +1304,13 @@ describe("KinPulse", () => {
         new Map(
           (shown?.byProject ?? []).flatMap((group) => group.facts).map((one) => [one.key, one]),
         );
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/001')
+        WHERE org_id = ${orgId} AND record_id = 'r-INV-1'`;
       const first = yield* section();
       const byKey = rows(first);
+      // Named as the owner's screen names it, with the key its tools take; a draft by its key.
+      assert.match(byKey.get(keys[1]!)!.about, /^AM\/26-27\/001 \(INV-1\) /);
+      assert.match(byKey.get(keys[0]!)!.about, /^INV-5 /);
       assert.deepInclude(byKey.get(keys[0]!), {
         writeTo: { name: "Anita", email: "anita@lumen.example" },
         document: { key: "D-wk-5", file: "INV-5.pdf", draft: true },
@@ -1402,6 +1409,112 @@ describe("KinPulse", () => {
       assert.notInclude(
         (yield* read(at, { _tag: "people", people: [mate] })).facts.map((fact) => fact.sense),
         "holder_removed",
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a missing month's statement is one line for the owner, its count Kin's own", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const statement = (id: string, from: string, to: string, applied: boolean) =>
+        sql`INSERT INTO kin_bank_statements (org_id, statement_id, attachment_id, file_name,
+            chat_id, agent_id, wakeup_id, status, review_json, created_at, read_at, applied_at)
+          VALUES (${orgId}, ${id}, ${`att-${id}`}, 'invented.csv', ${`chat-${finance}`},
+            ${finance}, 'w-old', 'read', ${JSON.stringify({
+              statement: {
+                kind: "account",
+                bank: "Invented Bank",
+                account: "1234",
+                currency: "INR",
+                from,
+                to,
+                rows: [],
+              },
+            })}, 0, 0, ${applied ? 1 : null})`;
+      const missing = (at: number, viewer?: KinPulse.Viewer) =>
+        read(at, viewer).pipe(
+          Effect.map((pulse) => pulse.facts.filter((fact) => fact.sense === "statement_missing")),
+        );
+      // A company that never confirmed a statement has no month to wait on.
+      assert.lengthOf(yield* missing(B + 20 * DAY), 0);
+      yield* statement("st-sep", "2026-09-01", "2026-09-30", true);
+      yield* insert({
+        id: "INV-71",
+        list: "invoices",
+        state: "waiting",
+        amount: 9_000_00,
+        dueAt: B - 5 * DAY,
+      });
+      // October ended on the 31st; five days on by default, it is a line on the 6th.
+      assert.lengthOf(yield* missing(B + 5 * DAY - MINUTE), 0);
+      const [october] = yield* missing(B + 5 * DAY);
+      assert.deepInclude(october!, {
+        key: "statement_missing:2026-10",
+        consequence: "October's statement isn't in yet: 1 invoice can't be confirmed until it is.",
+        family: "money",
+        sensitive: true,
+        wake: "brief",
+        actor: { _tag: "agent", agentId: finance },
+      });
+      // Another unpaid invoice changes its words, never its key or what it is told on: once.
+      yield* insert({
+        id: "INV-72",
+        list: "invoices",
+        state: "waiting",
+        amount: 1_000_00,
+        dueAt: B - 2 * DAY,
+      });
+      const [later] = yield* missing(B + 9 * DAY);
+      assert.strictEqual(
+        later!.consequence,
+        "October's statement isn't in yet: 2 invoices can't be confirmed until it is.",
+      );
+      assert.strictEqual(later!.key, october!.key);
+      assert.strictEqual(
+        factSig(later!, B + 9 * DAY, "UTC"),
+        factSig(october!, B + 5 * DAY, "UTC"),
+      );
+      // A screen of a build that can't read the sense never gets it.
+      assert.lengthOf(screenFacts([october!], undefined), 0);
+      assert.lengthOf(screenFacts([october!], ["statement_missing"]), 1);
+      // A teammate never reads it.
+      assert.lengthOf(yield* missing(B + 9 * DAY, { _tag: "people", people: [mate] }), 0);
+      // Read but not confirmed, October is still missing; confirmed, the line is gone.
+      yield* statement("st-oct", "2026-10-01", "2026-10-31", false);
+      assert.lengthOf(yield* missing(B + 9 * DAY), 1);
+      yield* sql`UPDATE kin_bank_statements SET applied_at = 1 WHERE statement_id = 'st-oct'`;
+      assert.lengthOf(yield* missing(B + 9 * DAY), 0);
+      // The company's playbook sets the days: November's line waits ten after the 30th.
+      yield* insert({ id: "D-3", list: "docs", category: "playbook" });
+      yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
+          operations_json, actor_kind, actor_id, via, origin_key, created_at)
+        VALUES (${orgId}, 'r-D-3', 1, ${"# Money\n\n```kin\nstatement_due_days: 10\n```\n"},
+          'Money', 'created', 'Seeded', '[]', 'person', ${owner}, 'owner', 'seed-D-3', 0)`;
+      assert.lengthOf(yield* missing(B + 40 * DAY - MINUTE), 0);
+      const [november] = yield* missing(B + 40 * DAY);
+      assert.strictEqual(november!.key, "statement_missing:2026-11");
+      assert.match(november!.consequence, /^November's statement isn't in yet/);
+      // A second account that is further on: the line names the account still waited on.
+      yield* sql`INSERT INTO kin_bank_statements (org_id, statement_id, attachment_id, file_name,
+          chat_id, agent_id, wakeup_id, status, review_json, created_at, read_at, applied_at)
+        VALUES (${orgId}, 'st-other', 'att-st-other', 'invented.csv', ${`chat-${finance}`},
+          ${finance}, 'w-old', 'read', ${JSON.stringify({
+            statement: {
+              kind: "account",
+              bank: "Invented Bank",
+              account: "5678",
+              currency: "INR",
+              from: "2026-10-01",
+              to: "2026-11-30",
+              rows: [],
+            },
+          })}, 0, 0, 1)`;
+      const [named] = yield* missing(B + 40 * DAY);
+      assert.strictEqual(named!.key, "statement_missing:2026-11");
+      assert.match(
+        named!.consequence,
+        /^November's statement for Invented Bank Account ••1234 isn't in yet/,
       );
     }).pipe(Effect.provide(layer)),
   );
@@ -1545,6 +1658,23 @@ describe("KinPulse", () => {
       const euros = yield* weeklyFigures({ orgId, now: at });
       assert.include(euros, "Open quotes:\n- QT-1: €600,000.00, sent, no answer yet");
       assert.notInclude(euros, "₹");
+      // Once issued, an invoice or quote is named by its number, then the key its tools take.
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/001')
+        WHERE org_id = ${orgId} AND record_id = 'r-INV-1'`;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'Q 2026 7')
+        WHERE org_id = ${orgId} AND record_id = 'r-QT-1'`;
+      yield* insert({
+        id: "INV-9",
+        list: "invoices",
+        state: "waiting",
+        amount: 2_000_00,
+        dueAt: at + 2 * DAY,
+        fields: '{"number":"AM/26-27/002"}',
+      });
+      const named = yield* weeklyFigures({ orgId, now: at });
+      assert.match(named, /^- AM\/26-27\/001 \(INV-1\):.*unpaid, overdue for \d+ days/m);
+      assert.include(named, "Open quotes:\n- Q 2026 7 (QT-1): €600,000.00, sent, no answer yet");
+      assert.include(named, "Invoices not yet due:\n- AM/26-27/002 (INV-9): ₹2,000.00 due");
     }).pipe(Effect.provide(layer)),
   );
 });
