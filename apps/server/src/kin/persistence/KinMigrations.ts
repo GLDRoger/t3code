@@ -108,7 +108,7 @@ import Recommendations from "./migrations/K184_Recommendations.ts";
 import AskedFor from "./migrations/K185_AskedFor.ts";
 import TasksKeysWithoutMaker from "./migrations/K186_TasksKeysWithoutMaker.ts";
 import Holds from "./migrations/K187_Holds.ts";
-import SearchDocKinds from "./migrations/K188_SearchDocKinds.ts";
+import SearchDocKinds from "./migrations/K191_SearchDocKinds.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -297,7 +297,7 @@ const loader = Migrator.fromRecord({
   "185_AskedFor": AskedFor,
   "186_TasksKeysWithoutMaker": TasksKeysWithoutMaker,
   "187_Holds": Holds,
-  "188_SearchDocKinds": SearchDocKinds,
+  "191_SearchDocKinds": SearchDocKinds,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that
