@@ -1,3 +1,5 @@
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { useKinHostAt } from "./useKinHost";
 import { useKinOwnerLevel, useKinViewerScope } from "./useKinOwnerLevel";
 import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
@@ -25,6 +27,7 @@ import {
   kinWorkHostEdits,
   kinWorkListFooter,
   kinWorkNothing,
+  kinWorkOffline,
   kinWorkOverview,
   kinWorkRow,
   kinWorkShown,
@@ -46,6 +49,7 @@ import {
   KIN_WORK_LIST_INITIAL,
   createKinListKeeper,
   createKinWorkList,
+  kinListShown,
   type KinWorkList,
   type KinWorkListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
@@ -210,7 +214,7 @@ export function KinWorkTaskList(
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when the page shows (or catches a kept one up), and stops what is in flight when it leaves
   useEffect(() => {
     kinTaskLists.show(kept, setListState);
-    if (resumed) list.resume();
+    if (resumed) kinTaskLists.resume(kept);
     else list.start();
     return () => kinTaskLists.hide(kept);
   }, [kept, list, resumed]);
@@ -220,6 +224,7 @@ export function KinWorkTaskList(
   }, [list, live.seq, props.stale]);
 
   const { filter } = listState;
+  const shown = kinListShown(listState, kinHostLink(useKinHostAt(environmentId)));
   const setFilter = (next: KinWorkFilter) => {
     if (next.groupBy !== undefined && next.groupBy !== filter.groupBy) saveGroupBy(next.groupBy);
     list.setFilter(next);
@@ -237,7 +242,9 @@ export function KinWorkTaskList(
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";
   const items: ReadonlyArray<KinTasksItem<KinRecord>> =
-    within === undefined && kinWorkByMove(filter)
+    shown !== "rows"
+      ? []
+      : within === undefined && kinWorkByMove(filter)
       ? kinTasksByMove({
           records,
           moves: list.moves(),
@@ -246,6 +253,7 @@ export function KinWorkTaskList(
           ownerLevel,
           names,
           facts,
+          read: listState.seq !== null,
         })
       : within === undefined && groupBy !== "me" && !searching
         ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
@@ -295,7 +303,7 @@ export function KinWorkTaskList(
         ListHeaderComponent={
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
             {props.header}
-            {props.stale || listState.stale ? (
+            {shown === "rows" && (props.stale || listState.stale) ? (
               <KinWorkStaleLine environmentId={environmentId} onRetry={list.refresh} />
             ) : null}
             <KinWorkFilters
@@ -321,11 +329,13 @@ export function KinWorkTaskList(
         ListEmptyComponent={
           records.length > 0 || items.length > 0 ? null : (
             <div className="mx-auto w-full max-w-3xl px-4">
-              {listState.loading ? (
+              {shown === "offline" ? (
+                <KinWorkNotice {...kinWorkOffline("tasks")} />
+              ) : shown === "loading" ? (
                 <div role="status" aria-label="Loading tasks">
                   <KinWorkRowSkeletons />
                 </div>
-              ) : listState.failed !== null ? (
+              ) : shown === "failed" ? (
                 <KinLoadFailed
                   what={KIN_WORK_LOAD_FAILED}
                   cause={listState.failed}

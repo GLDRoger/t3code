@@ -403,8 +403,11 @@ export function kinTasksByMove<R extends KinRecord>(input: {
   readonly names: KinWorkNames;
   /** Deal and prospect facts (`kinTasksDealFacts`), first under Needs you. */
   readonly facts?: ReadonlyArray<KinAttentionRow>;
+  /** Tasks were read for this filter; until then no group is drawn, so none says all clear. */
+  readonly read: boolean;
 }): ReadonlyArray<KinTasksItem<R>> {
   const { records, moves, counts, names, ownerLevel } = input;
+  if (!input.read) return [];
   const facts = input.facts ?? [];
   const fromHost = moves.size > 0 || counts !== null;
   const placed = new Map<KinWorkMoveGroup, Array<{ record: R; move: KinWorkRowMove | null }>>(

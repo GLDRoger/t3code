@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
 import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_SEARCH } from "@t3tools/client-runtime/kin/kinDocs";
 import {
@@ -27,6 +28,7 @@ import {
   kinWorkHostEdits,
   kinWorkListFooter,
   kinWorkNothing,
+  kinWorkOffline,
   kinWorkOverview,
   kinWorkRow,
   kinWorkShown,
@@ -51,6 +53,7 @@ import {
   KIN_WORK_LIST_INITIAL,
   createKinListKeeper,
   createKinWorkList,
+  kinListShown,
   type KinWorkList,
   type KinWorkListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
@@ -95,6 +98,7 @@ import { useKinOpenHit, useKinWorkLink } from "./state/kinWorkLink";
 import { useKinSearch } from "./state/useKinDocs";
 import { useKinAskAgent } from "./state/useKinMoney";
 import { useKinAttention, useKinAttentionHandle } from "./state/useKinAttention";
+import { useKinHostAt } from "./state/useKinHost";
 import { useKinTaskSteps } from "./state/useKinTaskSteps";
 import {
   kinWorkLiveAtom,
@@ -180,7 +184,7 @@ export function KinTasksList(
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when the screen shows (or catches a kept one up), and stops what is in flight when it leaves
   useEffect(() => {
     kinTaskLists.show(kept, setListState);
-    if (resumed) list.resume();
+    if (resumed) kinTaskLists.resume(kept);
     else list.start();
     return () => kinTaskLists.hide(kept);
   }, [kept, list, resumed]);
@@ -194,6 +198,7 @@ export function KinTasksList(
     list.refresh();
   };
   const { filter } = listState;
+  const shown = kinListShown(listState, kinHostLink(useKinHostAt(environmentId)));
   const scope = useKinViewerScope(environmentId);
   const overview = kinWorkOverview(live.summary, filter, names);
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
@@ -220,7 +225,9 @@ export function KinTasksList(
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";
   const items: ReadonlyArray<KinTasksItem<KinRecord>> =
-    within === undefined && kinWorkByMove(filter)
+    shown !== "rows"
+      ? []
+      : within === undefined && kinWorkByMove(filter)
       ? kinTasksByMove({
           records,
           moves: list.moves(),
@@ -229,6 +236,7 @@ export function KinTasksList(
           ownerLevel,
           names,
           facts,
+          read: listState.seq !== null,
         })
       : within === undefined && groupBy !== "me" && !searching
         ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
@@ -336,7 +344,7 @@ export function KinTasksList(
           ListHeaderComponent={
             <View className="gap-3 pt-2">
               {within?.header}
-              {props.stale || listState.stale ? (
+              {shown === "rows" && (props.stale || listState.stale) ? (
                 <View className="px-4">
                   <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
                 </View>
@@ -385,7 +393,9 @@ export function KinTasksList(
           ListEmptyComponent={
             records.length > 0 || items.length > 0 ? null : (
               <View className="px-4 pt-4">
-                {listState.loading ? (
+                {shown === "offline" ? (
+                  <EmptyState variant="plain" {...kinWorkOffline("tasks")} />
+                ) : shown === "loading" ? (
                   <View
                     className="items-center py-12"
                     accessible
@@ -394,7 +404,7 @@ export function KinTasksList(
                   >
                     <AppActivityIndicator />
                   </View>
-                ) : listState.failed !== null ? (
+                ) : shown === "failed" ? (
                   <KinLoadFailed
                     title={KIN_WORK_LOAD_FAILED}
                     cause={listState.failed}

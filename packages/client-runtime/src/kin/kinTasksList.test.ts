@@ -191,6 +191,7 @@ describe("kinTasksByMove", () => {
           needsYou: null,
           ownerLevel: true,
           names,
+          read: true,
         }),
       ),
     ).toEqual([
@@ -214,7 +215,7 @@ describe("kinTasksByMove", () => {
     ]);
     const counts = { needsYou: 0, waiting: 60, rest: 1, doneRecently: 16 };
     expect(
-      groups(kinTasksByMove({ records, moves, counts, needsYou: 0, ownerLevel: true, names })),
+      groups(kinTasksByMove({ records, moves, counts, needsYou: 0, ownerLevel: true, names, read: true })),
     ).toEqual([
       "Needs you 0",
       "clear",
@@ -224,6 +225,10 @@ describe("kinTasksByMove", () => {
       "E",
       "done",
     ]);
+    // Nothing read yet, as offline before the first answer: no group, so not all clear either.
+    expect(
+      kinTasksByMove({ records: [], moves: new Map(), counts: null, needsYou: null, ownerLevel: true, names, read: false }),
+    ).toEqual([]);
   });
 
   it("gives a teammate their projects and the line on what they see", () => {
@@ -238,6 +243,7 @@ describe("kinTasksByMove", () => {
           needsYou: 2,
           ownerLevel: false,
           names: asZoya,
+          read: true,
         }),
       ),
     ).toEqual(["Needs you 2", "Your projects 1", "K", "foot"]);
@@ -329,6 +335,7 @@ describe("kinTasksDealFacts", () => {
       ownerLevel: false,
       names: asZoya,
       facts,
+      read: true,
     });
     expect(
       items.map((item) =>
@@ -353,6 +360,7 @@ describe("kinTasksDealFacts", () => {
       ownerLevel: false,
       names: asZoya,
       facts: facts.slice(0, 1),
+      read: true,
     });
     expect(alone.map((item) => item.type)).toEqual(["heading", "fact", "foot"]);
   });

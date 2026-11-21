@@ -32,6 +32,7 @@ import {
   kinPickerSearchView,
   createKinListEntries,
   createKinListKeeper,
+  kinListShown,
   createKinWorkList,
   type KinWorkList,
   type KinWorkListState,
@@ -312,16 +313,26 @@ describe("createKinWorkList", () => {
     expect(again).toBe(first);
     expect(keeper.wasKept(again)).toBe(true);
     keeper.show(again, () => {});
-    again.list.resume();
+    keeper.resume(again);
     again.list.changed(8);
     expect(h.asked).toHaveLength(1);
     expect(h.state().records.map((held) => held.key)).toEqual(["W-1", "W-2", "W-3", "W-4"]);
 
-    // Shown elsewhere, or left too long, it isn't handed out again.
+    // Shown elsewhere, it isn't handed out again.
     expect(keeper.take("tasks", () => harness().list)).not.toBe(first);
     keeper.hide(again);
+
+    // Left too long, it is read again; what it held stays up, and through a read that fails.
     clock += 10 * 60_000;
-    expect(keeper.take("tasks", () => harness().list)).not.toBe(first);
+    const later = keeper.take("tasks", () => harness().list);
+    expect(later).toBe(first);
+    keeper.show(later, () => {});
+    keeper.resume(later);
+    expect(h.asked).toHaveLength(2);
+    expect(h.state()).toMatchObject({ refreshing: true, failed: null });
+    await h.answer(null);
+    expect(h.state()).toMatchObject({ stale: true, failed: null });
+    expect(h.state().records.map((held) => held.key)).toEqual(["W-1", "W-2", "W-3", "W-4"]);
   });
 });
 
@@ -539,5 +550,17 @@ describe("createKinPickerSearch", () => {
       ["env-a", other],
       ["env-b", other],
     ]);
+  });
+});
+
+describe("kinListShown", () => {
+  it.each([
+    ["rows held, offline", { seq: 4, loading: false, failed: null }, "offline", "rows"],
+    ["nothing held, offline, the read pending", { seq: null, loading: true, failed: null }, "offline", "offline"],
+    ["nothing held, offline, the read failed", { seq: null, loading: false, failed: "down" }, "offline", "offline"],
+    ["nothing held, still connecting", { seq: null, loading: true, failed: null }, "connecting", "loading"],
+    ["nothing held, connected, failed", { seq: null, loading: false, failed: "down" }, "connected", "failed"],
+  ] as const)("%s", (_, state, link, shown) => {
+    expect(kinListShown(state, link)).toBe(shown);
   });
 });
