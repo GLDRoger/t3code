@@ -393,7 +393,7 @@ export function KinTaskActivity(
                           <Button
                             size="xs"
                             variant="ghost-muted"
-                            aria-label="Remove this note"
+                            aria-label={KIN_TASK_NOTE_COPY.removeLabel}
                             onClick={() => setRemoving(comment.commentId)}
                           >
                             {KIN_TASK_NOTE_COPY.remove}

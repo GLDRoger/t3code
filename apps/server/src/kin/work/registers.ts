@@ -326,9 +326,12 @@ const builtInDef = (name: ListName, currency: string): ListDef => {
 };
 export const isBuiltIn = (id: string): id is ListName => Object.hasOwn(LISTS, id);
 const isPreset = (id: string): id is PresetId => (PRESET_IDS as ReadonlyArray<string>).includes(id);
+/** An Invoices draft: not issued yet, so nobody owes it. */
+export const isInvoiceDraft = (list: string, state: KinRecordState) =>
+  list === "invoices" && state === "open";
 /** Whether an entry in `state` owes its balance: not closed, and not an Invoices draft. */
 export const owesIn = (def: ListDef, state: KinRecordState) =>
-  state !== "done" && state !== "dropped" && !(def.id === "invoices" && state === "open");
+  state !== "done" && state !== "dropped" && !isInvoiceDraft(def.id, state);
 /**
  * Where a new entry with no state asked for starts: an invoice is Issued only once it has an
  * issue day or a number, else Draft; an expense is Paid only on or before today, else To pay.

@@ -60,7 +60,8 @@ import { KinAvatar } from "./KinAvatar";
 import { prefillKinDraft } from "./kinDraft";
 import { openKinSettingsInstead } from "./kinSettingsAddress";
 import { kinClient, refreshKinAgents } from "./kinClient";
-import { KinAgentSection, KinLeadAccess } from "./KinLeadAccess";
+import { KinAgentSection } from "./KinLeadAccess";
+import { KinAgentReach } from "./KinReach";
 import { kinLeadFormAtom } from "./kinLeadForm";
 import { KIN_PLACE_PATH } from "./kinPlaces";
 import type { KinAgentPageTarget } from "./kinAgentPageLink";
@@ -145,7 +146,6 @@ function KinAgentSheet(props: { readonly target: KinAgentPageTarget }) {
               activeAgents={
                 (leads?.leads ?? []).filter((lead) => lead.retired === undefined).length
               }
-              personId={null}
               onClose={closePage}
               onOpenSettings={(section) => openKinSettingsInstead(router.history, section, "agent")}
             />
@@ -197,7 +197,6 @@ export function KinAgentDetails(props: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly activeAgents: number;
-  readonly personId: string | null;
   readonly onClose: () => void;
   /** Kin's Settings dialog on a section, in place of this agent's details. */
   readonly onOpenSettings: (section: "check-ins" | "connections") => void;
@@ -234,7 +233,6 @@ function AgentPageBody(props: {
   readonly orgId: KinOrgId;
   readonly page: KinAgentPage;
   readonly activeAgents: number;
-  readonly personId: string | null;
   readonly onClose: () => void;
   readonly onOpenSettings: (section: "check-ins" | "connections") => void;
   readonly onChanged: () => void;
@@ -248,7 +246,7 @@ function AgentPageBody(props: {
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
   const canRetire = useAtomValue(kinClient.leadRetire.permissionAtom(environmentId));
   const canEdit = useAtomValue(kinClient.leadUpdate.permissionAtom(environmentId)) && !retired;
-  const canShare = useAtomValue(kinClient.leadAllow.permissionAtom(environmentId)) && !retired;
+  const canShare = useAtomValue(kinClient.reachSet.permissionAtom(environmentId)) && !retired;
   const canPause = useAtomValue(kinClient.leadPause.permissionAtom(environmentId)) && !retired;
   const pause = useAtomCommand(kinClient.leadPause, { reportFailure: false });
   const resume = useAtomCommand(kinClient.leadResume, { reportFailure: false });
@@ -262,7 +260,7 @@ function AgentPageBody(props: {
     setBusy(false);
     setProblem(
       AsyncResult.isFailure(outcome)
-        ? kinFailureText(squashAtomCommandFailure(outcome), "Couldn't change that.")
+        ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_PAGE.changeFailed)
         : null,
     );
     props.onChanged();
@@ -315,7 +313,7 @@ function AgentPageBody(props: {
         }
       >
         <p className="whitespace-pre-line text-sm text-foreground">
-          {lead.charter.trim() === "" ? "Nothing written yet." : lead.charter}
+          {lead.charter.trim() === "" ? KIN_AGENT_PAGE.charterNone : lead.charter}
         </p>
         {(lead.intro ?? "").trim() === "" ? null : (
           <p className="text-xs text-muted-foreground">Teammates see: {lead.intro}</p>
@@ -330,7 +328,7 @@ function AgentPageBody(props: {
         onOpenSettings={props.onOpenSettings}
       />
       {canShare ? (
-        <KinLeadAccess lead={lead} environmentId={environmentId} personId={props.personId} />
+        <KinAgentReach lead={lead} environmentId={environmentId} section={KinAgentSection} />
       ) : null}
       <KinAgentSection
         title={KIN_AGENT_PAGE.teamAgent}
@@ -793,7 +791,7 @@ function AgentChanged(props: {
                   onClick={props.onClose}
                   className="text-sm break-words text-foreground underline-offset-4 hover:underline"
                 >
-                  {kinAgentChangeLine(change, names)}
+                  {kinAgentChangeLine(change, names, undefined, directory.zone)}
                 </Link>
                 <div className="flex flex-wrap items-center gap-2">
                   {offer.kind === "undo" && canUndo ? (

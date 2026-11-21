@@ -95,6 +95,11 @@ const KinGroupQuestion = memo(function KinGroupQuestion(props: {
       {...(props.onLongPress === undefined ? {} : { onLongPress: props.onLongPress })}
       className="gap-1.5 pb-2 active:opacity-80"
     >
+      {expanded && choice.askedBy !== null ? (
+        <Text textRole="footnote" className="text-foreground-secondary">
+          {choice.askedBy}
+        </Text>
+      ) : null}
       <Text className="text-foreground" numberOfLines={expanded ? undefined : 3}>
         {choice.question}
       </Text>

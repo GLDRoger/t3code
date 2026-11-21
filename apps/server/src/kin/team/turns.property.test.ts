@@ -133,7 +133,11 @@ it.prop(
     const d = Turns.opened({ openedBy: "social", decider: "finance", chair: "chief" });
     const spent = Turns.afterUnits(d, Turns.TEAM_UNITS_CAP + (seeds[0] ?? 0));
     const idle = Turns.afterIdle(d);
+    // Ten warm owner-seat turns (about 32,800 units each) reach the chair check, not the cap.
+    const talked = Turns.afterUnits(d, 10 * 32_800);
     return (
+      talked.state === "open" &&
+      talked.turn?.kind !== "closing" &&
       spent.turn?.kind === "closing" &&
       idle.turn?.kind === "closing" &&
       Turns.afterIdle(idle).state === "parked"

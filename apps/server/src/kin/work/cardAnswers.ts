@@ -21,6 +21,7 @@ import { answerCard } from "../questions/openQuestions.ts";
 import { answerReceiptCard } from "../gendocs/receiptProposals.ts";
 import { receiptDocument } from "../gendocs/receipts.ts";
 import { answerCurrencyCard } from "./statements/statementReview.ts";
+import { answerCharacterCard } from "../lead/characters.ts";
 import * as CardActions from "../widgets/cardActions.ts";
 import { KinRecords } from "./KinRecords.ts";
 
@@ -33,8 +34,12 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   scope: Scope.Scope,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  // Kin's own route and recommendation cards answer nothing else, and are no decision to remember.
-  if (input.plan?.kind === "let_talk" || input.plan?.kind === "recommend")
+  // Kin's own route, suggestion and leaver cards answer nothing else; no decision to remember.
+  if (
+    input.plan?.kind === "let_talk" ||
+    input.plan?.kind === "recommend" ||
+    input.plan?.kind === "leaver"
+  )
     return yield* CardActions.run(input, input.plan, {
       records: yield* KinRecords,
       chat: yield* KinChatService,
@@ -65,6 +70,14 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
     code: input.option.label,
     now: input.now,
   });
+  const character = yield* answerCharacterCard({
+    orgId: input.orgId,
+    widgetId: input.widget.widgetId,
+    messageId: input.widget.messageId,
+    personId: input.personId,
+    yes: input.option.kind === "yes",
+  });
+  if (character !== undefined) return character;
   const made = yield* answerReceiptCard({
     orgId: input.orgId,
     widgetId: input.widget.widgetId,

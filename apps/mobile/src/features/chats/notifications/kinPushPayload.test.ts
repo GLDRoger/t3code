@@ -57,10 +57,11 @@ describe("kinNotificationRoute", () => {
       },
       chatLink,
     ],
+    // The host's approval push names no chat: Waiting on you shows the card in full.
     [
       "an approval with no chat",
       { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/actions/act-1" },
-      "/kin",
+      "/kin/waiting",
     ],
     [
       "a phone that can now approve, or no longer can",

@@ -122,6 +122,7 @@ export const WriteInput = Schema.Struct({
   // Checked against that event's message, never trusted as sent (`MemoryWriter`).
   quote: Schema.optional(Schema.String.check(Schema.isMaxLength(QUOTE_MAX))),
   supersedes: Schema.optional(KinMemoryItemId),
+  besides: Schema.optional(Schema.Array(KinMemoryItemId).check(Schema.isMaxLength(100))),
 });
 export const DeferInput = Schema.Struct({
   itemId: Schema.optional(itemId),
@@ -270,6 +271,7 @@ const authorityRejections = new Set([
   "Invalid dream branch",
   "Invalid undo target",
 ]);
+const TITLES_SHOWN = 5;
 const isChatError = Schema.is(KinChatError);
 const isNotFound = Schema.is(Memory.MemoryNotFound);
 const isDuplicate = Schema.is(Memory.MemoryDuplicateId);
@@ -280,11 +282,26 @@ const isQueryError = Schema.is(Memory.MemoryQueryDecodeError);
 const failure = (error: unknown) => {
   if (isChatError(error)) return error;
   if (isNotFound(error)) return missing();
-  if (isConflict(error))
+  if (isConflict(error)) {
+    if (error.shared === undefined || error.shared.length === 0)
+      return new KinChatError({
+        reason: "conflict",
+        message: `Memory item ${error.existingId} already exists. Update it, or leave out \`id\` to make a new item.`,
+      });
+    const more = error.shared.slice(TITLES_SHOWN).map((item) => item.id);
+    const listed = error.shared
+      .slice(0, TITLES_SHOWN)
+      .map((item) => `${item.id} ${JSON.stringify(item.title.slice(0, 80))}`)
+      .join(", ");
     return new KinChatError({
       reason: "conflict",
-      message: `Memory item ${error.existingId} already exists. Update or supersede it instead of creating it again.`,
+      message: `Open items of the same kind share a link with it: ${listed}${
+        more.length > 0 ? `, and ${more.join(", ")}` : ""
+      }. If it says the same, there is nothing to save; if it replaces one, supersede that id; if it is a different matter, send the same write again with besides: [${error.shared
+        .map((item) => JSON.stringify(item.id))
+        .join(", ")}].`,
     });
+  }
   if (isRejected(error)) {
     if (error.reason === "Another wake-up owns the writer") return busy();
     return authorityRejections.has(error.reason)
@@ -854,8 +871,11 @@ const make = Effect.gen(function* () {
     )
       return failure(error);
     if (isConflict(error)) {
-      const visible = yield* visibleItems(ctx, audience);
-      if (visible.some((item) => item.head.id === error.existingId)) return failure(error);
+      const visible = new Set<string>(
+        (yield* visibleItems(ctx, audience)).map((item) => item.head.id),
+      );
+      if ((error.shared ?? [{ id: error.existingId }]).every((item) => visible.has(item.id)))
+        return failure(error);
     }
     if (isConflict(error) || isRejected(error) || isNotFound(error) || isDuplicate(error))
       return invalid(TEAM_REFUSAL);
@@ -946,6 +966,11 @@ const make = Effect.gen(function* () {
       .readItemQuietly(ctx.orgId, fields.id, { lead: ctx.agentId })
       .pipe(Effect.asSome, Effect.catchTags({ MemoryNotFound: () => Effect.succeedNone }));
     const known = yield* storedLabels(ctx.orgId).pipe(provideSql);
+    // Only what this turn can see may be named, so `besides` never tells what is there.
+    if (shared && input.besides !== undefined && input.besides.length > 0) {
+      const visible = new Set((yield* visibleItems(ctx, audience)).map((item) => item.head.id));
+      if (input.besides.some((id) => !visible.has(id))) return yield* invalid(TEAM_REFUSAL);
+    }
     if (shared && current._tag === "Some") {
       // What this turn can't see refuses like any other refused write; what an owner's turn
       // wrote is not its to change.
@@ -1042,6 +1067,7 @@ const make = Effect.gen(function* () {
               content: text,
               sourceEventId: input.sourceEventId,
               ...(input.supersedes === undefined ? {} : { supersedes: input.supersedes }),
+              ...(input.besides === undefined ? {} : { besides: input.besides }),
             }),
           (reserved, exit) =>
             !reserved || Exit.isSuccess(exit)

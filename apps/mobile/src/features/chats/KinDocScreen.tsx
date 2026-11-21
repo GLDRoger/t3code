@@ -641,9 +641,9 @@ function KinDocBody(
             {old ? (
               <View className="gap-2">
                 <Notice
-                  message={`You're reading version ${doc.version.version}. The latest is version ${doc.latest.version}.`}
+                  message={KIN_DOCS.oldVersion(doc.version.version, doc.latest.version)}
                   action={{
-                    label: "Open the latest",
+                    label: KIN_DOCS.openLatest,
                     onPress: () => navigation.setParams({ v: undefined }),
                   }}
                 />

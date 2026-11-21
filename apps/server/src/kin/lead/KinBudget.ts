@@ -268,6 +268,16 @@ const make = Effect.gen(function* () {
       WHERE b.org_id = ${orgId} AND b.day = ${day}`;
     if (row === undefined) return yield* notFound;
     const teammates = row.teammates;
+    // Whether turns found their fixed prefix cached: the day's input against its cached part.
+    const [input] = full
+      ? yield* sql<{ inputTokens: number; cachedInputTokens: number }>`
+          SELECT COALESCE(SUM(json_extract(u.value, '$.turnTokenUsage.inputTokens')), 0)
+              AS "inputTokens",
+            COALESCE(SUM(json_extract(u.value, '$.turnTokenUsage.cachedInputTokens')), 0)
+              AS "cachedInputTokens"
+          FROM kin_budget_charges c, json_each(c.tokens_json) u
+          WHERE c.org_id = ${orgId} AND c.day = ${day}`
+      : [];
     return {
       orgId,
       day,
@@ -278,6 +288,8 @@ const make = Effect.gen(function* () {
       ...(full
         ? {
             ownerUnits: Math.max(0, row.leadUnits - teammates),
+            inputTokens: input?.inputTokens ?? 0,
+            cachedInputTokens: input?.cachedInputTokens ?? 0,
             teammateUnits: teammates,
             usual: USUAL_LIMITS,
             waiting: yield* waiting(orgId),

@@ -353,6 +353,42 @@ describe("choice cards", () => {
       { id: "option-2", label: "Wait", action: null },
     ]);
     expect(acts.detail).toBe("Dev says it is live.");
+    expect(open.askedBy).toBeNull();
+    // Asked for someone else, who asks comes first; the line `detail` repeats is shown once.
+    const askedFor = (detail: string) =>
+      choice({
+        state: { ...choiceState(), askedBy: "Zoya Sheikh asks, through Chief of staff.", detail },
+      });
+    const forZoya = askedFor(
+      "Zoya Sheikh asks, through Chief of staff.\n\nThe pilot clinics wait on it.",
+    );
+    expect([forZoya.askedBy, forZoya.question, forZoya.detail]).toEqual([
+      "Zoya Sheikh asks, through Chief of staff.",
+      "Ship today?",
+      "The pilot clinics wait on it.",
+    ]);
+    expect(askedFor("Zoya Sheikh asks, through Chief of staff.").detail).toBeNull();
+    expect(kinChoiceAccessibilityLabel(forZoya, null)).toMatch(
+      /^Question\. Zoya Sheikh asks, through Chief of staff\. Ship today\?/,
+    );
+    // What holds only while nobody has chosen shows while open, on no settled copy.
+    const waiting = "Until someone chooses, they stay in Zoya's name and can still be found.";
+    const handOver = (change: Record<string, unknown>, state: Record<string, unknown> = {}) =>
+      choice({
+        ...change,
+        state: { ...choiceState(), detail: waiting, whileOpen: waiting, ...state },
+      }).detail;
+    const given = { title: "Given to Meera", text: "Meera now looks after 2 clients." };
+    const tapped = {
+      optionId: "option-1",
+      personId: "rhea",
+      via: "tap",
+      emoji: null,
+      answeredAt: "2026-11-08T09:01:00.000Z",
+    };
+    expect(handOver({})).toBe(waiting);
+    expect(handOver({}, { answer: tapped, outcome: given })).toBeNull();
+    expect(handOver({ closedAt: "2026-11-08T09:01:00.000Z" }, { outcome: given })).toBeNull();
     expect(kinChoicePhase(open, posted + 60_000)).toBe("open");
     expect(kinChoicePhase(open, posted + 24 * 60 * 60 * 1000)).toBe("expired");
     expect(kinChoicePhase(choice({ closedAt: "2026-11-08T10:00:00.000Z" }), posted)).toBe(

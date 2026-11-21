@@ -1,8 +1,9 @@
+import { mayUploadAttachments } from "@t3tools/client-runtime/kin/kinAttachmentAccess";
 import { createAttachmentEnvironmentAtoms } from "@t3tools/client-runtime/state/attachments";
 import type { AtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
-  AuthKinChatScope,
   AuthOrchestrationOperateScope,
+  type AuthEnvironmentScope,
   EnvironmentAuthorizationError,
   type EnvironmentId,
 } from "@t3tools/contracts";
@@ -21,9 +22,10 @@ function requireAttachmentWriteAccess<W extends { readonly environmentId: Enviro
   return {
     ...command,
     run: async (registry, input) => {
+      const hasScope = (scope: AuthEnvironmentScope) =>
+        readEnvironmentScope(input.environmentId, scope);
       if (
-        !readEnvironmentScope(input.environmentId, AuthOrchestrationOperateScope) &&
-        !(allowKinChat && readEnvironmentScope(input.environmentId, AuthKinChatScope))
+        !(allowKinChat ? mayUploadAttachments(hasScope) : hasScope(AuthOrchestrationOperateScope))
       ) {
         return AsyncResult.failure(
           Cause.fail(
