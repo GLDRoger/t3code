@@ -170,10 +170,8 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Layer.provide(DevFakeMail.egress),
           // Kin's GitHub App: the identity agents' shells and Kin's own GitHub writes use.
           Layer.provideMerge(
-            Layer.merge(
-              KinGitHubAppSetup.layer,
-              KinGitHubHook.layer.pipe(Layer.provide(ServerSecretStore.layer)),
-            ).pipe(
+            KinGitHubAppSetup.layer.pipe(
+              Layer.provideMerge(KinGitHubHook.layer.pipe(Layer.provide(ServerSecretStore.layer))),
               Layer.provideMerge(KinGitHubApp.layer),
               Layer.provide(KinGitHubApp.KinGitHubAppConfig.layer),
               Layer.provide(KinGitHubAppKey.layer.pipe(Layer.provide(ServerSecretStore.layer))),
