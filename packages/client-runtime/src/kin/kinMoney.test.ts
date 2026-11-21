@@ -1,6 +1,7 @@
 import {
   KinListId,
   KinRecordId,
+  type KinCash,
   type KinListDefinition,
   type KinMoneySummary,
 } from "@t3tools/contracts";
@@ -16,7 +17,14 @@ import {
   kinCompanyRead,
 } from "./kinCompanyProfile.ts";
 import { kinDatesMonth, kinMonthWindow, kinZonedDayStart } from "./kinDates.ts";
-import { kinMoneyAgent, kinMoneyHeadline, kinMoneyView } from "./kinMoney.ts";
+import {
+  KIN_MONEY_BLOCKS,
+  kinCashEmpty,
+  kinListSettingsOnPhone,
+  kinMoneyAgent,
+  kinMoneyHeadline,
+  kinMoneyView,
+} from "./kinMoney.ts";
 
 // Invented clients and figures only.
 const inr = (minor: number) => [{ minor, currency: "INR" }];
@@ -180,6 +188,46 @@ describe("the Money summary", () => {
     ];
     expect(kinMoneyAgent(leads)?.name).toBe("Ledger");
     expect(kinMoneyAgent(leads.slice(0, 2))?.name).toBe("Chief of staff");
+  });
+
+  it("puts this month right after who owes us, and an empty bank in one line", () => {
+    expect(KIN_MONEY_BLOCKS.slice(0, 3)).toEqual(["owed", "month", "suggested"]);
+    const cash: KinCash = {
+      asOf: "2026-11-12T06:00:00.000Z",
+      today: "2026-11-12",
+      timeZone: "Asia/Kolkata",
+      known: false,
+      accounts: [],
+      notOfRecord: [],
+      byCurrency: [],
+    };
+    expect(kinCashEmpty(cash)).toBe(true);
+    expect(kinCashEmpty({ ...cash, bankKnown: { through: null } })).toBe(true);
+    // Anything Kin knows of the bank keeps the whole block.
+    expect(kinCashEmpty({ ...cash, bankKnown: { through: "2026-10-31" } })).toBe(false);
+    expect(
+      kinCashEmpty({
+        ...cash,
+        notOfRecord: [
+          {
+            label: "Invented current account",
+            kind: "account",
+            balance: { minor: 100, currency: "INR" },
+            on: "2026-10-31",
+            standing: "not yet confirmed",
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps the settings of Kin's own money lists for the computer", () => {
+    expect(
+      ["invoices", "expenses", "receipts", "quotes", "dates", "jobs"].map((id) =>
+        kinListSettingsOnPhone(list(id)),
+      ),
+    ).toEqual([false, false, false, false, true, true]);
+    expect(kinListSettingsOnPhone({ ...list("work"), builtIn: true })).toBe(false);
   });
 });
 
