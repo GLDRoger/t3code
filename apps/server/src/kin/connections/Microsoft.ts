@@ -18,6 +18,7 @@ import {
 import { htmlToText } from "./MailText.ts";
 import { answeredWith, failure, mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * Microsoft's sign-in for work or school accounts in any organization and personal accounts.
@@ -214,7 +215,6 @@ const EVENT_FIELDS =
   "id,subject,start,end,isAllDay,location,organizer,attendees,isCancelled,bodyPreview";
 const UTC = 'outlook.timezone="UTC"';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const calendarBase = (calendarId: string | undefined) =>
   calendarId === undefined || calendarId === "primary"

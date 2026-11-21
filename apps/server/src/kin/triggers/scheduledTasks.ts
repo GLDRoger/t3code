@@ -55,6 +55,7 @@ import { cardChatFor, firingOrigin } from "./deferralOrigin.ts";
 import { hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinSchedules from "./kinSchedules.ts";
+import { pauseTriggers } from "./KinTriggerStore.ts";
 
 /** A run more than this late (the host was off) is skipped; the next slot runs as usual. */
 const SCHEDULED_RUN_LATE_MS = 2 * 60 * 60_000;
@@ -169,9 +170,7 @@ export const syncScheduledTasks = Effect.fn("KinScheduledTasks.sync")(function* 
     yield* sql`UPDATE kin_scheduled_tasks SET state = 'disarmed', run_now_at = NULL,
           updated_at = ${now}
         WHERE org_id = ${orgId} AND item_id = ${itemId} AND state <> 'disarmed'`;
-    yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
-          updated_at = max(updated_at, ${now})
-        WHERE org_id = ${orgId} AND trigger_id = ${scheduledTaskTriggerId(itemId)}`;
+    yield* pauseTriggers(orgId, [scheduledTaskTriggerId(itemId)], now);
     const widget = yield* repo.getWidget({ orgId, widgetId: scheduledTaskWidgetId(orgId, itemId) });
     if (Option.isSome(widget) && widget.value.closedAt === null) {
       const card = yield* decodeCard(widget.value.state);

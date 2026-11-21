@@ -1,6 +1,7 @@
 import { currencyDigits } from "../money.ts";
 import { RAILS } from "./statementRegion.ts";
 import type { StatementRow } from "./statementTable.ts";
+import { DAY_MS } from "../../durations.ts";
 
 /**
  * Which invoice a credit pays and which expense a debit is, by plain rules: the exact amount
@@ -129,7 +130,6 @@ const nameIn = (name: string, narration: string) => {
   return found.length / wanted.length;
 };
 
-const DAY_MS = 86_400_000;
 const dayNumber = (day: string) =>
   Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10))) / DAY_MS;
 const daysBetween = (from: string, to: string) => dayNumber(to) - dayNumber(from);

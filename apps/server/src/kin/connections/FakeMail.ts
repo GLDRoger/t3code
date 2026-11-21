@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off - a dev and test fixture: PKCE, a JSON file, mail dates.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
+import { WEEK_MS } from "../durations.ts";
 
 /**
  * A local mailbox that answers the Gmail, Google token, Microsoft Graph and Microsoft token calls
@@ -426,7 +427,6 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     },
   });
 
-  const WEEK = 7 * 24 * 60 * 60 * 1000;
   type Occurrence = {
     readonly event: FakeMailEvent;
     readonly id: string;
@@ -445,8 +445,8 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
             ? Array.from({ length: event.repeats }, (_, week) => ({
                 event,
                 id: `${event.id}_${week}`,
-                start: event.start + week * WEEK,
-                end: event.end + week * WEEK,
+                start: event.start + week * WEEK_MS,
+                end: event.end + week * WEEK_MS,
                 kind: "instance" as const,
               }))
             : [{ event, id: event.id, start: event.start, end: event.end, kind: "master" }],

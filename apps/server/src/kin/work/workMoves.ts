@@ -27,8 +27,8 @@ import { dayIn } from "./money.ts";
 import { waitingCards } from "./recordComments.ts";
 import { iso, isClosed, notFound, ownerZone, type RecordRow, workFailure } from "./recordRows.ts";
 import { teamVisible } from "./teamView.ts";
+import { DAY_MS } from "../durations.ts";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const RECENT_DONE_MS = 14 * DAY_MS;
 
 const principalOf = (kind: "person" | "agent", id: string): KinWorkPrincipal =>

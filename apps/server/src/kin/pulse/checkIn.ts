@@ -33,9 +33,8 @@ import { matchLines, type OutsideRead } from "./outside.ts";
 import { importedSince } from "./personMorning.ts";
 import { markTold, toldBy, untold } from "./told.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
+import { DAY_MS, MINUTE_MS } from "../durations.ts";
 
-const MINUTE = 60_000;
-const DAY = 24 * 60 * MINUTE;
 const sha = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
 
 /**
@@ -46,7 +45,8 @@ export const looseOffsetMs = (
   scheduleId: string,
   slot: string,
   spanMinutes = LOOSE_BEFORE_MINUTES + LOOSE_AFTER_MINUTES,
-) => (Number.parseInt(sha(`${scheduleId}\0${slot}`).slice(0, 8), 16) % (spanMinutes + 1)) * MINUTE;
+) =>
+  (Number.parseInt(sha(`${scheduleId}\0${slot}`).slice(0, 8), 16) % (spanMinutes + 1)) * MINUTE_MS;
 
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const decodeLines = Schema.decodeUnknownOption(
@@ -78,7 +78,7 @@ const weeklyDue = Effect.fn("KinPulse.weeklyDue")(function* (
   const every = everyOf(task, row.looseAt);
   if (every === undefined) return false;
   return [-1, 0, 1].some((by) => {
-    const slot = timeOnDayOf(at + by * DAY, zones.host, every.at);
+    const slot = timeOnDayOf(at + by * DAY_MS, zones.host, every.at);
     const weekDay = DateTime.toParts(
       DateTime.makeZonedUnsafe(slot, { timeZone: zones.host }),
     ).weekDay;

@@ -34,6 +34,7 @@ import {
   sourceOf,
   type Value,
 } from "./recipe.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * What a recipe's inputs read from stored rows, gathered before the job starts. Every value is
@@ -41,7 +42,6 @@ import {
  */
 
 type Cell = string | number | boolean | Money | null;
-const DAY_MS = 86_400_000;
 
 const isMoney = (value: unknown): value is Money =>
   typeof value === "object" &&

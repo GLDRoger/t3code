@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- the guard reads source files synchronously, outside any Effect.
 import { assert, describe, it } from "@effect/vitest";
 import {
   KinOrgId,
@@ -13,6 +14,8 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -468,4 +471,18 @@ describe("KinTriggerStore", () => {
         assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
       }).pipe(Effect.provide(layer)),
   );
+
+  // A paused trigger is written one way: a second copy of the statement drifts from this one.
+  it("pauses triggers only through pauseTriggers", () => {
+    const root = NodePath.resolve(import.meta.dirname, "..");
+    const pause = /UPDATE\s+kin_triggers\s+SET\s+enabled\s*=\s*0\s*,\s*next_run_at\s*=\s*NULL/g;
+    const found = NodeFS.readdirSync(root, { recursive: true, encoding: "utf8" }).flatMap((file) =>
+      !file.endsWith(".ts") || /\.test\.ts$|\.testkit\.ts$|migrations\//.test(file)
+        ? []
+        : [...NodeFS.readFileSync(NodePath.join(root, file), "utf8").matchAll(pause)].map(
+            () => file,
+          ),
+    );
+    assert.deepStrictEqual(found, ["triggers/KinTriggerStore.ts"]);
+  });
 });

@@ -75,7 +75,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { markOutside, outsideRead, outsideStamp, OUTSIDE_REFUSAL } from "../lead/OutsideContent.ts";
 import { sensitiveShown } from "../work/sensitiveReads.ts";
-import { quote } from "../lead/LeadPrompt.ts";
+import { quote } from "../lead/quote.ts";
 import {
   callable,
   changed,
