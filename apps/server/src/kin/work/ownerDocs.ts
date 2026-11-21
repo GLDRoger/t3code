@@ -57,7 +57,7 @@ import {
 } from "./recordRows.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { EVERY_RECORD_KIND, search as runSearch } from "./search.ts";
-import { searchIndexed } from "./searchIndex.ts";
+import { docKindWords, searchIndexed } from "./searchIndex.ts";
 import {
   clientMoneySeen,
   KIN_OWNER_LEVEL,
@@ -201,7 +201,8 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
     ...(text === ""
       ? []
       : [
-          sql`(instr(lower(r.title), ${text}) > 0 OR EXISTS (SELECT 1 FROM kin_doc_versions v
+          sql`(instr(lower(r.title), ${text}) > 0 OR instr(${docKindWords(sql)}, ${text}) > 0
+            OR EXISTS (SELECT 1 FROM kin_doc_versions v
               WHERE v.org_id = r.org_id AND v.record_id = r.record_id
                 AND v.version = (SELECT MAX(w.version) FROM kin_doc_versions w
                   WHERE w.org_id = r.org_id AND w.record_id = r.record_id)

@@ -117,6 +117,7 @@ import ScheduleOwnerTime from "./migrations/K193_ScheduleOwnerTime.ts";
 import DropWebhookSources from "./migrations/K194_DropWebhookSources.ts";
 import DreamCharges from "./migrations/K195_DreamCharges.ts";
 import GitHubReviewReceipts from "./migrations/K196_GitHubReviewReceipts.ts";
+import SearchDocKinds from "./migrations/K197_SearchDocKinds.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -314,6 +315,7 @@ const migrations = {
   "194_DropWebhookSources": DropWebhookSources,
   "195_DreamCharges": DreamCharges,
   "196_GitHubReviewReceipts": GitHubReviewReceipts,
+  "197_SearchDocKinds": SearchDocKinds,
 };
 const loader = Migrator.fromRecord(migrations);
 
