@@ -1296,7 +1296,10 @@ describe("invoices", () => {
       );
       // The agent recorded it on the owner's message, and the read says so beside the bank.
       const read = yield* LeadWork.get(scope, { key: "INV-1" });
-      assert.match(read.payments?.[0]?.source ?? "", /^recorded by .+ \(you\) on owner's word$/);
+      assert.match(
+        read.payments?.[0]?.source ?? "",
+        /^recorded by .+ \(you\) on .+ \(owner\)'s word$/,
+      );
       assert.deepStrictEqual(read.bank, {
         knownThrough: null,
         note: "No bank statement is confirmed, so Kin can't see what reached the bank.",
