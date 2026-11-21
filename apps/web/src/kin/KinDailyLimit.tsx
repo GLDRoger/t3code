@@ -11,39 +11,24 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 
-import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
 import { useSearchableSetting } from "../components/settings/settingsSearch";
-import {
-  AlertDialog,
-  AlertDialogClose,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogPopup,
-  AlertDialogTitle,
-} from "../components/ui/alert-dialog";
-import { Button } from "../components/ui/button";
-import {
-  Select,
-  SelectItem,
-  SelectPopup,
-  SelectTrigger,
-  SelectValue,
-} from "../components/ui/select";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinConfirm } from "./KinConfirm";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { kinClient } from "./kinClient";
+import { KinSettingsChoice } from "./settings/KinSettingsControls";
+import { KinSettingsRow, KinSettingsStatus } from "./settings/KinSettingsLayout";
 import { useKinHost } from "./useKinHost";
 import type { KinWorkTarget } from "./useKinWork";
 
-/** The owner's daily limit, one choice in Settings; nothing shows where there is no Kin to set. */
+/** The owner's daily limit, one row with one choice; nothing shows where there is no Kin to set. */
 export function KinDailyLimitSetting() {
   const searchableSetting = useSearchableSetting();
   const target = kinNewLeadTarget(useKinHost());
   return target === null ? null : (
-    <SettingsSection {...searchableSetting("kin-daily-limit")} hideTitle>
+    <div id={searchableSetting("kin-daily-limit").id} tabIndex={-1} className="outline-none">
       <DailyLimit {...target} />
-    </SettingsSection>
+    </div>
   );
 }
 
@@ -70,76 +55,60 @@ function DailyLimit(props: KinWorkTarget) {
     });
   };
   return (
-    <SettingsRow
-      title={KIN_DAILY_LIMIT.title}
-      description={failed ? KIN_DAILY_LIMIT.failed : KIN_DAILY_LIMIT.detail}
-      control={
-        <Select
-          items={choices.map(({ value, label }) => ({ value, label }))}
-          value={current}
-          disabled={budget === null}
-          onValueChange={(value) => {
-            const picked = choices.find((choice) => choice.value === value);
-            if (picked === undefined || picked.value === current) return;
-            if (kinDailyLimitAsks(picked)) setAsking(picked);
-            else choose(picked);
-          }}
-        >
-          <SelectTrigger size="xs" className="w-48" aria-label={KIN_DAILY_LIMIT.title}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectPopup align="end" alignItemWithTrigger={false}>
-            {choices.map(({ value, label }) => (
-              <SelectItem key={value} value={value}>
-                {label}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
-      }
-    >
-      {used === null ? null : (
-        <p className="pt-2 text-xs text-muted-foreground">
-          {KIN_DAILY_LIMIT.used}: {used}
-        </p>
-      )}
-      {waiting.length === 0 ? null : (
-        <div className="pt-2 text-xs text-muted-foreground">
-          <p className="font-medium text-foreground">{KIN_DAILY_LIMIT.waiting}</p>
-          <ul className="pt-1">
-            {waiting.map((agent) => (
-              <li key={agent.agentId}>
-                {agent.name}: {agent.line}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <AlertDialog
-        open={asking !== null}
-        onOpenChange={(open) => {
-          if (!open) setAsking(null);
-        }}
-      >
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{KIN_DAILY_LIMIT.noneAsk.title}</AlertDialogTitle>
-            <AlertDialogDescription>{KIN_DAILY_LIMIT.noneAsk.detail}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button
-              onClick={() => {
-                const picked = asking;
-                setAsking(null);
-                if (picked !== null) choose(picked);
+    <>
+      <KinSettingsRow
+        title={KIN_DAILY_LIMIT.title}
+        detail={
+          failed ? (
+            <span role="alert" className="text-destructive-foreground">
+              {KIN_DAILY_LIMIT.failed}
+            </span>
+          ) : waiting.length > 0 ? (
+            `${KIN_DAILY_LIMIT.waiting}: ${waiting.map((agent) => `${agent.name}, ${agent.line}`).join("; ")}`
+          ) : used === null ? (
+            KIN_DAILY_LIMIT.detail
+          ) : (
+            `${KIN_DAILY_LIMIT.used}: ${used}`
+          )
+        }
+        status={
+          waiting.length === 0 ? null : (
+            <KinSettingsStatus tone="attention">{KIN_DAILY_LIMIT.reached}</KinSettingsStatus>
+          )
+        }
+        control={
+          budget === null ? null : (
+            <KinSettingsChoice
+              label={KIN_DAILY_LIMIT.title}
+              value={current}
+              options={choices.map(({ value, label }) => ({ value, label }))}
+              onChange={(value) => {
+                const picked = choices.find((choice) => choice.value === value);
+                if (picked === undefined) return;
+                if (kinDailyLimitAsks(picked)) setAsking(picked);
+                else choose(picked);
               }}
-            >
-              {KIN_DAILY_LIMIT.noneAsk.confirm}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
-    </SettingsRow>
+            />
+          )
+        }
+      />
+      <KinConfirm
+        ask={
+          asking === null
+            ? null
+            : {
+                title: KIN_DAILY_LIMIT.noneAsk.title,
+                detail: KIN_DAILY_LIMIT.noneAsk.detail,
+                action: KIN_DAILY_LIMIT.noneAsk.confirm,
+              }
+        }
+        onConfirm={() => {
+          const picked = asking;
+          setAsking(null);
+          if (picked !== null) choose(picked);
+        }}
+        onClose={() => setAsking(null)}
+      />
+    </>
   );
 }
