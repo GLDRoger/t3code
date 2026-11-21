@@ -1597,6 +1597,69 @@ it.effect("a teammate's shared turn can't start What we sell, and nothing is wri
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "a proposal refused for a teammate in their own chat says to draft it for the owner; in a group it doesn't",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('mate-chat', ${orgId}, 'direct', ${`${mateId}:${lead}`}, 1, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('mate-chat-mate', ${orgId}, 'mate-chat', 'person', ${mateId}, 'owner', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('mate-chat-lead', ${orgId}, 'mate-chat', 'agent', ${lead}, 'member', ${at})`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+          author_member_id, author_role, kind, body, mentions_json, status, created_at)
+        VALUES ('ask', ${orgId}, 'mate-chat', 1, 'human', ${mateId}, 'mate-chat-mate', 'owner', 'text',
+          'Draft the invented proposal for Acme', '[]', 'posted', ${at})`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status,
+          event_ids, audience)
+        VALUES ('wake', ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '["ask-event"]', 'shared')`;
+      const event = {
+        _tag: "chat.message",
+        orgId,
+        agentId: lead,
+        eventId: "ask-event",
+        receivedAt: at,
+        dedupeKey: null,
+        provenance: { _tag: "human", personId: mateId, memberId: "mate-chat-mate" },
+        chatId: "mate-chat",
+        messageId: "ask",
+      };
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+          queued_at, state, wakeup_id)
+        VALUES ('ask-event', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0,
+          'claimed', 'wake')`;
+      const propose = Effect.flip(
+        LeadDocs.create(scopeOf(lead), {
+          sourceEventId: "ask-event",
+          title: "Invented proposal for Acme",
+          kind: "proposal",
+          body: "## Scope\n\nInvented scope.\n\n## Price\n\nLeft for the owner.",
+        }),
+      );
+      const refused = yield* propose;
+      assert.strictEqual(reasonOf(refused), "not_allowed");
+      assert.strictEqual(
+        "message" in refused ? refused.message : "",
+        "Only the owner or a co-owner changes that. Nothing was written. Draft it for Owner instead: put the draft in kin_ask_person to Owner as its detail, leaving blank what only Owner decides, such as a price, with the options Approve and Changes first. Then tell Mate in one line that it is with Owner to approve, with the draft under that line.",
+      );
+      const docs = sql`SELECT 1 FROM kin_records WHERE org_id = ${orgId} AND register_id = 'docs'`;
+      assert.lengthOf(yield* docs, 0);
+      // A chat others share asks nobody outside it, so its refusal names no card.
+      yield* sql`UPDATE kin_chats SET kind = 'team_group', direct_key = NULL WHERE chat_id = 'mate-chat'`;
+      const inGroup = yield* propose;
+      assert.strictEqual(
+        "message" in inGroup ? inGroup.message : "",
+        "Only the owner or a co-owner changes that.",
+      );
+      assert.lengthOf(yield* docs, 0);
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("a teammate with Docs reads What we sell, and their turn's agent can't change it", () =>
   Effect.gen(function* () {
     yield* seed;
