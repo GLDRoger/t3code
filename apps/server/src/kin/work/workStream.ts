@@ -17,7 +17,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { bufferLatestLiveStream } from "../../orchestration-v2/LiveStreamBudget.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRecords, type Tick } from "./KinRecords.ts";
-import { shownRecords, summary, type Viewer, viewerOf } from "./ownerWork.ts";
+import { shownRecords, summaryOf, type Viewer, viewerOf } from "./ownerWork.ts";
 import { workFailure } from "./recordRows.ts";
 import { dependentRows, teamKeyLists, teamSeq } from "./teamView.ts";
 
@@ -59,6 +59,16 @@ const PLACES = "*places";
 type Out = KinWorkEvent;
 
 /**
+ * Each company's last owner-level counts, by the newest change number the screen that read them
+ * had heard: every owner-level person counts Work alike, so their screens share one read. A
+ * teammate's counts are their own and never kept here. One server's KinRecords keys it.
+ */
+type Counted = { readonly heard: number; readonly counted: ReturnType<typeof summaryOf> };
+const lastCounted = new WeakMap<object, Map<KinOrgId, Counted>>();
+/** Late and due-this-week move with the clock, so a shared read is kept no longer than this. */
+const COUNTED_FOR = Duration.seconds(1);
+
+/**
  * One subscriber's side of the stream: where they start, what each tick means to them, and what a
  * burst of those sends. `subscribeRows` runs it over the live ticks; tests drive it tick by tick.
  */
@@ -71,6 +81,10 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
   const sql = yield* SqlClient.SqlClient;
   let viewer = yield* viewerOf(people, orgId);
   let level = 0;
+  const shared = lastCounted.get(records) ?? new Map<KinOrgId, Counted>();
+  lastCounted.set(records, shared);
+  /** The newest change number this session has heard; any read begun after it has its commit. */
+  let newest = 0;
   /** A teammate's entries they were told of, and their lists: only these are ever removed. */
   let seen = new Map<string, string>();
   /** The counts the client holds; null when it holds none we know of. */
@@ -114,8 +128,19 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
   const team = () => (viewer.teammate ? { team: true as const } : {});
   const numberNow = (v: Viewer) =>
     v.teammate ? teamSeq(orgId, own(v)).pipe(workFailure) : records.seq(orgId);
-  const counts = Effect.fn("KinWorkStream.counts")(function* (seq: number) {
-    const next = yield* summary(people, { orgId });
+  /** With `heard`, owner-level counts another screen read after hearing the same are reused. */
+  const ownerLevelCounts = Effect.fn("KinWorkStream.ownerLevelCounts")(function* (heard: number) {
+    const last = shared.get(orgId);
+    if (last?.heard === heard) return yield* last.counted;
+    const counted = yield* Effect.cachedWithTTL(summaryOf(viewer, { orgId }), COUNTED_FOR);
+    shared.set(orgId, { heard, counted });
+    return yield* counted;
+  });
+  const counts = Effect.fn("KinWorkStream.counts")(function* (seq: number, heard?: number) {
+    const next =
+      heard === undefined || viewer.teammate
+        ? yield* summaryOf(viewer, { orgId })
+        : yield* ownerLevelCounts(heard);
     const moved = kinWorkCountsOf(held, next);
     held = next;
     return moved === null
@@ -212,6 +237,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
 
   /** A tick as this viewer's pending change; none when it doesn't touch what they see. */
   const pendingOf = (tick: Tick): ReadonlyArray<Pending> => {
+    newest = Math.max(newest, tick.seq);
     const base = { list: tick.registerId ?? null, created: tick.created === true, level };
     const mine = tick.people?.includes(viewer.person.personId) === true;
     if (!viewer.teammate) {
@@ -288,7 +314,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     }
     const rows = yield* rowsNow(keyed);
     const close = yield* resumable(top).pipe(workFailure);
-    const moved = yield* counts(close);
+    const moved = yield* counts(close, newest);
     if (rows.length === 0) return moved === null ? [] : [moved];
     return [...rows, moved ?? ({ _tag: "synchronized", seq: close, ...team() } satisfies Out)];
   });

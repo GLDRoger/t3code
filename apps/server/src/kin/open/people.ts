@@ -116,10 +116,12 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinOpenS
         Stream.filter((moved) => moved),
         Stream.map(() => -1),
       );
-      const waiting = (yield* (yield* KinChatHub).subscribeForViewer(person)).pipe(
+      const chats = yield* KinChatHub;
+      // Behind or failed, it builds once and listens again: the build reads what it missed.
+      const waiting: Stream.Stream<number> = Stream.unwrap(chats.subscribeForViewer(person)).pipe(
         Stream.filter((event) => WAITING_EVENTS.has(event.type)),
         Stream.map(() => -2),
-        Stream.catch(() => Stream.make(-2)),
+        Stream.catch(() => Stream.make(-2).pipe(Stream.concat(Stream.suspend(() => waiting)))),
       );
       const dayTurns = Stream.fromEffectRepeat(
         Effect.gen(function* () {
