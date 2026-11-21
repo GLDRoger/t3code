@@ -1246,7 +1246,14 @@ features:
     phone: [SettingsKin, KinTeam, KinInvite]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    proof: [apps/server/src/kin/people/http.test.ts]
+    note: >-
+      With the name, the owner or a co-owner chooses what the new person will see (Money, Clients,
+      Docs), kept with the invite and given when they join; a name that matches someone already on
+      the team or an open invite is a warning, never a block.
+    proof:
+      - apps/server/src/kin/people/http.test.ts
+      - apps/server/src/kin/people/KinPeople.test.ts
+      - packages/client-runtime/src/kin/kinTeam.test.ts
 
   - id: teammate
     name: A teammate's access, places and devices
@@ -1332,8 +1339,7 @@ features:
     name: Your GitHub username, for finding your pull requests
     tab: settings
     web: [home, sheet:Profile, section:GitHub username, dialog:GitHub username]
-    phone: [SettingsKin, KinProfile, section:GitHub username]
-    roles: { owner: both, co_owner: both, lead: both, member: both }
+    roles: { owner: web, co_owner: web, lead: web, member: web }
     note: >-
       The host sends it only on a profile its reader may change and refuses one another person
       already has, without saying whose. Settings → Profile on the web shows the same row. Agents
@@ -1347,8 +1353,7 @@ features:
     name: Set a teammate's GitHub username
     tab: settings
     web: [home, sheet:Profile, section:GitHub username, dialog:GitHub username]
-    phone: [SettingsKin, KinTeam, KinTeammate, section:GitHub username]
-    roles: { owner: both, co_owner: both, lead: none, member: none }
+    roles: { owner: web, co_owner: web, lead: none, member: none }
     note: >-
       The owner sets anyone's; a co-owner a member's, as with the rest of a profile. Nobody else
       sees the row on someone else's page.
@@ -1360,8 +1365,7 @@ features:
     name: Coding agent keys for the tasks you hold
     tab: settings
     web: [home, sheet:Profile, section:Coding agent keys]
-    phone: [SettingsKin, KinProfile, section:Coding agent keys]
-    roles: { owner: both, co_owner: both, lead: both, member: both }
+    roles: { owner: web, co_owner: web, lead: web, member: web }
     tools: [list_my_tasks, get_task, comment_on_task, set_task_state]
     note: >-
       A person makes a key for their own coding agent (Claude Code, Codex, Cursor) to read the
@@ -1378,8 +1382,7 @@ features:
     name: See and remove a teammate's coding agent keys
     tab: settings
     web: [home, sheet:Profile, section:Coding agent keys]
-    phone: [SettingsKin, KinTeam, KinTeammate, section:Coding agent keys]
-    roles: { owner: both, co_owner: both, lead: none, member: none }
+    roles: { owner: web, co_owner: web, lead: none, member: none }
     note: >-
       Read and Remove only; nobody makes a key for someone else. The host lets a co-owner remove a
       member's keys but not the owner's or another co-owner's, and removing access ends them all.
