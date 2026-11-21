@@ -172,8 +172,8 @@ const waitsForOwner = Effect.fnUntraced(function* (lead: Lead) {
     person,
     note:
       theirs.length === 0
-        ? `Nothing waits for ${person} now.`
-        : `These wait for ${person}, not for ${asking}: only ${person} answers, approves or sends them. Say they wait for ${person}; never say nothing is waiting, and don't offer to answer, approve or send them for ${asking}.`,
+        ? `Nothing waits for ${person} alone now.`
+        : `These wait for ${person}, not for ${asking}: only ${person} answers, approves or sends these. Say they wait for ${person}; never say nothing is waiting, and don't offer to answer, approve or send these for ${asking}. What waits for ${asking}, and ${asking}'s own work, is unaffected.`,
     items: theirs.slice(0, 20).map((item) => {
       const kind = WAITS_KIND[item.card ?? item.reason] ?? "Question";
       const from = item.ask === undefined ? "" : ` from ${item.ask.agent}`;
