@@ -11,6 +11,7 @@ import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { withAlwaysLoaded } from "../lead/deferredTools.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { PipelineInput, PipelineResult, pipelineRead } from "./pipeline.ts";
 import { WebPageInput, WebPageResult, webPage } from "./read.ts";
@@ -72,6 +73,9 @@ const handlers = McpToolAccess.toLayer(KinSalesToolkit, {
   ),
 });
 
-export const registration = McpHttpServer.toolkitRegistration(KinSalesToolkit, handlers).pipe(
+export const registration = McpHttpServer.toolkitRegistration(
+  withAlwaysLoaded(KinSalesToolkit),
+  handlers,
+).pipe(
   Layer.provide(WebPages.layer),
 );

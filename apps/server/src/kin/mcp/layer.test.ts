@@ -650,12 +650,18 @@ it.effect.each([true, false])(
             homed.filter((name) => seat.names.includes(name)),
             [],
           );
-        // One core loads up front in every seat, so every agent's request starts with the same bytes.
+        // One core loads up front in every seat; a seat that leaves money and the pipeline to
+        // another loads the core without them.
         assert.sameMembers(engineering.upFront, [...KIN_ALWAYS_LOADED]);
-        for (const seat of [...Object.values(seats), ...Object.values(beside)])
+        for (const seat of Object.values(seats))
           assert.deepStrictEqual(
             { upFront: seat.upFront, bytes: seat.upFrontBytes },
             { upFront: engineering.upFront, bytes: engineering.upFrontBytes },
+          );
+        for (const seat of Object.values(beside))
+          assert.deepStrictEqual(
+            seat.upFront,
+            engineering.upFront.filter((name) => !homed.includes(name)),
           );
         assert.includeMembers((yield* seatList("support")).names, homed);
         assert.includeMembers((yield* seatList("chief-of-staff")).names, homed);

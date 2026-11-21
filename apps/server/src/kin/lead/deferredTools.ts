@@ -2,9 +2,10 @@ import * as Context from "effect/Context";
 import { Tool, Toolkit } from "effect/ai";
 
 /**
- * The Kin tools a lead session loads up front, the same in every seat so that every agent's
- * request starts with the same cached bytes. Every other tool, Kin's or T3's, waits for the
- * provider's tool search, so a tool added later is deferred until it is named here.
+ * The Kin tools a lead session loads up front, so one agent's requests start with the same cached
+ * bytes. Every other tool, Kin's or T3's, waits for the provider's tool search, so a tool added
+ * later is deferred until it is named here. A tool with a look-alike in sight belongs here: hidden,
+ * `web_page` loses to a built-in fetch and `record_assign` to `record_update`.
  */
 export const KIN_ALWAYS_LOADED: ReadonlySet<string> = new Set([
   "kin_ask",
@@ -35,6 +36,12 @@ export const KIN_ALWAYS_LOADED: ReadonlySet<string> = new Set([
   "kin_recipes",
   "kin_connection_tools",
   "kin_connection_call",
+  "web_page",
+  "record_assign",
+  "deal_stages",
+  "money_summary",
+  "money_query",
+  "pipeline_read",
 ]);
 
 /** `Tool.Meta` that has Claude Code load a tool up front while ToolSearch holds the rest back. */
