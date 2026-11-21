@@ -303,6 +303,8 @@ export const nudge = Effect.fn("KinWork.nudge")(function* (
     [{ personId: holder, kind: "nudged", row, why: null }],
   ).pipe(workFailure);
   if (!told.has(holder)) return yield* refuse("Kin couldn't reach them in a chat just now.");
+  // No entry changed, so their open Tasks hears of it from here, as the row now reads.
+  yield* records.announce(orgId, [row.recordId]);
   const sent = (yield* nudgesSent(orgId, [messageId]).pipe(workFailure)).get(messageId) ?? now;
   return { key: row.key, nudgedAt: iso(sent), already: false };
 });

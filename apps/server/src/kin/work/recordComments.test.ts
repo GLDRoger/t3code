@@ -18,7 +18,9 @@ import {
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
@@ -659,8 +661,15 @@ it.effect("asking a late task's holder where it stands tells them once a day, on
       dueAt: "2026-11-09T00:00:00.000Z",
     });
     yield* say(zoya, made.key, "Invented: waiting on the quote");
+    const records = yield* KinRecords.KinRecords;
+    const work = yield* Stream.toQueue(records.changes(orgId), { capacity: "unbounded" });
+    yield* Queue.take(work);
     const first = yield* OwnerWork.nudge([rhea], { orgId, key: made.key });
     assert.isFalse(first.already);
+    // Her open Tasks hears of it: Work's stream names the task, before anything later.
+    yield* records.announce(orgId);
+    const told = yield* Queue.take(work);
+    assert.strictEqual(told.key, made.key);
     const again = yield* OwnerWork.nudge([rhea], { orgId, key: made.key });
     assert.deepStrictEqual(again, { ...first, already: true });
     // No line in her chat: one held for her banner, and her row says who asked.
