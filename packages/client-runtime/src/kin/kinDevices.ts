@@ -28,6 +28,7 @@ export const KIN_DEVICES_COPY = {
   expiredDetail: `Links work for ${KIN_DEVICE_LINK_TTL_MINUTES} minutes. Make a new one for the device.`,
   limit: `You have ${KIN_DEVICE_LIMIT} devices linked, the most Kin allows. Remove one you no longer use, then link the new one.`,
   remove: "Remove",
+  thisDevice: "This device",
   ownerFooter: "Removing a device signs it out right away.",
 } as const;
 

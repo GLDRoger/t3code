@@ -57,6 +57,11 @@ export const KIN_TASKS_KEYS_COPY = {
   dropped: `${ADDRESS_UNKNOWN} Remove this key and make another.`,
   addressUnknown: ADDRESS_UNKNOWN,
   setupHow: "How to set it up",
+  setupDetail: "The address and the lines to paste into your coding agent",
+  addressMissing: "Address unknown",
+  foldedTitle: "Use Kin from your coding agent",
+  foldedDetail: "For people who write code with Claude Code, Codex or Cursor",
+  show: "Show",
   standIn: `Each line has ${KIN_TASKS_KEY_STAND_IN} where your key goes. Kin shows a key only once, when it is made.`,
 } as const;
 

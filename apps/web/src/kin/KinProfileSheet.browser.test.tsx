@@ -17,14 +17,24 @@ const state = vi.hoisted(() => ({
   /** What the host sends for each person's GitHub username; absent, the reader may not change it. */
   logins: {} as Record<string, string | null | undefined>,
   saved: [] as Array<{ readonly personId: string; readonly githubLogin: string | null }>,
+  /** Each profile save, as sent. */
+  updates: [] as Array<Record<string, unknown>>,
+  /** Whether Rhea has a picture of her own. */
+  pictured: false,
   /** How the next save is answered. */
   answer: "saved" as "saved" | "taken",
 }));
 
-function setup(logins: Record<string, string | null | undefined>, answer: "saved" | "taken") {
+function setup(
+  logins: Record<string, string | null | undefined>,
+  answer: "saved" | "taken",
+  pictured = false,
+) {
   state.logins = logins;
   state.saved = [];
+  state.updates = [];
   state.answer = answer;
+  state.pictured = pictured;
 }
 
 const environmentId = EnvironmentId.make("env-1");
@@ -55,7 +65,7 @@ vi.mock("./kinPictures", async () => {
       personId: contracts.KinPersonId.make(personId),
       displayName,
       handle: personId,
-      pictureId: null,
+      pictureId: personId === "rhea" && state.pictured ? "picture-rhea" : null,
       roleTags: [],
       skills: "",
       timeZone: null,
@@ -76,7 +86,7 @@ vi.mock("./KinPersonTasks", () => ({
   ),
 }));
 vi.mock("./KinAvatar", () => ({ KinAvatar: () => null }));
-vi.mock("./KinAway", () => ({ KinAwayField: () => null }));
+vi.mock("./KinAway", () => ({ KinAwayRow: () => null }));
 vi.mock("./KinTasksKeys", () => ({ KinTasksKeysSection: () => null }));
 vi.mock("./KinDevices", () => ({ KinMyDevices: () => null }));
 vi.mock("./useKinOwnerLevel", () => ({ useKinOwnerLevelKnown: () => true }));
@@ -91,6 +101,10 @@ vi.mock("../state/use-atom-command", async () => {
       async (value: {
         readonly input: { readonly personId: string; readonly githubLogin: string | null };
       }) => {
+        if (command.label === "kin:profile:update") {
+          state.updates.push(value.input);
+          return AsyncResult.success({});
+        }
         if (command.label !== "kin:person:set-github-login")
           return AsyncResult.failure(Cause.fail("unused"));
         if (state.answer === "taken")
@@ -142,6 +156,33 @@ describe("a person's profile over a Kin page", () => {
   });
 });
 
+describe("editing a profile", () => {
+  it("takes the picture away only when the form is saved", async () => {
+    setup({}, "saved", true);
+    await using _mine = await opened("/kin", rhea);
+    await page.getByRole("button", { name: "Edit name: Rhea" }).click();
+    await page.getByRole("button", { name: "Remove picture" }).click();
+    await expect.element(page.getByRole("button", { name: "Add picture" })).toBeVisible();
+    expect(state.updates).toEqual([]);
+    await page.getByRole("button", { name: "Save profile" }).click();
+    await vi.waitFor(() =>
+      expect(state.updates).toEqual([{ orgId, personId: rhea, picture: null }]),
+    );
+  });
+
+  it("keeps the picture when the form is cancelled", async () => {
+    setup({}, "saved", true);
+    await using _mine = await opened("/kin", rhea);
+    await page.getByRole("button", { name: "Edit name: Rhea" }).click();
+    await page.getByRole("button", { name: "Remove picture" }).click();
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect
+      .element(page.getByRole("button", { name: "Save profile" }))
+      .not.toBeInTheDocument();
+    expect(state.updates).toEqual([]);
+  });
+});
+
 describe("a GitHub username on a profile", () => {
   const field = () => page.getByRole("textbox", { name: "GitHub username" });
   const save = () => page.getByRole("button", { name: "Save" });
@@ -149,8 +190,8 @@ describe("a GitHub username on a profile", () => {
   it("is added on your own profile and refused plainly when it isn't one", async () => {
     setup({ rhea: null }, "saved");
     await using _mine = await opened("/kin", rhea);
-    await expect.element(page.getByRole("heading", { name: "GitHub username" })).toBeVisible();
     expect(document.getElementById("kin-github-username")?.textContent).toContain("Not set");
+    await page.getByRole("button", { name: "GitHub username: Not set" }).click();
     await expect
       .element(
         page.getByText(
@@ -158,7 +199,6 @@ describe("a GitHub username on a profile", () => {
         ),
       )
       .toBeVisible();
-    await page.getByRole("button", { name: "Add GitHub username…" }).click();
     await userEvent.type(field(), "-rhea");
     await save().click();
     await expect.element(page.getByText(/That isn't a GitHub username/)).toBeVisible();
@@ -170,18 +210,21 @@ describe("a GitHub username on a profile", () => {
     expect(state.saved).toEqual([{ personId: rhea, githubLogin: "rhea-ambermill" }]);
   });
 
-  it("is cleared with Remove", async () => {
+  it("is cleared with Remove, after asking", async () => {
     setup({ rhea: "rhea-ambermill" }, "saved");
     await using _mine = await opened("/kin", rhea);
-    await expect.element(page.getByText("rhea-ambermill")).toBeVisible();
+    await page.getByRole("button", { name: "GitHub username: rhea-ambermill" }).click();
     await page.getByRole("button", { name: "Remove" }).click();
+    await expect.element(page.getByText("Remove the GitHub username?")).toBeVisible();
+    expect(state.saved).toEqual([]);
+    await page.getByRole("alertdialog").getByRole("button", { name: "Remove" }).click();
     await vi.waitFor(() => expect(state.saved).toEqual([{ personId: rhea, githubLogin: null }]));
   });
 
   it("says when someone else already has it, without saying who", async () => {
     setup({ rhea: null }, "taken");
     await using _mine = await opened("/kin", rhea);
-    await page.getByRole("button", { name: "Add GitHub username…" }).click();
+    await page.getByRole("button", { name: "GitHub username: Not set" }).click();
     await userEvent.type(field(), "zoya-ambermill");
     await save().click();
     await expect
@@ -193,6 +236,7 @@ describe("a GitHub username on a profile", () => {
   it("is set on a teammate's page by the owner", async () => {
     setup({ rhea: null, zoya: null }, "saved");
     await using _theirs = await opened("/kin", zoya);
+    await page.getByRole("button", { name: "GitHub username: Not set" }).click();
     await expect
       .element(
         page.getByText(
@@ -200,7 +244,6 @@ describe("a GitHub username on a profile", () => {
         ),
       )
       .toBeVisible();
-    await page.getByRole("button", { name: "Add GitHub username…" }).click();
     await userEvent.type(field(), "zoya-ambermill");
     await save().click();
     await expect.element(field()).not.toBeInTheDocument();

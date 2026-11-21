@@ -43,6 +43,8 @@ import { toastManager } from "../components/ui/toast";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
 import { useKinFormOpen } from "./kinOverlayParts";
+import { KinSettingsField, KinSettingsFormDialog } from "./settings/KinSettingsControls";
+import { KinSettingsRow } from "./settings/KinSettingsLayout";
 import { useKinWorkDirectory } from "./useKinWork";
 
 /**
@@ -124,6 +126,113 @@ export function KinAwayField(props: {
         />
       ) : null}
     </section>
+  );
+}
+
+/** Away as a profile row: whoever may edit the profile opens it to set a day or say they're back. */
+export function KinAwayRow(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly profile: KinPersonProfile;
+  readonly mine: boolean;
+  readonly mayEdit: boolean;
+}) {
+  const { profile } = props;
+  const update = useAtomCommand(kinClient.profileUpdate, { reportFailure: false });
+  const [picking, setPicking] = useKinFormOpen();
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const line = kinAwayLine(profile, { mine: props.mine, short: true });
+  if (line === null && !props.mayEdit) return null;
+  const save = async (awayUntil: string | null) => {
+    setBusy(true);
+    setProblem(null);
+    const outcome = await update({
+      environmentId: props.environmentId,
+      input: { orgId: props.orgId, personId: profile.personId, awayUntil },
+    });
+    setBusy(false);
+    if (AsyncResult.isSuccess(outcome)) return setPicking(false);
+    setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_AWAY.failed));
+  };
+  const close = () => {
+    setProblem(null);
+    setPicking(false);
+  };
+  return (
+    <>
+      <KinSettingsRow
+        title={KIN_AWAY.label}
+        detail={line ?? KIN_AWAY.notAway}
+        {...(props.mayEdit
+          ? {
+              openLabel: `${KIN_AWAY.label}: ${line ?? KIN_AWAY.notAway}`,
+              onOpen: () => setPicking(true),
+            }
+          : {})}
+      />
+      {picking ? (
+        <KinAwayForm
+          profile={profile}
+          mine={props.mine}
+          busy={busy}
+          problem={problem}
+          onSave={(day) => void save(day)}
+          onBack={line === null ? null : () => void save(null)}
+          onClose={close}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function KinAwayForm(props: {
+  readonly profile: KinPersonProfile;
+  readonly mine: boolean;
+  readonly busy: boolean;
+  readonly problem: string | null;
+  readonly onSave: (day: string) => void;
+  /** Null while they aren't away. */
+  readonly onBack: (() => void) | null;
+  readonly onClose: () => void;
+}) {
+  const { profile } = props;
+  const [day, setDay] = useState(
+    () => profile.awayUntil ?? kinAwayDefault(kinNow(), profile.timeZone),
+  );
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <KinSettingsFormDialog
+      title={KIN_AWAY.title}
+      description={props.mine ? KIN_AWAY.mineHint : KIN_AWAY.theirHint(profile.displayName)}
+      submitLabel={KIN_AWAY.save}
+      busy={props.busy}
+      problem={problem ?? props.problem}
+      secondary={
+        props.onBack === null ? undefined : (
+          <Button type="button" variant="outline" disabled={props.busy} onClick={props.onBack}>
+            {KIN_AWAY.back}
+          </Button>
+        )
+      }
+      onSubmit={() => {
+        const wrong = kinAwayProblem(day, kinNow(), profile.timeZone);
+        setProblem(wrong);
+        if (wrong === null) props.onSave(day);
+      }}
+      onClose={props.onClose}
+    >
+      <KinSettingsField label={KIN_AWAY.dayLabel}>
+        {(ids) => (
+          <Input
+            id={ids.control}
+            type="date"
+            value={day}
+            onChange={(event) => setDay(event.currentTarget.value)}
+          />
+        )}
+      </KinSettingsField>
+    </KinSettingsFormDialog>
   );
 }
 

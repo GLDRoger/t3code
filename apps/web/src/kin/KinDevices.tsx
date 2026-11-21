@@ -22,19 +22,10 @@ import type {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { CheckIcon, CopyIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
-import {
-  AlertDialog,
-  AlertDialogClose,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogPopup,
-  AlertDialogTitle,
-} from "../components/ui/alert-dialog";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import {
@@ -52,7 +43,15 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { usePreparedConnection } from "../state/session";
 import { useKinPublicUrl } from "./useKinOwnerLevel";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinConfirm } from "./KinConfirm";
 import { kinClient } from "./kinClient";
+import {
+  KinSettingsEmpty,
+  KinSettingsLoadFailed,
+  KinSettingsLoading,
+  KinSettingsRow,
+  KinSettingsSection,
+} from "./settings/KinSettingsLayout";
 import { useNowMinuteMs } from "./useKinClock";
 
 interface KinDevicesTarget {
@@ -88,6 +87,7 @@ function useActiveDevices(target: KinDevicesTarget) {
 export function KinMyDevices(props: KinDevicesTarget) {
   const { devices } = useActiveDevices(props);
   const link = useAtomCommand(kinClient.deviceLink, { reportFailure: false });
+  const removal = useDeviceRemoval(props, true);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   // The link on screen; dropped when the dialog closes.
@@ -108,24 +108,58 @@ export function KinMyDevices(props: KinDevicesTarget) {
     else setProblem(kinDeviceLinkProblem(squashAtomCommandFailure(result)));
   };
   return (
-    <section className="flex flex-col gap-2">
-      <h3 className="text-xs font-medium text-muted-foreground">{KIN_DEVICES_COPY.title}</h3>
-      <KinDeviceList {...props} mine />
-      <Button
-        size="sm"
-        variant="outline"
-        className="self-start"
-        disabled={busy}
-        aria-busy={busy}
-        onClick={() => void makeLink()}
-      >
-        {KIN_DEVICES_COPY.link}
-      </Button>
-      {problem === null || made !== null ? null : (
-        <p role="alert" className="text-xs text-destructive-foreground">
-          {problem}
-        </p>
+    <KinSettingsSection
+      title={KIN_DEVICES_COPY.title}
+      action={
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={busy}
+          aria-busy={busy}
+          onClick={() => void makeLink()}
+        >
+          <PlusIcon />
+          {KIN_DEVICES_COPY.link}
+        </Button>
+      }
+      problem={(made === null ? problem : null) ?? removal.problem}
+    >
+      {removal.shown === null ? (
+        removal.failed ? (
+          <KinSettingsLoadFailed onRetry={() => void refreshDevices(props)}>
+            {KIN_DEVICES_COPY.loadFailed}
+          </KinSettingsLoadFailed>
+        ) : (
+          <KinSettingsLoading rows={2} />
+        )
+      ) : removal.shown.length === 0 ? (
+        <KinSettingsEmpty>{KIN_DEVICES_COPY.empty}</KinSettingsEmpty>
+      ) : (
+        removal.shown.map((device) => (
+          <KinSettingsRow
+            key={device.sessionId}
+            title={kinDeviceLabel(device)}
+            detail={
+              device.current === true
+                ? `${KIN_DEVICES_COPY.thisDevice} · ${kinDeviceLine(device, removal.now)}`
+                : kinDeviceLine(device, removal.now)
+            }
+            control={
+              kinDeviceRemovable(device) ? (
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  aria-label={`Remove ${kinDeviceLabel(device)}`}
+                  onClick={() => removal.ask(device)}
+                >
+                  {KIN_DEVICES_COPY.remove}
+                </Button>
+              ) : null
+            }
+          />
+        ))
       )}
+      {removal.confirm}
       {made === null ? null : (
         <KinLinkDeviceDialog
           made={made}
@@ -140,7 +174,7 @@ export function KinMyDevices(props: KinDevicesTarget) {
           }}
         />
       )}
-    </section>
+    </KinSettingsSection>
   );
 }
 
@@ -149,19 +183,20 @@ export function KinTeammateDevices(props: KinDevicesTarget) {
   return (
     <section className="flex flex-col gap-2">
       <h3 className="text-xs font-medium text-muted-foreground">Devices</h3>
-      <KinDeviceList {...props} mine={false} />
+      <KinDeviceList {...props} />
     </section>
   );
 }
 
-function KinDeviceList(props: KinDevicesTarget & { readonly mine: boolean }) {
-  const { environmentId, orgId, personId } = props;
-  const { devices, all, nowMs, failed, now } = useActiveDevices(props);
+/** Removing one of `mine`'s or a teammate's devices: asks first, then signs it out. */
+function useDeviceRemoval(target: KinDevicesTarget, mine: boolean) {
+  const { environmentId, orgId, personId } = target;
+  const { devices, all, nowMs, failed, now } = useActiveDevices(target);
   const remove = useAtomCommand(kinClient.deviceRemove, { reportFailure: false });
   const [asked, setAsked] = useState<KinPersonDevice | null>(null);
   const [removing, setRemoving] = useState<ReadonlySet<string>>(new Set());
   const [problem, setProblem] = useState<string | null>(null);
-  const copy = asked === null ? null : kinRemoveDeviceCopy(asked, props.mine, all, nowMs);
+  const copy = asked === null ? null : kinRemoveDeviceCopy(asked, mine, all, nowMs);
 
   const removeDevice = async (device: KinPersonDevice) => {
     setProblem(null);
@@ -177,7 +212,7 @@ function KinDeviceList(props: KinDevicesTarget & { readonly mine: boolean }) {
     }
     if (!AsyncResult.isSuccess(result))
       setProblem(kinRemoveDeviceProblem(squashAtomCommandFailure(result)));
-    await refreshDevices(props);
+    await refreshDevices(target);
     setRemoving((held) => {
       const next = new Set(held);
       next.delete(device.sessionId);
@@ -185,23 +220,44 @@ function KinDeviceList(props: KinDevicesTarget & { readonly mine: boolean }) {
     });
   };
 
-  if (devices === null) {
+  return {
+    shown: devices?.filter((device) => !removing.has(device.sessionId)) ?? null,
+    failed,
+    now,
+    problem,
+    ask: setAsked,
+    confirm: (
+      <KinConfirm
+        ask={
+          copy === null
+            ? null
+            : { title: copy.title, detail: copy.detail, action: "Remove", destructive: true }
+        }
+        onConfirm={() => {
+          if (asked !== null) void removeDevice(asked);
+        }}
+        onClose={() => setAsked(null)}
+      />
+    ),
+  };
+}
+
+function KinDeviceList(props: KinDevicesTarget) {
+  const removal = useDeviceRemoval(props, false);
+  if (removal.shown === null) {
     return (
       <p className="text-sm text-muted-foreground">
-        {failed ? KIN_DEVICES_COPY.loadFailed : "Loading…"}
+        {removal.failed ? KIN_DEVICES_COPY.loadFailed : "Loading…"}
       </p>
     );
   }
-  const shown = devices.filter((device) => !removing.has(device.sessionId));
   return (
     <>
-      {shown.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          {props.mine ? "No devices linked yet." : "Not signed in anywhere."}
-        </p>
+      {removal.shown.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Not signed in anywhere.</p>
       ) : (
         <ul className="flex flex-col">
-          {shown.map((device) => (
+          {removal.shown.map((device) => (
             <li
               key={device.sessionId}
               className="flex items-center gap-3 border-b border-border/60 py-2 last:border-b-0"
@@ -211,14 +267,16 @@ function KinDeviceList(props: KinDevicesTarget & { readonly mine: boolean }) {
                   <span className="truncate text-sm text-foreground">{kinDeviceLabel(device)}</span>
                   {device.current === true ? <Badge variant="secondary">This device</Badge> : null}
                 </span>
-                <span className="text-xs text-muted-foreground">{kinDeviceLine(device, now)}</span>
+                <span className="text-xs text-muted-foreground">
+                  {kinDeviceLine(device, removal.now)}
+                </span>
               </span>
               {kinDeviceRemovable(device) ? (
                 <Button
                   size="sm"
                   variant="ghost-destructive"
                   aria-label={`Remove ${kinDeviceLabel(device)}`}
-                  onClick={() => setAsked(device)}
+                  onClick={() => removal.ask(device)}
                 >
                   {KIN_DEVICES_COPY.remove}
                 </Button>
@@ -227,32 +285,12 @@ function KinDeviceList(props: KinDevicesTarget & { readonly mine: boolean }) {
           ))}
         </ul>
       )}
-      {problem === null ? null : (
+      {removal.problem === null ? null : (
         <p role="alert" className="text-xs text-destructive-foreground">
-          {problem}
+          {removal.problem}
         </p>
       )}
-      <AlertDialog open={asked !== null} onOpenChange={(open) => !open && setAsked(null)}>
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{copy?.title}</AlertDialogTitle>
-            <AlertDialogDescription>{copy?.detail}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                const device = asked;
-                setAsked(null);
-                if (device !== null) void removeDevice(device);
-              }}
-            >
-              Remove
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
+      {removal.confirm}
     </>
   );
 }
