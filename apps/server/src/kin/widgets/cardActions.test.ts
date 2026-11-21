@@ -1164,7 +1164,7 @@ it.effect("a tap on a list proposal's own card makes the list once, for an owner
           const refused = yield* kin
             .tap(kin.person("dev"), widgetId, "option-1", "dev-tap")
             .pipe(Effect.flip);
-          assert.oneOf(refused.reason, ["not_allowed", "not_found"]);
+          assert.include(refused, { reason: "not_found" });
           assert.lengthOf(yield* lists(id), 0);
         }
         yield* kin.tap(who, widgetId, "option-1", `${name}-tap`);

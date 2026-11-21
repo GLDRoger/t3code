@@ -300,9 +300,10 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
         };
   // A new list's yes runs as the card's own action, so the tap makes it with no turn to wake;
   // a turn that couldn't make it here offers the plain card. A typed yes works without either.
+  const chatId = KinChatId.make(chat.chatId);
   const create =
     proposal._tag === "new"
-      ? yield* CardActions.draw(lead, chat.chatId, { kind: "create_list", target: proposalId }).pipe(
+      ? yield* CardActions.draw(lead, chatId, { kind: "create_list", target: proposalId }).pipe(
           Effect.map((drawn) => drawn.plan),
           Effect.catchTags({ KinChatError: () => Effect.undefined }),
         )
@@ -330,7 +331,7 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
         if (create !== undefined)
           yield* sealPlans({
             orgId: lead.orgId,
-            chatId: chat.chatId,
+            chatId,
             widgetId: KinWidgetId.make(widgetId),
             plans: [{ optionId: OWNER_CARD_YES, plan: create }],
             now,
