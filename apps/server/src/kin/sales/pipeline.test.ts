@@ -829,7 +829,7 @@ it.effect(
         next: { title: "Invented: chase the quote", due: "2026-11-20" },
       });
       assert.deepStrictEqual(
-        stepped.openSteps?.map((one: { readonly title: string }) => one.title),
+        ("openSteps" in stepped ? stepped.openSteps : undefined)?.map((one) => one.title),
         ["Invented: call Ira", "Invented: chase the quote"],
       );
       // Rhea's client with no deal: Zoya's screen and her agent may both open one, and neither
