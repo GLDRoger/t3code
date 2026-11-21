@@ -140,6 +140,8 @@ export const KinRecordCan = Schema.Struct({
   repeat: Schema.optional(Schema.Boolean),
   /** Add or remove its web links (`kin.work.linkAdd`); absent from older hosts. */
   links: Schema.optional(Schema.Boolean),
+  /** Add, tick or remove its steps and mark it urgent: a task only; absent from older hosts. */
+  steps: Schema.optional(Schema.Boolean),
 });
 export type KinRecordCan = typeof KinRecordCan.Type;
 

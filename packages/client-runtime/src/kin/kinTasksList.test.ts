@@ -286,6 +286,33 @@ describe("kinTasksByMove", () => {
     ]);
   });
 
+  it.each([
+    ["UTC", ["U", "V", "B", "X", "A"]],
+    // In Auckland V falls due the next day, so it no longer leads B's.
+    ["Pacific/Auckland", ["U", "B", "V", "X", "A"]],
+  ] as const)("an urgent task leads its own due day where the company is (%s)", (zone, order) => {
+    const records = [
+      row("A"),
+      row("B", { dueAt: "2026-11-20T00:00:00.000Z" }),
+      row("U", { dueAt: "2026-11-20T09:00:00.000Z", urgent: true }),
+      row("V", { dueAt: "2026-11-20T12:00:00.000Z", urgent: true }),
+      row("X", { urgent: true }),
+    ];
+    const items = kinTasksByMove({
+      records,
+      moves: new Map(),
+      counts: null,
+      needsYou: null,
+      ownerLevel: true,
+      names: { ...names, zone },
+      read: true,
+    });
+    expect(groups(items)).toEqual(["Needs you -", ...order]);
+    // Its flag is on its row; urgent alone puts nothing else in Needs you.
+    expect(kinTaskLine(records[2]!, names, now).urgent).toBe(true);
+    expect(kinTaskLine(records[1]!, names, now).urgent).toBe(false);
+  });
+
   it("keeps the host's order and counts, says all clear, and ends with Done", () => {
     const records = [row("D", { owner: meera }), row("E", { owner: zoya })];
     const moves = new Map<string, KinWorkRowMove>([
@@ -859,6 +886,13 @@ describe("kinTaskLine", () => {
       "Due tomorrow",
     ],
     ["no date says so", row("C"), null, null, "No date"],
+    [
+      "steps say how many are ticked",
+      row("S", { steps: { done: 2, of: 4 } }),
+      null,
+      null,
+      "No date · 2 of 4",
+    ],
     [
       "waiting names who it waits on",
       row("D", {

@@ -1695,6 +1695,15 @@ export function makeKinClient<R, ER>(
       label: "kin:work:update",
       tag: "kin.work.update",
     }),
+    /** Ticks one of a task's steps, by whoever may change the task. */
+    workTickStep: createKinRpcCommand(runtime, {
+      label: "kin:work:tickStep",
+      tag: "kin.work.tickStep",
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ input }) => `${input.orgId}:${input.key}:${input.index}`,
+      },
+    }),
     /** The holder gives a task back to whoever gave it. */
     workHandBack: createKinRpcCommand(runtime, {
       label: "kin:work:handBack",

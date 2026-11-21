@@ -502,6 +502,51 @@ describe("kinWorkItemView", () => {
     ]);
   });
 
+  it("lists a task's steps in order, and says all ticked without marking it done", () => {
+    const can = {
+      states: ["done" as const],
+      edit: true,
+      party: true,
+      project: true,
+      clearProject: true,
+      give: true,
+      takeBack: false,
+      mark: true,
+      unmark: true,
+      share: false,
+      confirm: false,
+      steps: true,
+    };
+    const checklist = [
+      { title: "Fields and states", done: true },
+      { title: "Wireframe", done: true },
+    ];
+    const view = kinWorkItemView(
+      detail({ can, checklist, steps: { done: 2, of: 2 }, urgent: true }),
+      names,
+      now,
+      50,
+      place,
+    );
+    expect(view.urgent).toBe(true);
+    expect(view.steps).toMatchObject({
+      count: "2 of 2",
+      editable: true,
+      allDone: "Every step is ticked. Mark the task done when it's finished.",
+    });
+    expect(view.steps?.items.map((item) => [item.title, item.label])).toEqual([
+      ["Fields and states", "Untick: Fields and states"],
+      ["Wireframe", "Untick: Wireframe"],
+    ]);
+    expect(view.state).not.toBe("done");
+    // One that may not change it reads them and ticks none; with none, it has no Steps.
+    const reader = { ...can, edit: false, steps: false };
+    expect(
+      kinWorkItemView(detail({ can: reader, checklist }), names, now, 50, place).steps,
+    ).toMatchObject({ editable: false });
+    expect(kinWorkItemView(detail({ can: reader }), names, now, 50, place).steps).toBeNull();
+  });
+
   it("opens web links and source chats only, and keeps the latest word on a pull request", () => {
     const link = { relation: "relates", chatId: null, createdAt: now.toISOString() } as const;
     const view = kinWorkItemView(
@@ -636,6 +681,10 @@ describe("a task on an older host", () => {
     const view = kinWorkItemView(suggested, names, now, 50, place);
     expect(view).toMatchObject({ editable: false, suggestion: "Tech lead suggested this task." });
     expect(view.remarks.join(" ")).toContain("Tell it in chat");
+  });
+
+  it("shows no Steps to add where the host doesn't say it keeps them", () => {
+    expect(kinWorkItemView({ ...suggested, seq: 9 }, names, now, 50, place).steps).toBeNull();
   });
 
   it("offers them on a host that sends a task's own change number", () => {

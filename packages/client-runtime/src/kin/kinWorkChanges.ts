@@ -9,6 +9,8 @@ import type {
   KinWorkAssignInput,
   KinWorkConfirmInput,
   KinWorkPrincipal,
+  KinWorkStep,
+  KinWorkTickStepInput,
   KinWorkUpdateInput,
 } from "@t3tools/contracts";
 
@@ -65,7 +67,21 @@ export type KinWorkAction =
   /** The task's own label; its client or project can still keep it private. */
   | { readonly type: "private"; readonly private: boolean }
   /** How it comes back once closed, from its due date; null stops it. */
-  | { readonly type: "repeat"; readonly rule: KinRepeatRule | null };
+  | { readonly type: "repeat"; readonly rule: KinRepeatRule | null }
+  | { readonly type: "urgent"; readonly urgent: boolean }
+  /** Ticks or unticks one step, as the page showed it. */
+  | {
+      readonly type: "tick";
+      readonly index: number;
+      readonly title: string;
+      readonly done: boolean;
+    }
+  /** The whole checklist after a step was added or removed, or put back. */
+  | {
+      readonly type: "steps";
+      readonly steps: ReadonlyArray<KinWorkStep>;
+      readonly said: "added" | "removed" | "back";
+    };
 
 export const KIN_WORK_OFFLINE_CHANGE = "You're offline. Changes need a connection.";
 export const KIN_WORK_EDIT_CHANGED =
@@ -136,6 +152,9 @@ type Patch = Partial<
     | "side"
     | "sensitive"
     | "repeat"
+    | "urgent"
+    | "steps"
+    | "checklist"
   >
 >;
 
@@ -298,20 +317,48 @@ function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames
       return action.rule === null
         ? "No longer repeats."
         : `Repeats ${kinRepeatText(action.rule).toLowerCase()}.`;
+    case "urgent":
+      return action.urgent ? "Marked urgent." : "No longer urgent.";
+    case "tick":
+      return action.done ? "Ticked." : "Unticked.";
+    case "steps":
+      return action.said === "added"
+        ? "Step added."
+        : action.said === "removed"
+          ? "Step removed."
+          : "Step put back.";
   }
 }
 
+/** The steps a change would leave, shown at once with their count while the host answers. */
+const stepsShown = (steps: ReadonlyArray<KinWorkStep>): Patch => ({
+  checklist: steps,
+  steps:
+    steps.length === 0
+      ? undefined
+      : { done: steps.filter((step) => step.done).length, of: steps.length },
+});
+
 /** Closing and re-dating have a way back: to where the task stood. Nothing else needs one. */
-const undoOf = (record: KinRecord, action: KinWorkAction): KinWorkAction | null => {
+const undoOf = (
+  record: KinRecord | KinRecordDetail,
+  action: KinWorkAction,
+): KinWorkAction | null => {
   if (action.type === "due")
     return { type: "dueBack", dueAt: record.dueAt, allDay: record.dueAllDay };
+  if (action.type === "steps" && action.said === "removed" && "checklist" in record)
+    return { type: "steps", steps: record.checklist ?? [], said: "back" };
   return !kinWorkClosed(record.state) &&
     (action.type === "decline" || (action.type === "state" && kinWorkClosed(action.state)))
     ? { type: "state", state: record.state, waitingOn: record.waitingOn }
     : null;
 };
 
-function patchOf(record: KinRecord, action: KinWorkAction, names: KinWorkNames): Patch {
+function patchOf(
+  record: KinRecord | KinRecordDetail,
+  action: KinWorkAction,
+  names: KinWorkNames,
+): Patch {
   switch (action.type) {
     case "state": {
       const closing = kinWorkClosed(action.state);
@@ -359,6 +406,20 @@ function patchOf(record: KinRecord, action: KinWorkAction, names: KinWorkNames):
       return { sensitive: action.private };
     case "repeat":
       return { repeat: action.rule ?? undefined };
+    case "urgent":
+      return { urgent: action.urgent ? true : undefined };
+    case "tick": {
+      const held = "checklist" in record ? record.checklist : undefined;
+      return held === undefined
+        ? {}
+        : stepsShown(
+            held.map((step, index) =>
+              index === action.index ? { title: step.title, done: action.done } : step,
+            ),
+          );
+    }
+    case "steps":
+      return stepsShown(action.steps);
   }
 }
 
@@ -375,6 +436,7 @@ export function createKinWorkChanges(options: {
   readonly assign: (input: KinWorkAssignInput) => Sent;
   readonly confirm: (input: KinWorkConfirmInput) => Sent;
   readonly decline: (input: KinWorkConfirmInput) => Sent;
+  readonly tickStep: (input: KinWorkTickStepInput) => Sent;
   /** Reads a task again after the host said it had moved on. */
   readonly reread: (key: KinRecordKey) => void;
   readonly online: () => boolean;
@@ -451,12 +513,26 @@ export function createKinWorkChanges(options: {
         return kinWorkSettled(await options.update({ ...at, sensitive: action.private }));
       case "repeat":
         return kinWorkSettled(await options.update({ ...at, repeat: action.rule }));
+      case "urgent":
+        return kinWorkSettled(await options.update({ ...at, urgent: action.urgent }));
+      case "tick":
+        return kinWorkSettled(
+          await options.tickStep({
+            orgId,
+            key: record.key,
+            index: action.index,
+            title: action.title,
+            done: action.done,
+          }),
+        );
+      case "steps":
+        return kinWorkSettled(await options.update({ ...at, steps: action.steps }));
     }
   };
 
   /** Makes one change to the task as the owner sees it. Resolves true when the host took it. */
   const run = async (
-    held: KinRecord,
+    held: KinRecord | KinRecordDetail,
     action: KinWorkAction,
     names: KinWorkNames,
   ): Promise<boolean> => {
@@ -478,12 +554,16 @@ export function createKinWorkChanges(options: {
       set({
         pending,
         answers: { ...state.answers, [key]: outcome.item },
-        notice: {
-          key,
-          kind: "saved",
-          text: savedText(record, action, names),
-          undo: undoOf(record, action),
-        },
+        // A tick shows in its own box; a notice for each would only cover the list.
+        notice:
+          action.type === "tick"
+            ? null
+            : {
+                key,
+                kind: "saved",
+                text: savedText(record, action, names),
+                undo: undoOf(record, action),
+              },
       });
       return true;
     }

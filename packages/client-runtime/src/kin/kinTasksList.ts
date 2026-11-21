@@ -15,12 +15,14 @@ import {
   type KinWorkRowMove,
   type KinWorkSummary,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 
 import { KIN_DEAL_SENSES, kinAttention, type KinAttentionRow } from "./kinAttention.ts";
 import { kinMayHaveGoneLine } from "./kinChoicePresentation.ts";
 import { kinLateWords } from "./kinTaskRecord.ts";
 import type { KinWorkAction, KinWorkChangesState, KinWorkNotice } from "./kinWorkChanges.ts";
 import {
+  KIN_WORK_STEPS,
   kinWorkClosed,
   kinWorkDueDays,
   kinWorkDueText,
@@ -187,6 +189,8 @@ export interface KinTaskLine {
   readonly holder: string | null;
   readonly lead: { readonly text: string; readonly tone: "late" | "soon" | "working" } | null;
   readonly rest: string;
+  /** Someone marked it urgent and it is still open: the row's flag. */
+  readonly urgent: boolean;
 }
 
 export function kinTaskLine(
@@ -237,7 +241,15 @@ export function kinTaskLine(
   return {
     holder: options.ownList === true && mine ? null : kinWorkName(record.owner, names),
     lead,
-    rest: [waiting, due, about].filter((part) => part !== null).join(" · "),
+    rest: [
+      waiting,
+      due,
+      record.steps === undefined ? null : KIN_WORK_STEPS.count(record.steps),
+      about,
+    ]
+      .filter((part) => part !== null)
+      .join(" · "),
+    urgent: record.urgent === true && !closed,
   };
 }
 
@@ -402,13 +414,27 @@ export type KinTasksItem<R extends KinRecord> =
   | { readonly type: "done"; readonly key: string; readonly count: number }
   | { readonly type: "foot"; readonly key: string; readonly text: string };
 
-const lateOf = (record: KinRecord) => ({
-  late: record.late,
-  dueMs: record.dueAt === null ? null : Date.parse(record.dueAt),
-  createdMs: Date.parse(record.createdAt),
-  key: record.key,
-});
-const byOrder = (a: KinRecord, b: KinRecord) => kinWorkMoveOrder(lateOf(a), lateOf(b));
+/** With the company's zone, urgent leads its whole due day; without, those due at one time. */
+const lateOf = (record: KinRecord, zone?: string | null) => {
+  const dueMs = record.dueAt === null ? null : Date.parse(record.dueAt);
+  return {
+    late: record.late,
+    dueMs,
+    createdMs: Date.parse(record.createdAt),
+    key: record.key,
+    urgent: record.urgent === true,
+    ...(zone == null
+      ? {}
+      : {
+          day:
+            dueMs === null || Number.isNaN(dueMs)
+              ? null
+              : DateTime.formatIsoDate(DateTime.makeZonedUnsafe(dueMs, { timeZone: zone })),
+        }),
+  };
+};
+const byOrder = (a: KinRecord, b: KinRecord, zone?: string | null) =>
+  kinWorkMoveOrder(lateOf(a, zone), lateOf(b, zone));
 
 /** The most urgent open tasks first, in the order Tasks lists them inside a group. */
 export const kinTasksMostUrgent = <R extends KinRecord>(
@@ -559,7 +585,8 @@ export function kinTasksByMove<R extends KinRecord>(input: {
     placed.get(place)!.push({ record, move });
   }
   if (!fromHost)
-    for (const rows of placed.values()) rows.sort((a, b) => byOrder(a.record, b.record));
+    for (const rows of placed.values())
+      rows.sort((a, b) => byOrder(a.record, b.record, names.zone));
   const title = (place: KinWorkMovePlace) =>
     place === "noDate"
       ? KIN_TASKS.noDateGroup
@@ -722,7 +749,7 @@ export function kinTasksGroupedBy<R extends KinRecord>(input: {
     });
     pushTasks(
       items,
-      [...rows].sort(byOrder).map((record) => ({ record, move: null })),
+      [...rows].sort((a, b) => byOrder(a, b, names.zone)).map((record) => ({ record, move: null })),
       groupBy === "project" && bucket.project !== null,
     );
   }

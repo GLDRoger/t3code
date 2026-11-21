@@ -2276,6 +2276,7 @@ it.effect(
         "Hand-off",
       ]);
       assert.deepInclude(made, { steps: { done: 0, of: 4 }, urgent: true });
+      assert.isTrue(made.can?.steps);
       const tick = (index: number, title: string, done = true) =>
         OwnerWork.tickStep([owner], { orgId, key: made.key, index, title, done });
       const ticked = yield* tick(1, "Wireframe");
@@ -2374,16 +2375,15 @@ it.effect(
         to: { _tag: "person", personId: mateId },
         rev: given.rev,
       });
-      assert.deepInclude(
-        yield* OwnerWork.tickStep([mate], {
-          orgId,
-          key: made.key,
-          index: 0,
-          title: "Hand-off",
-          done: true,
-        }),
-        { steps: { done: 1, of: 1 } },
-      );
+      const theirs = yield* OwnerWork.tickStep([mate], {
+        orgId,
+        key: made.key,
+        index: 0,
+        title: "Hand-off",
+        done: true,
+      });
+      assert.deepInclude(theirs, { steps: { done: 1, of: 1 } });
+      assert.isTrue(theirs.can?.steps);
       // Only a task has steps.
       const client = yield* OwnerClients.createParty([owner], {
         orgId,

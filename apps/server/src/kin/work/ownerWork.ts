@@ -253,6 +253,7 @@ const NOTHING: KinRecordCan = {
   confirm: false,
   repeat: false,
   links: false,
+  steps: false,
 };
 
 type CanEntry = Pick<KinRecord, "recordId" | "key" | "state" | "owner" | "confirmed"> &
@@ -275,11 +276,16 @@ const cansOf = Effect.fn("KinWork.cansOf")(function* (
     const def = defs.get(entry.registerId);
     return def === undefined ? [] : [{ ...entry, states: def.states }];
   });
+  const tasks = new Set(
+    entries.flatMap((entry) => (entry.registerId === "work" ? [entry.recordId] : [])),
+  );
   if (viewer.teammate) {
     const cans = yield* teamCan(orgId, viewer.person.personId, known).pipe(workFailure);
     return (recordId: string): KinRecordCan => {
       const can = cans.get(recordId);
-      return can === undefined ? NOTHING : { ...can, links: can.edit };
+      return can === undefined
+        ? NOTHING
+        : { ...can, links: can.edit, steps: can.edit && tasks.has(recordId) };
     };
   }
   const cans = new Map<string, KinRecordCan>(
@@ -303,6 +309,7 @@ const cansOf = Effect.fn("KinWork.cansOf")(function* (
         confirm: edits && !entry.confirmed && entry.state !== "dropped",
         repeat: entry.registerId === "work",
         links: edits,
+        steps: tasks.has(entry.recordId),
       };
       return [entry.recordId, can] as const;
     }),
