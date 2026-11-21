@@ -90,7 +90,10 @@ export const KinPulseHandled = Schema.Struct({
     Schema.TaggedStruct("person", { personId: KinPersonId }),
   ]),
   at: CanonicalUtcTimestamp,
-  /** Hidden until then; null closes this episode for good ("not a problem"). */
+  /**
+   * Hidden until then; null is "not a problem": for good on this episode, but an invoice still
+   * owed only until its next chase is due.
+   */
   until: Schema.NullOr(CanonicalUtcTimestamp),
   note: Schema.NullOr(Schema.String.check(Schema.isMaxLength(500))),
 });
