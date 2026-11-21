@@ -425,71 +425,97 @@ describe("Settings → Deals", () => {
     quietDays: 14,
   });
 
-  it("lets the owner rename, add and remove a stage, moving its open deals first", async () => {
-    const { setStages } = setup({ stages: held(true) });
-    await using _screen = await render(
+  const renderSettings = () =>
+    render(
       <AppAtomRegistryProvider>
         <KinDealStagesSettings {...target} />
       </AppAtomRegistryProvider>,
     );
-    const second = page.getByRole("textbox", { name: "Stage name 2" });
-    await userEvent.clear(second);
-    await userEvent.type(second, "Talking");
+
+  it("lets the owner rename and move a stage in its own dialog", async () => {
+    const { setStages } = setup({ stages: held(true) });
+    await using _screen = await renderSettings();
+    await userEvent.click(page.getByRole("button", { name: "Edit stage: In talks" }));
+    const form = page.getByRole("dialog");
+    const name = form.getByRole("textbox", { name: "Name" });
+    await userEvent.clear(name);
+    await userEvent.type(name, "Talking");
+    await userEvent.click(form.getByRole("button", { name: "Move up" }));
+    await expect.element(form.getByText("1 of 4")).toBeVisible();
+    await userEvent.click(form.getByRole("button", { name: "Save stage" }));
+    expect(setStages).toHaveBeenCalledWith({
+      rev: 5,
+      stages: [
+        { id: "in-talks", name: "Talking" },
+        { id: "new", name: "New" },
+        { id: "proposal", name: "Proposal" },
+        { id: "deciding", name: "Deciding" },
+      ],
+    });
+  });
+
+  it("adds a stage at the end, and waits for a name that isn't there already", async () => {
+    const { setStages } = setup({ stages: held(true) });
+    await using _screen = await renderSettings();
     await userEvent.click(page.getByRole("button", { name: "Add a stage" }));
-    await userEvent.type(page.getByRole("textbox", { name: "Stage name 5" }), "Signed off");
-    await userEvent.click(page.getByRole("button", { name: "Remove…" }).nth(3));
-    const ask = page.getByRole("dialog");
+    const form = page.getByRole("dialog");
+    const add = form.getByRole("button", { name: "Add stage" });
+    await expect.element(add).toBeDisabled();
+    await userEvent.type(form.getByRole("textbox", { name: "Name" }), "proposal");
+    await expect.element(form.getByText("“proposal” is there twice.")).toBeVisible();
+    await userEvent.clear(form.getByRole("textbox", { name: "Name" }));
+    await userEvent.type(form.getByRole("textbox", { name: "Name" }), "Signed off");
+    await userEvent.click(add);
+    expect(setStages).toHaveBeenCalledWith({
+      rev: 5,
+      stages: [...held(true).stages, { name: "Signed off" }],
+    });
+  });
+
+  it("asks where a removed stage's open deals go before removing it", async () => {
+    const { setStages } = setup({ stages: held(true) });
+    await using _screen = await renderSettings();
+    await userEvent.click(page.getByRole("button", { name: "Edit stage: Deciding" }));
+    await userEvent.click(page.getByRole("button", { name: "Remove stage" }));
+    const ask = page.getByRole("alertdialog");
+    await expect.element(ask.getByText("2 open deals are in it. They move to:")).toBeVisible();
+    expect(setStages).not.toHaveBeenCalled();
     await userEvent.click(ask.getByRole("button", { name: "Move 2 and remove" }));
-    await userEvent.click(page.getByRole("button", { name: "Save stages" }));
     expect(setStages).toHaveBeenCalledWith({
       rev: 5,
       stages: [
         { id: "new", name: "New" },
-        { id: "in-talks", name: "Talking" },
+        { id: "in-talks", name: "In talks" },
         { id: "proposal", name: "Proposal" },
-        { name: "Signed off" },
       ],
       moveTo: { deciding: "new" },
     });
   });
 
-  it("lets the owner set when a deal goes quiet, on its own Save", async () => {
+  it("lets the owner pick when a deal goes quiet, saved as it is picked", async () => {
     const { setQuietDays, setStages } = setup({ stages: held(true) });
-    await using _screen = await render(
-      <AppAtomRegistryProvider>
-        <KinDealStagesSettings {...target} />
-      </AppAtomRegistryProvider>,
-    );
-    const days = page.getByRole("spinbutton", { name: "Days before a deal is quiet" });
-    await expect.element(days).toHaveValue(14);
-    const save = page.getByRole("region", { name: "A deal goes quiet after" }).getByRole("button", {
-      name: "Save",
-    });
-    await expect.element(save).toBeDisabled();
-    await userEvent.clear(days);
-    await userEvent.type(days, "0");
-    await expect.element(page.getByText("Say a whole number of days, 1 to 365.")).toBeVisible();
-    await userEvent.clear(days);
-    await userEvent.type(days, "21");
-    await userEvent.click(save);
+    await using _screen = await renderSettings();
+    const days = page.getByRole("combobox", { name: "Days before a deal is quiet" });
+    await expect.element(days).toHaveTextContent("14 days");
+    await userEvent.click(days);
+    await userEvent.click(page.getByRole("option", { name: "21 days" }));
     expect(setQuietDays).toHaveBeenCalledWith(21);
     expect(setStages).not.toHaveBeenCalled();
   });
 
   it("shows a teammate the stages to read, not change", async () => {
     setup({ stages: held(false) });
-    await using _screen = await render(
-      <AppAtomRegistryProvider>
-        <KinDealStagesSettings {...target} />
-      </AppAtomRegistryProvider>,
-    );
+    await using _screen = await renderSettings();
     await expect
-      .element(page.getByText("The owner and co-owners set the stages. Ask them to change one."))
+      .element(
+        page.getByText("How every deal in the company moves. The owner and co-owners set it."),
+      )
       .toBeVisible();
-    expect(page.getByRole("textbox").elements()).toHaveLength(0);
-    expect(page.getByRole("button", { name: "Save stages" }).elements()).toHaveLength(0);
+    await expect.element(page.getByText("Deciding")).toBeVisible();
+    expect(page.getByRole("button", { name: /Edit stage/ }).elements()).toHaveLength(0);
+    expect(page.getByRole("button", { name: "Add a stage" }).elements()).toHaveLength(0);
     await expect.element(page.getByText("14 days")).toBeVisible();
-    expect(page.getByRole("spinbutton").elements()).toHaveLength(0);
+    expect(page.getByRole("combobox").elements()).toHaveLength(0);
   });
 });
 

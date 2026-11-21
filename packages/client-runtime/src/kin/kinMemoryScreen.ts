@@ -554,6 +554,26 @@ export function createKinMemoryActions(options: {
 
 export type KinMemoryActions = ReturnType<typeof createKinMemoryActions>;
 
+/** Settings → Memory on the web: one row per memory, each opening on its own. */
+export const KIN_MEMORY_SETTINGS = {
+  purpose:
+    "What your agents remember from working with you, and whether your teammates' chats use it.",
+  teamRow: "Use team memory in teammates' chats",
+  remembered: "Remembered",
+  empty: "What your agents learn while working with you shows up here.",
+  open: "Open memory",
+  showAll: (n: number) => `Show all ${n}`,
+  /** Who may know one memory, said on its own page. */
+  whoKnows: (state: KinMemoryVisibility, teamOff: boolean) =>
+    state === "suggested"
+      ? "Your agents think the team could know this. Until you say yes, only you can."
+      : state === "only_owner"
+        ? "Your agents use this only when they work with you."
+        : teamOff
+          ? "The team can know this, once team memory is on for their chats."
+          : "Your agents can use this when they work with teammates.",
+} as const;
+
 /** What the agents remember, for the owner, and the dead end for everyone else. */
 export const KIN_MEMORY_COPY = {
   loading: "Loading what your agents remember",

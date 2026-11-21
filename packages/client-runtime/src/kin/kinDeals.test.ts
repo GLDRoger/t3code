@@ -30,6 +30,7 @@ import {
   kinDealsRaisedInput,
   kinDealsStartFilter,
   kinDealStageBeside,
+  kinDealStagesAfter,
   kinDealStagesProblem,
   kinDealStepHint,
   kinDealWhen,
@@ -412,6 +413,47 @@ describe("kinDealStagesProblem", () => {
     [Array.from({ length: 13 }, (_, i) => `S${i}`), "At most 12 stages."],
   ])("%j", (list, problem) => {
     expect(kinDealStagesProblem(list)).toBe(problem);
+  });
+});
+
+describe("kinDealStagesAfter", () => {
+  const held = {
+    rev: 5,
+    stages: [
+      { id: "new", name: "New" },
+      { id: "in-talks", name: "In talks" },
+      { id: "proposal", name: "Proposal" },
+    ],
+  };
+  it("adds a stage at the end and keeps the rest as they are", () => {
+    expect(kinDealStagesAfter(held, { _tag: "add", name: " Signed " })).toEqual({
+      rev: 5,
+      stages: [...held.stages, { name: "Signed" }],
+    });
+  });
+  it("renames and moves one stage, leaving the others in order", () => {
+    expect(
+      kinDealStagesAfter(held, { _tag: "edit", id: "proposal", name: "Quote", place: 0 }).stages,
+    ).toEqual([
+      { id: "proposal", name: "Quote" },
+      { id: "new", name: "New" },
+      { id: "in-talks", name: "In talks" },
+    ]);
+    expect(
+      kinDealStagesAfter(held, { _tag: "edit", id: "new", name: "New", place: 9 }).stages.map(
+        (stage) => stage.id,
+      ),
+    ).toEqual(["in-talks", "proposal", "new"]);
+  });
+  it("removes a stage, sending its open deals where the person said", () => {
+    expect(kinDealStagesAfter(held, { _tag: "remove", id: "in-talks", moveTo: "new" })).toEqual({
+      rev: 5,
+      stages: [held.stages[0], held.stages[2]],
+      moveTo: { "in-talks": "new" },
+    });
+    expect(
+      kinDealStagesAfter(held, { _tag: "remove", id: "new", moveTo: null }),
+    ).not.toHaveProperty("moveTo");
   });
 });
 
