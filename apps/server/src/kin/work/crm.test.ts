@@ -45,6 +45,7 @@ import * as OwnerWork from "./ownerWork.ts";
 import * as Docs from "./docs.ts";
 import * as Search from "./search.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import * as Numbers from "../gendocs/numbering.ts";
 import { sectionsOf } from "./docBody.ts";
 import { milestoneRisk } from "./projectSpine.ts";
 import { effectivelySensitive } from "./recordRows.ts";
@@ -72,6 +73,13 @@ type Services =
   | FileSystem.FileSystem
   | ServerConfig;
 
+/** The lead issues them on the owner's ask, as kin_issue does: an agent's invoice is a draft. */
+const issuedByLead = (...keys: ReadonlyArray<string>) =>
+  Effect.forEach(
+    keys,
+    (key) => Numbers.issue(orgId, { actor: { _tag: "agent", agentId: lead }, via: "lead" }, key),
+    { discard: true },
+  );
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("fixture"),
   requestNamespace: "fixture",
@@ -1047,6 +1055,7 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         },
       ],
     });
+    yield* issuedByLead("INV-1");
     // One row per tool the lead has: a tool added without one fails to typecheck and here.
     // A definition shows no entry, so proposing one marks nothing.
     const calls = {
@@ -2242,6 +2251,9 @@ it.effect(
         ],
       });
       const overdue = made.records.find((one) => one.title === "Invented overdue invoice")!.key;
+      yield* issuedByLead(
+        ...made.records.filter((one) => one.key.startsWith("INV-")).map((one) => one.key),
+      );
       yield* LeadMoney.payment(scope, {
         sourceEventId: "ask-event",
         key: overdue,
@@ -2970,9 +2982,12 @@ it.effect(
             client: "C-1",
             amount: "900",
             state: "waiting",
+            // Issued the day before: Issue dates it the end of a day, no contact until then.
+            date: "1970-01-14",
           },
         ],
       });
+      yield* issuedByLead("INV-1");
       yield* LeadMoney.payment(scope, {
         sourceEventId: "ask-event",
         key: "INV-1",

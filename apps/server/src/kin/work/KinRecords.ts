@@ -1371,8 +1371,9 @@ const make = Effect.gen(function* () {
     const key = yield* ensureRegister(orgId, def, now);
     const kept = options.kept ?? (yield* startsKept(orgId, writer, list, input));
     // Nobody issued, sent or was paid for what nobody kept: it waits as a draft on its own day.
+    // Only Issue makes an invoice owed, with its number; an agent sets none, so it starts a draft.
     const state =
-      !kept && ISSUED_LISTS.has(list)
+      (!kept && ISSUED_LISTS.has(list)) || (writer.actor._tag === "agent" && list === "invoices")
         ? "open"
         : (input.state ??
           startState(def, {
@@ -1808,7 +1809,17 @@ const make = Effect.gen(function* () {
                 ? (owing ?? row.state)
                 : row.state
             : undefined;
-        const state = patch.state ?? settled ?? row.state;
+        const wanted = patch.state ?? settled ?? row.state;
+        // An agent never issues or settles an invoice by its state: Issue gives it its number.
+        const unissued =
+          writer.actor._tag === "agent" &&
+          list === "invoices" &&
+          !isSuggestion(row) &&
+          (wanted === "waiting" || wanted === "done") &&
+          wanted !== row.state &&
+          (yield* sql`SELECT 1 FROM kin_issued_numbers
+            WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`).length === 0;
+        const state = unissued ? row.state : wanted;
         // Only who may keep one keeps a suggestion, and only an owner-level person takes it back;
         // anyone else's `confirmed` changes nothing, so an agent's slip ack stays only that.
         const keeping =

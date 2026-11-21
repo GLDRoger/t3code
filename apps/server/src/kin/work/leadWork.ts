@@ -105,6 +105,7 @@ import {
   sensitiveNow,
   suggestedStateLabel,
   toRecord,
+  UNISSUED_INVOICE,
   workFailure,
 } from "./recordRows.ts";
 import {
@@ -534,7 +535,7 @@ export const CreateResult = Schema.Struct({
       created: Schema.Boolean,
       /** A meeting whose start has passed: recorded as held, not booked. */
       past: Schema.optional(Schema.Literal(true)),
-      /** On a suggestion only: the state it was stored in, whatever the row asked for. */
+      /** On a suggestion or an invoice draft only: the state it was stored in, whatever was asked. */
       state: Schema.optional(KinRecordState),
       stateLabel: Schema.optional(Schema.String),
       suggested: Schema.optional(Schema.Literal(true)),
@@ -601,6 +602,8 @@ const Updated = Schema.Struct({
   key: Schema.String,
   rev: Schema.Number,
   state: KinRecordState,
+  /** On an invoice an agent asked to issue or settle by its state: still a draft. */
+  stateLabel: Schema.optional(Schema.String),
   changed: Schema.Array(Schema.String),
   ...Marks.fields,
   /** Other contacts with the same email. */
@@ -617,6 +620,7 @@ export const UpdateResult = Schema.Struct({
   key: Schema.optional(Updated.fields.key),
   rev: Schema.optional(Updated.fields.rev),
   state: Schema.optional(Updated.fields.state),
+  stateLabel: Updated.fields.stateLabel,
   changed: Schema.optional(Updated.fields.changed),
   ...Marks.fields,
   sameEmail: Updated.fields.sameEmail,
@@ -2381,7 +2385,9 @@ const createRow = Effect.fnUntraced(function* (
           ),
           suggested: true as const,
         }
-      : {}),
+      : isInvoiceDraft(stored.registerId, stored.state)
+        ? { state: stored.state, stateLabel: UNISSUED_INVOICE }
+        : {}),
     ...marksOf(lists, stored),
     ...(created && alsoOpen.length > 0 ? { alsoOpen } : {}),
     ...(alsoNamed === undefined ? {} : { alsoNamed }),
@@ -3077,6 +3083,12 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
       key: after.key,
       rev: after.rev,
       state: after.state,
+      ...(input.state !== undefined &&
+      input.state !== after.state &&
+      !isSuggestion(after) &&
+      isInvoiceDraft(after.registerId, after.state)
+        ? { stateLabel: UNISSUED_INVOICE }
+        : {}),
       changed,
       ...marksOf(lists, after),
       ...(hiddenFrom.length === 0 ? {} : { noLongerSeenBy: hiddenFrom }),

@@ -212,6 +212,8 @@ export const suggestedStateLabel = (list: string, state: string, label: string) 
   state === "open" && (list === "quotes" || list === "invoices")
     ? `${label}, suggested: waits for the owner or a co-owner to keep it`
     : "Suggested: waits for the owner or a co-owner to keep it";
+/** A kept invoice nobody has issued, as an agent's tool result names it. */
+export const UNISSUED_INVOICE = "Draft: waits for the owner or a co-owner to issue it";
 /** The one refusal for anything done to a suggestion before it is kept, whoever asks. */
 export const stillSuggestion = (key: string) =>
   `${key} is still a suggestion: the owner or a co-owner hasn't kept it. They keep it with Keep on its page, or by asking you to keep it themselves. Nothing changed.`;
