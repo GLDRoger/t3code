@@ -65,6 +65,7 @@ export function KinCheckInRows(
     <>
       {props.beyond.map((checkIn) => (
         <SettingsRow
+          labelWholeWords
           key={checkIn.scheduleId}
           icon={checkIn.on ? "clock" : "moon"}
           label={checkIn.title}
@@ -88,6 +89,7 @@ export function KinCheckInRows(
       ))}
       {props.result.agents.length === 0 ? null : (
         <SettingsRow
+          labelWholeWords
           icon="plus"
           label={KIN_CHECK_INS.add}
           onPress={() =>
