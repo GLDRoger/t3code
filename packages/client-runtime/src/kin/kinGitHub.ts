@@ -37,7 +37,12 @@ import { kinCount } from "./kinCount.ts";
 export const KIN_GITHUB_COPY = {
   title: "GitHub",
   intro:
-    "Your own GitHub login on your Kin's computer. Kin watches your repositories with it, and agents can clone, push and open pull requests on any repository your account can reach.",
+    "Your own GitHub login. Kin watches your repositories with it, and agents can clone, push and open pull requests wherever your account can.",
+  purpose: "Your GitHub login, the repositories Kin watches, and who agents work as there.",
+  open: "Open",
+  accountTitle: "Your account",
+  disconnectRow: "Disconnect GitHub",
+  disconnectRowDetail: "Agents stop working on GitHub as you.",
   connect: "Connect",
   reconnect: "Reconnect",
   disconnect: "Disconnect",
@@ -58,12 +63,12 @@ export const KIN_GITHUB_COPY = {
   tokenLabel: "Personal access token (classic)",
   tokenPlaceholder: "ghp_…",
   tokenHint:
-    "Make one in GitHub under Settings → Developer settings → Tokens (classic), with repo, read:org and workflow. It goes to your Kin's computer and is never shown again.",
+    "Make one in GitHub under Settings → Developer settings → Tokens (classic), with repo, read:org and workflow. It goes to your Kin and is never shown again.",
   tokenConnect: "Connect with token",
   connecting: "Connecting…",
   disconnectTitle: "Disconnect GitHub?",
   disconnectDetail: (login: string) =>
-    `Agents and git on your Kin's computer stop acting as ${login}. To end it on GitHub too, revoke GitHub CLI under Settings → Applications.`,
+    `Agents stop acting as ${login}. To end it on GitHub too, revoke GitHub CLI under Settings → Applications.`,
   revokeUrl: "https://github.com/settings/applications",
   revokeLabel: "Authorized apps on GitHub",
   loadFailed: "Couldn't load your GitHub connection",
@@ -87,6 +92,16 @@ const orgList = (orgs: ReadonlyArray<string>) => {
   if (orgs.length <= 3) return `${orgs.slice(0, -1).join(", ")} and ${orgs.at(-1)}`;
   return `${orgs.slice(0, 2).join(", ")} and ${orgs.length - 2} more`;
 };
+
+/** The GitHub row's one line on Connections: what it reaches, or what's in the way. */
+export function kinGitHubRowDetail(status: KinGitHubStatus): string {
+  const account = status.account;
+  if (status.signIn !== null) return KIN_GITHUB_COPY.waiting;
+  if (account === null)
+    return status.failed ?? "Agents work in your repositories once you connect.";
+  if (account.problem !== null) return account.problem;
+  return account.orgs.length === 0 ? "Your own repositories" : `Reaches ${orgList(account.orgs)}`;
+}
 
 /** The GitHub row on the Connections list. */
 export function kinGitHubRow(status: KinGitHubStatus): KinGitHubRow {
@@ -490,7 +505,7 @@ export const KIN_GITHUB_APP_SETUP_COPY = {
     `Kin forgot ${name}; agents work on GitHub as you. To remove the App for good, delete it on GitHub.`,
   appOnGitHub: "The App on GitHub",
   setUpInKin: (name: string, by: string, at: string) => `${name}, set up in Kin by ${by} on ${at}.`,
-  setUpEarlier: (name: string) => `${name}, set up earlier on Kin's computer.`,
+  setUpEarlier: (name: string) => `${name}, set up earlier.`,
 } as const;
 
 /** Choosing the App's repos one by one on an account, from Kin. */
@@ -816,7 +831,7 @@ export function kinGitHubAgentsView(
       headline: `Agents work on GitHub as ${you}.`,
       detail:
         agents.problem ??
-        "Kin has no GitHub App on this computer, so their commits, pull requests and reviews carry your name, signed with the agent's.",
+        "Kin has no GitHub App yet, so their commits, pull requests and reviews carry your name, signed with the agent's.",
       installUrl: null,
       ...extras,
       uses,

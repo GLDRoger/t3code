@@ -4,20 +4,30 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { ChevronDownIcon } from "lucide-react";
 import { useState } from "react";
 
+import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
+import { KinSettingsRow, KinSettingsSection } from "./settings/KinSettingsLayout";
 
 const failureText = (result: AsyncResult.AsyncResult<unknown, unknown>, fallback: string) => {
   const cause = AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null;
   return cause instanceof Error && cause.message !== "" ? cause.message : fallback;
 };
 
-/** The owner's list of outside hosts visuals may load from: see it, add to it, take from it. */
+/** Charts: the websites charts may load from, one row that opens the list to add to or take from. */
 export function KinVisualHosts(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
@@ -48,68 +58,86 @@ export function KinVisualHosts(props: {
   };
 
   return (
-    <section aria-label={COPY.title} className="flex flex-col gap-2 border-t border-border/60 pt-4">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-xs font-medium text-muted-foreground">
-          {open ? COPY.title : COPY.advanced}
-        </h3>
-        <Button size="xs" variant="ghost" aria-expanded={open} onClick={() => setOpen(!open)}>
-          {open ? "Hide" : `${COPY.title} · ${hosts === null ? "…" : COPY.count(hosts.length)}`}
-          <ChevronDownIcon className={open ? "rotate-180" : undefined} />
-        </Button>
-      </div>
+    <>
+      <KinSettingsSection title={COPY.section}>
+        <KinSettingsRow
+          title={COPY.title}
+          detail={hosts === null ? undefined : COPY.summary(hosts)}
+          onOpen={() => {
+            setProblem(null);
+            setOpen(true);
+          }}
+        />
+      </KinSettingsSection>
       {!open ? null : (
-        <>
-          <p className="text-sm text-muted-foreground">{COPY.detail}</p>
-          {hosts === null ? null : hosts.length === 0 ? (
-            <p className="text-sm">{COPY.none}</p>
-          ) : (
-            <ul className="flex flex-col">
-              {hosts.map((host) => (
-                <li
-                  key={host}
-                  className="flex items-center gap-2 border-b border-border/60 py-1.5 last:border-b-0"
+        <Dialog
+          open
+          onOpenChange={(next) => {
+            if (!next && !busy) setOpen(false);
+          }}
+        >
+          <DialogPopup className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>{COPY.title}</DialogTitle>
+              <DialogDescription>{COPY.detail}</DialogDescription>
+            </DialogHeader>
+            <DialogPanel>
+              <div className="flex flex-col gap-3">
+                {hosts === null || hosts.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">{COPY.none}</p>
+                ) : (
+                  <ul className="flex flex-col divide-y rounded-lg border">
+                    {hosts.map((host) => (
+                      <li key={host} className="flex min-h-10 items-center gap-2 px-3 py-1">
+                        <span className="min-w-0 flex-1 truncate text-sm">{host}</span>
+                        <Button
+                          size="xs"
+                          variant="ghost-destructive"
+                          disabled={busy}
+                          aria-label={`${COPY.remove} ${host}`}
+                          onClick={() => void change(host, false)}
+                        >
+                          {COPY.remove}
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <form
+                  className="flex items-center gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (draft.trim() !== "") void change(draft, true);
+                  }}
                 >
-                  <span className="min-w-0 flex-1 truncate font-mono text-sm">{host}</span>
-                  <Button
-                    size="xs"
-                    variant="ghost-destructive"
-                    disabled={busy}
-                    onClick={() => void change(host, false)}
-                  >
-                    {COPY.remove}
+                  <Input
+                    aria-label={COPY.inputLabel}
+                    placeholder={COPY.placeholder}
+                    value={draft}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    onChange={(event) => setDraft(event.target.value)}
+                  />
+                  <Button type="submit" variant="outline" disabled={busy || draft.trim() === ""}>
+                    {COPY.add}
                   </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <form
-            className="flex items-center gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (draft.trim() !== "") void change(draft, true);
-            }}
-          >
-            <Input
-              aria-label={COPY.inputLabel}
-              placeholder={COPY.placeholder}
-              value={draft}
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              onChange={(event) => setDraft(event.target.value)}
-            />
-            <Button type="submit" variant="outline" disabled={busy || draft.trim() === ""}>
-              {COPY.add}
-            </Button>
-          </form>
-          {problem === null ? null : (
-            <p role="alert" className="text-xs text-destructive-foreground">
-              {problem}
-            </p>
-          )}
-        </>
+                </form>
+                {problem === null ? null : (
+                  <Alert variant="error">
+                    <AlertDescription role="alert">{problem}</AlertDescription>
+                  </Alert>
+                )}
+              </div>
+            </DialogPanel>
+            <DialogFooter>
+              <Button type="button" disabled={busy} onClick={() => setOpen(false)}>
+                {COPY.done}
+              </Button>
+            </DialogFooter>
+          </DialogPopup>
+        </Dialog>
       )}
-    </section>
+    </>
   );
 }

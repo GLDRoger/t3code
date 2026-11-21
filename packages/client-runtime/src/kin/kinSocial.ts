@@ -62,7 +62,7 @@ export const KIN_SOCIAL_COPY = {
   keyLabel: "Profile key",
   keyPlaceholder: "Paste the key",
   keyHint: (service: string) =>
-    `Make a key in ${service} limited to this one profile, so it can't reach anyone else's accounts. It goes to your Kin's computer and is never shown again.`,
+    `Make a key in ${service} limited to this one profile, so it can't reach anyone else's accounts. It goes to your Kin and is never shown again.`,
   openService: (service: string) => `Open ${service}`,
   check: "Check the key",
   checking: "Checking…",
@@ -93,6 +93,8 @@ export const KIN_SOCIAL_COPY = {
   loadFailed: "Couldn't load your social accounts",
   loading: "Loading…",
   empty: "Nothing connected yet. Social can still draft, and hands you ready-to-post packs.",
+  open: "Open",
+  noAccountsYet: "No accounts yet. Send a connect link to add one.",
 } as const;
 
 const makeKey = Schema.decodeSync(KinConnectionKey);
