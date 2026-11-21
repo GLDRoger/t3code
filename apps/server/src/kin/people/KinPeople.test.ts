@@ -1675,11 +1675,11 @@ it.effect(
         orgId,
         agentId: KinAgentId.make("none"),
         wakeupId: "none",
-      })).quoted;
+      })).people;
       const signedIn = (personId: string) =>
-        new RegExp(`"personId":"${personId}"[^}]*"signedIn":(true|false)`).exec(listed)?.[1];
-      assert.strictEqual(signedIn(asha.person.personId), "true");
-      assert.strictEqual(signedIn("listed-only"), "false");
+        listed.find((person) => person.personId === personId)?.signedIn;
+      assert.strictEqual(signedIn(asha.person.personId), true);
+      assert.strictEqual(signedIn("listed-only"), false);
       yield* sql`DELETE FROM kin_people WHERE person_id = 'listed-only'`;
       yield* TestClock.setTime(Date.parse("2026-11-16T12:00:00.000Z"));
       const away = yield* service.updateProfile(ownerSession, {
