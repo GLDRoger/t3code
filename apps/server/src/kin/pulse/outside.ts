@@ -81,22 +81,6 @@ const linesOf = (
           where: cut(event.start, 200),
         })),
       ].slice(0, LINES_PER_CONNECTION);
-    case "github":
-      return activity.deliveries
-        .slice(0, LINES_PER_CONNECTION)
-        .map((delivery): KinPulseOutsideLine => ({
-          source: "github",
-          connection,
-          id: cut(delivery.deliveryId ?? delivery.fireId, 200)!,
-          at: isoOf(delivery.receivedAt),
-          who: null,
-          subject: cut(
-            [delivery.eventName, delivery.summary].filter((part) => part !== null).join(": ") ||
-              null,
-            300,
-          ),
-          where: cut(delivery.repo, 200),
-        }));
     case "unsupported":
       return [];
   }
@@ -112,7 +96,7 @@ export const fromConnections = (
       const rows = yield* sql<{ connectionId: string; label: string }>`SELECT connection_id AS
         "connectionId", label FROM kin_connections
       WHERE org_id = ${orgId} AND removed_at IS NULL AND paused_at IS NULL AND state = 'active'
-        AND preset IN ${sql.in([...MAIL_PRESETS, "github"])}
+        AND preset IN ${sql.in(MAIL_PRESETS)}
       ORDER BY created_at, connection_id`;
       const lines: Array<KinPulseOutsideLine> = [];
       const seen: Array<{ connectionId: string; until: number; cursor: string | null }> = [];
