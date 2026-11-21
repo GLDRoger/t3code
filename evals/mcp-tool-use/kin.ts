@@ -418,3 +418,39 @@ export const filledEvent = <U extends { readonly name: string; readonly input: u
     ? use
     : { ...use, input: { ...use.input, sourceEventId: chosen.eventId } };
 };
+
+/** Kin's runs have no step limit, so a sample is named in the log at each this many model calls. */
+export const LONG_TURN_CALLS = 40;
+export const longTurnNote = (id: string, modelCalls: number) =>
+  modelCalls > 0 && modelCalls % LONG_TURN_CALLS === 0
+    ? `${id}: one sample has made ${modelCalls} model calls and is still going. Nothing stops it.`
+    : undefined;
+
+/** A no-limit run's summary lines: model calls per finished sample, and the cases that took most. */
+export const modelCallLines = (
+  rows: ReadonlyArray<{
+    readonly id: string;
+    readonly modelCalls?: number | undefined;
+    readonly error?: string | undefined;
+  }>,
+) => {
+  const counted = rows.flatMap(({ id, modelCalls, error }) =>
+    error === undefined && modelCalls !== undefined ? [{ id, modelCalls }] : [],
+  );
+  if (counted.length === 0) return ["- No step limit. No sample recorded its model calls."];
+  const sorted = counted.map((row) => row.modelCalls).toSorted((a, b) => a - b);
+  const mean = sorted.reduce((sum, calls) => sum + calls, 0) / sorted.length;
+  const p90 = sorted[Math.min(sorted.length - 1, Math.floor(0.9 * sorted.length))]!;
+  const top = [...Map.groupBy(counted, (row) => row.id)]
+    .map(([id, members]) => ({
+      id,
+      largest: Math.max(...members.map((row) => row.modelCalls)),
+      mean: members.reduce((sum, row) => sum + row.modelCalls, 0) / members.length,
+    }))
+    .toSorted((a, b) => b.largest - a.largest || b.mean - a.mean || a.id.localeCompare(b.id))
+    .slice(0, 5);
+  return [
+    `- No step limit. Model calls per sample: mean ${mean.toFixed(1)}, p90 ${p90}, largest ${sorted.at(-1)}, over ${sorted.length} samples.`,
+    `- Most model calls: ${top.map((one) => `\`${one.id}\` (largest ${one.largest}, mean ${one.mean.toFixed(1)})`).join(", ")}.`,
+  ];
+};

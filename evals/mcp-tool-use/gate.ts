@@ -13,6 +13,7 @@ export const RunManifest = Schema.Struct({
   effort: Schema.String,
   harness: Schema.String,
   shellModel: Schema.String,
+  /** Model calls per sample; 0 is no limit, so it never compares with a run that had one. */
   maxSteps: Schema.Number,
   userInstructions: Schema.String,
   /** Hashes of the captured template and of the runner and graders. */
@@ -114,10 +115,13 @@ export interface Run {
   readonly rows: ReadonlyArray<Sampled & { readonly id: string }>;
 }
 
+const shown = (key: (typeof SHARED)[number], manifest: RunManifest) =>
+  key === "maxSteps" && manifest.maxSteps === 0 ? "no limit" : manifest[key];
+
 /** Why two runs cannot be compared; empty when they can. */
 export const refusals = (baseline: RunManifest, candidate: RunManifest) => [
   ...SHARED.filter((key) => baseline[key] !== candidate[key]).map(
-    (key) => `${key} differs: baseline ${baseline[key]}, candidate ${candidate[key]}`,
+    (key) => `${key} differs: baseline ${shown(key, baseline)}, candidate ${shown(key, candidate)}`,
   ),
   ...Object.entries(candidate.cases).flatMap(([id, { case: hash }]) => {
     const before = baseline.cases[id];

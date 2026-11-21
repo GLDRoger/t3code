@@ -134,7 +134,8 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
         })),
         history: responsesHistory(messages.slice(0, -1), APP_SERVER_NAMESPACE),
         prompt,
-        maxToolCalls: Math.max(config.maxSteps, testCase.maxSteps ?? 0) * 3,
+        maxToolCalls:
+          config.maxSteps === 0 ? Infinity : Math.max(config.maxSteps, testCase.maxSteps ?? 0) * 3,
         onToolCall: (tool, args) => {
           const use = {
             type: "tool_use" as const,

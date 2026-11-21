@@ -231,7 +231,8 @@ export async function startServer(instance: Instance): Promise<InstanceState> {
     ...withoutRealModels(process.env, NodePath.join(instance.meta, "no-models")),
     KIN_ENABLED: "true",
     T3CODE_DEV_SEED: "0",
-    KIN_DEV_FAKE_MAIL: FAKE_MAIL,
+    // `KIN_VERIFY_FAKE_MAIL` connects other invented accounts instead, in the same form.
+    KIN_DEV_FAKE_MAIL: process.env.KIN_VERIFY_FAKE_MAIL ?? FAKE_MAIL,
     KIN_DEV_PUSH_CAPTURE: "1",
     KIN_VERIFY_DIR: instance.meta,
     KIN_DEV_FAKE_GITHUB: fakeGitHub,

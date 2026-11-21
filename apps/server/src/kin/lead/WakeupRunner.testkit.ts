@@ -1,5 +1,10 @@
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
-import type { ChatAttachment, KinAttachment, ThreadId } from "@t3tools/contracts";
+import type {
+  ChatAttachment,
+  KinAttachment,
+  OrchestrationV2DomainEvent,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -17,6 +22,7 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RuntimeRequestId,
+  TurnItemId,
   type ProviderApprovalDecision,
   type RuntimeMode,
 } from "@t3tools/contracts";
@@ -122,6 +128,24 @@ export const event = (id: string) =>
     routine: "owner_check",
   });
 
+/** One tool call by the running turn (`work`), back once T3 has recorded it. */
+export const toolCall = Effect.fn("test.toolCall")(function* (
+  work: Queue.Queue<void>,
+  threadId: ThreadId,
+) {
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const afterSequence = yield* threads.getThreadEventSequence(threadId);
+  yield* Queue.offer(work, undefined);
+  yield* threads
+    .streamStoredEventsFrom({ threadId, afterSequence, eventType: "turn-item.updated" })
+    .pipe(
+      Stream.filter(
+        ({ event }) => event.type === "turn-item.updated" && event.payload.type === "dynamic_tool",
+      ),
+      Stream.take(1),
+      Stream.runDrain,
+    );
+});
 type HarnessOptions = {
   readonly sharedWith?: ReadonlyArray<ThreadId>;
   readonly releaseEntered?: Deferred.Deferred<void>;
@@ -156,6 +180,8 @@ type HarnessOptions = {
   readonly onTurn?: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
   /** Each turn reports itself running, then completes only once this does. */
   readonly holdRunning?: Deferred.Deferred<void>;
+  /** Each item is one tool call a running turn makes (`holdRunning`, `untilInterrupted`). */
+  readonly work?: Queue.Queue<void>;
   /** Messages the provider received as steers into a running turn. */
   readonly providerSteers?: Queue.Queue<{ readonly runId: string; readonly messageId: string }>;
   /** Runs as the provider takes a steer; failing it fails the steer, as a rejecting provider would. */
@@ -182,6 +208,8 @@ type HarnessOptions = {
   readonly wholeThreadReads?: Array<ThreadId>;
   /** Called each time the runner subscribes to T3's domain events. */
   readonly onDomainSubscribe?: () => void;
+  /** More of T3's events the runner hears, as if a turn outside the fake provider made them. */
+  readonly domainEvents?: Queue.Queue<OrchestrationV2DomainEvent>;
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -197,7 +225,9 @@ export function harness(options: HarnessOptions = {}) {
       streamDomainEvents: Stream.unwrap(
         Effect.sync(() => {
           options.onDomainSubscribe?.();
-          return service.streamDomainEvents;
+          return options.domainEvents === undefined
+            ? service.streamDomainEvents
+            : Stream.merge(service.streamDomainEvents, Stream.fromQueue(options.domainEvents));
         }),
       ),
     })),
@@ -233,6 +263,45 @@ function parts(options: HarnessOptions) {
           string,
           Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0]
         >();
+        let toolCalls = 0;
+        // The turn's tool calls, one per item `work` gives, while `live` says it is still open.
+        const working = (
+          input: Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0],
+          providerTurnId: ProviderTurnId,
+          live: () => boolean,
+        ) =>
+          Effect.gen(function* () {
+            while (options.work !== undefined) {
+              yield* Queue.take(options.work);
+              if (!live()) return;
+              const time = yield* DateTime.now;
+              const n = ++toolCalls;
+              yield* PubSub.publish(events, {
+                type: "turn_item.updated",
+                driver,
+                turnItem: {
+                  id: TurnItemId.make(`tool-${providerTurnId}-${n}`),
+                  threadId: input.threadId,
+                  runId: input.runId,
+                  nodeId: input.rootNodeId,
+                  providerThreadId: input.providerThread.id,
+                  providerTurnId,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: input.runOrdinal * 1000 + n,
+                  status: "completed",
+                  title: null,
+                  startedAt: time,
+                  completedAt: time,
+                  updatedAt: time,
+                  type: "dynamic_tool",
+                  toolName: "fixture_tool",
+                  input: {},
+                },
+              });
+            }
+            return yield* Effect.never;
+          });
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
           instanceId,
           driver,
@@ -312,6 +381,8 @@ function parts(options: HarnessOptions) {
               });
             if (options.untilInterrupted) {
               open.set(id, input);
+              if (options.work !== undefined)
+                yield* working(input, id, () => open.has(id)).pipe(Effect.forkDetach);
               return;
             }
             if (options.approval !== undefined)
@@ -392,6 +463,7 @@ function parts(options: HarnessOptions) {
             });
             if (options.holdRunning !== undefined)
               return yield* Deferred.await(options.holdRunning).pipe(
+                Effect.raceFirst(working(input, id, () => true)),
                 Effect.andThen(finish),
                 Effect.forkDetach,
               );

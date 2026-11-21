@@ -60,11 +60,12 @@ type IdentityError = KinChatRepository.RepositoryError;
  * landed after the turn ended, and the rescue turn (see `hasRunningWakeup`).
  */
 export const wakeupMessageId = (wakeupId: KinWakeupId) => `kin-wakeup-msg:${wakeupId}`;
+export const steerMessagePrefix = (wakeupId: KinWakeupId) => `kin-steer-msg:${wakeupId}:`;
 export const steerMessageId = (wakeupId: KinWakeupId, n: number) =>
-  `kin-steer-msg:${wakeupId}:${n}`;
+  `${steerMessagePrefix(wakeupId)}${n}`;
 export const rescueMessageId = (wakeupId: KinWakeupId) => `kin-rescue-msg:${wakeupId}`;
 export const isSteerMessage = (wakeupId: KinWakeupId, messageId: string) =>
-  messageId.startsWith(`kin-steer-msg:${wakeupId}:`);
+  messageId.startsWith(steerMessagePrefix(wakeupId));
 export const isAdoptedRunMessage = (wakeupId: KinWakeupId, messageId: string) =>
   messageId === rescueMessageId(wakeupId) || isSteerMessage(wakeupId, messageId);
 // A host holds one company: bootstrap makes org `kin-default` and refuses any other. `orgId`

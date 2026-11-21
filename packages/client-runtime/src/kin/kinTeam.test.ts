@@ -72,6 +72,28 @@ describe("kinTeamView", () => {
       ["Anouk", "invited", "i-new"],
       ["Tomas", "no_access", "i-tomas"],
     ]);
+    // The list's row: who they are as its line, and a status only when they aren't simply here.
+    const withProfiles: KinTeamList = {
+      ...list,
+      people: [...list.people, person(KinPersonId.make("ines"), "Ines")],
+      profiles: [
+        { personId: mira, roleTags: ["design"], awayUntil: "2026-11-30" },
+        { personId: owner, roleTags: [] },
+      ] as never,
+    };
+    expect(
+      kinTeamView(withProfiles, KIN_TEAM_NO_EDITS, owner).map((row) => [
+        row.name,
+        row.line,
+        row.status,
+      ]),
+    ).toEqual([
+      ["Olu", "You", null],
+      ["Mira", "design", "Away"],
+      ["Anouk", "", "Invited"],
+      ["Ines", "", "No access"],
+      ["Tomas", "", "Invited"],
+    ]);
     expect(kinTeamEntrySummary(list, owner)).toBe("1 teammate, 1 hasn't joined yet");
     // A co-owner's count holds the owner too: every row the Team page lists besides their own.
     const asMira = {
@@ -118,6 +140,7 @@ describe("kinTeamView", () => {
     // Mira, a co-owner, looking: the owner is shown as the owner, with nothing to do there.
     const [you, theOwner] = kinTeamView(kinds, KIN_TEAM_NO_EDITS, mira);
     expect([you?.detail, theOwner?.state, theOwner?.detail]).toEqual(["You", "owner", "Owner"]);
+    expect([you?.line, theOwner?.line]).toEqual(["You", "Owner"]);
     expect(kinTeammateActions(theOwner!, "co_owner")).toEqual({
       link: null,
       cancel: null,
@@ -125,7 +148,7 @@ describe("kinTeamView", () => {
     });
     expect(kinTeammateKindEditable(theOwner!, "owner")).toBe(false);
     const [, coOwner] = kinTeamView(kinds, KIN_TEAM_NO_EDITS, owner);
-    expect(coOwner?.detail).toBe("Co-owner");
+    expect([coOwner?.detail, coOwner?.line]).toEqual(["Co-owner", "Co-owner"]);
     expect(kinTeammateActions(coOwner!, "co_owner").remove).toBe(false);
     expect(kinTeammateActions(coOwner!, "owner").remove).toBe(true);
     expect(kinTeammateKindEditable(coOwner!, "owner")).toBe(true);
@@ -165,7 +188,11 @@ describe("kinTeamView", () => {
       ],
     };
     const [row] = kinTeamView(placed, KIN_TEAM_NO_EDITS, owner);
-    expect([row?.detail, row?.places?.clients]).toEqual(["Leads Atlas", true]);
+    expect([row?.detail, row?.line, row?.places?.clients]).toEqual([
+      "Leads Atlas",
+      "Leads Atlas",
+      true,
+    ]);
   });
 
   it("opens a teammate's page on what they can see and do, with the rest folded and removal last", () => {

@@ -24,7 +24,13 @@ export const KIN_PROFILE_COPY = {
   title: "Profile",
   mine: "Your profile",
   edit: "Edit profile",
+  /** Settings → Profile's one sentence. */
+  purpose: "How your teammates and agents see you, and when Kin can reach you.",
+  editOf: (what: string) => `Edit ${what.toLowerCase()}`,
+  saveProfile: "Save profile",
+  pictureLabel: "Picture",
   save: "Save",
+  saveUsername: "Save username",
   saving: "Saving…",
   failed: "Couldn't save.",
   loadFailed: "Couldn't load this profile.",
@@ -48,6 +54,8 @@ export const KIN_PROFILE_COPY = {
   noHours: "Not set",
   noSkills: "Nothing yet",
   noTags: "No roles yet",
+  /** Web's profile rows: one word for every empty value. */
+  rowEmpty: "Not set",
   pictureAdd: "Add picture",
   pictureChange: "Change picture",
   pictureRemove: "Remove picture",
@@ -68,7 +76,13 @@ export const KIN_GITHUB_LOGIN = {
   set: "Add GitHub username…",
   change: "Change",
   remove: "Remove",
+  removeTitle: "Remove the GitHub username?",
+  removeDetail: (mine: boolean) =>
+    mine
+      ? "Kin stops finding your pull requests until you add it again."
+      : "Kin stops finding their pull requests until it's added again.",
   save: "Save",
+  saveUsername: "Save username",
   saving: "Saving…",
   invalid:
     "That isn't a GitHub username. It is 1 to 39 letters, digits and single hyphens, and doesn't start or end with a hyphen.",

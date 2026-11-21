@@ -155,7 +155,7 @@ describe("kinGitHubAgentsView", () => {
     expect([adopted.canCreate, adopted.disconnect, adopted.setUpLine]).toEqual([
       false,
       { name: "Invented Kin", settingsUrl: "https://github.com/settings/apps/invented-kin" },
-      "Invented Kin, set up earlier on Kin's computer.",
+      "Invented Kin, set up earlier.",
     ]);
     const none = kinGitHubAgentsView(
       {

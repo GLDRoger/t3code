@@ -8,6 +8,7 @@ import {
   type KinDealPersonNumbers,
   type KinDealRow,
   type KinDealStage,
+  type KinDealStagesSetInput,
   type KinDealState,
   type KinDealsInput,
   type KinDealsResult,
@@ -208,6 +209,61 @@ export const KIN_DEAL_STAGES = {
   limit: "At most 12 stages.",
   searchTerms: ["deals", "stages", "pipeline", "won", "lost"],
 } as const;
+
+/** Settings → Deals on the web: each stage changes in its own dialog. */
+export const KIN_DEAL_STAGES_SETTINGS = {
+  purposeReadOnly: "How every deal in the company moves. The owner and co-owners set it.",
+  addSubmit: "Add stage",
+  add: "Add stage",
+  edit: "Edit stage",
+  save: "Save stage",
+  remove: "Remove stage",
+  name: "Name",
+  nameHelp: "Renaming keeps every deal where it is.",
+  place: "Place",
+  placeOf: (n: number, of: number) => `${n} of ${of}`,
+  removeEmptyDetail: "No open deals are in it. You can add it again later.",
+  moveTo: "Move them to",
+  failed: "Couldn't change the stages.",
+  quietTitle: "Quiet deals",
+  wonDetail: "Turns a prospect into a client",
+  lostDetail: "Asks why, in a word",
+} as const;
+
+/** The quiet-day lengths offered, with the one in use kept when it is none of them. */
+export function kinDealQuietChoices(days: number): ReadonlyArray<number> {
+  // Hermes has no `toSorted`.
+  return [...new Set([7, 14, 21, 30, days])].sort((a, b) => a - b);
+}
+
+/** One stage's change, made in its own dialog and saved on its own. */
+export type KinDealStageChange =
+  | { readonly _tag: "add"; readonly name: string }
+  | { readonly _tag: "edit"; readonly id: string; readonly name: string; readonly place: number }
+  | { readonly _tag: "remove"; readonly id: string; readonly moveTo: string | null };
+
+/** The whole list a stage's change sends, on the version it was made on; only that stage differs. */
+export function kinDealStagesAfter(
+  held: { readonly stages: ReadonlyArray<KinDealStage>; readonly rev: number },
+  change: KinDealStageChange,
+): Omit<KinDealStagesSetInput, "orgId"> {
+  const kept = held.stages.map((stage): { id?: string; name: string } => ({
+    id: stage.id,
+    name: stage.name,
+  }));
+  if (change._tag === "add")
+    return { rev: held.rev, stages: [...kept, { name: change.name.trim() }] };
+  if (change._tag === "remove")
+    return {
+      rev: held.rev,
+      stages: kept.filter((stage) => stage.id !== change.id),
+      ...(change.moveTo === null ? {} : { moveTo: { [change.id]: change.moveTo } }),
+    };
+  const others = kept.filter((stage) => stage.id !== change.id);
+  const place = Math.max(0, Math.min(change.place, others.length));
+  others.splice(place, 0, { id: change.id, name: change.name.trim() });
+  return { rev: held.rev, stages: others };
+}
 
 /** Settings → Deals: when a deal with nothing moving reaches whoever looks after it. */
 export const KIN_DEAL_QUIET = {

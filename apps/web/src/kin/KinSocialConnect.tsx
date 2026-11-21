@@ -1,5 +1,4 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   createKinSocialActions,
   KIN_SOCIAL_COPY as COPY,
@@ -20,11 +19,10 @@ import type {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
+import { PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
 
-import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
 import { Alert, AlertDescription } from "../components/ui/alert";
-import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import {
   Dialog,
@@ -47,18 +45,28 @@ import {
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { kinClient } from "./kinClient";
+import { KinSettingsFormDialog } from "./settings/KinSettingsControls";
+import {
+  KinSettingsEmpty,
+  KinSettingsLoadFailed,
+  KinSettingsLoading,
+  KinSettingsRow,
+  KinSettingsSection,
+  KinSettingsStatus,
+} from "./settings/KinSettingsLayout";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 
-const TONE_BADGE = {
-  ok: "success",
-  attention: "warning",
-  error: "error",
-  muted: "outline",
-} as const;
+/** A state said only when it isn't fine: problems are badges. */
+function ToneStatus(props: { readonly row: KinSocialRow }) {
+  const { tone, label } = props.row;
+  if (tone === "ok") return null;
+  return <KinSettingsStatus tone={tone === "muted" ? "quiet" : tone}>{label}</KinSettingsStatus>;
+}
 
 type Actions = ReturnType<typeof createKinSocialActions>;
 type Open =
   | { readonly kind: "add" }
+  | { readonly kind: "group"; readonly row: KinSocialRow }
   | { readonly kind: "rekey"; readonly row: KinSocialRow }
   | { readonly kind: "link"; readonly row: KinSocialRow };
 
@@ -92,88 +100,116 @@ function SocialSection(props: { readonly environmentId: EnvironmentId; readonly 
   });
   const [open, setOpen] = useState<Open | null>(null);
   const [removing, setRemoving] = useState<KinSocialRow | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const rows = view === null ? [] : kinSocialRows(view);
   const choices = view === null ? [] : kinSocialChoices(view);
 
   const checkAgain = async (row: KinSocialRow) => {
-    setBusy(row.groupId);
+    setBusy(true);
     setProblem(null);
     const outcome = await actions.refresh(row.groupId);
-    setBusy(null);
-    if (!outcome.ok) setProblem(outcome.problem);
+    setBusy(false);
+    if (outcome.ok) setOpen(null);
+    else setProblem(outcome.problem);
   };
 
   return (
     <>
-      <SettingsSection
+      <KinSettingsSection
         title={COPY.title}
-        headerAction={
+        action={
           view !== null && choices.length > 0 ? (
             <Button size="xs" variant="outline" onClick={() => setOpen({ kind: "add" })}>
+              <PlusIcon />
               {COPY.add}
             </Button>
-          ) : null
+          ) : undefined
         }
+        problem={open === null ? problem : null}
       >
         {view === null ? (
           AsyncResult.isFailure(result) ? (
-            <div className="flex items-center justify-between gap-3 px-4 py-3">
-              <p className="text-sm text-destructive-foreground">{COPY.loadFailed}</p>
-              <Button size="xs" variant="outline" onClick={reload}>
-                {KIN_RETRY}
-              </Button>
-            </div>
+            <KinSettingsLoadFailed onRetry={reload}>{COPY.loadFailed}</KinSettingsLoadFailed>
           ) : (
-            <p className="px-4 py-3 text-sm text-muted-foreground">{COPY.loading}</p>
+            <KinSettingsLoading rows={1} />
           )
         ) : rows.length === 0 ? (
-          <p className="px-4 py-3 text-sm text-muted-foreground">{COPY.empty}</p>
+          <KinSettingsEmpty>{COPY.settingsEmpty}</KinSettingsEmpty>
         ) : (
-          rows.map((row) => (
-            <SettingsRow
-              key={row.groupId}
-              title={row.title}
-              description={<GroupDetail row={row} />}
-              status={<Badge variant={TONE_BADGE[row.tone]}>{row.label}</Badge>}
-              control={
-                <div className="flex flex-wrap justify-end gap-2">
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    onClick={() => setOpen({ kind: "link", row })}
-                  >
-                    {row.linkLabel}
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    disabled={busy === row.groupId}
-                    aria-busy={busy === row.groupId}
-                    onClick={() =>
-                      row.tone === "error" ? setOpen({ kind: "rekey", row }) : void checkAgain(row)
-                    }
-                  >
-                    {row.tone === "error" ? COPY.reconnect : COPY.refresh}
-                  </Button>
-                  <Button size="xs" variant="ghost" onClick={() => setRemoving(row)}>
-                    {COPY.remove}
-                  </Button>
-                </div>
+          rows
+            .toSorted((a, b) => Number(a.tone === "ok") - Number(b.tone === "ok"))
+            .map((row) => (
+              <KinSettingsRow
+                key={row.groupId}
+                title={row.title}
+                detail={
+                  row.tone === "ok" && row.accounts.length > 0
+                    ? row.accounts.map((account) => account.line).join(", ")
+                    : row.detail
+                }
+                status={<ToneStatus row={row} />}
+                openLabel={`${COPY.open}: ${row.title}`}
+                onOpen={() => {
+                  setProblem(null);
+                  setOpen({ kind: "group", row });
+                }}
+              />
+            ))
+        )}
+      </KinSettingsSection>
+      {open?.kind === "group" ? (
+        <KinSettingsFormDialog
+          title={open.row.title}
+          description={open.row.detail}
+          submitLabel={open.row.linkLabel}
+          busy={busy}
+          problem={problem}
+          remove={
+            <Button
+              type="button"
+              variant="ghost-destructive"
+              disabled={busy}
+              onClick={() => setRemoving(open.row)}
+            >
+              {COPY.remove}
+            </Button>
+          }
+          secondary={
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              aria-busy={busy}
+              onClick={() =>
+                open.row.tone === "error"
+                  ? setOpen({ kind: "rekey", row: open.row })
+                  : void checkAgain(open.row)
               }
-            />
-          ))
-        )}
-        {problem === null ? null : (
-          <div className="px-4 pb-3">
-            <Alert variant="error">
-              <AlertDescription>{problem}</AlertDescription>
-            </Alert>
-          </div>
-        )}
-      </SettingsSection>
-      {view !== null && open !== null && open.kind !== "link" ? (
+            >
+              {open.row.tone === "error" ? COPY.reconnect : COPY.refresh}
+            </Button>
+          }
+          onSubmit={() => setOpen({ kind: "link", row: open.row })}
+          onClose={() => setOpen(null)}
+        >
+          {open.row.accounts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{COPY.noAccountsYet}</p>
+          ) : (
+            <ul className="flex flex-col divide-y rounded-lg border">
+              {open.row.accounts.map((account) => (
+                <li key={account.accountId} className="flex flex-col gap-0.5 px-3 py-2">
+                  <span className="truncate text-sm text-foreground">{account.line}</span>
+                  {account.problem === null ? null : (
+                    <span className="text-xs text-warning-foreground">{account.problem}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </KinSettingsFormDialog>
+      ) : null}
+      {view !== null && (open?.kind === "add" || open?.kind === "rekey") ? (
         <ConnectDialog
           view={view}
           rekey={open.kind === "rekey" ? open.row : null}
@@ -199,6 +235,7 @@ function SocialSection(props: { readonly environmentId: EnvironmentId; readonly 
           const row = removing;
           setRemoving(null);
           if (row === null) return;
+          setOpen(null);
           void actions.remove(row.groupId).then((outcome) => {
             if (!outcome.ok) setProblem(outcome.problem);
           });
@@ -206,28 +243,6 @@ function SocialSection(props: { readonly environmentId: EnvironmentId; readonly 
         onClose={() => setRemoving(null)}
       />
     </>
-  );
-}
-
-function GroupDetail(props: { readonly row: KinSocialRow }) {
-  const { row } = props;
-  return (
-    <span className="flex flex-col gap-1">
-      <span>{row.detail}</span>
-      {row.accounts.length === 0 ? null : (
-        <span className="flex flex-wrap gap-x-3 gap-y-0.5">
-          {row.accounts.map((account) => (
-            <span
-              key={account.accountId}
-              className={account.problem === null ? undefined : "text-warning-foreground"}
-            >
-              {account.line}
-              {account.problem === null ? "" : ` · ${account.problem}`}
-            </span>
-          ))}
-        </span>
-      )}
-    </span>
   );
 }
 

@@ -203,6 +203,10 @@ const switched = KIN_PROVIDER_FACTS.filter((facts) => facts.behindSwitch && !fac
 
 /** The host's switch for the providers behind it, shown beside the model new agents start on. */
 export const KIN_OTHER_PROVIDER_AGENTS = {
+  /** Settings → Agents' row, last on the page. */
+  section: "Experiments",
+  row: `Let agents run on ${switched.map((facts) => facts.label).join(" and ")} models`,
+  rowDetail: `Set ${switched.map((facts) => facts.label).join(" and ")} up first, under This computer, Providers and models.`,
   title: "Agents on other providers",
   detail: `An experiment: agents may also run on ${switched.map((facts) => facts.label).join(" and ")} models. As on Claude, in your own chats they have a shell, files and the web, each step checked by Kin, and in chats others read only their Kin tools. Set the provider up under Settings, Providers first.`,
 };
@@ -312,6 +316,37 @@ export function kinChatReadOnlyLine(other: {
       : `You can read this chat, but you and ${other.name} can no longer message each other.`;
   return `You can read this chat, but you can no longer message ${other.name ?? "this agent"}.`;
 }
+
+/**
+ * An agent's line in a list: what it does, never its name again. The intro its owner wrote for
+ * people, else its roles, else its area when that says more than the name; null when nothing does.
+ * Never the charter: that is written for the agent.
+ */
+export function kinAgentRowLine(
+  lead: Pick<KinLeadProfile, "name" | "domain" | "intro" | "roleTags">,
+): string | null {
+  const intro = lead.intro?.trim() ?? "";
+  if (intro !== "") return intro;
+  if ((lead.roleTags ?? []).length > 0) return (lead.roleTags ?? []).join(", ");
+  const area = kinDomainLabel(lead.domain);
+  return area === "" || lead.name.toLowerCase().includes(area.toLowerCase()) ? null : area;
+}
+
+/** Settings → Agents. */
+export const KIN_AGENTS_PAGE = {
+  purpose: "The agents that look after parts of your company.",
+  add: "New agent",
+  open: (name: string) => `Open ${name}`,
+  working: "Working",
+  paused: "Paused",
+  forNew: "For new agents",
+  model: "Model",
+  defaultsTitle: "Choose what new agents run on",
+  defaultsLabel: "Model",
+  /** The row's line while nobody has chosen: what they start on meanwhile. */
+  unchosen: (line: string) => `${line}, as your first agent`,
+  save: "Save model",
+} as const;
 
 /** The owner's list of agents, and what a teammate is shown of one. */
 export const KIN_AGENTS_COPY = {

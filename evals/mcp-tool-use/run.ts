@@ -76,6 +76,8 @@ import {
   type KinSeatOptions,
   kinSessionOf,
   kinToolVisible,
+  longTurnNote,
+  modelCallLines,
   rescuePrompt,
   shownText,
   unredact,
@@ -2021,6 +2023,7 @@ type Config = {
     readonly headers: Readonly<Record<string, string>>;
   };
   readonly effort: string;
+  /** Model calls per sample; 0 is no limit (`--no-step-limit`), and a case's own is ignored. */
   readonly maxSteps: number;
   readonly shellModel: ShellModel;
   /** `--harness app-server`: GPT models run in `codex app-server` as Kin runs them (`providers/codex.ts`). */
@@ -2728,7 +2731,7 @@ export const ranCalls = (
  * Runs one sample until the model ends its turn, uses up its steps, or fails a check that no
  * later step can undo. Tokens add up in `spent`, so a sample that errors still reports them.
  */
-const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
+export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   testCase: McpToolUseCase,
   config: Config,
   base: Base,
@@ -2753,6 +2756,7 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   // Codex's code-mode cells take more model calls, so a case's own budget grows for it too.
   const extra = isCodex(config.model) ? 4 : 0;
   let maxSteps = testCase.maxSteps === undefined ? config.maxSteps : testCase.maxSteps + extra;
+  if (config.maxSteps === 0) maxSteps = Infinity;
   // Kin's rescue: a finished lead turn that owed words and said none is asked once, as a new turn.
   let rescue: string | undefined;
   for (let step = 0; step < maxSteps; step++) {
@@ -2770,6 +2774,8 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     }
     messages.push({ role: "assistant", content: response.content });
     responses.push(response.content);
+    const long = config.maxSteps === 0 ? longTurnNote(testCase.id, responses.length) : undefined;
+    if (long !== undefined) yield* Effect.log(long);
     shown = shownText(responses);
     const texts = response.content.filter(isText).map((block) => block.text);
     const uses = response.content.filter(isToolUse);
@@ -2865,6 +2871,7 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     text: shown,
     stopReason,
     finalText,
+    modelCalls: responses.length,
     ...(rescue === undefined ? {} : { rescue }),
     silent: rescuePrompt(sample, normalizeToolName) !== undefined,
     cwd: base.environment.cwd,
@@ -2883,6 +2890,7 @@ type ResultRow = Pick<McpToolUseCase, "id" | "kind" | "pattern"> & {
   readonly withinMargin?: boolean;
   /** `max_steps` when the step limit ended the turn. */
   readonly stopReason?: string;
+  readonly modelCalls?: number;
   /** Set when the sample could not run to the end, even after retries. It is not graded. */
   readonly error?: string;
   readonly usage: Usage;
@@ -2948,6 +2956,7 @@ export const summarize = (
     readonly model: Model;
     /** Cases' `margin` settings, by id. */
     readonly margins?: ReadonlyMap<string, CaseMargin>;
+    readonly noStepLimit?: boolean;
   },
   before?: Map<string, number>,
 ) => {
@@ -3008,6 +3017,7 @@ export const summarize = (
           `- Cut off by the step limit: ${cutOff(rows).length} samples, ${cutOff(rows).filter((row) => !row.pass).length} graded fail. Each ended on max_steps before replying; read its calls to tell a turn that needed more steps from one that looped.`,
         ]
       : []),
+    ...(options.noStepLimit === true ? modelCallLines(rows) : []),
     `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample${codex ? ", at OpenAI's API prices; the run itself bills whatever provider the Codex config (`CODEX_HOME`) selects" : ""}.`,
     `- Agent tokens: ${agent.tokens} ($${agent.cost.toFixed(2)}).`,
     ...latencyLine(rows),
@@ -3041,6 +3051,7 @@ const Flags = Schema.Struct({
   "top-up": Schema.optional(PositiveInt),
   concurrency: PositiveInt,
   "max-steps": Schema.optional(PositiveInt),
+  "no-step-limit": Schema.Boolean,
   effort: Schema.optional(Schema.Literals(EFFORTS)),
   "shell-model": Schema.Literals([
     ...(Object.keys(PRICES) as Array<PricedModel>),
@@ -3097,6 +3108,8 @@ const main = Effect.gen(function* () {
       concurrency: { ...string, default: "8" },
       // Unset: 6 for Claude, 10 for Codex, whose code-mode cells take more steps.
       "max-steps": string,
+      // Kin's runs: no bound on model calls per sample. The manifest records it as maxSteps 0.
+      "no-step-limit": { type: "boolean", default: false },
       effort: string,
       "shell-model": { ...string, default: "claude-haiku-5-5" },
       // T3's text must work for every user, so the captured CLAUDE.md is dropped by default.
@@ -3379,7 +3392,7 @@ const main = Effect.gen(function* () {
     model: flags.model,
     ...(replay || !isPricedModel(flags["shell-model"]) ? { proxy: proxyConfig() } : {}),
     effort,
-    maxSteps: flags["max-steps"] ?? (codex ? 10 : 6),
+    maxSteps: flags["no-step-limit"] ? 0 : (flags["max-steps"] ?? (codex ? 10 : 6)),
     shellModel: flags["shell-model"],
     ...(appServer
       ? {
@@ -3592,6 +3605,7 @@ const main = Effect.gen(function* () {
       header: [header, t3ContextReport(flags.model), ...stopped].join("\n"),
       shellModel: config.shellModel,
       model: config.model,
+      noStepLimit: config.maxSteps === 0,
       margins: new Map(
         selected.flatMap((testCase) =>
           testCase.margin === undefined ? [] : [[testCase.id, testCase.margin] as const],

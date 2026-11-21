@@ -5,6 +5,7 @@ import {
   KinOrgId,
   type KinConnection,
   type KinConnectionAddInput,
+  type KinConnectionCall,
   type KinConnectionDetail,
   type KinConnectionService,
   type KinConnectionTool,
@@ -23,6 +24,9 @@ import {
   kinSignInCheck,
   kinSignInClientCheck,
   kinSuggestedModes,
+  kinMailModes,
+  kinMailPermission,
+  kinUseRow,
   kinToolRows,
   kinToolMark,
 } from "./kinConnections.ts";
@@ -388,4 +392,148 @@ describe("createKinConnectionActions", () => {
     expect(sent).toHaveLength(2);
     expect(refreshes).toHaveLength(3);
   });
+});
+
+describe("mail and calendar, said once", () => {
+  const mail = (
+    name: string,
+    mode: KinConnectionTool["mode"],
+    extra: Partial<KinConnectionTool> = {},
+  ) =>
+    tool({
+      name,
+      mode,
+      pinDigest: `pin-${name}`,
+      alwaysAsk: ["mail_send", "mail_reply", "calendar_save_event"].includes(name),
+      ...extra,
+    });
+  const account = (read: KinConnectionTool["mode"], send: KinConnectionTool["mode"]) => [
+    mail("mail_search", read),
+    mail("calendar_list_events", read),
+    mail("mail_send", send),
+    mail("mail_reply", send),
+    mail("calendar_save_event", "ask"),
+  ];
+
+  it.each([
+    {
+      case: "every account the same",
+      accounts: [account("read", "ask"), account("read", "ask")],
+      read: "read",
+      send: "ask",
+      differs: [false, false],
+    },
+    {
+      case: "every account off",
+      accounts: [account("off", "off"), account("off", "off")],
+      read: "off",
+      send: "off",
+      differs: [false, false],
+    },
+    {
+      case: "one account differs",
+      accounts: [account("read", "ask"), account("read", "ask"), account("off", "ask")],
+      read: null,
+      send: "ask",
+      differs: [false, false, true],
+    },
+    {
+      case: "mixed inside every account",
+      accounts: [
+        [mail("mail_search", "read"), mail("calendar_get_event", "off")],
+        [mail("mail_search", "read"), mail("calendar_get_event", "off")],
+      ],
+      read: null,
+      send: undefined,
+      differs: [false, false],
+    },
+  ] as const)("$case", ({ accounts, read, send, differs }) => {
+    const readRow = kinMailPermission(accounts, "read");
+    expect(readRow?.value).toBe(read);
+    expect(accounts.map((tools) => readRow?.differs(tools))).toEqual(differs);
+    // With no account that sends, the row is not shown.
+    expect(kinMailPermission(accounts, "send")?.value).toBe(send);
+  });
+
+  it("hides every row with no mail account", () => {
+    expect(kinMailPermission([], "read")).toBeNull();
+    expect(kinMailPermission([[tool({ name: "query", mode: "read" })]], "read")).toBeNull();
+  });
+
+  it("writes only the tools that differ, at the digest shown", () => {
+    expect(kinMailModes(account("off", "ask"), "read", "read")).toEqual([
+      { tool: "calendar_list_events", mode: "read", digest: "pin-calendar_list_events" },
+      { tool: "mail_search", mode: "read", digest: "pin-mail_search" },
+    ]);
+    expect(kinMailModes(account("read", "ask"), "send", "off")).toEqual([
+      { tool: "mail_reply", mode: "off" },
+      { tool: "mail_send", mode: "off" },
+    ]);
+    expect(kinMailModes(account("read", "ask"), "read", "read")).toEqual([]);
+  });
+
+  it("never writes Read for sending or calendar changes", () => {
+    expect(kinMailModes(account("read", "off"), "send", "read")).toEqual([]);
+    expect(kinMailModes(account("read", "off"), "calendar", "read")).toEqual([]);
+    // A sending tool somehow in the read group still can't take Read.
+    expect(kinMailModes([mail("mail_search", "off", { alwaysAsk: true })], "read", "read")).toEqual(
+      [],
+    );
+  });
+
+  it("leaves a tool waiting for a look, and every other connection's tools, alone", () => {
+    const tools = [
+      mail("mail_search", "off", { changed: true }),
+      mail("mail_read_thread", "off"),
+      tool({ name: "query", mode: "off" }),
+    ];
+    expect(kinMailModes(tools, "read", "read")).toEqual([
+      { tool: "mail_read_thread", mode: "read", digest: "pin-mail_read_thread" },
+    ]);
+  });
+});
+
+describe("kinUseRow", () => {
+  const call = (status: KinConnectionCall["status"], refusedReason: string | null) => ({
+    callId: "c1",
+    connectionId,
+    toolName: "mail_list_threads",
+    agentId: "a1",
+    agentName: "Chief of staff",
+    wakeupId: "w1",
+    mode: "read" as const,
+    args: null,
+    reason: null,
+    status,
+    refusedReason,
+    resultChars: null,
+    resultBytes: null,
+    durationMs: null,
+    createdAt: 0,
+  });
+  const tools = [{ name: "mail_list_threads", title: "List mail" }];
+
+  it.each([
+    ["ok", null, "Done"],
+    [
+      "refused",
+      "Sending is off for this account; the owner can change it.",
+      "Not allowed by your settings",
+    ],
+    [
+      "error",
+      "Billing's sign-in expired. The owner can sign in again in Settings.",
+      "Didn't go through: the sign-in had expired",
+    ],
+    ["error", "HTTP 500 from graph.microsoft.com", "Didn't go through"],
+  ] as const)(
+    "says %s in a person's words, never the host's reason to the agent",
+    (status, reason, said) => {
+      // @effect-diagnostics-next-line globalDate:off - the use row's clock label takes a Date.
+      const row = kinUseRow(call(status, reason), new Date(0), tools);
+      expect(row.title).toBe("See recent mail");
+      expect(row.detail).toContain(`Chief of staff · ${said} · `);
+      if (reason !== null) expect(row.detail).not.toContain(reason);
+    },
+  );
 });
