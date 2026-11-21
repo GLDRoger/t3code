@@ -60,6 +60,7 @@ import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as KinStop from "./KinStop.ts";
 import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
+import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -172,6 +173,7 @@ describe("WakeupRunner", () => {
         Writer.MemoryWriter.of({
           dreamBase: () => Effect.die("unused"),
           commitDream: () => Effect.die("unused"),
+          landDream: () => Effect.die("unused"),
           deleteDreamBranch: () => Effect.die("unused"),
           reconcileSharing: () => Effect.void,
           stripQuotes: () => Effect.void,
@@ -371,6 +373,43 @@ describe("WakeupRunner", () => {
         // One that saved something for the team commits exactly that.
         assert.deepStrictEqual(kept(saving.wakeupId), [`commit:${saving.wakeupId}`]);
         assert.deepStrictEqual(kept(again.wakeupId), [`commit:${again.wakeupId}`]);
+        // A stranger's pull request is reviewed on a thread of its own, which no other turn takes.
+        yield* (yield* KinEventQueue.KinEventQueue).enqueue(
+          decodeEvent({
+            _tag: "github",
+            orgId,
+            agentId,
+            eventId: "stranger-review",
+            receivedAt: at,
+            dedupeKey: "poll:review:invented-org/app#7",
+            provenance: { _tag: "system" },
+            deliveryId: "poll:review:invented-org/app#7",
+            eventName: "review",
+            repo: "invented-org/app",
+            summary: "review on invented-org/app#7 by stranger",
+            trigger: {
+              key: "review:invented-org/app#7",
+              kind: "review",
+              item: "pull",
+              number: 7,
+              url: "https://github.com/invented-org/app/pull/7",
+              title: "Fix typo",
+              author: "stranger",
+              association: "NONE",
+              inside: false,
+              text: "Invented",
+            },
+          }),
+        );
+        yield* Fiber.join(yield* run());
+        const [reviewed] = yield* sql<{ threadId: string; audience: string; wakeupId: string }>`
+          SELECT thread_id AS "threadId", audience, wakeup_id AS "wakeupId" FROM kin_wakeups
+          WHERE event_ids LIKE '%stranger-review%'`;
+        assert.strictEqual(reviewed?.audience, "shared");
+        assert.isTrue(reviewed!.threadId.startsWith(REVIEW_THREAD_PREFIX));
+        assert.deepStrictEqual(kept(reviewed!.wakeupId), []);
+        yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'teammate-member'`;
+        assert.strictEqual((yield* turn("after-review")).threadId, shared.threadId);
       }).pipe(Effect.provide(harness({ writer })), provideDeterministicTestRuntime);
     },
   );
@@ -641,6 +680,7 @@ describe("WakeupRunner", () => {
         Writer.MemoryWriter.of({
           dreamBase: () => Effect.die("unused"),
           commitDream: () => Effect.die("unused"),
+          landDream: () => Effect.die("unused"),
           deleteDreamBranch: () => Effect.die("unused"),
           reconcileSharing: () => Effect.void,
           stripQuotes: () => Effect.void,
@@ -768,6 +808,7 @@ describe("WakeupRunner", () => {
                   stage: () => Effect.die("unused"),
                   dreamBase: () => Effect.die("unused"),
                   commitDream: () => Effect.die("unused"),
+                  landDream: () => Effect.die("unused"),
                   deleteDreamBranch: () => Effect.die("unused"),
                   reconcileSharing: () => Effect.void,
                   stripQuotes: () => Effect.void,
@@ -928,7 +969,7 @@ describe("WakeupRunner", () => {
       failureCode: undefined,
       mode: "reply",
       owed: true,
-      said: ["retrying", "retrying", "retrying", "gave_up"],
+      said: ["retrying", "retrying", "retrying_later", "gave_up"],
     },
     // No retry signs the account in: each try names the fix, and the bridge says it once.
     {
@@ -942,7 +983,7 @@ describe("WakeupRunner", () => {
       failureCode: undefined,
       mode: "notice",
       owed: true,
-      said: ["retrying", "retrying", "retrying", "gave_up"],
+      said: ["retrying", "retrying", "retrying_later", "gave_up"],
     },
     // A check-in nobody waits on retries quietly, but never ends silent.
     { failureCode: undefined, mode: "notice", owed: false, said: ["gave_up"] },
@@ -1190,6 +1231,20 @@ describe("WakeupRunner", () => {
   it.effect("interrupts mid-wake-up without counting an attempt and admits the next claim", () =>
     Effect.gen(function* () {
       const entered = yield* Deferred.make<void>();
+      // What the agent staged before the server stopped lands; it is never dropped.
+      const memory: Array<string> = [];
+      let staged = true;
+      const writer = Layer.mock(Writer.MemoryWriter)({
+        appendJournal: () => Effect.void,
+        staged: () => Effect.sync(() => staged),
+        commitWakeup: (_org, _wakeup, outcome) =>
+          Effect.sync(() => {
+            staged = false;
+            memory.push(`commit ${outcome}`);
+            return { commit: "landed" };
+          }),
+        discard: () => Effect.sync(() => void memory.push("discard")),
+      });
       yield* Effect.gen(function* () {
         yield* seed;
         const queue = yield* KinEventQueue.KinEventQueue;
@@ -1199,9 +1254,11 @@ describe("WakeupRunner", () => {
         const fiber = yield* run();
         yield* Deferred.await(entered);
         yield* Fiber.interrupt(fiber);
-        assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups ORDER BY wakeup_id`, [
-          { status: "interrupted" },
-        ]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT status, memory_commit FROM kin_wakeups ORDER BY wakeup_id`,
+          [{ status: "interrupted", memory_commit: "landed" }],
+        );
+        assert.deepStrictEqual(memory, ["commit completed", "discard"]);
         assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
           { state: "queued", attempts: 0 },
         ]);
@@ -1219,6 +1276,7 @@ describe("WakeupRunner", () => {
       }).pipe(
         Effect.provide(
           harness({
+            writer,
             prepare: () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
           }),
         ),

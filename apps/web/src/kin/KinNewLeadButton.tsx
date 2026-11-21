@@ -14,15 +14,12 @@ import { kinGroupFormAtom } from "./kinGroupForm";
 import { kinLeadFormAtom, type KinLeadFormTarget } from "./kinLeadForm";
 import { openKinSettings } from "./kinSettingsAddress";
 import { kinTeamAddRequestAtom } from "./kinTeamForm";
-import { useKinHost } from "./useKinHost";
+import { kinHostTarget, useKinHost } from "./useKinHost";
 
 /** Where a new lead would go: the Kin host and the viewer's organization there. */
 export function kinNewLeadTarget(host: KinHost): KinLeadFormTarget | null {
-  if (host._tag !== "host" || !host.connected || host.probe._tag !== "ready") return null;
-  const me = host.probe.orgs.me[0];
-  return me === undefined
-    ? null
-    : { environmentId: host.environmentId, orgId: me.orgId, lead: null };
+  const target = kinHostTarget(host);
+  return target === null ? null : { ...target, lead: null };
 }
 
 /** Stands in for the create permission while no Kin host is known. */

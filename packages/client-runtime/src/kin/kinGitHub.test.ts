@@ -1,4 +1,10 @@
-import { KinOrgId, type KinGitHubAppAccount, type KinGitHubStatus } from "@t3tools/contracts";
+import {
+  KinOrgId,
+  type KinGitHubAgents,
+  type KinGitHubAppAccount,
+  type KinGitHubInstant,
+  type KinGitHubStatus,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import { AsyncResult } from "effect/reactivity";
 
@@ -12,6 +18,7 @@ import {
   kinGitHubAccountsHint,
   kinGitHubAgentsView,
   kinGitHubAppCreatePath,
+  kinGitHubInstantRow,
   kinGitHubRow,
   kinGitHubSheet,
 } from "./kinGitHub.ts";
@@ -314,6 +321,106 @@ describe("kinGitHubAccountRows", () => {
     const { accounts: _accounts, ...unknown } = { ...agents, accounts: undefined };
     expect(kinGitHubAccountRows(unknown)).toEqual([]);
     expect(kinGitHubAgentsView(unknown, null, 0).installUrl).toBe(agents.installUrl);
+  });
+});
+
+describe("kinGitHubInstantRow", () => {
+  const agents: KinGitHubAgents = {
+    as: "app",
+    appName: "Invented Kin",
+    problem: null,
+    watched: 4,
+    installed: 4,
+    without: [],
+    ownerUses: [],
+  };
+  const now = Date.parse("2026-03-02T10:00:00Z");
+  const settingsUrl = "https://github.com/settings/apps/invented-kin/permissions";
+  const instant = (state: KinGitHubInstant["state"], more: Partial<KinGitHubInstant> = {}) => ({
+    ...agents,
+    instant: { state, missing: [], settingsUrl, last: null, ...more },
+  });
+
+  it.each([
+    ["absent", agents, null],
+    [
+      "on, never heard",
+      instant("on"),
+      ["ok", "At once", "GitHub tells Kin the moment something happens on your repos.", null],
+    ],
+    [
+      "on, last heard",
+      instant("on", { last: { at: "2026-03-02T09:57:00Z", ok: true } }),
+      [
+        "ok",
+        "At once",
+        "GitHub tells Kin the moment something happens on your repos. Last heard 3 min ago.",
+        null,
+      ],
+    ],
+    [
+      "on, last failed",
+      instant("on", { last: { at: "2026-03-02T09:57:00Z", ok: false } }),
+      [
+        "attention",
+        "At once",
+        "GitHub tells Kin the moment something happens on your repos. GitHub's last message, 3 min ago, didn't get through.",
+        null,
+      ],
+    ],
+    [
+      "events",
+      instant("events", { missing: ["Pull request", "Issue comment", "Check suite"] }),
+      [
+        "attention",
+        "Events to tick",
+        `On GitHub, tick "Pull request", "Issue comment" and "Check suite" under Subscribe to events on the App's Permissions & events page. Also make sure Active is ticked under Webhook on the App's General page: GitHub doesn't let Kin check that. Until then Kin checks GitHub every minute, so nothing is missed.`,
+        `Open Permissions & events -> ${settingsUrl}`,
+      ],
+    ],
+    [
+      "events, no settings page",
+      instant("events", { missing: ["Issues"], settingsUrl: null }),
+      [
+        "attention",
+        "Events to tick",
+        `On GitHub, tick "Issues" under Subscribe to events on the App's Permissions & events page. Also make sure Active is ticked under Webhook on the App's General page: GitHub doesn't let Kin check that. Until then Kin checks GitHub every minute, so nothing is missed.`,
+        null,
+      ],
+    ],
+    [
+      "address",
+      instant("address"),
+      [
+        "muted",
+        "Every minute",
+        "This Kin has no public address, so GitHub can't reach it. Kin checks GitHub every minute instead.",
+        null,
+      ],
+    ],
+    [
+      "error",
+      instant("error"),
+      [
+        "attention",
+        "Every minute",
+        "Kin couldn't set up GitHub to tell it at once. Kin keeps checking GitHub every minute instead.",
+        null,
+      ],
+    ],
+  ] as const)("%s", (_name, input, expected) => {
+    const row = kinGitHubInstantRow(input, now);
+    expect(
+      row === null
+        ? null
+        : [
+            row.tone,
+            row.label,
+            row.detail,
+            row.action === null ? null : `${row.action.label} -> ${row.action.url}`,
+          ],
+    ).toEqual(expected);
+    if (row !== null) expect(row.title).toBe("How fast Kin hears from GitHub");
   });
 });
 

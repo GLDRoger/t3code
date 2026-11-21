@@ -49,9 +49,11 @@ import {
   rescueMessageId,
   type AgentIdentity,
 } from "../chat/KinIdentity.ts";
+import { askedForSuffix } from "../github/askedFor.ts";
 import { isClaudeThinkingItem } from "./claudeThinkingItem.ts";
 import { laneFor, type Lane } from "./replyLane.ts";
 import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
+import { LAST_RETRY_MS } from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Reach from "../lead/Reach.ts";
@@ -126,7 +128,13 @@ const fitParts = (text: string, max: number) =>
 // scheduled runs owe theirs through `LeadDelivery`; the rest may end on NO_REPLY.
 
 // `replied`: the turn failed after its reply answered every message it held.
-export type FailedOutcome = "partway" | "replied" | "retrying" | "gave_up" | SetupFailure;
+export type FailedOutcome =
+  | "partway"
+  | "replied"
+  | "retrying"
+  | "retrying_later"
+  | "gave_up"
+  | SetupFailure;
 // Plain words with the lead's name: the inbox shows this as the chat's latest line.
 const failedNotices: Record<
   Exclude<FailedOutcome, SetupFailure | "replied">,
@@ -136,6 +144,12 @@ const failedNotices: Record<
   retrying: {
     prefix: "kin-retrying",
     body: (lead) => `${lead} couldn't start. Trying again in a moment.`,
+  },
+  // Before the long wait: the same kind of line for clients, now saying when.
+  retrying_later: {
+    prefix: "kin-retrying",
+    body: (lead) =>
+      `${lead} couldn't start. Trying once more in about ${Math.round(LAST_RETRY_MS / 60_000)} minutes.`,
   },
   gave_up: {
     prefix: "kin-failed",
@@ -284,7 +298,7 @@ export class KinReplyBridge extends Context.Service<
      * The wake-up failed, in the lane read before the queue closed it: `partway` after
      * something visible (not retried), `replied` when its reply already answered every message
      * (a line only for a card the reply named and never posted, or a promise not kept),
-     * `retrying` when it showed nothing and will run again, `gave_up` when that was its last try.
+     * `retrying` (`retrying_later` before the long wait) when it showed nothing, `gave_up` last.
      */
     readonly failed: (input: {
       readonly orgId: KinOrgId;
@@ -697,7 +711,7 @@ const make = Effect.gen(function* () {
         ? presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, messageId)
         : Effect.void;
     // In the Team room an agent speaks with team_say; what else it writes is its own thinking.
-    if (wake.lane.team === true) {
+    if (wake.lane.team === true || wake.lane.quiet === true) {
       segment.outcome = "dropped";
       return yield* end(null);
     }
@@ -758,9 +772,20 @@ const make = Effect.gen(function* () {
       lead === undefined
         ? null
         : yield* chat.replyCard(lead, wake.lane.chatId).pipe(Effect.orElseSucceed(() => null));
+    // A review someone asked for in Kin: the owner's line says who asked (`reviewAsk.ts`).
+    const askedFor =
+      slot === undefined && wake.posted === 0
+        ? yield* askedForSuffix(wake.orgId, wake.wakeupId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orElseSucceed(() => undefined),
+          )
+        : undefined;
     const opening =
       slot === undefined
-        ? yield* underMorningHeading(wake, text).pipe(Effect.orElseSucceed(() => text))
+        ? yield* underMorningHeading(
+            wake,
+            askedFor === undefined ? text : `${text} ${askedFor}`,
+          ).pipe(Effect.orElseSucceed(() => text))
         : text;
     const result = yield* slot !== undefined
       ? extend(wake, slot, text, segment.ordinal)
@@ -1372,10 +1397,11 @@ const make = Effect.gen(function* () {
         return yield* setupFailed({ ...input, outcome: input.outcome });
       if (input.outcome === "replied") return yield* failedAfterReply(input);
       const notice = failedNotices[input.outcome];
-      if (input.outcome === "retrying") {
+      if (input.outcome === "retrying" || input.outcome === "retrying_later") {
         const agentId = yield* agentOf(input.orgId, input.wakeupId);
         if (agentId === undefined) return;
-        if (yield* standing(input, agentId, ["kin-retrying", "kin-setup"])) return;
+        const shown = input.outcome === "retrying" ? ["kin-retrying", "kin-setup"] : ["kin-setup"];
+        if (yield* standing(input, agentId, shown)) return;
       }
       yield* chat.notice({
         messageId: KinMessageId.make(`${notice.prefix}:${input.wakeupId}`),

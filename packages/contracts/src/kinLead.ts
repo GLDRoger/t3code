@@ -74,7 +74,10 @@ export type KinLeadDomain = typeof KinLeadDomain.Type;
 export const KinLeadCharter = Schema.String.check(Schema.isMaxLength(1_000));
 export type KinLeadCharter = typeof KinLeadCharter.Type;
 
-/** Seats that sell, as owners name them. */
+/** A domain that sells: its agent's prompt carries the sales rules, and it may keep What we sell. */
+export const isKinSalesDomain = (domain: string) =>
+  /^(growth|sales|business|marketing)/.test(domain);
+/** The selling seats as owners name them, kept first so no company's keeper moves to another. */
 const KIN_SALES_DOMAINS: ReadonlyArray<string> = ["growth", "sales", "business-development"];
 /**
  * The agent that keeps What we sell: a selling seat's, else the Chief of staff's, else any. By
@@ -88,6 +91,7 @@ export const kinSalesLead = <L extends { readonly agentId: string; readonly doma
   );
   return (
     byId.find((lead) => KIN_SALES_DOMAINS.includes(lead.domain)) ??
+    byId.find((lead) => isKinSalesDomain(lead.domain)) ??
     byId.find((lead) => lead.domain === "chief-of-staff") ??
     byId[0]
   );
@@ -701,8 +705,15 @@ export const KinGithubTrigger = Schema.Struct({
       fork: Schema.Boolean,
       /** The owner's own account opened it: GitHub allows only a comment review. */
       ownersOwn: Schema.Boolean,
+      /** The head commit Kin read; a review someone asked for is posted against it. */
+      headSha: Schema.optional(Schema.String),
       /** For an outside PR, whose turn gets no shell: the diff as the server read it, clipped. */
       diff: Schema.optional(Schema.String),
+      /**
+       * A re-review after new commits: the head Kin last reviewed, and whether `diff` is the whole
+       * PR's at `headSha` because GitHub didn't give what changed since `from`.
+       */
+      reReview: Schema.optional(Schema.Struct({ from: Schema.String, whole: Schema.Boolean })),
     }),
   ),
   /** Failing check names, for `checks`. */
@@ -745,6 +756,8 @@ export const KinEvent = Schema.Union([
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     webhookDeliveryId: Schema.optional(ScheduledTaskWebhookDeliveryId),
     trigger: Schema.optional(KinGithubTrigger),
+    /** The person who asked for this review in Kin (`kin_github_review_ask`); told its outcome. */
+    askedBy: Schema.optional(KinPersonId),
   }),
   Schema.TaggedStruct("deferral.due", {
     ...EventBase,

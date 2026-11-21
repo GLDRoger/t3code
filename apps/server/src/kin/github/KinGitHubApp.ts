@@ -38,6 +38,7 @@ import {
 } from "./ghSign.ts";
 import { type KnownRepo, knownRepos, repoList, watchRow } from "./githubWatchStore.ts";
 import { KinGitHubAppKey } from "./appKey.ts";
+import { MINUTE_MS } from "../durations.ts";
 
 /**
  * Kin's GitHub App: agents' shells get only one-hour installation tokens, kept fresh as files
@@ -46,15 +47,14 @@ import { KinGitHubAppKey } from "./appKey.ts";
  */
 
 const API = "https://api.github.com";
-const MINUTE = 60_000;
 /**
  * How often Kin looks again at the App and where it is installed: often enough that a choice the
  * owner saves on GitHub shows in Connections within a minute, without a reload.
  */
-const DESCRIBE_EVERY_MS = MINUTE;
+const DESCRIBE_EVERY_MS = MINUTE_MS;
 /** A token is renewed this long before it expires, so a shell never gets one about to lapse. */
-const VISIBILITY_EVERY_MS = 15 * MINUTE;
-const RENEW_BEFORE_MS = 30 * MINUTE;
+const VISIBILITY_EVERY_MS = 15 * MINUTE_MS;
+const RENEW_BEFORE_MS = 30 * MINUTE_MS;
 const TICK = "30 seconds";
 const MAX_PAGES = 10;
 const COMMAND_CAP = 400;
@@ -217,6 +217,21 @@ export class KinGitHubApp extends Context.Service<
       | { readonly source: "seed" }
       | { readonly source: "none" }
     >;
+    /**
+     * The four calls the App's webhook needs, each one fixed method and path signed as the App
+     * itself; undefined where Kin holds no key for it.
+     */
+    readonly hook?: {
+      readonly config: () => Effect.Effect<ApiAnswer | undefined>;
+      readonly setConfig: (config: {
+        readonly url: string;
+        readonly content_type: "json";
+        readonly insecure_ssl: "0";
+        readonly secret: string;
+      }) => Effect.Effect<ApiAnswer | undefined>;
+      readonly about: () => Effect.Effect<ApiAnswer | undefined>;
+      readonly latestDelivery: () => Effect.Effect<ApiAnswer | undefined>;
+    };
   }
 >()("t3/kin/github/KinGitHubApp") {}
 
@@ -432,7 +447,7 @@ export const make = Effect.gen(function* () {
         if (!/^[a-z0-9-]+$/.test(account)) continue;
         const held = tokens.get(installation.id);
         let token =
-          held !== undefined && held.expiresAt - (yield* Clock.currentTimeMillis) > 5 * MINUTE
+          held !== undefined && held.expiresAt - (yield* Clock.currentTimeMillis) > 5 * MINUTE_MS
             ? held
             : yield* mint(appToken, installation);
         const repos = new Set<string>();
@@ -675,7 +690,7 @@ export const make = Effect.gen(function* () {
     if (installation === undefined) return undefined;
     const now = yield* Clock.currentTimeMillis;
     let held = tokens.get(installation.id);
-    if (held === undefined || held.expiresAt - now < 5 * MINUTE) {
+    if (held === undefined || held.expiresAt - now < 5 * MINUTE_MS) {
       const appToken = yield* jwt(appId.value).pipe(Effect.orElseSucceed(() => undefined));
       held = appToken === undefined ? undefined : yield* mint(appToken, installation);
     }
@@ -705,7 +720,25 @@ export const make = Effect.gen(function* () {
       : ({ source: "kin", app: app.stored } as const);
   });
 
-  return KinGitHubApp.of({ state, on, refresh, lookAgain, origin });
+  const asApp = Effect.fnUntraced(function* (input: ApiRequest) {
+    const appId = yield* appIdNow();
+    if (Option.isNone(appId)) return undefined;
+    const token = yield* jwt(appId.value);
+    return token === undefined ? undefined : yield* request(token, input);
+  });
+  const hook = {
+    config: Effect.fn("KinGitHubApp.hookConfig")(() => asApp({ path: "app/hook/config" })),
+    setConfig: Effect.fn("KinGitHubApp.setHookConfig")(
+      (config: Parameters<NonNullable<KinGitHubApp["Service"]["hook"]>["setConfig"]>[0]) =>
+        asApp({ method: "PATCH", path: "app/hook/config", body: config }),
+    ),
+    about: Effect.fn("KinGitHubApp.about")(() => asApp({ path: "app" })),
+    latestDelivery: Effect.fn("KinGitHubApp.latestDelivery")(() =>
+      asApp({ path: "app/hook/deliveries?per_page=1" }),
+    ),
+  };
+
+  return KinGitHubApp.of({ state, on, refresh, lookAgain, origin, hook });
 });
 
 /** Looks once at startup and then every 30 seconds, for as long as Kin runs. */

@@ -20,6 +20,8 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { readStoredApp, removeStoredApp, writeSeedTaken, writeStoredApp } from "./appStore.ts";
 import { knownRepos } from "./githubWatchStore.ts";
+import { HOOK_EVENTS, KIN_GITHUB_HOOK_ROUTE } from "./appHook.ts";
+import { publicAddress } from "../publicAddress.ts";
 import { KinGitHubAppKey } from "./appKey.ts";
 import { appSettingsPage, KinGitHubApp, KinGitHubAppConfig } from "./KinGitHubApp.ts";
 
@@ -36,7 +38,7 @@ const NAME_MAX = 34;
 
 /**
  * What agents need and no more: code, pull requests, issues and checks, and reading Actions runs
- * for memory's checks. No webhook: Kin polls. Tokens Kin mints leave out admin-like permissions too.
+ * for memory's checks. Tokens Kin mints leave out admin-like permissions too.
  */
 const PERMISSIONS = {
   contents: "write",
@@ -187,6 +189,7 @@ export const make = Effect.gen(function* () {
     if (entry === undefined || entry.expiresAt <= (yield* Clock.currentTimeMillis))
       return Option.none<string>();
     const chosen = name.trim().replace(/\s+/g, " ").slice(0, NAME_MAX).trim();
+    const address = yield* publicAddress();
     const manifest = toJson({
       name: chosen === "" ? entry.defaultName : chosen,
       url: origin,
@@ -194,7 +197,13 @@ export const make = Effect.gen(function* () {
       redirect_url: `${origin}${APP_SETUP_ROUTE}/created`,
       public: entry.public,
       default_permissions: PERMISSIONS,
-      default_events: [],
+      // GitHub delivers to a public address only; without one Kin polls, as it always also does.
+      ...(address === undefined
+        ? { default_events: [] }
+        : {
+            hook_attributes: { url: `${address}${KIN_GITHUB_HOOK_ROUTE}`, active: true },
+            default_events: Object.keys(HOOK_EVENTS),
+          }),
     });
     const action = `https://github.com/settings/apps/new?state=${encodeURIComponent(state)}`;
     return Option.some(

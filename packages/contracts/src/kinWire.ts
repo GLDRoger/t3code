@@ -213,12 +213,14 @@ export function kinPulseDiff(
   const outlineMoved = JSON.stringify(held.outline) !== JSON.stringify(next.outline);
   const asideMoved = JSON.stringify(held.setAside ?? []) !== JSON.stringify(next.setAside ?? []);
   const orderMoved = !sameKeys(natural, order);
+  const countMoved = held.tasksNeedsYou !== next.tasksNeedsYou;
   if (
     removed.length === 0 &&
     updated.length === 0 &&
     !orderMoved &&
     !outlineMoved &&
     !asideMoved &&
+    !countMoved &&
     held.total === next.total
   )
     return null;
@@ -227,6 +229,9 @@ export function kinPulseDiff(
     total: next.total,
     ...(outlineMoved && next.outline !== undefined ? { outline: next.outline } : {}),
     ...(asideMoved ? { setAside: next.setAside ?? [] } : {}),
+    ...(countMoved && next.tasksNeedsYou !== undefined
+      ? { tasksNeedsYou: next.tasksNeedsYou }
+      : {}),
     updated,
     removed,
     ...(orderMoved ? { order } : {}),
@@ -250,11 +255,13 @@ export function kinPulseApply(
     );
   const outline = change.outline ?? held.outline;
   const setAside = change.setAside ?? held.setAside;
+  const tasksNeedsYou = change.tasksNeedsYou ?? held.tasksNeedsYou;
   return {
     asOf: change.asOf,
     total: change.total,
     facts: order.flatMap((key) => byKey.get(key) ?? []),
     ...(outline === undefined ? {} : { outline }),
     ...(setAside === undefined ? {} : { setAside }),
+    ...(tasksNeedsYou === undefined ? {} : { tasksNeedsYou }),
   };
 }

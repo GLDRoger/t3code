@@ -33,6 +33,10 @@ BACKUP_STATUS="$HOME/.t3/userdata/kin-backup-status.json"
 SPACE_HEADROOM=$((1024 * 1024 * 1024))
 # Seconds to wait for a new build to answer and finish its migrations.
 ANSWER_TIMEOUT=90
+# Seconds to wait for agents' turns and the nightly dream to end before stopping the server. Past
+# it the server stops anyway: a stopped turn lands what it staged in memory, and its unanswered
+# messages are answered after the restart.
+TURN_WAIT=120
 BACKUP=""
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 SELF_SUM="$(cksum <"$SELF")"
@@ -93,6 +97,33 @@ db_heads() {
   t3="$(sqlite3 -readonly "$DB" 'SELECT coalesce(max(migration_id), 0) FROM effect_sql_migrations;' 2>/dev/null || echo 0)"
   kin="$(sqlite3 -readonly "$DB" 'SELECT coalesce(max(migration_id), 0) FROM kin_sql_migrations;' 2>/dev/null || echo 0)"
   echo "${t3:-0} ${kin:-0}"
+}
+
+# How many agent turns (wake-ups) and dreams the database shows running; 0 before Kin's tables exist.
+running_work() {
+  local n=""
+  if [ -f "$DB" ]; then
+    n="$(sqlite3 -readonly "$DB" "SELECT (SELECT count(*) FROM kin_wakeups WHERE status = 'running') + (SELECT count(*) FROM kin_dream_runs WHERE status = 'running');" 2>/dev/null)" || n=""
+  fi
+  echo "${n:-0}"
+}
+
+# Waits up to TURN_WAIT seconds for running agent turns and dreams to end, saying what it waits for.
+wait_for_turns() {
+  local running waited=0
+  running="$(running_work)"
+  [ "$running" -gt 0 ] || return 0
+  say "waiting for $running running agent turn(s) or dream to finish before stopping the server (up to ${TURN_WAIT}s)."
+  until [ "$running" -eq 0 ]; do
+    if [ "$waited" -ge "$TURN_WAIT" ]; then
+      say "$running still running after ${TURN_WAIT}s; stopping the server anyway. What they staged in memory lands as it stops."
+      return 0
+    fi
+    sleep 5
+    waited=$((waited + 5))
+    running="$(running_work)"
+  done
+  say "no agent turn or dream is running now (waited ${waited}s)."
 }
 
 # A consistent copy of the database before the new build migrates it. Sets BACKUP.
@@ -313,6 +344,7 @@ deploy() {
     say "not enough disk space: $problem. Nothing changed; the server still runs ${previous:-nothing}."
     return 1
   fi
+  wait_for_turns
   # Stopped first, so the backup holds every write the previous build made.
   systemctl --user stop kin-server 2>/dev/null || true
   if ! backup_db "$sha"; then

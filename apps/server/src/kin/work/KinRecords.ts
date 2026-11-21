@@ -1371,15 +1371,19 @@ const make = Effect.gen(function* () {
     const key = yield* ensureRegister(orgId, def, now);
     const kept = options.kept ?? (yield* startsKept(orgId, writer, list, input));
     // Nobody issued, sent or was paid for what nobody kept: it waits as a draft on its own day.
+    // Only Issue makes an invoice owed, with its number; an agent sets none, so it starts a draft.
     const state =
-      !kept && ISSUED_LISTS.has(list)
+      (!kept && ISSUED_LISTS.has(list)) || (writer.actor._tag === "agent" && list === "invoices")
         ? "open"
         : (input.state ??
           startState(def, {
             dateAt: input.dateAt ?? null,
             numbered: "number" in fields,
             now,
-            zone: def.id === "expenses" ? yield* ownerZone(orgId).pipe(provideSql) : "UTC",
+            zone:
+              def.id === "expenses" || def.id === "invoices"
+                ? yield* ownerZone(orgId).pipe(provideSql)
+                : "UTC",
           }));
     const waitingOn = state === "waiting" ? (input.waitingOn ?? null) : null;
     const givenAway =
@@ -1504,9 +1508,13 @@ const make = Effect.gen(function* () {
     );
     const owner = principal(row.ownerKind, row.ownerId);
     if (owner === null) return;
-    const files = new Set(def.fields.filter((one) => one.type === "file").map((one) => one.key));
+    // The next one takes its own number when it is issued.
+    const dropped = new Set([
+      ...def.fields.filter((one) => one.type === "file").map((one) => one.key),
+      ...(numberingOf(def) === undefined ? [] : ["number"]),
+    ]);
     const kept = Object.fromEntries(
-      Object.entries(parseFields(row.fieldsJson)).filter(([key]) => !files.has(key)),
+      Object.entries(parseFields(row.fieldsJson)).filter(([key]) => !dropped.has(key)),
     );
     const amount = amountOf(row);
     // The next one is whoever closed this one's to keep, and a suggestion if this one is.
@@ -1808,7 +1816,17 @@ const make = Effect.gen(function* () {
                 ? (owing ?? row.state)
                 : row.state
             : undefined;
-        const state = patch.state ?? settled ?? row.state;
+        const wanted = patch.state ?? settled ?? row.state;
+        // An agent never issues or settles an invoice by its state: Issue gives it its number.
+        const unissued =
+          writer.actor._tag === "agent" &&
+          list === "invoices" &&
+          !isSuggestion(row) &&
+          (wanted === "waiting" || wanted === "done") &&
+          wanted !== row.state &&
+          (yield* sql`SELECT 1 FROM kin_issued_numbers
+            WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`).length === 0;
+        const state = unissued ? row.state : wanted;
         // Only who may keep one keeps a suggestion, and only an owner-level person takes it back;
         // anyone else's `confirmed` changes nothing, so an agent's slip ack stays only that.
         const keeping =
@@ -2857,6 +2875,8 @@ const make = Effect.gen(function* () {
           }),
       );
     }),
+    // Nested in the caller's transaction when there is one, so every tick waits for the outermost
+    // commit (screens read on readers) and a rollback tells no one.
     announce: Effect.fn("KinRecords.announce")(function* (orgId, recordIds) {
       const moved =
         recordIds === undefined
@@ -2895,13 +2915,9 @@ const make = Effect.gen(function* () {
             if (pair.recordId === one.recordId && number !== undefined)
               team.set(pair.personId, number);
           }
-          yield* PubSub.publish(ticks, {
-            orgId,
-            seq,
-            key: one.key,
-            registerId: one.registerId,
-            team,
-          });
+          yield* sql.afterCommit(
+            PubSub.publish(ticks, { orgId, seq, key: one.key, registerId: one.registerId, team }),
+          );
         }
         return;
       }
@@ -2917,9 +2933,8 @@ const make = Effect.gen(function* () {
           everyone.map((one) => one.personId),
         ).pipe(provideSql),
       );
-      // Screens read on readers, which see this only once it commits.
       yield* sql.afterCommit(PubSub.publish(ticks, { orgId, seq, team }));
-    }),
+    }, transaction),
     peopleMoved: Effect.fn("KinRecords.peopleMoved")(function* (orgId, personIds) {
       if (personIds.length === 0) return;
       const team = yield* failed(bumpTeamSeqs(orgId, personIds).pipe(provideSql));

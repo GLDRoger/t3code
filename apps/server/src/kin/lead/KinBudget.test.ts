@@ -169,6 +169,15 @@ describe("KinBudget", () => {
         assert.deepStrictEqual(yield* budget.chargeTask({ orgId, threadId: task, usage }), billed);
         yield* budget.chargeTask({ orgId, threadId: task, usage: full });
         assert.include(yield* budget.get(orgId), { leadUnits: 4, workerUnits: 59.5 });
+        // A nightly dream's turn bills the agents' units, once, and only what it grew by.
+        const dream = ThreadId.make("kin-dream:invented:extract");
+        const dreamed = yield* budget.chargeDream({ orgId, threadId: dream, usage });
+        assert.deepStrictEqual(
+          yield* budget.chargeDream({ orgId, threadId: dream, usage }),
+          dreamed,
+        );
+        yield* budget.chargeDream({ orgId, threadId: dream, usage: full });
+        assert.include(yield* budget.get(orgId), { leadUnits: 63.5, workerUnits: 59.5 });
         assert.include(
           yield* budget
             .charge({ orgId: KinOrgId.make("foreign"), wakeupId, usage })

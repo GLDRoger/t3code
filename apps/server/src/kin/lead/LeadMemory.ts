@@ -43,7 +43,12 @@ import * as KinLevels from "./KinLevels.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
-import { MemoryItemError, memoryDateMillis, parseFrontMatter } from "../memory/frontMatter.ts";
+import {
+  MemoryItemError,
+  memoryDateMillis,
+  parseFrontMatter,
+  reviewOverdueBy,
+} from "../memory/frontMatter.ts";
 import { leadOwner, withReadableQuotes } from "../memory/quoteAccess.ts";
 import { QUOTE_MAX, QUOTE_REFUSALS, writeRefusal } from "../memory/keeping.ts";
 import {
@@ -74,6 +79,8 @@ import { TurnEvent } from "./eventIds.ts";
 import { validZone } from "../triggers/quietHold.ts";
 import { stillAway } from "../triggers/quietHours.ts";
 import { ownerZone } from "../work/recordRows.ts";
+import { pauseTriggers } from "../triggers/KinTriggerStore.ts";
+import { DAY_MS } from "../durations.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -222,8 +229,6 @@ const SEARCH_WHAT_CHARS = 200;
 export const SearchResult = Schema.Array(
   Schema.Union([SearchHit, Schema.Struct({ ...SharedHead.fields, duplicate: Schema.Boolean })]),
 );
-const reviewOverdue = (head: Pick<MemoryItemHead, "review_by">, now: number) =>
-  head.review_by !== null && memoryDateMillis(head.review_by) < now;
 /** An authority refusal: who is calling, or when. Its reason is never spelled out. */
 const denied = () =>
   new KinChatError({ reason: "not_allowed", message: "Agent operation is not allowed." });
@@ -254,7 +259,6 @@ const SHARE_NEEDS_OWNER =
 // What a teammate's messages can cause shared turns to save, per person per day.
 const SHARED_WRITES_PER_DAY = 20;
 const SHARED_BYTES_PER_DAY = 20_000;
-const DAY_MS = 24 * 60 * 60 * 1000;
 const busy = () =>
   new KinChatError({
     reason: "unavailable",
@@ -751,9 +755,9 @@ const make = Effect.gen(function* () {
         if (asked !== undefined && asked.chatId !== head.chat) return false;
         const now = yield* Clock.currentTimeMillis;
         if (head.every !== undefined) {
-          yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
-            updated_at = max(updated_at, ${now})
-            WHERE org_id = ${ctx.orgId} AND trigger_id = ${scheduledTaskTriggerId(itemId)}`;
+          yield* pauseTriggers(ctx.orgId, [scheduledTaskTriggerId(itemId)], now).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
           return { outcome: "stopped" as const };
         }
         const stopped = yield* cancelDeferralRun({ orgId: ctx.orgId, itemId, now }).pipe(
@@ -1155,7 +1159,7 @@ const make = Effect.gen(function* () {
             }),
         status: item.status,
         due: item.due,
-        reviewOverdue: reviewOverdue(item, now),
+        reviewOverdue: reviewOverdueBy(item, now),
         ...(item.invalid_at === null ? {} : { misleading: true as const }),
         ...(item.superseded_by === null ? {} : { supersededBy: item.superseded_by }),
         duplicate: (counts.get(item.id) ?? 0) > 1,
@@ -1180,7 +1184,7 @@ const make = Effect.gen(function* () {
       return {
         ...item,
         head: head!,
-        reviewOverdue: reviewOverdue(item.head, now),
+        reviewOverdue: reviewOverdueBy(item.head, now),
         misleading: item.head.invalid_at !== null,
       };
     }, Effect.mapError(failure)),

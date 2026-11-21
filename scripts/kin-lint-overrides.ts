@@ -3,6 +3,11 @@ import type { OxlintConfig } from "vite-plus/lint";
 // Kin's own lint rules, spread into the root vite.config.ts overrides in place.
 export const kinLintOverrides = [
   {
+    // Lifted out of McpHttpServer, which this rule exempts: gates and visibility, no tool registered.
+    files: ["apps/server/src/kin/mcp/toolPolicy.ts"],
+    rules: { "t3code/no-raw-mcp-registration": "off" },
+  },
+  {
     // A person's read applies `personSees` through a required `KinViewer`; docs/kin/RULES.md.
     files: ["apps/server/src/kin/**"],
     excludeFiles: ["**/*.{test,testkit}.ts"],

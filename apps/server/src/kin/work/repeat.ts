@@ -3,6 +3,7 @@ import * as DateTime from "effect/DateTime";
 
 import { dayIn } from "./money.ts";
 import { endOfDay, type StoredRepeat } from "./recordRows.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * When a repeating entry's next one falls: a month, quarter or year on from each of its dates,
@@ -94,4 +95,3 @@ export const repeatsBetween = (rule: KinRepeatRule, from: number, to: number) =>
   const per = rule.every === "days" ? rule.days : MONTHS[rule.every] * 31;
   return Math.max(Math.floor(days / per) - 1, 0);
 };
-const DAY_MS = 24 * 60 * 60 * 1000;

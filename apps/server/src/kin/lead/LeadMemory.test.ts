@@ -392,6 +392,7 @@ it.live(
           "kin_cancel",
           "kin_journal",
           "kin_github_review",
+          "kin_github_review_ask",
           "kin_github_watch",
           "kin_github_link",
         ]);
@@ -448,7 +449,7 @@ it.live(
         assert.include(JSON.stringify(toolRead), "a-item");
         // A hit carries enough to choose what to read; the rest of its front matter is a read away.
         const toolSearch = yield* server
-          .callTool({ name: "memory_search", arguments: { kind: "claim", reviewOverdue: true } })
+          .callTool({ name: "memory_search", arguments: { kind: "claim" } })
           .pipe(
             Effect.provideService(McpInvocationContext, scope),
             Effect.provideService(KinIdentity, identity),
@@ -466,7 +467,7 @@ it.live(
               what: `Invented maintenance window ${"detail ".repeat(40)}`.slice(0, 199) + "…",
               status: "open",
               due: null,
-              reviewOverdue: true,
+              reviewOverdue: false,
               misleading: true,
               supersededBy: "spare-item",
               duplicate: false,
@@ -483,7 +484,7 @@ it.live(
           ],
         );
         const opened = yield* service.read(scope, { id: KinMemoryItemId.make("a-item") });
-        assert.isTrue("head" in opened && opened.reviewOverdue);
+        assert.isTrue("head" in opened && !opened.reviewOverdue);
         assert.isTrue("head" in opened && opened.misleading);
         assert.lengthOf(
           yield* sql`SELECT 1 FROM kin_memory_reads WHERE org_id = ${orgId} AND item_id = 'a-item'`,

@@ -20,7 +20,7 @@ import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAd
 import { hookAllows, kinSecretVariables } from "../../../claudeConfinement.testkit.ts";
 import * as DreamIsolation from "../../../dreaming/DreamIsolation.ts";
 import { builtinTools, claude, OWNER_SEAT_OFF } from "./claude.ts";
-import { kinInstructions } from "../session.ts";
+import { kinInstructions, REVIEW_SEAT_INSTRUCTIONS } from "../session.ts";
 import { ownerOnlyWakeup, wakeupRun } from "../../Audience.testkit.ts";
 import {
   delegatedFromLead,
@@ -103,6 +103,7 @@ it.effect.each([
           ["thread-1", other],
           ["kin-dream:fixture:extract", dream],
           ["kin-shared:lead", lead],
+          ["kin-shared:review:lead", lead],
         ] as const)
           yield* runner
             .open({
@@ -123,7 +124,7 @@ it.effect.each([
           ),
         ),
       );
-      const [leadOpened, otherOpened, dreamOpened, sharedOpened] = opened;
+      const [leadOpened, otherOpened, dreamOpened, sharedOpened, reviewOpened] = opened;
       assert.strictEqual(otherOpened, other);
       assert.deepStrictEqual(dreamOpened?.settingSources, []);
       if (!enabled) {
@@ -222,6 +223,18 @@ it.effect.each([
         SESSION_REFUSAL.none,
       );
       assert.isDefined(sharedOpened?.mcpServers?.kin);
+      // An outsider's pull request's review: its own short system prompt, and no web search.
+      assert.deepStrictEqual(reviewOpened?.systemPrompt, {
+        type: "custom",
+        prompt: REVIEW_SEAT_INSTRUCTIONS,
+        snapshot: false,
+      });
+      assert.deepStrictEqual(reviewOpened?.tools, ["ToolSearch"]);
+      for (const tool of builtinTools) assert.include(reviewOpened?.disallowedTools ?? [], tool);
+      assert.strictEqual(
+        yield* Effect.promise(() => hookDenial(reviewOpened, "WebSearch", { query: "tiles" })),
+        "This review has no web search.",
+      );
     }).pipe(
       Effect.scoped,
       Effect.provide(

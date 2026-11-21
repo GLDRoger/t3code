@@ -152,10 +152,15 @@ export function makeKinScreenReads(kinClient: KinClient, registry: AtomRegistry.
     streamed: boolean,
     paged = false,
     scope?: KinAttentionScope,
-  ) =>
-    streamed
-      ? kinClient.attentionLive(attentionInput(target, paged, scope))
-      : kinClient.attention(attentionInput(target, paged, scope));
+  ) => {
+    const asked = attentionInput(target, paged, scope);
+    if (!streamed) return kinClient.attention(asked);
+    // The whole list also carries Tasks' count, for the Tasks badge (`useKinTasksNeedsYou`).
+    const whole = !paged && scope === undefined;
+    return kinClient.attentionLive(
+      whole ? { ...asked, input: { ...asked.input, tasksNeedsYou: true } } : asked,
+    );
+  };
   const attentionStreamed = ({ environmentId, orgId }: KinScreenTarget) =>
     kinClient.attentionStreamed({ environmentId, input: { orgId } });
   /** Facts answered on this device, hidden until the live read says where they stand now. */

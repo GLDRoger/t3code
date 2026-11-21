@@ -7,7 +7,6 @@ import {
   KinPersonId,
   KinRecordId,
   KinWidgetId,
-  type KinOpenRead,
   type KinPulseFact,
   type KinRecord,
   type KinRecordDetail,
@@ -265,29 +264,13 @@ describe("kinTasksDealFacts", () => {
     handled: null,
     ...patch,
   });
-  const open = (...facts: ReadonlyArray<KinPulseFact>): KinOpenRead => ({
+  const pulseOf = (...facts: ReadonlyArray<KinPulseFact>) => ({
     asOf: DateTime.makeUnsafe(now.getTime()),
-    counts: { needsYou: facts.length + 1, waiting: 0 },
-    rows: [
-      ...facts.map((one) => ({
-        id: `fact:${one.key}`,
-        late: false,
-        item: { _tag: "fact" as const, fact: one },
-      })),
-      {
-        id: "task:W-1",
-        late: false,
-        item: {
-          _tag: "task" as const,
-          key: "W-1",
-          title: "Invented task",
-          dueAt: DateTime.makeUnsafe(Date.UTC(2026, 10, 18, 12)),
-        },
-      },
-    ],
+    total: facts.length,
+    facts,
   });
   const owner = { _tag: "owner" } as const;
-  const everything = open(
+  const everything = pulseOf(
     fact("deal_no_next_step", "DL-1", zoya),
     fact("deal_quiet", "DL-2", zoya),
     fact("deal_date_passed", "DL-3", rhea),
@@ -306,45 +289,38 @@ describe("kinTasksDealFacts", () => {
   const keys = (rows: ReturnType<typeof kinTasksDealFacts>) => rows.map((one) => one.factKey);
 
   it("lists a person's own deal and prospect facts, and the owner's own and those that fall to him", () => {
-    expect(keys(kinTasksDealFacts(everything, { ownerLevel: false, names: asZoya, now }))).toEqual([
-      "deal_no_next_step:DL-1",
-      "deal_quiet:DL-2",
-    ]);
-    expect(keys(kinTasksDealFacts(everything, { ownerLevel: true, names, now }))).toEqual([
+    expect(
+      keys(kinTasksDealFacts({ ownerLevel: false, names: asZoya, now, pulse: everything })),
+    ).toEqual(["deal_no_next_step:DL-1", "deal_quiet:DL-2"]);
+    expect(keys(kinTasksDealFacts({ ownerLevel: true, names, now, pulse: everything }))).toEqual([
       "deal_date_passed:DL-3",
       "deal_no_next_step:C-4",
     ]);
     // A deal with no next step carries "What's next?"; a prospect's opens the prospect.
-    const [deal] = kinTasksDealFacts(everything, { ownerLevel: false, names: asZoya, now });
+    const [deal] = kinTasksDealFacts({ ownerLevel: false, names: asZoya, now, pulse: everything });
     expect(deal).toMatchObject({ whatsNext: "DL-1", open: { type: "record", key: "DL-1" } });
-    const prospect = kinTasksDealFacts(everything, { ownerLevel: true, names, now })[1];
+    const prospect = kinTasksDealFacts({ ownerLevel: true, names, now, pulse: everything })[1];
     expect(prospect).toMatchObject({ whatsNext: null, open: { type: "record", key: "C-4" } });
   });
 
-  it("drops a fact once it clears, and on a host without the open list reads the pulse's", () => {
-    expect(kinTasksDealFacts(open(), { ownerLevel: false, names: asZoya, now })).toEqual([]);
-    expect(kinTasksDealFacts(null, { ownerLevel: true, names, now })).toEqual([]);
-    expect(kinTasksDealFacts(undefined, { ownerLevel: true, names, now })).toEqual([]);
-    // The same facts as Clients reads them, a handled one left out; none while the list loads.
-    const pulse = {
-      asOf: everything.asOf,
-      total: everything.rows.length - 1,
-      facts: everything.rows.flatMap((row) => (row.item._tag === "fact" ? [row.item.fact] : [])),
-    };
-    expect(keys(kinTasksDealFacts(null, { ownerLevel: false, names: asZoya, now, pulse }))).toEqual(
-      ["deal_no_next_step:DL-1", "deal_quiet:DL-2"],
+  it("drops a fact once it clears, and has none while the pulse loads", () => {
+    expect(kinTasksDealFacts({ ownerLevel: false, names: asZoya, now, pulse: pulseOf() })).toEqual(
+      [],
     );
-    expect(kinTasksDealFacts(undefined, { ownerLevel: true, names, now, pulse })).toEqual([]);
+    expect(kinTasksDealFacts({ ownerLevel: true, names, now, pulse: null })).toEqual([]);
+    expect(kinTasksDealFacts({ ownerLevel: true, names, now })).toEqual([]);
     // Needs you counts them beside the tasks, as the badge does.
     const counts = { needsYou: 3, waiting: 0, rest: 0, doneRecently: 0 };
-    const dealFacts = kinTasksDealFactsOf(null, pulse, { ownerLevel: false, me: asZoya.me }).length;
-    expect(kinNeedsYouCount({ open: null, counts, dealFacts })).toBe(5);
-    expect(kinNeedsYouCount({ open: null, counts: null, dealFacts })).toBeNull();
-    expect(kinNeedsYouCount({ open: everything, counts, dealFacts })).toBe(8);
+    const dealFacts = kinTasksDealFactsOf(everything, {
+      ownerLevel: false,
+      me: asZoya.me,
+    }).length;
+    expect(kinNeedsYouCount({ counts, dealFacts })).toBe(5);
+    expect(kinNeedsYouCount({ counts: null, dealFacts })).toBeNull();
   });
 
   it("puts them first under Needs you, so it is not all clear", () => {
-    const facts = kinTasksDealFacts(everything, { ownerLevel: false, names: asZoya, now });
+    const facts = kinTasksDealFacts({ ownerLevel: false, names: asZoya, now, pulse: everything });
     const items = kinTasksByMove({
       records: [row("K", { owner: zoya })],
       moves: new Map([["K", { key: "K", group: "needsYou" }]]),
@@ -542,12 +518,10 @@ describe("a person's page and the project filter", () => {
 });
 
 describe("kinNeedsYouCount", () => {
-  it("is the open list's count where it streams, else Tasks' own", () => {
+  it("is Tasks' own count, null until it arrives", () => {
     const counts = { needsYou: 4, waiting: 0, rest: 0, doneRecently: 0 };
-    expect(kinNeedsYouCount({ open: null, counts })).toBe(4);
-    expect(kinNeedsYouCount({ open: null, counts: null })).toBeNull();
-    const open = { counts: { needsYou: 7 } } as Parameters<typeof kinNeedsYouCount>[0]["open"];
-    expect(kinNeedsYouCount({ open, counts })).toBe(7);
+    expect(kinNeedsYouCount({ counts })).toBe(4);
+    expect(kinNeedsYouCount({ counts: null })).toBeNull();
   });
 });
 

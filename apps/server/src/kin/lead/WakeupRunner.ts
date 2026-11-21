@@ -59,6 +59,7 @@ import {
   recordedAudience,
   turnChat,
 } from "./Audience.ts";
+import { REVIEW_THREAD_PREFIX, outsideReview } from "./outsideReview.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import {
@@ -211,7 +212,9 @@ const make = Effect.gen(function* () {
             : finished.failedEventIds.length > 0
               ? "gave_up"
               : finished.retried > 0 && lane.value.owed
-                ? "retrying"
+                ? finished.retryInMs >= KinEventQueue.LAST_RETRY_MS
+                  ? "retrying_later"
+                  : "retrying"
                 : undefined;
     if (outcome !== undefined)
       yield* bridge.value.failed({
@@ -779,8 +782,29 @@ const make = Effect.gen(function* () {
     row: typeof RunningRow.Type,
     interrupted = false,
   ) {
-    if (Option.isSome(writer))
-      yield* writer.value.discard(row.orgId, row.wakeupId).pipe(Effect.ignore);
+    // Only a stopping server interrupts a wake-up: what it staged lands then, as the agent may
+    // already have said it saved it, and its events may be done. Otherwise it is dropped.
+    if (Option.isSome(writer)) {
+      const memory = writer.value;
+      const landed =
+        interrupted &&
+        (yield* memory.staged(row.orgId, row.wakeupId).pipe(Effect.orElseSucceed(() => false)))
+          ? yield* memory.commitWakeup(row.orgId, row.wakeupId, "completed").pipe(
+              Effect.tap(
+                ({ commit }) =>
+                  sql`UPDATE kin_wakeups SET memory_commit = ${commit} WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`,
+              ),
+              Effect.as(true),
+              Effect.catchCause((cause) =>
+                Effect.logError("Kin couldn't land a stopped wake-up's memory", {
+                  wakeupId: row.wakeupId,
+                  cause,
+                }).pipe(Effect.as(false)),
+              ),
+            )
+          : false;
+      if (!landed) yield* memory.discard(row.orgId, row.wakeupId).pipe(Effect.ignore);
+    }
     yield* endReply(row);
     const [running] =
       yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND status = 'running'`;
@@ -1180,11 +1204,15 @@ const make = Effect.gen(function* () {
             // registered again.
             const alone = !shared && (yield* ownerAlone(row).pipe(provideSql));
             const chatId = alone ? null : ((yield* turnChat(row).pipe(provideSql))?.chatId ?? null);
-            const prefix = shared ? SHARED_THREAD_PREFIX : "kin:";
+            // A stranger's pull request is reviewed on a thread that lists only its review tools.
+            const review = shared && (yield* outsideReview(row).pipe(provideSql)) !== undefined;
+            const prefix = review ? REVIEW_THREAD_PREFIX : shared ? SHARED_THREAD_PREFIX : "kin:";
             const [live] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
               FROM kin_agent_threads WHERE org_id = ${orgId} AND agent_id = ${agentId}
                 AND ended_at IS NULL AND chat_id IS ${chatId}
                 AND substr(thread_id, 1, ${prefix.length}) = ${prefix}
+                AND (${review ? 1 : 0} = 1
+                  OR substr(thread_id, 1, ${REVIEW_THREAD_PREFIX.length}) <> ${REVIEW_THREAD_PREFIX})
               ORDER BY started_at DESC, thread_id DESC LIMIT 1`;
             let existingThreadId = !alone && chatId === null ? null : (live?.threadId ?? null);
             if (existingThreadId !== null) {
@@ -1202,9 +1230,7 @@ const make = Effect.gen(function* () {
               yield* queue.finish({ orgId, wakeupId, status: "failed" });
               return;
             }
-            const threadId =
-              existingThreadId ??
-              ThreadId.make(`${shared ? SHARED_THREAD_PREFIX : "kin:"}${yield* ulid}`);
+            const threadId = existingThreadId ?? ThreadId.make(`${prefix}${yield* ulid}`);
             row = { ...row, threadId };
             yield* sql.withTransaction(
               Effect.gen(function* () {

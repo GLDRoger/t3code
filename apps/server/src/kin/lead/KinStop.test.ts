@@ -24,6 +24,7 @@ import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinStop from "./KinStop.ts";
@@ -281,13 +282,20 @@ describe("KinStop", () => {
       yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at) VALUES ('old-lead', 'org', 'Old', 'lead', 'owner', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z')`;
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('old-chat', 'org', 'team_group', 0, '1970-01-01T00:00:00.000Z')`;
       yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES ('old-lead', 'org', 'Old', 0, '{}', '[]', 'old-chat')`;
-      const paused = yield* stop.pause(owner, { orgId });
+      // Each real change moves the topic open screens follow; a repeat moves nothing.
+      const touched: Array<string> = [];
+      const told = Effect.provideService(KinRefreshObserver, {
+        touch: (org, topic) => Effect.sync(() => void touched.push(`${org}:${topic}`)),
+      });
+      const paused = yield* stop.pause(owner, { orgId }).pipe(told);
+      yield* stop.pause(owner, { orgId }).pipe(told);
+      assert.deepStrictEqual(touched, [`${orgId}:stop`]);
       assert.isTrue(yield* stop.isPaused(orgId));
       yield* queue.enqueue(event("old"));
       yield* TestClock.adjust("25 hours");
       yield* queue.enqueue(event("fresh"));
 
-      const resumed = yield* stop.resume(owner, { orgId });
+      const resumed = yield* stop.resume(owner, { orgId }).pipe(told);
       assert.deepStrictEqual(resumed, {
         orgId,
         paused: false,
@@ -295,7 +303,8 @@ describe("KinStop", () => {
         pausedBy: null,
         reason: null,
       });
-      assert.deepStrictEqual(yield* stop.resume(owner, { orgId }), resumed);
+      assert.deepStrictEqual(yield* stop.resume(owner, { orgId }).pipe(told), resumed);
+      assert.deepStrictEqual(touched, [`${orgId}:stop`, `${orgId}:stop`]);
       assert.isFalse(yield* stop.isPaused(orgId));
       assert.deepStrictEqual(
         yield* sql`SELECT author_kind, body FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`,

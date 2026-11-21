@@ -551,6 +551,22 @@ export const KinGitHubAppAccount = Schema.Struct({
 });
 export type KinGitHubAppAccount = typeof KinGitHubAppAccount.Type;
 
+/**
+ * Whether GitHub tells Kin at once, through the App's webhook: `on` (set, every event Kin needs
+ * ticked), `events` (set, some unticked), `address` (Kin has no public address), or `error`
+ * (GitHub refused or couldn't be reached). Kin's poll goes on in every state.
+ */
+export const KinGitHubInstant = Schema.Struct({
+  state: Schema.Literals(["on", "events", "address", "error"]),
+  /** Event names still to tick on GitHub, as GitHub's page words them ("Pull request", "Issue comment", ...). */
+  missing: Schema.Array(Schema.String),
+  /** The App's "Permissions & events" page on GitHub, for the owner. */
+  settingsUrl: Schema.NullOr(Schema.String),
+  /** When GitHub last delivered and whether Kin accepted it, from GET /app/hook/deliveries; null when never or unknown. */
+  last: Schema.NullOr(Schema.Struct({ at: Schema.String, ok: Schema.Boolean })),
+});
+export type KinGitHubInstant = typeof KinGitHubInstant.Type;
+
 /** Who agents act as on GitHub: Kin's GitHub App where it is installed, else the owner. */
 export const KinGitHubAgents = Schema.Struct({
   as: Schema.Literals(["app", "owner"]),
@@ -590,6 +606,8 @@ export const KinGitHubAgents = Schema.Struct({
   /** The account that owns the App, and its settings page when the login can open it. */
   appOwner: Schema.optional(Schema.String),
   appSettingsUrl: Schema.optional(Schema.String),
+  /** Whether GitHub tells Kin at once; owner-level readers only, absent with no App. */
+  instant: Schema.optional(KinGitHubInstant),
 });
 export type KinGitHubAgents = typeof KinGitHubAgents.Type;
 
