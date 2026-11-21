@@ -255,7 +255,7 @@ describe("KinRefreshHub", () => {
             }),
           );
         const burst = Effect.fn("test.burst")(function* (
-          queues: ReadonlyArray<Queue.Dequeue<unknown>>,
+          queues: Effect.Success<ReturnType<typeof screens>>,
         ) {
           statements = 0;
           yield* sql.withTransaction(
