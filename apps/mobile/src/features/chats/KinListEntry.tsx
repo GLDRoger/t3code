@@ -1025,7 +1025,6 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
           autoFocus
           keyboard="numbers"
           disabled={changes.busy}
-          placeholder={entry.balance.leftText}
           onChangeText={(amount) => setDraft({ ...draft, amount })}
         />
         {entry.takesTds ? (
