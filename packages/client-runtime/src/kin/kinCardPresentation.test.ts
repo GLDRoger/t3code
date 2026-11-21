@@ -639,7 +639,7 @@ describe("choice cards", () => {
       "Meera Shah sent it.",
       "Meera Shah confirmed it.",
       "Meera Shah confirmed it.",
-      "Meera Shah sent it.",
+      "Meera Shah confirmed it.",
       "Meera Shah confirmed it.",
     ]);
     expect(kinChoiceDecidedLine(withDecider(by("option-2")), "meera" as never)).toBe(

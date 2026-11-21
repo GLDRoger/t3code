@@ -561,8 +561,11 @@ export function kinChoiceDecidedLine(
   const who = mine ? "You" : decidedBy.name;
   if (view.send !== null) {
     const yes = view.options.find((option) => option.id === answer.optionId)?.kind === "yes";
-    if (yes) return `${who} ${view.send.outcome?.tone === "ok" ? "sent it" : "confirmed it"}.`;
-    return `${who} chose not to ${view.send.edit !== null ? "send it" : "go ahead"}.`;
+    const mail = view.send.edit !== null;
+    // Only a mail is "sent"; a calendar event's own outcome line says it was saved.
+    if (yes)
+      return `${who} ${mail && view.send.outcome?.tone === "ok" ? "sent it" : "confirmed it"}.`;
+    return `${who} chose not to ${mail ? "send it" : "go ahead"}.`;
   }
   return `${who} chose “${answer.label}”.`;
 }
