@@ -803,7 +803,12 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
     for (const owners of ["sales-and-marketing", "Invented-charter-zq", "Domain:", "Charter:"])
       expect(selling).not.toContain(owners);
     yield* sql`UPDATE kin_leads SET domain = 'engineering' WHERE agent_id = ${agentId}`;
-    expect(yield* build("shared-wake-engineering")).toBe(selling.replace(`${salesRules}\n\n`, ""));
+    // The area also picks Kin's part of the character, so that section differs by design.
+    const uncharactered = (text: string) =>
+      text.replace(/# Your character \(how you sound[\s\S]*?\n(?=# )/, "");
+    expect(uncharactered(yield* build("shared-wake-engineering"))).toBe(
+      uncharactered(selling.replace(`${salesRules}\n\n`, "")),
+    );
     yield* sql`UPDATE kin_leads SET domain = 'invented-domain-zq' WHERE agent_id = ${agentId}`;
     // With the Docs place, the teammate reads it, so the turn lists it.
     yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'rec-sells'`;

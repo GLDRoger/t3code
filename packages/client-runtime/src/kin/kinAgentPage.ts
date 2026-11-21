@@ -82,6 +82,12 @@ export const KIN_AGENT_PAGE = {
   characterRule:
     "A character changes how it sounds and what it cares about. It never changes what it may do or see.",
   characterEmpty: "Kin gives it a character on its next start.",
+  kinPart: "Kin's part",
+  kinPartDetail: "Kin keeps this part up to date.",
+  ownPart: "Your part",
+  ownPartHint:
+    "What this agent should know about your company, and anything you want done differently. Your part wins where the two differ.",
+  ownPartEmpty: "Nothing of your own yet.",
   editCharacter: "Edit",
   characterHistory: "History",
   rewrite: "Ask it to rewrite itself",

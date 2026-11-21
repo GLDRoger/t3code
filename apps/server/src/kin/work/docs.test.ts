@@ -948,6 +948,8 @@ it.effect(
       );
       // An agent's character is changed on its page, by anyone.
       yield* seedCharacters(orgId);
+      const [seeded] = yield* characters(orgId);
+      yield* setCharacter(orgId, seeded!.agentId as KinAgentId, "## Ours\n\nInvented words.");
       const [character] = yield* characters(orgId);
       const top = sectionsOf(character!.body).find((one) => one.id !== "top")!;
       assert.isUndefined(
@@ -1713,14 +1715,16 @@ it.effect(
       assert.strictEqual(yield* seedCharacters(orgId), 2);
       assert.strictEqual(yield* seedCharacters(orgId), 0);
       const [mine, theirs] = yield* characters(orgId);
-      // The finance default for the finance seat; a starter, from its charter, for the other.
-      assert.include(mine!.body, "Money is real when it is in the bank");
+      // The finance seat reads Kin's finance part, its own empty; a starter, from its charter, for the other.
+      assert.strictEqual(mine!.body.trim(), "");
+      assert.include(mine!.kin, "Money is real when it is in the bank");
       assert.include(theirs!.body, "This is a starter character.");
+      assert.isUndefined(theirs!.kin);
       assert.strictEqual(
-        parseCharacter(mine!.body).colleagues?.startsWith("Cynical and exact"),
+        parseCharacter(mine!.kin ?? "").colleagues?.startsWith("Cynical and exact"),
         true,
       );
-      assert.notInclude(parseCharacter(mine!.body).voice, "## Examples");
+      assert.notInclude(parseCharacter(mine!.kin ?? "").voice, "## Examples");
       // A teammate can't find it, by key or by search; the owner's level can.
       const hidden = yield* Effect.flip(
         Docs.docRow(orgId, { key: mine!.key }, viewerOfPeople([mateId])),
