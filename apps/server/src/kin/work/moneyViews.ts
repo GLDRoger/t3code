@@ -63,6 +63,24 @@ const order = (a: DateHit, b: DateHit) =>
   (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0) ||
   (a.field?.key ?? "").localeCompare(b.field?.key ?? "");
 
+/** An invoice nobody has issued: no money is due on it, whatever day it carries. */
+const draftInvoice = (sql: SqlClient.SqlClient) =>
+  sql`(r.register_id = 'invoices' AND r.state = 'open')`;
+
+/** The lists whose entries keep an amount, of those `asked` (all with none); never deals. */
+const moneyLists = (
+  lists: ReadonlyMap<string, ListDef>,
+  asked: ReadonlyArray<string> | undefined,
+) =>
+  [...lists.values()]
+    .filter(
+      (def) =>
+        def.amount &&
+        def.id !== "deals" &&
+        (asked === undefined || asked.length === 0 || asked.includes(def.id)),
+    )
+    .map((def) => def.id);
+
 /** The lists' own date fields with a value in `[from, to)`, read from each entry's fields. */
 const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
   orgId: KinOrgId,
@@ -73,6 +91,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
     readonly lists?: ReadonlyArray<string> | undefined;
     readonly open?: boolean | undefined;
     readonly kept?: boolean | undefined;
+    readonly money?: boolean | undefined;
     readonly viewer: KinViewer;
   },
 ) {
@@ -92,6 +111,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
       WHERE r.org_id = ${orgId} AND r.register_id = ${def.id}
         ${input.open === true ? sql`AND r.state NOT IN ('done', 'dropped')` : sql``}
         ${input.kept === true ? sql`AND ${keptEntry(sql)}` : sql``}
+        ${input.money === true ? sql`AND NOT ${draftInvoice(sql)}` : sql``}
         AND ${seenBy(sql, input.viewer)}
         AND (${sql.or(
           fields.map(
@@ -131,6 +151,8 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
     readonly open?: boolean | undefined;
     /** Only entries someone kept, as a figure counts them. */
     readonly kept?: boolean | undefined;
+    /** Only money's dates, for people's Money: lists that keep amounts, and no draft invoice. */
+    readonly money?: boolean | undefined;
     readonly offset?: number | undefined;
     readonly limit?: number | undefined;
     readonly viewer: KinViewer;
@@ -138,6 +160,9 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   now: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const lists = yield* allLists(orgId);
+  const asked = input.money === true ? moneyLists(lists, input.lists) : input.lists;
+  if (input.money === true && asked?.length === 0) return { total: 0, rows: [] };
   const where = (column: "due_at" | "date_at") =>
     sql.and([
       sql`r.org_id = ${orgId}`,
@@ -145,11 +170,12 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
       sql`r.register_id <> 'deals'`,
       sql`${sql("r")}.${sql(column)} >= ${input.from}`,
       sql`${sql("r")}.${sql(column)} < ${input.to}`,
-      ...(input.lists === undefined || input.lists.length === 0
+      ...(asked === undefined || asked.length === 0
         ? []
-        : [sql`r.register_id IN ${sql.in(input.lists)}`]),
+        : [sql`r.register_id IN ${sql.in(asked)}`]),
       ...(input.open === true ? [sql`r.state NOT IN ('done', 'dropped')`] : []),
       ...(input.kept === true ? [keptEntry(sql)] : []),
+      ...(input.money === true ? [sql`NOT ${draftInvoice(sql)}`] : []),
       seenBy(sql, input.viewer),
     ]);
   const hits = sql`SELECT r.record_id AS id, 'due' AS kind, r.due_at AS at, r.key FROM kin_records r
@@ -160,8 +186,7 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM (${hits})`;
   const limit = Math.min(Math.max(input.limit ?? 100, 1), DATES_CAP);
   const offset = Math.max(input.offset ?? 0, 0);
-  const lists = yield* allLists(orgId);
-  const fielded = yield* fieldHits(orgId, lists, input);
+  const fielded = yield* fieldHits(orgId, lists, { ...input, lists: asked });
   const page = [
     ...(yield* sql<DateHit>`SELECT id, key, kind, at FROM (${hits})
       ORDER BY at, key, kind LIMIT ${offset + limit}`),
@@ -228,6 +253,8 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   now: number,
   /** For people, figures of only what all of them see, never the company's. */
   viewer: KinViewer,
+  /** People's Money lists money's dates alone ahead; an agent's read keeps every date. */
+  options: { readonly moneyDates?: boolean } = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
   const seen = seenBy(sql, viewer);
@@ -350,7 +377,15 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
 
   const upcoming = yield* dates(
     orgId,
-    { from: now, to: now + 30 * DAY_MS, open: true, kept: true, limit: 50, viewer },
+    {
+      from: now,
+      to: now + 30 * DAY_MS,
+      open: true,
+      kept: true,
+      money: options.moneyDates,
+      limit: 50,
+      viewer,
+    },
     now,
   );
   // Suggestions in money lists, and any other with an amount: what Money's figures leave out.

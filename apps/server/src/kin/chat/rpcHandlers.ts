@@ -270,6 +270,13 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
       ),
+    "kin.chats.pin": (input) =>
+      viewer.pipe(
+        Effect.flatMap(({ chat, people }) => chat.pin(people, input)),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
     "kin.chats.clear": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.clear(people, input)),

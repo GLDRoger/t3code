@@ -22,8 +22,12 @@ import {
   type KinWorkCreateInput,
   type KinWorkListInput,
   type KinWorkPrincipal,
+  type KinWorkStep,
+  type KinWorkStepCount,
   type KinWorkSummary,
   KIN_LEFT_FIELD,
+  KIN_WORK_STEP_MAX,
+  KIN_WORK_STEPS_MAX,
   KIN_TAKEN_DEFAULT_FIELD,
   kinWhenFormat,
   kinWhenParts,
@@ -562,9 +566,102 @@ export const kinWorkStatusText = (
 const statusText = (record: KinRecord, names: KinWorkNames): string =>
   kinWorkStatusText(record, names);
 
+/** What a task waiting on its own reader says in place of "Waiting on you". */
+export const KIN_WORK_YOURS_TO_DO = "Yours to do";
+
+/** A task's checklist: lines under it, never tasks of their own. */
+export const KIN_WORK_STEPS = {
+  title: "Steps",
+  /** "2 of 4", on the row and above the checklist. */
+  count: (count: KinWorkStepCount) => `${count.done} of ${count.of}`,
+  /** The count read out: "2 of 4 steps done". */
+  spoken: (count: KinWorkStepCount) =>
+    `${count.done} of ${count.of} ${count.of === 1 ? "step" : "steps"} done`,
+  add: "Add a step",
+  placeholder: "Add a step",
+  remove: "Remove step",
+  tick: (title: string) => `Tick: ${title}`,
+  untick: (title: string) => `Untick: ${title}`,
+  /** Said once every step is ticked: the task itself stays open until someone says done. */
+  allDone: "Every step is ticked. Mark the task done when it's finished.",
+  tooLong: `Keep a step under ${KIN_WORK_STEP_MAX} characters.`,
+  tooMany: `A task holds up to ${KIN_WORK_STEPS_MAX} steps.`,
+} as const;
+
+/** A task someone marked urgent: first within its day, with a flag on its row and its page. */
+export const KIN_WORK_URGENT = {
+  label: "Urgent",
+  mark: "Mark urgent",
+  unmark: "Not urgent",
+} as const;
+
+/** A task's steps as its page shows them, with what this reader may do to them. */
+export interface KinWorkStepsView {
+  /** "2 of 4"; null with no steps yet. */
+  readonly count: string | null;
+  readonly items: ReadonlyArray<{
+    readonly index: number;
+    readonly title: string;
+    readonly done: boolean;
+    /** What a tap on its box does, read out. */
+    readonly label: string;
+  }>;
+  /** The reader may tick, add and remove steps: whoever may change the task (`can.edit`). */
+  readonly editable: boolean;
+  /** Every step ticked while the task is still open: `KIN_WORK_STEPS.allDone`. */
+  readonly allDone: string | null;
+}
+
+/** The page's Steps: null where the host keeps none for it, or has none and lets nobody add. */
+function kinWorkSteps(
+  item: Pick<KinRecordDetail, "checklist" | "can" | "state">,
+): KinWorkStepsView | null {
+  // An older host sends no checklist: it would drop steps sent to it.
+  if (item.checklist === undefined) return null;
+  const steps: ReadonlyArray<KinWorkStep> = item.checklist;
+  const editable = item.can?.edit === true;
+  if (steps.length === 0 && !editable) return null;
+  const done = steps.filter((step) => step.done).length;
+  return {
+    count: steps.length === 0 ? null : KIN_WORK_STEPS.count({ done, of: steps.length }),
+    items: steps.map((step, index) => ({
+      index,
+      title: step.title,
+      done: step.done,
+      label: step.done ? KIN_WORK_STEPS.untick(step.title) : KIN_WORK_STEPS.tick(step.title),
+    })),
+    editable,
+    allDone:
+      steps.length > 0 && done === steps.length && !kinWorkClosed(item.state)
+        ? KIN_WORK_STEPS.allDone
+        : null,
+  };
+}
+
+/** Why a typed step can't be added, or null when it can. */
+export const kinWorkStepProblem = (title: string, steps: number): string | null =>
+  title.trim().length > KIN_WORK_STEP_MAX
+    ? KIN_WORK_STEPS.tooLong
+    : steps >= KIN_WORK_STEPS_MAX
+      ? KIN_WORK_STEPS.tooMany
+      : null;
+
+/**
+ * Waiting on the reader themself: not paused for them but theirs to move, so drawn and said as
+ * a to-do from their seat. The stored state stays `waiting`.
+ */
+export const kinWorkWaitsOnMe = (
+  record: Pick<KinRecord, "state" | "waitingOn">,
+  names: Pick<KinWorkNames, "me">,
+): boolean =>
+  record.state === "waiting" &&
+  record.waitingOn?._tag === "person" &&
+  record.waitingOn.personId === names.me;
+
 export interface KinWorkRowView {
   readonly key: KinRecordKey;
   readonly title: string;
+  /** Where it stands from the reader's seat, for its mark: open when it waits on them. */
   readonly state: KinRecordState;
   /** "In progress", "Waiting on Priya", "Done". */
   readonly status: string;
@@ -598,6 +695,10 @@ export interface KinWorkRowView {
   readonly mark: KinWorkMark | null;
   /** The mark's words: "Late", "Handed back by Zoya". */
   readonly markText: string | null;
+  /** "2 of 4" of its steps ticked; null with none. */
+  readonly steps: string | null;
+  /** Someone marked it urgent: its flag. */
+  readonly urgent: boolean;
 }
 
 /** Why one of your own tasks leads "On me": shown on the task, not as a second list. */
@@ -680,7 +781,12 @@ export function kinWorkRow(
       : record.party !== undefined && record.party.key !== within?.party?.key
         ? record.party.title
         : null;
-  const status = record.working ? "Working on it now" : statusText(record, names);
+  const onMe = kinWorkWaitsOnMe(record, names);
+  const status = record.working
+    ? "Working on it now"
+    : onMe
+      ? KIN_WORK_YOURS_TO_DO
+      : statusText(record, names);
   const day = kinWorkClosed(record.state) ? null : kinWorkDueText(record, names, now);
   const due = day === null ? null : `Due ${day}`;
   const ownerRetired = kinWorkRetired(record.owner, names);
@@ -700,12 +806,15 @@ export function kinWorkRow(
   // What a narrow row keeps when it cuts the end off: who has it always (the row sets it apart),
   // then when it is due and where it stands, then its client or project. "Not started" is what
   // the empty circle already says.
+  const steps = record.steps === undefined ? null : KIN_WORK_STEPS.count(record.steps);
+  const urgent = record.urgent === true && !kinWorkClosed(record.state);
   const detail = [
     due,
+    steps,
     record.repeat === undefined || kinWorkClosed(record.state)
       ? null
       : kinRepeatText(record.repeat),
-    record.state === "open" && !record.working ? null : status,
+    (record.state === "open" || onMe) && !record.working ? null : status,
     about,
     record.side === "theirs" && !kinWorkClosed(record.state) && within?.sided !== true
       ? "They owe this"
@@ -717,7 +826,7 @@ export function kinWorkRow(
   return {
     key: record.key,
     title: record.title,
-    state: record.state,
+    state: onMe ? "open" : record.state,
     status,
     owner,
     ownerAvatar: kinWorkAvatar(record.owner),
@@ -742,10 +851,19 @@ export function kinWorkRow(
     detail: detail.join(" · "),
     line: parts.join(" · "),
     accessibilityLabel: kinSentences(
-      [record.title, ...parts, record.late ? "Late" : handedBack].filter((part) => part !== null),
+      [
+        record.title,
+        urgent ? KIN_WORK_URGENT.label : null,
+        ...parts.map((part) =>
+          part === steps && record.steps !== undefined ? KIN_WORK_STEPS.spoken(record.steps) : part,
+        ),
+        record.late ? "Late" : handedBack,
+      ].filter((part) => part !== null),
     ),
     mark: record.late ? "late" : handedBack === null ? null : "handed_back",
     markText: record.late ? KIN_WORK_MARKS.late : handedBackMark,
+    steps,
+    urgent,
   };
 }
 
@@ -943,6 +1061,10 @@ export interface KinWorkItemView {
   readonly can: KinRecordCan;
   /** How it comes back once closed, as a rule and in words; null when it doesn't. */
   readonly repeat: { readonly rule: KinRepeatRule; readonly text: string } | null;
+  /** Its checklist (`kinWorkSteps`); null where it has none to show or add. */
+  readonly steps: KinWorkStepsView | null;
+  /** Someone marked it urgent. */
+  readonly urgent: boolean;
 }
 
 /** How private something is, and what to say about it beside the label. */
@@ -1048,7 +1170,7 @@ export function kinWorkAudience(
   };
   const ids = (["people", "team", "me"] as const).filter(reachable);
   const choices = ids.map((id) => ({ id, label: label[id] }));
-  return { current, answer, choices: choices.length > 1 ? choices : [] };
+  return { current, answer, short: label[current], choices: choices.length > 1 ? choices : [] };
 }
 
 /** What picking `to` changes, null where it stays: its private mark, and its sharing. */
@@ -1239,6 +1361,10 @@ export function kinWorkChangeText(
   const project = field("project");
   if (project !== undefined)
     clauses.push(project.to === null ? "took it out of its project" : "put it in a project");
+  if (field("steps") !== undefined) clauses.push("changed its steps");
+  const urgent = field("urgent")?.to;
+  if (urgent === "true") clauses.push("marked it urgent");
+  else if (urgent === "false") clauses.push("took the urgent mark off");
   const sensitive = field("sensitive")?.to;
   if (sensitive === "true") clauses.push("made it private");
   else if (sensitive === "false") clauses.push("made it not private");
@@ -1543,6 +1669,8 @@ export function kinWorkItemView(
     can,
     repeat:
       item.repeat === undefined ? null : { rule: item.repeat, text: kinRepeatText(item.repeat) },
+    steps: kinWorkSteps({ ...item, can }),
+    urgent: item.urgent === true,
   };
 }
 

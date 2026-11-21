@@ -32,7 +32,7 @@ import { createKinWorkItemWatch } from "../kinWorkChanges.ts";
 import { kinWorkReadState } from "../kinWorkForms.ts";
 import { createKinPagedList, mapPage } from "../kinWorkList.ts";
 import type { KinHookApp, KinUseOpenChat } from "./kinHookApp.ts";
-import { kinSchedule, type KinWorkHooks } from "./kinWorkHooks.ts";
+import { kinPagedKeeper, kinSchedule, type KinWorkHooks } from "./kinWorkHooks.ts";
 
 /** The app's own hooks Docs' hooks read through. */
 export interface KinDocsUses {
@@ -60,6 +60,7 @@ const NO_WORDS = { text: "" };
 export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUses) {
   const { kinClient, kinReads, registry, useAtomCommand } = app;
   const { useKinOpenChat, useKinPagedList } = uses;
+  const docLists = kinPagedKeeper<KinDocsFilter, KinDocListRow>();
   const docsLiveAtom = ({ environmentId, orgId }: KinScreenTarget) =>
     kinClient.docsLive({ environmentId, input: { orgId } });
   /** Docs' live change number where this viewer reads Docs; null until known. */
@@ -129,6 +130,7 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
         });
       },
       seq,
+      { keeper: docLists, key: JSON.stringify([environmentId, orgId, text]) },
     );
   }
 

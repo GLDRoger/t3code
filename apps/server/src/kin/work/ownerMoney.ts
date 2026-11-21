@@ -243,6 +243,7 @@ export const dates = Effect.fn("KinMoney.dates")(function* (
       to,
       lists: input.lists,
       open: input.open,
+      money: true,
       offset,
       limit: input.limit,
       viewer: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
@@ -273,6 +274,7 @@ export const money = Effect.fn("KinMoney.summary")(function* (
     input.orgId,
     yield* Clock.currentTimeMillis,
     team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(hidden ? [] : [team]),
+    { moneyDates: true },
   );
   const { byClient } = summary.owed;
   const shown =

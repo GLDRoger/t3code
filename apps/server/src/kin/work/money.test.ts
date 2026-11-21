@@ -42,14 +42,20 @@ import {
 import * as Goals from "./goals.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadMoney from "./leadMoney.ts";
+import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import * as LeadWork from "./leadWork.ts";
 import { aboutTotal, addUp, financialYearOf, formatMinor, parseAmount } from "./money.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
-import { moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
-import { viewerOfPeople } from "./teamView.ts";
+import {
+  dates as datesView,
+  moneySection,
+  moneySummary,
+  ownerLevelStillToInvoice,
+} from "./moneyViews.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
-import { proposalFor } from "./registers.ts";
+import { listDef, proposalFor } from "./registers.ts";
 import { waitLine } from "./statements/passwordBudget.ts";
 import * as OwnerMoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as OwnerWork from "./ownerWork.ts";
@@ -949,41 +955,45 @@ describe("goals through the tools", () => {
 });
 
 describe("a list proposed again", () => {
-  it.effect("after the owner's yes is the same proposal and card; after a no it is a new one", () =>
-    Effect.gen(function* () {
-      yield* seed;
-      const sql = yield* SqlClient.SqlClient;
-      const cards = () =>
-        sql`SELECT 1 FROM kin_widgets WHERE type = 'choice' AND state_json LIKE '%Create the list%'`;
-      // Kin's own quotes list is made at once, with no card to tap.
-      const quotes = yield* turn(9, "Track quotes");
-      const plain = yield* LeadMoney.define(scope, { sourceEventId: quotes, template: "quotes" });
-      assert.strictEqual(plain.status, "defined");
-      assert.lengthOf(yield* cards(), 0);
-      const asked = yield* turn(1, "Track dates");
-      const first = yield* LeadMoney.define(scope, { sourceEventId: asked, template: "dates" });
-      // The owner taps Create it; the tap's turn proposes the same list instead of carrying it out.
-      const yes = yield* tap(2, cardOf(`kin-list:${first.proposal!}`), "yes");
-      const again = yield* LeadMoney.define(scope, { sourceEventId: yes, template: "dates" });
-      assert.strictEqual(again.proposal, first.proposal);
-      assert.lengthOf(yield* cards(), 1);
-      const made = yield* LeadMoney.define(scope, {
-        sourceEventId: yes,
-        proposal: again.proposal!,
-      });
-      assert.strictEqual(made.status, "defined");
-      // A no stands: asked again later, it is a new question on a new card.
-      const later = yield* turn(3, "Track expenses");
-      const declined = yield* LeadMoney.define(scope, {
-        sourceEventId: later,
-        template: "expenses",
-      });
-      yield* tap(4, cardOf(`kin-list:${declined.proposal!}`), "no");
-      const asks = yield* turn(5, "Actually, do track expenses");
-      const fresh = yield* LeadMoney.define(scope, { sourceEventId: asks, template: "expenses" });
-      assert.notStrictEqual(fresh.proposal, declined.proposal);
-      assert.lengthOf(yield* cards(), 3);
-    }).pipe(Effect.provide(layer)),
+  it.effect(
+    "after a co-owner's yes is the same proposal and card; after a no it is a new one",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('co-owner', ${orgId}, 'co', 'Co', ${at}, 'co_owner')`;
+        const cards = () =>
+          sql`SELECT 1 FROM kin_widgets WHERE type = 'choice' AND state_json LIKE '%Create the list%'`;
+        // Kin's own quotes list is made at once, with no card to tap.
+        const quotes = yield* turn(9, "Track quotes");
+        const plain = yield* LeadMoney.define(scope, { sourceEventId: quotes, template: "quotes" });
+        assert.strictEqual(plain.status, "defined");
+        assert.lengthOf(yield* cards(), 0);
+        const asked = yield* turn(1, "Track dates");
+        const first = yield* LeadMoney.define(scope, { sourceEventId: asked, template: "dates" });
+        // A co-owner taps Create it; the tap's turn proposes the same list instead of carrying it out.
+        const yes = yield* tap(2, cardOf(`kin-list:${first.proposal!}`), "yes", "co-owner");
+        const again = yield* LeadMoney.define(scope, { sourceEventId: yes, template: "dates" });
+        assert.strictEqual(again.proposal, first.proposal);
+        assert.lengthOf(yield* cards(), 1);
+        const made = yield* LeadMoney.define(scope, {
+          sourceEventId: yes,
+          proposal: again.proposal!,
+        });
+        assert.strictEqual(made.status, "defined");
+        // A no stands: asked again later, it is a new question on a new card.
+        const later = yield* turn(3, "Track expenses");
+        const declined = yield* LeadMoney.define(scope, {
+          sourceEventId: later,
+          template: "expenses",
+        });
+        yield* tap(4, cardOf(`kin-list:${declined.proposal!}`), "no", "co-owner");
+        const asks = yield* turn(5, "Actually, do track expenses");
+        const fresh = yield* LeadMoney.define(scope, { sourceEventId: asks, template: "expenses" });
+        assert.notStrictEqual(fresh.proposal, declined.proposal);
+        assert.lengthOf(yield* cards(), 3);
+      }).pipe(Effect.provide(layer)),
   );
 });
 
@@ -1073,6 +1083,40 @@ describe("repeating entries", () => {
         hosting.map((one) => [one.state, one.number]),
         [
           ["done", issued.number],
+          ["open", null],
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("start a numbered entry's next one with no number of its own", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const records = yield* KinRecords.KinRecords;
+      const owner = { _tag: "person" as const, personId: ownerId };
+      const writer = { actor: owner, via: "owner" } as const;
+      yield* defined(1, { template: "invoices" });
+      // Issued elsewhere, so typed with its own number, and billed every month.
+      const { row } = yield* records.create(orgId, writer, {
+        list: "invoices",
+        title: "Invented retainer",
+        owner,
+        originKey: "retainer",
+        fields: { number: "OLD/2026/041" },
+        amount: { minor: 4_720_000, currency: "INR" },
+        dueAt: Date.parse("2027-01-31T18:29:59.999Z"),
+        dueAllDay: true,
+        repeat: { every: "month" },
+      });
+      yield* records.update(orgId, writer, row.key, { state: "done" });
+      const sql = yield* SqlClient.SqlClient;
+      const all = yield* sql<{ key: string; state: string; fields: string }>`SELECT key, state,
+          fields_json AS fields FROM kin_records
+        WHERE org_id = ${orgId} AND title = 'Invented retainer' ORDER BY created_at, key`;
+      assert.deepStrictEqual(
+        all.map((one) => [one.state, JSON.parse(one.fields).number ?? null]),
+        [
+          ["done", "OLD/2026/041"],
           ["open", null],
         ],
       );
@@ -1646,13 +1690,19 @@ describe("invoices", () => {
         (yield* outlook(orgId, NOW)).incoming.map((one) => one.key),
         "INV-7",
       );
+      // People's Money leaves a draft out of its dates (S9); an agent's dates read its day as "Date".
       const december = yield* OwnerMoney.dates(people, {
         orgId,
         from: "2026-12-01T00:00:00.000Z",
         to: "2026-12-31T00:00:00.000Z",
       });
+      assert.notInclude(
+        december.rows.map((one) => one.record.key),
+        "INV-7",
+      );
+      const told = yield* LeadMoney.datesQuery(scope, { from: "2026-12-01", to: "2026-12-31" });
       assert.deepStrictEqual(
-        december.rows.filter((one) => one.record.key === "INV-7").map((one) => one.label),
+        told.dates.filter((one) => one.key === "INV-7").map((one) => one.what),
         ["Date", "Due"],
       );
     }).pipe(Effect.provide(layer)),
@@ -2281,11 +2331,8 @@ describe("the owner's taps", () => {
           ],
         );
         // As work and a date it is still there, late as any deadline is.
-        const agenda = yield* OwnerMoney.dates(people, {
-          orgId,
-          from: "2026-11-01T00:00:00.000Z",
-          to: "2026-11-30T00:00:00.000Z",
-        });
+        const window = { from: Date.parse("2026-11-01"), to: Date.parse("2026-11-30") };
+        const agenda = yield* datesView(orgId, { ...window, viewer: KIN_OWNER_LEVEL }, NOW);
         const tasks = yield* OwnerWork.list(people, { orgId });
         assert.deepStrictEqual(
           [
@@ -2299,6 +2346,16 @@ describe("the owner's taps", () => {
           agenda.rows.filter((one) => one.record.key === "INV-1").map((one) => one.label),
           ["Date", "Due"],
         );
+        // People's Money reads money's dates alone: no task, and no invoice still a draft.
+        const peoples = yield* OwnerMoney.dates(people, {
+          orgId,
+          from: "2026-11-01T00:00:00.000Z",
+          to: "2026-11-30T00:00:00.000Z",
+        });
+        assert.deepStrictEqual(
+          [peoples.total, peoples.rows.map((one) => one.record.key)],
+          [1, ["DT-1"]],
+        );
         const told = yield* LeadMoney.datesQuery(scope, {
           from: "2026-11-01",
           to: "2026-11-29",
@@ -2310,9 +2367,17 @@ describe("the owner's taps", () => {
             ["Due", "Draft, suggested: waits for the owner or a co-owner to keep it"],
           ],
         );
+        // An agent's summary still reads every date ahead; people's Money, money's alone.
+        const told30 = yield* moneySummary(orgId, NOW, KIN_OWNER_LEVEL);
         assert.deepStrictEqual(
-          [summary.upcomingTotal, summary.upcoming.map((one) => one.record.key)],
-          [1, ["W-2"]],
+          [
+            [told30.upcomingTotal, told30.upcoming.map((one) => one.record.key)],
+            [summary.upcomingTotal, summary.upcoming.map((one) => one.record.key)],
+          ],
+          [
+            [1, ["W-2"]],
+            [0, []],
+          ],
         );
         // Past Money's newest 20, the rest open as a list; a paid one keeps its Keep.
         yield* LeadWork.create(scope, {
@@ -2635,6 +2700,14 @@ describe("who keeps a suggestion", () => {
       });
       // A turn of the lead woken by these, in order: people's messages, or a routine or reaction.
       let n = 100;
+      // The party an approved draft names, if any.
+      let approvedParty: {
+        key: string;
+        title: string;
+        recordId: string;
+        list: "clients";
+        partyId: string;
+      } | null = null;
       const woken = (...by: ReadonlyArray<string>) =>
         Effect.gen(function* () {
           n += 1;
@@ -2644,9 +2717,37 @@ describe("who keeps a suggestion", () => {
               started_at, status, event_ids, audience)
             VALUES (${wake}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '[]',
               'owner_only')`;
+          let first = `event-${n}-0`;
           for (const [i, who] of by.entries()) {
             const eventId = `event-${n}-${i}`;
             const message = `msg-${n}-${i}`;
+            // The owner's Approve on a sent-up draft (`approveDraft`), or the same unapproved.
+            if (who === "approved" || who === "unapproved") {
+              const questionId = `q-${n}-${i}`;
+              const approval = approvalEventId(orgId, questionId);
+              if (i === 0) first = approval;
+              const draft = JSON.stringify({
+                kind: "invoice",
+                for: approvedParty,
+                text: "Invoice: ____",
+                line: "Invoice",
+                names: { owner: "Owner", asker: "Mate", agent: "Lead lead" },
+              });
+              yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id,
+                  chat_id, kind, question, safe, asked_at, due_at, act_at, state, answer,
+                  for_chat_id, for_person_id, draft_json, approved_at)
+                VALUES (${questionId}, ${orgId}, ${lead}, ${ownerId}, 'lead-chat', 'card',
+                  'Approve the invoice?', 0, 0, 0, 0, 'answered', 'Approve', 'mate-chat', 'mate',
+                  ${draft}, ${who === "approved" ? 1 : null})`;
+              yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+                  received_at, queued_at, state, wakeup_id, dedupe_key)
+                VALUES (${approval}, ${orgId}, ${lead}, 'deferral.due', 'P0', ${JSON.stringify({
+                  _tag: "deferral.due",
+                  provenance: { _tag: "system" },
+                  subject: { type: "question", questionId, answered: true, approved: true },
+                })}, 0, 0, 'claimed', ${wake}, ${approvalDedupeKey(questionId)})`;
+              continue;
+            }
             const said = who !== "routine" && who !== "reaction";
             if (said)
               yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
@@ -2668,7 +2769,7 @@ describe("who keeps a suggestion", () => {
                 provenance: { _tag: "human", personId: ownerId },
               })}, 0, 0, 'claimed', ${wake})`;
           }
-          return `event-${n}-0`;
+          return first;
         });
       const kept = (key: string) =>
         records.get(orgId, key).pipe(Effect.map((row) => row?.confirmed));
@@ -2680,6 +2781,8 @@ describe("who keeps a suggestion", () => {
         ["teammate asked", ["mate"]],
         ["nobody asked", ["routine"]],
         ["owner reacted", ["reaction"]],
+        ["owner approved a draft", ["approved"]],
+        ["a draft not approved", ["unapproved"]],
       ] as const;
       const asAgent = (by: ReadonlyArray<string>, records: ReadonlyArray<object>) =>
         Effect.gen(function* () {
@@ -2727,6 +2830,9 @@ describe("who keeps a suggestion", () => {
         "teammate asked": ["refused", "refused", "refused", "refused"],
         "nobody asked": [0, 0, 0, 0],
         "owner reacted": [0, 0, 0, 0],
+        // His Approve of an invoice makes only an invoice real; unapproved, nothing is.
+        "owner approved a draft": [0, 1, 0, 0],
+        "a draft not approved": [0, 0, 0, 0],
         [ownerId]: [1, 1, 1, 1],
         "co-owner": [1, 1, 1, 1],
         mate: [0, 0, 1, 1],
@@ -2836,10 +2942,53 @@ describe("who keeps a suggestion", () => {
         "teammate asked": 0,
         "nobody asked": 0,
         "owner reacted": 0,
+        // His Approve made the draft; it keeps nothing that was there before it.
+        "owner approved a draft": 0,
+        "a draft not approved": 0,
         [ownerId]: 1,
         "co-owner": 1,
         mate: 0,
       });
+
+      // One approval makes one kept entry: its list, for its party, as a Draft whatever state it
+      // was given; a different party, or a second entry, is ordinary; a retry is the same one.
+      const [harbour] = yield* asAgent([ownerId], [{ list: "clients", title: "Invented Harbour" }]);
+      yield* asAgent([ownerId], [{ list: "clients", title: "Invented Tide" }]);
+      const harbourId = (yield* records.get(orgId, harbour!))!.recordId;
+      approvedParty = {
+        key: harbour!,
+        title: "Invented Harbour",
+        recordId: harbourId,
+        list: "clients",
+        partyId: harbourId,
+      };
+      const approval = yield* woken("approved");
+      const rows = [
+        { list: "invoices", title: "Invented wrong party", client: "Invented Tide", amount: "1" },
+        {
+          list: "invoices",
+          title: "Invented approved one",
+          client: "Invented Harbour",
+          amount: "9,750",
+          state: "waiting",
+        },
+        { list: "invoices", title: "Invented second", client: "Invented Harbour", amount: "2" },
+      ];
+      const underApproval = (yield* LeadWork.create(scope, {
+        sourceEventId: approval,
+        records: rows as never,
+      })).records.map((one) => one.key);
+      assert.deepStrictEqual(yield* Effect.forEach(underApproval, startedAs), [
+        [0, "open", null],
+        [1, "open", null],
+        [0, "open", null],
+      ]);
+      const retried = (yield* LeadWork.create(scope, {
+        sourceEventId: approval,
+        records: rows as never,
+      })).records.map((one) => one.key);
+      assert.deepStrictEqual(retried, underApproval);
+      approvedParty = null;
 
       // Nothing else an agent does keeps one, or takes a person's keep back.
       const key = yield* guessed("Invented renewal");
@@ -2951,6 +3100,95 @@ describe("who keeps a suggestion", () => {
         [0, 1],
       );
     }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("an expense typed by hand", () => {
+  it.effect(
+    "is the owner level's, makes the Expenses list the first time, and keeps its receipt",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const records = yield* KinRecords.KinRecords;
+        yield* turn(1, "The courier's receipt", ["courier.jpg"]);
+        const asked = {
+          orgId,
+          title: "Courier for samples",
+          amount: { minor: 235_000, currency: "INR" },
+          paidOn: "2026-11-12",
+          vendor: "Invented Couriers",
+          category: "Office",
+          paidWith: "UPI",
+          receipt: ["att-1-0"],
+          clientRequestId: "form-1",
+        };
+        assert.isUndefined(yield* listDef(orgId, "expenses"));
+        const made = yield* OwnerMoneyAnswers.newExpense(people, asked);
+        const row = (yield* records.get(orgId, made.expense))!;
+        assert.deepStrictEqual(
+          [row.registerId, row.state, row.amountMinor, row.category, JSON.parse(row.fieldsJson)],
+          [
+            "expenses",
+            "done",
+            235_000,
+            "office",
+            { vendor: "Invented Couriers", paidWith: "upi", receipt: ["att-1-0"] },
+          ],
+        );
+        assert.strictEqual(row.dateAt, endOfDay("2026-11-12", "Asia/Kolkata"));
+        // The same request is the same expense; its id with other details makes nothing.
+        assert.strictEqual(
+          (yield* OwnerMoneyAnswers.newExpense(people, asked)).expense,
+          made.expense,
+        );
+        assert.include(
+          yield* OwnerMoneyAnswers.newExpense(people, { ...asked, title: "Other" }).pipe(
+            Effect.flip,
+          ),
+          { reason: "not_allowed" },
+        );
+        // Paid on a day still ahead, it is to pay; a file from nobody's chat isn't kept.
+        const { receipt: _receipt, ...plain } = asked;
+        const later = yield* OwnerMoneyAnswers.newExpense(people, {
+          ...plain,
+          paidOn: "2026-11-30",
+          clientRequestId: "form-2",
+        });
+        assert.strictEqual((yield* records.get(orgId, later.expense))!.state, "open");
+        assert.include(
+          yield* OwnerMoneyAnswers.newExpense(people, {
+            ...asked,
+            receipt: ["att-nowhere"],
+            clientRequestId: "form-3",
+          }).pipe(Effect.flip),
+          { reason: "not_found" },
+        );
+        assert.include(
+          yield* OwnerMoneyAnswers.newExpense(people, {
+            ...plain,
+            category: "Invented snacks",
+            clientRequestId: "form-4",
+          }).pipe(Effect.flip),
+          { reason: "invalid_state" },
+        );
+        // A teammate's app makes none.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', ${at})`;
+        const teammate = [
+          { _tag: "person" as const, orgId, personId: KinPersonId.make("teammate") },
+        ];
+        assert.include(
+          yield* OwnerMoneyAnswers.newExpense(teammate, {
+            ...plain,
+            clientRequestId: "form-5",
+          }).pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        // The agent's read totals both, as it totals its own.
+        const all = yield* LeadWork.query(scope, { list: "expenses" });
+        assert.deepStrictEqual(all.totals, ["₹4,700.00"]);
+      }).pipe(Effect.provide(layer)),
   );
 });
 

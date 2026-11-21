@@ -13,6 +13,7 @@ import {
   kinDealsByStage,
   kinDealsHeader,
   kinDealsMatching,
+  kinDealsCount,
   kinDealsQuery,
   kinDealsNothing,
   kinDealsNotRead,
@@ -20,11 +21,25 @@ import {
   type KinDealNextView,
   type KinDealRowView,
   type KinDealsFilter,
+  type KinDealsWho,
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
-import { KIN_CLIENTS } from "@t3tools/client-runtime/kin/kinWorkClients";
+import {
+  KIN_CLIENTS,
+  kinClientsChosenKey,
+  kinMineChoices,
+  kinMineChosenAtom,
+  kinMineOpens,
+  type KinMineSide,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
 import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
-import type { KinDealNumbers, KinDealsResult, KinPersonId, KinRecordKey } from "@t3tools/contracts";
+import type {
+  KinDealNumbers,
+  KinDealState,
+  KinDealsResult,
+  KinPersonId,
+  KinRecordKey,
+} from "@t3tools/contracts";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 
@@ -39,9 +54,12 @@ import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { ScreenContent } from "../../components/ui/ScreenContent";
+import { SegmentedControl } from "../../components/ui/SegmentedControl";
+import { useBarOverlap } from "../../components/ui/useBarInset";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { kinTabBar, useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import {
@@ -55,6 +73,7 @@ import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinDeals, useKinDealsStart } from "./state/useKinDeals";
 import { useKinRates } from "./state/useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./state/useKinWork";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
 const TONE: Record<KinDealNextView["tone"], string> = {
   plain: "text-foreground-muted",
@@ -64,9 +83,10 @@ const TONE: Record<KinDealNextView["tone"], string> = {
 
 /** A deal's next step, or that it has none (amber), or that it is late (red). */
 export function KinDealNextLine(props: { readonly next: KinDealNextView | null }) {
+  const grows = useKinTextGrows();
   if (props.next === null) return null;
   return (
-    <Text textRole="footnote" numberOfLines={1} className={TONE[props.next.tone]}>
+    <Text textRole="footnote" numberOfLines={kinLines(1, grows)} className={TONE[props.next.tone]}>
       {props.next.text}
     </Text>
   );
@@ -82,6 +102,7 @@ export function KinDealRowButton(props: {
   readonly note?: string | null;
   readonly onPress: () => void;
 }) {
+  const grows = useKinTextGrows();
   const { row } = props;
   return (
     <>
@@ -96,13 +117,21 @@ export function KinDealRowButton(props: {
       >
         <View className="min-w-0 flex-1 gap-0.5">
           <View className="flex-row items-center gap-2">
-            <Text textRole="body" numberOfLines={2} className="min-w-0 shrink text-foreground">
+            <Text
+              textRole="body"
+              numberOfLines={kinLines(2, grows)}
+              className="min-w-0 shrink text-foreground"
+            >
               {row.title}
             </Text>
             {row.private ? <KinWorkPrivateMark label="" /> : null}
           </View>
           {row.line === "" ? null : (
-            <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+            <Text
+              textRole="footnote"
+              numberOfLines={kinLines(1, grows)}
+              className="text-foreground-muted"
+            >
               {row.line}
             </Text>
           )}
@@ -146,13 +175,8 @@ type Item =
       readonly note: string | null;
     };
 
-/** Which deals and whose, as the bar's one Show menu. */
-function dealsMenu(
-  filter: KinDealsFilter,
-  onFilter: (filter: KinDealsFilter) => void,
-  names: KinWorkNames,
-): AppBarMenu {
-  const people = [...names.people.entries()].filter(([id]) => id !== names.me);
+/** Which deals, as the bar's one Show menu; whose is the switch on the tab. */
+function dealsMenu(filter: KinDealsFilter, onFilter: (filter: KinDealsFilter) => void): AppBarMenu {
   return {
     title: KIN_WORK_HOME.show,
     icon: "line.3.horizontal.decrease.circle",
@@ -168,50 +192,40 @@ function dealsMenu(
           onPress: () => onFilter({ ...filter, state: state.id }),
         })),
       },
-      {
-        id: "whose",
-        title: KIN_DEALS.whose,
-        inline: true,
-        items: [
-          {
-            id: "whose:everyone",
-            title: KIN_DEALS.everyone,
-            selected: filter.who._tag === "everyone",
-            onPress: () => onFilter({ ...filter, who: { _tag: "everyone" } }),
-          },
-          {
-            id: "whose:me",
-            title: KIN_DEALS.mine,
-            selected: filter.who._tag === "me",
-            onPress: () => onFilter({ ...filter, who: { _tag: "me" } }),
-          },
-          ...(people.length === 0
-            ? []
-            : [
-                {
-                  id: "whose:someone",
-                  title: KIN_DEALS.someone,
-                  items: people.map(([id, name]) => ({
-                    id: `whose:${id}`,
-                    title: name,
-                    selected: filter.who._tag === "person" && filter.who.personId === id,
-                    onPress: () =>
-                      onFilter({
-                        ...filter,
-                        who: { _tag: "person", personId: id as KinPersonId },
-                      }),
-                  })),
-                },
-              ]),
-        ],
-      },
     ],
   };
 }
 
-/** The Deals tab on the phone: open deals under each stage, won and lost under Show. */
-const WAITING: KinDealsFilter = { who: { _tag: "everyone" }, state: "open" };
+/**
+ * Above a list and outside its scroll, so what it holds stays while the rows move. On iOS it
+ * clears the bar the rows otherwise slide under.
+ */
+export function KinListPinned(props: { readonly children: React.ReactNode }) {
+  const bar = useBarOverlap();
+  return (
+    <View className="gap-2 bg-screen px-4 pb-2" style={{ paddingTop: bar + 8 }}>
+      {props.children}
+    </View>
+  );
+}
 
+/** Mine / Everyone on the list's tab itself, each side with its count once read. */
+export function KinMineSwitch(props: {
+  readonly side: KinMineSide;
+  readonly counts: Parameters<typeof kinMineChoices>[0];
+  readonly onSelect: (side: KinMineSide) => void;
+}) {
+  return (
+    <SegmentedControl
+      options={kinMineChoices(props.counts)}
+      selected={props.side}
+      onSelect={props.onSelect}
+      role="tab"
+    />
+  );
+}
+
+/** The Deals tab on the phone: open deals under each stage, won and lost under Show. */
 export function KinDealsView(
   props: KinWorkTarget & {
     readonly directory: KinWorkDirectory;
@@ -226,17 +240,68 @@ export function KinDealsView(
   const { environmentId, orgId } = props;
   const { names } = props.directory;
   const ownerLevel = useKinIsOwnerLevel(environmentId);
-  const start = useKinDealsStart(environmentId);
-  const [chosen, setFilter] = useState<KinDealsFilter | null>(null);
-  const query = kinDealsQuery(orgId, chosen, start, names.me);
   // Until the host says who this is nothing is read, and nothing says "Mine" on a guess.
-  const filter = query?.filter ?? WAITING;
+  const start = useKinDealsStart(environmentId);
+  const [which, setWhich] = useState<KinDealState>("open");
+  // A person's row under the figures opens their deals; the switch is back once it's cleared.
+  const [person, setPerson] = useState<KinPersonId | null>(null);
+  const remembered = kinMineChosenAtom(kinClientsChosenKey(environmentId, names.me));
+  const [asked, setAsked] = useState<KinMineSide | null>(null);
+  const ask = (who: KinDealsWho, at: KinDealState) =>
+    start === null ? null : kinDealsQuery(orgId, { who, state: at }, start, names.me);
+  const mine = useKinDeals(props, ask({ _tag: "me" }, which)?.input ?? null);
+  const everyone = useKinDeals(props, ask({ _tag: "everyone" }, which)?.input ?? null);
+  const theirs = useKinDeals(
+    props,
+    person === null ? null : (ask({ _tag: "person", personId: person }, which)?.input ?? null),
+  );
+  const countOf = (read: typeof mine) =>
+    read.state._tag === "ready" ? kinDealsCount(read.state.value, which) : null;
+  const counts = {
+    // Someone the host knows but who has no person id here has nothing of their own.
+    mine: countOf(mine) ?? (start !== null && names.me === null ? { n: 0 } : null),
+    everyone: countOf(everyone),
+  };
+  // A Mine that can't be read opens nothing of its own: the board opens on Everyone.
+  const side =
+    asked ??
+    kinMineOpens(
+      appAtomRegistry.get(remembered).deals ?? null,
+      counts.mine ?? (mine.state._tag === "loading" ? null : { n: 0 }),
+    );
+  const choose = (next: KinMineSide) => {
+    appAtomRegistry.set(remembered, { ...appAtomRegistry.get(remembered), deals: next });
+    setPerson(null);
+    setAsked(next);
+  };
+  const filter: KinDealsFilter = {
+    who:
+      person !== null
+        ? { _tag: "person", personId: person }
+        : side === "mine"
+          ? { _tag: "me" }
+          : { _tag: "everyone" },
+    state: which,
+  };
+  const shownRead = person !== null ? theirs : side === "mine" ? mine : everyone;
+  const setFilter = (next: KinDealsFilter) => {
+    setWhich(next.state);
+    if (next.who._tag === "person") setPerson(next.who.personId);
+    else if (next.who._tag === "me") choose("mine");
+    else if (next.who._tag === "everyone" && person !== null) setPerson(null);
+  };
   const [text, setText] = useState("");
-  const { state, refresh } = useKinDeals(props, query?.input ?? null);
-  const notRead = kinDealsNotRead(state);
+  // Mine's count decides the side; until it is read the board shows it is loading.
+  const dealsState = side === null ? ({ _tag: "loading" } as const) : shownRead.state;
+  const refresh = () => {
+    mine.refresh();
+    everyone.refresh();
+    theirs.refresh();
+  };
+  const notRead = kinDealsNotRead(dealsState);
   const rates = useKinRates(props, ownerLevel);
   const now = new Date(useNowMinuteMs());
-  const result = state._tag === "ready" ? state.value : null;
+  const result = dealsState._tag === "ready" ? dealsState.value : null;
   const deals = kinDealsMatching(result?.deals ?? [], text);
   const items: ReadonlyArray<Item> =
     result === null
@@ -275,6 +340,9 @@ export function KinDealsView(
   const open = (deal: KinRecordKey) =>
     navigation.navigate("KinDeal", { environmentId, orgId, deal });
   const nothing = kinDealsNothing(filter);
+  const personChip =
+    person === null ? null : KIN_DEALS.personChip(names.people.get(person) ?? KIN_DEALS.someone);
+  const owner = person ?? (side === "mine" ? names.me : null);
 
   return (
     <View collapsable={false} className="flex-1 bg-screen">
@@ -288,7 +356,7 @@ export function KinDealsView(
             ? []
             : [{ accessibilityLabel: KIN_DEALS.newDeal, icon: "plus" as const, onPress: add }]),
         ]}
-        menus={[dealsMenu(filter, setFilter, names)]}
+        menus={[dealsMenu(filter, setFilter)]}
         {...kinTabBar(tab, {
           onBack: () => navigation.goBack(),
           search: {
@@ -301,6 +369,24 @@ export function KinDealsView(
         })}
       />
       <ScreenContent surface="screen">
+        <KinListPinned>
+          {props.header}
+          {personChip === null ? (
+            side === null ? null : (
+              <KinMineSwitch side={side} counts={counts} onSelect={choose} />
+            )
+          ) : (
+            <View className="flex-row">
+              <Chip
+                selected
+                icon="xmark"
+                label={personChip}
+                accessibilityLabel={`${personChip}. ${KIN_DEALS.clearPerson}`}
+                onPress={() => setPerson(null)}
+              />
+            </View>
+          )}
+        </KinListPinned>
         <LegendList<Item>
           renderScrollComponent={NativeScrollView}
           className="flex-1"
@@ -314,13 +400,12 @@ export function KinDealsView(
           data={items}
           keyExtractor={(item) => item.id}
           getItemType={(item) => item.type}
-          extraData={state}
+          extraData={dealsState}
           estimatedItemSize={80}
           recycleItems
           ListHeaderComponent={
             <View className="gap-3 px-4 pt-2">
-              {props.header}
-              {props.stale || (state._tag === "ready" && state.stale) ? (
+              {props.stale || (dealsState._tag === "ready" && dealsState.stale) ? (
                 <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
               ) : null}
               {header === null || (result?.deals.length ?? 0) === 0 ? null : (
@@ -367,31 +452,20 @@ export function KinDealsView(
                   <DealFigures numbers={result?.numbers} />
                 </ListSection>
               )}
-              {filter.who._tag === "everyone" ? null : (
-                <View className="flex-row">
-                  <Chip
-                    selected
-                    icon="xmark"
-                    label={
-                      filter.who._tag === "me"
-                        ? KIN_DEALS.mine
-                        : (names.people.get(filter.who.personId) ?? KIN_DEALS.someone)
-                    }
-                    accessibilityLabel={`${KIN_DEALS.whose}: ${KIN_DEALS.everyone}`}
-                    onPress={() => setFilter({ ...filter, who: { _tag: "everyone" } })}
-                  />
-                </View>
-              )}
             </View>
           }
           ListEmptyComponent={
             <View className="px-4 pt-4">
-              {state._tag === "loading" ? (
+              {dealsState._tag === "loading" ? (
                 <KinWorkLoading label={`Loading ${KIN_DEALS.title}`} />
               ) : notRead !== null ? (
                 <EmptyState variant="plain" {...notRead} />
-              ) : state._tag === "failed" ? (
-                <KinLoadFailed title={KIN_DEALS.loadFailed} cause={state.cause} onRetry={refresh} />
+              ) : dealsState._tag === "failed" ? (
+                <KinLoadFailed
+                  title={KIN_DEALS.loadFailed}
+                  cause={dealsState.cause}
+                  onRetry={refresh}
+                />
               ) : (result?.deals.length ?? 0) > 0 ? (
                 <EmptyState
                   variant="plain"
@@ -437,9 +511,7 @@ export function KinDealsView(
                       environmentId,
                       orgId,
                       concern,
-                      ...(query?.input.owner?._tag === "person"
-                        ? { owner: query.input.owner.personId }
-                        : {}),
+                      ...(owner === null ? {} : { owner }),
                     })
                   }
                 />

@@ -1,4 +1,4 @@
-import { formatKinMoney, kinCurrency } from "@t3tools/contracts";
+import { formatKinMoney, kinCharacterSeat, kinCurrency } from "@t3tools/contracts";
 
 /**
  * The default characters for the five standard agents, by domain. Kin writes one as the agent's
@@ -172,21 +172,8 @@ Figure first, then the date, then the verdict: two to four short lines, under 60
 `;
 };
 
-/** Domains people commonly give the same seat. */
-const DOMAIN_ALIASES: Readonly<Record<string, string>> = {
-  tech: "engineering",
-  "tech-lead": "engineering",
-  marketing: "growth",
-  content: "social",
-  sales: "growth",
-  "sales-and-marketing": "growth",
-  "business-development": "growth",
-  chief: "chief-of-staff",
-};
-
 /** The default seat a domain takes: its own, or the one people commonly mean by it. */
-export const seatOf = (domain: string) =>
-  Object.hasOwn(DEFAULT_CHARACTERS, domain) ? domain : (DOMAIN_ALIASES[domain] ?? domain);
+export const seatOf = (domain: string): string => kinCharacterSeat(domain) ?? domain;
 
 export const defaultCharacterFor = (domain: string, money: CharacterMoney) => {
   const seat = seatOf(domain);

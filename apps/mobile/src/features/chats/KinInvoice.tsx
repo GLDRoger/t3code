@@ -71,6 +71,7 @@ import {
   KinWorkTextField,
 } from "./components/KinWorkPieces";
 import { KinLinesFields } from "./KinMoneyAnswers";
+import type { KinMakeStep } from "./kinMakeStep";
 import { kinClient } from "./state/kinClient";
 import {
   useKinCompanyCountry,
@@ -470,16 +471,6 @@ const targetOf = (params: { readonly environmentId: string; readonly orgId: stri
   const orgId = Option.getOrNull(decodeOrgId(params.orgId));
   return environmentId === null || orgId === null ? null : { environmentId, orgId };
 };
-
-/** What Make invoice or Make its PDF makes, and for whom: a step of the entry's sheet. */
-export interface KinMakeStep {
-  /** The list whose templates make it. */
-  readonly list: string;
-  /** The entry's currency: every line is in it. */
-  readonly currency: string;
-  /** The invoice's client, to edit when a detail of theirs is missing. */
-  readonly party: { readonly key: string; readonly title: string } | null;
-}
 
 /**
  * Pick a template, see the PDF as it would be made, then file it: the entry's sheet turns into

@@ -51,7 +51,7 @@ export function createKinTaskSteps(options: {
     /** Answers the row's card with one of its options; a confirmed draft can't be taken back. */
     choose: async (
       key: string,
-      step: Exclude<KinTaskStep, { readonly kind: "nudge" }>,
+      step: Exclude<KinTaskStep, { readonly kind: "nudge" | "told" }>,
       optionId: string,
     ) => {
       const outcome = await act(step.card, optionId, () =>

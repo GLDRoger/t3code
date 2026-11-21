@@ -97,6 +97,30 @@ export const kinSalesLead = <L extends { readonly agentId: string; readonly doma
   );
 };
 
+/** The areas Kin has a ready-made character for; any other area starts on a plain one. */
+export const KIN_CHARACTER_SEATS = [
+  "chief-of-staff",
+  "engineering",
+  "social",
+  "finance",
+  "growth",
+] as const;
+export type KinCharacterSeat = (typeof KIN_CHARACTER_SEATS)[number];
+const KIN_CHARACTER_SEAT_ALIASES: Readonly<Record<string, KinCharacterSeat>> = {
+  tech: "engineering",
+  "tech-lead": "engineering",
+  marketing: "growth",
+  content: "social",
+  sales: "growth",
+  "sales-and-marketing": "growth",
+  "business-development": "growth",
+  chief: "chief-of-staff",
+};
+/** The ready-made seat an area takes, its own or the one people commonly mean by it; else null. */
+export const kinCharacterSeat = (domain: string): KinCharacterSeat | null =>
+  KIN_CHARACTER_SEATS.find((seat) => seat === domain) ??
+  (Object.hasOwn(KIN_CHARACTER_SEAT_ALIASES, domain) ? KIN_CHARACTER_SEAT_ALIASES[domain]! : null);
+
 /** What teammates see about a lead: a line or two the owner writes, shown to people it may talk to. */
 export const KinLeadIntro = Schema.String.check(Schema.isMaxLength(200));
 export type KinLeadIntro = typeof KinLeadIntro.Type;
@@ -773,16 +797,17 @@ export const KinEvent = Schema.Union([
         itemId: KinMemoryItemId,
         person: KinPersonId,
       }),
-      // An agent's open question reached its day unanswered: the asker takes its default. With
-      // `undone`, the person put back what Kin's taking it changed; with `words` too, they
-      // instead undid the answer its asker took from their words. With `answered`, the person
-      // asked for another chat answered, and the asker's turn there carries it on.
+      // An agent's open question reached its day unanswered: the asker takes its default.
+      // `undone`: the person put that back; with `words`, the answer taken from their words.
+      // `answered`: the person asked for another chat answered, and the turn carries it on; with
+      // `approved`, the owner approved a teammate's sent-up draft, and the turn is his own.
       Schema.Struct({
         type: Schema.Literal("question"),
         questionId: TrimmedNonEmptyString,
         undone: Schema.optional(Schema.Literal(true)),
         words: Schema.optional(Schema.Literal(true)),
         answered: Schema.optional(Schema.Literal(true)),
+        approved: Schema.optional(Schema.Literal(true)),
       }),
       // One run of a scheduled task; `runId` names the fire or Run now tap that started it.
       Schema.Struct({

@@ -13,6 +13,7 @@ import { page, userEvent } from "vite-plus/test/browser";
 const host = vi.hoisted(() => ({
   item: null as unknown,
   updates: [] as Array<Record<string, unknown>>,
+  ticks: [] as Array<Record<string, unknown>>,
   refuse: null as string | null,
 }));
 
@@ -78,6 +79,18 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
           });
         },
       },
+      workTickStep: {
+        label: "test:workTickStep",
+        permissionAtom: () => allowed,
+        run: async (_registry: unknown, { input }: { readonly input: Record<string, unknown> }) => {
+          host.ticks.push(input);
+          const item = host.item as KinRecordDetail;
+          const checklist = (item.checklist ?? []).map((step, index) =>
+            index === input.index ? { ...step, done: input.done === true } : step,
+          );
+          return AsyncResult.success({ ...item, checklist, rev: item.rev + 1 });
+        },
+      },
     } as never,
   };
 });
@@ -91,7 +104,7 @@ const orgId = KinOrgId.make("ambermill");
 const rhea = { _tag: "person", personId: KinPersonId.make("rhea") } as const;
 
 // Each test opens its own task: answers the host gave are shared by every screen on the page.
-function setup(key: string, refuse: string | null) {
+function setup(key: string, refuse: string | null, extra: Partial<KinRecordDetail> = {}) {
   const item: KinRecordDetail = {
     recordId: KinRecordId.make(`rec-${key}`),
     orgId,
@@ -121,9 +134,11 @@ function setup(key: string, refuse: string | null) {
     links: [],
     changes: [],
     seq: 4,
+    ...extra,
   } as unknown as KinRecordDetail;
   host.item = item;
   host.updates = [];
+  host.ticks = [];
   host.refuse = refuse;
   return item;
 }
@@ -185,5 +200,43 @@ describe("changing a task from its sheet", () => {
     await userEvent.click(page.getByRole("button", { name: "Save" }));
     await expect.element(page.getByText("Only Rhea can change this task.")).toBeVisible();
     await expect.element(box).toHaveValue("Book the Ambermill van and driver");
+  });
+
+  it("ticks a step by its box without a revision, and marks the task urgent from Details", async () => {
+    await page.viewport(1440, 900);
+    const can = {
+      states: ["done"],
+      edit: true,
+      party: true,
+      project: true,
+      clearProject: true,
+      give: true,
+      takeBack: false,
+      mark: true,
+      unmark: true,
+      share: false,
+      confirm: false,
+    } as const;
+    setup("T-43", null, {
+      can: { ...can, states: [...can.states] },
+      checklist: [
+        { title: "Fields and states", done: true },
+        { title: "Wireframe", done: false },
+      ],
+      steps: { done: 1, of: 2 },
+    });
+    await using _screen = await screen("T-43");
+
+    await expect.element(page.getByText("Steps · 1 of 2")).toBeVisible();
+    await userEvent.click(page.getByRole("checkbox", { name: "Tick: Wireframe" }));
+    await expect.element(page.getByRole("checkbox", { name: "Untick: Wireframe" })).toBeChecked();
+    expect(host.ticks).toEqual([{ orgId, key: "T-43", index: 1, title: "Wireframe", done: true }]);
+    await expect
+      .element(page.getByText("Every step is ticked. Mark the task done when it's finished."))
+      .toBeVisible();
+
+    await userEvent.click(page.getByRole("switch", { name: "Urgent" }));
+    await expect.element(page.getByRole("switch", { name: "Urgent" })).toBeChecked();
+    expect(host.updates).toEqual([{ orgId, key: "T-43", rev: 5, urgent: true }]);
   });
 });

@@ -1,4 +1,4 @@
-// @effect-diagnostics globalTimers:off - React hooks pace list and search reads outside an Effect runtime.
+// @effect-diagnostics globalTimers:off globalDate:off - React hooks pace and keep list and search reads outside an Effect runtime.
 import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentId,
@@ -52,6 +52,7 @@ import {
 } from "../kinWorkForms.ts";
 import {
   KIN_PICKER_SEARCH_IDLE,
+  createKinListKeeper,
   createKinPagedList,
   createKinPickerSearch,
   createKinPickerSearchSlot,
@@ -97,6 +98,16 @@ type Paged<Filter extends { readonly text: string }, Row> = ReturnType<
   typeof createKinPagedList<Filter, Row>
 >;
 
+/** Lists of one kind kept while their screen is away (`createKinListKeeper`). */
+export type KinPagedKeeper<Filter extends { readonly text: string }, Row> = ReturnType<
+  typeof createKinListKeeper<Paged<Filter, Row>, KinPagedListState<Filter, Row>>
+>;
+
+export const kinPagedKeeper = <Filter extends { readonly text: string }, Row>(): KinPagedKeeper<
+  Filter,
+  Row
+> => createKinListKeeper<Paged<Filter, Row>, KinPagedListState<Filter, Row>>(Date.now);
+
 const NO_WORDS = { text: "" };
 
 const noChoicesAtom: Atom.Atom<
@@ -114,6 +125,8 @@ const noChoicesAtom: Atom.Atom<
 export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUses) {
   const { kinClient, registry, kinHostConnected } = app;
   const { useKinHostAt, catalogValueAtom } = uses;
+  const clientLists = kinPagedKeeper<KinClientsFilter, KinPartyRow>();
+  const projectLists = kinPagedKeeper<KinProjectsFilter, KinProjectRow>();
   const kinWorkLiveAtom = ({ environmentId, orgId }: KinScreenTarget) =>
     kinClient.workLive({ environmentId, input: { orgId } });
 
@@ -151,6 +164,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     const assign = app.useAtomCommand(kinClient.workAssign, { reportFailure: false });
     const confirm = app.useAtomCommand(kinClient.workConfirm, { reportFailure: false });
     const decline = app.useAtomCommand(kinClient.workDecline, { reportFailure: false });
+    const tickStep = app.useAtomCommand(kinClient.workTickStep, { reportFailure: false });
     const [state, setState] = useState(() => kinWorkChangesStart(editing));
     const [changes] = useState(() =>
       createKinWorkChanges({
@@ -159,6 +173,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
         assign: (input) => assign({ environmentId, input }),
         confirm: (input) => confirm({ environmentId, input }),
         decline: (input) => decline({ environmentId, input }),
+        tickStep: (input) => tickStep({ environmentId, input }),
         reread: (key) =>
           registry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
         online: () => kinHostConnected(environmentId),
@@ -264,20 +279,37 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     };
   }
 
-  /** One of Work's lists on screen: started when it shows, told each change number while current. */
+  /**
+   * One of Work's lists on screen: started when it shows, told each change number while current.
+   * With `keep`, coming back shows what it held, kept by that keeper under that key.
+   */
   function useKinPagedList<Filter extends { readonly text: string }, Row>(
     initial: Filter,
     make: (onChange: (state: KinPagedListState<Filter, Row>) => void) => Paged<Filter, Row>,
     /** The host's latest change number; null while what is held may be behind. */
     seq: number | null,
+    keep?: { readonly keeper: KinPagedKeeper<Filter, Row>; readonly key: string },
   ) {
-    const [state, setState] = useState(() => kinPagedListInitial<Filter, Row>(initial));
-    const [list] = useState(() => make(setState));
-    // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when it shows, and abandons what is in flight when it leaves
+    const [kept] = useState(() => (keep === undefined ? null : keep.keeper.take(keep.key, make)));
+    const [resumed] = useState(
+      () => kept !== null && keep !== undefined && keep.keeper.wasKept(kept),
+    );
+    const [state, setState] = useState(() =>
+      resumed && kept !== null ? kept.list.getState() : kinPagedListInitial<Filter, Row>(initial),
+    );
+    const [list] = useState(() => kept?.list ?? make(setState));
+    const keeper = keep?.keeper ?? null;
+    // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when it shows (or catches a kept one up), and abandons what is in flight when it leaves
     useEffect(() => {
-      list.start();
-      return list.dispose;
-    }, [list]);
+      if (keeper === null || kept === null) {
+        list.start();
+        return list.dispose;
+      }
+      keeper.show(kept, setState);
+      if (resumed) keeper.resume(kept);
+      else list.start();
+      return () => keeper.hide(kept);
+    }, [keeper, kept, list, resumed]);
     // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the list's reader the host's latest change number, so it reads again only when the rows are behind
     useEffect(() => {
       if (seq !== null) list.changed(seq);
@@ -311,6 +343,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
             ),
         }),
       seq,
+      { keeper: clientLists, key: JSON.stringify([environmentId, orgId, initial]) },
     );
   }
 
@@ -340,6 +373,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
             ),
         }),
       seq,
+      { keeper: projectLists, key: JSON.stringify([environmentId, orgId, view]) },
     );
   }
 

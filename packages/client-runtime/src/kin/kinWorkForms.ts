@@ -24,6 +24,7 @@ import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { kinFailureText } from "./kinAnswers.ts";
+import type { KinLink } from "./kinHost.ts";
 import { isKinChatError, kinWorkFailuresOf, kinWorkRefused, type KinWorkRef } from "./kinWork.ts";
 import { kinMoneyDraft, kinParseMoney } from "./kinLists.ts";
 import { kinContactEmailOk, kinContactPhoneOk, KIN_PROJECTS } from "./kinWorkClients.ts";
@@ -722,6 +723,30 @@ export async function kinWorkSend<A>(input: {
 
 // A form
 
+/** Asked once when a form that holds typed, unsaved words is closed. */
+export const KIN_FORM_DISCARD = {
+  title: "Discard what you typed?",
+  keep: "Keep editing",
+  discard: "Discard",
+} as const;
+
+const typedValue = (value: unknown): unknown =>
+  typeof value === "string"
+    ? value.trim()
+    : Array.isArray(value)
+      ? value.map(typedValue).filter((one) => one !== "")
+      : value;
+
+/**
+ * Whether closing a form would throw away something: a field that now says other than it did
+ * when the form opened. Spaces, and an empty "Add another" row, are nothing typed.
+ */
+export function kinFormTyped<D extends object>(from: D, draft: D): boolean {
+  return (Object.keys(draft) as Array<keyof D>).some(
+    (key) => JSON.stringify(typedValue(draft[key])) !== JSON.stringify(typedValue(from[key])),
+  );
+}
+
 /** A form's fields: text, a switch, or a client picked by its key. */
 type Draft = object;
 
@@ -874,6 +899,13 @@ export type KinWorkReadState<A> =
       /** The last read failed, so what is shown may be behind. */
       readonly stale: boolean;
     };
+
+/**
+ * A read with nothing held that the connection can't carry: it says neither loading nor failed,
+ * since the page's one offline line already says why.
+ */
+export const kinWorkReadUnreachable = (state: KinWorkReadState<unknown>, link: KinLink) =>
+  link === "offline" && (state._tag === "loading" || state._tag === "failed");
 
 export function kinWorkReadState<A>(
   result: AsyncResult.AsyncResult<A, unknown>,

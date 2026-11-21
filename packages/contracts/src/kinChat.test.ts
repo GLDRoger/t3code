@@ -258,7 +258,7 @@ const samples = {
   KinAgent: [agent],
   KinChat: [chat],
   KinPrincipal: principals,
-  KinChatMember: [member],
+  KinChatMember: [member, { ...member, pinnedAt: at }],
   KinAuthor: authors,
   KinMessage: [
     {
@@ -417,6 +417,10 @@ const samples = {
   KinChatsMuteInput: [
     { chatId: "chat-1", muted: true },
     { chatId: "chat-1", muted: false },
+  ],
+  KinChatsPinInput: [
+    { chatId: "chat-1", pinned: true },
+    { chatId: "chat-1", pinned: false },
   ],
   KinChatsClearInput: [{ chatId: "chat-1" }, { chatId: "chat-1", preview: true }],
   KinChatsClearResult: [{}, { keptFiles: 2 }],

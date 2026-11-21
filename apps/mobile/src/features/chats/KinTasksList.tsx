@@ -2,11 +2,15 @@ import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
 import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_SEARCH } from "@t3tools/client-runtime/kin/kinDocs";
 import {
+  KIN_TASK_FILTER,
   KIN_TASK_GROUP_BY,
+  KIN_TASK_MORE_VIEWS,
   kinTaskFilterProjects,
+  kinTaskQuickFilters,
   KIN_TASKS,
   kinNeedsYouCount,
   kinTaskGroupedChip,
@@ -16,6 +20,11 @@ import {
   kinTasksByMove,
   kinTasksDealFacts,
   kinTasksGroupedBy,
+  kinTasksSharedAbout,
+  kinTasksTick,
+  kinTasksTickedShown,
+  kinTasksWithTicked,
+  type KinTaskTicked,
   type KinTasksItem,
 } from "@t3tools/client-runtime/kin/kinTasksList";
 import {
@@ -27,10 +36,12 @@ import {
   kinWorkHostEdits,
   kinWorkListFooter,
   kinWorkNothing,
+  kinWorkOffline,
   kinWorkOverview,
   kinWorkRow,
   kinWorkShown,
   type KinWorkFilter,
+  type KinWorkNames,
   type KinWorkOverview,
   type KinWorkRef,
 } from "@t3tools/client-runtime/kin/kinWork";
@@ -51,6 +62,7 @@ import {
   KIN_WORK_LIST_INITIAL,
   createKinListKeeper,
   createKinWorkList,
+  kinListShown,
   type KinWorkList,
   type KinWorkListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
@@ -77,11 +89,13 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { Toast } from "../../components/ui/Toast";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { useNowMinuteMs } from "../../lib/clock";
+import { cn } from "../../lib/cn";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { KinAttentionItem } from "./KinAttention";
 import { KinSearchHits } from "./KinDocsList";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 import { kinTabBar, useKinTab, kinTabFoot } from "./components/KinTab";
 import {
   KinTaskRow,
@@ -95,6 +109,7 @@ import { useKinOpenHit, useKinWorkLink } from "./state/kinWorkLink";
 import { useKinSearch } from "./state/useKinDocs";
 import { useKinAskAgent } from "./state/useKinMoney";
 import { useKinAttention, useKinAttentionHandle } from "./state/useKinAttention";
+import { useKinHostAt } from "./state/useKinHost";
 import { useKinTaskSteps } from "./state/useKinTaskSteps";
 import {
   kinWorkLiveAtom,
@@ -180,7 +195,7 @@ export function KinTasksList(
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when the screen shows (or catches a kept one up), and stops what is in flight when it leaves
   useEffect(() => {
     kinTaskLists.show(kept, setListState);
-    if (resumed) list.resume();
+    if (resumed) kinTaskLists.resume(kept);
     else list.start();
     return () => kinTaskLists.hide(kept);
   }, [kept, list, resumed]);
@@ -194,16 +209,15 @@ export function KinTasksList(
     list.refresh();
   };
   const { filter } = listState;
+  const shown = kinListShown(listState, kinHostLink(useKinHostAt(environmentId)));
   const scope = useKinViewerScope(environmentId);
   const overview = kinWorkOverview(live.summary, filter, names);
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
     kinWorkApplied(record, changed),
   );
-  const act = (key: KinRecordKey, action: KinWorkAction) => {
-    const record = records.find((held) => held.key === key);
-    if (record !== undefined) void changes.run(record, action, names);
-  };
   const notice = kinWorkListNotice(changed, null);
+  const [ticked, setTicked] = useState<ReadonlyArray<KinTaskTicked<KinRecord>>>([]);
+  const held = kinTasksTickedShown(ticked, changed, notice);
   // A project's own list is always its project's, so only the rest of the filter is a chip.
   const narrowed = kinWorkFilterLabel(
     props.within === undefined ? filter : { ...filter, party: null, project: null },
@@ -219,7 +233,7 @@ export function KinTasksList(
   const needsYou = kinNeedsYouCount({ counts, dealFacts: facts.length });
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";
-  const items: ReadonlyArray<KinTasksItem<KinRecord>> =
+  const listed: ReadonlyArray<KinTasksItem<KinRecord>> =
     within === undefined && kinWorkByMove(filter)
       ? kinTasksByMove({
           records,
@@ -229,6 +243,7 @@ export function KinTasksList(
           ownerLevel,
           names,
           facts,
+          read: listState.seq !== null,
         })
       : within === undefined && groupBy !== "me" && !searching
         ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
@@ -241,6 +256,21 @@ export function KinTasksList(
             first: index === 0,
             last: index === records.length - 1,
           }));
+  const items =
+    shown !== "rows"
+      ? []
+      : kinTasksWithTicked(listed, held, (record) => kinWorkApplied(record, changed));
+  const act = (key: KinRecordKey, action: KinWorkAction) => {
+    const shown = items.find((item) => item.type === "task" && item.key === key);
+    if (shown?.type !== "task") return;
+    const tick = kinTasksTick({ held, items, key, action, notice });
+    if (tick.undo) return void changes.undo(names, shown.record);
+    setTicked(tick.ticked);
+    void changes.run(shown.record, action, names);
+  };
+  const sharedAbout = kinTasksSharedAbout(
+    items.flatMap((item) => (item.type === "task" ? [item.record] : [])),
+  );
   const grouped = kinTaskGroupedChip(within === undefined ? filter.groupBy : undefined);
   const nothing = kinWorkNothing(filter, names, scope);
   const footer = kinWorkListFooter(
@@ -266,11 +296,22 @@ export function KinTasksList(
   // The whole company's tasks also find clients, projects and docs, and say what needs you.
   const everywhere = within === undefined;
   const { state: found, search } = useKinSearch(props, ELSEWHERE, true);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the native search box comes back empty once the page was left (a result opened, another tab), so the words it narrowed by go with it
+  useEffect(() => {
+    const clear = () => {
+      const held = list.getState().filter;
+      if (held.text !== "") list.setFilter({ ...held, text: "" });
+      search.setText("");
+    };
+    if (resumed) clear();
+    return navigation.addListener("focus", clear);
+  }, [list, navigation, resumed, search]);
   const steps = useKinTaskSteps({ environmentId, orgId });
   const base = { environmentId: String(environmentId), orgId: String(orgId) };
   const filterMenu = kinWorkFilterMenu({
     overview,
     filter,
+    me: names.me,
     everyone: within === undefined,
     groups: within === undefined,
     choices: within === undefined ? props.choices : null,
@@ -336,7 +377,7 @@ export function KinTasksList(
           ListHeaderComponent={
             <View className="gap-3 pt-2">
               {within?.header}
-              {props.stale || listState.stale ? (
+              {shown === "rows" && (props.stale || listState.stale) ? (
                 <View className="px-4">
                   <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
                 </View>
@@ -385,7 +426,9 @@ export function KinTasksList(
           ListEmptyComponent={
             records.length > 0 || items.length > 0 ? null : (
               <View className="px-4 pt-4">
-                {listState.loading ? (
+                {shown === "offline" ? (
+                  <EmptyState variant="plain" {...kinWorkOffline("tasks")} />
+                ) : shown === "loading" ? (
                   <View
                     className="items-center py-12"
                     accessible
@@ -394,7 +437,7 @@ export function KinTasksList(
                   >
                     <AppActivityIndicator />
                   </View>
-                ) : listState.failed !== null ? (
+                ) : shown === "failed" ? (
                   <KinLoadFailed
                     title={KIN_WORK_LOAD_FAILED}
                     cause={listState.failed}
@@ -442,6 +485,8 @@ export function KinTasksList(
                     </ListSection>
                   </View>
                   <KinSearchHits
+                    // A task found, or the list's own "Nothing matches", answers already.
+                    quietWhenNone
                     state={found}
                     scope={scope}
                     onRetry={search.retry}
@@ -520,23 +565,27 @@ export function KinTasksList(
                     )}
                     line={kinTaskLine(record, names, now, {
                       inProject: item.inProject,
-                      quietNoDate: step !== null,
+                      quietNoDate:
+                        (step !== null && step.kind !== "told") || item.move?.under === "noDate",
+                      ownList: within === undefined,
+                      sharedAbout,
                     })}
                     avatar={kinWorkAvatar(record.owner)}
                     step={shown}
                     status={kinTaskStepStatusShown(steps.status[record.key], shown)}
                     first={item.first}
                     last={item.last}
+                    ticked={item.ticked === true}
                     saving={changed.pending[item.key] !== undefined}
                     onPress={() => openRecord("KinWorkItem", { ...base, task: item.key })}
                     onAct={canChange ? (action) => act(item.key, action) : null}
                     onChoose={
-                      canAnswer && shown !== null && shown.kind !== "nudge"
+                      canAnswer && shown !== null && shown.kind !== "nudge" && shown.kind !== "told"
                         ? (optionId) => steps.choose(record.key, shown, optionId)
                         : null
                     }
                     onOpenCard={() =>
-                      shown !== null && shown.kind !== "nudge"
+                      shown !== null && shown.kind !== "nudge" && shown.kind !== "told"
                         ? navigation.navigate("KinChat", {
                             ...base,
                             chatId: shown.card.chatId,
@@ -580,9 +629,14 @@ function KinTasksHeading(props: {
 }) {
   const { item } = props;
   const { project } = item;
+  const grows = useKinTextGrows();
   const body = (
-    <View className="min-w-0 flex-1 flex-row items-baseline gap-1.5">
-      <Text textRole="headline" numberOfLines={1} className="shrink text-foreground">
+    <View className={cn("min-w-0 flex-row items-baseline gap-1.5", !grows && "flex-1")}>
+      <Text
+        textRole="headline"
+        numberOfLines={kinLines(1, grows)}
+        className="shrink text-foreground"
+      >
         {item.title}
       </Text>
       {item.count === null ? null : (
@@ -602,12 +656,16 @@ function KinTasksHeading(props: {
   );
   const aside =
     item.aside === null ? null : (
-      <Text textRole="footnote" numberOfLines={1} className="shrink-0 text-foreground-muted">
+      <Text
+        textRole="footnote"
+        numberOfLines={kinLines(1, grows)}
+        className={cn("text-foreground-muted", !grows && "shrink-0")}
+      >
         {item.aside}
       </Text>
     );
   return project === null ? (
-    <View className="flex-row items-baseline gap-3 px-5 pt-5 pb-2">
+    <View className={cn("px-5 pt-5 pb-2", grows ? "gap-0.5" : "flex-row items-baseline gap-3")}>
       {body}
       {aside}
     </View>
@@ -619,7 +677,10 @@ function KinTasksHeading(props: {
         .join(", ")}
       accessibilityHint="Opens the project"
       onPress={() => props.onOpenProject(project)}
-      className="flex-row items-baseline gap-3 px-5 pt-5 pb-2 active:opacity-60"
+      className={cn(
+        "px-5 pt-5 pb-2 active:opacity-60",
+        grows ? "gap-0.5" : "flex-row items-baseline gap-3",
+      )}
     >
       {body}
       {aside}
@@ -684,6 +745,7 @@ function KinTasksUndoToast(props: {
     >
       <Toast
         singleLine
+        opaque
         message={props.text}
         action={{ label: KIN_WORK_COPY.undo, onPress: props.onUndo }}
         dismissMode="swipe"
@@ -695,10 +757,14 @@ function KinTasksUndoToast(props: {
 
 const UNDO_MS = 8_000;
 
-/** Tasks' one filter and grouping: how it groups, then what state, whose and who has it. */
+/**
+ * Tasks' one filter: five at a glance (`kinTaskQuickFilters`), then More filters with the other
+ * views, client, project, who has it and how it groups.
+ */
 function kinWorkFilterMenu(props: {
   readonly overview: KinWorkOverview;
   readonly filter: KinWorkFilter;
+  readonly me: KinWorkNames["me"];
   /** Whether who has what is offered, which a project's own list leaves out. */
   readonly everyone: boolean;
   /** Whether Group by is offered, which a project's own list leaves out. */
@@ -744,85 +810,103 @@ function kinWorkFilterMenu(props: {
     title: KIN_WORK_HOME.filter,
     icon: "line.3.horizontal.decrease.circle" as const,
     items: [
-      ...(!props.groups
-        ? []
-        : [
-            {
-              id: "group",
-              title: KIN_TASKS.groupBy,
-              inline: true,
-              items: [
-                ...KIN_TASK_GROUP_BY.map((one) => ({
-                  id: `group:${one.id}`,
-                  title: one.label,
-                  selected: one.id === groupBy,
-                  onPress: () => onChange({ ...filter, groupBy: one.id }),
-                })),
-                // Said once, here: the order never changes.
-                {
-                  id: "group:order",
-                  title: KIN_TASKS.order,
-                  disabled: true,
-                  onPress: () => {},
-                },
-              ],
-            },
-          ]),
       {
-        id: "view",
-        title: props.groups ? KIN_TASKS.showOnly : KIN_WORK_HOME.show,
+        id: "quick",
         inline: true,
-        items: overview.chips.map((chip) => ({
-          id: `view:${chip.id}`,
-          title: chip.label,
-          ...(chip.count === null ? {} : { subtitle: String(chip.count) }),
-          selected: chip.selected,
-          onPress: () => onChange({ ...filter, view: chip.id }),
+        items: kinTaskQuickFilters(filter, overview, props.me).map((one) => ({
+          id: `quick:${one.id}`,
+          title: one.label,
+          ...(one.count === null ? {} : { subtitle: String(one.count) }),
+          selected: one.selected,
+          onPress: () => onChange(one.next),
         })),
       },
-      ...(choices === null
-        ? []
-        : [
-            ...pickMenu(
-              "client",
-              KIN_WORK_HOME.byClient,
-              KIN_WORK_HOME.allClients,
-              filter.party,
-              choices.clients,
-              (party) => ({ ...filter, party }),
-            ),
-            ...pickMenu(
-              "project",
-              KIN_WORK_HOME.byProject,
-              KIN_WORK_HOME.allProjects,
-              filter.project,
-              kinTaskFilterProjects(choices.projects, props.records),
-              (project) => ({ ...filter, project }),
-            ),
-          ]),
-      ...(!props.everyone || overview.owners.length === 0
-        ? []
-        : [
-            {
-              id: "owner",
-              title: KIN_WORK_HOME.owner,
-              items: [
+      {
+        id: "more",
+        title: KIN_TASK_FILTER.more,
+        items: [
+          {
+            id: "view",
+            title: KIN_WORK_HOME.show,
+            inline: true,
+            items: overview.chips
+              .filter((chip) => KIN_TASK_MORE_VIEWS.includes(chip.id))
+              .map((chip) => ({
+                id: `view:${chip.id}`,
+                title: chip.label,
+                ...(chip.count === null ? {} : { subtitle: String(chip.count) }),
+                selected: chip.selected,
+                onPress: () => onChange({ ...filter, view: chip.selected ? "open" : chip.id }),
+              })),
+          },
+          ...(choices === null
+            ? []
+            : [
+                ...pickMenu(
+                  "client",
+                  KIN_WORK_HOME.byClient,
+                  KIN_WORK_HOME.allClients,
+                  filter.party,
+                  choices.clients,
+                  (party) => ({ ...filter, party }),
+                ),
+                ...pickMenu(
+                  "project",
+                  KIN_WORK_HOME.byProject,
+                  KIN_WORK_HOME.allProjects,
+                  filter.project,
+                  kinTaskFilterProjects(choices.projects, props.records),
+                  (project) => ({ ...filter, project }),
+                ),
+              ]),
+          ...(!props.everyone || overview.owners.length === 0
+            ? []
+            : [
                 {
-                  id: "owner:all",
-                  title: KIN_WORK_HOME.everyone,
-                  selected: filter.owner === null,
-                  onPress: () => onChange({ ...filter, owner: null }),
+                  id: "owner",
+                  title: KIN_WORK_HOME.owner,
+                  items: [
+                    {
+                      id: "owner:all",
+                      title: KIN_WORK_HOME.everyone,
+                      selected: filter.owner === null,
+                      onPress: () => onChange({ ...filter, owner: null }),
+                    },
+                    ...overview.owners.map((owner) => ({
+                      id: `owner:${owner.key}`,
+                      title: owner.name,
+                      subtitle: owner.line,
+                      selected: kinWorkOwnerSelected(filter, owner.owner),
+                      onPress: () => onChange({ ...filter, owner: owner.owner }),
+                    })),
+                  ],
                 },
-                ...overview.owners.map((owner) => ({
-                  id: `owner:${owner.key}`,
-                  title: owner.name,
-                  subtitle: owner.line,
-                  selected: kinWorkOwnerSelected(filter, owner.owner),
-                  onPress: () => onChange({ ...filter, owner: owner.owner }),
-                })),
-              ],
-            },
-          ]),
+              ]),
+          ...(!props.groups
+            ? []
+            : [
+                {
+                  id: "group",
+                  title: KIN_TASKS.groupBy,
+                  items: [
+                    ...KIN_TASK_GROUP_BY.map((one) => ({
+                      id: `group:${one.id}`,
+                      title: one.label,
+                      selected: one.id === groupBy,
+                      onPress: () => onChange({ ...filter, groupBy: one.id }),
+                    })),
+                    // Said once, here: the order never changes.
+                    {
+                      id: "group:order",
+                      title: KIN_TASKS.order,
+                      disabled: true,
+                      onPress: () => {},
+                    },
+                  ],
+                },
+              ]),
+        ],
+      },
     ],
   };
 }

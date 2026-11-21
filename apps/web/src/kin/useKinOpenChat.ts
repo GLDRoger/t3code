@@ -1,4 +1,4 @@
-import { kinAskDraft } from "@t3tools/client-runtime/kin/kinDraft";
+import { kinAskDraft, kinReadiedDraftAtom } from "@t3tools/client-runtime/kin/kinDraft";
 import { kinPendingRefAtom, kinPendingRefKey } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinAgentChatProblem } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -14,9 +14,16 @@ export function useKinOpenChat() {
   const navigate = useNavigate();
   return (environmentId: EnvironmentId, orgId: KinOrgId, chatId: KinChatId, draft?: string) => {
     if (draft !== undefined) {
-      const atom = kinDraftAtom(kinDraftKey(environmentId, orgId, chatId));
-      const ask = kinAskDraft(appAtomRegistry.get(atom), { question: draft, ref: null });
+      const key = kinDraftKey(environmentId, orgId, chatId);
+      const atom = kinDraftAtom(key);
+      const readied = kinReadiedDraftAtom(key);
+      const ask = kinAskDraft(appAtomRegistry.get(atom), {
+        question: draft,
+        ref: null,
+        readied: appAtomRegistry.get(readied),
+      });
       appAtomRegistry.set(atom, ask.text);
+      appAtomRegistry.set(readied, draft);
       appAtomRegistry.set(kinPendingRefAtom(kinPendingRefKey(environmentId, chatId)), ask.ref);
     }
     void navigate({

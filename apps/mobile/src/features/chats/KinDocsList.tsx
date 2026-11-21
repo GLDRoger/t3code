@@ -14,6 +14,9 @@ import {
   KIN_WHAT_WE_SELL,
   kinDocLibrary,
   kinDocRow,
+  kinDocsMine,
+  kinDocsMineHeld,
+  kinDocsOnPhone,
   kinDocsPinned,
   kinDocUnfiled,
   kinDocsChip,
@@ -39,9 +42,22 @@ import {
   kinPlaceLists,
   kinWorkAskDraft,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
+import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import type { KinDocListRow, KinRecordKey } from "@t3tools/contracts";
+import {
+  kinClientsChosenKey,
+  kinIsMine,
+  kinMineChosenAtom,
+  kinMineOpens,
+  type KinMineHeld,
+  type KinMineSide,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
+import type { KinDocListRow, KinPersonId, KinRecordKey } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 
@@ -57,6 +73,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { kinTabBar, useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
@@ -69,9 +86,17 @@ import {
   useKinWhatWeSellStart,
 } from "./state/useKinDocs";
 import { useKinAskAgent, useKinLists } from "./state/useKinMoney";
-import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import {
+  kinWorkChoicesAtom,
+  refreshKinWorkLive,
+  type KinWorkDirectory,
+  type KinWorkTarget,
+} from "./state/useKinWork";
+import { KinListPinned, KinMineSwitch } from "./KinDealsList";
 import { useKinWorkLink } from "./state/kinWorkLink";
+import { useKinHostAt } from "./state/useKinHost";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
 /** A doc as a row that opens it: its name, its kind and last change, and where it is filed. */
 function KinDocRowButton(props: {
@@ -85,6 +110,7 @@ function KinDocRowButton(props: {
   readonly onFile?: () => void;
 }) {
   const { row, onFile } = props;
+  const grows = useKinTextGrows();
   return (
     <>
       <View className={cn("min-h-16 flex-row items-center gap-3", props.inset ? "px-4" : "px-5")}>
@@ -95,7 +121,11 @@ function KinDocRowButton(props: {
           className="min-w-0 flex-1 gap-0.5 py-3 active:opacity-60"
         >
           <View className="flex-row items-center gap-2">
-            <Text textRole="body" numberOfLines={1} className="min-w-0 shrink text-foreground">
+            <Text
+              textRole="body"
+              numberOfLines={kinLines(1, grows)}
+              className="min-w-0 shrink text-foreground"
+            >
               {row.title}
             </Text>
             {row.pinned ? (
@@ -109,7 +139,11 @@ function KinDocRowButton(props: {
             {row.line}
           </Text>
           {props.bare || row.under === null ? null : (
-            <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+            <Text
+              textRole="footnote"
+              numberOfLines={kinLines(1, grows)}
+              className="text-foreground-muted"
+            >
               {row.under}
             </Text>
           )}
@@ -194,6 +228,7 @@ function KinPlaybooksRow(props: {
   readonly onPress: () => void;
 }) {
   const line = KIN_DOC_HOMES.playbooksLine(props.count);
+  const grows = useKinTextGrows();
   return (
     <>
       <Pressable
@@ -210,10 +245,14 @@ function KinPlaybooksRow(props: {
           type="monochrome"
         />
         <View className="min-w-0 flex-1 gap-0.5">
-          <Text textRole="body" numberOfLines={1} className="text-foreground">
+          <Text textRole="body" numberOfLines={kinLines(1, grows)} className="text-foreground">
             {KIN_DOC_HOMES.playbooks}
           </Text>
-          <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+          <Text
+            textRole="footnote"
+            numberOfLines={kinLines(1, grows)}
+            className="text-foreground-muted"
+          >
             {line}
           </Text>
         </View>
@@ -231,6 +270,7 @@ function KinPlaybooksRow(props: {
 
 function KinListRowButton(props: { readonly row: KinListIndexRow; readonly onPress: () => void }) {
   const { row } = props;
+  const grows = useKinTextGrows();
   return (
     <>
       <Pressable
@@ -246,10 +286,14 @@ function KinListRowButton(props: { readonly row: KinListIndexRow; readonly onPre
           type="monochrome"
         />
         <View className="min-w-0 flex-1 gap-0.5">
-          <Text textRole="body" numberOfLines={1} className="text-foreground">
+          <Text textRole="body" numberOfLines={kinLines(1, grows)} className="text-foreground">
             {row.name}
           </Text>
-          <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+          <Text
+            textRole="footnote"
+            numberOfLines={kinLines(1, grows)}
+            className="text-foreground-muted"
+          >
             {row.line}
           </Text>
         </View>
@@ -267,8 +311,11 @@ export function KinSearchHits(props: {
   /** Hits are all docs, so none needs to say what it is. */
   readonly docsOnly?: boolean;
   readonly scope?: KinViewerScope;
+  /** Finding nothing says nothing: the list above already answers for the search. */
+  readonly quietWhenNone?: boolean;
 }) {
   const { state } = props;
+  const grows = useKinTextGrows();
   if (state.hits === null) {
     return state.failed ? (
       <KinLoadFailed title={KIN_SEARCH.failed} cause={state.failed.cause} onRetry={props.onRetry} />
@@ -277,7 +324,9 @@ export function KinSearchHits(props: {
     );
   }
   if (state.hits.length === 0)
-    return <EmptyState variant="plain" {...kinSearchNothing(state.answered, props.scope)} />;
+    return props.quietWhenNone ? null : (
+      <EmptyState variant="plain" {...kinSearchNothing(state.answered, props.scope)} />
+    );
   return (
     <View className={cn(state.loading && "opacity-60")}>
       {state.failed ? (
@@ -298,7 +347,11 @@ export function KinSearchHits(props: {
           >
             <View className="min-w-0 flex-1 gap-0.5">
               <View className="flex-row items-center gap-2">
-                <Text textRole="body" numberOfLines={1} className="min-w-0 shrink text-foreground">
+                <Text
+                  textRole="body"
+                  numberOfLines={kinLines(1, grows)}
+                  className="min-w-0 shrink text-foreground"
+                >
                   {hit.section === null ? hit.title : `${hit.title} › ${hit.section.title}`}
                 </Text>
                 {hit.private ? <KinWorkPrivateMark label="" /> : null}
@@ -344,6 +397,7 @@ function KinRecentStrip(props: {
   readonly now: Date;
   readonly onOpen: (key: KinRecordKey) => void;
 }) {
+  const grows = useKinTextGrows();
   return (
     <View className="gap-1 pt-2">
       <View className="px-5 pb-1">
@@ -364,12 +418,23 @@ function KinRecentStrip(props: {
               accessibilityRole="button"
               accessibilityLabel={row.accessibilityLabel}
               onPress={() => props.onOpen(doc.key)}
-              className="min-w-0 grow basis-[45%] gap-1 rounded-2xl bg-grouped-card px-3.5 py-3 active:opacity-60"
+              className={cn(
+                "min-w-0 grow gap-1 rounded-2xl bg-grouped-card px-3.5 py-3 active:opacity-60",
+                grows ? "basis-full" : "basis-[45%]",
+              )}
             >
-              <Text textRole="body" numberOfLines={2} className="font-t3-medium text-foreground">
+              <Text
+                textRole="body"
+                numberOfLines={kinLines(2, grows)}
+                className="font-t3-medium text-foreground"
+              >
                 {row.title}
               </Text>
-              <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+              <Text
+                textRole="footnote"
+                numberOfLines={kinLines(1, grows)}
+                className="text-foreground-muted"
+              >
                 {row.under ?? KIN_DOC_HOMES.unfiled}
               </Text>
             </Pressable>
@@ -377,6 +442,29 @@ function KinRecentStrip(props: {
         })}
       </View>
     </View>
+  );
+}
+
+const noHeld = Atom.make(AsyncResult.initial<never, never>());
+
+/**
+ * The clients the viewer looks after and the projects they lead or are on, for Docs' Mine; null
+ * until both are read. A read the host refuses counts as none.
+ */
+function useKinDocsMineHeld(target: KinWorkTarget, me: KinPersonId | null): KinMineHeld | null {
+  const { environmentId, orgId } = target;
+  const choices = useAtomValue(me === null ? noHeld : kinWorkChoicesAtom(target));
+  const projects = useAtomValue(
+    me === null
+      ? noHeld
+      : kinClient.teammateProjects({ environmentId, input: { orgId, person: me } }),
+  );
+  if (me === null) return kinDocsMineHeld(null, [], []);
+  if (AsyncResult.isInitial(choices) || AsyncResult.isInitial(projects)) return null;
+  return kinDocsMineHeld(
+    me,
+    Option.getOrNull(AsyncResult.value(choices))?.clients ?? [],
+    Option.getOrNull(AsyncResult.value(projects))?.theirs ?? [],
   );
 }
 
@@ -406,6 +494,7 @@ export function KinDocsList(
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
   const scope = useKinViewerScope(environmentId);
   const { filter } = state;
+  const shown = kinListShown(state, kinHostLink(useKinHostAt(environmentId)));
   const lists = useKinLists(props, {
     enabled: true,
     archived: filter.archived,
@@ -430,15 +519,33 @@ export function KinDocsList(
   const pinShown = kinWhatWeSellShown(filter);
   const pinned = useKinWhatWeSell(props, pinShown);
   const starter = useKinWhatWeSellStart(props);
-  const pin = pinShown ? (pinned ?? null) : null;
-  const library = kinDocLibrary(state.records, pin);
+  const held = useKinDocsMineHeld(props, names.me);
+  const all = kinDocsOnPhone(state.records);
+  const mine = held === null || shown !== "rows" ? null : kinDocsMine(all, held, !state.more);
+  const remembered = kinMineChosenAtom(kinClientsChosenKey(environmentId, names.me));
+  const [asked, setAsked] = useState<KinMineSide | null>(null);
+  const side =
+    asked ?? kinMineOpens(appAtomRegistry.get(remembered).docs ?? null, mine?.counts.mine ?? null);
+  const choose = (next: KinMineSide) => {
+    appAtomRegistry.set(remembered, { ...appAtomRegistry.get(remembered), docs: next });
+    setAsked(next);
+  };
+  const onMine = side !== "everyone";
+  const records = !onMine ? all : (mine?.mine ?? []);
+  const pinnedRow = pinShown ? (pinned ?? null) : null;
+  const pin =
+    pinnedRow === null || !onMine || (held !== null && kinIsMine(pinnedRow, held))
+      ? pinnedRow
+      : null;
+  const library = kinDocLibrary(records, pin);
   const whatWeSell: ReadonlyArray<Item> =
-    !refused && pinShown && pinned === null && starter !== null
+    !refused && !onMine && shown === "rows" && pinShown && pinned === null && starter !== null
       ? [{ type: "whatWeSell", id: "what-we-sell" }]
       : [];
   const shownLists = allLists ? listRows : listRows.slice(0, LISTS_FOLDED);
+  // The lists people keep are the company's, so they show under Everyone.
   const listItems: ReadonlyArray<Item> =
-    !everything || listRows.length === 0
+    !everything || onMine || listRows.length === 0
       ? []
       : [
           { type: "group", id: "group:lists", title: `${KIN_LISTS.title} · ${listRows.length}` },
@@ -457,7 +564,7 @@ export function KinDocsList(
   const docItems: ReadonlyArray<Item> = refused
     ? []
     : !everything || searching
-      ? kinDocsPinned(state.records, searching ? null : pin).map((row): Item => ({
+      ? kinDocsPinned(records, searching ? null : pin).map((row): Item => ({
           type: "doc",
           id: row.recordId,
           row,
@@ -600,6 +707,15 @@ export function KinDocsList(
         })}
       />
       <ScreenContent surface="screen">
+        {refused || side === null ? null : (
+          <KinListPinned>
+            <KinMineSwitch
+              side={side}
+              counts={{ mine: mine?.counts.mine ?? null, everyone: mine?.counts.everyone ?? null }}
+              onSelect={choose}
+            />
+          </KinListPinned>
+        )}
         <LegendList<Item>
           renderScrollComponent={NativeScrollView}
           className="flex-1"
@@ -629,7 +745,7 @@ export function KinDocsList(
           ListHeaderComponent={
             refused ? null : (
               <View className="gap-2 pt-2">
-                {props.stale || state.stale ? (
+                {shown === "rows" && (props.stale || state.stale) ? (
                   <View className="px-4">
                     <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
                   </View>
@@ -670,9 +786,11 @@ export function KinDocsList(
             <View className="pt-4">
               {refused ? (
                 <EmptyState variant="plain" {...KIN_DOCS.unavailable} />
-              ) : state.loading ? (
+              ) : shown === "offline" ? (
+                <EmptyState variant="plain" {...kinWorkOffline("docs")} />
+              ) : shown === "loading" || (shown === "rows" && side === null) ? (
                 <KinWorkLoading label={KIN_DOCS.loading} />
-              ) : state.failed !== null ? (
+              ) : shown === "failed" ? (
                 <KinLoadFailed
                   title={KIN_DOCS.loadFailed}
                   cause={state.failed}
@@ -680,6 +798,8 @@ export function KinDocsList(
                 />
               ) : passages ? null : searching || !everything ? (
                 <EmptyState variant="plain" {...KIN_DOCS.noMatch} />
+              ) : onMine && !filter.archived && all.length > 0 ? (
+                <EmptyState variant="plain" {...KIN_DOCS.noneMine} />
               ) : (
                 <EmptyState
                   variant="plain"
@@ -692,9 +812,13 @@ export function KinDocsList(
           }
           ListFooterComponent={
             <>
-              {!docsPending ? null : state.loading ? (
+              {!docsPending ? null : shown === "offline" ? (
+                <View className="px-4 pt-4">
+                  <EmptyState variant="plain" {...kinWorkOffline("docs")} />
+                </View>
+              ) : shown === "loading" ? (
                 <KinWorkLoading label={KIN_DOCS.loading} />
-              ) : state.failed !== null ? (
+              ) : shown === "failed" ? (
                 <View className="px-4 pt-4">
                   <Notice
                     tone="danger"

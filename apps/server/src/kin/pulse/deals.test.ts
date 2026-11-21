@@ -19,6 +19,8 @@ import { withQuietDays } from "../work/deals.ts";
 import { PLAYBOOK_SEEDS } from "../work/playbookSeeds.ts";
 import * as CheckIns from "./checkIns.ts";
 import * as KinPulse from "./KinPulse.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
+import { morningMoneyLines } from "./morningMoney.ts";
 import { morningBody, morningDue, morningOf } from "./personMorning.ts";
 
 // Invented company, people, clients and deals only; nothing here reads a real database.
@@ -794,4 +796,142 @@ describe("a teammate's morning page", () => {
       "# Ours\n\nPlain words.\n\n## Thresholds\n```kin\ndeal_quiet_days: 9\n```\n",
     );
   });
+});
+
+describe("the morning page's Money lines", () => {
+  /** Kin's money lists, and an issued invoice or a sent quote of Corran Tiles' in `currency`. */
+  const money = Effect.fn("test.money")(function* (entry: {
+    readonly id: string;
+    readonly list: "invoices" | "quotes";
+    readonly minor: number;
+    readonly currency: string;
+    readonly dueAt?: number;
+    readonly sentAt: number;
+  }) {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+        owner_kind, owner_id, side, party_id, due_at, amount_minor, currency, created_by_kind,
+        created_by_id, origin_key, created_at, updated_at, fields_json)
+      VALUES (${orgId}, ${`r-${entry.id}`}, ${entry.list}, ${entry.id}, ${`Work for ${entry.id}`},
+        'waiting', 'person', ${rhea}, 'ours', 'r-C-1', ${entry.dueAt ?? null}, ${entry.minor},
+        ${entry.currency}, 'person', ${rhea}, ${`origin-${entry.id}`}, ${entry.sentAt},
+        ${entry.sentAt}, '{}')`;
+  });
+  const lists = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    for (const [id, prefix] of [
+      ["invoices", "INV"],
+      ["quotes", "QT"],
+    ] as const)
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at)
+        VALUES (${orgId}, ${id}, ${id}, ${prefix}, 1, 0)`;
+  });
+  // Noon UTC is the next morning in Auckland: the calendar days between them stay the same.
+  const NOW = B + 20 * DAY + 12 * HOUR;
+  const lines = (viewer: Parameters<typeof morningMoneyLines>[0]["viewer"] = KIN_OWNER_LEVEL) =>
+    morningMoneyLines({ orgId, now: NOW, viewer });
+
+  it.effect("tells each overdue invoice and unanswered quote, until settled, in its currency", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* lists;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Pacific/Auckland'`;
+      yield* money({
+        id: "INV-1",
+        list: "invoices",
+        minor: 120000,
+        currency: "NZD",
+        dueAt: B + 6 * DAY + 12 * HOUR,
+        sentAt: B,
+      });
+      // Due tomorrow, and a quote sent four days ago: neither is late yet.
+      yield* money({
+        id: "INV-2",
+        list: "invoices",
+        minor: 5000,
+        currency: "NZD",
+        dueAt: NOW + DAY,
+        sentAt: B,
+      });
+      yield* money({
+        id: "QT-1",
+        list: "quotes",
+        minor: 354000,
+        currency: "NZD",
+        sentAt: NOW - 6 * DAY - HOUR,
+      });
+      yield* money({
+        id: "QT-2",
+        list: "quotes",
+        minor: 1000,
+        currency: "NZD",
+        sentAt: NOW - 4 * DAY,
+      });
+      assert.deepStrictEqual(yield* lines(), [
+        "Corran Tiles owes NZ$1,200 on INV-1, 14 days overdue.",
+        "Corran Tiles hasn't answered quote QT-1 for NZ$3,540 in 6 days.",
+      ]);
+      // A teammate who may not see Money hears none of it; one who may, the same lines.
+      yield* sql`UPDATE kin_records SET team_shared = 1 WHERE register_id IN ('invoices', 'quotes')`;
+      assert.deepStrictEqual(yield* lines(viewerOfPeople([zoya])), []);
+      yield* sql`UPDATE kin_people SET sees_money = 1 WHERE person_id = ${zoya}`;
+      assert.lengthOf(yield* lines(viewerOfPeople([zoya])), 2);
+      // Paid in full, and the quote answered: nothing is left to say.
+      yield* sql`INSERT INTO kin_record_payments (payment_id, org_id, record_id, amount_minor,
+          currency, paid_on, origin_key, created_at, created_by_kind)
+        VALUES ('pay-1', ${orgId}, 'r-INV-1', 120000, 'NZD', '2026-11-20', 'pay-1', ${NOW},
+          'person')`;
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-QT-1'`;
+      assert.deepStrictEqual(yield* lines(), []);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("shows three of each, then how many more", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* lists;
+      for (let n = 1; n <= 5; n++)
+        yield* money({
+          id: `INV-${n}`,
+          list: "invoices",
+          minor: n * 100_000,
+          currency: "COP",
+          dueAt: NOW - n * DAY,
+          sentAt: B,
+        });
+      const told = yield* lines();
+      assert.lengthOf(told, 4);
+      assert.match(told[0] ?? "", /^Corran Tiles owes COP\s500,000 on INV-5, 5 days overdue\.$/);
+      assert.strictEqual(told[3], "and 2 more");
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a reader who may see Money gets their page for it alone, every morning", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* lists;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET sees_money = 1 WHERE person_id = ${zoya}`;
+      yield* money({
+        id: "INV-1",
+        list: "invoices",
+        minor: 120000,
+        currency: "EUR",
+        dueAt: B - 3 * DAY,
+        sentAt: B - 9 * DAY,
+      });
+      yield* sql`UPDATE kin_records SET team_shared = 1 WHERE register_id = 'invoices'`;
+      yield* tickAt(MONDAY - MINUTE);
+      yield* tickAt(MONDAY);
+      yield* tickAt(MONDAY + DAY);
+      const pages = (yield* pagesTo(zoya)).map((page) => page.body);
+      assert.lengthOf(pages, 2);
+      for (const page of pages)
+        assert.include(page, "Money:\n- Corran Tiles owes €1,200 on INV-1,");
+      // Arjun may not see Money: his page, if any, has none.
+      for (const page of yield* pagesTo(arjun)) assert.notInclude(page.body, "Money:");
+    }).pipe(Effect.provide(chatLayer)),
+  );
 });

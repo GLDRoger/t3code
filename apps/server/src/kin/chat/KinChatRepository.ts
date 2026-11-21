@@ -2,6 +2,7 @@ import { ACTIVE_RUN_STATUSES } from "../../orchestration-v2/ThreadManagementServ
 import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { wakeupOfRuns } from "./wakeupRuns.ts";
 import {
+  KIN_MONEY_SECTION,
   KIN_TEAM_ROOM_TEAM_ID,
   KIN_MESSAGE_FIGURES_MAX,
   KIN_MESSAGE_BODY_MAX_LENGTH,
@@ -40,6 +41,7 @@ import {
   IsoDateTime,
   NonNegativeInt,
   TrimmedNonEmptyString,
+  kinPageWithLines,
 } from "@t3tools/contracts";
 import { kinDocBlocks } from "@t3tools/shared/kinDocBlocks";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -178,8 +180,18 @@ const chatColumns = `org_id AS "orgId", chat_id AS "chatId", kind AS "kind", tit
 const MemberRow = Schema.Struct({
   ...KinChatMember.fields,
   principal: Schema.fromJsonString(KinChatMember.fields.principal),
+  // An unpinned member's row carries no `pinnedAt` at all, as before pins.
+  pinnedAt: Schema.optionalKey(Schema.NullOr(IsoDateTime)).pipe(
+    Schema.decodeTo(
+      Schema.optionalKey(IsoDateTime),
+      SchemaTransformation.transformOptional<IsoDateTime, IsoDateTime | null>({
+        decode: Option.filter((at) => at !== null),
+        encode: (at) => at,
+      }),
+    ),
+  ),
 });
-const memberColumns = `org_id AS "orgId", chat_id AS "chatId", member_id AS "memberId", role AS "role", joined_at AS "joinedAt", left_at AS "leftAt", muted_until AS "mutedUntil", CASE principal_kind WHEN 'person' THEN json_object('_tag', 'person', 'personId', person_id)
+const memberColumns = `org_id AS "orgId", chat_id AS "chatId", member_id AS "memberId", role AS "role", joined_at AS "joinedAt", left_at AS "leftAt", muted_until AS "mutedUntil", strftime('%Y-%m-%dT%H:%M:%fZ', pinned_at / 1000.0, 'unixepoch') AS "pinnedAt", CASE principal_kind WHEN 'person' THEN json_object('_tag', 'person', 'personId', person_id)
  ELSE json_object('_tag', principal_kind, 'agentId', agent_id) END AS principal`;
 const StoredAttachments = Schema.Array(KinAttachment);
 const encodeAttachments = Schema.encodeEffect(Schema.fromJsonString(StoredAttachments));
@@ -495,6 +507,10 @@ export class KinChatRepository extends Context.Service<
     readonly setMute: (
       input: MemberScope & { readonly mutedUntil: IsoDateTime | null },
     ) => Effect.Effect<Option.Option<KinChatMember>, RepositoryError>;
+    /** Pins an active member's chat at `pinnedAt` (epoch ms); `null` unpins. None when not active. */
+    readonly setPin: (
+      input: MemberScope & { readonly pinnedAt: number | null },
+    ) => Effect.Effect<Option.Option<KinChatMember>, RepositoryError>;
     /** A person's role in a chat they are in; never to or from the chat's owner. */
     readonly setRole: (
       input: MemberScope & { readonly role: "member" | "guest" },
@@ -544,6 +560,8 @@ export class KinChatRepository extends Context.Service<
         readonly body: string;
         /** The body ends with the page as stored: Kin's own section goes before it, unshaped. */
         readonly lead?: true;
+        /** The body is the page as stored with these lines in its Money section (`kinPageWithLines`). */
+        readonly money?: ReadonlyArray<string>;
       },
     ) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
@@ -1154,6 +1172,11 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toRepositoryError("KinChatRepository.addWaiting")),
   );
+  // A card with no words of its own, once closed (answered, replaced, run out), is Kin's status
+  // of it, not a message: it leaves the unread count. A card that carries words still counts.
+  const notStatusLine = sql`NOT (kin_messages.body = '' AND EXISTS (SELECT 1 FROM kin_widgets w
+ WHERE w.org_id = kin_messages.org_id AND w.message_id = kin_messages.message_id
+ AND w.closed_at IS NOT NULL))`;
   // `unreadCount` for each of a person's chats in one read, each from its own member row's join.
   const unreadByChat = (
     input: Scope & { readonly personId: KinPersonId },
@@ -1163,7 +1186,7 @@ const make = Effect.gen(function* () {
  COUNT(kin_messages.message_id) AS count
  FROM kin_chat_members m JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
  LEFT JOIN kin_messages ON kin_messages.org_id = m.org_id AND kin_messages.chat_id = m.chat_id
- AND kin_messages.status = 'posted' AND kin_messages.silent = 0
+ AND kin_messages.status = 'posted' AND kin_messages.silent = 0 AND ${notStatusLine}
  AND (kin_messages.author_member_id IS NULL OR kin_messages.author_member_id != m.member_id)
  AND ${readableFrom(sql, input.orgId, sql`COALESCE(m.joined_seq, 0)`)}
  AND kin_messages.seq > COALESCE((SELECT r.last_read_seq FROM kin_read_state r WHERE r.org_id = m.org_id
@@ -1177,7 +1200,8 @@ const make = Effect.gen(function* () {
         Request: Schema.Unknown,
         Result: Schema.Struct({ count: NonNegativeInt }),
         execute: () => sql`SELECT COUNT(*) AS count FROM kin_messages WHERE org_id = ${input.orgId}
- AND chat_id = ${input.chatId} AND status = 'posted' AND silent = 0 AND (author_member_id IS NULL OR author_member_id != ${input.memberId})
+ AND chat_id = ${input.chatId} AND status = 'posted' AND silent = 0 AND ${notStatusLine}
+ AND (author_member_id IS NULL OR author_member_id != ${input.memberId})
  AND ${readableBy(sql, input.orgId, input.memberId)}
  AND seq > COALESCE((SELECT last_read_seq FROM kin_read_state WHERE org_id = ${input.orgId}
  AND chat_id = ${input.chatId} AND member_id = ${input.memberId}), 0)`,
@@ -1626,6 +1650,14 @@ const make = Effect.gen(function* () {
       },
       Effect.mapError(toRepositoryError("KinChatRepository.setMute")),
     ),
+    setPin: Effect.fn("KinChatRepository.setPin")(
+      function* (input) {
+        const changed = yield* sql`UPDATE kin_chat_members SET pinned_at = ${input.pinnedAt}
+ WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND member_id = ${input.memberId} AND left_at IS NULL RETURNING member_id`;
+        return changed.length === 0 ? Option.none() : yield* memberOne(input);
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.setPin")),
+    ),
     setRole: Effect.fn("KinChatRepository.setRole")(
       function* (input) {
         const changed = yield* sql`UPDATE kin_chat_members SET role = ${input.role}
@@ -1777,9 +1809,12 @@ const make = Effect.gen(function* () {
               message.author.threadId !== input.threadId ||
               message.status !== "posted" ||
               message.kind !== "text" ||
-              (input.lead === true
-                ? message.form !== "brief" || !input.body.endsWith(message.body)
-                : !input.body.startsWith(message.body)) ||
+              (input.money !== undefined
+                ? message.form !== "brief" ||
+                  input.body !== kinPageWithLines(message.body, KIN_MONEY_SECTION, input.money)
+                : input.lead === true
+                  ? message.form !== "brief" || !input.body.endsWith(message.body)
+                  : !input.body.startsWith(message.body)) ||
               (message.widgetId !== null &&
                 message.body === "" &&
                 (yield* replyCard(input)) !== input.messageId) ||
@@ -1799,7 +1834,7 @@ const make = Effect.gen(function* () {
                 message: "Kin wake-up is not running.",
               });
             yield* ownerOnly(input.audience, input);
-            if (input.lead === true) {
+            if (input.lead === true || input.money !== undefined) {
               yield* sql`UPDATE kin_messages SET body = ${input.body}
                 WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
               return yield* requireRecord(messageOne(input));

@@ -100,6 +100,13 @@ export const KIN_INVOICES = {
   receiptSet: (number: string | null, invoice: string) =>
     `${number === null ? "The receipt" : `Receipt ${number}`} is set against ${invoice}.`,
   receiptProblems: "The receipt and its number stand, but Kin couldn't make its PDF:",
+  amountTitle: "Change an issued invoice?",
+  amountDetail: (number: string, was: string, next: string, sent: boolean) =>
+    sent
+      ? `${number} was issued and sent for ${was}. Change its total to ${next}? Your client's copy still says ${was}. The change is kept in its history with your name.`
+      : `${number} was issued for ${was}. Change its total to ${next}? Its number stays, and the change is kept in its history with your name.`,
+  noAmount: "no amount",
+  amountConfirm: "Change total",
 };
 
 export const KIN_RECEIPTS = {
@@ -177,10 +184,35 @@ export const kinIsInvoice = (item: Pick<KinRecordDetail, "list">) => item.list =
 /** The field an issued number is written to; the invoice heading shows it instead. */
 export const KIN_INVOICE_NUMBER_FIELD = "number";
 
-const numberFieldOf = (item: KinRecordDetail) => {
+const numberFieldOf = (item: Pick<KinRecordDetail, "fields">) => {
   const value = item.fields?.[KIN_INVOICE_NUMBER_FIELD];
   return typeof value === "string" ? value : null;
 };
+
+/**
+ * The question before an issued invoice's total changes, naming the old and new totals; null on a
+ * draft, a void invoice, or when the total stays as it is.
+ */
+export function kinIssuedAmountQuestion(
+  item: Pick<KinRecordDetail, "list" | "state" | "fields" | "amount" | "sent">,
+  next: KinMoney | null,
+) {
+  const number = numberFieldOf(item)?.trim() ?? "";
+  if (!kinIsInvoice(item) || item.state === "dropped" || number === "") return null;
+  const was = item.amount;
+  if (was === undefined) return null;
+  if (next !== null && next.minor === was.minor && next.currency === was.currency) return null;
+  return {
+    title: KIN_INVOICES.amountTitle,
+    message: KIN_INVOICES.amountDetail(
+      number,
+      kinMoneyText(was, true),
+      next === null ? KIN_INVOICES.noAmount : kinMoneyText(next, true),
+      (item.sent?.length ?? 0) > 0,
+    ),
+    confirm: KIN_INVOICES.amountConfirm,
+  };
+}
 
 /** Where a payment's receipt is, and the one tap it takes next. */
 export type KinPaymentReceiptView =

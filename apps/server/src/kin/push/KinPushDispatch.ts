@@ -4,6 +4,7 @@ import type {
   KinChatId,
   KinMessageId,
   KinOrgId,
+  KinWakeupId,
   KinWidget,
   KinWidgetId,
 } from "@t3tools/contracts";
@@ -45,31 +46,20 @@ const make = Effect.gen(function* () {
   // An agent's turn in a chat, from its presence line to the line's end. A card the turn posts
   // waits for the turn's end: whoever its words rang heard of the card with them.
   type Turn = {
-    readonly agents: Set<KinAgentId>;
-    readonly said: Array<KinMessageId>;
+    /** Each agent showing a line here, and the wake-up it shows; null for a queue line. */
+    readonly agents: Map<KinAgentId, KinWakeupId | null>;
+    said: Array<KinMessageId>;
     readonly cards: Map<KinWidgetId, KinWidget>;
   };
   const turns = new Map<string, Turn>();
   const turnKey = (orgId: KinOrgId, chatId: KinChatId) => `${orgId}\u0000${chatId}`;
 
-  const onPresence = Effect.fn("KinPushDispatch.onPresence")(function* (
-    orgId: KinOrgId,
-    chatId: KinChatId,
-    agentId: KinAgentId,
-    on: boolean,
-  ) {
-    const key = turnKey(orgId, chatId);
-    const turn = turns.get(key);
-    if (on) {
-      if (turn === undefined)
-        turns.set(key, { agents: new Set([agentId]), said: [], cards: new Map() });
-      else turn.agents.add(agentId);
-      return;
-    }
-    if (turn === undefined) return;
-    turn.agents.delete(agentId);
-    if (turn.agents.size > 0) return;
-    turns.delete(key);
+  const release = Effect.fn("KinPushDispatch.release")(function* (orgId: KinOrgId, turn: Turn) {
+    if (turn.cards.size > 0)
+      yield* Effect.logInfo("Kin push sends the cards a turn held", {
+        orgId,
+        widgetIds: [...turn.cards.keys()],
+      });
     for (const card of turn.cards.values())
       yield* sender.notify({
         _tag: "widget",
@@ -77,6 +67,36 @@ const make = Effect.gen(function* () {
         widgetId: card.widgetId,
         covered: turn.said,
       });
+  });
+
+  const onPresence = Effect.fn("KinPushDispatch.onPresence")(function* (
+    orgId: KinOrgId,
+    chatId: KinChatId,
+    agentId: KinAgentId,
+    wakeupId: KinWakeupId | null | undefined,
+  ) {
+    const key = turnKey(orgId, chatId);
+    const turn = turns.get(key);
+    if (wakeupId !== undefined) {
+      if (turn === undefined) {
+        turns.set(key, { agents: new Map([[agentId, wakeupId]]), said: [], cards: new Map() });
+        return;
+      }
+      const showing = turn.agents.get(agentId);
+      // A line that moves on to the next wake-up with no end between: the last one's turn is over.
+      if (showing !== undefined && showing !== null && wakeupId !== null && showing !== wakeupId) {
+        yield* release(orgId, turn);
+        turn.said = [];
+        turn.cards.clear();
+      }
+      if (wakeupId !== null || showing === undefined) turn.agents.set(agentId, wakeupId);
+      return;
+    }
+    if (turn === undefined) return;
+    turn.agents.delete(agentId);
+    if (turn.agents.size > 0) return;
+    turns.delete(key);
+    yield* release(orgId, turn);
   });
 
   const onWidget = Effect.fn("KinPushDispatch.onWidget")(function* (widget: KinWidget) {
@@ -96,6 +116,11 @@ const make = Effect.gen(function* () {
     if (!fresh) return;
     if (widget.type !== "approval") {
       if (turn !== undefined && turn.said.includes(widget.messageId)) {
+        if (!turn.cards.has(widget.widgetId))
+          yield* Effect.logInfo("Kin push holds a card for its turn's end", {
+            orgId: widget.orgId,
+            widgetId: widget.widgetId,
+          });
         turn.cards.set(widget.widgetId, widget);
         return;
       }
@@ -132,7 +157,7 @@ const make = Effect.gen(function* () {
       : event.type === "widget.updated"
         ? onWidget(event.widget)
         : event.type === "presence.updated"
-          ? onPresence(event.orgId, event.chatId, event.agentId, event.presence !== null)
+          ? onPresence(event.orgId, event.chatId, event.agentId, event.presence?.wakeupId)
           : event.type === "read.updated"
             ? sender.notify({
                 _tag: "read",

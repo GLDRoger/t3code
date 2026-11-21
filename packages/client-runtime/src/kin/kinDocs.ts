@@ -8,6 +8,7 @@ import {
   type KinChatSummary,
   type KinDocDetail,
   type KinDocDiff,
+  type KinDocEditSectionInput,
   type KinDocEmbed,
   type KinDocRenderInput,
   type KinDocFileInput,
@@ -27,10 +28,16 @@ import {
   type KinWidget,
   type KinWorkActor,
   type KinWorkPrincipal,
+  kinPlainBody,
   kinSalesLead,
+  kinThreadLinksAsWords,
   kinWhenFormat,
 } from "@t3tools/contracts";
 import { kinDocBlockIndex, kinDocBlocks, kinDocParts } from "@t3tools/shared/kinDocBlocks";
+import type { PhrasingContent, RootContent } from "mdast";
+import remarkGfm from "remark-gfm";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -44,6 +51,7 @@ import {
   type KinWorkNames,
 } from "./kinWork.ts";
 import { kinCount } from "./kinCount.ts";
+import { kinIsMine, type KinMineCount, type KinMineHeld } from "./kinWorkClients.ts";
 
 export const KIN_DOCS = {
   earlierVersions: "Show earlier versions",
@@ -74,6 +82,21 @@ export const KIN_DOCS = {
   suggest: "Suggest a change",
   copyLink: "Copy link",
   copied: "Link copied",
+  copyText: "Copy text",
+  textCopied: "Text copied",
+  more: "More",
+  sharePdf: "Share as PDF",
+  save: "Save",
+  saving: "Saving…",
+  cancel: "Cancel",
+  editing: (section: string) => `Changing ${section}`,
+  saved: (version: number) =>
+    `Saved as version ${version}. The one before is in History, and can be restored.`,
+  editMoved:
+    "This section changed since you opened it, so your change wasn't saved. Copy what you wrote, then open the doc again.",
+  editFailed: "Couldn't save your change.",
+  editOffline: "You're offline. Save it when the connection is back; your text stays here.",
+  discard: { title: "Discard your change?", keep: "Keep changing", confirm: "Discard" },
   export: "Export as Markdown",
   exportPdf: "Export PDF",
   exportingPdf: "Making the PDF…",
@@ -88,6 +111,11 @@ export const KIN_DOCS = {
     title: "No docs yet",
     detail:
       "Ask an agent for a plan, a brief, a runbook or meeting notes. It lands here, and the agent keeps it current.",
+  },
+  noneMine: {
+    title: "Nothing of yours yet",
+    detail:
+      "Docs you keep, and docs on the clients and projects you look after or are on, show here. Everyone has the rest.",
   },
   noMatch: {
     title: "No doc says that",
@@ -429,6 +457,51 @@ export function kinDocLibrary(
   };
 }
 
+/** The phone's Docs: an agent's character is changed on its page, so the list leaves it out. */
+export const kinDocsOnPhone = <Row extends Pick<KinDocListRow, "character">>(
+  rows: ReadonlyArray<Row>,
+): ReadonlyArray<Row> => rows.filter((row) => row.character !== true);
+
+/**
+ * The viewer's clients and projects for `kinIsMine`: the clients they look after among those read,
+ * and the projects they lead or are on.
+ */
+export function kinDocsMineHeld(
+  me: KinPersonId | null,
+  clients: ReadonlyArray<{ readonly key: string; readonly owner: KinWorkPrincipal }>,
+  projects: ReadonlyArray<{ readonly key: string }>,
+): KinMineHeld {
+  return {
+    me,
+    clients: new Set(
+      clients
+        .filter((one) => one.owner._tag === "person" && one.owner.personId === me)
+        .map((one) => one.key),
+    ),
+    projects: new Set(projects.map((one) => one.key)),
+  };
+}
+
+/**
+ * Docs' Mine among the rows the list holds, and both sides' counts: exact once it holds every doc
+ * the host has, "at least" before. Everyone is the same rows, so Mine never shows more.
+ */
+export function kinDocsMine<Row extends Parameters<typeof kinIsMine>[0]>(
+  rows: ReadonlyArray<Row>,
+  held: KinMineHeld,
+  complete: boolean,
+): {
+  readonly mine: ReadonlyArray<Row>;
+  readonly counts: { readonly mine: KinMineCount; readonly everyone: KinMineCount };
+} {
+  const mine = rows.filter((row) => kinIsMine(row, held));
+  const atLeast = complete ? {} : { atLeast: true };
+  return {
+    mine,
+    counts: { mine: { n: mine.length, ...atLeast }, everyone: { n: rows.length, ...atLeast } },
+  };
+}
+
 /** The rows with What we sell first, once: `pinned` as read on its own, else the page's copy. */
 export function kinDocsPinned(
   rows: ReadonlyArray<KinDocListRow>,
@@ -604,6 +677,87 @@ export function kinDocFileInput(
           project: draft.project as KinDocFileInput["key"] | null,
         }),
   };
+}
+
+// Copy text
+
+const copyParser = unified().use(remarkParse).use(remarkGfm);
+
+const inlineText = (nodes: ReadonlyArray<PhrasingContent>): string =>
+  nodes
+    .map((node): string => {
+      switch (node.type) {
+        case "text":
+        case "inlineCode":
+          return node.value;
+        case "break":
+          return "\n";
+        case "image":
+          return node.alt ?? "";
+        case "html":
+          return node.value.replace(/<[^>]*>/g, "");
+        case "link": {
+          const words = inlineText(node.children);
+          return /^https?:/i.test(node.url) && words !== node.url && words !== ""
+            ? `${words} (${node.url})`
+            : words === ""
+              ? node.url
+              : words;
+        }
+        case "emphasis":
+        case "strong":
+        case "delete":
+          return inlineText(node.children);
+        default:
+          return "";
+      }
+    })
+    .join("");
+
+const blockText = (node: RootContent): ReadonlyArray<string> => {
+  switch (node.type) {
+    case "paragraph":
+    case "heading":
+      return [inlineText(node.children)];
+    case "code":
+      return [node.value];
+    case "html":
+      return [node.value.replace(/<[^>]*>/g, "")];
+    case "blockquote":
+      return node.children.flatMap(blockText);
+    case "list":
+      return [
+        node.children
+          .map((item, index) => {
+            const lines = item.children.flatMap(blockText).filter((line) => line !== "");
+            const number = node.ordered === true ? `${(node.start ?? 1) + index}. ` : "";
+            return `${number}${lines.join("\n")}`;
+          })
+          .join("\n"),
+      ];
+    case "table":
+      return [
+        node.children
+          .map((row) =>
+            row.children.map((cell) => inlineText(cell.children).replace(/\s+/g, " ")).join("\t"),
+          )
+          .join("\n"),
+      ];
+    default:
+      return [];
+  }
+};
+
+/**
+ * A doc's markdown as text to paste anywhere: no marks, a list's items one per line, a table's
+ * rows as tab-separated cells, and its charts and visuals left out.
+ */
+export function kinDocCopyText(markdown: string): string {
+  const tree = copyParser.parse(kinThreadLinksAsWords(kinPlainBody(markdown)));
+  return tree.children
+    .flatMap(blockText)
+    .filter((block) => block.trim() !== "")
+    .join("\n\n");
 }
 
 // The reader
@@ -812,6 +966,88 @@ export function kinDocRestoreOutcome(
   )
     return { _tag: "refused", moved: false, text: error.message };
   return { _tag: "refused", moved: false, text: kinFailureText(error, "Couldn't restore it.") };
+}
+
+// Changing a section by hand
+
+/** Whether this reader changes the shown version's sections by hand: the host said so, on the latest. */
+export const kinDocCanEdit = (
+  doc: Pick<KinDocDetail, "editable" | "version" | "latest">,
+): boolean =>
+  doc.editable === true &&
+  doc.version.version === doc.latest.version &&
+  doc.version.file === undefined;
+
+/**
+ * A doc's one Change item, the same on web and phone: by hand, on its sections, where the host lets
+ * this reader; else through the doc's agent, a suggestion below the owner level.
+ */
+export const kinDocChangeItem = (input: {
+  readonly byHand: boolean;
+  readonly ownerLevel: boolean;
+}) =>
+  input.byHand
+    ? { by: "hand" as const, label: KIN_DOCS.change }
+    : { by: "agent" as const, label: input.ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest };
+
+/**
+ * What a hand edit is opened on, taken all at once: the doc, the section, its hash and its text as
+ * read then. The doc may refresh while the editor is open; the save still names what was opened,
+ * so a newer change to that section is refused, and one to another section is not.
+ */
+export interface KinDocEditOpened {
+  readonly key: KinDocDetail["key"];
+  readonly section: string;
+  readonly title: string;
+  readonly hash: string;
+  /** The section's markdown as opened, heading included: the editor's starting text. */
+  readonly was: string;
+}
+
+/** The section to open for a hand edit, or null when the body and the outline disagree. */
+export function kinDocEditOpen(
+  doc: Pick<KinDocDetail, "key" | "body" | "outline">,
+  section: string,
+): KinDocEditOpened | null {
+  const read = doc.outline.find((one) => one.id === section);
+  const text = kinDocSections(doc.body, doc.outline)?.find((one) => one.id === section);
+  return read === undefined || text === undefined
+    ? null
+    : { key: doc.key, section: read.id, title: text.title, hash: read.hash, was: text.text };
+}
+
+/** What the save sends: what was opened, never the doc as it reads now. */
+export const kinDocEditInput = (
+  orgId: KinOrgId,
+  opened: KinDocEditOpened,
+  text: string,
+  clientRequestId: string,
+): KinDocEditSectionInput => ({
+  orgId,
+  key: opened.key,
+  section: opened.section,
+  hash: opened.hash,
+  text,
+  clientRequestId,
+});
+
+export type KinDocEditOutcome =
+  | { readonly _tag: "saved"; readonly doc: KinDocDetail }
+  | { readonly _tag: "refused"; readonly text: string; readonly moved: boolean };
+
+/** The host's answer to a hand edit: the new version, or why not in words, the typed text kept. */
+export function kinDocEditOutcome(
+  result: AtomCommandResult<KinDocDetail, unknown>,
+): KinDocEditOutcome {
+  if (AsyncResult.isSuccess(result)) return { _tag: "saved", doc: result.value };
+  const error = squashAtomCommandFailure(result);
+  if (isKinChatError(error) && error.reason === "conflict")
+    return { _tag: "refused", moved: true, text: KIN_DOCS.editMoved };
+  return {
+    _tag: "refused",
+    moved: false,
+    text: kinFailureText(error, KIN_DOCS.editFailed, { gone: KIN_DOCS.gone.title }),
+  };
 }
 
 // Pointing at a part

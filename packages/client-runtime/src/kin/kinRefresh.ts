@@ -95,15 +95,24 @@ export function kinRefreshTriggers(
       Atom.withLabel(`${KIN_REFRESHES_LABEL}:${topic}:${environmentId}`),
     );
   });
-  /** Whether the host streams `name` (`KinRefreshes.streams`); null until it has said. */
+  const said = new Map<string, boolean>();
+  /**
+   * Whether the host streams `name` (`KinRefreshes.streams`); null until it has said. A reconnect
+   * keeps its last answer, so the reads that hang on it keep what they hold.
+   */
   const serves = Atom.family((key: string) => {
     const [environmentId, orgId, name] = parse(key);
     return Atom.make((get) => {
       const result = get(revisions({ environmentId, input: { orgId } }));
-      // No revisions to read: the reads that follow moves are all there is.
-      if (AsyncResult.isFailure(result)) return false;
-      const held = AsyncResult.getOrElse(result, () => null);
-      return held === null ? null : (held.streams ?? []).includes(name);
+      const failed = AsyncResult.isFailure(result);
+      const held = failed ? null : AsyncResult.getOrElse(result, () => null);
+      // No revisions ever read: the reads that follow moves are all there is.
+      const answer =
+        held !== null
+          ? (held.streams ?? []).includes(name)
+          : (said.get(key) ?? (failed ? false : null));
+      if (answer !== null) said.set(key, answer);
+      return answer;
     }).pipe(Atom.withLabel(`${KIN_REFRESHES_LABEL}:serves:${name}:${environmentId}`));
   });
   const keyOf = (topic: string, target: Target) =>

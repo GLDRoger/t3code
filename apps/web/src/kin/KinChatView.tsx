@@ -65,6 +65,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinReactions";
 import {
   kinAgentAvatar,
+  kinChatPinned,
   kinStaleNotice,
   type KinAvatarView,
 } from "@t3tools/client-runtime/kin/kinScreenState";
@@ -347,6 +348,15 @@ export function KinChatView(props: {
           environmentId={environmentId}
           chatId={chatId}
           muted={muted}
+          pinned={
+            // The main agent's chat is always on top, so it offers no pin.
+            summary === undefined ||
+            viewer.personId === null ||
+            (about.kind === "own" ? about.lead.agentId : about.contact.agentId) ===
+              (leads?._tag === "Success" ? leads.value.teamAgentId : undefined)
+              ? null
+              : kinChatPinned(summary, new Set([viewer.personId]))
+          }
           activeAgents={screen.activeAgents}
           ownsChat={
             summary !== undefined &&
