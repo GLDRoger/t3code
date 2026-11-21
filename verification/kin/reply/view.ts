@@ -7,7 +7,7 @@ const first = (vars: Vars, name: string) => list(vars[name])[0];
 export const title = "Your message to an agent, and what comes back";
 
 export const guide =
-  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, the agent starts on it, writes, writes the same answer again, posts a chart, thinks, sends you a message for someone else (a nudge or relay), its turn ends or fails, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, three tries at starting, one restart, and a floor that can close; it follows your first message. “Working…” shows while the agent works on it and clears when the turn ends.";
+  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, the agent starts on it, writes, writes the same answer again, posts a chart, thinks, sends you a message for someone else (a nudge or relay), its turn ends or fails, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, four tries at starting, one restart, and a floor that can close; it follows your first message. “Working…” shows while the agent works on it and clears when the turn ends.";
 
 export const rules: Record<string, string> = {
   NeverTwo: "Each message you send gets at most one reply or one plain failure line, never two.",
@@ -125,8 +125,8 @@ export const step = (action: string, from: Vars, to: Vars) => {
       if (first(to, "ev") === "done")
         return "The turn fails after the reply: logged, nothing posted";
       return Number(first(to, "fails")) > Number(first(from, "fails"))
-        ? Number(first(to, "tries")) >= 3
-          ? "It fails a third time: “won't try again”"
+        ? Number(first(to, "tries")) >= 4
+          ? "It fails a fourth time: “won't try again”"
           : "The turn fails after doing something: “stopped partway”"
         : "The turn fails to start: “trying again”";
     case "Restart":

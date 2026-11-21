@@ -10,7 +10,7 @@ import { CONNECTION_LIMITS } from "./limits.ts";
 const HIDDEN =
   /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}\u0000-\u0008\u000B-\u001F\u007F-\u009F]/gu;
 
-const clean = (text: string) => text.replace(HIDDEN, "");
+export const clean = (text: string) => text.replace(HIDDEN, "");
 
 const size = (bytes: number) =>
   bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024).toLocaleString("en-US")} KB`;

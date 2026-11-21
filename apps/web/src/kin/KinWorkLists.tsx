@@ -1,4 +1,4 @@
-import { KIN_RETRY, kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY, kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_LISTS,
@@ -481,7 +481,7 @@ function KinListEntries(
         {footer === null ? null : (
           <div className="flex items-center gap-3 px-2">
             <p className="text-xs text-muted-foreground" role="status">
-              {state.moreFailed ? "Couldn't load more." : footer}
+              {state.moreFailed ? KIN_MORE_FAILED : footer}
             </p>
             <Button
               size="xs"

@@ -12,6 +12,7 @@ import {
   KinChatId,
   KinMessageId,
   KinWidgetId,
+  KIN_CODING_AGENT_UNNAMED,
   KIN_TAKEN_DEFAULT_FIELD,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -576,6 +577,21 @@ describe("kinTaskActivity", () => {
             at: "2026-11-10T15:00:00.000Z",
             body: "Logo draft checked.",
           }),
+          // Meera reads another teammate's key by the server's generic name; a key named "Kin" is quoted.
+          comment({
+            seq: 4,
+            by: zoya,
+            codingAgent: KIN_CODING_AGENT_UNNAMED,
+            at: "2026-11-10T16:00:00.000Z",
+            body: "Logo exported.",
+          }),
+          comment({
+            seq: 5,
+            by: zoya,
+            codingAgent: "Kin",
+            at: "2026-11-10T17:00:00.000Z",
+            body: "Done here.",
+          }),
         ],
       }),
       names,
@@ -588,8 +604,10 @@ describe("kinTaskActivity", () => {
       ["comment", "You", "removed this note", null],
       ["state", "Chief of staff", "went with the default: finished it (nobody answered)", null],
       ["change", "Chief of staff", "updated it", null],
-      ["state", "Zoya", "started on it", "Work laptop"],
-      ["comment", "Zoya", "", "Work laptop"],
+      ["state", "Zoya", "started on it", "coding agent “Work laptop”"],
+      ["comment", "Zoya", "", "coding agent “Work laptop”"],
+      ["comment", "Zoya", "", "a coding agent"],
+      ["comment", "Zoya", "", "coding agent “Kin”"],
     ]);
     expect(lines[1]?.comment).toMatchObject({ body: "On it.", removed: false });
   });

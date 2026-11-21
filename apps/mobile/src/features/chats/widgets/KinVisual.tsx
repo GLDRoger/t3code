@@ -1,3 +1,4 @@
+import { KIN_VISUAL_HOSTS } from "@t3tools/client-runtime/kin/kinConnections";
 import { KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -149,7 +150,7 @@ function KinVisualWebView(props: {
       asking.current = false;
     };
     Dialog.confirm({
-      title: "Open this link?",
+      title: KIN_VISUAL_HOSTS.openLink,
       message: `A link in “${props.title}” goes to:\n\n${url}`,
       confirmText: "Open link",
       onCancel: done,
@@ -343,7 +344,9 @@ export const KinVisual = memo(function KinVisual(props: {
         }).then((result) => {
           setAllowing(null);
           if (!AsyncResult.isSuccess(result)) {
-            setProblem(kinFailureText(squashAtomCommandFailure(result), "Couldn't allow it."));
+            setProblem(
+              kinFailureText(squashAtomCommandFailure(result), KIN_VISUAL_HOSTS.allowFailed),
+            );
             return;
           }
           setBlocked(null);

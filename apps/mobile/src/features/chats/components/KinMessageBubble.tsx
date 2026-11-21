@@ -44,6 +44,7 @@ import {
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import * as Clipboard from "expo-clipboard";
 import {
+  KIN_REACTION_COPY,
   KIN_PICKER_REACTIONS,
   KIN_REACTION_NAMES,
   type KinReactionChip,
@@ -56,7 +57,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
-import { kinTurnReceiptLine } from "@t3tools/client-runtime/kin/kinTurnReceipt";
+import { kinTurnReceiptOpen, kinTurnReceiptLine } from "@t3tools/client-runtime/kin/kinTurnReceipt";
 import { kinCardDraws, KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   kinDraftMarkdown,
@@ -455,7 +456,7 @@ export function KinMessageBubble(props: {
       {receipt === null ? null : (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${receipt}. Show the changes`}
+          accessibilityLabel={kinTurnReceiptOpen(receipt)}
           hitSlop={8}
           onPress={props.onOpenReceipt}
           className="max-w-full px-1 active:opacity-60"
@@ -477,7 +478,7 @@ export function KinMessageBubble(props: {
               accessibilityLabel={
                 onReact === null
                   ? chip.label
-                  : `${chip.label}. ${chip.mine ? "Remove your reaction" : "Add yours"}`
+                  : `${chip.label}. ${chip.mine ? KIN_REACTION_COPY.remove : KIN_REACTION_COPY.add}`
               }
               onPress={onReact === null ? undefined : () => onReact(chip.emoji)}
             />

@@ -1,4 +1,5 @@
 import {
+  kinAccessAllows,
   kinOwnerLevel,
   kinRpcAccess,
   type EnvironmentId,
@@ -81,13 +82,6 @@ const failedWithoutAnswer = (
   result._tag === "Failure" &&
   !result.waiting &&
   !answered.has(errorTag(Cause.squash(result.cause)));
-
-/** Whether a person of `kind` may call a method of `access` (`KIN_RPC_ACCESS`). */
-function kinAccessAllows(kind: KinPersonAccess | null, access: KinRpcAccess | undefined) {
-  if (access === undefined || access === "person") return true;
-  if (kind === "owner") return true;
-  return kind === "co_owner" && access === "owner_level";
-}
 
 /** The viewer's own kind in the org the directory named, or null until the host has said. */
 function makeKinAccess<R, ER>(
@@ -297,7 +291,9 @@ export function createKinRpcCommand<
     const kind = kinAccessAtom(runtime, environmentId);
     let atom = combined.get(granted);
     if (atom === undefined) {
-      atom = Atom.make((get) => get(granted) && kinAccessAllows(get(kind), access));
+      atom = Atom.make(
+        (get) => get(granted) && (access === undefined || kinAccessAllows(get(kind), access)),
+      );
       combined.set(granted, atom);
     }
     return atom;

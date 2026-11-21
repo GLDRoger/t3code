@@ -267,7 +267,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                 </fieldset>
               ) : null}
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor={introId}>What teammates see</Label>
+                <Label htmlFor={introId}>{KIN_AGENTS_COPY.introLabel}</Label>
                 <Textarea
                   id={introId}
                   rows={2}

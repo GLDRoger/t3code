@@ -105,7 +105,8 @@ export interface KinEstimate {
 }
 
 const dayFormat = kinWhenFormat("dateYear", { zone: "UTC" });
-const kinRateDay = (day: string) => dayFormat.format(new Date(`${day}T00:00:00Z`));
+/** "Nov 10, 2026" for a rate's `YYYY-MM-DD` day. */
+export const kinRateDay = (day: string) => dayFormat.format(new Date(`${day}T00:00:00Z`));
 
 /** "₹84.25 per $1, as of 10 Nov 2026". */
 export function kinRateLine(rate: KinCurrencyRate, home: string): string {

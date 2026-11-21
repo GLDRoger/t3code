@@ -11,6 +11,7 @@ import { kinFailureText } from "./kinAnswers.ts";
 import { formatKinTime } from "./kinScreenState.ts";
 
 export const KIN_DEVICES_COPY = {
+  loadFailed: "Couldn't load devices",
   title: "Your devices",
   rowDetail: "Phones and browsers signed in as you",
   footer:

@@ -1113,7 +1113,7 @@ describe("invoices", () => {
         // The agent reads it as a suggestion, and it waits on a person with the right.
         assert.include(yield* LeadWork.get(scope, { key: "INV-2" }), {
           suggested: true,
-          stateLabel: "Draft, suggested, not kept yet",
+          stateLabel: "Draft, suggested: waits for the owner or a co-owner to keep it",
         });
         const section = moneySection(yield* OwnerMoney.money(people, { orgId }), "Asia/Kolkata");
         assert.deepStrictEqual(
@@ -1173,8 +1173,12 @@ describe("invoices", () => {
         yield* OwnerWork.decline(people, { orgId, key: "INV-4", rev: yield* rev("INV-4") });
         // It started as a draft, so kept it is a draft: owed once it is issued.
         assert.deepStrictEqual((yield* owed).owed, inr(4_720_000));
+        const balanceOf = (key: string) =>
+          LeadWork.get(scope, { key }).pipe(Effect.map((one) => [one.amount, one.balance]));
+        assert.deepStrictEqual(yield* balanceOf("INV-2"), ["₹47,200.00", undefined]);
         for (const key of ["INV-2", "INV-3"])
           yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make(key) });
+        assert.deepStrictEqual(yield* balanceOf("INV-2"), ["₹47,200.00", "₹47,200.00"]);
         assert.deepStrictEqual(yield* owed, {
           owed: inr(14_160_000),
           overdue: inr(14_160_000),
@@ -1186,6 +1190,11 @@ describe("invoices", () => {
         });
         const records = yield* KinRecords.KinRecords;
         assert.strictEqual((yield* records.get(orgId, "INV-4"))!.state, "dropped");
+        // An issued invoice is opened by the number on its page too, and named by it.
+        const number = String(JSON.parse((yield* records.get(orgId, "INV-2"))!.fieldsJson).number);
+        assert.strictEqual((yield* LeadWork.get(scope, { key: number })).key, "INV-2");
+        const lines = (yield* LeadWork.get(scope, { key: "C-1" })).owed?.money.invoices ?? [];
+        assert.isTrue(lines.some((line) => line.startsWith(`${number} (INV-2): `)));
         yield* LeadMoney.payment(scope, {
           sourceEventId: asked,
           key: "INV-2",
@@ -1236,6 +1245,21 @@ describe("invoices", () => {
         [first.received, first.balance, first.state],
         ["₹40,000.00", "₹60,000.00", "waiting"],
       );
+      // The agent recorded it on the owner's message, and the read says so beside the bank.
+      const read = yield* LeadWork.get(scope, { key: "INV-1" });
+      assert.match(read.payments?.[0]?.source ?? "", /^recorded by .+ \(you\) on owner's word$/);
+      assert.deepStrictEqual(read.bank, {
+        knownThrough: null,
+        note: "No bank statement is confirmed, so Kin can't see what reached the bank.",
+      });
+      const stored = yield* (yield* KinRecords.KinRecords).detail(
+        (yield* (yield* KinRecords.KinRecords).get(orgId, "INV-1"))!,
+      );
+      assert.deepStrictEqual(stored.payments?.[0]?.source, {
+        _tag: "person",
+        personId: ownerId,
+        agentId: lead,
+      });
       const over = yield* LeadMoney.payment(scope, {
         sourceEventId: paid,
         key: "INV-1",
@@ -1902,6 +1926,12 @@ describe("the owner's taps", () => {
           .toSorted(),
         ["1000000 TDS", "4000000", "4000000"],
       );
+      // Each is the owner's own tap, and Kin can't see a bank it has no statement of.
+      assert.deepStrictEqual(
+        settled.payments?.map((payment) => payment.source),
+        [1, 2, 3].map(() => ({ _tag: "person" as const, personId: ownerId })),
+      );
+      assert.deepStrictEqual(settled.bankKnown, { through: null });
     }).pipe(Effect.provide(layer)),
   );
 
@@ -2151,8 +2181,8 @@ describe("the owner's taps", () => {
         assert.deepStrictEqual(
           told.dates.filter((one) => one.key === "INV-1").map((one) => [one.what, one.state]),
           [
-            ["Date", "Draft, suggested, not kept yet"],
-            ["Due", "Draft, suggested, not kept yet"],
+            ["Date", "Draft, suggested: waits for the owner or a co-owner to keep it"],
+            ["Due", "Draft, suggested: waits for the owner or a co-owner to keep it"],
           ],
         );
         assert.deepStrictEqual(
@@ -2417,6 +2447,45 @@ describe("the owner's taps", () => {
       assert.deepStrictEqual([loaded.name, loaded.categoryLabels?.tds], ["Key dates", "T DS"]);
     }).pipe(Effect.provide(layer)),
   );
+
+  it.effect("send a screen the first 20 owing clients and a count of the rest", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(5, "The books");
+      const names = Array.from({ length: 22 }, (_, i) => `Invented Client ${i + 1}`);
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: names.map((title) => ({ list: "clients", title })),
+      });
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: names.map((client, i) => ({
+          list: "invoices",
+          title: `Invented invoice ${i + 1}`,
+          client,
+          amount: "10,000",
+          date: "2026-10-01",
+          due: `2026-10-${String(i + 1).padStart(2, "0")}`,
+        })),
+      });
+      const screen = yield* OwnerMoney.money(people, { orgId });
+      const every = yield* OwnerMoney.money(people, { orgId, allClients: true });
+      assert.deepStrictEqual<unknown>(screen.owed, {
+        ...every.owed,
+        byClient: every.owed.byClient.slice(0, 20),
+        byClientMore: 2,
+      });
+      assert.strictEqual(every.owed.byClient.length, 22);
+      assert.notProperty(every.owed, "byClientMore");
+      // A client's own page is sent its line, wherever it falls in the order.
+      const last = every.owed.byClient.at(-1)!.party!;
+      assert.deepStrictEqual(
+        (yield* OwnerMoney.money(people, { orgId, party: last.key })).owed.byClient,
+        [every.owed.byClient.at(-1)],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
 });
 
 describe("who keeps a suggestion", () => {
@@ -2559,7 +2628,7 @@ describe("who keeps a suggestion", () => {
       });
       assert.deepInclude(made.records[0], {
         state: "open",
-        stateLabel: "Draft, suggested, not kept yet",
+        stateLabel: "Draft, suggested: waits for the owner or a co-owner to keep it",
         suggested: true,
       });
       const started = [];
@@ -3599,20 +3668,23 @@ describe("money answers", () => {
   const statement = (
     id: string,
     input: {
-      readonly account: string;
+      readonly account: string | null;
       readonly currency: string;
       readonly to: string;
-      readonly closing: number;
+      readonly closing: number | null;
       readonly from?: string;
       readonly opening?: number;
       readonly bank?: string;
       readonly status?: string;
       readonly standing?: "confirmed" | "unconfirmed" | "undone";
       readonly check?: "adds_up" | "off";
+      /** As a CSV export gives them: no period or balances printed, a running balance per row. */
+      readonly rows?: ReadonlyArray<readonly [string, "credit" | "debit", number, number]>;
     },
   ) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+      const csv = input.rows !== undefined;
       const review = {
         statement: {
           kind: "account",
@@ -3620,10 +3692,19 @@ describe("money answers", () => {
           account: input.account,
           currency: input.currency,
           from: input.from ?? null,
-          to: input.to,
+          to: csv ? null : input.to,
           openingMinor: input.opening ?? null,
           closingMinor: input.closing,
-          rows: [],
+          rows: (input.rows ?? []).map(([date, direction, amountMinor, balanceMinor], index) => ({
+            index,
+            date,
+            description: "Invented row",
+            reference: null,
+            amountMinor,
+            direction,
+            balanceMinor,
+            foreign: null,
+          })),
           check: { status: input.check ?? "adds_up", line: "" },
         },
         format: "csv",
@@ -3775,6 +3856,8 @@ describe("money answers", () => {
         });
         const unconfirmed = cashAnswer(yield* cashPosition(orgId, now));
         assert.isFalse(unconfirmed.known);
+        // A statement read but not confirmed says nothing of how far Kin sees the bank.
+        assert.isNull((yield* cashPosition(orgId, now)).bank.through);
         assert.deepStrictEqual(unconfirmed.notOfRecord, [
           {
             account: "HDFC Bank Account ••1234",
@@ -3917,6 +4000,32 @@ describe("money answers", () => {
           },
         });
         assert.deepStrictEqual(dollars?.estimate?.now, "$2,000.00");
+        // Confirmed bank lines, totals off or not, set how far Kin sees each account; undone,
+        // scanned and unconfirmed reads don't. The company sees as far as its earliest account.
+        const { bank } = yield* cashPosition(orgId, now);
+        assert.deepStrictEqual(
+          bank.accounts.map((one) => [one.label, one.from, one.through]),
+          [
+            ["Account ••7777", "2026-11-09", "2026-11-09"],
+            ["Account ••9876", "2026-10-01", "2026-10-01"],
+            ["HDFC Bank Account ••1234", "2026-10-01", "2026-11-08"],
+          ],
+        );
+        assert.strictEqual(bank.through, "2026-10-01");
+        // Every money answer an agent reads says it beside its figures, each account on cash.
+        yield* turn(9, "How much cash do we have, and what is owed?");
+        const seen = {
+          knownThrough: "2026-10-01",
+          note: "The confirmed bank statements cover every day to 2026-10-01 on the accounts Kin has; Kin can't see the bank after that day.",
+        };
+        const asked = yield* LeadMoney.moneyQuery(scope, { view: "cash" });
+        assert.deepInclude(asked.bank, seen);
+        assert.lengthOf((asked.bank?.accounts ?? []) as ReadonlyArray<unknown>, 3);
+        assert.deepStrictEqual(
+          (yield* LeadMoney.moneyQuery(scope, { view: "outlook" })).bank,
+          seen,
+        );
+        assert.deepStrictEqual((yield* LeadMoney.money(scope, {})).bank, seen);
 
         // A second HDFC ••1234 balance Kin can't link to the first is listed apart, and INR has no
         // total, estimate or runway.
@@ -3948,6 +4057,79 @@ describe("money answers", () => {
           [runway?.currency, runway?.runwayMonths, runway?.cash],
           ["INR", null, undefined],
         );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "read one account's monthly CSV statements as one account, whatever each said of its digits",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* TestClock.setTime(Date.parse("2026-12-06T02:45:00.000Z"));
+        const now = yield* Clock.currentTimeMillis;
+        const october = [
+          ["2026-10-01", "credit", 1_800_00, 1_800_00],
+          ["2026-10-30", "credit", 47_150_00, 48_950_00],
+          ["2026-10-31", "debit", 50_00, 48_900_00],
+        ] as const;
+        const november = [
+          ["2026-11-01", "debit", 100_00, 48_800_00],
+          ["2026-11-30", "debit", 40_00, 48_760_00],
+        ] as const;
+        const december = [
+          ["2026-12-01", "debit", 110_00, 48_650_00],
+          ["2026-12-31", "debit", 60_00, 48_590_00],
+        ] as const;
+        const csv = (
+          id: string,
+          account: string | null,
+          rows: ReadonlyArray<readonly [string, "credit" | "debit", number, number]>,
+        ) => statement(id, { account, currency: "INR", to: rows.at(-1)![0], closing: null, rows });
+        const seen = Effect.gen(function* () {
+          const cash = yield* cashPosition(orgId, now);
+          const answer = cashAnswer(cash);
+          if (!answer.known) return assert.fail(answer.note);
+          return {
+            accounts: answer.accounts.map((one) => [one.account, one.closingBalance, one.on]),
+            apart: answer.accounts.some((one) => one.cannotTellApart === true),
+            total: answer.byCurrency.map((one) =>
+              "totalOfTheseAccounts" in one ? one.totalOfTheseAccounts : null,
+            ),
+            through: cash.bank.through,
+            known: cash.bank.accounts.map((one) => [one.label, one.from, one.through]),
+          };
+        });
+        // October stored before the file's account column was read, November with its digits.
+        yield* csv("st_oct", null, october);
+        yield* csv("st_nov", "1234", november);
+        assert.deepStrictEqual(yield* seen, {
+          accounts: [["Account ••1234", "₹48,760.00", "2026-11-30"]],
+          apart: false,
+          total: ["₹48,760.00"],
+          through: "2026-11-30",
+          known: [["Account ••1234", "2026-10-01", "2026-11-30"]],
+        });
+        // December runs to the 31st on the 6th: Kin sees the bank to today, not past it.
+        yield* csv("st_dec", "1234", december);
+        assert.deepStrictEqual(yield* seen, {
+          accounts: [["Account ••1234", "₹48,590.00", "2026-12-31"]],
+          apart: false,
+          total: ["₹48,590.00"],
+          through: "2026-12-06",
+          known: [["Account ••1234", "2026-10-01", "2026-12-06"]],
+        });
+        // October and December without November: one account with a gap, seen to October's end.
+        yield* sql`DELETE FROM kin_bank_statements`;
+        yield* csv("st_oct", "1234", october);
+        yield* csv("st_dec", "1234", december);
+        assert.deepStrictEqual(yield* seen, {
+          accounts: [["Account ••1234", "₹48,590.00", "2026-12-31"]],
+          apart: false,
+          total: ["₹48,590.00"],
+          through: "2026-10-31",
+          known: [["Account ••1234", "2026-10-01", "2026-10-31"]],
+        });
       }).pipe(Effect.provide(layer)),
   );
 

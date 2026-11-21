@@ -32,7 +32,7 @@ import { Sheet } from "../../../components/ui/Sheet";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import { useKinWorkDirectory } from "../state/useKinWork";
-import { KinWorkTextField } from "./KinWorkPieces";
+import { KinDayField } from "./KinDayField";
 
 /**
  * Away until a day, beside working hours: who is away reads it, whoever may edit the profile sets
@@ -128,6 +128,7 @@ function KinAwaySheet(props: {
     () => profile.awayUntil ?? kinAwayDefault(new Date(), profile.timeZone),
   );
   const [problem, setProblem] = useState<string | null>(null);
+  const [opened] = useState(() => new Date());
   const shown = problem ?? props.problem;
   const submit = () => {
     const wrong = kinAwayProblem(day, new Date(), profile.timeZone);
@@ -141,14 +142,14 @@ function KinAwaySheet(props: {
           {props.mine ? KIN_AWAY.mineHint : KIN_AWAY.theirHint(profile.displayName)}
         </Text>
         <ListSection>
-          <KinWorkTextField
+          <KinDayField
             label={KIN_AWAY.dayLabel}
-            value={day}
-            keyboard="numbers"
-            maxLength={10}
-            placeholder="YYYY-MM-DD"
+            day={day}
+            zone={profile.timeZone ?? null}
+            now={opened}
+            none={null}
             disabled={props.busy}
-            onChangeText={(text) => setDay(text.trim())}
+            onPick={(next) => setDay(next ?? day)}
           />
         </ListSection>
         {shown === null ? null : <ErrorBanner message={shown} />}

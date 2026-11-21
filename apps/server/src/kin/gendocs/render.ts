@@ -163,6 +163,7 @@ type Run =
  * Runs `command` with processor time capped, and, with no systemd scope to hold its memory, its
  * address space too. Each is the host's to refuse: macOS refuses an address-space limit, so there
  * the wall-clock and output caps and the processor-time limit are all that bound a render.
+ * Linux sends SIGKILL at the hard limit, so the soft one sits a second below it to send SIGXCPU.
  */
 export const limitedCommand = (
   command: string,
@@ -172,7 +173,7 @@ export const limitedCommand = (
   command: "/bin/sh",
   args: [
     "-c",
-    `ulimit -t ${limits.cpuSeconds} 2>/dev/null; ${limits.addressSpaceKiB === undefined ? "" : `ulimit -v ${limits.addressSpaceKiB} 2>/dev/null; `}exec "$@"`,
+    `ulimit -c 0 2>/dev/null; ulimit -St ${limits.cpuSeconds} 2>/dev/null; ulimit -Ht ${limits.cpuSeconds + 1} 2>/dev/null; ${limits.addressSpaceKiB === undefined ? "" : `ulimit -v ${limits.addressSpaceKiB} 2>/dev/null; `}exec "$@"`,
     "kin-render",
     command,
     ...args,

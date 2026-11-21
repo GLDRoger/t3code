@@ -188,7 +188,7 @@ function KinDeviceList(props: KinDevicesTarget & { readonly mine: boolean }) {
   if (devices === null) {
     return (
       <p className="text-sm text-muted-foreground">
-        {failed ? "Couldn't load devices." : "Loading…"}
+        {failed ? KIN_DEVICES_COPY.loadFailed : "Loading…"}
       </p>
     );
   }
