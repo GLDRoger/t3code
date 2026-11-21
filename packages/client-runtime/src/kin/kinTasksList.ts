@@ -1,6 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers compare due times with the reader's local day, outside an Effect runtime.
 import {
-  KIN_WORK_MOVE_GROUPS,
+  KIN_WORK_MOVE_PLACES,
   kinWorkMove,
   kinWorkMoveOrder,
   type KinChoiceOption,
@@ -10,6 +10,7 @@ import {
   type KinWorkMoveCard,
   type KinWorkMoveCounts,
   type KinWorkMoveGroup,
+  type KinWorkMovePlace,
   type KinWorkRowMove,
   type KinWorkSummary,
 } from "@t3tools/contracts";
@@ -37,6 +38,9 @@ export const KIN_TASKS = {
     waiting: "Waiting on others",
     rest: "Rest of the team",
   } satisfies Record<KinWorkMoveGroup, string>,
+  /** Your own tasks nothing asks of yet, outside Needs you's count. */
+  noDateGroup: "No date",
+  comingUp: "Coming up",
   yourProjects: "Your projects",
   done: "Done in the last 14 days",
   clearTitle: "Nothing needs you right now",
@@ -415,9 +419,10 @@ export function kinTasksDealFacts(input: {
 }
 
 /**
- * Tasks grouped by whose move: Needs you, Waiting on others, then the rest of the team (a
- * teammate's projects), each in the host's order, headed by the host's counts; then the Done row,
- * and a teammate's note on what they see. Needs you always shows, with the all-clear when empty.
+ * Tasks grouped by whose move: Needs you, then your own with no date, Waiting on others, your own
+ * due past the coming week, then the rest of the team (a teammate's projects), each in the host's
+ * order, headed by the host's counts; then the Done row, and a teammate's note on what they see.
+ * Needs you always shows, with the all-clear when empty.
  */
 export function kinTasksByMove<R extends KinRecord>(input: {
   readonly records: ReadonlyArray<R>;
@@ -437,31 +442,39 @@ export function kinTasksByMove<R extends KinRecord>(input: {
   if (!input.read) return [];
   const facts = input.facts ?? [];
   const fromHost = moves.size > 0 || counts !== null;
-  const placed = new Map<KinWorkMoveGroup, Array<{ record: R; move: KinWorkRowMove | null }>>(
-    KIN_WORK_MOVE_GROUPS.map((group) => [group, []]),
+  const placed = new Map<KinWorkMovePlace, Array<{ record: R; move: KinWorkRowMove | null }>>(
+    KIN_WORK_MOVE_PLACES.map((place) => [place, []]),
   );
   for (const record of records) {
     const move = moves.get(record.key) ?? null;
-    const group = fromHost ? move?.group : moveOfRow(record, names, ownerLevel);
-    if (group === undefined || group === null) continue;
-    placed.get(group)!.push({ record, move });
+    const place = fromHost ? (move?.under ?? move?.group) : moveOfRow(record, names, ownerLevel);
+    if (place === undefined || place === null) continue;
+    placed.get(place)!.push({ record, move });
   }
   if (!fromHost)
     for (const rows of placed.values()) rows.sort((a, b) => byOrder(a.record, b.record));
+  const title = (place: KinWorkMovePlace) =>
+    place === "noDate"
+      ? KIN_TASKS.noDateGroup
+      : place === "comingUp"
+        ? KIN_TASKS.comingUp
+        : place === "rest" && !ownerLevel
+          ? KIN_TASKS.yourProjects
+          : KIN_TASKS.groups[place];
   const items: Array<KinTasksItem<R>> = [];
-  for (const group of KIN_WORK_MOVE_GROUPS) {
-    const rows = placed.get(group)!;
-    const count = group === "needsYou" ? input.needsYou : (counts?.[group] ?? null);
-    if (group !== "needsYou" && rows.length === 0 && (count ?? 0) === 0) continue;
+  for (const place of KIN_WORK_MOVE_PLACES) {
+    const rows = placed.get(place)!;
+    const count = place === "needsYou" ? input.needsYou : (counts?.[place] ?? null);
+    if (place !== "needsYou" && rows.length === 0 && (count ?? 0) === 0) continue;
     items.push({
       type: "heading",
-      key: `group:${group}`,
-      title: group === "rest" && !ownerLevel ? KIN_TASKS.yourProjects : KIN_TASKS.groups[group],
-      count: fromHost || group === "needsYou" ? count : null,
+      key: `group:${place}`,
+      title: title(place),
+      count: fromHost || place === "needsYou" ? count : null,
       aside: null,
       project: null,
     });
-    if (group === "needsYou") {
+    if (place === "needsYou") {
       facts.forEach((row, index) =>
         items.push({
           type: "fact",

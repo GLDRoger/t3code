@@ -7,6 +7,7 @@ import {
   KinPersonId,
   KinRecordId,
   KinWidgetId,
+  kinWorkMoveUnder,
   type KinPulseFact,
   type KinRecord,
   type KinRecordDetail,
@@ -168,6 +169,44 @@ describe("whose move a task is (kinRecordMove, the rule Tasks and the record sha
   });
 });
 
+describe("kinWorkMoveUnder: Needs you holds only the coming week, what is late and what asks you", () => {
+  const at = now.getTime();
+  const inDays = (days: number) => new Date(at + days * 24 * 60 * 60 * 1000).toISOString();
+  const under = (record: KinRecord, extra: { card?: boolean; ownerLevel?: boolean } = {}) =>
+    kinWorkMoveUnder(
+      {
+        state: record.state,
+        owner: record.owner,
+        waitingOn: record.waitingOn,
+        late: record.late,
+        confirmed: record.confirmed,
+        askedBy: null,
+        givenBy: record.givenBy ?? null,
+        card: extra.card ?? false,
+        dueMs: record.dueAt === null ? null : Date.parse(record.dueAt),
+      },
+      { personId: rhea.personId, ownerLevel: extra.ownerLevel ?? true },
+      at,
+    );
+  it.each([
+    ["due in 6 days stays", row("A", { dueAt: inDays(6) }), {}, null],
+    ["due in 32 days is coming up", row("B", { dueAt: inDays(32) }), {}, "comingUp"],
+    ["no date is its own group", row("C"), {}, "noDate"],
+    ["a card waiting on you stays", row("D", { dueAt: inDays(32) }), { card: true }, null],
+    ["late never leaves", row("E", late(inDays(-2))), {}, null],
+    ["a suggestion to keep stays", row("F", { dueAt: inDays(32), confirmed: false }), {}, null],
+    [
+      "waiting on you stays",
+      row("G", { owner: meera, state: "waiting", waitingOn: rhea, dueAt: inDays(32) }),
+      {},
+      null,
+    ],
+    ["someone else's is not moved", row("H", { owner: meera, givenBy: rhea }), {}, null],
+  ] as const)("%s", (_name, record, extra, expected) => {
+    expect(under(record, extra)).toBe(expected);
+  });
+});
+
 describe("kinTasksByMove", () => {
   const groups = (items: ReturnType<typeof kinTasksByMove>) =>
     items.map((item) =>
@@ -252,6 +291,48 @@ describe("kinTasksByMove", () => {
         read: false,
       }),
     ).toEqual([]);
+  });
+
+  it("draws your own undated tasks under Needs you and far-off ones after Waiting, uncounted", () => {
+    const records = [
+      row("L", late("2026-11-15T00:00:00.000Z")),
+      row("N"),
+      row("D", { owner: meera }),
+      row("F", { dueAt: "2026-12-20T00:00:00.000Z" }),
+      row("E", { owner: zoya }),
+    ];
+    const moves = new Map<string, KinWorkRowMove>([
+      ["L", { key: "L", group: "needsYou" }],
+      ["N", { key: "N", group: "needsYou", under: "noDate" }],
+      ["D", { key: "D", group: "waiting" }],
+      ["F", { key: "F", group: "needsYou", under: "comingUp" }],
+      ["E", { key: "E", group: "rest" }],
+    ]);
+    const counts = { needsYou: 1, waiting: 1, rest: 1, doneRecently: 0, noDate: 4, comingUp: 2 };
+    expect(
+      groups(
+        kinTasksByMove({
+          records,
+          moves,
+          counts,
+          needsYou: 1,
+          ownerLevel: true,
+          names,
+          read: true,
+        }),
+      ),
+    ).toEqual([
+      "Needs you 1",
+      "L",
+      "No date 4",
+      "N",
+      "Waiting on others 1",
+      "D",
+      "Coming up 2",
+      "F",
+      "Rest of the team 1",
+      "E",
+    ]);
   });
 
   it("gives a teammate their projects and the line on what they see", () => {

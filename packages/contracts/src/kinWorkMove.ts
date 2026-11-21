@@ -1,5 +1,10 @@
 import type { KinPersonId } from "./kinChat.ts";
-import type { KinRecordState, KinWorkMoveGroup, KinWorkPrincipal } from "./kinWork.ts";
+import type {
+  KinRecordState,
+  KinWorkMoveGroup,
+  KinWorkMoveUnder,
+  KinWorkPrincipal,
+} from "./kinWork.ts";
 
 /** What decides whose move an open task is, read the same from a list row or a record. */
 export interface KinWorkMoveFacts {
@@ -39,6 +44,27 @@ export function kinWorkMove(
   return "rest";
 }
 
+/** How far ahead a dated task of the reader's still counts in Needs you. */
+export const KIN_WORK_SOON_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * A Needs you task drawn outside its count: one the reader holds that nothing asks of them yet
+ * and isn't late, undated or due past the coming week. A card, a suggestion to keep, a wait on
+ * them and anything late always count.
+ */
+export function kinWorkMoveUnder(
+  task: KinWorkMoveFacts & { readonly dueMs: number | null },
+  reader: { readonly personId: KinPersonId; readonly ownerLevel: boolean },
+  at: number,
+): KinWorkMoveUnder | null {
+  if (task.card || task.late || kinWorkMove(task, reader) !== "needsYou") return null;
+  if (!task.confirmed && reader.ownerLevel) return null;
+  if (task.state === "waiting" && isPerson(task.waitingOn, reader.personId)) return null;
+  if (!isPerson(task.owner, reader.personId)) return null;
+  if (task.dueMs === null) return "noDate";
+  return task.dueMs - at > KIN_WORK_SOON_MS ? "comingUp" : null;
+}
+
 /** Inside a group: late first, then soonest due, then no date; then oldest, then key. */
 export function kinWorkMoveOrder(
   a: {
@@ -67,5 +93,15 @@ export function kinWorkMoveOrder(
 export const KIN_WORK_MOVE_GROUPS: ReadonlyArray<KinWorkMoveGroup> = [
   "needsYou",
   "waiting",
+  "rest",
+];
+
+/** Where a `byMove` row is drawn, in Tasks' order: its `under` when it has one, else its group. */
+export type KinWorkMovePlace = KinWorkMoveGroup | KinWorkMoveUnder;
+export const KIN_WORK_MOVE_PLACES: ReadonlyArray<KinWorkMovePlace> = [
+  "needsYou",
+  "noDate",
+  "waiting",
+  "comingUp",
   "rest",
 ];

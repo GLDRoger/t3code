@@ -1,7 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 import {
-  KIN_WORK_MOVE_GROUPS,
+  KIN_WORK_MOVE_PLACES,
   KinAgentId,
   KinChatError,
   KinMessageId,
@@ -14,6 +14,8 @@ import {
   type KinWorkRowMove,
   kinWorkMove,
   kinWorkMoveOrder,
+  kinWorkMoveUnder,
+  type KinWorkMoveUnder,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -110,30 +112,31 @@ export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
   const filter: QueryInput = { ...rest, open: true, at };
   const light = yield* records.moveRows(orgId, filter);
   const cards = yield* waitingCards(orgId, personId, light).pipe(workFailure);
+  const reader = { personId, ownerLevel: input.ownerLevel };
   const placed = light.flatMap((row) => {
     const late = row.dueAt !== null && row.dueAt < at;
-    const group = kinWorkMove(
-      {
-        state: row.state,
-        owner: principalOf(row.ownerKind, row.ownerId),
-        waitingOn:
-          row.waitingOnKind === null || row.waitingOnId === null
-            ? null
-            : principalOf(row.waitingOnKind, row.waitingOnId),
-        late,
-        confirmed: row.confirmed === 1,
-        askedBy: row.askedBy === null ? null : KinPersonId.make(row.askedBy),
-        givenBy: givenOf(row),
-        card: cards.has(row.recordId),
-      },
-      { personId, ownerLevel: input.ownerLevel },
-    );
+    const facts = {
+      state: row.state,
+      owner: principalOf(row.ownerKind, row.ownerId),
+      waitingOn:
+        row.waitingOnKind === null || row.waitingOnId === null
+          ? null
+          : principalOf(row.waitingOnKind, row.waitingOnId),
+      late,
+      confirmed: row.confirmed === 1,
+      askedBy: row.askedBy === null ? null : KinPersonId.make(row.askedBy),
+      givenBy: givenOf(row),
+      card: cards.has(row.recordId),
+    };
+    const group = kinWorkMove(facts, reader);
+    const under = kinWorkMoveUnder({ ...facts, dueMs: row.dueAt }, reader, at);
     return group === null
       ? []
-      : [{ row, group, late, dueMs: row.dueAt, createdMs: row.createdAt, key: row.key }];
+      : [{ row, group, under, late, dueMs: row.dueAt, createdMs: row.createdAt, key: row.key }];
   });
-  const rank = (group: KinWorkMoveGroup) => KIN_WORK_MOVE_GROUPS.indexOf(group);
-  placed.sort((a, b) => rank(a.group) - rank(b.group) || kinWorkMoveOrder(a, b));
+  const rank = (one: { group: KinWorkMoveGroup; under: KinWorkMoveUnder | null }) =>
+    KIN_WORK_MOVE_PLACES.indexOf(one.under ?? one.group);
+  placed.sort((a, b) => rank(a) - rank(b) || kinWorkMoveOrder(a, b));
   const page = placed.slice(input.offset, input.offset + input.limit);
   const done = yield* records.query(orgId, {
     ...rest,
@@ -143,10 +146,12 @@ export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
     limit: 1,
   });
   const counts: KinWorkMoveCounts = {
-    needsYou: placed.filter((one) => one.group === "needsYou").length,
+    needsYou: placed.filter((one) => one.group === "needsYou" && one.under === null).length,
     waiting: placed.filter((one) => one.group === "waiting").length,
     rest: placed.filter((one) => one.group === "rest").length,
     doneRecently: done.total,
+    noDate: placed.filter((one) => one.under === "noDate").length,
+    comingUp: placed.filter((one) => one.under === "comingUp").length,
   };
   const full =
     page.length === 0
@@ -229,6 +234,7 @@ export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
         ? {}
         : { handedBackNote: note.trim() as KinWorkRowMove["said"] }),
       ...(askedBy === undefined ? {} : { askedBy }),
+      ...(one.under === null ? {} : { under: one.under }),
     };
   });
   return {

@@ -447,7 +447,10 @@ it.effect("a mail waiting to be confirmed about an entry shows on the sheet of w
       options: [],
     } as never);
     const hers = yield* OwnerWork.list([zoya], { orgId, byMove: true });
-    assert.deepStrictEqual(hers.moves, [{ key: made.key, group: "needsYou" }] as never);
+    // Hers has no date and no card: drawn under No date, outside Needs you's count.
+    assert.deepStrictEqual(hers.moves, [
+      { key: made.key, group: "needsYou", under: "noDate" },
+    ] as never);
     // Words a person saved on the card are what its Confirm sends, so the row names those.
     const edited = {
       question: "Send this email?",
@@ -491,7 +494,11 @@ it.effect(
       yield* seed;
       yield* TestClock.setTime(Date.parse("2026-11-11T12:00:00.000Z"));
       const toZoya = { owner: { _tag: "person" as const, personId: zoyaId } };
+      // Due past the coming week, or with no date: drawn outside Needs you and its count.
       const later = yield* task("order the banners", { dueAt: "2026-11-20T00:00:00.000Z" });
+      const farOff = yield* task("book the stall", { dueAt: "2026-12-13T12:00:00.000Z" });
+      const undated = yield* task("sort the receipts");
+      const soon = yield* task("pay the printer", { dueAt: "2026-11-17T12:00:00.000Z" });
       const late = yield* task("sign the lease", { dueAt: "2026-11-10T00:00:00.000Z" });
       const waits = yield* task("draft the brochure", {
         ...toZoya,
@@ -513,34 +520,62 @@ it.effect(
         OwnerWork.list([who], {
           orgId,
           byMove: true,
-          limit: 2,
+          limit: 3,
           ...(cursor === undefined ? {} : { cursor }),
         });
       const first = yield* page(rhea);
-      assert.deepStrictEqual(first.counts, { needsYou: 3, waiting: 1, rest: 1, doneRecently: 1 });
-      assert.strictEqual(first.total, 5);
+      assert.deepStrictEqual(first.counts, {
+        needsYou: 3,
+        waiting: 1,
+        rest: 1,
+        doneRecently: 1,
+        noDate: 1,
+        comingUp: 2,
+      });
+      assert.strictEqual(first.total, 8);
       const second = yield* page(rhea, first.nextCursor!);
       const third = yield* page(rhea, second.nextCursor!);
       assert.isNull(third.nextCursor);
       assert.deepStrictEqual(
-        [...first.moves!, ...second.moves!, ...third.moves!].map((one) => [one.key, one.group]),
+        [...first.moves!, ...second.moves!, ...third.moves!].map((one) => [
+          one.key,
+          one.group,
+          one.under ?? null,
+        ]),
         [
-          [lateHers.key, "needsYou"],
-          [late.key, "needsYou"],
-          [later.key, "needsYou"],
-          [waits.key, "waiting"],
-          [hersAlone.key, "rest"],
+          [lateHers.key, "needsYou", null],
+          [late.key, "needsYou", null],
+          [soon.key, "needsYou", null],
+          [undated.key, "needsYou", "noDate"],
+          [waits.key, "waiting", null],
+          [later.key, "needsYou", "comingUp"],
+          [farOff.key, "needsYou", "comingUp"],
+          [hersAlone.key, "rest", null],
         ],
       );
       assert.deepStrictEqual(
         first.records.map((one) => one.key),
-        [lateHers.key, late.key],
+        [lateHers.key, late.key, soon.key],
       );
       // Zoya counts only what she sees; Arjun sees none of it and is given no step for any of it.
       const zoyas = yield* page(zoya);
-      assert.deepStrictEqual(zoyas.counts, { needsYou: 3, waiting: 0, rest: 0, doneRecently: 0 });
+      assert.deepStrictEqual(zoyas.counts, {
+        needsYou: 1,
+        waiting: 0,
+        rest: 0,
+        doneRecently: 0,
+        noDate: 1,
+        comingUp: 1,
+      });
       const arjuns = yield* page(arjun);
-      assert.deepStrictEqual(arjuns.counts, { needsYou: 0, waiting: 0, rest: 0, doneRecently: 0 });
+      assert.deepStrictEqual(arjuns.counts, {
+        needsYou: 0,
+        waiting: 0,
+        rest: 0,
+        doneRecently: 0,
+        noDate: 0,
+        comingUp: 0,
+      });
       assert.deepStrictEqual(arjuns.moves, []);
     }).pipe(Effect.provide(layer)),
 );
