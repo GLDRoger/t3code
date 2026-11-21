@@ -1,8 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { KIN_INVOICES, kinConfirmTotal } from "@t3tools/client-runtime/kin/kinInvoices";
 import { KIN_BANK, KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
+import { kinWorkReadUnreachable } from "@t3tools/client-runtime/kin/kinWorkForms";
+import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import {
   KIN_BUDGETS,
   KIN_CASH,
@@ -73,6 +76,7 @@ import {
   useKinInvoiceFromQuote,
   useKinOutlook,
 } from "./state/useKinMoneyAnswers";
+import { useKinHostAt } from "./state/useKinHost";
 import { useKinWorkChoices, type KinWorkTarget } from "./state/useKinWork";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
@@ -164,7 +168,9 @@ export function KinCashSection(props: Section) {
   const agent = useKinAskAgent(props, "money");
   const [why, setWhy] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
+  const link = kinHostLink(useKinHostAt(props.environmentId));
   if (state._tag === "refused" || state._tag === "gone") return null;
+  if (kinWorkReadUnreachable(state, link)) return null;
   const view = state._tag === "ready" ? kinCashView(state.value, props.rates, now) : null;
   return (
     <ListSection title={KIN_CASH.title}>
@@ -311,7 +317,9 @@ export function KinOutlookSection(props: Section) {
   const open = useOpenEntry(props);
   const { state, refresh } = useKinOutlook(props, true);
   const [all, setAll] = useState(false);
+  const link = kinHostLink(useKinHostAt(props.environmentId));
   if (state._tag === "refused" || state._tag === "gone") return null;
+  if (kinWorkReadUnreachable(state, link)) return null;
   const view = state._tag === "ready" ? kinOutlookView(state.value, props.rates, now) : null;
   const longer = view !== null && view.incoming.length + view.outgoing.length > 0;
   return (
@@ -404,7 +412,9 @@ function QuotesPeek(props: Section) {
   const now = new Date(useNowMinuteMs());
   const open = useOpenEntry(props);
   const { state } = useKinListEntries(props, KIN_QUOTES_LIST, OPEN_QUOTES, props.seq);
+  const link = kinHostLink(useKinHostAt(props.environmentId));
   const rows = state.records.map((record) => kinQuoteRow(record, props.rates, now));
+  if (kinListShown(state, link) === "offline") return null;
   return (
     <KinFoldSection
       title={KIN_QUOTES.title}
@@ -515,7 +525,9 @@ export function KinBudgetsSection(
   const canChange = useAtomValue(kinClient.workSetBudget.permissionAtom(props.environmentId));
   const [all, setAll] = useState(false);
   const expenses = props.lists.find((one) => one.list === "expenses") ?? null;
+  const link = kinHostLink(useKinHostAt(props.environmentId));
   if (state._tag === "refused" || state._tag === "gone") return null;
+  if (kinWorkReadUnreachable(state, link)) return null;
   const views = state._tag === "ready" ? kinBudgetsView(state.value, expenses, props.rates) : [];
   // Absent with none set: Money's Add sets the first one.
   if (state._tag === "ready" && views.length === 0) return null;

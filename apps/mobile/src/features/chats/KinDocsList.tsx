@@ -39,6 +39,9 @@ import {
   kinPlaceLists,
   kinWorkAskDraft,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
+import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinDocListRow, KinRecordKey } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
@@ -71,6 +74,7 @@ import {
 import { useKinAskAgent, useKinLists } from "./state/useKinMoney";
 import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
+import { useKinHostAt } from "./state/useKinHost";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
@@ -443,6 +447,7 @@ export function KinDocsList(
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
   const scope = useKinViewerScope(environmentId);
   const { filter } = state;
+  const shown = kinListShown(state, kinHostLink(useKinHostAt(environmentId)));
   const lists = useKinLists(props, {
     enabled: true,
     archived: filter.archived,
@@ -470,7 +475,7 @@ export function KinDocsList(
   const pin = pinShown ? (pinned ?? null) : null;
   const library = kinDocLibrary(state.records, pin);
   const whatWeSell: ReadonlyArray<Item> =
-    !refused && pinShown && pinned === null && starter !== null
+    !refused && shown === "rows" && pinShown && pinned === null && starter !== null
       ? [{ type: "whatWeSell", id: "what-we-sell" }]
       : [];
   const shownLists = allLists ? listRows : listRows.slice(0, LISTS_FOLDED);
@@ -666,7 +671,7 @@ export function KinDocsList(
           ListHeaderComponent={
             refused ? null : (
               <View className="gap-2 pt-2">
-                {props.stale || state.stale ? (
+                {shown === "rows" && (props.stale || state.stale) ? (
                   <View className="px-4">
                     <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
                   </View>
@@ -707,9 +712,11 @@ export function KinDocsList(
             <View className="pt-4">
               {refused ? (
                 <EmptyState variant="plain" {...KIN_DOCS.unavailable} />
-              ) : state.loading ? (
+              ) : shown === "offline" ? (
+                <EmptyState variant="plain" {...kinWorkOffline("docs")} />
+              ) : shown === "loading" ? (
                 <KinWorkLoading label={KIN_DOCS.loading} />
-              ) : state.failed !== null ? (
+              ) : shown === "failed" ? (
                 <KinLoadFailed
                   title={KIN_DOCS.loadFailed}
                   cause={state.failed}
@@ -729,9 +736,13 @@ export function KinDocsList(
           }
           ListFooterComponent={
             <>
-              {!docsPending ? null : state.loading ? (
+              {!docsPending ? null : shown === "offline" ? (
+                <View className="px-4 pt-4">
+                  <EmptyState variant="plain" {...kinWorkOffline("docs")} />
+                </View>
+              ) : shown === "loading" ? (
                 <KinWorkLoading label={KIN_DOCS.loading} />
-              ) : state.failed !== null ? (
+              ) : shown === "failed" ? (
                 <View className="px-4 pt-4">
                   <Notice
                     tone="danger"

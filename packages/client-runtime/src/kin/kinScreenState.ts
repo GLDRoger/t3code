@@ -29,7 +29,8 @@ export type KinInboxScreenState =
   | { readonly _tag: "loading" }
   /** A connection to the saved host failed or was lost, and nothing is cached yet. */
   | { readonly _tag: "offline" }
-  | { readonly _tag: "noHost" }
+  /** `unreachable`: computers are saved here but none answers, as after signing out of the live one. */
+  | { readonly _tag: "noHost"; readonly unreachable?: true }
   | { readonly _tag: "unauthorized" }
   /** The host runs Kin but maps this session to no person. */
   | { readonly _tag: "noIdentity" }
@@ -61,7 +62,8 @@ export function kinInboxScreenState(
   inbox: AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null,
 ): KinInboxScreenState {
   if (host._tag === "searching") return { _tag: "loading" };
-  if (host._tag === "none") return { _tag: "noHost" };
+  if (host._tag === "none")
+    return host.unreachable === true ? { _tag: "noHost", unreachable: true } : { _tag: "noHost" };
   if (host.probe._tag === "unauthorized") return { _tag: "unauthorized" };
   if (host.probe._tag === "noIdentity") return { _tag: "noIdentity" };
   if (host.probe._tag === "error" && !host.probe.transient) {

@@ -25,8 +25,11 @@ import {
   type KinProjectsFilter,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinWorkHome";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
+  kinWorkOffline,
   kinWorkPrincipalKey,
   kinWorkSamePrincipal,
   type KinWorkNames,
@@ -60,6 +63,7 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { useKinHostAt } from "./state/useKinHost";
 import { KinDealsView } from "./KinDealsList";
 import { useKinExportList, useKinMarketing } from "./KinMarketing";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
@@ -192,6 +196,7 @@ function NamedList(props: {
   readonly items: ReadonlyArray<ListItem>;
   readonly shown: number;
   readonly state: {
+    readonly seq: number | null;
     readonly loading: boolean;
     readonly failed: unknown;
     readonly more: boolean;
@@ -215,6 +220,7 @@ function NamedList(props: {
   const navigation = useNavigation();
   const tab = useKinTab();
   const { state, list, add, items } = props;
+  const shown = kinListShown(state, kinHostLink(useKinHostAt(props.environmentId)));
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
@@ -261,16 +267,18 @@ function NamedList(props: {
           ListHeaderComponent={
             <View className="gap-2 px-4 pt-2">
               {props.header}
-              {props.stale ? (
+              {shown === "rows" && props.stale ? (
                 <KinWorkStaleNotice environmentId={props.environmentId} onRetry={list.refresh} />
               ) : null}
             </View>
           }
           ListEmptyComponent={
             <View className="px-4 pt-4">
-              {state.loading ? (
+              {shown === "offline" ? (
+                <EmptyState variant="plain" {...kinWorkOffline("clients")} />
+              ) : shown === "loading" ? (
                 <KinWorkLoading label={props.loading} />
-              ) : state.failed !== null ? (
+              ) : shown === "failed" ? (
                 <KinLoadFailed
                   title={props.loadFailed}
                   cause={state.failed}

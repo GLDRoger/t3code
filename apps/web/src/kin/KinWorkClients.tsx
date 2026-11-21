@@ -7,11 +7,14 @@ import {
 import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   kinWorkDraftFor,
+  kinWorkOffline,
   kinWorkPrincipalKey,
   type KinWorkDraft,
   type KinWorkRef,
   type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import { kinWorkApplied, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
   KIN_CLIENTS,
@@ -96,7 +99,7 @@ import { KinWorkRow } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { KinClientDeals } from "./KinDeals";
 import { useNowMinuteMs } from "./useKinClock";
-import { kinHostConnected } from "./useKinHost";
+import { kinHostConnected, useKinHostAt } from "./useKinHost";
 import {
   useKinClientPage,
   useKinClientsList,
@@ -139,6 +142,7 @@ export function KinWorkClientsList(
   );
   const marketing = useKinMarketing(props);
   const { filter } = state;
+  const listShown = kinListShown(state, kinHostLink(useKinHostAt(props.environmentId)));
   const nothing = kinClientsNothing(filter, scope, names.me);
   const mine =
     filter.lookedAfter !== "anyone" &&
@@ -184,7 +188,7 @@ export function KinWorkClientsList(
       onEndReachedThreshold={0.5}
       ListHeaderComponent={
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
-          {props.stale || state.stale ? (
+          {listShown === "rows" && (props.stale || state.stale) ? (
             <KinWorkStaleLine environmentId={props.environmentId} onRetry={list.refresh} />
           ) : null}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -276,11 +280,13 @@ export function KinWorkClientsList(
       }
       ListEmptyComponent={
         <div className="mx-auto w-full max-w-3xl px-4">
-          {state.loading ? (
+          {listShown === "offline" ? (
+            <KinWorkNotice {...kinWorkOffline("clients")} />
+          ) : listShown === "loading" ? (
             <div role="status" aria-label="Loading clients">
               <KinWorkRowSkeletons />
             </div>
-          ) : state.failed !== null ? (
+          ) : listShown === "failed" ? (
             <KinLoadFailed
               what={KIN_CLIENTS.loadFailed}
               cause={state.failed}
@@ -410,6 +416,7 @@ export function KinWorkProjectsTab(
   const scope = useKinViewerScope(props.environmentId);
   const { state, list } = useKinProjectsList(props, props.stale ? null : props.live.seq);
   const { filter } = state;
+  const listShown = kinListShown(state, kinHostLink(useKinHostAt(props.environmentId)));
   const items = kinProjectsByClient(state.records, props.directory.names, now).flatMap(
     (group): ReadonlyArray<ProjectsItem> => [
       { type: "group", id: `group:${group.id}`, title: group.title, party: group.party },
@@ -430,7 +437,7 @@ export function KinWorkProjectsTab(
       onEndReachedThreshold={0.5}
       ListHeaderComponent={
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
-          {props.stale || state.stale ? (
+          {listShown === "rows" && (props.stale || state.stale) ? (
             <KinWorkStaleLine environmentId={props.environmentId} onRetry={list.refresh} />
           ) : null}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -463,11 +470,13 @@ export function KinWorkProjectsTab(
       }
       ListEmptyComponent={
         <div className="mx-auto w-full max-w-3xl px-4">
-          {state.loading ? (
+          {listShown === "offline" ? (
+            <KinWorkNotice {...kinWorkOffline("clients")} />
+          ) : listShown === "loading" ? (
             <div role="status" aria-label="Loading projects">
               <KinWorkRowSkeletons />
             </div>
-          ) : state.failed !== null ? (
+          ) : listShown === "failed" ? (
             <KinLoadFailed
               what={KIN_PROJECTS.loadFailed}
               cause={state.failed}

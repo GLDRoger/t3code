@@ -1,3 +1,6 @@
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
+import { kinWorkReadUnreachable } from "@t3tools/client-runtime/kin/kinWorkForms";
 import {
   kinNothingOwed,
   kinNothingShown,
@@ -69,6 +72,7 @@ import {
   useKinMoneySummary,
   useKinRates,
 } from "./state/useKinMoney";
+import { useKinHostAt } from "./state/useKinHost";
 import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinChart } from "./widgets/KinChart";
 import { KinLoadFailed } from "./components/KinLoadFailed";
@@ -416,6 +420,7 @@ export function KinMoneyArea(props: Shared) {
   const reach = useKinPlaceReach(props.environmentId);
   const scopeNote = kinScopeNote("money", scope);
   const { state } = money;
+  const link = kinHostLink(useKinHostAt(props.environmentId));
   const frame = {
     target,
     stale: props.stale,
@@ -470,9 +475,12 @@ export function KinMoneyArea(props: Shared) {
     );
   }
   if (state._tag !== "ready") {
+    const unreachable = kinWorkReadUnreachable(state, link);
     return (
-      <AreaFrame {...frame}>
-        {state._tag === "loading" ? (
+      <AreaFrame {...frame} stale={props.stale && !unreachable}>
+        {unreachable ? (
+          <EmptyState variant="plain" {...kinWorkOffline("money")} />
+        ) : state._tag === "loading" ? (
           <KinWorkLoading label="Loading Money" />
         ) : state._tag === "refused" ? (
           <EmptyState variant="plain" {...KIN_MONEY.onlyOwner} />
