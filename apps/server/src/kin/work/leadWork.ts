@@ -1692,6 +1692,13 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
   const projectId =
     input.project === undefined ? undefined : yield* resolveRef(lead, input.project, "projects");
   const zone = yield* ownerZone(lead.orgId);
+  // A directory lists what is current, as the owner's screens do; tasks and money keep closed rows.
+  const openOnly =
+    input.states === undefined &&
+    input.open === undefined &&
+    input.keys === undefined &&
+    list !== undefined &&
+    DIRECTORIES.has(list.builtIn);
   const filter = {
     ...(list === undefined ? {} : { list: list.id }),
     ...(partyId === undefined ? {} : { partyId }),
@@ -1701,6 +1708,7 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
     ...(owner === undefined ? {} : { owner }),
     ...(input.states === undefined ? {} : { states: input.states }),
     ...(input.open === undefined ? {} : { open: input.open }),
+    ...(openOnly ? { open: true } : {}),
     ...(input.late === undefined ? {} : { late: input.late }),
     ...(dueBy === undefined ? {} : { dueBy }),
     ...(input.dateFrom === undefined
@@ -1764,6 +1772,7 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
 export const query = leadTool("KinWorkTools.query", runQuery);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DIRECTORIES = new Set<string | null>(["clients", "contacts", "projects"]);
 const TOTALS_BY: Record<NonNullable<typeof QueryInput.Type.groupBy>, TotalsBy> = {
   client: "party",
   project: "project",
@@ -2056,12 +2065,20 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             partyId: row.recordId,
             limit: 50,
           })).rows.map((contact) => rowFor(view, contact, now)),
-          projects: page.projects.map((one) => ({
-            key: one.key,
-            title: one.name,
-            health: one.health,
-            ...(one.sensitive || one.sensitiveInherited ? { sensitive: true as const } : {}),
-          })),
+          projects: page.projects.flatMap((one) =>
+            one.state === "dropped"
+              ? []
+              : [
+                  {
+                    key: one.key,
+                    title: one.name,
+                    health: one.health,
+                    ...(one.sensitive || one.sensitiveInherited
+                      ? { sensitive: true as const }
+                      : {}),
+                  },
+                ],
+          ),
         }),
     ...(project === undefined
       ? {}
