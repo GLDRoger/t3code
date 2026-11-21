@@ -1210,7 +1210,7 @@ export function KinDealNewDialog(
       onSave={() => void save()}
       onClose={props.onClose}
       typed={
-        party?.key !== props.party?.key ||
+        (party === null ? null : party.key) !== (props.party === null ? null : props.party.key) ||
         [title, value, expected, source, step, stepDay].some((typed) => typed.trim() !== "") ||
         picked !== null ||
         owner !== ME ||

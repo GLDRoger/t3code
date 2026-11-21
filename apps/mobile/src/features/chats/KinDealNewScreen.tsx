@@ -97,8 +97,10 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
   const stepHint = kinDealStepHint(step, noneYet);
   const canSave = party !== null && title.trim() !== "" && !moneyBad && stepHint === undefined;
   const people = [...names.people.entries()].filter(([id]) => id !== names.me);
+  const partyKey = party === null ? null : party.key;
+  const startKey = props.party === null ? null : props.party.key;
   const leave = useKinAskBeforeDiscard(
-    party?.key !== props.party?.key ||
+    partyKey !== startKey ||
       [title, value, source, step].some((typed) => typed.trim() !== "") ||
       expected !== null ||
       picked !== null ||
