@@ -105,6 +105,11 @@ describe("the Money summary", () => {
     ]);
     expect(view.months[0]).toMatchObject({ month: "2026-11", received: "₹40,000 and $1" });
     expect(kinMoneyView(summary, []).owed.open).toBeNull();
+    // Owing clients past those sent are one row, which loads them.
+    expect(view.clientsMore).toBeNull();
+    expect(
+      kinMoneyView({ ...summary, owed: { ...summary.owed, byClientMore: 12 } }, []).clientsMore,
+    ).toBe("12 more clients");
     // TDS stands on its own, never inside Received.
     expect([view.tdsDeducted, view.yearTdsDeducted]).toEqual([null, null]);
     const withTds = kinMoneyView(
@@ -262,6 +267,14 @@ describe("company details", () => {
     expect(fields(kinCompanyEditSections(uk, ukDraft))).not.toContain("gstin");
     expect(fields(kinCompanyEditSections(uk, ukDraft))).toContain("taxRate");
     for (const id of india) expect(fields(kinCompanyEditSections(uk, ukDraft))).not.toContain(id);
+    // The LUT's day reads as a day, as it does everywhere else, and is still edited as stored.
+    const filed = { ...(profile as object), lutDate: "2026-04-01" } as never;
+    expect(
+      kinCompanyRead(filed)
+        .flatMap((one) => one.rows)
+        .find((row) => row.id === "lutDate")?.value,
+    ).toBe("Apr 1, 2026");
+    expect(kinCompanyDraftOf(filed).lutDate).toBe("2026-04-01");
     // An IFSC kept from before shows only while the company is in India.
     expect(kinCompanyRead(uk).flatMap((one) => one.rows.map((row) => row.id))).not.toContain(
       "ifsc",

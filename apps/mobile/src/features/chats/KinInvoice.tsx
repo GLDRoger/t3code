@@ -1010,7 +1010,7 @@ function ApplyReceipt(
         <KinWorkLoading label="Loading invoices" />
       ) : invoices === null ? (
         <KinLoadFailed
-          title="Couldn't load invoices"
+          title={KIN_INVOICES.loadFailed}
           cause={held?.cause}
           onRetry={() => setAttempt((count) => count + 1)}
         />

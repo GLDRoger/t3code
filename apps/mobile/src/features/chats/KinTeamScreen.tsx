@@ -1,5 +1,6 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  KIN_TEAM_COPY,
   KIN_TEAM_ADD,
   KIN_TEAM_EMPTY,
   KIN_TEAM_LOAD_FAILED,
@@ -33,6 +34,7 @@ import { useKinOpenCounts } from "./state/useKinProfiles";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { KinGateView } from "./components/KinWorkPieces";
+import { KinReachListSection } from "./KinReachSections";
 
 export type KinTeamParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -134,7 +136,7 @@ function KinTeamBody(target: KinTeamTarget) {
                 className="items-center py-12"
                 accessible
                 accessibilityRole="progressbar"
-                accessibilityLabel="Loading your team"
+                accessibilityLabel={KIN_TEAM_COPY.loading}
               >
                 <AppActivityIndicator />
               </View>
@@ -176,6 +178,7 @@ function KinTeamBody(target: KinTeamTarget) {
                   <ListActionRow label={KIN_TEAM_ADD} icon="plus" onPress={add} />
                 </View>
               </ListSection>
+              <KinReachListSection environmentId={environmentId} orgId={orgId} />
             </>
           )}
         </ScreenScrollView>

@@ -31,7 +31,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -56,43 +55,6 @@ import { buildCodexAdditionalContext } from "../../apps/server/src/provider/Code
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
 import {
-  groupRules as kinGroupRules,
-  instructions as kinLeadInstructions,
-  teamRules as kinTeamRules,
-} from "../../apps/server/src/kin/lead/instructions.ts";
-import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
-import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
-import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
-import { KIN_DEFERRED_TOOLS } from "../../apps/server/src/kin/lead/deferredTools.ts";
-import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
-import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
-import { KinStatementToolkit } from "../../apps/server/src/kin/work/mcp/statementTools.ts";
-import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
-import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
-import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
-import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
-import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
-import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
-import { KinPulseToolkit } from "../../apps/server/src/kin/pulse/mcp.ts";
-import {
-  MONEY_RULE,
-  WITHDRAWN_WORK,
-  WORK_RULE,
-} from "../../apps/server/src/kin/work/workPrompt.ts";
-import {
-  githubTriggerEvent,
-  HANDED_BACK_WORK,
-  REPLY_SHAPE,
-  SHARED_TURN_LINE,
-} from "../../apps/server/src/kin/lead/LeadPrompt.ts";
-import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
-import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
-import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
-import { DECLINED_RULE } from "../../apps/server/src/kin/lead/declinedSection.ts";
-import { UNDO_RULE } from "../../apps/server/src/kin/lead/undoSection.ts";
-import { defaultCharacterFor } from "../../apps/server/src/kin/lead/characterDefaults.ts";
-import { characterForTurn, colleagueLine } from "../../apps/server/src/kin/lead/characters.ts";
-import {
   CaseMargin,
   caseState,
   type Check,
@@ -103,18 +65,25 @@ import {
 } from "./margin.ts";
 import { needsTopUp, refusals, RunManifest, tallies, tally } from "./gate.ts";
 import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
-import { type AppServer, type AppServerEvent, openAppServer } from "./appServer.ts";
+import { type AppServer, openAppServer } from "./appServer.ts";
 import {
-  CONFINED_CONFIG,
-  FULL_SESSION_CONFIG,
-} from "../../apps/server/src/kin/lead/turn/providers/codex.ts";
-import {
-  CAPTION_PROMPT,
-  classifySegment,
-  repeats,
-  RESCUE_PROMPT,
-} from "../../apps/server/src/kin/reply/classify.ts";
-import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
+  fillKinRules,
+  filledEvent,
+  KIN_TOOLKITS,
+  kinLeadBase,
+  kinLeadInstructions,
+  kinLoadedBefore,
+  type KinSeatOptions,
+  kinSessionOf,
+  kinToolVisible,
+  rescuePrompt,
+  shownText,
+  unredact,
+} from "./kin.ts";
+import { runAppServerSample } from "./kinAppServer.ts";
+// What kinAppServer.ts runs a sample with.
+export { EvalToolCallError, settle };
+export type { ApiMessage, Base, Call, Config as RunConfig, Sample, Usage };
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
 import { EnvironmentToolkit } from "../../apps/server/src/mcp/toolkits/environment/tools.ts";
@@ -213,7 +182,10 @@ const IDENTITY =
 const NEUTRAL_IDENTITY = "You are an AI coding agent running in the user's terminal.";
 
 type Block = { readonly type: string; readonly [key: string]: unknown };
-type ApiMessage = { readonly role: "user" | "assistant"; readonly content: ReadonlyArray<Block> };
+type ApiMessage = {
+  readonly role: "user" | "assistant";
+  readonly content: ReadonlyArray<Block>;
+};
 type ApiTool = { readonly name: string; readonly [key: string]: unknown };
 type Usage = Record<keyof (typeof PRICES)[PricedModel], number>;
 type Call = {
@@ -440,6 +412,7 @@ export const McpToolUseCase = Schema.Struct({
   notes: Schema.optional(Schema.String),
 });
 export type McpToolUseCase = typeof McpToolUseCase.Type;
+
 const AnyBlock = Schema.StructWithRest(
   Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) }),
   Rest,
@@ -519,50 +492,12 @@ const CODEX_NAMES: Readonly<Record<string, string>> = {
   write_stdin: "write_stdin",
   web__run: "WebFetch",
 };
-/** What follows a text block, as Kin's bridge reads it (`classifySegment`). */
-const nextAfter = (blocks: ReadonlyArray<unknown>, index: number) => {
-  const following = blocks.slice(index + 1).find((next) => isText(next) || isToolUse(next));
-  return following === undefined ? "end" : isText(following) ? "text" : "tool";
-};
-/**
- * The text a chat shows from a turn's responses: every text block, status lines included, less
- * one that only repeats the reply so far, which Kin's bridge drops (`repeats`).
- */
-export const shownText = (responses: ReadonlyArray<ReadonlyArray<unknown>>) => {
-  const blocks = responses.flat();
-  const said: Array<string> = [];
-  let reply = "";
-  blocks.forEach((block, index) => {
-    if (!isText(block) || (reply !== "" && repeats(block.text, reply))) return;
-    said.push(block.text);
-    if (classifySegment(block.text, nextAfter(blocks, index)) === "post")
-      reply = reply === "" ? block.text : `${reply}\n\n${block.text}`;
-  });
-  return said.join("\n\n");
-};
-/** Whether any text block posts as a message: short text before a tool is a status line. */
-const postsText = (responses: ReadonlyArray<ReadonlyArray<unknown>>) => {
-  const blocks = responses.flat();
-  return blocks.some(
-    (block, index) =>
-      isText(block) && classifySegment(block.text, nextAfter(blocks, index)) === "post",
-  );
-};
 export const normalizeToolName = (name: string) => {
   const bare = name.slice(name.lastIndexOf(".") + 1);
   return isT3Name(bare)
     ? bare.slice(T3_PREFIX.length)
     : (CODEX_NAMES[bare] ?? bare.slice(bare.lastIndexOf("_") + 1));
 };
-// Decoding wraps secrets such as a statement password in Redacted; grade the value the agent sent.
-const unredact = (value: unknown): unknown =>
-  Redacted.isRedacted(value)
-    ? Redacted.value(value)
-    : Array.isArray(value)
-      ? value.map(unredact)
-      : isRecord(value)
-        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, unredact(item)]))
-        : value;
 export const normalizeToolInput = (name: string, input: unknown) => {
   const decode = t3InputDecoders.get(normalizeToolName(name));
   if (decode !== undefined) return unredact(Option.getOrElse(decode(input), () => input));
@@ -589,15 +524,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   IssuesToolkit,
   DeviceToolkit,
   HtmlToolkit,
-  KinChatToolkit,
-  KinLeadToolkit,
-  KinWorkToolkit,
-  KinStatementToolkit,
-  KinDocsToolkit,
-  KinDocumentToolkit,
-  KinConnectionsToolkit,
-  KinPulseToolkit,
-  KinSocialToolkit,
+  ...KIN_TOOLKITS,
   MessageToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 // McpHttpServer decodes arguments with each tool's JSON codec, which drops undeclared keys.
@@ -656,51 +583,16 @@ const hiddenFromSubagents = enabledWhen(McpInvocationContext.hiddenFromSubagents
 const hiddenWhileLinksOff = enabledWhen(McpInvocationContext.hiddenWhileLinksOff);
 // T3 lists PR and CI tools only to a thread whose project is on a forge it reads.
 const hiddenWithoutForge = enabledWhen(McpInvocationContext.hiddenWithoutForge);
-const visibleT3Tools = (options: {
-  readonly subagent?: boolean;
-  readonly links?: boolean;
-  readonly forge?: boolean;
-  readonly kinAgent?: boolean;
-  readonly kinLead?: boolean;
-  readonly kinSession?: boolean;
-  readonly kinShared?: boolean;
-  /** The lead's remit is social media, so Social's tools join (AgentSession). */
-  readonly kinSocial?: boolean;
-}) =>
+const visibleT3Tools = (
+  options: {
+    readonly subagent?: boolean;
+    readonly links?: boolean;
+    readonly forge?: boolean;
+  } & KinSeatOptions,
+) =>
   t3Tools.filter(
     (tool) =>
-      // A turn others read runs on a shared thread, which lists only what it may run (AgentSession).
-      !(options.kinShared === true && !listedOnSharedThread(tool.name.slice(T3_PREFIX.length))) &&
-      (options.kinAgent === true || options.kinLead === true
-        ? // An owner-only turn's session: T3's lead tools join (AgentSession).
-          (options.kinSession === true
-            ? (LEAD_T3_TOOLS as ReadonlyArray<string>).some(
-                (name) => tool.name === `${T3_PREFIX}${name}`,
-              )
-            : false) ||
-          Object.keys(KinChatToolkit.tools).some((name) => tool.name === `${T3_PREFIX}${name}`) ||
-          (options.kinLead === true &&
-            [
-              ...Object.keys(KinLeadToolkit.tools),
-              ...Object.keys(KinWorkToolkit.tools),
-              ...Object.keys(KinStatementToolkit.tools),
-              ...Object.keys(KinStatementToolkit.tools),
-              ...Object.keys(KinDocsToolkit.tools),
-              ...Object.keys(KinDocumentToolkit.tools),
-              ...Object.keys(KinPulseToolkit.tools),
-              ...Object.keys(KinConnectionsToolkit.tools),
-              ...(options.kinSocial === true ? Object.keys(KinSocialToolkit.tools) : []),
-            ].some((name) => tool.name === `${T3_PREFIX}${name}`))
-        : ![
-            ...Object.keys(KinChatToolkit.tools),
-            ...Object.keys(KinLeadToolkit.tools),
-            ...Object.keys(KinWorkToolkit.tools),
-            ...Object.keys(KinDocsToolkit.tools),
-            ...Object.keys(KinDocumentToolkit.tools),
-            ...Object.keys(KinPulseToolkit.tools),
-            ...Object.keys(KinConnectionsToolkit.tools),
-            ...Object.keys(KinSocialToolkit.tools),
-          ].some((name) => tool.name === `${T3_PREFIX}${name}`)) &&
+      kinToolVisible(tool.name.slice(T3_PREFIX.length), options) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
       (options.forge !== false || !hiddenWithoutForge.has(tool.name)) &&
       !(options.subagent === true && hiddenFromSubagents.has(tool.name)),
@@ -814,18 +706,13 @@ export const buildBase = (
     readonly subagent?: boolean;
     readonly links?: boolean;
     readonly forge?: boolean;
-    readonly kinAgent?: boolean;
-    readonly kinLead?: boolean;
-    readonly kinSession?: boolean;
-    readonly kinShared?: boolean;
-    readonly kinSocial?: boolean;
     /** A native subagent starts from its task: T3 appends nothing to its system prompt. */
     readonly nativeSubagent?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
     readonly deviceAccess?: boolean;
     /** false: the thread has no agent browser access, so T3's text leaves the browser out. */
     readonly browserAccess?: boolean;
-  },
+  } & KinSeatOptions,
 ) => {
   const t3 = visibleT3Tools(options);
   const firstAssistant = template.messages.findIndex((message) => message.role === "assistant");
@@ -884,41 +771,18 @@ export const buildBase = (
     platform: /Platform: (\w+)/.exec(joined)?.[1] ?? "linux",
     date: /Today's date is ([\d-]+)/.exec(reminders.join("\n"))?.[1],
   };
-  // As Kin plans a session (`lead/turn/session.ts`): its instructions are the whole system prompt
-  // and Kin tools load upfront except the few deferred behind ToolSearch. A turn with the owner's
-  // seat (kinSession, not shared) has Claude Code's own tools too; a confined one, none of them.
-  if (options.kinLead === true) {
-    const ownerSeat = options.kinSession === true && options.kinShared !== true;
-    const deferredKin = t3.filter((tool) =>
-      KIN_DEFERRED_TOOLS.has(tool.name.slice(T3_PREFIX.length)),
-    );
-    const header = DEFERRED_LIST.exec(joined)?.[1];
-    const toolSearch = template.tools.filter((tool) => tool.name.endsWith("ToolSearch"));
-    return {
+  if (options.kinLead === true)
+    return kinLeadBase({
       model,
-      system: [text(kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"))],
-      reminders:
-        deferredKin.length > 0 && header !== undefined
-          ? [text(`${header}${deferredKin.map((tool) => tool.name).join("\n")}\n`)]
-          : [],
-      gitStatusAt: undefined,
+      options,
       environment,
-      nativeTools: [
-        ...(ownerSeat
-          ? [
-              ...template.tools.filter(
-                (tool) => !isT3Name(tool.name) && !tool.name.endsWith("ToolSearch"),
-              ),
-              ...nativeDeferred.map((name): ApiTool => ({ name, ...nativeSchema(name) })),
-            ]
-          : []),
-        ...(deferredKin.length > 0 ? toolSearch : []),
-        ...t3.filter((tool) => !deferredKin.includes(tool)),
-      ],
+      templateTools: template.tools,
       t3,
-      deferred: deferredKin,
-    };
-  }
+      deferredHeader: DEFERRED_LIST.exec(joined)?.[1],
+      nativeDeferred,
+      nativeSchema,
+      isT3Name,
+    });
   return {
     model,
     system: system.map(text),
@@ -952,16 +816,11 @@ const buildCodexBase = (
     readonly subagent?: boolean;
     readonly links?: boolean;
     readonly forge?: boolean;
-    readonly kinAgent?: boolean;
-    readonly kinLead?: boolean;
-    readonly kinSession?: boolean;
-    readonly kinShared?: boolean;
-    readonly kinSocial?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
     readonly deviceAccess?: boolean;
     /** false: the thread has no agent browser access, so T3's text leaves the browser out. */
     readonly browserAccess?: boolean;
-  },
+  } & KinSeatOptions,
 ): Base => {
   const t3 = visibleT3Tools(options);
   const contentText = (item: Block) =>
@@ -1183,14 +1042,7 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
   return {
     testCase,
     base,
-    // A Kin tool an earlier turn of the thread loaded through ToolSearch is still loaded.
-    tools: [
-      ...base.nativeTools,
-      ...base.deferred.filter((tool) => {
-        const bare = tool.name.replace(T3_PREFIX, "");
-        return KIN_DEFERRED_TOOLS.has(bare) && priorCalls.some((call) => call.tool === bare);
-      }),
-    ],
+    tools: [...base.nativeTools, ...kinLoadedBefore(base.deferred, priorCalls)],
     repo: testCase.setup.world?.repo ?? "acme/app",
     shell,
     shellUsage: emptyUsage(),
@@ -1314,67 +1166,6 @@ const loadTools = (tools: Array<ApiTool>, id: string, found: ReadonlyArray<ApiTo
 };
 
 /** Messages for a case: reminders, context, prior turns with real tool blocks, then the prompt. */
-/**
- * A lead case writes `{{WORK_RULE}}`, `{{SHARED_TURN}}` and Kin's other rule lines where Kin puts
- * them, in its prompt or a prior turn, so it tests the current text.
- */
-const STANDARD_SEATS = ["chief-of-staff", "finance", "engineering", "growth", "social"];
-const seatCharacter = (domain: string) => {
-  // The eval company keeps rupees in India, so Finance's text is the one Kin's tests know.
-  const body = defaultCharacterFor(domain, { homeCurrency: "INR", country: "IN", tax: null });
-  if (body === undefined) throw new Error(`No default character for ${domain}.`);
-  return { body, name: /^# (.+)$/m.exec(body)?.[1] ?? domain };
-};
-/**
- * `{{CHARACTER:<domain>}}` is that default character as its agent's own owner-only turn carries
- * it; `{{COLLEAGUES:<domain>}}` the other standard agents' lines, as Kin gives them.
- */
-const fillCharacters = (prompt: string) =>
-  prompt
-    .replace(/\{\{CHARACTER:([a-z-]+)\}\}/g, (_, domain: string) =>
-      characterForTurn({ key: "D-12", body: seatCharacter(domain).body }, true),
-    )
-    .replace(/\{\{COLLEAGUES:([a-z-]+)\}\}/g, (_, domain: string) =>
-      STANDARD_SEATS.filter((seat) => seat !== domain)
-        .map((seat) => colleagueLine(seatCharacter(seat).name, seatCharacter(seat).body))
-        .join("\n"),
-    );
-
-/** `{{GITHUB_TRIGGER}}` is the event Kin builds for the case's `world.githubTrigger`. */
-const fillGitHubTrigger = (prompt: string, world: McpToolUseCase["setup"]["world"]) => {
-  if (!prompt.includes("{{GITHUB_TRIGGER}}")) return prompt;
-  const given = world?.githubTrigger as
-    | {
-        readonly event: string;
-        readonly repo: string;
-        readonly trigger: Contracts.KinGithubTrigger;
-      }
-    | undefined;
-  if (given === undefined) throw new Error("{{GITHUB_TRIGGER}} needs setup.world.githubTrigger.");
-  return prompt.replaceAll(
-    "{{GITHUB_TRIGGER}}",
-    githubTriggerEvent(given.event, given.repo, given.trigger),
-  );
-};
-
-const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) =>
-  fillCharacters(fillGitHubTrigger(prompt, world))
-    .replaceAll("{{UNDO_RULE}}", UNDO_RULE)
-    .replaceAll("{{WORK_RULE}}", WORK_RULE)
-    .replaceAll("{{MONEY_RULE}}", MONEY_RULE)
-    .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
-    .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
-    .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
-    .replaceAll("{{GROUP_RULES}}", kinGroupRules)
-    .replaceAll("{{TEAM_RULES}}", kinTeamRules)
-    .replaceAll("{{SOCIAL_RULES}}", kinSocialRules)
-    .replaceAll("{{REPLY_SHAPE}}", REPLY_SHAPE)
-    .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
-    .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
-    .replaceAll("{{DECLINED_RULE}}", DECLINED_RULE)
-    .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
-    .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK);
-
 export const buildMessages = (sample: Sample) => {
   const { testCase, base, tools } = sample;
   const messages: Array<ApiMessage> = [];
@@ -2281,75 +2072,6 @@ const savedSecretFile = (sample: Sample, result: unknown) => {
   if (isRecord(result) && typeof result.file === "string") sample.secretFiles.push(result.file);
 };
 
-// Tools whose card or reaction answers the person in the chat, as Kin's own message would.
-const ANSWERS_IN_CHAT = new Set([
-  "kin_ask",
-  "kin_chart",
-  "kin_visual",
-  "kin_react",
-  "kin_connection_call",
-  "kin_connection_offer",
-  "kin_document",
-  "kin_issue",
-  "kin_receipt",
-  "list_define",
-  "company_profile",
-  "statement_read",
-  "doc_create",
-  "doc_edit",
-  "doc_rewrite",
-]);
-// Cards that show a chart, visual or file: Kin asks once for a line saying what it is. A doc
-// tool shows its doc as a card only when asked to (`card`); otherwise it posts nothing.
-const SHOWS_ONLY = new Set(["kin_chart", "kin_visual", "kin_document", "kin_issue", "kin_receipt"]);
-const DOC_TOOLS = new Set(["doc_create", "doc_edit", "doc_rewrite"]);
-/**
- * Every teammate message of the turn passed on by kin_hand_off (its mocked results, in call
- * order): Kin's own line in the chat answers each, so the turn owes no words (`answered`).
- */
-const passedOnEach = (
-  testCase: Sample["testCase"],
-  used: ReadonlyArray<{ readonly tool: string }>,
-) => {
-  if (!testCase.prompt.includes("your direct chat with a teammate")) return false;
-  const asked = testCase.prompt.match(/BEGIN QUOTE: member human message/g)?.length ?? 0;
-  const mock = testCase.setup.mocks?.kin_hand_off;
-  const results = isRecord(mock) && Array.isArray(mock.$sequence) ? mock.$sequence : [mock];
-  const passed = used
-    .filter((one) => one.tool === "kin_hand_off")
-    .filter((_, n) => {
-      const result: unknown = results[Math.min(n, results.length - 1)];
-      return isRecord(result) && result.passed === true;
-    });
-  return asked > 0 && passed.length >= asked;
-};
-/**
- * What Kin asks a lead whose finished turn left a person's message without words
- * (KinReplyBridge `complete`): the rescue prompt, the caption prompt when its only answer was a
- * chart, visual or file, or undefined when the turn answered.
- */
-export const rescuePrompt = (sample: Pick<Sample, "testCase" | "responses">) => {
-  if (sample.testCase.setup.world?.kinLead !== true) return undefined;
-  if (
-    !/BEGIN QUOTE: (?:owner|co-owner|member human|guest human) message/.test(sample.testCase.prompt)
-  )
-    return undefined;
-  if (postsText(sample.responses)) return undefined;
-  const used = sample.responses
-    .flat()
-    .filter(isToolUse)
-    .map((block) => ({
-      tool: normalizeToolName(block.name),
-      card: isRecord(block.input) && block.input.card === true,
-    }));
-  if (passedOnEach(sample.testCase, used)) return undefined;
-  const shows = ({ tool, card }: (typeof used)[number]) =>
-    SHOWS_ONLY.has(tool) || (DOC_TOOLS.has(tool) && card);
-  if (used.some((one) => ANSWERS_IN_CHAT.has(one.tool) && !DOC_TOOLS.has(one.tool) && !shows(one)))
-    return undefined;
-  return used.some(shows) ? CAPTION_PROMPT : RESCUE_PROMPT;
-};
-
 /** The result for one tool call. */
 const FORGE_WRITE_TOOLS = new Set([
   "pull_request_create",
@@ -2993,29 +2715,6 @@ const settle = (call: Call | undefined, result: Block) => {
 };
 
 /** Calls that ran. Claude Code rejects a deferred tool that was not loaded, so it never runs. */
-/**
- * A Kin tool's event as Kin's tool gate fills it (`KinToolGate.turnEvents`): left out, the turn's
- * latest message, else its first event; a message id, that message's event.
- */
-export const filledEvent = (testCase: McpToolUseCase, use: typeof ToolUse.Type) => {
-  const name = normalizeToolName(use.name);
-  if (testCase.setup.world?.kinLead !== true || !TURN_EVENT_TOOLS.has(name) || !isRecord(use.input))
-    return use;
-  const events = [
-    ...testCase.prompt.matchAll(/"event":\s*"([^"]+)"(?:,\s*"message":\s*"([^"]+)")?/g),
-  ].map((match) => ({ eventId: match[1]!, messageId: match[2] }));
-  const given = use.input.sourceEventId;
-  if (events.some((event) => event.eventId === given)) return use;
-  const chosen =
-    events.find((event) => event.messageId !== undefined && event.messageId === given) ??
-    (given === undefined
-      ? (events.findLast((event) => event.messageId !== undefined) ?? events[0])
-      : undefined);
-  return chosen === undefined
-    ? use
-    : { ...use, input: { ...use.input, sourceEventId: chosen.eventId } };
-};
-
 export const ranCalls = (
   { base, tools, testCase }: Sample,
   step: number,
@@ -3023,7 +2722,7 @@ export const ranCalls = (
 ) =>
   uses
     .filter((use) => base.codex !== undefined || hasTool(tools, use.name))
-    .map((use) => recordedCall(step, filledEvent(testCase, use)));
+    .map((use) => recordedCall(step, filledEvent(testCase, use, normalizeToolName)));
 
 /**
  * Runs one sample until the model ends its turn, uses up its steps, or fails a check that no
@@ -3078,7 +2777,8 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     if (response.stop_reason !== "tool_use") {
       stopReason = response.stop_reason ?? "unknown";
       finalText = texts.join("\n\n");
-      const asked = input || rescue !== undefined ? undefined : rescuePrompt(sample);
+      const asked =
+        input || rescue !== undefined ? undefined : rescuePrompt(sample, normalizeToolName);
       if (asked === undefined) break;
       rescue = asked;
       messages.push({ role: "user", content: [text(asked)] });
@@ -3166,7 +2866,7 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     stopReason,
     finalText,
     ...(rescue === undefined ? {} : { rescue }),
-    silent: rescuePrompt(sample) !== undefined,
+    silent: rescuePrompt(sample, normalizeToolName) !== undefined,
     cwd: base.environment.cwd,
     linked: [...sample.linked],
     ...(sample.devices ? { launchers: [...sample.devices.launchers] } : {}),
@@ -3175,151 +2875,6 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     transcript: input ? transcript : messages.slice(start),
   };
 }, Effect.scoped);
-
-/** Earlier turns as Responses items; a tool call carries its namespace, as Codex records one. */
-const responsesHistory = (messages: ReadonlyArray<ApiMessage>, namespace: string): Array<unknown> =>
-  messages.flatMap((message) =>
-    message.content.flatMap((block): Array<unknown> => {
-      if (block.type === "tool_use")
-        return [
-          {
-            type: "function_call",
-            call_id: block.id,
-            name: valueText(block.name).replace(T3_PREFIX, ""),
-            namespace,
-            arguments: JSON.stringify(block.input ?? {}),
-          },
-        ];
-      if (block.type === "tool_result")
-        return [
-          {
-            type: "function_call_output",
-            call_id: block.tool_use_id,
-            output: valueText(block.content),
-          },
-        ];
-      if (!isText(block)) return [];
-      return [
-        {
-          type: "message",
-          role: message.role,
-          content: [
-            { type: message.role === "user" ? "input_text" : "output_text", text: block.text },
-          ],
-        },
-      ];
-    }),
-  );
-
-const APP_SERVER_NAMESPACE = "t3_code";
-
-/**
- * One sample in `codex app-server`, confined as Kin's Codex descriptor confines a Kin thread: Kin's
- * instructions as the base instructions, no environment, and the turn's T3 and Kin tools as dynamic
- * tools that the case's mocks answer. A Claude lead's ToolSearch list becomes Codex's deferred loading.
- */
-const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSample")(function* (
-  testCase: McpToolUseCase,
-  config: Config,
-  server: AppServer,
-  base: Base,
-  spent: { readonly usage: Usage; readonly shellUsage: Usage },
-) {
-  const t3 = [...new Map(base.t3.map((tool) => [tool.name, tool])).values()];
-  const sample: Sample = {
-    ...makeSample(testCase, base),
-    tools: t3,
-    shellUsage: spent.shellUsage,
-  };
-  const messages = buildMessages(sample).map((message) => ({
-    ...message,
-    // Claude Code's reminders (its ToolSearch list) are its harness, not the case.
-    content: message.content.filter((block) => !base.reminders.includes(block)),
-  }));
-  const last = messages.at(-1);
-  if (testCase.prompt === "" || last?.role !== "user")
-    return yield* Effect.die(new Error(`${testCase.id}: the app-server harness needs a prompt.`));
-  const prompt = last.content
-    .filter(isText)
-    .map((block) => block.text)
-    .join("\n\n");
-  // As Kin's sessions decide (`kinDeferredTools`): a tool waits only where the model can look it up.
-  const lookup = yield* Effect.promise(() => server.knowsModel(config.model));
-  const deferred = new Set(lookup ? base.deferred.map((tool) => tool.name) : []);
-  const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
-  const calls: Array<Call> = [];
-  let step = 0;
-  const ownerSession =
-    testCase.setup.world?.kinSession === true &&
-    !/\{\{(SHARED_TURN|GROUP_RULES)\}\}/.test(testCase.prompt);
-  const result = yield* Effect.tryPromise({
-    try: () =>
-      server.runTurn({
-        model: config.model,
-        effort: config.effort,
-        // An owner-only session's note says it has a shell, as Kin's does; the eval runs none, so
-        // it keeps the session's web search and no sub-agents nobody here would answer.
-        baseInstructions: kinInstructions(ownerSession ? "owner" : "confined", "codex"),
-        config: ownerSession
-          ? { ...FULL_SESSION_CONFIG, "agents.enabled": false }
-          : CONFINED_CONFIG,
-        namespace: APP_SERVER_NAMESPACE,
-        tools: t3.map((tool) => ({
-          name: tool.name.replace(T3_PREFIX, ""),
-          description: valueText(tool.description),
-          inputSchema: tool.input_schema,
-          deferLoading: deferred.has(tool.name),
-        })),
-        history: responsesHistory(messages.slice(0, -1), APP_SERVER_NAMESPACE),
-        prompt,
-        maxToolCalls: Math.max(config.maxSteps, testCase.maxSteps ?? 0) * 3,
-        onToolCall: (tool, args) => {
-          const use = {
-            type: "tool_use" as const,
-            id: `call_${step}`,
-            name: `${T3_PREFIX}${tool}`,
-            input: args,
-          };
-          const [recorded] = ranCalls(sample, step++, [use]);
-          if (recorded !== undefined) calls.push(recorded);
-          return runPromise(
-            answerToolCall(sample, config, filledEvent(testCase, use)).pipe(
-              Effect.map((answer) => {
-                settle(recorded, answer);
-                return { text: valueText(answer.content), failed: answer.is_error === true };
-              }),
-            ),
-          );
-        },
-      }),
-    catch: (cause) => new EvalToolCallError({ tool: "app-server", cause }),
-  });
-  spent.usage.input += result.usage.input - result.usage.cached;
-  spent.usage.cacheRead += result.usage.cached;
-  spent.usage.output += result.usage.output;
-  // The turn as the runner's other harnesses record it, so the graders read it the same way.
-  const responses = result.events.map((event: AppServerEvent) =>
-    event.type === "text"
-      ? [text(event.text)]
-      : [{ type: "tool_use", id: event.id, name: `${T3_PREFIX}${event.tool}`, input: event.args }],
-  );
-  sample.responses.push(...responses);
-  const finals = result.events.flatMap((event) =>
-    event.type === "text" && event.phase !== "commentary" ? [event.text] : [],
-  );
-  return {
-    calls,
-    text: shownText(responses),
-    stopReason: result.stopReason,
-    finalText: finals.at(-1) ?? "",
-    silent: rescuePrompt(sample) !== undefined,
-    linked: [...sample.linked],
-    usage: spent.usage,
-    shellUsage: sample.shellUsage,
-    reasoningTokens: result.usage.reasoning,
-    transcript: result.items,
-  };
-});
 
 type ResultRow = Pick<McpToolUseCase, "id" | "kind" | "pattern"> & {
   readonly role: string;
@@ -3703,8 +3258,10 @@ const main = Effect.gen(function* () {
         );
   // Codex has no native subagents; its cases with that role run as top-level threads.
   // A Kin turn others read carries Kin's shared-turn line, as the server's prompt does.
-  const baseKey = ({ setup, prompt }: McpToolUseCase) =>
-    `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinSession === true}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}`;
+  const baseKey = (testCase: McpToolUseCase) => {
+    const { setup, prompt } = testCase;
+    return `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${kinSessionOf(testCase)}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}`;
+  };
   const base = yield* buildFor("top", true, true, false, true);
   const bases = new Map<string, Base>([
     ["top:true:true:false:true:false:false:false:false:false", base],

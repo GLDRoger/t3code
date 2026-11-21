@@ -155,7 +155,6 @@ export function HomeRouteScreen() {
       <WorkspaceListEmptyDetail
         hasConnections={catalogState.hasConnections}
         onAddConnection={() => openSettings(navigation, "SettingsEnvironmentNew")}
-        onJoinKin={() => navigation.navigate("KinJoin")}
         onStartNewTask={startNewTask}
       />
     );
@@ -193,7 +192,6 @@ export function HomeRouteScreen() {
           catalogState={catalogState}
           environments={environments}
           onAddConnection={() => openSettings(navigation, "SettingsEnvironmentNew")}
-          onJoinKin={() => navigation.navigate("KinJoin")}
           onArchiveThread={archiveThread}
           onDeleteThread={confirmDeleteThread}
           onSettleThread={settleThread}

@@ -41,7 +41,7 @@ No upstream secrets exist here. CI's task cache token is optional, so CI runs wi
 
 ## Syncing upstream
 
-Sync often; a few days of upstream merges in minutes.
+A sync takes hours, not minutes. Measured from the merge commit to the merged sync PR (elapsed time, not hours worked): 339 upstream commits on 20 Nov conflicted in 34 files and 60 hunks and took 3.4 hours; 2,212 on 17 Nov conflicted in 63 files and 148 hunks and took 6.2 hours. That is about an hour plus two minutes a conflicting hunk, so a week of upstream (about 1,300 commits) costs about six hours. The hunks are Kin's lines inside T3's files, most of them Kin's cases in T3's test files and Kin's part of the eval runner. Sync often, since the hunks grow with the commits taken, and move Kin's code out of T3's files (the footprint rule in [RULES.md](docs/kin/RULES.md)): each move is a conflict the next sync doesn't have.
 
 ```sh
 git switch kin

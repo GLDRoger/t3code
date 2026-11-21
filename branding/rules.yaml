@@ -61,7 +61,7 @@ text:
     exact: true
   # Kin's mobile app is Kin and nothing else: no coding threads, tabs or settings. Coding lives in
   # the T3 Code app. See KIN_ONLY in apps/mobile/src/lib/kinOnly.ts.
-  - files: [apps/mobile/app.config.ts, apps/mobile/src/lib/kinOnly.ts]
+  - files: [apps/mobile/src/lib/kinOnly.ts]
     from: "kin-only:off"
     to: "kin-only:on"
     exact: true

@@ -29,6 +29,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Tracer from "effect/Tracer";
 import * as Repository from "./KinChatRepository.ts";
 
 const decodeMessage = Schema.decodeSync(KinMessage);
@@ -1496,6 +1497,37 @@ describe("KinChatRepository", () => {
         }),
       );
       assert.strictEqual(guestPost.authorRole, "guest");
+      // The badge is every listed chat's unread count, in one statement whatever the chats.
+      const statements: Array<string> = [];
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          const end = span.end.bind(span);
+          span.end = (endTime, exit) => {
+            end(endTime, exit);
+            const query = span.attributes.get("db.query.text");
+            if (typeof query === "string") statements.push(query);
+          };
+          return span;
+        },
+      });
+      const guestScope = { orgId, chatId, memberId: guestMember };
+      assert.strictEqual(yield* repo.unreadCount(guestScope), 0);
+      yield* repo.insertMessage(
+        message("for-guest", { author: agentAuthor, authorRole: "member", intent: "answer" }),
+      );
+      for (const [who, member] of [
+        [personId, scope],
+        [guestPerson, guestScope],
+      ] as const) {
+        statements.length = 0;
+        const total = yield* repo
+          .unreadTotal({ orgId, personId: who })
+          .pipe(Effect.withTracer(tracer));
+        assert.strictEqual(statements.length, 1);
+        assert.strictEqual(total, yield* repo.unreadCount(member));
+      }
+      assert.strictEqual(yield* repo.unreadCount(guestScope), 1);
       for (const sentBy of [guestPerson, personId]) {
         if (sentBy === personId) yield* repo.leaveChat({ ...scope, leftAt: later });
         const failure = yield* Effect.flip(

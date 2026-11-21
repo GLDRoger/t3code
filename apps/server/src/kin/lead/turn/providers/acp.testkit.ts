@@ -108,6 +108,8 @@ export const acpFake: ProviderFake = {
         deferredFindable: true,
         // The agent's own skills and settings load as it decides (`ownConfigLoads`).
         personalConfig: true,
+        // Kin serves an ACP agent no search of its own.
+        webSearch: false,
         builtins:
           capabilities.terminal !== false ||
           capabilities.fs?.readTextFile !== false ||
