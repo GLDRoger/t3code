@@ -119,7 +119,7 @@ import DreamCharges from "./migrations/K195_DreamCharges.ts";
 import GitHubReviewReceipts from "./migrations/K196_GitHubReviewReceipts.ts";
 import InvitePlaces from "./migrations/K197_InvitePlaces.ts";
 import ChatPins from "./migrations/K198_ChatPins.ts";
-import SentUpDrafts from "./migrations/K199_SentUpDrafts.ts";
+import SentUpDrafts from "./migrations/K200_SentUpDrafts.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -319,7 +319,7 @@ const migrations = {
   "196_GitHubReviewReceipts": GitHubReviewReceipts,
   "197_InvitePlaces": InvitePlaces,
   "198_ChatPins": ChatPins,
-  "199_SentUpDrafts": SentUpDrafts,
+  "200_SentUpDrafts": SentUpDrafts,
 };
 const loader = Migrator.fromRecord(migrations);
 
