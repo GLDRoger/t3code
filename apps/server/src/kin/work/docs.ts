@@ -545,7 +545,13 @@ export const replaceBody = Effect.fn("KinDocs.replaceBody")(function* (
   writer: Writer,
   provenance: Provenance,
   ref: { readonly key: string },
-  input: { readonly body: string; readonly summary: string; readonly originKey: string },
+  input: {
+    readonly body: string;
+    readonly summary: string;
+    readonly originKey: string;
+    /** Writes only while the doc is still at this version; otherwise nothing changes. */
+    readonly atVersion?: number;
+  },
 ) {
   const body = normalize(input.body);
   if (body.length > DOC_BODY_MAX) return yield* tooLong(body.length);
@@ -555,7 +561,11 @@ export const replaceBody = Effect.fn("KinDocs.replaceBody")(function* (
       const current = yield* versionOf(orgId, row.recordId);
       if (current === undefined) return yield* unavailable;
       if (current.bodyKind === "file") return yield* fileOnly(row.key);
-      if (current.body === body) return { row, version: current, created: false };
+      if (
+        current.body === body ||
+        (input.atVersion !== undefined && current.version !== input.atVersion)
+      )
+        return { row, version: current, created: false };
       return yield* revise(orgId, writer, provenance, row, current, {
         title: row.title,
         body,

@@ -21,7 +21,6 @@ import { answerCard } from "../questions/openQuestions.ts";
 import { answerReceiptCard } from "../gendocs/receiptProposals.ts";
 import { receiptDocument } from "../gendocs/receipts.ts";
 import { answerCurrencyCard } from "./statements/statementReview.ts";
-import { answerCharacterCard } from "../lead/characters.ts";
 import * as CardActions from "../widgets/cardActions.ts";
 import { KinRecords } from "./KinRecords.ts";
 
@@ -70,14 +69,6 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
     code: input.option.label,
     now: input.now,
   });
-  const character = yield* answerCharacterCard({
-    orgId: input.orgId,
-    widgetId: input.widget.widgetId,
-    messageId: input.widget.messageId,
-    personId: input.personId,
-    yes: input.option.kind === "yes",
-  });
-  if (character !== undefined) return character;
   const made = yield* answerReceiptCard({
     orgId: input.orgId,
     widgetId: input.widget.widgetId,

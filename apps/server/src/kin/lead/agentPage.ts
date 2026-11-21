@@ -21,7 +21,8 @@ import { ownerZone } from "../work/recordRows.ts";
 import { type LeadCreator, profileIn, retirable } from "./KinLeadProvision.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import { turnModel } from "./leadModels.ts";
-import { setCharacter } from "./characters.ts";
+import { kinPartFor, setCharacter, wholeCharacter } from "./characters.ts";
+import { companyMoney } from "../work/companyProfile.ts";
 import { agentChanges, ownerLevelUndoAgentChange } from "./agentChanges.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -58,6 +59,7 @@ export const ownerLevelAgentPage = Effect.fn("KinAgentPage.read")(function* (inp
       AND v.version = (SELECT MAX(w.version) FROM kin_doc_versions w
         WHERE w.org_id = v.org_id AND w.record_id = v.record_id)
     ORDER BY r.key`.pipe(Effect.mapError(persistence));
+  const kin = kinPartFor(lead.domain, lead.name, yield* companyMoney(orgId));
   const zone = yield* ownerZone(orgId);
   const today = DateTime.makeZonedUnsafe(yield* Clock.currentTimeMillis, { timeZone: zone });
   const monthStart = `${DateTime.formatIsoDate(today).slice(0, 7)}-01`;
@@ -87,7 +89,12 @@ export const ownerLevelAgentPage = Effect.fn("KinAgentPage.read")(function* (inp
     character:
       character === undefined
         ? null
-        : { key: KinRecordKey.make(character.key), body: character.body.slice(0, CHARACTER_MAX) },
+        : {
+            key: KinRecordKey.make(character.key),
+            body: wholeCharacter({ kin, body: character.body }).slice(0, CHARACTER_MAX),
+          },
+    kinCharacter: kin ?? null,
+    ownCharacter: character?.body.slice(0, CHARACTER_MAX) ?? "",
     teamAgent: team === agentId,
     usedThisMonth: { turns: count(used?.turns), tokens: count(used?.tokens) },
     quietHours: Option.getOrElse(decodeQuiet(quiet?.hours), () => KIN_DEFAULT_QUIET_HOURS),
@@ -107,8 +114,8 @@ export const ownerLevelAgentPage = Effect.fn("KinAgentPage.read")(function* (inp
 });
 
 /**
- * Writes an agent's character from its page as a new version of its doc, so History still brings
- * the old one back. The next turn reads it. Checked as for retiring it.
+ * Writes the owner's part of an agent's character from its page as a new version of its doc, so
+ * History still brings the old one back. The next turn reads it. Checked as for retiring it.
  */
 export const ownerLevelSetCharacter = Effect.fn("KinAgentPage.setCharacter")(function* (input: {
   readonly by: LeadCreator;

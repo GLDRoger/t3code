@@ -265,18 +265,24 @@ const seatCharacter = (domain: string) => {
   if (body === undefined) throw new Error(`No default character for ${domain}.`);
   return { body, name: /^# (.+)$/m.exec(body)?.[1] ?? domain };
 };
+/** A standard agent's character with Kin's part and the owner's (`own`, empty by default). */
+const seatParts = (domain: string, own = "") => {
+  const { body, name } = seatCharacter(domain);
+  return { agentId: domain, name, key: "D-12", body: own, kin: body.trim() };
+};
 /**
  * `{{CHARACTER:<domain>}}` is that default character as its agent's own owner-only turn carries
- * it; `{{COLLEAGUES:<domain>}}` the other standard agents' lines, as Kin gives them.
+ * it, and `{{CHARACTER:<domain>|<owner's part>}}` with the owner's part too;
+ * `{{COLLEAGUES:<domain>}}` the other standard agents' lines, as Kin gives them.
  */
 const fillCharacters = (prompt: string) =>
   prompt
-    .replace(/\{\{CHARACTER:([a-z-]+)\}\}/g, (_, domain: string) =>
-      characterForTurn({ key: "D-12", body: seatCharacter(domain).body }, true),
+    .replace(/\{\{CHARACTER:([a-z-]+)(?:\|([^}]*))?\}\}/g, (_, domain: string, own?: string) =>
+      characterForTurn(seatParts(domain, own), true),
     )
     .replace(/\{\{COLLEAGUES:([a-z-]+)\}\}/g, (_, domain: string) =>
       STANDARD_SEATS.filter((seat) => seat !== domain)
-        .map((seat) => colleagueLine(seatCharacter(seat).name, seatCharacter(seat).body))
+        .map((seat) => colleagueLine(seatParts(seat)))
         .join("\n"),
     );
 

@@ -960,8 +960,18 @@ describe("KinLeadProvision", () => {
       })).lead;
       const socialPage = yield* ownerLevelAgentPage({ ...target, agentId: social.agentId });
       assert.deepStrictEqual(titles(socialPage), ["Winning customers"]);
-      const edited = yield* ownerLevelSetCharacter({ ...target, body: "# Ada\n\nDry and exact." });
-      assert.strictEqual(edited.character?.body.trim(), "# Ada\n\nDry and exact.");
+      // Kin's part, named for Ada; hers starts empty, and the single field still carries it all.
+      const kin = page.kinCharacter ?? "";
+      assert.isTrue(kin.startsWith("# Ada"));
+      assert.strictEqual(page.ownCharacter, "");
+      assert.strictEqual(page.character?.body, kin);
+      const edited = yield* ownerLevelSetCharacter({ ...target, body: "Dry and exact." });
+      assert.strictEqual(edited.ownCharacter?.trim(), "Dry and exact.");
+      assert.strictEqual(edited.kinCharacter, kin);
+      assert.strictEqual(edited.character?.body, `${kin}\n\nDry and exact.`);
+      // An older page sends the single field back whole: Kin's part is not stored as hers.
+      const again = yield* ownerLevelSetCharacter({ ...target, body: edited.character!.body });
+      assert.strictEqual(again.ownCharacter, edited.ownCharacter);
       const versions = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_doc_versions v
         JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
         WHERE r.key = ${edited.character!.key}`;
