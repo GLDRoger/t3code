@@ -1425,6 +1425,11 @@ export function makeKinClient<R, ER>(
       tag: "kin.work.createDeal",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
     }),
+    workPartyWithDealCreate: createKinRpcCommand(runtime, {
+      label: "kin:work:client-with-deal:create",
+      tag: "kin.work.createPartyWithDeal",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
     workDealUpdate: createKinRpcCommand(runtime, {
       label: "kin:work:deal:update",
       tag: "kin.work.updateDeal",

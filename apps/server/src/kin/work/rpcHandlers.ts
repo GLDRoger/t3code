@@ -198,6 +198,11 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.createDeal": Effect.fn("KinWork.rpc.createDeal")(function* (input) {
         return yield* call((people) => Deals.create(people, input));
       }),
+      "kin.work.createPartyWithDeal": Effect.fn("KinWork.rpc.createPartyWithDeal")(
+        function* (input) {
+          return yield* call((people) => Clients.createPartyWithDeal(people, input));
+        },
+      ),
       "kin.work.updateDeal": Effect.fn("KinWork.rpc.updateDeal")(function* (input) {
         return yield* call((people) => Deals.update(people, input));
       }),

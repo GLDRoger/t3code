@@ -9,6 +9,8 @@ import {
   KinRecordChange,
   KinRecordId,
   KinRecordKey,
+  KinPartyCreateInput,
+  KinPartyDetail,
   KinRecordRef,
   KinWorkPrincipal,
 } from "./kinWork.ts";
@@ -309,6 +311,25 @@ export const KinDealResult = Schema.Struct({
 });
 export type KinDealResult = typeof KinDealResult.Type;
 
+/** A new client's first deal, made with it: what it is and about how much. */
+export const KinPartyFirstDeal = Schema.Struct({
+  title: Title,
+  value: KinMoney,
+  /** Default the first stage. */
+  stage: Schema.optional(KinDealStageId),
+  expectedOn: Schema.optional(KinDay),
+  next: Schema.optional(KinDealStepInput),
+});
+export type KinPartyFirstDeal = typeof KinPartyFirstDeal.Type;
+/** A new client and its deal in one step: neither is ever kept without the other. */
+export const KinPartyWithDealCreateInput = Schema.Struct({
+  ...KinPartyCreateInput.fields,
+  deal: KinPartyFirstDeal,
+});
+export type KinPartyWithDealCreateInput = typeof KinPartyWithDealCreateInput.Type;
+export const KinPartyWithDealResult = Schema.Struct({ party: KinPartyDetail, deal: KinDealRow });
+export type KinPartyWithDealResult = typeof KinPartyWithDealResult.Type;
+
 export const KinDealAddStepInput = Schema.Struct({
   orgId: KinOrgId,
   key: KinRecordKey,
@@ -357,6 +378,7 @@ const KIN_DEAL_WS_METHODS = {
   deals: "kin.work.deals",
   deal: "kin.work.deal",
   createDeal: "kin.work.createDeal",
+  createPartyWithDeal: "kin.work.createPartyWithDeal",
   updateDeal: "kin.work.updateDeal",
   moveDeal: "kin.work.moveDeal",
   dealStep: "kin.work.dealStep",
@@ -372,6 +394,11 @@ export const KinDealRpcs = [
   Rpc.make(KIN_DEAL_WS_METHODS.createDeal, {
     payload: KinDealCreateInput,
     success: KinDealResult,
+    error,
+  }),
+  Rpc.make(KIN_DEAL_WS_METHODS.createPartyWithDeal, {
+    payload: KinPartyWithDealCreateInput,
+    success: KinPartyWithDealResult,
     error,
   }),
   Rpc.make(KIN_DEAL_WS_METHODS.updateDeal, {
@@ -411,6 +438,7 @@ export const KIN_DEAL_RPC_SCOPES = {
   [KIN_DEAL_WS_METHODS.deals]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.deal]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.createDeal]: AuthKinChatScope,
+  [KIN_DEAL_WS_METHODS.createPartyWithDeal]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.updateDeal]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.moveDeal]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.dealStep]: AuthKinChatScope,
