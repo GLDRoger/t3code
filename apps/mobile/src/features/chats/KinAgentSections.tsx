@@ -39,7 +39,7 @@ import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { setComposerDraftText } from "../../state/use-composer-drafts";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
-import { kinDraftKey } from "./components/KinComposer";
+import { kinDraftKey } from "./state/kinDraftKey";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import {
   KinAgentEffortAdvice,

@@ -54,7 +54,7 @@ import {
   kinPickedModel,
   useKinAgentModelOptions,
 } from "./KinAgentModelRow";
-import { kinDraftKey } from "./components/KinComposer";
+import { kinDraftKey } from "./state/kinDraftKey";
 
 export type KinLeadFormParams = {
   readonly environmentId: string;

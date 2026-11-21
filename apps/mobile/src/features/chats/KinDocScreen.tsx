@@ -1,5 +1,5 @@
 import { getComposerDraftSnapshot, setComposerDraftText } from "../../state/use-composer-drafts";
-import { kinDraftKey } from "./components/KinComposer";
+import { kinDraftKey } from "./state/kinDraftKey";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";

@@ -8,7 +8,7 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { getComposerDraftSnapshot, setComposerDraftText } from "../../../state/use-composer-drafts";
-import { kinDraftKey } from "../components/KinComposer";
+import { kinDraftKey } from "./kinDraftKey";
 import { kinClient } from "./kinClient";
 
 /** Opens a Kin chat, with `draft` ready in its box when given: an Ask of its own (`kinAskDraft`). */

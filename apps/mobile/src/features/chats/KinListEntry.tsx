@@ -73,13 +73,13 @@ import { uuidv4 } from "../../lib/uuid";
 import { MessageAttachmentList } from "../threads/ThreadFeed";
 import {
   KinInvoiceActions,
-  type KinMakeStep,
   KinInvoiceDocuments,
   KinInvoiceFigures,
   KinInvoiceSent,
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
+import type { KinMakeStep } from "./kinMakeStep";
 import { KinAsideNote } from "./KinAttention";
 import { KinSuggestionKeep } from "./KinMoneySuggested";
 import { KinQuoteActions } from "./KinMoneyAnswers";
