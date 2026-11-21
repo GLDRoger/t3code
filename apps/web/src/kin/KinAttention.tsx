@@ -156,7 +156,12 @@ export function KinAttentionItem(
         <Menu>
           <MenuTrigger
             render={
-              <Button size="icon-xs" variant="ghost" aria-label={KIN_ATTENTION.menu(row.title)} disabled={busy} />
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                aria-label={KIN_ATTENTION.menu(row.title)}
+                disabled={busy}
+              />
             }
           >
             <EllipsisIcon />

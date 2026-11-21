@@ -1056,8 +1056,7 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
       message: `No proposal ${input.proposalId.slice(0, 40)} of yours. Propose the list first.`,
     });
   if (row.definedAt !== null) return { id: row.registerId, created: false };
-  const tapped =
-    row.widgetId === null ? undefined : yield* cardAnswer(input.orgId, row.widgetId);
+  const tapped = row.widgetId === null ? undefined : yield* cardAnswer(input.orgId, row.widgetId);
   if (tapped === "no")
     return yield* new KinChatError({
       reason: "not_allowed",
