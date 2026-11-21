@@ -3545,6 +3545,10 @@ it.effect(
         group: "needsYou",
         handedBackNote: "Invented: blocked on design",
       });
+      // The agent reads who handed it back on the record, with no chat line to quote.
+      yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'wake'`;
+      assert.propertyVal(yield* LeadWork.get(scope, { key: "W-2" }), "handedBackBy", "Mate");
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
       // Given on from one teammate to another, each reads who gave it to whom from their side.
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
         VALUES ('mate-2', ${orgId}, 'mate2', 'Mate Two', ${at})`;
