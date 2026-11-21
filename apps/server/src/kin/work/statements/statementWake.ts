@@ -133,7 +133,7 @@ export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
   const target = onCard ? card.chatId : own?.chatId;
   if (target === undefined || (shared && target === card?.chatId))
     return yield* invalid(
-      "The statement's chat is shared now, and its lead has no chat with you alone.",
+      "The statement's chat is shared now, and its agent has no chat with you alone.",
     );
   const [member] = yield* memberIn(target);
   if (member === undefined) return yield* invalid("The owner isn't in that chat.");

@@ -4668,14 +4668,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     operation: string,
     input: GitVcsDriver.GitCreateBranchInput,
     fallbackErrorDetail: string,
-    config: ReadonlyArray<string> = [],
   ) {
     // `git branch` does not read a lone - as the previous checkout.
     const startPoint = input.startPoint === "-" ? "@{-1}" : input.startPoint;
     yield* executeGitWithStableDiagnostics(
       operation,
       input.cwd,
-      [...config, "branch", "--no-track", "--", input.branch, startPoint],
+      ["branch", "--no-track", "--", input.branch, startPoint],
       { fallbackErrorDetail },
     );
     const startRef = yield* executeGit(
@@ -4688,7 +4687,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     yield* executeGitWithStableDiagnostics(
       `${operation}.track`,
       input.cwd,
-      [...config, "branch", `--set-upstream-to=${startRef}`, "--", input.branch],
+      ["branch", `--set-upstream-to=${startRef}`, "--", input.branch],
       { writesSharedConfig: true },
     ).pipe(
       retryWhileConfigLocked,
@@ -5263,8 +5262,6 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     // Read before the branch exists, so a missing pattern file leaves nothing behind.
     const sparsePatterns = yield* readWorktreeSparsePatterns(input.cwd, input.refName);
     const newRefName = input.newRefName;
-    // Command-line config outranks every file, and git passes it on to the git it starts.
-    const hookConfig = options?.runHooks === false ? ["-c", "core.hooksPath=/dev/null"] : [];
     // Older Git still creates worktrees normally, but cannot prove ownership for cancellation.
     const addHelp = newRefName
       ? yield* executeGit(
@@ -5278,13 +5275,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       addHelp && `${addHelp.stdout}\n${addHelp.stderr}`.includes("--reason")
         ? `t3-create-${yield* random.uuidV4()}`
         : undefined;
+
     if (newRefName) {
       // Kept apart from the checkout so the shared-config lock only covers the tracking write.
       yield* createBranchAt(
         "GitVcsDriver.createWorktree.createBranch",
         { cwd: input.cwd, branch: newRefName, startPoint: input.refName },
         "git branch failed",
-        hookConfig,
       );
     }
     const checkoutRef = newRefName ?? input.refName;
@@ -5315,19 +5312,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       { concurrency: "unbounded" },
     );
     const checkoutWorkers = configuredCheckoutWorkers ?? "0";
-    // The cache clones a full checkout, so a sparse worktree uses Git's own checkout, and the
-    // cache runs post-checkout itself, as `git worktree add` would.
+    // The cache clones a full checkout, so a sparse worktree uses Git's own checkout.
     const fastCheckout =
-      checkoutCache !== undefined &&
-      options?.fastCheckout === true &&
-      sparsePatterns === null &&
-      options.runHooks !== false;
+      checkoutCache !== undefined && options?.fastCheckout === true && sparsePatterns === null;
     const cacheGeneration = fastCheckout ? yield* checkoutCache.currentGeneration : 0;
     const stockCheckout = executeGitWithStableDiagnostics(
       "GitVcsDriver.createWorktree",
       input.cwd,
       [
-        ...hookConfig,
         "-c",
         `checkout.workers=${checkoutWorkers}`,
         "worktree",
@@ -5363,7 +5355,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             yield* executeGitWithStableDiagnostics(
               "GitVcsDriver.createWorktree.checkout",
               worktreePath,
-              [...hookConfig, "-c", `checkout.workers=${checkoutWorkers}`, "checkout"],
+              ["-c", `checkout.workers=${checkoutWorkers}`, "checkout"],
               {
                 fallbackErrorDetail: "git checkout failed",
                 timeoutMs: null,
@@ -5495,7 +5487,6 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           "GitVcsDriver.createWorktree.updateSubmodules",
           worktreePath,
           [
-            ...hookConfig,
             "submodule",
             "update",
             "--init",
@@ -5551,7 +5542,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       yield* runGit(
         "GitVcsDriver.createWorktree.initSubmodules",
         worktreePath,
-        [...hookConfig, "submodule", "init"],
+        ["submodule", "init"],
         { writesSharedConfig: true },
       ).pipe(
         Effect.andThen(updateSubmodules([])),

@@ -52,10 +52,23 @@ it.effect("a promise to tell someone stands only when the turn told them", () =>
     yield* seed;
     yield* say(1, "I'll let you know once it's sorted.");
     assert.isUndefined(yield* unkeptPromise(wake));
+    // A saved standing permission, and its read-back, name him without promising anything now.
+    yield* say(
+      10,
+      "Saved. From now on I'll message Ishaan directly when something needs him, no need to involve you.",
+    );
+    yield* say(
+      11,
+      "Noted: I'll message Ishaan directly without involving you.\nYour saved permissions:\n1. You and Ishaan may message each other directly; I'll pass things to Ishaan whenever either of you asks.\n2. Going forward I will check with Ishaan before booking travel.",
+    );
+    assert.isUndefined(yield* unkeptPromise(wake));
     // Run 3's words: a promise to him, and nothing sent.
     yield* say(2, "Ishaan assigned W-7. I'll put your request to him now and come back here.");
     assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
     yield* say(3, "I'll ask Ishaan whether 1 February works.");
+    assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
+    yield* sql`DELETE FROM kin_messages WHERE message_id IN ('said-2', 'said-3')`;
+    yield* say(4, "I'll tell Ishaan now that the release moved to Friday.");
     assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
     // A question with a default to someone else, safe or not, leaves the promise to Ishaan unkept.
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)

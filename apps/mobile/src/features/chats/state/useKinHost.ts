@@ -2,7 +2,6 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { kinGate, type KinGate, type KinPermission } from "@t3tools/client-runtime/kin/kinAccess";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect } from "react";
 
@@ -17,8 +16,7 @@ import {
   kinHostCandidate,
   kinHostLink,
   kinHostIdToSave,
-  resolveKinHost,
-  resolveKinHostAt,
+  makeKinHostAtoms,
   type KinHost,
   type KinRouteHost,
   type KinHostCandidate,
@@ -54,37 +52,19 @@ const kinProbe = (get: Atom.AtomContext) => (environmentId: EnvironmentId) =>
 const kinCachedOrgs = (get: Atom.AtomContext) => (environmentId: EnvironmentId) =>
   AsyncResult.getOrElse(get(kinCachedOrgsAtom(environmentId)), () => null);
 
-export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
-  if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
-  const saved = get(savedKinHostAtom);
-  const candidates = kinHostCandidates(get);
-  const savedHostId =
-    saved._tag === "Initial" ? undefined : AsyncResult.getOrElse(saved, () => null);
-  // Before its first probe runs, so an outage there keeps it rather than hiding Kin.
-  if (savedHostId) markKinHostKnown(savedHostId);
-  return resolveKinHost({
-    candidates,
-    savedHostId,
-    probe: kinProbe(get),
-    cachedOrgs: kinCachedOrgs(get),
-    ...Option.match(get.self<KinHost>(), {
-      onNone: () => ({}),
-      onSome: (previous) => ({ previous }),
-    }),
-  });
-}).pipe(Atom.withLabel("kin:host"));
-
-const kinHostAtAtom = Atom.family((environmentId: EnvironmentId) =>
-  Atom.make((get): KinRouteHost => {
-    if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
-    return resolveKinHostAt({
-      candidates: kinHostCandidates(get),
-      environmentId,
-      probe: kinProbe(get),
-      cachedOrgs: kinCachedOrgs(get),
-    });
-  }).pipe(Atom.withLabel(`kin:host:${environmentId}`)),
-);
+const kinHostAtoms = makeKinHostAtoms({
+  ready: (get) => get(environmentCatalog.catalogValueAtom).isReady,
+  candidates: kinHostCandidates,
+  probe: kinProbe,
+  cachedOrgs: kinCachedOrgs,
+  savedHostId: (get) => {
+    const saved = get(savedKinHostAtom);
+    return saved._tag === "Initial" ? undefined : AsyncResult.getOrElse(saved, () => null);
+  },
+  markKnown: markKinHostKnown,
+});
+export const kinHostAtom = kinHostAtoms.hostAtom;
+const kinHostAtAtom = kinHostAtoms.hostAtAtom;
 
 /** Whether the host a route names is reachable right now, asked at the moment of a change. */
 export function kinHostConnected(environmentId: EnvironmentId): boolean {

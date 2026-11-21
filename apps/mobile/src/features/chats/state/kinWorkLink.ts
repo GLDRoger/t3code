@@ -61,6 +61,8 @@ export function useKinOpenHit(target: KinWorkTarget) {
       });
     else if (hit.kind === "clients") openRecord("KinClient", { ...base, party: hit.key });
     else if (hit.kind === "projects") openRecord("KinProject", { ...base, project: hit.key });
+    // A contact has no page of its own: its client's opens.
+    else if (hit.clientKey !== null) openRecord("KinClient", { ...base, party: hit.clientKey });
     else openRecord("KinWorkItem", { ...base, task: hit.key });
   };
 }

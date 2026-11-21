@@ -33,7 +33,8 @@ export function kinListAt(pathname: string): KinList {
 let lastKinHref: string | null = null;
 let listBehindModal: KinList = "threads";
 // The chat last open, for Chats on a wide window; null before one has been.
-let lastKinChatId: string | null = null;
+// With its host: every host uses the same org id, so a chat id means nothing on another one.
+let lastKinChat: { readonly environmentId: string; readonly chatId: string } | null = null;
 
 // Pages under a company that aren't a chat; anything else there is a chat id.
 const KIN_NOT_CHAT = new Set([
@@ -110,9 +111,14 @@ export function startKinListTracking(
     listBehindModal = list;
     if (pathname === "/") return;
     if (list === "kin") lastKinHref = href;
-    const page = pathname.split("/")[4];
-    if (page !== undefined && !KIN_NOT_CHAT.has(page) && pathname.split("/").length === 5)
-      lastKinChatId = page;
+    const [, , environmentId, , page] = pathname.split("/");
+    if (
+      environmentId !== undefined &&
+      page !== undefined &&
+      !KIN_NOT_CHAT.has(page) &&
+      pathname.split("/").length === 5
+    )
+      lastKinChat = { environmentId, chatId: page };
   };
   record();
   const stopRecording = router.subscribe("onResolved", record);
@@ -280,7 +286,8 @@ export function kinDestinationLink(
 ) {
   if (destination !== "chats") return { to: KIN_PLACE_PATH[destination], params: target } as const;
   // A wide window shows the list beside the chat, so Chats comes back to the chat you left.
-  const chatId = narrow ? null : lastKinChatId;
+  const chatId =
+    narrow || lastKinChat?.environmentId !== target.environmentId ? null : lastKinChat.chatId;
   return chatId === null
     ? ({ to: "/kin" } as const)
     : ({ to: "/kin/$environmentId/$orgId/$chatId", params: { ...target, chatId } } as const);

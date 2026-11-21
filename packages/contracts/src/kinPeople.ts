@@ -281,6 +281,8 @@ export const KinPersonProfile = Schema.Struct({
   load: Schema.optional(Schema.Struct({ open: NonNegativeInt, late: NonNegativeInt })),
   /** The reader may change this profile (the check `kin.people.updateProfile` runs); absent from older hosts. */
   canEdit: Schema.optional(Schema.Boolean),
+  /** Their GitHub username, null when none; only on a profile the reader may change. */
+  githubLogin: Schema.optional(Schema.NullOr(KinTrimmedText)),
 });
 export type KinPersonProfile = typeof KinPersonProfile.Type;
 export const KinPeopleProfilesResult = Schema.Struct({

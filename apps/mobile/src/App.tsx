@@ -55,13 +55,9 @@ import {
   installAppearanceRuntime,
   useAppearancePreferences,
 } from "./features/settings/appearance/AppearancePreferencesProvider";
-import {
-  KIN_ONLY_ROUTES,
-  RootStack,
-  rootPathnameFromState,
-  workspaceLocationFromState,
-} from "./Stack";
+import { RootStack, rootPathnameFromState, workspaceLocationFromState } from "./Stack";
 import { KIN_ONLY } from "./lib/kinOnly";
+import { KIN_ONLY_ROUTES } from "./lib/kinOnlyStackNavigator";
 import { isHomeLinkState, kinOnlyLinkState } from "./lib/kinOnlyRoutes";
 import { I18nProvider } from "./i18n/I18nProvider";
 import { DEFAULT_LOCALE } from "./i18n/locales";

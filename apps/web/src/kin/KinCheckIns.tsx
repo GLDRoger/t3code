@@ -3,6 +3,7 @@ import {
   KIN_CHECK_INS,
   KIN_WEEKDAYS,
   kinCheckInDraft,
+  kinCheckInPipeline,
   kinCheckInLine,
   kinCoveredLine,
   kinCheckInProblem,
@@ -167,6 +168,7 @@ function CheckIns(props: KinWorkTarget & { readonly inDialog: boolean }) {
             return AsyncResult.isSuccess(outcome);
           }}
           onRemove={(scheduleId) => run(scheduleId, "remove")}
+          onPipeline={(scheduleId, on) => run(scheduleId, on ? "numbers_on" : "numbers_off")}
           onClose={() => setEditing(null)}
         />
       )}
@@ -175,12 +177,13 @@ function CheckIns(props: KinWorkTarget & { readonly inDialog: boolean }) {
 }
 
 /** Add a check-in, or change one's name, words, time and days; its agent stays. */
-function CheckInSheet(props: {
+export function CheckInSheet(props: {
   readonly inDialog: boolean;
   readonly checkIn: KinCheckIn | null;
   readonly result: KinCheckInsResult;
   readonly onSave: (draft: KinCheckInDraft) => Promise<boolean>;
   readonly onRemove: (scheduleId: KinCheckIn["scheduleId"]) => Promise<boolean>;
+  readonly onPipeline: (scheduleId: KinCheckIn["scheduleId"], on: boolean) => Promise<boolean>;
   readonly onClose: () => void;
 }) {
   const { checkIn, result } = props;
@@ -190,7 +193,16 @@ function CheckInSheet(props: {
   const [saving, setSaving] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [failed, setFailed] = useState(false);
-  const ids = { name: useId(), what: useId(), agent: useId(), time: useId(), days: useId() };
+  const ids = {
+    name: useId(),
+    what: useId(),
+    agent: useId(),
+    time: useId(),
+    days: useId(),
+    pipeline: useId(),
+  };
+  // Saved at once, as the row's own switch is; only the weekly brief has it.
+  const [pipeline, setPipeline] = useState(() => kinCheckInPipeline(checkIn));
   const edit = (patch: Partial<KinCheckInDraft>) => setDraft({ ...draft, ...patch });
   const problem = kinCheckInProblem(draft);
   const agentName = (agentId: string | null) =>
@@ -288,6 +300,24 @@ function CheckInSheet(props: {
                 ))}
               </ToggleGroup>
             </div>
+            {checkIn === null || pipeline === null ? null : (
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex flex-col gap-0.5">
+                  <Label htmlFor={ids.pipeline}>{KIN_CHECK_INS.pipeline}</Label>
+                  <p className="text-xs text-muted-foreground">{KIN_CHECK_INS.pipelineDetail}</p>
+                </div>
+                <Switch
+                  id={ids.pipeline}
+                  checked={pipeline}
+                  disabled={saving}
+                  onCheckedChange={async (on) => {
+                    setFailed(false);
+                    if (await props.onPipeline(checkIn.scheduleId, on)) setPipeline(on);
+                    else setFailed(true);
+                  }}
+                />
+              </div>
+            )}
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={ids.what}>{KIN_CHECK_INS.what}</Label>
               <Textarea

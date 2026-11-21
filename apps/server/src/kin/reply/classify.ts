@@ -241,6 +241,7 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)pulse_nudge$/, "Nudging a teammate"],
   [/(?:^|__|\.)kin_ask$/, "Writing a question"],
   [/(?:^|__|\.)kin_ask_close$/, "Closing a question"],
+  [/(?:^|__|\.)kin_ask_person$/, "Asking a teammate"],
   [/(?:^|__|\.)agent_update$/, "Updating an agent"],
   [/(?:^|__|\.)kin_chart$/, "Drawing a chart"],
   [/(?:^|__|\.)kin_visual$/, "Putting a visual together"],

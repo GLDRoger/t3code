@@ -36,6 +36,7 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.connections === b.connections &&
   a.workLists === b.workLists &&
   a.recommendations === b.recommendations &&
+  a.imports === b.imports &&
   a.boot === b.boot;
 
 /**
@@ -62,6 +63,7 @@ export const subscribeRefreshes = (
       const view = Effect.all([
         LeadProvision.profiles(person),
         LeadProvision.contacts(person),
+        LeadProvision.messageable(person),
         kind,
       ]).pipe(
         Effect.map((shown) => JSON.stringify(shown)),

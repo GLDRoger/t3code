@@ -478,8 +478,8 @@ function KinLeaveTeam() {
 }
 
 const KIN_LEAVE_TEAM = {
-  button: "Leave this team",
-  title: "Leave this team?",
+  button: KIN_DEVICE_COPY.leaveTeam,
+  title: KIN_DEVICE_COPY.leaveTeamTitle,
   detail: KIN_DEVICE_COPY.leave("browser"),
   confirm: "Leave",
   failed: "Couldn't sign this browser out. Nothing changed.",
@@ -550,7 +550,7 @@ function KinSettingsAgents(props: KinSettingsTarget) {
       ) : agents.length === 0 ? (
         <Empty size="compact">
           <EmptyHeader>
-            <EmptyTitle>No agents yet</EmptyTitle>
+            <EmptyTitle>{KIN_AGENTS_COPY.noneTitle}</EmptyTitle>
             <EmptyDescription>{KIN_AGENTS_COPY.explain}</EmptyDescription>
           </EmptyHeader>
         </Empty>
