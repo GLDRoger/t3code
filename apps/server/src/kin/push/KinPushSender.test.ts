@@ -468,14 +468,15 @@ describe("KinPushSender", () => {
         answer: null,
         ...extra,
       });
-      const ask = (state: object, open: boolean) =>
+      const ask = (state: object, open: boolean, draft: string | null = null) =>
         Effect.gen(function* () {
           const widgetId = yield* postWidget(sql, "choice", state, [member], "Quick one on W-8.");
           if (open)
             yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id,
-                chat_id, kind, widget_id, question, safe, asked_at, due_at, act_at, state)
+                chat_id, kind, widget_id, question, safe, asked_at, due_at, act_at, state,
+                draft_json)
               VALUES (${`q_${widgetId}`}, 'org_01', 'lead_fin', ${member}, 'chat_team', 'card',
-                ${widgetId}, 'Is it signed?', 0, ${NOW}, ${NOW}, ${NOW}, 'open')`;
+                ${widgetId}, 'Is it signed?', 0, ${NOW}, ${NOW}, ${NOW}, 'open', ${draft})`;
           apns.sent.length = 0;
           yield* notify({ _tag: "widget", orgId, widgetId });
           return widgetId;
@@ -493,9 +494,9 @@ describe("KinPushSender", () => {
         ["option-1", "option-2"],
       );
       assert.isUndefined(apns.sent[0]?.collapseId, choice);
-      // Three answers, Kin's own Confirm (no open question), an answer that acts or sends: a
-      // plain notice whose tap opens the card.
-      for (const [state, open] of [
+      // Three answers, Kin's own Confirm (no open question), an answer that acts or sends, a
+      // sent-up draft (approved where it is read, R12): a plain notice whose tap opens the card.
+      for (const [state, open, draft] of [
         [question(["Signed", "Not yet", "Lost it"]), true],
         [question(["Confirm", "Cancel"]), false],
         [
@@ -523,9 +524,16 @@ describe("KinPushSender", () => {
           }),
           true,
         ],
+        [
+          question(["Approve", "Changes first"], {
+            draft: "## Harbourline retainer\n\nMonthly fee: ₹2,50,000",
+          }),
+          true,
+          '{"kind":"proposal","text":"## Harbourline retainer"}',
+        ],
       ] as const) {
         assert.isTrue(isChoiceCard(state));
-        yield* ask(state, open);
+        yield* ask(state, open, draft);
         assert.deepStrictEqual(categories(apns.sent), ["kin.message"], JSON.stringify(state));
         assert.deepStrictEqual(alerts(apns.sent), [
           { title: "Payments team", body: "Quick one on W-8." },

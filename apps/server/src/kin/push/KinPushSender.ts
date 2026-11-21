@@ -244,8 +244,9 @@ const decodeChoiceCard = Schema.decodeUnknownOption(KinChoiceCardState);
 
 /**
  * The two answers a notice shows as buttons, or none. Only an agent's open question (`asked`,
- * in `kin_questions`) with exactly two plain options: Kin's own Confirm cards (money, mail, a
- * company change) are no open question, and an option that runs an action or sends needs the card.
+ * in `kin_questions`, carrying no sent-up draft) with exactly two plain options: Kin's own Confirm
+ * cards (money, mail, a company change) are no open question, an option that runs an action or
+ * sends needs the card, and a draft is approved where it is read (R12).
  */
 const kinNoticeChoices = (state: unknown, asked: boolean) => {
   if (!asked) return undefined;
@@ -752,7 +753,8 @@ const make = Effect.gen(function* () {
         w.state_json, w.awaiting_json, m.seq, m.message_id, m.body, m.form, m.client_message_id,
         m.silent,
         EXISTS (SELECT 1 FROM kin_questions q WHERE q.org_id = w.org_id AND q.state = 'open'
-          AND (q.widget_id = w.widget_id OR q.raise_widget_id = w.widget_id)) AS asked,
+          AND (q.widget_id = w.widget_id OR q.raise_widget_id = w.widget_id)
+          AND q.draft_json IS NULL) AS asked,
         COALESCE(
           (SELECT display_name FROM kin_agents a
             WHERE a.org_id = m.org_id AND a.agent_id = m.author_agent_id),
