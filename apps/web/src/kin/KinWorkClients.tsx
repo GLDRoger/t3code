@@ -945,6 +945,9 @@ function ClientPage(
               ) : null}
             </>
           )}
+          {view.contactsWho === null ? null : (
+            <p className="text-xs text-muted-foreground">{view.contactsWho}</p>
+          )}
         </KinWorkSection>
         <KinWorkPlaceLists
           environmentId={environmentId}

@@ -328,6 +328,19 @@ describe("kinClientPageView", () => {
     expect(kinClientPageView(page({ kind: "vendor" }), names, now, true).nextStep).toBeNull();
   });
 
+  it("says who adds its contacts to a reader who can't", () => {
+    const reader = (can: KinPartyPage["can"], party: Partial<KinPartyPage["party"]> = {}) =>
+      kinClientPageView(page(party, can), names, now, false).contactsWho;
+    expect(reader({ edit: true, log: true, owner: false })).toBeNull();
+    expect(reader({ edit: false, log: true, owner: false, contacts: true })).toBeNull();
+    expect(reader({ edit: false, log: true, owner: false, contacts: false })).toBe(
+      "Zoya looks after this one. They, or anyone with an open deal here, add and change its contacts.",
+    );
+    expect(reader({ edit: false, log: true, owner: false }, { kind: "vendor" })).toBe(
+      "Zoya looks after this one, and adds and changes its contacts.",
+    );
+  });
+
   it("takes what the host says this reader may do, and from an older host only the owner level", () => {
     const can = { edit: true, log: true, owner: false };
     expect(kinClientPageView(page({}, can), names, now, false).can).toEqual(can);

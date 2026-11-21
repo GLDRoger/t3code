@@ -304,6 +304,12 @@ function KinClientBody(
     </ListSection>
   );
   const waitingNone = view.theyOwe.total === 0 && view.theyOwe.rows.length === 0;
+  const contactsFooter = [
+    view.contacts.length === 0 || !full ? null : KIN_CLIENTS.detailsPrivate,
+    view.contactsWho,
+  ]
+    .filter((line) => line !== null)
+    .join(" ");
   return (
     <KinWorkFrame
       title={
@@ -501,7 +507,7 @@ function KinClientBody(
       )}
       <ListSection
         title={KIN_CLIENTS.contacts}
-        {...(view.contacts.length === 0 || !full ? {} : { footer: KIN_CLIENTS.detailsPrivate })}
+        {...(contactsFooter === "" ? {} : { footer: contactsFooter })}
       >
         {view.contacts.length === 0 ? (
           <ListRowLayout
