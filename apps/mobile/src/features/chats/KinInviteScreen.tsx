@@ -1,13 +1,17 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  KIN_NEW_TEAMMATE_SEES,
+  KIN_PLACE_SWITCHES,
   KIN_TEAMMATE_NAME_MAX,
   KIN_TEAM_ADD_COPY,
+  KIN_TEAM_COPY,
   KIN_TEAM_ONLY_OWNER,
   kinRemovedNamesake,
   kinTeammateNameCheck,
+  kinTeammateNameMatch,
   type KinMadeInvite,
 } from "@t3tools/client-runtime/kin/kinTeam";
-import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
+import { EnvironmentId, KinOrgId, type KinPersonPlaceSwitches } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { useState } from "react";
@@ -20,6 +24,8 @@ import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListSection } from "../../components/ui/ListSection";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
+import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinInviteLink } from "./components/KinInviteLink";
@@ -67,7 +73,9 @@ function KinInviteForm(target: KinTeamTarget) {
   const [problem, setProblem] = useState<string | null>(null);
   // Held here and nowhere else; closing the sheet drops it.
   const [made, setMade] = useState<KinMadeInvite | null>(null);
+  const [sees, setSees] = useState<KinPersonPlaceSwitches>(KIN_NEW_TEAMMATE_SEES);
   const checked = kinTeammateNameCheck(name);
+  const match = kinTeammateNameMatch(list, name);
 
   const save = async (person: ReturnType<typeof kinRemovedNamesake> = null, newPerson?: true) => {
     if (saving || !allowed) return;
@@ -78,6 +86,8 @@ function KinInviteForm(target: KinTeamTarget) {
       displayName: person?.displayName ?? checked.name,
       personId: person?.personId ?? null,
       ...(newPerson === true ? { newPerson } : {}),
+      // Someone coming back gets back what they had; only someone new starts with these.
+      ...(person === null ? { sees } : {}),
       replaces:
         person === null
           ? null
@@ -160,6 +170,23 @@ function KinInviteForm(target: KinTeamTarget) {
                   {KIN_TEAM_ADD_COPY.nameHint}
                 </Text>
               </View>
+              {match === null ? null : <Notice message={match} />}
+              <ListSection title={KIN_TEAM_COPY.canSee} footer={KIN_TEAM_ADD_COPY.seesFooter}>
+                {KIN_PLACE_SWITCHES.map((entry, index) => (
+                  <View
+                    key={entry.place}
+                    className={index === 0 ? undefined : "border-t border-border-subtle"}
+                  >
+                    <ListToggleRow
+                      label={entry.label}
+                      description={entry.detail}
+                      value={sees[entry.place]}
+                      disabled={saving}
+                      onValueChange={(on) => setSees((held) => ({ ...held, [entry.place]: on }))}
+                    />
+                  </View>
+                ))}
+              </ListSection>
             </>
           )}
         </ScreenScrollView>

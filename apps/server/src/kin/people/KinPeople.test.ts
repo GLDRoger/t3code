@@ -2415,3 +2415,122 @@ it.effect(
       yield* service.createInvite(ownerSession, { orgId, displayName: "Arjun Rao" });
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect(
+  "an invite's places: chosen by the owner level only, stored with the invite, landed on the joined person; a changed retry is refused",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* People.KinPeople;
+      const identity = yield* KinIdentity;
+      const sessions = yield* SessionStore;
+      const sql = yield* SqlClient.SqlClient;
+      const orgId = identity.owner.orgId;
+      yield* pairSession(ownerSession.sessionId);
+      const joined = Effect.fn("test.joined")(function* (secret: string) {
+        const accepted = yield* service.accept({ secret });
+        const session = yield* sessions.verify(accepted.accessToken);
+        const me = yield* service.accessMe(session, { orgId });
+        return { personId: accepted.person.personId, session, places: me.places };
+      });
+      const invites = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_people_invites`;
+      const chosen = { clients: false, docs: true, money: true };
+
+      // Without the field, as before: client names and shared docs, money off.
+      const ravi = yield* joined(
+        (yield* service.createInvite(ownerSession, { orgId, displayName: "Ravi" })).secret,
+      );
+      assert.deepStrictEqual(ravi.places, { clients: true, docs: true, money: false });
+
+      // A member may not invite, so may not choose; nothing is written.
+      const before = (yield* invites)[0]!.n;
+      assert.propertyVal(
+        yield* service
+          .createInvite(ravi.session, { orgId, displayName: "Zoya", sees: chosen })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+      assert.strictEqual((yield* invites)[0]!.n, before);
+
+      // The owner's choice is stored on the pending invite and is what the person joins with.
+      const zoya = yield* service.createInvite(ownerSession, {
+        orgId,
+        displayName: "Zoya",
+        sees: chosen,
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT sees_json AS sees FROM kin_people_invites WHERE invite_id = ${zoya.inviteId}`,
+        [{ sees: JSON.stringify(chosen) }],
+      );
+      assert.deepStrictEqual((yield* joined(zoya.secret)).places, chosen);
+
+      // A co-owner may choose too, as on the switches; a joined person's are switched on their page.
+      const meera = yield* joined(
+        (yield* service.createInvite(ownerSession, { orgId, displayName: "Meera" })).secret,
+      );
+      yield* service.setAccess(ownerSession, {
+        orgId,
+        personId: meera.personId,
+        access: "co_owner",
+      });
+      const quiet = { clients: false, docs: false, money: false };
+      const dev = yield* service.createInvite(meera.session, {
+        orgId,
+        displayName: "Dev",
+        newPerson: true,
+        sees: quiet,
+      });
+      assert.propertyVal(
+        yield* service
+          .createInvite(ownerSession, {
+            orgId,
+            displayName: "Ravi",
+            personId: ravi.personId,
+            sees: chosen,
+          })
+          .pipe(Effect.flip),
+        "reason",
+        "invalid_state",
+      );
+
+      // The same add again is the same invite; with other places, or none, it is refused.
+      const again = yield* service.createInvite(ownerSession, {
+        orgId,
+        displayName: "Dev",
+        newPerson: true,
+        sees: quiet,
+      });
+      assert.strictEqual(again.inviteId, dev.inviteId);
+      for (const changed of [{ sees: chosen }, {}])
+        assert.propertyVal(
+          yield* service
+            .createInvite(ownerSession, { orgId, displayName: "Dev", newPerson: true, ...changed })
+            .pipe(Effect.flip),
+          "reason",
+          "not_allowed",
+        );
+      assert.deepStrictEqual((yield* joined(again.secret)).places, quiet);
+
+      // Another company's invite looks unknown, to make and to open.
+      const elsewhere = KinOrgId.make("another-company");
+      assert.propertyVal(
+        yield* service
+          .createInvite(ownerSession, { orgId: elsewhere, displayName: "Arjun", sees: chosen })
+          .pipe(Effect.flip),
+        "reason",
+        "not_found",
+      );
+      const arjun = yield* service.createInvite(ownerSession, {
+        orgId,
+        displayName: "Arjun",
+        sees: chosen,
+      });
+      assert.propertyVal(
+        yield* service
+          .accept({ secret: arjun.secret.replace(`${orgId}.`, `${elsewhere}.`) })
+          .pipe(Effect.flip),
+        "reason",
+        "not_found",
+      );
+    }).pipe(Effect.provide(layer)),
+);
