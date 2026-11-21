@@ -183,7 +183,6 @@ const tableNames = [
   "kin_wakeup_outside_reads",
   "kin_wakeup_sensitive_reads",
   "kin_wakeups",
-  "kin_webhook_sources",
   "kin_widgets",
   "kin_worker_attempts",
   "kin_worker_charges",
@@ -510,10 +509,6 @@ describe("Kin migrations", () => {
             assert.strictEqual(columns.find((column) => column.name === name)?.type, "INTEGER");
           }
         }
-        assert.deepStrictEqual(
-          yield* sql`SELECT name FROM pragma_table_info('kin_webhook_sources') WHERE pk > 0 ORDER BY pk`,
-          [{ name: "org_id" }, { name: "source_id" }],
-        );
         // The search index's FTS5 tables carry no org: each row is reached through kin_search_rows.
         for (const { name } of before.filter(
           (row) =>
@@ -699,8 +694,19 @@ describe("Kin migrations", () => {
       yield* sql`ALTER TABLE kin_messages DROP COLUMN silent`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN change_seq`;
       yield* sql`ALTER TABLE kin_chats DROP COLUMN change_seq`;
-      yield* sql`ALTER TABLE kin_webhook_sources DROP COLUMN secret_sha256`;
-      yield* sql`ALTER TABLE kin_webhook_sources DROP COLUMN secret_bound_at`;
+      // K194 dropped it; K019 alters it as K003 made it.
+      yield* sql`CREATE TABLE kin_webhook_sources (
+        source_id TEXT NOT NULL,
+        org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
+        repo TEXT NOT NULL,
+        scheduled_task_id TEXT NOT NULL UNIQUE,
+        inbox_thread_id TEXT NOT NULL,
+        github_hook_id INTEGER,
+        bot_login TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'paused_in_t3', 'blocked_by_policy', 'missing')),
+        PRIMARY KEY (org_id, source_id),
+        UNIQUE (org_id, repo)
+      )`;
       yield* sql`DROP TABLE kin_dream_runs`;
       yield* sql`DROP TABLE kin_deferral_runs`;
       yield* sql`DROP TABLE kin_auth_paired_sessions`;
@@ -1734,6 +1740,43 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect(
+    "K194 drops the webhook sources a host still holds, and runs on one already without",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const sources = sql`SELECT name FROM sqlite_master WHERE name = 'kin_webhook_sources'`;
+        yield* runKinMigrations();
+        assert.deepStrictEqual(yield* sources, []);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 194`;
+        yield* sql`CREATE TABLE kin_webhook_sources (
+        source_id TEXT NOT NULL,
+        org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
+        repo TEXT NOT NULL,
+        scheduled_task_id TEXT NOT NULL UNIQUE,
+        inbox_thread_id TEXT NOT NULL,
+        github_hook_id INTEGER,
+        bot_login TEXT NOT NULL,
+        status TEXT NOT NULL,
+        secret_sha256 TEXT,
+        secret_bound_at INTEGER,
+        PRIMARY KEY (org_id, source_id)
+      )`;
+        yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Invented Ambermill', '2026-11-11T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_webhook_sources (source_id, org_id, repo, scheduled_task_id,
+          inbox_thread_id, bot_login, status)
+        VALUES ('source', 'org', 'ambermill/shop', 'task', 'inbox', 'kin[bot]', 'active')`;
+        yield* sql`PRAGMA foreign_keys = ON`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(194));
+        assert.deepStrictEqual(yield* sources, []);
+        assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
+        // Already gone: it runs again and changes nothing.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 194`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(194));
+        assert.deepStrictEqual(yield* sources, []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -1744,7 +1787,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 193");
+      assert.include(String(exit), "below the latest applied migration 194");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

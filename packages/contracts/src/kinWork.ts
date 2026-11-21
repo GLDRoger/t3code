@@ -258,6 +258,11 @@ export const KinRecordLink = Schema.Struct({
   target: Schema.String,
   /** Message links name their chat so a client can open it. */
   chatId: Schema.NullOr(KinChatId),
+  /**
+   * Set on a message link into a chat this reader may not open; `chatId` and `label` are then
+   * null. `agent` is the name of the agent that chat was with, when it had one.
+   */
+  closedChat: Schema.optional(Schema.Struct({ agent: Schema.NullOr(KinText) })),
   // Server-written: a PR number, a worker title. Plain text, never markup.
   label: Schema.NullOr(KinText),
   createdAt: IsoDateTime,

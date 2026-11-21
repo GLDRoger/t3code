@@ -60,6 +60,7 @@ import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import { type AssignNotice, movedNotices, tellPeople, toldWhenBack } from "./assignNotices.ts";
 import { teamAgent as theTeamAgent } from "../lead/LeadAccess.ts";
 import {
+  chatLinksFor,
   endOfDay,
   isClosed,
   iso,
@@ -710,13 +711,14 @@ const getAs = Effect.fn("KinWork.getAs")(function* (
  */
 const shownTo = Effect.fn("KinWork.shownTo")(function* (
   viewer: Viewer,
-  detail: Effect.Success<ReturnType<KinRecords["Service"]["detail"]>>,
+  read: Effect.Success<ReturnType<KinRecords["Service"]["detail"]>>,
   row: Pick<RecordRow, "registerId" | "projectId">,
   ref: { readonly key: string } | { readonly recordId: string },
   seq?: number,
   /** Their own write just made it private: they saw it until then, so the answer still reads. */
   justHidden = false,
 ) {
+  const detail = yield* chatLinksFor(read.orgId, viewer.person.personId, read).pipe(workFailure);
   const can = (yield* cansOf(viewer, detail.orgId, [{ ...detail, registerId: row.registerId }]))(
     detail.recordId,
   );
