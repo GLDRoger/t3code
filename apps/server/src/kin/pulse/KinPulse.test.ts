@@ -1722,6 +1722,39 @@ describe("KinPulse", () => {
       assert.include(named, "Invoices not yet due:\n- AM/26-27/002 (INV-9): ₹2,000.00 due");
     }).pipe(Effect.provide(layer)),
   );
+
+  it.effect(
+    "the week's Behind is a project off track, less what Overdue and Quiet clients say",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        // P-5's task has waited since it was added; P-6's invoice is overdue; P-7's client has had
+        // no contact since they were added a month and a half ago.
+        yield* insert({ id: "P-5", list: "projects", title: "Invented waiting build" });
+        yield* insert({ id: "W-30", state: "waiting", projectId: "P-5" });
+        yield* insert({ id: "P-6", list: "projects", title: "Invented billed build" });
+        yield* insert({
+          id: "INV-9",
+          list: "invoices",
+          state: "waiting",
+          amount: 1_000_00,
+          dueAt: B,
+          projectId: "P-6",
+        });
+        yield* insert({ id: "C-5", list: "clients", title: "Invented Quiet Co" });
+        yield* insert({
+          id: "P-7",
+          list: "projects",
+          title: "Invented quiet build",
+          partyId: "r-C-5",
+        });
+        const figures = yield* weeklyFigures({ orgId, now: B + 15 * DAY });
+        const behind = figures.split("\n\n").find((block) => block.startsWith("Behind:")) ?? "";
+        assert.match(behind, /^- P-5 Invented waiting build, 1 open, 1 waiting over a week$/m);
+        assert.notMatch(behind, /P-6|P-7|overdue|contact/);
+        assert.match(figures, /^Overdue:\n(- .*\n)*- INV-9/m);
+      }).pipe(Effect.provide(layer)),
+  );
 });
 
 describe("project_quiet's last change", () => {

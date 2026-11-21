@@ -656,6 +656,174 @@ it.effect("project health moves on read as entries go late or wait, with no turn
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("an overdue invoice or a long silence with the client puts a project at risk", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seed;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
+    const client = yield* Clients.createParty([owner], {
+      orgId,
+      name: "Invented VIOM",
+      clientRequestId: "viom",
+    });
+    const build = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented VIOM build",
+      party: client.key,
+      clientRequestId: "viom-build",
+    });
+    const health = (key: string) =>
+      Clients.project([owner], { orgId, key }).pipe(Effect.map((page) => page.project));
+    yield* Clients.logTouch([owner], {
+      orgId,
+      party: client.key,
+      kind: "call",
+      clientRequestId: "kickoff",
+    });
+    assert.include(yield* health(build.key), { health: "on_track" });
+    // The deposit names only the client, the build only its project; both fall due on day 3.
+    const invoice = (title: string, project?: string) => ({
+      list: "invoices" as const,
+      title,
+      client: client.key,
+      ...(project === undefined ? {} : { project }),
+      amount: "50000",
+      state: "waiting" as const,
+      due: "1970-01-03",
+    });
+    const made = yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [
+        invoice("Invented VIOM deposit"),
+        invoice("Invented VIOM build invoice", build.key),
+      ],
+    });
+    yield* issuedByLead(...made.records.map((one) => one.key));
+    yield* TestClock.adjust(4 * DAY);
+    // Never guessed: the deposit isn't the build's, though it's the client's only open project.
+    const owed = yield* health(build.key);
+    assert.include(owed, { health: "at_risk" });
+    assert.deepInclude(owed.healthBecause, { overdueInvoices: 1 });
+    assert.isUndefined(owed.healthBecause.noContact);
+    // Every surface reads the same rule: the list, the Work summary and the lead's own read.
+    const listed = yield* Clients.projects([owner], { orgId });
+    assert.strictEqual(listed.projects.find((row) => row.key === build.key)?.health, "at_risk");
+    const summary = yield* OwnerWork.summary([owner], { orgId });
+    assert.deepInclude(
+      summary.projects!.find((one) => one.project.key === build.key),
+      { health: "at_risk" },
+    );
+    // Another project for the client doesn't take the build's invoice.
+    const second = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented VIOM app",
+      party: client.key,
+      clientRequestId: "viom-app",
+    });
+    assert.include(yield* health(second.key), { health: "on_track" });
+    // No contact past the client's check-in days (14 by default) puts both at risk.
+    yield* TestClock.adjust(11 * DAY);
+    const quiet = yield* health(build.key);
+    assert.include(quiet, { health: "at_risk" });
+    // Issuing the invoices was the last contact, dated the end of that day.
+    assert.deepStrictEqual(quiet.healthBecause.noContact, {
+      lastContactAt: "1970-01-01T18:29:59.999Z",
+      days: 14,
+    });
+    // The client's own playbook gives them longer than the company's 14 days.
+    const viom = (yield* Clients.party([owner], { orgId, key: client.key })).party;
+    yield* Docs.create(
+      orgId,
+      { actor: { _tag: "person", personId: ownerId }, via: "owner" },
+      {},
+      {
+        title: "Invented VIOM playbook",
+        body: "# VIOM\n\n```kin\nclient_checkin_days: 30\n```\n",
+        owner: { _tag: "person", personId: ownerId },
+        summary: "Created",
+        originKey: "test:viom-playbook",
+        kind: "playbook",
+        partyId: viom.recordId,
+      },
+    );
+    assert.include(yield* health(second.key), { health: "on_track" });
+    // A client nobody has contacted at all: no contact recorded, counted from their adding.
+    const silent = yield* Clients.createParty([owner], {
+      orgId,
+      name: "Invented Silent Co",
+      clientRequestId: "silent",
+    });
+    const silentBuild = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented silent build",
+      party: silent.key,
+      clientRequestId: "silent-build",
+    });
+    assert.include(yield* health(silentBuild.key), { health: "on_track" });
+    yield* TestClock.adjust(14 * DAY);
+    const never = yield* health(silentBuild.key);
+    assert.include(never, { health: "at_risk" });
+    assert.deepStrictEqual(never.healthBecause.noContact, { lastContactAt: null, days: 14 });
+    // Twenty healthy projects that sort ahead by name don't push a quiet client's out of the summary.
+    const busy = yield* Clients.createParty([owner], {
+      orgId,
+      name: "Invented Busy Co",
+      clientRequestId: "busy",
+    });
+    yield* Clients.logTouch([owner], {
+      orgId,
+      party: busy.key,
+      kind: "call",
+      clientRequestId: "busy-call",
+    });
+    for (let n = 1; n <= 20; n++)
+      yield* Clients.createProject([owner], {
+        orgId,
+        name: `Alpha ${String(n).padStart(2, "0")}`,
+        party: busy.key,
+        clientRequestId: `alpha-${n}`,
+      });
+    const crowded = (yield* OwnerWork.summary([owner], { orgId })).projects!;
+    assert.lengthOf(crowded, 20);
+    assert.deepInclude(
+      crowded.find((one) => one.project.key === silentBuild.key),
+      { health: "at_risk" },
+    );
+    // A returning client: the project we finished last week counts as contact, as client_quiet reads it.
+    const back = yield* Clients.createParty([owner], {
+      orgId,
+      name: "Invented Returning Co",
+      clientRequestId: "returning",
+    });
+    yield* Clients.logTouch([owner], {
+      orgId,
+      party: back.key,
+      kind: "call",
+      clientRequestId: "returning-call",
+    });
+    const first = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented returning first",
+      party: back.key,
+      clientRequestId: "returning-first",
+    });
+    yield* TestClock.adjust(23 * DAY);
+    yield* Clients.updateProject([owner], { orgId, key: first.key, rev: first.rev, state: "done" });
+    const again = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented returning second",
+      party: back.key,
+      clientRequestId: "returning-second",
+    });
+    yield* TestClock.adjust(7 * DAY);
+    const returning = yield* health(again.key);
+    assert.include(returning, { health: "on_track" });
+    assert.isUndefined(returning.healthBecause.noContact);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "a row repeating an open entry from another turn is refused by name; a near one is made and said",
   () =>

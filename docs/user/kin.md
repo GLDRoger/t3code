@@ -302,7 +302,10 @@ On a client, add contacts and **Log contact** after a call or meeting. If nothin
 while, the client shows up under Needs attention.
 
 A project has a lead, a target day, milestones and its tasks. Its page says whether it's on track,
-what's late or stuck, and who's on it. The owner, co-owners and the project's lead add milestones;
+what's late or stuck, and who's on it. An overdue invoice for it, or no contact with its client
+for longer than their check-in days (`client_checkin_days`, 14 by default), puts it at risk. Only
+invoices linked to the project count; Kin never guesses which project an invoice is for. The
+owner, co-owners and the project's lead add milestones;
 everyone on the project sees them. The owner or a co-owner sets the lead under **Project lead**.
 
 **People** on a project's page lists who's on it. The owner, co-owners and the project's lead choose

@@ -466,6 +466,11 @@ export const GetResult = Schema.Struct({
       late: Schema.Number,
       waitingOverAWeek: Schema.Number,
       targetPassed: Schema.Boolean,
+      overdueInvoices: Schema.optional(Schema.Number),
+      /** The client's last contact, or null when none is recorded; only past their check-in days. */
+      noContact: Schema.optional(
+        Schema.Struct({ lastContactAt: Schema.NullOr(Schema.String), days: Schema.Number }),
+      ),
     }),
   ),
   /** The newest comments still standing, oldest first; `olderComments` counts those before. */
@@ -2178,6 +2183,12 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             late: project.late,
             waitingOverAWeek: project.healthBecause.waitingOverAWeek,
             targetPassed: project.healthBecause.targetPassed,
+            ...(project.healthBecause.overdueInvoices
+              ? { overdueInvoices: project.healthBecause.overdueInvoices }
+              : {}),
+            ...(project.healthBecause.noContact === undefined
+              ? {}
+              : { noContact: project.healthBecause.noContact }),
           },
         }),
     ...(detail.payments === undefined
