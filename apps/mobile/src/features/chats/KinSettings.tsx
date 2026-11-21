@@ -158,7 +158,7 @@ export function KinSettings(props: {
                       key={page}
                       icon="paintbrush"
                       label={KIN_SETTINGS_PAGE_TITLES.appearance}
-                      onPress={() => navigation.navigate("SettingsAppearance")}
+                      onPress={() => navigation.navigate("KinAppearance")}
                     />
                   );
                 default:

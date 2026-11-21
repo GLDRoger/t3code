@@ -1363,6 +1363,16 @@ features:
       out of its one Kin from Settings.
     proof: [packages/client-runtime/src/kin/kinDevice.test.ts]
 
+  - id: appearance
+    name: Theme and text size on the phone
+    tab: settings
+    phone: [SettingsKin, KinAppearance]
+    roles: { owner: phone, co_owner: phone, lead: phone, member: phone }
+    note: >-
+      T3's own Theme, Text and (on Android) Navigation sections, without its coding ones. On web
+      Settings' Appearance is light, dark or the device's own.
+    proof: none
+
   - id: teammate-profile
     name: Change a teammate's profile
     tab: settings
