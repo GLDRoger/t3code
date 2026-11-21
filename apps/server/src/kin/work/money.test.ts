@@ -49,7 +49,7 @@ import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers
 import { moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
 import { viewerOfPeople } from "./teamView.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
-import { proposalFor } from "./registers.ts";
+import { listDef, proposalFor } from "./registers.ts";
 import { waitLine } from "./statements/passwordBudget.ts";
 import * as OwnerMoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as OwnerWork from "./ownerWork.ts";
@@ -2892,6 +2892,95 @@ describe("who keeps a suggestion", () => {
         [0, 1],
       );
     }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("an expense typed by hand", () => {
+  it.effect(
+    "is the owner level's, makes the Expenses list the first time, and keeps its receipt",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const records = yield* KinRecords.KinRecords;
+        yield* turn(1, "The courier's receipt", ["courier.jpg"]);
+        const asked = {
+          orgId,
+          title: "Courier for samples",
+          amount: { minor: 235_000, currency: "INR" },
+          paidOn: "2026-11-12",
+          vendor: "Invented Couriers",
+          category: "Office",
+          paidWith: "UPI",
+          receipt: ["att-1-0"],
+          clientRequestId: "form-1",
+        };
+        assert.isUndefined(yield* listDef(orgId, "expenses"));
+        const made = yield* OwnerMoneyAnswers.newExpense(people, asked);
+        const row = (yield* records.get(orgId, made.expense))!;
+        assert.deepStrictEqual(
+          [row.registerId, row.state, row.amountMinor, row.category, JSON.parse(row.fieldsJson)],
+          [
+            "expenses",
+            "done",
+            235_000,
+            "office",
+            { vendor: "Invented Couriers", paidWith: "upi", receipt: ["att-1-0"] },
+          ],
+        );
+        assert.strictEqual(row.dateAt, endOfDay("2026-11-12", "Asia/Kolkata"));
+        // The same request is the same expense; its id with other details makes nothing.
+        assert.strictEqual(
+          (yield* OwnerMoneyAnswers.newExpense(people, asked)).expense,
+          made.expense,
+        );
+        assert.include(
+          yield* OwnerMoneyAnswers.newExpense(people, { ...asked, title: "Other" }).pipe(
+            Effect.flip,
+          ),
+          { reason: "not_allowed" },
+        );
+        // Paid on a day still ahead, it is to pay; a file from nobody's chat isn't kept.
+        const { receipt: _receipt, ...plain } = asked;
+        const later = yield* OwnerMoneyAnswers.newExpense(people, {
+          ...plain,
+          paidOn: "2026-11-30",
+          clientRequestId: "form-2",
+        });
+        assert.strictEqual((yield* records.get(orgId, later.expense))!.state, "open");
+        assert.include(
+          yield* OwnerMoneyAnswers.newExpense(people, {
+            ...asked,
+            receipt: ["att-nowhere"],
+            clientRequestId: "form-3",
+          }).pipe(Effect.flip),
+          { reason: "not_found" },
+        );
+        assert.include(
+          yield* OwnerMoneyAnswers.newExpense(people, {
+            ...plain,
+            category: "Invented snacks",
+            clientRequestId: "form-4",
+          }).pipe(Effect.flip),
+          { reason: "invalid_state" },
+        );
+        // A teammate's app makes none.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', ${at})`;
+        const teammate = [
+          { _tag: "person" as const, orgId, personId: KinPersonId.make("teammate") },
+        ];
+        assert.include(
+          yield* OwnerMoneyAnswers.newExpense(teammate, {
+            ...plain,
+            clientRequestId: "form-5",
+          }).pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        // The agent's read totals both, as it totals its own.
+        const all = yield* LeadWork.query(scope, { list: "expenses" });
+        assert.deepStrictEqual(all.totals, ["₹4,700.00"]);
+      }).pipe(Effect.provide(layer)),
   );
 });
 
