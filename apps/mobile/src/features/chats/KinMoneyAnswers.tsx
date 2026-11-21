@@ -41,7 +41,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { useState } from "react";
-import type { KinMakeStep } from "./KinInvoice";
+import type { KinMakeStep } from "./kinMakeStep";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";

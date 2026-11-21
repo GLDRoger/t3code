@@ -21,7 +21,7 @@ import { KinDayField } from "./components/KinDayField";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinGateView, KinWorkTextField } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
-import { kinWorkRefParam } from "./KinWorkScreen";
+import { kinWorkRefParam } from "./state/kinWorkParams";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinDealSend, useKinDealStages } from "./state/useKinDeals";

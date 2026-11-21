@@ -42,7 +42,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinWorkSideRow } from "./components/KinWorkTaskMenus";
-import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
+import { kinWorkRefParam, type KinWorkParams } from "./state/kinWorkParams";
 import { kinClient } from "./state/kinClient";
 import {
   useKinWork,

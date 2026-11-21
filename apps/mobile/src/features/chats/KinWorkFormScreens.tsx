@@ -88,7 +88,7 @@ import { useKinCompanyCountry, useKinHomeCurrency } from "./state/useKinMoney.ts
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
 import { KinCameFromFields, KinTagFields, useKinMarketing } from "./KinMarketing";
-import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
+import { kinWorkRefParam, type KinWorkParams } from "./state/kinWorkParams";
 import { useKinIsOwnerLevel, useKinSeesClients } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected, useKinGate } from "./state/useKinHost";
