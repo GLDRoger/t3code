@@ -66,7 +66,7 @@ import { guarded } from "./EgressGuard.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
 import * as McpGateway from "./McpGateway.ts";
 import { KinConnectionsToolkit } from "./mcp.ts";
-import { GOOGLE_SCOPES } from "./Google.ts";
+import { GOOGLE_SCOPES, googleGrant, googleMail } from "./Google.ts";
 import { challengeOf } from "./OAuth.ts";
 import { promptLine } from "./ConnectionRows.ts";
 import { staleAsksStranded } from "./strandedAsks.ts";
@@ -1697,6 +1697,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
     refreshes: 0,
     revoked: false,
     googleRequests: [] as Array<URL>,
+    /** A Web app's secret at Microsoft; null for a public client, which redeems with PKCE alone. */
+    microsoftSecret: null as string | null,
     /** The scopes Google says it granted; none, as from a sign-in before Kin could send. */
     scope: undefined as string | undefined,
     sent: [] as Array<{
@@ -1862,8 +1864,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
       }
       if (url.origin === "https://login.microsoftonline.com") {
         const form = new URLSearchParams(await request.clone().text());
-        // A public client: the code is redeemed with PKCE alone.
-        if (form.has("client_secret")) return json({ error: "invalid_request" }, 400);
+        if (form.get("client_secret") !== vendor.microsoftSecret)
+          return json({ error: "invalid_client" }, 401);
         return token(request);
       }
       if (url.host === "graph.microsoft.com") {
@@ -2273,8 +2275,11 @@ describe("KinConnections sign-in", () => {
         assert.strictEqual(url.host, "accounts.google.com");
         assert.strictEqual(url.searchParams.get("client_id"), GOOGLE_CLIENT);
         assert.strictEqual(url.searchParams.get("access_type"), "offline");
-        assert.include(url.searchParams.get("scope") ?? "", "gmail.readonly");
-        assert.include(url.searchParams.get("scope") ?? "", "gmail.send");
+        assert.deepStrictEqual(url.searchParams.get("scope")?.split(" "), [
+          "https://www.googleapis.com/auth/gmail.modify",
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.readonly",
+        ]);
         const done = yield* connections.signInFinish(owner, {
           orgId,
           response: vendor.approve(started.authorizationUrl, null),
@@ -2999,6 +3004,36 @@ describe("KinConnections sending", () => {
       }),
     ),
   );
+
+  it("reads what a Google grant allows from either family of scopes", () => {
+    const auth = (...names: ReadonlyArray<string>) =>
+      names.map((name) => `https://www.googleapis.com/auth/${name}`).join(" ");
+    const cases = [
+      { granted: GOOGLE_SCOPES, allows: [true, true, true, true], sends: true },
+      {
+        granted: auth(
+          "gmail.readonly",
+          "gmail.send",
+          "calendar.events.readonly",
+          "calendar.events",
+        ),
+        allows: [true, true, true, true],
+        sends: true,
+      },
+      { granted: auth("gmail.readonly"), allows: [true, false, false, false], sends: false },
+      { granted: auth("calendar.readonly"), allows: [false, false, true, false], sends: false },
+      { granted: undefined, allows: [false, false, false, false], sends: false },
+    ];
+    for (const { granted, allows, sends } of cases) {
+      const grant = googleGrant(granted);
+      assert.deepStrictEqual(
+        [grant.readsMail, grant.sendsMail, grant.readsCalendar, grant.writesCalendar],
+        allows,
+        granted,
+      );
+      assert.strictEqual(googleMail.canSend(granted), sends, granted);
+    }
+  });
 });
 
 /** A second Google account, signed in with the same client, its send tools marked Ask me. */
@@ -3433,6 +3468,26 @@ describe("KinConnections Microsoft", () => {
 
         const activity = yield* connections.activity(orgId, id);
         assert.strictEqual(activity._tag, "mail");
+
+        // A Web app the company already had: its secret goes with the code, PKCE as before.
+        vendor.vendor.microsoftSecret = "invented-web-secret";
+        yield* connections.setSignInClient(owner, {
+          orgId,
+          service: "microsoft",
+          client: { clientId: MICROSOFT_APP, clientSecret: Redacted.make("invented-web-secret") },
+        });
+        const again = yield* connections.signInStart(owner, {
+          orgId,
+          connectionId: id,
+          returnTo: "web",
+        });
+        yield* connections.signInFinish(owner, {
+          orgId,
+          response: vendor.approve(again.authorizationUrl, null),
+        });
+        const form = vendor.vendor.tokenForms.at(-1)!;
+        assert.strictEqual(form.get("client_secret"), "invented-web-secret");
+        assert.isTrue(form.has("code_verifier"));
       }),
     ),
   );
