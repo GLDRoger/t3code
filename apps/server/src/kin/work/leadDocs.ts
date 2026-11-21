@@ -21,7 +21,9 @@ import * as Schema from "effect/Schema";
 import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { effectiveAudience, turnPeople } from "../lead/Audience.ts";
+import { madeUnderApproval } from "../questions/approval.ts";
+import { effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
+import { directKey } from "../lead/LeadAccess.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import { DOC_BODY_MAX, outlineOf, sectionsOf, WHOLE_DOC } from "./docBody.ts";
@@ -287,6 +289,7 @@ export const RestoreInput = Schema.Struct({
 });
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const isChatError = Schema.is(KinChatError);
 
 /** The event the lead says it acts on, which must be its own turn's, and who wrote its message. */
 const answering = Effect.fn("KinDocTools.answering")(function* (lead: Lead, eventId: string) {
@@ -514,6 +517,34 @@ const runStartOfferings = Effect.fnUntraced(function* (lead: Lead, input: typeof
   };
 });
 
+/** What a refused doc for a teammate's own ask tells the agent to do instead: draft it for the owner. */
+const draftUpLine = (owner: string, asker: string) =>
+  `Nothing was written. Draft it for ${owner} instead: put the draft in kin_ask_person to ${owner} as its detail, with draft naming its kind and the client or deal key, leaving blank what only ${owner} decides, such as a price; Kin adds the buttons Approve and Changes first. Then tell ${asker} in one line that it is with ${owner} to approve, with the draft under that line.`;
+
+/**
+ * A doc refused for the one teammate behind the turn, asked in their own direct chat with this
+ * agent, names the way on: the draft goes to the owner on a card, which only such a turn may post.
+ */
+const draftUp = Effect.fn("KinDocTools.draftUp")(function* (lead: Lead, refused: KinChatError) {
+  const behind = yield* turnPeople(lead);
+  const asker = behind?.people.length === 1 ? behind.askers[0] : undefined;
+  const chat = yield* turnChat(lead);
+  if (behind === undefined || asker === undefined || chat?.asked !== true) return refused;
+  const sql = yield* SqlClient.SqlClient;
+  const [names] = yield* sql<{ asker: string; owner: string | null }>`SELECT
+      p.display_name AS asker, (SELECT o.display_name FROM kin_people o
+        WHERE o.org_id = c.org_id AND o.person_id = ${behind.owner}) AS owner
+    FROM kin_chats c JOIN kin_people p ON p.org_id = c.org_id AND p.person_id = ${asker}
+    WHERE c.org_id = ${lead.orgId} AND c.chat_id = ${chat.chatId} AND c.kind = 'direct'
+      AND c.archived_at IS NULL AND c.direct_key = ${directKey(asker, lead.agentId)}
+    ORDER BY c.chat_id`;
+  if (names === undefined) return refused;
+  return new KinChatError({
+    reason: refused.reason,
+    message: `${refused.message} ${draftUpLine(names.owner?.trim() || "the owner", names.asker)}`,
+  });
+});
+
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   if (input.whatWeSell === true) return yield* runStartOfferings(lead, input);
   const context = yield* writeContext(lead, "doc_create", input);
@@ -543,9 +574,21 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
           },
         }
       : {}),
-  });
+  }).pipe(
+    Effect.catchIf(
+      (error): error is KinChatError => isChatError(error) && error.reason === "not_allowed",
+      (error) => Effect.flatMap(draftUp(lead, error), Effect.fail),
+    ),
+  );
   if (input.links !== undefined && input.links.length > 0)
     yield* Docs.link(lead.orgId, context.writer, { key: written.row.key }, input.links, "relates");
+  // A proposal or client terms made under the owner's Approve is that approval's one result.
+  if (written.created)
+    yield* madeUnderApproval(lead, {
+      kind: "doc",
+      recordId: written.row.recordId,
+      key: written.row.key,
+    });
   yield* shown(lead, written, input.card ?? "answer");
   return writeResult(written, written.created);
 });

@@ -1541,37 +1541,48 @@ const answer = Effect.fn("KinDeals.answer")(function* (
 const originOf = (actor: DealActor) =>
   actor.members.length === 0 ? "owner:deal" : `member:${actor.person}:deal`;
 
-export const create = Effect.fn("KinDeals.rpc.create")(function* (
+/** A person's new deal, written in the caller's transaction; `told` and `answer` follow its commit. */
+export const createIn = Effect.fn("KinDeals.createIn")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinDealCreateInput,
 ) {
   const { actor, viewer, person } = yield* personActor(people, input.orgId);
   const { clientRequestId, orgId: _orgId, ...asked } = input;
-  const { row, notices } = yield* written(
-    input.orgId,
-    Effect.gen(function* () {
-      const due = yield* expectedAt(input.orgId, input.expectedOn);
-      return yield* createAs(actor, {
-        partyKey: input.party,
-        title: input.title,
-        stage: input.stage,
-        value: input.value,
-        ...due,
-        source: input.source,
-        owner: input.owner,
-        sensitive: input.sensitive,
-        notes: input.notes,
-        quoteKey: input.quote,
-        next: input.next,
-        originKey: `${originOf(actor)}:${clientRequestId}`,
-        requestHash: requestHashOf({ clientRequestId, ...asked }),
-      });
-    }),
-    (made) => made.row,
-  );
-  for (const notice of notices)
-    yield* tellOnScreen(person, `${notice.row.recordId}:${notice.row.rev}`, [notice]);
-  return yield* answer(input.orgId, viewer, row, false);
+  const due = yield* expectedAt(input.orgId, input.expectedOn);
+  const made = yield* createAs(actor, {
+    partyKey: input.party,
+    title: input.title,
+    stage: input.stage,
+    value: input.value,
+    ...due,
+    source: input.source,
+    owner: input.owner,
+    sensitive: input.sensitive,
+    notes: input.notes,
+    quoteKey: input.quote,
+    next: input.next,
+    originKey: `${originOf(actor)}:${clientRequestId}`,
+    requestHash: requestHashOf({ clientRequestId, ...asked }),
+  });
+  return { ...made, viewer, person };
+});
+
+/** After `createIn` commits: its keeper hears of the step, and the deal as its writer reads it. */
+export const createdOut = Effect.fn("KinDeals.createdOut")(function* (
+  orgId: KinOrgId,
+  made: Effect.Success<ReturnType<typeof createIn>>,
+) {
+  for (const notice of made.notices)
+    yield* tellOnScreen(made.person, `${notice.row.recordId}:${notice.row.rev}`, [notice]);
+  return yield* answer(orgId, made.viewer, made.row, false);
+});
+
+export const create = Effect.fn("KinDeals.rpc.create")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinDealCreateInput,
+) {
+  const made = yield* written(input.orgId, createIn(people, input), (done) => done.row);
+  return yield* createdOut(input.orgId, made);
 });
 
 export const update = Effect.fn("KinDeals.rpc.update")(function* (

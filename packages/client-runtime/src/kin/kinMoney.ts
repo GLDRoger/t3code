@@ -1,4 +1,5 @@
 import type {
+  KinCash,
   KinChartSpec,
   KinListDefinition,
   KinListId,
@@ -88,7 +89,31 @@ export const KIN_MONEY = {
     detail: "An owner chooses the company's country first, so amounts, tax and dates read right.",
   },
   chooseCountry: "Open Company details",
+  /** Cash in the bank, as one line, before Kin has any statement or recorded money to show. */
+  noBank: "No bank statement yet",
 };
+
+/**
+ * Money's blocks, top to bottom: who owes us, then this month against last, ahead of what is
+ * suggested, the next 30 days and cash; the folded rows last.
+ */
+export const KIN_MONEY_BLOCKS = [
+  "owed",
+  "month",
+  "suggested",
+  "outlook",
+  "cash",
+  "folded",
+] as const;
+export type KinMoneyBlock = (typeof KIN_MONEY_BLOCKS)[number];
+
+/** True when Kin has nothing about the bank to show: Money draws it as `noBank`, one line. */
+export const kinCashEmpty = (cash: KinCash): boolean =>
+  !cash.known &&
+  cash.accounts.length === 0 &&
+  cash.byCurrency.length === 0 &&
+  cash.notOfRecord.length === 0 &&
+  (cash.bankKnown?.through ?? null) === null;
 
 /** The lists the host's summary is built from. Everything else about a list is its definition. */
 const INVOICES = "invoices";
@@ -97,6 +122,10 @@ const EXPENSES = "expenses";
 /** The lists Money already opens from its own figures, which Work's Lists leaves out. */
 export const kinInMoney = (def: Pick<KinListDefinition, "list">): boolean =>
   def.list === INVOICES || def.list === EXPENSES || def.list === "quotes";
+
+/** Kin's own money lists keep their settings for the computer: the books are set up there. */
+export const kinListSettingsOnPhone = (def: Pick<KinListDefinition, "list" | "builtIn">) =>
+  !def.builtIn && ![INVOICES, EXPENSES, "receipts", "quotes"].includes(def.list);
 
 /** A list to open, already narrowed to the entries behind a figure. */
 export interface KinListOpen {

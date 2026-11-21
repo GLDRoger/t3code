@@ -1,0 +1,517 @@
+import { useAtomValue } from "@effect/atom-react";
+import {
+  StackActions,
+  useNavigation,
+  usePreventRemove,
+  type StaticScreenProps,
+} from "@react-navigation/native";
+import { KIN_LISTS } from "@t3tools/client-runtime/kin/kinLists";
+import {
+  KIN_MONEY_FORMS,
+  kinExpenseChoices,
+  kinExpenseDraft,
+  kinExpenseInput,
+  kinExpenseTyped,
+  kinInvoiceBeforeTax,
+  kinInvoiceDraft,
+  kinInvoiceDueChoices,
+  kinInvoiceInput,
+  kinInvoiceTax,
+  kinInvoiceTaxText,
+  kinInvoiceTyped,
+  type KinExpenseDraft,
+  type KinInvoiceDraft,
+} from "@t3tools/client-runtime/kin/kinMoneyForms";
+import { kinWorkDayOf, kinWorkDueLabel } from "@t3tools/client-runtime/kin/kinWork";
+import {
+  EnvironmentId,
+  KIN_DEFAULT_HOME_CURRENCY,
+  KinOrgId,
+  KinRecordKey,
+} from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import { AsyncResult } from "effect/reactivity";
+import { useRef, useState } from "react";
+import { View } from "react-native";
+
+import { AppText as Text } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
+import * as Dialog from "../../components/ui/Dialog";
+import { EmptyState } from "../../components/ui/EmptyState";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
+import { ListSection } from "../../components/ui/ListSection";
+import { Menu } from "../../components/ui/Menu";
+import { Notice } from "../../components/ui/Notice";
+import { useNowMinuteMs } from "../../lib/clock";
+import { uuidv4 } from "../../lib/uuid";
+import { KinWorkFrame, KinWorkTextField } from "./components/KinWorkPieces";
+import { KinLinesFields } from "./KinMoneyAnswers";
+import {
+  kinListsOf,
+  useKinCompanyProfile,
+  useKinHomeCurrency,
+  useKinLists,
+  useKinWorkFiles,
+} from "./state/useKinMoney";
+import { useKinNewExpense, useKinNewInvoice } from "./state/useKinMoneyAnswers";
+import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
+
+const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
+const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
+const decodeKey = Schema.decodeUnknownOption(KinRecordKey);
+
+const targetOf = (params: { readonly environmentId: string; readonly orgId: string }) => {
+  const environmentId = Option.getOrNull(decodeEnvironmentId(params.environmentId));
+  const orgId = Option.getOrNull(decodeOrgId(params.orgId));
+  return environmentId === null || orgId === null ? null : { environmentId, orgId };
+};
+
+/**
+ * Asks before the sheet closes over words typed; a saved form goes to what it made instead. The
+ * returned `leave` replaces the form with the entry it made, so Back from there is the screen it
+ * was opened from.
+ */
+function useFormGuard(typed: boolean, busy: boolean, discardTitle: string) {
+  const navigation = useNavigation();
+  const saved = useRef(false);
+  usePreventRemove(typed || busy, ({ data }) => {
+    if (saved.current) return navigation.dispatch(data.action);
+    if (busy) return;
+    Dialog.alert(discardTitle, KIN_MONEY_FORMS.discard.detail, [
+      { text: KIN_MONEY_FORMS.discard.keep, style: "cancel" },
+      {
+        text: KIN_MONEY_FORMS.discard.discard,
+        style: "destructive",
+        onPress: () => navigation.dispatch(data.action),
+      },
+    ]);
+  });
+  return {
+    close: () => navigation.goBack(),
+    leave: (target: KinWorkTarget, key: KinRecordKey) => {
+      saved.current = true;
+      navigation.dispatch(
+        StackActions.replace("KinWorkItem", {
+          environmentId: String(target.environmentId),
+          orgId: String(target.orgId),
+          task: key,
+        }),
+      );
+    },
+  };
+}
+
+/** One picked value among a few, as a row that opens the system menu. */
+function PickRow(props: {
+  readonly label: string;
+  readonly value: string;
+  readonly shown: string;
+  readonly options: ReadonlyArray<{ readonly id: string; readonly title: string }>;
+  readonly disabled?: boolean;
+  readonly icon?: "clock";
+  readonly onPick: (id: string) => void;
+}) {
+  return (
+    <Menu
+      title={props.label}
+      accessibilityRole="button"
+      accessibilityLabel={`${props.label}: ${props.shown}. Change`}
+      actions={props.options.map((one) => ({
+        id: one.id,
+        title: one.title,
+        state: one.id === props.value ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent: { event } }) => {
+        if (props.disabled !== true) props.onPick(event);
+      }}
+    >
+      <View pointerEvents="none">
+        <ListRowLayout
+          {...(props.icon === undefined ? {} : { icon: props.icon })}
+          label={props.shown}
+          detail={props.label}
+        />
+      </View>
+    </Menu>
+  );
+}
+
+export type KinInvoiceNewParams = {
+  readonly environmentId: string;
+  readonly orgId: string;
+  /** The client it is opened from, already picked, and its name. */
+  readonly party?: string;
+  readonly partyName?: string;
+};
+
+/** A new invoice typed by hand: a Draft, made with its lines, which opens on its page. */
+export function KinInvoiceNewScreen({ route }: StaticScreenProps<KinInvoiceNewParams>) {
+  const navigation = useNavigation();
+  const target = targetOf(route.params);
+  if (target === null)
+    return (
+      <KinWorkFrame title={KIN_MONEY_FORMS.invoice.title} onClose={() => navigation.goBack()}>
+        <EmptyState variant="plain" {...KIN_LISTS.entry.gone} />
+      </KinWorkFrame>
+    );
+  const party = Option.getOrNull(decodeKey(route.params.party));
+  return (
+    <InvoiceForm
+      {...target}
+      party={party === null ? null : { key: party, name: route.params.partyName ?? String(party) }}
+    />
+  );
+}
+
+function InvoiceForm(
+  props: KinWorkTarget & {
+    readonly party: { readonly key: KinRecordKey; readonly name: string } | null;
+  },
+) {
+  const [opened] = useState(() => kinInvoiceDraft(props.party?.key ?? null));
+  const [draft, setDraft] = useState<KinInvoiceDraft>(opened);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [more, setMore] = useState(false);
+  const [requestId] = useState(uuidv4);
+  const [made, setMade] = useState<{
+    readonly key: KinRecordKey;
+    readonly problems: ReadonlyArray<string>;
+  } | null>(null);
+  const saving = useKinNewInvoice(props);
+  const choices = Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))));
+  const clients = (choices?.clients ?? []).filter((one) => one.kind !== "vendor");
+  const projects = choices?.projects ?? [];
+  const profile = useKinCompanyProfile(props, true);
+  const currency = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
+  const tax = profile.state._tag === "ready" ? kinInvoiceTax(profile.state.value) : null;
+  const gst = tax?._tag === "gst";
+  const taxText = tax === null ? null : kinInvoiceTaxText(tax);
+  const now = new Date(useNowMinuteMs());
+  const today = kinWorkDayOf(now);
+  const locked = saving.busy || made !== null;
+  const guard = useFormGuard(
+    made === null && kinInvoiceTyped(draft, opened),
+    saving.busy,
+    KIN_MONEY_FORMS.discard.invoice,
+  );
+  const set = (patch: Partial<KinInvoiceDraft>) => {
+    if (locked) return;
+    setDraft((current) => ({ ...current, ...patch }));
+    setProblem(null);
+  };
+  const client =
+    clients.find((one) => one.key === draft.party) ??
+    (props.party !== null && props.party.key === draft.party ? props.party : null);
+  const beforeTax = kinInvoiceBeforeTax(draft.lines, currency);
+  const save = async () => {
+    const checked = kinInvoiceInput(props.orgId, draft, {
+      currency,
+      gst: gst && tax.registered,
+      clientRequestId: requestId,
+    });
+    if (!checked.ok) return setProblem(checked.problem);
+    setProblem(null);
+    const result = await saving.save(checked.input);
+    if (result === null) return;
+    if (result.problems.length > 0)
+      return setMade({ key: result.invoice, problems: result.problems });
+    guard.leave(props, result.invoice);
+  };
+  const shown = problem ?? saving.problem;
+  return (
+    <KinWorkFrame
+      title={KIN_MONEY_FORMS.invoice.title}
+      form
+      showTop={shown}
+      onClose={guard.close}
+      confirm={{
+        label: made === null ? KIN_MONEY_FORMS.invoice.save : KIN_MONEY_FORMS.invoice.tryAgain,
+        onPress: () => void save(),
+        loading: saving.busy,
+        disabled: saving.busy,
+      }}
+    >
+      <Text textRole="footnote" className="px-2 text-foreground-muted">
+        {KIN_MONEY_FORMS.invoice.detail}
+      </Text>
+      {shown === null ? null : <Notice message={shown} tone="danger" />}
+      {made === null ? null : (
+        <Notice
+          message={KIN_MONEY_FORMS.invoice.savedWithout(made.key, made.problems)}
+          tone="danger"
+          action={{
+            label: KIN_MONEY_FORMS.invoice.openDraft(made.key),
+            onPress: () => guard.leave(props, made.key),
+          }}
+        />
+      )}
+      <ListSection>
+        {clients.length === 0 && client === null ? (
+          <ListRowLayout
+            label={KIN_MONEY_FORMS.invoice.noClients}
+            detail={KIN_MONEY_FORMS.invoice.party}
+          />
+        ) : (
+          <PickRow
+            label={KIN_MONEY_FORMS.invoice.party}
+            value={draft.party ?? ""}
+            shown={client?.name ?? KIN_MONEY_FORMS.invoice.pickClient}
+            options={clients.map((one) => ({ id: one.key, title: one.name }))}
+            disabled={locked}
+            onPick={(key) => set({ party: clients.find((one) => one.key === key)?.key ?? null })}
+          />
+        )}
+      </ListSection>
+      <KinWorkTextField
+        label={KIN_MONEY_FORMS.invoice.what}
+        value={draft.title}
+        placeholder={KIN_MONEY_FORMS.invoice.whatPlaceholder}
+        hint={KIN_MONEY_FORMS.invoice.whatHint}
+        maxLength={280}
+        disabled={locked}
+        onChangeText={(title) => set({ title })}
+      />
+      <KinLinesFields
+        lines={draft.lines}
+        disabled={locked}
+        codes={gst}
+        detail={KIN_MONEY_FORMS.invoice.linesDetail}
+        onChange={(lines) => set({ lines })}
+      />
+      {beforeTax === null ? null : (
+        <Text textRole="body" className="px-2 text-foreground">
+          {beforeTax}
+        </Text>
+      )}
+      {gst && tax.registered ? (
+        <KinWorkTextField
+          label={KIN_MONEY_FORMS.invoice.gstRate}
+          value={draft.gstRate}
+          keyboard="numbers"
+          hint={KIN_MONEY_FORMS.invoice.gstHint}
+          disabled={locked}
+          onChangeText={(gstRate) => set({ gstRate })}
+        />
+      ) : taxText === null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {taxText}
+        </Text>
+      )}
+      <ListSection>
+        <PickRow
+          label={KIN_MONEY_FORMS.invoice.due}
+          icon="clock"
+          value={draft.dueOn ?? ""}
+          shown={
+            draft.dueOn === null ? KIN_MONEY_FORMS.invoice.noDue : kinWorkDueLabel(draft.dueOn, now)
+          }
+          options={[
+            { id: "", title: KIN_MONEY_FORMS.invoice.noDue },
+            ...kinInvoiceDueChoices(today, now).map((one) => ({ id: one.day, title: one.label })),
+          ]}
+          disabled={locked}
+          onPick={(day) => set({ dueOn: day === "" ? null : day })}
+        />
+      </ListSection>
+      {more ? (
+        <>
+          <KinWorkTextField
+            label={KIN_MONEY_FORMS.invoice.notes}
+            value={draft.notes}
+            hint={KIN_MONEY_FORMS.invoice.notesHint}
+            maxLength={4_000}
+            multiline
+            disabled={locked}
+            onChangeText={(notes) => set({ notes })}
+          />
+          {projects.length === 0 ? null : (
+            <ListSection>
+              <PickRow
+                label={KIN_MONEY_FORMS.invoice.project}
+                value={draft.project ?? ""}
+                shown={
+                  projects.find((one) => one.key === draft.project)?.name ??
+                  KIN_MONEY_FORMS.invoice.noProject
+                }
+                options={[
+                  { id: "", title: KIN_MONEY_FORMS.invoice.noProject },
+                  ...projects.map((one) => ({ id: one.key, title: one.name })),
+                ]}
+                disabled={locked}
+                onPick={(key) =>
+                  set({ project: projects.find((one) => one.key === key)?.key ?? null })
+                }
+              />
+            </ListSection>
+          )}
+        </>
+      ) : (
+        <Button
+          tone="secondary"
+          fullWidth
+          icon="chevron.down"
+          label={KIN_MONEY_FORMS.invoice.more}
+          onPress={() => setMore(true)}
+        />
+      )}
+    </KinWorkFrame>
+  );
+}
+
+export type KinExpenseNewParams = { readonly environmentId: string; readonly orgId: string };
+
+/** A new expense typed by hand; the first one starts the company's Expenses list. */
+export function KinExpenseNewScreen({ route }: StaticScreenProps<KinExpenseNewParams>) {
+  const navigation = useNavigation();
+  const target = targetOf(route.params);
+  if (target === null)
+    return (
+      <KinWorkFrame title={KIN_MONEY_FORMS.expense.title} onClose={() => navigation.goBack()}>
+        <EmptyState variant="plain" {...KIN_LISTS.entry.gone} />
+      </KinWorkFrame>
+    );
+  return <ExpenseForm {...target} />;
+}
+
+function ExpenseForm(props: KinWorkTarget) {
+  const now = new Date(useNowMinuteMs());
+  const today = kinWorkDayOf(now);
+  const [opened] = useState(() => kinExpenseDraft(today));
+  const [draft, setDraft] = useState<KinExpenseDraft>(opened);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [requestId] = useState(uuidv4);
+  const saving = useKinNewExpense(props);
+  const currency = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
+  const lists = useKinLists(props, { enabled: true });
+  const choices = kinExpenseChoices(
+    lists.state._tag === "ready"
+      ? kinListsOf(lists).find((one) => one.list === "expenses")
+      : undefined,
+  );
+  const files = useKinWorkFiles(props, "");
+  const held = files.state._tag === "ready" ? files.state.files.slice(0, 20) : [];
+  const guard = useFormGuard(
+    kinExpenseTyped(draft, opened),
+    saving.busy,
+    KIN_MONEY_FORMS.discard.expense,
+  );
+  const set = (patch: Partial<KinExpenseDraft>) => {
+    setDraft((current) => ({ ...current, ...patch }));
+    setProblem(null);
+  };
+  const days = [0, 1, 2, 3, 4, 5, 6].map((back) => {
+    const day = new Date(now);
+    day.setDate(day.getDate() - back);
+    return kinWorkDayOf(day);
+  });
+  const save = async () => {
+    const checked = kinExpenseInput(props.orgId, draft, { currency, clientRequestId: requestId });
+    if (!checked.ok) return setProblem(checked.problem);
+    setProblem(null);
+    const key = await saving.save(checked.input);
+    if (key !== null) guard.leave(props, key);
+  };
+  const shown = problem ?? saving.problem;
+  const category = choices.categories.find((one) => one.value === draft.category);
+  const receipt = held.find((file) => file.attachmentId === draft.receipt);
+  return (
+    <KinWorkFrame
+      title={KIN_MONEY_FORMS.expense.title}
+      form
+      showTop={shown}
+      onClose={guard.close}
+      confirm={{
+        label: KIN_MONEY_FORMS.expense.save,
+        onPress: () => void save(),
+        loading: saving.busy,
+        disabled: saving.busy,
+      }}
+    >
+      {choices.first ? (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {KIN_MONEY_FORMS.expense.firstList}
+        </Text>
+      ) : null}
+      {shown === null ? null : <Notice message={shown} tone="danger" />}
+      <KinWorkTextField
+        label={KIN_MONEY_FORMS.expense.what}
+        value={draft.title}
+        placeholder={KIN_MONEY_FORMS.expense.whatPlaceholder}
+        maxLength={280}
+        autoFocus
+        onChangeText={(title) => set({ title })}
+      />
+      <KinWorkTextField
+        label={KIN_MONEY_FORMS.expense.amount}
+        value={draft.amount}
+        placeholder={KIN_MONEY_FORMS.expense.amountPlaceholder}
+        keyboard="numbers"
+        onChangeText={(amount) => set({ amount })}
+      />
+      <ListSection>
+        <PickRow
+          label={KIN_MONEY_FORMS.expense.paidOn}
+          icon="clock"
+          value={draft.paidOn}
+          shown={kinWorkDueLabel(draft.paidOn, now)}
+          options={days.map((day) => ({ id: day, title: kinWorkDueLabel(day, now) }))}
+          onPick={(paidOn) => set({ paidOn })}
+        />
+      </ListSection>
+      <KinWorkTextField
+        label={KIN_MONEY_FORMS.expense.vendor}
+        value={draft.vendor}
+        maxLength={200}
+        onChangeText={(vendor) => set({ vendor })}
+      />
+      {choices.categories.length === 0 && choices.paidWith.length === 0 ? null : (
+        <ListSection>
+          {choices.categories.length === 0 ? null : (
+            <PickRow
+              label={KIN_MONEY_FORMS.expense.category}
+              value={draft.category}
+              shown={category?.label ?? KIN_MONEY_FORMS.expense.noCategory}
+              options={[
+                { id: "", title: KIN_MONEY_FORMS.expense.noCategory },
+                ...choices.categories.map((one) => ({ id: one.value, title: one.label })),
+              ]}
+              onPick={(picked) => set({ category: picked })}
+            />
+          )}
+          {choices.paidWith.length === 0 ? null : (
+            <PickRow
+              label={KIN_MONEY_FORMS.expense.paidWith}
+              value={draft.paidWith}
+              shown={draft.paidWith === "" ? KIN_MONEY_FORMS.expense.notSaid : draft.paidWith}
+              options={[
+                { id: "", title: KIN_MONEY_FORMS.expense.notSaid },
+                ...choices.paidWith.map((one) => ({ id: one, title: one })),
+              ]}
+              onPick={(paidWith) => set({ paidWith })}
+            />
+          )}
+        </ListSection>
+      )}
+      {choices.receipt ? (
+        <>
+          <ListSection>
+            <PickRow
+              label={KIN_MONEY_FORMS.expense.receipt}
+              value={draft.receipt ?? ""}
+              shown={receipt?.name ?? KIN_MONEY_FORMS.expense.noReceipt}
+              options={[
+                { id: "", title: KIN_MONEY_FORMS.expense.noReceipt },
+                ...held.map((file) => ({ id: file.attachmentId, title: file.name })),
+              ]}
+              onPick={(picked) => set({ receipt: picked === "" ? null : picked })}
+            />
+          </ListSection>
+          <Text textRole="footnote" className="px-2 text-foreground-muted">
+            {KIN_MONEY_FORMS.expense.receiptHint}
+          </Text>
+        </>
+      ) : null}
+    </KinWorkFrame>
+  );
+}

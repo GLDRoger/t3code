@@ -548,6 +548,8 @@ it.effect.each<{
   readonly failed?: true;
   /** The evening summary's own day; the test clock's, in the company's UTC, is 1970-01-01. */
   readonly day?: string;
+  /** An invoice of the company's, 14 days past due. */
+  readonly overdue?: true;
 }>([
   {
     name: "plain prose",
@@ -648,6 +650,26 @@ it.effect.each<{
     stored: [],
   },
   {
+    name: "its own Money section, and an invoice overdue",
+    scheduleId: "checkin-morning",
+    overdue: true,
+    written: [
+      "## Needs you\n- One card waits.\n\n## Money\n- Nothing new came in.\n\n## Coming up\n- M-1 on 5 Dec.",
+    ],
+    stored: [
+      "## Needs you\n- One card waits.\n\n## Money\n- Nothing new came in.\n- Corran Tiles owes €1,200 on INV-1, 14 days overdue.\n\n## Coming up\n- M-1 on 5 Dec.",
+    ],
+  },
+  {
+    name: "a quiet morning, and an invoice overdue",
+    scheduleId: "checkin-morning",
+    overdue: true,
+    written: [],
+    stored: [
+      `${ReplyBridge.QUIET_PAGE}\n\n## Money\n\n- Corran Tiles owes €1,200 on INV-1, 14 days overdue.`,
+    ],
+  },
+  {
     name: "an afternoon check-in",
     scheduleId: "checkin-afternoon",
     written: ["One client has gone quiet. A reminder is drafted."],
@@ -695,6 +717,22 @@ it.effect.each<{
     });
     yield* sql`INSERT INTO kin_trigger_settings VALUES (${owner.orgId}, 'UTC', '08:30', '18:30',
       '03:00', 0, 1, '09:00', '[]')`;
+    if (row.overdue === true) {
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at)
+        VALUES (${owner.orgId}, 'clients', 'Clients', 'C', 1, 0),
+          (${owner.orgId}, 'invoices', 'Invoices', 'INV', 1, 0)`;
+      for (const [id, list, key, title, state, minor, due] of [
+        ["r-c1", "clients", "C-1", "Corran Tiles", "open", null, null],
+        ["r-inv1", "invoices", "INV-1", "Tiling", "waiting", 120000, -14 * 86_400_000],
+      ] as const)
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, party_id, due_at, amount_minor, currency, created_by_kind,
+            origin_key, created_at, updated_at)
+          VALUES (${owner.orgId}, ${id}, ${list}, ${key}, ${title}, ${state}, 'person',
+            ${owner.personId}, ${list === "invoices" ? "r-c1" : null}, ${due}, ${minor},
+            ${minor === null ? null : "EUR"}, 'person', ${id}, 0, 0)`;
+    }
     if (row.posted !== undefined) {
       const lead = Option.getOrThrow(
         yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),

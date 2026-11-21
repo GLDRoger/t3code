@@ -165,6 +165,8 @@ export const KinDocRow = Schema.Struct({
   archived: Schema.Boolean,
   /** The company's What we sell, pinned first in Docs. */
   whatWeSell: Schema.optional(Schema.Literal(true)),
+  /** An agent's character, which its page changes; the phone's Docs leaves it out. */
+  character: Schema.optional(Schema.Literal(true)),
   bodyKind: KinDocBodyKind,
   /** The latest version, with its "what changed" line. */
   latest: KinDocVersion,
@@ -211,6 +213,8 @@ export const KinDocDetail = Schema.Struct({
   seq: NonNegativeInt,
   /** Absent from servers that draw no blocks. */
   embeds: Schema.optional(Schema.Array(KinDocEmbed)),
+  /** This reader may change a section by hand (`kin.docs.editSection`); the host decides again. */
+  editable: Schema.optional(Schema.Literal(true)),
 });
 export type KinDocDetail = typeof KinDocDetail.Type;
 
@@ -314,6 +318,23 @@ export const KinDocRestoreInput = Schema.Struct({
   latest: PositiveInt,
 });
 export type KinDocRestoreInput = typeof KinDocRestoreInput.Type;
+
+/**
+ * One section changed by hand, as a new version: by the owner level, or the lead of the project
+ * the doc is filed under. A section whose hash is no longer `hash` is refused, and nothing changes.
+ */
+export const KinDocEditSectionInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  section: KinDocSectionId,
+  /** The section's hash in the outline that was read. */
+  hash: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  /** Its new markdown; without a heading line the heading stays. */
+  text: Schema.String.check(Schema.isMaxLength(200_000)),
+  /** The same id and text again returns what that request made. */
+  clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+});
+export type KinDocEditSectionInput = typeof KinDocEditSectionInput.Type;
 
 /** The owner level starts What we sell: Kin writes its outline once, or brings an archived one back. */
 export const KinDocStartWhatWeSellInput = Schema.Struct({ orgId: KinOrgId });
@@ -585,6 +606,7 @@ const KIN_DOCS_WS_METHODS = {
   labelRecipe: "kin.docs.labelRecipe",
   setDefaultRecipe: "kin.docs.setDefaultRecipe",
   startWhatWeSell: "kin.docs.startWhatWeSell",
+  editSection: "kin.docs.editSection",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -655,6 +677,11 @@ export const KinDocsRpcs = [
     success: KinDocDetail,
     error,
   }),
+  Rpc.make(KIN_DOCS_WS_METHODS.editSection, {
+    payload: KinDocEditSectionInput,
+    success: KinDocDetail,
+    error,
+  }),
 ] as const;
 
 export const KIN_DOCS_RPC_SCOPES = {
@@ -680,4 +707,6 @@ export const KIN_DOCS_RPC_SCOPES = {
   [KIN_DOCS_WS_METHODS.setDefaultRecipe]: AuthKinChatScope,
   // Writes Kin's outline once, as restore writes a version; it starts no agent work.
   [KIN_DOCS_WS_METHODS.startWhatWeSell]: AuthKinChatScope,
+  // Writes a version, as restore does; it starts no agent work.
+  [KIN_DOCS_WS_METHODS.editSection]: AuthKinChatScope,
 } as const;

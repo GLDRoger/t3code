@@ -30,6 +30,13 @@ export interface KinDailyLimitChoice {
 
 const NO_LIMIT = "none";
 
+const units = (n: number) =>
+  n >= 1_000_000
+    ? `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
+    : n >= 1_000
+      ? `${Math.round(n / 1_000)}k`
+      : `${Math.round(n)}`;
+
 /** Choosing no limit is asked once first; any other choice is made at once. */
 export const kinDailyLimitAsks = (choice: KinDailyLimitChoice) => choice.value === NO_LIMIT;
 
@@ -48,15 +55,14 @@ export function kinDailyLimitChoices(budget: KinBudget | null): {
       label: KIN_DAILY_LIMIT.none,
       limits: { leadUnits: null, workerUnits: null, teammateUnits: null },
     },
-    ...KIN_DAILY_LIMIT_STEPS.map(({ times, label }) => ({
-      value: String(times),
-      label,
-      limits: {
-        leadUnits: Math.round(usual.leadUnits * times),
-        workerUnits: Math.round(usual.workerUnits * times),
-        ...kept,
-      },
-    })),
+    ...KIN_DAILY_LIMIT_STEPS.map(({ times, label }) => {
+      const leadUnits = Math.round(usual.leadUnits * times);
+      return {
+        value: String(times),
+        label: `${label} (${units(leadUnits)} units a day)`,
+        limits: { leadUnits, workerUnits: Math.round(usual.workerUnits * times), ...kept },
+      };
+    }),
   ];
   if (budget === null) return { choices, current: null };
   const { leadUnits, workerUnits } = budget.limits;
@@ -89,12 +95,6 @@ export function kinDailyLimitWaiting(budget: KinBudget | null): ReadonlyArray<{
   });
 }
 
-const units = (n: number) =>
-  n >= 1_000_000
-    ? `${(n / 1_000_000).toFixed(1)}M`
-    : n >= 1_000
-      ? `${Math.round(n / 1_000)}k`
-      : `${Math.round(n)}`;
 const share = (used: number, limit: number | null) =>
   limit === null
     ? `${units(used)} units`

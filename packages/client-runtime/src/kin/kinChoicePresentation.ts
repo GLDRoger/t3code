@@ -96,6 +96,10 @@ export interface KinSendView {
   /** Other Froms the owner may pick before Confirm, with the one in use; empty when none. */
   readonly fromChoices: ReadonlyArray<KinSendFromChoice>;
   readonly attachments: ReadonlyArray<{ readonly name: string; readonly detail: string }>;
+  /** An attached invoice says nothing about how to pay: what is missing and where to add it. */
+  readonly noBank: string | null;
+  /** A mail's body folds under Read the whole email on a phone, so who, what and Confirm fit. */
+  readonly folds: boolean;
   /** After the tap: "Sending…", "Sent", or why it wasn't sent. */
   readonly outcome: { readonly tone: "pending" | "ok" | "error"; readonly text: string } | null;
   /** A mail's words as stored, which a person may change before it goes; null on other cards. */
@@ -144,6 +148,13 @@ export const KIN_SEND_EDIT_COPY = {
   attachments: "Attached files go as they are.",
   quotedLabel: "Quoted message",
   quoted: "The quoted message goes below yours as it is.",
+} as const;
+
+export const KIN_SEND_COPY = {
+  noBank:
+    "The company has no bank details yet, so this invoice doesn't say how to pay. Add them in Settings → Company details, then make its PDF again.",
+  readAll: "Read the whole email",
+  hideAll: "Hide the email",
 } as const;
 
 /** The tick a card for a mail that may already have gone needs before its Confirm. */
@@ -285,6 +296,10 @@ function kinSendView(send: KinSendCard, now: Date, confirmId: string | null): Ki
       name: file.name,
       detail: [file.label, kb(file.bytes)].filter((part) => part !== null).join(" · "),
     })),
+    noBank: send.attachments.some((file) => file.bankMissing === true)
+      ? KIN_SEND_COPY.noBank
+      : null,
+    folds: send.action === "email" || send.action === "reply",
     outcome:
       send.outcome === null
         ? null

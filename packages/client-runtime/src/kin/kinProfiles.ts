@@ -20,7 +20,7 @@ export { KIN_PROFILE_NAME_MAX, KIN_PROFILE_SKILLS_MAX, KIN_PROFILE_TALK_MAX };
 
 export const KIN_PROFILE_COPY = {
   runsWorkspace: "Runs this workspace",
-  skillsExample: "SwiftUI, App Store releases",
+  skillsExample: "For example: SwiftUI, App Store releases",
   title: "Profile",
   mine: "Your profile",
   edit: "Edit profile",
@@ -60,6 +60,12 @@ export const KIN_PROFILE_COPY = {
   pictureChange: "Change picture",
   pictureRemove: "Remove picture",
   pictureFailed: "The picture didn't upload. Try a smaller image.",
+  pictureSaved: "Picture saved.",
+  pictureRemoved: "Picture removed.",
+  aboutYou: "About you",
+  yourTasks: "Your tasks",
+  moreAboutYou: "More about you",
+  moreAboutThem: "More about them",
 } as const;
 
 export const KIN_GITHUB_LOGIN = {

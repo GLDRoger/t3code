@@ -44,6 +44,7 @@ import { KinAgentDetails } from "./KinAgentPage";
 import { KinAvatar } from "./KinAvatar";
 import { openKinSettings } from "./kinSettingsAddress";
 import { kinClient } from "./kinClient";
+import { KinPinSwitch } from "./KinPinSwitch";
 import { useKinWorkingAgents } from "./useKinHost";
 import { announceKinClearKept, useKinClearPreview } from "./useKinClearPreview";
 import { useNowMinuteMs } from "./useKinClock";
@@ -74,6 +75,8 @@ export function KinLeadSheet(props: {
   readonly environmentId: EnvironmentId;
   readonly chatId: KinChatId;
   readonly muted: boolean;
+  /** The viewer's pin on this chat; null where none is offered, as on the main agent's chat. */
+  readonly pinned: boolean | null;
   /** The viewer is the one person in this chat, so it is theirs to clear. */
   readonly ownsChat: boolean;
   /** How many of the viewer's own agents are active: the last one can't be retired. */
@@ -183,6 +186,13 @@ export function KinLeadSheet(props: {
                   {muteProblem}
                 </p>
               ) : null}
+              {props.pinned === null ? null : (
+                <KinPinSwitch
+                  environmentId={environmentId}
+                  chatId={props.chatId}
+                  pinned={props.pinned}
+                />
+              )}
             </Section>
           ) : null}
           {canClear ? (

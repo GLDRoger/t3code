@@ -10,6 +10,7 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  KinRecordKey,
   KinWidgetId,
   ProviderInstanceId,
   ThreadId,
@@ -577,10 +578,11 @@ it.effect("a turn others read reaches only docs they all see, and restores none"
     assert.strictEqual((yield* Docs.versionOf(orgId, created.row.recordId))!.version, 1);
     // A member reaches the doc reads, where the service shows them only their docs.
     const reads = ["kin.docs.list", "kin.docs.get", "kin.docs.history", "kin.docs.diff"];
+    // The service decides a hand edit (`Docs.editSectionByHand`).
     for (const rpc of KinDocsRpcs)
       assert.strictEqual(
         kinRpcAccess(rpc._tag) === "person",
-        [...reads, "kin.docs.subscribe", "kin.search"].includes(rpc._tag),
+        [...reads, "kin.docs.subscribe", "kin.search", "kin.docs.editSection"].includes(rpc._tag),
         rpc._tag,
       );
   }).pipe(Effect.provide(layer)),
@@ -740,6 +742,26 @@ it.effect(
         [yield* seen(prd.key), yield* seen(made.key), yield* seen(quote.key)],
         [true, false, false],
       );
+      // A proposal filed under the project: lowered, its people read it; raised again, they don't.
+      const proposal = yield* LeadDocs.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        title: "Invented proposal",
+        kind: "proposal",
+        body: "Invented: 20 credits",
+      });
+      yield* sql`UPDATE kin_records SET project_id = ${project.row.recordId}
+        WHERE key = ${proposal.key}`;
+      assert.isFalse(yield* seen(proposal.key));
+      const lowered = yield* OwnerDocs.label([owner], {
+        orgId,
+        key: proposal.key,
+        sensitive: false,
+      });
+      assert.isFalse(lowered.sensitive);
+      assert.isTrue(yield* seen(proposal.key));
+      yield* OwnerDocs.label([owner], { orgId, key: proposal.key, sensitive: true });
+      assert.isFalse(yield* seen(proposal.key));
+      yield* sql`UPDATE kin_records SET project_id = NULL WHERE key = ${proposal.key}`;
       // A doc written for the project, by its name or for its tasks, is filed under it; one that
       // names no project stays unfiled.
       const forIt = (title: string, links?: ReadonlyArray<string>) =>
@@ -793,6 +815,350 @@ it.effect(
       );
       assert.strictEqual(yield* label(made.key), 1);
     }).pipe(Effect.provide(layer)),
+);
+
+/**
+ * D3's people: Rhea owns the org, Meera is a co-owner, Dev leads Invented app (and holds a task in
+ * Invented site, which Zoya leads), Arjun only holds a task in Invented app. One doc per project and
+ * one of the company's, all reached by the people above.
+ */
+const handSeed = Effect.fn("KinDocsTest.handSeed")(function* () {
+  yield* seed;
+  const sql = yield* SqlClient.SqlClient;
+  const ids = {
+    meera: KinPersonId.make("meera"),
+    dev: mateId,
+    zoya: KinPersonId.make("zoya"),
+    arjun: KinPersonId.make("arjun"),
+  };
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+    VALUES (${ids.meera}, ${orgId}, 'meera', 'Meera', 'co_owner', ${at}),
+      (${ids.zoya}, ${orgId}, 'zoya', 'Zoya', NULL, ${at}),
+      (${ids.arjun}, ${orgId}, 'arjun', 'Arjun', NULL, ${at})`;
+  yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${ids.dev}`;
+  for (const person of [ids.meera, ids.dev, ids.zoya, ids.arjun])
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES (${`s-${person}`}, ${orgId}, ${person}, 0)`;
+  const records = yield* KinRecords.KinRecords;
+  const project = (title: string, personId: KinPersonId) =>
+    records.create(orgId, agentWriter(lead), {
+      list: "projects",
+      title,
+      owner: { _tag: "person", personId },
+      originKey: `test:project:${title}`,
+    });
+  const app = yield* project("Invented app", ids.dev);
+  const site = yield* project("Invented site", ids.zoya);
+  for (const [personId, projectId] of [
+    [ids.arjun, app.row.recordId],
+    [ids.dev, site.row.recordId],
+  ] as const)
+    yield* records.create(orgId, agentWriter(lead), {
+      title: `Invented task for ${personId}`,
+      owner: { _tag: "person", personId },
+      projectId,
+      originKey: `test:task:${personId}`,
+    });
+  const appDoc = yield* newDoc(plan, { title: "Invented app plan", projectId: app.row.recordId });
+  const siteDoc = yield* newDoc(plan, {
+    title: "Invented site plan",
+    projectId: site.row.recordId,
+  });
+  const companyDoc = yield* newDoc(plan, { title: "Invented company plan", company: true });
+  const as = (personId: KinPersonId) => [{ _tag: "person" as const, orgId, personId }];
+  const pricing = section(plan, "pricing");
+  const edit = (personId: KinPersonId, key: string, text: string, hash = pricing.hash) =>
+    OwnerDocs.editSection(as(personId), {
+      orgId,
+      key: KinRecordKey.make(key),
+      section: "pricing",
+      hash,
+      text,
+      clientRequestId: `test:${personId}:${text.length}`,
+    });
+  return { ids, as, edit, appDoc: appDoc.row, siteDoc: siteDoc.row, companyDoc: companyDoc.row };
+});
+
+it.effect(
+  "a project's lead changes a section of its doc by hand: a new version, kept beside the old, restorable and read by agents as any",
+  () =>
+    Effect.gen(function* () {
+      const { ids, as, edit, appDoc } = yield* handSeed();
+      const { key, recordId } = appDoc;
+      assert.isTrue((yield* OwnerDocs.get(as(ids.dev), { orgId, key })).editable);
+      const edited = yield* edit(ids.dev, key, "Starter costs 12 invented credits.");
+      assert.include(edited.body, "## Pricing\n\nStarter costs 12 invented credits.\n");
+      assert.include(edited.body, "Launch on the 10th.");
+      assert.include(edited.version, { version: 2, kind: "edited", baseVersion: 1 });
+      assert.strictEqual(edited.version.summary, 'Changed "Pricing" by hand');
+      assert.deepStrictEqual(edited.version.provenance.by, { _tag: "person", personId: ids.dev });
+      // The same request again returns what it made.
+      assert.strictEqual(
+        (yield* edit(ids.dev, key, "Starter costs 12 invented credits.")).version.version,
+        2,
+      );
+      // History keeps both, and the previous one comes back the way any version does.
+      assert.deepStrictEqual(
+        (yield* OwnerDocs.history([owner], { orgId, key })).versions.map((one) => [
+          one.version,
+          one.kind,
+        ]),
+        [
+          [2, "edited"],
+          [1, "created"],
+        ],
+      );
+      assert.strictEqual((yield* Docs.versionOf(orgId, recordId, 1))!.body, plan);
+      // An agent reads the hand-made version as the latest, like any other.
+      yield* turn();
+      const read = yield* LeadDocs.read(scopeOf(lead), { key });
+      assert.strictEqual(read.version, 2);
+      assert.include(read.body, "Starter costs 12 invented credits.");
+      const restored = yield* OwnerDocs.restore([owner], { orgId, key, version: 1, latest: 2 });
+      assert.strictEqual(restored.body, plan);
+      assert.include(restored.version, { version: 3, kind: "restored", restoredFrom: 1 });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a hand edit is refused for a member who isn't the lead, a lead on another project's doc, a doc with no project, and an agent's character; another org's doc looks unknown",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { ids, as, edit, appDoc, siteDoc, companyDoc } = yield* handSeed();
+      const refusal = <A, R>(effect: Effect.Effect<A, KinChatError, R>) =>
+        Effect.flip(effect).pipe(Effect.map((error) => [error.reason, error.message] as const));
+      const notAllowed = [
+        "not_allowed",
+        "Only the owner, a co-owner or the project's lead can change this doc by hand. Suggest a change instead; nothing was changed.",
+      ] as const;
+      // Each reads the doc, and none may change it.
+      for (const [personId, key] of [
+        [ids.arjun, appDoc.key],
+        [ids.dev, siteDoc.key],
+        [ids.dev, companyDoc.key],
+      ] as const) {
+        assert.isUndefined((yield* OwnerDocs.get(as(personId), { orgId, key })).editable);
+        assert.deepStrictEqual(yield* refusal(edit(personId, key, "Starter is free.")), notAllowed);
+      }
+      // A doc they can't read is no doc at all.
+      assert.strictEqual(
+        (yield* refusal(edit(ids.arjun, siteDoc.key, "Starter is free.")))[0],
+        "not_found",
+      );
+      // An agent's character is changed on its page, by anyone.
+      yield* seedCharacters(orgId);
+      const [character] = yield* characters(orgId);
+      const top = sectionsOf(character!.body).find((one) => one.id !== "top")!;
+      assert.isUndefined(
+        (yield* OwnerDocs.get([owner], { orgId, key: KinRecordKey.make(character!.key) })).editable,
+      );
+      assert.strictEqual(
+        (yield* refusal(
+          OwnerDocs.editSection([owner], {
+            orgId,
+            key: KinRecordKey.make(character!.key),
+            section: top.id,
+            hash: top.hash,
+            text: "Invented voice.",
+            clientRequestId: "test:character",
+          }),
+        ))[0],
+        "invalid_state",
+      );
+      // Another org's co-owner, asking in their own org, finds no such doc.
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, sees_docs,
+          created_at) VALUES ('outsider', ${elsewhere}, 'outsider', 'Outsider', 'co_owner', 1, ${at})`;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-outsider', ${elsewhere}, 'outsider', 0)`;
+      assert.strictEqual(
+        (yield* refusal(
+          OwnerDocs.editSection(
+            [{ _tag: "person", orgId: elsewhere, personId: KinPersonId.make("outsider") }],
+            {
+              orgId: elsewhere,
+              key: appDoc.key,
+              section: "pricing",
+              hash: section(plan, "pricing").hash,
+              text: "Leaked?",
+              clientRequestId: "test:outsider",
+            },
+          ),
+        ))[0],
+        "not_found",
+      );
+      // The owner of this org naming another org in the request finds no such doc either.
+      assert.strictEqual(
+        (yield* refusal(
+          OwnerDocs.editSection([owner], {
+            orgId: elsewhere,
+            key: appDoc.key,
+            section: "pricing",
+            hash: section(plan, "pricing").hash,
+            text: "Leaked?",
+            clientRequestId: "test:wrong-org",
+          }),
+        ))[0],
+        "not_found",
+      );
+      for (const row of [appDoc, siteDoc, companyDoc])
+        assert.strictEqual((yield* Docs.versionOf(orgId, row.recordId))!.version, 1);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "the owner level changes any doc's section by hand; a stale edit is refused in plain words and loses nothing",
+  () =>
+    Effect.gen(function* () {
+      const { ids, as, edit, siteDoc, companyDoc } = yield* handSeed();
+      assert.isTrue((yield* OwnerDocs.get(as(ids.meera), { orgId, key: siteDoc.key })).editable);
+      assert.strictEqual(
+        (yield* edit(ids.meera, siteDoc.key, "Starter costs 11 invented credits.")).version.version,
+        2,
+      );
+      assert.strictEqual(
+        (yield* edit(ownerId, companyDoc.key, "Starter costs 9 invented credits.")).version.version,
+        2,
+      );
+      // Rhea read the site doc before Meera's change: her edit names the old section.
+      const stale: KinChatError = yield* Effect.flip(
+        edit(ownerId, siteDoc.key, "Starter costs 13 invented credits."),
+      );
+      assert.deepInclude(stale, {
+        reason: "conflict",
+        message:
+          "This section changed since you opened it, so your change wasn't saved. Copy what you wrote, then open the doc again.",
+      });
+      const latest = (yield* Docs.versionOf(orgId, siteDoc.recordId))!;
+      assert.strictEqual(latest.version, 2);
+      assert.include(latest.body, "Starter costs 11 invented credits.");
+      // Against the section as it is now, it goes through.
+      const now = section(latest.body, "pricing");
+      assert.strictEqual(
+        (yield* edit(ownerId, siteDoc.key, "Starter costs 13 invented credits.", now.hash)).version
+          .version,
+        3,
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a playbook or What we sell is the owner level's to change by hand, even filed under a lead's project",
+  () =>
+    Effect.gen(function* () {
+      const { ids, as, edit, appDoc } = yield* handSeed();
+      assert.strictEqual(Docs.OFFERINGS_ORIGIN, OFFERINGS_ORIGIN);
+      const under = { projectId: appDoc.projectId };
+      const playbook = yield* newDoc(plan, {
+        title: "Invented app playbook",
+        kind: "playbook",
+        ...under,
+      });
+      const offerings = yield* newDoc(plan, {
+        title: "What we sell",
+        originKey: OFFERINGS_ORIGIN,
+        ...under,
+      });
+      for (const { row } of [playbook, offerings]) {
+        const { key, recordId } = row;
+        // Dev leads the project and reads the doc, and keeps Suggest a change.
+        assert.isUndefined((yield* OwnerDocs.get(as(ids.dev), { orgId, key })).editable);
+        const refused: KinChatError = yield* Effect.flip(edit(ids.dev, key, "Starter is free."));
+        assert.deepInclude(refused, {
+          reason: "not_allowed",
+          message:
+            "Only the owner, a co-owner or the project's lead can change this doc by hand. Suggest a change instead; nothing was changed.",
+        });
+        assert.strictEqual((yield* Docs.versionOf(orgId, recordId))!.version, 1);
+        // The owner and a co-owner change it.
+        for (const [personId, version] of [
+          [ownerId, 2],
+          [ids.meera, 3],
+        ] as const) {
+          assert.isTrue((yield* OwnerDocs.get(as(personId), { orgId, key })).editable);
+          const body = (yield* Docs.versionOf(orgId, recordId))!.body;
+          const changed = yield* edit(
+            personId,
+            key,
+            `Starter costs ${version} invented credits.`,
+            section(body, "pricing").hash,
+          );
+          assert.strictEqual(changed.version.version, version);
+        }
+      }
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a hand edit changes only its section: an open code block, a new heading or another section's heading is refused, and nothing is written",
+  () =>
+    Effect.gen(function* () {
+      const { edit, appDoc } = yield* handSeed();
+      const { key, recordId } = appDoc;
+      const timeline = section(plan, "timeline").text;
+      for (const [text, message] of [
+        [
+          "Starter costs 10 invented credits.\n\n```\nprice = 10",
+          "That would change other sections of this doc: close the code block you opened with ``` or ~~~.",
+        ],
+        [
+          "Starter costs 10 invented credits.\n\n## Discounts\n\nTen percent off.",
+          "A new heading would split this section in two: take the # off that line, or ask an agent to add the section.",
+        ],
+        [
+          "Starter costs 10 invented credits.\n\n## Timeline\n\nA second timeline.",
+          "A new heading would split this section in two: take the # off that line, or ask an agent to add the section.",
+        ],
+        [
+          "## Timeline\n\nStarter costs 10 invented credits.",
+          "Keep this section's heading as it was: change only the text under it.",
+        ],
+      ] as const) {
+        const refused: KinChatError = yield* Effect.flip(edit(ownerId, key, text));
+        assert.deepInclude(refused, { reason: "invalid_state", message }, text);
+        const latest = (yield* Docs.versionOf(orgId, recordId))!;
+        assert.strictEqual(latest.version, 1, text);
+        assert.strictEqual(section(latest.body, "timeline").text, timeline, text);
+      }
+      // A closed code block, even one holding a heading-like line, is the section's own.
+      const fenced = yield* edit(
+        ownerId,
+        key,
+        "Starter costs 12 invented credits.\n\n```\n## Not a heading\n```",
+      );
+      assert.strictEqual(fenced.version.version, 2);
+      assert.deepStrictEqual(
+        sectionsOf(fenced.body).map((one) => one.id),
+        sectionsOf(plan).map((one) => one.id),
+      );
+      assert.strictEqual(section(fenced.body, "timeline").text, timeline);
+      assert.strictEqual(section(fenced.body, "top").text, section(plan, "top").text);
+      assert.include(section(fenced.body, "pricing").text, "## Not a heading\n```");
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a hand edit's replay answers with the version it wrote, even after someone else's", () =>
+  Effect.gen(function* () {
+    const { ids, edit, appDoc } = yield* handSeed();
+    const { key, recordId } = appDoc;
+    const first = () => edit(ids.dev, key, "Starter costs 12 invented credits.");
+    assert.strictEqual((yield* first()).version.version, 2);
+    const body = (yield* Docs.versionOf(orgId, recordId))!.body;
+    const theirs = yield* edit(
+      ids.meera,
+      key,
+      "Starter costs 14 invented credits.",
+      section(body, "pricing").hash,
+    );
+    assert.strictEqual(theirs.version.version, 3);
+    // Dev's reply was lost and his app sends the same request again.
+    const replay = yield* first();
+    assert.strictEqual(replay.version.version, 2);
+    assert.include(replay.body, "Starter costs 12 invented credits.");
+    assert.strictEqual(replay.latest.version, 3);
+    assert.strictEqual((yield* Docs.versionOf(orgId, recordId))!.version, 3);
+    assert.isUndefined(yield* Docs.versionOf(orgId, recordId, 4));
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("another org's doc, by key or id, looks like no doc at all", () =>
@@ -1364,6 +1730,15 @@ it.effect(
         (yield* Docs.docRow(orgId, { key: mine!.key }, KIN_OWNER_LEVEL)).key,
         mine!.key,
       );
+      // Docs marks it by its origin, so the phone's Docs can leave it out; other docs are unmarked.
+      yield* newDoc();
+      const listed = (yield* OwnerDocs.list([owner], { orgId })).docs;
+      assert.deepStrictEqual(listed.map((doc) => [doc.title, doc.character === true]).toSorted(), [
+        ["Invented launch plan", false],
+        ["Lead lead's character", true],
+        ["Lead other's character", true],
+      ]);
+      assert.isTrue((yield* OwnerDocs.get([owner], { orgId, key: mine!.key })).character);
       // The owner's own text from the host is a new version; the old one stays in its history.
       const own = "# Finance\n\nTo colleagues: Invented line.\n\nInvented voice.\n";
       assert.strictEqual((yield* setCharacter(orgId, lead, own)).outcome, "set");
@@ -1595,6 +1970,69 @@ it.effect("a teammate's shared turn can't start What we sell, and nothing is wri
     );
     assert.isUndefined(yield* findOfferings(orgId));
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a proposal refused for a teammate in their own chat says to draft it for the owner; in a group it doesn't",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('mate-chat', ${orgId}, 'direct', ${`${mateId}:${lead}`}, 1, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('mate-chat-mate', ${orgId}, 'mate-chat', 'person', ${mateId}, 'owner', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('mate-chat-lead', ${orgId}, 'mate-chat', 'agent', ${lead}, 'member', ${at})`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+          author_member_id, author_role, kind, body, mentions_json, status, created_at)
+        VALUES ('ask', ${orgId}, 'mate-chat', 1, 'human', ${mateId}, 'mate-chat-mate', 'owner', 'text',
+          'Draft the invented proposal for Acme', '[]', 'posted', ${at})`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status,
+          event_ids, audience)
+        VALUES ('wake', ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '["ask-event"]', 'shared')`;
+      const event = {
+        _tag: "chat.message",
+        orgId,
+        agentId: lead,
+        eventId: "ask-event",
+        receivedAt: at,
+        dedupeKey: null,
+        provenance: { _tag: "human", personId: mateId, memberId: "mate-chat-mate" },
+        chatId: "mate-chat",
+        messageId: "ask",
+      };
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+          queued_at, state, wakeup_id)
+        VALUES ('ask-event', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0,
+          'claimed', 'wake')`;
+      const propose = Effect.flip(
+        LeadDocs.create(scopeOf(lead), {
+          sourceEventId: "ask-event",
+          title: "Invented proposal for Acme",
+          kind: "proposal",
+          body: "## Scope\n\nInvented scope.\n\n## Price\n\nLeft for the owner.",
+        }),
+      );
+      const refused = yield* propose;
+      assert.strictEqual(reasonOf(refused), "not_allowed");
+      assert.strictEqual(
+        "message" in refused ? refused.message : "",
+        "Only the owner or a co-owner changes that. Nothing was written. Draft it for Owner instead: put the draft in kin_ask_person to Owner as its detail, with draft naming its kind and the client or deal key, leaving blank what only Owner decides, such as a price; Kin adds the buttons Approve and Changes first. Then tell Mate in one line that it is with Owner to approve, with the draft under that line.",
+      );
+      const docs = sql`SELECT 1 FROM kin_records WHERE org_id = ${orgId} AND register_id = 'docs'`;
+      assert.lengthOf(yield* docs, 0);
+      // A chat others share asks nobody outside it, so its refusal names no card.
+      yield* sql`UPDATE kin_chats SET kind = 'team_group', direct_key = NULL WHERE chat_id = 'mate-chat'`;
+      const inGroup = yield* propose;
+      assert.strictEqual(
+        "message" in inGroup ? inGroup.message : "",
+        "Only the owner or a co-owner changes that.",
+      );
+      assert.lengthOf(yield* docs, 0);
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("a teammate with Docs reads What we sell, and their turn's agent can't change it", () =>

@@ -4,6 +4,8 @@ import {
   KIN_MESSAGE_BODY_MAX_LENGTH,
   KinChatId,
   kinIsPage,
+  KIN_MONEY_SECTION,
+  kinPageWithLines,
   kinPageSections,
   kinPageShape,
   KIN_FIGURE_SCHEME,
@@ -80,10 +82,12 @@ import {
 } from "./classify.ts";
 import { KinPresence, syncQueued } from "./KinPresence.ts";
 import { missingCard, NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promises.ts";
+import { morningMoneyFor } from "../pulse/morningMoney.ts";
 import { weeklyFigures } from "../pulse/weekly.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { flagTextQuestion } from "../questions/openQuestions.ts";
+import { tellDraftMade } from "../questions/sentUpDraft.ts";
 
 export { rescueMessageId };
 /** No turn-item or provider-turn update for this long shows the owner a stall and Stop. */
@@ -538,7 +542,11 @@ const make = Effect.gen(function* () {
   const store = Effect.fn("KinReplyBridge.store")(function* (
     wake: Wake,
     slot: Slot,
-    input: { readonly body: string; readonly lead?: true },
+    input: {
+      readonly body: string;
+      readonly lead?: true;
+      readonly money?: ReadonlyArray<string>;
+    },
     ordinal: number,
   ) {
     const author = yield* agent(wake);
@@ -679,7 +687,28 @@ const make = Effect.gen(function* () {
           return;
         }
       }
-      if (brief.figures !== 1) return;
+      // Each morning but the figures' day, which lists them, Kin's own Money lines go on the page.
+      if (brief.figures !== 1) {
+        const money = yield* morningMoneyFor({
+          orgId: wake.orgId,
+          chatId: wake.lane.chatId,
+          now: yield* Clock.currentTimeMillis,
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        if (money.length === 0) return;
+        const page = kinPageWithLines(slot.body, KIN_MONEY_SECTION, money);
+        if (page.length <= KIN_MESSAGE_BODY_MAX_LENGTH) {
+          const result = yield* store(wake, slot, { body: page, money }, -1);
+          if (result._tag === "posted") return;
+          if (result.reason !== "not_found") {
+            wake.withheld = result.reason;
+            return;
+          }
+        }
+        const section = kinPageWithLines("", KIN_MONEY_SECTION, money);
+        const result = yield* deliver(wake, `kin-money:${wake.wakeupId}`, section, -1);
+        if (result._tag === "withheld") wake.withheld = result.reason;
+        return;
+      }
       const figures = yield* weeklyFigures({
         orgId: wake.orgId,
         now: yield* Clock.currentTimeMillis,
@@ -1308,6 +1337,11 @@ const make = Effect.gen(function* () {
           yield* flagTextQuestion({ ...wake, chatId: wake.lane.chatId }).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.catchCause((cause) => Effect.logWarning("Kin question check failed", { cause })),
+          );
+          // The owner's turn on an approved draft: the teammate who asked hears it was made.
+          yield* tellDraftMade(wake, chat).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.catchCause((cause) => Effect.logWarning("Kin draft notice failed", { cause })),
           );
           return yield* answered(wake);
         }),

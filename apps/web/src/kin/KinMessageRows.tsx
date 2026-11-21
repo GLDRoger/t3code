@@ -8,6 +8,11 @@ import {
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinTurnReceiptLine } from "@t3tools/client-runtime/kin/kinTurnReceipt";
+import {
+  KIN_REPLY_BUTTONS,
+  kinReplyButtons,
+  type KinReplyButton,
+} from "@t3tools/client-runtime/kin/kinReplyButtons";
 import { kinCardDraws, KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   kinDraftMarkdown,
@@ -35,13 +40,14 @@ import {
 import { KinAvatar } from "./KinAvatar";
 import { kinOutbox } from "./kinOutbox";
 import { openKinProfile } from "./KinProfileSheet";
+import { kinRecordPlace } from "./kinPlaces";
 import {
   kinPageShape,
   KIN_REACTION_EMOJI,
   KinOrgId,
   type EnvironmentId,
   type KinMessageRef,
-  type KinPersonId,
+  KinPersonId,
   type KinReactionEmoji,
   type KinWidget,
   kinWhenFormat,
@@ -212,6 +218,7 @@ export function KinMessageRow(props: {
   const layout = row.own || !hasBody ? "bubble" : kinMessageLayout(message);
   const label = kinMessageLabel(row, formatTime(message.createdAt));
   const receipt = deleted ? null : kinTurnReceiptLine(message.turnChanges);
+  const buttons = kinReplyButtons(message);
   // A page's card is its foot, across the page's width.
   const onPage = hasBubble && layout !== "bubble";
   const card =
@@ -324,6 +331,13 @@ export function KinMessageRow(props: {
           {canReact && !hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
         </div>
       ) : null}
+      {buttons.length === 0 ? null : (
+        <KinReplyButtons
+          buttons={buttons}
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+        />
+      )}
       {receipt === null ? null : (
         <KinTurnReceipt
           line={receipt}
@@ -355,6 +369,74 @@ export function KinMessageRow(props: {
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** Up to three buttons under an agent's reply, each opening what it named. */
+function KinReplyButtons(props: {
+  readonly buttons: ReadonlyArray<KinReplyButton>;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+}) {
+  const params = { environmentId: props.environmentId, orgId: props.orgId };
+  return (
+    <div role="group" aria-label={KIN_REPLY_BUTTONS.label} className="flex flex-wrap gap-1 px-1">
+      {props.buttons.map((button) => {
+        const { to } = button;
+        const common = {
+          size: "sm-multiline" as const,
+          variant: "outline" as const,
+          title: button.note ?? undefined,
+        };
+        switch (to._tag) {
+          case "chat":
+            return (
+              <Button
+                key={button.id}
+                {...common}
+                render={
+                  <Link
+                    to="/kin/$environmentId/$orgId/$chatId"
+                    params={{ ...params, chatId: to.chatId }}
+                  />
+                }
+              >
+                {button.label}
+              </Button>
+            );
+          case "record": {
+            const place = kinRecordPlace(to);
+            return (
+              <Button
+                key={button.id}
+                {...common}
+                render={<Link to={place.to} params={params} search={place.search} />}
+              >
+                {button.label}
+              </Button>
+            );
+          }
+          case "person":
+            return (
+              <Button
+                key={button.id}
+                {...common}
+                onClick={() =>
+                  openKinProfile({
+                    environmentId: props.environmentId,
+                    orgId: KinOrgId.make(props.orgId),
+                    personId: KinPersonId.make(to.personId),
+                  })
+                }
+              >
+                {button.label}
+              </Button>
+            );
+          case "settings":
+            return null;
+        }
+      })}
     </div>
   );
 }

@@ -902,6 +902,9 @@ function KinSendDetail(props: {
           ))}
         </ul>
       )}
+      {send.noBank === null ? null : (
+        <p className="text-xs text-warning-foreground">{send.noBank}</p>
+      )}
       {send.outcome === null ? null : (
         <p
           role="status"

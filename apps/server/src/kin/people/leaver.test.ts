@@ -476,7 +476,7 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_org_state: "paused_by",
   kin_pending_actions: "requested_by_agent_id",
   kin_people: "person_id",
-  kin_people_invites: "made_by_person_id person_id",
+  kin_people_invites: "made_by_person_id person_id sees_by_person_id",
   kin_ping_deliveries: "person",
   kin_ping_items: "person",
   kin_ping_ledger: "person",

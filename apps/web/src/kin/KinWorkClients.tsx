@@ -7,11 +7,14 @@ import {
 import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   kinWorkDraftFor,
+  kinWorkOffline,
   kinWorkPrincipalKey,
   type KinWorkDraft,
   type KinWorkRef,
   type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import { kinWorkApplied, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
   KIN_CLIENTS,
@@ -24,6 +27,8 @@ import {
   KIN_CLIENTS_DEFAULT_FILTER,
   KIN_CLIENTS_SHOW,
   kinClientsShowChoices,
+  kinClientsChosenAtom,
+  kinClientsChosenKey,
   kinClientsQuery,
   type KinClientsFilter,
   kinClientPageView,
@@ -47,6 +52,7 @@ import {
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
+import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import {
   KIN_MARKETING,
   kinCameFromLabel,
@@ -61,6 +67,7 @@ import type {
   KinRecord,
   KinRecordKey,
 } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react";
 import { EllipsisIcon, MailIcon, PencilIcon, PhoneIcon, PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
@@ -72,12 +79,14 @@ import { Label } from "../components/ui/label";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Switch } from "../components/ui/switch";
 import { cn } from "../lib/utils";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinClientContact } from "./KinClientTouches";
 import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinClientDialog, KinContactDialog, KinProjectDialog } from "./KinWorkForms";
+import { KinNewInvoiceDialog } from "./KinMoneyForms";
 import { KinContactListDialog, KinExportListButton, useKinMarketing } from "./KinMarketing";
 import { KinWorkPlaceLists } from "./KinWorkPlaceLists";
 import {
@@ -95,8 +104,9 @@ import {
 import { KinWorkRow } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { KinClientDeals } from "./KinDeals";
+import { KinConfirm } from "./KinConfirm";
 import { useNowMinuteMs } from "./useKinClock";
-import { kinHostConnected } from "./useKinHost";
+import { kinHostConnected, useKinHostAt } from "./useKinHost";
 import {
   useKinClientPage,
   useKinClientsList,
@@ -132,13 +142,27 @@ export function KinWorkClientsList(
   const scope = useKinViewerScope(props.environmentId);
   const seesClients = useKinSeesClients(props.environmentId);
   const viewerStart = useKinClientsStart(props.environmentId);
+  // A list opened on its own start, such as a campaign's prospects, neither reads nor keeps it.
+  const chosen =
+    props.start === undefined
+      ? kinClientsChosenAtom(kinClientsChosenKey(props.environmentId, names.me))
+      : null;
+  const remembered = chosen === null ? null : appAtomRegistry.get(chosen);
   const { state, list } = useKinClientsList(
     props,
     props.stale ? null : props.live.seq,
-    props.start ?? viewerStart,
+    props.start ?? (remembered === null ? viewerStart : { ...remembered, text: "" }),
   );
+  const setFilter = (next: KinClientsFilter) => {
+    if (chosen !== null) {
+      const { text: _text, ...kept } = next;
+      appAtomRegistry.set(chosen, kept);
+    }
+    list.setFilter(next);
+  };
   const marketing = useKinMarketing(props);
   const { filter } = state;
+  const listShown = kinListShown(state, kinHostLink(useKinHostAt(props.environmentId)));
   const nothing = kinClientsNothing(filter, scope, names.me);
   const mine =
     filter.lookedAfter !== "anyone" &&
@@ -163,7 +187,7 @@ export function KinWorkClientsList(
   const lookedAfterValue =
     filter.lookedAfter === "anyone" ? ANYONE : mine ? ME : kinWorkPrincipalKey(filter.lookedAfter);
   const pickLookedAfter = (value: string) =>
-    list.setFilter({
+    setFilter({
       ...filter,
       lookedAfter:
         value === ANYONE || (value === ME && names.me === null)
@@ -184,7 +208,7 @@ export function KinWorkClientsList(
       onEndReachedThreshold={0.5}
       ListHeaderComponent={
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
-          {props.stale || state.stale ? (
+          {listShown === "rows" && (props.stale || state.stale) ? (
             <KinWorkStaleLine environmentId={props.environmentId} onRetry={list.refresh} />
           ) : null}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -194,12 +218,12 @@ export function KinWorkClientsList(
                 aria-label={KIN_CLIENTS.search}
                 placeholder={KIN_CLIENTS.search}
                 value={filter.text}
-                onChange={(event) => list.setFilter({ ...filter, text: event.currentTarget.value })}
+                onChange={(event) => setFilter({ ...filter, text: event.currentTarget.value })}
               />
             </div>
             <KinFilter
               chip={chip === "" ? null : chip}
-              onClear={() => list.setFilter({ ...KIN_CLIENTS_DEFAULT_FILTER, text: filter.text })}
+              onClear={() => setFilter({ ...KIN_CLIENTS_DEFAULT_FILTER, text: filter.text })}
               groups={[
                 {
                   label: KIN_CLIENTS.show,
@@ -209,7 +233,7 @@ export function KinWorkClientsList(
                     label: one.label,
                   })),
                   onChange: (value) =>
-                    list.setFilter({
+                    setFilter({
                       ...filter,
                       show:
                         kinClientsShowChoices(seesClients).find((one) => one.id === value)?.id ??
@@ -250,7 +274,7 @@ export function KinWorkClientsList(
                           })),
                         ],
                         onChange: (value: string) =>
-                          list.setFilter({
+                          setFilter({
                             ...filter,
                             cameFrom: value === ANYWHERE ? null : value,
                           }),
@@ -264,7 +288,7 @@ export function KinWorkClientsList(
                           ...marketing.tags.map((tag) => ({ value: tag, label: tag })),
                         ],
                         onChange: (value: string) =>
-                          list.setFilter({ ...filter, tag: value === ANYWHERE ? null : value }),
+                          setFilter({ ...filter, tag: value === ANYWHERE ? null : value }),
                         long: true,
                       },
                     ]
@@ -276,11 +300,13 @@ export function KinWorkClientsList(
       }
       ListEmptyComponent={
         <div className="mx-auto w-full max-w-3xl px-4">
-          {state.loading ? (
+          {listShown === "offline" ? (
+            <KinWorkNotice {...kinWorkOffline("clients")} />
+          ) : listShown === "loading" ? (
             <div role="status" aria-label="Loading clients">
               <KinWorkRowSkeletons />
             </div>
-          ) : state.failed !== null ? (
+          ) : listShown === "failed" ? (
             <KinLoadFailed
               what={KIN_CLIENTS.loadFailed}
               cause={state.failed}
@@ -410,6 +436,7 @@ export function KinWorkProjectsTab(
   const scope = useKinViewerScope(props.environmentId);
   const { state, list } = useKinProjectsList(props, props.stale ? null : props.live.seq);
   const { filter } = state;
+  const listShown = kinListShown(state, kinHostLink(useKinHostAt(props.environmentId)));
   const items = kinProjectsByClient(state.records, props.directory.names, now).flatMap(
     (group): ReadonlyArray<ProjectsItem> => [
       { type: "group", id: `group:${group.id}`, title: group.title, party: group.party },
@@ -430,7 +457,7 @@ export function KinWorkProjectsTab(
       onEndReachedThreshold={0.5}
       ListHeaderComponent={
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
-          {props.stale || state.stale ? (
+          {listShown === "rows" && (props.stale || state.stale) ? (
             <KinWorkStaleLine environmentId={props.environmentId} onRetry={list.refresh} />
           ) : null}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -463,11 +490,13 @@ export function KinWorkProjectsTab(
       }
       ListEmptyComponent={
         <div className="mx-auto w-full max-w-3xl px-4">
-          {state.loading ? (
+          {listShown === "offline" ? (
+            <KinWorkNotice {...kinWorkOffline("clients")} />
+          ) : listShown === "loading" ? (
             <div role="status" aria-label="Loading projects">
               <KinWorkRowSkeletons />
             </div>
-          ) : state.failed !== null ? (
+          ) : listShown === "failed" ? (
             <KinLoadFailed
               what={KIN_PROJECTS.loadFailed}
               cause={state.failed}
@@ -600,6 +629,7 @@ type ClientDialog =
   | { readonly type: "edit" }
   | { readonly type: "contact"; readonly key: KinRecordKey | null }
   | { readonly type: "project" }
+  | { readonly type: "invoice" }
   | null;
 
 /** One client: what is owed each way, who to reach, its projects, terms, notes and history. */
@@ -657,11 +687,13 @@ function ClientPage(
   const { state: changed, changes } = props.changes;
   const ownerLevel = useKinOwnerLevel(environmentId);
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
+  const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
   const now = new Date(useNowMinuteMs());
   const [dialog, setDialog] = useState<ClientDialog>(null);
   const [tagList, setTagList] = useState<string | null>(null);
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
+  const [askClose, setAskClose] = useState(false);
   const history = useKinWorkHistory(props, props.clientKey, page.seq);
   const privateId = useId();
 
@@ -771,7 +803,7 @@ function ClientPage(
                 <span className="truncate text-foreground">{view.lookedAfter.name}</span>
               </p>
             </div>
-            {can.edit || can.owner ? (
+            {can.edit || can.owner || canInvoice ? (
               <div className="flex shrink-0 items-center gap-1">
                 {can.edit ? (
                   <Button
@@ -793,13 +825,22 @@ function ClientPage(
                     <EllipsisIcon />
                   </MenuTrigger>
                   <MenuPopup align="end">
+                    {canInvoice && !view.vendor && !view.closed ? (
+                      <MenuItem onClick={() => setDialog({ type: "invoice" })}>
+                        {KIN_MONEY_FORMS.invoice.title}
+                      </MenuItem>
+                    ) : null}
                     {can.edit && !view.vendor ? (
                       <MenuItem onClick={() => void change({ prospect: !view.prospect })}>
                         {view.prospect ? KIN_CLIENTS.makeClient : KIN_CLIENTS.makeProspect}
                       </MenuItem>
                     ) : null}
                     {can.owner ? (
-                      <MenuItem onClick={() => void change({ active: view.closed })}>
+                      <MenuItem
+                        onClick={() =>
+                          view.closed ? void change({ active: true }) : setAskClose(true)
+                        }
+                      >
                         {view.closed ? KIN_CLIENTS.reopen : KIN_CLIENTS.close}
                       </MenuItem>
                     ) : null}
@@ -938,6 +979,9 @@ function ClientPage(
                 </p>
               ) : null}
             </>
+          )}
+          {view.contactsWho === null ? null : (
+            <p className="text-xs text-muted-foreground">{view.contactsWho}</p>
           )}
         </KinWorkSection>
         <KinWorkPlaceLists
@@ -1080,6 +1124,20 @@ function ClientPage(
           </KinWorkSection>
         ) : null}
       </div>
+      <KinConfirm
+        ask={
+          askClose
+            ? {
+                title: KIN_CLIENTS.closeAsk(view.name),
+                detail: KIN_CLIENTS.closeDetail,
+                action: KIN_CLIENTS.close,
+                destructive: true,
+              }
+            : null
+        }
+        onConfirm={() => void change({ active: false })}
+        onClose={() => setAskClose(false)}
+      />
       {dialog?.type === "edit" ? (
         <KinClientDialog
           environmentId={environmentId}
@@ -1118,6 +1176,14 @@ function ClientPage(
             setDialog(null);
             props.onRefresh();
           }}
+          onClose={() => setDialog(null)}
+        />
+      ) : dialog?.type === "invoice" ? (
+        <KinNewInvoiceDialog
+          environmentId={environmentId}
+          orgId={orgId}
+          party={view.ref}
+          onOpenKey={props.onOpenTask}
           onClose={() => setDialog(null)}
         />
       ) : dialog?.type === "project" ? (

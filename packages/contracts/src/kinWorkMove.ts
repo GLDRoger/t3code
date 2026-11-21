@@ -1,5 +1,10 @@
 import type { KinPersonId } from "./kinChat.ts";
-import type { KinRecordState, KinWorkMoveGroup, KinWorkPrincipal } from "./kinWork.ts";
+import type {
+  KinRecordState,
+  KinWorkMoveGroup,
+  KinWorkMoveUnder,
+  KinWorkPrincipal,
+} from "./kinWork.ts";
 
 /** What decides whose move an open task is, read the same from a list row or a record. */
 export interface KinWorkMoveFacts {
@@ -14,7 +19,18 @@ export interface KinWorkMoveFacts {
   readonly givenBy: KinWorkPrincipal | null;
   /** A draft to send or a question about it waits on the reader in a chat they read. */
   readonly card: boolean;
+  /** Handed back to its holder and not changed since (`kinWorkHandedBackOpen`). */
+  readonly handedBackOpen?: boolean;
+  /** Someone asked its holder where it stands today. */
+  readonly askedToday?: boolean;
 }
+
+/**
+ * A hand-back still asks its holder something until the task changes after it came back: the
+ * hand-back itself stamps both times alike. The row's "handed this back" line reads the same.
+ */
+export const kinWorkHandedBackOpen = (handedBackMs: number | null, updatedMs: number): boolean =>
+  handedBackMs !== null && updatedMs <= handedBackMs;
 
 const isPerson = (who: KinWorkPrincipal | null, personId: KinPersonId) =>
   who !== null && who._tag === "person" && who.personId === personId;
@@ -39,22 +55,48 @@ export function kinWorkMove(
   return "rest";
 }
 
-/** Inside a group: late first, then soonest due, then no date; then oldest, then key. */
-export function kinWorkMoveOrder(
-  a: {
-    readonly late: boolean;
-    readonly dueMs: number | null;
-    readonly createdMs: number;
-    readonly key: string;
-  },
-  b: {
-    readonly late: boolean;
-    readonly dueMs: number | null;
-    readonly createdMs: number;
-    readonly key: string;
-  },
-): number {
+/** How far ahead a dated task of the reader's still counts in Needs you. */
+const KIN_WORK_SOON_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * A Needs you task drawn outside its count: one the reader holds that nothing asks of them yet
+ * and isn't late, undated or due past the coming week. A card, a suggestion to keep, a wait on
+ * them, a hand-back still open, a nudge today and anything late always count.
+ */
+export function kinWorkMoveUnder(
+  task: KinWorkMoveFacts & { readonly dueMs: number | null },
+  reader: { readonly personId: KinPersonId; readonly ownerLevel: boolean },
+  at: number,
+): KinWorkMoveUnder | null {
+  if (task.card || task.late || kinWorkMove(task, reader) !== "needsYou") return null;
+  if (task.handedBackOpen === true || task.askedToday === true) return null;
+  if (!task.confirmed && reader.ownerLevel) return null;
+  if (task.state === "waiting" && isPerson(task.waitingOn, reader.personId)) return null;
+  if (!isPerson(task.owner, reader.personId)) return null;
+  if (task.dueMs === null) return "noDate";
+  return task.dueMs - at > KIN_WORK_SOON_MS ? "comingUp" : null;
+}
+
+/** What `kinWorkMoveOrder` reads of a task. */
+export interface KinWorkMoveOrdered {
+  readonly late: boolean;
+  readonly dueMs: number | null;
+  readonly createdMs: number;
+  readonly key: string;
+  /** Marked urgent: first among those due the same `day`, and among those with no date. */
+  readonly urgent?: boolean;
+  /** Its due day in the company's time zone, `YYYY-MM-DD`; null with no date. */
+  readonly day?: string | null;
+}
+
+/**
+ * Inside a group: late first, then soonest due, then no date; within one day (or no date) urgent
+ * first; then oldest, then key.
+ */
+export function kinWorkMoveOrder(a: KinWorkMoveOrdered, b: KinWorkMoveOrdered): number {
   if (a.late !== b.late) return a.late ? -1 : 1;
+  const sameDay = a.dueMs === b.dueMs || (a.day !== undefined && a.day === b.day);
+  if (sameDay && (a.urgent === true) !== (b.urgent === true)) return a.urgent === true ? -1 : 1;
   if (a.dueMs !== b.dueMs) {
     if (a.dueMs === null) return 1;
     if (b.dueMs === null) return -1;
@@ -64,8 +106,12 @@ export function kinWorkMoveOrder(
   return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 }
 
-export const KIN_WORK_MOVE_GROUPS: ReadonlyArray<KinWorkMoveGroup> = [
+/** Where a `byMove` row is drawn, in Tasks' order: its `under` when it has one, else its group. */
+export type KinWorkMovePlace = KinWorkMoveGroup | KinWorkMoveUnder;
+export const KIN_WORK_MOVE_PLACES: ReadonlyArray<KinWorkMovePlace> = [
   "needsYou",
+  "noDate",
   "waiting",
+  "comingUp",
   "rest",
 ];

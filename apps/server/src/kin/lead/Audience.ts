@@ -482,6 +482,8 @@ export const SESSION_REFUSAL = {
   outside:
     "Blocked: this turn read outside content, so it has no shell now. Ask the owner to start it in a fresh turn.",
   none: "Blocked: no owner's turn backs this session, so it has no shell. Ask the owner in their own chat.",
+  approved:
+    "Blocked: this turn only makes the draft the owner approved, so it has no shell, file edits, web fetch or sub-agents.",
 } as const;
 export const SHARED_ELSEWHERE =
   "In a chat with other people you post only in the chat you were asked in. Nothing was sent.";

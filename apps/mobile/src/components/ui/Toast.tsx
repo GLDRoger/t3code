@@ -31,6 +31,8 @@ export type ToastProps = {
   readonly tone?: "default" | "success" | "danger";
   readonly busy?: boolean;
   readonly action?: { readonly label: string; readonly onPress: () => void };
+  /** Dark iOS glass is clear; this backs it with the sheet colour so a busy list can't show through. */
+  readonly opaque?: boolean;
 } & (
   | { readonly dismissMode: "swipe"; readonly onDismiss: () => void }
   | { readonly dismissMode?: "button"; readonly onDismiss?: () => void }
@@ -121,6 +123,7 @@ function ToastContent(props: ToastProps & { readonly glassReady?: boolean }) {
   );
   return Platform.OS === "ios" ? (
     <View
+      className={props.opaque && colorScheme === "dark" ? "bg-sheet-solid" : undefined}
       style={{
         borderRadius,
         boxShadow: [

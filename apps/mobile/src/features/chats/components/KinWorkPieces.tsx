@@ -16,9 +16,11 @@ import type { KinTaskStepStatus } from "@t3tools/client-runtime/kin/kinTaskSteps
 import { KIN_WORK_COPY, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkTimelineLine } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
+  KIN_FORM_DISCARD,
   KIN_WORK_FORM_COPY,
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
+import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
 import { type ComponentRef, createContext, useEffect, useRef, useState } from "react";
 import { Platform, Pressable, TextInput, View } from "react-native";
@@ -26,9 +28,10 @@ import { KeyboardStickyView } from "react-native-keyboard-controller";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../../components/ui/AppBar";
-import { SymbolView } from "../../../components/ui/AppSymbol";
+import { SymbolView, type AppSymbolName } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
+import * as Dialog from "../../../components/ui/Dialog";
 import { EmptyState } from "../../../components/ui/EmptyState";
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { ListSection } from "../../../components/ui/ListSection";
@@ -44,6 +47,7 @@ import { useKinHost, useKinHostAt } from "../state/useKinHost";
 import { KinLoadFailed } from "./KinLoadFailed";
 import { KinAvatar } from "./KinAvatar";
 import { KinWorkStateSymbol } from "./KinWorkStateSymbol";
+import { kinLines, useKinTextGrows } from "./kinTextGrows";
 
 type Bar = React.ComponentProps<typeof AppBar>;
 
@@ -54,6 +58,30 @@ type Bar = React.ComponentProps<typeof AppBar>;
 export const KinWorkAboveKeyboard = createContext<
   ((node: ComponentRef<typeof View>) => void) | null
 >(null);
+
+/**
+ * Closing a form sheet that holds typed, unsaved words asks once, whether by its ✕, a swipe down or
+ * Android's Back; an untouched one closes at once. Call the returned `leave` before closing it
+ * after a save, so the save itself is never asked about.
+ */
+export function useKinAskBeforeDiscard(typed: boolean) {
+  const navigation = useNavigation();
+  const left = useRef(false);
+  usePreventRemove(typed, ({ data }) => {
+    if (left.current) return navigation.dispatch(data.action);
+    Dialog.alert(KIN_FORM_DISCARD.title, undefined, [
+      { text: KIN_FORM_DISCARD.keep, style: "cancel" },
+      {
+        text: KIN_FORM_DISCARD.discard,
+        style: "destructive",
+        onPress: () => navigation.dispatch(data.action),
+      },
+    ]);
+  });
+  return () => {
+    left.current = true;
+  };
+}
 
 /** A Work screen that isn't a list: everything sits in the scroll view that clears the bar. */
 export function KinWorkFrame(
@@ -75,6 +103,13 @@ export function KinWorkFrame(
   },
 ) {
   const { form, showTop, footer, children, ...bar } = props;
+  const navigation = useNavigation();
+  const guarded = props.guardBack === true;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a guarded step turns its screen's swipe and Back off (AppBar); options merge, so leaving the step must turn them on again
+  useEffect(() => {
+    if (!guarded) return;
+    return () => navigation.setOptions({ gestureEnabled: true });
+  }, [guarded, navigation]);
   const [footerHeight, setFooterHeight] = useState(0);
   const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
   const footerSpace = useRef(0);
@@ -166,6 +201,9 @@ export function KinWorkPrivateMark(props: { readonly label?: string }) {
 
 const TICK_LABEL = { done: KIN_WORK_COPY.done, reopen: KIN_WORK_COPY.reopen } as const;
 
+/** An urgent task's mark: a flag, and on Android (whose set has none) the alert mark. */
+export const KIN_URGENT_SYMBOL: AppSymbolName = { ios: "flag.fill", android: "error" };
+
 export function KinWorkTaskRow(props: {
   readonly row: KinWorkRowView;
   readonly saving: boolean;
@@ -177,6 +215,7 @@ export function KinWorkTaskRow(props: {
 }) {
   const { row, onAct } = props;
   const tick = onAct === null ? null : row.tick;
+  const grows = useKinTextGrows();
   return (
     <>
       <View className={cn("flex-row items-start", props.saving && "opacity-60")}>
@@ -205,23 +244,31 @@ export function KinWorkTaskRow(props: {
           )}
         >
           <View className="min-w-0 flex-1 gap-0.5">
-            <Text textRole="body" numberOfLines={2} className="text-foreground">
+            <Text textRole="body" numberOfLines={kinLines(2, grows)} className="text-foreground">
               {row.title}
             </Text>
             {/* Who has it never gives way: the rest of the line cuts off before it does. */}
-            <View className="min-w-0 flex-row items-center gap-1.5">
+            <View className={cn("min-w-0 flex-row items-center gap-1.5", grows && "flex-wrap")}>
+              {row.urgent ? (
+                <SymbolView
+                  name={KIN_URGENT_SYMBOL}
+                  size={11}
+                  tintColorClassName="accent-warning-foreground"
+                  type="monochrome"
+                />
+              ) : null}
               <KinAvatar avatar={row.ownerAvatar} size="mini" />
               <Text
                 textRole="footnote"
-                numberOfLines={1}
-                className="max-w-[60%] shrink-0 text-foreground"
+                numberOfLines={kinLines(1, grows)}
+                className={cn("text-foreground", !grows && "max-w-[60%] shrink-0")}
               >
                 {row.holder}
               </Text>
               {row.detail === "" ? null : (
                 <Text
                   textRole="footnote"
-                  numberOfLines={1}
+                  numberOfLines={kinLines(1, grows)}
                   className="min-w-0 shrink text-foreground-muted"
                 >
                   {`· ${row.detail}`}
@@ -299,6 +346,8 @@ export function KinTaskRow(props: {
   readonly status: KinTaskStepStatus | null;
   readonly first: boolean;
   readonly last: boolean;
+  /** Ticked done just now and held in its place until its Undo goes. */
+  readonly ticked?: boolean;
   readonly saving: boolean;
   readonly onPress: () => void;
   /** Null where this phone or this host can't change a task. */
@@ -311,6 +360,7 @@ export function KinTaskRow(props: {
 }) {
   const { row, line, step, status, onAct } = props;
   const tick = onAct === null ? null : row.tick;
+  const grows = useKinTextGrows();
   const busy = status?.kind === "busy";
   const symbol = <KinWorkStateSymbol state={row.state} />;
   return (
@@ -340,25 +390,41 @@ export function KinTaskRow(props: {
             onPress={props.onPress}
             className="gap-0.5 active:opacity-60"
           >
-            <Text textRole="body" numberOfLines={2} className="text-foreground">
+            <Text
+              textRole="body"
+              numberOfLines={kinLines(2, grows)}
+              className={props.ticked ? "text-foreground-muted line-through" : "text-foreground"}
+            >
               {row.title}
             </Text>
             {/* Who has it never gives way: the rest of the line cuts off before it does. */}
-            <View className="min-w-0 flex-row items-center gap-1.5">
-              <KinAvatar avatar={props.avatar} size="mini" />
+            <View className={cn("min-w-0 flex-row items-center gap-1.5", grows && "flex-wrap")}>
+              {line.urgent ? (
+                <SymbolView
+                  name={KIN_URGENT_SYMBOL}
+                  size={11}
+                  tintColorClassName="accent-warning-foreground"
+                  type="monochrome"
+                />
+              ) : null}
+              {line.holder === null ? null : (
+                <>
+                  <KinAvatar avatar={props.avatar} size="mini" />
+                  <Text
+                    textRole="footnote"
+                    numberOfLines={kinLines(1, grows)}
+                    className={cn("text-foreground", !grows && "max-w-[50%] shrink-0")}
+                  >
+                    {line.holder}
+                  </Text>
+                </>
+              )}
               <Text
                 textRole="footnote"
-                numberOfLines={1}
-                className="max-w-[50%] shrink-0 text-foreground"
-              >
-                {line.holder}
-              </Text>
-              <Text
-                textRole="footnote"
-                numberOfLines={1}
+                numberOfLines={kinLines(1, grows)}
                 className="min-w-0 shrink text-foreground-muted"
               >
-                {"· "}
+                {line.holder === null ? null : "· "}
                 {line.lead === null ? null : (
                   <Text className={cn("font-t3-medium", LEAD_TONE[line.lead.tone])}>
                     {line.lead.text}
@@ -379,7 +445,7 @@ export function KinTaskRow(props: {
               />
               <Text
                 textRole="footnote"
-                numberOfLines={2}
+                numberOfLines={kinLines(2, grows)}
                 className="min-w-0 flex-1 text-foreground"
               >
                 {step.line}
@@ -391,7 +457,7 @@ export function KinTaskRow(props: {
               {step.mayHaveGone}
             </Text>
           )}
-          {step === null ? null : status?.kind === "done" ? (
+          {step === null || step.kind === "told" ? null : status?.kind === "done" ? (
             <Text textRole="footnote" className="font-t3-medium text-foreground">
               {status.text}
             </Text>
@@ -455,6 +521,7 @@ function KinTaskStepButtons(props: {
   const { step, busyId, onChoose } = props;
   const busy = busyId !== null;
   const label = (what: string) => `${what}: ${props.title}`;
+  if (step.kind === "told") return null;
   if (step.kind === "nudge")
     return (
       <View className="flex-row flex-wrap items-center gap-2">

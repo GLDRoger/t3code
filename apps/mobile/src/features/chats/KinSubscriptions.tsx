@@ -36,6 +36,7 @@ import { KinFoldSection, KinWorkLoading, KinWorkStaleNotice } from "./components
 import { KinEstimateText, KinSetRateLink } from "./KinMoneyEstimate";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 import {
   kinListsOf,
   useKinAskAgent,
@@ -120,6 +121,7 @@ function SubscriptionRow(props: {
   readonly onCancel?: () => void;
   readonly onUndo?: () => void;
 }) {
+  const grows = useKinTextGrows();
   const { row } = props;
   return (
     <View className="flex-row items-center gap-3 bg-grouped-card px-4 py-2.5">
@@ -132,7 +134,7 @@ function SubscriptionRow(props: {
         <View className="min-w-0 flex-1 gap-0.5">
           <Text
             textRole="body"
-            numberOfLines={1}
+            numberOfLines={kinLines(1, grows)}
             className={row.cancelled ? "text-foreground-muted" : "text-foreground"}
           >
             {row.title}

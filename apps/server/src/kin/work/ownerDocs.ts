@@ -2,6 +2,7 @@ import {
   KinChatError,
   type KinDocDetail,
   type KinDocDiffInput,
+  type KinDocEditSectionInput,
   type KinDocFileInput,
   type KinDocGetInput,
   type KinDocHistoryInput,
@@ -28,13 +29,16 @@ import {
   type KinSearchInput,
   kinSlimDocRow,
 } from "@t3tools/contracts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous retry key; Digest would add a service.
+import * as NodeCrypto from "node:crypto";
+import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { makeDocument } from "../gendocs/make.ts";
 import { defaultRecipes, setDefaultRecipe as setDefault } from "../gendocs/recipeDefaults.ts";
 import { recipeLabelled, setLabel, undoRecipe as undoLabelled } from "../gendocs/recipeLabels.ts";
@@ -72,7 +76,8 @@ import {
 /**
  * What people's clients read and do in Docs: read, compare, restore and search. The owner and
  * co-owners read every doc; anyone else with the Docs place, or leading a project, reads only the
- * docs `personSees` gives them and restores none. People never write a body.
+ * docs `personSees` gives them and restores none. People write a body only by hand, one section
+ * at a time, as `Docs.editSectionByHand` allows.
  */
 
 const noDocs = new KinChatError({
@@ -92,6 +97,14 @@ const readerOf = Effect.fn("KinDocs.reader")(function* (
 });
 const reader = (people: ReadonlyArray<PersonIdentity>, orgId: KinOrgId) =>
   readerOf(people, orgId).pipe(Effect.map(({ team }) => team));
+
+/** A row as people's Docs reads it: What we sell and an agent's character marked by their origin. */
+const docRowOf = (...[row, ...rest]: Parameters<typeof Docs.toDocRow>) => {
+  const doc = withOfferings(Docs.toDocRow(row, ...rest), row);
+  return row.originKey.startsWith(Docs.CHARACTER_ORIGIN)
+    ? { ...doc, character: true as const }
+    : doc;
+};
 
 const badCursor = new KinChatError({
   reason: "invalid_state",
@@ -132,7 +145,7 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
       linked = new Set([...(linked ?? seen)].filter((id) => seen.has(id)));
     }
   return {
-    ...withOfferings(Docs.toDocRow(row, latest, now), row),
+    ...docRowOf(row, latest, now),
     version: Docs.toVersion(shown),
     body: shown.body,
     outline: [...outlineOf(shown.body)],
@@ -147,6 +160,10 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
     ...(yield* linkedFromOf(orgId, row.recordId, viewer)),
     seq: yield* recordSeq(orgId, row.recordId),
     embeds: yield* docEmbeds(orgId, row.recordId, shown.body),
+    ...((yield* Docs.handRefusal(orgId, readerId, viewer._tag === "ownerLevel", row, latest)) ===
+    undefined
+      ? { editable: true as const }
+      : {}),
   } satisfies KinDocDetail;
 });
 
@@ -242,7 +259,7 @@ export const list = Effect.fn("KinDocs.list")(
       docs: rows.flatMap((row) => {
         const version = latest.get(row.recordId);
         if (version === undefined) return [];
-        const doc = withOfferings(Docs.toDocRow(row, version, now), row);
+        const doc = docRowOf(row, version, now);
         return [input.acceptSlimLatest === true ? kinSlimDocRow(doc) : doc];
       }),
       total: count?.total ?? 0,
@@ -349,6 +366,45 @@ export const restore = Effect.fn("KinDocs.restore")(
       },
     );
     return yield* detailOf(input.orgId, { key: input.key }, KIN_OWNER_LEVEL, person.personId);
+  },
+  Effect.catchTags({ SqlError: () => unavailable }),
+);
+
+/** D3: a person changes one section by hand; `Docs.editSectionByHand` decides who may. */
+export const editSection = Effect.fn("KinDocs.editSection")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocEditSectionInput) {
+    // A company the caller isn't in has no doc of that name for them.
+    if (!people.some((one) => one.orgId === input.orgId)) return yield* Docs.docNotFound(input.key);
+    const { personId } = yield* readerOf(people, input.orgId);
+    const { owner } = yield* KinIdentity;
+    const asked = stableStringify({
+      key: input.key,
+      section: input.section,
+      hash: input.hash,
+      text: input.text,
+      clientRequestId: input.clientRequestId,
+    });
+    const written = yield* Docs.editSectionByHand(
+      input.orgId,
+      personId,
+      owner,
+      { key: input.key },
+      {
+        section: input.section,
+        hash: input.hash,
+        text: input.text,
+        originKey: `person-edit:${personId}:${NodeCrypto.createHash("sha256").update(asked).digest("hex").slice(0, 32)}`,
+      },
+    );
+    // The version this request wrote, a replay's included, in the view they read now.
+    const { team } = yield* readerOf(people, input.orgId);
+    return yield* detailOf(
+      input.orgId,
+      { key: input.key },
+      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+      personId,
+      written.version.version,
+    );
   },
   Effect.catchTags({ SqlError: () => unavailable }),
 );
@@ -469,7 +525,7 @@ const listedOf = Effect.fn("KinDocs.listedOf")(
       total: count?.total ?? 0,
       ...(row === undefined || version === undefined
         ? { unlisted: true as const }
-        : { row: kinSlimDocRow(withOfferings(Docs.toDocRow(row, version, now), row)) }),
+        : { row: kinSlimDocRow(docRowOf(row, version, now)) }),
     };
   },
   Effect.catchTags({ SqlError: () => unavailable }),

@@ -91,6 +91,8 @@ export const KinPeopleCreateInviteInput = Schema.Struct({
   personId: Schema.optional(KinPersonId),
   // Someone else who shares a removed person's name: a new person instead of the bring-back offer.
   newPerson: Schema.optional(Schema.Literal(true)),
+  // What a new person sees once they join, chosen by the owner level; absent, the usual start.
+  sees: Schema.optional(KinPersonPlaceSwitches),
   ttlHours: Schema.optional(
     PositiveInt.check(Schema.isLessThanOrEqualTo(KIN_INVITE_MAX_TTL_HOURS)),
   ),

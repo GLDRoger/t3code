@@ -14,15 +14,18 @@ import type * as SqlError from "effect/sql/SqlError";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous retry-key hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 
+import { ownerLevel } from "../people/KinAccess.ts";
 import { validZone } from "../triggers/quietHold.ts";
 import { storedWorkHours } from "../triggers/quietHours.ts";
 import { dueWhenText, endOfDay, ownerZone, startOfDay } from "../work/recordRows.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { asideOf, type Hold } from "./holds.ts";
 import { holderLine, noticeHolder } from "./holderNotice.ts";
 import { DEAL_SENSES } from "./senses/deals.ts";
 import { type SenseContext, type SensedFact } from "./senses/shared.ts";
 import { DAY_MS, HOUR_MS } from "./thresholds.ts";
 import { forHolder, markTold, untold } from "./told.ts";
+import { morningMoneyLines } from "./morningMoney.ts";
 
 /**
  * A teammate's own morning page: "Good morning, <name>" over Needs you, Clients and Coming up,
@@ -170,6 +173,8 @@ export const importedSince = Effect.fn("KinPulse.importedSince")(function* (
  */
 export const morningBody = (sections: {
   readonly needsYou: ReadonlyArray<string>;
+  /** Already cut to length (`morningMoneyLines`). */
+  readonly money?: ReadonlyArray<string>;
   readonly clients: ReadonlyArray<string>;
   readonly comingUp: ReadonlyArray<string>;
 }) => {
@@ -185,6 +190,7 @@ export const morningBody = (sections: {
         ];
   return [
     ...section("Needs you", sections.needsYou),
+    ...section("Money", sections.money ?? []),
     ...section("Clients", sections.clients),
     ...section("Coming up", sections.comingUp),
   ].join("\n\n");
@@ -258,8 +264,14 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
       ...(followUps === 0 ? [] : [`Follow-ups today: ${followUps}.`]),
       ...deals.map((fact) => fact.consequence),
     ];
+    // Money still owed or unanswered, for a reader who may see it: every morning until settled.
+    const money = yield* morningMoneyLines({
+      orgId,
+      now: at,
+      viewer: (yield* ownerLevel(orgId, personId)) ? KIN_OWNER_LEVEL : viewerOfPeople([personId]),
+    });
     // Written from what is true at its minute, and only with something untold: else none that day.
-    if (clients.length === 0 || deals.length + work.length === 0) {
+    if ((clients.length === 0 || deals.length + work.length === 0) && money.length === 0) {
       yield* sql`INSERT INTO kin_pulse_told (org_id, person_id, fact_key, event_id, sig, told_at)
         VALUES (${orgId}, ${personId}, ${morningKey(day)}, 'none', ${day}, ${at})
         ON CONFLICT DO NOTHING`;
@@ -318,7 +330,7 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
     ]
       .toSorted((a, b) => a.at - b.at)
       .map((one) => one.line);
-    const body = morningBody({ needsYou, clients, comingUp });
+    const body = morningBody({ needsYou, money, clients, comingUp });
     const messageId = yield* noticeHolder({
       orgId,
       personId,

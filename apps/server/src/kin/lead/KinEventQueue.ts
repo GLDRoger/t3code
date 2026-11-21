@@ -81,11 +81,14 @@ const SteerInput = Schema.Struct({
 
 /**
  * An event's lane, the chat a wake-up answers: a message's, tap's or task's asking chat, else the
- * lead's owner chat. A due deferral from another chat, and each GitHub trigger, get their own lane,
- * so a level or a stranger's text never mixes with another chat's. From stored rows, not model text.
+ * lead's owner chat. A due deferral from another chat, each GitHub trigger and each approved draft
+ * get their own lane, so a level, a stranger's text or one approval never mixes with anything else.
+ * From stored rows, not model text.
  */
 const LANE_OF = `CASE WHEN e.tag = 'github' AND json_extract(e.json, '$.trigger.key') IS NOT NULL
   THEN 'github:' || json_extract(e.json, '$.trigger.key')
+  WHEN e.tag = 'deferral.due' AND json_extract(e.json, '$.subject.approved') IS NOT NULL
+  THEN 'approved:' || json_extract(e.json, '$.subject.questionId')
   WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
   THEN json_extract(e.json, '$.chatId')
   WHEN e.tag IN ('record.changed', 'task.finished')

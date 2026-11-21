@@ -45,6 +45,7 @@ import { outlook } from "../work/moneyAnswers.ts";
 import { moneySection, moneySummary } from "../work/moneyViews.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as OwnerMoney from "../work/ownerMoney.ts";
+import * as OwnerMoneyAnswers from "../work/ownerMoneyAnswers.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
 import * as Amounts from "./amounts.ts";
 import { computeData } from "./compute.ts";
@@ -981,6 +982,16 @@ describe("recipe documents", () => {
       assert.deepStrictEqual(yield* figures("INV-5"), [590_000, "INR", 90_000]);
       yield* make("INV-5", { lines: line("₹6,000") });
       assert.deepStrictEqual(yield* figures("INV-5"), [708_000, "INR", 108_000]);
+      // A tax a person types stays theirs, as a typed amount does: their own PDF, coming to the
+      // same total, doesn't put its tax back over it.
+      const person = { actor: { _tag: "person", personId: ownerId }, via: "owner" } as const;
+      yield* records.update(orgId, person, "INV-5", {
+        fields: { tax: { minor: 100_000, currency: "INR" } },
+      });
+      const held = (yield* records.get(orgId, "INV-5"))!;
+      assert.isFalse(yield* Amounts.pricedByDocuments(orgId, held));
+      yield* Amounts.priceDraft(orgId, person, "INV-5", false);
+      assert.deepStrictEqual(yield* figures("INV-5"), [708_000, "INR", 100_000]);
 
       // A suggestion takes its document's amount too, and counts in nothing until a person keeps it.
       const suggested = yield* records.create(
@@ -1306,6 +1317,101 @@ describe("recipe documents", () => {
         again.preview?.map((one) => one.name),
         ["invoice.pdf"],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("are typed by hand as a draft, priced by their lines, and read so by an agent", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const [acme] = yield* sql<{ key: string; recordId: string }>`SELECT key,
+          record_id AS "recordId" FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'clients' AND title = 'Invented Acme'`;
+      const asked = {
+        orgId,
+        client: KinRecordKey.make(acme!.key),
+        title: "November design",
+        lines: [
+          { description: "Design", sac: null, quantity: "2", rate: "₹10,000.00" },
+          { description: "Review", sac: "998391", quantity: "1", rate: "₹5,000.00" },
+        ],
+        gstRate: "12",
+        dueOn: "2026-12-12",
+        notes: "Typed by hand",
+        clientRequestId: "form-1",
+      };
+      // The renderer is down: the draft stands with the reason, and the same request finishes it.
+      failing.reason = "the renderer stopped";
+      const first = yield* OwnerMoneyAnswers.newInvoice(people, asked);
+      assert.deepStrictEqual(
+        [first.invoice, first.documents, first.problems.length],
+        ["INV-2", [], 1],
+      );
+      failing.reason = undefined;
+      const made = yield* OwnerMoneyAnswers.newInvoice(people, asked);
+      assert.deepStrictEqual(
+        [made.invoice, made.documents.length, made.problems],
+        ["INV-2", 1, []],
+      );
+      const row = (yield* records.get(orgId, "INV-2"))!;
+      assert.deepStrictEqual(
+        [
+          row.state,
+          row.partyId,
+          row.title,
+          row.notes,
+          row.amountMinor,
+          JSON.parse(row.fieldsJson).tax,
+        ],
+        [
+          "open",
+          acme!.recordId,
+          "November design",
+          "Typed by hand",
+          2_800_000,
+          { minor: 300_000, currency: "INR" },
+        ],
+      );
+      assert.strictEqual(row.dueAt, Date.parse("2026-12-12T18:29:59.999Z"));
+      assert.deepStrictEqual(latestData().items[1].sac, "998391");
+      // Never numbered, never owed: Issue takes over from its page.
+      const summary = yield* moneySummary(
+        orgId,
+        Date.parse("2026-11-12T06:00:00.000Z"),
+        KIN_OWNER_LEVEL,
+      );
+      assert.deepStrictEqual(summary.owed.total, []);
+      // An agent's reads list it as the draft it is.
+      const read = yield* LeadWork.get(scope, { key: "INV-2" });
+      const listed = yield* LeadWork.query(scope, { list: "invoices" });
+      assert.deepStrictEqual(
+        [
+          read.stateLabel,
+          read.amount,
+          listed.records.find((one) => one.key === "INV-2")?.stateLabel,
+        ],
+        ["Draft", "₹28,000.00", "Draft"],
+      );
+      // The same request id with other details makes nothing; someone outside the owner level, none.
+      const someone = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("someone") }];
+      for (const [who, input] of [
+        [people, { ...asked, title: "Another" }],
+        [someone, { ...asked, clientRequestId: "form-2" }],
+      ] as const)
+        assert.include(yield* OwnerMoneyAnswers.newInvoice(who, input).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+      // A client that isn't one is unknown, and nothing is saved.
+      assert.include(
+        yield* OwnerMoneyAnswers.newInvoice(people, {
+          ...asked,
+          client: KinRecordKey.make("INV-1"),
+          clientRequestId: "form-3",
+        }).pipe(Effect.flip),
+        { reason: "not_found" },
+      );
+      assert.isUndefined(yield* records.get(orgId, "INV-3"));
     }).pipe(Effect.provide(layer)),
   );
 

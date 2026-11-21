@@ -1,21 +1,31 @@
 import {
   KinListId,
   KinRecordId,
+  type KinCash,
   type KinListDefinition,
   type KinMoneySummary,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  KIN_COMPANY,
   kinCompanyCountrySuggestion,
   kinCompanyDraftOf,
   kinCompanyEditSections,
+  kinCompanyGlance,
   kinCompanyInput,
   kinCompanyRead,
   kinCountryName,
 } from "./kinCompanyProfile.ts";
 import { kinDatesMonth, kinMonthWindow, kinZonedDayStart } from "./kinDates.ts";
-import { kinMoneyAgent, kinMoneyHeadline, kinMoneyView } from "./kinMoney.ts";
+import {
+  KIN_MONEY_BLOCKS,
+  kinCashEmpty,
+  kinListSettingsOnPhone,
+  kinMoneyAgent,
+  kinMoneyHeadline,
+  kinMoneyView,
+} from "./kinMoney.ts";
 
 // Invented clients and figures only.
 const inr = (minor: number) => [{ minor, currency: "INR" }];
@@ -180,6 +190,46 @@ describe("the Money summary", () => {
     expect(kinMoneyAgent(leads)?.name).toBe("Ledger");
     expect(kinMoneyAgent(leads.slice(0, 2))?.name).toBe("Chief of staff");
   });
+
+  it("puts this month right after who owes us, and an empty bank in one line", () => {
+    expect(KIN_MONEY_BLOCKS.slice(0, 3)).toEqual(["owed", "month", "suggested"]);
+    const cash: KinCash = {
+      asOf: "2026-11-12T06:00:00.000Z",
+      today: "2026-11-12",
+      timeZone: "Asia/Kolkata",
+      known: false,
+      accounts: [],
+      notOfRecord: [],
+      byCurrency: [],
+    };
+    expect(kinCashEmpty(cash)).toBe(true);
+    expect(kinCashEmpty({ ...cash, bankKnown: { through: null } })).toBe(true);
+    // Anything Kin knows of the bank keeps the whole block.
+    expect(kinCashEmpty({ ...cash, bankKnown: { through: "2026-10-31" } })).toBe(false);
+    expect(
+      kinCashEmpty({
+        ...cash,
+        notOfRecord: [
+          {
+            label: "Invented current account",
+            kind: "account",
+            balance: { minor: 100, currency: "INR" },
+            on: "2026-10-31",
+            standing: "not yet confirmed",
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps the settings of Kin's own money lists for the computer", () => {
+    expect(
+      ["invoices", "expenses", "receipts", "quotes", "dates", "jobs"].map((id) =>
+        kinListSettingsOnPhone(list(id)),
+      ),
+    ).toEqual([false, false, false, false, true, true]);
+    expect(kinListSettingsOnPhone({ ...list("work"), builtIn: true })).toBe(false);
+  });
 });
 
 describe("dates", () => {
@@ -276,6 +326,32 @@ describe("company details", () => {
         .find((row) => row.id === "lutDate")?.value,
     ).toBe("Apr 1, 2026");
     expect(kinCompanyDraftOf(filed).lutDate).toBe("2026-04-01");
+    // What an invoice needs reads "Not set" while empty, so a missing GSTIN is seen; the rest
+    // is left out. A UPI id is a way to be paid, so the account is then no gap.
+    const read = (company: unknown) =>
+      kinCompanyRead(company as never)
+        .flatMap((one) => one.rows)
+        .filter((row) => row.missing)
+        .map((row) => row.id);
+    expect(read(profile)).toEqual([
+      "address",
+      "country",
+      "gstin",
+      "placeOfSupply",
+      "accountName",
+      "accountNumber",
+      "bankName",
+    ]);
+    const upi = {
+      ...(profile as { bank: object }),
+      bank: { ...(profile as { bank: object }).bank, upi: "invented@hdfcbank" },
+    };
+    expect(read(upi)).toEqual(["address", "country", "gstin", "placeOfSupply"]);
+    expect(
+      kinCompanyRead(profile)
+        .flatMap((one) => one.rows)
+        .find((row) => row.id === "gstin")?.value,
+    ).toBe(KIN_COMPANY.notSet);
     // An IFSC kept from before shows only while the company is in India.
     expect(kinCompanyRead(uk).flatMap((one) => one.rows.map((row) => row.id))).not.toContain(
       "ifsc",
@@ -331,5 +407,42 @@ describe("company details", () => {
     });
     expect(kinCompanyCountrySuggestion({ ...fresh, country: "GB" }, "IN", true)).toBeNull();
     expect(kinCompanyCountrySuggestion(kinCompanyDraftOf(unsaved, "IN"), "IN", false)).toBeNull();
+  });
+
+  it("reads on the phone as one screen: the country in words, the company's own tax", () => {
+    const glance = (company: unknown) =>
+      kinCompanyGlance(company as never).map((section) => ({
+        title: section.title,
+        rows: section.rows.map((row) => `${row.label}: ${row.value}`),
+      }));
+    const india = { ...(profile as object), country: "IN", gstin: "29ABCDE1234F1Z5" };
+    expect(glance(india)).toEqual([
+      {
+        title: "Company",
+        rows: ["Legal name: Invented Studio Private Limited", "Registered address: Not set"],
+      },
+      {
+        title: "Tax",
+        rows: ["Country: India", "GSTIN: 29ABCDE1234F1Z5", "Place of supply: Not set"],
+      },
+      {
+        title: "Bank",
+        rows: [
+          "Account name: Not set",
+          "Account number: Not set",
+          "IFSC: HDFC0001234",
+          "Bank: Not set",
+        ],
+      },
+    ]);
+    const nz = {
+      ...(profile as object),
+      country: "NZ",
+      tax: { name: "Invented levy", rate: "15", pricesInclude: null },
+      bank: { ...(profile as { bank: object }).bank, accountNumber: "0212340123456700" },
+    };
+    const tax = glance(nz).find((section) => section.title === "Tax")?.rows;
+    expect(tax).toEqual(["Country: New Zealand", "Tax charged: Invented levy at 15%"]);
+    expect(JSON.stringify(glance(nz))).not.toMatch(/GST|IFSC/);
   });
 });

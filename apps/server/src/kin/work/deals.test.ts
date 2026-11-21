@@ -891,6 +891,57 @@ it.effect(
 );
 
 it.effect(
+  "a new client with its deal is one transaction: a retry returns both, a refused deal keeps no client",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      const count = (list: string) =>
+        sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records WHERE register_id = ${list}`.pipe(
+          Effect.map((rows) => rows[0]!.n),
+        );
+      const clients = yield* count("clients");
+      const input = {
+        orgId,
+        name: "Invented Tidewater",
+        prospect: true,
+        contact: { name: "Invented Ira", phones: ["+1 555 0100"] },
+        deal: { title: "Invented Tidewater", value: euros(400_000) },
+        clientRequestId: "tidewater",
+      };
+      const made = yield* Clients.createPartyWithDeal([zoya], input);
+      const again = yield* Clients.createPartyWithDeal([zoya], input);
+      assert.strictEqual(again.party.key, made.party.key);
+      assert.strictEqual(again.deal.key, made.deal.key);
+      assert.isTrue(made.party.prospect);
+      assert.strictEqual(made.deal.party.key, made.party.key);
+      assert.deepStrictEqual(made.deal.value, euros(400_000));
+      assert.deepStrictEqual(made.deal.owner, asZoya);
+      assert.strictEqual(yield* count("clients"), clients + 1);
+      assert.strictEqual(yield* count("deals"), 1);
+      assert.strictEqual(yield* count("contacts"), 1);
+      // A deal refused after its client is written takes the client, and its contact, with it.
+      const ghost = { ...input, name: "Invented Ghost Co", clientRequestId: "ghost" };
+      assert.strictEqual(
+        yield* refusal(
+          Clients.createPartyWithDeal([owner], {
+            ...ghost,
+            deal: { ...ghost.deal, stage: "nope" },
+          }),
+        ),
+        "invalid_state",
+      );
+      assert.strictEqual(
+        yield* refusal(Clients.createPartyWithDeal([dev], { ...ghost, clientRequestId: "dev" })),
+        "not_allowed",
+      );
+      assert.strictEqual(yield* count("clients"), clients + 1);
+      assert.strictEqual(yield* count("contacts"), 1);
+      assert.strictEqual(yield* count("deals"), 1);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "open deals total per currency, never summed across; a deal with no value counts only",
   () =>
     Effect.gen(function* () {

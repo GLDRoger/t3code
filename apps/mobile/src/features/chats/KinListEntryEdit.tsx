@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
+import { kinIssuedAmountQuestion } from "@t3tools/client-runtime/kin/kinInvoices";
 import {
   KIN_FIELD_FILES_MAX,
   KIN_LISTS,
@@ -16,6 +17,7 @@ import {
   KinOrgId,
   KinRecordKey,
   type KinFieldValue,
+  type KinMoney,
   type KinRecordDetail,
   KIN_DEFAULT_HOME_CURRENCY,
   kinWhenFormat,
@@ -27,6 +29,7 @@ import { type TextInputInstance, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
+import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
@@ -194,13 +197,24 @@ function TypedEdit(
         : kinFieldCheck(field, text, currency);
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);
-    const saved = await changes.update(
-      item.rev,
-      field === null
-        ? { amount: checked.value as never }
-        : fieldPatch(field, checked.value as KinFieldValue | null),
-    );
-    if (saved) props.onClose();
+    const keep = async () => {
+      const saved = await changes.update(
+        item.rev,
+        field === null
+          ? { amount: checked.value as never }
+          : fieldPatch(field, checked.value as KinFieldValue | null),
+      );
+      if (saved) props.onClose();
+    };
+    const question =
+      field === null ? kinIssuedAmountQuestion(item, checked.value as KinMoney | null) : null;
+    if (question === null) return keep();
+    Dialog.confirm({
+      title: question.title,
+      message: question.message,
+      confirmText: question.confirm,
+      onConfirm: () => void keep(),
+    });
   };
   const shown = problem ?? changes.problem;
   return (

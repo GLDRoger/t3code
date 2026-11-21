@@ -120,10 +120,17 @@ function Profile(
   const facts = (section: typeof company) =>
     (section?.rows ?? []).map((row) => ({
       label: row.label,
-      value: row.id === "country" ? kinCountryName(row.value) : row.value,
+      value: row.missing ? (
+        <span className="text-muted-foreground">{row.value}</span>
+      ) : row.id === "country" ? (
+        kinCountryName(row.value)
+      ) : (
+        row.value
+      ),
     }));
   const companyFacts = [...facts(company), ...facts(tax)];
-  const bankFacts = facts(bank);
+  // No way to be paid at all reads as one "Bank account" fact, not a Not set per field.
+  const bankFacts = (bank?.rows ?? []).every((row) => row.missing) ? [] : facts(bank);
   return (
     <>
       <KinSettingsSection

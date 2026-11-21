@@ -78,4 +78,19 @@ describe("kinRefreshTriggers", () => {
     registry.mount(memory);
     expect(registry.get(memory)).not.toBe(before);
   });
+
+  it("keeps whether the host streams a read through a reconnect", () => {
+    const { registry, revisions, triggers, heard } = setup();
+    const pulse = triggers.serves("pulse")(target);
+    const unmount = registry.mount(pulse);
+    expect(registry.get(pulse)).toBeNull();
+    heard({ streams: ["pulse"] });
+    expect(registry.get(pulse)).toBe(true);
+    // Reconnecting: what the host said still stands, so nothing reading it starts over.
+    registry.set(revisions, AsyncResult.initial(true));
+    expect(registry.get(pulse)).toBe(true);
+    heard({});
+    expect(registry.get(pulse)).toBe(false);
+    unmount();
+  });
 });

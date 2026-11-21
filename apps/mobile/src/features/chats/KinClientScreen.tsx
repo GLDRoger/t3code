@@ -4,7 +4,11 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinWorkHostEdits } from "@t3tools/client-runtime/kin/kinWork";
-import { kinWorkApplied, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
+import {
+  KIN_WORK_COPY,
+  kinWorkApplied,
+  type KinWorkAction,
+} from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
   KIN_CLIENTS,
   KIN_CLIENT_FAILED,
@@ -17,6 +21,7 @@ import {
   type KinOwedView,
   type KinTouchView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
+import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import {
   KIN_WORK_FORM_COPY,
   kinWorkSend,
@@ -45,6 +50,7 @@ import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
+import { cn } from "../../lib/cn";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
@@ -60,6 +66,7 @@ import {
 import { KinClientDeals } from "./KinDealsList";
 import { KinWorkNamedRow } from "./KinWorkLists";
 import { KinAvatar } from "./components/KinAvatar";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
@@ -167,6 +174,7 @@ function KinClientBody(
   const { state: changed, changes } = useKinWorkChanges(target);
   const ownerLevel = useKinIsOwnerLevel(environmentId);
   const canAddTask = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
+  const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
   const canChangeTasks =
     useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)) &&
     kinWorkHostEdits(work._tag === "ready" ? work.live.summary : null);
@@ -178,6 +186,7 @@ function KinClientBody(
   const history = useKinWorkHistory(target, props.clientKey, page.seq);
   const removeTouch = useAtomCommand(kinClient.workTouchRemove, { reportFailure: false });
   const [refused, setRefused] = useState<string | null>(null);
+  const grows = useKinTextGrows();
   // A logged contact taken back, after a plain confirm; what Kin read from its records stays.
   const askRemoveTouch = (touch: KinTouchView) =>
     Alert.alert(KIN_CLIENTS.touchRemoveTitle, `${touch.title}, ${touch.when}`, [
@@ -300,6 +309,12 @@ function KinClientBody(
     </ListSection>
   );
   const waitingNone = view.theyOwe.total === 0 && view.theyOwe.rows.length === 0;
+  const contactsFooter = [
+    view.contacts.length === 0 || !full ? null : KIN_CLIENTS.detailsPrivate,
+    view.contactsWho,
+  ]
+    .filter((line) => line !== null)
+    .join(" ");
   return (
     <KinWorkFrame
       title={
@@ -311,7 +326,7 @@ function KinClientBody(
       }
       onBack={() => navigation.goBack()}
       refresh={{ accessibilityLabel: "Refresh", onPress: props.onRefresh }}
-      {...(can.edit || can.owner
+      {...(can.edit || can.owner || canInvoice
         ? {
             actions: can.edit
               ? [
@@ -333,6 +348,22 @@ function KinClientBody(
                 title: "More",
                 icon: "ellipsis" as const,
                 items: [
+                  ...(canInvoice && !view.vendor && !view.closed
+                    ? [
+                        {
+                          id: "invoice",
+                          title: KIN_MONEY_FORMS.invoice.title,
+                          disabled: busy,
+                          onPress: () =>
+                            navigation.navigate("KinInvoiceNew", {
+                              environmentId,
+                              orgId,
+                              party: view.key,
+                              partyName: view.name,
+                            }),
+                        },
+                      ]
+                    : []),
                   ...(can.edit && !view.vendor
                     ? [
                         {
@@ -349,7 +380,21 @@ function KinClientBody(
                           id: "close",
                           title: view.closed ? KIN_CLIENTS.reopen : KIN_CLIENTS.close,
                           disabled: busy,
-                          onPress: () => void change({ active: view.closed }),
+                          onPress: () =>
+                            view.closed
+                              ? void change({ active: true })
+                              : Alert.alert(
+                                  KIN_CLIENTS.closeAsk(view.name),
+                                  KIN_CLIENTS.closeDetail,
+                                  [
+                                    { text: KIN_WORK_COPY.cancel, style: "cancel" },
+                                    {
+                                      text: KIN_CLIENTS.close,
+                                      style: "destructive",
+                                      onPress: () => void change({ active: false }),
+                                    },
+                                  ],
+                                ),
                         },
                       ]
                     : []),
@@ -373,12 +418,16 @@ function KinClientBody(
         >
           {view.line}
         </Text>
-        <View className="flex-row items-center gap-1.5">
+        <View className={cn("flex-row items-center gap-1.5", grows && "flex-wrap")}>
           <Text textRole="footnote" className="text-foreground-muted">
             {KIN_CLIENTS.lookedAfterBy}
           </Text>
           <KinAvatar avatar={view.lookedAfter.avatar} size="mini" />
-          <Text textRole="footnote" numberOfLines={1} className="shrink text-foreground">
+          <Text
+            textRole="footnote"
+            numberOfLines={kinLines(1, grows)}
+            className="shrink text-foreground"
+          >
             {view.lookedAfter.name}
           </Text>
         </View>
@@ -483,7 +532,7 @@ function KinClientBody(
       )}
       <ListSection
         title={KIN_CLIENTS.contacts}
-        {...(view.contacts.length === 0 || !full ? {} : { footer: KIN_CLIENTS.detailsPrivate })}
+        {...(contactsFooter === "" ? {} : { footer: contactsFooter })}
       >
         {view.contacts.length === 0 ? (
           <ListRowLayout

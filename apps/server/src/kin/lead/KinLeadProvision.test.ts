@@ -4,6 +4,7 @@ import {
   AuthSessionId,
   AuthStandardClientScopes,
   KinAgentId,
+  type KinAgentPage,
   type KinChatId,
   KinOrgId,
   KinPersonId,
@@ -29,6 +30,7 @@ import * as RetiredActions from "../approvals/retiredActions.ts";
 import * as Provision from "./KinLeadProvision.ts";
 import { ownerLevelAgentPage, ownerLevelSetCharacter } from "./agentPage.ts";
 import { seedCharacters } from "./characters.ts";
+import { seedPlaybooks } from "../work/playbookSeeds.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import { KinLevelGate } from "./LevelGate.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
@@ -946,6 +948,18 @@ describe("KinLeadProvision", () => {
       assert.deepStrictEqual(page.runsOn, page.model);
       assert.isNull(page.modelNote);
       assert.include(page.character?.body ?? "", "# Ada");
+      // Each page lists the playbooks its area works by: code review is Ada's, not Social's.
+      yield* seedPlaybooks(tech.orgId, (yield* KinIdentity).owner.personId);
+      const reviewing = "Reviewing and merging code";
+      const titles = (shown: KinAgentPage) => shown.playbooks.map((one) => one.title);
+      assert.include(titles(yield* ownerLevelAgentPage(target)), reviewing);
+      const social = (yield* Provision.create({
+        ...input(owner, []),
+        name: "Social",
+        domain: "social",
+      })).lead;
+      const socialPage = yield* ownerLevelAgentPage({ ...target, agentId: social.agentId });
+      assert.deepStrictEqual(titles(socialPage), ["Winning customers"]);
       const edited = yield* ownerLevelSetCharacter({ ...target, body: "# Ada\n\nDry and exact." });
       assert.strictEqual(edited.character?.body.trim(), "# Ada\n\nDry and exact.");
       const versions = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_doc_versions v

@@ -19,6 +19,7 @@ export function SettingsRow(props: {
   readonly target?: SettingsPageTarget;
   readonly fullScreenTarget?: SettingsLegalDocumentTarget;
   readonly onPress?: () => void;
+  readonly labelWholeWords?: boolean;
 }) {
   const navigation = useNavigation();
   const sidebar = use(SettingsSidebarContext);
@@ -33,6 +34,7 @@ export function SettingsRow(props: {
     description: valueBelow ? props.value : undefined,
     detail: valueBelow ? undefined : props.value,
     disabled: props.disabled,
+    labelWholeWords: props.labelWholeWords,
   };
   const onPress = () => {
     if (props.target) {
