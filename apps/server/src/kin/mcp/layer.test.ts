@@ -281,8 +281,8 @@ it.effect.each([true, false])(
         );
         const http = yield* HttpRouter.toHttpEffect(routes);
         // The wake-up runner, the chat wake bridge, the worker tracker, the finished-task watch,
-        // the Work import and the issued amounts check.
-        if (enabled) yield* Queue.takeN(runnerStarts, 6);
+        // the Work import, the issued amounts check and archiving Kin's earlier projects.
+        if (enabled) yield* Queue.takeN(runnerStarts, 7);
         assert.strictEqual(yield* Queue.size(runnerStarts), 0);
         const services = yield* Deferred.await(ready);
         const kin = Context.get(services, Kin.KinServer);

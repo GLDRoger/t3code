@@ -18,6 +18,7 @@ import { versionOf } from "./docs.ts";
 import { type FieldValue, fieldList, fieldText, isMoney, parseFields } from "./lists.ts";
 import { dayIn, dayWords, formatMoney, parseAmount } from "./money.ts";
 import { principalOfText, principalText, specChangesOf } from "./projectSpine.ts";
+import type { ToolNamer } from "./toolNames.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 import { matchName } from "./nameMatch.ts";
 import { ownerZone, type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
@@ -204,10 +205,7 @@ export const spineFields = Effect.fn("KinLeadSpine.fields")(function* <E, R>(
 });
 
 /** A row's spine fields as an agent reads them. */
-export const spineShown = (
-  row: RecordRow,
-  name: (who: KinWorkPrincipal | null) => string | undefined,
-) => {
+export const spineShown = (row: RecordRow, name: ToolNamer) => {
   const fields = parseFields(row.fieldsJson);
   const text = (key: string) => fieldText(fields, key) ?? undefined;
   const names = (key: string) => {
@@ -322,7 +320,7 @@ const OPEN = ["open", "doing", "waiting"] as const;
 export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
   row: RecordRow,
   now: number,
-  name: (who: KinWorkPrincipal | null) => string | undefined,
+  name: ToolNamer,
   viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;

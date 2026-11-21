@@ -1871,7 +1871,7 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
-    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 200, and runs again",
+    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 201, and runs again",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -1901,7 +1901,7 @@ describe("Kin migrations", () => {
         // Later branches' migrations run after these too; only these three are this test's.
         assert.deepStrictEqual(
           (yield* runKinMigrations()).map(([id]) => id),
-          [196, 197, 198, 199, 200],
+          [196, 197, 198, 199, 200, 201],
         );
         assert.deepStrictEqual(yield* receipts, [
           { trigger_key: "review:ambermill/shop#7", review_url: null },
@@ -1929,7 +1929,7 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
-    "a host on K196, as kin runs today, migrates through 197, 198, 199 and 200, and again",
+    "a host on K196 migrates through 197, 198, 199, 200 and 201, and again",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -1952,7 +1952,7 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* added, []);
         assert.deepStrictEqual(
           (yield* runKinMigrations()).map(([id]) => id),
-          [197, 198, 199, 200],
+          [197, 198, 199, 200, 201],
         );
         const all = [
           "approved_at",
@@ -1968,7 +1968,7 @@ describe("Kin migrations", () => {
           (yield* added).map(({ name }) => name),
           all,
         );
-        for (const from of [197, 198, 199, 200]) {
+        for (const from of [197, 198, 199, 200, 201]) {
           yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
           assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
           assert.deepStrictEqual(
@@ -1991,7 +1991,7 @@ describe("Kin migrations", () => {
             question_id AS id, question, draft_json AS draft FROM kin_questions ORDER BY question_id`;
         yield* runKinMigrations();
         // A database at K198: none of this migration's columns, one open question.
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 200`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 200`;
         for (const column of ["draft_json", "approved_at", "draft_made_json"])
           yield* sql`ALTER TABLE kin_questions DROP COLUMN ${sql.literal(column)}`;
         assert.deepStrictEqual(yield* columns, []);
@@ -2010,11 +2010,48 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* columns, added);
         assert.deepStrictEqual(yield* questions, kept);
         // Already there: running it again changes nothing.
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 200`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 200`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(200));
         assert.deepStrictEqual(yield* columns, added);
         assert.deepStrictEqual(yield* questions, kept);
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K201 rebuilds an upgraded search index so a doc is found by its kind", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      // Back to K200, as release 1 leaves it: the index without a kind, holding a playbook that never says "playbook".
+      yield* sql`DROP TABLE kin_search`;
+      yield* sql`CREATE VIRTUAL TABLE kin_search USING fts5(
+        title, body, tokenize = 'unicode61 remove_diacritics 2')`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 201`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+        VALUES ('org', 'docs', 'Docs', 'D', 1)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, category,
+          owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at)
+        VALUES ('org', 'doc', 'docs', 'D-1', 'Chasing money', 'playbook', 'person', 'p',
+          'person', 'owner:1', 1, 1)`;
+      yield* sql`INSERT INTO kin_search_rows (org_id, record_id, part) VALUES ('org', 'doc', 'public')`;
+      yield* sql`INSERT INTO kin_search (rowid, title, body)
+        SELECT id, 'Chasing money', '' FROM kin_search_rows`;
+      const found = sql<{
+        rowid: number;
+      }>`SELECT rowid FROM kin_search WHERE kin_search MATCH 'playbooks'`;
+      assert.lengthOf(yield* found, 0);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(201));
+      assert.lengthOf(yield* found, 1);
+      // Run again: the index is rebuilt from what is stored, so the doc is found once.
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 201`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(201));
+      assert.lengthOf(yield* found, 1);
+      // Without FTS5 there is no index to rebuild, and search scans.
+      yield* sql`DROP TABLE kin_search`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 201`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(201));
+      assert.lengthOf(yield* sql`SELECT 1 FROM sqlite_master WHERE name = 'kin_search'`, 0);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
@@ -2027,7 +2064,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 200");
+      assert.include(String(exit), "below the latest applied migration 201");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

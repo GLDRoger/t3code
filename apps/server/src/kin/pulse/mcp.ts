@@ -37,7 +37,8 @@ import { accessOf, accessSql } from "../people/KinAccess.ts";
 import { type Lead, leadTool } from "../work/leadWork.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import { dayIn } from "../work/money.ts";
-import { asideLine, holdNames, subjectText, wordOf } from "./holds.ts";
+import { leadNamer } from "../work/toolNames.ts";
+import { asideLine, subjectText, wordOf } from "./holds.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { nudge } from "./nudge.ts";
 
@@ -66,7 +67,7 @@ export const PulseHandleInput = Schema.Struct({
   }),
   action: Schema.optional(KinPulseHandleAction).annotate({
     description:
-      "got_it (default): you or someone has it in hand; it comes back after until, or 3 days. not_a_problem: drop it until what it is about changes. set_aside: a person said to leave it; its record is set aside until the day in until, or until someone lifts it. undo: take any of these back.",
+      "got_it (default): you or someone has it in hand; it comes back after until, or 3 days. not_a_problem: drop it until what it is about changes; an overdue invoice comes back at its next chase. set_aside: a person said to leave it; its record is set aside until the day in until, or until someone lifts it. undo: take any of these back.",
   }),
   until: Schema.optional(
     Schema.Union([
@@ -194,9 +195,9 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseRead
   const waits = yield* waitsForOwner(lead);
   const told = waits === undefined ? read : { ...read, waitsFor: waits };
   if (setAside === undefined || setAside.length === 0) return told;
-  const names = yield* holdNames(lead.orgId);
+  const name = yield* leadNamer(lead.orgId, lead.agentId);
   const zone = yield* ownerZone(lead.orgId);
-  return { ...told, held: setAside.map((aside) => asideLine(aside, names, zone)) };
+  return { ...told, held: setAside.map((aside) => asideLine(aside, name, zone)) };
 });
 
 /** An agent sets or lifts a hold only on a person's own word in this turn, never on its own. */

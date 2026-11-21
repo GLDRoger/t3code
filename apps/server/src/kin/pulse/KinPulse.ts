@@ -163,17 +163,21 @@ const storedRows = Effect.fn("KinPulse.stored")(function* (
 });
 
 /**
- * A stored hold that still applies at `at`; an expired "I've got it" brings the fact back. With a
+ * A stored hold that still applies at `at`; an expired "I've got it" brings the fact back, as does
+ * "not a problem" past the fact's `quietForMs`. With a
  * reader, only theirs: an agent's or an owner-level person's hold the owner's view, a person's own
  * hold theirs. Handling a fact hides it from no one else, and never hides the task.
  */
 const handledOf = (
   row: StoredRow | undefined,
   at: number,
+  fact: Pick<SensedFact, "quietForMs">,
   reader?: { readonly viewer: Viewer; readonly level: ReadonlySet<string> },
 ): KinPulseHandled | null => {
   if (row?.byKind == null || row.byId === null || row.handledAt === null) return null;
   if (row.until !== null && row.until <= at) return null;
+  if (row.until === null && fact.quietForMs !== undefined && row.handledAt + fact.quietForMs <= at)
+    return null;
   if (reader !== undefined) {
     const theirs =
       reader.viewer._tag === "owner"
@@ -214,7 +218,7 @@ const withStored = (
   },
   hold?: Hold | undefined,
 ): KinPulseFact => {
-  const { yours, ...shared } = fact;
+  const { yours, quietForMs: _quietForMs, ...shared } = fact;
   // One person reading a fact that names them reads it as theirs; a shared view keeps names.
   const own =
     reader.viewer._tag === "people" && reader.viewer.people.length === 1
@@ -227,7 +231,7 @@ const withStored = (
       row !== undefined && row.firstSeenAt < DateTime.toEpochMillis(fact.since)
         ? iso(row.firstSeenAt)
         : fact.since,
-    handled: hold === undefined ? handledOf(row, at, reader) : heldAs(hold),
+    handled: hold === undefined ? handledOf(row, at, fact, reader) : heldAs(hold),
     ...(hold === undefined ? {} : { aside: asideView(hold, reader.viewer, reader.personId) }),
   };
 };
@@ -447,8 +451,9 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
   const { orgId, at, zone } = ctx;
-  const due = facts.flatMap(({ yours: _yours, ...fact }): Array<KinPulseFact> => {
-    const open = { ...fact, handled: handledOf(stored.get(fact.key), at) };
+  const due = facts.flatMap((sensed): Array<KinPulseFact> => {
+    const { yours: _yours, quietForMs: _quietForMs, ...fact } = sensed;
+    const open = { ...fact, handled: handledOf(stored.get(fact.key), at, sensed) };
     return open.handled === null &&
       forHolder(open, at, zone) &&
       asideOf(fact, holds, { _tag: "owner" }) === undefined
@@ -579,10 +584,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
   // Sensed from committed rows before the transaction, on a reader: off the writer it needs.
   const ctx = yield* context(orgId, at).pipe(NodeSqliteClient.readOnly);
   const facts = yield* senseIn(ctx).pipe(NodeSqliteClient.readOnly);
-  // Owner-level screens read Needs attention again only on this topic, so any change to what was
-  // sensed moves it: a fact's words or progress, not only a fact coming or going.
-  const sensedNow = shortHash(yield* encodeSensed(facts));
-  const sensedMoved = sensedNow !== lastSensed.get(orgId);
+  const sensedText = yield* encodeSensed(facts);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       // Set-wise over one JSON array: a tick can sense thousands of facts.
@@ -625,11 +627,19 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         facts.map((fact) => fact.key),
       );
       const holds = yield* liveHolds(orgId, at);
+      // Owner-level screens read Needs attention again only on this topic, so any change to what
+      // was sensed or is set aside moves it: a fact's words, progress, or a handling running out.
+      const quiet = facts.filter(
+        (fact) =>
+          handledOf(stored.get(fact.key), at, fact) !== null ||
+          asideOf(fact, holds, { _tag: "owner" }) !== undefined,
+      );
+      const sensedNow = shortHash(`${sensedText}\0${quiet.map((fact) => fact.key).join("\n")}`);
       const woken: Array<string> = [];
       for (const fact of facts) {
         const row = stored.get(fact.key);
         if (fact.wake !== "now" || fact.actor._tag !== "agent") continue;
-        if (row === undefined || row.wokeAt !== null || handledOf(row, at) !== null) continue;
+        if (row === undefined || row.wokeAt !== null || handledOf(row, at, fact) !== null) continue;
         // Set aside: it wakes no one; when the hold ends, the check-in tells it once.
         if (asideOf(fact, holds, { _tag: "owner" }) !== undefined) continue;
         const enqueued = yield* queue
@@ -667,12 +677,12 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
       // A teammate's page first: what it tells, the holder notice after it doesn't repeat.
       const pages = yield* morningPages({
         ctx,
-        open: facts.filter((fact) => handledOf(stored.get(fact.key), at) === null),
+        open: facts.filter((fact) => handledOf(stored.get(fact.key), at, fact) === null),
         holds,
         sees: (personId) => visibleTo(orgId, { _tag: "people", people: [personId] }, facts),
       });
       const told = yield* tellHolders(ctx, facts, stored, holds);
-      if (moved > 0 || sensedMoved) yield* refreshes.touch(orgId, "pulse");
+      if (moved > 0 || sensedNow !== lastSensed.get(orgId)) yield* refreshes.touch(orgId, "pulse");
       yield* sql.afterCommit(
         Effect.sync(() => {
           lastSensed.set(orgId, sensedNow);

@@ -60,7 +60,7 @@ import {
   turnChat,
 } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX, outsideReview } from "./outsideReview.ts";
-import { KinLeadPrompt } from "./LeadPrompt.ts";
+import { KinLeadPrompt, STEER_CLOSING } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import {
   chooseLeadModel,
@@ -485,9 +485,21 @@ const make = Effect.gen(function* () {
       const [landedSteers] = yield* sql<{ steers: number }>`SELECT COUNT(*) AS steers
         FROM orchestration_v2_projection_messages WHERE thread_id = ${threadId}
           AND substr(message_id, 1, ${steerPrefix.length}) = ${steerPrefix}`;
+      const landed = landedSteers?.steers ?? 0;
+      const steered =
+        landed === 0
+          ? []
+          : (yield* threads.getThreadRecords(threadId, ["messages"], {
+              messageIds: Array.from({ length: landed }, (_, index) =>
+                MessageId.make(KinIdentity.steerMessageId(wakeupId, index + 1)),
+              ),
+            })).messages;
       const steering = {
         open: true,
-        steers: landedSteers?.steers ?? 0,
+        steers: landed,
+        // The session holds a steer's framing once it read one; a taken run's first steer is the
+        // whole prompt, which has none.
+        framed: steered.some((message) => message.text.includes(STEER_CLOSING)),
         lock: yield* Semaphore.make(1),
       };
       const waitingSince = yield* Clock.currentTimeMillis;
@@ -545,9 +557,17 @@ const make = Effect.gen(function* () {
         steering.steers++;
         const n = steering.steers;
         const messageId = MessageId.make(KinIdentity.steerMessageId(wakeupId, n));
+        const first = !steering.framed;
+        steering.framed = true;
         const deliver = Effect.gen(function* () {
           const { text, attachments } = yield* turnContent.prepare({
-            text: yield* prompt.steer({ orgId, agentId, wakeupId, events }),
+            text: yield* prompt.steer({
+              orgId,
+              agentId,
+              wakeupId,
+              events,
+              first,
+            }),
             attachments: yield* prompt.attachments({ orgId, events }),
           });
           yield* holdFloor;
@@ -583,6 +603,7 @@ const make = Effect.gen(function* () {
                 })).messages.length > 0;
               if (landed) return;
               steering.steers--;
+              steering.framed = !first;
               yield* Effect.logWarning("Kin steer failed; its messages wait", {
                 orgId,
                 wakeupId,

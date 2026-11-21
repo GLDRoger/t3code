@@ -33,9 +33,11 @@ export interface SenseContext {
 /**
  * A fact before its stored handling is joined on. `yours` words it for one person it names
  * ("Your meeting …"); the read for that person uses it, and it never leaves the server.
+ * `quietForMs` bounds "not a problem" on a fact that stays true as it worsens.
  */
 export type SensedFact = Omit<KinPulseFact, "handled"> & {
   readonly yours?: (personId: string) => string | undefined;
+  readonly quietForMs?: number;
 };
 
 /** An entry with its project and client, as every record sense selects it (`r`, `p`, `c`). */

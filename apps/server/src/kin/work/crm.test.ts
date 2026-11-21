@@ -25,7 +25,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
-import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
+import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
+import { KinDocRenderer } from "../gendocs/render.ts";
+import { LeadMemory } from "../lead/LeadMemory.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -35,6 +39,7 @@ import * as KinRecords from "./KinRecords.ts";
 import * as LeadClients from "./leadClients.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
+import { handlers as workHandlers } from "./mcp/handlers.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Deals from "./deals.ts";
@@ -355,6 +360,31 @@ it.effect(
         now: 0,
       });
       assert.strictEqual(section.open, 5);
+      // W-29, W-30: a dropped client or duplicate project is listed only when asked for.
+      const dropped = yield* LeadWork.create(scope, {
+        sourceEventId: "again-event",
+        records: [
+          { list: "clients", title: "Invented test client", state: "dropped" },
+          { list: "projects", title: "Invented site copy", client: "C-1", state: "dropped" },
+        ],
+      });
+      const keys = (input: Parameters<typeof LeadWork.query>[1]) =>
+        LeadWork.query(scope, input).pipe(Effect.map((page) => page.records.map((row) => row.key)));
+      const [droppedClient, droppedProject] = dropped.records.map((row) => row.key);
+      assert.deepStrictEqual(yield* keys({ list: "clients" }), ["C-1"]);
+      assert.deepStrictEqual(yield* keys({ list: "projects" }), ["P-1"]);
+      assert.deepStrictEqual(yield* keys({ list: "projects", open: false }), [droppedProject]);
+      assert.deepStrictEqual(yield* keys({ list: "clients", states: ["open", "dropped"] }), [
+        "C-1",
+        droppedClient,
+      ]);
+      assert.deepStrictEqual(yield* keys({ list: "projects", keys: [droppedProject!] }), [
+        droppedProject,
+      ]);
+      assert.deepStrictEqual(
+        (yield* LeadWork.get(scope, { key: "C-1" })).projects!.map((row) => row.key),
+        ["P-1"],
+      );
     }).pipe(Effect.provide(layer)),
 );
 
@@ -623,6 +653,174 @@ it.effect("project health moves on read as entries go late or wait, with no turn
       yield* Clients.updateProject([owner], { orgId, key: project.key, rev: 2, state: "open" }),
       { state: "open" },
     );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("an overdue invoice or a long silence with the client puts a project at risk", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seed;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
+    const client = yield* Clients.createParty([owner], {
+      orgId,
+      name: "Invented VIOM",
+      clientRequestId: "viom",
+    });
+    const build = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented VIOM build",
+      party: client.key,
+      clientRequestId: "viom-build",
+    });
+    const health = (key: string) =>
+      Clients.project([owner], { orgId, key }).pipe(Effect.map((page) => page.project));
+    yield* Clients.logTouch([owner], {
+      orgId,
+      party: client.key,
+      kind: "call",
+      clientRequestId: "kickoff",
+    });
+    assert.include(yield* health(build.key), { health: "on_track" });
+    // The deposit names only the client, the build only its project; both fall due on day 3.
+    const invoice = (title: string, project?: string) => ({
+      list: "invoices" as const,
+      title,
+      client: client.key,
+      ...(project === undefined ? {} : { project }),
+      amount: "50000",
+      state: "waiting" as const,
+      due: "1970-01-03",
+    });
+    const made = yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [
+        invoice("Invented VIOM deposit"),
+        invoice("Invented VIOM build invoice", build.key),
+      ],
+    });
+    yield* issuedByLead(...made.records.map((one) => one.key));
+    yield* TestClock.adjust(4 * DAY);
+    // Never guessed: the deposit isn't the build's, though it's the client's only open project.
+    const owed = yield* health(build.key);
+    assert.include(owed, { health: "at_risk" });
+    assert.deepInclude(owed.healthBecause, { overdueInvoices: 1 });
+    assert.isUndefined(owed.healthBecause.noContact);
+    // Every surface reads the same rule: the list, the Work summary and the lead's own read.
+    const listed = yield* Clients.projects([owner], { orgId });
+    assert.strictEqual(listed.projects.find((row) => row.key === build.key)?.health, "at_risk");
+    const summary = yield* OwnerWork.summary([owner], { orgId });
+    assert.deepInclude(
+      summary.projects!.find((one) => one.project.key === build.key),
+      { health: "at_risk" },
+    );
+    // Another project for the client doesn't take the build's invoice.
+    const second = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented VIOM app",
+      party: client.key,
+      clientRequestId: "viom-app",
+    });
+    assert.include(yield* health(second.key), { health: "on_track" });
+    // No contact past the client's check-in days (14 by default) puts both at risk.
+    yield* TestClock.adjust(11 * DAY);
+    const quiet = yield* health(build.key);
+    assert.include(quiet, { health: "at_risk" });
+    // Issuing the invoices was the last contact, dated the end of that day.
+    assert.deepStrictEqual(quiet.healthBecause.noContact, {
+      lastContactAt: "1970-01-01T18:29:59.999Z",
+      days: 14,
+    });
+    // The client's own playbook gives them longer than the company's 14 days.
+    const viom = (yield* Clients.party([owner], { orgId, key: client.key })).party;
+    yield* Docs.create(
+      orgId,
+      { actor: { _tag: "person", personId: ownerId }, via: "owner" },
+      {},
+      {
+        title: "Invented VIOM playbook",
+        body: "# VIOM\n\n```kin\nclient_checkin_days: 30\n```\n",
+        owner: { _tag: "person", personId: ownerId },
+        summary: "Created",
+        originKey: "test:viom-playbook",
+        kind: "playbook",
+        partyId: viom.recordId,
+      },
+    );
+    assert.include(yield* health(second.key), { health: "on_track" });
+    // A client nobody has contacted at all: no contact recorded, counted from their adding.
+    const silent = yield* Clients.createParty([owner], {
+      orgId,
+      name: "Invented Silent Co",
+      clientRequestId: "silent",
+    });
+    const silentBuild = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented silent build",
+      party: silent.key,
+      clientRequestId: "silent-build",
+    });
+    assert.include(yield* health(silentBuild.key), { health: "on_track" });
+    yield* TestClock.adjust(14 * DAY);
+    const never = yield* health(silentBuild.key);
+    assert.include(never, { health: "at_risk" });
+    assert.deepStrictEqual(never.healthBecause.noContact, { lastContactAt: null, days: 14 });
+    // Twenty healthy projects that sort ahead by name don't push a quiet client's out of the summary.
+    const busy = yield* Clients.createParty([owner], {
+      orgId,
+      name: "Invented Busy Co",
+      clientRequestId: "busy",
+    });
+    yield* Clients.logTouch([owner], {
+      orgId,
+      party: busy.key,
+      kind: "call",
+      clientRequestId: "busy-call",
+    });
+    for (let n = 1; n <= 20; n++)
+      yield* Clients.createProject([owner], {
+        orgId,
+        name: `Alpha ${String(n).padStart(2, "0")}`,
+        party: busy.key,
+        clientRequestId: `alpha-${n}`,
+      });
+    const crowded = (yield* OwnerWork.summary([owner], { orgId })).projects!;
+    assert.lengthOf(crowded, 20);
+    assert.deepInclude(
+      crowded.find((one) => one.project.key === silentBuild.key),
+      { health: "at_risk" },
+    );
+    // A returning client: the project we finished last week counts as contact, as client_quiet reads it.
+    const back = yield* Clients.createParty([owner], {
+      orgId,
+      name: "Invented Returning Co",
+      clientRequestId: "returning",
+    });
+    yield* Clients.logTouch([owner], {
+      orgId,
+      party: back.key,
+      kind: "call",
+      clientRequestId: "returning-call",
+    });
+    const first = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented returning first",
+      party: back.key,
+      clientRequestId: "returning-first",
+    });
+    yield* TestClock.adjust(23 * DAY);
+    yield* Clients.updateProject([owner], { orgId, key: first.key, rev: first.rev, state: "done" });
+    const again = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented returning second",
+      party: back.key,
+      clientRequestId: "returning-second",
+    });
+    yield* TestClock.adjust(7 * DAY);
+    const returning = yield* health(again.key);
+    assert.include(returning, { health: "on_track" });
+    assert.isUndefined(returning.healthBecause.noContact);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -1325,6 +1523,88 @@ it.effect(
       assert.isFalse(lowered.sensitive);
       const after = yield* OwnerWork.get([owner], { orgId, key: "W-1" });
       assert.notProperty(after, "sensitiveInherited");
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "records_query says its rows' marks once, and a mixed page still names each sensitive row and field",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* setup("ask-event");
+      yield* LeadWork.update(scope, { key: "C-1", sourceEventId: "ask-event", sensitive: true });
+      const toolkit = yield* KinWorkToolkit.pipe(
+        Effect.provide(McpToolAccess.HandlersLayer.layer(workHandlers)),
+      );
+      const unused = Layer.mergeAll(
+        Layer.mock(ThreadManagementService)({}),
+        Layer.mock(KinDocRenderer)({}),
+        Layer.mock(LeadMemory)({}),
+      );
+      // What the agent is sent, as the toolkit encodes it.
+      const sent = (input: Parameters<typeof toolkit.handle<"records_query">>[1]) =>
+        toolkit.handle("records_query", input).pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.map((chunk) => chunk.at(-1)!.encodedResult as Record<string, unknown>),
+          Effect.provideService(McpInvocationContext, scope),
+          Effect.provide(unused),
+        );
+      // Each row's marks as the page's say them, beside what Kin marked that row.
+      const rowMarks = (input: { readonly list: string }) =>
+        Effect.gen(function* () {
+          const page = yield* sent(input);
+          const rows = page.records as ReadonlyArray<Record<string, unknown>>;
+          for (const row of rows) {
+            assert.notProperty(row, "sensitive");
+            assert.notProperty(row, "sensitiveFields");
+          }
+          const fields = page.sensitiveFields;
+          const said = rows.map((row) => {
+            const key = row.key as string;
+            const own = Array.isArray(fields)
+              ? fields
+              : Object.entries((fields ?? {}) as Record<string, ReadonlyArray<string>>)
+                  .filter(([, keys]) => keys.includes(key))
+                  .map(([field]) => field);
+            const rowsSaid = page.sensitiveRows;
+            const sensitive =
+              rowsSaid === "all" || (Array.isArray(rowsSaid) && rowsSaid.includes(key));
+            return [key, sensitive, own.toSorted()];
+          });
+          const kin = (yield* LeadWork.query(scope, input)).records.map((row) => [
+            row.key,
+            row.sensitive === true,
+            [...(row.sensitiveFields ?? [])].toSorted(),
+          ]);
+          assert.deepStrictEqual(said, kin);
+          return page;
+        });
+      const contacts = yield* rowMarks({ list: "contacts" });
+      assert.deepInclude(contacts, { sensitiveRows: "all", sensitiveFields: ["email", "phone"] });
+      const tasks = yield* rowMarks({ list: "work" });
+      assert.notProperty(tasks, "sensitiveRows");
+      assert.notProperty(tasks, "sensitiveFields");
+      yield* LeadWork.update(scope, { key: "W-2", sourceEventId: "ask-event", sensitive: true });
+      yield* LeadWork.create(scope, {
+        sourceEventId: "again-event",
+        records: [
+          { title: "Invented printing", amount: "₹1,200" },
+          { list: "clients", title: "Invented Bolt" },
+          { list: "contacts", title: "Invented Asha", client: "Invented Bolt" },
+        ],
+      });
+      const mixedTasks = yield* rowMarks({ list: "work" });
+      const mixedContacts = yield* rowMarks({ list: "contacts" });
+      // A mixed page names exactly the rows and, per field, the rows that are sensitive.
+      assert.deepInclude(mixedTasks, {
+        sensitiveRows: ["W-2"],
+        sensitiveFields: { amount: ["W-7"] },
+      });
+      assert.deepInclude(mixedContacts, {
+        sensitiveRows: ["CT-1", "CT-2"],
+        sensitiveFields: ["email", "phone"],
+      });
     }).pipe(Effect.provide(layer)),
 );
 
@@ -3704,7 +3984,7 @@ it.effect(
         value: "€20,000.00",
         expected: "2026-12-15",
         expectedDay: "Tue 15 Dec 2026",
-        lookedAfterBy: "owner",
+        lookedAfterBy: "Owner (owner)",
         next: {
           key: stepped.deal.next!.key,
           title: "Invented: call Ingrid",

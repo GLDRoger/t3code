@@ -115,7 +115,9 @@ import {
   verifyRefs,
 } from "./registers.ts";
 import { contactFields } from "./contactDetails.ts";
+import { directionOf, findBankList } from "./statements/bankList.ts";
 import { cleanTags } from "./tags.ts";
+import { notAVendor } from "./vendorName.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
   bumpTeamSeqs,
@@ -393,6 +395,10 @@ type Sums = {
   /** Quotes sent and waiting, and accepted. */
   readonly sent?: ReadonlyArray<KinMoney>;
   readonly accepted?: ReadonlyArray<KinMoney>;
+  /** The bank list's money in, money out, and in less out; `total` stays the plain sum. */
+  readonly moneyIn?: ReadonlyArray<KinMoney>;
+  readonly moneyOut?: ReadonlyArray<KinMoney>;
+  readonly net?: ReadonlyArray<KinMoney>;
 };
 export type Totals = Sums & {
   readonly counted: number;
@@ -553,20 +559,35 @@ const checkInput = (
         ? `${def.name} has no categories.`
         : `${def.name}'s categories are ${def.categories.join(", ")}.`,
     );
+  const vendor = input.fields?.vendor;
+  if (def.id === "expenses" && typeof vendor === "string" && notAVendor(vendor))
+    return invalid(
+      `"${vendor.slice(0, 60)}" is not a vendor: give who was paid, as the receipt or bill names them, or leave vendor off.`,
+    );
   return input.fields === undefined ? undefined : checkFields(def, input.fields);
 };
 
-/** An invoice, or a renewal on Dates, for nothing: it isn't owed, so it isn't kept as owed. */
+/**
+ * An invoice, or a renewal on Dates, for nothing: it isn't owed, so it isn't kept as owed. An
+ * agent's expense for nothing is a free plan's bill or a misread one; only the owner keeps those.
+ */
 const zeroOwed = (
   def: ListDef,
   amount: KinMoney | null | undefined,
   category: string | null | undefined,
+  writer: Writer,
 ) =>
-  amount?.minor === 0 && (def.id === "invoices" || (def.id === "dates" && category === "renewal"))
-    ? invalid(
-        `${def.id === "invoices" ? "An invoice" : "A renewal"} for 0 isn't owed; leave the amount off or drop it.`,
-      )
-    : undefined;
+  amount?.minor !== 0
+    ? undefined
+    : def.id === "invoices" || (def.id === "dates" && category === "renewal")
+      ? invalid(
+          `${def.id === "invoices" ? "An invoice" : "A renewal"} for 0 isn't owed; leave the amount off or drop it.`,
+        )
+      : def.id === "expenses" && writer.actor._tag !== "person"
+        ? invalid(
+            "An expense for 0 cost nothing, so it isn't recorded: skip a receipt or bill for 0, such as a free plan's, and say so. If you couldn't read the amount, leave it off and set suggested true.",
+          )
+        : undefined;
 
 export class KinRecords extends Context.Service<
   KinRecords,
@@ -1396,7 +1417,7 @@ const make = Effect.gen(function* () {
       steps: (input.steps?.length ?? 0) > 0 || input.urgent === true,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
-    const zero = zeroOwed(def, input.amount, input.category);
+    const zero = zeroOwed(def, input.amount, input.category, writer);
     if (zero !== undefined) return yield* zero;
     if (list === "receipts" && RECEIPT_TIES.some((field) => field in fields))
       return yield* invalid(RECEIPT_TIES_ARE_KINS);
@@ -1700,7 +1721,7 @@ const make = Effect.gen(function* () {
         if (invalidFor !== undefined) return yield* invalidFor;
         if (recordsMoney(patch.amount, patch.fields))
           yield* countryFirst(orgId, { saved: true }).pipe(provideSql);
-        const zero = zeroOwed(def, patch.amount, patch.category ?? row.category);
+        const zero = zeroOwed(def, patch.amount, patch.category ?? row.category, writer);
         if (zero !== undefined) return yield* zero;
         if (list === "receipts") {
           if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
@@ -2619,23 +2640,47 @@ const make = Effect.gen(function* () {
           at: number;
           paid: number;
           received: number;
+          fields: string;
         }>`SELECT r.amount_minor AS minor, r.currency, r.category, r.party_id AS party,
             r.project_id AS project, r.side, r.state, r.owner_kind || ':' || r.owner_id AS owner,
             ${moneyDay(sql)} AS at,
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}) AS paid,
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live} AND p.withheld = 0
               AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
-              AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received
+              AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received,
+            r.fields_json AS fields
           FROM kin_records r WHERE ${filter} AND ${countedEntry(sql, asked)}
           ORDER BY r.record_id`;
         const listDef = yield* resolveList(orgId, input.list ?? "work");
         const paidOverTime = listDef.payments === true;
+        const directed = (yield* findBankList(orgId).pipe(provideSql))?.id === listDef.id;
         const amounts = (members: typeof rows): Sums => {
           const priced = members.flatMap((row) =>
             row.minor === null ? [] : [{ ...row, minor: row.minor }],
           );
+          // Money in and out never add up to one figure; an entry with no direction is in neither.
+          const way = directed ? priced.map((row) => directionOf(parseFields(row.fields))) : [];
+          const side = (direction: "credit" | "debit") =>
+            addUp(
+              priced.filter((_, at) => way[at] === direction),
+              home,
+            );
           return {
             total: addUp(priced, home),
+            ...(directed
+              ? {
+                  moneyIn: side("credit"),
+                  moneyOut: side("debit"),
+                  net: addUp(
+                    priced.flatMap((row, at) =>
+                      way[at] === null
+                        ? []
+                        : [way[at] === "debit" ? { ...row, minor: -row.minor } : row],
+                    ),
+                    home,
+                  ),
+                }
+              : {}),
             ...(paidOverTime
               ? {
                   owed: addUp(
