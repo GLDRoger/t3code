@@ -48,15 +48,15 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
       ORDER BY priority, received_at, event_id LIMIT 1`;
     const chatId = first?.chatId ?? lead?.ownerChatId;
     if (chatId === undefined) return Option.none<Lane>();
-    // Another agent's turn handed on in the Team room, and no person's message with it.
-    const [team] = yield* sql<{ people: number }>`SELECT COUNT(e.event_id) FILTER (
-        WHERE json_extract(e.json, '$.provenance._tag') = 'human') AS people
+    // Only discussion turns Kin handed on in the Team room (`team:` keys), nothing else there.
+    const [team] = yield* sql<{ others: number }>`SELECT COUNT(e.event_id) FILTER (
+        WHERE e.dedupe_key IS NULL OR e.dedupe_key NOT LIKE 'team:%') AS others
       FROM kin_events e JOIN kin_chats c ON c.org_id = e.org_id
         AND c.chat_id = json_extract(e.json, '$.chatId') AND c.team_id = ${KIN_TEAM_ROOM_TEAM_ID}
       WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
         AND e.wakeup_id = ${input.wakeupId} AND c.chat_id = ${chatId}
       HAVING COUNT(e.event_id) > 0`;
-    if (team !== undefined && team.people === 0)
+    if (team !== undefined && team.others === 0)
       return Option.some<Lane>({
         chatId: KinChatId.make(chatId),
         mode: "notice",

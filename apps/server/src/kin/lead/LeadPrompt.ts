@@ -113,7 +113,7 @@ export interface KinLeadPromptInput {
   readonly lane?: {
     readonly chatId: KinChatId;
     readonly mode: "reply" | "notice";
-    /** A Team-room discussion turn handed on with no person's message: plain text is dropped. */
+    /** Only Team-room discussion turns Kin handed on woke it: plain text is dropped. */
     readonly team?: true;
   };
   /** Server-gathered facts for a brief or summary event, by event id. */
@@ -689,7 +689,8 @@ export class KinLeadPrompt extends Context.Service<
               true,
             ),
           );
-          if (message.discussionId !== undefined && message.author._tag === "agent") {
+          // Kin's outcome notice names its discussion too, but it is no turn.
+          if (message.discussionId !== undefined && message.author._tag !== "system") {
             const turn = yield* teamTurnFacts(orgId, agentId, message.discussionId).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.mapError(

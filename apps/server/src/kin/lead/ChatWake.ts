@@ -27,6 +27,7 @@ import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { speakerOrder } from "../floor/KinFloor.ts";
 import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
+import { KinTeam } from "../team/KinTeam.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { RETIRED_NOTICE_PREFIX, retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
 import { teammatesLimited } from "./KinBudget.ts";
@@ -87,6 +88,7 @@ const make = Effect.gen(function* () {
   const repo = yield* KinChatRepository;
   const queue = yield* KinEventQueue;
   const presence = yield* Effect.serviceOption(KinPresence);
+  const team = yield* Effect.serviceOption(KinTeam);
   const dailyTurns = yield* LeadAccess.dailyTurns;
   // The working line shows the moment a message is accepted, before any wake-up claims it.
   const showQueued = Effect.fn("KinChatWake.showQueued")(
@@ -239,6 +241,12 @@ const make = Effect.gen(function* () {
       if (message.kind !== "text" && message.kind !== "widget_action") return;
       // Kin's copy of a person's words (`kin_hand_off`) is woken once by the hand-off itself.
       if (message.origin !== undefined) return;
+      // Agents it names in the Team room talk it over: the discussion's turns answer it.
+      if (
+        Option.isSome(team) &&
+        (yield* team.value.personAsked(message).pipe(Effect.orElseSucceed(() => false)))
+      )
+        return;
       const leads = yield* sql<{
         agentId: string;
         memberId: string;
