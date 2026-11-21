@@ -17,6 +17,7 @@ import {
   type KinImportDateFormat,
   type KinImportDecisions,
   type KinImportFile,
+  type KinImportFileInput,
   type KinImportLeftOut,
   type KinImportMapping,
   type KinImportRuns,
@@ -42,6 +43,7 @@ import { contactAll } from "./contactDetails.ts";
 import { stagesOf } from "./dealStages.ts";
 import { type ImportReport, KinImport } from "./KinImport.ts";
 import { beating } from "./importUndo.ts";
+import { heldImportFile, holdImportFile, releaseImportFile } from "./importUploads.ts";
 import { fieldList, fieldText, parseFields } from "./lists.ts";
 import { dayIn, isCurrency } from "./money.ts";
 import { fold, matchName } from "./nameMatch.ts";
@@ -1171,8 +1173,12 @@ const decodeBase64 = (file: KinImportFile) => {
     return invalid("The file didn't arrive whole. Choose it again.");
   return new Uint8Array(Buffer.from(file.data, "base64"));
 };
-const batchOf = (bytes: Uint8Array) =>
-  `f${NodeCrypto.createHash("sha256").update(bytes).digest("hex").slice(0, 16)}`;
+const hashOf = (bytes: Uint8Array) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+const FILE_GONE = new KinChatError({
+  reason: "not_found",
+  message: "Kin no longer has this file. Choose it again.",
+});
+const NOT_CHECKED = invalid("This isn't the file you checked. Check it again before importing.");
 
 /** The owner level, from the session; `guard` asks again inside the write's own transaction. */
 const ownerLevel = Effect.fn("KinImportFile.ownerLevel")(function* (
@@ -1190,12 +1196,23 @@ const ownerLevel = Effect.fn("KinImportFile.ownerLevel")(function* (
   return { personId, guard };
 });
 
-const fileOf = (file: KinImportFile) => {
-  const bytes = decodeBase64(file);
-  if (isKinError(bytes)) return Effect.fail(bytes);
+/** The file as sent, or the one held for this person under its id; `upload` names the held one. */
+const fileOf = Effect.fn("KinImportFile.file")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  file: KinImportFileInput,
+) {
+  const bytes =
+    "data" in file ? decodeBase64(file) : yield* heldImportFile(orgId, personId, file.upload);
+  if (bytes === "gone") return yield* FILE_GONE;
+  if (bytes === "changed") return yield* NOT_CHECKED;
+  if (!(bytes instanceof Uint8Array)) return yield* bytes;
   const csv = readCsv(bytes);
-  return isKinError(csv) ? Effect.fail(csv) : Effect.succeed({ csv, batch: batchOf(bytes) });
-};
+  if (isKinError(csv)) return yield* csv;
+  const hash = "data" in file ? hashOf(bytes) : file.upload.hash;
+  const upload = "data" in file ? null : file.upload;
+  return { csv, bytes, hash, batch: `f${hash.slice(0, 16)}`, upload };
+});
 
 const linesOf = (lines: ReadonlyArray<string>) => Stream.fromIterable(lines);
 const leftOutOf = (report: ImportReport, lineOf: ReadonlyArray<number>) =>
@@ -1206,7 +1223,7 @@ const leftOutOf = (report: ImportReport, lineOf: ReadonlyArray<number>) =>
 
 const resolvedFor = Effect.fn("KinImportFile.resolved")(function* (
   orgId: KinOrgId,
-  file: KinImportFile,
+  file: { readonly name: string },
   csv: Csv,
   batch: string,
   mapping: KinImportMapping,
@@ -1226,7 +1243,8 @@ export const check = Effect.fn("KinImportFile.check")(function* (
   input: KinImportCheckInput,
 ) {
   const { personId } = yield* ownerLevel(people, input.orgId);
-  const { csv, batch } = yield* fileOf(input.file);
+  const { csv, batch, bytes, hash, ...file } = yield* fileOf(input.orgId, personId, input.file);
+  const upload = file.upload ?? (yield* holdImportFile(input.orgId, personId, bytes, hash));
   const sample = (index: number) =>
     clip(csv.rows.map((row) => row.cells[index] ?? "").find((one) => one.trim() !== "") ?? "", 80);
   const mapping = input.mapping ?? { columns: proposeColumns(csv.headers) };
@@ -1236,7 +1254,7 @@ export const check = Effect.fn("KinImportFile.check")(function* (
     target: mapping.columns[index] ?? "skip",
     ...(isMailBasis(header) ? { note: MAIL_BASIS } : {}),
   }));
-  const base = { batch, rows: csv.rows.length, columns, mapping };
+  const base = { batch, rows: csv.rows.length, columns, mapping, upload };
   const resolved = yield* resolvedFor(
     input.orgId,
     input.file,
@@ -1276,9 +1294,8 @@ export const apply = Effect.fn("KinImportFile.apply")(function* (
   input: KinImportApplyInput,
 ) {
   const { personId, guard } = yield* ownerLevel(people, input.orgId);
-  const { csv, batch } = yield* fileOf(input.file);
-  if (batch !== input.batch)
-    return yield* invalid("This isn't the file you checked. Check it again before importing.");
+  const { csv, batch, upload } = yield* fileOf(input.orgId, personId, input.file);
+  if (batch !== input.batch) return yield* NOT_CHECKED;
   const resolved = yield* resolvedFor(
     input.orgId,
     input.file,
@@ -1294,6 +1311,7 @@ export const apply = Effect.fn("KinImportFile.apply")(function* (
     guard,
     file: input.file.name,
   });
+  if (upload !== null) yield* releaseImportFile(upload);
   const leftOut = [...resolved.check.leftOut, ...leftOutOf(report, resolved.lineOf)];
   return {
     batch,

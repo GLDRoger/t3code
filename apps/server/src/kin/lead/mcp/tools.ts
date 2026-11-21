@@ -146,9 +146,7 @@ export const KinLeadToolkit = Toolkit.make(
       "Open a Team-room discussion for agents to settle something: you need another agent's answer, you're about to decide in another agent's lane, or the owner says \"sort it out between you\". decider is whose call it is; to asks up to two agents; text opens it. Kin wakes them in turn; others with a stake may pitch in. When the owner asked, the outcome comes back to you to tell him. A refusal says why: then work it out in your own lane.",
     parameters: Team.TeamOpenInput,
     success: Team.TeamResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("team_say", {
     ...team,
     description:

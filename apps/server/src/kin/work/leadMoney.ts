@@ -91,6 +91,7 @@ import {
   unknownList,
 } from "./registers.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
+import { DAY_MS } from "../durations.ts";
 
 /** The lead tools for lists and money. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -699,7 +700,6 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
   };
 });
 export const datesQuery = leadTool("KinWorkTools.dates", runDates);
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 const ProfileText = Schema.NullOr(KinToolText(500));
 export const ProfileInput = Schema.Struct({

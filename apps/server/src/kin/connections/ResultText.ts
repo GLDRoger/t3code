@@ -2,7 +2,7 @@ import { stableStringify } from "@t3tools/shared/relaySigning";
 import type { McpSchema } from "effect/ai";
 import * as Predicate from "effect/Predicate";
 
-import { quote } from "../lead/LeadPrompt.ts";
+import { quote } from "../lead/quote.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
 
 // Zero-width, direction overrides, invisible operators, BOM, Unicode tags, and C0/C1 controls

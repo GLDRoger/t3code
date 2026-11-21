@@ -735,12 +735,15 @@ it.effect("a check-in the host slept through fires once when Kin is back that da
     const tasks = yield* ScheduledTaskService.ScheduledTaskService;
     const evening = (yield* tasks.list()).tasks.find((row) => row.title === "Evening check-in")!;
     const opens = Date.parse(evening.nextRunAt!);
+    // Kin's pass runs just before T3's scheduler sees the slot, so its minutely work is done.
+    yield* TestClock.setTime(opens + 12 * 60_000 - 5_000);
+    yield* tick;
     // The host sleeps through the slot and wakes twelve minutes in: T3 skips the run as missed.
     yield* TestClock.setTime(opens + 12 * 60_000);
     yield* workers.get("scheduled-tasks")!;
     const skipped = (yield* tasks.list()).tasks.find((row) => row.id === evening.id)!;
     assert.isAbove(Date.parse(skipped.nextRunAt!), opens + 12 * 60_000);
-    yield* tick;
+    // It fires in the next pass, five seconds on, not a minute.
     yield* tick;
     assert.deepStrictEqual(
       yield* sql`SELECT fire_id AS "fireId", consumed_at IS NOT NULL AS done

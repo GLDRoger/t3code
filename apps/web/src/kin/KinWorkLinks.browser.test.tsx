@@ -1,4 +1,10 @@
-import { EnvironmentId, KinOrgId, KinRecordId, type KinRecordLink } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  KinChatId,
+  KinOrgId,
+  KinRecordId,
+  type KinRecordLink,
+} from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -72,5 +78,44 @@ describe("a task's Linked section", () => {
 
     await userEvent.click(page.getByRole("button", { name: /W-2/ }));
     expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ key: "W-2", kind: "task" }));
+  });
+
+  it("on a doc a member reads, tells the chat they aren't in, and opens only the one they are", async () => {
+    const onOpen = vi.fn();
+    const source = (target: string, rest: Partial<KinRecordLink>): KinRecordLink => ({
+      kind: "message",
+      relation: "source",
+      target,
+      chatId: null,
+      label: null,
+      createdAt: "2026-11-18T09:00:00.000Z",
+      ...rest,
+    });
+    await using screen = await render(
+      <KinLinkedGroups
+        item={{
+          key: "D-11",
+          links: [
+            source("msg-rhea", { closedChat: { agent: "Chief of staff" } }),
+            source("msg-dev", { chatId: KinChatId.make("chat-dev"), label: "Dev asked here" }),
+          ],
+        }}
+        title="Linked"
+        parentsShown
+        onOpen={onOpen}
+      />,
+    );
+    const told = screen.getByText("Where this came from: a chat with Chief of staff");
+    await expect.element(told).toBeVisible();
+    await expect
+      .element(screen.getByRole("button", { name: /Chief of staff/ }))
+      .not.toBeInTheDocument();
+    await userEvent.click(told);
+    expect(onOpen).not.toHaveBeenCalled();
+
+    await userEvent.click(page.getByRole("button", { name: "Dev asked here" }));
+    expect(onOpen).toHaveBeenCalledWith(
+      expect.objectContaining({ _tag: "chat", chatId: "chat-dev" }),
+    );
   });
 });

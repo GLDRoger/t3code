@@ -74,6 +74,7 @@ import { KinStop } from "../lead/KinStop.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { KinPushSender } from "../push/KinPushSender.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
+import { placeRefusals } from "../work/ownerWork.ts";
 import { placesOf } from "../work/teamView.ts";
 import { accessOf, accessSql, isOwnerHimself, mayActAsOwner, ownerLevel } from "./KinAccess.ts";
 import { KIN_DEFAULT_QUIET_HOURS, stillAway, storedWorkHours } from "../triggers/quietHours.ts";
@@ -1346,6 +1347,10 @@ export const make = Effect.gen(function* () {
     );
     if (access === undefined) return yield* missing;
     const places = yield* placesFor(input.orgId, caller.personId);
+    const { refused } = yield* placeRefusals([caller], input.orgId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(KinIdentity, identity),
+    );
     const publicUrl = yield* publicAddress();
     const all = access === "owner" || access === "co_owner";
     return {
@@ -1355,6 +1360,7 @@ export const make = Effect.gen(function* () {
         ? { clients: true, docs: true, money: true }
         : { clients: places.clients, docs: places.docs, money: places.money },
       leads: places.leads,
+      refused,
       ...(yield* companyMoney(input.orgId).pipe(
         Effect.map(({ homeCurrency, country, financialYearStartMonth }) => ({
           homeCurrency,

@@ -35,6 +35,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
@@ -264,6 +265,7 @@ const make = Effect.gen(function* () {
             : yield* sql`UPDATE kin_org_state SET paused = 1, paused_at = ${now},
                 paused_by = ${person.personId}, reason = ${reason}
               WHERE org_id = ${input.orgId} AND paused = 0 RETURNING org_id`;
+        if (changed.length > 0) yield* (yield* KinRefreshObserver).touch(input.orgId, "stop");
         const messages: ReadonlyArray<KinMessage> =
           changed.length === 0 ? [] : yield* notice(input.orgId, now, "pause", PAUSED_NOTICE);
         return { state: yield* state(input.orgId), messages };
@@ -296,6 +298,7 @@ const make = Effect.gen(function* () {
         if (cleared === undefined) return undefined;
         yield* sql`UPDATE kin_org_state SET paused = 0, paused_at = NULL, paused_by = NULL, reason = NULL
           WHERE org_id = ${input.orgId} AND paused = 1`;
+        yield* (yield* KinRefreshObserver).touch(input.orgId, "stop");
         const now = yield* Clock.currentTimeMillis;
         const expired = yield* sql<{
           eventId: string;
