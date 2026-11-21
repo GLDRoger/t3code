@@ -1148,6 +1148,7 @@ describe("invoices", () => {
           due: `2026-11-${20 + at}`,
         })),
       });
+      yield* issueAll(...Array.from({ length: 10 }, (_, at) => `INV-${at + 1}`));
       const told = yield* LeadMoney.datesQuery(scope, { from: "2026-11-13", to: "2026-12-11" });
       const invoices = told.dates.filter((one) => one.key.startsWith("INV-"));
       assert.deepStrictEqual([told.total, told.dates.length, invoices.length], [11, 11, 10]);
@@ -1168,21 +1169,16 @@ describe("invoices", () => {
       );
 
       const section = moneySection(yield* OwnerMoney.money(people, { orgId }), "Asia/Kolkata");
-      // By their due day; the review, due with INV-2, sits after it.
+      // By their due day, one entry each; Money's dates are money's only, so the review is not here.
       assert.deepStrictEqual(
         section?.next30Days.map((one) => [one.key, one.issued, one.due]),
-        [
-          ["INV-1", "2026-11-13", "2026-11-20"],
-          ["INV-2", "2026-11-14", "2026-11-21"],
-          ["W-1", undefined, "2026-11-21"],
-          ...Array.from({ length: 7 }, (_, at) => [
-            `INV-${at + 3}`,
-            `2026-11-${15 + at}`,
-            `2026-11-${22 + at}`,
-          ]),
-        ],
+        Array.from({ length: 10 }, (_, at) => [
+          `INV-${at + 1}`,
+          `2026-11-${13 + at}`,
+          `2026-11-${20 + at}`,
+        ]),
       );
-      assert.strictEqual(section?.moreDates, 1);
+      assert.strictEqual(section?.moreDates, undefined);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1772,8 +1768,10 @@ describe("invoices", () => {
       );
       const told = yield* LeadMoney.datesQuery(scope, { from: "2026-12-01", to: "2026-12-31" });
       assert.deepStrictEqual(
-        told.dates.filter((one) => one.key === "INV-7").map((one) => one.what),
-        ["Date", "Due"],
+        told.dates
+          .filter((one) => one.key === "INV-7")
+          .map((one) => [one.date !== undefined, one.issued, one.due !== undefined]),
+        [[true, undefined, true]],
       );
     }).pipe(Effect.provide(layer)),
   );
