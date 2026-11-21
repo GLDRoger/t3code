@@ -6,9 +6,10 @@ import {
   kinPageGist,
   kinIsBrief,
   kinPageSections,
-  kinPageShape,
+  kinMessageShape,
   kinPlainBody,
   KIN_FIGURE_SCHEME,
+  type KinChatPreview,
   type KinMessage,
   type KinMessageLink,
   type KinPageSection,
@@ -29,9 +30,7 @@ export type KinMessageLayout = "bubble" | "page";
 type Shaped = Pick<KinMessage, "author" | "body" | "form" | "status" | "embeds">;
 
 export function kinMessageLayout(message: Shaped): KinMessageLayout {
-  if (message.status === "deleted" || message.author._tag === "human") return "bubble";
-  if ((message.embeds?.length ?? 0) > 0 || kinIsBrief(message.body, message.form)) return "page";
-  return kinPageShape(message.body);
+  return kinMessageShape(message);
 }
 
 /** A brief's greeting and date over its page; null for every other page. */
@@ -248,7 +247,14 @@ export function kinPageCut(markdown: string, brief = false): KinPageCut | null {
  * The line a chat list shows for an agent's message, still markdown: a page's first thing under
  * "Needs you" (else its first line), after the greeting for a brief.
  */
-export function kinMessageGistMarkdown(message: Shaped & Pick<KinMessage, "createdAt">): string {
+export function kinMessageGistMarkdown(
+  message: Shaped & Pick<KinMessage, "createdAt">,
+  preview?: KinChatPreview,
+): string {
+  if (preview !== undefined)
+    return preview.brief
+      ? `${kinBriefHead(message.createdAt, null).greeting} · ${preview.gist}`
+      : preview.gist;
   if (kinMessageLayout(message) === "bubble") return message.body;
   const gist = kinPageGist(message.body);
   const head = kinPageHead(message, null);

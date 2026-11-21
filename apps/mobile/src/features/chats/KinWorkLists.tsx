@@ -1,5 +1,8 @@
+import { KIN_MARKETING, kinContactListOfClients } from "@t3tools/client-runtime/kin/kinMarketing";
+import type { KinMarketing } from "@t3tools/contracts";
+import { KIN_IMPORT } from "@t3tools/client-runtime/kin/kinImport";
 import { useKinClientsStart, useKinSeesClients, useKinViewerScope } from "./state/kinChatOnly";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
@@ -12,6 +15,7 @@ import {
   KIN_PROJECT_VIEWS,
   kinClientRow,
   kinClientsLookedAfterChoices,
+  kinClientsQuery,
   kinClientsNothing,
   type KinClientsFilter,
   kinProjectsByClient,
@@ -57,6 +61,7 @@ import {
 } from "./state/useKinWork";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { KinDealsView } from "./KinDealsList";
+import { useKinExportList, useKinMarketing } from "./KinMarketing";
 
 const HEALTH_TONE: Record<KinHealthView["tone"], string> = {
   good: "text-foreground-muted",
@@ -189,6 +194,8 @@ function NamedList(props: {
   readonly onSearch: (text: string) => void;
   readonly nothing: React.ReactNode;
   readonly add: { readonly label: string; readonly onPress: () => void } | null;
+  /** Beside Add: Clients' Import a file, for the owner level. */
+  readonly bring?: AppBarAction | null;
   readonly loading: string;
   readonly loadFailed: string;
   readonly extra: unknown;
@@ -205,6 +212,7 @@ function NamedList(props: {
         refresh={{ accessibilityLabel: "Refresh", onPress: list.refresh }}
         actions={[
           ...(props.ask === null ? [] : [props.ask]),
+          ...(props.bring === undefined || props.bring === null ? [] : [props.bring]),
           ...(add === null
             ? []
             : [{ accessibilityLabel: add.label, icon: "plus" as const, onPress: add.onPress }]),
@@ -268,7 +276,7 @@ function NamedList(props: {
               <View className="items-start gap-2 px-5 py-4">
                 <Text textRole="footnote" className="text-foreground-muted">
                   {state.moreFailed
-                    ? "Couldn't load more."
+                    ? KIN_MORE_FAILED
                     : `Showing ${props.shown} of ${state.total ?? props.shown}`}
                 </Text>
                 <Button
@@ -351,6 +359,8 @@ function clientsMenu(
   onShow: (showing: Showing) => void,
   names: KinWorkNames,
   seesClients: boolean,
+  marketing: KinMarketing,
+  onExport: () => void,
 ): AppBarMenu["items"] {
   const { clients } = showing;
   const pick = (lookedAfter: KinClientsFilter["lookedAfter"]) =>
@@ -417,7 +427,45 @@ function clientsMenu(
                   ]),
             ],
           },
+          {
+            id: "cameFrom",
+            title: KIN_MARKETING.cameFrom,
+            items: [
+              {
+                id: "cameFrom:anywhere",
+                title: KIN_MARKETING.cameFromAnywhere,
+                selected: clients.cameFrom == null,
+                onPress: () => onShow({ ...showing, clients: { ...clients, cameFrom: null } }),
+              },
+              ...marketing.cameFrom.map((one) => ({
+                id: `cameFrom:${one.source}`,
+                title: one.campaign ? `${one.label} (${KIN_MARKETING.campaign})` : one.label,
+                selected: clients.cameFrom === one.source,
+                onPress: () =>
+                  onShow({ ...showing, clients: { ...clients, cameFrom: one.source } }),
+              })),
+            ],
+          },
+          {
+            id: "tag",
+            title: KIN_MARKETING.tag,
+            items: [
+              {
+                id: "tag:any",
+                title: KIN_MARKETING.anyTag,
+                selected: clients.tag == null,
+                onPress: () => onShow({ ...showing, clients: { ...clients, tag: null } }),
+              },
+              ...marketing.tags.map((tag) => ({
+                id: `tag:${tag}`,
+                title: tag,
+                selected: clients.tag === tag,
+                onPress: () => onShow({ ...showing, clients: { ...clients, tag } }),
+              })),
+            ],
+          },
         ]),
+    { id: "export", title: KIN_MARKETING.exportList, onPress: onExport },
   ];
 }
 
@@ -428,13 +476,15 @@ function showMenu(
   onShow: (showing: Showing) => void,
   names: KinWorkNames,
   seesClients: boolean,
+  marketing: KinMarketing,
+  onExport: () => void,
 ): AppBarMenu {
   return {
     title: KIN_WORK_HOME.show,
     icon: "line.3.horizontal.decrease.circle",
     items:
       tab === "clients"
-        ? clientsMenu(showing, onShow, names, seesClients)
+        ? clientsMenu(showing, onShow, names, seesClients, marketing, onExport)
         : KIN_PROJECT_VIEWS.map((view) => ({
             id: view.id,
             title: view.label,
@@ -458,6 +508,8 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
     clients: { show: start.show, lookedAfter: start.lookedAfter },
     view: "open",
   }));
+  const marketing = useKinMarketing(props);
+  const exporter = useKinExportList(props);
   const agent = useKinAskAgent(props, "clients");
   const ask =
     agent === null
@@ -468,7 +520,18 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
           onPress: () => agent.ask(kinWorkAskDraft("clients")),
         };
   const view = {
-    menu: showMenu(tab, showing, setShowing, props.directory.names, seesClients),
+    menu: showMenu(
+      tab,
+      showing,
+      setShowing,
+      props.directory.names,
+      seesClients,
+      marketing,
+      () =>
+        void exporter.run(
+          kinContactListOfClients(kinClientsQuery(props.orgId, { ...showing.clients, text: "" })),
+        ),
+    ),
     ask,
     header: (
       <SegmentedControl
@@ -499,7 +562,7 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
         showing.clients.lookedAfter === "anyone"
           ? "anyone"
           : kinWorkPrincipalKey(showing.clients.lookedAfter)
-      }`}
+      }:${showing.clients.cameFrom ?? ""}:${showing.clients.tag ?? ""}`}
       {...props}
       {...view}
       showing={showing.clients}
@@ -547,6 +610,8 @@ function ClientsView(
         };
   const openClient = (to: KinRecordKey) =>
     navigation.navigate("KinClient", { environmentId, orgId, party: to });
+  // The owner level's, as the host has it: the host applies the same gate to the call.
+  const canImport = useAtomValue(kinClient.importApply.permissionAtom(environmentId));
   return (
     <NamedList
       environmentId={environmentId}
@@ -588,6 +653,15 @@ function ClientsView(
         />
       }
       add={add}
+      bring={
+        canImport
+          ? {
+              accessibilityLabel: KIN_IMPORT.entry,
+              icon: "tray.and.arrow.down" as const,
+              onPress: () => navigation.navigate("KinImport", { environmentId, orgId }),
+            }
+          : null
+      }
       loading="Loading clients"
       loadFailed={KIN_CLIENTS.loadFailed}
       onOpen={openClient}

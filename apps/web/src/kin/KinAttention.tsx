@@ -2,6 +2,7 @@ import {
   KIN_ATTENTION,
   kinAsideOf,
   kinAttention,
+  kinNotNowUntil,
   kinSetAsideDays,
   kinSnoozeDays,
   type KinAsideRow,
@@ -96,6 +97,7 @@ export function KinAttentionItem(
   const opens = row.open.type !== "none";
   const [asideOpen, setAsideOpen] = useState(false);
   const record = row.record;
+  const line = row.about === null ? row.detail : `${row.detail.replace(/\.$/, "")} · ${row.about}`;
   const body = (
     <>
       <CircleAlertIcon
@@ -109,11 +111,11 @@ export function KinAttentionItem(
         <span className="truncate text-sm text-foreground">{row.title}</span>
         <span
           className={cn(
-            "line-clamp-2 text-xs",
+            "line-clamp-2 text-xs wrap-break-word",
             row.urgent ? "text-destructive-foreground" : "text-muted-foreground",
           )}
         >
-          {row.about === null ? row.detail : `${row.detail.replace(/\.$/, "")} · ${row.about}`}
+          {line}
         </span>
       </span>
     </>
@@ -123,6 +125,7 @@ export function KinAttentionItem(
       {opens ? (
         <button
           type="button"
+          aria-label={`${row.title}, ${line}`}
           onClick={() => props.onOpen(row.open)}
           className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring focus-visible:ring-2 focus-visible:ring-inset"
         >
@@ -132,14 +135,24 @@ export function KinAttentionItem(
         <div className="flex min-w-0 flex-1 items-start gap-3 px-2 py-1.5">{body}</div>
       )}
       <div className="flex shrink-0 items-center gap-0.5 py-1 pe-1">
-        <Button
-          size="xs"
-          variant="ghost"
-          disabled={busy}
-          onClick={() => void handler.send(row.factKey, "got_it")}
-        >
-          {KIN_ATTENTION.gotIt}
-        </Button>
+        {row.whatsNext === null ? (
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => void handler.send(row.factKey, "got_it")}
+          >
+            {KIN_ATTENTION.gotIt}
+          </Button>
+        ) : (
+          <WhatsNext
+            row={row}
+            deal={row.whatsNext}
+            busy={busy}
+            handler={handler}
+            onOpen={props.onOpen}
+          />
+        )}
         <Menu>
           <MenuTrigger
             render={
@@ -183,6 +196,39 @@ export function KinAttentionItem(
         />
       )}
     </li>
+  );
+}
+
+/** A deal with no next step: open it to add one, or hold it for two weeks as the person's own. */
+function WhatsNext(props: {
+  readonly row: KinAttentionRow;
+  readonly deal: KinRecordKey;
+  readonly busy: boolean;
+  readonly handler: Handler;
+  readonly onOpen: (open: KinAttentionOpen) => void;
+}) {
+  const now = new Date(useNowMinuteMs());
+  return (
+    <>
+      <Button
+        size="xs"
+        variant="outline"
+        disabled={props.busy}
+        onClick={() => props.onOpen({ type: "record", key: props.deal })}
+      >
+        {KIN_ATTENTION.whatsNext}
+      </Button>
+      <Button
+        size="xs"
+        variant="ghost"
+        disabled={props.busy}
+        onClick={() =>
+          void props.handler.aside(props.deal, "set", kinNotNowUntil(now), props.row.factKey)
+        }
+      >
+        {KIN_ATTENTION.notNow}
+      </Button>
+    </>
   );
 }
 

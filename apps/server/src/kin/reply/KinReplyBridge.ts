@@ -11,6 +11,7 @@ import {
   MessageId,
   type KinAgentId,
   type KinOrgId,
+  type KinPersonId,
   type KinPresenceState,
   type KinWakeupId,
   type OrchestrationV2DomainEvent,
@@ -35,7 +36,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KIN_VISUAL_CARD_TYPE } from "@t3tools/shared/kinVisual";
 
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
-import { isClaudeThinkingItem } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import {
   KinChatService,
@@ -49,9 +49,14 @@ import {
   rescueMessageId,
   type AgentIdentity,
 } from "../chat/KinIdentity.ts";
+import { isClaudeThinkingItem } from "./claudeThinkingItem.ts";
 import { laneFor, type Lane } from "./replyLane.ts";
 import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
+import { LAST_RETRY_MS } from "../lead/KinEventQueue.ts";
+import * as KinLevels from "../lead/KinLevels.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
+import * as Reach from "../lead/Reach.ts";
+import { turnRecords } from "../lead/wakeupRuns.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import {
   CAPTION_PROMPT,
@@ -122,7 +127,13 @@ const fitParts = (text: string, max: number) =>
 // scheduled runs owe theirs through `LeadDelivery`; the rest may end on NO_REPLY.
 
 // `replied`: the turn failed after its reply answered every message it held.
-export type FailedOutcome = "partway" | "replied" | "retrying" | "gave_up" | SetupFailure;
+export type FailedOutcome =
+  | "partway"
+  | "replied"
+  | "retrying"
+  | "retrying_later"
+  | "gave_up"
+  | SetupFailure;
 // Plain words with the lead's name: the inbox shows this as the chat's latest line.
 const failedNotices: Record<
   Exclude<FailedOutcome, SetupFailure | "replied">,
@@ -132,6 +143,12 @@ const failedNotices: Record<
   retrying: {
     prefix: "kin-retrying",
     body: (lead) => `${lead} couldn't start. Trying again in a moment.`,
+  },
+  // Before the long wait: the same kind of line for clients, now saying when.
+  retrying_later: {
+    prefix: "kin-retrying",
+    body: (lead) =>
+      `${lead} couldn't start. Trying once more in about ${Math.round(LAST_RETRY_MS / 60_000)} minutes.`,
   },
   gave_up: {
     prefix: "kin-failed",
@@ -153,7 +170,10 @@ const setupNotice = (lead: string, failure: SetupFailure, ownerOnly: boolean) =>
 type Outcome = "posted" | "note" | "silent" | "empty" | "withheld" | "overflow" | "dropped";
 
 const WITHHELD_ANY = "Kin couldn't save it. Send your message again.";
-/** Why Kin held a reply back, for everyone in the chat, never what it said; none for the chat's own no. */
+/**
+ * Why Kin held a reply back, for everyone in the chat, never what it said; none for the chat's own
+ * no, which a person's direct chat still hears (`refusedHere`).
+ */
 const withheldWhy = (error: { readonly reason: string }): string | null =>
   isPrivateWriteRefused(error)
     ? "it included things only the owner and co-owners see, and someone else is in this chat. Ask again and the answer will be one everyone here may read."
@@ -277,7 +297,7 @@ export class KinReplyBridge extends Context.Service<
      * The wake-up failed, in the lane read before the queue closed it: `partway` after
      * something visible (not retried), `replied` when its reply already answered every message
      * (a line only for a card the reply named and never posted, or a promise not kept),
-     * `retrying` when it showed nothing and will run again, `gave_up` when that was its last try.
+     * `retrying` (`retrying_later` before the long wait) when it showed nothing, `gave_up` last.
      */
     readonly failed: (input: {
       readonly orgId: KinOrgId;
@@ -303,7 +323,10 @@ type AnswerItem = Extract<OrchestrationV2TurnItem, { type: "assistant_message" }
 /** The model's own words. Its reasoning never reaches a chat, even shown as an update. */
 const isAnswer = (item: OrchestrationV2TurnItem) =>
   item.type === "assistant_message" && !isClaudeThinkingItem(item);
-const textOf = (item: AnswerItem, projection?: OrchestrationV2ThreadProjection) =>
+const textOf = (
+  item: AnswerItem,
+  projection?: Pick<OrchestrationV2ThreadProjection, "messages">,
+) =>
   item.textOmitted === true
     ? (projection?.messages.find((message) => message.id === item.messageId)?.text ?? item.text)
     : item.text;
@@ -998,7 +1021,7 @@ const make = Effect.gen(function* () {
     if (removed > 0) yield* journal(wake, [`Omitted ${removed} unplaced answer figures.`]);
   });
   const settle = Effect.fn("KinReplyBridge.settle")(function* (wake: Wake, rootRunId: RunId) {
-    const projection = yield* threads.getThreadProjection(wake.threadId);
+    const projection = yield* turnRecords(threads, wake.threadId, rootRunId);
     const root = projection.runs.find((run) => run.id === rootRunId);
     if (root === undefined) return;
     // What a run that could not sign in "said" is the provider's, never the lead's.
@@ -1199,6 +1222,38 @@ const make = Effect.gen(function* () {
       });
   });
 
+  /**
+   * Why a reply refused in a person's direct chat didn't land, for them: a restricted pair, or a
+   * level the owner set below talking. Anything else there (a mute) is the chat's own no.
+   */
+  const refusedHere = Effect.fn("KinReplyBridge.refusedHere")(
+    function* (wake: Wake) {
+      const [row] = yield* sql<{ personId: KinPersonId }>`SELECT p.person_id AS "personId"
+        FROM kin_chats c JOIN kin_people p ON p.org_id = c.org_id
+          AND c.direct_key = p.person_id || ':' || ${wake.agentId}
+        WHERE c.org_id = ${wake.orgId} AND c.chat_id = ${wake.lane.chatId} AND c.kind = 'direct'
+        ORDER BY p.person_id LIMIT 1`;
+      if (row === undefined) return null;
+      const lead = wake.lane.leadName;
+      const ask = Effect.provideService(SqlClient.SqlClient, sql);
+      if (
+        (yield* Reach.mayReach(
+          wake.orgId,
+          Reach.person(row.personId),
+          Reach.agent(wake.agentId),
+        ).pipe(ask)) === "restricted"
+      )
+        return `you and ${lead} can't message each other here.`;
+      const level = yield* KinLevels.effectiveLevel({
+        orgId: wake.orgId,
+        agentId: wake.agentId,
+        chatId: wake.lane.chatId,
+      }).pipe(ask);
+      return KinLevels.atLeast(level, "L1") ? null : `the owner has set ${lead} not to post here.`;
+    },
+    Effect.orElseSucceed(() => null),
+  );
+
   // Ends the wake-up's line and drafts for good; queue lines are the queue's, not the wake-up's.
   const settleLine = (wake: Wake) =>
     wake.lock.withPermits(1)(
@@ -1258,8 +1313,11 @@ const make = Effect.gen(function* () {
       yield* settled;
       // What it showed stands without its line: "didn't reply" under a chart would be false.
       if (shown && wake.withheld === null) return;
-      // The chat itself said no (a mute, a level), or someone joining already said so.
-      if (wake.movedNoticed || (wake.withheld !== null && wake.withheldWhy === null)) return;
+      // A person told this agent answers them in their own chat never meets silence there.
+      const why =
+        wake.withheldWhy ?? (wake.withheld === "not_allowed" ? yield* refusedHere(wake) : null);
+      // The chat itself said no (a mute, a group's level), or someone joining already said so.
+      if (wake.movedNoticed || (wake.withheld !== null && why === null)) return;
       // Honest, never faked: whoever asked sees that no reply came, and why Kin held one back.
       yield* chat.notice({
         messageId: KinMessageId.make(`kin-no-reply:${wake.wakeupId}`),
@@ -1269,7 +1327,7 @@ const make = Effect.gen(function* () {
         body:
           wake.withheld === null
             ? `${wake.lane.leadName} didn't reply.`
-            : `${wake.lane.leadName}'s reply couldn't be posted: ${wake.withheldWhy ?? WITHHELD_ANY}`,
+            : `${wake.lane.leadName}'s reply couldn't be posted: ${why ?? WITHHELD_ANY}`,
       });
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin reply completion failed", { cause })),
@@ -1327,10 +1385,11 @@ const make = Effect.gen(function* () {
         return yield* setupFailed({ ...input, outcome: input.outcome });
       if (input.outcome === "replied") return yield* failedAfterReply(input);
       const notice = failedNotices[input.outcome];
-      if (input.outcome === "retrying") {
+      if (input.outcome === "retrying" || input.outcome === "retrying_later") {
         const agentId = yield* agentOf(input.orgId, input.wakeupId);
         if (agentId === undefined) return;
-        if (yield* standing(input, agentId, ["kin-retrying", "kin-setup"])) return;
+        const shown = input.outcome === "retrying" ? ["kin-retrying", "kin-setup"] : ["kin-setup"];
+        if (yield* standing(input, agentId, shown)) return;
       }
       yield* chat.notice({
         messageId: KinMessageId.make(`${notice.prefix}:${input.wakeupId}`),

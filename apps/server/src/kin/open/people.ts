@@ -17,13 +17,15 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshHub } from "../chat/KinRefreshHub.ts";
 import { coalesced, hashedLive, viewHash } from "../hashedLive.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
 import { viewerIn } from "../pulse/people.ts";
+import type { SensedFact } from "../pulse/senses/shared.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import * as KinOpen from "./KinOpen.ts";
+import { HOUR_MS } from "../durations.ts";
 
 /** The open list on people's screens: `KinOpen.compute` as the session's person, each time. */
 
-const HOUR_MS = 3_600_000;
 /** Chat events that can move what waits on someone; their data is never forwarded. */
 const WAITING_EVENTS = new Set(["waiting.updated", "widget.updated", "member.removed"]);
 
@@ -37,13 +39,17 @@ const unavailable = (cause: unknown) =>
 export const read = Effect.fn("KinOpenPeople.read")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinOpenReadInput,
+  sensed?: ReadonlyArray<SensedFact>,
 ) {
   const { person, viewer } = yield* viewerIn(people, input.orgId);
+  const ownerLevel = viewer._tag === "owner";
   return yield* KinOpen.compute({
     orgId: input.orgId,
-    viewer: { personId: person.personId, ownerLevel: viewer._tag === "owner" },
+    viewer: { personId: person.personId, ownerLevel },
     at: yield* Clock.currentTimeMillis,
     acceptSenses: input.acceptSenses,
+    // Only owner level reuses a tick's facts; a teammate's are sensed afresh, as before.
+    sensed: ownerLevel ? sensed : undefined,
   }).pipe(
     Effect.catchTags({
       SqlError: unavailable,
@@ -110,10 +116,12 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinOpenS
         Stream.filter((moved) => moved),
         Stream.map(() => -1),
       );
-      const waiting = (yield* (yield* KinChatHub).subscribeForViewer(person)).pipe(
+      const chats = yield* KinChatHub;
+      // Behind or failed, it builds once and listens again: the build reads what it missed.
+      const waiting: Stream.Stream<number> = Stream.unwrap(chats.subscribeForViewer(person)).pipe(
         Stream.filter((event) => WAITING_EVENTS.has(event.type)),
         Stream.map(() => -2),
-        Stream.catch(() => Stream.make(-2)),
+        Stream.catch(() => Stream.make(-2).pipe(Stream.concat(Stream.suspend(() => waiting)))),
       );
       const dayTurns = Stream.fromEffectRepeat(
         Effect.gen(function* () {
@@ -147,12 +155,24 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinOpenS
         diff: kinOpenDiff,
         apply: kinOpenApply,
       });
+      // Owner level, it shows what the last tick sensed if no older than what it shows; a Work
+      // change or a day's turn is sensed afresh, so it shows at once.
+      let shownAt: number | undefined;
       return coalesced(
         Stream.mergeAll([pulse, work, waiting, dayTurns, lapsed], { concurrency: 5 }),
-        () =>
+        (asked) =>
           Effect.gen(function* () {
             const at = yield* Clock.currentTimeMillis;
-            const list = yield* read(people, readInput);
+            const tick = KinPulse.lastTick(input.orgId);
+            const reuse =
+              !member &&
+              !asked.includes(-1) &&
+              !asked.includes(-3) &&
+              shownAt !== undefined &&
+              tick !== undefined &&
+              tick.at >= shownAt;
+            shownAt = reuse ? tick.at : at;
+            const list = yield* read(people, readInput, reuse ? tick.facts : undefined);
             yield* Queue.offer(
               lapses,
               yield* nextLapse(input.orgId, person.personId, at).pipe(

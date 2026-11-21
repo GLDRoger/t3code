@@ -1,6 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 import {
+  KIN_CODING_AGENT_UNNAMED,
   KIN_RECORD_COMMENTS_PAGE,
   KinAgentId,
   KinAttachment,
@@ -127,7 +128,7 @@ export const keyNamedFor = <A extends Pick<KinRecordChange, "by" | "codingAgent"
   !viewer.teammate ||
   (row.by._tag === "person" && row.by.personId === viewer.person.personId)
     ? row
-    : { ...row, codingAgent: "a coding agent" };
+    : { ...row, codingAgent: KIN_CODING_AGENT_UNNAMED };
 
 /** Whether this viewer may take a comment back: its author, or the owner level any. */
 export const withCanRemove = (

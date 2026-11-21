@@ -269,7 +269,9 @@ export function kinInboxStream(input: KinChatsSubscribeInput) {
         EnvironmentSupervisor.EnvironmentSupervisor
       > = Stream.merge(
         resubscribeWhenKinReturns(
-          retryWhileKinUnavailable(subscribe(KIN_CHAT_WS_METHODS.chatsSubscribe, input)),
+          retryWhileKinUnavailable(
+            subscribe(KIN_CHAT_WS_METHODS.chatsSubscribe, { ...input, acceptPreview: true }),
+          ),
           Stream.empty,
           Stream.empty,
         ),

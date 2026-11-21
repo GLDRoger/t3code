@@ -99,7 +99,7 @@ export const KinDocsToolkit = Toolkit.make(
     .annotate(Tool.Meta, deferredMeta),
   Tool.make("docs_search", {
     ...shared,
-    description: `Search docs and Work entries, clients, contacts and projects by words, best match first. A doc hit names the section the words are in. Use it to find a doc before writing a new one. Read-only. ${data} sensitiveRows (keys, or all) marks confidential hits: keep them out of delegated tasks' briefs, pull requests and chats others read.`,
+    description: `Search docs and Work entries, clients, contacts, projects and deals by words (a deal also by its key), best match first. A doc hit names the section the words are in. Use it to find a doc before writing a new one. Read-only. ${data} sensitiveRows (keys, or all) marks confidential hits: keep them out of delegated tasks' briefs, pull requests and chats others read.`,
     parameters: Docs.SearchInput,
     success: SearchResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

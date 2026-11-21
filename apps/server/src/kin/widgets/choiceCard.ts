@@ -60,6 +60,10 @@ export const LeadAskInput = Schema.Struct({
 export type AskInput = typeof AskInput.Type & {
   readonly image?: { readonly attachmentId: string; readonly mimeType: string };
   readonly send?: KinSendCard;
+  /** Asked for someone else: the card's first line (`askedBy` in `openQuestions.ts`). */
+  readonly askedBy?: string;
+  /** What holds only until it is answered: `detail` opens with it, shown while open. */
+  readonly whileOpen?: string;
   /** An agent's open question: it takes taps until the question closes. */
   readonly untilAnswered?: true;
   /**
@@ -136,6 +140,8 @@ export const choiceCardState = (input: AskInput): KinChoiceCardState => {
     options,
     ...(input.image === undefined ? {} : { image: input.image }),
     ...(input.send === undefined ? {} : { send: input.send }),
+    ...(input.askedBy === undefined ? {} : { askedBy: input.askedBy }),
+    ...(input.whileOpen === undefined ? {} : { whileOpen: input.whileOpen }),
     ...(input.untilAnswered === true ? { untilAnswered: true as const } : {}),
     answer: null,
   };

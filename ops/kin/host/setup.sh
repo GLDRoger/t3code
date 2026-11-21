@@ -211,7 +211,7 @@ if [ -f "$CURRENT/apps/server/dist/bin.mjs" ]; then
   # `start` is a no-op for a running server; changed settings wait for a planned restart.
   run as_kin systemctl --user start kin-server.service
 else
-  say "No build at $CURRENT yet: as $KIN_USER, run $CHECKOUT/ops/kin/host/update.sh (see README.md)."
+  say "No build at $CURRENT yet: as $KIN_USER, run $CHECKOUT/ops/kin/host/update.sh <commit> (see README.md)."
 fi
 
 # 5. Checklist.

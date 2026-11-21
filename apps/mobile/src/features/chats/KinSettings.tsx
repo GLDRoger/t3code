@@ -2,7 +2,7 @@ import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
-import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import { KIN_WAITING_TITLE, selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   KIN_DAILY_LIMIT,
   kinDailyLimitAsks,
@@ -20,6 +20,7 @@ import {
   kinTeamAgentLabel,
 } from "@t3tools/client-runtime/kin/kinProfiles";
 import { kinHomeTabs } from "@t3tools/client-runtime/kin/kinJoin";
+import { kinTeamAgentDetail } from "@t3tools/client-runtime/kin/kinReach";
 import {
   KIN_SETTINGS_PAGE_TITLES,
   kinSettingsGroups,
@@ -53,7 +54,6 @@ import { openKinNotificationSettings } from "./notifications/installKinNotificat
 import { useChatOnlyEnvironments, useKinOwnerLevel, useKinSeesClients } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinInbox } from "./state/useKinInbox";
-import { useKinOpenWaiting } from "./state/useKinOpen";
 import { useKinProfiles } from "./state/useKinProfiles";
 import { useKinReconnect } from "./state/useKinReconnect";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -180,9 +180,7 @@ export function KinSettings(props: {
   });
   const you = groups[0]!;
   const companyGroup = groups.find((group) => group.id === "company");
-  const openWaiting = useKinOpenWaiting(host, state._tag === "ready" ? state.inbox.value : null);
-  const waiting =
-    state._tag === "ready" ? selectKinInboxView(state.inbox.value, openWaiting).waiting.length : 0;
+  const waiting = state._tag === "ready" ? selectKinInboxView(state.inbox.value).waiting.length : 0;
 
   // Two computers with one name are told apart by the address their rows show.
   const nameOf = (environment: EnvironmentPresentation) =>
@@ -213,7 +211,9 @@ export function KinSettings(props: {
   };
   const leave = (environmentId: EnvironmentId) =>
     Dialog.alert(
-      teamOf(environmentId) === null ? "Leave this team?" : `Leave ${teamOf(environmentId)}?`,
+      teamOf(environmentId) === null
+        ? KIN_DEVICE_COPY.leaveTeamTitle
+        : `Leave ${teamOf(environmentId)}?`,
       KIN_DEVICE_COPY.leave("phone"),
       [
         { text: "Cancel", style: "cancel" },
@@ -362,9 +362,7 @@ export function KinSettings(props: {
           )}
           {company === null ? null : (
             <>
-              <SettingsSection footer={KIN_TEAM_AGENT_COPY.detail}>
-                <KinTeamAgentRow {...company} />
-              </SettingsSection>
+              <KinTeamAgentRow {...company} />
               <SettingsSection footer={KIN_COMPANY_CHAT_COPY.detail}>
                 <KinCompanyChatRow {...company} />
               </SettingsSection>
@@ -375,7 +373,7 @@ export function KinSettings(props: {
               >
                 <SettingsRow
                   icon="exclamationmark.circle"
-                  label="Waiting on you"
+                  label={KIN_WAITING_TITLE}
                   value={waiting === 0 ? "Nothing" : `${waiting}`}
                   valuePosition="trailing"
                   onPress={() => navigation.navigate("KinWaiting")}
@@ -413,7 +411,7 @@ export function KinSettings(props: {
               fullWidth
               label={
                 teamOf(environmentId) === null
-                  ? "Leave this team"
+                  ? KIN_DEVICE_COPY.leaveTeam
                   : `Leave ${teamOf(environmentId)}`
               }
               onPress={() => leave(environmentId)}
@@ -559,40 +557,47 @@ function KinTeamAgentRow(props: {
   const canSet = useAtomValue(kinClient.teamAgentSet.permissionAtom(props.environmentId));
   const set = useAtomCommand(kinClient.teamAgentSet, { reportFailure: false });
   const list = Option.getOrNull(AsyncResult.value(result));
+  const reach = useAtomValue(
+    kinClient.reach({ environmentId: props.environmentId, input: { orgId: props.orgId } }),
+  );
   const leads = list?.leads ?? [];
   const current = list?.teamAgentId ?? null;
   const choices = kinTeamAgentChoices(leads);
   return (
-    <Menu
-      actions={choices.map((choice) => ({
-        id: choice.agentId ?? "off",
-        title: choice.label,
-        ...(choice.suggested ? { subtitle: KIN_TEAM_AGENT_COPY.suggested } : {}),
-        state: choice.agentId === current ? ("on" as const) : ("off" as const),
-      }))}
-      onPressAction={({ nativeEvent }) => {
-        const picked = choices.find((choice) => (choice.agentId ?? "off") === nativeEvent.event);
-        if (picked === undefined || picked.agentId === current) return;
-        void set({
-          environmentId: props.environmentId,
-          input: { orgId: props.orgId, agentId: picked.agentId },
-        }).then((outcome) => {
-          if (AsyncResult.isFailure(outcome))
-            Dialog.alert(
-              kinFailureText(squashAtomCommandFailure(outcome), KIN_TEAM_AGENT_COPY.failed),
-            );
-          refresh();
-        });
-      }}
+    <SettingsSection
+      footer={kinTeamAgentDetail(Option.getOrNull(AsyncResult.value(reach)), current)}
     >
-      <SettingsRow
-        icon="bubble.left.and.bubble.right"
-        label={KIN_TEAM_AGENT_COPY.label}
-        value={list === null ? "…" : kinTeamAgentLabel(leads, current)}
-        valuePosition="trailing"
-        disabled={!canSet || list === null}
-      />
-    </Menu>
+      <Menu
+        actions={choices.map((choice) => ({
+          id: choice.agentId ?? "off",
+          title: choice.label,
+          ...(choice.suggested ? { subtitle: KIN_TEAM_AGENT_COPY.suggested } : {}),
+          state: choice.agentId === current ? ("on" as const) : ("off" as const),
+        }))}
+        onPressAction={({ nativeEvent }) => {
+          const picked = choices.find((choice) => (choice.agentId ?? "off") === nativeEvent.event);
+          if (picked === undefined || picked.agentId === current) return;
+          void set({
+            environmentId: props.environmentId,
+            input: { orgId: props.orgId, agentId: picked.agentId },
+          }).then((outcome) => {
+            if (AsyncResult.isFailure(outcome))
+              Dialog.alert(
+                kinFailureText(squashAtomCommandFailure(outcome), KIN_TEAM_AGENT_COPY.failed),
+              );
+            refresh();
+          });
+        }}
+      >
+        <SettingsRow
+          icon="bubble.left.and.bubble.right"
+          label={KIN_TEAM_AGENT_COPY.label}
+          value={list === null ? "…" : kinTeamAgentLabel(leads, current)}
+          valuePosition="trailing"
+          disabled={!canSet || list === null}
+        />
+      </Menu>
+    </SettingsSection>
   );
 }
 

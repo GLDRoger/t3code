@@ -144,16 +144,18 @@ it.effect("links for each reader only what they may open; a hidden client leaves
         ('finance-in-finance', ${orgId}, 'finance-chat', 'agent', NULL, 'finance', 'member', ${at})`;
     yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
       VALUES (${orgId}, 'clients', 'Clients', 'C', 1, 0), (${orgId}, 'work', 'Work', 'W', 1, 0),
-        (${orgId}, 'invoices', 'Invoices', 'INV', 1, 0)`;
+        (${orgId}, 'invoices', 'Invoices', 'INV', 1, 0), (${orgId}, 'deals', 'Deals', 'DL', 1, 0)`;
     yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
         owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
       VALUES (${orgId}, 'c1', 'clients', 'C-1', 'Orbit Dental', 'person', ${ownerId}, 0, 'person', 'c1', 0, 0),
         (${orgId}, 'c3', 'clients', 'C-3', 'Lumen Grove', 'person', ${ownerId}, 1, 'person', 'c3', 0, 0),
         (${orgId}, 'w1', 'work', 'W-1', 'Logo files', 'person', ${mateId}, 0, 'person', 'w1', 0, 0),
-        (${orgId}, 'i1', 'invoices', 'INV-1', 'Orbit Dental retainer', 'person', ${ownerId}, 0, 'person', 'i1', 0, 0)`;
+        (${orgId}, 'i1', 'invoices', 'INV-1', 'Orbit Dental retainer', 'person', ${ownerId}, 0, 'person', 'i1', 0, 0),
+        (${orgId}, 'd1', 'deals', 'DL-1', 'Pineglass window graphics', 'person', ${ownerId}, 0, 'person', 'd1', 0, 0),
+        (${orgId}, 'd2', 'deals', 'DL-2', 'Orbit Dental', 'person', ${ownerId}, 0, 'person', 'd2', 0, 0)`;
     yield* sql`UPDATE kin_records SET fields_json = '{"number":"INV/26-27/004"}' WHERE key = 'INV-1'`;
     const said = message(
-      "Talk to Finance about INV-1 for Orbit Dental. W-1 is with Zoya Sheikh. Lumen Grove and C-3 can wait. See Settings and INV/26-27/004.",
+      "Talk to Finance about INV-1 for Orbit Dental. W-1 is with Zoya Sheikh. Lumen Grove and C-3 can wait. See Settings and INV/26-27/004. Pineglass window graphics is DL-1.",
     );
     const linksOf = (personId: KinPersonId) =>
       withLinks(orgId, { _tag: "person", personId }, [said]).pipe(
@@ -173,8 +175,21 @@ it.effect("links for each reader only what they may open; a hidden client leaves
         ["C-3", "record"],
         ["Settings", "settings"],
         ["INV/26-27/004", "record"],
+        ["Pineglass window graphics", "record"],
+        ["DL-1", "record"],
       ],
     );
+    // A deal opens as a deal by its title, and a deal named like its client leaves it the client.
+    assert.deepStrictEqual(owner.find((link) => link.text === "Pineglass window graphics")?.to, {
+      _tag: "record",
+      key: "DL-1",
+      kind: "entry",
+    });
+    assert.deepStrictEqual(owner.find((link) => link.text === "Orbit Dental")?.to, {
+      _tag: "record",
+      key: "C-1",
+      kind: "client",
+    });
     assert.strictEqual(owner.find((link) => link.text === "W-1")?.note, "Logo files · Open");
 
     // Zoya has no Clients or Money place and no chat with Finance: only her own task links.
@@ -184,7 +199,15 @@ it.effect("links for each reader only what they may open; a hidden client leaves
     ]);
     // The private client is not named, numbered or hinted at anywhere in what she is sent.
     const sent = JSON.stringify(mate);
-    for (const hidden of ["Lumen Grove", "C-3", "Orbit Dental", "INV", "finance-chat"])
+    for (const hidden of [
+      "Lumen Grove",
+      "C-3",
+      "Orbit Dental",
+      "INV",
+      "finance-chat",
+      "Pineglass",
+      "DL-",
+    ])
       assert.notInclude(sent, hidden);
 
     // Agents read the words as written.

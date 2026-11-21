@@ -1,5 +1,7 @@
 import {
+  EnvironmentId,
   KIN_SOCIAL_WEEK_CARD,
+  KinChatError,
   KinChatId,
   KinMessageId,
   KinOrgId,
@@ -7,10 +9,21 @@ import {
   type KinSocialCardPost,
   type KinSocialWeekCard,
   type KinWidget,
+  type KinWidgetsActInput,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
 
-import { kinSocialPostActions, kinSocialRows, kinSocialWeekView } from "./kinSocial.ts";
+import {
+  kinSocialCardActions,
+  kinSocialCardTaps,
+  kinSocialNoticeShown,
+  kinSocialPostActions,
+  kinSocialRows,
+  kinSocialWeekView,
+  type KinSocialNotice,
+} from "./kinSocial.ts";
 
 const account = {
   accountId: "acc_1",
@@ -89,6 +102,53 @@ describe("kinSocialWeekView", () => {
     ]);
     expect(kinSocialPostActions(scheduled!, Date.parse("2026-11-18T13:25:00.000Z"))).toEqual([]);
     expect(kinSocialPostActions(failed!, 0)).toEqual(["retry"]);
+  });
+});
+
+describe("kinSocialCardActions", () => {
+  it("posts one tap at a time and shows a refusal only on the card it was raised on", async () => {
+    const week = kinSocialWeekView(widget({}))!;
+    const taps = kinSocialCardTaps();
+    const sent: Array<KinWidgetsActInput> = [];
+    let answer = () => {};
+    const seen = { pending: [] as Array<string | null>, notice: null as KinSocialNotice };
+    const refusal = new KinChatError({ reason: "invalid_state", message: "This week moved on." });
+    const actions = kinSocialCardActions({
+      view: week,
+      environmentId: EnvironmentId.make("env"),
+      newId: () => `tap-${sent.length + 1}`,
+      taps,
+      post: ({ input }) => {
+        sent.push(input);
+        return new Promise((resolve) => {
+          answer = () => resolve(AsyncResult.failure<unknown, unknown>(Cause.fail(refusal)));
+        });
+      },
+      set: {
+        pending: (key) => seen.pending.push(key),
+        notice: (notice) => (seen.notice = notice),
+      },
+    });
+    const confirm = actions.press("confirm", { actionId: "confirm", value: "d1" });
+    await actions.press("remove:a", { actionId: "remove", value: "a" });
+    answer();
+    await confirm;
+    expect(sent).toEqual([
+      {
+        widgetId: week.widgetId,
+        revision: 3,
+        actionId: "confirm",
+        value: "d1",
+        clientActionId: "tap-1",
+      },
+    ]);
+    expect(seen.pending).toEqual(["confirm", null]);
+    expect(kinSocialNoticeShown(seen.notice, week)).toEqual({
+      kind: "error",
+      text: "This week moved on.",
+    });
+    // The card's next revision clears it.
+    expect(kinSocialNoticeShown(seen.notice, { revision: 4 })).toBeNull();
   });
 });
 

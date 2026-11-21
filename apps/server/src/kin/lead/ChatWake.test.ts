@@ -28,6 +28,7 @@ import * as Presence from "../reply/KinPresence.ts";
 import * as ChatWake from "./ChatWake.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import { retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
+import { KinTeam } from "../team/KinTeam.ts";
 
 const decodeMessage = Schema.decodeUnknownSync(KinMessage);
 const decodeEventJson = Schema.decodeEffect(Schema.fromJsonString(KinEvent));
@@ -122,7 +123,7 @@ const storeMessage = Effect.fn("test.storeMessage")(function* (row: KinMessage) 
 
 // Records every enqueue attempt and result. `settle` publishes a post the bridge ignores and waits
 // until the bridge pulls it: catch-up and every earlier hub event are handled by then.
-const start = Effect.fn("test.start")(function* () {
+const start = Effect.fn("test.start")(function* (discussed: ReadonlyArray<string> = []) {
   const attempts: Array<KinEvent> = [];
   const results: Array<{ readonly event: KinEvent; readonly duplicate: boolean }> = [];
   const pulled = yield* Queue.unbounded<string>();
@@ -139,6 +140,10 @@ const start = Effect.fn("test.start")(function* () {
                 Effect.andThen(queue.enqueue(event)),
                 Effect.tap((result) => Effect.sync(() => results.push(result))),
               ),
+          }),
+          // The messages the Team room opened a discussion for: KinTeam's to decide and test.
+          Layer.mock(KinTeam)({
+            personAsked: (message) => Effect.succeed(discussed.includes(message.messageId)),
           }),
           Layer.succeed(Hub.KinChatHub, {
             ...hub,
@@ -358,14 +363,17 @@ describe("ChatWake", () => {
   );
 
   it.effect(
-    "a member's direct chat wakes the lead while they are a co-owner, and stops once demoted",
+    "a restricted member's direct chat wakes the lead while they are a co-owner, and stops once demoted",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* seed("a");
-        // A member with no grant to this lead: only promotion lets their direct chat wake it.
+        // A member restricted from this lead: only promotion lets their direct chat wake it.
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
           VALUES ('mate-a', 'a', 'mate', 'Mate', ${createdAt}, 'member')`;
+        yield* sql`INSERT INTO kin_reach_limits (limit_id, org_id, one_kind, one_id, other_kind,
+            other_id, set_by_person_id, set_at)
+          VALUES ('limit-mate-a', 'a', 'agent', 'lead-a', 'person', 'mate-a', 'owner-a', 0)`;
         yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
           VALUES ('mate-chat-a', 'a', 'direct', 'direct-mate-a', 0, ${createdAt})`;
         yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
@@ -459,10 +467,12 @@ describe("ChatWake", () => {
             VALUES (${id}, 'g', ${id}, 0, '{}', '[]', 'chat-g')`;
         }
         yield* storeMessage(message("g", "missed", { mentions: ["growth-member"] }));
-        const { attempts, settle } = yield* start();
+        const { attempts, settle } = yield* start(["talked-over"]);
         yield* post("g", "unnamed", { seq: 2 });
         yield* post("g", "named", { seq: 3, mentions: ["growth-member"] });
         yield* post("g", "both", { seq: 4, mentions: ["lead-member-g", "growth-member"] });
+        // A discussion of the agents it names answers it, so neither gets a plain reply turn.
+        yield* post("g", "talked-over", { seq: 4, mentions: ["lead-member-g", "growth-member"] });
         // A lead's own post names another lead and wakes nobody; nor does naming one who left.
         yield* post("g", "from-lead", { seq: 5, agent: true, mentions: ["growth-member"] });
         yield* post("g", "left", { seq: 6, mentions: ["gone-member"] });
@@ -637,7 +647,7 @@ describe("ChatWake", () => {
     ]);
   });
   it.effect(
-    "wakes a lead for another person's direct message only while its owner allows it, a bounded number of times a day",
+    "wakes a lead for another person's direct message unless the pair is restricted, a bounded number of times a day",
     () =>
       Effect.gen(function* () {
         yield* seed("a");
@@ -666,13 +676,19 @@ describe("ChatWake", () => {
         const notices = sql<{ body: string }>`SELECT body FROM kin_messages
           WHERE org_id = 'a' AND chat_id = 'mate-chat' AND author_kind = 'system' ORDER BY seq`;
 
-        // Being in the chat is not enough: the owner has not allowed it.
+        const restrict = (limitId: string) =>
+          sql`INSERT INTO kin_reach_limits (limit_id, org_id, one_kind, one_id, other_kind,
+              other_id, set_by_person_id, set_at)
+            VALUES (${limitId}, 'a', 'agent', 'lead-a', 'person', 'mate', 'owner-a', 0)`;
+        // Being in the chat is not enough while the pair is restricted, whatever grant is stored.
+        yield* restrict("limit-1");
+        yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+          VALUES ('a', 'lead-a', 'mate', 'owner-a', 0)`;
         yield* say("uninvited", 1);
         yield* settle;
         assert.deepStrictEqual(keys(attempts), []);
 
-        yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
-          VALUES ('a', 'lead-a', 'mate', 'owner-a', 0)`;
+        yield* sql`UPDATE kin_reach_limits SET lifted_at = 1, lifted_by_person_id = 'owner-a'`;
         for (const [index, id] of ["first", "second", "third", "fourth"].entries())
           yield* say(id, index + 2);
         // The owner's own chat is never counted.
@@ -683,37 +699,42 @@ describe("ChatWake", () => {
           "chat-message:second:lead-a",
           "chat-message:owners:lead-a",
         ]);
-        // Told once, however many more arrive.
-        assert.deepStrictEqual(yield* notices, [
-          {
-            body: "Lead has answered as much as it can for you today and didn't see your last message. Send it again later.",
-          },
-        ]);
+        // Told once, however many more arrive that hour.
+        const capped = {
+          body: "Lead has answered as much as it can for you today and didn't see your last message. Send it again later.",
+        };
+        assert.deepStrictEqual(yield* notices, [capped]);
+        // An hour on and still capped, the next one hears it again rather than silence.
+        yield* TestClock.adjust("61 minutes");
+        yield* say("an-hour-on", 6);
+        yield* say("and-another", 7);
+        yield* settle;
+        assert.deepStrictEqual(yield* notices, [capped, capped]);
 
         // With no limit for teammates' turns the cap is lifted; a limit again restores it.
         const setLimits = (json: string) =>
           sql`UPDATE kin_budget_limits SET limits_json = ${json} WHERE org_id = 'a'`;
         yield* setLimits('{"leadUnits":null,"workerUnits":null}');
-        yield* say("no-limit", 6);
+        yield* say("no-limit", 8);
         yield* settle;
         assert.include(keys(attempts), "chat-message:no-limit:lead-a");
         yield* setLimits(limited);
-        yield* say("limited-again", 7);
+        yield* say("limited-again", 9);
         yield* settle;
         assert.notInclude(keys(attempts), "chat-message:limited-again:lead-a");
-        assert.lengthOf(yield* notices, 1);
+        assert.deepStrictEqual(yield* notices, [capped, capped]);
 
         // The turns age out a day after they were asked for.
         yield* TestClock.adjust("25 hours");
-        yield* say("next-day", 8);
+        yield* say("next-day", 10);
         yield* settle;
         assert.include(keys(attempts), "chat-message:next-day:lead-a");
 
-        yield* sql`UPDATE kin_lead_access SET revoked_at = 1 WHERE person_id = 'mate'`;
-        yield* say("after", 9);
+        yield* restrict("limit-2");
+        yield* say("after", 11);
         yield* settle;
         assert.notInclude(keys(attempts), "chat-message:after:lead-a");
-        assert.lengthOf(yield* notices, 1);
+        assert.lengthOf(yield* notices, 2);
       }).pipe(
         Effect.provide(
           Layer.merge(
@@ -760,16 +781,24 @@ describe("ChatWake", () => {
       const notices = sql<{ chat: string; body: string }>`SELECT chat_id AS chat, body
         FROM kin_messages WHERE org_id = 'a' AND author_kind = 'system' ORDER BY chat_id`;
 
-      yield* say("group-first", 1, "group");
-      yield* say("group-tap", 2, "group", "approve");
+      // Restricted from the lead, the group is no way to wake it, and the room hears nothing.
+      yield* sql`INSERT INTO kin_reach_limits (limit_id, org_id, one_kind, one_id, other_kind,
+          other_id, set_by_person_id, set_at)
+        VALUES ('limit-group', 'a', 'agent', 'lead-a', 'person', 'mate', 'owner-a', 0)`;
+      yield* say("group-restricted", 1, "group");
+      yield* settle;
+      assert.deepStrictEqual(keys(attempts), []);
+      yield* sql`UPDATE kin_reach_limits SET lifted_at = 1, lifted_by_person_id = 'owner-a'`;
+      yield* say("group-first", 2, "group");
+      yield* say("group-tap", 3, "group", "approve");
       // The day's turns are used up in the group, so the direct chat and the group both stop.
       yield* say("direct-after", 1, "mate-chat");
-      yield* say("group-after", 3, "group");
+      yield* say("group-after", 4, "group");
       yield* hub.publish({
         type: "message.posted",
         orgId: KinOrgId.make("a"),
         message: decodeMessage({
-          ...message("a", "owner-in-group", { chat: "group", seq: 4 }),
+          ...message("a", "owner-in-group", { chat: "group", seq: 5 }),
           author: { _tag: "human", personId: "owner-a", memberId: "owner-in-group" },
         }),
       });

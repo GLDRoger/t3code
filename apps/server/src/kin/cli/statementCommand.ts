@@ -38,7 +38,7 @@ const rereadCommand = Command.make("reread", {
   ),
 }).pipe(
   Command.withDescription(
-    "Read a statement's stored file again, as Read again on its card does: rows already recorded stay recorded, the rest go to a fresh review card or to its lead to read, and the lead is told in its chat. A locked file with no kept password gets a password card. Without --apply it only reports, reading the database read-only; --apply goes through the running server.",
+    "Read a statement's stored file again, as Read again on its card does: rows already recorded stay recorded, the rest go to a fresh review card or to its agent to read, and the agent is told in its chat. A locked file with no kept password gets a password card. Without --apply it only reports, reading the database read-only; --apply goes through the running server.",
   ),
   Command.withHandler(
     Effect.fn("kin.statement.reread")(
@@ -59,7 +59,7 @@ const rereadCommand = Command.make("reread", {
         );
         yield* Console.log(`Now: ${yield* standing}`);
         if (!flags.apply)
-          return yield* Console.log("Run again with --apply to read it again and tell its lead.");
+          return yield* Console.log("Run again with --apply to read it again and tell its agent.");
         const result = yield* Effect.gen(function* () {
           const state = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
           if (Option.isNone(state))
@@ -81,10 +81,10 @@ const rereadCommand = Command.make("reread", {
         }).pipe(Effect.scoped, Effect.provide(remoteLayer(config)));
         yield* Console.log(
           result.status === "needs_password"
-            ? "Locked, and no password is kept for its account: Kin posted a password card in its chat. When the owner opens it there, the lead is told."
+            ? "Locked, and no password is kept for its account: Kin posted a password card in its chat. When the owner opens it there, the agent is told."
             : result.status === "unreadable"
               ? "Kin couldn't read the file again; nothing changed."
-              : `Read again; its lead was told in its chat. ${yield* standing}`,
+              : `Read again; its agent was told in its chat. ${yield* standing}`,
         );
       },
       Effect.tapError((error) =>

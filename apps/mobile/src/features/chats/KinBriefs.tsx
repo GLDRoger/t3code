@@ -6,6 +6,8 @@ import {
   KIN_WEEKDAYS,
   kinBriefHasDays,
   kinBriefLine,
+  kinBriefTitle,
+  kinBriefTurnsOff,
   kinCoveredLine,
   kinBriefProblem,
   kinBriefSave,
@@ -100,7 +102,7 @@ function Briefs(props: Target & { readonly checkIns: KinCheckInsResult | null | 
             <SettingsRow
               key={brief.kind}
               icon={brief.on ? "clock" : "moon"}
-              label={KIN_BRIEFS.titles[brief.kind]}
+              label={kinBriefTitle(brief)}
               valuePosition="below"
               value={[kinBriefLine(brief), kinCoveredLine(brief)]
                 .filter((line) => line !== null)
@@ -129,7 +131,7 @@ export type KinBriefFormParams = {
   readonly kind: string;
 };
 
-/** One brief's time, its days for the morning one, and on or off for the others. */
+/** One brief's time, its days for the morning one, and on or off for the others and a page. */
 export function KinBriefFormScreen({ route }: StaticScreenProps<KinBriefFormParams>) {
   const target = targetOf(route.params);
   if (target === null) return <FormMessage title={KIN_BRIEFS.title}>{NO_LINK}</FormMessage>;
@@ -182,7 +184,7 @@ function BriefForm(
   };
   return (
     <FormShell
-      title={KIN_BRIEFS.titles[draft.kind]}
+      title={kinBriefTitle(draft)}
       submit={KIN_BRIEFS.save}
       saving={saving}
       canSave={invalid === null}
@@ -194,14 +196,14 @@ function BriefForm(
           .filter((line) => line !== null)
           .join(" ")}
       >
-        {kinBriefHasDays(draft.kind) ? null : (
+        {kinBriefTurnsOff(draft) ? (
           <ListToggleRow
             label={KIN_BRIEFS.on}
             value={draft.on}
             disabled={saving}
             onValueChange={(on) => setDraft({ ...draft, on })}
           />
-        )}
+        ) : null}
         <KinWorkTextField
           label={KIN_BRIEFS.time}
           value={draft.at}
@@ -233,7 +235,7 @@ function BriefForm(
           ))}
         </ListSection>
       ) : null}
-      {ownerLevel ? (
+      {ownerLevel && draft.page !== true ? (
         <ListSection>
           <ListActionRow
             icon="slider.horizontal.3"

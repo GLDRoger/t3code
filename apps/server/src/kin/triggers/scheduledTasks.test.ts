@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  type KinCheckIn,
   CommandId,
   KinChatId,
   ProjectId,
@@ -22,6 +23,7 @@ import * as Chat from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as CheckIns from "../pulse/checkIns.ts";
 import { followOwnerZone, onHostClock, seedCheckIns } from "../pulse/checkInSeeds.ts";
+import { weeklyPipelineOf } from "../work/dealStages.ts";
 import { checkInIndex } from "../pulse/prompt.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Budget from "../lead/KinBudget.ts";
@@ -220,7 +222,7 @@ const retirement = (agentId: string, at: number, retired: boolean) =>
         if (retired)
           yield* Retirement.retire(
             { orgId, agentId: agent, retiredAt: retiredAt!, now: at },
-            { closeReplaced: () => Effect.void },
+            { closeReplaced: () => Effect.void, notice: () => Effect.die("unused") },
           );
         else
           yield* Retirement.restore({ orgId, agentId: agent, retiredAt: was!.retiredAt, now: at });
@@ -684,10 +686,32 @@ it.effect(
         (row) => row.scheduleId === morning,
       );
       assert.include(kept, { at: "08:15" });
-      // Someone who isn't owner-level is refused.
+      assert.notProperty(kept, "numbers");
+      // Only the weekly brief has the pipeline switch: off until turned on, and off again.
+      const weekly = KinMemoryItemId.make("checkin-weekly");
+      const weeklyRow = (read: { readonly checkIns: ReadonlyArray<KinCheckIn> }) =>
+        read.checkIns.find((row) => row.scheduleId === weekly);
+      assert.deepStrictEqual(weeklyRow(yield* CheckIns.list(people, orgId))?.numbers, []);
+      const numbers = (scheduleId: KinMemoryItemId, action: "numbers_on" | "numbers_off") =>
+        CheckIns.act(people, { orgId, scheduleId, action });
+      assert.deepInclude(weeklyRow(yield* numbers(weekly, "numbers_on")), {
+        numbers: ["pipeline"],
+      });
+      assert.isTrue(yield* weeklyPipelineOf(orgId));
+      assert.equal((yield* numbers(morning, "numbers_on").pipe(Effect.flip))._tag, "KinChatError");
+      assert.deepInclude(weeklyRow(yield* numbers(weekly, "numbers_off")), { numbers: [] });
+      assert.isFalse(yield* weeklyPipelineOf(orgId));
+      // Someone who isn't owner-level is refused, the switch included.
       const teammate = { ...owner, personId: KinPersonId.make("teammate-a") };
       const refused = yield* CheckIns.list([teammate], orgId).pipe(Effect.flip);
       assert.equal(refused._tag, "KinChatError");
+      const notTheirs = yield* CheckIns.act([teammate], {
+        orgId,
+        scheduleId: weekly,
+        action: "numbers_on",
+      }).pipe(Effect.flip);
+      assert.equal(notTheirs._tag, "KinChatError");
+      assert.isFalse(yield* weeklyPipelineOf(orgId));
     }).pipe(Effect.provide(Layer.merge(layer, identity)));
   },
 );
@@ -711,12 +735,15 @@ it.effect("a check-in the host slept through fires once when Kin is back that da
     const tasks = yield* ScheduledTaskService.ScheduledTaskService;
     const evening = (yield* tasks.list()).tasks.find((row) => row.title === "Evening check-in")!;
     const opens = Date.parse(evening.nextRunAt!);
+    // Kin's pass runs just before T3's scheduler sees the slot, so its minutely work is done.
+    yield* TestClock.setTime(opens + 12 * 60_000 - 5_000);
+    yield* tick;
     // The host sleeps through the slot and wakes twelve minutes in: T3 skips the run as missed.
     yield* TestClock.setTime(opens + 12 * 60_000);
     yield* workers.get("scheduled-tasks")!;
     const skipped = (yield* tasks.list()).tasks.find((row) => row.id === evening.id)!;
     assert.isAbove(Date.parse(skipped.nextRunAt!), opens + 12 * 60_000);
-    yield* tick;
+    // It fires in the next pass, five seconds on, not a minute.
     yield* tick;
     assert.deepStrictEqual(
       yield* sql`SELECT fire_id AS "fireId", consumed_at IS NOT NULL AS done

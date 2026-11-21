@@ -25,6 +25,7 @@ import {
   kinPageGist,
   kinPageShape,
   kinPlainBody,
+  kinThreadLinksAsWords,
   kinWhenParts,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -157,7 +158,7 @@ const kinRelayWords = (text: string) =>
 
 /** A message as plain text for a banner, its line breaks kept; `sendTo` cuts it to fit. */
 const kinPushBody = (text: string) =>
-  text
+  kinThreadLinksAsWords(text)
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
     .replace(/```[^\s`]*/g, "")

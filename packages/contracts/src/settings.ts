@@ -209,7 +209,10 @@ export const EnvironmentIdentificationMode = Schema.Literals([
 export type EnvironmentIdentificationMode = typeof EnvironmentIdentificationMode.Type;
 export const DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE: EnvironmentIdentificationMode = "artwork";
 
-/** Unread: a session with Kin always opens to Kin. Kept so saved settings and older builds decode. */
+/**
+ * @deprecated Read by nothing since Kin lost its code mode: a session with Kin always opens to Kin.
+ * Kept so saved settings and older builds decode; it goes once no supported build predates that.
+ */
 export const KinStartList = Schema.Literals(["lastUsed", "threads", "kin"]);
 export type KinStartList = typeof KinStartList.Type;
 const DEFAULT_KIN_START_LIST: KinStartList = "lastUsed";

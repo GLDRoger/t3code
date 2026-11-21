@@ -237,6 +237,19 @@ describe("KinEventQueue", () => {
         yield* sql`UPDATE kin_chat_members SET role = 'member'`;
         yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'person-lead-a'`;
         yield* queue.enqueue(yield* event("member", "chat.message"));
+        // Their turn in the budget, not the machine window: a person's words start as an owner's do.
+        const said = yield* Effect.scoped(queue.claim(input("member-said"))).pipe(Effect.forkChild);
+        yield* TestClock.adjust("299 millis");
+        assert.deepStrictEqual(
+          yield* sql`SELECT 1 FROM kin_wakeups WHERE wakeup_id = 'member-said'`,
+          [],
+        );
+        yield* TestClock.adjust("1 millis");
+        assert.deepStrictEqual(
+          (yield* Fiber.join(said)).map((entry) => [entry.eventId, entry.priority]),
+          [["member", "P2"]],
+        );
+        yield* finish("member-said");
         const forged = yield* event("forged", "widget.action", "a", "other");
         yield* queue.enqueue({
           ...forged,
@@ -244,7 +257,7 @@ describe("KinEventQueue", () => {
         });
         assert.deepStrictEqual(
           yield* sql`SELECT priority FROM kin_events WHERE state = 'queued' ORDER BY event_id`,
-          [{ priority: "P2" }, { priority: "P2" }],
+          [{ priority: "P2" }],
         );
         yield* sql`UPDATE kin_people SET access = NULL WHERE person_id = 'person-lead-a'`;
         yield* seed("a", "lead-a2");
@@ -770,7 +783,7 @@ describe("KinEventQueue", () => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("retries failed provider runs soon and fails the third attempt", () =>
+  it.effect("retries failed provider runs soon, then after a quarter hour, then fails them", () =>
     Effect.gen(function* () {
       yield* seed();
       const queue = yield* KinEventQueue.KinEventQueue;
@@ -779,7 +792,9 @@ describe("KinEventQueue", () => {
         const id = `failure-${mode}`;
         yield* queue.enqueue(yield* event(id));
         yield* TestClock.adjust("20 seconds");
-        for (let attempt = 1; attempt <= 3; attempt++) {
+        // A counted release still fails its third; a failed or timed-out run its fourth.
+        const last = mode === "release" ? 3 : 4;
+        for (let attempt = 1; attempt <= last; attempt++) {
           const claimInput = input(`${id}-${attempt}`);
           yield* Effect.scoped(queue.claim(claimInput));
           yield* queue.finish({ ...claimInput, orgId: KinOrgId.make("b"), status: "completed" });
@@ -790,24 +805,31 @@ describe("KinEventQueue", () => {
           const terminal = yield* failed;
           assert.deepStrictEqual(
             terminal.failedEventIds,
-            attempt === 3 ? [KinEventId.make(id)] : [],
+            attempt === last ? [KinEventId.make(id)] : [],
           );
-          if ("retried" in terminal) assert.strictEqual(terminal.retried, attempt === 3 ? 0 : 1);
+          if ("retried" in terminal) assert.strictEqual(terminal.retried, attempt === last ? 0 : 1);
           assert.deepStrictEqual((yield* failed).failedEventIds, []);
           const now = yield* Clock.currentTimeMillis;
           // A run that showed nothing retries soon; a counted release keeps its five minutes.
-          const delay = mode === "release" ? 300_000 : attempt === 1 ? 15_000 : 60_000;
+          const delay =
+            mode === "release"
+              ? 300_000
+              : attempt === 1
+                ? 15_000
+                : attempt === 2
+                  ? 60_000
+                  : 900_000;
           assert.deepStrictEqual(
             yield* sql`SELECT state, attempts, not_before FROM kin_events WHERE event_id = ${id}`,
             [
               {
-                state: attempt === 3 ? "failed" : "queued",
+                state: attempt === last ? "failed" : "queued",
                 attempts: attempt,
                 not_before: now + delay,
               },
             ],
           );
-          if (attempt < 3) {
+          if (attempt < last) {
             const retry = yield* Effect.scoped(queue.claim(input(`${id}-early-${attempt}`))).pipe(
               Effect.forkChild,
             );
