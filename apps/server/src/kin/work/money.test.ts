@@ -946,6 +946,123 @@ describe("lists through the tools", () => {
         assert.strictEqual((yield* records.get(orgId, blurry!.key))!.confirmed, 1);
       }).pipe(Effect.provide(layer)),
   );
+
+  it.effect("record one charge mailed as an invoice and a receipt once, keeping both files", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "expenses" });
+      const charge = (title: string, file: string) => ({
+        list: "expenses",
+        title,
+        amount: "₹1,770",
+        date: "2026-11-10",
+        fields: { vendor: "Invented Cloud", receipt: [file] },
+      });
+      const mailed = yield* turn(3, "Fwd: Your receipt", ["invoice-77.pdf", "receipt-77.pdf"]);
+      const pair = [
+        charge("Invented Cloud invoice", "invoice-77.pdf"),
+        charge("Invented Cloud receipt", "receipt-77.pdf"),
+      ];
+      const kept = yield* LeadWork.create(scope, { sourceEventId: mailed, records: pair });
+      assert.deepStrictEqual(
+        kept.records.map((one) => [one.key, one.created]),
+        [
+          ["EXP-1", true],
+          ["EXP-1", false],
+        ],
+      );
+      const records = yield* KinRecords.KinRecords;
+      const files = (key: string) =>
+        records.get(orgId, key).pipe(
+          Effect.flatMap((entry) => records.detail(entry!)),
+          Effect.map((detail) => detail.files?.map((one) => one.name)),
+        );
+      assert.deepStrictEqual(yield* files("EXP-1"), ["invoice-77.pdf", "receipt-77.pdf"]);
+      // A retry is the same entry, and keeps each file once.
+      const again = yield* LeadWork.create(scope, { sourceEventId: mailed, records: pair });
+      assert.deepStrictEqual(
+        again.records.map((one) => one.key),
+        ["EXP-1", "EXP-1"],
+      );
+      assert.deepStrictEqual(yield* files("EXP-1"), ["invoice-77.pdf", "receipt-77.pdf"]);
+      // The same charge in another mail is another charge.
+      const next = yield* turn(4, "Fwd: Your receipt", ["receipt-78.pdf"]);
+      const other = yield* LeadWork.create(scope, {
+        sourceEventId: next,
+        records: [charge("Invented Cloud receipt", "receipt-78.pdf")],
+      });
+      assert.deepInclude(other.records[0], { key: "EXP-2", created: true });
+      // Two receipts for the same price in one mail are two purchases.
+      const two = yield* turn(5, "Fwd: Your receipts", ["Receipt-2001.pdf", "Receipt-2002.pdf"]);
+      const bought = yield* LeadWork.create(scope, {
+        sourceEventId: two,
+        records: [
+          charge("Invented Cloud seat", "Receipt-2001.pdf"),
+          charge("Invented Cloud domain", "Receipt-2002.pdf"),
+        ],
+      });
+      assert.deepStrictEqual(
+        bought.records.map((one) => [one.key, one.created]),
+        [
+          ["EXP-3", true],
+          ["EXP-4", true],
+        ],
+      );
+      // Named in besides, an invoice and a receipt stay apart too.
+      const told = yield* turn(6, "Fwd: Two orders", ["Invoice-88.pdf", "Receipt-88.pdf"]);
+      const plan = { ...charge("Invented Cloud plan", "Invoice-88.pdf"), amount: "₹590" };
+      yield* LeadWork.create(scope, { sourceEventId: told, records: [plan] });
+      const apart = yield* LeadWork.create(scope, {
+        sourceEventId: told,
+        records: [
+          {
+            ...plan,
+            title: "Invented Cloud plan, second seat",
+            fields: { vendor: "Invented Cloud", receipt: ["Receipt-88.pdf"] },
+            besides: ["EXP-5"],
+          },
+        ],
+      });
+      assert.deepInclude(apart.records[0], { key: "EXP-6", created: true });
+      // Either order ends as one Paid expense, paid on the receipt's day and way, with both files.
+      const invoice = (amount: string, file: string, date?: string) => ({
+        list: "expenses",
+        title: "Invented Cloud invoice",
+        amount,
+        state: "open" as const,
+        due: "2026-11-20",
+        ...(date === undefined ? {} : { date }),
+        fields: { vendor: "Invented Cloud", receipt: [file] },
+      });
+      const receipt = (amount: string, file: string) => ({
+        list: "expenses",
+        title: "Invented Cloud receipt",
+        amount,
+        date: "2026-11-12",
+        fields: { vendor: "Invented Cloud", paidWith: "card", receipt: [file] },
+      });
+      for (const [n, amount, first] of [
+        [7, "₹2,950", "invoice"],
+        [8, "₹3,540", "receipt"],
+      ] as const) {
+        const names = [`Invoice-${n}.pdf`, `Receipt-${n}.pdf`];
+        const both = yield* turn(n, "Fwd: Your receipt", names);
+        // The invoice first carries its issue day; the one after it, none.
+        const issued = first === "invoice" ? "2026-11-10" : undefined;
+        const docs = [invoice(amount, names[0]!, issued), receipt(amount, names[1]!)];
+        const one = yield* LeadWork.create(scope, {
+          sourceEventId: both,
+          records: first === "invoice" ? docs : docs.toReversed(),
+        });
+        assert.strictEqual(one.records[0]!.key, one.records[1]!.key, first);
+        const entry = (yield* records.get(orgId, one.records[0]!.key))!;
+        assert.strictEqual(entry.state, "done", first);
+        assert.strictEqual(entry.dateAt, endOfDay("2026-11-12", "Asia/Kolkata"));
+        assert.include(entry.fieldsJson, '"card"');
+        assert.sameMembers((yield* files(entry.key))!, names);
+      }
+    }).pipe(Effect.provide(layer)),
+  );
 });
 
 describe("goals through the tools", () => {
