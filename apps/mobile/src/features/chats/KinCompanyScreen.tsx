@@ -34,6 +34,7 @@ import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
 import { downloadAndShareAttachment } from "../../lib/attachmentDownload";
 import { usePreparedConnection } from "../../state/session";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   KinWorkFrame,
@@ -46,8 +47,9 @@ import { KinTemplateRows } from "./KinTemplates";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinCompanyProfile, useKinCountryNeeded } from "./state/useKinMoney";
-import type { KinWorkTarget } from "./state/useKinWork";
-import { KinLoadFailed } from "./components/KinLoadFailed";
+import { useKinWorkZone, type KinWorkTarget } from "./state/useKinWork";
+import { KinDayField } from "./components/KinDayField";
+import { KinLoadFailed, KinLoadFailedRow } from "./components/KinLoadFailed";
 import { useKinGate } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
 
@@ -95,7 +97,7 @@ function Permitted(props: KinWorkTarget) {
     return (
       <KinWorkFrame title={KIN_COMPANY.title} onBack={back}>
         {state._tag === "loading" ? (
-          <KinWorkLoading label="Loading company details" />
+          <KinWorkLoading label={KIN_COMPANY.loading} />
         ) : (
           <KinLoadFailed
             title={KIN_COMPANY.loadFailed}
@@ -127,6 +129,8 @@ function Profile(
   const [editingBrand, setEditingBrand] = useState(false);
   const waiting = useKinCountryNeeded(props);
   const region = kinDeviceRegion();
+  const { zone } = useKinWorkZone(props);
+  const [opened] = useState(() => new Date());
   const save = async (typed: KinCompanyDraft) => {
     const checked = kinCompanyInput(orgId, profile, typed);
     setProblem(null);
@@ -270,16 +274,28 @@ function Profile(
               field.id === "country" ? kinCompanyCountrySuggestion(draft, region, waiting) : null;
             return (
               <Fragment key={field.id}>
-                <KinWorkTextField
-                  label={field.label}
-                  value={draft[field.id]}
-                  placeholder={field.placeholder}
-                  disabled={saving}
-                  {...(field.code ? { keyboard: "plain" as const } : {})}
-                  {...(field.multiline ? { multiline: true } : {})}
-                  {...(problems[field.id] === undefined ? {} : { hint: problems[field.id] })}
-                  onChangeText={(text) => setDraft({ ...draft, [field.id]: text })}
-                />
+                {field.day ? (
+                  <KinDayField
+                    label={field.label}
+                    day={draft[field.id] === "" ? null : draft[field.id]}
+                    zone={zone}
+                    now={opened}
+                    hint={problems[field.id] ?? null}
+                    disabled={saving}
+                    onPick={(day) => setDraft({ ...draft, [field.id]: day ?? "" })}
+                  />
+                ) : (
+                  <KinWorkTextField
+                    label={field.label}
+                    value={draft[field.id]}
+                    placeholder={field.placeholder}
+                    disabled={saving}
+                    {...(field.code ? { keyboard: "plain" as const } : {})}
+                    {...(field.multiline ? { multiline: true } : {})}
+                    {...(problems[field.id] === undefined ? {} : { hint: problems[field.id] })}
+                    onChangeText={(text) => setDraft({ ...draft, [field.id]: text })}
+                  />
+                )}
                 {offer === null ? null : (
                   <ListActionRow
                     icon="globe"
@@ -299,18 +315,31 @@ function Profile(
 
 /** What check-ins, due days and the agents' times follow; the owner's phone keeps it set. */
 function CompanyTimeZone(props: KinWorkTarget) {
-  const result = useAtomValue(
-    kinClient.workZone({ environmentId: props.environmentId, input: { orgId: props.orgId } }),
-  );
+  const atom = kinClient.workZone({
+    environmentId: props.environmentId,
+    input: { orgId: props.orgId },
+  });
+  const result = useAtomValue(atom);
   const zone = Option.getOrNull(AsyncResult.value(result));
-  if (zone === null) return null;
+  if (zone === null)
+    return AsyncResult.isFailure(result) ? (
+      <ListSection title={KIN_COMPANY.timeZone}>
+        <KinLoadFailedRow
+          title="Couldn't load the company's time zone"
+          cause={result}
+          onRetry={() => appAtomRegistry.refresh(atom)}
+        />
+      </ListSection>
+    ) : null;
   return (
     <ListSection title={KIN_COMPANY.timeZone}>
       <ListRowLayout
         icon="clock"
         label={kinZoneLabel(zone.timeZone)}
         description={
-          zone.fromHost === true ? KIN_COMPANY.timeZoneFromHost : KIN_COMPANY.timeZoneUse
+          zone.fromHost === true
+            ? KIN_COMPANY.timeZoneFromHost
+            : `${KIN_COMPANY.timeZoneUse} ${KIN_COMPANY.timeZoneFollows}`
         }
       />
     </ListSection>

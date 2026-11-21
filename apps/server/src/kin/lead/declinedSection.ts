@@ -14,7 +14,7 @@ import * as SqlClient from "effect/sql/SqlClient";
  */
 
 export const DECLINED_RULE =
-  "Requests of this person's that you passed on and Kin put to the owner on a card, which the owner answered not this time. This is Kin's record now and outranks anything said in the chat, your own words included: nothing about these waits on the owner or anyone. When one comes up again, say it was declined; never say it waits or that the owner has been asked. Pass a new message of theirs on only if it asks for something new, which puts it to the owner again.";
+  "Requests of this person's that you passed on and Kin put to the owner on a card, which the owner answered not this time. This is Kin's record now and outranks anything said in the chat, your own words included: nothing about these waits on the owner or anyone. When one comes up again, say it was declined; never say it waits or that the owner has been asked. Pass a new message of theirs on only if it asks for something new.";
 
 /** A "not this time" is about this time: by a working weekend later, a new ask is a new one. */
 export const DECLINED_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;

@@ -86,3 +86,48 @@ export const LEAD_T3_TOOLS = [
   "t3_attachment_discard",
   "t3_thread_send_attachments",
 ] as const satisfies ReadonlyArray<T3Tool>;
+
+/**
+ * The lead T3 tools that only write and ship code: listed to an engineering lead alone. Every
+ * other lead delegates code with delegate_task, and its tasks keep all of `LEAD_T3_TOOLS`.
+ */
+export const CODING_T3_TOOLS = [
+  "t3_project_create",
+  "t3_project_update",
+  "t3_project_delete",
+  "t3_project_clone",
+  "t3_worktree_handoff",
+  "t3_worktree_status",
+  "t3_worktree_list",
+  "link_pull_request",
+  "link_pull_requests",
+  "unlink_pull_request",
+  "unlink_pull_requests",
+  "list_thread_pull_requests",
+  "watch_pull_request",
+  "unwatch_pull_request",
+  "write_pull_request_guides",
+  "read_pull_request_guide",
+  "preview_status",
+  "preview_open",
+  "preview_dialog",
+  "preview_navigate",
+  "preview_resize",
+  "preview_set_appearance",
+  "preview_snapshot",
+  "preview_act",
+  "preview_evaluate",
+  "preview_wait_for",
+  "preview_recording_start",
+  "preview_recording_stop",
+  "t3_preview_list",
+  "t3_preview_close",
+  "device_list",
+  "device_open",
+  "device_screenshot",
+  "device_close",
+] as const satisfies ReadonlyArray<(typeof LEAD_T3_TOOLS)[number]>;
+
+/** A remit that builds software: the leads that see `CODING_T3_TOOLS`. */
+export const isEngineeringDomain = (domain: string) =>
+  /^(engineering|tech|dev|software)/.test(domain);

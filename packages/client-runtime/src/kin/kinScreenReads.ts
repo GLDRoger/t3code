@@ -36,7 +36,7 @@ export function kinLiveOrPlain(
  * `line`: a line of what is owed, which no task moves. `screen`: Money itself, whose coming-up count
  * counts tasks too. `rows`: Money for a viewer who can't open Dates, so it draws the coming-up rows.
  */
-export type KinMoneyUse = "line" | "screen" | "rows";
+export type KinMoneyUse = "line" | "screen" | "rows" | "allClients";
 
 type Part<P extends KinMoneyPart> = NonNullable<KinMoneyLive[P]>;
 
@@ -67,10 +67,16 @@ export function makeKinScreenReads(kinClient: KinClient, registry: AtomRegistry.
         })
       : kinClient.workMoney({
           environmentId,
-          input: use === "rows" ? { orgId } : { orgId, upcomingRows: false },
+          input:
+            use === "rows"
+              ? { orgId }
+              : use === "allClients"
+                ? { orgId, upcomingRows: false, allClients: true }
+                : { orgId, upcomingRows: false },
         });
   const refreshMoney = (target: KinScreenTarget) => {
-    for (const use of ["line", "screen", "rows"] as const) registry.refresh(money(target, use));
+    for (const use of ["line", "screen", "rows", "allClients"] as const)
+      registry.refresh(money(target, use));
   };
   const refreshLists = (target: KinScreenTarget) => {
     registry.refresh(lists(target, false));
@@ -230,3 +236,5 @@ export function kinAskAboutAgent<
     kinWorkAgent(leads, "tasks")
   );
 }
+
+export type KinScreenReads = ReturnType<typeof makeKinScreenReads>;

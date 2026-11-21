@@ -1,3 +1,4 @@
+import { KIN_WAITING_TITLE } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { createNativeStackScreen } from "@react-navigation/native-stack";
 
 import { pageRoute, sheetRoute } from "../layout/route-options";
@@ -10,7 +11,9 @@ import { KinCompanyScreen } from "./KinCompanyScreen";
 import { KinDealEditScreen } from "./KinDealEditScreen";
 import { KinDealNewScreen } from "./KinDealNewScreen";
 import { KinDealScreen } from "./KinDealScreen";
+import { KinDealsConcernScreen } from "./KinDealsConcernScreen";
 import { KinDealStagesScreen } from "./KinDealsSettings";
+import { KinImportScreen } from "./KinImportScreen";
 import { KinRecommendationsScreen } from "./KinRecommendationsScreen";
 import {
   KinConnectionAddScreen,
@@ -35,6 +38,7 @@ import { KinLeadScreen } from "./KinLeadScreen";
 import { KinMemoryScreen } from "./KinMemoryScreen";
 import { KinRatesScreen } from "./KinMoneyEstimate";
 import { KinSubscriptionsScreen } from "./KinSubscriptions";
+import { KinMarketingListScreen } from "./KinMarketingListScreen";
 import { KinProjectLeadScreen } from "./KinProjectLeadScreen";
 import { KinProjectPeopleScreen } from "./KinProjectPeopleScreen";
 import { KinProjectScreen } from "./KinProjectScreen";
@@ -80,7 +84,7 @@ export const KIN_SCREENS = {
   KinWaiting: createNativeStackScreen({
     screen: KinWaitingScreen,
     linking: "kin/waiting",
-    options: pageRoute({ title: "Waiting on you" }),
+    options: pageRoute({ title: KIN_WAITING_TITLE }),
   }),
   KinMemory: createNativeStackScreen({
     screen: KinMemoryScreen,
@@ -218,10 +222,18 @@ export const KIN_SCREENS = {
     screen: KinDealEditScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
+  KinDealsConcern: createNativeStackScreen({
+    screen: KinDealsConcernScreen,
+    options: sheetRoute({ detent: 0.75 }),
+  }),
   KinDealStages: createNativeStackScreen({
     screen: KinDealStagesScreen,
     linking: "kin/:environmentId/:orgId/settings/deals",
     options: pageRoute({ title: "Deals" }),
+  }),
+  KinImport: createNativeStackScreen({
+    screen: KinImportScreen,
+    options: pageRoute({ title: "Import a file" }),
   }),
   KinDoc: createNativeStackScreen({
     screen: KinDocScreen,
@@ -284,6 +296,10 @@ export const KIN_SCREENS = {
     screen: KinTeamScreen,
     linking: "kin/:environmentId/:orgId/team",
     options: pageRoute({ title: "Team" }),
+  }),
+  KinMarketingList: createNativeStackScreen({
+    screen: KinMarketingListScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinProjectLead: createNativeStackScreen({
     screen: KinProjectLeadScreen,

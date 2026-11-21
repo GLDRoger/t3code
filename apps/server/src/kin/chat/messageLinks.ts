@@ -65,7 +65,7 @@ const around = (pattern: string, flags: string) =>
 
 /**
  * What a message names among `names` and `keys`, by exact spelling: keys (INV-1) and printed
- * numbers (INV/26-27/004) of entries, and whole names of agents, people, clients and projects,
+ * numbers (INV/26-27/004) of entries, and whole names of agents, people, clients, projects and deals,
  * case and all ("Finance", not "finance"), longest first, each once. An agent also matches as
  * "<name> chat" in any case. Built once for a batch; its patterns run only where a name appears.
  */
@@ -172,7 +172,7 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
     WHERE org_id = ${orgId} AND removed_at IS NULL AND person_id <> ${personId}`;
   const named = yield* sql<{ key: string; title: string; register: string; state: string }>`SELECT
       r.key, r.title, r.register_id AS register, r.state FROM kin_records r
-    WHERE r.org_id = ${orgId} AND r.register_id IN ('clients', 'projects')
+    WHERE r.org_id = ${orgId} AND r.register_id IN ('clients', 'projects', 'deals')
       AND r.state <> 'dropped' AND ${seenBy(sql, viewer)}`;
   // A document's own number, such as INV/26-27/004, as it is printed and mailed.
   const numbered =
@@ -219,9 +219,16 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
       to: { _tag: "person" as const, personId: row.personId },
       note: null,
     })),
-    ...named.map((row) => ({ name: row.title, ...record(row) })),
+    ...named
+      .filter((row) => row.register !== "deals")
+      .map((row) => ({ name: row.title, ...record(row) })),
     ...numbered.map((row) => ({ name: row.number, ...record(row) })),
   ];
+  // A deal named like its client, or anything else, leaves that name to it.
+  const others = new Set(names.map((one) => one.name));
+  for (const row of named)
+    if (row.register === "deals" && !others.has(row.title))
+      names.push({ name: row.title, ...record(row) });
   // Two things by one name would be a guess, so neither links.
   const counts = new Map<string, number>();
   for (const one of names) counts.set(one.name, (counts.get(one.name) ?? 0) + 1);

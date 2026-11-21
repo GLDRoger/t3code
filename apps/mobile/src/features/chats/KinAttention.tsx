@@ -2,6 +2,7 @@ import {
   KIN_ATTENTION,
   kinAsideOf,
   kinAttention,
+  kinNotNowUntil,
   kinSetAsideDays,
   kinSnoozeDays,
   type KinAsideRow,
@@ -38,6 +39,8 @@ const NOT_A_PROBLEM = "not-a-problem";
 const ASK = "ask";
 const SNOOZE = "snooze:";
 const SET_ASIDE = "set-aside";
+const WHATS_NEXT = "whats-next";
+const NOT_NOW = "not-now";
 
 /** "Set aside until…" unfolded under its row: a day it comes back on, or until it is lifted. */
 function KinSetAsidePicker(props: {
@@ -70,7 +73,7 @@ function KinSetAsidePicker(props: {
 }
 
 /** One row: tapping it opens the thing itself; its menu holds the answers to it. */
-function KinAttentionItem(
+export function KinAttentionItem(
   props: KinWorkTarget & {
     readonly row: KinAttentionRow;
     readonly names: KinWorkNames;
@@ -118,6 +121,12 @@ function KinAttentionItem(
           accessibilityRole="button"
           accessibilityLabel={`Answer ${row.title}`}
           actions={[
+            ...(row.whatsNext === null
+              ? []
+              : [
+                  { id: WHATS_NEXT, title: KIN_ATTENTION.whatsNext, image: "arrow.up.right" },
+                  { id: NOT_NOW, title: KIN_ATTENTION.notNow, image: "clock" },
+                ]),
             { id: GOT_IT, title: KIN_ATTENTION.gotIt, image: "hand.raised" },
             ...kinSnoozeDays(now).map((choice) => ({
               id: `${SNOOZE}${choice.until}`,
@@ -134,7 +143,11 @@ function KinAttentionItem(
           ]}
           onPressAction={({ nativeEvent: { event } }) => {
             if (busy) return;
-            if (event === GOT_IT) void handler.send(row.factKey, "got_it");
+            const deal = row.whatsNext;
+            if (event === WHATS_NEXT && deal !== null) props.onOpen({ type: "record", key: deal });
+            else if (event === NOT_NOW && deal !== null)
+              void handler.aside(deal, "set", kinNotNowUntil(now), row.factKey);
+            else if (event === GOT_IT) void handler.send(row.factKey, "got_it");
             else if (event === NOT_A_PROBLEM) void handler.send(row.factKey, "not_a_problem");
             else if (event === ASK) asker?.ask(row.askDraft);
             else if (event === SET_ASIDE) setAsiding(true);

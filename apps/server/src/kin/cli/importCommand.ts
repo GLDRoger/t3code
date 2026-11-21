@@ -63,6 +63,11 @@ const describeImport = (report: KinImport.ImportReport) =>
     counts("Projects", report.projects),
     counts("Entries", report.entries),
     counts("Payments", report.payments),
+    counts("Contacts", report.contacts),
+    counts("Deals", report.deals),
+    ...(report.filled === 0
+      ? []
+      : [`Filled in empty fields on ${report.filled} clients and contacts Kin had.`]),
     ...report.money.map(
       (one) =>
         `Money in ${one.list}: ${one.entries} entries, ${formatMoney(one.total)}, ${formatMoney(one.paid)} paid`,
@@ -86,7 +91,12 @@ const describeImport = (report: KinImport.ImportReport) =>
 
 const describeUndo = (report: UndoReport) =>
   [
-    `${report.applied ? "Undid" : "Undo plan for"} batch ${report.batch}: ${report.removes.entries} entries, ${report.removes.payments} payments, ${report.removes.clients} clients and ${report.removes.projects} projects ${report.applied ? "removed" : "to remove"}.`,
+    `${report.applied ? "Undid" : "Undo plan for"} batch ${report.batch}: ${report.removes.entries} entries, ${report.removes.payments} payments, ${report.removes.contacts} contacts, ${report.removes.deals} deals, ${report.removes.clients} clients and ${report.removes.projects} projects ${report.applied ? "removed" : "to remove"}.`,
+    ...(report.restored === 0
+      ? []
+      : [
+          `Fields it filled in on ${report.restored} clients and contacts ${report.applied ? "emptied" : "to empty"} again.`,
+        ]),
     `Changed since import: ${report.changed.length}${report.changed.length === 0 ? "" : ` (${report.changed.join(", ")})`}, ${report.includeChanged ? "removed with the rest." : "left as they are. Add --include-changed to remove them too."}`,
     ...report.kept.map((one) => `Kept ${one.key}: ${one.reason}.`),
     ...report.lists.map((one) =>
@@ -167,7 +177,7 @@ export const importCommand = Command.make("import", {
             flags.org,
             owner,
             lines,
-            progress,
+            { progress },
           );
           if (done.applied) changes.records(flags.org);
           return flags.json ? encodeReport(done) : describeImport(done);

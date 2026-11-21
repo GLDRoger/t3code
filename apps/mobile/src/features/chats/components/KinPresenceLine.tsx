@@ -1,3 +1,4 @@
+import { KIN_CHAT_COPY } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useEffect, useState, type ReactNode } from "react";
 import { AccessibilityInfo, View } from "react-native";
 import Animated, {
@@ -111,7 +112,7 @@ export function KinPresenceLine(props: {
           {/* The 44 pt target overhangs the 32 pt row, so the row keeps its height. */}
           <View className="-my-1.5">
             <ComposerActionButton
-              accessibilityLabel={props.stop === "failed" ? "Try stopping again" : "Stop"}
+              accessibilityLabel={props.stop === "failed" ? KIN_CHAT_COPY.stopAgain : "Stop"}
               icon="stop.fill"
               variant="danger"
               disabled={props.stop === "stopping"}

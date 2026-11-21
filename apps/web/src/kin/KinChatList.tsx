@@ -1,3 +1,4 @@
+import { KIN_HOST_OFFLINE } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_CHAT_COPY } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_MONEY } from "@t3tools/client-runtime/kin/kinMoney";
@@ -9,7 +10,7 @@ import {
   kinRoomLine,
   KIN_CHATS_EMPTY,
 } from "@t3tools/client-runtime/kin/kinChatListRows";
-import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import { KIN_WAITING_TITLE, selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   formatKinTime,
   kinDirectory,
@@ -65,7 +66,7 @@ const STATE_COPY: Record<
   { readonly title: string; readonly detail: string }
 > = {
   offline: {
-    title: "Kin is offline",
+    title: KIN_HOST_OFFLINE,
     detail: "Your chats come back when the connection does.",
   },
   noHost: {
@@ -171,7 +172,7 @@ export function KinChatList() {
         mine === null ? (
           <Empty size="compact">
             <EmptyHeader>
-              <EmptyTitle>No chats yet</EmptyTitle>
+              <EmptyTitle>{KIN_CHATS_EMPTY.title}</EmptyTitle>
               <EmptyDescription>{KIN_CHATS_EMPTY.none}</EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -474,7 +475,7 @@ function KinWaiting(props: {
       >
         {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
         <span className="flex min-w-0 flex-1 flex-col items-start text-start">
-          <span className="font-medium">Waiting on you</span>
+          <span className="font-medium">{KIN_WAITING_TITLE}</span>
           <span className="line-clamp-2 text-xs font-normal text-muted-foreground">
             {banner.summary}
           </span>

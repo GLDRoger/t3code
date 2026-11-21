@@ -911,7 +911,8 @@ it.live.each([
   "missing HEAD",
   "missing objects",
   "empty git",
-  "permission denied",
+  // Root reads through any mode, so a chmod cannot deny it the checkout.
+  ...(process.getuid?.() === 0 ? [] : (["permission denied"] as const)),
   "parent repository",
   "non-repository directory",
 ])("preserves the existing writer on $0", (damage) =>
