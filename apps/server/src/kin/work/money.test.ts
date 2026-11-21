@@ -1689,13 +1689,19 @@ describe("invoices", () => {
         (yield* outlook(orgId, NOW)).incoming.map((one) => one.key),
         "INV-7",
       );
+      // People's Money leaves a draft out of its dates (S9); an agent's dates read its day as "Date".
       const december = yield* OwnerMoney.dates(people, {
         orgId,
         from: "2026-12-01T00:00:00.000Z",
         to: "2026-12-31T00:00:00.000Z",
       });
+      assert.notInclude(
+        december.rows.map((one) => one.record.key),
+        "INV-7",
+      );
+      const told = yield* LeadMoney.datesQuery(scope, { from: "2026-12-01", to: "2026-12-31" });
       assert.deepStrictEqual(
-        december.rows.filter((one) => one.record.key === "INV-7").map((one) => one.label),
+        told.dates.filter((one) => one.key === "INV-7").map((one) => one.what),
         ["Date", "Due"],
       );
     }).pipe(Effect.provide(layer)),
