@@ -352,7 +352,7 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
     next:
       card === undefined
         ? "Nothing is created yet. Put these fields to the owner in one short message and ask. Once they say yes, call list_define with this proposal in that later turn."
-        : "Nothing is created yet. Kin showed the owner these fields on a card to tap; ask in one short line without listing them again. Once they tap yes or say yes, call list_define with this proposal in that later turn.",
+        : "Nothing is created yet. Kin has posted the card that asks the owner, with Create it and Not now: add no kin_ask or card of your own. Ask in one short line without listing the fields again. Once they tap yes or say yes, call list_define with this proposal in that later turn.",
   };
 });
 export const define = leadTool("KinWorkTools.define", runDefine);

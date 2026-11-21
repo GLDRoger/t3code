@@ -232,7 +232,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_defer", {
     ...shared,
     description:
-      'Set a reminder or one-time follow-up: what, due as a timestamp with offset (from the Owner time line), onDue and chatId. A bare number with sleep, wait or pause is seconds ("sleep for 60" is due 60 s after the message). If a duration is ambiguous in a way that matters, ask in one short line. When the owner corrects a time, pass the old item as replaces so only the new one fires. A step with a client (a call, a mail, a follow-up) is a Work row for that client instead (record_create). Returns itemId.',
+      'Set a reminder or one-time follow-up: what, due as a timestamp with offset (from the Owner time line), onDue and chatId. A bare number with sleep, wait or pause is seconds ("sleep for 60" is due 60 s after the message). If a duration is ambiguous in a way that matters, ask in one short line. When the owner corrects a time, pass the old item as replaces so only the new one fires. A step with a client (a call, a mail, a follow-up) is a Work row for that client instead (record_create), and so is something a person is to do on a day with no time ("remind me to send Meera the link on Thursday"): a task of theirs due that day. Returns itemId.',
     parameters: Lead.DeferInput,
     success: Lead.DeferResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -270,7 +270,7 @@ export const KinLeadToolkit = Toolkit.make(
     ...prCare,
     dependencies: [...prCare.dependencies, KinServer],
     description:
-      "Queue the reviews a person asks for in their own chat with you, on the repos Kin watches that they can read (a private repo needs their GitHub username on file): their open PRs (omit both), those on repo, or one by repo and number. Kin picks the PRs and queues each review as a GitHub review request would; it posts on the PR, and Kin tells them in this chat when it is posted or didn't finish. The result says per PR: queued, under way or already reviewed at this head, or why not. Tell them exactly that. Changing code, merging or re-running CI still goes to the owner with kin_relay.",
+      'Queue the reviews a person asks for in their own chat with you, on the repos Kin watches that they can read (a private repo needs their GitHub username on file). With no PR named ("my PRs", "the latest changes"), call it with nothing: Kin finds their open PRs. Give repo, or repo and number, only as they named them. Kin queues each review as a GitHub review request would; it posts on the PR, and Kin tells them in this chat when it is posted or didn\'t finish. The result says per PR: queued, under way or already reviewed at this head, or why not. Tell them exactly that. Changing code, merging or re-running CI still goes to the owner with kin_relay: their request and what you couldn\'t check, never a question for the owner to answer.',
     parameters: ReviewAsk.AskInput,
     success: ReviewAsk.AskResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
