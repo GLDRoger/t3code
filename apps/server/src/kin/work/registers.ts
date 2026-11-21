@@ -938,12 +938,16 @@ export const propose = Effect.fn("KinRegisters.propose")(function* (input: {
     WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
   if (chat === undefined) return yield* invalid("This turn has no chat to propose a list in.");
   // The same list asked again in this chat, from a later turn such as the owner's tap on it, is
-  // that question still: one card. Only a no an owner or co-owner gave closes it.
+  // that question still: one card. So is that list proposed again in one turn, however worded.
+  // Only a no an owner or co-owner gave closes it.
   const [open] = yield* sql<{ proposalId: string; widgetId: string | null }>`
     SELECT p.proposal_id AS "proposalId", p.widget_id AS "widgetId"
     FROM kin_list_proposals p
     WHERE p.org_id = ${input.orgId} AND p.agent_id = ${input.agentId}
-      AND p.chat_id = ${input.chatId} AND p.definition_json = ${json} AND p.defined_at IS NULL
+      AND p.chat_id = ${input.chatId} AND p.defined_at IS NULL
+      AND (p.definition_json = ${json} OR (p.wakeup_id = ${input.wakeupId}
+        AND p.register_id = ${input.proposal.id}
+        AND p.extends_existing = ${input.proposal._tag === "extend" ? 1 : 0}))
     ORDER BY p.proposed_at DESC, p.proposal_id LIMIT 1`;
   if (
     open !== undefined &&
@@ -958,6 +962,17 @@ export const propose = Effect.fn("KinRegisters.propose")(function* (input: {
       ${input.now})
     ON CONFLICT DO NOTHING`;
   return proposalId;
+});
+
+/** A proposal as stored, for what its card and its tool result show. */
+export const storedProposal = Effect.fn("KinRegisters.storedProposal")(function* (
+  orgId: KinOrgId,
+  proposalId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ json: string }>`SELECT definition_json AS json
+    FROM kin_list_proposals WHERE org_id = ${orgId} AND proposal_id = ${proposalId}`;
+  return row === undefined ? undefined : Option.getOrUndefined(decodeProposal(row.json));
 });
 
 /** The card Kin put the proposal to the owner with; a retry keeps the first. */

@@ -1097,6 +1097,88 @@ it.effect("take the default runs the default's own action; a list is made as pro
   ),
 );
 
+// list_define's own card: an owner's or a co-owner's "Create it" makes the list in the tap, with no
+// turn to wake; one ask proposing the list again keeps one proposal and one card.
+it.effect("a tap on a list proposal's own card makes the list once, for an owner or co-owner", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { owner, orgId, sql } = kin;
+      const meera = kin.person("meera");
+      const meeraChat = (yield* kin.chats.createDirect(meera, {
+        orgId,
+        agentId: KinAgentId.make("finance"),
+      })).chatId;
+      const lists = (id: string) =>
+        sql<{ name: string }>`SELECT name FROM kin_registers
+          WHERE org_id = ${orgId} AND register_id = ${id}`;
+      const proposals = (chatId: KinChatId) =>
+        sql<{ id: string; widgetId: string | null; definedAt: number | null }>`SELECT
+            proposal_id AS id, widget_id AS "widgetId", defined_at AS "definedAt"
+          FROM kin_list_proposals WHERE org_id = ${orgId} AND chat_id = ${chatId}
+          ORDER BY proposed_at, proposal_id`;
+      const define = (wakeupId: string, name: string, extra: string) =>
+        callAs("finance", "list_define", {
+          sourceEventId: `event:${wakeupId}`,
+          name,
+          noun: "item",
+          prefix: name.slice(0, 3).toUpperCase(),
+          fields: [
+            { label: "Vendor", type: "text" },
+            { label: extra, type: "text" },
+          ],
+          amount: true,
+        });
+      for (const [who, chatId, name] of [
+        [meera, meeraChat, "Stationery"],
+        [owner, kin.chatOf("finance"), "Office snacks"],
+      ] as const) {
+        const turn = yield* kin.turn("finance", chatId, `Track ${name} for me`, who);
+        const first = yield* define(turn, name, "Note");
+        assert.strictEqual(first.value.status, "proposed", JSON.stringify(first.value));
+        // The same list proposed again in that turn, worded differently, is the first proposal.
+        const again = yield* define(turn, name, "Comment");
+        assert.strictEqual(again.value.proposal, first.value.proposal);
+        const stored = yield* proposals(chatId);
+        assert.lengthOf(stored, 1);
+        const cards = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
+          WHERE org_id = ${orgId} AND chat_id = ${chatId} AND type = 'choice'`;
+        assert.strictEqual(cards[0]!.n, 1);
+        const widgetId = stored[0]!.widgetId;
+        assert.strictEqual(card(yield* kin.widget(widgetId)).options[0]?.label, "Create it");
+
+        const id = String(first.value.list);
+        if (who === owner) {
+          // A teammate let into the chat after the card was drawn: their tap is refused.
+          yield* kin.repo.addMember({
+            orgId,
+            chatId,
+            memberId: KinMemberId.make("dev-in-finance"),
+            principal: { _tag: "person", personId: KinPersonId.make("dev") },
+            role: "member",
+            joinedAt: at,
+            leftAt: null,
+            mutedUntil: null,
+          });
+          const refused = yield* kin
+            .tap(kin.person("dev"), widgetId, "option-1", "dev-tap")
+            .pipe(Effect.flip);
+          assert.oneOf(refused.reason, ["not_allowed", "not_found"]);
+          assert.lengthOf(yield* lists(id), 0);
+        }
+        yield* kin.tap(who, widgetId, "option-1", `${name}-tap`);
+        assert.deepStrictEqual(yield* lists(id), [{ name }]);
+        assert.strictEqual(card(yield* kin.widget(widgetId)).outcome?.title, "List created");
+        assert.isNotNull((yield* proposals(chatId))[0]!.definedAt);
+        // A second tap, from another session, changes nothing.
+        yield* kin.tap(who, widgetId, "option-1", `${name}-tap-again`);
+        assert.deepStrictEqual(yield* lists(id), [{ name }]);
+      }
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 // A start that fails after its run was marked rolls the whole tap back: no started run, no event,
 // no receipt, the card and its question still open, and the tapper is told plainly. While Kin's
 // deferred work is stopped, no card can offer a start at all.
