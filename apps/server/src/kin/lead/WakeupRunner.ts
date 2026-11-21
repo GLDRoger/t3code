@@ -211,7 +211,9 @@ const make = Effect.gen(function* () {
             : finished.failedEventIds.length > 0
               ? "gave_up"
               : finished.retried > 0 && lane.value.owed
-                ? "retrying"
+                ? finished.retryInMs >= KinEventQueue.LAST_RETRY_MS
+                  ? "retrying_later"
+                  : "retrying"
                 : undefined;
     if (outcome !== undefined)
       yield* bridge.value.failed({

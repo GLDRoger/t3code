@@ -4551,3 +4551,39 @@ it.effect("an announcement reaches screens only once its transaction commits", (
     );
   }).pipe(Effect.scoped, Effect.provide(layer)),
 );
+
+it.effect("an entry's announcement reaches screens once, after its transaction commits", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
+    const { row } = yield* records.create(orgId, ownerWrites, {
+      list: "clients",
+      originKey: "Invented Grove",
+      title: "Invented Grove",
+      owner: { _tag: "person", personId: ownerId },
+    });
+    const pull = yield* Stream.toPull(records.changes(orgId));
+    const opening = (yield* pull)[0]!.seq;
+    yield* sql
+      .withTransaction(
+        records.announce(orgId, [row.recordId]).pipe(Effect.andThen(Effect.fail("rolled back"))),
+      )
+      .pipe(Effect.flip);
+    // Told at once, the entry's tick would overtake the whole org's one announced before it.
+    yield* sql.withTransaction(
+      records.announce(orgId).pipe(Effect.andThen(records.announce(orgId, [row.recordId]))),
+    );
+    yield* records.announce(orgId);
+    const heard = [];
+    for (let i = 0; i < 3; i++) heard.push(...(yield* pull));
+    assert.deepStrictEqual(
+      heard.map((tick) => [tick.seq, tick.key]),
+      [
+        [opening + 1, undefined],
+        [opening + 2, row.key],
+        [opening + 3, undefined],
+      ],
+    );
+  }).pipe(Effect.scoped, Effect.provide(layer)),
+);

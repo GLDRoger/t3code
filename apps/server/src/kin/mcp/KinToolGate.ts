@@ -15,6 +15,7 @@ import { toolAdmitted } from "../lead/SharedTools.ts";
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
+import * as ReadTools from "./readTools.ts";
 
 type Check = (
   turn: Parameters<typeof toolAdmitted>[0],
@@ -182,13 +183,18 @@ export const workerPolicy = (services: Context.Context<Services>) => {
  * none of these checks follow; nothing reaches the owner's context in a turn others read
  * (`SharedTools`); no run outside text could steer (`OutsideContent`); no task past the limit.
  */
-export const layer = Layer.mergeAll(
-  turnEvents,
-  McpHttpServer.toolCallGate(
-    (_tool, args) => Effect.map(namesOtherMachine(args), (other) => !other),
-    REMOTE_REFUSAL,
+export const layer = ReadTools.layer.pipe(
+  // Built last, so outermost: a read tool's gates read on the reader too.
+  Layer.provideMerge(
+    Layer.mergeAll(
+      turnEvents,
+      McpHttpServer.toolCallGate(
+        (_tool, args) => Effect.map(namesOtherMachine(args), (other) => !other),
+        REMOTE_REFUSAL,
+      ),
+      McpHttpServer.toolCallGate(gate("KinToolGate.admitted", toolAdmitted), SHARED_REFUSAL),
+      McpHttpServer.toolCallGate(gate("KinToolGate.outside", outsideToolAllowed), OUTSIDE_REFUSAL),
+      McpHttpServer.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
+    ),
   ),
-  McpHttpServer.toolCallGate(gate("KinToolGate.admitted", toolAdmitted), SHARED_REFUSAL),
-  McpHttpServer.toolCallGate(gate("KinToolGate.outside", outsideToolAllowed), OUTSIDE_REFUSAL),
-  McpHttpServer.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
 );

@@ -1,17 +1,29 @@
 import { KinChatError, type KinOrgId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { sensitiveNow } from "./recordRows.ts";
 
+export type SensitiveMark = { readonly orgId: KinOrgId; readonly wakeupId: string };
+/** Set while a read tool runs on a reader (`mcp/readTools.ts`), which writes these after it. */
+export const heldSensitiveMarks = Context.Reference<Array<SensitiveMark> | undefined>(
+  "t3/kin/work/sensitiveReads/heldSensitiveMarks",
+  { defaultValue: () => undefined },
+);
+
 /**
  * The agent's wake-up was shown a sensitive Work entry: what it writes from now on may carry it.
  */
-export const sensitiveShown = Effect.fn("KinSensitiveReads.sensitiveShown")(function* (input: {
-  readonly orgId: KinOrgId;
-  readonly wakeupId: string;
-}) {
+export const sensitiveShown = Effect.fn("KinSensitiveReads.sensitiveShown")(function* (
+  input: SensitiveMark,
+) {
+  const held = yield* heldSensitiveMarks;
+  if (held !== undefined) {
+    held.push({ orgId: input.orgId, wakeupId: input.wakeupId });
+    return;
+  }
   const sql = yield* SqlClient.SqlClient;
   const at = yield* Clock.currentTimeMillis;
   yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)

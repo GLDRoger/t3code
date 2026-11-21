@@ -1468,6 +1468,18 @@ export const toolCallPrepare = <R>(
     { global: true },
   );
 
+/**
+ * Runs every tool call on the server this joins inside `around`, whichever toolkit registered
+ * the tool; it may run the call where it chooses, such as on a database reader.
+ */
+export const toolCallAround = <E extends McpSchema.McpErrorBase, R>(
+  around: McpServer.middleware.Fn<never, E, R>,
+) =>
+  McpServer.middleware()(
+    (effect, options) => (options.method === "tools/call" ? around(effect, options) : effect),
+    { global: true },
+  );
+
 export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE, RR>) =>
   McpServer.layerHttp({
     name: "T3 Code",
