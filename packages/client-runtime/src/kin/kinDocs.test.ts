@@ -19,6 +19,7 @@ import type { AtomCommandResult } from "../state/runtime.ts";
 import {
   createKinSearch,
   KIN_DOCS,
+  kinDocChangeItem,
   kinDocChangeLine,
   kinDocCopyText,
   kinDocPieces,
@@ -490,6 +491,18 @@ describe("kinDocRef", () => {
     expect(kinDocRefLabel(ref)).toBe("Launch plan › Pricing");
     // A section that is no longer in the doc points at the doc, not at nothing.
     expect(kinDocRefLabel(kinDocRef(doc, "gone"))).toBe("Launch plan");
+  });
+});
+
+describe("kinDocChangeItem", () => {
+  it.each([
+    ["the owner level, on a doc it may change", true, true, "hand", KIN_DOCS.change],
+    ["a lead, on their project's doc", true, false, "hand", KIN_DOCS.change],
+    ["the owner level, on an older version", false, true, "agent", KIN_DOCS.change],
+    ["a lead, on a playbook", false, false, "agent", KIN_DOCS.suggest],
+    ["a member", false, false, "agent", KIN_DOCS.suggest],
+  ] as const)("%s: one Change item", (_who, byHand, ownerLevel, by, label) => {
+    expect(kinDocChangeItem({ byHand, ownerLevel })).toEqual({ by, label });
   });
 });
 

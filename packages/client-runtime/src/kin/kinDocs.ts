@@ -979,6 +979,18 @@ export const kinDocCanEdit = (
   doc.version.file === undefined;
 
 /**
+ * A doc's one Change item, the same on web and phone: by hand, on its sections, where the host lets
+ * this reader; else through the doc's agent, a suggestion below the owner level.
+ */
+export const kinDocChangeItem = (input: {
+  readonly byHand: boolean;
+  readonly ownerLevel: boolean;
+}) =>
+  input.byHand
+    ? { by: "hand" as const, label: KIN_DOCS.change }
+    : { by: "agent" as const, label: input.ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest };
+
+/**
  * What a hand edit is opened on, taken all at once: the doc, the section, its hash and its text as
  * read then. The doc may refresh while the editor is open; the save still names what was opened,
  * so a newer change to that section is refused, and one to another section is not.

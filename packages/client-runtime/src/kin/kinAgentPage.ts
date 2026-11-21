@@ -92,6 +92,8 @@ export const KIN_AGENT_PAGE = {
   reachDetail: "Every agent uses the same connections, only in your own chats with it.",
   playbooks: "Playbooks it follows",
   playbooksNone: "No playbooks yet.",
+  playbooksDetail:
+    "Playbooks are how this agent does a kind of work. Open one to read it; the owner or a co-owner changes them in Docs.",
   activity: "In hand",
   pause: "Pause",
   resume: "Resume",

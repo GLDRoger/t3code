@@ -20,7 +20,7 @@ export { KIN_PROFILE_NAME_MAX, KIN_PROFILE_SKILLS_MAX, KIN_PROFILE_TALK_MAX };
 
 export const KIN_PROFILE_COPY = {
   runsWorkspace: "Runs this workspace",
-  skillsExample: "SwiftUI, App Store releases",
+  skillsExample: "For example: SwiftUI, App Store releases",
   title: "Profile",
   mine: "Your profile",
   edit: "Edit profile",
