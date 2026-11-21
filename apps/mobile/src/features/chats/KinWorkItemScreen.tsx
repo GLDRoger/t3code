@@ -39,7 +39,10 @@ import {
   KIN_WORK_NOTES_MAX,
   kinWorkOnlyOwner,
   KIN_WORK_REPEAT,
+  KIN_WORK_STEPS,
+  KIN_WORK_URGENT,
   kinSameRepeat,
+  kinWorkStepProblem,
   kinWorkAssignees,
   kinWorkClientStays,
   kinWorkHostClients,
@@ -49,6 +52,7 @@ import {
   kinWorkTitleTooLong,
   type KinWorkItemView,
   type KinWorkLinkView,
+  type KinWorkStepsView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_WORK_COPY,
@@ -90,6 +94,7 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { RowPressable } from "../../components/ui/RowPressable";
 import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -112,7 +117,12 @@ import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinListEntryBody } from "./KinListEntry";
 import { KinMakeDocumentStep } from "./KinInvoice";
 import type { KinMakeStep } from "./kinMakeStep";
-import { KinWorkFrame, KinWorkLoading, KinWorkTaskRow } from "./components/KinWorkPieces";
+import {
+  KIN_URGENT_SYMBOL,
+  KinWorkFrame,
+  KinWorkLoading,
+  KinWorkTaskRow,
+} from "./components/KinWorkPieces";
 import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
 import { useKinAskRecord } from "./state/useKinAskRecord";
@@ -620,6 +630,7 @@ function KinWorkItemBody(props: ItemTarget) {
       <View className="gap-2.5 px-1">
         <View className="flex-row flex-wrap items-center gap-2">
           <KinRecordChip tone={chip.tone} label={chip.label} />
+          {view.urgent && !view.closed ? <KinUrgentFlag /> : null}
           <Text textRole="footnote" className="text-foreground-muted">
             {view.heading === "Task" ? item.key : `${item.key} · ${view.heading}`}
           </Text>
@@ -732,6 +743,22 @@ function KinWorkItemBody(props: ItemTarget) {
           onDismiss={changes.dismiss}
         />
       )}
+      {view.steps === null ? null : (
+        <KinTaskSteps
+          steps={view.steps}
+          disabled={saving}
+          onTick={
+            act === null || !view.steps.editable
+              ? null
+              : (index, title, done) => act({ type: "tick", index, title, done })
+          }
+          onChange={
+            act === null || !view.steps.editable
+              ? null
+              : (steps, said) => act({ type: "steps", steps, said })
+          }
+        />
+      )}
       <ListSection title={KIN_TASK_RECORD.details}>
         {askedBy === null || (folded?.asked === true && !peopleOpen) ? null : (
           <KinDetailPerson
@@ -769,6 +796,15 @@ function KinWorkItemBody(props: ItemTarget) {
             people={[...waitingOn.people, ...waitingOn.leads]}
             disabled={saving}
             onAct={act}
+          />
+        )}
+        {act === null || view.can.steps !== true || view.closed ? null : (
+          <ListToggleRow
+            icon={KIN_URGENT_SYMBOL}
+            label={KIN_WORK_URGENT.label}
+            value={view.urgent}
+            disabled={saving}
+            onValueChange={(urgent) => act({ type: "urgent", urgent })}
           />
         )}
         {reword !== null && !view.closed ? (
@@ -980,6 +1016,145 @@ function KinWorkItemBody(props: ItemTarget) {
 }
 
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** A task someone marked urgent, beside where it stands. */
+function KinUrgentFlag() {
+  return (
+    <View className="flex-row items-center gap-1">
+      <SymbolView
+        name={KIN_URGENT_SYMBOL}
+        size={12}
+        tintColorClassName="accent-warning-foreground"
+        type="monochrome"
+      />
+      <Text textRole="footnote" className="font-t3-medium text-warning-foreground">
+        {KIN_WORK_URGENT.label}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * A task's checklist: a tap on a box ticks it; a step is added at the foot and removed with its
+ * cross. Ticking every step leaves the task open: done is still the top card's to say.
+ */
+function KinTaskSteps(props: {
+  readonly steps: KinWorkStepsView;
+  readonly disabled: boolean;
+  readonly onTick: ((index: number, title: string, done: boolean) => void) | null;
+  readonly onChange:
+    | ((
+        steps: ReadonlyArray<{ readonly title: string; readonly done: boolean }>,
+        said: "added" | "removed",
+      ) => void)
+    | null;
+}) {
+  const { steps, onTick, onChange } = props;
+  const [draft, setDraft] = useState("");
+  const held = steps.items.map((item) => ({ title: item.title, done: item.done }));
+  const problem = draft.trim() === "" ? null : kinWorkStepProblem(draft, held.length);
+  const add = () => {
+    const title = draft.trim();
+    if (onChange === null || title === "" || problem !== null) return;
+    onChange([...held, { title, done: false }], "added");
+    setDraft("");
+  };
+  return (
+    <View className="gap-2">
+      <ListSection
+        title={
+          steps.count === null ? KIN_WORK_STEPS.title : `${KIN_WORK_STEPS.title} · ${steps.count}`
+        }
+      >
+        {steps.items.map((item) => (
+          <View key={`${item.index}:${item.title}`} className="min-h-12 flex-row items-center">
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: item.done, disabled: onTick === null }}
+              accessibilityLabel={onTick === null ? item.title : item.label}
+              disabled={onTick === null || props.disabled}
+              onPress={() => onTick?.(item.index, item.title, !item.done)}
+              className="min-w-0 flex-1 flex-row items-center gap-3 py-3 pl-4 active:opacity-60"
+            >
+              <SymbolView
+                name={item.done ? "checkmark.circle.fill" : "circle"}
+                size={20}
+                tintColorClassName={item.done ? "accent-icon" : "accent-icon-muted"}
+                type="monochrome"
+              />
+              <Text
+                textRole="body"
+                className={cn(
+                  "min-w-0 flex-1",
+                  item.done ? "text-foreground-muted line-through" : "text-foreground",
+                )}
+              >
+                {item.title}
+              </Text>
+            </Pressable>
+            {onChange === null ? (
+              <View className="w-4" />
+            ) : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${KIN_WORK_STEPS.remove}: ${item.title}`}
+                disabled={props.disabled}
+                hitSlop={8}
+                onPress={() =>
+                  onChange(
+                    held.filter((_, index) => index !== item.index),
+                    "removed",
+                  )
+                }
+                className="px-4 py-3 active:opacity-60"
+              >
+                <SymbolView
+                  name="xmark"
+                  size={12}
+                  tintColorClassName="accent-icon-muted"
+                  type="monochrome"
+                />
+              </Pressable>
+            )}
+          </View>
+        ))}
+        {onChange === null ? null : (
+          <View className="min-h-12 flex-row items-center gap-3 px-4 py-2">
+            <SymbolView
+              name="plus"
+              size={16}
+              tintColorClassName="accent-icon-muted"
+              type="monochrome"
+            />
+            <TextInput
+              accessibilityLabel={KIN_WORK_STEPS.add}
+              value={draft}
+              editable={!props.disabled}
+              autoCapitalize="sentences"
+              returnKeyType="done"
+              submitBehavior="submit"
+              onChangeText={setDraft}
+              onSubmitEditing={add}
+              placeholder={KIN_WORK_STEPS.placeholder}
+              placeholderTextColorClassName="accent-placeholder"
+              className="min-h-8 min-w-0 flex-1 font-sans text-base text-foreground"
+            />
+          </View>
+        )}
+      </ListSection>
+      {problem === null ? null : (
+        <Text accessibilityRole="alert" textRole="footnote" className="px-2 text-danger-foreground">
+          {problem}
+        </Text>
+      )}
+      {steps.allDone === null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {steps.allDone}
+        </Text>
+      )}
+    </View>
+  );
+}
 
 /** Where the task stands for this viewer, in one word or two, above its title. */
 function KinRecordChip(props: { readonly tone: KinRecordChipTone; readonly label: string }) {

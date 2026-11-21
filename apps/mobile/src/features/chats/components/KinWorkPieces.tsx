@@ -28,7 +28,7 @@ import { KeyboardStickyView } from "react-native-keyboard-controller";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../../components/ui/AppBar";
-import { SymbolView } from "../../../components/ui/AppSymbol";
+import { SymbolView, type AppSymbolName } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
 import * as Dialog from "../../../components/ui/Dialog";
@@ -201,6 +201,9 @@ export function KinWorkPrivateMark(props: { readonly label?: string }) {
 
 const TICK_LABEL = { done: KIN_WORK_COPY.done, reopen: KIN_WORK_COPY.reopen } as const;
 
+/** An urgent task's mark: a flag, and on Android (whose set has none) the alert mark. */
+export const KIN_URGENT_SYMBOL: AppSymbolName = { ios: "flag.fill", android: "error" };
+
 export function KinWorkTaskRow(props: {
   readonly row: KinWorkRowView;
   readonly saving: boolean;
@@ -246,6 +249,14 @@ export function KinWorkTaskRow(props: {
             </Text>
             {/* Who has it never gives way: the rest of the line cuts off before it does. */}
             <View className={cn("min-w-0 flex-row items-center gap-1.5", grows && "flex-wrap")}>
+              {row.urgent ? (
+                <SymbolView
+                  name={KIN_URGENT_SYMBOL}
+                  size={11}
+                  tintColorClassName="accent-warning-foreground"
+                  type="monochrome"
+                />
+              ) : null}
               <KinAvatar avatar={row.ownerAvatar} size="mini" />
               <Text
                 textRole="footnote"
@@ -388,6 +399,14 @@ export function KinTaskRow(props: {
             </Text>
             {/* Who has it never gives way: the rest of the line cuts off before it does. */}
             <View className={cn("min-w-0 flex-row items-center gap-1.5", grows && "flex-wrap")}>
+              {line.urgent ? (
+                <SymbolView
+                  name={KIN_URGENT_SYMBOL}
+                  size={11}
+                  tintColorClassName="accent-warning-foreground"
+                  type="monochrome"
+                />
+              ) : null}
               {line.holder === null ? null : (
                 <>
                   <KinAvatar avatar={props.avatar} size="mini" />

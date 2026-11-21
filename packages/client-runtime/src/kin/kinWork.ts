@@ -1359,6 +1359,10 @@ export function kinWorkChangeText(
   const project = field("project");
   if (project !== undefined)
     clauses.push(project.to === null ? "took it out of its project" : "put it in a project");
+  if (field("steps") !== undefined) clauses.push("changed its steps");
+  const urgent = field("urgent")?.to;
+  if (urgent === "true") clauses.push("marked it urgent");
+  else if (urgent === "false") clauses.push("took the urgent mark off");
   const sensitive = field("sensitive")?.to;
   if (sensitive === "true") clauses.push("made it private");
   else if (sensitive === "false") clauses.push("made it not private");
