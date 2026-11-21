@@ -319,6 +319,9 @@ export function KinListEntryBody(
   return (
     <>
       <View className="gap-3 px-2">
+        <Text textRole="footnote" selectable className="text-foreground-muted">
+          {entry.heading}
+        </Text>
         <Text
           textRole="headline"
           accessibilityRole="header"
