@@ -5,6 +5,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import * as McpToolPolicy from "./toolPolicy.ts";
 import { McpInvocationContext, type McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { KinServer, type Services } from "../KinServer.ts";
@@ -209,6 +210,28 @@ export const workerPolicy = (services: Context.Context<Services>) => {
 };
 
 /**
+ * How often agents call each Kin tool, to decide what loads up front: counted in memory and
+ * logged as one line an hour, and once more when the server stops; never stored.
+ */
+export const callCounts = Layer.unwrap(
+  Effect.gen(function* () {
+    const counts = new Map<string, number>();
+    const flush = Effect.suspend(() => {
+      if (counts.size === 0) return Effect.void;
+      const calls = Object.fromEntries(counts);
+      counts.clear();
+      return Effect.logInfo("Kin tool calls", { calls });
+    });
+    yield* Effect.addFinalizer(() => flush);
+    yield* Effect.forkScoped(Effect.forever(Effect.delay(flush, "1 hour")));
+    return McpHttpServer.toolCallAround((effect, { target }) => {
+      counts.set(target, (counts.get(target) ?? 0) + 1);
+      return effect;
+    });
+  }),
+);
+
+/**
  * Every Kin MCP call passes here first, whatever registered it: nothing to another machine, where
  * none of these checks follow; only the review in a stranger's pull request's turn
  * (`outsideReview`), only the one approved make in an approved draft's (`approvedDraft`); nothing reaches the owner's context in a turn others read (`SharedTools`); no
@@ -218,6 +241,7 @@ export const layer = ReadTools.layer.pipe(
   // Built last, so outermost: a read tool's gates read on the reader too.
   Layer.provideMerge(
     Layer.mergeAll(
+      callCounts,
       turnEvents,
       McpToolPolicy.toolCallGate(
         (_tool, args) => Effect.map(namesOtherMachine(args), (other) => !other),
