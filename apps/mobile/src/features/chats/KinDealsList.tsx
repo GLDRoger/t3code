@@ -275,6 +275,12 @@ export function KinDealsView(
   const open = (deal: KinRecordKey) =>
     navigation.navigate("KinDeal", { environmentId, orgId, deal });
   const nothing = kinDealsNothing(filter);
+  const whoseLabel =
+    filter.who._tag === "everyone"
+      ? KIN_DEALS.everyone
+      : filter.who._tag === "me"
+        ? KIN_DEALS.mine
+        : (names.people.get(filter.who.personId) ?? KIN_DEALS.someone);
 
   return (
     <View collapsable={false} className="flex-1 bg-screen">
@@ -372,12 +378,8 @@ export function KinDealsView(
                   <Chip
                     selected
                     icon="xmark"
-                    label={
-                      filter.who._tag === "me"
-                        ? KIN_DEALS.mine
-                        : (names.people.get(filter.who.personId) ?? KIN_DEALS.someone)
-                    }
-                    accessibilityLabel={`${KIN_DEALS.whose}: ${KIN_DEALS.everyone}`}
+                    label={whoseLabel}
+                    accessibilityLabel={`${KIN_DEALS.whose}: ${whoseLabel}. ${KIN_DEALS.showEveryone}`}
                     onPress={() => setFilter({ ...filter, who: { _tag: "everyone" } })}
                   />
                 </View>
