@@ -2295,7 +2295,7 @@ const createRow = Effect.fnUntraced(function* (
           dateAt: "dateAt" in money && typeof money.dateAt === "number" ? money.dateAt : null,
           originKey,
           besides: row.besides ?? [],
-          vendor: money.fields === undefined ? null : fieldText(money.fields, "vendor"),
+          vendor: typeof money.fields?.vendor === "string" ? money.fields.vendor : null,
         })
       : [];
   const inProject = projectId !== undefined ? projectId : spine.projectId;
