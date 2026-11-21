@@ -46,6 +46,7 @@ import { moneySection, moneySummary } from "../work/moneyViews.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as OwnerMoney from "../work/ownerMoney.ts";
 import * as OwnerMoneyAnswers from "../work/ownerMoneyAnswers.ts";
+import { UNISSUED_INVOICE } from "../work/recordRows.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
 import * as Amounts from "./amounts.ts";
 import { computeData } from "./compute.ts";
@@ -443,7 +444,19 @@ describe("recipe documents", () => {
         documents: [{ key: "D-1", title: "Invoice INV-1", version: 1 }],
         sensitive: true,
         next: 'Filed, with its card in the chat. Call it "Invoice INV-1" in your reply, never by its key.',
+        record: { key: "INV-1", state: UNISSUED_INVOICE, total: "₹1,000.01" },
       });
+      // What the agent says of it is the record, and what the company details lack, the first time.
+      yield* sql`UPDATE kin_company_profile SET profile_json = json_set(profile_json,
+          '$.gstin', NULL, '$.bank.accountNumber', NULL, '$.bank.upi', NULL)
+        WHERE org_id = ${orgId}`;
+      assert.deepStrictEqual((yield* LeadDocuments.onRecord(orgId, "INV-1"))?.missing, [
+        "tax number (GSTIN)",
+        "bank details",
+      ]);
+      yield* sql`UPDATE kin_company_profile SET profile_json = json_set(profile_json,
+          '$.gstin', '29AAAAA1111A1Z5', '$.bank.accountNumber', '000111222333')
+        WHERE org_id = ${orgId}`;
       assert.deepStrictEqual(shownCards, ["D-1"], "its doc card is in the chat");
       const { request, data } = rendered.at(-1)!;
       assert.deepStrictEqual(
