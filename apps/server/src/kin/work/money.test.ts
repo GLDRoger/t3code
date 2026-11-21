@@ -1124,6 +1124,68 @@ describe("repeating entries", () => {
 });
 
 describe("invoices", () => {
+  it.effect("reach an agent's dates once each, issue and due day on one row", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(3, "Invoice Invented Acme");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          { list: "clients", title: "Invented Acme" },
+          { title: "Invented review", due: "2026-11-21" },
+        ],
+      });
+      // Issued from the 13th, each due a week later, so later invoices issue after earlier fall due.
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: Array.from({ length: 10 }, (_, at) => ({
+          list: "invoices",
+          title: `Invented retainer ${at + 1}`,
+          client: "Invented Acme",
+          amount: "10,000",
+          date: `2026-11-${13 + at}`,
+          due: `2026-11-${20 + at}`,
+        })),
+      });
+      const told = yield* LeadMoney.datesQuery(scope, { from: "2026-11-13", to: "2026-12-11" });
+      const invoices = told.dates.filter((one) => one.key.startsWith("INV-"));
+      assert.deepStrictEqual([told.total, told.dates.length, invoices.length], [11, 11, 10]);
+      assert.deepStrictEqual(
+        invoices.map(({ key, issued, due, what, on }) => ({ key, issued, due, what, on })),
+        Array.from({ length: 10 }, (_, at) => ({
+          key: `INV-${at + 1}`,
+          issued: `2026-11-${13 + at}`,
+          due: `2026-11-${20 + at}`,
+          what: undefined,
+          on: undefined,
+        })),
+      );
+      // Anything else is as it was: what the day is, and the day.
+      assert.deepStrictEqual(
+        told.dates.filter((one) => !one.key.startsWith("INV-")).map(({ what, on }) => [what, on]),
+        [["Due", "2026-11-21"]],
+      );
+
+      const section = moneySection(yield* OwnerMoney.money(people, { orgId }), "Asia/Kolkata");
+      // By their due day; the review, due with INV-2, sits after it.
+      assert.deepStrictEqual(
+        section?.next30Days.map((one) => [one.key, one.issued, one.due]),
+        [
+          ["INV-1", "2026-11-13", "2026-11-20"],
+          ["INV-2", "2026-11-14", "2026-11-21"],
+          ["W-1", undefined, "2026-11-21"],
+          ...Array.from({ length: 7 }, (_, at) => [
+            `INV-${at + 3}`,
+            `2026-11-${15 + at}`,
+            `2026-11-${22 + at}`,
+          ]),
+        ],
+      );
+      assert.strictEqual(section?.moreDates, 1);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "an agent's suggestion is owed nowhere, takes no payment or number, and counts once a person with the right keeps it",
     () =>
@@ -1346,6 +1408,15 @@ describe("invoices", () => {
         sourceEventId: asked,
         entry: KinRecordKey.make("INV-1"),
       });
+      // Issued and overdue, yet only its due day is late: the day it was issued never is.
+      const lateOn = (day: string) =>
+        LeadMoney.datesQuery(scope, { from: day, to: day }).pipe(
+          Effect.map((told) => told.dates.map((one) => one.late === true)),
+        );
+      assert.deepStrictEqual(
+        [yield* lateOn("2026-10-01"), yield* lateOn("2026-11-01")],
+        [[false], [true]],
+      );
       const paid = yield* turn(4, "Acme paid 40k");
       const first = yield* LeadMoney.payment(scope, {
         sourceEventId: paid,
@@ -2360,10 +2431,16 @@ describe("the owner's taps", () => {
           to: "2026-11-29",
         });
         assert.deepStrictEqual(
-          told.dates.filter((one) => one.key === "INV-1").map((one) => [one.what, one.state]),
+          told.dates
+            .filter((one) => one.key === "INV-1")
+            .map((one) => [one.date, one.due, one.issued, one.state]),
           [
-            ["Date", "Draft, suggested: waits for the owner or a co-owner to keep it"],
-            ["Due", "Draft, suggested: waits for the owner or a co-owner to keep it"],
+            [
+              "2026-11-12",
+              "2026-11-20",
+              undefined,
+              "Draft, suggested: waits for the owner or a co-owner to keep it",
+            ],
           ],
         );
         // An agent's summary still reads every date ahead; people's Money, money's alone.
