@@ -40,8 +40,8 @@ import { listReceipts, makeReceipt as makeReceiptFor } from "../gendocs/receipts
 import { readProfile, setProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { dates as datesView, moneySummary } from "./moneyViews.ts";
-import { found, ownerWriter, theOwner, viewerOf } from "./ownerWork.ts";
-import { iso, workFailure } from "./recordRows.ts";
+import { found, ownerWriter, placeRefusals, theOwner } from "./ownerWork.ts";
+import { chatLinksFor, iso, workFailure } from "./recordRows.ts";
 import {
   allLists,
   encodeDefinition,
@@ -306,10 +306,9 @@ const moneyReader = Effect.fn("KinMoney.reader")(function* (
   people: ReadonlyArray<PersonIdentity>,
   orgId: KinOrgId,
 ) {
-  const viewer = yield* viewerOf(people, orgId);
+  const { viewer, refused } = yield* placeRefusals(people, orgId);
   if (!viewer.teammate) return undefined;
-  const places = yield* placesOf(orgId, viewer.person.personId);
-  if (!places.reaches.money) return yield* noMoney;
+  if (refused.money) return yield* noMoney;
   return viewer.person.personId;
 });
 
@@ -426,7 +425,11 @@ export const recordPayment = Effect.fn("KinMoney.recordPayment")(function* (
         ? pay(tds, true)
         : pay(input.amount, false).pipe(Effect.andThen(pay(tds, true))),
   );
-  return yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
+  return yield* chatLinksFor(
+    input.orgId,
+    person.personId,
+    yield* records.detail(row, KIN_RECORD_CHANGES_CAP),
+  );
 }, workFailure);
 
 export const voidPayment = Effect.fn("KinMoney.voidPayment")(function* (
@@ -442,7 +445,11 @@ export const voidPayment = Effect.fn("KinMoney.voidPayment")(function* (
     input.key,
     input.paymentId,
   );
-  return yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
+  return yield* chatLinksFor(
+    input.orgId,
+    person.personId,
+    yield* records.detail(row, KIN_RECORD_CHANGES_CAP),
+  );
 }, workFailure);
 
 const decodeAttachments = Schema.decodeUnknownOption(

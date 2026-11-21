@@ -636,6 +636,41 @@ describe("pulse check-ins", () => {
       assert.strictEqual(again._tag === "duplicate" ? again.notBefore : 0, MONDAY + DAY + 8 * HOUR);
       const asked = yield* at("checkin-late", "run-now-2");
       assert.strictEqual(asked._tag === "queued" ? asked.notBefore : 0, night);
+      // Away until Friday: the week's morning briefs wait for them, and only the latest goes, with
+      // what the earlier ones carried.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET away_until = '2026-11-20' WHERE person_id = ${owner}`;
+      yield* record({ key: "W-2", list: "work", title: "Invented brochure", dueAt: MONDAY - DAY });
+      const morning = (day: number, outside: OutsideRead = nothingOutside) =>
+        queueCheckIn({
+          orgId,
+          agentId: chief,
+          scheduleId: KinMemoryItemId.make("checkin-morning"),
+          title: "Morning brief",
+          what: "Check-in.",
+          dueAt: MONDAY + day * DAY + 9 * HOUR,
+          looseAt: null,
+          zone: "UTC",
+          at: MONDAY + day * DAY + 9 * HOUR,
+          outside,
+        });
+      assert.include(
+        yield* morning(1, { lines: [mail("m-1", "Zoya", "Invented brief")], seen: [] }),
+        {
+          _tag: "queued",
+          facts: 1,
+        },
+      );
+      assert.include(yield* morning(2), { _tag: "queued", facts: 1, outside: 1 });
+      assert.include(yield* morning(3), { _tag: "queued", facts: 1, outside: 1 });
+      const briefs = yield* sql<{ key: string; state: string }>`SELECT dedupe_key AS key, state
+        FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'checkin:checkin-morning:%'
+        ORDER BY dedupe_key`;
+      assert.deepStrictEqual(briefs, [
+        { key: "checkin:checkin-morning:2026-11-17", state: "expired" },
+        { key: "checkin:checkin-morning:2026-11-18", state: "expired" },
+        { key: "checkin:checkin-morning:2026-11-19", state: "queued" },
+      ]);
     }).pipe(Effect.provide(layer)),
   );
 

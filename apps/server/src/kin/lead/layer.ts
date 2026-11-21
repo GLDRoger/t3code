@@ -55,7 +55,6 @@ import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts"
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import * as KinRecommend from "../recommend/KinRecommend.ts";
-import * as OpenShadow from "../open/shadow.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
 import { importWork } from "../work/importWork.ts";
 import { fillDraftAmounts, reportIssuedWithoutAmount } from "../gendocs/amounts.ts";
@@ -109,7 +108,6 @@ const routineRuntime = Layer.mergeAll(
   HostBackup.layer,
   KinPulse.layer,
   KinRecommend.layer,
-  OpenShadow.layer,
 ).pipe(
   Layer.provideMerge(LeadDelivery.layer),
   Layer.provideMerge(TriggerScheduler.layer),
@@ -460,5 +458,5 @@ const unconfigured = containStartup(
   ),
 );
 
-export const layerServer = configured(layer);
-export const layerMcp = configured(production);
+/** Kin's agent runtime as the server builds it, inside the Kin MCP endpoint (`kin/mcp/layer.ts`). */
+export const layerRuntime = configured(production);

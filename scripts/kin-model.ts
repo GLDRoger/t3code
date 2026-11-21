@@ -115,6 +115,7 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/chat/KinGroups.ts",
     "apps/server/src/kin/lead/Handoff.ts",
     "apps/server/src/kin/lead/WakeupRunner.ts",
+    "apps/server/src/kin/lead/ChatWake.ts",
   ],
   "github-events": [
     "apps/server/src/kin/github/GitHubWatch.ts",

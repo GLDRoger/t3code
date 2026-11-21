@@ -1,8 +1,8 @@
 // @effect-diagnostics globalDate:off - Days are read on the device clock, so fixtures use local dates.
-import { formatKinWhen, type KinWaitingItem, KinWidgetId } from "@t3tools/contracts";
+import type { KinWaitingItem } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinChoiceDefaultLine, kinWaitingAskView } from "./kinWaitingAsk.ts";
+import { kinWaitingAskView } from "./kinWaitingAsk.ts";
 
 const item = (ask: KinWaitingItem["ask"]) =>
   ({
@@ -58,42 +58,5 @@ describe("an open question in Waiting on you", () => {
     expect(view?.line).toBe("Finance won't act on this without you.");
     expect(view?.options.some((option) => option.isDefault)).toBe(false);
     expect(kinWaitingAskView(item(undefined), now)).toBeNull();
-  });
-});
-
-describe("an open question's card", () => {
-  const now = new Date(2026, 10, 16, 11, 30).getTime();
-  const waiting = (ask: KinWaitingItem["ask"]) => [item(ask)];
-  const asked = (fields: Partial<NonNullable<KinWaitingItem["ask"]>>) =>
-    waiting({
-      agent: "Finance",
-      default: "Draft it",
-      by: new Date(2026, 10, 17, 19, 30).toISOString(),
-      revision: 1,
-      options,
-      ...fields,
-    });
-  const card = KinWidgetId.make("widget-1");
-
-  it("names the default Kin takes and when, in the reader's own time", () => {
-    const at = new Date(2026, 10, 17, 19, 30);
-    expect(kinChoiceDefaultLine(card, asked({}), now)).toBe(
-      `If nobody answers by tomorrow at ${formatKinWhen(at, "time")}: Draft it.`,
-    );
-    expect(
-      kinChoiceDefaultLine(
-        card,
-        asked({ by: new Date(2026, 10, 19, 19, 30).toISOString(), default: "Go ahead!" }),
-        now,
-      ),
-    ).toBe(`If nobody answers by Thursday at ${formatKinWhen(at, "time")}: Go ahead!`);
-  });
-
-  it("says nothing where no default is taken, or the card isn't the reader's question", () => {
-    expect(kinChoiceDefaultLine(card, asked({ default: null }), now)).toBeNull();
-    expect(kinChoiceDefaultLine(KinWidgetId.make("widget-2"), asked({}), now)).toBeNull();
-    expect(kinChoiceDefaultLine(card, waiting(undefined), now)).toBeNull();
-    expect(kinChoiceDefaultLine(card, null, now)).toBeNull();
-    expect(kinChoiceDefaultLine(card, asked({}), Date.parse(asked({})[0]!.ask!.by))).toBeNull();
   });
 });

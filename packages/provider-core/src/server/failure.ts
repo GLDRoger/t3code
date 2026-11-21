@@ -78,7 +78,6 @@ const CODEX_ACCESS_REQUIREMENT_REJECTION =
 const PROVIDER_FAILURE_REASONS: Record<ProviderAdapterFailureReason, string> = {
   previous_turn_active: "the previous turn is still running",
   attachment_unreadable: "an attachment could not be read",
-  process_exited: "the provider program exited before the turn started",
 };
 
 /**

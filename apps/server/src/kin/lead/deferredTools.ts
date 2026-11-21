@@ -22,7 +22,6 @@ export const KIN_DEFERRED_TOOLS: ReadonlySet<string> = new Set([
   "doc_history",
   "doc_link",
   "doc_move",
-  "team_open",
   "people_update",
   "agent_update",
   "record_hand_back",

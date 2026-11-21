@@ -52,7 +52,7 @@ import { configureClientTracing } from "../observability/clientTracing";
 import { resolveInitialServerAuthGateState } from "../environments/primary";
 import { GUEST_PAGE_PATH } from "../guestPage";
 import { KIN_INVITE_LINK_PATH } from "@t3tools/shared/remote";
-import { kinListAt } from "../kin/kinListSwitch";
+import { KinChatOnlyRoot, redirectChatOnlyToKin } from "../kin/KinChatOnlyRoot";
 import { rememberKinTeammate } from "../kin/kinTeammateMark";
 import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
 import { useHostedPromptLinkLanding } from "../components/promptLinks/HostedPromptLinkLanding";
@@ -95,19 +95,7 @@ export const Route = createRootRoute({
     }
 
     const authGateState = await resolveInitialServerAuthGateState();
-    if (
-      authGateState.status === "authenticated" &&
-      authGateState.chatOnly &&
-      kinListAt(location.pathname) !== "kin"
-    ) {
-      throw redirect({
-        to: "/kin",
-        search: location.pathname.startsWith("/settings")
-          ? { settings: location.pathname.split("/")[2] || "general" }
-          : {},
-        replace: true,
-      });
-    }
+    redirectChatOnlyToKin(authGateState, location.pathname);
     if (authGateState.status === "authenticated") {
       // Idempotent, so every navigation can ask for it.
       void configureClientTracing();
@@ -199,16 +187,8 @@ function RootRouteBranch() {
   if (authGateState.status !== "authenticated" && authGateState.status !== "hosted-static") {
     return <Outlet />;
   }
-  // A teammate's session gets Kin's list and chats: no setup, thread sync or coding chrome.
-  if (authGateState.status === "authenticated" && authGateState.chatOnly) {
-    return (
-      <CommandPalette>
-        <AppSidebarLayout chatOnly>
-          <Outlet />
-        </AppSidebarLayout>
-      </CommandPalette>
-    );
-  }
+  if (authGateState.status === "authenticated" && authGateState.chatOnly)
+    return <KinChatOnlyRoot />;
 
   // Settings can reopen /welcome mid-session, so it mounts everything the app does except the
   // first-run gate and the event router, whose first navigation would leave the page.

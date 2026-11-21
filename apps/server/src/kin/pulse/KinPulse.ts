@@ -605,7 +605,8 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           json_extract(value, '$.record'), json_extract(value, '$.scope'), ${at}, ${at}
         FROM json_each(${rows}) WHERE true
         ON CONFLICT (org_id, fact_key) DO NOTHING RETURNING fact_key`;
-      const reopened = yield* sql<{ key: string }>`UPDATE kin_pulse_facts SET cleared_at = NULL
+      const reopened = yield* sql<{ key: string }>`UPDATE kin_pulse_facts
+        SET cleared_at = NULL, woke_at = NULL
         WHERE org_id = ${orgId} AND cleared_at IS NOT NULL AND fact_key IN (${sensedKeys})
         RETURNING fact_key AS key`;
       // Back after it stopped being true: its holder and the check-ins hear of it again.
@@ -636,10 +637,11 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
             yield* decodeEvent({
               _tag: "pulse",
               orgId,
-              eventId: KinEventId.make(`pulse-${shortHash(`${orgId}\0${fact.key}`)}`),
+              // A fact that comes back wakes anew: `woke_at` keeps a fact from waking twice.
+              eventId: KinEventId.make(`pulse-${shortHash(`${orgId}\0${fact.key}\0${at}`)}`),
               agentId: fact.actor.agentId,
               receivedAt: DateTime.formatIso(iso(at)),
-              dedupeKey: fact.key,
+              dedupeKey: `${fact.key}:${at}`,
               provenance: { _tag: "system" },
               factKeys: [fact.key],
             }),
