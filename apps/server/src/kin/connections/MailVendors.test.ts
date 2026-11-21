@@ -6,7 +6,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 
 import { type FakeMail, makeFakeMail } from "./FakeMail.ts";
-import { MAIL_TOOL, type Mailbox, type MailProvider } from "./MailProvider.ts";
+import { MAIL_TOOL, type MailActivity, type Mailbox, type MailProvider } from "./MailProvider.ts";
 import type { KinGatewayError } from "./McpGateway.ts";
 import { MAIL_PROVIDERS } from "./mailProviders.ts";
 
@@ -372,7 +372,7 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
           event("review", "Design review");
           event("lunch", "Client lunch");
           event("standup", "Standup", { repeats: 2 });
-          const first = yield* provider.activity(http, token, mailbox, NOW - 6 * HOUR, null);
+          const first = yield* provider.activity(http, token, mailbox, NOW - 6 * HOUR, null, NOW);
           assert.includeMembers(
             first.calendar.map((one) => one.summary),
             ["Design review", "Client lunch", "Standup", "Standup"],
@@ -389,6 +389,7 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
             mailbox,
             NOW - 2 * HOUR,
             first.cursor ?? null,
+            NOW,
           );
           assert.deepStrictEqual(
             later.mail.map((one) => [one.subject, one.receivedBy, one.unread]),
@@ -402,6 +403,50 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
             2,
           );
           sameInstant(byId.get("standup_0")?.start ?? null, NOW + 26 * HOUR);
+        }),
+    ],
+    [
+      "reads a busy inbox and calendar past their first page, and the next read goes on from where one stopped",
+      ({ provider, fake, http, token }) =>
+        Effect.gen(function* () {
+          const MINUTE = 60_000;
+          for (let i = 0; i < 130; i++)
+            fake.deliver({
+              to: BILLING,
+              from: `client-${i}@client.example`,
+              subject: `Mail ${i}`,
+              body: "Hello.",
+              at: NOW - 3 * HOUR + i * MINUTE,
+            });
+          for (let i = 0; i < 230; i++)
+            fake.putEvent({
+              account: OWNER,
+              id: `meeting${i}`,
+              title: `Meeting ${i}`,
+              start: NOW + 24 * HOUR,
+              end: NOW + 25 * HOUR,
+              updated: NOW - 4 * HOUR + i * MINUTE,
+            });
+          const senders = new Set<string | null>();
+          const events = new Set<string>();
+          let since = NOW - 5 * HOUR;
+          let cursor: string | null = null;
+          for (let read = 0; read < 4 && since < NOW; read++) {
+            const found: MailActivity = yield* provider.activity(
+              http,
+              token,
+              mailbox,
+              since,
+              cursor,
+              NOW,
+            );
+            for (const mail of found.mail) senders.add(mail.from);
+            for (const event of found.calendar) events.add(event.eventId);
+            since = found.until ?? NOW;
+            cursor = found.cursor;
+          }
+          assert.strictEqual(senders.size, 130);
+          assert.strictEqual(events.size, 230);
         }),
     ],
     [

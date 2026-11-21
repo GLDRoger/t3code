@@ -75,7 +75,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { markOutside, outsideRead, outsideStamp, OUTSIDE_REFUSAL } from "../lead/OutsideContent.ts";
 import { sensitiveShown } from "../work/sensitiveReads.ts";
-import { quote } from "../lead/LeadPrompt.ts";
+import { quote } from "../lead/quote.ts";
 import {
   callable,
   changed,
@@ -340,21 +340,6 @@ export type KinConnectionActivity =
         readonly start: string | null;
         readonly status: string | null;
         readonly updated: string | null;
-      }>;
-    }
-  | {
-      readonly _tag: "github";
-      readonly connectionId: KinConnectionId;
-      readonly since: number;
-      readonly until: number;
-      readonly deliveries: ReadonlyArray<{
-        readonly fireId: string;
-        readonly repo: string | null;
-        readonly deliveryId: string | null;
-        readonly receivedAt: number;
-        /** From the wake-up Kin queued for it, when GitHub's event was one it acts on. */
-        readonly eventName: string | null;
-        readonly summary: string | null;
       }>;
     }
   | { readonly _tag: "unsupported"; readonly connectionId: KinConnectionId };
@@ -1783,39 +1768,34 @@ const make = Effect.gen(function* () {
                     mailboxOf(row),
                     since,
                     cursor?.calendarCursor ?? null,
+                    until,
                   ),
                 ),
               ),
             )
           : { mail: [], calendar: [], cursor: cursor?.calendarCursor ?? null };
+      // A read that stopped at its bound moves the cursor only as far as it read.
+      const cut = "until" in found ? found.until : undefined;
+      const readUntil = cut === undefined ? until : Math.max(since + 1, Math.min(until, cut));
+      if (readUntil < until)
+        yield* Effect.logInfo(
+          "Kin read a connection's activity up to its bound; the rest comes next",
+          {
+            orgId,
+            connectionId: row.connectionId,
+            readUntil,
+          },
+        );
       return {
         _tag: "mail",
         connectionId: row.connectionId,
         since,
-        until,
+        until: readUntil,
         account: row.accountLabel,
         cursor: found.cursor,
         mail: mail ? found.mail : [],
         calendar: calendar ? found.calendar : [],
       } as const;
-    }
-    if (row.preset === "github") {
-      // What GitHub woke Kin's agents for, as the owner's login watch recorded it.
-      const deliveries = yield* sql<{
-        fireId: string;
-        repo: string | null;
-        deliveryId: string | null;
-        receivedAt: number;
-        eventName: string | null;
-        summary: string | null;
-      }>`SELECT event_id AS "fireId", json_extract(json, '$.repo') AS repo,
-            json_extract(json, '$.deliveryId') AS "deliveryId", received_at AS "receivedAt",
-            json_extract(json, '$.eventName') AS "eventName", json_extract(json, '$.summary') AS summary
-          FROM kin_events
-          WHERE org_id = ${orgId} AND tag = 'github' AND received_at > ${since}
-            AND received_at <= ${until}
-          ORDER BY received_at, event_id LIMIT 200`;
-      return { _tag: "github", connectionId: row.connectionId, since, until, deliveries } as const;
     }
     return { _tag: "unsupported", connectionId: row.connectionId } as const;
   }, settle);

@@ -9,6 +9,7 @@ export const {
   useKinDocsList,
   useKinDocsUnder,
   useKinWhatWeSell,
+  useKinDocsCounts,
   useKinWhatWeSellStart,
   useKinDoc,
   useKinDocHistory,

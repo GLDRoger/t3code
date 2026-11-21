@@ -28,6 +28,7 @@ import * as Presence from "../reply/KinPresence.ts";
 import * as ChatWake from "./ChatWake.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import { retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
+import { KinTeam } from "../team/KinTeam.ts";
 
 const decodeMessage = Schema.decodeUnknownSync(KinMessage);
 const decodeEventJson = Schema.decodeEffect(Schema.fromJsonString(KinEvent));
@@ -122,7 +123,7 @@ const storeMessage = Effect.fn("test.storeMessage")(function* (row: KinMessage) 
 
 // Records every enqueue attempt and result. `settle` publishes a post the bridge ignores and waits
 // until the bridge pulls it: catch-up and every earlier hub event are handled by then.
-const start = Effect.fn("test.start")(function* () {
+const start = Effect.fn("test.start")(function* (discussed: ReadonlyArray<string> = []) {
   const attempts: Array<KinEvent> = [];
   const results: Array<{ readonly event: KinEvent; readonly duplicate: boolean }> = [];
   const pulled = yield* Queue.unbounded<string>();
@@ -139,6 +140,10 @@ const start = Effect.fn("test.start")(function* () {
                 Effect.andThen(queue.enqueue(event)),
                 Effect.tap((result) => Effect.sync(() => results.push(result))),
               ),
+          }),
+          // The messages the Team room opened a discussion for: KinTeam's to decide and test.
+          Layer.mock(KinTeam)({
+            personAsked: (message) => Effect.succeed(discussed.includes(message.messageId)),
           }),
           Layer.succeed(Hub.KinChatHub, {
             ...hub,
@@ -462,10 +467,12 @@ describe("ChatWake", () => {
             VALUES (${id}, 'g', ${id}, 0, '{}', '[]', 'chat-g')`;
         }
         yield* storeMessage(message("g", "missed", { mentions: ["growth-member"] }));
-        const { attempts, settle } = yield* start();
+        const { attempts, settle } = yield* start(["talked-over"]);
         yield* post("g", "unnamed", { seq: 2 });
         yield* post("g", "named", { seq: 3, mentions: ["growth-member"] });
         yield* post("g", "both", { seq: 4, mentions: ["lead-member-g", "growth-member"] });
+        // A discussion of the agents it names answers it, so neither gets a plain reply turn.
+        yield* post("g", "talked-over", { seq: 4, mentions: ["lead-member-g", "growth-member"] });
         // A lead's own post names another lead and wakes nobody; nor does naming one who left.
         yield* post("g", "from-lead", { seq: 5, agent: true, mentions: ["growth-member"] });
         yield* post("g", "left", { seq: 6, mentions: ["gone-member"] });

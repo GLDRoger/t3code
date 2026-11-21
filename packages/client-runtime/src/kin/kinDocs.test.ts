@@ -241,6 +241,14 @@ describe("kinDocLibrary", () => {
     expect(
       kinWhatWeSellAgent([lead("c", "growth", true), lead("b", "chief-of-staff")])?.agentId,
     ).toBe("b");
+    // Any agent the sales rules reach keeps it before the Chief of staff; a named seat stays first.
+    expect(kinWhatWeSellAgent([lead("b", "chief-of-staff"), lead("d", "marketing")])?.agentId).toBe(
+      "d",
+    );
+    expect(kinWhatWeSellAgent([lead("b", "chief-of-staff"), lead("e", "sales-ops")])?.agentId).toBe(
+      "e",
+    );
+    expect(kinWhatWeSellAgent([lead("a", "marketing"), lead("c", "growth")])?.agentId).toBe("c");
     expect(kinWhatWeSellAgent([lead("z", "finance"), lead("y", "social")])?.agentId).toBe("y");
     expect(kinWhatWeSellAgent([])).toBeNull();
   });

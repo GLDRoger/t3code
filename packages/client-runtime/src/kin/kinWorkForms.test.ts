@@ -100,6 +100,20 @@ describe("createKinWorkForm", () => {
     expect(kinClientUpdateInput({ address: " \n " })).toEqual({ address: null });
   });
 
+  it("takes a newer read while the owner types, keeps the typing and saves against the newer one", async () => {
+    const { form, sent, state } = clientForm([]);
+    form.edit({ terms: "Invented net 45" });
+    // Every render hands the form the record as read; only a newer revision counts.
+    form.latest({ ...state().from, name: "Invented Foods Pvt" }, 4);
+    expect(state().latest).toBeNull();
+    form.latest({ ...state().from, name: "Invented Foods Ltd" }, 6);
+    form.latest({ ...state().from, name: "Invented Foods Old" }, 5);
+    expect(state().draft).toMatchObject({ name: "Invented Foods", terms: "Invented net 45" });
+    expect(kinWorkFormMoved(state())).toEqual({ name: "Invented Foods Ltd" });
+    expect(await form.save()).toEqual({ saved: true, value: "ok" });
+    expect(sent).toEqual([{ rev: 6, terms: "Invented net 45" }]);
+  });
+
   it("sends a prospect, where it came from and its tags, and switches prospect and client", () => {
     const draft = {
       ...kinClientDraftOf(undefined, "prospect"),

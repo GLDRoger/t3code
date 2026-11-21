@@ -49,6 +49,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Ref from "effect/Ref";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -3056,5 +3057,52 @@ describe("KinChatService", () => {
         assert.strictEqual(yield* profile(), "9999999999");
         assert.strictEqual(yield* company, 1);
       }).pipe(Effect.provide(Layer.provideMerge(LevelGate.layer, layer))),
+  );
+
+  it.effect(
+    "a screen too far behind ends, and resuming from its cursor brings what it missed",
+    () =>
+      Effect.gen(function* () {
+        const { service, person, chat } = yield* seed();
+        const hub = yield* Hub.KinChatHub;
+        const pull = yield* Stream.toPull(service.subscribe(person, { chatId: chat.chatId }));
+        const [opened] = yield* pull;
+        assert.strictEqual(opened?._tag, "backlog");
+        if (opened?._tag !== "backlog") return;
+        const sent = [];
+        for (const n of [1, 2, 3])
+          sent.push(
+            yield* service.send(person, {
+              chatId: chat.chatId,
+              body: `Owner note ${n}`,
+              clientMessageId: `behind-${n}`,
+            }),
+          );
+        // Ten thousand more wait on a screen that reads none of them.
+        for (let seq = 0; seq < 10_000; seq += 1)
+          yield* hub.publish({
+            type: "read.updated",
+            orgId: person.orgId,
+            chatId: chat.chatId,
+            memberId: decodeKinMemberId("behind-reader"),
+            seq,
+          });
+        const ended = yield* Effect.exit(pull);
+        assert.isTrue(Exit.isFailure(ended), "the screen ends");
+        assert.include(JSON.stringify(ended), "unavailable");
+        const resumed = yield* Stream.runHead(
+          service.subscribe(person, {
+            chatId: chat.chatId,
+            afterSeq: opened.lastSeq,
+            afterChangeSeq: opened.lastChangeSeq,
+          }),
+        ).pipe(Effect.map(Option.getOrThrow));
+        assert.strictEqual(resumed._tag, "backlog");
+        if (resumed._tag !== "backlog") return;
+        assert.deepStrictEqual(
+          resumed.messages.map((message) => message.messageId),
+          sent.map((message) => message.messageId),
+        );
+      }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 });

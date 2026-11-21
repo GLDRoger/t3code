@@ -10,7 +10,7 @@ import {
   readInventory,
 } from "./featureMap.ts";
 
-const PHONE_PROOF_GAP = 98;
+const PHONE_PROOF_GAP = 99;
 
 describe("Kin feature map", () => {
   it("lists every route, pane, phone screen and agent tool, and every proof exists", () => {

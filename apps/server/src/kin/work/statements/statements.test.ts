@@ -2505,7 +2505,7 @@ describe("statement card taps over the server's RPCs", () => {
       const services = Option.getOrThrow((yield* Kin.KinServer).services);
       const queue = Context.get(services, KinEventQueue.KinEventQueue);
       const woken = yield* Queue.unbounded<KinEvent>();
-      // The lead's wake-ups, on the server's own hub and queue, as `KinLead.layerMcp` runs them.
+      // The lead's wake-ups, on the server's own hub and queue, as `KinLead.layerRuntime` runs them.
       yield* Layer.build(
         ChatWake.layer.pipe(
           Layer.provide(

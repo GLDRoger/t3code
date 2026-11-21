@@ -7,12 +7,20 @@ import {
   type KinImportClientDecision,
   type KinImportDateFormat,
   type KinImportDecisions,
+  type KinImportFile,
+  type KinImportFileInput,
   type KinImportLeftOut,
   type KinImportRun,
   type KinImportRunning,
   type KinImportTarget,
   type KinImportUndone,
+  type KinImportUpload,
+  KinChatError,
 } from "@t3tools/contracts";
+import { AsyncResult } from "effect/reactivity";
+import * as Schema from "effect/Schema";
+
+import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 
 /** Every word the import screens show, on the web and the phone alike. */
 export const KIN_IMPORT = {
@@ -371,3 +379,35 @@ export const kinImportUndoneLine = (run: KinImportRun, by: (personId: string) =>
   run.undone === null
     ? null
     : `Undone on ${day(run.undone.at)} by ${by(run.undone.by)}, so there's nothing left to undo.`;
+
+const isKinChatError = Schema.is(KinChatError);
+
+/**
+ * Sends a file to the host once: after a check names the `upload` the host holds it under, the
+ * same file goes as that. When the host no longer has it (a restart, an hour unused) it goes whole
+ * again, once, without a word to the person. A host that names no upload gets the file each time.
+ */
+export function createKinImportFiles() {
+  let held: { readonly data: string; readonly upload: KinImportUpload } | null = null;
+  return async <A>(
+    file: KinImportFile,
+    request: (file: KinImportFileInput) => Promise<AtomCommandResult<A, unknown>>,
+    /** What the host holds it under after this answer; null once it has let it go. */
+    holds: (value: A) => KinImportUpload | null | undefined,
+  ): Promise<AtomCommandResult<A, unknown>> => {
+    const upload = held !== null && held.data === file.data ? held.upload : null;
+    let result = await request(upload === null ? file : { name: file.name, upload });
+    if (upload !== null && AsyncResult.isFailure(result)) {
+      const cause = squashAtomCommandFailure(result);
+      if (isKinChatError(cause) && cause.reason === "not_found") {
+        held = null;
+        result = await request(file);
+      }
+    }
+    if (AsyncResult.isSuccess(result)) {
+      const next = holds(result.value);
+      held = next == null ? null : { data: file.data, upload: next };
+    }
+    return result;
+  };
+}
