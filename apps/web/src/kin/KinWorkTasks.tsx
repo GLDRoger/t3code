@@ -1046,6 +1046,12 @@ export function KinWorkRow(props: {
           <span className="line-clamp-2 text-sm text-foreground">{row.title}</span>
           {/* Who has it never gives way: the rest of the line cuts off before it does. */}
           <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+            {row.urgent ? (
+              <FlagIcon
+                aria-hidden
+                className="size-3 shrink-0 fill-current text-warning-foreground"
+              />
+            ) : null}
             <KinAvatar avatar={row.ownerAvatar} size="xs" />
             <span className="max-w-[60%] shrink-0 truncate text-foreground/80">{row.holder}</span>
             {row.detail === "" ? null : (
