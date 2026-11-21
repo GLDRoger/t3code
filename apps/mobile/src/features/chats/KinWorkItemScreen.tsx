@@ -599,6 +599,8 @@ function KinWorkItemBody(props: ItemTarget) {
       actions={asker.actions}
       menus={[...asker.menus, ...menus]}
       form={edit !== null}
+      // The form opens at the top, wherever the page was scrolled to.
+      showTop={edit === null ? null : edit.key}
       {...(footer === undefined ? {} : { footer })}
     >
       <View className="gap-2.5 px-1">
@@ -633,7 +635,6 @@ function KinWorkItemBody(props: ItemTarget) {
                 accessibilityLabel="Title"
                 value={edit.title}
                 editable={!saving}
-                autoFocus
                 autoCapitalize="sentences"
                 returnKeyType="done"
                 onChangeText={(title) => changes.setEdit({ title })}
@@ -660,6 +661,8 @@ function KinWorkItemBody(props: ItemTarget) {
                 accessibilityLabel={KIN_TASK_RECORD.brief}
                 value={edit.notes}
                 editable={!saving}
+                // Opened from the brief's own Edit: the words go there, not into the title.
+                autoFocus
                 multiline
                 maxLength={KIN_WORK_NOTES_MAX}
                 onChangeText={(notes) => changes.setEdit({ notes })}
