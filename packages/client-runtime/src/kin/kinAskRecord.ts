@@ -1,41 +1,46 @@
-import type { KinChatId } from "@t3tools/contracts";
+import type { KinAgentId, KinChatId, KinLeadContact, KinLeadsListResult } from "@t3tools/contracts";
+
+import { kinMessageableAgents } from "./kinPeopleChat.ts";
 
 export const KIN_ASK_RECORD = {
   askWho: "Ask an agent",
   ask: (name: string) => `Ask ${name}`,
 } as const;
 
-/** An agent the viewer can message, and the viewer's own chat with it. */
+/** An agent the viewer can message, and their chat with it when they have one already. */
 export interface KinAskAgent {
-  readonly agentId: string;
+  readonly agentId: KinAgentId;
   readonly name: string;
-  readonly chatId: KinChatId;
+  readonly chatId: KinChatId | null;
 }
 
 /**
- * Who an Ask can go to: the viewer's own live agents, then the teammates' agents they may message,
- * each in the viewer's own chat with it.
+ * Who an Ask can go to: every agent the new-chat list offers the viewer, in its order. A chat the
+ * viewer already has with one is opened as it is; for any other, the chat is made on the pick.
  */
 export function kinAskAgents(
   result: {
-    readonly leads: ReadonlyArray<{
-      readonly agentId: string;
-      readonly name: string;
-      readonly ownerChatId: KinChatId;
-      readonly retired?: unknown;
-    }>;
-    readonly contacts?: ReadonlyArray<KinAskAgent> | undefined;
+    readonly leads: ReadonlyArray<
+      Pick<KinLeadsListResult["leads"][number], "agentId" | "name" | "ownerChatId"> & {
+        readonly retired?: unknown;
+      }
+    >;
+    readonly contacts?:
+      | ReadonlyArray<Pick<KinLeadContact, "agentId" | "name" | "intro" | "ownerName" | "chatId">>
+      | undefined;
+    readonly messageable?: KinLeadsListResult["messageable"];
   } | null,
 ): ReadonlyArray<KinAskAgent> {
   if (result === null) return [];
-  const own = result.leads
-    .filter((lead) => lead.retired === undefined)
-    .map((lead) => ({ agentId: lead.agentId, name: lead.name, chatId: lead.ownerChatId }));
-  const seen = new Set(own.map((agent) => agent.agentId));
-  const others = (result.contacts ?? [])
-    .filter((contact) => !seen.has(contact.agentId))
-    .map((contact) => ({ agentId: contact.agentId, name: contact.name, chatId: contact.chatId }));
-  return [...own, ...others];
+  const chats = new Map<string, KinChatId>([
+    ...(result.contacts ?? []).map((contact) => [contact.agentId, contact.chatId] as const),
+    ...result.leads.map((lead) => [lead.agentId, lead.ownerChatId] as const),
+  ]);
+  return kinMessageableAgents(result).map(({ agentId, name }) => ({
+    agentId,
+    name,
+    chatId: chats.get(agentId) ?? null,
+  }));
 }
 
 /**
@@ -48,7 +53,8 @@ export function kinAskName(key: string, number: unknown) {
 
 /**
  * What an Ask about an entry starts with in the agent's composer: its name for the agent, and its
- * title, so the person sees what they are asking about.
+ * title, so the person sees what they are asking about. A numbered name already ends in the
+ * bracketed key, so its title follows bare, as Needs attention's Ask has it.
  */
 export function kinAskRecordDraft(record: {
   readonly key: string;
@@ -57,5 +63,6 @@ export function kinAskRecordDraft(record: {
 }) {
   const name = kinAskName(record.key, record.number);
   const title = record.title.trim();
-  return title === "" ? `About ${name}: ` : `About ${name} (${title}): `;
+  if (title === "") return `About ${name}: `;
+  return name === record.key ? `About ${name} (${title}): ` : `About ${name} ${title}: `;
 }

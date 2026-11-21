@@ -43,8 +43,13 @@ import {
   kinWorkRefused,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { kinCount } from "./kinCount.ts";
 
 export const KIN_DOCS = {
+  earlierVersions: "Show earlier versions",
+  oldVersion: (version: number, latest: number) =>
+    `You're reading version ${version}. The latest is version ${latest}.`,
+  openLatest: "Open the latest",
   changesFailed: "Couldn't load the changes",
   historyFailed: "Couldn't load the history",
   restoreOffline: "You're offline. Restore it when the connection is back.",
@@ -174,9 +179,6 @@ export const kinSearchHint = (scope: KinViewerScope) =>
         detail:
           "Tasks, clients, contacts, projects, docs and money you can see, by any words in them.",
       };
-
-const plural = (count: number, one: string, many = `${one}s`) =>
-  `${count} ${count === 1 ? one : many}`;
 
 // When and who
 
@@ -566,7 +568,7 @@ export const kinWhatWeSellAgent = <
 
 export function kinDocsFooter(shown: number, total: number | null, more: boolean): string | null {
   if (!more || total === null) return null;
-  return `Showing ${shown} of ${plural(total, "doc")}`;
+  return `Showing ${shown} of ${kinCount(total, "doc")}`;
 }
 
 /** What the File sheet starts from, and what it sends. */
@@ -769,10 +771,10 @@ export function kinDocDiffSummary(diff: KinDocDiff, sections: number): string {
   const removed = diff.removedSections.length;
   const unchanged = Math.max(sections - changed, 0);
   return [
-    changed > 0 ? `${plural(changed, "section")} changed` : null,
+    changed > 0 ? `${kinCount(changed, "section")} changed` : null,
     removed > 0 ? `${removed} removed` : null,
     `${unchanged} unchanged`,
-    `${plural(diff.additions, "line")} added, ${diff.deletions} removed`,
+    `${kinCount(diff.additions, "line")} added, ${diff.deletions} removed`,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -967,6 +969,8 @@ export interface KinSearchHitView {
   readonly snippet: string | null;
   /** The doc section the words are in, to open it there. */
   readonly section: { readonly id: string; readonly title: string } | null;
+  /** A contact's client, whose page opens for it; null for anything else or from an older host. */
+  readonly clientKey: string | null;
   readonly private: boolean;
   /** "Closed" for an entry, "Archived" for a doc; null while it is live. */
   readonly closed: string | null;
@@ -1004,6 +1008,7 @@ export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
     title: hit.title,
     snippet: snippet === "" ? null : snippet,
     section,
+    clientKey: hit.client ?? null,
     // Everything memory keeps is the owner level's; only an entry's own label reads as private.
     private: hit.sensitive && hit.kind !== "memory",
     closed,

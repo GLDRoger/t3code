@@ -5,10 +5,13 @@ import {
   KinLead,
   KinMessageId,
   KinOrgId,
+  type KinPersonId,
   KinWakeupId,
   MessageId,
   ModelSelection,
+  NodeId,
   ProjectId,
+  RunAttemptId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -20,6 +23,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Random from "effect/Random";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
@@ -41,6 +45,8 @@ import * as Writer from "../memory/MemoryWriter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
+import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { dueTurnText } from "../questions/openQuestions.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
@@ -76,6 +82,8 @@ import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { KinTeam } from "../team/KinTeam.ts";
 import { KinHandoff } from "./Handoff.ts";
+import * as WorkFor from "./workFor.ts";
+import { noticeRecords, runsFrom, turnRecords } from "./wakeupRuns.ts";
 
 /** How long one wake-up may run before it is interrupted. */
 const WAKEUP_DEADLINE_MS = 900_000;
@@ -88,7 +96,6 @@ const deadlineAt = (startedAt: number, steers: number) =>
 const isSteerRun = (wakeupId: KinWakeupId, run: { readonly userMessageId: string }) =>
   KinIdentity.isAdoptedRunMessage(wakeupId, run.userMessageId) &&
   run.userMessageId !== KinIdentity.rescueMessageId(wakeupId);
-const ownerCheckDispatcherReady = false;
 /** A running lead never shortens the org loop's wait; its finish wakes the loop instead. */
 const orgLoopWaitMs = (
   ready: ReadonlyArray<{ readonly agentId: KinAgentId; readonly readyAt: number }>,
@@ -146,6 +153,9 @@ const RunningRow = Schema.Struct({
 });
 const decodeLead = Schema.decodeUnknownEffect(LeadRow);
 const decodeRunning = Schema.decodeUnknownEffect(RunningRow);
+const decodeTaskIds = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
 const ulid = Effect.gen(function* () {
   const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
   let timestamp = yield* Clock.currentTimeMillis;
@@ -178,10 +188,14 @@ const make = Effect.gen(function* () {
       status === "completed" || Option.isNone(bridge)
         ? Option.none()
         : yield* bridge.value.lane(row);
+    const owed = status !== "completed" || Option.isNone(handoff) ? [] : yield* workOwed(row);
     const finished = yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });
     // A Team-room turn that said nothing passed; a hand-off's answer goes back to who asked.
     if (Option.isSome(team)) yield* team.value.wakeupEnded(row);
-    if (Option.isSome(handoff)) yield* handoff.value.reportBack(row);
+    if (Option.isSome(handoff)) {
+      yield* handoff.value.reportBack(row);
+      if (owed.length > 0) yield* handoff.value.workDone({ ...row, owed });
+    }
     if (Option.isNone(bridge) || Option.isNone(lane)) return;
     // Something visible already happened, so a silent retry could repeat it; say so instead.
     // Otherwise the person waiting hears at once that it is retrying, or has stopped. A run
@@ -197,7 +211,9 @@ const make = Effect.gen(function* () {
             : finished.failedEventIds.length > 0
               ? "gave_up"
               : finished.retried > 0 && lane.value.owed
-                ? "retrying"
+                ? finished.retryInMs >= KinEventQueue.LAST_RETRY_MS
+                  ? "retrying_later"
+                  : "retrying"
                 : undefined;
     if (outcome !== undefined)
       yield* bridge.value.failed({
@@ -261,6 +277,104 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  /** What on a lead's thread can free it or change what it is owed: a run update, a turn's end. */
+  const isLeadActivity = (event: Stream.Success<typeof threads.streamDomainEvents>) =>
+    event.type === "run.updated" ||
+    (event.type === "provider-turn.updated" && event.payload.completedAt !== null);
+  // One subscription to T3's events serves every wait below; each would otherwise open its own.
+  const runActivity = yield* PubSub.unbounded<string>();
+  yield* threads.streamDomainEvents.pipe(
+    Stream.filter(isLeadActivity),
+    Stream.runForEach((event) => PubSub.publish(runActivity, event.threadId)),
+    Effect.catchCause((cause) =>
+      Effect.logError("Kin run activity watch failed", { cause }).pipe(
+        Effect.andThen(Effect.sleep("1 second")),
+      ),
+    ),
+    Effect.forever,
+    Effect.forkScoped,
+  );
+  /** Who each finished-task event's work was for (`WorkFor.workFor`), by event id. */
+  const finishedFor = Effect.fn("WakeupRunner.finishedFor")(function* (
+    orgId: KinOrgId,
+    agentId: KinAgentId,
+    events: ReadonlyArray<{
+      readonly eventId: string;
+      readonly threadId: ThreadId;
+      readonly taskIds: ReadonlyArray<string>;
+    }>,
+  ) {
+    const found = new Map<string, ReadonlyArray<{ personId: KinPersonId; name: string }>>();
+    for (const event of events) {
+      const { subagents } = yield* threads.getThreadRecords(event.threadId, ["subagents"], {
+        subagentIds: event.taskIds.map((taskId) => NodeId.make(taskId)),
+      });
+      const runIds = subagents.flatMap((task) =>
+        event.taskIds.includes(task.id) && task.runId !== null ? [task.runId] : [],
+      );
+      const people = yield* WorkFor.workFor({ orgId, agentId, runIds }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      if (people.length > 0) found.set(event.eventId, people);
+    }
+    return found;
+  });
+  /** The people a completed wake-up's finished work was for, each by the event that brought it. */
+  const workOwed = Effect.fn("WakeupRunner.workOwed")(
+    function* (row: typeof RunningRow.Type) {
+      const rows = yield* sql<{ eventId: string; threadId: string; taskIds: string }>`SELECT
+          event_id AS "eventId", json_extract(json, '$.threadId') AS "threadId",
+          json_extract(json, '$.taskIds') AS "taskIds"
+        FROM kin_events WHERE org_id = ${row.orgId} AND agent_id = ${row.agentId}
+          AND wakeup_id = ${row.wakeupId} AND tag = 'task.finished'
+        ORDER BY event_id`;
+      const found = yield* finishedFor(
+        row.orgId,
+        row.agentId,
+        rows.map((one) => ({
+          eventId: one.eventId,
+          threadId: ThreadId.make(one.threadId),
+          taskIds: Option.getOrElse(decodeTaskIds(one.taskIds), () => []),
+        })),
+      );
+      return [...found].flatMap(([eventId, people]) =>
+        people.map((one) => ({ eventId, personId: one.personId })),
+      );
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin finished-work owners unavailable", { cause }).pipe(
+        Effect.as<ReadonlyArray<{ eventId: string; personId: KinPersonId }>>([]),
+      ),
+    ),
+  );
+  /**
+   * A due run of a scheduled task that no longer exists, or a question with nothing left to take:
+   * every prompt answers it with NO_REPLY (`KinLeadPrompt`), so it starts no turn. A failed read
+   * keeps the event for the turn.
+   */
+  const goneBeforeTurn = Effect.fn("WakeupRunner.goneBeforeTurn")(
+    function* (orgId: KinOrgId, event: KinEvent) {
+      if (event._tag !== "deferral.due") return false;
+      const subject = event.subject;
+      if (subject.type === "scheduled_task") {
+        const schedule = yield* KinSchedules.readSchedule(sql, orgId, subject.itemId);
+        if (schedule !== undefined)
+          return (yield* KinSchedules.readNativeTask(sql, schedule.taskId)) === undefined;
+        return yield* memory
+          .readItemQuietly(orgId, subject.itemId, "triggers")
+          .pipe(Effect.as(false), Effect.catchTags({ MemoryNotFound: () => Effect.succeed(true) }));
+      }
+      if (subject.type !== "question" || subject.undone === true || subject.answered === true)
+        return false;
+      const due = yield* dueTurnText(orgId, subject.questionId, yield* Clock.currentTimeMillis);
+      return due === undefined;
+    },
+    (effect) =>
+      effect.pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.orElseSucceed(() => false),
+      ),
+  );
   const settings = yield* ServerSettingsService;
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const paused = (orgId: KinOrgId) =>
@@ -276,18 +390,16 @@ const make = Effect.gen(function* () {
     readonly agentId: KinAgentId;
     readonly wakeupId: KinWakeupId;
   }) => aborted(row).pipe(provideSql);
-  const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
+  const leadThreadIds = Effect.fn("WakeupRunner.leadThreadIds")(function* (orgId: KinOrgId) {
     const rows = yield* sql<{
       threadId: string;
     }>`SELECT thread_id AS "threadId" FROM kin_leads WHERE org_id = ${orgId} AND thread_id IS NOT NULL ORDER BY thread_id`;
-    const leadThreads = new Set(rows.map((row) => row.threadId));
-    return yield* threads.streamDomainEvents.pipe(
-      Stream.filter(
-        (event) =>
-          leadThreads.has(event.threadId) &&
-          (event.type === "run.updated" ||
-            (event.type === "provider-turn.updated" && event.payload.completedAt !== null)),
-      ),
+    return new Set(rows.map((row) => row.threadId));
+  });
+  const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
+    const leadThreads = yield* leadThreadIds(orgId);
+    return yield* Stream.fromPubSub(runActivity).pipe(
+      Stream.filter((threadId) => leadThreads.has(threadId)),
       Stream.runHead,
     );
   });
@@ -335,9 +447,8 @@ const make = Effect.gen(function* () {
   });
   const capture = Effect.fn("WakeupRunner.capture")(function* (row: typeof RunningRow.Type) {
     if (row.threadId === null || row.runId === null) return;
-    const projection = yield* threads.getThreadProjection(row.threadId);
     const runIds = new Set([row.runId]);
-    for (const run of projection.runs.toSorted((a, b) => a.ordinal - b.ordinal)) {
+    for (const run of yield* runsFrom(threads, row.threadId, row.runId)) {
       if (
         KinIdentity.isAdoptedRunMessage(row.wakeupId, run.userMessageId) ||
         (run.restartContinuationOfRunId !== undefined &&
@@ -347,15 +458,14 @@ const make = Effect.gen(function* () {
       )
         runIds.add(run.id);
     }
-    const attempts = new Set(
-      projection.attempts
-        .filter((attempt) => runIds.has(attempt.runId))
-        .map((attempt) => attempt.id),
-    );
-    const turns = projection.providerTurns.filter(
-      (turn) => turn.runAttemptId !== null && attempts.has(turn.runAttemptId),
-    );
-    const usage = turns.map((turn) => ({
+    // Every attempt of those runs, retries and steering restarts included, by T3's run index.
+    const attempts = yield* sql<{ attemptId: string }>`SELECT attempt_id AS "attemptId"
+      FROM orchestration_v2_projection_run_attempts
+      WHERE thread_id = ${row.threadId} AND run_id IN ${sql.in([...runIds])} ORDER BY attempt_id`;
+    const { providerTurns } = yield* threads.getThreadRecords(row.threadId, ["providerTurns"], {
+      providerTurnAttemptIds: attempts.map((attempt) => RunAttemptId.make(attempt.attemptId)),
+    });
+    const usage = providerTurns.map((turn) => ({
       providerTurnId: turn.id,
       ...(turn.turnTokenUsage === undefined ? {} : { turnTokenUsage: turn.turnTokenUsage }),
       ...(turn.tokenUsage === undefined ? {} : { tokenUsage: turn.tokenUsage }),
@@ -372,9 +482,11 @@ const make = Effect.gen(function* () {
       // Recovery resumes the count from the thread, so steer ids and the deadline stay stable.
       const steering = {
         open: true,
-        steers: (yield* threads.getThreadProjection(threadId)).messages.filter((message) =>
-          isSteerRun(wakeupId, { userMessageId: message.id }),
-        ).length,
+        steers: (yield* threads.getThreadRecords(threadId, ["messages"], {
+          messageIds: Array.from({ length: MAX_STEERS }, (_, index) =>
+            MessageId.make(KinIdentity.steerMessageId(wakeupId, index + 1)),
+          ),
+        })).messages.length,
         lock: yield* Semaphore.make(1),
       };
       const deadline = () => deadlineAt(row.startedAt, steering.steers);
@@ -448,9 +560,10 @@ const make = Effect.gen(function* () {
         yield* deliver.pipe(
           Effect.catch((error) =>
             Effect.gen(function* () {
-              const landed = (yield* threads.getThreadProjection(threadId)).messages.some(
-                (message) => message.id === messageId,
-              );
+              const landed =
+                (yield* threads.getThreadRecords(threadId, ["messages"], {
+                  messageIds: [messageId],
+                })).messages.length > 0;
               if (landed) return;
               steering.steers--;
               yield* Effect.logWarning("Kin steer failed; its messages wait", {
@@ -495,12 +608,15 @@ const make = Effect.gen(function* () {
         // Under the steer lock, so no steer lands once the wake-up stops waiting.
         const next = yield* steering.lock.withPermits(1)(
           Effect.gen(function* () {
-            const projection = yield* threads.getThreadProjection(threadId);
-            const after = projection.runs.find((run) => run.id === current)?.ordinal ?? 0;
+            const after =
+              (yield* threads.getThreadRecords(threadId, ["runs"], { runIds: [current] })).runs[0]
+                ?.ordinal ?? 0;
             const adopted =
               result.timedOut || (yield* isAborted(row))
                 ? undefined
-                : projection.runs
+                : (yield* threads.getThreadRecords(threadId, ["runs"], {
+                    runStatuses: ["queued", ...ThreadManagementService.ACTIVE_RUN_STATUSES],
+                  })).runs
                     .filter(
                       (run) =>
                         run.ordinal > after &&
@@ -520,7 +636,10 @@ const make = Effect.gen(function* () {
       yield* Fiber.interrupt(steerer);
       // Its steers still queued would start with no wake-up to own them, or hold the lead's
       // queue for good; they go, and their messages return with the rest of its events.
-      const final = yield* threads.getThreadProjection(threadId);
+      const final = yield* turnRecords(threads, threadId, runId, {
+        turnItemTypes: ["error"],
+        turnItemStatuses: ["failed"],
+      });
       for (const leftover of final.runs) {
         if (leftover.status !== "queued" || !isSteerRun(wakeupId, leftover)) continue;
         yield* threads
@@ -662,14 +781,35 @@ const make = Effect.gen(function* () {
     row: typeof RunningRow.Type,
     interrupted = false,
   ) {
-    if (Option.isSome(writer))
-      yield* writer.value.discard(row.orgId, row.wakeupId).pipe(Effect.ignore);
+    // Only a stopping server interrupts a wake-up: what it staged lands then, as the agent may
+    // already have said it saved it, and its events may be done. Otherwise it is dropped.
+    if (Option.isSome(writer)) {
+      const memory = writer.value;
+      const landed =
+        interrupted &&
+        (yield* memory.staged(row.orgId, row.wakeupId).pipe(Effect.orElseSucceed(() => false)))
+          ? yield* memory.commitWakeup(row.orgId, row.wakeupId, "completed").pipe(
+              Effect.tap(
+                ({ commit }) =>
+                  sql`UPDATE kin_wakeups SET memory_commit = ${commit} WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`,
+              ),
+              Effect.as(true),
+              Effect.catchCause((cause) =>
+                Effect.logError("Kin couldn't land a stopped wake-up's memory", {
+                  wakeupId: row.wakeupId,
+                  cause,
+                }).pipe(Effect.as(false)),
+              ),
+            )
+          : false;
+      if (!landed) yield* memory.discard(row.orgId, row.wakeupId).pipe(Effect.ignore);
+    }
     yield* endReply(row);
     const [running] =
       yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND status = 'running'`;
     if (running === undefined) return;
     if (row.threadId !== null) {
-      const projection = yield* threads.getThreadProjection(row.threadId).pipe(Effect.option);
+      const projection = yield* threads.getThreadRecords(row.threadId, []).pipe(Effect.option);
       if (Option.isSome(projection))
         yield* threads
           .interruptThread({
@@ -724,16 +864,10 @@ const make = Effect.gen(function* () {
       if (record.retiredAt !== null) return yield* retire(record);
       if (yield* paused(orgId)) return;
       if (record.threadId !== null) {
-        const unfinished = yield* sql`SELECT 1 FROM orchestration_v2_projection_provider_turns
-          WHERE thread_id = ${record.threadId} AND completed_at IS NULL LIMIT 1`;
-        const busy = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
-          WHERE thread_id = ${record.threadId}
-            AND status IN ${sql.in(["queued", ...ThreadManagementService.ACTIVE_RUN_STATUSES])} LIMIT 1`;
-        // A run T3 started for a finished task is the one thing a wake-up claims into: it takes it.
-        const notice = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
-          AND agent_id = ${agentId} AND tag = 'task.finished' AND state = 'queued'
-          AND json_extract(json, '$.threadId') = ${record.threadId} LIMIT 1`;
-        if ((unfinished.length > 0 || busy.length > 0) && notice.length === 0) {
+        const busy = yield* sql`SELECT 1 FROM kin_leads l
+          WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}
+            AND ${KinEventQueue.leadThreadBusy(sql, "l")}`;
+        if (busy.length > 0) {
           yield* Effect.raceFirst(yield* queue.changes(orgId), threadActivity(orgId)).pipe(
             Effect.timeoutOrElse({ duration: 60_000, orElse: () => Effect.void }),
           );
@@ -805,7 +939,7 @@ const make = Effect.gen(function* () {
             for (const event of events) {
               if (event._tag !== "task.finished" || row.runId !== null) continue;
               const state = noticeState(
-                yield* threads.getThreadRecords(event.threadId, ["messages", "runs"]),
+                yield* noticeRecords(threads, event.threadId, event.messageId),
                 event.messageId,
               );
               if (state._tag !== "live") continue;
@@ -875,14 +1009,13 @@ const make = Effect.gen(function* () {
             // A finished-task notice T3 steered into a turn already going was answered there.
             events = yield* Effect.filter(events, (event) =>
               event._tag === "task.finished"
-                ? threads
-                    .getThreadRecords(event.threadId, ["messages", "runs"])
-                    .pipe(
-                      Effect.map(
-                        (records) => noticeState(records, event.messageId)._tag !== "seen",
-                      ),
-                    )
+                ? noticeRecords(threads, event.threadId, event.messageId).pipe(
+                    Effect.map((records) => noticeState(records, event.messageId)._tag !== "seen"),
+                  )
                 : Effect.succeed(true),
+            );
+            events = yield* Effect.filter(events, (event) =>
+              goneBeforeTurn(orgId, event).pipe(Effect.map((gone) => !gone)),
             );
             if (events.length === 0) {
               yield* queue.finish({ orgId, wakeupId, status: "completed" });
@@ -915,13 +1048,8 @@ const make = Effect.gen(function* () {
               ),
             );
             const preparedAt = yield* Clock.currentTimeMillis;
+            // The owner check is retired (K145) and posts no card: a fire that lands is dropped.
             if (Option.isSome(ownerCheck)) {
-              for (const event of events) {
-                if (event._tag === "routine" && event.routine === "owner_check")
-                  // Keep cards dark until the verified action dispatcher and clients land.
-                  if (ownerCheckDispatcherReady)
-                    yield* ownerCheck.value.post(orgId, event.eventId, event.ownerCheckItems ?? []);
-              }
               events = events.filter(
                 (event) => event._tag !== "routine" || event.routine !== "owner_check",
               );
@@ -1031,6 +1159,17 @@ const make = Effect.gen(function* () {
                 return;
               }
             }
+            // Work the owner side started for a teammate's relayed request goes back to them.
+            const workFor = new Map<string, ReadonlyArray<string>>();
+            for (const [eventId, people] of yield* finishedFor(
+              orgId,
+              agentId,
+              events.flatMap((event) => (event._tag === "task.finished" ? [event] : [])),
+            ))
+              workFor.set(
+                eventId,
+                people.map((one) => one.name),
+              );
             const built = yield* prompt.build({
               orgId,
               agentId,
@@ -1039,6 +1178,7 @@ const make = Effect.gen(function* () {
               memoryHead: pinned.head,
               budgetContext,
               routineFacts,
+              workFor,
               ...(lane === undefined ? {} : { lane }),
             });
             // What the people in the chat attached to the messages this turn answers, as text and
@@ -1072,7 +1212,7 @@ const make = Effect.gen(function* () {
             let existingThreadId = !alone && chatId === null ? null : (live?.threadId ?? null);
             if (existingThreadId !== null) {
               const existing = yield* threads
-                .getThreadProjection(existingThreadId)
+                .getThreadRecords(existingThreadId, [])
                 .pipe(Effect.option);
               // A thread keeps its cwd: one from another project ends so this launches its own.
               if (Option.isSome(existing) && existing.value.thread.projectId !== project.id) {
@@ -1146,14 +1286,13 @@ const make = Effect.gen(function* () {
             const taken =
               existingThreadId === null || finished.length === 0
                 ? undefined
-                : yield* threads.getThreadRecords(threadId, ["messages", "runs"]).pipe(
-                    Effect.map((records) =>
-                      finished
-                        .map((event) => noticeState(records, event.messageId))
-                        .flatMap((state) => (state._tag === "live" ? [state.run] : []))
-                        .at(0),
+                : (yield* Effect.forEach(finished, (event) =>
+                    noticeRecords(threads, threadId, event.messageId).pipe(
+                      Effect.map((records) => noticeState(records, event.messageId)),
                     ),
-                  );
+                  ))
+                    .flatMap((state) => (state._tag === "live" ? [state.run] : []))
+                    .at(0);
             const commandId = CommandId.make(`kin-wakeup:${wakeupId}`);
             const messageId = MessageId.make(KinIdentity.wakeupMessageId(wakeupId));
             const sent =
@@ -1189,8 +1328,12 @@ const make = Effect.gen(function* () {
             const run = taken ?? sent?.runs.findLast((run) => run.userMessageId === messageId);
             if (run === undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: "missing_run" });
-            // Anything else this wake-up answers goes into that run as its first steer.
-            if (taken !== undefined && events.some((event) => event._tag !== "task.finished")) {
+            // Anything else this wake-up answers goes into that run as its first steer, and so
+            // does who the finished work was for.
+            if (
+              taken !== undefined &&
+              (workFor.size > 0 || events.some((event) => event._tag !== "task.finished"))
+            ) {
               if (Option.isSome(bridge))
                 yield* bridge.value.steered(orgId, wakeupId, {
                   n: 1,
@@ -1265,7 +1408,7 @@ const make = Effect.gen(function* () {
       if (Option.isSome(bridge)) yield* bridge.value.abort(orgId, wakeupId);
       // Not launched yet: the runner finds the mark before or right after its launch.
       if (row.threadId === null) return;
-      const projection = yield* threads.getThreadProjection(row.threadId);
+      const projection = yield* threads.getThreadRecords(row.threadId, []);
       // The stop switch's interrupt, without settling its events: `wait` sees the mark.
       yield* threads.interruptThread({
         projectId: projection.thread.projectId,
@@ -1309,14 +1452,21 @@ const make = Effect.gen(function* () {
               row.threadId === null
                 ? []
                 : yield* sql`SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id = ${row.threadId}`;
+            const wakeMessageId = MessageId.make(KinIdentity.wakeupMessageId(row.wakeupId));
+            const runId =
+              row.threadId === null || existing.length === 0 || row.runId !== null
+                ? row.runId
+                : ((yield* threads.getThreadRecords(row.threadId, ["messages"], {
+                    messageIds: [wakeMessageId],
+                  })).messages[0]?.runId ?? null);
             const projection =
               row.threadId === null || existing.length === 0
                 ? undefined
-                : yield* threads.getThreadProjection(row.threadId);
+                : yield* threads.getThreadRecords(row.threadId, ["runs"], {
+                    runIds: runId === null ? [] : [runId],
+                  });
             const run = projection?.runs.find((run) =>
-              row.runId === null
-                ? run.userMessageId === KinIdentity.wakeupMessageId(row.wakeupId)
-                : run.id === row.runId,
+              row.runId === null ? run.userMessageId === wakeMessageId : run.id === row.runId,
             );
             if (projection === undefined || run === undefined) {
               const receipts =
@@ -1456,12 +1606,22 @@ const make = Effect.gen(function* () {
           freed = Deferred.makeUnsafe<void>();
           return Deferred.succeed(signal, undefined);
         }).pipe(Effect.asVoid);
-        yield* Effect.gen(function* () {
+        // One reader of the runner's run activity per company, for its loop's life: activity on a
+        // lead's thread ends a pass's wait, as `freed` does.
+        let stirred = Deferred.makeUnsafe<void>();
+        let leadThreads = new Set<string>();
+        // A pass after a run ended, or after a quiet wait, recovers wake-ups left running.
+        let recoverNext = true;
+        const pass = Effect.gen(function* () {
           const changed = yield* queue.changes(orgId);
           // Taken before any read, so a run that finishes mid-pass still ends this pass's wait.
           const finished = Deferred.await(freed);
+          stirred = Deferred.makeUnsafe<void>();
+          const stir = Deferred.await(stirred);
+          leadThreads = yield* leadThreadIds(orgId);
           const active = activeOf(orgId);
-          yield* recoverOrg(orgId, active, wake, true);
+          if (recoverNext) yield* recoverOrg(orgId, active, wake, true);
+          recoverNext = false;
           const rows = yield* sql<{
             agentId: string;
           }>`SELECT l.agent_id AS "agentId" FROM kin_leads l
@@ -1489,19 +1649,33 @@ const make = Effect.gen(function* () {
               Effect.forkScoped,
             );
           }
-          yield* Effect.raceAllFirst([changed, finished, threadActivity(orgId)]).pipe(
+          recoverNext = yield* Effect.raceAllFirst([
+            changed.pipe(Effect.as(false)),
+            finished.pipe(Effect.as(true)),
+            stir.pipe(Effect.as(false)),
+          ]).pipe(
             Effect.timeoutOrElse({
               duration: orgLoopWaitMs(ready, active, now),
-              orElse: () => Effect.void,
+              orElse: () => Effect.succeed(true),
             }),
           );
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logError("Kin runner iteration failed", { orgId, cause }).pipe(
-              Effect.andThen(Effect.sleep("1 second")),
+        });
+        yield* Effect.gen(function* () {
+          yield* Stream.fromPubSub(runActivity).pipe(
+            Stream.runForEach((threadId) =>
+              leadThreads.has(threadId) ? Deferred.succeed(stirred, undefined) : Effect.void,
             ),
-          ),
-          Effect.forever,
+            Effect.forkChild,
+          );
+          return yield* pass.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError("Kin runner iteration failed", { orgId, cause }).pipe(
+                Effect.andThen(Effect.sleep("1 second")),
+              ),
+            ),
+            Effect.forever,
+          );
+        }).pipe(
           Effect.catchCause((cause) => Effect.logError("Kin org loop failed", { orgId, cause })),
           Effect.ensuring(Effect.sync(() => organizations.delete(orgId))),
           Effect.forkScoped,

@@ -1,3 +1,4 @@
+import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -72,7 +73,6 @@ export function KinLeadSheet(props: {
   readonly avatar: KinAvatarView;
   readonly environmentId: EnvironmentId;
   readonly chatId: KinChatId;
-  readonly personId: string | null;
   readonly muted: boolean;
   /** The viewer is the one person in this chat, so it is theirs to clear. */
   readonly ownsChat: boolean;
@@ -100,7 +100,7 @@ export function KinLeadSheet(props: {
     const result = await mute({ environmentId, input: { chatId: props.chatId, muted } });
     setMuteProblem(
       AsyncResult.isFailure(result)
-        ? kinFailureText(squashAtomCommandFailure(result), "Couldn't change that.")
+        ? kinFailureText(squashAtomCommandFailure(result), KIN_AGENT_PAGE.changeFailed)
         : null,
     );
     setMuteState(AsyncResult.isFailure(result) ? "failed" : "idle");
@@ -150,7 +150,6 @@ export function KinLeadSheet(props: {
               environmentId={environmentId}
               orgId={about.lead.orgId}
               agentId={about.lead.agentId}
-              personId={props.personId}
               activeAgents={props.activeAgents}
               onClose={() => props.onOpenChange(false)}
               onOpenSettings={(section) => {

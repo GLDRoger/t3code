@@ -4,7 +4,8 @@ import {
   kinWorkMove,
   kinWorkMoveOrder,
   type KinChoiceOption,
-  type KinOpenRead,
+  type KinPulseFact,
+  type KinPulseScreenRead,
   type KinRecord,
   type KinWorkMoveCard,
   type KinWorkMoveCounts,
@@ -13,6 +14,7 @@ import {
   type KinWorkSummary,
 } from "@t3tools/contracts";
 
+import { KIN_DEAL_SENSES, kinAttention, type KinAttentionRow } from "./kinAttention.ts";
 import { kinMayHaveGoneLine } from "./kinChoicePresentation.ts";
 import { kinLateWords } from "./kinTaskRecord.ts";
 import {
@@ -78,14 +80,14 @@ export const kinTaskGroupedChip = (groupBy: KinTaskGroupBy | undefined): string 
 };
 
 /**
- * The Needs you number, read alike by its heading and the dock's Tasks badge: the host's open list
- * where it streams one, else the Tasks read's own count. Null until either has arrived.
+ * The Needs you number, read alike by its heading and the dock's Tasks badge: the Tasks read's own
+ * count with the deal facts beside it (`kinTasksDealFactsOf`). Null until the count has arrived.
  */
 export const kinNeedsYouCount = (input: {
-  readonly open: KinOpenRead | null;
-  readonly counts: KinWorkMoveCounts | null;
+  readonly counts: Pick<KinWorkMoveCounts, "needsYou"> | null;
+  readonly dealFacts?: number;
 }): number | null =>
-  input.open !== null ? input.open.counts.needsYou : (input.counts?.needsYou ?? null);
+  input.counts === null ? null : input.counts.needsYou + (input.dealFacts ?? 0);
 
 /**
  * A row's line after who has it: one coloured word first when there is one (late in red, due
@@ -240,6 +242,14 @@ export type KinTasksItem<R extends KinRecord> =
       readonly project: { readonly key: string; readonly title: string } | null;
     }
   | { readonly type: "clear"; readonly key: string }
+  /** A deal or prospect that stopped moving, with the client page's answers to it. */
+  | {
+      readonly type: "fact";
+      readonly key: string;
+      readonly row: KinAttentionRow;
+      readonly first: boolean;
+      readonly last: boolean;
+    }
   | {
       readonly type: "task";
       readonly key: string;
@@ -322,6 +332,8 @@ function pushTasks<R extends KinRecord>(
   items: Array<KinTasksItem<R>>,
   rows: ReadonlyArray<{ readonly record: R; readonly move: KinWorkRowMove | null }>,
   inProject: boolean,
+  /** Rows already lead this group's card. */
+  after = false,
 ) {
   rows.forEach(({ record, move }, index) =>
     items.push({
@@ -330,10 +342,49 @@ function pushTasks<R extends KinRecord>(
       record,
       move,
       inProject,
-      first: index === 0,
+      first: index === 0 && !after,
       last: index === rows.length - 1,
     }),
   );
+}
+
+/**
+ * The open deal and prospect facts that are the reader's to answer: their own, and for the owner
+ * and a co-owner also those that fall to the owner. From the pulse's read, as Clients reads them.
+ * A fact that clears leaves it, so its row goes with it.
+ */
+export function kinTasksDealFactsOf(
+  pulse: KinPulseScreenRead | null | undefined,
+  input: { readonly ownerLevel: boolean; readonly me: string | null },
+): ReadonlyArray<KinPulseFact> {
+  const all = (pulse?.facts ?? []).filter((fact) => fact.handled === null);
+  return all.filter(
+    (fact) =>
+      KIN_DEAL_SENSES.has(fact.sense) &&
+      ((fact.actor._tag === "person" && fact.actor.personId === input.me) ||
+        (fact.actor._tag === "owner" && input.ownerLevel)),
+  );
+}
+
+/** `kinTasksDealFactsOf` as rows, with the client page's answers. */
+export function kinTasksDealFacts(input: {
+  readonly ownerLevel: boolean;
+  readonly names: KinWorkNames;
+  readonly now: Date;
+  readonly pulse?: KinPulseScreenRead | null | undefined;
+}): ReadonlyArray<KinAttentionRow> {
+  const { names, ownerLevel } = input;
+  const facts = kinTasksDealFactsOf(input.pulse, { ownerLevel, me: names.me });
+  const asOf = input.pulse?.asOf;
+  if (facts.length === 0 || asOf === undefined) return [];
+  return kinAttention(
+    { asOf, total: facts.length, facts },
+    {
+      scope: { type: "all" },
+      names: new Map([...names.agents, ...names.people]),
+      now: input.now,
+    },
+  ).open;
 }
 
 /**
@@ -350,8 +401,11 @@ export function kinTasksByMove<R extends KinRecord>(input: {
   readonly needsYou: number | null;
   readonly ownerLevel: boolean;
   readonly names: KinWorkNames;
+  /** Deal and prospect facts (`kinTasksDealFacts`), first under Needs you. */
+  readonly facts?: ReadonlyArray<KinAttentionRow>;
 }): ReadonlyArray<KinTasksItem<R>> {
   const { records, moves, counts, names, ownerLevel } = input;
+  const facts = input.facts ?? [];
   const fromHost = moves.size > 0 || counts !== null;
   const placed = new Map<KinWorkMoveGroup, Array<{ record: R; move: KinWorkRowMove | null }>>(
     KIN_WORK_MOVE_GROUPS.map((group) => [group, []]),
@@ -377,8 +431,22 @@ export function kinTasksByMove<R extends KinRecord>(input: {
       aside: null,
       project: null,
     });
-    if (group === "needsYou" && rows.length === 0) {
-      if ((counts?.needsYou ?? 0) === 0) items.push({ type: "clear", key: "clear" });
+    if (group === "needsYou") {
+      facts.forEach((row, index) =>
+        items.push({
+          type: "fact",
+          key: row.factKey,
+          row,
+          first: index === 0,
+          last: index === facts.length - 1 && rows.length === 0,
+        }),
+      );
+      if (rows.length === 0) {
+        if (facts.length === 0 && (counts?.needsYou ?? 0) === 0)
+          items.push({ type: "clear", key: "clear" });
+        continue;
+      }
+      pushTasks(items, rows, false, facts.length > 0);
       continue;
     }
     pushTasks(items, rows, false);

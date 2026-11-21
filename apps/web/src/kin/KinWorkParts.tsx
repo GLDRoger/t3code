@@ -388,7 +388,7 @@ export function KinFilter(props: {
           variant="secondary"
           aria-label={`${props.grouped.label}. Clear grouping`}
           onClick={props.grouped.onClear}
-          className="min-w-0"
+          className="min-w-0 shrink"
         >
           <span className="truncate">{props.grouped.label}</span>
           <XIcon aria-hidden />
@@ -400,7 +400,7 @@ export function KinFilter(props: {
           variant="secondary"
           aria-label={`Filtered to ${props.chip}. Clear filter`}
           onClick={props.onClear}
-          className="min-w-0"
+          className="min-w-0 shrink"
         >
           <span className="truncate">{props.chip}</span>
           <XIcon aria-hidden />

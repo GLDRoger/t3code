@@ -29,6 +29,7 @@ import { ListActionRow } from "../../../components/ui/ListActionRow";
 import { SecretTextInput } from "../../../components/ui/SecretTextInput";
 import { tryCopyTextWithHaptic } from "../../../lib/copyTextWithHaptic";
 import { useAtomCommand } from "../../../state/use-atom-command";
+import { KinLoadFailed } from "../components/KinLoadFailed";
 import { kinClient } from "../state/kinClient";
 import { kinSignInInApp, kinSignInReturn, useKinConnectionActions } from "./kinConnectionSignIn";
 import {
@@ -59,7 +60,8 @@ function AddForm(props: {
   const navigation = useNavigation();
   const { environmentId, orgId } = props.target;
   const listAtom = kinClient.connections({ environmentId, input: { orgId } });
-  const view = Option.getOrNull(AsyncResult.value(useAtomValue(listAtom)));
+  const list = useAtomValue(listAtom);
+  const view = Option.getOrNull(AsyncResult.value(list));
   const reload = useAtomRefresh(listAtom);
   const actions = useKinConnectionActions(environmentId, orgId, reload);
   const services = kinAddableServices(view?.services ?? []);
@@ -135,7 +137,11 @@ function AddForm(props: {
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
           {view === null ? (
-            <AppActivityIndicator />
+            AsyncResult.isFailure(list) ? (
+              <KinLoadFailed title={COPY.loadFailed} cause={list} onRetry={reload} />
+            ) : (
+              <AppActivityIndicator />
+            )
           ) : (
             <>
               <Text textRole="body" className="px-2 text-foreground-muted">
@@ -365,9 +371,10 @@ function NoteForm(props: {
   const navigation = useNavigation();
   const { environmentId, orgId } = props.target;
   const ref = { orgId, connectionId: props.connectionId };
-  const detail = Option.getOrNull(
-    AsyncResult.value(useAtomValue(kinClient.connection({ environmentId, input: ref }))),
-  );
+  const detailAtom = kinClient.connection({ environmentId, input: ref });
+  const read = useAtomValue(detailAtom);
+  const reread = useAtomRefresh(detailAtom);
+  const detail = Option.getOrNull(AsyncResult.value(read));
   const update = useAtomCommand(kinClient.connectionUpdate, { reportFailure: false });
   const [value, setValue] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -375,7 +382,8 @@ function NoteForm(props: {
   const shown = value ?? detail?.connection.note ?? "";
 
   const save = async () => {
-    if (busy) return;
+    // Until the note is read, saving would put an empty field over it.
+    if (busy || detail === null) return;
     setBusy(true);
     setProblem(null);
     const note = shown.trim();
@@ -397,7 +405,7 @@ function NoteForm(props: {
           label: COPY.save,
           onPress: () => void save(),
           loading: busy,
-          disabled: busy || shown.trim().length > 200,
+          disabled: busy || detail === null || shown.trim().length > 200,
         }}
       />
       <ScreenContent surface="screen">
@@ -408,21 +416,29 @@ function NoteForm(props: {
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
           {problem === null ? null : <ErrorBanner message={problem} />}
-          <Field label={COPY.noteLabel} hint={COPY.noteHint}>
-            <TextInput
-              accessibilityLabel={COPY.noteLabel}
-              value={shown}
-              editable={!busy}
-              autoFocus
-              maxLength={200}
-              returnKeyType="done"
-              placeholder={COPY.notePlaceholder}
-              placeholderTextColorClassName="accent-placeholder"
-              onChangeText={setValue}
-              onSubmitEditing={() => void save()}
-              className="min-h-8 font-sans text-base text-foreground"
-            />
-          </Field>
+          {detail === null ? (
+            AsyncResult.isFailure(read) ? (
+              <KinLoadFailed title="Couldn't load this connection" cause={read} onRetry={reread} />
+            ) : (
+              <AppActivityIndicator />
+            )
+          ) : (
+            <Field label={COPY.noteLabel} hint={COPY.noteHint}>
+              <TextInput
+                accessibilityLabel={COPY.noteLabel}
+                value={shown}
+                editable={!busy}
+                autoFocus
+                maxLength={200}
+                returnKeyType="done"
+                placeholder={COPY.notePlaceholder}
+                placeholderTextColorClassName="accent-placeholder"
+                onChangeText={setValue}
+                onSubmitEditing={() => void save()}
+                className="min-h-8 font-sans text-base text-foreground"
+              />
+            </Field>
+          )}
         </ScreenScrollView>
       </ScreenContent>
     </View>

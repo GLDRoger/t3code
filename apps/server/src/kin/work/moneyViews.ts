@@ -42,13 +42,13 @@ import { LISTS, parseFields } from "./lists.ts";
 import { findBankList } from "./statements/bankList.ts";
 import { allLists, isBuiltIn, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * Read views over every list: the dates view and the Money summary, computed from stored
  * integer amounts by code. Whole for the owner; for anyone else, of what `personSees` gives them.
  */
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const DATES_CAP = 200;
 
 type DateHit = {

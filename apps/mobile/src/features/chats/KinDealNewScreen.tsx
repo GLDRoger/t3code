@@ -1,5 +1,5 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { KIN_DEALS } from "@t3tools/client-runtime/kin/kinDeals";
+import { KIN_DEALS, kinDealStepHint } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinParseMoney } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_WORK_NEW_COPY,
@@ -94,8 +94,8 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
   const [problem, setProblem] = useState<string | null>(null);
   const money = value.trim() === "" ? null : kinParseMoney(value, home);
   const moneyBad = value.trim() !== "" && money === null;
-  const canSave =
-    party !== null && title.trim() !== "" && !moneyBad && (noneYet || step.trim() !== "");
+  const stepHint = kinDealStepHint(step, noneYet);
+  const canSave = party !== null && title.trim() !== "" && !moneyBad && stepHint === undefined;
   const people = [...names.people.entries()].filter(([id]) => id !== names.me);
 
   const save = async () => {
@@ -172,7 +172,7 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
         <KinDayField
           label={KIN_DEALS.expected}
           day={expected}
-          names={names}
+          zone={names.zone}
           now={now}
           disabled={saving}
           onPick={setExpected}
@@ -222,13 +222,14 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
           value={step}
           maxLength={280}
           disabled={saving || noneYet}
+          hint={stepHint}
           onChangeText={setStep}
         />
         {noneYet ? null : (
           <KinDayField
             label={KIN_WORK_NEW_COPY.dueLabel}
             day={stepDay}
-            names={names}
+            zone={names.zone}
             now={now}
             disabled={saving}
             onPick={setStepDay}

@@ -29,8 +29,8 @@ import {
   kinLinked,
   kinLinkedRest,
   type KinLinkedGroupName,
-  type KinLinkedItem,
 } from "@t3tools/client-runtime/kin/kinLinked";
+import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import {
   KIN_TASK_RECORD,
   kinBriefBy,
@@ -582,7 +582,6 @@ function KinWorkItem(
                 orgId={orgId}
                 record={{ key: view.key, title: view.title }}
                 disabled={saving}
-                onOpen={props.onClose}
               />
               {!more ? null : (
                 <Menu>
@@ -683,7 +682,9 @@ function KinWorkItem(
                 </p>
               )}
               {moved?.title == null ? null : (
-                <p className="text-xs text-muted-foreground">It now says: {moved.title}</p>
+                <p className="text-xs text-muted-foreground">
+                  {KIN_WORK_COPY.nowSays(moved.title)}
+                </p>
               )}
             </div>
             <div className="flex flex-col gap-1.5">
@@ -739,7 +740,6 @@ function KinWorkItem(
                         key={act.id}
                         size="sm"
                         variant={variant}
-                        onClick={props.onClose}
                         render={
                           <Link
                             to="/kin/$environmentId/$orgId/$chatId"
@@ -789,7 +789,12 @@ function KinWorkItem(
                       variant={variant}
                       disabled={saving}
                       aria-busy={saving && index === 0}
-                      onClick={() => stepAct(act.id)}
+                      // A double click's second click would land on Reopen once Mark done lands.
+                      onClick={(event) =>
+                        event.detail > 1 && (act.id === "done" || act.id === "reopen")
+                          ? undefined
+                          : stepAct(act.id)
+                      }
                     >
                       {act.id === "keep" || act.id === "done" ? <CheckIcon /> : null}
                       {act.id === "reopen" ? <RotateCcwIcon /> : null}
@@ -858,7 +863,6 @@ function KinWorkItem(
                   orgId={orgId}
                   agentId={view.owner.principal.agentId}
                   name={view.owner.name}
-                  onOpen={props.onClose}
                 />
               </dd>
             ) : null}
@@ -1020,7 +1024,7 @@ function KinWorkItem(
                   size="xs"
                   variant="ghost"
                   disabled={saving}
-                  aria-label="Edit the brief"
+                  aria-label={KIN_TASK_RECORD.editBrief}
                   onClick={props.onStartEdit}
                 >
                   <PencilIcon />
@@ -1107,7 +1111,6 @@ export function KinWorkLinks(
     readonly itemKey?: KinRecordKey;
     readonly addLink?: boolean;
     readonly onOpenKey: (key: KinRecordKey) => void;
-    readonly onClose: () => void;
   },
 ) {
   const navigate = useNavigate();
@@ -1119,10 +1122,10 @@ export function KinWorkLinks(
       // Both panels show the entry's client, project and milestone in their rows already.
       parentsShown
       // A task or list entry opens on this panel; a doc, client or project has its own page.
-      onOpen={(item) =>
-        item.open._tag === "record" && (item.open.kind === "task" || item.open.kind === "entry")
-          ? props.onOpenKey(item.open.key)
-          : void openDestination(navigate, props, item.open)
+      onOpen={(to) =>
+        to._tag === "record" && (to.kind === "task" || to.kind === "entry")
+          ? props.onOpenKey(to.key)
+          : void openDestination(navigate, props, to)
       }
     >
       {rest.length === 0 && props.addLink !== true ? null : (
@@ -1136,7 +1139,6 @@ export function KinWorkLinks(
                     environmentId={props.environmentId}
                     orgId={props.orgId}
                     {...(props.itemKey === undefined ? {} : { itemKey: props.itemKey })}
-                    onOpen={props.onClose}
                     onOpenKey={props.onOpenKey}
                   />
                 </li>
@@ -1161,7 +1163,7 @@ export function KinLinkedGroups(props: {
   readonly item: Parameters<typeof kinLinked>[0];
   readonly title: string;
   readonly parentsShown: boolean;
-  readonly onOpen: (item: KinLinkedItem) => void;
+  readonly onOpen: (to: KinNotificationDestination) => void;
   readonly children?: React.ReactNode;
 }) {
   const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
@@ -1174,22 +1176,34 @@ export function KinLinkedGroups(props: {
         <div key={group.group} className="flex flex-col">
           <h4 className="px-1 text-xs text-muted-foreground">{KIN_LINKED.group[group.group]}</h4>
           <ul className="flex flex-col">
-            {group.items.map((item) => (
-              <li key={item.key}>
-                <button
-                  type="button"
-                  onClick={() => props.onOpen(item)}
-                  className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
-                >
+            {group.items.map((item) => {
+              const { open } = item;
+              const content = (
+                <>
                   {item.kind === "message" ? null : (
                     <span className="shrink-0 text-xs text-muted-foreground">{item.name}</span>
                   )}
                   <span className="min-w-0 flex-1 truncate text-foreground">
                     {item.title ?? KIN_LINKED.message}
                   </span>
-                </button>
-              </li>
-            ))}
+                </>
+              );
+              return (
+                <li key={item.key}>
+                  {open === null ? (
+                    <div className={LINK_ROW}>{content}</div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => props.onOpen(open)}
+                      className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
+                    >
+                      {content}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
           </ul>
           {group.more === 0 ? null : (
             <div>
@@ -1581,12 +1595,15 @@ export function GiveItems(props: {
   );
 }
 
-/** The owner's chat with the lead that has the task, which is where it reports back. */
+/**
+ * The owner's chat with the lead that has the task, which is where it reports back. This and the
+ * other ways from a task to a chat push over the task without closing it: closing is a history
+ * step back that can land after the push and leave the person in Tasks.
+ */
 function KinWorkLeadChat(
   props: KinWorkTarget & {
     readonly agentId: string;
     readonly name: string;
-    readonly onOpen: () => void;
   },
 ) {
   const { environmentId, orgId } = props;
@@ -1605,7 +1622,6 @@ function KinWorkLeadChat(
     <Button
       size="sm"
       variant="ghost"
-      onClick={props.onOpen}
       render={
         <Link
           to="/kin/$environmentId/$orgId/$chatId"
@@ -1627,7 +1643,6 @@ function KinWorkLink(
   props: KinWorkTarget & {
     readonly link: KinWorkLinkView;
     readonly itemKey?: KinRecordKey;
-    readonly onOpen: () => void;
     readonly onOpenKey: (key: KinRecordKey) => void;
   },
 ) {
@@ -1649,7 +1664,6 @@ function KinWorkLink(
       <Button
         size="xs"
         variant="ghost"
-        onClick={props.onOpen}
         render={<Link to="/$environmentId/$threadId" params={link.thread} />}
       >
         {KIN_WORK_COPY.openThread}
@@ -1662,7 +1676,6 @@ function KinWorkLink(
       <Link
         to="/kin/$environmentId/$orgId/$chatId"
         params={{ environmentId: props.environmentId, orgId: props.orgId, chatId: open.chatId }}
-        onClick={props.onOpen}
         className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
       >
         {content}

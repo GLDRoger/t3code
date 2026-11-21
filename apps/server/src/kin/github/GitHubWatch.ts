@@ -13,6 +13,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ServerConfig } from "../../config.ts";
@@ -24,7 +25,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { githubClosed } from "../work/githubEntries.ts";
-import { agentPostKeys, signed } from "./agentMark.ts";
+import { agentPostLines, signed } from "./agentMark.ts";
 import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
 import {
   decideTriggers,
@@ -36,6 +37,7 @@ import {
 import { checkGuards } from "./branchGuard.ts";
 import { companyRepo, knownRepos, type KnownRepo, repoList, watchRow } from "./githubWatchStore.ts";
 import { gitHubApp } from "./KinGitHubApp.ts";
+import { HOUR_MS, MINUTE_MS } from "../durations.ts";
 
 /**
  * Watches GitHub with the owner's own login: notifications and his own events, both conditional, so
@@ -44,17 +46,21 @@ import { gitHubApp } from "./KinGitHubApp.ts";
  * goes out as its GitHub App where the App is installed (`KinGitHubApp.ts`).
  */
 
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-const DEFAULT_INTERVAL_MS = MINUTE;
-const RETRY_MS = 5 * MINUTE;
-const REPOS_EVERY_MS = 6 * HOUR;
+const DEFAULT_INTERVAL_MS = MINUTE_MS;
+const RETRY_MS = 5 * MINUTE_MS;
+const REPOS_EVERY_MS = 6 * HOUR_MS;
 /** Re-read a little before the last look, so a comment GitHub lists late is still seen. */
-const OVERLAP_MS = 5 * MINUTE;
+const OVERLAP_MS = 5 * MINUTE_MS;
 /** After downtime: older triggers are stored as stale, and one look wakes at most this many. */
-const STALE_MS = 24 * HOUR;
+const STALE_MS = 24 * HOUR_MS;
 /** How long an agent's sent text is known as its own; triggers older than a day are stale anyway. */
-const POSTS_KEPT_MS = 7 * 24 * HOUR;
+const POSTS_KEPT_MS = 7 * 24 * HOUR_MS;
+/**
+ * Handled rows that only stop a re-weigh are kept 30 days: anything they held back is past
+ * `STALE_MS` by then, so a look that meets it again stores it stale and wakes no one.
+ */
+const HANDLED_KEPT_MS = 30 * 24 * HOUR_MS;
+const PRUNE_EVERY_MS = 24 * HOUR_MS;
 export const WAKES_PER_LOOK = 10;
 const THREADS_PER_LOOK = 30;
 /** Replies an agent makes in one issue or PR in an hour before it stops and says so. */
@@ -289,14 +295,71 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
   /** Orgs whose repos this server has read; the first look after a start reads them again. */
   const reposReadSinceStart = new Set<KinOrgId>();
-  /** What agents' shells sent this past week (`ghSign.ts`): their words, signed or not. */
+  /**
+   * What agents' shells sent this past week (`ghSign.ts`): their words, signed or not. The log
+   * is read on from where the last look stopped; once its first line is past the week it moves
+   * to `.1`, and the one before that, older than the week throughout, goes.
+   */
+  const postLog = {
+    keys: new Map<string, number>(),
+    offset: 0,
+    firstAt: undefined as number | undefined,
+    started: false,
+  };
+  const postsLock = yield* Semaphore.make(1);
   const agentPosts = Effect.gen(function* () {
     if (Option.isNone(config) || Option.isNone(fileSystem)) return undefined;
-    const log = yield* fileSystem.value
-      .readFileString(`${config.value.stateDir}/kin/${GH_APP_FOLDER}/${AGENT_POSTS_FILE}`)
-      .pipe(Effect.orElseSucceed(() => ""));
+    const fs = fileSystem.value;
+    const path = `${config.value.stateDir}/kin/${GH_APP_FOLDER}/${AGENT_POSTS_FILE}`;
+    const keep = (text: string) => {
+      for (const [at, key] of agentPostLines(text)) {
+        postLog.firstAt ??= at * 1000;
+        postLog.keys.set(key, Math.max(at * 1000, postLog.keys.get(key) ?? 0));
+      }
+    };
+    // Whole lines from `offset` on; a line a shell is still writing waits for the next look.
+    const readOn = (file: string, offset: number) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const handle = yield* fs.open(file, { flag: "r" });
+          const size = Number((yield* handle.stat).size);
+          const from = size < offset ? 0 : offset;
+          if (size === from) return from;
+          const bytes = Option.getOrElse(
+            yield* handle.readAlloc(size - from, { position: BigInt(from) }),
+            () => new Uint8Array(),
+          );
+          const end = bytes.lastIndexOf(10) + 1;
+          keep(new TextDecoder().decode(bytes.subarray(0, end)));
+          return from + end;
+        }),
+      ).pipe(Effect.orElseSucceed(() => offset));
     const now = yield* Clock.currentTimeMillis;
-    return agentPostKeys(log, Math.floor((now - POSTS_KEPT_MS) / 1000));
+    if (!postLog.started) {
+      postLog.started = true;
+      yield* readOn(`${path}.1`, 0);
+      postLog.firstAt = undefined;
+    }
+    postLog.offset = yield* readOn(path, postLog.offset);
+    if (postLog.firstAt !== undefined && postLog.firstAt < now - POSTS_KEPT_MS) {
+      const moved = yield* fs.rename(path, `${path}.1`).pipe(Effect.result);
+      if (moved._tag === "Success") {
+        // A line a shell added since the read above is in `.1` now.
+        yield* readOn(`${path}.1`, postLog.offset);
+        postLog.offset = 0;
+        postLog.firstAt = undefined;
+      }
+    }
+    for (const [key, at] of postLog.keys) if (at < now - POSTS_KEPT_MS) postLog.keys.delete(key);
+    return new Set(postLog.keys.keys());
+  }).pipe(postsLock.withPermits(1));
+  const pruned = new Map<KinOrgId, number>();
+  /** Drops handled rows that only stop a re-weigh, once a day; what stops a second wake stays. */
+  const prune = Effect.fn("KinGitHubWatch.prune")(function* (orgId: KinOrgId, now: number) {
+    if (now - (pruned.get(orgId) ?? -Infinity) < PRUNE_EVERY_MS) return;
+    pruned.set(orgId, now);
+    yield* sql`DELETE FROM kin_github_handled WHERE org_id = ${orgId} AND at < ${now - HANDLED_KEPT_MS}
+      AND (trigger_key LIKE 'seen:%' OR outcome IN ('stale', 'note'))`;
   });
   const botLogin = Effect.gen(function* () {
     if (Option.isNone(app)) return undefined;
@@ -512,7 +575,7 @@ export const make = Effect.gen(function* () {
         if (already !== undefined) return "seen" as const;
         const [recent] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
           FROM kin_github_handled WHERE org_id = ${orgId} AND repo = ${repo}
-            AND number = ${thread.number} AND outcome = 'woke' AND at > ${now - HOUR}`;
+            AND number = ${thread.number} AND outcome = 'woke' AND at > ${now - HOUR_MS}`;
         // Past the look's cap, it waits for the next look, which reads from the same point.
         if (now - input.happenedAt <= STALE_MS && input.woken >= WAKES_PER_LOOK)
           return "later" as const;
@@ -572,7 +635,7 @@ export const make = Effect.gen(function* () {
     agentName: string,
     now: number,
   ) {
-    const key = `capnote:${thread.repo.toLowerCase()}#${thread.number}:${Math.floor(now / HOUR)}`;
+    const key = `capnote:${thread.repo.toLowerCase()}#${thread.number}:${Math.floor(now / HOUR_MS)}`;
     const inserted = yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number,
         agent_id, outcome, at)
       VALUES (${orgId}, ${key}, ${thread.repo.toLowerCase()}, ${thread.number}, NULL, 'note', ${now})
@@ -689,6 +752,7 @@ export const make = Effect.gen(function* () {
 
     const agents = yield* agentsOf(orgId);
     const bot = yield* botLogin;
+    yield* prune(orgId, now);
     const posts = yield* agentPosts;
     const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN });
     let woken = 0;

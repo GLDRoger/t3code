@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { heldWork } from "./KinBudget.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * What a lead started and where it stands now, read from Kin's own rows at turn time, so the
@@ -12,7 +13,6 @@ import { heldWork } from "./KinBudget.ts";
 
 export const STARTED_RULE =
   "Where the tasks you started (task is the id task_cancel takes), the requests you passed on, the entries you gave others and anything waiting on the daily limit stand now, as Kin's records have them. Say only what this shows; when something you mention isn't here, check before you say where it stands.";
-const DAY_MS = 24 * 60 * 60 * 1000;
 const TASKS_CAP = 8;
 const HANDOFFS_CAP = 5;
 const ASSIGNED_CAP = 8;

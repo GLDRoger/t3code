@@ -6,6 +6,8 @@ import {
   type EnvironmentId,
   type KinWidget,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -18,6 +20,8 @@ import {
 import {
   kinChoiceAccessibilityLabel,
   kinChoiceActInput,
+  kinChoiceCardActions,
+  kinChoiceCardTaps,
   kinChoiceOutcomeSentence,
   kinChoiceAnswered,
   kinChoiceFailureNotice,
@@ -27,6 +31,8 @@ import {
   kinAddressPieces,
   kinSendEditFailure,
   kinSendEditBound,
+  kinSendEditHeld,
+  kinSendEditHeldKey,
   kinSendEditControls,
   kinSendEditDiscardInput,
   kinSendEditedLine,
@@ -44,6 +50,8 @@ import {
   kinSendTry,
   kinSendEditWarned,
   kinThreadDate,
+  type KinChoiceCardStatus,
+  type KinSendEditing,
 } from "./kinChoicePresentation.ts";
 import { kinListedModelName } from "./kinLeadPresentation.ts";
 import { formatKinTime } from "./kinScreenState.ts";
@@ -353,6 +361,42 @@ describe("choice cards", () => {
       { id: "option-2", label: "Wait", action: null },
     ]);
     expect(acts.detail).toBe("Dev says it is live.");
+    expect(open.askedBy).toBeNull();
+    // Asked for someone else, who asks comes first; the line `detail` repeats is shown once.
+    const askedFor = (detail: string) =>
+      choice({
+        state: { ...choiceState(), askedBy: "Zoya Sheikh asks, through Chief of staff.", detail },
+      });
+    const forZoya = askedFor(
+      "Zoya Sheikh asks, through Chief of staff.\n\nThe pilot clinics wait on it.",
+    );
+    expect([forZoya.askedBy, forZoya.question, forZoya.detail]).toEqual([
+      "Zoya Sheikh asks, through Chief of staff.",
+      "Ship today?",
+      "The pilot clinics wait on it.",
+    ]);
+    expect(askedFor("Zoya Sheikh asks, through Chief of staff.").detail).toBeNull();
+    expect(kinChoiceAccessibilityLabel(forZoya, null)).toMatch(
+      /^Question\. Zoya Sheikh asks, through Chief of staff\. Ship today\?/,
+    );
+    // What holds only while nobody has chosen shows while open, on no settled copy.
+    const waiting = "Until someone chooses, they stay in Zoya's name and can still be found.";
+    const handOver = (change: Record<string, unknown>, state: Record<string, unknown> = {}) =>
+      choice({
+        ...change,
+        state: { ...choiceState(), detail: waiting, whileOpen: waiting, ...state },
+      }).detail;
+    const given = { title: "Given to Meera", text: "Meera now looks after 2 clients." };
+    const tapped = {
+      optionId: "option-1",
+      personId: "rhea",
+      via: "tap",
+      emoji: null,
+      answeredAt: "2026-11-08T09:01:00.000Z",
+    };
+    expect(handOver({})).toBe(waiting);
+    expect(handOver({}, { answer: tapped, outcome: given })).toBeNull();
+    expect(handOver({ closedAt: "2026-11-08T09:01:00.000Z" }, { outcome: given })).toBeNull();
     expect(kinChoicePhase(open, posted + 60_000)).toBe("open");
     expect(kinChoicePhase(open, posted + 24 * 60 * 60 * 1000)).toBe("expired");
     expect(kinChoicePhase(choice({ closedAt: "2026-11-08T10:00:00.000Z" }), posted)).toBe(
@@ -868,6 +912,122 @@ describe("choice cards", () => {
       { revision: refused.revision, checkedSent: later },
     );
     expect(kinSendCheckPending(plain, null, "option-1")).toBe(false);
+  });
+
+  it("posts one tap at a time, and binds a late refusal to the card the press carried", async () => {
+    const mailCard = (revision: number) =>
+      choice({
+        revision,
+        state: {
+          ...choiceState(),
+          send: {
+            service: "Gmail",
+            action: "email",
+            from: "rhea@ambermill.example",
+            to: ["anita@orbitdental.example"],
+            cc: [],
+            subject: "Invoice",
+            body: "Hi Anita,",
+            attachments: [],
+            outcome: null,
+          },
+        },
+      });
+    const first = mailCard(1);
+    const changed = new KinChatError({
+      reason: "widget_changed",
+      message: "This card changed or was answered. Look at it again.",
+    });
+    const sent: Array<string> = [];
+    const replies: Array<() => void> = [];
+    const later = <A>(name: string, result: AsyncResult.Failure<A, unknown>) =>
+      new Promise<AsyncResult.Success<A, unknown> | AsyncResult.Failure<A, unknown>>((resolve) => {
+        sent.push(name);
+        replies.push(() => resolve(result));
+      });
+    const refused = <A>() => AsyncResult.failure<A, unknown>(Cause.fail(changed));
+    const taps = kinChoiceCardTaps();
+    const heldKey = kinSendEditHeldKey("env", null, first.widgetId);
+    const typed: KinSendEditing = {
+      ...kinSendEditStart(first)!,
+      draft: {
+        to: "anita@orbitdental.example",
+        cc: "",
+        subject: "Invoice",
+        body: "Hi Anita, paid",
+      },
+    };
+    const seen = {
+      pending: [] as Array<string | null>,
+      status: [] as Array<KinChoiceCardStatus>,
+      editing: [] as Array<KinSendEditing | null>,
+    };
+    const actions = (card: typeof first, pending: string | null, editing: KinSendEditing | null) =>
+      kinChoiceCardActions({
+        choice: card,
+        environmentId: "env" as EnvironmentId,
+        newId: () => `id-${sent.length}`,
+        taps,
+        heldKey,
+        state: {
+          pending,
+          switching: false,
+          editing,
+          editBusy: null,
+          editable: true,
+          ticked: null,
+          nowMs: posted,
+        },
+        commands: {
+          post: () => later("post", refused()),
+          setSendFrom: () => later("from", refused()),
+          sendEdited: () => later("send", refused()),
+          saveEdited: () => later("save", refused()),
+        },
+        set: {
+          pending: (pending) => seen.pending.push(pending),
+          lastStatus: (status) => seen.status.push(status),
+          switching: () => {},
+          switchProblem: () => {},
+          editBusy: () => {},
+          editing: (editing) => seen.editing.push(editing),
+          ack: () => {},
+          ticked: () => {},
+        },
+      });
+
+    // A second tap in the same render, and one drawn while the first is pending, post nothing.
+    const tap = actions(first, null, null);
+    const pressed = tap.press("option-1");
+    await tap.press("option-2");
+    await actions(first, "option-1", null).press("option-2");
+    await actions(first, "option-1", null).pickFrom("billing");
+    expect(sent).toEqual(["post"]);
+    // The newer card arrives before the refusal: the notice is tied to the card the tap was on.
+    const newer = mailCard(2);
+    replies.shift()!();
+    await pressed;
+    expect(seen.pending).toEqual(["option-1", null]);
+    expect(seen.status).toEqual([
+      null,
+      {
+        revision: 1,
+        optionId: "option-1",
+        notice: kinChoiceFailureNotice(changed),
+        holding: false,
+      },
+    ]);
+
+    // Send edited, refused as changed after the card moved on: every typed word stays, and the
+    // next Send goes against the card now on screen.
+    const sending = actions(first, null, typed).sendEdit();
+    replies.shift()!();
+    await sending;
+    const kept = seen.editing.at(-1)!;
+    expect(kept).toEqual({ ...typed, problem: changed.message, stale: true });
+    expect(kinSendEditHeld(heldKey)).toEqual(kept);
+    expect(kinSendEditBound(kept, newer)).toEqual({ revision: 2, ready: true, review: true });
+    expect(sent).toEqual(["post", "send"]);
   });
 
   it("says a refused answer in the host's words when its figures changed", () => {

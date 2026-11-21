@@ -223,6 +223,11 @@ export const KinAccessMeResult = Schema.Struct({
   // Absent from a host older than places; an owner-level person's are all on.
   places: Schema.optional(KinPersonPlaceSwitches),
   leads: Schema.optional(Schema.Array(KinRecordRef)),
+  /**
+   * The places this host refuses the caller, by the check Money and Docs refuse with. Work is never
+   * refused to a caller this answers. Absent from an older host.
+   */
+  refused: Schema.optional(Schema.Struct({ money: Schema.Boolean, docs: Schema.Boolean })),
   /** The company's home currency, which every member's forms start amounts in; absent from an older host. */
   homeCurrency: Schema.optional(KinCurrency),
   /** The company's country, ISO 3166 alpha-2, null for none; absent from an older host. */
@@ -281,6 +286,8 @@ export const KinPersonProfile = Schema.Struct({
   load: Schema.optional(Schema.Struct({ open: NonNegativeInt, late: NonNegativeInt })),
   /** The reader may change this profile (the check `kin.people.updateProfile` runs); absent from older hosts. */
   canEdit: Schema.optional(Schema.Boolean),
+  /** Their GitHub username, null when none; only on a profile the reader may change. */
+  githubLogin: Schema.optional(Schema.NullOr(KinTrimmedText)),
 });
 export type KinPersonProfile = typeof KinPersonProfile.Type;
 export const KinPeopleProfilesResult = Schema.Struct({

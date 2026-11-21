@@ -69,6 +69,13 @@ const STATEMENT_CAPS = {
 
 const isTooLarge = Schema.is(TooLarge);
 const tooLarge = (reason: string): Failure => ({ _tag: "unreadable", reason });
+export const TOO_LARGE =
+  "Kin couldn't read this file: it is too large to read safely. Send a shorter period, or the bank's CSV or Excel download.";
+// V8's message when a buffer can't be had; pdf.js passes it on inside its own exception.
+const outOfMemory = (error: unknown) =>
+  typeof error === "object" &&
+  error !== null &&
+  Reflect.get(error, "message") === "Array buffer allocation failed";
 
 const startsWith = (bytes: Uint8Array, magic: ReadonlyArray<number>) =>
   magic.every((byte, index) => bytes[index] === byte);
@@ -280,6 +287,7 @@ const pdfLines = async (
     if (name === "PasswordException" && code === INCORRECT_PASSWORD)
       return { _tag: "wrong_password" };
     if (isTooLarge(error)) return tooLarge(error.reason);
+    if (outOfMemory(error)) return tooLarge(TOO_LARGE);
     return { _tag: "unreadable", reason: "The PDF couldn't be opened; it may be damaged." };
   } finally {
     await task.destroy();

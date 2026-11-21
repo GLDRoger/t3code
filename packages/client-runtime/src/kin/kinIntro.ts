@@ -17,6 +17,7 @@ export const KIN_INTRO_PROMPTS: ReadonlyArray<{
 
 /** Said of a chip that opens its words in the composer instead of sending them. */
 export const KIN_INTRO_START_HINT = "Starts the message for you to finish";
+export const kinIntroSendsTo = (agentName: string) => `Sends this to ${agentName}`;
 
 /** On the intro while a company made new has no country (`countryNeeded`): opens Company details. */
 export const KIN_INTRO_COUNTRY = "Choose your company's country";

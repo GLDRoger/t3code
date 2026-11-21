@@ -32,6 +32,26 @@ const capabilities = {
  * user, which can mint an owner session. Holds if a later wrapper widens `tools`.
  */
 export const builtinTools = [...new Set(Object.values(capabilities).flat())];
+/** The one built-in a confined session keeps: it runs at Anthropic and opens nothing from here. */
+const CONFINED_SEARCH = "WebSearch";
+
+/**
+ * Built-ins an owner turn can't use: they wait for someone at the screen, or Kin does the job
+ * itself (kin_ask, kin_defer, kin_schedule). A delegated task keeps them for T3 to answer.
+ */
+export const OWNER_SEAT_OFF = [
+  "AskUserQuestion",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  "EnterWorktree",
+  "ExitWorktree",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "ScheduleWakeup",
+  "PushNotification",
+  "RemoteTrigger",
+];
 
 /** What it posts ends with its own signature (`ghSign.ts`), not Claude Code's footer. */
 const NO_PROVIDER_FOOTER = {
@@ -83,10 +103,17 @@ const apply = (
       : { systemPrompt: { type: "custom" as const, prompt: plan.instructions, snapshot: false } }),
     ...(confined
       ? {
-          tools: loading.search === "true" ? ["ToolSearch"] : [],
-          disallowedTools: [...new Set([...(options.disallowedTools ?? []), ...builtinTools])],
+          tools: [...(loading.search === "true" ? ["ToolSearch"] : []), CONFINED_SEARCH],
+          disallowedTools: [
+            ...new Set([
+              ...(options.disallowedTools ?? []),
+              ...builtinTools.filter((name) => name !== CONFINED_SEARCH),
+            ]),
+          ],
         }
-      : {}),
+      : plan.seat === "owner"
+        ? { disallowedTools: [...new Set([...(options.disallowedTools ?? []), ...OWNER_SEAT_OFF])] }
+        : {}),
     ...(loading.mcpServers === undefined ? {} : { mcpServers: loading.mcpServers }),
     // The user's own MCP servers and plugins could hand a lead a shell again.
     strictMcpConfig: true,
@@ -139,7 +166,12 @@ const decisionHook = (plan: KinSessionPlan): HookCallbackMatcher => ({
     async (input) => {
       if (input.hook_event_name !== "PreToolUse") return {};
       const kinTool = input.tool_name.startsWith("mcp__") || input.tool_name === "ToolSearch";
-      if (plan.seat === "confined") return kinTool ? {} : refused();
+      if (plan.seat === "confined") {
+        if (kinTool) return {};
+        if (input.tool_name !== CONFINED_SEARCH) return refused();
+        const reason = await Effect.runPromise(plan.webSearch);
+        return reason === undefined ? {} : refused(reason);
+      }
       if (kinTool && plan.seat !== "delegated") return {};
       const reason = await Effect.runPromise(plan.refusal);
       return reason === undefined ? {} : refused(reason);

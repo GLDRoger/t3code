@@ -77,21 +77,29 @@ function setup(
   host = makeHost(),
   disk = makeStorage(),
   send: (record: KinOutboxRecord) => Promise<KinSendOutcome> = host.send,
-  extra: { readonly maxEntries?: number; readonly warn?: (message: string) => void } = {},
+  extra: {
+    readonly maxEntries?: number;
+    readonly warn?: (message: string) => void;
+    readonly makeId?: () => string;
+  } = {},
 ) {
   let id = 0;
+  // Who this phone's session on the host is; undefined until the host has said.
+  let person: string | null | undefined = "person-meera";
   const registry = AtomRegistry.make();
   const outbox = createKinOutbox({
     registry,
     storage: disk.storage,
     send,
+    identity: () => person,
     makeId: () => `client-${++id}`,
     now: () => new Date("2026-11-08T09:00:00.000Z"),
     ...extra,
   });
   const chat = () => registry.get(outbox.chatAtom(ENV, CHAT));
   const full = () => registry.get(outbox.fullAtom(ENV));
-  return { host, disk, outbox, chat, full };
+  const pairAs = (next: string | null | undefined) => void (person = next);
+  return { host, disk, outbox, chat, full, pairAs };
 }
 
 describe("kinOutbox", () => {
@@ -149,6 +157,50 @@ describe("kinOutbox", () => {
     expect(host.rows.size).toBe(1);
     expect(second.chat()[0]?.state).toBe("sent");
     expect(disk.saved()).toEqual([]);
+  });
+
+  it("sends an unsent message only as the person who wrote it, across a re-pair", async () => {
+    const legacy = {
+      environmentId: ENV,
+      chatId: CHAT,
+      clientMessageId: "client-old",
+      body: "Written before authors were kept",
+      createdAt: "2026-11-08T08:00:00.000Z",
+      error: null,
+    };
+    for (const changed of [true, false]) {
+      const { host, disk, outbox, chat, pairAs } = setup(
+        makeHost(),
+        makeStorage(JSON.stringify({ version: 1, entries: [legacy] })),
+      );
+      await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "Meera's draft" });
+      host.setOnline(true);
+      // Re-paired as Dev: nothing goes out until the host says who this session is.
+      pairAs(undefined);
+      await outbox.deliver(ENV);
+      pairAs("person-dev");
+      await outbox.deliver(ENV);
+      expect(host.calls).toEqual([]);
+
+      await outbox.syncIdentity(ENV, "person-dev", changed);
+      await outbox.deliver(ENV);
+      if (changed) {
+        // Dev changed places with Meera: neither her message nor the unowned one is his to send.
+        expect(chat()).toEqual([]);
+        expect(disk.saved()).toEqual([]);
+        expect(host.calls).toEqual([]);
+      } else {
+        // The person never changed, so the unowned one was this session's and is Dev's now.
+        expect(host.calls).toEqual(["client-old"]);
+        expect(chat().map((entry) => [entry.clientMessageId, entry.state])).toEqual([
+          ["client-old", "sent"],
+          ["client-1", "waiting"],
+        ]);
+        pairAs("person-meera");
+        await outbox.deliver(ENV);
+        expect(host.calls).toEqual(["client-old", "client-1"]);
+      }
+    }
   });
 
   it("shows a duplicate ack and the stream's echo as one message", async () => {
@@ -391,6 +443,29 @@ describe("kinOutbox", () => {
     await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "unsent" });
     await outbox.clearEnvironment(ENV);
     expect(chat()).toEqual([]);
+    expect(disk.saved()).toEqual([]);
+  });
+
+  it("keeps another tab's unsent message on disk when this tab saves its own", async () => {
+    const host = makeHost();
+    const disk = makeStorage();
+    const first = setup(host, disk);
+    let id = 0;
+    const second = setup(host, disk, host.send, { makeId: () => `tab-b-${++id}` });
+    await first.outbox.load();
+    await second.outbox.load();
+    await first.outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "Written in tab A" });
+    await second.outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "Written in tab B" });
+    expect(disk.saved().map((entry: { body: string }) => entry.body)).toEqual([
+      "Written in tab A",
+      "Written in tab B",
+    ]);
+    // Tab B sends its own and forgets it; tab A's still waits on disk for the next load.
+    host.setOnline(true);
+    await second.outbox.deliver(ENV);
+    expect(disk.saved().map((entry: { body: string }) => entry.body)).toEqual(["Written in tab A"]);
+    // A tab that removes the environment takes every tab's messages there with it.
+    await second.outbox.clearEnvironment(ENV);
     expect(disk.saved()).toEqual([]);
   });
 

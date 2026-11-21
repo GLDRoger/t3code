@@ -18,7 +18,7 @@ import {
   kinDocRestoreOutcome,
   kinDocVersionView,
 } from "@t3tools/client-runtime/kin/kinDocs";
-import type { KinLinkedItem } from "@t3tools/client-runtime/kin/kinLinked";
+import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import { KIN_TASK_RECORD } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import { KIN_DOC_CHANGES } from "@t3tools/client-runtime/kin/kinDocChanges";
 import { KIN_DOC_COMPANY, KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
@@ -176,8 +176,7 @@ export function KinDocPage(
     onGo({ doc: key });
   };
 
-  const openLinked = (item: KinLinkedItem) => {
-    const to = item.open;
+  const openLinked = (to: KinNotificationDestination) => {
     if (to._tag !== "record") return void openDestination(navigate, props, to);
     if (to.kind === "doc") return onGo({ doc: to.key });
     if (to.kind === "client") return props.onOpenClient(to.key);
@@ -693,7 +692,7 @@ function KinDocHistory(
                 aria-busy={state.loadingMore}
                 onClick={() => void list.loadMore()}
               >
-                {state.moreFailed ? KIN_RETRY : "Show earlier versions"}
+                {state.moreFailed ? KIN_RETRY : KIN_DOCS.earlierVersions}
               </Button>
             </div>
           )}

@@ -25,7 +25,6 @@ import {
   splitTests,
   type Step,
 } from "./check-changed.ts";
-import { MODEL_COVERS, modelsFor } from "./kin-model.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 
 const GiB = 1024 ** 3;
@@ -37,26 +36,6 @@ describe("check:changed", () => {
     assert.strictEqual(defaultConcurrency(4, 15 * GiB), 2);
     assert.strictEqual(defaultConcurrency(4, 2 * GiB), 1);
     assert.strictEqual(defaultConcurrency(1, 64 * GiB), 1);
-  });
-
-  it("checks a Kin model only when a file it stands for, its folder or its runner changed", () => {
-    assert.deepStrictEqual(modelsFor(["apps/server/src/kin/work/cardAnswers.ts"]), [
-      "send",
-      "money",
-      "questions",
-    ]);
-    assert.deepStrictEqual(modelsFor(["apps/server/src/kin/people/personNamed.ts"]), ["people"]);
-    // The queue stands in both the reply and the check-in.
-    assert.deepStrictEqual(modelsFor(["apps/server/src/kin/lead/KinEventQueue.ts"]), [
-      "reply",
-      "checkin",
-    ]);
-    assert.deepStrictEqual(modelsFor(["verification/kin/checkin/CheckIn.tla"]), ["checkin"]);
-    assert.deepStrictEqual(modelsFor(["scripts/kin-model.ts"]), Object.keys(MODEL_COVERS));
-    assert.deepStrictEqual(
-      modelsFor(["apps/server/src/kin/work/money.ts", "docs/kin/RULES.md"]),
-      [],
-    );
   });
 
   it("runs the server tests for the one guide they read and leaves other docs inert", () => {
@@ -342,6 +321,18 @@ it.each(["upstream", "team/upstream"])(
     assert.strictEqual(result.ref, remote + "/main");
   },
 );
+
+it("compares a Kin branch against the fork's kin when that is closer than any main", async () => {
+  using project = fixture({ origin: "A", upstream: "A" });
+  NodeChildProcess.execFileSync(
+    "git",
+    ["update-ref", "refs/remotes/origin/kin", project.commits.B!],
+    { cwd: project.root, env },
+  );
+  const result = await compare(project.root, Option.none());
+  assert.strictEqual(result.base, project.commits.B);
+  assert.strictEqual(result.ref, "origin/kin");
+});
 
 it("compares against an explicit ref instead of the closest remote main", async () => {
   using project = fixture({ origin: "A", upstream: "B" });

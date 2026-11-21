@@ -2,13 +2,23 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_PEOPLE_CHAT,
-  kinMessageablePeople,
+  kinAgentChatProblem,
+  kinNewChatList,
   kinPeopleChatProblem,
 } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { kinPersonSeed } from "@t3tools/client-runtime/kin/kinProfiles";
+import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { EnvironmentId, KinOrgId, type KinPersonId } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
+import {
+  EnvironmentId,
+  KinOrgId,
+  type KinAgentId,
+  type KinLeadsListResult,
+  type KinPersonId,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 import { useState } from "react";
 import { View } from "react-native";
@@ -59,7 +69,33 @@ export function useOpenKinPeopleChat() {
   };
 }
 
-/** New → Message a teammate: everyone else on the team, one tap to their chat. */
+/** Opens the viewer's chat with an agent, made the first time; the problem when it can't. */
+function useOpenKinAgentChat() {
+  const navigation = useNavigation();
+  return async (target: {
+    readonly environmentId: EnvironmentId;
+    readonly orgId: KinOrgId;
+    readonly agentId: KinAgentId;
+  }) => {
+    const result = await kinClient.chatWithAgent.run(appAtomRegistry, {
+      environmentId: target.environmentId,
+      input: { orgId: target.orgId, agentId: target.agentId },
+    });
+    if (result._tag !== "Success") return kinAgentChatProblem(squashAtomCommandFailure(result));
+    navigation.goBack();
+    navigation.navigate("KinChat", {
+      environmentId: target.environmentId,
+      orgId: target.orgId,
+      chatId: result.value.chatId,
+    });
+    return null;
+  };
+}
+
+type LeadsResult = AsyncResult.AsyncResult<KinLeadsListResult, unknown> | null;
+const noLeadsAtom: Atom.Atom<LeadsResult> = Atom.make<LeadsResult>(null);
+
+/** New → Message someone: everyone else on the team, then the agents the viewer may message. */
 export function KinPeoplePickScreen({ route }: StaticScreenProps<KinPeoplePickParams>) {
   const navigation = useNavigation();
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
@@ -70,10 +106,32 @@ export function KinPeoplePickScreen({ route }: StaticScreenProps<KinPeoplePickPa
     host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
     orgId,
   ).personId;
-  const open = useOpenKinPeopleChat();
-  const [busy, setBusy] = useState<KinPersonId | null>(null);
+  const leadsResult = useAtomValue(
+    environmentId === null || orgId === null
+      ? noLeadsAtom
+      : kinClient.leads({ environmentId, input: { orgId } }),
+  );
+  // Without the agent list the people still show; a failed read lists no agents.
+  const leads =
+    leadsResult === null
+      ? null
+      : AsyncResult.isFailure(leadsResult)
+        ? { leads: [] }
+        : Option.getOrNull(AsyncResult.value(leadsResult));
+  const openPerson = useOpenKinPeopleChat();
+  const openAgent = useOpenKinAgentChat();
+  const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-  const people = held === null ? null : kinMessageablePeople(held.profiles, me);
+  const list = held === null || leads === null ? null : kinNewChatList(held.profiles, me, leads);
+  const pick = async (key: string, open: () => Promise<string | null>) => {
+    setBusy(key);
+    setProblem(null);
+    const failure = await open();
+    setBusy(null);
+    setProblem(failure);
+  };
+  const onlyAgents = list !== null && list.people.length === 0 && list.agents.length > 0;
+  const detail = onlyAgents ? list.agentsNote : KIN_PEOPLE_CHAT.pickDetail;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar title={KIN_PEOPLE_CHAT.pickTitle} onClose={() => navigation.goBack()} />
@@ -83,11 +141,13 @@ export function KinPeoplePickScreen({ route }: StaticScreenProps<KinPeoplePickPa
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 16 }}
         >
-          <Text textRole="body" className="px-2 text-foreground-muted">
-            {KIN_PEOPLE_CHAT.pickDetail}
-          </Text>
+          {detail === null ? null : (
+            <Text textRole="body" className="px-2 text-foreground-muted">
+              {detail}
+            </Text>
+          )}
           {problem === null ? null : <ErrorBanner message={problem} />}
-          {people === null || environmentId === null || orgId === null ? (
+          {list === null || environmentId === null || orgId === null ? (
             failed ? (
               <EmptyState
                 variant="plain"
@@ -99,36 +159,61 @@ export function KinPeoplePickScreen({ route }: StaticScreenProps<KinPeoplePickPa
                 <AppActivityIndicator />
               </View>
             )
-          ) : people.length === 0 ? (
+          ) : list.people.length === 0 && list.agents.length === 0 ? (
             <EmptyState
               variant="plain"
               title={KIN_PEOPLE_CHAT.noOne}
               detail={KIN_PEOPLE_CHAT.noOneDetail}
             />
           ) : (
-            <ListSection>
-              {people.map((person) => (
-                <ListActionRow
-                  key={person.personId}
-                  label={person.displayName}
-                  leading={
-                    <KinAvatar
-                      avatar={{ kind: "person", seed: kinPersonSeed(person.personId) }}
-                      size="small"
+            <>
+              {list.people.length === 0 ? null : (
+                <ListSection {...(list.peopleTitle === null ? {} : { title: list.peopleTitle })}>
+                  {list.people.map((person) => (
+                    <ListActionRow
+                      key={person.personId}
+                      label={person.displayName}
+                      leading={
+                        <KinAvatar
+                          avatar={{ kind: "person", seed: kinPersonSeed(person.personId) }}
+                          size="small"
+                        />
+                      }
+                      loading={busy === `person:${person.personId}`}
+                      disabled={busy !== null}
+                      onPress={() =>
+                        void pick(`person:${person.personId}`, () =>
+                          openPerson({ environmentId, orgId, personId: person.personId }),
+                        )
+                      }
                     />
-                  }
-                  loading={busy === person.personId}
-                  disabled={busy !== null}
-                  onPress={async () => {
-                    setBusy(person.personId);
-                    setProblem(null);
-                    const failure = await open({ environmentId, orgId, personId: person.personId });
-                    setBusy(null);
-                    setProblem(failure);
-                  }}
-                />
-              ))}
-            </ListSection>
+                  ))}
+                </ListSection>
+              )}
+              {list.agents.length === 0 ? null : (
+                <ListSection
+                  {...(list.agentsTitle === null ? {} : { title: list.agentsTitle })}
+                  {...(onlyAgents || list.agentsNote === null ? {} : { footer: list.agentsNote })}
+                >
+                  {list.agents.map((agent) => (
+                    <ListActionRow
+                      key={agent.agentId}
+                      label={agent.name}
+                      {...(agent.intro === null ? {} : { description: agent.intro })}
+                      accessibilityLabel={`${KIN_PEOPLE_CHAT.message} ${agent.name}`}
+                      leading={<KinAvatar avatar={kinAgentAvatar(agent.agentId)} size="small" />}
+                      loading={busy === `agent:${agent.agentId}`}
+                      disabled={busy !== null}
+                      onPress={() =>
+                        void pick(`agent:${agent.agentId}`, () =>
+                          openAgent({ environmentId, orgId, agentId: agent.agentId }),
+                        )
+                      }
+                    />
+                  ))}
+                </ListSection>
+              )}
+            </>
           )}
         </ScreenScrollView>
       </ScreenContent>

@@ -27,6 +27,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
 import { KinWorkspace } from "../gendocs/workspace.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import {
@@ -53,6 +54,7 @@ import { ensureBankList } from "./statements/bankList.ts";
 import { waitLine } from "./statements/passwordBudget.ts";
 import * as OwnerMoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import * as LeadDocuments from "../gendocs/leadDocuments.ts";
 import * as Quotes from "../gendocs/quotes.ts";
 import { endOfDay } from "./recordRows.ts";
 
@@ -327,6 +329,11 @@ const tap = (n: number, widgetId: string, kind: "yes" | "no", personId: string =
     return `event-${n}`;
   });
 const cardOf = (clientMessageId: string) => `choice:card-${clientMessageId}`;
+/** The owner issues them: an invoice an agent made is a draft until then. */
+const issueAll = (...keys: ReadonlyArray<string>) =>
+  Effect.forEach(keys, (key) => OwnerMoney.issue(people, { orgId, key: KinRecordKey.make(key) }), {
+    discard: true,
+  });
 
 describe("amounts", () => {
   it("reads spoken and written amounts as exact minor units, and refuses the ambiguous", () => {
@@ -1075,25 +1082,37 @@ describe("invoices", () => {
           due: "2026-11-01",
           ...(suggested === undefined ? {} : { suggested }),
         });
-        yield* LeadWork.create(scope, {
+        // Asked for "issued" by its date or its state, the agent's kept invoice is a draft.
+        const made = yield* LeadWork.create(scope, {
           sourceEventId: asked,
           records: [
-            invoice("Invented retainer", "2026-10-01"),
+            { ...invoice("Invented retainer", "2026-10-01"), state: "waiting" },
             invoice("Invented renewal", "2026-10-02", true),
             invoice("Invented second renewal", "2026-10-03", true),
             invoice("Invented third renewal", "2026-10-04", true),
           ],
         });
+        assert.include(made.records[0], {
+          key: "INV-1",
+          state: "open",
+          stateLabel: "Draft: waits for the owner or a co-owner to issue it",
+        });
         const owed = Effect.gen(function* () {
           const summary = yield* OwnerMoney.money(people, { orgId });
           const page = yield* OwnerWork.list(people, { orgId, list: "invoices", totalsBy: "none" });
           const client = yield* LeadWork.get(scope, { key: "C-1" });
+          const outlookView = outlookAnswer(yield* outlook(orgId, NOW));
+          const pulse = yield* KinPulse.read({ orgId, at: NOW, viewer: { _tag: "owner" } });
           return {
             owed: summary.owed.total,
             overdue: summary.owed.overdue,
             byClient: summary.owed.byClient.map((one) => one.owed),
             listOwed: page.totals?.owed,
             clientUnpaid: client.owed?.money.unpaid,
+            overdueIn: outlookView.overdueNotCounted.map((one) => one.key),
+            pulse: pulse.facts
+              .filter((fact) => fact.sense === "invoice_overdue")
+              .map((fact) => fact.subject.key),
             suggested: (summary.suggested ?? []).map((one) => one.record.key),
             late: page.records
               .filter((one) => one.late)
@@ -1101,20 +1120,43 @@ describe("invoices", () => {
               .toSorted(),
           };
         });
+        const nothingOwed = {
+          owed: [],
+          overdue: [],
+          byClient: [],
+          listOwed: [],
+          clientUnpaid: [],
+          overdueIn: [],
+          pulse: [],
+          suggested: ["INV-2", "INV-3", "INV-4"],
+          // Late is a deadline's, kept or not; no figure counts a suggestion's or a draft's.
+          late: ["INV-1", "INV-2", "INV-3", "INV-4"],
+        };
+        assert.deepStrictEqual(yield* owed, nothingOwed);
+        // Nor does asking for it Issued or Paid by its state: the draft stays as it was.
+        for (const state of ["waiting", "done"] as const)
+          assert.include(
+            yield* LeadWork.update(scope, { sourceEventId: asked, key: "INV-1", state }),
+            { state: "open", stateLabel: "Draft: waits for the owner or a co-owner to issue it" },
+          );
+        assert.deepStrictEqual(yield* owed, nothingOwed);
+        // Issued by the owner, it has its number and counts.
+        yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make("INV-1") });
         assert.deepStrictEqual(yield* owed, {
           owed: inr(4_720_000),
           overdue: inr(4_720_000),
           byClient: [inr(4_720_000)],
           listOwed: inr(4_720_000),
           clientUnpaid: ["₹47,200.00"],
+          overdueIn: ["INV-1"],
+          pulse: ["INV-1"],
           suggested: ["INV-2", "INV-3", "INV-4"],
-          // Late is a deadline's, kept or not; no figure counts a suggestion's.
           late: ["INV-1", "INV-2", "INV-3", "INV-4"],
         });
         // The agent reads it as a suggestion, and it waits on a person with the right.
         assert.include(yield* LeadWork.get(scope, { key: "INV-2" }), {
           suggested: true,
-          stateLabel: "Draft, suggested, not kept yet",
+          stateLabel: "Draft, suggested: waits for the owner or a co-owner to keep it",
         });
         const section = moneySection(yield* OwnerMoney.money(people, { orgId }), "Asia/Kolkata");
         assert.deepStrictEqual(
@@ -1174,14 +1216,20 @@ describe("invoices", () => {
         yield* OwnerWork.decline(people, { orgId, key: "INV-4", rev: yield* rev("INV-4") });
         // It started as a draft, so kept it is a draft: owed once it is issued.
         assert.deepStrictEqual((yield* owed).owed, inr(4_720_000));
+        const balanceOf = (key: string) =>
+          LeadWork.get(scope, { key }).pipe(Effect.map((one) => [one.amount, one.balance]));
+        assert.deepStrictEqual(yield* balanceOf("INV-2"), ["₹47,200.00", undefined]);
         for (const key of ["INV-2", "INV-3"])
           yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make(key) });
+        assert.deepStrictEqual(yield* balanceOf("INV-2"), ["₹47,200.00", "₹47,200.00"]);
         assert.deepStrictEqual(yield* owed, {
           owed: inr(14_160_000),
           overdue: inr(14_160_000),
           byClient: [inr(14_160_000)],
           listOwed: inr(14_160_000),
           clientUnpaid: ["₹1,41,600.00"],
+          overdueIn: ["INV-1", "INV-2", "INV-3"],
+          pulse: ["INV-1", "INV-2", "INV-3"],
           suggested: [],
           late: ["INV-1", "INV-2", "INV-3"],
         });
@@ -1222,6 +1270,11 @@ describe("invoices", () => {
             due: "2026-11-01",
           },
         ],
+      });
+      // Issued on the owner's ask, by the agent, so the owner changed nothing it is asked about later.
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: asked,
+        entry: KinRecordKey.make("INV-1"),
       });
       const paid = yield* turn(4, "Acme paid 40k");
       const first = yield* LeadMoney.payment(scope, {
@@ -1392,6 +1445,10 @@ describe("invoices", () => {
           },
         ],
       });
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: overpaid,
+        entry: KinRecordKey.make("INV-2"),
+      });
       const unsettled = yield* OwnerMoney.money(people, { orgId });
       const tds = {
         sourceEventId: overpaid,
@@ -1433,6 +1490,10 @@ describe("invoices", () => {
           },
         ],
       });
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: overpaid,
+        entry: KinRecordKey.make("INV-3"),
+      });
       yield* LeadMoney.payment(scope, {
         ...tds,
         key: "INV-3",
@@ -1452,6 +1513,10 @@ describe("invoices", () => {
             date: "2026-11-08",
           },
         ],
+      });
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: overpaid,
+        entry: KinRecordKey.make("INV-4"),
       });
       const part = { ...tds, key: "INV-4", amount: "900", withheld: "100" };
       yield* LeadMoney.payment(scope, part);
@@ -1491,6 +1556,10 @@ describe("invoices", () => {
         sourceEventId: overpaid,
         records: [{ ...backwards, confirmed: true }],
       });
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: overpaid,
+        entry: KinRecordKey.make("INV-6"),
+      });
 
       // K150: an invoice for 0 is refused on the owner's own path too.
       const ownerEdit = (amount: { minor: number; currency: string }) =>
@@ -1525,7 +1594,7 @@ describe("invoices", () => {
       }).pipe(Effect.flip);
       assert.strictEqual(
         dropped.message,
-        "C-1 still owes on 4 unpaid invoices: INV-3 (₹1,000.00 owed), INV-4 (₹1,000.00 owed), INV-1 (₹9,999.00 owed), INV-6 (₹3,000.00 owed). Record their payments or void them first.",
+        "C-1 still owes on 4 unpaid invoices: INV-1 (₹9,999.00 owed), INV-6 (₹3,000.00 owed), INV-3 (₹1,000.00 owed), INV-4 (₹1,000.00 owed). Record their payments or void them first.",
       );
       assert.strictEqual((yield* records.get(orgId, "C-1"))!.state, "open");
     }).pipe(Effect.provide(layer)),
@@ -1873,6 +1942,7 @@ describe("the owner's taps", () => {
           { list: "invoices", title: "Invented retainer", amount: "1 lakh", date: "2026-11-01" },
         ],
       });
+      yield* issueAll("INV-1");
       yield* OwnerMoney.recordPayment(people, {
         orgId,
         key: "INV-1",
@@ -2178,8 +2248,8 @@ describe("the owner's taps", () => {
         assert.deepStrictEqual(
           told.dates.filter((one) => one.key === "INV-1").map((one) => [one.what, one.state]),
           [
-            ["Date", "Draft, suggested, not kept yet"],
-            ["Due", "Draft, suggested, not kept yet"],
+            ["Date", "Draft, suggested: waits for the owner or a co-owner to keep it"],
+            ["Due", "Draft, suggested: waits for the owner or a co-owner to keep it"],
           ],
         );
         assert.deepStrictEqual(
@@ -2268,6 +2338,7 @@ describe("the owner's taps", () => {
           { list: "expenses", title: "Invented flight", amount: "9,000", category: "travel" },
         ],
       });
+      yield* issueAll("INV-1", "INV-2", "INV-3");
       yield* OwnerMoney.recordPayment(people, {
         orgId,
         key: "INV-1",
@@ -2291,6 +2362,7 @@ describe("the owner's taps", () => {
           { list: "expenses", title: "Invented guessed lunch", amount: "700", suggested: true },
         ],
       });
+      yield* issueAll("INV-5");
       yield* OwnerMoney.recordPayment(people, {
         orgId,
         key: "INV-5",
@@ -2444,6 +2516,46 @@ describe("the owner's taps", () => {
       assert.deepStrictEqual([loaded.name, loaded.categoryLabels?.tds], ["Key dates", "T DS"]);
     }).pipe(Effect.provide(layer)),
   );
+
+  it.effect("send a screen the first 20 owing clients and a count of the rest", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(5, "The books");
+      const names = Array.from({ length: 22 }, (_, i) => `Invented Client ${i + 1}`);
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: names.map((title) => ({ list: "clients", title })),
+      });
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: names.map((client, i) => ({
+          list: "invoices",
+          title: `Invented invoice ${i + 1}`,
+          client,
+          amount: "10,000",
+          date: "2026-10-01",
+          due: `2026-10-${String(i + 1).padStart(2, "0")}`,
+        })),
+      });
+      yield* issueAll(...names.map((_, i) => `INV-${i + 1}`));
+      const screen = yield* OwnerMoney.money(people, { orgId });
+      const every = yield* OwnerMoney.money(people, { orgId, allClients: true });
+      assert.deepStrictEqual<unknown>(screen.owed, {
+        ...every.owed,
+        byClient: every.owed.byClient.slice(0, 20),
+        byClientMore: 2,
+      });
+      assert.strictEqual(every.owed.byClient.length, 22);
+      assert.notProperty(every.owed, "byClientMore");
+      // A client's own page is sent its line, wherever it falls in the order.
+      const last = every.owed.byClient.at(-1)!.party!;
+      assert.deepStrictEqual(
+        (yield* OwnerMoney.money(people, { orgId, party: last.key })).owed.byClient,
+        [every.owed.byClient.at(-1)],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
 });
 
 describe("who keeps a suggestion", () => {
@@ -2562,7 +2674,8 @@ describe("who keeps a suggestion", () => {
         mate: [0, 0, 1, 1],
       });
 
-      // Issued, sent or paid as asked, a quote or invoice nobody kept starts as a draft on its day.
+      // Issued, sent or paid as asked, a quote or invoice nobody kept, or an agent's invoice,
+      // starts as a draft on its day.
       const issueDay = "2026-12-01";
       const startedAs = (key: string) =>
         records
@@ -2586,7 +2699,7 @@ describe("who keeps a suggestion", () => {
       });
       assert.deepInclude(made.records[0], {
         state: "open",
-        stateLabel: "Draft, suggested, not kept yet",
+        stateLabel: "Draft, suggested: waits for the owner or a co-owner to keep it",
         suggested: true,
       });
       const started = [];
@@ -2610,6 +2723,17 @@ describe("who keeps a suggestion", () => {
         });
         started.push(yield* startedAs(row.key));
       }
+      // One the owner enters with the number another system gave it was issued there: it is owed.
+      const { row: elsewhere } = yield* records.create(orgId, person(ownerId), {
+        list: "invoices",
+        originKey: "owner-numbered",
+        title: "Invented invoice from the old books",
+        owner: { _tag: "person", personId: ownerId },
+        amount: { minor: 975_000, currency: "INR" },
+        fields: { number: "OLD/2026/041" },
+        dateAt: Date.parse(`${issueDay}T00:00:00.000Z`),
+      });
+      started.push(yield* startedAs(elsewhere.key));
       const day = Date.parse(`${issueDay}T00:00:00.000Z`);
       assert.deepStrictEqual(
         started.map(([kept, state, dateAt]) => [kept, state, dateAt === null ? null : day]),
@@ -2618,9 +2742,11 @@ describe("who keeps a suggestion", () => {
           [0, "open", day],
           [0, "open", day],
           [0, "open", day],
+          // Kept on the owner's word, it is still a draft: only Issue makes it owed.
+          [1, "open", day],
+          [0, "open", day],
+          [0, "open", day],
           [1, "waiting", day],
-          [0, "open", day],
-          [0, "open", day],
         ],
       );
 
@@ -3712,6 +3838,7 @@ describe("money answers", () => {
             due: "2026-12-01",
           })),
         });
+        yield* issueAll("INV-1", "INV-2", "INV-3");
         const summary = yield* OwnerMoney.money(people, { orgId });
         assert.deepStrictEqual(summary.owed.total, [
           { minor: 100_000, currency: "USD" },

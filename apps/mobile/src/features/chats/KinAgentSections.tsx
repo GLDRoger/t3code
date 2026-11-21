@@ -27,6 +27,7 @@ import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 import { View } from "react-native";
 
+import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppText as Text } from "../../components/ui/AppText";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
@@ -39,6 +40,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { setComposerDraftText } from "../../state/use-composer-drafts";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { kinDraftKey } from "./components/KinComposer";
+import { KinLoadFailed } from "./components/KinLoadFailed";
 import {
   KinAgentEffortAdvice,
   KinAgentEffortRow,
@@ -65,8 +67,27 @@ export function KinAgentSections(props: {
     environmentId,
     input: { orgId, agentId: lead.agentId },
   });
-  const page = Option.getOrNull(AsyncResult.value(useAtomValue(pageAtom)));
-  if (page === null) return null;
+  const result = useAtomValue(pageAtom);
+  // What was last read stays up while a change is read again.
+  const page = Option.getOrNull(AsyncResult.value(result));
+  if (page === null)
+    return AsyncResult.isFailure(result) ? (
+      <KinLoadFailed
+        variant="card"
+        title={KIN_AGENT_PAGE.loadFailed}
+        cause={result}
+        onRetry={() => appAtomRegistry.refresh(pageAtom)}
+      />
+    ) : (
+      <View
+        className="items-center py-8"
+        accessible
+        accessibilityRole="progressbar"
+        accessibilityLabel="Loading this agent"
+      >
+        <AppActivityIndicator />
+      </View>
+    );
   const changed = () => {
     appAtomRegistry.refresh(pageAtom);
     refreshKinAgents(environmentId, orgId);
@@ -386,7 +407,7 @@ function Pause(props: {
             setBusy(false);
             setProblem(
               AsyncResult.isFailure(outcome)
-                ? kinFailureText(squashAtomCommandFailure(outcome), "Couldn't change that.")
+                ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_PAGE.changeFailed)
                 : null,
             );
             props.onChanged();

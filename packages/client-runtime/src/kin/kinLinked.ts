@@ -35,6 +35,9 @@ export const KIN_LINKED = {
   } satisfies Record<KinLinkedGroupName, string>,
   /** A message link the host gave no label. */
   message: "Where this came from",
+  /** A message link into a chat this reader isn't in: told in words, not linked. */
+  closedChat: (agent: string | null) =>
+    agent === null ? "Where this came from: a chat" : `Where this came from: a chat with ${agent}`,
   more: (count: number) => `${count} more`,
   unlisted: (count: number) => `${count} more not shown`,
 } as const;
@@ -47,7 +50,8 @@ export interface KinLinkedItem {
   /** What the row calls it: an entry's issued number, else its key. */
   readonly name: string;
   readonly title: string | null;
-  readonly open: KinNotificationDestination;
+  /** Null for a chat this reader may not open: the row is told, not tapped. */
+  readonly open: KinNotificationDestination | null;
 }
 export interface KinLinkedGroup {
   readonly group: KinLinkedGroupName;
@@ -137,6 +141,14 @@ export function kinLinked(
     if (link.kind === "record" && link.record !== undefined)
       add(recordItem(link.record, link.number));
     if (link.kind === "message" && link.chatId !== null) add(messageItem(link, link.chatId));
+    else if (link.kind === "message" && link.closedChat !== undefined)
+      add({
+        kind: "message",
+        key: link.target,
+        name: link.target,
+        title: KIN_LINKED.closedChat(link.closedChat.agent),
+        open: null,
+      });
   }
   const groups = KIN_LINKED_GROUPS.flatMap((group): ReadonlyArray<KinLinkedGroup> => {
     const all = items.filter((item) => GROUP_OF[item.kind] === group);
