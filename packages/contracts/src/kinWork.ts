@@ -143,6 +143,19 @@ export const KinRecordCan = Schema.Struct({
 });
 export type KinRecordCan = typeof KinRecordCan.Type;
 
+/** A step's words: one checklist line under a task. */
+export const KIN_WORK_STEP_MAX = 200;
+/** How many steps a task holds. */
+export const KIN_WORK_STEPS_MAX = 30;
+export const KinWorkStepTitle = KinTrimmedText.check(Schema.isMaxLength(KIN_WORK_STEP_MAX));
+/** A checklist line under a task, in order: never a task of its own, with no holder or date. */
+export const KinWorkStep = Schema.Struct({ title: KinWorkStepTitle, done: Schema.Boolean });
+export type KinWorkStep = typeof KinWorkStep.Type;
+export const KinWorkSteps = Schema.Array(KinWorkStep).check(Schema.isMaxLength(KIN_WORK_STEPS_MAX));
+/** How many of a task's steps are ticked, of how many: "2 of 4". */
+export const KinWorkStepCount = Schema.Struct({ done: NonNegativeInt, of: NonNegativeInt });
+export type KinWorkStepCount = typeof KinWorkStepCount.Type;
+
 /** One slim list row, about 150 bytes: what a list, the profile and the prompt show. */
 export const KinRecord = Schema.Struct({
   recordId: KinRecordId,
@@ -209,6 +222,10 @@ export const KinRecord = Schema.Struct({
   markedBy: Schema.optional(KinPersonId),
   /** Its true list when that is newer than older clients know, such as a deal. */
   listName: Schema.optional(KinRecordListName),
+  /** A task's steps, ticked of all; absent with none, and from older hosts. */
+  steps: Schema.optional(KinWorkStepCount),
+  /** Someone marked the task urgent: first within its day; absent otherwise. */
+  urgent: Schema.optional(Schema.Literal(true)),
 });
 export type KinRecord = typeof KinRecord.Type;
 
@@ -443,6 +460,8 @@ export const KinRecordDetail = Schema.Struct({
   toldWhenBack: Schema.optional(KinDay),
   /** An invoice's: how far Kin sees the bank, for whether it was paid; absent from older hosts. */
   bankKnown: Schema.optional(KinBankKnown),
+  /** A task's steps in order; absent with none, and from older hosts. */
+  checklist: Schema.optional(KinWorkSteps),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;
@@ -761,6 +780,11 @@ export const KinWorkCreateInput = Schema.Struct({
   repo: Schema.optional(KinRepoName),
   /** A task that comes back: when it closes, the next one is made from its due date. */
   repeat: Schema.optional(KinRepeatRule),
+  /** A task's steps, in order, none ticked. */
+  steps: Schema.optional(
+    Schema.Array(KinWorkStepTitle).check(Schema.isMaxLength(KIN_WORK_STEPS_MAX)),
+  ),
+  urgent: Schema.optional(Schema.Boolean),
   /** A retry with the same id returns the same entry. */
   clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
 });
@@ -810,6 +834,10 @@ export const KinWorkUpdateInput = Schema.Struct({
   dateAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   dateAllDay: Schema.optional(Schema.Boolean),
   repeat: Schema.optional(Schema.NullOr(KinRepeatRule)),
+  /** A task's whole checklist, in order; `[]` takes every step off. */
+  steps: Schema.optional(KinWorkSteps),
+  /** Marks a task urgent, or takes the mark off. */
+  urgent: Schema.optional(Schema.Boolean),
   // Defined lists only.
   /** One of the list's own categories; `null` clears it. */
   listCategory: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(60)))),
@@ -823,6 +851,20 @@ export const KinWorkUpdateInput = Schema.Struct({
   ),
 });
 export type KinWorkUpdateInput = typeof KinWorkUpdateInput.Type;
+
+/**
+ * Ticks one of a task's steps, or unticks it, by whoever may change the task. `title` is the step's
+ * words as the screen showed them: steps changed since are a conflict. Ticked already, a retry
+ * changes nothing; no revision is needed, so two people ticking two steps both land.
+ */
+export const KinWorkTickStepInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  index: NonNegativeInt,
+  title: KinWorkStepTitle,
+  done: Schema.Boolean,
+});
+export type KinWorkTickStepInput = typeof KinWorkTickStepInput.Type;
 
 /**
  * The owner shares tasks with the team (`shared: true`) or takes them back. Every task that
@@ -1689,6 +1731,7 @@ export const KIN_WORK_WS_METHODS = {
   nudge: "kin.work.nudge",
   handOver: "kin.work.handOver",
   update: "kin.work.update",
+  tickStep: "kin.work.tickStep",
   confirm: "kin.work.confirm",
   decline: "kin.work.decline",
   share: "kin.work.share",
@@ -1795,6 +1838,11 @@ export const KinWorkRpcs = [
   }),
   Rpc.make(KIN_WORK_WS_METHODS.update, {
     payload: KinWorkUpdateInput,
+    success: KinRecordDetail,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.tickStep, {
+    payload: KinWorkTickStepInput,
     success: KinRecordDetail,
     error,
   }),
@@ -1916,6 +1964,7 @@ export const KIN_WORK_RPC_SCOPES = {
   [KIN_WORK_WS_METHODS.linkRemove]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.projectNote]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.update]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.tickStep]: AuthKinChatScope,
   // Keeping a lead's suggestion makes it the owner's word; only he does that, or shares.
   [KIN_WORK_WS_METHODS.confirm]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.decline]: AuthKinChatScope,

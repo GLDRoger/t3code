@@ -20,6 +20,7 @@ import {
   type KinWorkPrincipal,
   type KinWorkShareInput,
   type KinWorkSummary,
+  type KinWorkTickStepInput,
   type KinWorkUpdateInput,
   calendarTimeMillis,
   isCalendarDay,
@@ -924,6 +925,10 @@ export const create = Effect.fn("KinWork.create")(function* (
       ...(input.side === undefined ? {} : { side: input.side }),
       ...(input.repo === undefined ? {} : { repo: input.repo }),
       ...(input.repeat === undefined || milestone ? {} : { repeat: input.repeat }),
+      ...(input.steps === undefined
+        ? {}
+        : { steps: input.steps.map((title) => ({ title, done: false })) }),
+      ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
     });
     return {
       row,
@@ -1146,6 +1151,8 @@ export const update = Effect.fn("KinWork.update")(function* (
       ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
       ...(input.amount === undefined ? {} : { amount: input.amount }),
       ...(input.repeat === undefined ? {} : { repeat: input.repeat }),
+      ...(input.steps === undefined ? {} : { steps: input.steps }),
+      ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
       ...due,
       ...(input.dateAt === undefined
         ? input.dateAllDay === undefined
@@ -1165,6 +1172,18 @@ export const update = Effect.fn("KinWork.update")(function* (
   return yield* sql
     .withTransaction(ownFiles(person, row.fieldsJson, input.fields).pipe(Effect.andThen(save)))
     .pipe(workFailure);
+});
+
+/** Ticks one of a task's steps, by whoever may change the task, through the same write. */
+export const tickStep = Effect.fn("KinWork.tickStep")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinWorkTickStepInput,
+) {
+  const viewer = yield* viewerOf(people, input.orgId);
+  // A teammate's task is read only inside the write, so an earlier read decides nothing.
+  if (!viewer.teammate) yield* inList(input.orgId, input.key, "work");
+  const { index, title, done } = input;
+  return yield* change(viewer, input.orgId, input.key, { tick: { index, title, done } }, undefined);
 });
 
 /** A web page's address as it is kept, or undefined for anything that isn't one. */

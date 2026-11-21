@@ -49,6 +49,8 @@ const MEMBER = [
   "kin.chats.subscribe",
   "kin.chats.withPerson",
   "kin.docs.diff",
+  // The owner level, or a project's lead for its docs; the service checks (`docs.ts`).
+  "kin.docs.editSection",
   "kin.docs.get",
   "kin.docs.history",
   "kin.docs.list",
@@ -123,6 +125,7 @@ const MEMBER = [
   "kin.work.removeTouch",
   "kin.work.subscribe",
   "kin.work.summary",
+  "kin.work.tickStep",
   "kin.work.update",
   "kin.work.updateContact",
   "kin.work.updateDeal",

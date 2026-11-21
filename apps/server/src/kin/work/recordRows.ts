@@ -107,6 +107,9 @@ export type RecordRow = {
   readonly dateAt: number | null;
   readonly dateAllDay: number;
   readonly repeatJson: string | null;
+  /** A task's checklist (`stepsOf`), and whether someone marked it urgent. */
+  readonly stepsJson: string | null;
+  readonly urgent: number | null;
   /** Payments not voided, in its own currency. */
   readonly paid: number;
   /** Of `paid`, tax the payer withheld at source rather than paid in. */
@@ -353,6 +356,7 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.fields_json AS "fieldsJson",
     r.amount_minor AS "amountMinor", r.currency, r.date_at AS "dateAt",
     r.date_all_day AS "dateAllDay", r.repeat_json AS "repeatJson",
+    r.steps_json AS "stepsJson", r.urgent,
     (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
       WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
     (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
@@ -459,8 +463,32 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
       : {}),
     ...moneyOf(row),
     ...listNameOf(row.registerId),
+    ...stepsCount(row),
+    ...(row.registerId === "work" && row.urgent === 1 ? { urgent: true as const } : {}),
   };
 };
+
+/** A task's steps as stored: in order, each its words and whether it is ticked. */
+const StepsJson = Schema.fromJsonString(
+  Schema.Array(Schema.Struct({ title: Schema.String, done: Schema.Boolean })),
+);
+const decodeSteps = Schema.decodeUnknownOption(StepsJson);
+export const encodeSteps = Schema.encodeEffect(StepsJson);
+export const stepsOf = (row: Pick<RecordRow, "registerId" | "stepsJson">) =>
+  row.registerId !== "work" || row.stepsJson === null
+    ? []
+    : Option.getOrElse(decodeSteps(row.stepsJson), () => []);
+const stepsCount = (row: RecordRow) => {
+  const steps = stepsOf(row);
+  return steps.length === 0
+    ? {}
+    : { steps: { done: steps.filter((step) => step.done).length, of: steps.length } };
+};
+/** How a checklist reads in a task's history: "Wireframe (done), Review with Zoya". */
+export const shownSteps = (steps: ReadonlyArray<{ title: string; done: boolean }>) =>
+  steps.length === 0
+    ? null
+    : steps.map((step) => (step.done ? `${step.title} (done)` : step.title)).join(", ");
 
 /** Who gave a task to whoever holds it now, when that is someone else. */
 const givenOf = (row: RecordRow): { readonly givenBy?: KinWorkPrincipal } => {
@@ -725,6 +753,7 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
 ) {
   const orgId = row.orgId as KinOrgId;
   const reason = row.registerId === "work" ? parseFields(row.fieldsJson).reason : undefined;
+  const checklist = stepsOf(row);
   return {
     ...toRecord(row, now),
     notes: row.notes,
@@ -738,6 +767,7 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
       ? {}
       : { assignedByAgent: KinAgentId.make(row.assignedByAgent) }),
     ...(typeof reason === "string" ? { reason } : {}),
+    ...(checklist.length === 0 ? {} : { checklist }),
     createdBy: actorOf(row.createdByKind, row.createdById),
     links: yield* linksOf(orgId, row.recordId),
     changes: yield* changesOf(orgId, row.recordId, changeLimit),
