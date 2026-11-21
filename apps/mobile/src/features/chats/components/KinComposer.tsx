@@ -3,7 +3,7 @@ import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime
 import { type EnvironmentId, type KinAttachment, type KinChatId } from "@t3tools/contracts";
 import { useNavigation } from "@react-navigation/native";
 import { AsyncResult } from "effect/reactivity";
-import { useImperativeHandle, useState, type Ref, type RefObject } from "react";
+import { useEffect, useImperativeHandle, useState, type Ref, type RefObject } from "react";
 import { Platform, Pressable, View } from "react-native";
 
 import { ComposerAttachmentStrip } from "../../../components/ComposerAttachmentStrip";
@@ -64,6 +64,7 @@ import {
 import {
   kinDocAskPlaceholder,
   kinDocRefLabel,
+  kinDocSuggestStarter,
   kinPendingRefAtom,
   kinPendingRefKey,
 } from "@t3tools/client-runtime/kin/kinDocs";
@@ -183,6 +184,23 @@ export function KinComposer({
   const showsDictation = voicePresentation.statusKind === "active";
   const controlSize = largeControls ? "large" : "regular";
   const navigation = useNavigation();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- listens for the chat losing focus; nothing focuses the box on entry, so iOS gets no focus to restore
+  useEffect(
+    () => navigation.addListener("blur", () => editorRef.current?.blur()),
+    [navigation, editorRef],
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- listens for the chat leaving the stack, which ends a doc change begun for it
+  useEffect(
+    () =>
+      navigation.addListener("beforeRemove", () => {
+        const held = appAtomRegistry.get(pendingAtom);
+        if (held === null) return;
+        appAtomRegistry.set(pendingAtom, null);
+        if (getComposerDraftSnapshot(draftKey).text === kinDocSuggestStarter(held.ref))
+          setComposerDraftText(draftKey, "");
+      }),
+    [navigation, pendingAtom, draftKey],
+  );
   const serverConfig = useServerConfigs().get(props.environmentId) ?? null;
   // Whoever may post in a Kin chat may attach: the upload stays theirs alone until a send the
   // host checks against the chat claims it.

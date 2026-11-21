@@ -1,3 +1,5 @@
+import { Atom } from "effect/reactivity";
+
 /** Every Kin host uses the same org id, so the environment keeps two hosts' drafts apart. */
 export const kinDraftKey = (environmentId: string, orgId: string, chatId: string) =>
   `${environmentId}:${orgId}:${chatId}`;
@@ -19,13 +21,28 @@ export const kinDraftPrefill = (typed: string, prepared: string): string =>
 
 /**
  * What one Ask readies in a chat: its question added to what was typed, which stays, and its own
- * doc reference or none. One an earlier Ask left unsent is replaced, never carried into this one;
- * files the person attached aren't the Ask's and stay.
+ * doc reference or none. The words or reference an earlier Ask readied and nobody touched are
+ * replaced, never carried into this one; files the person attached aren't the Ask's and stay.
  */
 export const kinAskDraft = <Ref>(
   typed: string,
-  ask: { readonly question: string | null; readonly ref: Ref | null },
-): { readonly text: string; readonly ref: Ref | null } => ({
-  text: ask.question === null ? typed : kinDraftPrefill(typed, ask.question),
-  ref: ask.ref,
-});
+  ask: {
+    readonly question: string | null;
+    readonly ref: Ref | null;
+    /** The words the last Ask readied in this box, if any. */
+    readonly readied?: string | null;
+  },
+): { readonly text: string; readonly ref: Ref | null } => {
+  const untouched =
+    ask.readied !== undefined && ask.readied !== null && typed.trim() === ask.readied.trim();
+  const left = untouched ? "" : typed;
+  return {
+    text: ask.question === null ? left : kinDraftPrefill(left, ask.question),
+    ref: ask.ref,
+  };
+};
+
+/** Per chat box: the words the last Ask readied there, so the next Ask replaces them untouched. */
+export const kinReadiedDraftAtom = Atom.family((draftKey: string) =>
+  Atom.make<string | null>(null).pipe(Atom.keepAlive, Atom.withLabel(`kin:readied:${draftKey}`)),
+);

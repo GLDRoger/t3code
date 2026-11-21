@@ -2,17 +2,27 @@ import { KIN_MONEY } from "@t3tools/client-runtime/kin/kinMoney";
 import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
+import type { KinNewChatAgent } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { useNavigation } from "@react-navigation/native";
-import { EnvironmentId, type KinOrgId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type KinAgentId,
+  type KinLeadsListResult,
+  type KinOrgId,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
-import { AsyncResult } from "effect/reactivity";
-import type { ReactNode } from "react";
+import { AsyncResult, Atom } from "effect/reactivity";
+import { useState, type ReactNode } from "react";
 import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
 import type { AppBarProps } from "../../components/ui/AppBar.types";
 import { Button } from "../../components/ui/Button";
+import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { ListActionRow } from "../../components/ui/ListActionRow";
+import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
@@ -21,16 +31,20 @@ import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { KinMemoryEntry } from "./KinMemoryScreen";
 import { KinTeamEntry } from "./KinTeamScreen";
 import { KinWorkEntry } from "./KinWorkScreen";
+import { KinAvatar } from "./components/KinAvatar";
 import { KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
 import { KinInboxNotice, KinScreenState, KinStandInNotice } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
+  kinChatListAgents,
   kinChatListRowLabel,
   kinChatListRows,
   kinRoomLine,
   type KinChatListRow,
+  KIN_CHATS_AGENTS_TITLE,
   KIN_CHATS_EMPTY,
+  KIN_CHATS_INTRO,
 } from "@t3tools/client-runtime/kin/kinChatListRows";
 import {
   formatKinTime,
@@ -41,12 +55,21 @@ import {
   type KinInboxScreenState,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { kinClient } from "./state/kinClient";
+import {
+  dismissKinIntroAtom,
+  kinIntroDismissedAtom,
+  kinIntroPersonKey,
+} from "./state/kinIntroDismissed";
 import { kinJoinedNameAtom } from "./state/kinJoin";
+import { useKinOpenAgentChat } from "./state/useKinOpenChat";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinProfiles } from "./state/useKinProfiles";
 import { kinTabFoot } from "./components/KinTab";
 
 const NO_ENVIRONMENT = EnvironmentId.make("kin:none");
+
+type LeadsResult = AsyncResult.AsyncResult<KinLeadsListResult, unknown> | null;
+const noLeadsAtom: Atom.Atom<LeadsResult> = Atom.make<LeadsResult>(null);
 
 /** The Kin list as a page over coding threads: opening and leaving it is the switch between them. */
 export function KinChatsScreen() {
@@ -79,6 +102,21 @@ export function KinChatsList({
   const canAddLead = useAtomValue(
     kinClient.leadCreate.permissionAtom(newLeadAt?.environmentId ?? NO_ENVIRONMENT),
   );
+  // Who may message whom is the host's rule; it lists them, and a failed read lists none.
+  const leadsResult = useAtomValue(
+    newLeadAt === null
+      ? noLeadsAtom
+      : kinClient.leads({
+          environmentId: newLeadAt.environmentId,
+          input: { orgId: newLeadAt.orgId },
+        }),
+  );
+  const leads = leadsResult === null ? null : Option.getOrNull(AsyncResult.value(leadsResult));
+  const agents =
+    state._tag === "ready" && leads !== null
+      ? kinChatListAgents(state.inbox.value.chats, leads, kinDirectory(host).me)
+      : [];
+  const openAgentChat = useKinOpenAgentChat();
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       {newLeadAt === null ? (
@@ -93,6 +131,15 @@ export function KinChatsList({
           onRetry={retry}
           bottomClearance={bottomClearance}
           {...(empty === undefined ? {} : { empty })}
+          agents={agents}
+          onOpenAgent={(agentId) => {
+            if (newLeadAt === null) return;
+            void openAgentChat(newLeadAt.environmentId, newLeadAt.orgId, agentId).then(
+              (problem) => {
+                if (problem !== null) Dialog.alert(problem);
+              },
+            );
+          }}
           memory={
             <>
               {state._tag === "ready" && orgId !== null && myPersonId !== null ? (
@@ -101,6 +148,9 @@ export function KinChatsList({
                   orgId={orgId}
                   personId={myPersonId}
                 />
+              ) : null}
+              {state._tag === "ready" && myPersonId !== null ? (
+                <KinWhatKinIs environmentId={state.environmentId} personId={myPersonId} />
               ) : null}
               {
                 // Where Kin is the whole app these are Settings pages and a tab, and the list is chats.
@@ -170,6 +220,29 @@ function KinJoinedName(props: {
               personId: mine.personId,
             });
           },
+        }}
+      />
+    </View>
+  );
+}
+
+/** One line saying what Kin is, on the first Chats screen, until this person dismisses it here. */
+function KinWhatKinIs(props: { readonly environmentId: EnvironmentId; readonly personId: string }) {
+  const person = kinIntroPersonKey(props.environmentId, props.personId);
+  const dismissed = useAtomValue(kinIntroDismissedAtom);
+  const dismiss = useAtomSet(dismissKinIntroAtom);
+  const [gone, setGone] = useState(false);
+  // Hidden until the saved answer loads, so a dismissed line never flashes back.
+  if (gone || !AsyncResult.isSuccess(dismissed) || dismissed.value.has(person)) return null;
+  return (
+    <View className="px-4 pb-2 pt-2">
+      <Notice
+        icon="info.circle"
+        message={KIN_CHATS_INTRO.line}
+        dismissLabel={KIN_CHATS_INTRO.dismiss}
+        onDismiss={() => {
+          setGone(true);
+          dismiss(person);
         }}
       />
     </View>
@@ -254,10 +327,19 @@ export function KinChatsView(props: {
   readonly onOpenChat: (chatId: KinChatRowView["chatId"]) => void;
   /** A company with no chats yet starts here: its first agent, the Chief of staff suggested. */
   readonly onCreateFirstAgent?: () => void;
+  /** Agents the viewer may message and has no chat with yet, under the chats. */
+  readonly agents?: ReadonlyArray<KinNewChatAgent>;
+  readonly onOpenAgent?: (agentId: KinAgentId) => void;
 }) {
   const { state, onOpenChat } = props;
   const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
   const banner = view === null ? null : kinWaitingBannerView(view.waiting);
+  const agents =
+    props.agents === undefined ||
+    props.agents.length === 0 ||
+    props.onOpenAgent === undefined ? null : (
+      <KinAgentsToMessage agents={props.agents} onOpen={props.onOpenAgent} />
+    );
   if (state._tag !== "ready" || view === null || view.rows.length === 0) {
     return (
       <ScreenScrollView
@@ -296,6 +378,7 @@ export function KinChatsView(props: {
                   }
                 />
               )}
+              {agents === null ? null : <View className="-mx-4">{agents}</View>}
             </>
           )}
         </KinScreenState>
@@ -351,7 +434,31 @@ export function KinChatsView(props: {
           {props.memory}
         </>
       }
+      ListFooterComponent={agents}
     />
+  );
+}
+
+/** Agents not yet talked to, each with what it is for; a tap opens a chat with it. */
+function KinAgentsToMessage(props: {
+  readonly agents: ReadonlyArray<KinNewChatAgent>;
+  readonly onOpen: (agentId: KinAgentId) => void;
+}) {
+  return (
+    <View className="px-4 pt-4">
+      <ListSection title={KIN_CHATS_AGENTS_TITLE}>
+        {props.agents.map((agent) => (
+          <ListActionRow
+            key={agent.agentId}
+            label={agent.name}
+            {...(agent.intro === null ? {} : { description: agent.intro })}
+            accessibilityLabel={`Message ${agent.name}`}
+            leading={<KinAvatar avatar={kinAgentAvatar(agent.agentId)} size="small" />}
+            onPress={() => props.onOpen(agent.agentId)}
+          />
+        ))}
+      </ListSection>
+    </View>
   );
 }
 
