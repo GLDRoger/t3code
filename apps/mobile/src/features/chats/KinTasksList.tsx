@@ -400,7 +400,7 @@ export function KinTasksList(
                     cause={listState.failed}
                     onRetry={list.refresh}
                   />
-                ) : (
+                ) : searching && (found.hits?.length ?? 0) > 0 ? null : (
                   <EmptyState
                     variant="plain"
                     title={nothing.title}
