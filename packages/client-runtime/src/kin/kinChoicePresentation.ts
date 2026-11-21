@@ -1,4 +1,4 @@
-// @effect-diagnostics globalDate:off - Pure view helpers format a mail thread's date for React render, outside an Effect runtime.
+// @effect-diagnostics globalDate:off globalTimers:off - Pure view helpers format a mail thread's date, and a held press waits on the device's timer, outside an Effect runtime.
 import { kinNow } from "./kinNow.ts";
 import {
   KIN_CHOICE_CARD_ACTION,
