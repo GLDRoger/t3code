@@ -5,7 +5,8 @@
  */
 
 export const TEAM_MAX_MESSAGES = 16;
-export const TEAM_UNITS_CAP = 150_000;
+/** About 33,000 units per warm owner-seat turn, so the cap lets the designed messages run. */
+export const TEAM_UNITS_CAP = TEAM_MAX_MESSAGES * 33_000;
 export const TEAM_IDLE_MS = 24 * 60 * 60 * 1000;
 /** The Chief of staff's chair check comes once, at this many messages. */
 const TEAM_CHAIR_AT = 10;

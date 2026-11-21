@@ -25,6 +25,9 @@ import {
   KinOrgPauseInput,
   KinOrgResumeInput,
   KinOrgState,
+  KinReachListInput,
+  KinReachListResult,
+  KinReachSetInput,
 } from "./kinLead.ts";
 import { KinApprovalRpcs, KIN_APPROVAL_RPC_SCOPES } from "./kinApprovals.ts";
 import { KinLevelRpcs, KIN_LEVEL_RPC_SCOPES } from "./kinLevels.ts";
@@ -32,6 +35,7 @@ import { KinMemoryRpcs, KIN_MEMORY_RPC_SCOPES } from "./kinMemory.ts";
 import { KinWorkRpcs, KIN_WORK_RPC_SCOPES } from "./kinWork.ts";
 import { KinDocsRpcs, KIN_DOCS_RPC_SCOPES } from "./kinDocs.ts";
 import { KinDealRpcs, KIN_DEAL_RPC_SCOPES } from "./kinDeals.ts";
+import { KinImportRpcs, KIN_IMPORT_RPC_SCOPES } from "./kinImport.ts";
 import { KinFinanceRpcs, KIN_FINANCE_RPC_SCOPES } from "./kinFinance.ts";
 import { KinStatementRpcs, KIN_STATEMENT_RPC_SCOPES } from "./kinStatements.ts";
 import { KinMoneyAnswerRpcs, KIN_MONEY_ANSWER_RPC_SCOPES } from "./kinMoneyAnswers.ts";
@@ -47,6 +51,7 @@ import {
   KinLeadInterruptInput,
   KinLeadInterruptResult,
   KIN_CHAT_RPC_SCOPES,
+  type KinPersonAccess,
 } from "./kinChat.ts";
 import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
 import { KinPeopleRpcs, KIN_PEOPLE_RPC_SCOPES } from "./kinPeople.ts";
@@ -89,6 +94,16 @@ const KinLeadRpcs = [
   Rpc.make("kin.lead.access.revoke", {
     payload: KinLeadAccessChangeInput,
     success: KinLeadAccessResult,
+    error: KinError,
+  }),
+  Rpc.make("kin.reach.list", {
+    payload: KinReachListInput,
+    success: KinReachListResult,
+    error: KinError,
+  }),
+  Rpc.make("kin.reach.set", {
+    payload: KinReachSetInput,
+    success: KinReachListResult,
     error: KinError,
   }),
   Rpc.make("kin.leads.list", {
@@ -185,6 +200,7 @@ export const KinRpcs = [
   ...KinMemoryRpcs,
   ...KinWorkRpcs,
   ...KinDealRpcs,
+  ...KinImportRpcs,
   ...KinDocsRpcs,
   ...KinFinanceRpcs,
   ...KinMoneyAnswerRpcs,
@@ -207,6 +223,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_MEMORY_RPC_SCOPES,
   ...KIN_WORK_RPC_SCOPES,
   ...KIN_DEAL_RPC_SCOPES,
+  ...KIN_IMPORT_RPC_SCOPES,
   ...KIN_DOCS_RPC_SCOPES,
   ...KIN_FINANCE_RPC_SCOPES,
   ...KIN_MONEY_ANSWER_RPC_SCOPES,
@@ -233,6 +250,8 @@ export const KIN_RPC_SCOPES = {
   "kin.lead.access.list": AuthKinChatScope,
   "kin.lead.access.grant": AuthKinChatScope,
   "kin.lead.access.revoke": AuthKinChatScope,
+  "kin.reach.list": AuthKinChatScope,
+  "kin.reach.set": AuthKinChatScope,
   "kin.lead.update": AuthKinChatScope,
   "kin.lead.retire": AuthKinChatScope,
   "kin.lead.restore": AuthKinChatScope,
@@ -290,6 +309,8 @@ const KIN_RPC_ACCESS = {
   "kin.lead.access.list": "owner_level",
   "kin.lead.access.grant": "owner_level",
   "kin.lead.access.revoke": "owner_level",
+  "kin.reach.list": "owner_level",
+  "kin.reach.set": "owner_level",
   "kin.leads.list": "person",
   "kin.lead.update": "owner_level",
   "kin.lead.retire": "owner_level",
@@ -367,6 +388,10 @@ const KIN_RPC_ACCESS = {
   "kin.work.projectPeople": "person",
   "kin.work.logTouch": "person",
   "kin.work.removeTouch": "person",
+  // Marketing's reads and the list export: each reader gets what they see in Clients.
+  "kin.work.marketing": "person",
+  "kin.work.contactList": "person",
+  "kin.work.exportContacts": "person",
   // Deals: a teammate reads and changes theirs; the service decides. Stages are owner level.
   "kin.work.deals": "person",
   "kin.work.deal": "person",
@@ -376,6 +401,12 @@ const KIN_RPC_ACCESS = {
   "kin.work.dealStep": "person",
   "kin.work.dealStages": "person",
   "kin.work.setDealStages": "owner_level",
+  "kin.work.setDealQuietDays": "owner_level",
+  // Bringing a file in, and taking it away again: the owner level; the service decides too.
+  "kin.import.check": "owner_level",
+  "kin.import.apply": "owner_level",
+  "kin.import.undo": "owner_level",
+  "kin.import.runs": "owner_level",
   "kin.docs.list": "person",
   "kin.docs.get": "person",
   "kin.docs.history": "person",
@@ -508,6 +539,10 @@ const KIN_RPC_ACCESS = {
 export const kinRpcAccess = (method: string): KinRpcAccess | undefined =>
   (KIN_RPC_ACCESS as Record<string, KinRpcAccess>)[method];
 
+/** What each level means, read the same by the host's gate and a client's controls. */
+export const kinAccessAllows = (kind: KinPersonAccess | null | undefined, access: KinRpcAccess) =>
+  access === "person" || kind === "owner" || (kind === "co_owner" && access === "owner_level");
+
 export const KIN_RPC_AGGREGATES = {
   "kin.people.listInvites": "kin-people",
   "kin.people.revokeInvite": "kin-people",
@@ -567,6 +602,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.lead.access.list": "kin-chat",
   "kin.lead.access.grant": "kin-chat",
   "kin.lead.access.revoke": "kin-chat",
+  "kin.reach.list": "kin-chat",
+  "kin.reach.set": "kin-chat",
   "kin.orgs.list": "kin-chat",
   "kin.chats.subscribe": "kin-chat",
   "kin.chats.createDirect": "kin-chat",
@@ -657,6 +694,9 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.projectPeople": "kin-work",
   "kin.work.logTouch": "kin-work",
   "kin.work.removeTouch": "kin-work",
+  "kin.work.marketing": "kin-work",
+  "kin.work.contactList": "kin-work",
+  "kin.work.exportContacts": "kin-work",
   "kin.work.deals": "kin-work",
   "kin.work.deal": "kin-work",
   "kin.work.createDeal": "kin-work",
@@ -665,6 +705,11 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.dealStep": "kin-work",
   "kin.work.dealStages": "kin-work",
   "kin.work.setDealStages": "kin-work",
+  "kin.work.setDealQuietDays": "kin-work",
+  "kin.import.check": "kin-work",
+  "kin.import.apply": "kin-work",
+  "kin.import.undo": "kin-work",
+  "kin.import.runs": "kin-work",
   "kin.work.lists": "kin-work",
   "kin.work.updateList": "kin-work",
   "kin.work.dates": "kin-work",

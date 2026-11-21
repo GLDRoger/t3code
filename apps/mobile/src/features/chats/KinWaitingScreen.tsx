@@ -8,7 +8,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { KinInboxPage } from "./components/KinScreenState";
-import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import { KIN_WAITING_TITLE, selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   formatKinTime,
   kinDirectory,
@@ -32,7 +32,7 @@ export function KinWaitingScreen() {
   const { agentNames } = kinDirectory(host);
   const nowMs = useNowMinuteMs();
   return (
-    <KinInboxPage title="Waiting on you" state={state} onRetry={retry}>
+    <KinInboxPage title={KIN_WAITING_TITLE} state={state} onRetry={retry}>
       {(ready) => {
         const view = selectKinInboxView(ready.inbox.value, waiting);
         if (view.waiting.length === 0) {

@@ -23,7 +23,7 @@ import { KIN_PROVIDERS } from "./providers.ts";
 import { acpFake } from "./providers/acp.testkit.ts";
 import { claudeFake } from "./providers/claude.testkit.ts";
 import { codexFake } from "./providers/codex.testkit.ts";
-import { kinInstructions } from "./session.ts";
+import { CONFINED_WEB_SEARCH, kinInstructions } from "./session.ts";
 
 /** Every registered provider has a fake; a provider without one fails here, not in production. */
 const FAKES: ReadonlyArray<ProviderFake> = [claudeFake, codexFake, acpFake];
@@ -45,6 +45,7 @@ const kin = (refusal: (thread: ThreadId) => string | undefined) =>
         KinAgentSessionPolicy,
         KinAgentSessionPolicy.of({
           refusal: (thread) => Effect.sync(() => refusal(thread)),
+          webSearch: (thread) => Effect.sync(() => refusal(thread)),
           delegated: (thread) => Effect.succeed(thread === "task-from-lead"),
           toolDirectories: [PINNED],
           agentName: () => Effect.succeed(AGENT),
@@ -148,7 +149,7 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
   );
 
   it.effect(
-    "a teammate's or group chat: Kin's tools only, no shell, files or web, none of the user's own config, and any ask refused",
+    "a teammate's or group chat: Kin's tools only, no shell or files, web search only where the provider runs it, none of the user's own config, and any ask refused",
     () =>
       Effect.gen(function* () {
         const shared = yield* open(fake, "kin-shared:tech", {
@@ -160,6 +161,7 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
         assert.isTrue(shared.deferredFindable);
         assert.strictEqual(shared.personalConfig, limited(driver, "ownConfigLoads"));
         assert.isFalse(shared.builtins);
+        assert.strictEqual(shared.webSearch, CONFINED_WEB_SEARCH.has(driver));
         assert.notStrictEqual(yield* asked(shared.askShell), "allowed");
         assert.notStrictEqual(yield* asked(shared.askRead), "allowed");
         // Even were Kin's policy to admit it, a chat others read never gets a shell.

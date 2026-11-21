@@ -33,7 +33,6 @@ describe("a task's Linked section", () => {
         links={[]}
         title="Linked"
         onOpenKey={onOpenKey}
-        onClose={() => {}}
       />,
     );
     await expect.element(screen.getByRole("button", { name: /D-11/ })).toBeVisible();

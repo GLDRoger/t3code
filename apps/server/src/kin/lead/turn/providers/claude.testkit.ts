@@ -80,7 +80,10 @@ export const claudeFake: ProviderFake = {
           options.strictMcpConfig === true &&
           settings?.autoMemoryEnabled === false
         ),
-        builtins: listed === undefined || listed.some((tool) => tool !== "ToolSearch"),
+        builtins:
+          listed === undefined ||
+          listed.some((tool) => tool !== "ToolSearch" && tool !== "WebSearch"),
+        webSearch: listed === undefined || listed.includes("WebSearch"),
         shell:
           options.env === undefined
             ? undefined

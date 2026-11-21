@@ -1,22 +1,29 @@
-import { kinNeedsYouCount } from "@t3tools/client-runtime/kin/kinTasksList";
+import { useAtomValue } from "@effect/atom-react";
+import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinNeedsYouCount, kinTasksDealFactsOf } from "@t3tools/client-runtime/kin/kinTasksList";
 import { kinWorkListsMoved } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinWorkMoveCounts } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState } from "react";
 
+import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { kinClient } from "./kinClient";
+import { useKinAttention } from "./useKinAttention";
 import { useKinOpen } from "./useKinOpen";
 import { useKinWork, type KinWorkTarget } from "./useKinWork";
 
 /**
  * The nav's Tasks count: the same number as Tasks' Needs you heading (`kinNeedsYouCount`), as the
  * phone's dock badge reads it. Without the host's open list it is Tasks' own count, read again
- * whenever Work's tasks change. Null until known, and on a host that counts neither.
+ * whenever Work's tasks change, and the deal facts. Null until known, and on a host that counts neither.
  */
 export function useKinTasksNeedsYou(target: KinWorkTarget): number | null {
   const { environmentId, orgId } = target;
   const open = useKinOpen(target);
+  const pulse = useKinAttention(target, open === null);
+  const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
   const work = useKinWork(target);
   const seq =
     open === null && work._tag === "ready" && !work.stale
@@ -39,5 +46,10 @@ export function useKinTasksNeedsYou(target: KinWorkTarget): number | null {
       current = false;
     };
   }, [environmentId, orgId, seq]);
-  return kinNeedsYouCount({ open: open ?? null, counts: open === undefined ? null : counts });
+  const dealFacts = kinTasksDealFactsOf(open, pulse, { ownerLevel, me: me?.personId ?? null });
+  return kinNeedsYouCount({
+    open: open ?? null,
+    counts: open === undefined ? null : counts,
+    dealFacts: dealFacts.length,
+  });
 }

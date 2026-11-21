@@ -30,6 +30,7 @@ import { AsyncResult } from "effect/reactivity";
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { formatKinTime } from "./kinScreenState.ts";
 import { KIN_SERVICE_SLOW, KIN_SERVICE_UNREACHED, kinFailureText } from "./kinAnswers.ts";
+import { kinCount } from "./kinCount.ts";
 
 /**
  * The owner's Connections screens: plain-word states for connections and their tools, the Add
@@ -181,10 +182,10 @@ export interface KinConnectionStatus {
   readonly detail: string;
 }
 
-const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
-
 /** The outside websites visuals may load from: rarely needed, so folded under Advanced. */
 export const KIN_VISUAL_HOSTS = {
+  allowFailed: "Couldn't allow it.",
+  openLink: "Open this link?",
   advanced: "Advanced",
   title: "Websites charts can load from",
   count: (count: number) => (count === 0 ? "None" : String(count)),
@@ -244,7 +245,7 @@ export function kinConnectionStatus(connection: KinConnection): KinConnectionSta
       label: "Needs a look",
       detail:
         changed > 0
-          ? `${plural(changed, "tool changed", "tools changed")} since you allowed ${changed === 1 ? "it" : "them"}.`
+          ? `${kinCount(changed, "tool changed", "tools changed")} since you allowed ${changed === 1 ? "it" : "them"}.`
           : KIN_CONNECTIONS_COPY.instructionsChanged,
     };
   return {
@@ -255,7 +256,7 @@ export function kinConnectionStatus(connection: KinConnection): KinConnectionSta
         ? "Turn on the tools agents may use."
         : (connection.sendAs?.length ?? 0) > 0 && connection.needsSignInToSend !== true
           ? "Kin reads it, and sends only after you confirm."
-          : `Agents can use ${plural(connection.readTools, "tool", "tools")}.`,
+          : `Agents can use ${kinCount(connection.readTools, "tool", "tools")}.`,
   };
 }
 
