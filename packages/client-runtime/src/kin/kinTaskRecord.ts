@@ -57,6 +57,9 @@ export const KIN_TASK_RECORD = {
   fromProject: "From the project",
   toldWhenBack: (name: string, day: string) =>
     `${name} is away until ${day}, so they'll be told when they're back.`,
+  /** The Details row that opens what the card above already says. */
+  folded: (asked: boolean, held: boolean) =>
+    asked && held ? "Who asked and who has it" : held ? "Who has it" : "Who asked",
 } as const;
 
 /** A task's note box and its notes, on web and phone. */
@@ -316,6 +319,29 @@ export function kinNextStep(input: NextStepInput): KinNextStepView {
 }
 
 /**
+ * Which of Details' Asked by and Held by name only the person the next-step card already
+ * names, so they fold under one row. Null where neither does.
+ */
+export function kinTaskPeopleFolded(
+  item: Pick<KinRecordDetail, "owner" | "createdBy" | "assignedBy" | "askedBy" | "handedBack">,
+  step: Pick<KinNextStepView, "kind">,
+): { readonly asked: boolean; readonly held: boolean; readonly label: string } | null {
+  const named =
+    step.kind === "yours" || step.kind === "held" || step.kind === "late" || step.kind === "agent"
+      ? item.owner
+      : step.kind === "suggested" && item.createdBy._tag !== "system"
+        ? item.createdBy
+        : step.kind === "handedBack" && item.handedBack !== undefined
+          ? item.handedBack.by
+          : null;
+  if (named === null) return null;
+  const asker = kinRecordAskedBy(item);
+  const asked = asker !== null && samePrincipal(asker, named);
+  const held = samePrincipal(item.owner, named);
+  return asked || held ? { asked, held, label: KIN_TASK_RECORD.folded(asked, held) } : null;
+}
+
+/**
  * Where a task page's own controls sit for this viewer: status on the page, the rest in the ••• /
  * More menu; the Brief section carries the page's edit. Each is present only where the host takes
  * that move from this viewer, and Done or Reopen only where the next-step card doesn't offer it.
@@ -427,7 +453,8 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
       who: { name: "You", avatar: holder.avatar },
       line: "have this",
       when: due === null ? null : `due ${due}`,
-      words: view.reason,
+      // What to do: the brief, and why it came only while there is none.
+      words: view.notes ?? view.reason,
       note: null,
       acts: [...done, ...back],
     };

@@ -24,6 +24,7 @@ import {
   kinRecordChip,
   kinTaskActivity,
   kinTaskControls,
+  kinTaskPeopleFolded,
 } from "./kinTaskRecord.ts";
 import { kinWorkItemView, type KinWorkNames } from "./kinWork.ts";
 
@@ -318,6 +319,30 @@ describe("kinNextStep", () => {
       kind: "yours",
       acts: [{ id: "done" }, { id: "handBack", label: "Hand back to Meera" }],
     });
+  });
+
+  it("shows the holder the brief on top, and why it came only while there is no brief", () => {
+    const why = task({ owner: rhea, reason: "Owner's ask; Dev leads the booking app" });
+    expect(stepOf(why).words).toBe("Owner's ask; Dev leads the booking app");
+    expect(stepOf({ ...why, notes: "Book two pilot clinics for the beta." }).words).toBe(
+      "Book two pilot clinics for the beta.",
+    );
+  });
+
+  it("folds Details' Asked by and Held by when the card already names that person", () => {
+    // Your own: "You have this", asked by you.
+    const own = task({ owner: rhea, createdBy: rhea, assignedBy: null });
+    expect(kinTaskPeopleFolded(own, stepOf(own))).toEqual({
+      asked: true,
+      held: true,
+      label: "Who asked and who has it",
+    });
+    // Meera holds it and Rhea asked: the card names Meera, so only Held by folds.
+    const hers = task();
+    expect(kinTaskPeopleFolded(hers, stepOf(hers))).toMatchObject({ asked: false, held: true });
+    // An agent's suggestion names the agent, who neither asked nor holds it here.
+    const suggested = task({ owner: meera, createdBy: finance, confirmed: false });
+    expect(kinTaskPeopleFolded(suggested, stepOf(suggested))).toBeNull();
   });
 
   it("quotes the words a task came back with", () => {

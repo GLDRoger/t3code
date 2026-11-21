@@ -1048,7 +1048,7 @@ export function kinWorkAudience(
   };
   const ids = (["people", "team", "me"] as const).filter(reachable);
   const choices = ids.map((id) => ({ id, label: label[id] }));
-  return { current, answer, choices: choices.length > 1 ? choices : [] };
+  return { current, answer, short: label[current], choices: choices.length > 1 ? choices : [] };
 }
 
 /** What picking `to` changes, null where it stays: its private mark, and its sharing. */
