@@ -599,6 +599,38 @@ describe("a list by its definition", () => {
     );
     expect(quotes.totals).toEqual([]);
     expect(quotes.summary).toBe("Sent, waiting: ₹1 · Accepted: ₹2");
+    // Bank rows add money in and out apart, then their net, which may go below zero; `total`
+    // stays the plain sum older phone builds show. A side with nothing in it goes unsaid.
+    const out = { moneyIn: inr(100), moneyOut: inr(300), net: inr(-200), total: inr(400) };
+    const outOnly = { moneyIn: [], moneyOut: inr(300), net: inr(-300), total: inr(300) };
+    const inOnly = { moneyIn: inr(100), moneyOut: [], net: inr(100), total: inr(100) };
+    const bank = kinListHeader(
+      list({ amount: true }),
+      { ...KIN_LIST_DEFAULT_FILTER, groupBy: "month" },
+      {
+        ...out,
+        groups: [
+          { group: "2026-09", count: 1, ...inOnly },
+          { group: "2026-10", count: 1, ...outOnly },
+          { group: "2026-11", count: 2, ...out },
+        ],
+      },
+      4,
+    );
+    expect([bank.figures, bank.totals, bank.summary]).toEqual([
+      [
+        { id: "moneyIn", label: "Money in", lines: ["₹1"] },
+        { id: "moneyOut", label: "Money out", lines: ["₹3"] },
+        { id: "net", label: "Net", lines: ["−₹2"] },
+      ],
+      [],
+      "Money in: ₹1 · Money out: ₹3 · Net: −₹2",
+    ]);
+    expect(bank.groups.map((group) => [group.totals, group.billed])).toEqual([
+      [["−₹2"], "₹1 in · ₹3 out"],
+      [["−₹3"], "₹3 out"],
+      [["₹1"], "₹1 in"],
+    ]);
     expect(kinListFilterParam(JSON.stringify({ noParty: true, noCategory: true }))).toMatchObject({
       noParty: true,
       noCategory: true,

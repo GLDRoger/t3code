@@ -111,6 +111,7 @@ import {
   verifyRefs,
 } from "./registers.ts";
 import { contactFields } from "./contactDetails.ts";
+import { directionOf, findBankList } from "./statements/bankList.ts";
 import { cleanTags } from "./tags.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
@@ -376,6 +377,10 @@ type Sums = {
   /** Quotes sent and waiting, and accepted. */
   readonly sent?: ReadonlyArray<KinMoney>;
   readonly accepted?: ReadonlyArray<KinMoney>;
+  /** The bank list's money in, money out, and in less out; `total` stays the plain sum. */
+  readonly moneyIn?: ReadonlyArray<KinMoney>;
+  readonly moneyOut?: ReadonlyArray<KinMoney>;
+  readonly net?: ReadonlyArray<KinMoney>;
 };
 export type Totals = Sums & {
   readonly counted: number;
@@ -2522,23 +2527,47 @@ const make = Effect.gen(function* () {
           at: number;
           paid: number;
           received: number;
+          fields: string;
         }>`SELECT r.amount_minor AS minor, r.currency, r.category, r.party_id AS party,
             r.project_id AS project, r.side, r.state, r.owner_kind || ':' || r.owner_id AS owner,
             ${moneyDay(sql)} AS at,
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}) AS paid,
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live} AND p.withheld = 0
               AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
-              AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received
+              AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received,
+            r.fields_json AS fields
           FROM kin_records r WHERE ${filter} AND ${countedEntry(sql, asked)}
           ORDER BY r.record_id`;
         const listDef = yield* resolveList(orgId, input.list ?? "work");
         const paidOverTime = listDef.payments === true;
+        const directed = (yield* findBankList(orgId).pipe(provideSql))?.id === listDef.id;
         const amounts = (members: typeof rows): Sums => {
           const priced = members.flatMap((row) =>
             row.minor === null ? [] : [{ ...row, minor: row.minor }],
           );
+          // Money in and out never add up to one figure; an entry with no direction is in neither.
+          const way = directed ? priced.map((row) => directionOf(parseFields(row.fields))) : [];
+          const side = (direction: "credit" | "debit") =>
+            addUp(
+              priced.filter((_, at) => way[at] === direction),
+              home,
+            );
           return {
             total: addUp(priced, home),
+            ...(directed
+              ? {
+                  moneyIn: side("credit"),
+                  moneyOut: side("debit"),
+                  net: addUp(
+                    priced.flatMap((row, at) =>
+                      way[at] === null
+                        ? []
+                        : [way[at] === "debit" ? { ...row, minor: -row.minor } : row],
+                    ),
+                    home,
+                  ),
+                }
+              : {}),
             ...(paidOverTime
               ? {
                   owed: addUp(

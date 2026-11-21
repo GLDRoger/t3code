@@ -452,8 +452,12 @@ export const KIN_RECORDS_PAGE_CAP = 100;
 export const KinListGroupBy = Schema.Literals(["none", "category", "month", "financialYear"]);
 export type KinListGroupBy = typeof KinListGroupBy.Type;
 const KinListSums = {
-  /** Full amounts. */
+  /** Full amounts, whichever way the money went. */
   total: KinMoneyTotals,
+  /** The bank transactions list's money in, money out, and in less out. */
+  moneyIn: Schema.optional(KinMoneyTotals),
+  moneyOut: Schema.optional(KinMoneyTotals),
+  net: Schema.optional(KinMoneyTotals),
   /** In a list whose entries are paid over time: what the open ones still have unpaid. */
   owed: Schema.optional(KinMoneyTotals),
   /** With `paidFrom` or `paidTo`: the payments made in those days, not the entries' amounts. */
