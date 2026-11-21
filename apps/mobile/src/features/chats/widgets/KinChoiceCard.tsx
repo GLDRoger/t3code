@@ -5,7 +5,7 @@ import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId, KinPersonId, KinSendTry } from "@t3tools/contracts";
 import { Image as ExpoImage } from "expo-image";
 import { memo, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
-import { AppState, Pressable, TextInput, View } from "react-native";
+import { Alert, AppState, Pressable, TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
 import { SymbolView } from "../../../components/ui/AppSymbol";
@@ -24,8 +24,14 @@ import {
   kinChoiceCardTaps,
   kinChoiceAccessibilityLabel,
   kinChoiceAnswered,
+  kinChoiceDecidedLine,
   kinChoicePhase,
   kinChoiceUndoneLine,
+  createKinHeldPress,
+  kinDeviceTimers,
+  kinMailCancels,
+  KIN_MAIL_CANCEL_COPY,
+  KIN_MAIL_CANCEL_UNDO_MS,
   kinSendEditBound,
   kinSendEditControls,
   kinSendEditedLine,
@@ -562,6 +568,37 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     };
   }, [editorOpen, navigation]);
   const edited = kinSendEditedLine(choice, props.viewerPersonId);
+  const decided = kinChoiceDecidedLine(choice, props.viewerPersonId);
+  // A mail's Cancel, once said yes to, waits a few seconds for Undo before it is sent.
+  const [held, setHeld] = useState<string | null>(null);
+  const sendHeld = useEffectEvent(() => {
+    const optionId = held;
+    setHeld(null);
+    if (optionId !== null) void press(optionId);
+  });
+  const [heldPress] = useState(() =>
+    createKinHeldPress({
+      delayMs: KIN_MAIL_CANCEL_UNDO_MS,
+      send: () => sendHeld(),
+      timers: kinDeviceTimers,
+    }),
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a held Cancel is sent when its card leaves the screen.
+  useEffect(() => () => heldPress.flush(), [heldPress]);
+  const choose = (optionId: string) => {
+    if (!kinMailCancels(choice, optionId)) return void press(optionId);
+    Alert.alert(KIN_MAIL_CANCEL_COPY.ask, KIN_MAIL_CANCEL_COPY.detail, [
+      { text: KIN_MAIL_CANCEL_COPY.no, style: "cancel" },
+      {
+        text: KIN_MAIL_CANCEL_COPY.yes,
+        style: "destructive",
+        onPress: () => {
+          setHeld(optionId);
+          heldPress.hold();
+        },
+      },
+    ]);
+  };
 
   const fromPicker =
     choice.send !== null &&
@@ -652,7 +689,26 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         <Text textRole="footnote" className="text-foreground-muted">
           {KIN_DEVICE_COPY.cantAct("phone", "answer")}
         </Text>
-      ) : shownEdit !== null ? null : (
+      ) : shownEdit !== null ? null : held !== null ? (
+        <View className="flex-row items-center gap-3 pt-1">
+          <Text
+            accessibilityLiveRegion="polite"
+            textRole="footnote"
+            className="min-w-0 flex-1 font-t3-medium text-foreground-secondary"
+          >
+            {KIN_MAIL_CANCEL_COPY.held}
+          </Text>
+          <Button
+            label={KIN_MAIL_CANCEL_COPY.undo}
+            tone="outline"
+            size="compact"
+            onPress={() => {
+              heldPress.undo();
+              setHeld(null);
+            }}
+          />
+        </View>
+      ) : (
         <>
           {status?.notice == null ? null : (
             <Text
@@ -684,7 +740,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
                     switching ||
                     kinSendCheckPending(choice, ticked, option.id)
                   }
-                  onPress={() => void press(option.id)}
+                  onPress={() => choose(option.id)}
                 />
                 {option.action === null ? null : (
                   <Text textRole="footnote" className="px-1 text-foreground-muted">
@@ -708,6 +764,11 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
             ) : null}
           </View>
         </>
+      )}
+      {decided === null ? null : (
+        <Text textRole="footnote" className="text-foreground-muted">
+          {decided}
+        </Text>
       )}
       {undone === null ? null : (
         <Text textRole="footnote" className="text-foreground-muted">

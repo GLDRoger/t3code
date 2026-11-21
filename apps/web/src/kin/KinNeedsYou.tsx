@@ -25,6 +25,7 @@ import { useState } from "react";
 import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
 import { KinAttentionHandled, KinAttentionItem, kinAttentionNames } from "./KinAttention";
+import { KinWaitsForFolds } from "./KinWaitsFor";
 import { KinWorkSection } from "./KinWorkParts";
 import { useKinAttention, useKinAttentionHandle } from "./useKinAttention";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
@@ -77,15 +78,13 @@ function useKinNeedsRows(
     inbox.state._tag === "ready" && inbox.state.environmentId === environmentId
       ? inbox.state
       : null;
+  const inboxView = ready === null ? null : selectKinInboxView(ready.inbox.value);
   const before = kinNeedsYou({
     mine,
     // Where the host keeps money from this viewer, nothing owed shows here either.
     money: money.state._tag === "ready" ? money.state.value : null,
     lists: kinListsOf(lists),
-    waiting:
-      ready === null
-        ? []
-        : selectKinInboxView(ready.inbox.value).waiting.filter((item) => item.orgId === orgId),
+    waiting: inboxView === null ? [] : inboxView.waiting.filter((item) => item.orgId === orgId),
     chats: ready?.inbox.value.chats ?? [],
     agentNames: kinDirectory(inbox.host).agentNames,
     names,
@@ -100,6 +99,13 @@ function useKinNeedsRows(
   return {
     attention: split.rows,
     needs,
+    // What waits on someone else the viewer may see, to look at only: a co-owner's view of the owner's.
+    waitsFor: (inboxView?.waitsFor ?? []).flatMap((group) => {
+      const items = group.items.filter((item) => item.orgId === orgId);
+      return items.length === 0 ? [] : [{ ...group, items }];
+    }),
+    chats: ready?.inbox.value.chats ?? [],
+    inboxDirectory: kinDirectory(inbox.host),
     hidden: split.hidden,
     handled: attention.handled,
     asides: attention.asides,
@@ -238,6 +244,11 @@ function KinNeedsBlock(
           {shown.slice(lead).map(needRow)}
         </ul>
       )}
+      <KinWaitsForFolds
+        groups={props.waitsFor}
+        chats={props.chats}
+        directory={props.inboxDirectory}
+      />
       <KinAttentionHandled rows={props.handled} asides={props.asides} handler={handler} />
       {handler.problem === null ? null : (
         <p role="alert" className="px-2 text-xs text-destructive-foreground">

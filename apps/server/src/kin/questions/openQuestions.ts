@@ -1566,7 +1566,11 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
       options_json = ${yield* encodeOptions(options).pipe(Effect.orDie)}
     WHERE org_id = ${orgId} AND question_id = ${row.questionId}`;
   if (row.widgetId !== null)
-    yield* chat.closeReplaced({ orgId, widgetId: KinWidgetId.make(row.widgetId) });
+    yield* chat.closeReplaced({
+      orgId,
+      widgetId: KinWidgetId.make(row.widgetId),
+      by: card.widgetId,
+    });
   // Keyed on the question, so a reopened one raised again tells the chat that asked nothing more.
   if (row.forChatId !== null) {
     const who = yield* personName(orgId, row.personId);

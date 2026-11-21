@@ -136,6 +136,8 @@ export class KinLevelGate extends Context.Service<
     readonly closeReplaced: (
       agent: Turn,
       widgetIds: ReadonlyArray<string>,
+      /** The newer card that replaces them. */
+      by?: KinWidgetId,
     ) => Effect.Effect<void, KinChatError>;
     readonly showCard: (
       agent: AgentIdentity,
@@ -517,9 +519,13 @@ const make = Effect.gen(function* () {
       ),
     ),
     closeReplaced: Effect.fn("KinLevelGate.closeReplaced")(
-      function* (agent, widgetIds) {
+      function* (agent, widgetIds, by) {
         for (const widgetId of widgetIds)
-          yield* chat.closeReplaced({ orgId: agent.orgId, widgetId: KinWidgetId.make(widgetId) });
+          yield* chat.closeReplaced({
+            orgId: agent.orgId,
+            widgetId: KinWidgetId.make(widgetId),
+            ...(by === undefined ? {} : { by }),
+          });
       },
       Effect.catchIf(
         (error) => !isChatError(error),

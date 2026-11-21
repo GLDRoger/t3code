@@ -7,6 +7,7 @@ import {
   KinPulseAside,
   KinPulseHandleAction,
   KinPulseRead,
+  KinPersonId,
   KinRecordKey,
   OrchestratorMcpFailure,
   TrimmedNonEmptyString,
@@ -30,7 +31,9 @@ import { KinServer } from "../KinServer.ts";
 import { agentServices } from "../mcp/KinChatToolkit.ts";
 import { isHeld } from "../lead/LevelGate.ts";
 import { theirTime } from "../triggers/quietHold.ts";
-import { SHARED_REFUSAL, effectiveAudience, turnPeople } from "../lead/Audience.ts";
+import { SHARED_REFUSAL, effectiveAudience, turnAsker, turnPeople } from "../lead/Audience.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { accessOf, accessSql } from "../people/KinAccess.ts";
 import { type Lead, leadTool } from "../work/leadWork.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import { dayIn } from "../work/money.ts";
@@ -86,6 +89,13 @@ export const PulseHandleInput = Schema.Struct({
 export const PulseReadResult = Schema.Struct({
   ...KinPulseRead.fields,
   held: Schema.optional(Schema.Array(Schema.String)),
+  waitsFor: Schema.optional(
+    Schema.Struct({
+      person: Schema.String,
+      note: Schema.String,
+      items: Schema.Array(Schema.String),
+    }),
+  ),
 });
 export const PulseAsideResult = Schema.Struct({
   setAside: Schema.NullOr(KinPulseAside),
@@ -122,6 +132,56 @@ const viewerOf = Effect.fn("KinPulseTools.viewer")(function* (lead: Lead) {
   return { _tag: "people", people: behind.people } as const;
 });
 
+const WAITS_KIND: Record<string, string> = {
+  mail: "Mail ready to send",
+  draft: "Draft sent up for a yes",
+  approval: "Approval",
+  decision: "Decision",
+  question: "Question",
+  suggestion: "Suggestion",
+};
+
+/**
+ * In a co-owner's own turn at the owner's level, what waits on the owner, by the one rule a
+ * co-owner sees it by (`listOwnersOpenWaiting`): so the agent says whom it waits for, and that
+ * only they answer it. Undefined for anyone else's turn.
+ */
+const waitsForOwner = Effect.fnUntraced(function* (lead: Lead) {
+  if ((yield* effectiveAudience(lead)) !== "owner_only") return undefined;
+  const asker = yield* turnAsker(lead);
+  if (asker === null || (yield* accessOf(lead.orgId, KinPersonId.make(asker))) !== "co_owner")
+    return undefined;
+  const kin = yield* KinServer;
+  if (Option.isNone(kin.services)) return undefined;
+  const repo = Context.get(kin.services.value, KinChatRepository);
+  const identity = {
+    _tag: "person" as const,
+    orgId: lead.orgId,
+    personId: KinPersonId.make(asker),
+  };
+  const theirs = yield* repo.listOwnersOpenWaiting(identity);
+  const sql = yield* SqlClient.SqlClient;
+  const [named] = yield* sql<{ name: string }>`SELECT p.display_name AS name FROM kin_people p
+    WHERE p.org_id = ${lead.orgId} AND p.removed_at IS NULL
+      AND ${sql.literal(accessSql("p"))} = 'owner' ORDER BY p.person_id LIMIT 1`;
+  const person = theirs[0]?.waitsFor?.name ?? named?.name ?? "the owner";
+  const [me] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+    WHERE org_id = ${lead.orgId} AND person_id = ${asker}`;
+  const asking = me?.name ?? "the co-owner";
+  return {
+    person,
+    note:
+      theirs.length === 0
+        ? `Nothing waits for ${person} alone now.`
+        : `These wait for ${person}, not for ${asking}: only ${person} answers, approves or sends these. Say they wait for ${person}; never say nothing is waiting, and don't offer to answer, approve or send these for ${asking}. What waits for ${asking}, and ${asking}'s own work, is unaffected.`,
+    items: theirs.slice(0, 20).map((item) => {
+      const kind = WAITS_KIND[item.card ?? item.reason] ?? "Question";
+      const from = item.ask === undefined ? "" : ` from ${item.ask.agent}`;
+      return item.question == null ? `${kind}${from}` : `${kind}${from}: ${item.question}`;
+    }),
+  };
+});
+
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseReadInput.Type) {
   const { setAside, ...read } = yield* KinPulse.read({
     orgId: lead.orgId,
@@ -131,10 +191,12 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseRead
     includeHandled: input.includeHandled,
     withAside: true,
   });
-  if (setAside === undefined || setAside.length === 0) return read;
+  const waits = yield* waitsForOwner(lead);
+  const told = waits === undefined ? read : { ...read, waitsFor: waits };
+  if (setAside === undefined || setAside.length === 0) return told;
   const names = yield* holdNames(lead.orgId);
   const zone = yield* ownerZone(lead.orgId);
-  return { ...read, held: setAside.map((aside) => asideLine(aside, names, zone)) };
+  return { ...told, held: setAside.map((aside) => asideLine(aside, names, zone)) };
 });
 
 /** An agent sets or lifts a hold only on a person's own word in this turn, never on its own. */

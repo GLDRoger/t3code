@@ -1,4 +1,4 @@
-// @effect-diagnostics globalDate:off - Pure view helpers format a mail thread's date for React render, outside an Effect runtime.
+// @effect-diagnostics globalDate:off globalTimers:off - Pure view helpers format a mail thread's date, and a held press waits on the device's timer, outside an Effect runtime.
 import { kinNow } from "./kinNow.ts";
 import {
   KIN_CHOICE_CARD_ACTION,
@@ -37,6 +37,8 @@ import { formatKinTime, kinSentences } from "./kinScreenState.ts";
 
 const KIN_CHOICE_EXPIRED_TEXT = "This question expired. Answer in the chat instead.";
 const KIN_CHOICE_REPLACED_TEXT = "Replaced by a newer one.";
+const kinChoiceReplacedText = (decided: { readonly name: string; readonly label: string }) =>
+  `Replaced by a newer one, where ${decided.name} chose “${line(decided.label)}”.`;
 
 export interface KinChoiceCardView {
   readonly orgId: KinWidget["orgId"];
@@ -51,6 +53,8 @@ export interface KinChoiceCardView {
     readonly label: string;
     /** What a tap on it does, in the server's words: shown under the option. */
     readonly action: string | null;
+    /** The yes or no of a yes/no pair, such as a send card's Confirm and Cancel. */
+    readonly kind: "yes" | "no" | null;
   }>;
   /** A picture of what is asked about, such as a new logo: a file in the card's chat. */
   readonly image: { readonly attachmentId: string; readonly mimeType: string } | null;
@@ -61,6 +65,8 @@ export interface KinChoiceCardView {
   } | null;
   /** What the answer did, in the owner's words, on a card Kin asked itself. */
   readonly outcome: { readonly title: string; readonly text: string } | null;
+  /** Who settled it, by name then; null from a host that doesn't say. */
+  readonly decidedBy: { readonly personId: KinPersonId; readonly name: string } | null;
   /** Who undid what a default Kin took, by name then, and when; null on any other card. */
   readonly undone: {
     readonly personId: KinPersonId;
@@ -357,6 +363,7 @@ export function kinChoiceCardView(
     id: option.optionId,
     label: line(option.label),
     action: option.action === undefined ? null : line(option.action.line),
+    kind: option.kind ?? null,
   }));
   // The server repeats each option's action line in `detail` for older clients; shown here once.
   const note = kinChoiceActionNote(card.options);
@@ -442,9 +449,12 @@ export function kinChoiceCardView(
         : Date.parse(widget.updatedAt) + KIN_CHOICE_CARD_TTL_MS,
     closed: widget.closedAt !== null,
     // A question closed unanswered says what became of it ("Went with “Draft it”.").
+    decidedBy: card.decidedBy ?? null,
     closedText:
       card.replaced === true
-        ? KIN_CHOICE_REPLACED_TEXT
+        ? card.replacedBy?.decided === undefined
+          ? KIN_CHOICE_REPLACED_TEXT
+          : kinChoiceReplacedText(card.replacedBy.decided)
         : card.outcome !== undefined
           ? card.outcome.text
           : KIN_CHOICE_EXPIRED_TEXT,
@@ -533,6 +543,31 @@ export function kinChoiceAnswered(
           : null;
   if (text === null) return null;
   return { text: view.send?.outcome == null ? text : null };
+}
+
+/**
+ * Who settled the card, under it: "Rhea Rao chose “Same terms”.", "Meera Shah sent it.". Null
+ * while it is open, from a host that doesn't say, or for the viewer's own plain answer, which the
+ * card already reads as theirs. A send's yes says "sent it" only once the host stored it sent.
+ */
+export function kinChoiceDecidedLine(
+  view: Pick<KinChoiceCardView, "answer" | "decidedBy" | "outcome" | "send" | "options">,
+  viewerPersonId: KinPersonId | null,
+): string | null {
+  const { answer, decidedBy } = view;
+  if (answer === null || decidedBy === null) return null;
+  const mine = decidedBy.personId === viewerPersonId;
+  if (mine && view.outcome === null && view.send === null) return null;
+  const who = mine ? "You" : decidedBy.name;
+  if (view.send !== null) {
+    const yes = view.options.find((option) => option.id === answer.optionId)?.kind === "yes";
+    const mail = view.send.edit !== null;
+    // Only a mail is "sent"; a calendar event's own outcome line says it was saved.
+    if (yes)
+      return `${who} ${mail && view.send.outcome?.tone === "ok" ? "sent it" : "confirmed it"}.`;
+    return `${who} chose not to ${mail ? "send it" : "go ahead"}.`;
+  }
+  return `${who} chose “${answer.label}”.`;
 }
 
 /** "Undone by you at 9:52 AM.", or by name on another day: under a taken default's note. */
@@ -1101,4 +1136,72 @@ export function kinChoiceCardActions(options: {
     );
   };
   return { tick, press, pickFrom, sendEdit, saveEdit, discardEdit };
+}
+
+/** A mail card's Cancel asks first, then waits a few seconds for Undo before it is sent. */
+export const KIN_MAIL_CANCEL_COPY = {
+  ask: "Don't send this mail?",
+  detail: "The mail won't go, and its card closes.",
+  yes: "Don't send",
+  no: "Keep it",
+  held: "This mail won't be sent.",
+  undo: "Undo",
+} as const;
+export const KIN_MAIL_CANCEL_UNDO_MS = 5_000;
+
+/** Whether a tap on this option is a mail card's Cancel, which is asked and held for Undo. */
+export function kinMailCancels(
+  view: Pick<KinChoiceCardView, "send" | "options">,
+  optionId: string,
+): boolean {
+  return (
+    view.send?.edit != null && view.options.find((option) => option.id === optionId)?.kind === "no"
+  );
+}
+
+export interface KinHeldPress {
+  /** Starts the wait; a second hold while one waits changes nothing. */
+  readonly hold: () => void;
+  /** Drops the waiting press: nothing is sent. */
+  readonly undo: () => void;
+  /** Sends a waiting press now, as leaving the screen does. */
+  readonly flush: () => void;
+  readonly waiting: () => boolean;
+}
+
+/** The device's own timers, for `createKinHeldPress`. */
+export const kinDeviceTimers = {
+  set: (run: () => void, ms: number) => globalThis.setTimeout(run, ms),
+  clear: (handle: ReturnType<typeof setTimeout>) => globalThis.clearTimeout(handle),
+};
+
+/** A press held back `delayMs` so it can be undone; it is sent at most once. */
+export function createKinHeldPress<H>(input: {
+  readonly delayMs: number;
+  readonly send: () => void;
+  readonly timers: {
+    readonly set: (run: () => void, ms: number) => H;
+    readonly clear: (handle: H) => void;
+  };
+}): KinHeldPress {
+  const { timers } = input;
+  let handle: { readonly value: H } | null = null;
+  const fire = () => {
+    if (handle === null) return;
+    timers.clear(handle.value);
+    handle = null;
+    input.send();
+  };
+  return {
+    hold: () => {
+      if (handle === null) handle = { value: timers.set(fire, input.delayMs) };
+    },
+    undo: () => {
+      if (handle === null) return;
+      timers.clear(handle.value);
+      handle = null;
+    },
+    flush: fire,
+    waiting: () => handle !== null,
+  };
 }

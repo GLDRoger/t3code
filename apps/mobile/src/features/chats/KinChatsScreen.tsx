@@ -346,7 +346,7 @@ export function KinChatsView(props: {
 }) {
   const { state, onOpenChat } = props;
   const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
-  const banner = view === null ? null : kinWaitingBannerView(view.waiting);
+  const banner = view === null ? null : kinWaitingBannerView(view.waiting, view.waitsFor);
   const agents =
     props.agents === undefined ||
     props.agents.length === 0 ||
