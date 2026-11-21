@@ -1835,22 +1835,38 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
-    "K196 gives a host on K195 the review receipt column, keeps its rows, and runs again",
+    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 and 198, and runs again",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const receipts = sql<{ trigger_key: string; review_url: string | null }>`
           SELECT trigger_key, review_url FROM kin_github_handled ORDER BY trigger_key`;
+        const later = sql<{ name: string }>`
+          SELECT name FROM pragma_table_info('kin_people_invites')
+            WHERE name IN ('sees_json', 'sees_by_person_id')
+          UNION ALL SELECT name FROM pragma_table_info('kin_chat_members') WHERE name = 'pinned_at'
+          ORDER BY name`;
         yield* runKinMigrations();
-        // A host on K195: no receipt column yet, one handled trigger.
+        // A host on K195: none of 196-198's columns yet, one handled trigger.
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
         yield* sql`ALTER TABLE kin_github_handled DROP COLUMN review_url`;
+        for (const column of ["sees_json", "sees_by_person_id"])
+          yield* sql`ALTER TABLE kin_people_invites DROP COLUMN ${sql.literal(column)}`;
+        yield* undoChatPins;
+        assert.deepStrictEqual(yield* later, []);
         yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, outcome, at)
           VALUES ('org', 'review:ambermill/shop#7', 'ambermill/shop', 7, 'woke', 1)`;
-        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
+        assert.deepStrictEqual(
+          (yield* runKinMigrations()).map(([id]) => id),
+          [196, 197, 198],
+        );
         assert.deepStrictEqual(yield* receipts, [
           { trigger_key: "review:ambermill/shop#7", review_url: null },
         ]);
+        assert.deepStrictEqual(
+          (yield* later).map(({ name }) => name),
+          ["pinned_at", "sees_by_person_id", "sees_json"],
+        );
         // Already there: it changes nothing.
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
