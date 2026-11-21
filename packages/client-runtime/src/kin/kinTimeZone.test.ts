@@ -26,6 +26,8 @@ describe("kinZoneLabel", () => {
     ["America/Los_Angeles", "Pacific Time"],
     ["Pacific/Auckland", "New Zealand Time"],
     ["UTC", "Coordinated Universal Time"],
+    ["Etc/GMT-13", "GMT+13"],
+    ["Etc/GMT+5", "GMT-5"],
   ])("names %s as %s, never by its id", (zone, label) => {
     expect(kinZoneLabel(zone, "en", january)).toBe(label);
   });

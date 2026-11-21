@@ -85,6 +85,7 @@ it.live.each([
   "M2-nondescendant",
   "M4-modes",
   "tree-substitution",
+  "besides",
 ] as const)("writer real git: %s", (scenario) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -374,6 +375,68 @@ it.live.each([
       yield* git(paths.writer, ["config", "user.name", "Fixture Bot"]);
       yield* git(paths.writer, ["config", "user.email", "fixture@example.invalid"]);
       const original = yield* git(paths.writer, ["rev-parse", "HEAD"]);
+      if (scenario === "besides") {
+        // One subject, more than one thing said about it: a second permission for one agent.
+        const item = (
+          id: string,
+          title: string,
+          overrides: Record<string, unknown> = {},
+          besides?: ReadonlyArray<string>,
+        ) => ({
+          path: `${overrides.kind === "claim" ? "claims" : "decisions"}/${id}.md`,
+          sourceEventId: "owner",
+          content: fixtureItem({
+            id,
+            kind: "decision",
+            title,
+            due: null,
+            on_due: undefined,
+            review_by: null,
+            quote: FIXTURE_QUOTE,
+            links: ["permission:Finance"],
+            ...overrides,
+          }),
+          ...(besides === undefined ? {} : { besides }),
+        });
+        const stage = (change: Writer.MemoryChange) =>
+          writer.stage(orgId, "wake1", change).pipe(Effect.flip);
+        const repos = "Finance may open pull requests in the invented repositories";
+        const messages = "Finance and Growth may message each other directly";
+        yield* writer.stage(orgId, "wake1", item("closed", "Closed", { status: "done" }));
+        yield* writer.stage(orgId, "wake1", item("repos", repos));
+        yield* writer.stage(orgId, "wake1", item("noted", "A claim", { kind: "claim" }));
+        yield* writer.stage(orgId, "wake1", item("other", "Other", { links: ["permission:all"] }));
+        // The refusal names every open item of that kind sharing a link, not only the first.
+        expect(yield* stage(item("messages", messages))).toMatchObject({
+          _tag: "MemoryConflict",
+          existingId: "repos",
+          shared: [{ id: "repos", title: repos }],
+        });
+        // Only an open item of that kind that shares a link may be named; anything else writes nothing.
+        for (const besides of [["closed"], ["noted"], ["other"], ["missing"], ["refused"]])
+          expect(yield* stage(item("refused", messages, {}, besides))).toMatchObject({
+            _tag: "MemoryWriteRejected",
+            reason: expect.stringContaining("besides names only"),
+          });
+        yield* writer.stage(orgId, "wake1", item("messages", messages, {}, ["repos"]));
+        yield* writer.stage(orgId, "wake1", item("messages", messages, {}, ["repos"]));
+        // A third lists what is left; `besides` never passes the same id saying something else.
+        expect(yield* stage(item("third", "Third", {}, ["repos"]))).toMatchObject({
+          _tag: "MemoryConflict",
+          shared: [{ id: "messages", title: messages }],
+        });
+        const conflict = yield* stage(item("repos", "Forged", {}, ["messages"]));
+        expect(conflict).toMatchObject({ _tag: "MemoryConflict", existingId: "repos" });
+        expect(conflict).not.toHaveProperty("shared");
+        // Replayed at commit, `besides` still lets the second through.
+        const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        const show = (file: string) => git(paths.writer, ["show", `${committed.commit}:${file}`]);
+        expect(yield* show("decisions/messages.md")).toContain(messages);
+        expect(yield* show("decisions/repos.md")).toContain(repos);
+        expect(yield* show("decisions/repos.md")).toContain("status: open");
+        expect((yield* show("decisions/refused.md").pipe(Effect.result))._tag).toBe("Failure");
+        return;
+      }
       if (scenario === "two-leads") {
         const one = {
           path: "claims/one.md",

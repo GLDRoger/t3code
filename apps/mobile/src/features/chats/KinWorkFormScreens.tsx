@@ -1,3 +1,4 @@
+import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -82,9 +83,11 @@ import {
   KinWorkTextField,
 } from "./components/KinWorkPieces";
 import { KinCountryFirstField } from "./components/KinCountryFirst";
+import { KinDayField } from "./components/KinDayField";
 import { useKinCompanyCountry, useKinHomeCurrency } from "./state/useKinMoney.ts";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
+import { KinCameFromFields, KinTagFields, useKinMarketing } from "./KinMarketing";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
 import { useKinIsOwnerLevel, useKinSeesClients } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
@@ -93,6 +96,7 @@ import {
   kinWorkChoicesAtom,
   useKinWorkChoices,
   useKinWorkDirectory,
+  useKinWorkZone,
   useKinWorkForm,
   type KinWorkTarget,
 } from "./state/useKinWork";
@@ -275,6 +279,7 @@ const ABROAD = "abroad";
 function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
   const navigation = useNavigation();
   const { environmentId, orgId, editing, member } = props;
+  const marketing = useKinMarketing(props);
   const create = useAtomCommand(kinClient.workClientCreate, { reportFailure: false });
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
   // One id for the form's life: trying again after a dropped answer never adds a second client.
@@ -389,14 +394,14 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
         </View>
       )}
       <ListSection>
-        <KinWorkTextField
+        <KinCameFromFields
           label={COPY.party.source}
           value={draft.source}
+          choices={marketing.cameFrom}
           disabled={state.saving}
-          maxLength={120}
           placeholder={COPY.party.sourcePlaceholder}
           moved={moved.source}
-          onChangeText={(source) => form.edit({ source })}
+          onChange={(source) => form.edit({ source })}
         />
         <KinWorkTextField
           label={COPY.party.tags}
@@ -678,6 +683,7 @@ function ContactForm(
   useEffect(() => {
     if (editing !== null) form.latest(kinContactDraftOf(editing), editing.rev);
   }, [form, editing]);
+  const marketing = useKinMarketing(props);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
   const busy = state.saving || aside.busy;
@@ -749,6 +755,12 @@ function ContactForm(
           onChange={(phones) => form.edit({ phones })}
         />
       </ListSection>
+      <KinTagFields
+        tags={draft.tags ?? []}
+        company={marketing.tags}
+        disabled={busy}
+        onChange={(tags) => form.edit({ tags })}
+      />
       <ListSection>
         <KinWorkTextField
           label={COPY.contact.notes}
@@ -910,6 +922,7 @@ function ProjectForm(
   const { environmentId, orgId, editing } = props;
   const choices = useKinWorkChoices(props, true);
   const directory = useKinWorkDirectory(props, editing === null);
+  const { zone } = useKinWorkZone(props);
   const [members, setMembers] = useState<ReadonlyArray<KinWorkPrincipal>>([]);
   // The form keeps its first `send`, so it reads who was picked from here at save time.
   const picked = useRef(members);
@@ -918,6 +931,7 @@ function ProjectForm(
   const [requestId] = useState(uuidv4);
   const [key] = useState(() => editing?.project.key ?? null);
   const [opened] = useState(() => new Date());
+  const marketing = useKinMarketing(props);
   const home = useKinHomeCurrency(props);
   const { state, form } = useKinWorkForm(environmentId, {
     noun: "project",
@@ -960,7 +974,6 @@ function ProjectForm(
   }, [form, editing, home]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
-  const target = draft.target ?? "";
   const openProject = (project: KinRecordKey) => {
     navigation.goBack();
     navigation.navigate("KinProject", { environmentId, orgId, project });
@@ -1010,15 +1023,15 @@ function ProjectForm(
           disabled={state.saving}
           onPick={(party) => form.edit({ party })}
         />
-        <KinWorkTextField
+        <KinDayField
           label={COPY.project.target}
-          value={target}
-          keyboard="numbers"
+          day={draft.target}
+          zone={zone}
+          now={opened}
+          none={KIN_PROJECTS.noTarget}
+          hint={kinProjectTargetHint(draft.target)}
           disabled={state.saving}
-          maxLength={10}
-          placeholder="YYYY-MM-DD"
-          hint={kinProjectTargetHint(target, opened)}
-          onChangeText={(text) => form.edit({ target: text.trim() === "" ? null : text.trim() })}
+          onPick={(target) => form.edit({ target })}
         />
       </ListSection>
       {editing === null ? (
@@ -1032,7 +1045,7 @@ function ProjectForm(
             picked.current = next;
             setMembers(next);
           }}
-          footer={KIN_PROJECT_PEOPLE.detail}
+          footer={draft.private ? KIN_PROJECT_PEOPLE.privateDetail : KIN_PROJECT_PEOPLE.detail}
         />
       ) : null}
       <ListSection title={COPY.project.billing}>
@@ -1059,27 +1072,60 @@ function ProjectForm(
             onChangeText={(value) => form.edit({ value })}
           />
         </KinCountryFirstField>
-        <KinWorkTextField
+        <KinDayField
           label={COPY.project.startsOn}
-          value={draft.startsOn ?? ""}
-          keyboard="numbers"
+          day={draft.startsOn}
+          zone={zone}
+          now={opened}
           disabled={state.saving}
-          maxLength={10}
-          placeholder="YYYY-MM-DD"
-          onChangeText={(text) => form.edit({ startsOn: text.trim() === "" ? null : text.trim() })}
+          onPick={(startsOn) => form.edit({ startsOn })}
         />
         {draft.billing === "retainer" || draft.renewsOn !== null ? (
-          <KinWorkTextField
+          <KinDayField
             label={COPY.project.renewsOn}
-            value={draft.renewsOn ?? ""}
-            keyboard="numbers"
+            day={draft.renewsOn}
+            zone={zone}
+            now={opened}
             disabled={state.saving}
-            maxLength={10}
-            placeholder="YYYY-MM-DD"
-            onChangeText={(text) =>
-              form.edit({ renewsOn: text.trim() === "" ? null : text.trim() })
-            }
+            onPick={(renewsOn) => form.edit({ renewsOn })}
           />
+        ) : null}
+      </ListSection>
+      <ListSection footer={draft.campaign ? KIN_MARKETING.audienceHint : undefined}>
+        <ListToggleRow
+          icon="tag"
+          label={KIN_MARKETING.campaign}
+          description={KIN_MARKETING.campaignHint}
+          value={draft.campaign}
+          disabled={state.saving}
+          onValueChange={(campaign) => form.edit({ campaign })}
+        />
+        {draft.campaign ? (
+          <>
+            <KinWorkTextField
+              label={KIN_MARKETING.audience}
+              value={draft.audience}
+              disabled={state.saving}
+              maxLength={60}
+              placeholder={KIN_MARKETING.audiencePlaceholder}
+              moved={moved.audience}
+              onChangeText={(audience) => form.edit({ audience })}
+            />
+            {marketing.tags.length === 0 ? null : (
+              <View className="flex-row flex-wrap gap-2 px-4 pb-3">
+                {marketing.tags.slice(0, 12).map((tag) => (
+                  <Chip
+                    key={tag}
+                    label={tag}
+                    size="small"
+                    selected={draft.audience === tag}
+                    disabled={state.saving}
+                    onPress={() => form.edit({ audience: tag })}
+                  />
+                ))}
+              </View>
+            )}
+          </>
         ) : null}
       </ListSection>
       <ListSection>
@@ -1139,11 +1185,13 @@ function MilestoneForm(props: KinWorkTarget & { readonly project: KinRecordKey }
   const { environmentId, orgId } = props;
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
   const [requestId] = useState(uuidv4);
+  const { zone } = useKinWorkZone(props);
+  const [opened] = useState(() => new Date());
   const [name, setName] = useState("");
-  const [due, setDue] = useState("");
+  const [due, setDue] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
-  const canSave = name.trim() !== "" && (due === "" || /^\d{4}-\d{2}-\d{2}$/.test(due));
+  const canSave = name.trim() !== "";
   const save = async () => {
     if (saving || !canSave) return;
     setSaving(true);
@@ -1158,7 +1206,7 @@ function MilestoneForm(props: KinWorkTarget & { readonly project: KinRecordKey }
             list: "milestones",
             title: name.trim(),
             project: props.project,
-            ...(due === "" ? {} : { dueAt: due, dueAllDay: true }),
+            ...(due === null ? {} : { dueAt: due, dueAllDay: true }),
             clientRequestId: requestId,
           },
         }),
@@ -1189,14 +1237,13 @@ function MilestoneForm(props: KinWorkTarget & { readonly project: KinRecordKey }
           maxLength={KIN_WORK_FORM_LIMITS.name}
           onChangeText={setName}
         />
-        <KinWorkTextField
+        <KinDayField
           label="Due"
-          value={due}
-          keyboard="numbers"
+          day={due}
+          zone={zone}
+          now={opened}
           disabled={saving}
-          maxLength={10}
-          placeholder="YYYY-MM-DD"
-          onChangeText={(text) => setDue(text.trim())}
+          onPick={setDue}
         />
       </ListSection>
     </FormShell>

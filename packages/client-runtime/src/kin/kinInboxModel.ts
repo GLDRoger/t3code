@@ -25,6 +25,7 @@ import {
 import { applyKinReaction, mergeKinReactions } from "./kinReactions.ts";
 
 export const KIN_CACHED_MESSAGE_LIMIT = 50;
+export const KIN_WAITING_TITLE = "Waiting on you";
 
 // Chat list + Waiting on you
 

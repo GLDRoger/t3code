@@ -119,6 +119,9 @@ async function renderPalette() {
   return screen;
 }
 
+// The shortcut sign follows the platform; CI runs on Linux.
+const onMac = () => vi.spyOn(Navigator.prototype, "platform", "get").mockReturnValue("MacIntel");
+
 const kinRowNames = () =>
   page
     .getByRole("option")
@@ -129,6 +132,7 @@ const kinRowNames = () =>
 describe("Kin's rows in the command palette", () => {
   it("offers the owner each place once, with its shortcut, and no two rows share a value", async () => {
     setup(["chats", "tasks", "money", "clients", "docs"]);
+    using _mac = onMac();
     await using _screen = await renderPalette();
 
     expect(kinRowNames()).toEqual([
@@ -153,6 +157,7 @@ describe("Kin's rows in the command palette", () => {
 
   it("offers a teammate without Money no Money and no Dates, and Projects opens its tab", async () => {
     setup(["chats", "tasks", "clients", "docs"]);
+    using _mac = onMac();
     await using screen = await renderPalette();
 
     const names = kinRowNames();

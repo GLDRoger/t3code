@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
+import { kinRateDay, type KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
 import { KIN_LIST_DEFAULT_FILTER, kinListSend } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_SUBSCRIPTIONS,
@@ -231,7 +231,7 @@ export function KinSubscriptionsPage(
       </div>
     ) : (
       <KinLoadFailed
-        what={"Couldn't load subscriptions"}
+        what={KIN_SUBSCRIPTIONS.loadFailed}
         cause={lists.state._tag === "failed" ? lists.state.cause : null}
         onRetry={lists.refresh}
         className="mx-auto w-full max-w-3xl p-4"
@@ -303,7 +303,7 @@ function KinSubscriptionsBody(
     setUndo(cancel ? { key: row.key, title: row.title, repeat: row.repeat } : null);
   };
   const basis = (props.rates?.rates ?? []).map(
-    (rate) => `${rate.currency}: ${props.rates?.home} ${rate.rate} as of ${rate.asOf}`,
+    (rate) => `${rate.currency}: ${props.rates?.home} ${rate.rate} as of ${kinRateDay(rate.asOf)}`,
   );
   const rows = (list: ReadonlyArray<KinSubscriptionRow>, cancelled: boolean) =>
     list.map((row) => (
@@ -333,7 +333,7 @@ function KinSubscriptionsBody(
               <Button
                 size="xs"
                 variant="ghost"
-                onClick={() => agent.ask("About our subscriptions: ")}
+                onClick={() => agent.ask(KIN_SUBSCRIPTIONS.askAbout)}
               >
                 <MessageSquareIcon />
                 Ask {agent.name}

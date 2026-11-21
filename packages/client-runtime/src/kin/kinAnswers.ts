@@ -24,6 +24,10 @@ export type KinFailure =
 
 /** A Retry button's label. Show it only where `failure.retry` is true. */
 export const KIN_RETRY = "Try again";
+/** A list's next page didn't come. */
+export const KIN_MORE_FAILED = "Couldn't load more.";
+/** The heading while the Kin host can't be reached. */
+export const KIN_HOST_OFFLINE = "Kin is offline";
 /** Under a heading that already says what failed, for a request that got no answer. */
 export const KIN_CHECK_CONNECTION = "Check your connection to the server and try again.";
 export const KIN_BUSY = "Kin isn't answering right now. Try again in a moment.";

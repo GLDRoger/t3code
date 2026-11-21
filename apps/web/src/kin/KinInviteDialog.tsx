@@ -1,4 +1,5 @@
 import {
+  KIN_TEAM_COPY,
   KIN_INVITE_PHONE_NOTE,
   KIN_TEAMMATE_NAME_MAX,
   KIN_TEAM_ADD_COPY,
@@ -233,7 +234,7 @@ function InviteLink(props: {
         ) : (
           <div className="flex flex-col gap-3">
             <Label htmlFor={linkId} className="sr-only">
-              Invite link for {invite.displayName}
+              {KIN_TEAM_COPY.inviteLinkFor(invite.displayName)}
             </Label>
             <Textarea
               id={linkId}

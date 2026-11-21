@@ -1,7 +1,4 @@
-import {
-  kinLeadMessageable,
-  KIN_AGENTS_COPY,
-} from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { KIN_REACH_COPY } from "@t3tools/client-runtime/kin/kinReach";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -14,7 +11,6 @@ import {
   kinTeammateAgentsLine,
   kinTeammateKind,
   kinTeammateKindEditable,
-  kinTeammateLeadLine,
   type KinMadeInvite,
   type KinTeammate,
   KIN_TEAM_COPY,
@@ -23,7 +19,6 @@ import {
   EnvironmentId,
   KinOrgId,
   kinOwnerLevel,
-  type KinLeadProfile,
   type KinPersonAccess,
   type KinPersonId,
   type KinPersonPlaceSwitches,
@@ -66,11 +61,13 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinAwaySection, KinHandOverRow } from "./components/KinAway";
+import { KinGithubLoginSection } from "./components/KinGithubLogin";
 import { KinPersonTasks } from "./components/KinPersonTasks";
 import { KinDeviceList } from "./KinDevicesScreen";
 import { KinInviteLink } from "./components/KinInviteLink";
 import { KinTasksKeysSection } from "./components/KinTasksKeys";
 import { kinClient } from "./state/kinClient";
+import { KinPersonReachSections } from "./KinReachSections";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 import { useKinOpenCounts, useKinProfiles } from "./state/useKinProfiles";
 
@@ -285,13 +282,21 @@ function KinTeammateDetails(props: {
         </ListSection>
       )}
       {profile === null ? null : (
-        <KinAwaySection
-          environmentId={props.target.environmentId}
-          orgId={props.target.orgId}
-          profile={profile}
-          mine={false}
-          mayEdit={profile.canEdit === true}
-        />
+        <>
+          <KinAwaySection
+            environmentId={props.target.environmentId}
+            orgId={props.target.orgId}
+            profile={profile}
+            mine={false}
+            mayEdit={profile.canEdit === true}
+          />
+          <KinGithubLoginSection
+            environmentId={props.target.environmentId}
+            orgId={props.target.orgId}
+            profile={profile}
+            mine={false}
+          />
+        </>
       )}
       {teammate.personId === null ? null : (
         <KinPersonTasks
@@ -337,26 +342,32 @@ function KinTeammateDetails(props: {
         />
       )}
       {teammate.personId === null ? (
-        <ListSection
-          title="Agents"
-          footer={`Once ${teammate.name} joins, open an agent's details to let them message it.`}
-        >
-          <View className="px-4 py-3">
-            <Text textRole="body" className="text-foreground-muted">
-              None yet.
-            </Text>
-          </View>
-        </ListSection>
-      ) : kinTeammateAgentsLine(teammate) !== null ? (
         <ListSection title="Agents">
           <View className="px-4 py-3">
             <Text textRole="body" className="text-foreground-muted">
-              {kinTeammateAgentsLine(teammate)}
+              {KIN_REACH_COPY.notJoined(teammate.name)}
             </Text>
           </View>
         </ListSection>
       ) : (
-        <KinTeammateLeads target={props.target} personId={teammate.personId} name={teammate.name} />
+        <>
+          {kinTeammateAgentsLine(teammate) === null ? null : (
+            <ListSection title="Agents">
+              <View className="px-4 py-3">
+                <Text textRole="body" className="text-foreground-muted">
+                  {kinTeammateAgentsLine(teammate)}
+                </Text>
+              </View>
+            </ListSection>
+          )}
+          <KinPersonReachSections
+            environmentId={props.target.environmentId}
+            orgId={props.target.orgId}
+            personId={teammate.personId}
+            name={teammate.name}
+            ownerLevel={kinTeammateAgentsLine(teammate) !== null}
+          />
+        </>
       )}
       {offered.link === null ? null : (
         <ListSection title="Invite link" footer={offered.link.hint}>
@@ -421,78 +432,6 @@ function KinTeammateDetails(props: {
   );
 }
 
-/** The owner's leads and whether this person can message each. A lead's own details change it. */
-function KinTeammateLeads(props: {
-  readonly target: KinTeamTarget;
-  readonly personId: KinPersonId;
-  readonly name: string;
-}) {
-  const { environmentId, orgId } = props.target;
-  const result = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
-  const leads = Option.getOrNull(AsyncResult.value(result))?.leads ?? null;
-  return (
-    <ListSection
-      title="Agents"
-      footer={
-        leads === null || leads.length === 0
-          ? undefined
-          : KIN_TEAM_COPY.openAgentToChange(props.name)
-      }
-    >
-      {leads === null || leads.length === 0 ? (
-        <View className="px-4 py-3">
-          <Text textRole="body" className="text-foreground-muted">
-            {leads !== null
-              ? KIN_AGENTS_COPY.none
-              : AsyncResult.isFailure(result)
-                ? KIN_AGENTS_COPY.loadFailed
-                : "Loading…"}
-          </Text>
-        </View>
-      ) : (
-        leads.map((lead, index) => (
-          <View
-            key={lead.agentId}
-            className={index === 0 ? undefined : "border-t border-border-subtle"}
-          >
-            <KinTeammateLead lead={lead} personId={props.personId} environmentId={environmentId} />
-          </View>
-        ))
-      )}
-    </ListSection>
-  );
-}
-
-function KinTeammateLead(props: {
-  readonly lead: KinLeadProfile;
-  readonly personId: KinPersonId;
-  readonly environmentId: EnvironmentId;
-}) {
-  const navigation = useNavigation();
-  const { lead, environmentId } = props;
-  const access = useAtomValue(
-    kinClient.leadAccess({ environmentId, input: { orgId: lead.orgId, agentId: lead.agentId } }),
-  );
-  const read = Option.getOrNull(AsyncResult.value(access));
-  return (
-    <ListRow
-      label={lead.name}
-      detail={
-        read === null && AsyncResult.isFailure(access)
-          ? undefined
-          : kinTeammateLeadLine(kinLeadMessageable(read, props.personId))
-      }
-      onPress={() =>
-        navigation.navigate("KinLead", {
-          environmentId,
-          orgId: lead.orgId,
-          agentId: lead.agentId,
-        })
-      }
-    />
-  );
-}
-
 /** A member's places beyond Tasks, and the projects they are on. */
 function KinTeammatePlaces(props: {
   readonly target: KinTeamTarget;
@@ -516,7 +455,7 @@ function KinTeammatePlaces(props: {
       { label: "kin:person:set-places", reportFailure: false, reportDefect: true },
     );
     if (AsyncResult.isFailure(result))
-      setProblem(kinFailureText(squashAtomCommandFailure(result), "That didn't save."));
+      setProblem(kinFailureText(squashAtomCommandFailure(result), KIN_TEAM_COPY.saveFailed));
     await refreshKinTeam(target);
     setAsked((held) => {
       const rest = { ...held };

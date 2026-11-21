@@ -158,6 +158,7 @@ export function kinRoomLine(
 
 /** The chat list with no chats yet, for the owner and for a teammate. */
 export const KIN_CHATS_EMPTY = {
+  title: "No chats yet",
   none: "Chats with your agents show up here.",
   chiefPitch:
     "Start with a Chief of staff: your front door for everything. You chat with it like a colleague, and it passes work to the agents you add later.",

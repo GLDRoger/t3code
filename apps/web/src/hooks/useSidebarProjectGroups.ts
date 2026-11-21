@@ -1,4 +1,3 @@
-import { isKinLeadProjectId } from "@t3tools/contracts";
 import { useMessages } from "gt-react";
 
 import { orderItemsByPreferredIds, sortSidebarV2ProjectGroups } from "../components/Sidebar.logic";
@@ -13,8 +12,7 @@ import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore"
 import { useClientSettings } from "./useSettings";
 
 export function useSidebarProjectGroups() {
-  // A lead's own project holds its memory, not code, and is reached through Kin.
-  const projects = useProjects().filter((project) => !isKinLeadProjectId(project.id));
+  const projects = useProjects();
   // Activity order lags a running thread's streaming ticks until its next
   // real change; reading every tick re-rendered the whole sidebar with it.
   const threads = useQuietThreadShells();

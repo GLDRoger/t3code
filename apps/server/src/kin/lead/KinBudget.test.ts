@@ -142,6 +142,8 @@ describe("KinBudget", () => {
         yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, ${wakeupId}, ${agentId}, 'cheap', 0, 'running', '[]')`;
         const first = yield* budget.charge({ orgId, wakeupId, usage });
         assert.strictEqual(first.units, 55.5);
+        // The owner sees how much of the day's input the provider's cache served.
+        assert.include(yield* budget.get(orgId), { inputTokens: 20, cachedInputTokens: 5 });
         assert.deepStrictEqual(yield* budget.charge({ orgId, wakeupId, usage }), first);
         yield* TestClock.adjust("1 day");
         assert.deepStrictEqual(yield* budget.charge({ orgId, wakeupId, usage }), first);

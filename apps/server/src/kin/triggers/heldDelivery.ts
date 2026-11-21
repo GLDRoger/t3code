@@ -14,6 +14,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { WriteAudience } from "../chat/KinChatRepository.ts";
 import type { KinChatService } from "../chat/KinChatService.ts";
+import { turnChat } from "../lead/Audience.ts";
+import * as Reach from "../lead/Reach.ts";
 import { heldGivenBody, isGivenHeld } from "../work/assignNotices.ts";
 import { personQuietUntil } from "./quietHold.ts";
 
@@ -74,6 +76,13 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
       yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
       continue;
     }
+    // An agent's words to a pair restricted since they were held go nowhere; the asker hears so.
+    const closed = yield* restrictedSince(orgId, first);
+    if (closed !== undefined) {
+      yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+      yield* tellAsker(orgId, first, closed, chat);
+      continue;
+    }
     // One that can't post (they left the chat) stays held and doesn't block the others.
     const sent = yield* sql
       .withTransaction(
@@ -109,3 +118,62 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
   }
   return posted;
 });
+
+type Held = {
+  readonly personId: KinPersonId;
+  readonly kind: string;
+  readonly agentId: KinAgentId | null;
+  readonly relay: string | null;
+};
+
+/** The pair a held line from an agent may no longer cross, by name; undefined when it may. */
+const restrictedSince = Effect.fn("KinQuiet.restrictedSince")(function* (
+  orgId: KinOrgId,
+  held: Held,
+) {
+  if (held.agentId === null) return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const nameOf = (personId: string) =>
+    sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+      WHERE org_id = ${orgId} AND person_id = ${personId}`.pipe(
+      Effect.map((rows) => rows[0]?.name ?? "They"),
+    );
+  if (
+    (yield* Reach.mayReach(orgId, Reach.person(held.personId), Reach.agent(held.agentId))) ===
+    "restricted"
+  ) {
+    const [lead] = yield* sql<{ name: string }>`SELECT name FROM kin_leads
+      WHERE org_id = ${orgId} AND agent_id = ${held.agentId}`;
+    return `${yield* nameOf(held.personId)} and ${lead?.name ?? "this agent"}`;
+  }
+  const from = Option.getOrUndefined(decodeRelay(held.relay ?? undefined))?.personId;
+  if (
+    from !== undefined &&
+    (yield* Reach.mayReach(orgId, Reach.person(from), Reach.person(held.personId))) === "restricted"
+  )
+    return `${yield* nameOf(held.personId)} and ${yield* nameOf(from)}`;
+  return undefined;
+});
+
+/** A held relay's asker hears, in the chat its turn answered, that it was dropped. */
+const tellAsker = Effect.fn("KinQuiet.tellAsker")(
+  function* (
+    orgId: KinOrgId,
+    held: Held,
+    pair: string,
+    chat: Pick<KinChatService["Service"], "notice">,
+  ) {
+    const wakeupId = /^kin-relay:([^:]+):/.exec(held.kind)?.[1];
+    if (wakeupId === undefined || held.agentId === null) return;
+    const here = yield* turnChat({ orgId, agentId: held.agentId, wakeupId });
+    if (here === undefined) return;
+    yield* chat.notice({
+      orgId,
+      chatId: KinChatId.make(here.chatId),
+      messageId: KinMessageId.make(`kin-held-dropped:${held.kind}`),
+      audience: "chat",
+      body: `${pair} can't message each other here, so nothing was sent.`,
+    });
+  },
+  Effect.catch((cause) => Effect.logWarning("Kin couldn't say a held line was dropped", { cause })),
+);

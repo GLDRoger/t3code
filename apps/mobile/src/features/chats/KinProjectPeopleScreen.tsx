@@ -273,7 +273,7 @@ function KinProjectPeopleAdd(props: KinWorkTarget & { readonly projectKey: KinRe
         picked={picked}
         disabled={busy || !view.changesPeople}
         onChange={setPicked}
-        footer={KIN_PROJECT_PEOPLE.detail}
+        footer={view.privacy.private ? KIN_PROJECT_PEOPLE.privateDetail : KIN_PROJECT_PEOPLE.detail}
       />
       <Button
         tone="primary"

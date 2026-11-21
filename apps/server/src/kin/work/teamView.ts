@@ -790,10 +790,13 @@ export const teamCan = Effect.fn("KinTeamView.can")(function* (
   );
 });
 
-/** `p` is a teammate who sees `r`: a person let in by an invite, never the owner's own session. */
+/**
+ * `p` is a teammate who sees `r`: a person let in by an invite, never the owner's own session.
+ * An IN list, not EXISTS: SQLite runs an EXISTS last, after `personSees` for everyone, owner too.
+ */
 const teammateSees = (sql: SqlClient.SqlClient) =>
-  sql`(EXISTS (SELECT 1 FROM kin_session_bindings b WHERE b.org_id = p.org_id
-    AND b.person_id = p.person_id) AND ${personSees(sql, sql`p.person_id`)})`;
+  sql`(p.person_id IN (SELECT b.person_id FROM kin_session_bindings b WHERE b.org_id = p.org_id)
+    AND ${personSees(sql, sql`p.person_id`)})`;
 
 /** Who sees which of these entries now, as person and record pairs, through the caller's transaction. */
 export const teamPairs = Effect.fn("KinTeamView.pairs")(function* (

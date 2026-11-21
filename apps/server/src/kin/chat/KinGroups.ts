@@ -39,6 +39,7 @@ import * as SqlError from "effect/sql/SqlError";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { freezeMovedCard, onPersonJoined, settleCards } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
+import * as Reach from "../lead/Reach.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import * as Hub from "./KinChatHub.ts";
@@ -461,10 +462,23 @@ const make = Effect.gen(function* () {
       if (person === undefined) return yield* notFound;
       if (input.personId === person.personId)
         return yield* invalid("Pick a teammate other than yourself.");
-      const [other] = yield* query("KinGroups.withPerson")(sql<{ personId: string }>`
-        SELECT person_id AS "personId" FROM kin_people
+      const [other] = yield* query("KinGroups.withPerson")(sql<{ name: string }>`
+        SELECT display_name AS name FROM kin_people
         WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND removed_at IS NULL`);
       if (other === undefined) return yield* notFound;
+      const reach = yield* query("KinGroups.withPerson")(
+        Reach.mayReach(
+          input.orgId,
+          Reach.person(person.personId),
+          Reach.person(input.personId),
+        ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      );
+      if (reach === "restricted")
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: `You and ${other.name} can't message each other here.`,
+        });
+      if (reach !== "allowed") return yield* notFound;
       const teamId = kinPeopleChatTeamId(person.personId, input.personId);
       const [held] = yield* query("KinGroups.withPerson")(sql<{ chatId: string }>`
         SELECT chat_id AS "chatId" FROM kin_chats

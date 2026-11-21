@@ -7,6 +7,8 @@ import {
   type KinMoney,
   type KinMoneyAbout,
   type KinOrgId,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
   parseKinMoney,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -126,6 +128,9 @@ export const dayIn = (ms: number, zone: string) =>
 /** An instant as `zone`'s own clock reads it, with its offset: `2026-12-05T00:16:00.000+14:00`. */
 export const timeIn = (ms: number, zone: string) =>
   DateTime.formatIsoOffset(DateTime.makeZonedUnsafe(ms, { timeZone: zone }));
+/** `Mon 23 Nov 2026`: the day an instant falls on in `zone`, beside a due's machine value. */
+export const dayWords = (ms: number, zone: string) =>
+  formatKinWhen(ms, "dayYear", { zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "");
 /** `2026-11` from a day. */
 export const monthOf = (day: string) => day.slice(0, 7);
 /**
