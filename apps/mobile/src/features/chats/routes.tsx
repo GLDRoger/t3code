@@ -4,6 +4,7 @@ import { createNativeStackScreen } from "@react-navigation/native-stack";
 import { pageRoute, sheetRoute } from "../layout/route-options";
 import { KinApprovalsScreen } from "./approvals/KinApprovalsScreen";
 import { KinAgentsScreen } from "./KinAgentsScreen";
+import { KinAppearanceScreen } from "./KinAppearanceScreen";
 import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinClientScreen } from "./KinClientScreen";
@@ -84,6 +85,10 @@ export const KIN_SCREENS = {
   KinThisPhone: createNativeStackScreen({
     screen: KinThisPhoneScreen,
     options: pageRoute({ title: "This phone" }),
+  }),
+  KinAppearance: createNativeStackScreen({
+    screen: KinAppearanceScreen,
+    options: pageRoute({ title: "Appearance" }),
   }),
   KinWaiting: createNativeStackScreen({
     screen: KinWaitingScreen,
