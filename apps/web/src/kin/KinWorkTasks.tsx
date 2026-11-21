@@ -265,7 +265,7 @@ export function KinWorkTaskList(
     if (record !== undefined) void changes.run(record, action, names);
   };
   const openCard = (step: KinTaskStep) => {
-    if (step.kind === "nudge") return;
+    if (step.kind === "nudge" || step.kind === "told") return;
     void navigate({
       to: "/kin/$environmentId/$orgId/$chatId",
       params: { environmentId, orgId, chatId: step.card.chatId },
@@ -471,7 +471,7 @@ export function KinWorkTaskList(
                     )}
                     line={kinTaskLine(record, names, now, {
                       inProject: item.inProject,
-                      quietNoDate: shown !== null,
+                      quietNoDate: shown !== null && shown.kind !== "told",
                     })}
                     step={shown}
                     status={kinTaskStepStatusShown(steps.status[record.key], shown)}
@@ -480,7 +480,7 @@ export function KinWorkTaskList(
                     onOpen={() => props.onOpen(record.key)}
                     onAct={canChange ? (action) => act(record.key, action) : null}
                     onChoose={
-                      canAnswer && shown !== null && shown.kind !== "nudge"
+                      canAnswer && shown !== null && shown.kind !== "nudge" && shown.kind !== "told"
                         ? (optionId) => void steps.choose(record.key, shown, optionId)
                         : null
                     }
@@ -652,7 +652,7 @@ function KinTaskRow(props: {
         {step?.kind !== "send" || step.mayHaveGone === null ? null : (
           <p className="px-2 text-xs font-medium text-destructive-foreground">{step.mayHaveGone}</p>
         )}
-        {step === null ? null : status?.kind === "done" ? (
+        {step === null || step.kind === "told" ? null : status?.kind === "done" ? (
           <p role="status" className="px-2 text-xs font-medium text-foreground">
             {status.text}
           </p>
@@ -713,6 +713,7 @@ function KinTaskStepButtons(props: {
   const { step, busyId, onChoose } = props;
   const busy = busyId !== null;
   const label = (what: string) => `${what}: ${props.title}`;
+  if (step.kind === "told") return null;
   if (step.kind === "nudge") {
     const nudgeText = step.nudged ? KIN_TASKS.nudged : KIN_TASKS.nudge(step.name);
     return (

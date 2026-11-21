@@ -32,6 +32,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import { inheritOutside, outsideStamp, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { commentMine, setStateMine } from "../tasksKey/tasks.ts";
+import { taskNewsBanner } from "./assignNotices.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadWork from "./leadWork.ts";
 import * as OwnerClients from "./ownerClients.ts";
@@ -544,7 +545,7 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
-it.effect("asking a late task's holder where it stands posts one line a day in their chat", () =>
+it.effect("asking a late task's holder where it stands tells them once a day, on their Tasks", () =>
   Effect.gen(function* () {
     yield* seed;
     const sql = yield* SqlClient.SqlClient;
@@ -566,12 +567,25 @@ it.effect("asking a late task's holder where it stands posts one line a day in t
     assert.isFalse(first.already);
     const again = yield* OwnerWork.nudge([rhea], { orgId, key: made.key });
     assert.deepStrictEqual(again, { ...first, already: true });
-    const told = yield* sql<{ body: string }>`SELECT body FROM kin_messages
-      WHERE chat_id = 'zoya-chat' AND kind = 'system' AND body LIKE '%asked where%' ORDER BY seq`;
+    // No line in her chat: one held for her banner, and her row says who asked.
     assert.deepStrictEqual(
-      told.map((one) => one.body),
-      [`Rhea asked where ${made.key} Invented: call the printer stands.`],
+      yield* sql`SELECT body FROM kin_messages WHERE chat_id = 'zoya-chat' AND kind = 'system'`,
+      [],
     );
+    const held = yield* sql<{ id: string }>`SELECT hold_id AS id FROM kin_held_posts
+      WHERE person_id = ${zoyaId} AND substr(kind, 1, 14) = 'kin-task-news:'
+        AND json_extract(body, '$.kind') = 'nudged'`;
+    assert.strictEqual(
+      (yield* taskNewsBanner(
+        orgId,
+        held.map((one) => one.id),
+      ))?.body,
+      `Rhea asked where ${made.key} Invented: call the printer stands`,
+    );
+    assert.deepInclude((yield* OwnerWork.list([zoya], { orgId, byMove: true })).moves?.[0], {
+      key: made.key,
+      askedBy: rheaId,
+    });
     // The row says it went today, beside the holder's last word.
     const row = (yield* OwnerWork.list([rhea], { orgId, byMove: true })).moves?.[0];
     assert.deepStrictEqual(row, {
@@ -647,17 +661,21 @@ it.effect("a person's comment tells who holds the task and who asked for it, onc
           if (event.type === "message.posted") posted.push(event.message.chatId);
         }),
     });
-    const told = sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
-      FROM kin_messages WHERE kind = 'system' ORDER BY chat_id, seq`;
+    // Told in no chat: news held for each one's banner.
+    const told = sql<{ personId: string; body: string }>`SELECT person_id AS "personId",
+        json_extract(body, '$.name') || ' ' || json_extract(body, '$.kind') AS body
+      FROM kin_held_posts WHERE substr(kind, 1, 14) = 'kin-task-news:'
+        AND json_extract(body, '$.kind') = 'commented'
+      ORDER BY person_id, held_at, rowid`;
     const meera = person(meeraId);
     yield* say(meera, made.key, "Invented: use the matte paper", "first").pipe(Effect.provide(hub));
     yield* say(meera, made.key, "Invented: use the matte paper", "first").pipe(Effect.provide(hub));
-    const line = `Meera commented on ${made.key} Invented: print the menus: Invented: use the matte paper.`;
     assert.deepStrictEqual(yield* told, [
-      { chatId: "dev-chat", body: line },
-      { chatId: "zoya-chat", body: line },
+      { personId: devId, body: "Meera commented" },
+      { personId: zoyaId, body: "Meera commented" },
     ]);
-    assert.deepStrictEqual(posted.toSorted(), ["dev-chat", "zoya-chat"]);
+    assert.deepStrictEqual(posted, []);
+    assert.deepStrictEqual(yield* sql`SELECT body FROM kin_messages WHERE kind = 'system'`, []);
     // Dev's own coding agent, through his key, is Dev commenting: the asker is told, once.
     yield* sql`INSERT INTO auth_sessions (session_id, subject, method, scopes, issued_at, expires_at)
       VALUES ('dev-key', 'kin-coding-agent', 'bearer-access-token', '["kin:tasks"]', ${at},
@@ -674,12 +692,10 @@ it.effect("a person's comment tells who holds the task and who asked for it, onc
       yield* commentMine(devKey, { key: made.key, text: "Invented: proofs are in" }).pipe(
         Effect.provide(hub),
       );
-    assert.deepStrictEqual((yield* told).slice(2), [
-      {
-        chatId: "zoya-chat",
-        body: `Dev commented on ${made.key} Invented: print the menus: Invented: proofs are in.`,
-      },
-    ]);
+    assert.deepStrictEqual(
+      (yield* told).filter((one) => one.body === "Dev commented"),
+      [{ personId: zoyaId, body: "Dev commented" }],
+    );
     // The key's name is Dev's and the owner's to read, revoked too; anyone else reads a generic.
     yield* setStateMine(devKey, { key: made.key, state: "doing" }).pipe(Effect.provide(hub));
     const dev = person(devId);
@@ -711,8 +727,8 @@ it.effect("a person's comment tells who holds the task and who asked for it, onc
     yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${devId}`;
     yield* say(meera, made.key, "Invented: and the gold ink", "second").pipe(Effect.provide(hub));
     assert.deepStrictEqual(
-      (yield* told).map((one) => one.chatId),
-      ["dev-chat", "zoya-chat", "zoya-chat", "zoya-chat"],
+      (yield* told).map((one) => one.personId),
+      [devId, zoyaId, zoyaId, zoyaId],
     );
   }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
 );
@@ -940,12 +956,13 @@ it.effect(
       yield* setStateMine(zoyaKey, { key, state: "done" });
       const after = yield* counts;
       // No wake-up (kin_events), card (kin_widgets), mail, memory or payment: the two rows, the
-      // note's search entry and the open screens' refresh count, and nothing else.
+      // note's search entry, the open screens' refresh count and Rhea's banner of the note.
       assert.deepStrictEqual(
         [...after].flatMap(([name, n]) =>
           n === before.get(name) ? [] : [[name, n - (before.get(name) ?? 0)]],
         ),
         [
+          ["kin_held_posts", 1],
           ["kin_record_changes", 1],
           ["kin_record_comments", 1],
           ["kin_search_data", 2],

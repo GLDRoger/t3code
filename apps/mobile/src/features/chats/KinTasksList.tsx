@@ -520,7 +520,7 @@ export function KinTasksList(
                     )}
                     line={kinTaskLine(record, names, now, {
                       inProject: item.inProject,
-                      quietNoDate: step !== null,
+                      quietNoDate: step !== null && step.kind !== "told",
                     })}
                     avatar={kinWorkAvatar(record.owner)}
                     step={shown}
@@ -531,12 +531,12 @@ export function KinTasksList(
                     onPress={() => openRecord("KinWorkItem", { ...base, task: item.key })}
                     onAct={canChange ? (action) => act(item.key, action) : null}
                     onChoose={
-                      canAnswer && shown !== null && shown.kind !== "nudge"
+                      canAnswer && shown !== null && shown.kind !== "nudge" && shown.kind !== "told"
                         ? (optionId) => steps.choose(record.key, shown, optionId)
                         : null
                     }
                     onOpenCard={() =>
-                      shown !== null && shown.kind !== "nudge"
+                      shown !== null && shown.kind !== "nudge" && shown.kind !== "told"
                         ? navigation.navigate("KinChat", {
                             ...base,
                             chatId: shown.card.chatId,

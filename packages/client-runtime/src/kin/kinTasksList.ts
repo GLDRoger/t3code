@@ -54,6 +54,9 @@ export const KIN_TASKS = {
   answered: (label: string) => `Answered: ${label}`,
   replyHint: "Sends this as your reply",
   nudgeFailed: "Couldn't send the nudge.",
+  handedBack: (name: string, note: string | null) =>
+    note === null ? `${name} handed this back` : `${name} handed this back: “${note}”`,
+  asked: (name: string) => `${name} asked where this stands`,
   working: "Working on it",
   dueToday: "Due today",
   noDate: "No date",
@@ -163,7 +166,9 @@ export type KinTaskStep =
       readonly name: string;
       readonly nudged: boolean;
       readonly give: boolean;
-    };
+    }
+  /** What someone did to a task the reader holds: handed it back, or asked where it stands. */
+  | { readonly kind: "told"; readonly line: string };
 
 const QUESTION_BUTTONS = 3;
 
@@ -177,7 +182,7 @@ export function kinTaskStepStatusShown<S extends object>(
 ): S | null {
   if (status === undefined) return null;
   const answered = "widgetId" in status ? status.widgetId : undefined;
-  const card = step === null || step.kind === "nudge" ? undefined : step.card.widgetId;
+  const card = step === null || !("card" in step) ? undefined : step.card.widgetId;
   return answered === undefined || card === undefined || card === answered ? status : null;
 }
 
@@ -210,6 +215,20 @@ export function kinTaskStep(
           options: card.options.slice(0, QUESTION_BUTTONS),
         };
   const holder = record.owner;
+  if (holder._tag === "person" && holder.personId === names.me) {
+    const first = (by: KinRecord["owner"]) => kinWorkName(by, names).split(/\s+/)[0] ?? "";
+    if (record.handedBack !== undefined)
+      return {
+        kind: "told",
+        line: KIN_TASKS.handedBack(first(record.handedBack.by), move.handedBackNote ?? null),
+      };
+    if (move.askedBy !== undefined)
+      return {
+        kind: "told",
+        line: KIN_TASKS.asked(first({ _tag: "person", personId: move.askedBy })),
+      };
+    return null;
+  }
   if (
     move.group === "needsYou" &&
     record.late &&

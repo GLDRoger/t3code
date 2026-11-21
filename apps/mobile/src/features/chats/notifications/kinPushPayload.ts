@@ -84,7 +84,10 @@ function landing(
   const destination = opensChat
     ? kinNotificationDestination({ chatId: data.chatId, subject })
     : null;
-  if (destination === null) return [target.path];
+  if (destination === null)
+    return target.path.startsWith(`${kinPath(target.environmentId, data.orgId, "work")}/`)
+      ? [kinPath(target.environmentId, data.orgId, "work"), target.path]
+      : [target.path];
   if (destination._tag === "chat")
     return [
       destination.messageId === null
@@ -101,12 +104,18 @@ function landing(
 
 /**
  * Where a push's `deepLink` opens, checked against the ids it carries. The sender writes
- * `/kin/<environmentId>/<orgId>/(chats|actions)/<id>`, `/kin/<environmentId>/<orgId>/approvals` or
+ * `/kin/<environmentId>/<orgId>/(chats|actions|work|projects)/<id>`,
+ * `/kin/<environmentId>/<orgId>/(approvals|work)` or
  * `/kin/<environmentId>/<orgId>/people/<personId>/devices`; anything else is dropped.
  */
 function linkTarget(data: KinPushData): { environmentId: string; path: string } | null {
   const parts = data.deepLink.split("/");
   if (parts[0] !== "" || parts[1] !== "kin") return null;
+  if (parts.length === 5 && parts[4] === "work") {
+    const [environmentId, orgId] = parts.slice(2, 4).map(decodeSegment);
+    if (!environmentId || orgId !== data.orgId) return null;
+    return { environmentId, path: kinPath(environmentId, orgId, "work") };
+  }
   if (parts.length === 5 && parts[4] === "approvals") {
     const [environmentId, orgId] = parts.slice(2, 4).map(decodeSegment);
     if (!environmentId || orgId !== data.orgId) return null;
@@ -130,6 +139,9 @@ function linkTarget(data: KinPushData): { environmentId: string; path: string } 
     if (data.chatId !== undefined && data.chatId !== id) return null;
     return { environmentId, path: kinChatPath(environmentId, orgId, id) };
   }
+  // Someone's moves on the reader's tasks, told in no chat: the one task or project, over Tasks.
+  if (kind === "work" || kind === "projects")
+    return { environmentId, path: kinPath(environmentId, orgId, kind, id) };
   if (kind === "actions") {
     if (data.pendingActionId !== undefined && data.pendingActionId !== id) return null;
     // MOB-8: open the `KinApproval` route (this link, re-encoded) once it exists. Until then
