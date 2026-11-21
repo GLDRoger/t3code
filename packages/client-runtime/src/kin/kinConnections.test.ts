@@ -19,6 +19,8 @@ import {
   kinConnectionAddCheck,
   kinConnectionDraft,
   kinConnectionStatus,
+  kinMailReadText,
+  kinOffersSignIn,
   KIN_OWNER_CLIENT_SETUP,
   kinSignInCheck,
   kinSignInClientCheck,
@@ -192,6 +194,33 @@ describe("kinToolRows", () => {
         connection({ state: "needs_sign_in", lastError: "Sentry's sign-in expired." }),
       ).label,
     ).toBe("Needs sign-in");
+  });
+
+  it("says a mail account Kin stopped reading isn't syncing, and why, until a read works", () => {
+    const stopped = { readAt: 1, error: "The mailbox didn't answer in time.", stopped: true };
+    expect(kinConnectionStatus(connection({ paused: true, mailSync: stopped })).label).toBe(
+      "Paused",
+    );
+    expect(
+      kinConnectionStatus(connection({ state: "needs_sign_in", mailSync: stopped })).label,
+    ).toBe("Needs sign-in");
+    const failing = kinConnectionStatus(connection({ auth: "oauth", mailSync: stopped }));
+    expect([failing.tone, failing.label]).toEqual(["error", "Not syncing"]);
+    expect(failing.detail).toMatch(
+      /^Kin can't read new mail\. The mailbox didn't answer in time\. .* Sign in again to fix it\.$/,
+    );
+    expect(
+      kinConnectionStatus(connection({ mailSync: { ...stopped, error: null } })).detail,
+    ).toMatch(/^Kin hasn't read new mail for over a day\./);
+    expect(
+      kinConnectionStatus(connection({ mailSync: { ...stopped, stopped: false } })).label,
+    ).not.toBe("Not syncing");
+    expect(kinOffersSignIn(connection({ auth: "oauth", mailSync: stopped }))).toBe(true);
+    expect(kinOffersSignIn(connection({ auth: "oauth" }))).toBe(false);
+    expect(kinMailReadText(null)).toBe("No mail read yet");
+    expect(kinMailReadText(Date.UTC(2026, 10, 17, 9), new Date(2026, 10, 17, 18))).toMatch(
+      /^Mail last read /,
+    );
   });
 });
 
