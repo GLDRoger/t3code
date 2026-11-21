@@ -263,6 +263,7 @@ export class KinChatService extends Context.Service<
         readonly messageId: KinMessageId;
         readonly body: string;
         readonly lead?: true;
+        readonly money?: ReadonlyArray<string>;
       },
     ) => Effect.Effect<KinMessage, ServiceError>;
     /** Whether this person is in the chat whose message carries the stored file. */

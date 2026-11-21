@@ -2,6 +2,7 @@ import { ACTIVE_RUN_STATUSES } from "../../orchestration-v2/ThreadManagementServ
 import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { wakeupOfRuns } from "./wakeupRuns.ts";
 import {
+  KIN_MONEY_SECTION,
   KIN_TEAM_ROOM_TEAM_ID,
   KIN_MESSAGE_FIGURES_MAX,
   KIN_MESSAGE_BODY_MAX_LENGTH,
@@ -40,6 +41,7 @@ import {
   IsoDateTime,
   NonNegativeInt,
   TrimmedNonEmptyString,
+  kinPageWithLines,
 } from "@t3tools/contracts";
 import { kinDocBlocks } from "@t3tools/shared/kinDocBlocks";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -544,6 +546,8 @@ export class KinChatRepository extends Context.Service<
         readonly body: string;
         /** The body ends with the page as stored: Kin's own section goes before it, unshaped. */
         readonly lead?: true;
+        /** The body is the page as stored with these lines in its Money section (`kinPageWithLines`). */
+        readonly money?: ReadonlyArray<string>;
       },
     ) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
@@ -1783,9 +1787,12 @@ const make = Effect.gen(function* () {
               message.author.threadId !== input.threadId ||
               message.status !== "posted" ||
               message.kind !== "text" ||
-              (input.lead === true
-                ? message.form !== "brief" || !input.body.endsWith(message.body)
-                : !input.body.startsWith(message.body)) ||
+              (input.money !== undefined
+                ? message.form !== "brief" ||
+                  input.body !== kinPageWithLines(message.body, KIN_MONEY_SECTION, input.money)
+                : input.lead === true
+                  ? message.form !== "brief" || !input.body.endsWith(message.body)
+                  : !input.body.startsWith(message.body)) ||
               (message.widgetId !== null &&
                 message.body === "" &&
                 (yield* replyCard(input)) !== input.messageId) ||
@@ -1805,7 +1812,7 @@ const make = Effect.gen(function* () {
                 message: "Kin wake-up is not running.",
               });
             yield* ownerOnly(input.audience, input);
-            if (input.lead === true) {
+            if (input.lead === true || input.money !== undefined) {
               yield* sql`UPDATE kin_messages SET body = ${input.body}
                 WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
               return yield* requireRecord(messageOne(input));
