@@ -1085,6 +1085,14 @@ const figuresIn = (text: string) => {
   return [...found];
 };
 const ENTRY_KEY = /\b[A-Z]{1,4}-\d{1,6}\b/g;
+const FIGURE_RUN = /\d(?:[\d.,'’]*\d)?/g;
+const digitsOf = (run: string) => run.replace(/[.,]00?$/, "").replace(/\D/g, "");
+
+/** `text` without the figures that `own` also carries, however each is grouped ("2,50,000"). */
+export const withoutOwnFigures = (text: string, own: string) => {
+  const mine = new Set([...own.matchAll(FIGURE_RUN)].map(([run]) => digitsOf(run)));
+  return text.replace(FIGURE_RUN, (run) => (mine.has(digitsOf(run)) ? "" : run));
+};
 const fold = (text: string) => text.toLowerCase().replace(/\s+/g, " ");
 
 /**
