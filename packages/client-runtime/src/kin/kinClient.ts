@@ -26,6 +26,7 @@ import {
   type KinBriefsInput,
   type KinCheckInsInput,
   type KinPulseListInput,
+  type KinPulseSubscribeInput,
   type KinMemoryListInput,
   type KinPeopleListInput,
   type KinPeopleListDevicesInput,
@@ -1226,7 +1227,7 @@ export function makeKinClient<R, ER>(
     /** `attention` as the host streams it, for a host that does (`attentionStreamed`). */
     attentionLive: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: KIN_PULSE_LIVE_LABEL,
-      subscribe: (input: KinPulseListInput) =>
+      subscribe: (input: Omit<KinPulseSubscribeInput, "held">) =>
         kinPulseLiveStream({ ...input, acceptSenses: KIN_PULSE_LATER_SENSES }),
     }),
     /** Whether the host streams Needs attention; null until its refreshes say. */
@@ -1331,6 +1332,17 @@ export function makeKinClient<R, ER>(
     workRead: workSummaryRead,
     /** One page of a filter; the list's controller decides when. */
     workList: workListRead,
+    /** Tasks' counts by move, for the badge on a host whose Needs attention doesn't carry them. */
+    workMoveCounts: createKinQueryAtomFamily(runtime, {
+      label: "kin:work:move-counts",
+      execute: Effect.fn("KinClient.workMoveCounts")(function* (input: {
+        readonly orgId: KinOrgId;
+      }) {
+        const page = yield* readWorkList({ ...input, open: true, byMove: true, limit: 1 });
+        return page.counts ?? null;
+      }),
+      refreshTrigger: kinWorkRefreshOn(["work"]),
+    }),
     /** One task with its links and history. */
     workItem: createKinQueryAtomFamily(runtime, {
       label: "kin:work:item",

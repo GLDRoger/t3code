@@ -215,7 +215,7 @@ export function KinTasksList(
   const facts = kinTasksDealFacts({ ownerLevel, names, now, pulse });
   const answers = useKinAttentionHandle({ environmentId, orgId });
   const counts = list.counts();
-  // The same number the dock's Tasks badge shows (`useKinTasksBadge`).
+  // The same number the dock's Tasks badge shows (`useKinTasksNeedsYou`).
   const needsYou = kinNeedsYouCount({ counts, dealFacts: facts.length });
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";

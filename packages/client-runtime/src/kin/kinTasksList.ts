@@ -84,7 +84,7 @@ export const kinTaskGroupedChip = (groupBy: KinTaskGroupBy | undefined): string 
  * count with the deal facts beside it (`kinTasksDealFactsOf`). Null until the count has arrived.
  */
 export const kinNeedsYouCount = (input: {
-  readonly counts: KinWorkMoveCounts | null;
+  readonly counts: Pick<KinWorkMoveCounts, "needsYou"> | null;
   readonly dealFacts?: number;
 }): number | null =>
   input.counts === null ? null : input.counts.needsYou + (input.dealFacts ?? 0);

@@ -40,7 +40,7 @@ import { listReceipts, makeReceipt as makeReceiptFor } from "../gendocs/receipts
 import { readProfile, setProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { dates as datesView, moneySummary } from "./moneyViews.ts";
-import { found, ownerWriter, theOwner, viewerOf } from "./ownerWork.ts";
+import { found, ownerWriter, placeRefusals, theOwner } from "./ownerWork.ts";
 import { iso, workFailure } from "./recordRows.ts";
 import {
   allLists,
@@ -306,10 +306,9 @@ const moneyReader = Effect.fn("KinMoney.reader")(function* (
   people: ReadonlyArray<PersonIdentity>,
   orgId: KinOrgId,
 ) {
-  const viewer = yield* viewerOf(people, orgId);
+  const { viewer, refused } = yield* placeRefusals(people, orgId);
   if (!viewer.teammate) return undefined;
-  const places = yield* placesOf(orgId, viewer.person.personId);
-  if (!places.reaches.money) return yield* noMoney;
+  if (refused.money) return yield* noMoney;
   return viewer.person.personId;
 });
 
