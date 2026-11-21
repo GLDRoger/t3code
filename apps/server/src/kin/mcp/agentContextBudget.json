@@ -5,6 +5,7 @@
     "owner": 38144,
     "confined": 38092
   },
+  "kinSharedInstructionsHash": "27d500e05c23223ee2a9747d1d8b836dab933b863bedb4ab2649428f7314d5e1",
   "kinLeadToolListJsonBytes": {
     "engineering": 141320,
     "finance": 120904,
@@ -13,5 +14,337 @@
     "engineeringBesideFinanceAndSales": 128226,
     "socialBesideFinanceAndSales": 110883,
     "shared": 74406
+  },
+  "kinLeadAlwaysLoadedToolBytes": 64935,
+  "kinLeadToolBytes": {
+    "agent_update": {
+      "desc": 91,
+      "schema": 132
+    },
+    "away_set": {
+      "desc": 359,
+      "schema": 179
+    },
+    "budget_set": {
+      "desc": 392,
+      "schema": 520
+    },
+    "client_read": {
+      "desc": 660,
+      "schema": 75
+    },
+    "company_profile": {
+      "desc": 840,
+      "schema": 993
+    },
+    "dates_query": {
+      "desc": 248,
+      "schema": 317
+    },
+    "deal_stages": {
+      "desc": 158,
+      "schema": 46
+    },
+    "doc_create": {
+      "desc": 1494,
+      "schema": 1577
+    },
+    "doc_edit": {
+      "desc": 1017,
+      "schema": 1210
+    },
+    "doc_history": {
+      "desc": 114,
+      "schema": 257
+    },
+    "doc_link": {
+      "desc": 267,
+      "schema": 293
+    },
+    "doc_move": {
+      "desc": 356,
+      "schema": 1110
+    },
+    "doc_read": {
+      "desc": 428,
+      "schema": 374
+    },
+    "doc_restore": {
+      "desc": 311,
+      "schema": 453
+    },
+    "doc_rewrite": {
+      "desc": 374,
+      "schema": 562
+    },
+    "docs_search": {
+      "desc": 411,
+      "schema": 490
+    },
+    "kin_ask": {
+      "desc": 1047,
+      "schema": 735
+    },
+    "kin_ask_close": {
+      "desc": 244,
+      "schema": 182
+    },
+    "kin_ask_person": {
+      "desc": 789,
+      "schema": 873
+    },
+    "kin_cancel": {
+      "desc": 127,
+      "schema": 115
+    },
+    "kin_chart": {
+      "desc": 2996,
+      "schema": 2080
+    },
+    "kin_chat_post": {
+      "desc": 488,
+      "schema": 363
+    },
+    "kin_chat_read": {
+      "desc": 163,
+      "schema": 185
+    },
+    "kin_connection_call": {
+      "desc": 627,
+      "schema": 226
+    },
+    "kin_connection_note": {
+      "desc": 288,
+      "schema": 153
+    },
+    "kin_connection_offer": {
+      "desc": 262,
+      "schema": 98
+    },
+    "kin_connection_tools": {
+      "desc": 792,
+      "schema": 120
+    },
+    "kin_defer": {
+      "desc": 503,
+      "schema": 473
+    },
+    "kin_document": {
+      "desc": 1667,
+      "schema": 1728
+    },
+    "kin_github_link": {
+      "desc": 172,
+      "schema": 143
+    },
+    "kin_github_review": {
+      "desc": 196,
+      "schema": 499
+    },
+    "kin_github_review_ask": {
+      "desc": 586,
+      "schema": 134
+    },
+    "kin_github_watch": {
+      "desc": 208,
+      "schema": 114
+    },
+    "kin_hand_off": {
+      "desc": 1618,
+      "schema": 328
+    },
+    "kin_issue": {
+      "desc": 945,
+      "schema": 439
+    },
+    "kin_journal": {
+      "desc": 130,
+      "schema": 310
+    },
+    "kin_leads": {
+      "desc": 242,
+      "schema": 46
+    },
+    "kin_react": {
+      "desc": 317,
+      "schema": 221
+    },
+    "kin_receipt": {
+      "desc": 1599,
+      "schema": 999
+    },
+    "kin_recipe_undo": {
+      "desc": 215,
+      "schema": 115
+    },
+    "kin_recipes": {
+      "desc": 276,
+      "schema": 46
+    },
+    "kin_relay": {
+      "desc": 565,
+      "schema": 166
+    },
+    "kin_schedule": {
+      "desc": 447,
+      "schema": 840
+    },
+    "kin_take_private": {
+      "desc": 313,
+      "schema": 92
+    },
+    "kin_visual": {
+      "desc": 4451,
+      "schema": 138
+    },
+    "kin_widget_upsert": {
+      "desc": 250,
+      "schema": 1308
+    },
+    "list_define": {
+      "desc": 810,
+      "schema": 1930
+    },
+    "memory_label": {
+      "desc": 357,
+      "schema": 212
+    },
+    "memory_read": {
+      "desc": 215,
+      "schema": 73
+    },
+    "memory_search": {
+      "desc": 185,
+      "schema": 450
+    },
+    "memory_write": {
+      "desc": 2291,
+      "schema": 1963
+    },
+    "money_query": {
+      "desc": 938,
+      "schema": 501
+    },
+    "money_summary": {
+      "desc": 432,
+      "schema": 46
+    },
+    "payment_record": {
+      "desc": 320,
+      "schema": 746
+    },
+    "people_read": {
+      "desc": 270,
+      "schema": 46
+    },
+    "people_update": {
+      "desc": 292,
+      "schema": 625
+    },
+    "pipeline_read": {
+      "desc": 715,
+      "schema": 113
+    },
+    "project_note": {
+      "desc": 149,
+      "schema": 166
+    },
+    "pulse_handle": {
+      "desc": 987,
+      "schema": 1021
+    },
+    "pulse_nudge": {
+      "desc": 283,
+      "schema": 151
+    },
+    "pulse_read": {
+      "desc": 275,
+      "schema": 529
+    },
+    "record_assign": {
+      "desc": 710,
+      "schema": 964
+    },
+    "record_comment": {
+      "desc": 258,
+      "schema": 239
+    },
+    "record_create": {
+      "desc": 4164,
+      "schema": 7542
+    },
+    "record_get": {
+      "desc": 1075,
+      "schema": 212
+    },
+    "record_hand_back": {
+      "desc": 324,
+      "schema": 318
+    },
+    "record_link": {
+      "desc": 162,
+      "schema": 174
+    },
+    "record_update": {
+      "desc": 1833,
+      "schema": 7211
+    },
+    "records_query": {
+      "desc": 1053,
+      "schema": 1848
+    },
+    "social_draft": {
+      "desc": 430,
+      "schema": 356
+    },
+    "social_lookup": {
+      "desc": 193,
+      "schema": 115
+    },
+    "social_pack": {
+      "desc": 325,
+      "schema": 364
+    },
+    "social_read": {
+      "desc": 452,
+      "schema": 156
+    },
+    "social_week": {
+      "desc": 249,
+      "schema": 151
+    },
+    "statement_read": {
+      "desc": 1325,
+      "schema": 2582
+    },
+    "statement_rows": {
+      "desc": 659,
+      "schema": 494
+    },
+    "team_open": {
+      "desc": 433,
+      "schema": 332
+    },
+    "team_say": {
+      "desc": 515,
+      "schema": 1113
+    },
+    "touch_log": {
+      "desc": 362,
+      "schema": 735
+    },
+    "web_page": {
+      "desc": 494,
+      "schema": 106
+    }
+  },
+  "kinLeadPromptBytes": {
+    "ownerReply": 1588,
+    "checkIn": 2960,
+    "pulse": 3086,
+    "scheduled": 3418,
+    "reminder": 3163,
+    "groupReply": 2908,
+    "teamRoom": 2793
   }
 }

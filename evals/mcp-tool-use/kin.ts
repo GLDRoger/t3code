@@ -15,7 +15,7 @@ import {
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
-import { KIN_DEFERRED_TOOLS } from "../../apps/server/src/kin/lead/deferredTools.ts";
+import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
 import { KinStatementToolkit } from "../../apps/server/src/kin/work/mcp/statementTools.ts";
@@ -155,7 +155,7 @@ export const kinSessionOf = ({ setup, prompt }: McpToolUseCase) => {
 
 /**
  * A lead's request as Kin plans its session (`lead/turn/session.ts`): its instructions are the
- * whole system prompt and Kin tools load upfront except the few deferred behind ToolSearch. A turn
+ * whole system prompt and only Kin's core loads up front; every other tool waits behind ToolSearch. A turn
  * with the owner's seat (kinSession, not shared) has Claude Code's own tools too; a confined one,
  * only its web search.
  */
@@ -173,8 +173,8 @@ export const kinLeadBase = <M, E>(input: {
 }) => {
   const { options, t3 } = input;
   const ownerSeat = options.kinSession === true && options.kinShared !== true;
-  const deferredKin = t3.filter((tool) =>
-    KIN_DEFERRED_TOOLS.has(tool.name.slice(T3_PREFIX.length)),
+  const deferredKin = t3.filter(
+    (tool) => !KIN_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
   );
   const toolSearch = input.templateTools.filter((tool) => tool.name.endsWith("ToolSearch"));
   return {
@@ -211,7 +211,7 @@ export const kinLoadedBefore = <T extends ApiTool>(
 ) =>
   deferred.filter((tool) => {
     const bare = tool.name.replace(T3_PREFIX, "");
-    return KIN_DEFERRED_TOOLS.has(bare) && priorCalls.some((call) => call.tool === bare);
+    return !KIN_ALWAYS_LOADED.has(bare) && priorCalls.some((call) => call.tool === bare);
   });
 
 // Decoding wraps secrets such as a statement password in Redacted; grade the value the agent sent.

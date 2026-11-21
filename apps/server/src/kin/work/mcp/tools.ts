@@ -18,7 +18,6 @@ import { KinRecords } from "../KinRecords.ts";
 import * as Money from "../leadMoney.ts";
 import * as Work from "../leadWork.ts";
 import * as Comments from "../workComments.ts";
-import { deferredMeta } from "../../lead/deferredTools.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
@@ -111,9 +110,7 @@ export const KinWorkToolkit = Toolkit.make(
       "Give a task back to whoever gave it: yours, or the asker's when they say they can't take it (their words as note). For your own, note what blocks it and what would unblock it. It returns open to the giver; an agent is woken to reassign or ask the owner, and can't give it straight back until it changes or the owner says so.",
     parameters: Work.HandBackInput,
     success: Work.HandBackResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_comment", {
     ...shared,
     description:
@@ -127,26 +124,20 @@ export const KinWorkToolkit = Toolkit.make(
       "Put a web link on an entry (W-12): url and an optional name; remove true takes it off. Only an http or https address, on an entry the people you act for may edit.",
     parameters: Comments.LinkInput,
     success: Comments.LinkResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("project_note", {
     ...shared,
     description:
       "Set a project's one note for every task (P-2), shown on each of its tasks as from the project; note null clears it. Only for the owner or a co-owner.",
     parameters: Comments.NoteInput,
     success: Comments.NoteResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("list_define", {
     ...shared,
     description: `Start tracking something new as a list with typed fields, such as "start tracking expenses" or "track leave": a template (expenses, invoices, dates, receipts) or a name and fields (text, choice with choices, date, person, link to clients or projects, money, file), plus categories, the states it uses and what it calls them, and whether entries carry an amount. To add fields, choices or categories to a list you defined, pass list. The first call only proposes: it returns a proposal, creates nothing, and shows the owner its fields on a card to tap. Ask in one short line; once they tap yes or say yes in a later turn, call again with just proposal to create exactly that. A no on the card ends that proposal. Never create a list the owner hasn't agreed to. Only the owner retires a field or archives a list.`,
     parameters: Money.DefineInput,
     success: Money.DefineResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("payment_record", {
     ...shared,
     description:
@@ -176,9 +167,7 @@ export const KinWorkToolkit = Toolkit.make(
     description: `Set the owner's monthly spending limit for an expense category, a project, or a category in a project, as they said it ("50k for travel"). limit null removes it. Only in a turn the owner started with their own message or tap; in any other turn propose it to them instead. Returns the old and new limit and every budget with this month's spending. Reply in one line with the old and new limit.`,
     parameters: Money.BudgetInput,
     success: Money.BudgetResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("dates_query", {
     ...shared,
     description: `Everything due or dated between two days (inclusive) across every list (filings, renewals, invoices, Work), soonest first. lists narrows it; open false includes done. Read-only. ${data}`,
@@ -190,7 +179,5 @@ export const KinWorkToolkit = Toolkit.make(
     description: `The company's legal name, address, GSTIN, PAN, place of supply, SAC, bank details, logo and brand. set proposes changing the fields given (null clears one): Kin shows the owner the change on a card, the logo as a picture, and it applies only when they tap Confirm. Nothing changes before then. logo is the file's name as its message shows it, with or without its extension, of a PNG, JPEG or SVG the owner sent in this chat ("this is our logo"); Kin keeps its own copy. brand is the documents' look: primaryColor and secondaryColor as #RRGGBB, font (Poppins, Mukta, Libertinus Serif, New Computer Modern or DejaVu Sans Mono) and a footer line. Every recipe that shows a logo or brand colours uses them; nothing else needs changing. The profile is confidential: never put it in a delegated task's brief, a pull request or a chat others read.`,
     parameters: Money.ProfileInput,
     success: Money.ProfileResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
 );

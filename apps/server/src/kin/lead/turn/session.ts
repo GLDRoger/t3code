@@ -13,7 +13,6 @@ import { agentShellScripts, GH_APP_FOLDER } from "../../github/ghSign.ts";
 import { KinEnabled, layer as kinEnabledLayer } from "../../KinEnabled.ts";
 import { KinServer } from "../../KinServer.ts";
 import { SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "../Audience.ts";
-import { KIN_DEFERRED_TOOLS } from "../deferredTools.ts";
 import { REVIEW_THREAD_PREFIX } from "../outsideReview.ts";
 import { instructions } from "../instructions.ts";
 import { KinAgentSessionPolicy } from "../sessionPolicy.ts";
@@ -41,8 +40,11 @@ export interface KinSessionPlan {
   readonly thread: ThreadId;
   /** The whole system prompt for `owner` and `confined`; the provider's own otherwise. */
   readonly instructions: string | undefined;
-  /** Kin tools that wait to be searched for (`kinDeferredTools`); every other one loads up front. */
-  readonly deferredTools: ReadonlySet<string>;
+  /**
+   * Only `KIN_ALWAYS_LOADED` loads up front and every other tool waits to be searched for; false
+   * where the model in use can't look a tool up, so every tool it may use loads up front.
+   */
+  readonly toolSearch: boolean;
   readonly shell: KinShell | undefined;
   /** Why a built-in call is refused now, as the line the model reads; undefined admits it. */
   readonly refusal: Effect.Effect<string | undefined>;
@@ -54,15 +56,6 @@ export interface KinSessionPlan {
   /** False where the provider's own web search isn't offered at all: an outside review. */
   readonly nativeSearch: boolean;
 }
-
-const NOTHING_DEFERRED: ReadonlySet<string> = new Set();
-
-/**
- * A rare tool waits to be searched for only when the model in use can look one up; otherwise every
- * tool the session is allowed loads up front, so none is ever out of reach.
- */
-const kinDeferredTools = (toolLookup: boolean) =>
-  toolLookup ? KIN_DEFERRED_TOOLS : NOTHING_DEFERRED;
 
 /** GPT agents rarely asked with a card or made the Confirm card (evals, Nov 2026); true for all. */
 const ALL_MODELS_NOTE =
@@ -103,6 +96,12 @@ const sessionNote = (
 /** Kin's instructions are the whole system prompt on every provider, then what this seat has. */
 export const kinInstructions = (seat: "owner" | "confined", driver: string) =>
   `${instructions}\n\n${sessionNote(seat, kinProviderFacts(driver)?.lacks ?? [], driver)}`;
+
+/** What a lead's own thread is told, as `plan` decides it for that thread. */
+export const leadThreadInstructions = (threadId: ThreadId, driver: string) =>
+  threadId.startsWith(REVIEW_THREAD_PREFIX)
+    ? REVIEW_SEAT_INSTRUCTIONS
+    : kinInstructions(threadId.startsWith(SHARED_THREAD_PREFIX) ? "confined" : "owner", driver);
 
 /**
  * Decides, once and for every provider, what a Kin session is: which turn it serves, what it may
@@ -203,7 +202,7 @@ export class KinSessions extends Context.Service<
         if (!isKin && !delegated) return undefined;
         const base = {
           thread,
-          deferredTools: kinDeferredTools(input.toolLookup),
+          toolSearch: input.toolLookup,
           nativeSearch: true,
         };
         if (delegated && Option.isSome(policy))
