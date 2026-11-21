@@ -3784,7 +3784,10 @@ it.effect(
         waitingOn: null,
       });
       assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-2" })).handedBack);
-      assert.notProperty(yield* encodeGet(yield* LeadWork.get(scope, { key: "W-2" })), "handedBackBy");
+      assert.notProperty(
+        yield* encodeGet(yield* LeadWork.get(scope, { key: "W-2" })),
+        "handedBackBy",
+      );
       const closedRow = (yield* KinRecords.KinRecords.pipe(
         Effect.flatMap((records) => records.moveRows(orgId, { keys: ["W-2"] })),
       )).find((one) => one.key === "W-2");
