@@ -36,9 +36,9 @@ Once you're in, you add your other devices yourself. Open **Your devices** (unde
 web, in **Settings** on the phone) and choose **Link a device**. Kin shows a link and a QR code that
 work once, for 10 minutes. Scan the QR code with the new phone, or open the link in the new
 browser. Each time a device is linked, Kin tells you in your chat with the Team agent; without a
-Team agent, in your direct chats. Your iPhones with notifications on also get an alert, when phone
-alerts are set up for your company's Kin. Android phones don't get this alert yet. If no notice
-reaches you, check **Your devices** for any you didn't add.
+Team agent, in your direct chats. Your phones with notifications on also get an alert, when phone
+alerts are set up for your company's Kin. If no notice reaches you, check **Your devices** for any
+you didn't add.
 
 A linked device stays signed in for 30 days, then you link it again the same way. You can have 10
 devices at a time. Remove a device from the same list to sign it out at once, along with every
@@ -69,7 +69,8 @@ only when they end, once per teammate. Only you can change these two.
 
 **Settings → Notifications** sets how this device tells you about new messages. On the web and the
 desktop app it alerts you while Kin is open in a window you aren't looking at; on the phone it opens
-the phone's own notification settings.
+the phone's own notification settings. On Android those list Kin's kinds apart (Messages, Questions
+and approvals, Briefs, Devices and security), so you can silence one and keep the rest.
 
 ### Adding a teammate (owner and co-owners)
 
@@ -123,8 +124,9 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   under it, such as Mark W-4 “Set up the API” done, does exactly that when you tap it, with no
   wait for the agent. If what it names changed since, the card says nothing was done. A reaction
   never does it, and Kin never takes such an answer as a default: it waits for your tap.
-  On an iPhone, the notice of an agent's question with two answers lists them as 1 and 2; press
-  and hold it and tap **Answer 1** or **Answer 2** to answer without finding the chat. The phone
+  On a phone, the notice of an agent's question with two answers lists them as 1 and 2; press
+  and hold it (on Android, expand it) and tap **Answer 1** or **Answer 2** to answer without
+  finding the chat. The phone
   unlocks, opens the card and answers it once it reaches your Kin. Something to confirm, and a
   question with more answers, opens the card instead.
 - **It asks once, and says what it will do.** An agent's question comes with the answer it will go
