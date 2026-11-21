@@ -343,6 +343,8 @@ function ProfileForm(props: {
   const [draft, setDraft] = useState<KinProfileDraft>(initial);
   const [busy, setBusy] = useState<"saving" | "picture" | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  // The picture saves the moment it is chosen; this says so, and lets Save close the sheet.
+  const [pictureDone, setPictureDone] = useState<string | null>(null);
   const saved = useRef(false);
   const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
   const set = (change: Partial<KinProfileDraft>) => {
@@ -384,11 +386,21 @@ function ProfileForm(props: {
       const picture = await pickKinPicture(environmentId);
       if (picture !== null) {
         const outcome = await send({ picture });
-        if (!AsyncResult.isSuccess(outcome)) setProblem(KIN_PROFILE_COPY.pictureFailed);
+        if (AsyncResult.isSuccess(outcome)) setPictureDone(KIN_PROFILE_COPY.pictureSaved);
+        else setProblem(KIN_PROFILE_COPY.pictureFailed);
       }
     } catch {
       setProblem(KIN_PROFILE_COPY.pictureFailed);
     }
+    setBusy(null);
+  };
+
+  const removePicture = async () => {
+    setBusy("picture");
+    setProblem(null);
+    const outcome = await send({ picture: null });
+    if (AsyncResult.isSuccess(outcome)) setPictureDone(KIN_PROFILE_COPY.pictureRemoved);
+    else setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_PROFILE_COPY.failed));
     setBusy(null);
   };
 
@@ -400,7 +412,7 @@ function ProfileForm(props: {
         label: KIN_PROFILE_COPY.save,
         onPress: () => void save(),
         loading: busy === "saving",
-        disabled: busy !== null || !dirty,
+        disabled: busy !== null || (!dirty && pictureDone === null),
       }}
     >
       {problem === null ? null : <ErrorBanner message={problem} />}
@@ -428,11 +440,20 @@ function ProfileForm(props: {
               label={KIN_PROFILE_COPY.pictureRemove}
               icon="trash"
               disabled={busy !== null}
-              onPress={() => void send({ picture: null })}
+              onPress={() => void removePicture()}
             />
           </View>
         )}
       </ListSection>
+      {pictureDone === null ? null : (
+        <Text
+          textRole="footnote"
+          accessibilityLiveRegion="polite"
+          className="-mt-3 px-4 text-foreground-muted"
+        >
+          {pictureDone}
+        </Text>
+      )}
       <ListSection>
         <Field
           label={KIN_PROFILE_COPY.nameLabel}

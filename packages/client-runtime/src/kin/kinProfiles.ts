@@ -52,6 +52,8 @@ export const KIN_PROFILE_COPY = {
   pictureChange: "Change picture",
   pictureRemove: "Remove picture",
   pictureFailed: "The picture didn't upload. Try a smaller image.",
+  pictureSaved: "Picture saved.",
+  pictureRemoved: "Picture removed.",
 } as const;
 
 export const KIN_GITHUB_LOGIN = {
