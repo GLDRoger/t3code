@@ -15,6 +15,8 @@ export function SettingsRow(props: {
   readonly icon: ComponentProps<typeof ListRow>["icon"];
   readonly label: string;
   readonly value?: string;
+  /** Said whole after `value`, which is cut first. */
+  readonly valueEnd?: string;
   readonly valuePosition?: "below" | "trailing";
   readonly target?: SettingsPageTarget;
   readonly fullScreenTarget?: SettingsLegalDocumentTarget;
@@ -31,8 +33,9 @@ export function SettingsRow(props: {
   const content = {
     icon: props.icon,
     label: props.label,
-    description: valueBelow ? props.value : undefined,
+    description: valueBelow ? [props.value, props.valueEnd].filter(Boolean).join("") : undefined,
     detail: valueBelow ? undefined : props.value,
+    detailEnd: valueBelow ? undefined : props.valueEnd,
     disabled: props.disabled,
     labelWholeWords: props.labelWholeWords,
   };
@@ -51,7 +54,9 @@ export function SettingsRow(props: {
     return (
       <RowPressable
         accessibilityRole="button"
-        accessibilityLabel={[props.label, props.value].filter(Boolean).join(", ")}
+        accessibilityLabel={[props.label, `${props.value ?? ""}${props.valueEnd ?? ""}`]
+          .filter(Boolean)
+          .join(", ")}
         accessibilityState={{ disabled: Boolean(props.disabled), selected }}
         disabled={props.disabled}
         onPress={onPress}
