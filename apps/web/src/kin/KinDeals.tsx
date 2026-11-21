@@ -1209,6 +1209,13 @@ export function KinDealNewDialog(
       onOpenExisting={() => {}}
       onSave={() => void save()}
       onClose={props.onClose}
+      typed={
+        (party === null ? null : party.key) !== (props.party === null ? null : props.party.key) ||
+        [title, value, expected, source, step, stepDay].some((typed) => typed.trim() !== "") ||
+        picked !== null ||
+        owner !== ME ||
+        noneYet
+      }
     >
       {props.party !== null ? (
         <p className="text-sm text-muted-foreground">For {props.party.title}</p>

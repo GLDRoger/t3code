@@ -72,6 +72,7 @@ export const KIN_DEALS = {
   me: "Me",
   someone: "Someone…",
   whose: "Whose deals",
+  showEveryone: "Clear to show everyone's",
   which: "Which deals",
   dropWon: "Drop to win",
   dropLost: "Drop to lose",

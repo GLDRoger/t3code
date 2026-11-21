@@ -27,6 +27,8 @@ import {
   KIN_CLIENTS_DEFAULT_FILTER,
   KIN_CLIENTS_SHOW,
   kinClientsShowChoices,
+  kinClientsChosenAtom,
+  kinClientsChosenKey,
   kinClientsQuery,
   type KinClientsFilter,
   kinClientPageView,
@@ -75,6 +77,7 @@ import { Label } from "../components/ui/label";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Switch } from "../components/ui/switch";
 import { cn } from "../lib/utils";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinClientContact } from "./KinClientTouches";
@@ -98,6 +101,7 @@ import {
 import { KinWorkRow } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { KinClientDeals } from "./KinDeals";
+import { KinConfirm } from "./KinConfirm";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinHostConnected, useKinHostAt } from "./useKinHost";
 import {
@@ -135,11 +139,24 @@ export function KinWorkClientsList(
   const scope = useKinViewerScope(props.environmentId);
   const seesClients = useKinSeesClients(props.environmentId);
   const viewerStart = useKinClientsStart(props.environmentId);
+  // A list opened on its own start, such as a campaign's prospects, neither reads nor keeps it.
+  const chosen =
+    props.start === undefined
+      ? kinClientsChosenAtom(kinClientsChosenKey(props.environmentId, names.me))
+      : null;
+  const remembered = chosen === null ? null : appAtomRegistry.get(chosen);
   const { state, list } = useKinClientsList(
     props,
     props.stale ? null : props.live.seq,
-    props.start ?? viewerStart,
+    props.start ?? (remembered === null ? viewerStart : { ...remembered, text: "" }),
   );
+  const setFilter = (next: KinClientsFilter) => {
+    if (chosen !== null) {
+      const { text: _text, ...kept } = next;
+      appAtomRegistry.set(chosen, kept);
+    }
+    list.setFilter(next);
+  };
   const marketing = useKinMarketing(props);
   const { filter } = state;
   const listShown = kinListShown(state, kinHostLink(useKinHostAt(props.environmentId)));
@@ -167,7 +184,7 @@ export function KinWorkClientsList(
   const lookedAfterValue =
     filter.lookedAfter === "anyone" ? ANYONE : mine ? ME : kinWorkPrincipalKey(filter.lookedAfter);
   const pickLookedAfter = (value: string) =>
-    list.setFilter({
+    setFilter({
       ...filter,
       lookedAfter:
         value === ANYONE || (value === ME && names.me === null)
@@ -198,12 +215,12 @@ export function KinWorkClientsList(
                 aria-label={KIN_CLIENTS.search}
                 placeholder={KIN_CLIENTS.search}
                 value={filter.text}
-                onChange={(event) => list.setFilter({ ...filter, text: event.currentTarget.value })}
+                onChange={(event) => setFilter({ ...filter, text: event.currentTarget.value })}
               />
             </div>
             <KinFilter
               chip={chip === "" ? null : chip}
-              onClear={() => list.setFilter({ ...KIN_CLIENTS_DEFAULT_FILTER, text: filter.text })}
+              onClear={() => setFilter({ ...KIN_CLIENTS_DEFAULT_FILTER, text: filter.text })}
               groups={[
                 {
                   label: KIN_CLIENTS.show,
@@ -213,7 +230,7 @@ export function KinWorkClientsList(
                     label: one.label,
                   })),
                   onChange: (value) =>
-                    list.setFilter({
+                    setFilter({
                       ...filter,
                       show:
                         kinClientsShowChoices(seesClients).find((one) => one.id === value)?.id ??
@@ -254,7 +271,7 @@ export function KinWorkClientsList(
                           })),
                         ],
                         onChange: (value: string) =>
-                          list.setFilter({
+                          setFilter({
                             ...filter,
                             cameFrom: value === ANYWHERE ? null : value,
                           }),
@@ -268,7 +285,7 @@ export function KinWorkClientsList(
                           ...marketing.tags.map((tag) => ({ value: tag, label: tag })),
                         ],
                         onChange: (value: string) =>
-                          list.setFilter({ ...filter, tag: value === ANYWHERE ? null : value }),
+                          setFilter({ ...filter, tag: value === ANYWHERE ? null : value }),
                         long: true,
                       },
                     ]
@@ -671,6 +688,7 @@ function ClientPage(
   const [tagList, setTagList] = useState<string | null>(null);
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
+  const [askClose, setAskClose] = useState(false);
   const history = useKinWorkHistory(props, props.clientKey, page.seq);
   const privateId = useId();
 
@@ -808,7 +826,11 @@ function ClientPage(
                       </MenuItem>
                     ) : null}
                     {can.owner ? (
-                      <MenuItem onClick={() => void change({ active: view.closed })}>
+                      <MenuItem
+                        onClick={() =>
+                          view.closed ? void change({ active: true }) : setAskClose(true)
+                        }
+                      >
                         {view.closed ? KIN_CLIENTS.reopen : KIN_CLIENTS.close}
                       </MenuItem>
                     ) : null}
@@ -947,6 +969,9 @@ function ClientPage(
                 </p>
               ) : null}
             </>
+          )}
+          {view.contactsWho === null ? null : (
+            <p className="text-xs text-muted-foreground">{view.contactsWho}</p>
           )}
         </KinWorkSection>
         <KinWorkPlaceLists
@@ -1089,6 +1114,20 @@ function ClientPage(
           </KinWorkSection>
         ) : null}
       </div>
+      <KinConfirm
+        ask={
+          askClose
+            ? {
+                title: KIN_CLIENTS.closeAsk(view.name),
+                detail: KIN_CLIENTS.closeDetail,
+                action: KIN_CLIENTS.close,
+                destructive: true,
+              }
+            : null
+        }
+        onConfirm={() => void change({ active: false })}
+        onClose={() => setAskClose(false)}
+      />
       {dialog?.type === "edit" ? (
         <KinClientDialog
           environmentId={environmentId}

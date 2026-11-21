@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Fixtures build times relative to a fixed clock.
+import { AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -18,6 +19,8 @@ import {
   kinNewTaskChoices,
   kinClientContactLine,
   kinClientPageView,
+  kinClientsChosenAtom,
+  kinClientsChosenKey,
   kinClientRow,
   kinClientsNothing,
   kinClientsQuery,
@@ -261,6 +264,20 @@ describe("the clients list's Show and Looked after by", () => {
   });
 });
 
+describe("kinClientsChosenAtom", () => {
+  it("keeps a person's choice of Anyone for the next time the list opens, and only theirs", () => {
+    const registry = AtomRegistry.make();
+    const zoya = kinClientsChosenAtom(kinClientsChosenKey("env-1", "zoya"));
+    registry.set(zoya, { show: "open", lookedAfter: "anyone" });
+    expect(registry.get(kinClientsChosenAtom(kinClientsChosenKey("env-1", "zoya")))).toEqual({
+      show: "open",
+      lookedAfter: "anyone",
+    });
+    expect(registry.get(kinClientsChosenAtom(kinClientsChosenKey("env-1", "dev")))).toBeNull();
+    expect(registry.get(kinClientsChosenAtom(kinClientsChosenKey("env-2", "zoya")))).toBeNull();
+  });
+});
+
 describe("kinClientPageView", () => {
   const now = new Date("2026-11-20T10:00:00.000Z");
   const zoya = KinPersonId.make("zoya");
@@ -329,6 +346,19 @@ describe("kinClientPageView", () => {
     expect(step).toMatchObject({ title: "Send the revised proposal", late: true });
     expect(step?.line).toMatch(/^Was due .+ · W-38$/);
     expect(kinClientPageView(page({ kind: "vendor" }), names, now, true).nextStep).toBeNull();
+  });
+
+  it("says who adds its contacts to a reader who can't", () => {
+    const reader = (can: KinPartyPage["can"], party: Partial<KinPartyPage["party"]> = {}) =>
+      kinClientPageView(page(party, can), names, now, false).contactsWho;
+    expect(reader({ edit: true, log: true, owner: false })).toBeNull();
+    expect(reader({ edit: false, log: true, owner: false, contacts: true })).toBeNull();
+    expect(reader({ edit: false, log: true, owner: false, contacts: false })).toBe(
+      "Zoya looks after this one. They, or anyone with an open deal here, add and change its contacts.",
+    );
+    expect(reader({ edit: false, log: true, owner: false }, { kind: "vendor" })).toBe(
+      "Zoya looks after this one, and adds and changes its contacts.",
+    );
   });
 
   it("takes what the host says this reader may do, and from an older host only the owner level", () => {

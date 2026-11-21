@@ -4,7 +4,11 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinWorkHostEdits } from "@t3tools/client-runtime/kin/kinWork";
-import { kinWorkApplied, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
+import {
+  KIN_WORK_COPY,
+  kinWorkApplied,
+  type KinWorkAction,
+} from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
   KIN_CLIENTS,
   KIN_CLIENT_FAILED,
@@ -303,6 +307,12 @@ function KinClientBody(
     </ListSection>
   );
   const waitingNone = view.theyOwe.total === 0 && view.theyOwe.rows.length === 0;
+  const contactsFooter = [
+    view.contacts.length === 0 || !full ? null : KIN_CLIENTS.detailsPrivate,
+    view.contactsWho,
+  ]
+    .filter((line) => line !== null)
+    .join(" ");
   return (
     <KinWorkFrame
       title={
@@ -352,7 +362,21 @@ function KinClientBody(
                           id: "close",
                           title: view.closed ? KIN_CLIENTS.reopen : KIN_CLIENTS.close,
                           disabled: busy,
-                          onPress: () => void change({ active: view.closed }),
+                          onPress: () =>
+                            view.closed
+                              ? void change({ active: true })
+                              : Alert.alert(
+                                  KIN_CLIENTS.closeAsk(view.name),
+                                  KIN_CLIENTS.closeDetail,
+                                  [
+                                    { text: KIN_WORK_COPY.cancel, style: "cancel" },
+                                    {
+                                      text: KIN_CLIENTS.close,
+                                      style: "destructive",
+                                      onPress: () => void change({ active: false }),
+                                    },
+                                  ],
+                                ),
                         },
                       ]
                     : []),
@@ -490,7 +514,7 @@ function KinClientBody(
       )}
       <ListSection
         title={KIN_CLIENTS.contacts}
-        {...(view.contacts.length === 0 || !full ? {} : { footer: KIN_CLIENTS.detailsPrivate })}
+        {...(contactsFooter === "" ? {} : { footer: contactsFooter })}
       >
         {view.contacts.length === 0 ? (
           <ListRowLayout

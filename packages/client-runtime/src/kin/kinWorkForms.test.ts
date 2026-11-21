@@ -25,6 +25,7 @@ import {
   kinContactDraftCheck,
   kinContactDraftOf,
   kinContactUpdateInput,
+  kinFormTyped,
   kinProjectCreateInput,
   kinProjectDraftCheck,
   kinProjectDraftOf,
@@ -391,6 +392,22 @@ describe("kinProjectDraftCheck", () => {
     expect(kinProjectTargetHint(null)).toBe("Leave it empty for no target date.");
     expect(kinProjectTargetHint("2026-12-03")).toBeNull();
     expect(kinProjectTargetHint("2026-02-30")).toBe("Enter a real date.");
+  });
+});
+
+describe("kinFormTyped", () => {
+  const opened = { ...kinClientDraftOf(), name: "Tallmoor Freight", tags: "freight" };
+  it.each([
+    ["nothing touched", {}, false],
+    ["spaces only", { notes: "   ", contactName: " " }, false],
+    ["an empty Add another row", { contactPhones: ["", " "] }, false],
+    ["typed then erased", { name: "Tallmoor Freight " }, false],
+    ["a word typed", { contactName: "Ingrid" }, true],
+    ["a phone typed in a second row", { contactPhones: ["", "+47 912 34 567"] }, true],
+    ["a switch moved", { private: true }, true],
+    ["a kind picked", { kind: "prospect" as const }, true],
+  ])("%s", (_, change, typed) => {
+    expect(kinFormTyped(opened, { ...opened, ...change })).toBe(typed);
   });
 });
 

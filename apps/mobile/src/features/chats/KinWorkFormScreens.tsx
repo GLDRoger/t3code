@@ -38,6 +38,7 @@ import {
   kinProjectDraftOf,
   kinProjectTargetHint,
   kinProjectUpdateInput,
+  kinFormTyped,
   kinWorkFormMoved,
   kinWorkReadState,
   kinWorkSend,
@@ -77,6 +78,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   KinGateView,
+  useKinAskBeforeDiscard,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkProblemNotice,
@@ -235,6 +237,7 @@ function ClientFormRead(props: KinWorkTarget & { readonly clientKey: KinRecordKe
       {...props}
       editing={state.value.party}
       can={state.value.can ?? null}
+      contacts={state.value.contacts}
       start="client"
     />
   );
@@ -244,6 +247,8 @@ type ClientFormProps = KinWorkTarget & {
   readonly editing: KinPartyDetail | null;
   /** What the host says this reader may change; null for a new one or from an older host. */
   readonly can: KinPartyPage["can"] | null;
+  /** An existing one's contacts, whose emails and phones are edited in their own form. */
+  readonly contacts?: ReadonlyArray<KinContact>;
   readonly start: KinClientDraftKind;
 };
 
@@ -314,6 +319,7 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
   });
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
+  const leave = useKinAskBeforeDiscard(kinFormTyped(state.from, draft));
   const kinds: ReadonlyArray<KinClientDraftKind> = !member
     ? ["prospect", "client", "vendor"]
     : editing !== null && draft.kind !== "vendor"
@@ -325,6 +331,7 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
     vendor: COPY.party.kindVendor,
   };
   const newProspect = editing === null && draft.kind === "prospect";
+  const keepsContacts = props.can?.contacts ?? props.can?.edit ?? !member;
   const india = kinIndiaFields(useKinCompanyCountry(props));
   const gstinNote = kinClientGstinNote(draft);
   const placeId = draft.abroad ? ABROAD : draft.placeOfSupply || NO_PLACE;
@@ -332,12 +339,14 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
     ? COPY.party.placeAbroad
     : draft.placeOfSupply || COPY.party.placeNone;
   const openClient = (to: KinRecordKey) => {
+    leave();
     navigation.goBack();
     navigation.navigate("KinClient", { environmentId, orgId, party: to });
   };
   const save = async () => {
     const outcome = await form.save();
     if (!outcome.saved) return;
+    leave();
     appAtomRegistry.refresh(kinWorkChoicesAtom(props));
     if (key !== null) {
       appAtomRegistry.refresh(kinClient.workClient({ environmentId, input: { orgId, key } }));
@@ -409,6 +418,38 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
           onChangeText={(tags) => form.edit({ tags })}
         />
       </ListSection>
+      {editing === null || (!keepsContacts && (props.contacts ?? []).length === 0) ? null : (
+        <ListSection title={KIN_CLIENTS.contacts} footer={COPY.contact.detailsHint}>
+          {(props.contacts ?? []).map((contact) => (
+            <ListActionRow
+              key={contact.key}
+              icon="person.crop.circle"
+              label={contact.name}
+              description={[contact.role, ...contact.phones, ...contact.emails]
+                .filter((part) => part !== null && part !== "")
+                .join(" · ")}
+              disabled={!keepsContacts}
+              onPress={() =>
+                navigation.navigate("KinContactForm", {
+                  environmentId,
+                  orgId,
+                  party: editing.key,
+                  contact: contact.key,
+                })
+              }
+            />
+          ))}
+          {keepsContacts ? (
+            <ListActionRow
+              icon="plus"
+              label={KIN_CLIENTS.addContact}
+              onPress={() =>
+                navigation.navigate("KinContactForm", { environmentId, orgId, party: editing.key })
+              }
+            />
+          ) : null}
+        </ListSection>
+      )}
       {editing !== null ? null : (
         <ListSection
           title={COPY.party.contact}
@@ -681,7 +722,9 @@ function ContactForm(
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
   const busy = state.saving || aside.busy;
+  const leave = useKinAskBeforeDiscard(kinFormTyped(state.from, draft));
   const done = () => {
+    leave();
     reread();
     navigation.goBack();
   };
@@ -711,7 +754,10 @@ function ContactForm(
       canSave={draft.name.trim() !== ""}
       problem={state.problem ?? aside.problem}
       // Two people at one client can't share a name; the one there is on the page behind.
-      onOpenExisting={() => navigation.goBack()}
+      onOpenExisting={() => {
+        leave();
+        navigation.goBack();
+      }}
       onSave={() => void save()}
     >
       <ListSection>
@@ -962,13 +1008,16 @@ function ProjectForm(
   });
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
+  const leave = useKinAskBeforeDiscard(kinFormTyped(state.from, draft) || members.length > 0);
   const openProject = (project: KinRecordKey) => {
+    leave();
     navigation.goBack();
     navigation.navigate("KinProject", { environmentId, orgId, project });
   };
   const save = async () => {
     const outcome = await form.save();
     if (!outcome.saved) return;
+    leave();
     appAtomRegistry.refresh(kinWorkChoicesAtom(props));
     if (key !== null) {
       appAtomRegistry.refresh(kinClient.workProject({ environmentId, input: { orgId, key } }));
@@ -1180,6 +1229,7 @@ function MilestoneForm(props: KinWorkTarget & { readonly project: KinRecordKey }
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const canSave = name.trim() !== "";
+  const leave = useKinAskBeforeDiscard(canSave || due !== null);
   const save = async () => {
     if (saving || !canSave) return;
     setSaving(true);
@@ -1203,8 +1253,9 @@ function MilestoneForm(props: KinWorkTarget & { readonly project: KinRecordKey }
       own: null,
     });
     setSaving(false);
-    if (outcome.ok) navigation.goBack();
-    else setProblem(outcome.problem);
+    if (!outcome.ok) return setProblem(outcome.problem);
+    leave();
+    navigation.goBack();
   };
   return (
     <FormShell

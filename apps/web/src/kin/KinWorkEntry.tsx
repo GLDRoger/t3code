@@ -295,7 +295,6 @@ function PaymentForm(props: {
             inputMode="decimal"
             autoComplete="off"
             autoFocus
-            placeholder={props.entry.balance?.leftText}
             value={draft.amount}
             onChange={(event) => setDraft({ ...draft, amount: event.target.value })}
           />

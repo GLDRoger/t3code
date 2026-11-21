@@ -723,6 +723,30 @@ export async function kinWorkSend<A>(input: {
 
 // A form
 
+/** Asked once when a form that holds typed, unsaved words is closed. */
+export const KIN_FORM_DISCARD = {
+  title: "Discard what you typed?",
+  keep: "Keep editing",
+  discard: "Discard",
+} as const;
+
+const typedValue = (value: unknown): unknown =>
+  typeof value === "string"
+    ? value.trim()
+    : Array.isArray(value)
+      ? value.map(typedValue).filter((one) => one !== "")
+      : value;
+
+/**
+ * Whether closing a form would throw away something: a field that now says other than it did
+ * when the form opened. Spaces, and an empty "Add another" row, are nothing typed.
+ */
+export function kinFormTyped<D extends object>(from: D, draft: D): boolean {
+  return (Object.keys(draft) as Array<keyof D>).some(
+    (key) => JSON.stringify(typedValue(draft[key])) !== JSON.stringify(typedValue(from[key])),
+  );
+}
+
 /** A form's fields: text, a switch, or a client picked by its key. */
 type Draft = object;
 

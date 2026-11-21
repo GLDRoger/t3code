@@ -44,6 +44,7 @@ import {
   type KinWorkRowView,
 } from "./kinWork.ts";
 import { kinCount } from "./kinCount.ts";
+import { Atom } from "effect/reactivity";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -166,6 +167,10 @@ export const KIN_CLIENTS = {
   noContacts: "No one yet. Add who you deal with there.",
   /** For someone who can't add contacts. */
   noContactsYet: "No contacts yet.",
+  contactsWho: (lookedAfter: string, vendor: boolean) =>
+    vendor
+      ? `${lookedAfter} looks after this one, and adds and changes its contacts.`
+      : `${lookedAfter} looks after this one. They, or anyone with an open deal here, add and change its contacts.`,
   projects: "Projects",
   noProjects: "No projects for them yet.",
   terms: "Terms",
@@ -192,6 +197,8 @@ export const KIN_CLIENTS = {
   earlier: "Show earlier",
   edit: "Edit",
   close: "Close client",
+  closeAsk: (name: string) => `Close ${name}?`,
+  closeDetail: "Its to-dos and what needs attention leave its page. You can reopen it from More.",
   reopen: "Reopen",
   active: "Active",
   closed: "Closed",
@@ -454,6 +461,17 @@ export function kinClientsStartFilter(
     lookedAfter: { _tag: "person", personId: me.personId },
   };
 }
+
+/**
+ * The clients a person last chose to show (which, whose, came from, tag), kept on this device
+ * while the app stays open, so a trip elsewhere doesn't put the list back where it starts. Keyed
+ * by `kinClientsChosenKey`: someone else signing in on the same device starts on their own.
+ */
+export const kinClientsChosenAtom = Atom.family((_viewer: string) =>
+  Atom.make<Omit<KinClientsFilter, "text"> | null>(null).pipe(Atom.keepAlive),
+);
+export const kinClientsChosenKey = (environmentId: string, me: string | null) =>
+  `${environmentId}\u0000${me ?? ""}`;
 
 const lookedAfterKey = (who: KinClientsFilter["lookedAfter"]) =>
   who === "anyone" ? who : kinWorkPrincipalKey(who);
@@ -788,6 +806,8 @@ export interface KinClientPageView {
   readonly theyOwe: KinOwedView;
   readonly projects: ReadonlyArray<KinProjectRowView>;
   readonly contacts: ReadonlyArray<KinContactView>;
+  /** Who adds and changes its contacts, for a reader who can't; null for one who can. */
+  readonly contactsWho: string | null;
   readonly terms: string | null;
   readonly address: string | null;
   /** "GSTIN 27ABCDE1234F1Z5 · Maharashtra"; null when neither is set. */
@@ -825,6 +845,8 @@ export function kinClientPageView(
   const terms = party.terms?.trim() ?? "";
   const touches =
     page.touches === undefined ? null : page.touches.map((touch) => kinTouchView(touch, now));
+  const can = page.can ?? (ownerLevel ? CAN_ALL : CAN_NONE);
+  const lookedAfter = kinWorkName(party.owner, names);
   return {
     key: party.key,
     rev: party.rev,
@@ -843,11 +865,11 @@ export function kinClientPageView(
     ]
       .filter((part) => part !== null)
       .join(" · "),
-    lookedAfter: { name: kinWorkName(party.owner, names), avatar: kinWorkAvatar(party.owner) },
+    lookedAfter: { name: lookedAfter, avatar: kinWorkAvatar(party.owner) },
     nextStep: vendor ? null : { next: kinClientNext(party, weOwe, names, now) },
     source,
     tags: party.tags ?? [],
-    can: page.can ?? (ownerLevel ? CAN_ALL : CAN_NONE),
+    can,
     closed: !party.active,
     privacy: {
       private: party.sensitive,
@@ -858,6 +880,7 @@ export function kinClientPageView(
     theyOwe: owed(page.theyOwe, theyOwe),
     projects: page.projects.map((row) => kinProjectRow(row, names, now, ref)),
     contacts: page.contacts.map(kinContactView),
+    contactsWho: (can.contacts ?? can.edit) ? null : KIN_CLIENTS.contactsWho(lookedAfter, vendor),
     terms: terms === "" ? null : terms,
     address: party.address?.trim() || null,
     tax:
