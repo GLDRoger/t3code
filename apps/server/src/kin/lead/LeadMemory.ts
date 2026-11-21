@@ -431,8 +431,8 @@ export const authority = Layer.effect(
             sources,
             stagedReceipts:
               (yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}
-                -- A schedule is saved when its call runs; nothing of it waits for the turn's end.
-                AND call_key NOT LIKE 'schedule:%' LIMIT 1`).length > 0,
+                -- A schedule is saved, and a review posted, when its call runs; neither waits for the turn's end.
+                AND call_key NOT LIKE 'schedule:%' AND call_key NOT LIKE 'github-review:%' LIMIT 1`).length > 0,
           };
         },
         Effect.mapError((error) =>
