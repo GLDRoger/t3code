@@ -26,6 +26,7 @@ import { ServerConfig } from "../../config.ts";
 import { toolDirectories } from "../gendocs/toolchain.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { KinServer } from "../KinServer.ts";
+import { approvalOf } from "../questions/approval.ts";
 import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { markOutside, outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
@@ -112,13 +113,14 @@ const governingTurn = Effect.fnUntraced(function* (threadId: ThreadId) {
 /**
  * Why a thread's built-in tools (shell, edits, web, sub-agents) may not run now, or `undefined`
  * when they may: the turn it follows (`governingTurn`) is owner-only, not aborted for its
- * audience, and has read no outside text. No such turn admits nothing, so a run Kin hasn't
- * adopted can't use them. A delegated task keeps them exactly as long as its asking turn would.
+ * audience, has read no outside text, and is no approved draft's (`approvalOf`), whose content a
+ * teammate's turn wrote. No such turn admits nothing. A delegated task follows its asking turn.
  */
 export const fullSessionRefusal = Effect.fn("KinAgentSession.fullSessionRefusal")(
   function* (threadId: ThreadId) {
     const { turn } = yield* governingTurn(threadId);
     if (turn === undefined) return SESSION_REFUSAL.none;
+    if ((yield* approvalOf(turn))._tag !== "none") return SESSION_REFUSAL.approved;
     if (yield* aborted(turn)) return SESSION_REFUSAL.aborted;
     if ((yield* effectiveAudience(turn)) !== "owner_only") return SESSION_REFUSAL.shared;
     if (yield* outsideRead(turn)) return SESSION_REFUSAL.outside;

@@ -59,6 +59,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
       widgetId: input.widget.widgetId,
       personId: input.personId,
       label: input.option.label,
+      approves: input.option.kind === "yes",
       now: input.now,
     },
     yield* KinChatService,

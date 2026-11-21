@@ -32,6 +32,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
+import { madeUnderApproval } from "../questions/approval.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { resolveAttachmentPathById } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -912,6 +913,8 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       drafts,
       title,
     }).pipe(
+      // A post made under the owner's Approve: its week card is that approval's one result.
+      Effect.tap((card) => madeUnderApproval(lead, { kind: "post", cardId: card.cardId })),
       sql.withTransaction,
       Effect.provide(context),
       Effect.tapError((error) =>

@@ -45,6 +45,7 @@ import { teammatesLimited } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
+import { approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
 import { codingAgentSource, outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
 import { commentsPage } from "./recordComments.ts";
@@ -1279,8 +1280,8 @@ const make = Effect.gen(function* () {
   /**
    * Whether a new entry starts kept, from who makes it, in the write's transaction. Made from a
    * suggestion, or asked to be one, it is one. A quote or invoice is real only on an owner-level
-   * person's word: theirs, or their ask in person of an agent. Anything else starts kept as it
-   * always did, unless its caller asks for less.
+   * person's word: theirs, or their ask in person of an agent (an approved draft's one entry is
+   * `approvalKeeps`'). Anything else starts kept, unless its caller asks for less.
    */
   const startsKept = Effect.fn("KinRecords.startsKept")(function* (
     orgId: KinOrgId,
@@ -1296,6 +1297,33 @@ const make = Effect.gen(function* () {
     }
     if (!ISSUED_LISTS.has(list) || writer.actor._tag === "system") return true;
     return yield* mayKeep(orgId, writer);
+  });
+
+  /**
+   * An entry made under the owner's Approve of a sent-up quote or invoice (`approval.ts`): it
+   * starts kept, as his Draft, only on the approved kind's list, for the approved party when the
+   * draft named one, and only as the first entry made under that approval. Undefined when the
+   * writer's wake runs for no approval; then the entry starts as on any other turn.
+   */
+  const approvalKeeps = Effect.fn("KinRecords.approvalKeeps")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    list: string,
+    partyId: string | null,
+  ) {
+    if (writer.actor._tag !== "agent" || writer.wakeupId === undefined) return undefined;
+    const approval = yield* approvedFor({
+      orgId,
+      agentId: writer.actor.agentId,
+      wakeupId: writer.wakeupId,
+    }).pipe(provideSql);
+    if (approval === undefined) return undefined;
+    const { draft } = approval;
+    const keeps =
+      approval.made === null &&
+      DRAFT_LIST[draft.kind] === list &&
+      (draft.for === null || draft.for.partyId === partyId);
+    return { questionId: approval.questionId, keeps };
   });
 
   /**
@@ -1391,11 +1419,18 @@ const make = Effect.gen(function* () {
         : yield* storedRepeat(orgId, input.repeat, input.dueAt ?? null, input.dateAt ?? null));
     const now = yield* Clock.currentTimeMillis;
     const key = yield* ensureRegister(orgId, def, now);
-    const kept = options.kept ?? (yield* startsKept(orgId, writer, list, input));
+    const approved =
+      options.kept === undefined ? yield* approvalKeeps(orgId, writer, list, partyId) : undefined;
+    const kept =
+      options.kept ??
+      (approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps);
     // Nobody issued, sent or was paid for what nobody kept: it waits as a draft on its own day.
     // Only Issue makes an invoice owed, with its number; an agent sets none, so it starts a draft.
+    // An approval's entry is the owner's Draft whatever state it was given.
     const state =
-      (!kept && ISSUED_LISTS.has(list)) || (writer.actor._tag === "agent" && list === "invoices")
+      (!kept && ISSUED_LISTS.has(list)) ||
+      (writer.actor._tag === "agent" && list === "invoices") ||
+      approved?.keeps === true
         ? "open"
         : (input.state ??
           startState(def, {
@@ -1443,6 +1478,10 @@ const make = Effect.gen(function* () {
         ${givenAway && writer.actor._tag === "agent" && writer.askedBy == null ? writer.actor.agentId : null},
         ${input.sensitive === true ? textBy(writer) : null}, ${textBy(writer)},
         ${steps.length === 0 ? null : yield* encodeSteps(steps)}, ${input.urgent === true ? 1 : null})`;
+    if (approved?.keeps === true)
+      yield* recordMade(orgId, approved.questionId, { kind: "entry", recordId, key, list }).pipe(
+        provideSql,
+      );
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
       { field: "state", from: null, to: state },

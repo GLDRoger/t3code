@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { madeUnderApproval } from "../questions/approval.ts";
 import { effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -518,7 +519,7 @@ const runStartOfferings = Effect.fnUntraced(function* (lead: Lead, input: typeof
 
 /** What a refused doc for a teammate's own ask tells the agent to do instead: draft it for the owner. */
 const draftUpLine = (owner: string, asker: string) =>
-  `Nothing was written. Draft it for ${owner} instead: put the draft in kin_ask_person to ${owner} as its detail, leaving blank what only ${owner} decides, such as a price, with the options Approve and Changes first. Then tell ${asker} in one line that it is with ${owner} to approve, with the draft under that line.`;
+  `Nothing was written. Draft it for ${owner} instead: put the draft in kin_ask_person to ${owner} as its detail, with draft naming its kind and the client or deal key, leaving blank what only ${owner} decides, such as a price; Kin adds the buttons Approve and Changes first. Then tell ${asker} in one line that it is with ${owner} to approve, with the draft under that line.`;
 
 /**
  * A doc refused for the one teammate behind the turn, asked in their own direct chat with this
@@ -581,6 +582,13 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
   );
   if (input.links !== undefined && input.links.length > 0)
     yield* Docs.link(lead.orgId, context.writer, { key: written.row.key }, input.links, "relates");
+  // A proposal or client terms made under the owner's Approve is that approval's one result.
+  if (written.created)
+    yield* madeUnderApproval(lead, {
+      kind: "doc",
+      recordId: written.row.recordId,
+      key: written.row.key,
+    });
   yield* shown(lead, written, input.card ?? "answer");
   return writeResult(written, written.created);
 });

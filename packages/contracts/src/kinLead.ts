@@ -797,16 +797,17 @@ export const KinEvent = Schema.Union([
         itemId: KinMemoryItemId,
         person: KinPersonId,
       }),
-      // An agent's open question reached its day unanswered: the asker takes its default. With
-      // `undone`, the person put back what Kin's taking it changed; with `words` too, they
-      // instead undid the answer its asker took from their words. With `answered`, the person
-      // asked for another chat answered, and the asker's turn there carries it on.
+      // An agent's open question reached its day unanswered: the asker takes its default.
+      // `undone`: the person put that back; with `words`, the answer taken from their words.
+      // `answered`: the person asked for another chat answered, and the turn carries it on; with
+      // `approved`, the owner approved a teammate's sent-up draft, and the turn is his own.
       Schema.Struct({
         type: Schema.Literal("question"),
         questionId: TrimmedNonEmptyString,
         undone: Schema.optional(Schema.Literal(true)),
         words: Schema.optional(Schema.Literal(true)),
         answered: Schema.optional(Schema.Literal(true)),
+        approved: Schema.optional(Schema.Literal(true)),
       }),
       // One run of a scheduled task; `runId` names the fire or Run now tap that started it.
       Schema.Struct({
