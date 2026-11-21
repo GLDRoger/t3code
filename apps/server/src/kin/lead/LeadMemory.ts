@@ -42,7 +42,12 @@ import * as KinLevels from "./KinLevels.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
-import { MemoryItemError, memoryDateMillis, parseFrontMatter } from "../memory/frontMatter.ts";
+import {
+  MemoryItemError,
+  memoryDateMillis,
+  parseFrontMatter,
+  reviewOverdueBy,
+} from "../memory/frontMatter.ts";
 import { leadOwner, withReadableQuotes } from "../memory/quoteAccess.ts";
 import { QUOTE_MAX, QUOTE_REFUSALS, writeRefusal } from "../memory/keeping.ts";
 import {
@@ -1158,7 +1163,7 @@ const make = Effect.gen(function* () {
       return {
         ...item,
         head: head!,
-        reviewOverdue: item.head.review_by !== null && memoryDateMillis(item.head.review_by) < now,
+        reviewOverdue: reviewOverdueBy(item.head, now),
         misleading: item.head.invalid_at !== null,
       };
     }, Effect.mapError(failure)),

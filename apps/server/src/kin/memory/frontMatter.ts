@@ -39,6 +39,16 @@ export const memoryDateMillis = (value: string | null) => {
 export const endedBy = (head: { readonly invalid_at: string | null }, now: number) =>
   head.invalid_at !== null && !(memoryDateMillis(head.invalid_at) > now);
 
+type Standing = Pick<MemoryItemFrontMatter, "status" | "invalid_at" | "superseded_by">;
+/** Still in hand by `now`: not done, cancelled or replaced, and still true. */
+export const openBy = (head: Standing, now: number) =>
+  head.status === "open" && head.superseded_by === null && !endedBy(head, now);
+/** Past its review date and still open: a closed item has nothing left to review. */
+export const reviewOverdueBy = (
+  head: Standing & Pick<MemoryItemFrontMatter, "review_by">,
+  now: number,
+) => openBy(head, now) && memoryDateMillis(head.review_by) < now;
+
 const decodeFrontMatter = Schema.decodeUnknownEffect(MemoryItemFrontMatter);
 const decodeStaged = Schema.decodeUnknownEffect(
   Schema.Struct({
