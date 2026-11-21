@@ -15,6 +15,7 @@ import {
   KinPersonId,
   KinText,
   KinTrimmedText,
+  KinWidgetId,
 } from "./kinChat.ts";
 import {
   KinRecordChangeVia,
@@ -570,6 +571,27 @@ export const KinSearchResult = Schema.Struct({
 });
 export type KinSearchResult = typeof KinSearchResult.Type;
 
+/** What an agent's draft is of; the owner's Approve on it makes that one thing. */
+export const KIN_DRAFT_KINDS = ["proposal", "quote", "invoice", "terms", "mail", "post"] as const;
+export const KinDraftKind = Schema.Literals(KIN_DRAFT_KINDS);
+export type KinDraftKind = typeof KinDraftKind.Type;
+
+const KinNamedPerson = Schema.Struct({ personId: KinPersonId, name: KinTrimmedText });
+
+/** A doc card that is one draft: its text to copy, and where it goes up to be approved. */
+export const KinDocCardDraft = Schema.Struct({
+  kind: KinDraftKind,
+  /** The draft as filed, in markdown; Copy text takes it without the marks. */
+  text: KinText,
+  /** Who "Send to" sends it up to: set only in a teammate's own chat with the agent. */
+  sendTo: Schema.optional(KinNamedPerson),
+  /** Sent up: to whom, and when. */
+  sent: Schema.optional(Schema.Struct({ name: KinTrimmedText, at: IsoDateTime })),
+  /** Kin can't post it: no account on this service is connected, and who can connect one. */
+  noAccount: Schema.optional(Schema.Struct({ service: KinTrimmedText, by: KinNamedPerson })),
+});
+export type KinDocCardDraft = typeof KinDocCardDraft.Type;
+
 export const KIN_DOC_CARD = "doc";
 /** The chat card an agent shows a doc with. Filled by the server from stored rows. */
 export const KinDocCardState = Schema.Struct({
@@ -586,8 +608,24 @@ export const KinDocCardState = Schema.Struct({
   }),
   /** The version before, to open "See changes"; `null` for a new doc. */
   previousVersion: Schema.NullOr(PositiveInt),
+  draft: Schema.optional(KinDocCardDraft),
 });
 export type KinDocCardState = typeof KinDocCardState.Type;
+
+/** "Send to" on a teammate's draft card: it goes up to the agent's owner as one card to approve. */
+export const KinDocSendUpInput = Schema.Struct({
+  orgId: KinOrgId,
+  chatId: KinChatId,
+  widgetId: KinWidgetId,
+});
+export type KinDocSendUpInput = typeof KinDocSendUpInput.Type;
+export const KinDocSendUpResult = Schema.Struct({
+  /** Who it went up to. */
+  to: KinTrimmedText,
+  /** Waiting for their quiet hours to end before it reaches them. */
+  held: Schema.Boolean,
+});
+export type KinDocSendUpResult = typeof KinDocSendUpResult.Type;
 
 const KIN_DOCS_WS_METHODS = {
   list: "kin.docs.list",
@@ -607,6 +645,7 @@ const KIN_DOCS_WS_METHODS = {
   setDefaultRecipe: "kin.docs.setDefaultRecipe",
   startWhatWeSell: "kin.docs.startWhatWeSell",
   editSection: "kin.docs.editSection",
+  sendUp: "kin.docs.sendUp",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -682,6 +721,11 @@ export const KinDocsRpcs = [
     success: KinDocDetail,
     error,
   }),
+  Rpc.make(KIN_DOCS_WS_METHODS.sendUp, {
+    payload: KinDocSendUpInput,
+    success: KinDocSendUpResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_DOCS_RPC_SCOPES = {
@@ -709,4 +753,6 @@ export const KIN_DOCS_RPC_SCOPES = {
   [KIN_DOCS_WS_METHODS.startWhatWeSell]: AuthKinChatScope,
   // Writes a version, as restore does; it starts no agent work.
   [KIN_DOCS_WS_METHODS.editSection]: AuthKinChatScope,
+  // Asks the agent's owner on a card, as a chat message to the agent would; it starts no turn.
+  [KIN_DOCS_WS_METHODS.sendUp]: AuthKinChatScope,
 } as const;

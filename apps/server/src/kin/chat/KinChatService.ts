@@ -30,6 +30,7 @@ import {
   KinMessagesSendInput,
   KinWidgetsActInput,
   KinChoiceCardState,
+  KinDocCardState,
   type KinChoiceOutcome,
   type KinSendCard,
   type KinSendTry,
@@ -121,6 +122,7 @@ import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { memberReads } from "./sharing.ts";
 
 const decodeChoiceCard = Schema.decodeUnknownEffect(KinChoiceCardState);
+const decodeDocCard = Schema.decodeUnknownEffect(KinDocCardState);
 type Identity = PersonIdentity | AgentIdentity;
 type Viewers = ReadonlyArray<PersonIdentity>;
 type Caller = Identity | Viewers;
@@ -333,6 +335,12 @@ export class KinChatService extends Context.Service<
       readonly outcome: NonNullable<KinSendCard["outcome"]>;
       /** "chat" when the chat turned shared since the Confirm: the caller passes no reason. */
       readonly audience?: "owner" | "chat";
+    }) => Effect.Effect<KinWidget, ServiceError>;
+    /** Server-only: a draft's doc card was sent up; from then on it says to whom, once. */
+    readonly setDocCardSent: (input: {
+      readonly orgId: KinOrgId;
+      readonly widgetId: KinWidgetId;
+      readonly sent: NonNullable<NonNullable<KinDocCardState["draft"]>["sent"]>;
     }) => Effect.Effect<KinWidget, ServiceError>;
     /**
      * Server-only: the owner switched an unanswered send card's From. Bound to the revision he
@@ -2818,6 +2826,24 @@ const make = Effect.gen(function* () {
         state: { ...card, send: { ...card.send, outcome: input.outcome } },
         expectedRevision: existing.revision,
         updatedAt,
+      });
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      return widget;
+    }, transaction),
+    setDocCardSent: Effect.fn("KinChatService.setDocCardSent")(function* (input) {
+      const existing = yield* requireRecord(
+        repo.getWidget({ orgId: input.orgId, widgetId: input.widgetId }),
+      );
+      if (existing.type !== KIN_DOC_CARD) return yield* notFound;
+      const card = yield* decodeDocCard(existing.state).pipe(Effect.mapError(() => invalidState));
+      if (card.draft === undefined) return yield* notFound;
+      if (card.draft.sent !== undefined) return existing;
+      const widget = yield* repo.updateWidget({
+        ...existing,
+        audience: "chat",
+        state: { ...card, draft: { ...card.draft, sent: input.sent } },
+        expectedRevision: existing.revision,
+        updatedAt: yield* now,
       });
       yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
       return widget;

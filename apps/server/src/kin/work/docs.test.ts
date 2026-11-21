@@ -578,11 +578,12 @@ it.effect("a turn others read reaches only docs they all see, and restores none"
     assert.strictEqual((yield* Docs.versionOf(orgId, created.row.recordId))!.version, 1);
     // A member reaches the doc reads, where the service shows them only their docs.
     const reads = ["kin.docs.list", "kin.docs.get", "kin.docs.history", "kin.docs.diff"];
-    // The service decides a hand edit (`Docs.editSectionByHand`).
+    // The service decides a hand edit (`Docs.editSectionByHand`), and Send to on a draft card.
+    const decided = ["kin.docs.editSection", "kin.docs.sendUp"];
     for (const rpc of KinDocsRpcs)
       assert.strictEqual(
         kinRpcAccess(rpc._tag) === "person",
-        [...reads, "kin.docs.subscribe", "kin.search", "kin.docs.editSection"].includes(rpc._tag),
+        [...reads, "kin.docs.subscribe", "kin.search", ...decided].includes(rpc._tag),
         rpc._tag,
       );
   }).pipe(Effect.provide(layer)),
@@ -2033,7 +2034,10 @@ it.effect(
       });
       assert.deepInclude(posted, { changed: true, kind: "other" });
       const mate = { _tag: "person" as const, orgId, personId: mateId };
-      assert.strictEqual((yield* OwnerDocs.get([mate], { orgId, key: posted.key })).key, posted.key);
+      assert.strictEqual(
+        (yield* OwnerDocs.get([mate], { orgId, key: posted.key })).key,
+        posted.key,
+      );
       assert.lengthOf(yield* docs, 1);
       // A chat others share asks nobody outside it, so its refusal names no card.
       yield* sql`UPDATE kin_chats SET kind = 'team_group', direct_key = NULL WHERE chat_id = 'mate-chat'`;

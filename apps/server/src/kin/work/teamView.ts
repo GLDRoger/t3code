@@ -368,7 +368,10 @@ const DRAFT_DOC_FIELDS: ReadonlySet<string> = new Set(["list", "source", "partyI
  */
 const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
   orgId: KinOrgId,
-  view: { readonly people: ReadonlyArray<KinPersonId>; readonly askers: ReadonlyArray<KinPersonId> },
+  view: {
+    readonly people: ReadonlyArray<KinPersonId>;
+    readonly askers: ReadonlyArray<KinPersonId>;
+  },
   write: Parameters<typeof teamGuard>[2],
 ) {
   const { row, input } = write;
@@ -392,10 +395,7 @@ const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
   const own = facts(row?.recordId);
   if (!own.member) return yield* noLongerTeam;
   if (row !== undefined) return own.seen !== null && own.seen !== undefined;
-  if (
-    typeof input.partyId === "string" &&
-    !(own.clients.on && own.clients.seen.has(input.partyId))
-  )
+  if (typeof input.partyId === "string" && !(own.clients.on && own.clients.seen.has(input.partyId)))
     return false;
   return typeof input.projectId !== "string" || (yield* inProject(orgId, person, input.projectId));
 });

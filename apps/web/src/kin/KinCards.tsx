@@ -61,7 +61,13 @@ import {
   type KinMemoryChangeItemView,
   type KinMemoryChangesCardView,
 } from "@t3tools/client-runtime/kin/kinMemoryChangesPresentation";
-import { kinDocCardLine, KIN_DOCS, type KinDocCardView } from "@t3tools/client-runtime/kin/kinDocs";
+import {
+  kinDocCardDraft,
+  kinDocCardLine,
+  kinDocSendUpProblem,
+  KIN_DOCS,
+  type KinDocCardView,
+} from "@t3tools/client-runtime/kin/kinDocs";
 import { kinListedModelName } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinPersonId, KinSendTry, KinWidget } from "@t3tools/contracts";
@@ -107,7 +113,8 @@ import { KinSocialPackCard, KinSocialWeekCard } from "./KinSocialCards";
 import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
 import { KinVisual } from "./KinVisual";
 import { kinClient } from "./kinClient";
-import { useKinHostAt } from "./useKinHost";
+import { kinHostConnected, useKinHostAt } from "./useKinHost";
+import { toastManager } from "../components/ui/toast";
 import { serverEnvironment } from "../state/server";
 
 const CANT_ACT_TEXT = KIN_DEVICE_COPY.cantAct("browser", "answer");
@@ -220,7 +227,14 @@ export const KinCard = memo(function KinCard(props: {
     case "approval":
       return <KinApprovalCard approval={view.approval} />;
     case "doc":
-      return <KinDocCard doc={view.doc} environmentId={props.environmentId} orgId={props.orgId} />;
+      return (
+        <KinDocCard
+          doc={view.doc}
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          ownerLevel={ownerLevel !== false}
+        />
+      );
     case "statement_review":
       return <KinStatementReviewCard review={view.review} environmentId={props.environmentId} />;
     case "statement_password":
@@ -311,8 +325,31 @@ function KinDocCard(props: {
   readonly doc: KinDocCardView;
   readonly environmentId: EnvironmentId;
   readonly orgId: string;
+  readonly ownerLevel: boolean;
 }) {
   const { doc } = props;
+  const draft = kinDocCardDraft(doc, props.ownerLevel);
+  const sendUp = useAtomCommand(kinClient.docSendUp, { reportFailure: false });
+  const [sending, setSending] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const copy = (text: string) => {
+    void navigator.clipboard.writeText(text).then(
+      () => toastManager.add({ type: "success", title: KIN_DOCS.textCopied }),
+      () => undefined,
+    );
+  };
+  const send = async () => {
+    if (sending) return;
+    if (!kinHostConnected(props.environmentId)) return setProblem(KIN_DOCS.sendOffline);
+    setSending(true);
+    setProblem(null);
+    const result = await sendUp({
+      environmentId: props.environmentId,
+      input: { orgId: doc.orgId, chatId: doc.chatId, widgetId: doc.widgetId },
+    });
+    setSending(false);
+    setProblem(kinDocSendUpProblem(result));
+  };
   const nowMs = useNowMinuteMs();
   const host = useKinHostAt(props.environmentId);
   const agents =
@@ -325,11 +362,31 @@ function KinDocCard(props: {
     new Date(nowMs),
   );
   const params = { environmentId: props.environmentId, orgId: props.orgId };
+  const eyebrow = draft === null ? "Doc" : KIN_DOCS.draft;
   return (
-    <CardFrame eyebrow="Doc" label={`Doc: ${doc.title}. ${line.text}`}>
+    <CardFrame eyebrow={eyebrow} label={`${eyebrow}: ${doc.title}. ${line.text}`}>
       <p className="font-medium text-foreground">{doc.title}</p>
       <p className="text-xs text-muted-foreground">{line.text}</p>
+      {draft?.noAccount == null ? null : (
+        <p className="text-xs text-muted-foreground">{draft.noAccount}</p>
+      )}
+      {draft?.sent == null ? null : <p className="text-xs text-foreground">{draft.sent}</p>}
+      {problem === null ? null : (
+        <p role="alert" className="text-xs text-destructive-foreground">
+          {problem}
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-2">
+        {draft === null ? null : (
+          <Button size="xs" variant="outline" onClick={() => copy(draft.copyText)}>
+            {KIN_DOCS.copyText}
+          </Button>
+        )}
+        {draft?.sendTo == null ? null : (
+          <Button size="xs" variant="outline" disabled={sending} onClick={() => void send()}>
+            {sending ? KIN_DOCS.sending : draft.sendTo}
+          </Button>
+        )}
         <Button
           size="xs"
           variant="outline"

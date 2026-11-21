@@ -4,6 +4,7 @@ import { KIN_CHECK_CONNECTION, kinFailureText } from "./kinAnswers.ts";
 import { kinIsDealKey } from "./kinDeals.ts";
 import {
   KinDocCardState,
+  type KinDocCardDraft,
   type KinChatId,
   type KinChatSummary,
   type KinDocDetail,
@@ -150,6 +151,14 @@ export const KIN_DOCS = {
   noAgent: "No agent keeps this doc, so there is nobody to ask yet.",
   // The host drew nothing for the block: it predates them, or the block is new since it drew.
   undrawn: { chart: "This chart can't be shown.", visual: "This visual can't be shown." },
+  draft: "Draft",
+  sendTo: (name: string) => `Send to ${name}`,
+  sending: "Sending…",
+  sentTo: (name: string) => `Sent to ${name} to approve.`,
+  sendFailed: "Couldn't send it. Try again.",
+  sendOffline: "You're offline. Send it when the connection is back.",
+  noAccount: (service: string, by: string | null) =>
+    `No ${service} account is connected. ${by === null ? "You can connect one in Settings on your computer." : `${by} can connect one on their computer.`}`,
 } as const;
 
 /** A stretch of a doc's markdown, or what the host drew for one of its blocks. */
@@ -1148,24 +1157,77 @@ export function kinDocChat(
 const decodeDocCard = Schema.decodeUnknownOption(KinDocCardState);
 
 export interface KinDocCardView {
+  readonly orgId: KinOrgId;
+  readonly widgetId: KinWidget["widgetId"];
+  readonly chatId: KinChatId;
   readonly key: string;
   readonly title: string;
   readonly version: number;
   readonly change: Change;
   /** The version before, for "See changes"; null for a new doc. */
   readonly previousVersion: number | null;
+  /** One draft an agent wrote, with its text and where it goes up; null for any other doc. */
+  readonly draft: KinDocCardDraft | null;
 }
 
 export function kinDocCardView(widget: KinWidget): KinDocCardView | null {
   const state = Option.getOrNull(decodeDocCard(widget.state));
   if (state === null) return null;
   return {
+    orgId: widget.orgId,
+    widgetId: widget.widgetId,
+    chatId: widget.chatId,
+    draft: state.draft ?? null,
     key: state.key,
     title: state.title,
     version: state.version,
     change: state.change,
     previousVersion: state.previousVersion,
   };
+}
+
+/** What a draft's card offers its reader: the text to copy, Send to, and what Kin can't do. */
+export interface KinDocCardDraftView {
+  /** The draft as clean text, without the markdown marks (Copy text). */
+  readonly copyText: string;
+  /** The "Send to" button's label, or null when this reader has nothing to send up. */
+  readonly sendTo: string | null;
+  /** That it went up, and to whom, once sent. */
+  readonly sent: string | null;
+  /** Why Kin can't post it, and who can fix that. */
+  readonly noAccount: string | null;
+}
+
+/**
+ * A draft card for its reader: Copy text for everyone; Send to only for the teammate whose own
+ * draft it is, until sent. The owner and a co-owner have nothing to send up, so Copy text only.
+ */
+export function kinDocCardDraft(
+  card: Pick<KinDocCardView, "draft">,
+  ownerLevel: boolean,
+): KinDocCardDraftView | null {
+  const { draft } = card;
+  if (draft === null) return null;
+  return {
+    copyText: kinDocCopyText(draft.text),
+    sendTo:
+      draft.sendTo === undefined || draft.sent !== undefined || ownerLevel
+        ? null
+        : KIN_DOCS.sendTo(draft.sendTo.name),
+    sent: draft.sent === undefined ? null : KIN_DOCS.sentTo(draft.sent.name),
+    noAccount:
+      draft.noAccount === undefined
+        ? null
+        : KIN_DOCS.noAccount(draft.noAccount.service, ownerLevel ? null : draft.noAccount.by.name),
+  };
+}
+
+/** What a "Send to" tap came to: nothing to say once sent (the card says it), else why not. */
+export function kinDocSendUpProblem(result: AtomCommandResult<unknown, unknown>): string | null {
+  if (AsyncResult.isSuccess(result)) return null;
+  return kinFailureText(squashAtomCommandFailure(result), KIN_DOCS.sendFailed, {
+    gone: KIN_DOCS.gone.title,
+  });
 }
 
 /** A card names agents only, and the chat knows those by id. */

@@ -109,6 +109,7 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
           doc={view.doc}
           environmentId={props.environmentId}
           orgId={props.widget.orgId}
+          ownerLevel={access === null || kinOwnerLevel(access)}
           {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
           {...(props.onLongPress === undefined ? {} : { onLongPress: props.onLongPress })}
         />

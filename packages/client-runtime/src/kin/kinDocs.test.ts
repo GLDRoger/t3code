@@ -21,6 +21,7 @@ import {
   KIN_DOCS,
   kinDocChangeItem,
   kinDocChangeLine,
+  kinDocCardDraft,
   kinDocCopyText,
   kinDocPieces,
   kinSearchHit,
@@ -421,6 +422,38 @@ describe("kinDocCopyText", () => {
         "Read the invented thread or https://example.com/faq.",
       ].join("\n"),
     );
+  });
+
+  // A draft's card copies the same clean text, and offers Send to only to the teammate it's for.
+  it("a draft card: Copy text for all, Send to only for its teammate until sent", () => {
+    const rhea = { personId: KinPersonId.make("rhea"), name: "Rhea" };
+    const draft = {
+      kind: "post" as const,
+      text: "## Teaser\n\n**Soon** at _Harbourline_.\n",
+      sendTo: rhea,
+      noAccount: { service: "Instagram", by: rhea },
+    };
+    const teammate = kinDocCardDraft({ draft }, false);
+    expect(teammate).toEqual({
+      copyText: "Teaser\n\nSoon at Harbourline.",
+      sendTo: "Send to Rhea",
+      sent: null,
+      noAccount: "No Instagram account is connected. Rhea can connect one on their computer.",
+    });
+    expect(kinDocCardDraft({ draft }, true)).toEqual({
+      ...teammate,
+      sendTo: null,
+      noAccount:
+        "No Instagram account is connected. You can connect one in Settings on your computer.",
+    });
+    const sent = { ...draft, sent: { name: "Rhea", at: "2026-11-16T06:00:00.000Z" } };
+    expect(kinDocCardDraft({ draft: sent }, false)).toMatchObject({
+      sendTo: null,
+      sent: "Sent to Rhea to approve.",
+    });
+    const { sendTo: _sendTo, ...ownersOwn } = draft;
+    expect(kinDocCardDraft({ draft: ownersOwn }, true)?.sendTo).toBeNull();
+    expect(kinDocCardDraft({ draft: null }, false)).toBeNull();
   });
 });
 

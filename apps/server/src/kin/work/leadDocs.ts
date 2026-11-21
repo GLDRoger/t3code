@@ -5,6 +5,7 @@ import {
   KinChatId,
   KinDocKind,
   KinDocSectionId,
+  type KinDocCardDraft,
   type KinDocCardState,
   KinMessageId,
   KinPersonId,
@@ -388,6 +389,7 @@ export const shown = Effect.fn("KinDocTools.shown")(function* (
   lead: Lead,
   written: Docs.Written,
   card: boolean | "answer" | undefined,
+  draft?: KinDocCardDraft,
 ) {
   if (card !== true && card !== "answer") return;
   const turn = {
@@ -426,6 +428,7 @@ export const shown = Effect.fn("KinDocTools.shown")(function* (
           summary: version.summary,
         },
         previousVersion: version.baseVersion,
+        ...(draft === undefined ? {} : { draft }),
       } satisfies KinDocCardState,
     },
   );

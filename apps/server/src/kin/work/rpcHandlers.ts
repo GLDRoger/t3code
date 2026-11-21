@@ -35,6 +35,7 @@ import * as Goals from "./goals.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Deals from "./deals.ts";
 import * as Docs from "./ownerDocs.ts";
+import * as DraftCards from "./draftCards.ts";
 import * as ImportFile from "./importFile.ts";
 import * as Export from "./exportBundle.ts";
 import * as Marketing from "./ownerMarketing.ts";
@@ -280,6 +281,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.docs.editSection": Effect.fn("KinDocs.rpc.editSection")(function* (input) {
         return yield* call((people) => Docs.editSection(people, input));
+      }),
+      "kin.docs.sendUp": Effect.fn("KinDocs.rpc.sendUp")(function* (input) {
+        return yield* call((people) => DraftCards.sendUp(people, input));
       }),
       "kin.docs.subscribe": (input) => stream((people) => Docs.subscribe(people, input)),
       "kin.docs.recipes": Effect.fn("KinDocs.rpc.recipes")(function* (input) {
