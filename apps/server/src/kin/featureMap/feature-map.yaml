@@ -950,7 +950,10 @@ features:
     web: [docs, "?doc"]
     phone: [tab:docs, KinDoc]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: A teammate's Suggest a change opens their chat with the team agent, the doc attached.
+    note: >-
+      The owner level, and a project's lead for that project's docs, change a section by hand
+      (kin.docs.editSection); history keeps both versions. Anyone else's Suggest a change opens
+      their chat with the team agent, the doc attached.
     tools: [doc_create, doc_read, doc_edit, doc_rewrite, doc_link]
     proof:
       - .agents/skills/verify-kin/scripts/member-suggests-playbook.sh

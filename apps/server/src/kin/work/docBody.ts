@@ -261,6 +261,78 @@ export const applyOperations = (
   }
 };
 
+const handRefused = {
+  fence:
+    "That would change other sections of this doc: close the code block you opened with ``` or ~~~.",
+  split:
+    "A new heading would split this section in two: take the # off that line, or ask an agent to add the section.",
+  heading: "Keep this section's heading as it was: change only the text under it.",
+  others: "That would change other sections of this doc, so nothing was changed.",
+} as const;
+
+/** Whether `text` leaves a code fence open, read as `sectionsOf` reads fences. */
+const opensFence = (text: string) => {
+  let fence: string | undefined;
+  for (const line of text.split("\n")) {
+    const opened = FENCE.exec(line)?.[1];
+    if (opened === undefined) continue;
+    if (fence === undefined) fence = opened;
+    else if (opened[0] === fence[0] && opened.length >= fence.length) fence = undefined;
+  }
+  return fence !== undefined;
+};
+
+/**
+ * A person's hand edit of one section (D3): only that section's lines are replaced, and the result
+ * must have the same sections, in order, with the same ids and levels, every other one byte for
+ * byte as before; anything else is refused in words for people. Text without a heading line keeps
+ * the section's heading. The agents' `replace_section` is `applyOperations`, unchanged.
+ */
+export const replaceSectionByHand = (
+  body: string,
+  id: string,
+  text: string,
+):
+  | { readonly _tag: "applied"; readonly body: string }
+  | { readonly _tag: "refused"; readonly error: KinChatError } => {
+  const before = sectionsOf(body);
+  const at = before.findIndex((section) => section.id === id);
+  const old = before[at];
+  if (old === undefined) return { _tag: "refused", error: conflict(handRefused.others) };
+  let next = normalize(text).replace(/\n$/, "");
+  if (old.level > 0 && !startsWithHeading(next)) {
+    const heading = old.text.split("\n")[0]!;
+    next = next.trim() === "" ? heading : `${heading}\n\n${next.replace(/^\s+/, "")}`;
+  }
+  // A blank line before the next heading, as the section had one.
+  if (at < before.length - 1 && old.text.endsWith("\n") && !next.endsWith("\n")) next += "\n";
+  const parts = before.map((section, index) => (index === at ? next : section.text));
+  const after = normalize((parts[0] === "" ? parts.slice(1) : parts).join("\n"));
+  if (after.length > DOC_BODY_MAX)
+    return {
+      _tag: "refused",
+      error: invalid(
+        `A doc holds at most ${DOC_BODY_MAX} characters; this edit makes it ${after.length}.`,
+      ),
+    };
+  const sections = sectionsOf(after);
+  const refused = (message: string) => ({ _tag: "refused" as const, error: invalid(message) });
+  if (sections.length < before.length)
+    return refused(opensFence(next) ? handRefused.fence : handRefused.others);
+  if (sections.length > before.length) return refused(handRefused.split);
+  const mine = sections[at]!;
+  if (mine.id !== old.id || mine.level !== old.level) return refused(handRefused.heading);
+  const othersKept = before.every(
+    (section, index) =>
+      index === at ||
+      (sections[index]!.id === section.id &&
+        sections[index]!.level === section.level &&
+        sections[index]!.text === section.text),
+  );
+  if (!othersKept) return refused(opensFence(next) ? handRefused.fence : handRefused.others);
+  return { _tag: "applied", body: after };
+};
+
 /** Ids in `after` that are new or whose text changed, and ids `before` had that `after` lacks. */
 export const changedSections = (before: string, after: string) => {
   const old = new Map(sectionsOf(before).map((section) => [section.id, section.hash]));

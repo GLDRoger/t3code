@@ -13,6 +13,12 @@ import {
   KIN_DOC_KIND_LABELS,
   kinDocKindOf,
   kinDocUnfiled,
+  kinDocCanEdit,
+  kinDocCopyText,
+  kinDocEditInput,
+  kinDocEditOpen,
+  kinDocEditOutcome,
+  type KinDocEditOpened,
   kinDocDiffSummary,
   kinDocPdfInput,
   kinDocRestoreOutcome,
@@ -50,6 +56,15 @@ import {
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../components/ui/dialog";
+import {
   Sheet,
   SheetDescription,
   SheetHeader,
@@ -57,6 +72,7 @@ import {
   SheetTitle,
 } from "../components/ui/sheet";
 import { Skeleton } from "../components/ui/skeleton";
+import { Textarea } from "../components/ui/textarea";
 import { toastManager } from "../components/ui/toast";
 import { isElectron } from "../env";
 import { useRenderedAppearance } from "../hooks/useTheme";
@@ -151,6 +167,8 @@ export function KinDocPage(
   /** The version that was latest before a restore, which restoring again undoes. */
   const [undo, setUndo] = useState<number | null>(null);
   const [filing, setFiling] = useState(false);
+  // Taken when the editor opens; the doc may refresh underneath without touching the draft.
+  const [editing, setEditing] = useState<KinDocEditOpened | null>(null);
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
 
   const run = async (target: NonNullable<Restoring>, undoing: boolean) => {
@@ -188,6 +206,12 @@ export function KinDocPage(
     void navigator.clipboard.writeText(props.linkTo(section)).then(
       () => toastManager.add({ type: "success", title: KIN_DOCS.copied }),
       () => setProblem("Couldn't copy the link."),
+    );
+  };
+  const copyText = (markdown: string) => {
+    void navigator.clipboard.writeText(kinDocCopyText(markdown)).then(
+      () => toastManager.add({ type: "success", title: KIN_DOCS.textCopied }),
+      () => setProblem("Couldn't copy the text."),
     );
   };
 
@@ -300,6 +324,19 @@ export function KinDocPage(
           )}
         </div>
       )}
+      {editing === null ? null : (
+        <KinDocSectionEditor
+          {...props}
+          docTitle={doc?.title ?? editing.key}
+          opened={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(version) => {
+            setEditing(null);
+            toastManager.add({ type: "success", title: KIN_DOCS.saved(version) });
+            refresh();
+          }}
+        />
+      )}
       {filing && doc !== null ? (
         <KinDocFileDialog {...props} doc={doc} onClose={() => setFiling(false)} />
       ) : null}
@@ -355,6 +392,8 @@ export function KinDocPage(
           onPoint={ask}
           suggests={!ownerLevel}
           onCopyLink={copyLink}
+          onCopyText={copyText}
+          onEdit={kinDocCanEdit(doc) ? (section) => setEditing(kinDocEditOpen(doc, section)) : null}
           onSeeChanges={(to) => onGo({ doc: key, changes: { to } })}
           onOpenLatest={() => onGo({ doc: key })}
           onHistory={() => onGo({ ...where, history: true })}
@@ -699,5 +738,84 @@ function KinDocHistory(
         </div>
       </SheetPopup>
     </Sheet>
+  );
+}
+
+/** One section changed by hand; a refusal keeps what was typed, and nothing else closes it. */
+function KinDocSectionEditor(
+  props: KinWorkTarget & {
+    readonly docTitle: string;
+    /** What the editor opened on (`kinDocEditOpen`): the save names it, never the doc as it reads now. */
+    readonly opened: KinDocEditOpened;
+    readonly onClose: () => void;
+    readonly onSaved: (version: number) => void;
+  },
+) {
+  const { environmentId, orgId, opened } = props;
+  const send = useAtomCommand(kinClient.docEditSection, { reportFailure: false });
+  const [text, setText] = useState(opened.was);
+  const [requestId] = useState(randomUUID);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const changed = text !== opened.was;
+  const save = async () => {
+    if (busy || !changed) return;
+    if (!kinHostConnected(environmentId)) return setProblem(KIN_DOCS.editOffline);
+    const input = kinDocEditInput(orgId, opened, text, requestId);
+    setBusy(true);
+    setProblem(null);
+    const outcome = kinDocEditOutcome(await send({ environmentId, input }));
+    setBusy(false);
+    if (outcome._tag === "refused") return setProblem(outcome.text);
+    props.onSaved(outcome.doc.version.version);
+  };
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        // Typed words go only by Cancel, never by a stray click outside.
+        if (!open && !busy && !changed) props.onClose();
+      }}
+    >
+      <DialogPopup className="max-w-2xl">
+        <form
+          className="contents"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>{KIN_DOCS.editing(opened.title)}</DialogTitle>
+            <DialogDescription>{props.docTitle}</DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <div className="flex flex-col gap-3">
+              <Textarea
+                aria-label={KIN_DOCS.editing(opened.title)}
+                rows={14}
+                value={text}
+                disabled={busy}
+                autoFocus
+                onChange={(event) => setText(event.target.value)}
+              />
+              {problem === null ? null : (
+                <Alert variant="error">
+                  <AlertDescription>{problem}</AlertDescription>
+                </Alert>
+              )}
+            </div>
+          </DialogPanel>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={busy} onClick={props.onClose}>
+              {KIN_DOCS.cancel}
+            </Button>
+            <Button type="submit" disabled={busy || !changed} aria-busy={busy}>
+              {busy ? KIN_DOCS.saving : KIN_DOCS.save}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogPopup>
+    </Dialog>
   );
 }

@@ -1664,6 +1664,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.docs.restore",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
+    /** One section changed by hand; the host decides who may (`kin.docs.editSection`). */
+    docEditSection: createKinRpcCommand(runtime, {
+      label: "kin:docs:editSection",
+      tag: "kin.docs.editSection",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
     /** Starts What we sell, or brings an archived one back; the same doc however often it is tapped. */
     docStartWhatWeSell: createKinRpcCommand(runtime, {
       label: "kin:docs:startWhatWeSell",

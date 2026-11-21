@@ -2,8 +2,10 @@
 import {
   KinAgentId,
   KinChatError,
+  KinOrgId,
   KinPersonId,
   KinRecordId,
+  KinRecordKey,
   type KinDocRow,
   type KinDocSection,
   type KinDocVersion,
@@ -18,6 +20,7 @@ import {
   createKinSearch,
   KIN_DOCS,
   kinDocChangeLine,
+  kinDocCopyText,
   kinDocPieces,
   kinSearchHit,
   KIN_DOCS_DEFAULT_FILTER,
@@ -28,6 +31,9 @@ import {
   kinDocsQuery,
   kinDocRef,
   kinDocRefLabel,
+  kinDocEditInput,
+  kinDocEditOpen,
+  kinDocEditOutcome,
   kinDocRestoreOutcome,
   kinDocSections,
   kinDocRow,
@@ -331,6 +337,55 @@ describe("kinDocSections", () => {
   });
 });
 
+describe("kinDocCopyText", () => {
+  it("gives clean text: no marks, a list's items as lines, a table's rows as tab-separated cells", () => {
+    const body = [
+      "# Ambermill launch post",
+      "",
+      "We **finally** ship the _invented_ [planner](https://example.com/planner) on `Monday`.",
+      "",
+      "- Faster sync",
+      "- [ ] Offline mode",
+      "  1. On the phone",
+      "",
+      "3. Book the room",
+      "4. Send the invite",
+      "",
+      "> Rhea: ~~maybe~~ yes.",
+      "",
+      "| Plan | Price |",
+      "| --- | ---: |",
+      "| Starter | 10 |",
+      "| Team | *20* |",
+      "",
+      "```kin_chart",
+      '{"type":"bar"}',
+      "```",
+      "",
+      "---",
+      "",
+      "Read [the invented thread](t3-thread:abc) or https://example.com/faq.",
+    ].join("\n");
+    expect(kinDocCopyText(body)).toBe(
+      [
+        "Ambermill launch post",
+        "",
+        "We finally ship the invented planner (https://example.com/planner) on Monday.",
+        "",
+        "Faster sync\nOffline mode\n1. On the phone",
+        "",
+        "3. Book the room\n4. Send the invite",
+        "",
+        "Rhea: maybe yes.",
+        "",
+        "Plan\tPrice\nStarter\t10\nTeam\t20",
+        "",
+        "Read the invented thread or https://example.com/faq.",
+      ].join("\n"),
+    );
+  });
+});
+
 describe("kinDocPieces", () => {
   const visual = (title: string, attachmentId: string) =>
     ({ _tag: "visual", title, attachmentId, height: 240 }) as const;
@@ -398,6 +453,71 @@ describe("kinDocRef", () => {
     expect(kinDocRefLabel(ref)).toBe("Launch plan › Pricing");
     // A section that is no longer in the doc points at the doc, not at nothing.
     expect(kinDocRefLabel(kinDocRef(doc, "gone"))).toBe("Launch plan");
+  });
+});
+
+describe("kinDocEditOpen", () => {
+  const read = (pricing: string, timeline: string) => ({
+    key: KinRecordKey.make("D-3"),
+    body: `## Pricing\n\n${pricing}\n\n## Timeline\n\n${timeline}\n`,
+    outline: [
+      { id: "pricing", title: "Pricing", level: 2, chars: 20, hash: `p:${pricing}` },
+      { id: "timeline", title: "Timeline", level: 2, chars: 20, hash: `t:${timeline}` },
+    ],
+  });
+  const orgId = KinOrgId.make("org");
+
+  it("saves against the section as opened, whatever version arrives while the editor is open", () => {
+    const v1 = read("Starter is 10.", "Launch on the 10th.");
+    const opened = kinDocEditOpen(v1, "pricing")!;
+    expect(opened).toEqual({
+      key: "D-3",
+      section: "pricing",
+      title: "Pricing",
+      hash: "p:Starter is 10.",
+      was: "## Pricing\n\nStarter is 10.\n",
+    });
+    // The same section changes underneath: the save still names version 1's text, so the host
+    // refuses it rather than write the older draft over the newer change.
+    const sameChanged = read("Starter is 12.", "Launch on the 10th.");
+    expect(kinDocEditOpen(sameChanged, "pricing")!.hash).toBe("p:Starter is 12.");
+    expect(kinDocEditInput(orgId, opened, "Starter is 11.", "r-1")).toEqual({
+      orgId,
+      key: "D-3",
+      section: "pricing",
+      hash: "p:Starter is 10.",
+      text: "Starter is 11.",
+      clientRequestId: "r-1",
+    });
+    // Another section changes underneath: the hash sent is still the section's own, which holds.
+    const otherChanged = read("Starter is 10.", "Launch on the 20th.");
+    expect(kinDocEditInput(orgId, opened, "Starter is 11.", "r-1").hash).toBe(
+      kinDocEditOpen(otherChanged, "pricing")!.hash,
+    );
+    expect(kinDocEditOpen(v1, "missing")).toBeNull();
+  });
+});
+
+describe("kinDocEditOutcome", () => {
+  it("says a newer change to the section refused the edit, in its own words", () => {
+    const failed = (reason: "conflict" | "not_allowed", message: string) =>
+      kinDocEditOutcome(
+        AsyncResult.failure(Cause.fail(new KinChatError({ reason, message }))) as AtomCommandResult<
+          never,
+          unknown
+        >,
+      );
+    expect(failed("conflict", "Section pricing changed, hash 9f")).toEqual({
+      _tag: "refused",
+      moved: true,
+      text: KIN_DOCS.editMoved,
+    });
+    const refusal = "Only the owner, a co-owner or the project's lead can change this doc by hand.";
+    expect(failed("not_allowed", refusal)).toEqual({
+      _tag: "refused",
+      moved: false,
+      text: refusal,
+    });
   });
 });
 
