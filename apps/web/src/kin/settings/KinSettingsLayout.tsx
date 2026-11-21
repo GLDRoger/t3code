@@ -83,7 +83,7 @@ export function KinSettingsSection(props: {
 export function KinSettingsRow(props: {
   readonly title: ReactNode;
   readonly detail?: ReactNode;
-  /** A mark, avatar or icon before the text, 20px. */
+  /** A mark before the text: a 24px avatar, or a 16px icon centred in the same slot. */
   readonly leading?: ReactNode;
   readonly status?: ReactNode;
   readonly control?: ReactNode;
@@ -92,15 +92,20 @@ export function KinSettingsRow(props: {
   readonly openLabel?: string;
   /** Lets a long main text wrap instead of cutting it: a sentence, not a name. */
   readonly wrap?: boolean;
+  /** `useSearchableSetting(...).id`, so a settings search lands on this row. */
+  readonly searchId?: string;
 }) {
   const text = props.wrap === true ? "text-pretty" : "truncate";
   return (
     <div
       data-slot="kin-settings-row"
-      className="relative flex min-h-12 items-center gap-3 px-4 py-2.5 first:rounded-t-xl last:rounded-b-xl has-[[data-kin-row-open]:hover]:bg-accent/50"
+      id={props.searchId}
+      tabIndex={props.searchId === undefined ? undefined : -1}
+      // A found row rings inside the card, so the ring never covers the rows beside it.
+      className="relative flex min-h-12 items-center gap-3 px-4 py-2.5 outline-none first:rounded-t-xl last:rounded-b-xl has-[[data-kin-row-open]:hover]:bg-accent/50 data-[kin-setting-found]:ring-inset! data-[kin-setting-found]:ring-offset-0!"
     >
       {props.leading === undefined ? null : (
-        <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+        <span className="flex size-6 shrink-0 items-center justify-center text-muted-foreground">
           {props.leading}
         </span>
       )}
@@ -194,6 +199,49 @@ export function KinSettingsLoadFailed(props: {
     >
       <span role="alert">{props.children}</span>
     </KinSettingsEmpty>
+  );
+}
+
+/**
+ * The last line of a long list's card: the first rows show, and this shows the rest. Lists stay
+ * short to open; a person who wants all of them asks once.
+ */
+export function KinSettingsShowAll(props: { readonly label: string; readonly onShow: () => void }) {
+  return (
+    <div className="flex min-h-10 items-center px-2 py-1">
+      <Button size="xs" variant="ghost" onClick={props.onShow}>
+        {props.label}
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * Several read-mostly values that one form edits, read at a glance: label, then value, one line
+ * each, wrapping long values. The section's own action opens the form, so there is one way in,
+ * not one per line. `attention` marks only a line missing something the reader needs.
+ */
+export function KinSettingsFacts(props: {
+  readonly facts: ReadonlyArray<{
+    readonly label: string;
+    readonly value: ReactNode;
+    readonly attention?: ReactNode;
+  }>;
+}) {
+  return (
+    <dl className="grid grid-cols-1 gap-x-6 gap-y-1 px-4 py-3 sm:grid-cols-[minmax(8rem,auto)_1fr] sm:gap-y-2">
+      {props.facts.map((fact) => (
+        <div key={fact.label} className="contents">
+          <dt className="pt-1 text-xs text-muted-foreground sm:pt-0 sm:text-sm">{fact.label}</dt>
+          <dd className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-foreground">
+            <span className="min-w-0 whitespace-pre-line break-words">{fact.value}</span>
+            {fact.attention === undefined || fact.attention === null ? null : (
+              <KinSettingsStatus tone="attention">{fact.attention}</KinSettingsStatus>
+            )}
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 

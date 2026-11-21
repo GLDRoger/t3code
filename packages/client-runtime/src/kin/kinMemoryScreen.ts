@@ -562,7 +562,6 @@ export const KIN_MEMORY_SETTINGS = {
   remembered: "Remembered",
   empty: "What your agents learn while working with you shows up here.",
   open: "Open memory",
-  showAll: (n: number) => `Show all ${n}`,
   /** Who may know one memory, said on its own page. */
   whoKnows: (state: KinMemoryVisibility, teamOff: boolean) =>
     state === "suggested"

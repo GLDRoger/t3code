@@ -345,7 +345,7 @@ export const KIN_AGENTS_PAGE = {
   defaultsLabel: "Model",
   /** The row's line while nobody has chosen: what they start on meanwhile. */
   unchosen: (line: string) => `${line}, as your first agent`,
-  save: "Save",
+  save: "Save model",
 } as const;
 
 /** The owner's list of agents, and what a teammate is shown of one. */

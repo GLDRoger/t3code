@@ -23,6 +23,8 @@ export function KinGithubLoginRow(props: {
   readonly orgId: KinOrgId;
   readonly profile: KinPersonProfile;
   readonly mine: boolean;
+  /** The settings search id that lands on this row. */
+  readonly searchId?: string;
 }) {
   const { profile } = props;
   const [editing, setEditing] = useKinFormOpen();
@@ -31,6 +33,7 @@ export function KinGithubLoginRow(props: {
   return (
     <>
       <KinSettingsRow
+        {...(props.searchId === undefined ? {} : { searchId: props.searchId })}
         title={KIN_GITHUB_LOGIN.label}
         detail={login ?? KIN_GITHUB_LOGIN.none}
         openLabel={`${KIN_GITHUB_LOGIN.label}: ${login ?? KIN_GITHUB_LOGIN.none}`}
@@ -72,7 +75,7 @@ function KinGithubLoginDialog(props: {
       <KinSettingsFormDialog
         title={KIN_GITHUB_LOGIN.label}
         description={props.mine ? KIN_GITHUB_LOGIN.mineHint : KIN_GITHUB_LOGIN.theirHint}
-        submitLabel={KIN_GITHUB_LOGIN.save}
+        submitLabel={KIN_GITHUB_LOGIN.saveUsername}
         busy={busy}
         problem={problem}
         remove={

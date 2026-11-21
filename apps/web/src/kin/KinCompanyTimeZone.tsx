@@ -37,13 +37,11 @@ export function KinCompanyTimeZoneSetting() {
   const searchableSetting = useSearchableSetting();
   const target = kinNewLeadTarget(useKinHost());
   return target === null ? null : (
-    <div id={searchableSetting("kin-time-zone").id} tabIndex={-1} className="outline-none">
-      <CompanyTimeZone {...target} />
-    </div>
+    <CompanyTimeZone {...target} searchId={searchableSetting("kin-time-zone").id} />
   );
 }
 
-function CompanyTimeZone(props: KinWorkTarget) {
+function CompanyTimeZone(props: KinWorkTarget & { readonly searchId: string }) {
   const query = { environmentId: props.environmentId, input: { orgId: props.orgId } };
   const result = useAtomValue(kinClient.workZone(query));
   const canSet = useKinCanSetTimeZone(props.environmentId);
@@ -58,6 +56,7 @@ function CompanyTimeZone(props: KinWorkTarget) {
     (zone.fromHost === true || !kinSameTimeZone(browserZone, zone.timeZone));
   return (
     <KinSettingsRow
+      searchId={props.searchId}
       title={KIN_COMPANY.timeZone}
       detail={
         state === "failed" ? (

@@ -11,11 +11,9 @@ import { AsyncResult } from "effect/reactivity";
 import { EyeIcon, MessageSquareIcon, RotateCcwIcon } from "lucide-react";
 import { useId, useState } from "react";
 
-import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import {
   Dialog,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogPanel,
@@ -28,6 +26,7 @@ import { Switch } from "../components/ui/switch";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
+import { KinSettingsDialog } from "./settings/KinSettingsControls";
 import { kinPreviewUrl } from "./KinInvoice";
 import { kinClient } from "./kinClient";
 import {
@@ -190,103 +189,84 @@ export function KinTemplatesSection(props: KinWorkTarget) {
         )
       )}
       {open === undefined ? null : (
-        <Dialog
-          open
-          onOpenChange={(next) => {
-            if (!next && !busy) setOpened(null);
-          }}
+        <KinSettingsDialog
+          title={open.template.title}
+          description={open.template.description ?? open.template.changed}
+          busy={busy}
+          problem={failed}
+          start={
+            canUndo && open.template.canUndo ? (
+              <Button
+                variant="ghost"
+                disabled={busy}
+                onClick={() => setAsking({ kind: "undo", template: open.template })}
+              >
+                <RotateCcwIcon />
+                {KIN_TEMPLATES.undo}
+              </Button>
+            ) : undefined
+          }
+          secondary={
+            canPreview ? (
+              <Button
+                variant="outline"
+                disabled={actions.busy || busy}
+                aria-busy={actions.busy}
+                onClick={() => void preview(open.template, open.group.list)}
+              >
+                {actions.busy ? <Spinner /> : <EyeIcon />}
+                {actions.busy ? KIN_TEMPLATES.previewing : KIN_TEMPLATES.preview}
+              </Button>
+            ) : undefined
+          }
+          onClose={() => setOpened(null)}
         >
-          <DialogPopup className="max-w-lg">
-            <DialogHeader>
-              <DialogTitle>{open.template.title}</DialogTitle>
-              <DialogDescription>
-                {open.template.description ?? open.template.changed}
-              </DialogDescription>
-            </DialogHeader>
-            <DialogPanel>
-              <div className="flex flex-col gap-4">
-                {open.template.description === null ? null : (
-                  <p className="text-xs text-muted-foreground">{open.template.changed}</p>
-                )}
-                {open.group.list === null ? null : (
-                  <div className="flex items-center justify-between gap-4">
-                    <p className="text-sm text-foreground">
-                      {open.template.isDefault
-                        ? KIN_TEMPLATES_SETTINGS.usedFor(open.group.title)
-                        : open.group.title}
-                    </p>
-                    {canDefault && !open.template.isDefault ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() => void makeDefault(open.template)}
-                      >
-                        {KIN_TEMPLATES.pickFor(open.group.title)}
-                      </Button>
-                    ) : null}
-                  </div>
-                )}
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex flex-col gap-0.5">
-                    <Label htmlFor={privateId}>{KIN_TEMPLATES_SETTINGS.privateLabel}</Label>
-                    <p className="text-xs text-muted-foreground">
-                      {open.template.alwaysPrivate
-                        ? KIN_TEMPLATES.alwaysPrivateDetail
-                        : open.template.labelled
-                          ? KIN_TEMPLATES.privateDetail
-                          : KIN_TEMPLATES.setDetail}
-                    </p>
-                  </div>
-                  <Switch
-                    id={privateId}
-                    checked={open.template.alwaysPrivate || open.template.labelled}
-                    disabled={busy || !canLabel || open.template.alwaysPrivate}
-                    onCheckedChange={() =>
-                      setAsking({
-                        kind: open.template.labelled ? "clear" : "set",
-                        template: open.template,
-                      })
-                    }
-                  />
-                </div>
-                {failed === null ? null : (
-                  <Alert variant="error">
-                    <AlertDescription role="alert">{failed}</AlertDescription>
-                  </Alert>
-                )}
-              </div>
-            </DialogPanel>
-            <DialogFooter>
-              {canUndo && open.template.canUndo ? (
-                <div className="sm:me-auto">
-                  <Button
-                    variant="ghost"
-                    disabled={busy}
-                    onClick={() => setAsking({ kind: "undo", template: open.template })}
-                  >
-                    <RotateCcwIcon />
-                    {KIN_TEMPLATES.undo}
-                  </Button>
-                </div>
-              ) : null}
-              {canPreview ? (
+          {open.template.description === null ? null : (
+            <p className="text-xs text-muted-foreground">{open.template.changed}</p>
+          )}
+          {open.group.list === null ? null : (
+            <div className="flex items-center justify-between gap-4">
+              <p className="text-sm text-foreground">
+                {open.template.isDefault
+                  ? KIN_TEMPLATES_SETTINGS.usedFor(open.group.title)
+                  : open.group.title}
+              </p>
+              {canDefault && !open.template.isDefault ? (
                 <Button
+                  size="sm"
                   variant="outline"
-                  disabled={actions.busy || busy}
-                  aria-busy={actions.busy}
-                  onClick={() => void preview(open.template, open.group.list)}
+                  disabled={busy}
+                  onClick={() => void makeDefault(open.template)}
                 >
-                  {actions.busy ? <Spinner /> : <EyeIcon />}
-                  {actions.busy ? KIN_TEMPLATES.previewing : KIN_TEMPLATES.preview}
+                  {KIN_TEMPLATES.pickFor(open.group.title)}
                 </Button>
               ) : null}
-              <Button disabled={busy} onClick={() => setOpened(null)}>
-                {KIN_TEMPLATES_SETTINGS.done}
-              </Button>
-            </DialogFooter>
-          </DialogPopup>
-        </Dialog>
+            </div>
+          )}
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex flex-col gap-0.5">
+              <Label htmlFor={privateId}>{KIN_TEMPLATES_SETTINGS.privateLabel}</Label>
+              <p className="text-xs text-muted-foreground">
+                {open.template.alwaysPrivate
+                  ? KIN_TEMPLATES.alwaysPrivateDetail
+                  : open.template.labelled
+                    ? KIN_TEMPLATES.privateDetail
+                    : KIN_TEMPLATES.setDetail}
+              </p>
+            </div>
+            <Switch
+              id={privateId}
+              checked={open.template.alwaysPrivate || open.template.labelled}
+              disabled={busy || !canLabel || open.template.alwaysPrivate}
+              onCheckedChange={() =>
+                setAsking({
+                  kind: open.template.labelled ? "clear" : "set",
+                  template: open.template,
+                })
+              }
+            />
+          </div>
+        </KinSettingsDialog>
       )}
       <KinConfirm
         ask={

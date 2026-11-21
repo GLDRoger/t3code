@@ -3,6 +3,7 @@ import {
   KIN_APPROVALS_SETTINGS as COPY,
   KIN_APPROVER_PHONES_TITLE,
 } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
+import { KIN_SETTINGS_COPY } from "@t3tools/client-runtime/kin/kinSettingsSpread";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   formatKinWhen,
@@ -30,14 +31,6 @@ import { useKinHost } from "../../kin/useKinHost";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useEnvironmentQuery } from "../../state/query";
 import { Button } from "../ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogPopup,
-  DialogTitle,
-} from "../ui/dialog";
 import { PLATFORM, approvalsProblem } from "./ApprovalsSettings.logic";
 import { useSearchableSetting } from "./settingsSearch";
 
@@ -50,7 +43,7 @@ const when = (at: DateTime.Utc, now: number) => {
 
 type Target = { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId };
 
-/** The phones that can approve for Kin; each opens to its Remove. */
+/** The phones that can approve for Kin, each with Remove. */
 export function ApprovalsSettings() {
   const host = useKinHost();
   const environmentId = host._tag === "host" ? host.environmentId : null;
@@ -90,7 +83,7 @@ function Phones(props: { readonly target: Target }) {
   const canRemove = useAtomValue(kinClient.approverKeyRevoke.permissionAtom(environmentId));
   const removal = useRemove(props.target, keys.refresh);
   const searchableSetting = useSearchableSetting();
-  const [open, setOpen] = useState<KinApproverKey | null>(null);
+  const [asking, setAsking] = useState<KinApproverKey | null>(null);
   const phones = keys.data?.keys ?? [];
   const activity = keys.data?.activity ?? [];
   const failure = keys.data === null && keys.error !== null ? approvalsProblem(keys.failure) : null;
@@ -119,9 +112,21 @@ function Phones(props: { readonly target: Target }) {
               key={phone.thumbprint}
               title={phone.deviceLabel}
               detail={phoneLine(phone, now)}
-              {...(canRemove
-                ? { openLabel: COPY.open(phone.deviceLabel), onOpen: () => setOpen(phone) }
-                : {})}
+              // A phone has nothing to open, so Remove is its one quiet control, and asks first.
+              control={
+                canRemove ? (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    disabled={removal.busy !== null}
+                    aria-busy={removal.busy === phone.thumbprint}
+                    aria-label={COPY.removeTitle(phone.deviceLabel)}
+                    onClick={() => setAsking(phone)}
+                  >
+                    {removal.busy === phone.thumbprint ? COPY.removing : KIN_SETTINGS_COPY.remove}
+                  </Button>
+                ) : null
+              }
             />
           ))
         )}
@@ -141,20 +146,22 @@ function Phones(props: { readonly target: Target }) {
           ))}
         </KinSettingsSection>
       )}
-      {open === null ? null : (
-        <PhoneDialog
-          phone={open}
-          now={now}
-          last={phones.length === 1}
-          busy={removal.busy !== null}
-          // A refusal is said under the list, so the dialog closes either way.
-          onRemove={async () => {
-            await removal.remove(open.thumbprint);
-            setOpen(null);
-          }}
-          onClose={() => setOpen(null)}
-        />
-      )}
+      <KinConfirm
+        ask={
+          asking === null
+            ? null
+            : {
+                title: COPY.removeTitle(asking.deviceLabel),
+                detail: phones.length === 1 ? COPY.removeLast : COPY.removeOther,
+                action: KIN_SETTINGS_COPY.remove,
+                destructive: true,
+              }
+        }
+        onConfirm={() => {
+          if (asking !== null) void removal.remove(asking.thumbprint);
+        }}
+        onClose={() => setAsking(null)}
+      />
     </>
   );
 }
@@ -165,65 +172,6 @@ const phoneLine = (phone: KinApproverKey, now: number) =>
     COPY.added(when(phone.confirmedAt ?? phone.createdAt, now)),
     phone.lastUsedAt === undefined ? COPY.notUsed : COPY.lastUsed(when(phone.lastUsedAt, now)),
   ].join(" · ");
-
-/** A phone's own dialog: what it is, and Remove, which asks first. */
-function PhoneDialog(props: {
-  readonly phone: KinApproverKey;
-  readonly now: number;
-  readonly last: boolean;
-  readonly busy: boolean;
-  readonly onRemove: () => Promise<void>;
-  readonly onClose: () => void;
-}) {
-  const { phone } = props;
-  const [confirming, setConfirming] = useState(false);
-  return (
-    <>
-      <Dialog
-        open
-        onOpenChange={(next) => {
-          if (!next && !props.busy) props.onClose();
-        }}
-      >
-        <DialogPopup className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{phone.deviceLabel}</DialogTitle>
-            <DialogDescription>{phoneLine(phone, props.now)}</DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <div className="sm:me-auto">
-              <Button
-                variant="ghost-destructive"
-                disabled={props.busy}
-                aria-busy={props.busy}
-                onClick={() => setConfirming(true)}
-              >
-                {props.busy ? COPY.removing : COPY.remove}
-              </Button>
-            </div>
-            <Button variant="outline" disabled={props.busy} onClick={props.onClose}>
-              {COPY.close}
-            </Button>
-          </DialogFooter>
-        </DialogPopup>
-      </Dialog>
-      <KinConfirm
-        ask={
-          confirming
-            ? {
-                title: COPY.removeTitle(phone.deviceLabel),
-                detail: props.last ? COPY.removeLast : COPY.removeOther,
-                action: COPY.remove,
-                destructive: true,
-              }
-            : null
-        }
-        onConfirm={() => void props.onRemove()}
-        onClose={() => setConfirming(false)}
-      />
-    </>
-  );
-}
 
 /** One removal at a time; a refusal says why, and the list is read again either way. */
 function useRemove(target: Target, refresh: () => void) {

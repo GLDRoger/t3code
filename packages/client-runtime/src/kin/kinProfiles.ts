@@ -30,6 +30,7 @@ export const KIN_PROFILE_COPY = {
   saveProfile: "Save profile",
   pictureLabel: "Picture",
   save: "Save",
+  saveUsername: "Save username",
   saving: "Saving…",
   failed: "Couldn't save.",
   loadFailed: "Couldn't load this profile.",
@@ -73,6 +74,7 @@ export const KIN_GITHUB_LOGIN = {
       ? "Kin stops finding your pull requests until you add it again."
       : "Kin stops finding their pull requests until it's added again.",
   save: "Save",
+  saveUsername: "Save username",
   saving: "Saving…",
   invalid:
     "That isn't a GitHub username. It is 1 to 39 letters, digits and single hyphens, and doesn't start or end with a hyphen.",

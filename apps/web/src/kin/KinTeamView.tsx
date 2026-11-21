@@ -47,17 +47,8 @@ import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { PlusIcon, XIcon } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 
-import {
-  AlertDialog,
-  AlertDialogClose,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogPopup,
-  AlertDialogTitle,
-} from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
 import {
   Select,
@@ -73,12 +64,13 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinTeammateDevices } from "./KinDevices";
 import { KinInviteDialog, type KinInviteDialogState } from "./KinInviteDialog";
-import { KinAwayField, KinHandOverButton } from "./KinAway";
-import { KinPersonTasks } from "./KinPersonTasks";
+import { KinAwayRow, KinHandOverButton } from "./KinAway";
+import { KinConfirm } from "./KinConfirm";
+import { useNowMinuteMs } from "./useKinClock";
 import { KIN_PLACE_PATH } from "./kinPlaces";
 import { useKinProfiles } from "./kinPictures";
 import { KIN_HAND_OVER } from "@t3tools/client-runtime/kin/kinHandOver";
-import { KIN_PERSON_TASKS } from "@t3tools/client-runtime/kin/kinTasksList";
+import { KIN_PERSON_TASKS, kinTaskLine } from "@t3tools/client-runtime/kin/kinTasksList";
 import { kinClient } from "./kinClient";
 import { kinTeamAddRequestAtom } from "./kinTeamForm";
 import { openKinProfile } from "./KinProfileSheet";
@@ -86,7 +78,7 @@ import { KinTalkToSection } from "./KinTeamAgent";
 import { KinPersonReach, KinReachList } from "./KinReach";
 import { KIN_REACH_COPY } from "@t3tools/client-runtime/kin/kinReach";
 import { useKinHostAt } from "./useKinHost";
-import { useKinWork } from "./useKinWork";
+import { useKinWork, useKinWorkDirectory } from "./useKinWork";
 import { useKinGate } from "./useKinHost";
 import { KinGateView } from "./KinWorkParts";
 import { KinSettingsChoice, useKinSettingsSave } from "./settings/KinSettingsControls";
@@ -299,7 +291,7 @@ function KinTeamBody(props: KinTeamTarget) {
             {rows.map((row) => (
               <KinSettingsRow
                 key={row.key}
-                leading={<KinAvatar avatar={row.avatar} size="xs" />}
+                leading={<KinAvatar avatar={row.avatar} size="sm" />}
                 title={row.name}
                 detail={row.line === "" ? undefined : row.line}
                 status={
@@ -320,22 +312,9 @@ function KinTeamBody(props: KinTeamTarget) {
           </>
         )}
       </KinSettingsSection>
-      {reachList ? (
-        <KinTeammateBlock>
-          <KinReachList environmentId={environmentId} orgId={orgId} />
-        </KinTeammateBlock>
-      ) : null}
+      {reachList ? <KinReachList environmentId={environmentId} orgId={orgId} /> : null}
       {inviteDialog}
     </KinSettingsPage>
-  );
-}
-
-/** A section whose content isn't rows (a block another screen shares), padded inside its card. */
-function KinTeammateBlock(props: { readonly title?: string; readonly children: ReactNode }) {
-  return (
-    <KinSettingsSection {...(props.title === undefined ? {} : { title: props.title })}>
-      <div className="flex flex-col gap-2 px-4 py-3">{props.children}</div>
-    </KinSettingsSection>
   );
 }
 
@@ -392,7 +371,7 @@ function KinTeammatePage(props: {
       {personId === null ? null : (
         <KinSettingsSection>
           <KinSettingsRow
-            leading={<KinAvatar avatar={teammate.avatar} size="xs" />}
+            leading={<KinAvatar avatar={teammate.avatar} size="sm" />}
             title={KIN_TEAMMATE_PAGE.profile}
             detail={teammate.roles === "" ? undefined : teammate.roles}
             openLabel={KIN_TEAMMATE_PAGE.openProfile(teammate.name)}
@@ -401,9 +380,10 @@ function KinTeammatePage(props: {
               openKinProfile({ ...target, personId });
             }}
           />
+          <KinTeammateAway {...target} personId={personId} />
         </KinSettingsSection>
       )}
-      {personId === null ? null : <KinTeammateAway {...target} personId={personId} />}
+      {personId === null ? null : <KinTeammateTasks {...target} personId={personId} />}
       {kinTeammateKindEditable(teammate, props.viewer) ? (
         <KinSettingsSection
           title={teammate.backAs === null ? KIN_TEAM_COPY.canDo : KIN_TEAM_COPY.canDoBack}
@@ -434,15 +414,15 @@ function KinTeammatePage(props: {
         <KinTeammateProjects {...target} personId={personId} onOpen={props.onClose} />
       )}
       {personId === null ? (
-        <KinTeammateBlock title="Agents">
-          <p className="text-sm text-muted-foreground">{KIN_REACH_COPY.notJoined(teammate.name)}</p>
-        </KinTeammateBlock>
+        <KinSettingsSection title={KIN_REACH_COPY.agentsTitle}>
+          <KinSettingsEmpty>{KIN_REACH_COPY.notJoined(teammate.name)}</KinSettingsEmpty>
+        </KinSettingsSection>
       ) : (
         <>
           {agentsLine === null ? null : (
-            <KinTeammateBlock title="Agents">
-              <p className="text-sm text-muted-foreground">{agentsLine}</p>
-            </KinTeammateBlock>
+            <KinSettingsSection title={KIN_REACH_COPY.agentsTitle}>
+              <KinSettingsEmpty>{agentsLine}</KinSettingsEmpty>
+            </KinSettingsSection>
           )}
           <KinPersonReach
             {...target}
@@ -450,7 +430,6 @@ function KinTeammatePage(props: {
             name={teammate.name}
             ownerLevel={agentsLine !== null}
             onOpenAgent={props.onClose}
-            section={KinTeammateBlock}
           />
         </>
       )}
@@ -474,9 +453,7 @@ function KinTeammatePage(props: {
         </KinSettingsSection>
       )}
       {removable && teammate.state === "joined" ? (
-        <KinTeammateBlock>
-          <KinTeammateDevices {...target} personId={personId} />
-        </KinTeammateBlock>
+        <KinTeammateDevices {...target} personId={personId} />
       ) : null}
       {offered.cancel === null && !removable ? null : (
         <KinSettingsSection>
@@ -514,77 +491,61 @@ function KinTeammatePage(props: {
           ) : null}
         </KinSettingsSection>
       )}
-      <AlertDialog open={kindCopy !== null} onOpenChange={(open) => !open && setKindAsked(null)}>
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{kindCopy?.title}</AlertDialogTitle>
-            <AlertDialogDescription>{kindCopy?.detail}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button
-              onClick={() => {
-                const access = kindAsked;
-                setKindAsked(null);
-                if (teammate.personId === null || access === null) return;
-                setBusy(true);
-                void actions.setAccess(teammate.personId, access).finally(() => setBusy(false));
-              }}
-            >
-              {kindCopy?.confirm}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
-      <AlertDialog open={confirming} onOpenChange={setConfirming}>
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{removal.title}</AlertDialogTitle>
-            <AlertDialogDescription>{removal.detail}</AlertDialogDescription>
-          </AlertDialogHeader>
-          {personId === null ? null : (
-            <KinRemoveHandOver {...target} personId={personId} name={teammate.name} />
-          )}
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                setConfirming(false);
-                if (teammate.personId !== null) void actions.removeAccess(teammate.personId);
-              }}
-            >
-              {removal.confirm}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
+      <KinConfirm
+        ask={
+          kindCopy === null
+            ? null
+            : { title: kindCopy.title, detail: kindCopy.detail, action: kindCopy.confirm }
+        }
+        onConfirm={() => {
+          const access = kindAsked;
+          if (teammate.personId === null || access === null) return;
+          setBusy(true);
+          void actions.setAccess(teammate.personId, access).finally(() => setBusy(false));
+        }}
+        onClose={() => setKindAsked(null)}
+      />
+      <KinConfirm
+        ask={
+          confirming
+            ? {
+                title: removal.title,
+                detail: removal.detail,
+                action: removal.confirm,
+                destructive: true,
+              }
+            : null
+        }
+        onConfirm={() => {
+          if (teammate.personId !== null) void actions.removeAccess(teammate.personId);
+        }}
+        onClose={() => setConfirming(false)}
+      >
+        {personId === null ? null : (
+          <KinRemoveHandOver {...target} personId={personId} name={teammate.name} />
+        )}
+      </KinConfirm>
       {offered.cancel === null ? null : (
-        <AlertDialog open={cancelling} onOpenChange={setCancelling}>
-          <AlertDialogPopup>
-            <AlertDialogHeader>
-              <AlertDialogTitle>{offered.cancel.title}</AlertDialogTitle>
-              <AlertDialogDescription>{offered.cancel.detail}</AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogClose render={<Button variant="outline" />}>
-                {offered.cancel.keep}
-              </AlertDialogClose>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  setCancelling(false);
-                  if (teammate.inviteId === null) return;
-                  // Shown at once; the page says so if the host refuses.
-                  void actions.cancelInvite(teammate.inviteId);
-                  if (teammate.personId === null) props.onClose();
-                }}
-              >
-                {offered.cancel.label}
-              </Button>
-            </AlertDialogFooter>
-          </AlertDialogPopup>
-        </AlertDialog>
+        <KinConfirm
+          ask={
+            cancelling
+              ? {
+                  title: offered.cancel.title,
+                  detail: offered.cancel.detail,
+                  action: offered.cancel.label,
+                  cancel: offered.cancel.keep,
+                  destructive: true,
+                }
+              : null
+          }
+          onConfirm={() => {
+            if (teammate.inviteId === null) return;
+            // Shown at once; the page says so if the host refuses.
+            void actions.cancelInvite(teammate.inviteId);
+            if (teammate.personId === null) props.onClose();
+          }}
+          onClose={() => setCancelling(false)}
+        />
       )}
     </KinSettingsPage>
   );
@@ -744,49 +705,101 @@ function useKinProfile(environmentId: EnvironmentId, orgId: KinOrgId, personId: 
   return held?.profiles.find((profile) => profile.personId === personId) ?? null;
 }
 
-/** Away, their tasks, and giving all their open tasks to someone, from the teammate's own page. */
+/** Their Away row, beside their profile on the teammate's own page. */
 function KinTeammateAway(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly personId: KinPersonId;
 }) {
   const profile = useKinProfile(props.environmentId, props.orgId, props.personId);
-  const navigate = useNavigate();
   if (profile === null) return null;
-  const params = { environmentId: props.environmentId, orgId: props.orgId };
   return (
-    <>
-      <KinTeammateBlock>
-        <KinAwayField
-          environmentId={props.environmentId}
-          orgId={props.orgId}
-          profile={profile}
-          mine={false}
-          mayEdit={profile.canEdit === true}
-        />
-      </KinTeammateBlock>
-      <KinTeammateBlock title={KIN_PERSON_TASKS.title}>
-        <KinPersonTasks
-          environmentId={props.environmentId}
-          orgId={props.orgId}
-          personId={props.personId}
-          onOpenTask={(task) => {
-            void navigate({ to: KIN_PLACE_PATH.tasks, params, search: { task } });
-          }}
-          onSeeAll={() => {
-            void navigate({ to: KIN_PLACE_PATH.tasks, params, search: { person: props.personId } });
-          }}
-        />
-        {(profile.load?.open ?? 0) === 0 ? null : (
+    <KinAwayRow
+      environmentId={props.environmentId}
+      orgId={props.orgId}
+      profile={profile}
+      mine={false}
+      mayEdit={profile.canEdit === true}
+    />
+  );
+}
+
+/**
+ * Their open tasks, the most urgent first, each opening in Tasks; the last row opens all of them,
+ * and "Give all open tasks to…" sits on the title line.
+ */
+function KinTeammateTasks(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly personId: KinPersonId;
+}) {
+  const { environmentId, orgId, personId } = props;
+  const navigate = useNavigate();
+  const profile = useKinProfile(environmentId, orgId, personId);
+  const tasksAtom = kinClient.personTasks({ environmentId, input: { orgId, person: personId } });
+  const result = useAtomValue(tasksAtom);
+  const { names } = useKinWorkDirectory(props, true);
+  const now = new Date(useNowMinuteMs());
+  const params = { environmentId, orgId };
+  const held = Option.getOrNull(AsyncResult.value(result));
+  return (
+    <KinSettingsSection
+      title={KIN_PERSON_TASKS.title}
+      description={held === null || held.total === 0 ? undefined : KIN_PERSON_TASKS.count(held.total)}
+      action={
+        profile === null || (profile.load?.open ?? 0) === 0 ? undefined : (
           <KinHandOverButton
-            environmentId={props.environmentId}
-            orgId={props.orgId}
-            from={{ _tag: "person", personId: props.personId }}
+            environmentId={environmentId}
+            orgId={orgId}
+            from={{ _tag: "person", personId }}
             fromName={profile.displayName}
+            size="xs"
           />
-        )}
-      </KinTeammateBlock>
-    </>
+        )
+      }
+    >
+      {held === null ? (
+        AsyncResult.isFailure(result) ? (
+          <KinSettingsLoadFailed onRetry={() => appAtomRegistry.refresh(tasksAtom)}>
+            {KIN_PERSON_TASKS.failed}
+          </KinSettingsLoadFailed>
+        ) : (
+          <KinSettingsLoading rows={3} />
+        )
+      ) : held.total === 0 ? (
+        <KinSettingsEmpty>{KIN_PERSON_TASKS.none}</KinSettingsEmpty>
+      ) : (
+        <>
+          {held.records.map((record) => {
+            const line = kinTaskLine(record, names, now);
+            // Late is the one thing not fine, so it is the badge; the rest is the line.
+            const late = line.lead?.tone === "late" ? line.lead.text : null;
+            const lead = late === null ? (line.lead?.text ?? "") : "";
+            return (
+              <KinSettingsRow
+                key={record.key}
+                title={record.title}
+                detail={[lead, line.rest].filter((part) => part !== "").join(" · ")}
+                status={
+                  late === null ? null : (
+                    <KinSettingsStatus tone="attention">{late}</KinSettingsStatus>
+                  )
+                }
+                onOpen={() => {
+                  void navigate({ to: KIN_PLACE_PATH.tasks, params, search: { task: record.key } });
+                }}
+              />
+            );
+          })}
+          <KinSettingsRow
+            title={KIN_PERSON_TASKS.seeAll}
+            onOpen={() => {
+              void navigate({ to: KIN_PLACE_PATH.tasks, params, search: { person: personId } });
+            }}
+          />
+        </>
+      )}
+    </KinSettingsSection>
   );
 }
 
@@ -801,7 +814,7 @@ function KinRemoveHandOver(props: {
   const open = profile?.load?.open ?? 0;
   if (open === 0) return null;
   return (
-    <div className="flex flex-col gap-2 px-6">
+    <div className="flex flex-col gap-2">
       <p className="text-sm text-muted-foreground">{KIN_HAND_OVER.removeOffer(open, props.name)}</p>
       <KinHandOverButton
         environmentId={props.environmentId}

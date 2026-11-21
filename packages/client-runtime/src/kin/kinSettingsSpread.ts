@@ -17,6 +17,12 @@ export const KIN_SETTINGS_COPY = {
   save: "Save",
   saving: "Saving…",
   back: "Back",
+  /** The one way into a card of facts that one form edits. */
+  edit: "Edit",
+  /** Under a long list that shows its first rows. */
+  showAll: (count: number) => `Show all ${count}`,
+  remove: "Remove",
+  done: "Done",
 } as const;
 
 export function kinSettingSpread<T>(

@@ -457,7 +457,7 @@ describe("Settings → Deals", () => {
   it("adds a stage at the end, and waits for a name that isn't there already", async () => {
     const { setStages } = setup({ stages: held(true) });
     await using _screen = await renderSettings();
-    await userEvent.click(page.getByRole("button", { name: "Add a stage" }));
+    await userEvent.click(page.getByRole("button", { name: "Add stage" }));
     const form = page.getByRole("dialog");
     const add = form.getByRole("button", { name: "Add stage" });
     await expect.element(add).toBeDisabled();
@@ -513,7 +513,7 @@ describe("Settings → Deals", () => {
       .toBeVisible();
     await expect.element(page.getByText("Deciding")).toBeVisible();
     expect(page.getByRole("button", { name: /Edit stage/ }).elements()).toHaveLength(0);
-    expect(page.getByRole("button", { name: "Add a stage" }).elements()).toHaveLength(0);
+    expect(page.getByRole("button", { name: "Add stage" }).elements()).toHaveLength(0);
     await expect.element(page.getByText("14 days")).toBeVisible();
     expect(page.getByRole("combobox").elements()).toHaveLength(0);
   });

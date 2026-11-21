@@ -202,7 +202,6 @@ export const KIN_VISUAL_HOSTS = {
       : hosts.length === 1
         ? (hosts[0] ?? "")
         : `${hosts[0]} and ${hosts.length - 1} more`,
-  done: "Done",
   detail:
     "Charts and pictures your agents make can't reach the internet. Add a website only if one needs maps, images or data from it. That website can see what the chart shows.",
   none: "None added.",

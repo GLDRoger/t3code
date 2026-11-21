@@ -9,21 +9,11 @@ import {
   kinDealStagesProblem,
   type KinDealStageChange,
 } from "@t3tools/client-runtime/kin/kinDeals";
-import { KIN_SETTINGS_COPY } from "@t3tools/client-runtime/kin/kinSettingsSpread";
 import type { KinDealStage, KinDealStagesResult } from "@t3tools/contracts";
 import { ArrowDownIcon, ArrowUpIcon, PlusIcon, TrophyIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 import { useSearchableSetting } from "../components/settings/settingsSearch";
-import {
-  AlertDialog,
-  AlertDialogClose,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogPopup,
-  AlertDialogTitle,
-} from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import {
@@ -102,7 +92,7 @@ function Stages(
           canAdd ? (
             <Button size="xs" variant="outline" onClick={() => setEditing({ _tag: "add" })}>
               <PlusIcon />
-              {KIN_DEAL_STAGES.add}
+              {KIN_DEAL_STAGES_SETTINGS.add}
             </Button>
           ) : undefined
         }
@@ -166,6 +156,9 @@ function StageDialog(
   const [problem, setProblem] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
   const open = stage === null ? 0 : (held.open[stage.id] ?? 0);
+  const others = held.stages.filter((each) => each.id !== stage?.id);
+  // Where a removed stage's open deals go; nothing is stranded.
+  const [moveTo, setMoveTo] = useState<string | null>(others[0]?.id ?? null);
   const change: KinDealStageChange =
     stage === null ? { _tag: "add", name } : { _tag: "edit", id: stage.id, name, place };
   const after = kinDealStagesAfter(held, change);
@@ -186,7 +179,7 @@ function StageDialog(
   return (
     <>
       <KinSettingsFormDialog
-        title={stage === null ? KIN_DEAL_STAGES.add : KIN_DEAL_STAGES_SETTINGS.edit}
+        title={stage === null ? KIN_DEAL_STAGES_SETTINGS.add : KIN_DEAL_STAGES_SETTINGS.edit}
         submitLabel={
           stage === null ? KIN_DEAL_STAGES_SETTINGS.addSubmit : KIN_DEAL_STAGES_SETTINGS.save
         }
@@ -255,82 +248,46 @@ function StageDialog(
           </KinSettingsField>
         )}
       </KinSettingsFormDialog>
-      {stage === null || !removing ? null : open === 0 ? (
+      {stage === null || !removing ? null : (
         <KinConfirm
           ask={{
             title: KIN_DEAL_STAGES.removeTitle(stage.name),
-            detail: KIN_DEAL_STAGES_SETTINGS.removeEmptyDetail,
-            action: KIN_DEAL_STAGES.removeConfirm(0),
+            detail:
+              open === 0
+                ? KIN_DEAL_STAGES_SETTINGS.removeEmptyDetail
+                : KIN_DEAL_STAGES.removeDetail(open),
+            action: KIN_DEAL_STAGES.removeConfirm(open),
             destructive: true,
           }}
-          onConfirm={() => void send({ _tag: "remove", id: stage.id, moveTo: null })}
+          notReady={open > 0 && moveTo === null}
+          onConfirm={() =>
+            void send({ _tag: "remove", id: stage.id, moveTo: open === 0 ? null : moveTo })
+          }
           onClose={() => setRemoving(false)}
-        />
-      ) : (
-        <RemoveStage
-          stage={stage}
-          open={open}
-          others={held.stages.filter((each) => each.id !== stage.id)}
-          onRemove={(to) => void send({ _tag: "remove", id: stage.id, moveTo: to })}
-          onClose={() => setRemoving(false)}
-        />
+        >
+          {open === 0 ? null : (
+            <>
+              <Select value={moveTo ?? ""} onValueChange={(value) => setMoveTo(String(value))}>
+                <SelectTrigger
+                  aria-label={KIN_DEAL_STAGES_SETTINGS.moveTo}
+                  className="w-full min-w-0"
+                >
+                  <SelectValue>{others.find((each) => each.id === moveTo)?.name}</SelectValue>
+                </SelectTrigger>
+                <SelectPopup alignItemWithTrigger={false}>
+                  {others.map((each) => (
+                    <SelectItem key={each.id} value={each.id}>
+                      {each.name}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+              <p className="text-xs text-muted-foreground">{KIN_DEAL_STAGES.removeNote}</p>
+            </>
+          )}
+        </KinConfirm>
       )}
     </>
-  );
-}
-
-/**
- * Removing a stage with open deals asks where they go; nothing is stranded. `KinConfirm` with a
- * choice in it, built here until the shared confirm takes one.
- */
-function RemoveStage(props: {
-  readonly stage: KinDealStage;
-  readonly open: number;
-  readonly others: ReadonlyArray<KinDealStage>;
-  readonly onRemove: (to: string) => void;
-  readonly onClose: () => void;
-}) {
-  const [to, setTo] = useState<string | null>(props.others[0]?.id ?? null);
-  return (
-    <AlertDialog open onOpenChange={(open) => !open && props.onClose()}>
-      <AlertDialogPopup>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{KIN_DEAL_STAGES.removeTitle(props.stage.name)}</AlertDialogTitle>
-          <AlertDialogDescription>
-            {KIN_DEAL_STAGES.removeDetail(props.open)}
-          </AlertDialogDescription>
-          <Select value={to ?? ""} onValueChange={(value) => setTo(String(value))}>
-            <SelectTrigger aria-label={KIN_DEAL_STAGES_SETTINGS.moveTo} className="w-full min-w-0">
-              <SelectValue>{props.others.find((each) => each.id === to)?.name}</SelectValue>
-            </SelectTrigger>
-            <SelectPopup alignItemWithTrigger={false}>
-              {props.others.map((each) => (
-                <SelectItem key={each.id} value={each.id}>
-                  {each.name}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-          <p className="text-xs text-muted-foreground">{KIN_DEAL_STAGES.removeNote}</p>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button variant="outline" />}>
-            {KIN_SETTINGS_COPY.cancel}
-          </AlertDialogClose>
-          <Button
-            variant="destructive"
-            disabled={to === null}
-            onClick={() => {
-              if (to === null) return;
-              props.onClose();
-              props.onRemove(to);
-            }}
-          >
-            {KIN_DEAL_STAGES.removeConfirm(props.open)}
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
   );
 }
 

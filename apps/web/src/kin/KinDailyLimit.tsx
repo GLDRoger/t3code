@@ -26,13 +26,11 @@ export function KinDailyLimitSetting() {
   const searchableSetting = useSearchableSetting();
   const target = kinNewLeadTarget(useKinHost());
   return target === null ? null : (
-    <div id={searchableSetting("kin-daily-limit").id} tabIndex={-1} className="outline-none">
-      <DailyLimit {...target} />
-    </div>
+    <DailyLimit {...target} searchId={searchableSetting("kin-daily-limit").id} />
   );
 }
 
-function DailyLimit(props: KinWorkTarget) {
+function DailyLimit(props: KinWorkTarget & { readonly searchId: string }) {
   const query = { environmentId: props.environmentId, input: { orgId: props.orgId } };
   const budgetAtom = kinClient.budget(query);
   const result = useAtomValue(budgetAtom);
@@ -57,6 +55,7 @@ function DailyLimit(props: KinWorkTarget) {
   return (
     <>
       <KinSettingsRow
+        searchId={props.searchId}
         title={KIN_DAILY_LIMIT.title}
         detail={
           failed ? (

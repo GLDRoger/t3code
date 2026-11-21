@@ -19,6 +19,8 @@ export const KIN_AWAY = {
     `Kin holds messages that can wait until the day ${name} is back. Agents see it and plan around it.`,
   dayLabel: "Back on",
   save: "Save",
+  /** Web's form submit: the action, beside "I'm back". */
+  setSubmit: "Set away",
   saving: "Saving…",
   notAfterToday: "Pick a day after today.",
   failed: "Couldn't save that.",

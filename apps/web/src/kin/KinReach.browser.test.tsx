@@ -90,14 +90,6 @@ const lead = Schema.decodeSync(KinLeadProfile)({
   tracking: [],
 });
 
-function Section(props: { readonly title: string; readonly children: React.ReactNode }) {
-  return (
-    <section aria-label={props.title} className="flex flex-col gap-2">
-      {props.children}
-    </section>
-  );
-}
-
 function setup(may = true) {
   host.may = may;
   host.limits.length = 0;
@@ -172,7 +164,6 @@ describe("who can message whom", () => {
           name="Dev Malhotra"
           ownerLevel={false}
           onOpenAgent={() => {}}
-          section={Section}
         />
         <KinReachList environmentId={environmentId} orgId={orgId} />
         <KinPersonReach
@@ -182,7 +173,6 @@ describe("who can message whom", () => {
           name="Meera Iyer"
           ownerLevel
           onOpenAgent={() => {}}
-          section={Section}
         />
       </AppAtomRegistryProvider>,
     );
@@ -194,7 +184,9 @@ describe("who can message whom", () => {
       )
       .toBeVisible();
     const agents = page.getByRole("region", { name: "Agents" });
-    await expect.element(agents.getByText("Can message")).toBeVisible();
+    await expect
+      .element(agents.getByRole("button", { name: /^Restrict Dev Malhotra and / }).first())
+      .toBeVisible();
     await expect
       .element(page.getByText("Dev Malhotra can message everyone on the team."))
       .toBeVisible();
@@ -205,8 +197,8 @@ describe("who can message whom", () => {
     await expect.element(page.getByText("Restrict Dev Malhotra and Zoya Sheikh?")).toBeVisible();
     await userEvent.click(page.getByRole("button", { name: "Restrict", exact: true }));
 
-    const cant = page.getByRole("list", { name: "Can't message" });
-    await expect.element(cant.getByText("Zoya Sheikh")).toBeVisible();
+    const cant = page.getByRole("region", { name: "People" }).first().getByText("Zoya Sheikh");
+    await expect.element(cant).toBeVisible();
     // Settings, Team lists the same pair, with who set it.
     await expect
       .element(page.getByText("Dev Malhotra and Zoya Sheikh", { exact: true }))
@@ -234,7 +226,6 @@ describe("who can message whom", () => {
           name="Dev Malhotra"
           ownerLevel={false}
           onOpenAgent={() => {}}
-          section={Section}
         />
       </AppAtomRegistryProvider>,
     );

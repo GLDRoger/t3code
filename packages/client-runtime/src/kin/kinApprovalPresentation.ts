@@ -29,21 +29,18 @@ export const KIN_APPROVALS_SETTINGS = {
   noHost: "Connect to the computer that runs Kin to see the phones that approve.",
   notPerson: "This sign-in isn't a person in Kin.",
   cantRemove: "To remove a phone, use Kin signed in as yourself.",
-  open: (phone: string) => `Open phone: ${phone}`,
   added: (when: string) => `added ${when}`,
   lastUsed: (when: string) => `last approved ${when}`,
   notUsed: "not used yet",
   recent: "Recent changes",
   setUp: (when: string) => `set up ${when}`,
   removed: (when: string) => `removed ${when}`,
-  remove: "Remove phone",
   removing: "Removing…",
   removeTitle: (phone: string) => `Remove ${phone}?`,
   removeLast:
     "It's the only phone that can approve. Once it's removed, nothing that needs approval can happen until you set up a phone again. Anything it approved that hasn't run yet is cancelled.",
   removeOther:
     "It stops approving for Kin, and anything it approved that hasn't run yet is cancelled. To use it again, set up approvals on it.",
-  close: "Close",
 } as const;
 
 /** What a chat message's approval widget says: which action, and where it stood when drawn. */

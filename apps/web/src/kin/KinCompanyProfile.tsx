@@ -14,6 +14,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinCompanyProfile";
 import { KIN_OFFLINE_PAGE, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_SETTINGS_COPY } from "@t3tools/client-runtime/kin/kinSettingsSpread";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { KinCompanyProfile } from "@t3tools/contracts";
@@ -32,6 +33,7 @@ import { kinClient } from "./kinClient";
 import { KinSettingsField, KinSettingsFormDialog } from "./settings/KinSettingsControls";
 import {
   KinSettingsEmpty,
+  KinSettingsFacts,
   KinSettingsLoadFailed,
   KinSettingsLoading,
   KinSettingsRow,
@@ -107,65 +109,63 @@ function Permitted(props: KinWorkTarget) {
   return <Profile {...props} profile={state.value} onRefresh={refresh} />;
 }
 
-const oneLine = (text: string) => text.replace(/\s*\n\s*/g, ", ");
-
 function Profile(
   props: KinWorkTarget & { readonly profile: KinCompanyProfile; readonly onRefresh: () => void },
 ) {
   const { environmentId, orgId, profile } = props;
   const canEdit = useAtomValue(kinClient.companyProfileSet.permissionAtom(environmentId));
   const searchableSetting = useSearchableSetting();
-  const [editing, setEditing] = useState<KinCompanyFieldId | "any" | null>(null);
+  const [editing, setEditing] = useState(false);
   const [company, tax, bank] = kinCompanyRead(profile);
-  const rows = (section: typeof company) =>
-    (section?.rows ?? []).map((row) => (
-      <KinSettingsRow
-        key={row.id}
-        title={row.label}
-        detail={row.id === "country" ? kinCountryName(row.value) : oneLine(row.value)}
-        openLabel={KIN_COMPANY_SETTINGS.editLabel(row.label)}
-        {...(canEdit ? { onOpen: () => setEditing(row.id) } : {})}
-      />
-    ));
-  const notSet = (title: string) => (
-    <KinSettingsRow
-      key={title}
-      title={title}
-      detail={KIN_COMPANY_SETTINGS.notSet}
-      openLabel={KIN_COMPANY_SETTINGS.editLabel(title)}
-      {...(canEdit ? { onOpen: () => setEditing("any") } : {})}
-    />
-  );
-  const companyRows = [...rows(company), ...rows(tax)];
-  const bankRows = rows(bank);
+  const facts = (section: typeof company) =>
+    (section?.rows ?? []).map((row) => ({
+      label: row.label,
+      value: row.id === "country" ? kinCountryName(row.value) : row.value,
+    }));
+  const companyFacts = [...facts(company), ...facts(tax)];
+  const bankFacts = facts(bank);
   return (
     <>
       <KinSettingsSection
         title={KIN_COMPANY_SETTINGS.company}
         description={KIN_COMPANY_SETTINGS.companyDetail}
         searchId={searchableSetting("company-details").id}
+        action={
+          canEdit ? (
+            <Button size="xs" variant="outline" onClick={() => setEditing(true)}>
+              {KIN_SETTINGS_COPY.edit}
+            </Button>
+          ) : undefined
+        }
       >
-        {companyRows.length === 0 ? notSet(KIN_COMPANY_SETTINGS.legalName) : companyRows}
-        {bankRows.length === 0 ? notSet(KIN_COMPANY_SETTINGS.bank) : bankRows}
+        <KinSettingsFacts
+          facts={[
+            ...(companyFacts.length === 0
+              ? [{ label: KIN_COMPANY_SETTINGS.legalName, value: KIN_COMPANY_SETTINGS.notSet }]
+              : companyFacts),
+            ...(bankFacts.length === 0
+              ? [
+                  {
+                    label: KIN_COMPANY_SETTINGS.bank,
+                    value: KIN_COMPANY_SETTINGS.notSet,
+                    attention: KIN_COMPANY_SETTINGS.bankNeeded,
+                  },
+                ]
+              : bankFacts),
+          ]}
+        />
       </KinSettingsSection>
       <KinBrandSection {...props} profile={profile} onRefresh={props.onRefresh} />
       <KinTemplatesSection environmentId={environmentId} orgId={orgId} />
-      {editing === null ? null : (
-        <ProfileDialog
-          {...props}
-          focus={editing === "any" ? null : editing}
-          onClose={() => setEditing(null)}
-        />
-      )}
+      {editing ? <ProfileDialog {...props} onClose={() => setEditing(false)} /> : null}
     </>
   );
 }
 
-/** Every detail in one form, in the order an invoice needs them; it opens at the row chosen. */
+/** Every detail in one form, in the order an invoice needs them. */
 function ProfileDialog(
   props: KinWorkTarget & {
     readonly profile: KinCompanyProfile;
-    readonly focus: KinCompanyFieldId | null;
     readonly onRefresh: () => void;
     readonly onClose: () => void;
   },
@@ -238,7 +238,6 @@ function ProfileDialog(
                     value: draft[field.id],
                     placeholder: field.placeholder,
                     disabled: saving,
-                    autoFocus: field.id === props.focus,
                     "aria-invalid": fieldProblem !== undefined,
                   };
                   return (

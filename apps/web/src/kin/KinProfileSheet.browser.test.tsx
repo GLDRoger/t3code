@@ -185,7 +185,7 @@ describe("editing a profile", () => {
 
 describe("a GitHub username on a profile", () => {
   const field = () => page.getByRole("textbox", { name: "GitHub username" });
-  const save = () => page.getByRole("button", { name: "Save" });
+  const save = () => page.getByRole("button", { name: "Save username" });
 
   it("is added on your own profile and refused plainly when it isn't one", async () => {
     setup({ rhea: null }, "saved");

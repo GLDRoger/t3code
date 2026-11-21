@@ -209,6 +209,7 @@ export const KIN_DEAL_STAGES = {
 export const KIN_DEAL_STAGES_SETTINGS = {
   purposeReadOnly: "How every deal in the company moves. The owner and co-owners set it.",
   addSubmit: "Add stage",
+  add: "Add stage",
   edit: "Edit stage",
   save: "Save stage",
   remove: "Remove stage",

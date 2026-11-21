@@ -26,7 +26,6 @@ import { CheckIcon, CopyIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
-import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import {
   Dialog,
@@ -124,41 +123,7 @@ export function KinMyDevices(props: KinDevicesTarget) {
       }
       problem={(made === null ? problem : null) ?? removal.problem}
     >
-      {removal.shown === null ? (
-        removal.failed ? (
-          <KinSettingsLoadFailed onRetry={() => void refreshDevices(props)}>
-            {KIN_DEVICES_COPY.loadFailed}
-          </KinSettingsLoadFailed>
-        ) : (
-          <KinSettingsLoading rows={2} />
-        )
-      ) : removal.shown.length === 0 ? (
-        <KinSettingsEmpty>{KIN_DEVICES_COPY.empty}</KinSettingsEmpty>
-      ) : (
-        removal.shown.map((device) => (
-          <KinSettingsRow
-            key={device.sessionId}
-            title={kinDeviceLabel(device)}
-            detail={
-              device.current === true
-                ? `${KIN_DEVICES_COPY.thisDevice} · ${kinDeviceLine(device, removal.now)}`
-                : kinDeviceLine(device, removal.now)
-            }
-            control={
-              kinDeviceRemovable(device) ? (
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  aria-label={`Remove ${kinDeviceLabel(device)}`}
-                  onClick={() => removal.ask(device)}
-                >
-                  {KIN_DEVICES_COPY.remove}
-                </Button>
-              ) : null
-            }
-          />
-        ))
-      )}
+      <KinDeviceRows {...props} removal={removal} empty={KIN_DEVICES_COPY.empty} />
       {removal.confirm}
       {made === null ? null : (
         <KinLinkDeviceDialog
@@ -178,14 +143,60 @@ export function KinMyDevices(props: KinDevicesTarget) {
   );
 }
 
-/** A teammate's devices on the owner's sheet, each with Remove. */
+/** A teammate's devices on their page in Team, each with Remove. */
 export function KinTeammateDevices(props: KinDevicesTarget) {
+  const removal = useDeviceRemoval(props, false);
   return (
-    <section className="flex flex-col gap-2">
-      <h3 className="text-xs font-medium text-muted-foreground">Devices</h3>
-      <KinDeviceList {...props} />
-    </section>
+    <KinSettingsSection title={KIN_DEVICES_COPY.theirTitle} problem={removal.problem}>
+      <KinDeviceRows {...props} removal={removal} empty={KIN_DEVICES_COPY.theirEmpty} />
+      {removal.confirm}
+    </KinSettingsSection>
   );
+}
+
+/**
+ * One row per device. A device has nothing to open, so Remove is the row's one quiet control,
+ * and it asks first.
+ */
+function KinDeviceRows(
+  props: KinDevicesTarget & {
+    readonly removal: ReturnType<typeof useDeviceRemoval>;
+    readonly empty: string;
+  },
+) {
+  const { removal } = props;
+  if (removal.shown === null)
+    return removal.failed ? (
+      <KinSettingsLoadFailed onRetry={() => void refreshDevices(props)}>
+        {KIN_DEVICES_COPY.loadFailed}
+      </KinSettingsLoadFailed>
+    ) : (
+      <KinSettingsLoading rows={2} />
+    );
+  if (removal.shown.length === 0) return <KinSettingsEmpty>{props.empty}</KinSettingsEmpty>;
+  return removal.shown.map((device) => (
+    <KinSettingsRow
+      key={device.sessionId}
+      title={kinDeviceLabel(device)}
+      detail={
+        device.current === true
+          ? `${KIN_DEVICES_COPY.thisDevice} · ${kinDeviceLine(device, removal.now)}`
+          : kinDeviceLine(device, removal.now)
+      }
+      control={
+        kinDeviceRemovable(device) ? (
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-label={`${KIN_DEVICES_COPY.remove} ${kinDeviceLabel(device)}`}
+            onClick={() => removal.ask(device)}
+          >
+            {KIN_DEVICES_COPY.remove}
+          </Button>
+        ) : null
+      }
+    />
+  ));
 }
 
 /** Removing one of `mine`'s or a teammate's devices: asks first, then signs it out. */
@@ -240,59 +251,6 @@ function useDeviceRemoval(target: KinDevicesTarget, mine: boolean) {
       />
     ),
   };
-}
-
-function KinDeviceList(props: KinDevicesTarget) {
-  const removal = useDeviceRemoval(props, false);
-  if (removal.shown === null) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        {removal.failed ? KIN_DEVICES_COPY.loadFailed : "Loading…"}
-      </p>
-    );
-  }
-  return (
-    <>
-      {removal.shown.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Not signed in anywhere.</p>
-      ) : (
-        <ul className="flex flex-col">
-          {removal.shown.map((device) => (
-            <li
-              key={device.sessionId}
-              className="flex items-center gap-3 border-b border-border/60 py-2 last:border-b-0"
-            >
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className="truncate text-sm text-foreground">{kinDeviceLabel(device)}</span>
-                  {device.current === true ? <Badge variant="secondary">This device</Badge> : null}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {kinDeviceLine(device, removal.now)}
-                </span>
-              </span>
-              {kinDeviceRemovable(device) ? (
-                <Button
-                  size="sm"
-                  variant="ghost-destructive"
-                  aria-label={`Remove ${kinDeviceLabel(device)}`}
-                  onClick={() => removal.ask(device)}
-                >
-                  {KIN_DEVICES_COPY.remove}
-                </Button>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      )}
-      {removal.problem === null ? null : (
-        <p role="alert" className="text-xs text-destructive-foreground">
-          {removal.problem}
-        </p>
-      )}
-      {removal.confirm}
-    </>
-  );
 }
 
 function CopyButton(props: {

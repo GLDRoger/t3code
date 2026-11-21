@@ -16,6 +16,7 @@ import {
   type KinMemoryRow,
   KIN_MEMORY_COPY,
 } from "@t3tools/client-runtime/kin/kinMemoryScreen";
+import { KIN_SETTINGS_COPY } from "@t3tools/client-runtime/kin/kinSettingsSpread";
 import type { EnvironmentId, KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -38,6 +39,7 @@ import {
   KinSettingsPage,
   KinSettingsRow,
   KinSettingsSection,
+  KinSettingsShowAll,
 } from "./settings/KinSettingsLayout";
 import { useKinGate } from "./useKinHost";
 
@@ -89,7 +91,8 @@ function KinMemoryBody({
   const [forgetting, setForgetting] = useState<KinMemoryItemView | null>(null);
   const [edits, setEdits] = useState(KIN_MEMORY_NO_EDITS);
   const [search, setSearch] = useState(find ?? "");
-  const [showAll, setShowAll] = useState(false);
+  // The sections whose every memory is shown, by key.
+  const [showAll, setShowAll] = useState<ReadonlySet<string>>(new Set());
   // Which change the shared problem line belongs under.
   const [changed, setChanged] = useState<"team" | "items">("items");
   // Whose words and which agent an item names; until these arrive a row says "a teammate" or "an agent".
@@ -194,7 +197,7 @@ function KinMemoryBody({
               ) : undefined
             }
           >
-            {(showAll ? group.items : group.items.slice(0, SHOWN)).map((item) => (
+            {(showAll.has(group.row.key) ? group.items : group.items.slice(0, SHOWN)).map((item) => (
               <KinSettingsRow
                 key={item.itemId}
                 title={item.title}
@@ -203,12 +206,11 @@ function KinMemoryBody({
                 onOpen={() => setOpened(item.itemId)}
               />
             ))}
-            {showAll || group.items.length <= SHOWN ? null : (
-              <div className="px-4 py-2">
-                <Button size="xs" variant="ghost" onClick={() => setShowAll(true)}>
-                  {KIN_MEMORY_SETTINGS.showAll(group.items.length)}
-                </Button>
-              </div>
+            {showAll.has(group.row.key) || group.items.length <= SHOWN ? null : (
+              <KinSettingsShowAll
+                label={KIN_SETTINGS_COPY.showAll(group.items.length)}
+                onShow={() => setShowAll(new Set(showAll).add(group.row.key))}
+              />
             )}
           </KinSettingsSection>
         ))
@@ -307,6 +309,7 @@ function KinMemoryForgotten(props: KinMemoryTarget & { readonly onRestored: () =
   const restore = useAtomCommand(kinClient.memoryRestore, { reportFailure: false });
   const [busy, setBusy] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
+  const [all, setAll] = useState(false);
   const items = Option.getOrNull(AsyncResult.value(result))?.items ?? null;
   if (items === null || items.length === 0) return null;
   const bringBack = async (itemId: KinMemoryItemId) => {
@@ -322,7 +325,10 @@ function KinMemoryForgotten(props: KinMemoryTarget & { readonly onRestored: () =
   };
   return (
     <KinSettingsSection title={KIN_MEMORY_FORGOTTEN.title} problem={failed}>
-      {[...items].reverse().map((item) => (
+      {[...items]
+        .reverse()
+        .slice(0, all ? undefined : SHOWN)
+        .map((item) => (
         <KinSettingsRow
           key={item.itemId}
           title={item.title}
@@ -340,6 +346,12 @@ function KinMemoryForgotten(props: KinMemoryTarget & { readonly onRestored: () =
           }
         />
       ))}
+      {all || items.length <= SHOWN ? null : (
+        <KinSettingsShowAll
+          label={KIN_SETTINGS_COPY.showAll(items.length)}
+          onShow={() => setAll(true)}
+        />
+      )}
     </KinSettingsSection>
   );
 }

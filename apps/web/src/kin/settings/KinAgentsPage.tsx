@@ -71,7 +71,7 @@ export function KinAgentsPage(props: KinSettingsTarget) {
           agents.map((agent) => (
             <KinSettingsRow
               key={agent.agentId}
-              leading={<KinAvatar avatar={kinAgentAvatar(agent.agentId)} size="xs" />}
+              leading={<KinAvatar avatar={kinAgentAvatar(agent.agentId)} size="sm" />}
               title={agent.name}
               detail={kinAgentRowLine(agent)}
               status={

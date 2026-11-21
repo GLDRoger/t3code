@@ -13,6 +13,8 @@ import { formatKinTime } from "./kinScreenState.ts";
 export const KIN_DEVICES_COPY = {
   loadFailed: "Couldn't load devices",
   title: "Your devices",
+  theirTitle: "Devices",
+  theirEmpty: "Not signed in anywhere.",
   rowDetail: "Phones and browsers signed in as you",
   footer:
     "Each device stays signed in for 30 days from when it was linked. Then link it again here.",

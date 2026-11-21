@@ -414,26 +414,6 @@ function Field(props: { readonly label: string; readonly children: React.ReactNo
   );
 }
 
-/**
- * Where the app's settings search lands on your own profile: the row itself, so the found ring
- * sits on it. Squares the row inside so a middle row's hover stays square.
- */
-function Found(props: {
-  readonly id: KinProfileSearchId | undefined;
-  readonly children: ReactNode;
-}) {
-  if (props.id === undefined) return props.children;
-  return (
-    <div
-      id={props.id}
-      tabIndex={-1}
-      className="overflow-hidden outline-none first:rounded-t-xl last:rounded-b-xl [&>[data-slot=kin-settings-row]]:rounded-none!"
-    >
-      {props.children}
-    </div>
-  );
-}
-
 function KinProfileRows(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
@@ -446,7 +426,7 @@ function KinProfileRows(props: {
   const { profile, mine, mayEdit } = props;
   const hours = kinHoursLine(profile.workHours);
   // Your own settings are where the app's settings search lands.
-  const found = (id: KinProfileSearchId) => (mine ? id : undefined);
+  const found = (id: KinProfileSearchId) => (mine ? { searchId: id } : {});
   // How you're spoken to and when Kin holds messages are only yours to change.
   const opens = (focus: KinProfileFocus, what: string, value: string) =>
     mayEdit && (mine || (focus !== "talk" && focus !== "quiet"))
@@ -455,8 +435,18 @@ function KinProfileRows(props: {
           onOpen: () => props.onEdit(focus),
         }
       : {};
-  const row = (focus: KinProfileFocus, title: string, value: string) => (
-    <KinSettingsRow title={title} detail={value} {...opens(focus, title, value)} />
+  const row = (
+    focus: KinProfileFocus,
+    title: string,
+    value: string,
+    searchId?: KinProfileSearchId,
+  ) => (
+    <KinSettingsRow
+      title={title}
+      detail={value}
+      {...(searchId === undefined ? {} : found(searchId))}
+      {...opens(focus, title, value)}
+    />
   );
   const awayShows = mayEdit || kinAwayLine(profile, { mine }) !== null;
   return (
@@ -483,38 +473,38 @@ function KinProfileRows(props: {
         KIN_PROFILE_COPY.talkLabel,
         (profile.talkStyle ?? "") === "" ? KIN_PROFILE_COPY.noTalk : (profile.talkStyle ?? ""),
       )}
-      <Found id={found("kin-working-hours")}>
-        {row(
-          "hours",
-          KIN_PROFILE_COPY.hoursLabel,
-          hours === null
-            ? KIN_PROFILE_COPY.noHours
-            : `${hours}${profile.timeZone === null ? "" : `, ${kinZoneLabel(profile.timeZone)}`}`,
-        )}
-      </Found>
-      <Found id={found("kin-quiet-hours")}>
-        {row("quiet", KIN_PROFILE_COPY.quietLabel, kinQuietLine(profile, props.holding))}
-      </Found>
+      {row(
+        "hours",
+        KIN_PROFILE_COPY.hoursLabel,
+        hours === null
+          ? KIN_PROFILE_COPY.noHours
+          : `${hours}${profile.timeZone === null ? "" : `, ${kinZoneLabel(profile.timeZone)}`}`,
+        "kin-working-hours",
+      )}
+      {row(
+        "quiet",
+        KIN_PROFILE_COPY.quietLabel,
+        kinQuietLine(profile, props.holding),
+        "kin-quiet-hours",
+      )}
       {awayShows ? (
-        <Found id={found("kin-away")}>
-          <KinAwayRow
-            environmentId={props.environmentId}
-            orgId={props.orgId}
-            profile={profile}
-            mine={mine}
-            mayEdit={mayEdit}
-          />
-        </Found>
+        <KinAwayRow
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          profile={profile}
+          mine={mine}
+          mayEdit={mayEdit}
+          {...found("kin-away")}
+        />
       ) : null}
       {profile.githubLogin === undefined ? null : (
-        <Found id={found("kin-github-username")}>
-          <KinGithubLoginRow
-            environmentId={props.environmentId}
-            orgId={props.orgId}
-            profile={profile}
-            mine={mine}
-          />
-        </Found>
+        <KinGithubLoginRow
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          profile={profile}
+          mine={mine}
+          {...found("kin-github-username")}
+        />
       )}
     </KinSettingsSection>
   );
@@ -545,7 +535,7 @@ function KinProfileForm(props: {
   readonly focus: KinProfileFocus;
   readonly onDone: () => void;
 }) {
-  const { environmentId, orgId, profile, focus } = props;
+  const { environmentId, orgId, profile } = props;
   const update = useAtomCommand(kinClient.profileUpdate, { reportFailure: false });
   const [draft, setDraft] = useState<KinProfileDraft>(() =>
     kinProfileDraft(profile, props.holding),
@@ -595,23 +585,12 @@ function KinProfileForm(props: {
     setPicture({ ...uploaded, preview: URL.createObjectURL(resized) });
   };
 
-  // The row that opened the form names the field it lands on, once the dialog has taken focus.
-  const landed = useRef(false);
-  const landing = (field: KinProfileFocus) => (node: HTMLDivElement | null) => {
-    if (node === null || field !== focus || landed.current) return;
-    landed.current = true;
-    requestAnimationFrame(() => {
-      node.scrollIntoView({ block: "center" });
-      node.querySelector<HTMLElement>("input:not([disabled]), textarea, button")?.focus({
-        preventScroll: true,
-      });
-    });
-  };
   const shownPicture = picture === undefined ? profile.pictureId !== null : picture !== null;
   return (
     <KinSettingsFormDialog
       title={KIN_PROFILE_COPY.edit}
       submitLabel={KIN_PROFILE_COPY.saveProfile}
+      openAt={props.focus}
       busy={busy !== null}
       problem={problem}
       onSubmit={() => void save()}
@@ -684,8 +663,7 @@ function KinProfileForm(props: {
           </div>
         )}
       </KinSettingsField>
-      <div ref={landing("name")}>
-        <KinSettingsField label={KIN_PROFILE_COPY.nameLabel}>
+      <KinSettingsField name="name" label={KIN_PROFILE_COPY.nameLabel}>
           {(ids) => (
             <Input
               id={ids.control}
@@ -695,9 +673,7 @@ function KinProfileForm(props: {
             />
           )}
         </KinSettingsField>
-      </div>
-      <div ref={landing("tags")}>
-        <KinSettingsField label={KIN_PROFILE_COPY.tagsLabel} help={KIN_PROFILE_COPY.tagsHint}>
+      <KinSettingsField name="tags" label={KIN_PROFILE_COPY.tagsLabel} help={KIN_PROFILE_COPY.tagsHint}>
           {(ids) => (
             <Input
               id={ids.control}
@@ -706,9 +682,7 @@ function KinProfileForm(props: {
             />
           )}
         </KinSettingsField>
-      </div>
-      <div ref={landing("skills")}>
-        <KinSettingsField label={KIN_PROFILE_COPY.skillsLabel} help={KIN_PROFILE_COPY.skillsHint}>
+      <KinSettingsField name="skills" label={KIN_PROFILE_COPY.skillsLabel} help={KIN_PROFILE_COPY.skillsHint}>
           {(ids) => (
             <Textarea
               id={ids.control}
@@ -719,10 +693,8 @@ function KinProfileForm(props: {
             />
           )}
         </KinSettingsField>
-      </div>
       {props.mine ? (
-        <div ref={landing("talk")}>
-          <KinSettingsField label={KIN_PROFILE_COPY.talkLabel} help={KIN_PROFILE_COPY.talkHint}>
+        <KinSettingsField name="talk" label={KIN_PROFILE_COPY.talkLabel} help={KIN_PROFILE_COPY.talkHint}>
             {(ids) => (
               <Textarea
                 id={ids.control}
@@ -732,10 +704,8 @@ function KinProfileForm(props: {
               />
             )}
           </KinSettingsField>
-        </div>
       ) : null}
-      <div ref={landing("hours")}>
-        <KinSettingsField label={KIN_PROFILE_COPY.hoursLabel}>
+      <KinSettingsField name="hours" label={KIN_PROFILE_COPY.hoursLabel}>
           {(ids) => (
             <div role="group" aria-labelledby={ids.label} className="flex flex-col gap-2">
               <div className="flex flex-wrap gap-1">
@@ -778,7 +748,6 @@ function KinProfileForm(props: {
             </div>
           )}
         </KinSettingsField>
-      </div>
       <KinSettingsField label={KIN_PROFILE_COPY.timeZoneLabel}>
         {(ids) => (
           <>
@@ -798,8 +767,7 @@ function KinProfileForm(props: {
         )}
       </KinSettingsField>
       {props.mine ? (
-        <div ref={landing("quiet")}>
-          <KinSettingsField label={KIN_PROFILE_COPY.quietLabel} help={KIN_PROFILE_COPY.quietHint}>
+        <KinSettingsField name="quiet" label={KIN_PROFILE_COPY.quietLabel} help={KIN_PROFILE_COPY.quietHint}>
             {(ids) => (
               <div role="group" aria-labelledby={ids.label} className="flex items-center gap-2">
                 <Input
@@ -819,7 +787,6 @@ function KinProfileForm(props: {
               </div>
             )}
           </KinSettingsField>
-        </div>
       ) : null}
       {props.mine ? (
         <div className="flex items-start justify-between gap-4">

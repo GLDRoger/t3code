@@ -15,6 +15,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinBrand";
 import { KIN_COMPANY } from "@t3tools/client-runtime/kin/kinCompanyProfile";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_SETTINGS_COPY } from "@t3tools/client-runtime/kin/kinSettingsSpread";
 
 import type { KinCompanyProfile } from "@t3tools/contracts";
 
@@ -42,7 +43,11 @@ import { KinConfirm } from "./KinConfirm";
 
 import { kinClient } from "./kinClient";
 import { KinSettingsField, KinSettingsFormDialog } from "./settings/KinSettingsControls";
-import { KinSettingsRow, KinSettingsSection } from "./settings/KinSettingsLayout";
+import {
+  KinSettingsFacts,
+  KinSettingsRow,
+  KinSettingsSection,
+} from "./settings/KinSettingsLayout";
 import { kinHostConnected } from "./useKinHost";
 import { useKinAskAgent } from "./useKinMoney";
 import { type KinWorkTarget } from "./useKinWork";
@@ -156,9 +161,18 @@ export function KinBrandSection(
   );
   const [editing, setEditing] = useState(false);
   const brand = profile.brand;
-  const open = canEdit ? { onOpen: () => setEditing(true) } : {};
   return (
-    <KinSettingsSection title={KIN_BRAND.title} description={KIN_BRAND_SETTINGS.detail}>
+    <KinSettingsSection
+      title={KIN_BRAND.title}
+      description={KIN_BRAND_SETTINGS.detail}
+      action={
+        canEdit ? (
+          <Button size="xs" variant="outline" onClick={() => setEditing(true)}>
+            {KIN_SETTINGS_COPY.edit}
+          </Button>
+        ) : undefined
+      }
+    >
       <KinSettingsRow
         title={KIN_BRAND.logo}
         detail={profile.logo === null ? KIN_BRAND_SETTINGS.logoNone : profile.logo.name}
@@ -178,26 +192,20 @@ export function KinBrandSection(
           )
         }
       />
-      <KinSettingsRow
-        title={KIN_BRAND_SETTINGS.colours}
-        detail={KIN_BRAND_SETTINGS.coloursLine(brand.primaryColor, brand.secondaryColor)}
-        openLabel={`${KIN_BRAND.edit}: ${KIN_BRAND_SETTINGS.colours}`}
-        {...open}
-      />
-      <KinSettingsRow
-        title={KIN_BRAND.font}
-        detail={brand.font ?? KIN_BRAND.defaultFont}
-        openLabel={`${KIN_BRAND.edit}: ${KIN_BRAND.font}`}
-        {...open}
-      />
-      <KinSettingsRow
-        title={KIN_BRAND.footer}
-        detail={brand.footer ?? KIN_BRAND_SETTINGS.none}
-        openLabel={`${KIN_BRAND.edit}: ${KIN_BRAND.footer}`}
-        {...open}
-      />
-      <div className="px-4 pt-3 pb-4">
-        <SampleHeader profile={profile} draft={kinBrandDraftOf(brand)} logoUrl={logoUrl} />
+      <div>
+        <KinSettingsFacts
+          facts={[
+            {
+              label: KIN_BRAND_SETTINGS.colours,
+              value: KIN_BRAND_SETTINGS.coloursLine(brand.primaryColor, brand.secondaryColor),
+            },
+            { label: KIN_BRAND.font, value: brand.font ?? KIN_BRAND.defaultFont },
+            { label: KIN_BRAND.footer, value: brand.footer ?? KIN_BRAND_SETTINGS.none },
+          ]}
+        />
+        <div className="px-4 pb-4">
+          <SampleHeader profile={profile} draft={kinBrandDraftOf(brand)} logoUrl={logoUrl} />
+        </div>
       </div>
       {editing ? (
         <BrandDialog {...props} logoUrl={logoUrl} onClose={() => setEditing(false)} />

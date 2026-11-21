@@ -6,20 +6,11 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 
-import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogPanel,
-  DialogPopup,
-  DialogTitle,
-} from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
+import { KinSettingsDialog } from "./settings/KinSettingsControls";
 import { KinSettingsRow, KinSettingsSection } from "./settings/KinSettingsLayout";
 
 const failureText = (result: AsyncResult.AsyncResult<unknown, unknown>, fallback: string) => {
@@ -70,73 +61,54 @@ export function KinVisualHosts(props: {
         />
       </KinSettingsSection>
       {!open ? null : (
-        <Dialog
-          open
-          onOpenChange={(next) => {
-            if (!next && !busy) setOpen(false);
-          }}
+        <KinSettingsDialog
+          title={COPY.title}
+          description={COPY.detail}
+          busy={busy}
+          problem={problem}
+          onClose={() => setOpen(false)}
         >
-          <DialogPopup className="max-w-lg">
-            <DialogHeader>
-              <DialogTitle>{COPY.title}</DialogTitle>
-              <DialogDescription>{COPY.detail}</DialogDescription>
-            </DialogHeader>
-            <DialogPanel>
-              <div className="flex flex-col gap-3">
-                {hosts === null || hosts.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">{COPY.none}</p>
-                ) : (
-                  <ul className="flex flex-col divide-y rounded-lg border">
-                    {hosts.map((host) => (
-                      <li key={host} className="flex min-h-10 items-center gap-2 px-3 py-1">
-                        <span className="min-w-0 flex-1 truncate text-sm">{host}</span>
-                        <Button
-                          size="xs"
-                          variant="ghost-destructive"
-                          disabled={busy}
-                          aria-label={`${COPY.remove} ${host}`}
-                          onClick={() => void change(host, false)}
-                        >
-                          {COPY.remove}
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <form
-                  className="flex items-center gap-2"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    if (draft.trim() !== "") void change(draft, true);
-                  }}
-                >
-                  <Input
-                    aria-label={COPY.inputLabel}
-                    placeholder={COPY.placeholder}
-                    value={draft}
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    onChange={(event) => setDraft(event.target.value)}
-                  />
-                  <Button type="submit" variant="outline" disabled={busy || draft.trim() === ""}>
-                    {COPY.add}
+          {hosts === null || hosts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{COPY.none}</p>
+          ) : (
+            <ul className="flex flex-col divide-y rounded-lg border">
+              {hosts.map((host) => (
+                <li key={host} className="flex min-h-10 items-center gap-2 px-3 py-1">
+                  <span className="min-w-0 flex-1 truncate text-sm">{host}</span>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    disabled={busy}
+                    aria-label={`${COPY.remove} ${host}`}
+                    onClick={() => void change(host, false)}
+                  >
+                    {COPY.remove}
                   </Button>
-                </form>
-                {problem === null ? null : (
-                  <Alert variant="error">
-                    <AlertDescription role="alert">{problem}</AlertDescription>
-                  </Alert>
-                )}
-              </div>
-            </DialogPanel>
-            <DialogFooter>
-              <Button type="button" disabled={busy} onClick={() => setOpen(false)}>
-                {COPY.done}
-              </Button>
-            </DialogFooter>
-          </DialogPopup>
-        </Dialog>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (draft.trim() !== "") void change(draft, true);
+            }}
+          >
+            <Input
+              aria-label={COPY.inputLabel}
+              placeholder={COPY.placeholder}
+              value={draft}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              onChange={(event) => setDraft(event.target.value)}
+            />
+            <Button type="submit" variant="outline" disabled={busy || draft.trim() === ""}>
+              {COPY.add}
+            </Button>
+          </form>
+        </KinSettingsDialog>
       )}
     </>
   );

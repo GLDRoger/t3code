@@ -9,7 +9,7 @@ import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinDocDetail, KinRecordDetail } from "@t3tools/contracts";
 import { RotateCcwIcon } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import {
   AlertDialog,
@@ -32,8 +32,14 @@ export function KinConfirm(props: {
     readonly title: string;
     readonly detail: string;
     readonly action: string;
+    /** The way out, when "Cancel" would read wrong: "Keep link". */
+    readonly cancel?: string;
     readonly destructive?: boolean;
   } | null;
+  /** One control the answer needs, under the question: where a removed stage's deals go. */
+  readonly children?: ReactNode;
+  /** The action waits until the control has an answer. */
+  readonly notReady?: boolean;
   readonly onConfirm: () => void;
   readonly onClose: () => void;
 }) {
@@ -49,13 +55,15 @@ export function KinConfirm(props: {
         <AlertDialogHeader>
           <AlertDialogTitle>{ask?.title}</AlertDialogTitle>
           <AlertDialogDescription>{ask?.detail}</AlertDialogDescription>
+          {props.children}
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogClose render={<Button variant="outline" />}>
-            {KIN_WORK_COPY.cancel}
+            {ask?.cancel ?? KIN_WORK_COPY.cancel}
           </AlertDialogClose>
           <Button
             variant={ask?.destructive === true ? "destructive" : "default"}
+            disabled={props.notReady === true}
             onClick={() => {
               props.onClose();
               props.onConfirm();
