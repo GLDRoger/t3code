@@ -603,6 +603,87 @@ function accountState(
   }
 }
 
+/** Whether GitHub tells Kin at once, as one row under the App's accounts. */
+export interface KinGitHubInstantRow {
+  readonly title: string;
+  readonly tone: KinConnectionTone;
+  readonly label: string;
+  readonly detail: string;
+  /** The App's "Permissions & events" page on GitHub, while events are left to tick. */
+  readonly action: { readonly label: string; readonly url: string } | null;
+}
+
+const quotedList = (names: ReadonlyArray<string>) => {
+  const quoted = names.map((name) => `"${name}"`);
+  return quoted.length <= 1
+    ? quoted.join("")
+    : `${quoted.slice(0, -1).join(", ")} and ${quoted.at(-1)}`;
+};
+
+/** Null without `instant`, which only an owner or co-owner of a Kin with its own App is sent. */
+export function kinGitHubInstantRow(
+  agents: KinGitHubAgents,
+  now: number,
+): KinGitHubInstantRow | null {
+  const instant = agents.instant;
+  if (instant === undefined) return null;
+  const title = "How fast Kin hears from GitHub";
+  const everyMinute = "Until then Kin checks GitHub every minute, so nothing is missed.";
+  switch (instant.state) {
+    case "on": {
+      const last = instant.last;
+      const at = last === null ? Number.NaN : Date.parse(last.at);
+      const heard = Number.isNaN(at)
+        ? ""
+        : last?.ok === true
+          ? ` Last heard ${ago(at, now)}.`
+          : ` GitHub's last message, ${ago(at, now)}, didn't get through.`;
+      return {
+        title,
+        tone: last?.ok === false ? "attention" : "ok",
+        label: "At once",
+        detail: `GitHub tells Kin the moment something happens on your repos.${heard}`,
+        action: null,
+      };
+    }
+    case "events":
+      return {
+        title,
+        tone: "attention",
+        label: "Events to tick",
+        detail: [
+          instant.missing.length === 0
+            ? "On GitHub, tick the events Kin needs on the App's Permissions & events page."
+            : `On GitHub, tick ${quotedList(instant.missing)} under Subscribe to events on the App's Permissions & events page.`,
+          "Also make sure Active is ticked under Webhook on the App's General page: GitHub doesn't let Kin check that.",
+          everyMinute,
+        ].join(" "),
+        action:
+          instant.settingsUrl === null
+            ? null
+            : { label: "Open Permissions & events", url: instant.settingsUrl },
+      };
+    case "address":
+      return {
+        title,
+        tone: "muted",
+        label: "Every minute",
+        detail:
+          "This Kin has no public address, so GitHub can't reach it. Kin checks GitHub every minute instead.",
+        action: null,
+      };
+    case "error":
+      return {
+        title,
+        tone: "attention",
+        label: "Every minute",
+        detail:
+          "Kin couldn't set up GitHub to tell it at once, so it checks GitHub every minute instead. It tries again by itself within the hour.",
+        action: null,
+      };
+  }
+}
+
 /** Whether to show the hint under the rows: some row sends the owner to pick on GitHub. */
 export const kinGitHubAccountsHint = (rows: ReadonlyArray<KinGitHubAccountRow>) =>
   rows.some((row) => row.action?.picksRepos === true) ? KIN_GITHUB_AGENTS_COPY.accountsHint : null;
