@@ -10,6 +10,7 @@ import {
   kinGroupMemberViews,
   kinGroupNameCheck,
   kinGroupProblem,
+  kinGroupTakesAdds,
   type KinGroupMemberView,
   KIN_GROUP_FORM,
 } from "@t3tools/client-runtime/kin/kinGroups";
@@ -218,7 +219,7 @@ export function KinGroupSheet(props: {
             {leads.length === 0 ? (
               <p className="text-xs text-muted-foreground">{KIN_GROUP_FORM.noAgent}</p>
             ) : null}
-            {canChange ? (
+            {canChange && kinGroupTakesAdds(group.chat) ? (
               <Button
                 size="sm"
                 variant="outline"

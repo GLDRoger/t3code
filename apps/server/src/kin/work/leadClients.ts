@@ -110,7 +110,7 @@ const runLog = Effect.fnUntraced(function* (lead: Lead, input: typeof TouchInput
     )}`,
     now,
   });
-  yield* (yield* KinRecords).announce(lead.orgId);
+  yield* (yield* KinRecords).announce(lead.orgId, [partyId]);
   return { client: `${client.name} (${client.key})`, touch: toShown(touch) };
 });
 export const logTouch = leadTool("KinClientTools.logTouch", runLog);

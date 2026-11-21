@@ -206,7 +206,7 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
           }}
         >
           <DialogHeader>
-            <DialogTitle>{creating ? "New group" : "Add to group"}</DialogTitle>
+            <DialogTitle>{creating ? KIN_GROUP_FORM.newGroup : KIN_GROUP_FORM.addTo}</DialogTitle>
             <DialogDescription>
               {creating
                 ? "A chat with any mix of your agents and people. Everyone reads what is said while they are in it."

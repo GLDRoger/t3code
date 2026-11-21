@@ -1,4 +1,4 @@
-import type { KinFeedRow } from "@t3tools/client-runtime/kin/kinChatFeed";
+import type { KinFeedRow } from "./kinChatFeed.ts";
 
 export interface KinRowDisplay {
   /** An earlier copy of a notice the host repeated; only the last one is drawn. */

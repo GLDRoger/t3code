@@ -393,12 +393,11 @@ export function KinDocReader(
             {old ? (
               <Alert variant="warning">
                 <AlertDescription>
-                  You're reading version {doc.version.version}. The latest is version{" "}
-                  {doc.latest.version}.
+                  {KIN_DOCS.oldVersion(doc.version.version, doc.latest.version)}
                 </AlertDescription>
                 <AlertAction>
                   <Button size="xs" variant="outline" onClick={props.onOpenLatest}>
-                    Open the latest
+                    {KIN_DOCS.openLatest}
                   </Button>
                   {props.onRestore === null ? null : (
                     <Button

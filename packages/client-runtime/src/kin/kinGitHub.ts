@@ -26,6 +26,7 @@ import { AsyncResult } from "effect/reactivity";
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { kinFailureText } from "./kinAnswers.ts";
 import type { KinConnectionTone } from "./kinConnections.ts";
+import { kinCount } from "./kinCount.ts";
 
 /**
  * Settings → Connections → GitHub: the owner's own GitHub login on his Kin's computer. Web and
@@ -232,8 +233,6 @@ export const KIN_GITHUB_WATCH_COPY = {
   asYou: "As you",
 } as const;
 
-const plural = (count: number, one: string) => `${count} ${count === 1 ? one : `${one}s`}`;
-
 const ago = (at: number, now: number) => {
   const seconds = Math.max(0, Math.round((now - at) / 1000));
   if (seconds < 60) return "just now";
@@ -245,9 +244,9 @@ const ago = (at: number, now: number) => {
 /** "Watching: 4 repos · last checked 20 s ago · 3 things handled today". */
 export function kinGitHubWatchLine(watch: KinGitHubWatch, now: number): string {
   return [
-    `Watching: ${plural(watch.repos, "repo")}`,
+    `Watching: ${kinCount(watch.repos, "repo")}`,
     watch.checkedAt === null ? "not checked yet" : `last checked ${ago(watch.checkedAt, now)}`,
-    `${plural(watch.handledToday, "thing")} handled today`,
+    `${kinCount(watch.handledToday, "thing")} handled today`,
   ].join(" · ");
 }
 
@@ -394,7 +393,7 @@ export function createKinGitHubGuardActions(options: {
       summary: !all
         ? null
         : failed.length === 0
-          ? `Protected ${plural(changed, "repo")}.`
+          ? `Protected ${kinCount(changed, "repo")}.`
           : `Protected ${changed} of ${total}. Not protected:`,
       problems: failed.map(kinGitHubGuardRefusal),
     };
@@ -506,7 +505,7 @@ export function createKinGitHubAppRepoActions(options: {
   };
 }
 
-const reposWord = (count: number) => plural(count, "watched repo");
+const reposWord = (count: number) => kinCount(count, "watched repo");
 
 /** One row per account with watched repos; empty when Kin can't tell the accounts. */
 export function kinGitHubAccountRows(agents: KinGitHubAgents): ReadonlyArray<KinGitHubAccountRow> {
@@ -549,7 +548,7 @@ function accountState(
         detail: [
           rest === 0 || (row.elsewhere ?? 0) === 0
             ? ""
-            : `Works on ${plural(row.elsewhere ?? 0, "repo")} Kin doesn't watch.`,
+            : `Works on ${kinCount(row.elsewhere ?? 0, "repo")} Kin doesn't watch.`,
           rest === 0
             ? "Covers every watched repo here, but not repos made later."
             : `Agents work as you on ${row.covered === 0 ? "its" : "the other"} ${reposWord(rest)}.`,
@@ -630,7 +629,7 @@ export interface KinGitHubAgentsView {
 const repoList = (repos: ReadonlyArray<string>, total: number) => {
   const named = repos.slice(0, 3);
   const more = total - named.length;
-  if (more > 0) return `${named.join(", ")} and ${plural(more, "more repo")}`;
+  if (more > 0) return `${named.join(", ")} and ${kinCount(more, "more repo")}`;
   return named.length <= 1
     ? named.join("")
     : `${named.slice(0, -1).join(", ")} and ${named.at(-1)}`;
@@ -683,7 +682,7 @@ export function kinGitHubAgentsView(
       ? `Agents work on GitHub as ${app} wherever it is installed.`
       : agents.installed === 0
         ? (agents.elsewhere ?? 0) > 0
-          ? `${app} works only on ${plural(agents.elsewhere ?? 0, "repo")} Kin doesn't watch, so on watched repos agents work as ${you}.`
+          ? `${app} works only on ${kinCount(agents.elsewhere ?? 0, "repo")} Kin doesn't watch, so on watched repos agents work as ${you}.`
           : `${app} isn't installed on any watched repo yet, so agents work there as ${you}.`
         : missing === 0
           ? `Agents work on GitHub as ${app} on ${agents.watched === 1 ? "your watched repo" : `all ${agents.watched} watched repos`}.`

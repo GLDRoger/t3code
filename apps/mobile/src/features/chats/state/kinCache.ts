@@ -120,14 +120,15 @@ export const removeKinCacheEntry = Effect.fn("KinCache.remove")(function* (
 
 /**
  * Drops an environment's Kin cache when the person it maps this session to changes, so a re-paired
- * phone never shows the previous person's inbox. `null` is a host with no identity.
+ * phone never shows the previous person's inbox. `null` is a host with no identity. True when the
+ * person changed, or the cache could not say.
  */
 export const syncKinCacheIdentity = Effect.fn("KinCache.syncIdentity")(function* (
   environmentId: EnvironmentId,
   identity: string | null,
 ) {
   const database = yield* MobileDatabase;
-  yield* Effect.gen(function* () {
+  return yield* Effect.gen(function* () {
     const index = yield* readIndex(database, environmentId);
     if (Option.isNone(index) || index.value.identity === undefined) {
       // Saved before the host first answered: it was this session's, so adopt it.
@@ -135,14 +136,15 @@ export const syncKinCacheIdentity = Effect.fn("KinCache.syncIdentity")(function*
         identity,
         keys: Option.match(index, { onNone: () => [], onSome: (held) => held.keys }),
       });
-      return;
+      return false;
     }
-    if (index.value.identity === identity) return;
+    if (index.value.identity === identity) return false;
     yield* database.clearCacheKind(environmentId, KIND);
     yield* writeIndex(database, environmentId, { identity, keys: [] });
+    return true;
   }).pipe(
     indexLock.withPermit,
-    Effect.catch(() => Effect.logWarning("Kin cache identity sync failed")),
+    Effect.catch(() => Effect.as(Effect.logWarning("Kin cache identity sync failed"), true)),
   );
 });
 

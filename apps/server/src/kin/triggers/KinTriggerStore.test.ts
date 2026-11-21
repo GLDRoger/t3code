@@ -346,12 +346,9 @@ describe("KinTriggerStore", () => {
         const legacy = trigger("gh:org-a:delivery");
         yield* sql`UPDATE kin_triggers SET trigger_id = ${legacy.id} WHERE org_id = ${orgA}`;
         const collision = fire(legacy, `${legacy.id}:${now}`);
-        yield* sql`INSERT INTO kin_webhook_sources
-          (source_id, org_id, repo, scheduled_task_id, inbox_thread_id, bot_login, status)
-          VALUES ('source', ${orgA}, 'owner/repo', 'task', 'inbox', 'bot', 'active')`;
-        const inbox = yield* KinTriggerInbox.KinTriggerInbox;
-        yield* inbox.put(
-          decodeFire({
+        // A GitHub delivery an older build left in the inbox under the same id.
+        yield* sql`INSERT INTO kin_trigger_inbox (org_id, fire_id, payload_json, received_at)
+          VALUES (${orgA}, ${collision.fireId}, ${JSON.stringify({
             ...collision,
             payload: {
               kind: "github",
@@ -359,9 +356,7 @@ describe("KinTriggerStore", () => {
               scheduledTaskId: "task",
               deliveryId: `delivery:${now}`,
             },
-          }),
-          now,
-        );
+          })}, ${now})`;
         const conflict = yield* Effect.flip(store.fire(collision, () => null));
         assert.strictEqual(conflict._tag, "KinTriggerFireConflict");
         if (conflict._tag === "KinTriggerFireConflict")

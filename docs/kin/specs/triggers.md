@@ -429,7 +429,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 - Node 26 (the repo's `engines`) through `mise`, which the host already uses, and `vp`.
 - A dedicated `kin` user (`sudo useradd -m kin`). The Kin server runs as this user, never as the owner's account. Its GitHub credentials are the owner's `gh` login, connected from the phone (Settings → Connections → GitHub), and a memory repo deploy key kept outside `~/.ssh` and passed to memory git alone through `KIN_MEMORY_SSH_COMMAND` ([host README](../../../ops/kin/host/README.md#memory-repo-access)). Only owner-only turns that have read no outside text get a shell with that login (lead spec, security notes).
 - The providers' CLIs (Claude Code, Codex) installed for the `kin` user and signed in to the owner's plans.
-- As `kin`: clone `GLDRoger/t3code` to `~/t3code`, `git switch kin`, `cp .env.example .env` (it holds the production relay URL), then `ops/kin/host/update.sh`, which makes the first build.
+- As `kin`: clone `GLDRoger/t3code` to `~/t3code`, `git switch kin`, `cp .env.example .env` (it holds the production relay URL), then `ops/kin/host/update.sh <commit>`, which makes the first build.
 - `sudo /root/kin-ops/ops/kin/host/setup.sh`, run only from that root-owned clone, creates the user, turns on linger, masks sleep, installs and enables the units, and prints a pass/fail checklist of everything above. It is safe to re-run, and `--dry-run` shows every action. Steps: [`ops/kin/host/README.md`](../../../ops/kin/host/README.md).
 
 **Run:**
