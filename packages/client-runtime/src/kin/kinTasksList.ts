@@ -26,6 +26,8 @@ import {
   kinMidSentence,
   kinWorkName,
   kinWorkPrincipalKey,
+  kinWorkStatusText,
+  kinWorkWaitsOnMe,
   type KinTaskGroupBy,
   type KinWorkFilter,
   type KinWorkNames,
@@ -222,10 +224,14 @@ export function kinTaskLine(
           : KIN_TASKS.noDate;
   const named = record.party?.title ?? record.project?.title ?? null;
   const about = options.inProject || named === (options.sharedAbout ?? null) ? null : named;
+  // The clock (`kinWorkRow`'s state) always has these words beside it; one waiting on the
+  // reader is drawn as a to-do and says nothing of waiting.
   const waiting =
-    record.state === "waiting" && record.waitingOn !== null
-      ? `Waiting on ${kinMidSentence(kinWorkName(record.waitingOn, names, "you"))}`
-      : null;
+    record.state !== "waiting" || kinWorkWaitsOnMe(record, names)
+      ? null
+      : record.waitingOn === null
+        ? kinWorkStatusText(record, names)
+        : `Waiting on ${kinMidSentence(kinWorkName(record.waitingOn, names, "you"))}`;
   const mine = record.owner._tag === "person" && record.owner.personId === names.me;
   return {
     holder: options.ownList === true && mine ? null : kinWorkName(record.owner, names),

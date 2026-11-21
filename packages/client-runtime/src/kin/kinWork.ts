@@ -562,9 +562,25 @@ export const kinWorkStatusText = (
 const statusText = (record: KinRecord, names: KinWorkNames): string =>
   kinWorkStatusText(record, names);
 
+/** What a task waiting on its own reader says in place of "Waiting on you". */
+export const KIN_WORK_YOURS_TO_DO = "Yours to do";
+
+/**
+ * Waiting on the reader themself: not paused for them but theirs to move, so drawn and said as
+ * a to-do from their seat. The stored state stays `waiting`.
+ */
+export const kinWorkWaitsOnMe = (
+  record: Pick<KinRecord, "state" | "waitingOn">,
+  names: Pick<KinWorkNames, "me">,
+): boolean =>
+  record.state === "waiting" &&
+  record.waitingOn?._tag === "person" &&
+  record.waitingOn.personId === names.me;
+
 export interface KinWorkRowView {
   readonly key: KinRecordKey;
   readonly title: string;
+  /** Where it stands from the reader's seat, for its mark: open when it waits on them. */
   readonly state: KinRecordState;
   /** "In progress", "Waiting on Priya", "Done". */
   readonly status: string;
@@ -680,7 +696,12 @@ export function kinWorkRow(
       : record.party !== undefined && record.party.key !== within?.party?.key
         ? record.party.title
         : null;
-  const status = record.working ? "Working on it now" : statusText(record, names);
+  const onMe = kinWorkWaitsOnMe(record, names);
+  const status = record.working
+    ? "Working on it now"
+    : onMe
+      ? KIN_WORK_YOURS_TO_DO
+      : statusText(record, names);
   const day = kinWorkClosed(record.state) ? null : kinWorkDueText(record, names, now);
   const due = day === null ? null : `Due ${day}`;
   const ownerRetired = kinWorkRetired(record.owner, names);
@@ -705,7 +726,7 @@ export function kinWorkRow(
     record.repeat === undefined || kinWorkClosed(record.state)
       ? null
       : kinRepeatText(record.repeat),
-    record.state === "open" && !record.working ? null : status,
+    (record.state === "open" || onMe) && !record.working ? null : status,
     about,
     record.side === "theirs" && !kinWorkClosed(record.state) && within?.sided !== true
       ? "They owe this"
@@ -717,7 +738,7 @@ export function kinWorkRow(
   return {
     key: record.key,
     title: record.title,
-    state: record.state,
+    state: onMe ? "open" : record.state,
     status,
     owner,
     ownerAvatar: kinWorkAvatar(record.owner),

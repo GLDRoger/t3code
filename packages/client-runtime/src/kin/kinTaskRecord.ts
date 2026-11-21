@@ -18,6 +18,8 @@ import { kinAwayDay } from "./kinAway.ts";
 import { kinSafeWebUrl } from "./kinLinks.ts";
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import {
+  KIN_WORK_YOURS_TO_DO,
+  kinWorkWaitsOnMe,
   kinWorkActorName,
   kinWorkAvatar,
   kinWorkChangeText,
@@ -240,6 +242,8 @@ export function kinRecordChip(
   if (item.state === "dropped") return { tone: "plain", label: "Dropped" };
   if (item.late && item.dueAt !== null)
     return { tone: "late", label: kinLateWords(item, names, now) };
+  // Waiting on this viewer is theirs to move, never a pause (`kinWorkWaitsOnMe`).
+  if (kinWorkWaitsOnMe(item, names)) return { tone: "plain", label: KIN_WORK_YOURS_TO_DO };
   const handedToMe = item.handedBack !== undefined && isMe(item.owner, names);
   // Tasks' Needs you and this chip read one rule; a plain task of your own says its status.
   const move = kinRecordMove(item, names, view.can.confirm);
@@ -395,6 +399,11 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
   const waitsOnMe =
     item.state === "waiting" && item.waitingOn !== null && isMe(item.waitingOn, names);
   const nothingNeeded = waitsOnMe ? `${view.status}.` : KIN_TASK_RECORD.nothingNeeded;
+  // Theirs to do, with why it is when the record says and the card doesn't quote it already.
+  const yoursToDo = (quoted: string | null) =>
+    view.reason === null || quoted === view.reason
+      ? `${KIN_WORK_YOURS_TO_DO}.`
+      : `${KIN_WORK_YOURS_TO_DO}: ${view.reason}`;
   if (view.suggestion !== null) {
     const acts =
       input.change && view.can.confirm
@@ -455,7 +464,7 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
       when: due === null ? null : `due ${due}`,
       // What to do: the brief, and why it came only while there is none.
       words: view.notes ?? view.reason,
-      note: null,
+      note: waitsOnMe ? yoursToDo(view.notes ?? view.reason) : null,
       acts: [...done, ...back],
     };
   }
@@ -497,6 +506,7 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
   }
   const waiting =
     item.state === "waiting" &&
+    !waitsOnMe &&
     !(item.waitingOn !== null && samePrincipal(item.waitingOn, item.owner));
   return {
     kind: "held",
@@ -504,8 +514,7 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
     line: waiting ? view.status.replace(/^Waiting/, "is waiting") : "has this",
     when: due === null ? null : `due ${due}`,
     words: null,
-    // The line already says it waits on this viewer.
-    note: toldLater ?? (waitsOnMe ? null : KIN_TASK_RECORD.nothingNeeded),
+    note: toldLater ?? (waitsOnMe ? yoursToDo(null) : KIN_TASK_RECORD.nothingNeeded),
     acts: [],
   };
 }

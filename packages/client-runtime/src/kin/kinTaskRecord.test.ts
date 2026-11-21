@@ -224,26 +224,44 @@ describe("kinNextStep", () => {
   });
 
   it.each([
+    // Waiting on the reader is theirs to do, never a pause: no "Waiting on you" anywhere.
     {
       who: "the person it waits on, who holds it",
       item: task({ owner: zoya, state: "waiting", waitingOn: zoya }),
       names: asZoya,
-      chip: "Waiting on you",
-      step: { kind: "yours", line: "have this", note: null },
+      chip: "Yours to do",
+      step: { kind: "yours", line: "have this", note: "Yours to do." },
+    },
+    {
+      who: "the person it waits on, who holds it, with the agent's reason and a brief",
+      item: task({
+        owner: zoya,
+        state: "waiting",
+        waitingOn: zoya,
+        reason: "Needs your sign-off on the price",
+        notes: "Send the quote to the clinic.",
+      }),
+      names: asZoya,
+      chip: "Yours to do",
+      step: {
+        kind: "yours",
+        words: "Send the quote to the clinic.",
+        note: "Yours to do: Needs your sign-off on the price",
+      },
     },
     {
       who: "the person it waits on, who doesn't hold it",
       item: task({ state: "waiting", waitingOn: zoya, can: readOnly }),
       names: asZoya,
-      chip: "Waiting on you",
-      step: { kind: "held", line: "is waiting on you", note: null },
+      chip: "Yours to do",
+      step: { kind: "held", line: "has this", note: "Yours to do." },
     },
     {
       who: "the person an agent's task waits on",
       item: task({ owner: chief, state: "waiting", waitingOn: zoya, can: readOnly }),
       names: asZoya,
-      chip: "Waiting on you",
-      step: { kind: "agent", line: "is on it", note: "Waiting on you." },
+      chip: "Yours to do",
+      step: { kind: "agent", line: "is on it", note: "Yours to do." },
     },
     {
       who: "the person a late task waits on",
@@ -258,7 +276,7 @@ describe("kinNextStep", () => {
       names: asZoya,
       // Due the 15th, read the 18th: three calendar days, as Money counts days overdue.
       chip: "3 days late",
-      step: { kind: "late", note: "Waiting on you." },
+      step: { kind: "late", note: "Yours to do." },
     },
     {
       who: "a third person, on a task waiting on its own holder",

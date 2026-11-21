@@ -39,7 +39,12 @@ import {
   type KinTaskTicked,
 } from "./kinTasksList.ts";
 import type { KinWorkNotice } from "./kinWorkChanges.ts";
-import { KIN_WORK_DEFAULT_FILTER, kinWorkOverview, type KinWorkNames } from "./kinWork.ts";
+import {
+  KIN_WORK_DEFAULT_FILTER,
+  kinWorkOverview,
+  kinWorkRow,
+  type KinWorkNames,
+} from "./kinWork.ts";
 
 // Ambermill, invented: owner Rhea; Meera, Zoya; agents Chief of staff and Finance.
 const rhea = { _tag: "person", personId: KinPersonId.make("ambermill-rhea") } as const;
@@ -728,6 +733,54 @@ describe("kinTaskQuickFilters", () => {
       "waiting",
       "late",
     ]);
+  });
+});
+
+describe("a waiting task's mark and words, from the reader's seat", () => {
+  const asMeera: KinWorkNames = { ...names, me: meera.personId };
+  const onRhea = row("A", { state: "waiting", waitingOn: rhea });
+  it.each([
+    ["waits on the reader: an ordinary to-do", onRhea, names, "open", "done", "No date"],
+    [
+      "the same task, seen by someone else",
+      onRhea,
+      asMeera,
+      "waiting",
+      "done",
+      "Waiting on Rhea · No date",
+    ],
+    [
+      "waits on someone else",
+      row("B", { state: "waiting", waitingOn: zoya }),
+      names,
+      "waiting",
+      "done",
+      "Waiting on Zoya · No date",
+    ],
+    [
+      "waits on nobody named",
+      row("C", { state: "waiting" }),
+      names,
+      "waiting",
+      "done",
+      "Waiting · No date",
+    ],
+    [
+      "late and waiting: the clock still has its words, late stays red text",
+      row("D", { state: "waiting", waitingOn: zoya, ...late("2026-11-15T09:00:00.000Z") }),
+      names,
+      "waiting",
+      "done",
+      "Waiting on Zoya",
+    ],
+    ["open", row("E"), names, "open", "done", "No date"],
+  ] as const)("%s", (_name, record, who, mark, tick, rest) => {
+    const shown = kinWorkRow(record, who, now);
+    const line = kinTaskLine(record, who, now);
+    expect([shown.state, shown.tick, line.rest]).toEqual([mark, tick, rest]);
+    // The clock never stands without "Waiting…" beside it, and never says "Waiting on you".
+    expect(line.rest.startsWith("Waiting")).toBe(shown.state === "waiting");
+    expect(`${line.rest} ${shown.status} ${shown.detail}`).not.toContain("Waiting on you");
   });
 });
 
