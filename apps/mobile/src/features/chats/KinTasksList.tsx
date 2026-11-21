@@ -684,6 +684,7 @@ function KinTasksUndoToast(props: {
     >
       <Toast
         singleLine
+        opaque
         message={props.text}
         action={{ label: KIN_WORK_COPY.undo, onPress: props.onUndo }}
         dismissMode="swipe"
