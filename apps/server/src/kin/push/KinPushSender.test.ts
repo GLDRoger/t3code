@@ -17,6 +17,7 @@ import {
   KIN_DEVICE_LINKED_NOTICE,
 } from "@t3tools/contracts";
 import * as Arbitrary from "effect/Arbitrary";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -624,7 +625,7 @@ describe("KinPushSender", () => {
         mentions: ["m_priya"],
       });
       yield* TestClock.adjust("1 minute");
-      yield* sql`UPDATE kin_messages SET created_at = ${new Date(NOW + 60_000).toISOString()}
+      yield* sql`UPDATE kin_messages SET created_at = ${DateTime.formatIso(DateTime.makeUnsafe(NOW + 60_000))}
         WHERE message_id = ${again}`;
       yield* notify({ _tag: "message", orgId, messageId: again });
       assert.deepStrictEqual(alerts(apns.sent.slice(-1)), [undefined]);
