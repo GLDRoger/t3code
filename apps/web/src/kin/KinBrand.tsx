@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_BRAND,
   KIN_BRAND_FONTS,
+  KIN_BRAND_SETTINGS,
   kinBrandDraftOf,
   kinBrandInput,
   kinBrandSample,
@@ -17,12 +18,10 @@ import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
 
 import type { KinCompanyProfile } from "@t3tools/contracts";
 
-import { MessageSquareIcon, PaletteIcon, Trash2Icon } from "lucide-react";
+import { MessageSquareIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { useAssetUrls } from "../assets/assetUrls";
-import { Alert, AlertDescription } from "../components/ui/alert";
-
 import { Button } from "../components/ui/button";
 
 import { Input } from "../components/ui/input";
@@ -42,6 +41,8 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 
 import { kinClient } from "./kinClient";
+import { KinSettingsField, KinSettingsFormDialog } from "./settings/KinSettingsControls";
+import { KinSettingsRow, KinSettingsSection } from "./settings/KinSettingsLayout";
 import { kinHostConnected } from "./useKinHost";
 import { useKinAskAgent } from "./useKinMoney";
 import { type KinWorkTarget } from "./useKinWork";
@@ -51,15 +52,6 @@ const fontStack = (font: string | null) =>
   font === null
     ? undefined
     : `"${font}", ${SERIF.has(font) ? "Georgia, serif" : font.includes("Mono") ? "monospace" : "system-ui, sans-serif"}`;
-
-export function KinSettingsHeading(props: { readonly title: string; readonly detail: string }) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <h3 className="text-xs font-medium text-muted-foreground">{props.title}</h3>
-      <p className="text-xs text-muted-foreground">{props.detail}</p>
-    </div>
-  );
-}
 
 /** A letterhead drawn with the draft's colours and font, so a change is seen before it is saved. */
 function SampleHeader(props: {
@@ -151,26 +143,85 @@ function ColorField(props: {
   );
 }
 
-/** The company's logo, colours, font and footer, as every brand-aware template uses them. */
+/** The company's logo, colours, font and footer as rows; one form changes them, logo aside. */
 export function KinBrandSection(
   props: KinWorkTarget & { readonly profile: KinCompanyProfile; readonly onRefresh: () => void },
 ) {
-  const { environmentId, orgId, profile } = props;
+  const { environmentId, profile } = props;
   const canEdit = useAtomValue(kinClient.companyProfileSet.permissionAtom(environmentId));
-  const set = useAtomCommand(kinClient.companyProfileSet, { reportFailure: false });
   const asker = useKinAskAgent(props);
   const [logoUrl = null] = useAssetUrls(
     environmentId,
     profile.logo === null ? [] : [kinLogoResource(profile.logo)],
   );
-  const [draft, setDraft] = useState<KinBrandDraft | null>(null);
+  const [editing, setEditing] = useState(false);
+  const brand = profile.brand;
+  const open = canEdit ? { onOpen: () => setEditing(true) } : {};
+  return (
+    <KinSettingsSection title={KIN_BRAND.title} description={KIN_BRAND_SETTINGS.detail}>
+      <KinSettingsRow
+        title={KIN_BRAND.logo}
+        detail={profile.logo === null ? KIN_BRAND_SETTINGS.logoNone : profile.logo.name}
+        leading={
+          profile.logo === null ? undefined : logoUrl === null ? (
+            <Skeleton className="size-5" />
+          ) : (
+            <img src={logoUrl} alt="" className="max-h-full max-w-full object-contain" />
+          )
+        }
+        control={
+          asker === null ? null : (
+            <Button size="xs" variant="outline" onClick={() => asker.ask(KIN_BRAND.askLogoDraft)}>
+              <MessageSquareIcon />
+              {profile.logo === null ? KIN_BRAND.askLogo : KIN_BRAND_SETTINGS.sendNew}
+            </Button>
+          )
+        }
+      />
+      <KinSettingsRow
+        title={KIN_BRAND_SETTINGS.colours}
+        detail={KIN_BRAND_SETTINGS.coloursLine(brand.primaryColor, brand.secondaryColor)}
+        openLabel={`${KIN_BRAND.edit}: ${KIN_BRAND_SETTINGS.colours}`}
+        {...open}
+      />
+      <KinSettingsRow
+        title={KIN_BRAND.font}
+        detail={brand.font ?? KIN_BRAND.defaultFont}
+        openLabel={`${KIN_BRAND.edit}: ${KIN_BRAND.font}`}
+        {...open}
+      />
+      <KinSettingsRow
+        title={KIN_BRAND.footer}
+        detail={brand.footer ?? KIN_BRAND_SETTINGS.none}
+        openLabel={`${KIN_BRAND.edit}: ${KIN_BRAND.footer}`}
+        {...open}
+      />
+      <div className="px-4 pt-3 pb-4">
+        <SampleHeader profile={profile} draft={kinBrandDraftOf(brand)} logoUrl={logoUrl} />
+      </div>
+      {editing ? (
+        <BrandDialog {...props} logoUrl={logoUrl} onClose={() => setEditing(false)} />
+      ) : null}
+    </KinSettingsSection>
+  );
+}
+
+/** Colours, font and footer, seen on the sample as they are typed, saved together. */
+function BrandDialog(
+  props: KinWorkTarget & {
+    readonly profile: KinCompanyProfile;
+    readonly logoUrl: string | null;
+    readonly onRefresh: () => void;
+    readonly onClose: () => void;
+  },
+) {
+  const { environmentId, orgId, profile } = props;
+  const set = useAtomCommand(kinClient.companyProfileSet, { reportFailure: false });
+  const [draft, setDraft] = useState<KinBrandDraft>(() => kinBrandDraftOf(profile.brand));
   const [problems, setProblems] = useState<Partial<Record<KinBrandField, string>>>({});
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
   const [removing, setRemoving] = useState(false);
-  const fontId = useId();
-  const footerId = useId();
   const send = async (input: Parameters<typeof set>[0]["input"]) => {
     setSaving(true);
     setProblem(null);
@@ -180,142 +231,57 @@ export function KinBrandSection(
     });
     setSaving(false);
     props.onRefresh();
-    if (!outcome.ok) setProblem(outcome.changed ? KIN_COMPANY.changed : outcome.problem);
-    return outcome.ok;
+    if (!outcome.ok) return setProblem(outcome.changed ? KIN_COMPANY.changed : outcome.problem);
+    props.onClose();
   };
-  const save = async (typed: KinBrandDraft) => {
-    const checked = kinBrandInput(orgId, profile, typed);
+  const save = () => {
+    const checked = kinBrandInput(orgId, profile, draft);
     if (!checked.ok) return setProblems(checked.problems);
     setProblems({});
-    if (checked.input === null) return setDraft(null);
-    if (await send(checked.input)) {
-      setDraft(null);
-      setSaved(true);
-    }
+    if (checked.input === null) return props.onClose();
+    void send(checked.input);
   };
-  const shown = draft ?? kinBrandDraftOf(profile.brand);
-  const logo = (
-    <div className="flex items-start gap-3">
-      {profile.logo === null ? null : (
-        <div className="flex size-16 shrink-0 items-center justify-center rounded-md border border-border bg-white p-1.5">
-          {logoUrl === null ? (
-            <Skeleton className="size-full" />
-          ) : (
-            <img
-              src={logoUrl}
-              alt={`${KIN_BRAND.logo}: ${profile.logo.name}`}
-              className="max-h-full max-w-full object-contain"
-            />
-          )}
-        </div>
-      )}
-      <div className="flex min-w-0 flex-1 flex-col items-start gap-2">
-        <p className="text-sm text-foreground">
-          {profile.logo === null ? KIN_BRAND.noLogo : profile.logo.name}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          {profile.logo === null ? KIN_BRAND.addLogo : KIN_BRAND.changeLogo}
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {asker === null ? null : (
-            <Button size="sm" variant="outline" onClick={() => asker.ask(KIN_BRAND.askLogoDraft)}>
-              <MessageSquareIcon />
-              {KIN_BRAND.askLogo}
-            </Button>
-          )}
-          {profile.logo !== null && canEdit ? (
-            <Button size="sm" variant="outline" disabled={saving} onClick={() => setRemoving(true)}>
-              <Trash2Icon />
+  return (
+    <>
+      <KinSettingsFormDialog
+        title={KIN_BRAND.edit}
+        description={KIN_BRAND_SETTINGS.detail}
+        submitLabel={KIN_BRAND_SETTINGS.save}
+        busy={saving}
+        problem={problem}
+        remove={
+          profile.logo === null ? undefined : (
+            <Button
+              type="button"
+              variant="ghost-destructive"
+              disabled={saving}
+              onClick={() => setRemoving(true)}
+            >
               {KIN_BRAND.removeLogo}
             </Button>
-          ) : null}
+          )
+        }
+        onSubmit={save}
+        onClose={props.onClose}
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          <ColorField
+            label={KIN_BRAND.primary}
+            value={draft.primaryColor}
+            problem={problems.primaryColor}
+            disabled={saving}
+            onChange={(primaryColor) => setDraft({ ...draft, primaryColor })}
+          />
+          <ColorField
+            label={KIN_BRAND.secondary}
+            value={draft.secondaryColor}
+            problem={problems.secondaryColor}
+            disabled={saving}
+            onChange={(secondaryColor) => setDraft({ ...draft, secondaryColor })}
+          />
         </div>
-      </div>
-    </div>
-  );
-  return (
-    <section
-      className="flex flex-col gap-4 border-t border-border pt-5"
-      aria-labelledby={`${fontId}-title`}
-    >
-      <div className="flex flex-col items-start gap-2 sm:flex-row sm:gap-4">
-        <div id={`${fontId}-title`} className="min-w-0 flex-1">
-          <KinSettingsHeading title={KIN_BRAND.title} detail={KIN_BRAND.detail} />
-        </div>
-        {canEdit && draft === null ? (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              setSaved(false);
-              setDraft(kinBrandDraftOf(profile.brand));
-            }}
-          >
-            <PaletteIcon />
-            {KIN_BRAND.edit}
-          </Button>
-        ) : null}
-      </div>
-      {logo}
-      {draft === null ? (
-        <dl className="grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-6 gap-y-1.5 text-sm">
-          {(
-            [
-              [KIN_BRAND.primary, profile.brand.primaryColor],
-              [KIN_BRAND.secondary, profile.brand.secondaryColor],
-            ] as const
-          ).map(([label, color]) => (
-            <div key={label} className="contents">
-              <dt className="text-muted-foreground">{label}</dt>
-              <dd className="flex items-center gap-2 font-mono text-xs text-foreground">
-                {color === null ? (
-                  <span className="font-sans text-sm text-muted-foreground">
-                    {KIN_BRAND.defaultFont}
-                  </span>
-                ) : (
-                  <>
-                    <span
-                      aria-hidden
-                      className="size-3.5 rounded-sm border border-border"
-                      style={{ backgroundColor: color }}
-                    />
-                    {color}
-                  </>
-                )}
-              </dd>
-            </div>
-          ))}
-          <dt className="text-muted-foreground">{KIN_BRAND.font}</dt>
-          <dd className="text-foreground">{profile.brand.font ?? KIN_BRAND.defaultFont}</dd>
-          <dt className="text-muted-foreground">{KIN_BRAND.footer}</dt>
-          <dd className="min-w-0 break-words text-foreground">{profile.brand.footer ?? "None"}</dd>
-        </dl>
-      ) : (
-        <form
-          className="flex flex-col gap-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void save(draft);
-          }}
-        >
-          <div className="grid gap-3 sm:grid-cols-2">
-            <ColorField
-              label={KIN_BRAND.primary}
-              value={draft.primaryColor}
-              problem={problems.primaryColor}
-              disabled={saving}
-              onChange={(primaryColor) => setDraft({ ...draft, primaryColor })}
-            />
-            <ColorField
-              label={KIN_BRAND.secondary}
-              value={draft.secondaryColor}
-              problem={problems.secondaryColor}
-              disabled={saving}
-              onChange={(secondaryColor) => setDraft({ ...draft, secondaryColor })}
-            />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor={fontId}>{KIN_BRAND.font}</Label>
+        <KinSettingsField label={KIN_BRAND.font}>
+          {(ids) => (
             <Select
               value={draft.font ?? ""}
               disabled={saving}
@@ -323,7 +289,7 @@ export function KinBrandSection(
                 setDraft({ ...draft, font: KIN_BRAND_FONTS.find((one) => one === value) ?? null })
               }
             >
-              <SelectTrigger id={fontId} className="w-full sm:w-80">
+              <SelectTrigger id={ids.control} className="w-full">
                 <SelectValue>{draft.font ?? KIN_BRAND.defaultFont}</SelectValue>
               </SelectTrigger>
               <SelectPopup>
@@ -335,52 +301,22 @@ export function KinBrandSection(
                 ))}
               </SelectPopup>
             </Select>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor={footerId}>{KIN_BRAND.footer}</Label>
+          )}
+        </KinSettingsField>
+        <KinSettingsField label={KIN_BRAND.footer} help={problems.footer}>
+          {(ids) => (
             <Textarea
-              id={footerId}
+              id={ids.control}
               rows={2}
               value={draft.footer}
               disabled={saving}
               aria-invalid={problems.footer !== undefined}
               onChange={(event) => setDraft({ ...draft, footer: event.target.value })}
             />
-            {problems.footer === undefined ? null : (
-              <p className="text-xs text-destructive-foreground">{problems.footer}</p>
-            )}
-          </div>
-          <SampleHeader profile={profile} draft={shown} logoUrl={logoUrl} />
-          <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={saving}
-              onClick={() => {
-                setProblems({});
-                setProblem(null);
-                setDraft(null);
-              }}
-            >
-              {KIN_BRAND.cancel}
-            </Button>
-            <Button type="submit" disabled={saving} aria-busy={saving}>
-              {KIN_BRAND.save}
-            </Button>
-          </div>
-        </form>
-      )}
-      {draft === null ? <SampleHeader profile={profile} draft={shown} logoUrl={logoUrl} /> : null}
-      {saved ? (
-        <p role="status" className="text-xs text-muted-foreground">
-          {KIN_BRAND.saved}
-        </p>
-      ) : null}
-      {problem === null ? null : (
-        <Alert variant="error">
-          <AlertDescription>{problem}</AlertDescription>
-        </Alert>
-      )}
+          )}
+        </KinSettingsField>
+        <SampleHeader profile={profile} draft={draft} logoUrl={props.logoUrl} />
+      </KinSettingsFormDialog>
       <KinConfirm
         ask={
           removing
@@ -395,6 +331,6 @@ export function KinBrandSection(
         onConfirm={() => void send(kinLogoRemoveInput(orgId, profile))}
         onClose={() => setRemoving(false)}
       />
-    </section>
+    </>
   );
 }

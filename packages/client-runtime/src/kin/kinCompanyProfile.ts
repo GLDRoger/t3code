@@ -58,6 +58,29 @@ export const KIN_COMPANY = {
   },
 };
 
+/** Web Settings → Company details, said to whoever runs the company. */
+export const KIN_COMPANY_SETTINGS = {
+  purpose:
+    "Your company on paper, as invoices and receipts show it, seen only by you and your co-owners.",
+  company: "Company",
+  companyDetail: "Agents read these only for work that needs them, like an invoice.",
+  bank: "Bank account",
+  legalName: "Name and address",
+  notSet: "Not set",
+  editTitle: "Edit company details",
+  editLabel: (field: string) => `Edit ${field.toLowerCase()}`,
+  save: "Save details",
+  countryHelp: "Its two-letter code, like IN, GB or US.",
+  exportRow: "Download everything",
+  exportDetail: "A copy of your company's work in Kin, in one zip",
+  exportSubmit: "Download",
+  timeAndLimits: "Time and limits",
+  timeZoneDetail: (zone: string) => `${zone} · check-ins and due days follow it`,
+  timeZoneFromHost: (zone: string) => `${zone}, this computer's · none set yet`,
+  timeZoneFailed: "Couldn't change the time zone.",
+  takeZone: (zone: string) => `Use ${zone}`,
+};
+
 export type KinCompanyFieldId =
   | "legalName"
   | "tradeName"
@@ -310,9 +333,9 @@ export const kinCompanyDraftOf = (
 };
 
 /** "India" for IN, or the code where this device can't name it. */
-const countryName = (code: string): string => {
+export const kinCountryName = (code: string): string => {
   try {
-    return new Intl.DisplayNames(undefined, { type: "region" }).of(code) ?? code;
+    return new Intl.DisplayNames(undefined, { type: "region", fallback: "none" }).of(code) ?? code;
   } catch {
     return code;
   }
@@ -330,7 +353,7 @@ export const kinCompanyCountrySuggestion = (
   !waiting || region === null || draft.country.trim() !== "" || !valid.country(region)
     ? null
     : {
-        label: KIN_COMPANY.useCountry(countryName(region)),
+        label: KIN_COMPANY.useCountry(kinCountryName(region)),
         accept: () => ({ ...draft, country: region }),
       };
 

@@ -18,6 +18,7 @@ export const KIN_DAILY_LIMIT = {
   custom: "Set elsewhere",
   failed: "Couldn't change the daily limit.",
   waiting: "Waiting until tomorrow",
+  reached: "Reached",
   used: "Used today",
 };
 
