@@ -1339,6 +1339,7 @@ describe("recipe documents", () => {
         gstRate: "12",
         dueOn: "2026-12-12",
         notes: "Typed by hand",
+        amountConfirmed: false,
         clientRequestId: "form-1",
       };
       // The renderer is down: the draft stands with the reason, and the same request finishes it.
@@ -1412,6 +1413,17 @@ describe("recipe documents", () => {
         { reason: "not_found" },
       );
       assert.isUndefined(yield* records.get(orgId, "INV-3"));
+      // Lines far above every invoice are asked about once, saving nothing; confirmed, they save.
+      const far = {
+        ...asked,
+        lines: [{ description: "Design", sac: null, quantity: "1", rate: "₹5,00,00,000.00" }],
+        clientRequestId: "form-4",
+      };
+      const slip = yield* OwnerMoneyAnswers.newInvoice(people, far).pipe(Effect.flip);
+      assert.deepStrictEqual(slip.farAbove?.list, "Invoices");
+      assert.isUndefined(yield* records.get(orgId, "INV-3"));
+      const kept = yield* OwnerMoneyAnswers.newInvoice(people, { ...far, amountConfirmed: true });
+      assert.strictEqual(kept.invoice, "INV-3");
     }).pipe(Effect.provide(layer)),
   );
 

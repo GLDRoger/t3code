@@ -3188,6 +3188,57 @@ describe("an expense typed by hand", () => {
         // The agent's read totals both, as it totals its own.
         const all = yield* LeadWork.query(scope, { list: "expenses" });
         assert.deepStrictEqual(all.totals, ["₹4,700.00"]);
+        // A form that asks: over a thousand times the largest is refused once, saving nothing,
+        // and saved when confirmed; under it, or from a form that can't ask, it saves.
+        const far = { minor: 235_000_001, currency: "INR" };
+        const slip = yield* OwnerMoneyAnswers.newExpense(people, {
+          ...plain,
+          amount: far,
+          amountConfirmed: false,
+          clientRequestId: "form-6",
+        }).pipe(Effect.flip);
+        assert.deepStrictEqual(slip.farAbove, {
+          list: "Expenses",
+          largest: { minor: 235_000, currency: "INR" },
+        });
+        const kept = yield* OwnerMoneyAnswers.newExpense(people, {
+          ...plain,
+          amount: far,
+          amountConfirmed: true,
+          clientRequestId: "form-6",
+        });
+        for (const [n, amount, amountConfirmed] of [
+          [7, { minor: 235_000_000, currency: "INR" }, false],
+          [8, far, undefined],
+        ] as const)
+          yield* OwnerMoneyAnswers.newExpense(people, {
+            ...plain,
+            amount,
+            ...(amountConfirmed === undefined ? {} : { amountConfirmed }),
+            clientRequestId: `form-${n}`,
+          });
+        // An edit asks the same of a new amount, and never of the one it already has.
+        const edit = (amount: { minor: number; currency: string }, amountConfirmed: boolean) =>
+          Effect.gen(function* () {
+            const row = (yield* records.get(orgId, later.expense))!;
+            return yield* OwnerWork.update(people, {
+              orgId,
+              key: row.key,
+              rev: row.rev,
+              amount,
+              amountConfirmed,
+            });
+          });
+        const huge = { minor: 999_999_999_999, currency: "INR" };
+        assert.deepStrictEqual(
+          (yield* edit(huge, false).pipe(Effect.flip)).farAbove?.list,
+          "Expenses",
+        );
+        assert.strictEqual((yield* records.get(orgId, later.expense))!.amountMinor, 235_000);
+        yield* edit(huge, true);
+        yield* edit(huge, false);
+        assert.strictEqual((yield* records.get(orgId, later.expense))!.amountMinor, huge.minor);
+        assert.isDefined(yield* records.get(orgId, kept.expense));
       }).pipe(Effect.provide(layer)),
   );
 });

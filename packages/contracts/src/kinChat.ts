@@ -1001,6 +1001,13 @@ export class KinChatError extends Schema.TaggedError<KinChatError>()("KinChatErr
   message: Schema.String,
   /** On a send refused for its sent-mail tick: the try, for the words that were refused. */
   mayHaveGone: Schema.optionalKey(KinSendTry),
+  /** On a person's save whose amount reads like a slip: the list and its largest entry, if any. */
+  farAbove: Schema.optionalKey(
+    Schema.Struct({
+      list: Schema.String,
+      largest: Schema.NullOr(Schema.Struct({ minor: Schema.Number, currency: Schema.String })),
+    }),
+  ),
 }) {}
 
 export const KIN_CHAT_WS_METHODS = {

@@ -209,6 +209,10 @@ export function kinInvoiceBeforeTax(
   );
 }
 
+/** The invoice's amount as its lines hold it, for the form's one question about a slip. */
+export const kinInvoiceAmountAbout = (lines: ReadonlyArray<KinLineDraft>) =>
+  lines.map((line) => `${line.quantity.trim()} x ${line.rate.trim()}`).join(" + ");
+
 /** The due days people pick for an invoice, counted from `today`: the usual terms. */
 export function kinInvoiceDueChoices(
   today: string,
@@ -283,6 +287,9 @@ export const kinExpenseDraft = (today: string): KinExpenseDraft => ({
   paidWith: "",
   receipt: null,
 });
+
+/** The expense's amount as typed, for the form's one question about a slip. */
+export const kinExpenseAmountAbout = (draft: KinExpenseDraft) => draft.amount.trim();
 
 export const kinExpenseTyped = (draft: KinExpenseDraft, opened: KinExpenseDraft) =>
   draft.title.trim() !== "" ||
