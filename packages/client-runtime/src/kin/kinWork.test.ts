@@ -33,6 +33,7 @@ import {
   kinWorkHostClients,
   kinWorkAssignees,
   kinWorkAudience,
+  kinWorkNameOfText,
   kinWorkAudienceMove,
   kinWorkHostEdits,
   kinWorkClientStays,
@@ -107,6 +108,30 @@ const detail = (patch: Partial<KinRecordDetail> = {}): KinRecordDetail => ({
   links: [],
   changes: [],
   ...patch,
+});
+
+describe("kinWorkName", () => {
+  const names = {
+    people: new Map([
+      ["p-me", "Rhea"],
+      ["p-zoya", "Zoya"],
+    ]),
+    agents: new Map([["a-fin", "Finance"]]),
+    me: KinPersonId.make("p-me"),
+  };
+  it.each([
+    ["yourself", "person:p-me", "You"],
+    ["a teammate", "person:p-zoya", "Zoya"],
+    ["an agent, by name", "agent:a-fin", "Finance"],
+    ["an unlisted teammate", "person:p-gone", "A teammate"],
+    ["an unlisted agent, never by id", "agent:a-gone", "An agent"],
+  ])("names %s", (_, text, expected) => {
+    expect(kinWorkNameOfText(text, names)).toBe(expected);
+  });
+
+  it("leaves text that names nobody", () => {
+    expect(kinWorkNameOfText("next week", names)).toBeNull();
+  });
 });
 
 describe("kinWorkListQuery", () => {

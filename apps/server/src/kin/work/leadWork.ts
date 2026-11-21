@@ -138,6 +138,7 @@ import {
   viewVisible,
 } from "./teamView.ts";
 import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts";
+import { leadNamer, shownName, type ToolNamer } from "./toolNames.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
@@ -736,8 +737,24 @@ export const sourceOf = Effect.fn("KinWorkTools.sourceOf")(function* (lead: Lead
 const NO_ASKER =
   '"me" is the person who asked, and no one person asked in this turn. Use "you" for yourself, or name the person.';
 /** "me" is the one person whose act the turn carries out (`turnAsker`); "you" is the calling lead. */
-export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: Lead, who: string) {
+export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (
+  lead: Lead,
+  shown: string,
+) {
   const sql = yield* SqlClient.SqlClient;
+  // A name as `toolName` shows it reads back: "Rhea (owner)", "Lead (you)", "Finance (a-1)".
+  const read = shownName(shown);
+  const tag = read?.mark;
+  const who = tag === "you" || tag === "owner" ? tag : shown;
+  if (tag !== undefined && who === shown) {
+    // "Finance (a-1)" is that agent, unless a person is called exactly that.
+    const [agent] = yield* sql<{ id: string }>`SELECT agent_id AS id FROM kin_agents
+      WHERE org_id = ${lead.orgId} AND retired_at IS NULL AND agent_id = ${tag}
+        AND NOT EXISTS (SELECT 1 FROM kin_people WHERE org_id = ${lead.orgId}
+          AND removed_at IS NULL AND trim(display_name) = ${shown.trim()})`;
+    if (agent !== undefined)
+      return { _tag: "agent", agentId: KinAgentId.make(agent.id) } satisfies KinWorkPrincipal;
+  }
   if (who === "you") return { _tag: "agent", agentId: lead.agentId } satisfies KinWorkPrincipal;
   if (who === "me") {
     const asker = yield* turnAsker(lead);
@@ -752,8 +769,9 @@ export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: 
   }
   const [agent] = yield* sql<{ id: string }>`SELECT agent_id AS id FROM kin_agents
     WHERE org_id = ${lead.orgId} AND retired_at IS NULL
-      AND (agent_id = ${who} OR lower(display_name) = lower(${who}))
-    ORDER BY agent_id = ${who} DESC, agent_id LIMIT 1`;
+      AND (agent_id = ${who} OR lower(display_name) = lower(${who})
+        OR lower(display_name) = lower(${tag === "agent" ? read!.name : who}))
+    ORDER BY agent_id = ${who} DESC, lower(display_name) = lower(${who}) DESC, agent_id LIMIT 1`;
   if (agent !== undefined && agent.id !== who)
     return { _tag: "agent", agentId: KinAgentId.make(agent.id) } satisfies KinWorkPrincipal;
   if (agent === undefined) {
@@ -799,26 +817,7 @@ const dueOf = Effect.fn("KinWorkTools.dueOf")(function* (orgId: KinOrgId, due: s
   return { dueAt: ms, dueAllDay: false };
 });
 
-/** How a lead reads names: itself by name and "(you)", the owner as "owner", other leads by name. */
-export const namer = Effect.fn("KinWorkTools.namer")(function* (lead: Lead) {
-  const sql = yield* SqlClient.SqlClient;
-  const agents = yield* sql<{ id: string; name: string }>`SELECT agent_id AS id,
-      display_name AS name FROM kin_agents WHERE org_id = ${lead.orgId} ORDER BY agent_id`;
-  const people = yield* sql<{ id: string; name: string; owner: number }>`SELECT p.person_id AS id,
-      p.display_name AS name, p.person_id = a.owner_person_id AS owner
-    FROM kin_people p JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = ${lead.agentId}
-    WHERE p.org_id = ${lead.orgId} ORDER BY p.person_id`;
-  const agentNames = new Map(agents.map((row) => [row.id, row.name]));
-  const personNames = new Map(people.map((row) => [row.id, row.owner === 1 ? "owner" : row.name]));
-  return (who: KinWorkPrincipal | null) =>
-    who === null
-      ? undefined
-      : who._tag === "agent"
-        ? who.agentId === lead.agentId
-          ? `${agentNames.get(who.agentId) ?? "an agent"} (you)`
-          : `${agentNames.get(who.agentId) ?? "an agent"} (${who.agentId})`
-        : (personNames.get(who.personId) ?? "a person");
-});
+export const namer = (lead: Lead) => leadNamer(lead.orgId, lead.agentId);
 
 type Lists = ReadonlyMap<string, ListDef>;
 const defOf = (lists: Lists, row: RecordRow) => lists.get(row.registerId);
@@ -842,7 +841,7 @@ const marksOf = (lists: Lists, row: RecordRow): typeof Marks.Type => {
 const shownFields = (
   def: ListDef | undefined,
   row: RecordRow,
-  name: (who: KinWorkPrincipal | null) => string | undefined,
+  name: ToolNamer,
   keys: ReadonlyMap<string, string>,
 ) => {
   if (def === undefined || def.builtIn !== null) return {};
@@ -921,7 +920,7 @@ const linkKeys = Effect.fn("KinWorkTools.linkKeys")(function* (
 });
 
 type Shown = {
-  readonly name: (who: KinWorkPrincipal | null) => string | undefined;
+  readonly name: ToolNamer;
   /** The campaigns these rows came from that the turn's people see in Clients, by key. */
   readonly campaigns: ReadonlyMap<string, KinRecordRef>;
   readonly lists: Lists;

@@ -237,7 +237,7 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
     const started = yield* setStateMine(zoyaKey, { key: hers.key, state: "doing" });
     assert.deepInclude(started, { key: hers.key, state: "doing" });
     assert.deepStrictEqual(started.comments, [
-      { by: "you", at: started.comments[0]!.at, text: "Invented: the hall is booked" },
+      { by: "you (the user)", at: started.comments[0]!.at, text: "Invented: the hall is booked" },
     ]);
     const [change] = yield* sql<{
       kind: string;

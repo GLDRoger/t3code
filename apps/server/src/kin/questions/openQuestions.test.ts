@@ -500,7 +500,7 @@ it.effect("no card is raised about what is set aside, but its owner may be asked
       assert.isFalse(refused.ok);
       assert.match(
         String(refused.value.message),
-        /^C-8 Invented C-8 and everything under it is set aside until 2026-11-19, by Finance on Rhea Rao's word \(2026-11-15\)\. Kin won't ask about it before then\.$/,
+        /^C-8 Invented C-8 and everything under it is set aside until 2026-11-19, by Finance \(finance\) on Rhea Rao \(owner\)'s word \(2026-11-15\)\. Kin won't ask about it before then\.$/,
       );
       // Rhea's own message about it: she may be asked.
       yield* wake(
@@ -1191,11 +1191,18 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       // A co-owner is asked in her own chat with the agent, as anyone else.
       const toMeera = yield* askFor("chief", rhea, { to: "Meera", intent: "shoot budget" });
       assert.strictEqual(toMeera.state, "posted");
-      yield* refused(
-        askFor("chief", rhea, { to: "Rhea", intent: "x" }),
-        /ask them here with kin_ask/,
-      );
+      // Also by her name as a tool shows it.
+      for (const to of ["Rhea", "Rhea Rao (owner)"])
+        yield* refused(askFor("chief", rhea, { to, intent: "x" }), /ask them here with kin_ask/);
       yield* refused(askFor("chief", rhea, { to: "Finance" }), /No one called Finance/);
+      // The agent as a tool shows it is not the person whose name starts the same.
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('finance-team', ${orgId}, 'finance-team', 'Finance Team', 0, 'member')`;
+      yield* refused(
+        askFor("chief", rhea, { to: "Finance (finance)" }),
+        /No one called Finance \(finance\)/,
+      );
+      yield* sql`UPDATE kin_people SET removed_at = 0 WHERE person_id = 'finance-team'`;
       // Through Finance, once Rhea restricted Dev and Finance, nothing is asked.
       yield* Reach.setLimit({
         orgId: KinOrgId.make(orgId),

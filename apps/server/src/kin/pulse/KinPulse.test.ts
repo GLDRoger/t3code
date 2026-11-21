@@ -539,7 +539,7 @@ describe("KinPulse", () => {
             checkIn: new Set([fact.key]),
           }).pipe(Effect.map((section) => section?.byProject.flatMap((group) => group.facts)[0]));
         assert.notProperty(yield* told(ahead, B + 33 * DAY - MINUTE), "acts");
-        assert.include(yield* told(drafting, B + 33 * DAY), { acts: "fin" });
+        assert.include(yield* told(drafting, B + 33 * DAY), { acts: "fin (fin)" });
         // Lumen's own playbook drafts 3 days ahead; the company's, 10.
         yield* insert({
           id: "DT-3",
@@ -1026,13 +1026,13 @@ describe("KinPulse", () => {
           );
         assert.match(
           (yield* ended()) ?? "",
-          /^set aside by fin on the owner's word on \S+ until \S+; lifted by fin on \S+$/,
+          /^set aside by fin \(fin\) on the owner's word on \S+ until \S+; lifted by fin \(fin\) on \S+$/,
         );
         yield* sql`UPDATE kin_holds SET on_word_of = ${mate}, lifted_by_kind = 'person',
           lifted_by_id = ${owner} WHERE org_id = ${orgId}`;
         assert.match(
           (yield* ended()) ?? "",
-          /^set aside by fin on Meera's word on \S+ until \S+; lifted by the owner on \S+$/,
+          /^set aside by fin \(fin\) on Meera's word on \S+ until \S+; lifted by the owner on \S+$/,
         );
         yield* aside("INV-5", "set");
         const after = yield* open();
