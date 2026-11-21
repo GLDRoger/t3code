@@ -301,6 +301,7 @@ export const leadWithOwner = Effect.gen(function* () {
   return repo;
 });
 /** A finished wake-up whose stored events are `events`, which is all the audience reads. */
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 export const stored = Effect.fn("test.stored")(function* (
   wakeupId: string,
   events: ReadonlyArray<KinEvent>,
@@ -310,5 +311,5 @@ export const stored = Effect.fn("test.stored")(function* (
     VALUES (${wakeupId}, ${orgId}, ${agentId}, 'model', 0, 'completed', '[]')`;
   for (const item of events)
     yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
-      VALUES (${`${wakeupId}:${item.eventId}`}, ${orgId}, ${agentId}, ${item._tag}, 'P0', ${JSON.stringify(item)}, 0, 0, 'done', ${wakeupId})`;
+      VALUES (${`${wakeupId}:${item.eventId}`}, ${orgId}, ${agentId}, ${item._tag}, 'P0', ${encodeJson(item)}, 0, 0, 'done', ${wakeupId})`;
 });

@@ -13,7 +13,7 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
-import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
+import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 
@@ -62,6 +62,18 @@ const inventedHandlers = McpToolAccess.toLayer(Invented, {
   invented_write: McpToolAccess.reads(() => Effect.succeed({ ran: "write" })),
 });
 
+const caller: McpInvocationScope = {
+  environmentId: EnvironmentId.make("environment"),
+  requestNamespace: "lead",
+  issuedAt: 0,
+  capabilities: new Set(),
+  client: undefined,
+  thread: {
+    threadId: ThreadId.make("lead-thread"),
+    providerSessionId: "lead",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+  },
+};
 const client = McpSchema.McpServerClient.of({
   clientId: 1,
   clientCapabilities: {},
@@ -80,21 +92,12 @@ it.effect("counts each tool's calls in memory and logs them in one line an hour"
   return Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     const call = (name: string) =>
-      server.callTool({ name, arguments: {} }).pipe(
-        Effect.provideService(McpSchema.McpServerClient, client),
-        Effect.provideService(McpInvocationContext, {
-          environmentId: EnvironmentId.make("environment"),
-          requestNamespace: "lead",
-          issuedAt: 0,
-          capabilities: new Set(),
-          client: undefined,
-          thread: {
-            threadId: ThreadId.make("lead-thread"),
-            providerSessionId: "lead",
-            providerInstanceId: ProviderInstanceId.make("codex"),
-          },
-        }),
-      );
+      server
+        .callTool({ name, arguments: {} })
+        .pipe(
+          Effect.provideService(McpSchema.McpServerClient, client),
+          Effect.provideService(McpInvocationContext, caller),
+        );
     yield* call("invented_read");
     yield* call("invented_read");
     yield* call("invented_write");

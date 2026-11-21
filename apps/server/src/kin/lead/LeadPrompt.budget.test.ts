@@ -1,10 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import {
-  KIN_TEAM_ROOM_TEAM_ID,
-  KinMessageId,
-  type KinAuthor,
-  type KinEvent,
-} from "@t3tools/contracts";
+import { KIN_TEAM_ROOM_TEAM_ID, KinMessageId, type KinAuthor, KinEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -109,7 +104,9 @@ const checkIn = (scheduleId: string) =>
     });
   });
 
-const due = (subject: Record<string, unknown>) =>
+const due = (
+  subject: Extract<typeof KinEvent.Encoded, { readonly _tag: "deferral.due" }>["subject"],
+) =>
   Effect.gen(function* () {
     yield* leadWithOwner;
     return decodeEvent({
