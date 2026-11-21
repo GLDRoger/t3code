@@ -733,7 +733,7 @@ describe("kinTaskQuickFilters", () => {
 
 describe("kinTaskLine", () => {
   it("drops You on your own list, and the client every row shares", () => {
-    const lumen = { key: "C-1", title: "Lumen Clinics" } as const;
+    const lumen = { recordId: KinRecordId.make("rec-C-1"), key: "C-1", title: "Lumen Clinics" };
     const mine = row("A", { party: lumen, dueAt: "2026-11-24T23:59:59.000Z", dueAllDay: true });
     const hers = row("B", { owner: zoya, party: lumen });
     const shared = kinTasksSharedAbout([mine, hers]);
