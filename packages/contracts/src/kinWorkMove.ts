@@ -77,22 +77,26 @@ export function kinWorkMoveUnder(
   return task.dueMs - at > KIN_WORK_SOON_MS ? "comingUp" : null;
 }
 
-/** Inside a group: late first, then soonest due, then no date; then oldest, then key. */
-export function kinWorkMoveOrder(
-  a: {
-    readonly late: boolean;
-    readonly dueMs: number | null;
-    readonly createdMs: number;
-    readonly key: string;
-  },
-  b: {
-    readonly late: boolean;
-    readonly dueMs: number | null;
-    readonly createdMs: number;
-    readonly key: string;
-  },
-): number {
+/** What `kinWorkMoveOrder` reads of a task. */
+export interface KinWorkMoveOrdered {
+  readonly late: boolean;
+  readonly dueMs: number | null;
+  readonly createdMs: number;
+  readonly key: string;
+  /** Marked urgent: first among those due the same `day`, and among those with no date. */
+  readonly urgent?: boolean;
+  /** Its due day in the company's time zone, `YYYY-MM-DD`; null with no date. */
+  readonly day?: string | null;
+}
+
+/**
+ * Inside a group: late first, then soonest due, then no date; within one day (or no date) urgent
+ * first; then oldest, then key.
+ */
+export function kinWorkMoveOrder(a: KinWorkMoveOrdered, b: KinWorkMoveOrdered): number {
   if (a.late !== b.late) return a.late ? -1 : 1;
+  const sameDay = a.dueMs === b.dueMs || (a.day !== undefined && a.day === b.day);
+  if (sameDay && (a.urgent === true) !== (b.urgent === true)) return a.urgent === true ? -1 : 1;
   if (a.dueMs !== b.dueMs) {
     if (a.dueMs === null) return 1;
     if (b.dueMs === null) return -1;

@@ -164,6 +164,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     const assign = app.useAtomCommand(kinClient.workAssign, { reportFailure: false });
     const confirm = app.useAtomCommand(kinClient.workConfirm, { reportFailure: false });
     const decline = app.useAtomCommand(kinClient.workDecline, { reportFailure: false });
+    const tickStep = app.useAtomCommand(kinClient.workTickStep, { reportFailure: false });
     const [state, setState] = useState(() => kinWorkChangesStart(editing));
     const [changes] = useState(() =>
       createKinWorkChanges({
@@ -172,6 +173,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
         assign: (input) => assign({ environmentId, input }),
         confirm: (input) => confirm({ environmentId, input }),
         decline: (input) => decline({ environmentId, input }),
+        tickStep: (input) => tickStep({ environmentId, input }),
         reread: (key) =>
           registry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
         online: () => kinHostConnected(environmentId),

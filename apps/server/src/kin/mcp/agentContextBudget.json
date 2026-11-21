@@ -6,12 +6,12 @@
     "confined": 38034
   },
   "kinLeadToolListJsonBytes": {
-    "engineering": 140187,
-    "finance": 119771,
-    "social": 122844,
-    "support": 119771,
-    "engineeringBesideFinanceAndSales": 127093,
-    "socialBesideFinanceAndSales": 109750,
-    "shared": 73273
+    "engineering": 140881,
+    "finance": 120465,
+    "social": 123538,
+    "support": 120465,
+    "engineeringBesideFinanceAndSales": 127787,
+    "socialBesideFinanceAndSales": 110444,
+    "shared": 73967
   }
 }

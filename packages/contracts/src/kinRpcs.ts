@@ -358,6 +358,8 @@ const KIN_RPC_ACCESS = {
   "kin.work.create": "person",
   "kin.work.assign": "person",
   "kin.work.update": "person",
+  // Whoever may change the task; the service checks, as for `kin.work.update`.
+  "kin.work.tickStep": "person",
   "kin.work.handBack": "person",
   "kin.work.nudge": "person",
   "kin.work.handOver": "person",
@@ -685,6 +687,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.linkRemove": "kin-work",
   "kin.work.projectNote": "kin-work",
   "kin.work.update": "kin-work",
+  "kin.work.tickStep": "kin-work",
   "kin.work.confirm": "kin-work",
   "kin.work.decline": "kin-work",
   "kin.work.share": "kin-work",

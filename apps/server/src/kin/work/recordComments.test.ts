@@ -499,6 +499,11 @@ it.effect(
       const farOff = yield* task("book the stall", { dueAt: "2026-12-13T12:00:00.000Z" });
       const undated = yield* task("sort the receipts");
       const soon = yield* task("pay the printer", { dueAt: "2026-11-17T12:00:00.000Z" });
+      // Urgent leads its own day, however late in it it falls due.
+      const urgent = yield* task("fix the picker", {
+        dueAt: "2026-11-17T18:00:00.000Z",
+        urgent: true,
+      });
       const late = yield* task("sign the lease", { dueAt: "2026-11-10T00:00:00.000Z" });
       const waits = yield* task("draft the brochure", {
         ...toZoya,
@@ -525,14 +530,14 @@ it.effect(
         });
       const first = yield* page(rhea);
       assert.deepStrictEqual(first.counts, {
-        needsYou: 3,
+        needsYou: 4,
         waiting: 1,
         rest: 1,
         doneRecently: 1,
         noDate: 1,
         comingUp: 2,
       });
-      assert.strictEqual(first.total, 8);
+      assert.strictEqual(first.total, 9);
       const second = yield* page(rhea, first.nextCursor!);
       const third = yield* page(rhea, second.nextCursor!);
       assert.isNull(third.nextCursor);
@@ -545,6 +550,7 @@ it.effect(
         [
           [lateHers.key, "needsYou", null],
           [late.key, "needsYou", null],
+          [urgent.key, "needsYou", null],
           [soon.key, "needsYou", null],
           [undated.key, "needsYou", "noDate"],
           [waits.key, "waiting", null],
@@ -555,7 +561,7 @@ it.effect(
       );
       assert.deepStrictEqual(
         first.records.map((one) => one.key),
-        [lateHers.key, late.key, soon.key],
+        [lateHers.key, late.key, urgent.key],
       );
       // Zoya counts only what she sees; Arjun sees none of it and is given no step for any of it.
       const zoyas = yield* page(zoya);

@@ -442,9 +442,12 @@ features:
     note: >-
       Status and Edit title and brief sit on the page itself; give, hand back, take back and drop
       are in More (web) and ••• (phone). Each shows only where the host takes it from that person.
+      Its Steps (checklist lines, never tasks) and the Urgent switch are on the page too, for
+      whoever may change the task; all steps ticked leaves it open.
     proof:
       - apps/server/src/kin/work/KinRecords.test.ts
       - packages/client-runtime/src/kin/kinWork.test.ts
+      - packages/client-runtime/src/kin/kinWorkChanges.test.ts
       - packages/client-runtime/src/kin/kinTaskRecord.test.ts
 
   - id: task-assign

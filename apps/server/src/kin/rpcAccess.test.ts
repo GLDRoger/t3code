@@ -129,6 +129,7 @@ const MEMBER = [
   "kin.work.removeTouch",
   "kin.work.subscribe",
   "kin.work.summary",
+  "kin.work.tickStep",
   "kin.work.update",
   "kin.work.updateContact",
   "kin.work.updateDeal",

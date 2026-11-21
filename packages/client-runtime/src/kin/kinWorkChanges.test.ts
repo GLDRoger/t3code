@@ -99,6 +99,7 @@ function harness(answers?: KinWorkAnswers) {
     assign: call("assign"),
     confirm: call("confirm"),
     decline: call("decline"),
+    tickStep: call("tickStep"),
     reread: (key) => reread.push(key),
     online: () => online,
     ...(answers === undefined ? {} : { answers }),
@@ -146,6 +147,54 @@ describe("createKinWorkChanges", () => {
       text: "Reopened. Tech lead has it again.",
       undo: null,
     });
+  });
+
+  it("ticks a step at once with its count, sends no revision, and puts a removed step back", async () => {
+    const h = harness();
+    const checklist = [
+      { title: "Wireframe", done: false },
+      { title: "Review with Zoya", done: false },
+    ];
+    const held = task({ checklist, steps: { done: 0, of: 2 } });
+    const ticked = h.changes.run(
+      held,
+      { type: "tick", index: 1, title: "Review with Zoya", done: true },
+      names,
+    );
+    expect(kinWorkApplied(held, h.state())).toMatchObject({
+      steps: { done: 1, of: 2 },
+      checklist: [checklist[0], { title: "Review with Zoya", done: true }],
+    });
+    expect(h.sent).toEqual([
+      ["tickStep", { orgId, key: "W-1", index: 1, title: "Review with Zoya", done: true }],
+    ]);
+    const after = task({
+      rev: 4,
+      checklist: [checklist[0]!, { title: "Review with Zoya", done: true }],
+    });
+    h.answer(AsyncResult.success(after));
+    expect(await ticked).toBe(true);
+    // The box says it; no notice covers the list for each tick.
+    expect(h.state().notice).toBeNull();
+
+    const removed = h.changes.run(
+      after,
+      { type: "steps", steps: [checklist[0]!], said: "removed" },
+      names,
+    );
+    expect(h.sent[1]).toEqual(["update", { orgId, key: "W-1", rev: 4, steps: [checklist[0]] }]);
+    const shorter = task({ rev: 5, checklist: [checklist[0]!] });
+    h.answer(AsyncResult.success(shorter));
+    expect(await removed).toBe(true);
+    expect(h.state().notice).toMatchObject({
+      text: "Step removed.",
+      undo: { type: "steps", steps: after.checklist, said: "back" },
+    });
+    const urgent = h.changes.run(shorter, { type: "urgent", urgent: true }, names);
+    expect(h.sent[2]).toEqual(["update", { orgId, key: "W-1", rev: 5, urgent: true }]);
+    h.answer(AsyncResult.success(task({ rev: 6, urgent: true })));
+    expect(await urgent).toBe(true);
+    expect(h.state().notice).toMatchObject({ text: "Marked urgent.", undo: null });
   });
 
   it("takes a refused change back and says why without the host's wording", async () => {

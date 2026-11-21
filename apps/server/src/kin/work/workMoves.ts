@@ -117,7 +117,7 @@ export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
   // Today's asks where each of the reader's own tasks stands: they keep it in Needs you, and
   // the same ones draw the row's note.
   const mineAll = light.filter((row) => row.ownerKind === "person" && row.ownerId === personId);
-  const heldZone = mineAll.length === 0 ? "" : yield* ownerZone(orgId).pipe(workFailure);
+  const heldZone = yield* ownerZone(orgId).pipe(workFailure);
   const asked =
     mineAll.length === 0
       ? new Map<string, KinPersonId>()
@@ -148,7 +148,19 @@ export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
     const under = kinWorkMoveUnder({ ...facts, dueMs: row.dueAt }, reader, at);
     return group === null
       ? []
-      : [{ row, group, under, late, dueMs: row.dueAt, createdMs: row.createdAt, key: row.key }];
+      : [
+          {
+            row,
+            group,
+            under,
+            late,
+            dueMs: row.dueAt,
+            createdMs: row.createdAt,
+            key: row.key,
+            urgent: row.urgent === 1,
+            day: row.dueAt === null ? null : dayIn(row.dueAt, heldZone),
+          },
+        ];
   });
   const rank = (one: { group: KinWorkMoveGroup; under: KinWorkMoveUnder | null }) =>
     KIN_WORK_MOVE_PLACES.indexOf(one.under ?? one.group);

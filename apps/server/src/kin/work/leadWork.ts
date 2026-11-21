@@ -103,6 +103,7 @@ import {
   recordName,
   type RecordRow,
   sensitiveNow,
+  stepsOf,
   suggestedStateLabel,
   toRecord,
   UNISSUED_INVOICE,
@@ -160,6 +161,10 @@ const Due = Schema.NullOr(
     "A calendar day in the owner's time zone (2026-11-20), or a time with its offset (2026-11-20T18:00+05:30). null clears it.",
 });
 const WaitingOn = KinToolText(120, "Who it waits on, written as owner is.");
+/** A task's checklist, in order: each step is a line under the task, never a task. */
+const Steps = Schema.Array(
+  Schema.Struct({ title: KinToolText(200), done: Schema.optional(Schema.Boolean) }),
+).check(Schema.isMaxLength(30));
 const Title = KinToolText(280);
 const Notes = Schema.String.check(Schema.isMaxLength(4_000));
 const List = KinListId.annotate({
@@ -320,6 +325,13 @@ const Row = Schema.Struct({
   }),
   ...SpineShown,
   ...Marks.fields,
+  handedBackBy: Schema.optional(Schema.String),
+  steps: Schema.optional(
+    Schema.Array(
+      Schema.Struct({ title: Schema.String, done: Schema.optional(Schema.Literal(true)) }),
+    ),
+  ),
+  urgent: Schema.optional(Schema.Literal(true)),
   rev: Schema.Number,
 });
 export const QueryResult = Schema.Struct({
@@ -497,6 +509,8 @@ const CreateRow = Schema.Struct({
   ),
   repeat: Schema.optional(Repeat),
   fields: Schema.optional(FieldInputs),
+  steps: Schema.optional(Steps),
+  urgent: Schema.optional(Schema.Boolean),
   sensitive: Schema.optional(Schema.Literal(true)),
   suggested: Schema.optional(Schema.Boolean),
   confirmed: Schema.optional(Schema.Boolean).annotate({
@@ -588,6 +602,8 @@ export const UpdateInput = Schema.Struct({
   date: Schema.optional(Day),
   repeat: Schema.optional(Repeat),
   fields: Schema.optional(FieldInputs),
+  steps: Schema.optional(Steps),
+  urgent: Schema.optional(Schema.Boolean),
   sensitive: Schema.optional(Schema.Literal(true)),
   confirmed: Schema.optional(Schema.Boolean).annotate({
     description:
@@ -1085,10 +1101,31 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     ...shownFields(def, row, name, view.keys),
     ...(list === "work" || list === "projects" ? spineShown(row, name) : {}),
     ...(list === "goals" ? goalShown(fields) : {}),
+    ...(list === "work" ? stepsShown(row) : {}),
     ...marksOf(view.lists, row),
     rev: record.rev,
   } as typeof Row.Type;
 };
+
+/** A task's checklist and urgent mark, as `Row` carries them; nothing when it has neither. */
+const stepsShown = (row: RecordRow) => {
+  const steps = stepsOf(row);
+  return {
+    ...(steps.length === 0
+      ? {}
+      : {
+          steps: steps.map((step) =>
+            step.done ? { title: step.title, done: true as const } : { title: step.title },
+          ),
+        }),
+    ...(row.urgent === 1 ? { urgent: true as const } : {}),
+  };
+};
+/** An agent's steps as stored: one left without `done` is not ticked. */
+const stepsIn = (steps: typeof Steps.Type | undefined) =>
+  steps === undefined
+    ? {}
+    : { steps: steps.map((step) => ({ title: step.title, done: step.done === true })) };
 
 /** Each deal among `rows` as its page shows the turn's people, by key: what `Row.deal` says. */
 const dealsShown = Effect.fnUntraced(function* (
@@ -2334,6 +2371,8 @@ const createRow = Effect.fnUntraced(function* (
       ...(Object.keys(fields).length === 0 ? {} : { fields }),
       ...(row.state === undefined ? {} : { state: row.state }),
       ...(waitingOn === undefined ? {} : { waitingOn }),
+      ...stepsIn(row.steps),
+      ...(row.urgent === undefined ? {} : { urgent: row.urgent }),
       ...due,
       ...(closedAt === undefined ? {} : { closedAt }),
       ...money,
@@ -3008,6 +3047,8 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...(input.kind === undefined ? {} : { category: input.kind }),
     ...(input.repo === undefined ? {} : { repo: input.repo }),
     ...(input.sensitive === undefined ? {} : { sensitive: true }),
+    ...stepsIn(input.steps),
+    ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
   };
   if (patch.owner !== undefined) yield* notBouncedBack(lead, before, patch.owner);
   // tell false holds the new holder's notice on the task; giving it to them again tells them.

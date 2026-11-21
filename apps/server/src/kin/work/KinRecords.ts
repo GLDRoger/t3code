@@ -90,6 +90,9 @@ import {
   repeatOf,
   samePrincipal,
   selectRecords,
+  encodeSteps,
+  shownSteps,
+  stepsOf,
   keySensitive,
   sensitiveNow,
   type StoredRepeat,
@@ -232,7 +235,11 @@ export type Fields = {
   readonly dateAllDay?: boolean;
   /** Needs a due date or a date to repeat from; not on clients, contacts or projects. */
   readonly repeat?: KinRepeatRule | null;
+  /** A task's whole checklist, in order; only Work. */
+  readonly steps?: ReadonlyArray<Step>;
+  readonly urgent?: boolean;
 };
+type Step = { readonly title: string; readonly done: boolean };
 export type CreateInput = Fields & {
   /** Default `work`; a built-in list or one defined in this org. */
   readonly list?: string;
@@ -254,6 +261,11 @@ export type Patch = Partial<Omit<Fields, "owner">> & {
   readonly handedBack?: { readonly note: string | null };
   /** What a field's old and new ids read as now, kept on its history line (`FieldChange.names`). */
   readonly names?: Readonly<Record<string, NonNullable<FieldChange["names"]>>>;
+  /**
+   * Ticks or unticks one step against the checklist as stored now; a step at `index` with other
+   * words means the steps changed since the screen read them.
+   */
+  readonly tick?: { readonly index: number; readonly title: string; readonly done: boolean };
 };
 export type LinkInput = {
   readonly kind: KinRecordLinkKind;
@@ -281,6 +293,7 @@ export type MoveRow = {
   readonly updatedAt: number;
   /** Handed back to its holder, when (`kinWorkHandedBackOpen`). */
   readonly handedBackAt: number | null;
+  readonly urgent: number | null;
 };
 const MOVE_ROWS_CAP = 5_000;
 
@@ -448,6 +461,8 @@ const asSet = (field: string) =>
 const FIELD_NAMES: Readonly<Record<string, string>> = {
   owner: "its holder",
   waitingOn: "who it waits on",
+  steps: "its steps",
+  urgent: "its urgent mark",
   due: "its due date",
   party: "its client",
 };
@@ -492,8 +507,11 @@ const checkInput = (
     readonly amount?: KinMoney | null | undefined;
     readonly dateAt?: number | null | undefined;
     readonly repeat?: KinRepeatRule | null | undefined;
+    readonly steps?: boolean;
   },
 ): KinChatError | undefined => {
+  if (input.steps === true && def.id !== "work")
+    return invalid(`Only a task has steps or an urgent mark; a ${def.noun} has neither.`);
   if (input.title !== undefined && mentionsKinMoney(input.title))
     return invalid(
       "A title never holds an amount: give the amount on its own and keep the title to what it was for.",
@@ -1347,6 +1365,7 @@ const make = Effect.gen(function* () {
       amount: input.amount,
       dateAt: input.dateAt,
       repeat: input.repeat,
+      steps: (input.steps?.length ?? 0) > 0 || input.urgent === true,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
     const zero = zeroOwed(def, input.amount, input.category);
@@ -1396,13 +1415,14 @@ const make = Effect.gen(function* () {
     const amount = input.amount ?? null;
     const notes = input.notes ?? "";
     const author = textBy(writer);
+    const steps = input.steps ?? [];
     yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
         waiting_on_kind, waiting_on_id, owner_kind, owner_id, side, category, due_at, due_all_day,
         sensitive, confirmed, notes, rev, source_chat_id, source_message_id, created_by_kind,
         created_by_id, assigned_by_person_id, assigned_at, origin_key, created_at, updated_at,
         closed_at, party_id, project_id, repo, fields_json, amount_minor, currency, date_at,
         date_all_day, repeat_json, request_hash, team_shared, title_by, notes_by,
-        assigned_by_agent_id, marked_by_person_id, asked_by_person_id)
+        assigned_by_agent_id, marked_by_person_id, asked_by_person_id, steps_json, urgent)
       VALUES (${orgId}, ${recordId}, ${list}, ${key}, ${input.title}, ${state},
         ${waitingOn?._tag ?? null}, ${waitingOn === null ? null : principalId(waitingOn)},
         ${input.owner._tag}, ${principalId(input.owner)}, ${input.side ?? "ours"},
@@ -1421,7 +1441,8 @@ const make = Effect.gen(function* () {
         ${options.authors === undefined ? author : options.authors.title},
         ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes},
         ${givenAway && writer.actor._tag === "agent" && writer.askedBy == null ? writer.actor.agentId : null},
-        ${input.sensitive === true ? textBy(writer) : null}, ${textBy(writer)})`;
+        ${input.sensitive === true ? textBy(writer) : null}, ${textBy(writer)},
+        ${steps.length === 0 ? null : yield* encodeSteps(steps)}, ${input.urgent === true ? 1 : null})`;
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
       { field: "state", from: null, to: state },
@@ -1445,6 +1466,8 @@ const make = Effect.gen(function* () {
       ...(input.repo === undefined || input.repo === null
         ? []
         : [{ field: "repo", from: null, to: input.repo }]),
+      ...(steps.length === 0 ? [] : [{ field: "steps", from: null, to: shownSteps(steps) }]),
+      ...(input.urgent === true ? [{ field: "urgent", from: null, to: "true" }] : []),
       ...Object.entries(fields).map(([field, value]) => ({
         field,
         from: null,
@@ -1551,6 +1574,8 @@ const make = Effect.gen(function* () {
         repo: row.repo,
         fields: kept,
         ...(amount === undefined ? {} : { amount }),
+        // The next one's checklist starts unticked; urgent was about this one.
+        steps: stepsOf(row).map((step) => ({ title: step.title, done: false })),
         links: [{ kind: "record", target: row.recordId, relation: "relates", label: row.key }],
       },
       {
@@ -1630,6 +1655,8 @@ const make = Effect.gen(function* () {
           amount: patch.amount,
           dateAt: patch.dateAt,
           repeat: patch.repeat,
+          steps:
+            patch.steps !== undefined || patch.urgent !== undefined || patch.tick !== undefined,
         });
         if (invalidFor !== undefined) return yield* invalidFor;
         if (recordsMoney(patch.amount, patch.fields))
@@ -2043,6 +2070,27 @@ const make = Effect.gen(function* () {
             patch.dateAt === undefined ? row.dateAt : patch.dateAt,
           );
           set("repeat_json", yield* encodeRepeat(stored));
+        }
+        const storedSteps = stepsOf(row);
+        const ticked = patch.tick === undefined ? undefined : storedSteps[patch.tick.index];
+        if (patch.tick !== undefined && ticked?.title !== patch.tick.title)
+          return yield* conflict(row.key, row.rev);
+        const steps =
+          patch.tick === undefined
+            ? patch.steps
+            : storedSteps.map((step, index) =>
+                index === patch.tick?.index ? { title: step.title, done: patch.tick.done } : step,
+              );
+        const same = (a: ReadonlyArray<Step>, b: ReadonlyArray<Step>) =>
+          a.length === b.length &&
+          a.every((step, index) => step.title === b[index]?.title && step.done === b[index]?.done);
+        if (steps !== undefined && !same(steps, storedSteps)) {
+          changes.push({ field: "steps", from: shownSteps(storedSteps), to: shownSteps(steps) });
+          set("steps_json", steps.length === 0 ? null : yield* encodeSteps(steps));
+        }
+        if (patch.urgent !== undefined && patch.urgent !== (row.urgent === 1)) {
+          changes.push({ field: "urgent", from: shown(row.urgent === 1), to: shown(patch.urgent) });
+          set("urgent", patch.urgent ? 1 : null);
         }
         if (patch.notes !== undefined && patch.notes !== row.notes) {
           changes.push({ field: "notes", from: row.notes, to: patch.notes });
@@ -2725,7 +2773,7 @@ const make = Effect.gen(function* () {
               r.assigned_by_person_id) AS "askedBy",
             r.assigned_by_person_id AS "assignedBy", r.assigned_by_agent_id AS "assignedByAgent",
             r.created_at AS "createdAt", r.updated_at AS "updatedAt",
-            r.handed_back_at AS "handedBackAt"
+            r.handed_back_at AS "handedBackAt", r.urgent
           FROM kin_records r WHERE ${filterOf(orgId, input, now)}
           ORDER BY r.record_id LIMIT ${MOVE_ROWS_CAP}`;
       }),
