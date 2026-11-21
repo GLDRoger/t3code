@@ -7,6 +7,7 @@ import {
   KinPersonId,
   KinRecordId,
   KinWidgetId,
+  kinWorkHandedBackOpen,
   kinWorkMoveUnder,
   type KinPulseFact,
   type KinRecord,
@@ -179,7 +180,10 @@ describe("whose move a task is (kinRecordMove, the rule Tasks and the record sha
 describe("kinWorkMoveUnder: Needs you holds only the coming week, what is late and what asks you", () => {
   const at = now.getTime();
   const inDays = (days: number) => new Date(at + days * 24 * 60 * 60 * 1000).toISOString();
-  const under = (record: KinRecord, extra: { card?: boolean; ownerLevel?: boolean } = {}) =>
+  const under = (
+    record: KinRecord,
+    extra: { card?: boolean; ownerLevel?: boolean; askedToday?: boolean } = {},
+  ) =>
     kinWorkMoveUnder(
       {
         state: record.state,
@@ -190,6 +194,11 @@ describe("kinWorkMoveUnder: Needs you holds only the coming week, what is late a
         askedBy: null,
         givenBy: record.givenBy ?? null,
         card: extra.card ?? false,
+        handedBackOpen: kinWorkHandedBackOpen(
+          record.handedBack === undefined ? null : Date.parse(record.handedBack.at),
+          Date.parse(record.updatedAt),
+        ),
+        askedToday: extra.askedToday ?? false,
         dueMs: record.dueAt === null ? null : Date.parse(record.dueAt),
       },
       { personId: rhea.personId, ownerLevel: extra.ownerLevel ?? true },
@@ -209,6 +218,25 @@ describe("kinWorkMoveUnder: Needs you holds only the coming week, what is late a
       null,
     ],
     ["someone else's is not moved", row("H", { owner: meera, givenBy: rhea }), {}, null],
+    // A hand-back and a nudge ask the holder something: they stay until acted on, or today.
+    [
+      "undated and handed back to you stays",
+      row("I", { handedBack: { by: meera, at: inDays(-1) }, updatedAt: inDays(-1) }),
+      {},
+      null,
+    ],
+    [
+      "handed back, then changed since, follows the plain rule",
+      row("J", { handedBack: { by: meera, at: inDays(-1) }, updatedAt: inDays(-0.5) }),
+      {},
+      "noDate",
+    ],
+    [
+      "due in 32 days, asked today where it stands, stays",
+      row("K", { dueAt: inDays(32) }),
+      { askedToday: true },
+      null,
+    ],
   ] as const)("%s", (_name, record, extra, expected) => {
     expect(under(record, extra)).toBe(expected);
   });
@@ -640,6 +668,15 @@ describe("kinTaskStep", () => {
       row("C", { handedBack: { by: zoya, at: "2026-11-18T08:30:00.000Z" } }),
       { key: "C", group: "needsYou" },
       { kind: "told", line: "Zoya handed this back" },
+    ],
+    [
+      "handed back, then changed since: no longer said, as it no longer counts",
+      row("H", {
+        handedBack: { by: zoya, at: "2026-11-18T08:30:00.000Z" },
+        updatedAt: "2026-11-18T08:45:00.000Z",
+      }),
+      { key: "H", group: "needsYou" },
+      null,
     ],
     [
       "yours, and someone asked today where it stands",

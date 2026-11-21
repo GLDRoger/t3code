@@ -19,7 +19,18 @@ export interface KinWorkMoveFacts {
   readonly givenBy: KinWorkPrincipal | null;
   /** A draft to send or a question about it waits on the reader in a chat they read. */
   readonly card: boolean;
+  /** Handed back to its holder and not changed since (`kinWorkHandedBackOpen`). */
+  readonly handedBackOpen?: boolean;
+  /** Someone asked its holder where it stands today. */
+  readonly askedToday?: boolean;
 }
+
+/**
+ * A hand-back still asks its holder something until the task changes after it came back: the
+ * hand-back itself stamps both times alike. The row's "handed this back" line reads the same.
+ */
+export const kinWorkHandedBackOpen = (handedBackMs: number | null, updatedMs: number): boolean =>
+  handedBackMs !== null && updatedMs <= handedBackMs;
 
 const isPerson = (who: KinWorkPrincipal | null, personId: KinPersonId) =>
   who !== null && who._tag === "person" && who.personId === personId;
@@ -50,7 +61,7 @@ const KIN_WORK_SOON_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * A Needs you task drawn outside its count: one the reader holds that nothing asks of them yet
  * and isn't late, undated or due past the coming week. A card, a suggestion to keep, a wait on
- * them and anything late always count.
+ * them, a hand-back still open, a nudge today and anything late always count.
  */
 export function kinWorkMoveUnder(
   task: KinWorkMoveFacts & { readonly dueMs: number | null },
@@ -58,6 +69,7 @@ export function kinWorkMoveUnder(
   at: number,
 ): KinWorkMoveUnder | null {
   if (task.card || task.late || kinWorkMove(task, reader) !== "needsYou") return null;
+  if (task.handedBackOpen === true || task.askedToday === true) return null;
   if (!task.confirmed && reader.ownerLevel) return null;
   if (task.state === "waiting" && isPerson(task.waitingOn, reader.personId)) return null;
   if (!isPerson(task.owner, reader.personId)) return null;

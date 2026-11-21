@@ -14,6 +14,7 @@ import {
   type KinWorkRowMove,
   kinWorkMove,
   kinWorkMoveOrder,
+  kinWorkHandedBackOpen,
   kinWorkMoveUnder,
   type KinWorkMoveUnder,
 } from "@t3tools/contracts";
@@ -113,6 +114,19 @@ export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
   const light = yield* records.moveRows(orgId, filter);
   const cards = yield* waitingCards(orgId, personId, light).pipe(workFailure);
   const reader = { personId, ownerLevel: input.ownerLevel };
+  // Today's asks where each of the reader's own tasks stands: they keep it in Needs you, and
+  // the same ones draw the row's note.
+  const mineAll = light.filter((row) => row.ownerKind === "person" && row.ownerId === personId);
+  const heldZone = mineAll.length === 0 ? "" : yield* ownerZone(orgId).pipe(workFailure);
+  const asked =
+    mineAll.length === 0
+      ? new Map<string, KinPersonId>()
+      : yield* askedOf(
+          orgId,
+          personId,
+          mineAll.map((row) => row.recordId),
+          startOfDay(dayIn(at, heldZone), heldZone),
+        ).pipe(workFailure);
   const placed = light.flatMap((row) => {
     const late = row.dueAt !== null && row.dueAt < at;
     const facts = {
@@ -127,6 +141,8 @@ export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
       askedBy: row.askedBy === null ? null : KinPersonId.make(row.askedBy),
       givenBy: givenOf(row),
       card: cards.has(row.recordId),
+      handedBackOpen: kinWorkHandedBackOpen(row.handedBackAt, row.updatedAt),
+      askedToday: asked.has(row.recordId),
     };
     const group = kinWorkMove(facts, reader);
     const under = kinWorkMoveUnder({ ...facts, dueMs: row.dueAt }, reader, at);
@@ -201,17 +217,8 @@ export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
   for (const one of backNotes)
     if (!backNote.has(one.recordId)) backNote.set(one.recordId, one.note);
   const zone =
-    chased.length === 0 && held.length === 0 ? "" : yield* ownerZone(orgId).pipe(workFailure);
+    heldZone !== "" || chased.length === 0 ? heldZone : yield* ownerZone(orgId).pipe(workFailure);
   const day = zone === "" ? "" : dayIn(at, zone);
-  const asked =
-    held.length === 0
-      ? new Map<string, KinPersonId>()
-      : yield* askedOf(
-          orgId,
-          personId,
-          held.map((one) => one.row.recordId),
-          startOfDay(day, zone),
-        ).pipe(workFailure);
   const nudged = yield* nudgesSent(
     orgId,
     chased.map((one) => nudgeMessageId(orgId, one.row.recordId, personId, day)),
