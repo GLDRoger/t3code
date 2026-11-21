@@ -97,6 +97,12 @@ const sessionNote = (
 export const kinInstructions = (seat: "owner" | "confined", driver: string) =>
   `${instructions}\n\n${sessionNote(seat, kinProviderFacts(driver)?.lacks ?? [], driver)}`;
 
+/** What a lead's own thread is told, as `plan` decides it for that thread. */
+export const leadThreadInstructions = (threadId: ThreadId, driver: string) =>
+  threadId.startsWith(REVIEW_THREAD_PREFIX)
+    ? REVIEW_SEAT_INSTRUCTIONS
+    : kinInstructions(threadId.startsWith(SHARED_THREAD_PREFIX) ? "confined" : "owner", driver);
+
 /**
  * Decides, once and for every provider, what a Kin session is: which turn it serves, what it may
  * use and what it is told. A provider's descriptor only applies the plan to its own session.

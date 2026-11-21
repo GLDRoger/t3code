@@ -140,6 +140,9 @@ const apply = (
           }),
       ENABLE_TOOL_SEARCH: loading.search,
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      // Every wake-up is a fresh session: its first request otherwise may go out before Kin's
+      // tools are listed, and a different tool block misses the prompt cache.
+      ...(plan.seat === "delegated" ? {} : { MCP_CONNECTION_NONBLOCKING: "0" }),
     },
   };
 };
