@@ -745,6 +745,33 @@ it.effect(
           ],
         ],
       );
+      // A vendor named only in its field counts as the party: the same receipt retitled is refused.
+      const ink = {
+        list: "expenses",
+        title: "Invented ink",
+        amount: "800",
+        date: "1970-01-10",
+        fields: { vendor: "Invented Inkworks" },
+      };
+      assert.strictEqual((yield* make("again-event", [ink])).records[0]!.key, "EXP-3");
+      assert.include(
+        yield* Effect.flip(
+          make("third-event", [
+            { ...ink, title: "Invented ink cartridges", fields: { vendor: "invented inkworks" } },
+          ]),
+        ),
+        {
+          reason: "conflict",
+          message:
+            'EXP-3 "Invented ink" records the same amount for the same vendor on the same day. Use EXP-3, or pass besides: ["EXP-3"] to add another.',
+        },
+      );
+      assert.strictEqual(
+        (yield* make("third-event", [
+          { ...ink, title: "Invented toner", fields: { vendor: "Invented Tonerworks" } },
+        ])).records[0]!.key,
+        "EXP-4",
+      );
       // K204: an email another contact has is said, on a new contact and on an edit.
       const twin = yield* make("again-event", [
         { list: "contacts", title: "Invented R. Rao", client: "C-1", email: " Ravi@x.invalid" },

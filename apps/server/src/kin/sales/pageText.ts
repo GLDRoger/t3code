@@ -1,7 +1,8 @@
 /**
  * A web page's HTML as the text a reader sees, in one forward pass: every search starts where the
  * last one ended, so an unclosed tag, comment or script costs one scan of what is left, never a
- * rescan. Scripts, styles and hidden elements are dropped; each link keeps its address.
+ * rescan. Scripts, styles and hidden elements are dropped; each link keeps its address. Text stops
+ * at its cut; links are read from the whole page, since a site's menu and footer often sit past it.
  */
 
 const ENTITIES: Record<string, string> = {
@@ -121,7 +122,7 @@ export type PageText = {
   readonly text: string;
   /** Each link's address as the page gives it, resolved against the page, at most `links`. */
   readonly links: ReadonlyArray<string>;
-  /** The text ran past `chars`; scanning stopped there. */
+  /** The text ran past `chars`; links past it are still kept. */
   readonly cut: boolean;
 };
 
@@ -145,6 +146,7 @@ export const pageText = (
   let depth = 0;
 
   const push = (piece: string) => {
+    if (cut) return;
     if (length > 0) {
       if (breaks > 0) {
         out.push(breaks > 1 ? "\n\n" : "\n");
@@ -166,6 +168,7 @@ export const pageText = (
     if (length > limits.chars) cut = true;
   };
   const words = (run: string) => {
+    if (cut) return;
     const text = decode(run).replace(/[\s ]+/g, " ");
     const trimmed = text.trim();
     if (trimmed === "") {
@@ -194,7 +197,6 @@ export const pageText = (
 
   let i = 0;
   while (i < n) {
-    if (cut) break;
     const lt = html.indexOf("<", i);
     const end = lt < 0 ? n : lt;
     if (end > i && skip === undefined) words(html.slice(i, end));
@@ -325,7 +327,7 @@ export const pageText = (
       bullet = true;
     } else if (BLOCK.has(name)) block();
   }
-  if (!cut) closeLink();
+  closeLink();
   const text = out.join("");
   return {
     title: title ?? "",

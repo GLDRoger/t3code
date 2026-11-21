@@ -211,10 +211,11 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   };
 });
 
-/** A suggestion's own day is no issue day: where its list names the day after a state, "Date". */
+/** A suggestion's or draft's day is no issue day: where its list names the day after a state, "Date". */
 const dayLabel = (def: ListDef, row: RecordRow) =>
   def.dateLabel === undefined ||
-  (isSuggestion(row) && def.states.some((state) => stateLabel(def, state) === def.dateLabel))
+  ((isSuggestion(row) || row.state === "open") &&
+    def.states.some((state) => stateLabel(def, state) === def.dateLabel))
     ? "Date"
     : def.dateLabel;
 

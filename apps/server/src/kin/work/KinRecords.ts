@@ -1383,7 +1383,10 @@ const make = Effect.gen(function* () {
             dateAt: input.dateAt ?? null,
             numbered: "number" in fields,
             now,
-            zone: def.id === "expenses" ? yield* ownerZone(orgId).pipe(provideSql) : "UTC",
+            zone:
+              def.id === "expenses" || def.id === "invoices"
+                ? yield* ownerZone(orgId).pipe(provideSql)
+                : "UTC",
           }));
     const waitingOn = state === "waiting" ? (input.waitingOn ?? null) : null;
     const givenAway =
@@ -1508,11 +1511,13 @@ const make = Effect.gen(function* () {
     );
     const owner = principal(row.ownerKind, row.ownerId);
     if (owner === null) return;
-    const files = new Set(def.fields.filter((one) => one.type === "file").map((one) => one.key));
-    // A numbered list's next entry gets its own number when it is issued, never this one's.
-    if (numberingOf(def) !== undefined) files.add("number");
+    // The next one takes its own number when it is issued.
+    const dropped = new Set([
+      ...def.fields.filter((one) => one.type === "file").map((one) => one.key),
+      ...(numberingOf(def) === undefined ? [] : ["number"]),
+    ]);
     const kept = Object.fromEntries(
-      Object.entries(parseFields(row.fieldsJson)).filter(([key]) => !files.has(key)),
+      Object.entries(parseFields(row.fieldsJson)).filter(([key]) => !dropped.has(key)),
     );
     const amount = amountOf(row);
     // The next one is whoever closed this one's to keep, and a suggestion if this one is.
