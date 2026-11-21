@@ -9,6 +9,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { openingOf, sameAccounts } from "./bankAccounts.ts";
+import { DAY_MS } from "../../durations.ts";
 
 /**
  * How far Kin sees the bank, computed when read from the statements the owner confirmed. Kin
@@ -16,7 +17,6 @@ import { openingOf, sameAccounts } from "./bankAccounts.ts";
  * a month no statement covers, Kin can't tell.
  */
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 /** An account whose lines end this long before another's no longer holds back the company's day. */
 const KEPT_UP_DAYS = 45;
 

@@ -4,7 +4,6 @@ import {
   kinWorkMove,
   kinWorkMoveOrder,
   type KinChoiceOption,
-  type KinOpenRead,
   type KinPulseFact,
   type KinPulseScreenRead,
   type KinRecord,
@@ -81,20 +80,14 @@ export const kinTaskGroupedChip = (groupBy: KinTaskGroupBy | undefined): string 
 };
 
 /**
- * The Needs you number, read alike by its heading and the dock's Tasks badge: the host's open list
- * where it streams one, else the Tasks read's own count with the deal facts beside it
- * (`kinTasksDealFactsOf`). Null until either has arrived.
+ * The Needs you number, read alike by its heading and the dock's Tasks badge: the Tasks read's own
+ * count with the deal facts beside it (`kinTasksDealFactsOf`). Null until the count has arrived.
  */
 export const kinNeedsYouCount = (input: {
-  readonly open: KinOpenRead | null;
-  readonly counts: KinWorkMoveCounts | null;
+  readonly counts: Pick<KinWorkMoveCounts, "needsYou"> | null;
   readonly dealFacts?: number;
 }): number | null =>
-  input.open !== null
-    ? input.open.counts.needsYou
-    : input.counts === null
-      ? null
-      : input.counts.needsYou + (input.dealFacts ?? 0);
+  input.counts === null ? null : input.counts.needsYou + (input.dealFacts ?? 0);
 
 /**
  * A row's line after who has it: one coloured word first when there is one (late in red, due
@@ -357,21 +350,14 @@ function pushTasks<R extends KinRecord>(
 
 /**
  * The open deal and prospect facts that are the reader's to answer: their own, and for the owner
- * and a co-owner also those that fall to the owner. From the host's open list where it streams
- * one (`null`: it doesn't), else the pulse's read, as Clients reads them. A fact that clears
- * leaves either, so its row goes with it.
+ * and a co-owner also those that fall to the owner. From the pulse's read, as Clients reads them.
+ * A fact that clears leaves it, so its row goes with it.
  */
 export function kinTasksDealFactsOf(
-  open: KinOpenRead | null | undefined,
   pulse: KinPulseScreenRead | null | undefined,
   input: { readonly ownerLevel: boolean; readonly me: string | null },
 ): ReadonlyArray<KinPulseFact> {
-  const all =
-    open === undefined
-      ? []
-      : open === null
-        ? (pulse?.facts ?? []).filter((fact) => fact.handled === null)
-        : open.rows.flatMap((row) => (row.item._tag === "fact" ? [row.item.fact] : []));
+  const all = (pulse?.facts ?? []).filter((fact) => fact.handled === null);
   return all.filter(
     (fact) =>
       KIN_DEAL_SENSES.has(fact.sense) &&
@@ -381,18 +367,15 @@ export function kinTasksDealFactsOf(
 }
 
 /** `kinTasksDealFactsOf` as rows, with the client page's answers. */
-export function kinTasksDealFacts(
-  open: KinOpenRead | null | undefined,
-  input: {
-    readonly ownerLevel: boolean;
-    readonly names: KinWorkNames;
-    readonly now: Date;
-    readonly pulse?: KinPulseScreenRead | null | undefined;
-  },
-): ReadonlyArray<KinAttentionRow> {
+export function kinTasksDealFacts(input: {
+  readonly ownerLevel: boolean;
+  readonly names: KinWorkNames;
+  readonly now: Date;
+  readonly pulse?: KinPulseScreenRead | null | undefined;
+}): ReadonlyArray<KinAttentionRow> {
   const { names, ownerLevel } = input;
-  const facts = kinTasksDealFactsOf(open, input.pulse, { ownerLevel, me: names.me });
-  const asOf = open?.asOf ?? input.pulse?.asOf;
+  const facts = kinTasksDealFactsOf(input.pulse, { ownerLevel, me: names.me });
+  const asOf = input.pulse?.asOf;
   if (facts.length === 0 || asOf === undefined) return [];
   return kinAttention(
     { asOf, total: facts.length, facts },

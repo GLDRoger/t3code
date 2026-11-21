@@ -1483,24 +1483,18 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
       (yield* posted).at(-1)?.body,
       "Ada couldn't start: the server couldn't run its model program. Check the provider's binary path in Settings.",
     );
-    // A retry says so once; the next retry before anyone writes adds nothing.
+    // A retry says so once; the next retry before anyone writes adds nothing. Before the long
+    // wait it says when, from the wait the queue sets.
     yield* chats.send(owner, { chatId, body: "Again?", clientMessageId: "retry" });
     const before = (yield* posted).length;
-    yield* bridge.failed({
-      orgId: owner.orgId,
-      wakeupId: yield* retry(),
-      lane,
-      outcome: "retrying",
-    });
-    yield* bridge.failed({
-      orgId: owner.orgId,
-      wakeupId: yield* retry(),
-      lane,
-      outcome: "retrying",
-    });
+    for (const outcome of ["retrying", "retrying", "retrying_later"] as const)
+      yield* bridge.failed({ orgId: owner.orgId, wakeupId: yield* retry(), lane, outcome });
     assert.deepStrictEqual(
       (yield* posted).slice(before).map((row) => row.body),
-      ["Ada couldn't start. Trying again in a moment."],
+      [
+        "Ada couldn't start. Trying again in a moment.",
+        "Ada couldn't start. Trying once more in about 15 minutes.",
+      ],
     );
   }).pipe(Effect.provide(layer)),
 );

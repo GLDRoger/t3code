@@ -12,6 +12,7 @@ import {
   type KinTaskLine,
   type KinTaskStep,
 } from "@t3tools/client-runtime/kin/kinTasksList";
+import type { KinTaskStepStatus } from "@t3tools/client-runtime/kin/kinTaskSteps";
 import { KIN_WORK_COPY, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkTimelineLine } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
@@ -269,12 +270,6 @@ export function KinWorkTaskRow(props: {
     </>
   );
 }
-
-/** What a row's step is doing: on its way, done in the host's words, or refused with its reason. */
-export type KinTaskStepStatus =
-  | { readonly kind: "busy"; readonly id: string }
-  | { readonly kind: "done"; readonly text: string; readonly widgetId?: string }
-  | { readonly kind: "failed"; readonly text: string; readonly widgetId?: string };
 
 const LEAD_TONE = {
   late: "text-danger-foreground",

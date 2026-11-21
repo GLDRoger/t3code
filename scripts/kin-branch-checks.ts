@@ -14,6 +14,8 @@ import { Argument, Command, Flag } from "effect/cli";
 
 import { git, gitLines } from "./check-changed.ts";
 
+/** The branch the fork ships from; with no ref, check:changed also tries `<remote>/kin`. */
+export const SHIPPING_BRANCH = "kin";
 export const MIGRATIONS = "apps/server/src/kin/persistence/KinMigrations.ts";
 export const INSTRUCTIONS = "apps/server/src/kin/lead/instructions.ts";
 const SURVIVAL_SKIP = /(?:\.test\.|\.ndjson$|pnpm-lock|instructions\.ts$|KinMigrations\.ts$)/;
@@ -248,15 +250,10 @@ export const KIN_SHARED_HOOKS_DIR = "packages/client-runtime/src/kin/react";
 export const KIN_HOOK_FILES_IN_BOTH: Readonly<Record<string, string>> = {
   "useKinHost.ts": "each app finds its host through its own connection and pairing",
   "useKinMoneyLive.ts": "web counts its own session as owner level; the phone reads the host",
-  "useKinOpen.ts": "the open-list stream, which no host serves yet",
   "useKinOpenChat.ts": "each app opens a chat through its own navigation and draft store",
-  "useKinTaskSteps.ts": "web ignores a second nudge while one is busy or sent; the phone sends it",
 };
 /** Hooks written in both apps' copies of one file, each for a reason; an entry goes with its copy. */
-export const KIN_HOOKS_IN_BOTH: Readonly<Record<string, string>> = {
-  useKinWorkChanges:
-    "the phone keeps the host's answers for every screen of a task and can open editing; web does neither",
-};
+export const KIN_HOOKS_IN_BOTH: Readonly<Record<string, string>> = {};
 
 const hookFileName = (file: string) => /\/(use[A-Z]\w*\.tsx?)$/.exec(file)?.[1];
 const callsSharedHooks = (source: string) =>
@@ -426,13 +423,19 @@ export const checkPeopleChange = (input: {
         .flatMap((commit) => commit.files),
     ),
   ].filter(readByPeople);
-  const files = `${read[0]}${read.length > 1 ? ` and ${read.length - 1} more` : ""}`;
+  const ask =
+    "Add a line to the last commit message: `People-change: <what a person already had that now looks, reads or works differently, or is gone>`, or `People-change: none`.";
   if (read.length > 0)
     problems.push(
       (newestSaid === -1
-        ? `People-change: this branch changes what a person or an agent reads (${files}), and no commit says what they will notice.\n`
-        : `People-change: commits after ${input.commits[newestSaid]!.sha}, the last with a People-change line, change what a person or an agent reads (${files}), and none says what they will notice.\n`) +
-        "Add a line to the last commit message: `People-change: <what a person already had that now looks, reads or works differently, or is gone>`, or `People-change: none`.",
+        ? `People-change: this branch changes what a person or an agent reads (${read.join(", ")}), and no commit says what they will notice.\n`
+        : `People-change: commits after ${input.commits[newestSaid]!.sha}, the last with a People-change line, change what a person or an agent reads (${read.join(", ")}), and none says what they will notice.\n`) +
+        ask,
+    );
+  // The last commit restates the branch's lines, so whoever merges reads them in one place.
+  else if (newestSaid > 0 && changed.some(readByPeople))
+    problems.push(
+      `People-change: the last commit, ${input.commits[0]!.sha}, has no People-change line, and this branch changes what a person or an agent reads.\n${ask}`,
     );
   const approvedItems = new Set(
     said.flatMap(({ text }) => /^approved-item\s+(\S+?):\s*\S/.exec(text)?.[1] ?? []),
