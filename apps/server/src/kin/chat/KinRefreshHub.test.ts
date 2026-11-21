@@ -16,6 +16,7 @@ import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as Tracer from "effect/Tracer";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
@@ -214,6 +215,79 @@ describe("KinRefreshHub", () => {
         yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
         assert.deepStrictEqual(yield* Queue.take(priyaSees), { ...moved, company: 1, stop: 1 });
       }).pipe(Effect.scoped, Effect.provide(paired)),
+  );
+
+  let statements = 0;
+  const tracer = Tracer.make({
+    span(options) {
+      const span = new Tracer.NativeSpan(options);
+      const end = span.end.bind(span);
+      span.end = (endTime, exit) => {
+        end(endTime, exit);
+        if (typeof span.attributes.get("db.query.text") === "string") statements += 1;
+      };
+      return span;
+    },
+  });
+  it.effect(
+    "reads a person's view once a burst for all their screens, and a demoted co-owner's next as a member's",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const { touch } = yield* RefreshHub.KinRefreshObserver;
+        const { owner: me } = yield* KinIdentity;
+        yield* Provision.create(lead("Finance", "finance"));
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+            access)
+          VALUES ('meera', ${me.orgId}, 'meera', 'Meera', '2026-11-09T00:00:00.000Z', 'member'),
+            ('zoya', ${me.orgId}, 'zoya', 'Zoya', '2026-11-09T00:00:00.000Z', 'co_owner')`;
+        const screens = (personId: string, count: number) =>
+          Effect.forEach(Array.from({ length: count }), () =>
+            Effect.gen(function* () {
+              const queue = yield* Stream.toQueue(
+                subscribeRefreshes([{ ...me, personId: KinPersonId.make(personId) }], {
+                  orgId: me.orgId,
+                }),
+                { capacity: "unbounded" },
+              );
+              yield* Queue.take(queue);
+              return queue;
+            }),
+          );
+        const burst = Effect.fn("test.burst")(function* (
+          queues: ReadonlyArray<Queue.Dequeue<unknown>>,
+        ) {
+          statements = 0;
+          yield* sql.withTransaction(
+            Effect.all([touch(me.orgId, "people"), touch(me.orgId, "leads")]),
+          );
+          yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+          const seen = yield* Effect.forEach(queues, Queue.take);
+          return { statements, seen };
+        });
+        const one = yield* Effect.scoped(
+          Effect.gen(function* () {
+            return (yield* burst(yield* screens("meera", 1))).statements;
+          }),
+        );
+        const three = yield* Effect.scoped(
+          Effect.gen(function* () {
+            return (yield* burst(yield* screens("meera", 3))).statements;
+          }),
+        );
+        assert.isAbove(one, 0);
+        assert.strictEqual(three, one, "her three screens share one read of her view");
+
+        const hers = yield* screens("zoya", 2);
+        const before = yield* burst(hers);
+        for (const seen of before.seen) assert.property(seen, "memory", "a co-owner's topics");
+        yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'zoya'`;
+        const after = yield* burst(hers);
+        for (const seen of after.seen) {
+          assert.notProperty(seen, "memory", "a demoted co-owner hears only a member's topics");
+          assert.property(seen, "leads");
+        }
+      }).pipe(Effect.withTracer(tracer), Effect.scoped, Effect.provide(paired)),
   );
 
   it.effect("moves the lists a new company made while waiting when its country is saved", () =>

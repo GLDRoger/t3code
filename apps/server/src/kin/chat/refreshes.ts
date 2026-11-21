@@ -2,6 +2,7 @@ import {
   KIN_STREAMS,
   KinChatError,
   kinOwnerLevel,
+  type KinPersonAccess,
   type KinRefreshes,
   type KinRefreshesAnnounceInput,
   type KinRefreshesSubscribeInput,
@@ -19,6 +20,18 @@ import { theOwner } from "../work/ownerWork.ts";
 import { KinRefreshHub, KinRefreshObserver, type KinRevisions } from "./KinRefreshHub.ts";
 
 const notFound = new KinChatError({ reason: "not_found", message: "Kin couldn't find that." });
+
+type Reads = {
+  readonly kind: Effect.Effect<KinPersonAccess | undefined>;
+  readonly view: Effect.Effect<string | null>;
+  readonly lists: Effect.Effect<string | null>;
+};
+/**
+ * One person's reads for one settled burst, shared by their devices. A burst's revisions are a new
+ * object (`KinRefreshHub`), and a change of role or of whom one leads moves `people` or `leads`, so
+ * it is always a new burst and read afresh.
+ */
+const burstReads = new WeakMap<object, WeakMap<KinRevisions, Map<string, Reads>>>();
 
 const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.company === b.company &&
@@ -76,6 +89,25 @@ export const subscribeRefreshes = (
         Effect.map((shown) => JSON.stringify(shown)),
         Effect.orElseSucceed(() => null),
       );
+      const bursts = burstReads.get(hub) ?? new WeakMap<KinRevisions, Map<string, Reads>>();
+      burstReads.set(hub, bursts);
+      const readsOf = Effect.fn("KinRefreshes.readsOf")(function* (now: KinRevisions) {
+        const people = bursts.get(now) ?? new Map<string, Reads>();
+        bursts.set(now, people);
+        const key = `${input.orgId}:${person.personId}`;
+        const held = people.get(key);
+        if (held !== undefined) return held;
+        const services = yield* Effect.context<
+          Effect.Services<typeof kind> | Effect.Services<typeof view | typeof listsView>
+        >();
+        const reads: Reads = {
+          kind: yield* Effect.cached(Effect.provide(kind, services)),
+          view: yield* Effect.cached(Effect.provide(view, services)),
+          lists: yield* Effect.cached(Effect.provide(listsView, services)),
+        };
+        people.set(key, reads);
+        return reads;
+      });
       const waiting = countryNeeded(input.orgId).pipe(Effect.orElseSucceed(() => false));
       // Counted per person for the run, so a reconnect with nothing moved reads the same numbers.
       const counter = (name: string) => `${input.orgId}:${person.personId}:${name}`;
@@ -87,7 +119,8 @@ export const subscribeRefreshes = (
       return changes.pipe(
         Stream.mapEffect((now) =>
           Effect.gen(function* () {
-            const access = yield* kind;
+            const reads = yield* readsOf(now);
+            const access = yield* reads.kind;
             if (kinOwnerLevel(access)) {
               heard = undefined;
               // What Kin suggested is the owner's alone (`kin.recommendations.*`).
@@ -99,10 +132,10 @@ export const subscribeRefreshes = (
               } satisfies KinRefreshes;
             }
             if (heard === undefined || heard.leads !== now.leads || heard.people !== now.people)
-              leads = hub.counted(counter("leads"), yield* view);
+              leads = hub.counted(counter("leads"), yield* reads.view);
             if (heard === undefined || heard.workLists !== now.workLists)
               // A refusal that stands is no change.
-              lists = hub.counted(counter("workLists"), (yield* listsView) ?? "refused");
+              lists = hub.counted(counter("workLists"), (yield* reads.lists) ?? "refused");
             if (heard === undefined || heard.company !== now.company) {
               const still = yield* waiting;
               waited ||= still;
