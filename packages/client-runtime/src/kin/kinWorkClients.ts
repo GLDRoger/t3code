@@ -192,6 +192,8 @@ export const KIN_CLIENTS = {
   earlier: "Show earlier",
   edit: "Edit",
   close: "Close client",
+  closeAsk: (name: string) => `Close ${name}?`,
+  closeDetail: "Its to-dos and what needs attention leave its page. You can reopen it from More.",
   reopen: "Reopen",
   active: "Active",
   closed: "Closed",

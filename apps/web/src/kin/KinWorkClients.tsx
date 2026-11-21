@@ -95,6 +95,7 @@ import {
 import { KinWorkRow } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { KinClientDeals } from "./KinDeals";
+import { KinConfirm } from "./KinConfirm";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinHostConnected } from "./useKinHost";
 import {
@@ -662,6 +663,7 @@ function ClientPage(
   const [tagList, setTagList] = useState<string | null>(null);
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
+  const [askClose, setAskClose] = useState(false);
   const history = useKinWorkHistory(props, props.clientKey, page.seq);
   const privateId = useId();
 
@@ -799,7 +801,11 @@ function ClientPage(
                       </MenuItem>
                     ) : null}
                     {can.owner ? (
-                      <MenuItem onClick={() => void change({ active: view.closed })}>
+                      <MenuItem
+                        onClick={() =>
+                          view.closed ? void change({ active: true }) : setAskClose(true)
+                        }
+                      >
                         {view.closed ? KIN_CLIENTS.reopen : KIN_CLIENTS.close}
                       </MenuItem>
                     ) : null}
@@ -1080,6 +1086,20 @@ function ClientPage(
           </KinWorkSection>
         ) : null}
       </div>
+      <KinConfirm
+        ask={
+          askClose
+            ? {
+                title: KIN_CLIENTS.closeAsk(view.name),
+                detail: KIN_CLIENTS.closeDetail,
+                action: KIN_CLIENTS.close,
+                destructive: true,
+              }
+            : null
+        }
+        onConfirm={() => void change({ active: false })}
+        onClose={() => setAskClose(false)}
+      />
       {dialog?.type === "edit" ? (
         <KinClientDialog
           environmentId={environmentId}
