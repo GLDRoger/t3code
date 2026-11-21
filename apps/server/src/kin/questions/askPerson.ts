@@ -17,6 +17,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeCrypto from "node:crypto";
 
 import { storedClientId } from "../chat/KinChatRepository.ts";
+import { keysIn } from "../chat/messageLinks.ts";
 import type { KinChatService } from "../chat/KinChatService.ts";
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
 import {
@@ -71,7 +72,7 @@ export const AskPersonInput = Schema.Struct({
     Schema.Struct({
       kind: Schema.Literals(DRAFT_KINDS),
       for: Schema.optional(
-        KinTrimmedText.check(Schema.isMaxLength(20)).annotate({
+        KinTrimmedText.check(Schema.isMaxLength(120)).annotate({
           description: "The key of the client or deal it is for.",
         }),
       ),
@@ -269,9 +270,10 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           );
         if (input.detail === undefined || input.detail.trim() === "")
           return yield* refuse("Put the draft itself in detail.");
-        const key = input.draft.for;
-        const [party] =
-          key === undefined
+        // Who it is for, as one client or deal key the text holds: "Tidewater Freight (C-7)" is C-7.
+        const named = input.draft.for === undefined ? [] : keysIn(input.draft.for);
+        const parties =
+          named.length === 0
             ? []
             : yield* sql<{
                 key: string;
@@ -283,10 +285,18 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
                   CASE WHEN r.register_id = 'clients' THEN r.record_id ELSE r.party_id END
                     AS "partyId"
                 FROM kin_records r
-                WHERE r.org_id = ${orgId} AND r.key = ${key}
-                  AND r.register_id IN ('clients', 'deals') AND ${personSees(sql, asker)}`;
-        if (key !== undefined && party === undefined)
-          return yield* refuse(`No client or deal ${key} that ${askerName ?? "they"} sees.`);
+                WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(named)}
+                  AND r.register_id IN ('clients', 'deals') AND ${personSees(sql, asker)}
+                ORDER BY r.key`;
+        if (input.draft.for !== undefined && parties.length !== 1)
+          return yield* refuse(
+            parties.length > 1
+              ? `draft.for is one client or deal; “${input.draft.for}” names ${parties.map((one) => one.key).join(" and ")}. Send the key of the one it is for.`
+              : named.length === 0
+                ? `draft.for is the key of the client or deal it is for, such as C-4; “${input.draft.for}” holds none.`
+                : `No client or deal ${named.join(" or ")} that ${askerName ?? "they"} sees.`,
+          );
+        const [party] = parties;
         const [owner] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
           WHERE org_id = ${orgId} AND person_id = ${self.owner}`;
         sentUp = {
