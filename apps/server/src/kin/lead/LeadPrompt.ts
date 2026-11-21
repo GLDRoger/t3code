@@ -1,5 +1,6 @@
 import {
   getProviderAttachmentLimitError,
+  KIN_COMPANY_CHAT_TEAM_ID,
   KIN_TEAM_ROOM_TEAM_ID,
   KinOrgId,
   type KinAttachment,
@@ -900,6 +901,9 @@ export class KinLeadPrompt extends Context.Service<
           if (yield* askedWhereOthersRead(sql, orgId, item)) paths.add(item.path);
         return paths;
       });
+      /** Where a teammate can talk with the team: the Team room is the owner's and co-owners'. */
+      const placesLine = (inCompany: boolean) =>
+        `the Team room isn't open to them${inCompany ? "; they are in the Company chat" : "; they are in no Company chat, which the owner or a co-owner turns on in Settings"}`;
       // Who wrote what woke this turn, by stored provenance, so the lead talks to them as "you".
       const speakers = Effect.fnUntraced(function* (
         events: ReadonlyArray<KinEvent>,
@@ -924,8 +928,15 @@ export class KinLeadPrompt extends Context.Service<
           access: string;
           tags: string | null;
           zone: string | null;
+          inCompany: number;
         }>`SELECT p.person_id AS "personId", p.display_name AS name,
-            ${sql.literal(accessSql("p"))} AS access, p.role_tags_json AS tags, p.time_zone AS zone
+            ${sql.literal(accessSql("p"))} AS access, p.role_tags_json AS tags, p.time_zone AS zone,
+            EXISTS (SELECT 1 FROM kin_chats c JOIN kin_chat_members m
+                ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+              WHERE c.org_id = p.org_id AND c.kind = 'team_group'
+                AND c.team_id = ${KIN_COMPANY_CHAT_TEAM_ID} AND c.archived_at IS NULL
+                AND m.principal_kind = 'person' AND m.person_id = p.person_id
+                AND m.left_at IS NULL) AS "inCompany"
           FROM kin_people p WHERE p.org_id = ${events[0]!.orgId} ORDER BY p.person_id`;
         const people = new Map(rows.map((row) => [row.personId, row]));
         const nameOf = (personId: string | undefined) =>
@@ -947,6 +958,7 @@ export class KinLeadPrompt extends Context.Service<
             ...(row?.zone === null || row?.zone === undefined
               ? []
               : [`their times are in ${encoded(row.zone)}`]),
+            ...(row?.access === "co_owner" ? [] : [placesLine(row?.inCompany === 1)]),
           ].join("; ");
           return `${encoded(nameOf(personId) || "a teammate")} (${about})`;
         });
