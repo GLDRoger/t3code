@@ -17,6 +17,8 @@ export interface ListRowContentProps {
   readonly disabled?: boolean;
   /** Where a trailing `detail` too long for the row is cut; a name reads best cut at its end. */
   readonly detailEllipsizeMode?: "middle" | "tail";
+  /** Above the default text size, shrinks the label rather than break a word across lines. */
+  readonly labelWholeWords?: boolean;
 }
 
 export function ListRowLayout({
@@ -28,11 +30,17 @@ export function ListRowLayout({
   meta,
   disabled,
   detailEllipsizeMode = "middle",
+  labelWholeWords,
   accessory,
   tone = "default",
 }: ListRowContentProps & { readonly accessory?: ReactNode; readonly tone?: "default" | "danger" }) {
   const { fontScale } = useWindowDimensions();
   const stackDetail = fontScale >= 1.5;
+  // One line per word: a word wider than the row shrinks to fit instead of splitting.
+  const wholeWords =
+    labelWholeWords === true && fontScale > 1
+      ? { numberOfLines: label.trim().split(/\s+/).length, adjustsFontSizeToFit: true }
+      : {};
   return (
     <View
       className={cn(
@@ -58,6 +66,7 @@ export function ListRowLayout({
         <AppText
           textRole="body"
           className={tone === "danger" ? "text-danger-foreground" : "text-foreground"}
+          {...wholeWords}
         >
           {label}
         </AppText>

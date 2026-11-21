@@ -43,7 +43,7 @@ import type { ComposerSendPresentation } from "../../threads/composerSendPresent
 import { SendActionButton } from "../../threads/ThreadComposer";
 import { kinClient } from "../state/kinClient";
 import { kinAttachmentFailure } from "../state/kinAttachmentFailure";
-import { kinDraftKey } from "./KinComposer";
+import { kinDraftKey } from "../state/kinDraftKey";
 
 const NOTE_SEND: ComposerSendPresentation = {
   label: KIN_TASK_NOTE_COPY.send,

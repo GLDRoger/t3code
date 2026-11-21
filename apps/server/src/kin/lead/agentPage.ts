@@ -16,6 +16,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { liveConnections } from "../connections/ConnectionRows.ts";
 import { KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
+import { playbookForSeat } from "../work/playbookSeeds.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { type LeadCreator, profileIn, retirable } from "./KinLeadProvision.ts";
 import * as LeadAccess from "./LeadAccess.ts";
@@ -28,6 +29,8 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 const CHARACTER_ORIGIN = "kin-character:";
 const CHARACTER_MAX = 20_000;
 const PLAYBOOKS_MAX = 20;
+// Read past the shown 20, so a company's many playbooks still leave this agent's own.
+const PLAYBOOKS_READ_MAX = 200;
 const decodeQuiet = Schema.decodeUnknownOption(
   Schema.fromJsonString(KinTriggerSettings.fields.quietHours),
 );
@@ -69,10 +72,11 @@ export const ownerLevelAgentPage = Effect.fn("KinAgentPage.read")(function* (inp
     FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`.pipe(
     Effect.mapError(persistence),
   );
-  const playbooks = yield* sql<{ key: string; title: string }>`SELECT r.key, r.title
+  const playbooks = yield* sql<{ key: string; title: string; originKey: string | null }>`
+    SELECT r.key, r.title, r.origin_key AS "originKey"
     FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'docs'
       AND r.category = 'playbook' AND r.state <> 'dropped'
-    ORDER BY r.created_at, r.key LIMIT ${PLAYBOOKS_MAX}`.pipe(Effect.mapError(persistence));
+    ORDER BY r.created_at, r.key LIMIT ${PLAYBOOKS_READ_MAX}`.pipe(Effect.mapError(persistence));
   const connections = yield* liveConnections(orgId).pipe(Effect.mapError(persistence));
   const team = yield* LeadAccess.teamAgent(orgId).pipe(Effect.mapError(persistence));
   return {
@@ -92,7 +96,10 @@ export const ownerLevelAgentPage = Effect.fn("KinAgentPage.read")(function* (inp
       account: row.accountLabel,
       paused: row.pausedAt !== null,
     })),
-    playbooks: playbooks.map((row) => ({ key: KinRecordKey.make(row.key), title: row.title })),
+    playbooks: playbooks
+      .filter((row) => playbookForSeat(row.originKey, lead.domain))
+      .slice(0, PLAYBOOKS_MAX)
+      .map((row) => ({ key: KinRecordKey.make(row.key), title: row.title })),
     changed: yield* agentChanges(KIN_OWNER_LEVEL, orgId, agentId).pipe(
       Effect.mapError(persistence),
     ),

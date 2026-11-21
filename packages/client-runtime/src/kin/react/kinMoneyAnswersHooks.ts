@@ -4,6 +4,8 @@ import type {
   KinDocumentLine,
   KinMoneyBudgetSetInput,
   KinMoneyBudgets,
+  KinNewExpenseInput,
+  KinNewInvoiceInput,
   KinOutlook,
   KinRecordKey,
 } from "@t3tools/contracts";
@@ -140,7 +142,56 @@ export function makeKinMoneyAnswersHooks<R, ER>(
     };
   }
 
+  /**
+   * An invoice typed by hand: the draft and its document, or why nothing was saved. The form keeps
+   * every word either way; a retry with the same request id finishes the same draft.
+   */
+  function useKinNewInvoice(target: KinScreenTarget) {
+    const send = useAtomCommand(kinClient.workNewInvoice, { reportFailure: false });
+    const [busy, setBusy] = useState(false);
+    const [problem, setProblem] = useState<string | null>(null);
+    return {
+      busy,
+      problem,
+      save: async (input: KinNewInvoiceInput) => {
+        setBusy(true);
+        setProblem(null);
+        const outcome = await kinListSend({
+          online: () => kinHostConnected(target.environmentId),
+          send: () => send({ environmentId: target.environmentId, input }),
+        });
+        setBusy(false);
+        if (!outcome.ok) setProblem(outcome.problem);
+        return outcome.ok ? outcome.value : null;
+      },
+    };
+  }
+
+  /** An expense typed by hand: its key, or why nothing was saved, the words kept. */
+  function useKinNewExpense(target: KinScreenTarget) {
+    const send = useAtomCommand(kinClient.workNewExpense, { reportFailure: false });
+    const [busy, setBusy] = useState(false);
+    const [problem, setProblem] = useState<string | null>(null);
+    return {
+      busy,
+      problem,
+      save: async (input: KinNewExpenseInput) => {
+        setBusy(true);
+        setProblem(null);
+        const outcome = await kinListSend({
+          online: () => kinHostConnected(target.environmentId),
+          send: () => send({ environmentId: target.environmentId, input }),
+        });
+        setBusy(false);
+        if (!outcome.ok) setProblem(outcome.problem);
+        return outcome.ok ? outcome.value.expense : null;
+      },
+    };
+  }
+
   return {
+    useKinNewInvoice,
+    useKinNewExpense,
     useKinCash,
     useKinOutlook,
     useKinBudgets,

@@ -73,13 +73,13 @@ import { uuidv4 } from "../../lib/uuid";
 import { MessageAttachmentList } from "../threads/ThreadFeed";
 import {
   KinInvoiceActions,
-  type KinMakeStep,
   KinInvoiceDocuments,
   KinInvoiceFigures,
   KinInvoiceSent,
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
+import type { KinMakeStep } from "./kinMakeStep";
 import { KinAsideNote } from "./KinAttention";
 import { KinSuggestionKeep } from "./KinMoneySuggested";
 import { KinQuoteActions } from "./KinMoneyAnswers";
@@ -90,6 +90,7 @@ import {
   KinWorkLoading,
   KinWorkPrivateMark,
   KinWorkTextField,
+  useKinAskBeforeDiscard,
 } from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import { kinClient } from "./state/kinClient";
@@ -940,6 +941,9 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
   const [problem, setProblem] = useState<string | null>(null);
   const [requestId] = useState(uuidv4);
   const [month, setMonth] = useState<string | null>(null);
+  const leave = useKinAskBeforeDiscard(
+    [draft.amount, draft.note, draft.tds ?? ""].some((typed) => typed.trim() !== ""),
+  );
   const close = () => navigation.goBack();
   const title = KIN_LISTS.entry.recordPayment;
   if (!allowed) {
@@ -988,7 +992,9 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
       ...(draft.note.trim() === "" ? {} : { note: draft.note.trim() }),
       clientRequestId: requestId,
     });
-    if (saved) close();
+    if (!saved) return;
+    leave();
+    close();
   };
   const shown = problem ?? changes.problem;
   return (
@@ -1019,7 +1025,6 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
           autoFocus
           keyboard="numbers"
           disabled={changes.busy}
-          placeholder={entry.balance.leftText}
           onChangeText={(amount) => setDraft({ ...draft, amount })}
         />
         {entry.takesTds ? (

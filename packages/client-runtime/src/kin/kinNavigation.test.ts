@@ -7,6 +7,7 @@ import {
   kinDestinations,
   kinDockSelection,
   kinDockShown,
+  kinPhoneSettingsRows,
   kinPlaceInPlace,
   kinSettingsGroups,
   kinSettingsPageOf,
@@ -187,6 +188,18 @@ describe("kinSettingsGroups", () => {
     ]);
     expect(kinSettingsPageOf("deals", member)).toBe("deals");
     expect(kinSettingsPageOf("deals", groups("member"))).toBe("profile");
+  });
+
+  it("keeps the phone's Settings to the day's rows: Company for the owner level, none for a teammate", () => {
+    const owner = ["team", "agents", "company", "stop"];
+    expect(kinPhoneSettingsRows(ROLES.owner)).toEqual({
+      you: ["profile", "notifications", "appearance"],
+      company: owner,
+    });
+    expect(kinPhoneSettingsRows(ROLES.coOwner).company).toEqual(owner);
+    // Clients on or off, a teammate has no Company rows: no read-only Deals on the phone.
+    expect(kinPhoneSettingsRows(ROLES.member).company).toEqual([]);
+    expect(kinPhoneSettingsRows(ROLES.lead).company).toEqual([]);
   });
 
   it("opens a Company address only for the owner level; anything else lands on the profile", () => {

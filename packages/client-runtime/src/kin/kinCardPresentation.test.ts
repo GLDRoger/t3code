@@ -37,6 +37,7 @@ import {
   kinSendEditDiscardInput,
   kinSendEditedLine,
   kinSendEditInput,
+  KIN_SEND_COPY,
   kinSendEditKept,
   kinSendEditLeaveSaves,
   kinSendEditOffered,
@@ -590,6 +591,15 @@ describe("choice cards", () => {
     // An event or a plain call keeps Confirm and Cancel only.
     expect(mail({ action: "event" }).send?.edit).toBeNull();
     expect(mail({ action: "call" }).send?.edit).toBeNull();
+    // A mail's words fold under Read the whole email; an event's time and a call's tool don't.
+    expect(open.send?.folds).toBe(true);
+    expect(mail({ action: "event" }).send?.folds).toBe(false);
+    // An invoice attached while the company has no bank details says what is missing and where.
+    const file = { name: "INV-26-27-005.pdf", label: "Invoice INV/26-27/005", bytes: 2048 };
+    expect(mail({ attachments: [file] }).send?.noBank).toBeNull();
+    expect(mail({ attachments: [{ ...file, bankMissing: true }] }).send?.noBank).toBe(
+      KIN_SEND_COPY.noBank,
+    );
 
     const started = kinSendEditStart(open)!;
     expect(started).toEqual({

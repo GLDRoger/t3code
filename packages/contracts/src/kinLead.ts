@@ -97,6 +97,30 @@ export const kinSalesLead = <L extends { readonly agentId: string; readonly doma
   );
 };
 
+/** The areas Kin has a ready-made character for; any other area starts on a plain one. */
+export const KIN_CHARACTER_SEATS = [
+  "chief-of-staff",
+  "engineering",
+  "social",
+  "finance",
+  "growth",
+] as const;
+export type KinCharacterSeat = (typeof KIN_CHARACTER_SEATS)[number];
+const KIN_CHARACTER_SEAT_ALIASES: Readonly<Record<string, KinCharacterSeat>> = {
+  tech: "engineering",
+  "tech-lead": "engineering",
+  marketing: "growth",
+  content: "social",
+  sales: "growth",
+  "sales-and-marketing": "growth",
+  "business-development": "growth",
+  chief: "chief-of-staff",
+};
+/** The ready-made seat an area takes, its own or the one people commonly mean by it; else null. */
+export const kinCharacterSeat = (domain: string): KinCharacterSeat | null =>
+  KIN_CHARACTER_SEATS.find((seat) => seat === domain) ??
+  (Object.hasOwn(KIN_CHARACTER_SEAT_ALIASES, domain) ? KIN_CHARACTER_SEAT_ALIASES[domain]! : null);
+
 /** What teammates see about a lead: a line or two the owner writes, shown to people it may talk to. */
 export const KinLeadIntro = Schema.String.check(Schema.isMaxLength(200));
 export type KinLeadIntro = typeof KinLeadIntro.Type;
@@ -705,8 +729,15 @@ export const KinGithubTrigger = Schema.Struct({
       fork: Schema.Boolean,
       /** The owner's own account opened it: GitHub allows only a comment review. */
       ownersOwn: Schema.Boolean,
+      /** The head commit Kin read; a review someone asked for is posted against it. */
+      headSha: Schema.optional(Schema.String),
       /** For an outside PR, whose turn gets no shell: the diff as the server read it, clipped. */
       diff: Schema.optional(Schema.String),
+      /**
+       * A re-review after new commits: the head Kin last reviewed, and whether `diff` is the whole
+       * PR's at `headSha` because GitHub didn't give what changed since `from`.
+       */
+      reReview: Schema.optional(Schema.Struct({ from: Schema.String, whole: Schema.Boolean })),
     }),
   ),
   /** Failing check names, for `checks`. */
@@ -749,6 +780,8 @@ export const KinEvent = Schema.Union([
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     webhookDeliveryId: Schema.optional(ScheduledTaskWebhookDeliveryId),
     trigger: Schema.optional(KinGithubTrigger),
+    /** The person who asked for this review in Kin (`kin_github_review_ask`); told its outcome. */
+    askedBy: Schema.optional(KinPersonId),
   }),
   Schema.TaggedStruct("deferral.due", {
     ...EventBase,

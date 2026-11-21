@@ -91,7 +91,7 @@ export function makeKinAttentionHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinAt
   /**
    * The Tasks badge: the same number as Tasks' Needs you heading (`kinNeedsYouCount`): Tasks' own
    * count, which the host's Needs attention carries as it moves, and the deal facts. An older host's
-   * count is read again as Work's tasks change. Null until known.
+   * count is read again as Work's tasks change. Null until first known.
    */
   function useKinTasksNeedsYou(target: KinScreenTarget): number | null {
     const { environmentId, orgId } = target;
@@ -107,7 +107,13 @@ export function makeKinAttentionHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinAt
     const counts =
       carried !== null ? { needsYou: carried } : Option.getOrNull(AsyncResult.value(read));
     const dealFacts = kinTasksDealFactsOf(pulse, { ownerLevel, me: me?.personId ?? null });
-    return kinNeedsYouCount({ counts, dealFacts: dealFacts.length });
+    const known = kinNeedsYouCount({ counts, dealFacts: dealFacts.length });
+    // Offline or reconnecting the count can't be read; the badge keeps the last one it showed.
+    const key = `${environmentId}:${orgId}`;
+    const [last, setLast] = useState({ key, count: known });
+    if (known !== null && (known !== last.count || key !== last.key))
+      setLast({ key, count: known });
+    return known ?? (last.key === key ? last.count : null);
   }
 
   /**

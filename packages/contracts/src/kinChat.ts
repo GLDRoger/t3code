@@ -155,6 +155,8 @@ export const KinChatMember = Schema.Struct({
   joinedAt: IsoDateTime,
   leftAt: Schema.NullOr(IsoDateTime),
   mutedUntil: Schema.NullOr(IsoDateTime),
+  // When this member pinned the chat to the top of their list; absent when it isn't pinned.
+  pinnedAt: Schema.optionalKey(IsoDateTime),
 });
 export type KinChatMember = typeof KinChatMember.Type;
 
@@ -472,6 +474,8 @@ export const KinSendCard = Schema.Struct({
       /** "Invoice INV/26-27/004 · ₹1,18,000.00", read by the server from the record. */
       label: Schema.NullOr(KinText.check(Schema.isMaxLength(200))),
       bytes: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      /** An invoice's, drawn while the company had no bank account or UPI id to be paid to. */
+      bankMissing: Schema.optionalKey(Schema.Literal(true)),
     }),
   ).check(Schema.isMaxLength(10)),
   outcome: Schema.NullOr(
@@ -932,6 +936,9 @@ export const KinMessagesMarkReadResult = Schema.Struct({});
 /** Mutes or unmutes the caller's own notifications for one chat; the badge still counts it. */
 export const KinChatsMuteInput = Schema.Struct({ chatId: KinChatId, muted: Schema.Boolean });
 export type KinChatsMuteInput = typeof KinChatsMuteInput.Type;
+/** Pins or unpins one chat at the top of the caller's own list. */
+export const KinChatsPinInput = Schema.Struct({ chatId: KinChatId, pinned: Schema.Boolean });
+export type KinChatsPinInput = typeof KinChatsPinInput.Type;
 export type KinMessagesMarkReadResult = typeof KinMessagesMarkReadResult.Type;
 /**
  * Empties a chat for everyone in it, for good: its messages, cards, reactions and files. The chat,
@@ -1002,6 +1009,7 @@ export const KIN_CHAT_WS_METHODS = {
   chatsCreateDirect: "kin.chats.createDirect",
   chatsWithPerson: "kin.chats.withPerson",
   chatsMute: "kin.chats.mute",
+  chatsPin: "kin.chats.pin",
   chatsClear: "kin.chats.clear",
   chatMembers: "kin.chat.members",
   chatSubscribe: "kin.chat.subscribe",
@@ -1036,6 +1044,11 @@ export const KinChatRpcs = [
   }),
   Rpc.make(KIN_CHAT_WS_METHODS.chatsMute, {
     payload: KinChatsMuteInput,
+    success: KinChatMember,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatsPin, {
+    payload: KinChatsPinInput,
     success: KinChatMember,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
@@ -1090,6 +1103,8 @@ export const KIN_CHAT_RPC_SCOPES = {
   [KIN_CHAT_WS_METHODS.chatsWithPerson]: AuthKinChatScope,
   // Only quiets the caller's own pushes, like marking a chat read.
   [KIN_CHAT_WS_METHODS.chatsMute]: AuthKinChatScope,
+  // Only orders the caller's own list, like a mute.
+  [KIN_CHAT_WS_METHODS.chatsPin]: AuthKinChatScope,
   // A teammate clears their own direct chat with a lead, so chat access reaches the method; the
   // chat service decides per chat, and refuses a group to anyone but the owner.
   [KIN_CHAT_WS_METHODS.chatsClear]: AuthKinChatScope,

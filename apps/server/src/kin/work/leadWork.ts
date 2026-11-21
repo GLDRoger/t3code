@@ -1037,6 +1037,10 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     title: record.title,
     state: record.state,
     owner: name(record.owner) ?? "someone",
+    // Who handed it back to its holder: a person's own hand-back is no chat line (`tellOnTasks`).
+    ...(record.handedBack === undefined
+      ? {}
+      : { handedBackBy: name(record.handedBack.by) ?? "someone" }),
     ...(waitingOn === undefined ? {} : { waitingOn }),
     ...(record.dueAt === null
       ? {}

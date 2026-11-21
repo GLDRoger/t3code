@@ -147,6 +147,22 @@ describe("kinNotificationRoute", () => {
       },
       "/kin/env-1/kin-default/approvals",
     ],
+    // Someone's moves on the reader's tasks come in no chat.
+    [
+      "someone's moves on several of your tasks, to Tasks",
+      { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/work" },
+      "/kin/env-1/kin-default/work",
+    ],
+    [
+      "someone's move on one task, to it over Tasks",
+      { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/work/W-31" },
+      ["/kin/env-1/kin-default/work", "/kin/env-1/kin-default/work/W-31"],
+    ],
+    [
+      "being put on a project, to the project",
+      { kin: 1, orgId: "kin-default", deepLink: "/kin/env-1/kin-default/projects/P-2" },
+      "/kin/env-1/kin-default/projects/P-2",
+    ],
   ])("routes %s", (_name, data, path) => {
     const route = kinNotificationRoute(response({ data }));
     expect(route?.paths).toEqual(typeof path === "string" ? [path] : path);
@@ -165,6 +181,7 @@ describe("kinNotificationRoute", () => {
     ["an encoded dot segment", { ...deferral, deepLink: "/kin/%2E%2E/kin-default/chats/chat-1" }],
     ["a trailing segment", { ...deferral, deepLink: `${chatLink}/extra` }],
     ["another org's approvals", { ...deferral, deepLink: "/kin/env-1/other-org/approvals" }],
+    ["another org's Tasks", { ...deferral, deepLink: "/kin/env-1/other-org/work" }],
     [
       "another org's devices",
       { ...deferral, deepLink: "/kin/env-1/other-org/people/zoya/devices" },

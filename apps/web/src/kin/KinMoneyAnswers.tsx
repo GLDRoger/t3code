@@ -730,7 +730,11 @@ export function KinLinesEditor(props: {
   readonly lines: ReadonlyArray<KinLineDraft>;
   readonly disabled: boolean;
   readonly onChange: (lines: ReadonlyArray<KinLineDraft>) => void;
+  /** Each line's SAC or HSN code, which only India's invoices carry; shown unless false. */
+  readonly codes?: boolean;
+  readonly detail?: string;
 }) {
+  const codes = props.codes !== false;
   const set = (index: number, patch: Partial<KinLineDraft>) =>
     props.onChange(props.lines.map((one, at) => (at === index ? { ...one, ...patch } : one)));
   const field = (
@@ -759,24 +763,34 @@ export function KinLinesEditor(props: {
     <div className="flex flex-col gap-2">
       <div className="flex flex-col">
         <span className="text-sm font-medium text-foreground">{KIN_LINES.title}</span>
-        <span className="text-xs text-muted-foreground">{KIN_LINES.detail}</span>
+        <span className="text-xs text-muted-foreground">{props.detail ?? KIN_LINES.detail}</span>
       </div>
       {props.lines.map((_, index) => (
         <div
           // oxlint-disable-next-line react/no-array-index-key -- lines have no id; a row is its place
           key={index}
-          className="grid grid-cols-[1fr_1fr_auto] gap-2 sm:grid-cols-[3fr_1.4fr_0.8fr_1fr_1.6fr_auto]"
+          className={cn(
+            "grid grid-cols-[1fr_1fr_auto] gap-2",
+            codes
+              ? "sm:grid-cols-[3fr_1.4fr_0.8fr_1fr_1.6fr_auto]"
+              : "sm:grid-cols-[3fr_0.8fr_1fr_1.6fr_auto]",
+          )}
         >
           {field(index, "description", KIN_LINES.description, {
             className: "col-span-3 sm:col-span-1",
             maxLength: 300,
           })}
-          {field(index, "sac", KIN_LINES.sac, {
-            className: "",
-            inputMode: "numeric",
-            maxLength: 8,
+          {codes
+            ? field(index, "sac", KIN_LINES.sac, {
+                className: "",
+                inputMode: "numeric",
+                maxLength: 8,
+              })
+            : null}
+          {field(index, "quantity", KIN_LINES.quantity, {
+            className: codes ? "" : "col-span-2 sm:col-span-1",
+            inputMode: "decimal",
           })}
-          {field(index, "quantity", KIN_LINES.quantity, { className: "", inputMode: "decimal" })}
           <Button
             type="button"
             size="icon-sm"

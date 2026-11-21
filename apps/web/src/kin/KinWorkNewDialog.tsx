@@ -19,7 +19,10 @@ import {
 } from "@t3tools/client-runtime/kin/kinWork";
 import { useAtomValue } from "@effect/atom-react";
 import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
-import { kinNewTaskChoices } from "@t3tools/client-runtime/kin/kinWorkClients";
+import {
+  kinNewTaskChoices,
+  kinTaskProjectsAllowed,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
 import type { KinRecordKey } from "@t3tools/contracts";
 import { useId, useState } from "react";
 
@@ -299,6 +302,7 @@ export function KinWorkNewDialog(
                       label={KIN_WORK_NEW_COPY.projectLabel}
                       value={draft.project}
                       choices={choices.projects}
+                      only={kinTaskProjectsAllowed(me)}
                       onChange={(project) => setDraft({ ...draft, project })}
                     />
                   )}

@@ -30,6 +30,7 @@ import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } fro
 import { markOutside, outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
+import { REVIEW_THREAD_PREFIX, REVIEW_TOOLS } from "./outsideReview.ts";
 import { CODING_T3_TOOLS, isEngineeringDomain, LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { wakeupOfRuns } from "../chat/wakeupRuns.ts";
 import { isSocialTool } from "../social/mcp.ts";
@@ -253,7 +254,12 @@ export const leadNameOf = Effect.fn("KinAgentSession.leadNameOf")(
 
 /** Kin's GitHub tools work through the owner's own login, so they show only while it's connected. */
 const isKinGitHubTool = (name: string) => name.startsWith("kin_github_");
-const LOGIN_GITHUB_TOOLS = new Set(["kin_github_review", "kin_github_watch", "kin_github_link"]);
+const LOGIN_GITHUB_TOOLS = new Set([
+  "kin_github_review",
+  "kin_github_review_ask",
+  "kin_github_watch",
+  "kin_github_link",
+]);
 const loginConnected = Effect.gen(function* () {
   const kin = yield* Effect.serviceOption(KinServer);
   if (Option.isNone(kin) || Option.isNone(kin.value.services)) return false;
@@ -262,8 +268,8 @@ const loginConnected = Effect.gen(function* () {
 
 /**
  * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
- * Shared threads list only what shared turns may run; T3 tools show only on an owner-only thread,
- * and its coding ones only on an engineering lead's (`threadSeat`, as `SEAT_HOME`'s).
+ * Shared threads list only what shared turns may run, an outside review's only `REVIEW_TOOLS`; T3
+ * tools only an owner-only thread, its coding ones only an engineering lead's (`SEAT_HOME`'s).
  * `KinToolGate` checks each call.
  */
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(function* (
@@ -271,7 +277,12 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
   threadId: ThreadId,
 ) {
   const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
-  if (shared && !listedOnSharedThread(name)) return false;
+  if (
+    threadId.startsWith(REVIEW_THREAD_PREFIX)
+      ? !REVIEW_TOOLS.has(name)
+      : shared && !listedOnSharedThread(name)
+  )
+    return false;
   if (isKinGitHubTool(name)) return LOGIN_GITHUB_TOOLS.has(name) && (yield* loginConnected);
   if (isSocialTool(name)) return yield* onSocialSeat(threadId);
   const home = Object.hasOwn(SEAT_HOME, name) ? SEAT_HOME[name] : undefined;

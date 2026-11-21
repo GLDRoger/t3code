@@ -25,6 +25,7 @@ import {
   kinContactDraftCheck,
   kinContactDraftOf,
   kinContactUpdateInput,
+  kinFormTyped,
   kinProjectCreateInput,
   kinProjectDraftCheck,
   kinProjectDraftOf,
@@ -33,6 +34,7 @@ import {
   kinTaskProjectMenu,
   kinWorkFormMoved,
   kinWorkReadState,
+  kinWorkReadUnreachable,
   kinWorkSend,
   type KinClientDraft,
   type KinWorkFormState,
@@ -339,6 +341,18 @@ describe("kinWorkReadState", () => {
       stale: true,
     });
   });
+
+  // Money's Cash in the bank and Next 30 days offline: no "Loading…" under the page's offline line.
+  it("says nothing of a read it can't reach and holds nothing of, and shows what it holds", () => {
+    const waiting = kinWorkReadState(AsyncResult.initial(true));
+    const failed = kinWorkReadState(AsyncResult.failure(Cause.fail("down")));
+    const held = kinWorkReadState(AsyncResult.success("Cash 1,200"));
+    expect(kinWorkReadUnreachable(waiting, "offline")).toBe(true);
+    expect(kinWorkReadUnreachable(failed, "offline")).toBe(true);
+    expect(kinWorkReadUnreachable(held, "offline")).toBe(false);
+    expect(kinWorkReadUnreachable(waiting, "connecting")).toBe(false);
+    expect(kinWorkReadUnreachable(failed, "connected")).toBe(false);
+  });
 });
 
 describe("kinTaskProjectMenu", () => {
@@ -378,6 +392,22 @@ describe("kinProjectDraftCheck", () => {
     expect(kinProjectTargetHint(null)).toBe("Leave it empty for no target date.");
     expect(kinProjectTargetHint("2026-12-03")).toBeNull();
     expect(kinProjectTargetHint("2026-02-30")).toBe("Enter a real date.");
+  });
+});
+
+describe("kinFormTyped", () => {
+  const opened = { ...kinClientDraftOf(), name: "Tallmoor Freight", tags: "freight" };
+  it.each([
+    ["nothing touched", {}, false],
+    ["spaces only", { notes: "   ", contactName: " " }, false],
+    ["an empty Add another row", { contactPhones: ["", " "] }, false],
+    ["typed then erased", { name: "Tallmoor Freight " }, false],
+    ["a word typed", { contactName: "Ingrid" }, true],
+    ["a phone typed in a second row", { contactPhones: ["", "+47 912 34 567"] }, true],
+    ["a switch moved", { private: true }, true],
+    ["a kind picked", { kind: "prospect" as const }, true],
+  ])("%s", (_, change, typed) => {
+    expect(kinFormTyped(opened, { ...opened, ...change })).toBe(typed);
   });
 });
 

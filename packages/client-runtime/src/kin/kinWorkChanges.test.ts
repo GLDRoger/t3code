@@ -28,6 +28,7 @@ import {
   kinWorkItemNotice,
   kinWorkListNotice,
   kinWorkStatusOffer,
+  kinWorkTakeLabel,
 } from "./kinWorkChanges.ts";
 import { KIN_WORK_NOTHING_NAMED, kinWorkNote } from "./kinWorkStream.ts";
 
@@ -285,6 +286,20 @@ describe("createKinWorkChanges", () => {
     const h = harness();
     void h.changes.run(task({ owner: lead, confirmed: false }), action, names);
     expect(h.sent).toEqual([[method, input]]);
+  });
+
+  it.each([
+    ["one the reader gave away comes back", { givenBy: me }, "Take it back", "It's yours again."],
+    ["one that was never the reader's is taken", {}, "Take it", "It's yours now."],
+  ] as const)("taking a task: %s", async (_name, patch, label, said) => {
+    const teammate = { _tag: "person", personId: KinPersonId.make("invented-teammate") } as const;
+    const held = task({ owner: teammate, ...patch });
+    expect(kinWorkTakeLabel(held, names)).toBe(label);
+    const h = harness();
+    const taken = h.changes.run(held, { type: "takeBack" }, names);
+    h.answer(AsyncResult.success(task({ rev: 4 })));
+    await taken;
+    expect(h.state().notice?.text).toBe(said);
   });
 
   it("says a closed task has to be reopened before it is given to anyone", async () => {

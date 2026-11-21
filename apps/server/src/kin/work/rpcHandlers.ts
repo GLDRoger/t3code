@@ -198,6 +198,11 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.createDeal": Effect.fn("KinWork.rpc.createDeal")(function* (input) {
         return yield* call((people) => Deals.create(people, input));
       }),
+      "kin.work.createPartyWithDeal": Effect.fn("KinWork.rpc.createPartyWithDeal")(
+        function* (input) {
+          return yield* call((people) => Clients.createPartyWithDeal(people, input));
+        },
+      ),
       "kin.work.updateDeal": Effect.fn("KinWork.rpc.updateDeal")(function* (input) {
         return yield* call((people) => Deals.update(people, input));
       }),
@@ -269,6 +274,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.docs.restore": Effect.fn("KinDocs.rpc.restore")(function* (input) {
         return yield* call((people) => Docs.restore(people, input));
+      }),
+      "kin.docs.editSection": Effect.fn("KinDocs.rpc.editSection")(function* (input) {
+        return yield* call((people) => Docs.editSection(people, input));
       }),
       "kin.docs.subscribe": (input) => stream((people) => Docs.subscribe(people, input)),
       "kin.docs.recipes": Effect.fn("KinDocs.rpc.recipes")(function* (input) {
@@ -373,6 +381,12 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.work.invoiceFromQuote": Effect.fn("KinWork.rpc.invoiceFromQuote")(function* (input) {
         return yield* call((people) => MoneyAnswers.invoiceFromQuote(people, input));
+      }),
+      "kin.work.newInvoice": Effect.fn("KinWork.rpc.newInvoice")(function* (input) {
+        return yield* call((people) => MoneyAnswers.newInvoice(people, input));
+      }),
+      "kin.work.newExpense": Effect.fn("KinWork.rpc.newExpense")(function* (input) {
+        return yield* call((people) => MoneyAnswers.newExpense(people, input));
       }),
     }),
     ...moneyLive.of({

@@ -1,4 +1,4 @@
-import type { KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { kinCharacterSeat, type KinOrgId, type KinPersonId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -8,6 +8,7 @@ import * as Docs from "./docs.ts";
 export const PLAYBOOK_SEEDS = [
   {
     slug: "taking-on-a-client",
+    seats: ["growth", "finance"],
     title: "Taking on a client",
     body: `# Taking on a client
 
@@ -37,6 +38,7 @@ Keep the PRD short; it changes, and the doc history keeps every version.
   },
   {
     slug: "running-a-project",
+    seats: ["engineering"],
     title: "Running a project",
     body: `# Running a project
 
@@ -67,6 +69,7 @@ The owner decides scope changes that move price or dates. The team decides how t
   },
   {
     slug: "reviewing-and-merging-code",
+    seats: ["engineering"],
     title: "Reviewing and merging code",
     body: `# Reviewing and merging code
 
@@ -92,6 +95,7 @@ Merging follows each repo's own rules and permissions; this playbook doesn't cha
   },
   {
     slug: "chasing-money",
+    seats: ["finance"],
     title: "Chasing money",
     body: `# Chasing money
 
@@ -120,6 +124,7 @@ Every reminder and invoice goes out only on the owner's Confirm. Never change an
   },
   {
     slug: "checking-in-with-clients",
+    seats: ["growth"],
     title: "Checking in with clients",
     body: `# Checking in with clients
 
@@ -147,6 +152,7 @@ Whoever owns the client decides what to say; anything that commits money or date
   },
   {
     slug: "assigning-work",
+    seats: ["engineering"],
     title: "Assigning work",
     body: `# Assigning work
 
@@ -171,6 +177,7 @@ The owner can reassign anything; people can hand back work they can't do.
   },
   {
     slug: "winning-customers",
+    seats: ["growth", "social"],
     title: "Winning customers",
     body: `# Winning customers
 
@@ -201,6 +208,17 @@ Whoever looks after a deal decides the next step. Prices, discounts and terms ar
 const SEED_ORIGIN = "kin-playbook-seed:";
 /** Winning customers, which holds `deal_quiet_days` until the company moves it. */
 export const WINNING_CUSTOMERS_ORIGIN = `${SEED_ORIGIN}winning-customers`;
+
+/**
+ * Whether an agent in this area works by this playbook, for its page: the owner's own playbooks and
+ * the Chief of staff's (or any other area's) take every one; a standard seat takes the seeds for it.
+ */
+export const playbookForSeat = (originKey: string | null, domain: string) => {
+  const seat = kinCharacterSeat(domain);
+  if (seat === null || seat === "chief-of-staff") return true;
+  const seed = PLAYBOOK_SEEDS.find((one) => `${SEED_ORIGIN}${one.slug}` === originKey);
+  return seed === undefined || (seed.seats as ReadonlyArray<string>).includes(seat);
+};
 
 /**
  * The default set, once per company: a seed whose origin key exists is never made again, so a

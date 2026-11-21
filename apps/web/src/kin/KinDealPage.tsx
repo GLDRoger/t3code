@@ -16,6 +16,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
 import { kinWorkAssignees, kinWorkDueText, kinWorkName } from "@t3tools/client-runtime/kin/kinWork";
+import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type {
   KinDealMove,
   KinDealPage as KinDealPageValue,
@@ -672,7 +673,8 @@ function DealEdit(
   const { names } = props.directory;
   const send = useKinDealSend(props);
   const home = useKinHomeCurrency(props);
-  const [draft, setDraft] = useState(() => kinDealEditDraft(deal, names));
+  const [opened] = useState(() => kinDealEditDraft(deal, names));
+  const [draft, setDraft] = useState(opened);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const ids = {
@@ -706,6 +708,7 @@ function DealEdit(
       onOpenExisting={() => {}}
       onSave={() => void save()}
       onClose={props.onClose}
+      typed={kinFormTyped(opened, draft)}
     >
       <Field id={ids.party} label={KIN_DEALS.clientField} hint={KIN_DEALS.clientStays}>
         <Input id={ids.party} value={deal.party.title} readOnly />

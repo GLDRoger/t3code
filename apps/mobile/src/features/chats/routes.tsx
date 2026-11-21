@@ -4,6 +4,7 @@ import { createNativeStackScreen } from "@react-navigation/native-stack";
 import { pageRoute, sheetRoute } from "../layout/route-options";
 import { KinApprovalsScreen } from "./approvals/KinApprovalsScreen";
 import { KinAgentsScreen } from "./KinAgentsScreen";
+import { KinAppearanceScreen } from "./KinAppearanceScreen";
 import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinClientScreen } from "./KinClientScreen";
@@ -14,7 +15,6 @@ import { KinDealScreen } from "./KinDealScreen";
 import { KinDealsConcernScreen } from "./KinDealsConcernScreen";
 import { KinDealStagesScreen } from "./KinDealsSettings";
 import { KinImportScreen } from "./KinImportScreen";
-import { KinRecommendationsScreen } from "./KinRecommendationsScreen";
 import {
   KinConnectionAddScreen,
   KinConnectionEditScreen,
@@ -30,7 +30,6 @@ import { KinGroupFormScreen } from "./KinGroupFormScreen";
 import { KinPeoplePickScreen } from "./KinPeoplePickScreen";
 import { KinGroupScreen } from "./KinGroupScreen";
 import { KinLeadFormScreen } from "./KinLeadFormScreen";
-import { KinAgentCharacterScreen } from "./KinAgentCharacterScreen";
 import { KinListSettingsScreen, KinPaymentScreen } from "./KinListEntry";
 import { KinEntryEditScreen } from "./KinListEntryEdit";
 import { KinDatesScreen, KinListScreen } from "./KinListScreen";
@@ -43,11 +42,13 @@ import { KinProjectLeadScreen } from "./KinProjectLeadScreen";
 import { KinProjectPeopleScreen } from "./KinProjectPeopleScreen";
 import { KinProjectScreen } from "./KinProjectScreen";
 import { KinSettingsScreen } from "./KinSettings";
+import { KinThisPhoneScreen } from "./KinThisPhoneScreen";
 import { KinBriefFormScreen } from "./KinBriefs";
 import { KinCheckInFormScreen } from "./KinCheckIns";
 import { KinGoalFormScreen } from "./KinGoals";
 import { KinInviteScreen } from "./KinInviteScreen";
 import { KinReceiptApplyScreen, KinReceiptNewScreen } from "./KinInvoice";
+import { KinExpenseNewScreen, KinInvoiceNewScreen } from "./KinMoneyForms";
 import { KinJoinScreen } from "./KinJoinScreen";
 import { KinBudgetScreen } from "./KinMoneyAnswers";
 import { KinTeamScreen } from "./KinTeamScreen";
@@ -80,6 +81,14 @@ export const KIN_SCREENS = {
     screen: KinSettingsScreen,
     linking: "settings/kin",
     options: pageRoute({ title: "Kin", itemStyle: "standard" }),
+  }),
+  KinThisPhone: createNativeStackScreen({
+    screen: KinThisPhoneScreen,
+    options: pageRoute({ title: "This phone" }),
+  }),
+  KinAppearance: createNativeStackScreen({
+    screen: KinAppearanceScreen,
+    options: pageRoute({ title: "Appearance" }),
   }),
   KinWaiting: createNativeStackScreen({
     screen: KinWaitingScreen,
@@ -124,6 +133,14 @@ export const KIN_SCREENS = {
     screen: KinReceiptNewScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
+  KinInvoiceNew: createNativeStackScreen({
+    screen: KinInvoiceNewScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinExpenseNew: createNativeStackScreen({
+    screen: KinExpenseNewScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
   KinReceiptApply: createNativeStackScreen({
     screen: KinReceiptApplyScreen,
     options: sheetRoute({ detent: 0.75 }),
@@ -150,11 +167,6 @@ export const KIN_SCREENS = {
     screen: KinCompanyScreen,
     linking: "kin/:environmentId/:orgId/company",
     options: pageRoute({ title: "Company details" }),
-  }),
-  KinRecommendations: createNativeStackScreen({
-    screen: KinRecommendationsScreen,
-    linking: "kin/:environmentId/:orgId/recommendations",
-    options: pageRoute({ title: "Recommendations" }),
   }),
   KinConnections: createNativeStackScreen({
     screen: KinConnectionsScreen,
@@ -358,11 +370,6 @@ export const KIN_SCREENS = {
   // A full sheet, so the keyboard never covers the field being typed in.
   KinLeadForm: createNativeStackScreen({
     screen: KinLeadFormScreen,
-    options: sheetRoute({ detent: "full", android: "fullScreen" }),
-  }),
-  // A full sheet, so the keyboard never covers the character being written.
-  KinAgentCharacter: createNativeStackScreen({
-    screen: KinAgentCharacterScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinGroup: createNativeStackScreen({

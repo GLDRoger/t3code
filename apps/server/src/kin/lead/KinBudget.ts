@@ -59,6 +59,7 @@ export const askedByTeammate = (event: KinEvent, ownerLevel: ReadonlySet<string>
   ("origin" in event &&
     event.origin?.personId !== undefined &&
     !ownerLevel.has(event.origin.personId)) ||
+  (event._tag === "github" && event.askedBy !== undefined && !ownerLevel.has(event.askedBy)) ||
   (event.provenance._tag === "human" && !ownerLevel.has(event.provenance.personId));
 type Charge = {
   readonly orgId: KinOrgId;
@@ -247,7 +248,9 @@ const make = Effect.gen(function* () {
             AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.origin.personId')"))})
           OR (json_extract(e.json, '$.provenance._tag') = 'human'
             AND json_extract(e.json, '$.provenance.personId') <> a.owner_person_id
-            AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.provenance.personId')"))})))`;
+            AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.provenance.personId')"))})
+          OR (e.tag = 'github' AND json_extract(e.json, '$.askedBy') <> a.owner_person_id
+            AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.askedBy')"))})))`;
   const waiting = (orgId: KinOrgId) =>
     heldWork(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const limitsOf = Effect.fn("KinBudget.limitsOf")(function* (stored: string | null) {

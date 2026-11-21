@@ -101,14 +101,18 @@ export function KinWorkAudienceRow(
     props.names,
   );
   if (props.onMark === null) return null;
-  const description = failed ? KIN_WORK_AUDIENCE.failed : audience.answer;
+  // One line: who in a few words; the whole answer is read out.
   const row = (
-    <ListRowLayout
-      icon={audience.current === "me" ? "lock" : "person.2"}
-      label={KIN_WORK_AUDIENCE.label}
-      description={description}
-      disabled={props.disabled || pending}
-    />
+    <View accessible accessibilityLabel={`${KIN_WORK_AUDIENCE.label}: ${audience.answer}`}>
+      <ListRowLayout
+        icon={audience.current === "me" ? "lock" : "person.2"}
+        label={KIN_WORK_AUDIENCE.label}
+        detail={audience.short}
+        detailEllipsizeMode="tail"
+        {...(failed ? { description: KIN_WORK_AUDIENCE.failed } : {})}
+        disabled={props.disabled || pending}
+      />
+    </View>
   );
   if (audience.choices.length === 0) return row;
   return (

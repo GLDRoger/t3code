@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
   EnvironmentId,
+  KinAgentId,
   KinChatId,
   KinEventId,
   KinMemberId,
@@ -47,6 +48,9 @@ import { KinPushDevices, type KinPushCaller } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
 import * as Devices from "./KinPushDevices.ts";
 import { layerTrusting, watcher } from "./KinPushPresence.testkit.ts";
+import { deliverHeld } from "../triggers/heldDelivery.ts";
+import { tellOnTasks } from "../work/assignNotices.ts";
+import { byId } from "../work/recordRows.ts";
 import * as Sender from "./KinPushSender.ts";
 
 const NOW = Date.parse("2026-11-08T00:00:00Z");
@@ -1435,6 +1439,112 @@ describe("KinPushSender", () => {
       // Settled once sent, so the next start's pass sends nothing again.
       assert.strictEqual(yield* sender.flushKeyPushes, 0);
       assert.strictEqual(apns.sent.length, 4);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
+  it.effect("tells a person's taps on someone's tasks in one banner per mover, in no chat", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { sender, sql } = yield* seed;
+      const chats = yield* Repository.KinChatRepository;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('h_dev', 'org_01', 'dev', 'Dev', ${T})`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at)
+        VALUES ('org_01', 'work', 'Work', 'W', 1, 0)`;
+      for (let n = 31; n <= 40; n++)
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title,
+            owner_kind, owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
+          VALUES ('org_01', ${`w${n}`}, 'work', ${`W-${n}`}, ${`Invented task ${n}`}, 'person',
+            ${owner}, 0, 'person', ${`w${n}`}, 0, 0)`;
+      const handBack = (by: KinPersonId, n: number) =>
+        Effect.gen(function* () {
+          const row = (yield* byId(orgId, `w${n}`))!;
+          yield* tellOnTasks(
+            { orgId, personId: by, agentId: KinAgentId.make("lead_fin"), change: `screen:w${n}` },
+            [{ personId: owner, kind: "returned", row, why: "Invented: not mine" }],
+          );
+        });
+      const deliver = deliverHeld(
+        orgId,
+        { notice: () => Effect.die("a task move is no chat line") },
+        { notify: (notification) => sender.notify(notification).pipe(Effect.tap(Fiber.join)) },
+      );
+      const banners = () =>
+        apns.sent.map((push) => {
+          const { aps, body } = push.payload as {
+            aps: { alert?: { title: string; body: string }; badge: number };
+            body: { deepLink: string; subject?: unknown };
+          };
+          return { alert: aps.alert ?? null, badge: aps.badge, link: body.deepLink };
+        });
+      const unread = yield* chats.unreadTotal({ orgId, personId: owner });
+      const messages = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages`;
+      const posted = (yield* messages)[0]!.n;
+      // Priya hands seven back within the minute; nothing is posted and nothing rings yet.
+      for (let n = 31; n <= 37; n++) {
+        yield* handBack(member, n);
+        yield* TestClock.adjust(Duration.seconds(5));
+      }
+      apns.sent.length = 0;
+      yield* deliver;
+      assert.deepStrictEqual(banners(), []);
+      // Dev hands one back inside Priya's minute; each is told for themself.
+      yield* handBack(KinPersonId.make("h_dev"), 38);
+      yield* TestClock.adjust(Duration.seconds(60));
+      yield* deliver;
+      assert.deepStrictEqual(banners(), [
+        {
+          alert: { title: "Tasks", body: "priya handed back 7 tasks" },
+          badge: unread,
+          link: "/kin/env_kin/org_01/work",
+        },
+        {
+          alert: { title: "Tasks", body: "priya handed back 7 tasks" },
+          badge: unread,
+          link: "/kin/env_kin/org_01/work",
+        },
+        // The half hour's one ring is spent: the second banner only sets the badge, unchanged.
+        { alert: null, badge: unread, link: "/kin/env_kin/org_01/work/W-38" },
+        { alert: null, badge: unread, link: "/kin/env_kin/org_01/work/W-38" },
+      ]);
+      assert.strictEqual((yield* messages)[0]!.n, posted);
+      assert.strictEqual(yield* chats.unreadTotal({ orgId, personId: owner }), unread);
+      apns.sent.length = 0;
+      yield* deliver;
+      assert.deepStrictEqual(banners(), []);
+
+      // In his quiet hours (22:00 in New York) it waits, and is told once when they end.
+      yield* TestClock.setTime(Date.parse("2026-11-08T03:00:00Z"));
+      yield* sql`DELETE FROM kin_push_rings`;
+      yield* handBack(member, 39);
+      yield* TestClock.adjust(Duration.minutes(5));
+      yield* deliver;
+      assert.deepStrictEqual(banners(), []);
+      yield* TestClock.setTime(Date.parse("2026-11-08T13:00:00Z"));
+      yield* deliver;
+      yield* deliver;
+      assert.deepStrictEqual(
+        banners().map((banner) => banner.alert?.body),
+        ["priya handed back W-39 Invented task 39", "priya handed back W-39 Invented task 39"],
+      );
+      assert.deepStrictEqual(
+        (apns.sent[0]!.payload as { body: { subject?: unknown } }).body.subject,
+        { _tag: "record", key: "W-39", kind: "task" },
+      );
+
+      // Muted, his chat with the agent keeps it silent.
+      yield* sql`DELETE FROM kin_push_rings`;
+      yield* sql`UPDATE kin_chat_members SET muted_until = '2026-12-01T00:00:00.000Z'
+        WHERE member_id = 'm_owner_dm'`;
+      apns.sent.length = 0;
+      yield* handBack(member, 40);
+      yield* TestClock.adjust(Duration.minutes(2));
+      yield* deliver;
+      assert.deepStrictEqual(
+        banners().map((banner) => banner.alert),
+        [null, null],
+      );
     }).pipe(Effect.provide(build(apns)));
   });
 

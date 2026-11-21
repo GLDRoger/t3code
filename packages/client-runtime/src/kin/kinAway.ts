@@ -98,10 +98,33 @@ export function kinWhenText(when: KinMessageWhen, readerZone: string = deviceZon
   return when.of === undefined ? mine : `${mine}, ${timeIn(at, when.zone)} for ${when.of}`;
 }
 
+/** Kin's note in the asking chat when a request waits for the person it went to (`arrivesNote`). */
+const ARRIVES_NOTE = "kin-arrives:";
+
+/**
+ * Who will see the request and when, on their clock: "Rhea Kapoor will see your request at
+ * 7:00 AM (Sat Nov 21).", and on another clock also when that is for the reader.
+ */
+export function kinArrivesText(
+  when: KinMessageWhen & { readonly of: string },
+  readerZone: string = deviceZone(),
+): string {
+  const at = new Date(when.at);
+  const day = dayIn(at, when.zone);
+  if (kinSameTimeZone(when.zone, readerZone))
+    return `${when.of} will see your request at ${timeIn(at, when.zone)} (${day}).`;
+  const myDay = dayIn(at, readerZone);
+  const mine = `${timeIn(at, readerZone)} your time${myDay === day ? "" : ` (${myDay})`}`;
+  return `${when.of} will see your request at ${timeIn(at, when.zone)} their time (${day}), ${mine}.`;
+}
+
 /** The message as this reader reads it: a time it names, on their own clock. */
 export function kinMessageOnMyClock(message: KinMessage, readerZone?: string): KinMessage {
   const when = message.when;
-  if (when === undefined || !message.body.includes(when.text)) return message;
+  if (when === undefined) return message;
+  if (message.messageId.startsWith(ARRIVES_NOTE) && when.of !== undefined)
+    return { ...message, body: kinArrivesText({ ...when, of: when.of }, readerZone) };
+  if (!message.body.includes(when.text)) return message;
   const text = kinWhenText(when, readerZone);
   return text === when.text ? message : { ...message, body: message.body.replace(when.text, text) };
 }

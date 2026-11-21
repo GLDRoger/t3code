@@ -55,7 +55,7 @@ import { milestoneLinks } from "./projectSpine.ts";
 import { keyNamedFor, personSeesRecord, sheetExtras } from "./recordComments.ts";
 import { movePage, nudge as nudgeHolder } from "./workMoves.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
-import { type AssignNotice, movedNotices, tellPeople, toldWhenBack } from "./assignNotices.ts";
+import { type AssignNotice, movedNotices, tellOnTasks, toldWhenBack } from "./assignNotices.ts";
 import { teamAgent as theTeamAgent } from "../lead/LeadAccess.ts";
 import {
   chatLinksFor,
@@ -100,6 +100,11 @@ import { DAY_MS, WEEK_MS } from "../durations.ts";
 export const ownerOnly = new KinChatError({
   reason: "not_allowed",
   message: "Only the owner or a co-owner can do that in Work.",
+});
+
+const notTheirProject = new KinChatError({
+  reason: "not_allowed",
+  message: "Only the owner, a co-owner or that project's lead can put a task in it.",
 });
 
 export const theOwner = Effect.fn("KinWork.owner")(function* (
@@ -328,8 +333,10 @@ const refId = Effect.fn("KinWork.refId")(function* (
       return reached ? row.recordId : yield* missing(key, list);
     }
     if (row === undefined || row.registerId !== "projects") return yield* missing(key, list);
-    if (!(yield* ledIds(viewer)).has(row.recordId)) return yield* missing(key, list);
-    return row.recordId;
+    if ((yield* ledIds(viewer)).has(row.recordId)) return row.recordId;
+    // One they are on is no secret to them: say who files tasks there, not that it is gone.
+    const on = yield* inProject(orgId, viewer.person.personId, row.recordId).pipe(workFailure);
+    return yield* on ? notTheirProject : missing(key, list);
   }
   if (key === null) return null;
   return (yield* inList(orgId, key, list)).recordId;
@@ -514,6 +521,8 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
         })
       : yield* records.query(input.orgId, {
           ...filter,
+          // "Due this week" and the like read by when, so tomorrow's comes before Tuesday's.
+          ...(input.dueBy === undefined ? {} : { order: "dueFirst" as const }),
           ...internal,
           offset: cursor.offset,
           limit,
@@ -946,8 +955,8 @@ export const assign = Effect.fn("KinWork.assign")(function* (
 });
 
 /**
- * Someone gives or takes a task on their own screen: its holders hear it as they would from an
- * agent, from the team agent's chat. The write already committed, so a failed message fails nothing.
+ * Someone gives or takes a task on their own screen: its holders see it on Tasks and hear it in
+ * one banner (`tellOnTasks`), in no chat. The write already committed, so a failure fails nothing.
  */
 export const tellMoved = (
   person: PersonIdentity,
@@ -961,18 +970,12 @@ export const tellOnScreen = Effect.fn("KinWork.tellOnScreen")(
   function* (person: PersonIdentity, change: string, all: ReadonlyArray<AssignNotice>) {
     const notices = all.filter((notice) => notice.personId !== person.personId);
     if (notices.length === 0) return;
-    const agentId = yield* theTeamAgent(person.orgId);
-    if (agentId === null) return;
-    const sql = yield* SqlClient.SqlClient;
-    const [me] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
-      WHERE org_id = ${person.orgId} AND person_id = ${person.personId}`;
-    yield* tellPeople(
+    yield* tellOnTasks(
       {
         orgId: person.orgId,
-        agentId,
-        wakeupId: `screen:${change}`,
-        by: me?.name ?? "The owner",
-        byPersonId: person.personId,
+        personId: person.personId,
+        agentId: yield* theTeamAgent(person.orgId),
+        change: `screen:${change}`,
       },
       notices,
     );
@@ -1003,7 +1006,7 @@ export const handBack = Effect.fn("KinWork.handBack")(function* (
     records.handBack(input.orgId, writerOf(viewer), input.key, holder, input.note ?? null),
   );
   const to = toRecord(row, yield* Clock.currentTimeMillis).owner;
-  // An agent it goes back to is woken by the write; a person hears it from the team agent.
+  // An agent it goes back to is woken by the write; a person sees it on Tasks.
   if (to._tag === "person")
     yield* tellOnScreen(viewer.person, `${row.recordId}:${row.rev}`, [
       { personId: to.personId, kind: "returned", row, why: input.note ?? null },
@@ -1282,7 +1285,7 @@ export const removeLink = (people: ReadonlyArray<PersonIdentity>, input: KinWork
  * The files an owner's edit adds are ones the owner can read: each on a message, not deleted, in
  * a chat the owner is in. Anything else looks like no file at all.
  */
-const ownFiles = Effect.fn("KinWork.ownFiles")(function* (
+export const ownFiles = Effect.fn("KinWork.ownFiles")(function* (
   person: PersonIdentity,
   storedJson: string,
   fields: Readonly<Record<string, unknown>>,

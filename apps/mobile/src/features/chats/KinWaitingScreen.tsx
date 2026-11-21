@@ -47,6 +47,7 @@ export function KinWaitingScreen() {
             environmentId: ready.environmentId,
             orgId: item.orgId,
             chatId: item.chatId,
+            ...(item.messageId === null ? {} : { message: item.messageId }),
           });
         const approvals = view.waiting.flatMap((item) => {
           const actionId =

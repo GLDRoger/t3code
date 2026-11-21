@@ -1069,6 +1069,11 @@ export function makeKinClient<R, ER>(
       tag: KIN_CHAT_WS_METHODS.chatsMute,
       concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
     }),
+    pin: createKinRpcCommand(runtime, {
+      label: "kin:pin",
+      tag: KIN_CHAT_WS_METHODS.chatsPin,
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
+    }),
     /** Empties this chat for everyone in it, for good; one in flight per chat. */
     clear: createKinRpcCommand(runtime, {
       label: "kin:clear",
@@ -1425,6 +1430,11 @@ export function makeKinClient<R, ER>(
       tag: "kin.work.createDeal",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
     }),
+    workPartyWithDealCreate: createKinRpcCommand(runtime, {
+      label: "kin:work:client-with-deal:create",
+      tag: "kin.work.createPartyWithDeal",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
     workDealUpdate: createKinRpcCommand(runtime, {
       label: "kin:work:deal:update",
       tag: "kin.work.updateDeal",
@@ -1664,6 +1674,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.docs.restore",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
+    /** One section changed by hand; the host decides who may (`kin.docs.editSection`). */
+    docEditSection: createKinRpcCommand(runtime, {
+      label: "kin:docs:editSection",
+      tag: "kin.docs.editSection",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
     /** Starts What we sell, or brings an archived one back; the same doc however often it is tapped. */
     docStartWhatWeSell: createKinRpcCommand(runtime, {
       label: "kin:docs:startWhatWeSell",
@@ -1827,6 +1843,16 @@ export function makeKinClient<R, ER>(
       label: "kin:work:invoice-from-quote",
       tag: "kin.work.invoiceFromQuote",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    workNewInvoice: createKinRpcCommand(runtime, {
+      label: "kin:work:new-invoice",
+      tag: "kin.work.newInvoice",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    workNewExpense: createKinRpcCommand(runtime, {
+      label: "kin:work:new-expense",
+      tag: "kin.work.newExpense",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
     }),
     /** One page of everything dated in a window; the Dates view decides when. */
     workDates: workDatesRead,

@@ -33,6 +33,9 @@ import {
   type KinListIndexRow,
 } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_WORK_HOME, kinPlaceLists } from "@t3tools/client-runtime/kin/kinWorkHome";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
+import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinDocListRow, KinListDefinition, KinListId, KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
 import {
@@ -63,6 +66,7 @@ import {
 import { KinDocFileDialog } from "./KinDocFileDialog";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinHostAt } from "./useKinHost";
 import {
   useKinDocsList,
   useKinDocsLive,
@@ -325,6 +329,7 @@ export function KinDocsList(
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(props.environmentId));
   const scope = useKinViewerScope(props.environmentId);
   const { filter } = state;
+  const shown = kinListShown(state, kinHostLink(useKinHostAt(props.environmentId)));
   const text = filter.text.trim().toLowerCase();
   const searching = text !== "";
   const everything = filter.show._tag === "all";
@@ -362,7 +367,7 @@ export function KinDocsList(
   const starter = useKinWhatWeSellStart(props);
   const library = kinDocLibrary(state.records, pinShown ? (pinned ?? null) : null);
   const whatWeSell: ReadonlyArray<Item> =
-    pinShown && pinned === null && starter !== null
+    shown === "rows" && pinShown && pinned === null && starter !== null
       ? [{ type: "whatWeSell", id: "what-we-sell" }]
       : [];
   // Typed words narrow the list on the host, so every doc is looked through, not just these rows.
@@ -434,7 +439,7 @@ export function KinDocsList(
         onEndReachedThreshold={0.5}
         ListHeaderComponent={
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
-            {props.stale || state.stale ? (
+            {shown === "rows" && (props.stale || state.stale) ? (
               <KinWorkStaleLine environmentId={props.environmentId} onRetry={list.refresh} />
             ) : null}
             <Input
@@ -503,11 +508,13 @@ export function KinDocsList(
         }
         ListEmptyComponent={
           <div className="mx-auto w-full max-w-3xl px-4">
-            {state.loading ? (
+            {shown === "offline" ? (
+              <KinWorkNotice {...kinWorkOffline("docs")} />
+            ) : shown === "loading" ? (
               <div role="status" aria-label={KIN_DOCS.loading}>
                 <KinWorkRowSkeletons />
               </div>
-            ) : state.failed !== null ? (
+            ) : shown === "failed" ? (
               <KinLoadFailed
                 what={KIN_DOCS.loadFailed}
                 cause={state.failed}
@@ -530,15 +537,25 @@ export function KinDocsList(
             {items.length > 0 &&
             docItems.length === 0 &&
             playbookItems.length === 0 &&
-            !state.loading ? (
+            shown !== "loading" ? (
               <div className="mx-auto w-full max-w-3xl px-4 pt-4">
-                <KinWorkNotice
-                  {...(searching
-                    ? KIN_DOCS.noMatch
-                    : filter.archived
-                      ? KIN_DOCS.emptyArchived
-                      : (kinNothingShown("docs", scope) ?? KIN_DOCS.empty))}
-                />
+                {shown === "failed" ? (
+                  <KinLoadFailed
+                    what={KIN_DOCS.loadFailed}
+                    cause={state.failed}
+                    onRetry={list.refresh}
+                  />
+                ) : (
+                  <KinWorkNotice
+                    {...(shown === "offline"
+                      ? kinWorkOffline("docs")
+                      : searching
+                        ? KIN_DOCS.noMatch
+                        : filter.archived
+                          ? KIN_DOCS.emptyArchived
+                          : (kinNothingShown("docs", scope) ?? KIN_DOCS.empty))}
+                  />
+                )}
               </div>
             ) : null}
             {footer === null ? null : (

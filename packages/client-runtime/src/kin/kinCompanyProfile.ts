@@ -34,6 +34,8 @@ export const KIN_COMPANY = {
   timeZoneFromHost:
     "None set yet, so Kin uses the computer's. Open Kin on your phone to set yours.",
   empty: "Nothing here yet. Add what goes on your invoices.",
+  /** The phone reads these; they are changed on the computer. */
+  onComputer: "Change these, the brand and the templates in Kin on your computer.",
   /** A new company's suggested country, the device's, which it takes only with a tap. */
   useCountry: (name: string) => `Use ${name}?`,
   changed:
@@ -93,6 +95,8 @@ interface FieldSpec {
   readonly problem?: string;
   /** Shown only for a company in India, or only for one elsewhere. */
   readonly india?: boolean;
+  /** An invoice needs it: read as "Not set" while empty, so a gap is seen. */
+  readonly invoice?: true;
 }
 
 /** The form in the order an invoice needs it. */
@@ -103,13 +107,14 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
   {
     title: "Company",
     fields: [
-      { id: "legalName", label: "Legal name" },
+      { id: "legalName", label: "Legal name", invoice: true },
       { id: "tradeName", label: "Trading name" },
       {
         id: "address",
         label: "Registered address",
         placeholder: "Street, city and postal code",
         multiline: true,
+        invoice: true,
       },
     ],
   },
@@ -121,6 +126,7 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         label: "Country",
         placeholder: "Two-letter code",
         code: true,
+        invoice: true,
         problem: "A country is its two-letter code, like GB, US or IN.",
       },
       {
@@ -147,6 +153,7 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         label: "GSTIN",
         india: true,
         code: true,
+        invoice: true,
         problem: "A GSTIN is 15 characters, like 29ABCDE1234F1Z5.",
       },
       {
@@ -156,7 +163,7 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         code: true,
         problem: "A PAN is 10 characters, like ABCDE1234F.",
       },
-      { id: "placeOfSupply", india: true, label: "Place of supply" },
+      { id: "placeOfSupply", india: true, label: "Place of supply", invoice: true },
       {
         id: "sac",
         india: true,
@@ -182,11 +189,12 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
   {
     title: "Bank",
     fields: [
-      { id: "accountName", label: "Account name" },
+      { id: "accountName", label: "Account name", invoice: true },
       {
         id: "accountNumber",
         label: "Account number",
         code: true,
+        invoice: true,
         problem: "An account number is 6 to 34 letters and digits.",
       },
       {
@@ -194,9 +202,10 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         india: true,
         label: "IFSC",
         code: true,
+        invoice: true,
         problem: "An IFSC is 11 characters, like HDFC0001234.",
       },
-      { id: "bankName", label: "Bank" },
+      { id: "bankName", label: "Bank", invoice: true },
       { id: "branch", label: "Branch" },
       {
         id: "upi",
@@ -436,14 +445,41 @@ export function kinCompanyRead(profile: KinCompanyProfile): ReadonlyArray<{
     readonly id: KinCompanyFieldId;
     readonly label: string;
     readonly value: string;
+    /** Empty, and an invoice needs it: `value` is "Not set". */
+    readonly missing: boolean;
   }>;
 }> {
+  // A UPI id is a way to be paid too: with one, the account's details are no gap.
+  const paid = profile.bank.accountNumber !== null || profile.bank.upi !== null;
   return kinCompanySections(profile.country).map((section) => ({
     title: section.title,
     rows: section.fields.flatMap((field) => {
       const value = stored(profile, field.id);
-      if (value === null) return [];
-      return [{ id: field.id, label: field.label, value: field.day ? readDay(value) : value }];
+      const missing = value === null && field.invoice === true && !(paid && isBank(field.id));
+      if (value === null && !missing) return [];
+      const shown = value === null ? KIN_COMPANY.notSet : field.day ? readDay(value) : value;
+      return [{ id: field.id, label: field.label, value: shown, missing }];
     }),
   }));
+}
+
+/**
+ * The phone's one screen to read: the country in words and the tax as one line ("VAT at 20%");
+ * the year's first month stays on the computer's page.
+ */
+export function kinCompanyGlance(profile: KinCompanyProfile): ReturnType<typeof kinCompanyRead> {
+  const rate = profile.tax?.rate ?? null;
+  return kinCompanyRead(profile)
+    .map((section) => ({
+      ...section,
+      rows: section.rows.flatMap((row) => {
+        if (row.id === "financialYearStartMonth" || row.id === "taxRate") return [];
+        if (row.missing) return [row];
+        if (row.id === "country") return [{ ...row, value: countryName(row.value) }];
+        if (row.id === "taxName" && rate !== null)
+          return [{ ...row, value: `${row.value} at ${rate}%` }];
+        return [row];
+      }),
+    }))
+    .filter((section) => section.rows.length > 0);
 }

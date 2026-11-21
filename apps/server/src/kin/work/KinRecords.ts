@@ -278,6 +278,9 @@ export type MoveRow = {
   readonly assignedBy: string | null;
   readonly assignedByAgent: string | null;
   readonly createdAt: number;
+  readonly updatedAt: number;
+  /** Handed back to its holder, when (`kinWorkHandedBackOpen`). */
+  readonly handedBackAt: number | null;
 };
 const MOVE_ROWS_CAP = 5_000;
 
@@ -1511,6 +1514,8 @@ const make = Effect.gen(function* () {
     const owner = principal(row.ownerKind, row.ownerId);
     if (owner === null) return;
     const files = new Set(def.fields.filter((one) => one.type === "file").map((one) => one.key));
+    // A numbered list's next entry gets its own number when it is issued, never this one's.
+    if (numberingOf(def) !== undefined) files.add("number");
     const kept = Object.fromEntries(
       Object.entries(parseFields(row.fieldsJson)).filter(([key]) => !files.has(key)),
     );
@@ -2719,7 +2724,8 @@ const make = Effect.gen(function* () {
               CASE WHEN r.created_by_kind = 'person' THEN r.created_by_id END,
               r.assigned_by_person_id) AS "askedBy",
             r.assigned_by_person_id AS "assignedBy", r.assigned_by_agent_id AS "assignedByAgent",
-            r.created_at AS "createdAt"
+            r.created_at AS "createdAt", r.updated_at AS "updatedAt",
+            r.handed_back_at AS "handedBackAt"
           FROM kin_records r WHERE ${filterOf(orgId, input, now)}
           ORDER BY r.record_id LIMIT ${MOVE_ROWS_CAP}`;
       }),

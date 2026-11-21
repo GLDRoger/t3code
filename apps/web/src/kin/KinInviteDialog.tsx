@@ -1,4 +1,6 @@
 import {
+  KIN_NEW_TEAMMATE_SEES,
+  KIN_PLACE_SWITCHES,
   KIN_TEAM_COPY,
   KIN_INVITE_PHONE_NOTE,
   KIN_TEAMMATE_NAME_MAX,
@@ -7,11 +9,12 @@ import {
   kinRemovedNamesake,
   kinShareLink,
   kinTeammateNameCheck,
+  kinTeammateNameMatch,
   type KinMadeInvite,
   type KinTeamActions,
   type KinTeamList,
 } from "@t3tools/client-runtime/kin/kinTeam";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, KinPersonPlaceSwitches } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { CheckIcon, CopyIcon, ShareIcon } from "lucide-react";
 import { useId, useState } from "react";
@@ -29,6 +32,7 @@ import {
 } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { usePreparedConnection } from "../state/session";
@@ -97,8 +101,10 @@ function NameForm(props: {
     readonly text: string;
     readonly person: ReturnType<typeof kinRemovedNamesake>;
   } | null>(null);
+  const [sees, setSees] = useState<KinPersonPlaceSwitches>(KIN_NEW_TEAMMATE_SEES);
   const nameId = useId();
   const checked = kinTeammateNameCheck(name);
+  const match = kinTeammateNameMatch(props.list, name);
 
   const make = async (
     person: NonNullable<ReturnType<typeof kinRemovedNamesake>> | null,
@@ -112,6 +118,8 @@ function NameForm(props: {
       displayName: person?.displayName ?? checked.name,
       personId: person?.personId ?? null,
       ...(newPerson === true ? { newPerson } : {}),
+      // Someone coming back gets back what they had; only someone new starts with these.
+      ...(person === null ? { sees } : {}),
       replaces:
         person === null
           ? null
@@ -152,6 +160,34 @@ function NameForm(props: {
             />
             <p className="text-xs text-muted-foreground">{KIN_TEAM_ADD_COPY.nameHint}</p>
           </div>
+          {match === null ? null : (
+            <Alert variant="warning">
+              <AlertDescription>{match}</AlertDescription>
+            </Alert>
+          )}
+          <fieldset className="flex flex-col gap-3">
+            <legend className="mb-2 text-sm font-medium text-foreground">
+              {KIN_TEAM_COPY.canSee}
+            </legend>
+            {KIN_PLACE_SWITCHES.map((entry) => {
+              const id = `${nameId}-${entry.place}`;
+              return (
+                <div key={entry.place} className="flex items-start justify-between gap-3">
+                  <label htmlFor={id} className="flex min-w-0 flex-col gap-0.5">
+                    <span className="text-sm text-foreground">{entry.label}</span>
+                    <span className="text-xs text-muted-foreground">{entry.detail}</span>
+                  </label>
+                  <Switch
+                    id={id}
+                    checked={sees[entry.place]}
+                    disabled={busy}
+                    onCheckedChange={(on) => setSees((held) => ({ ...held, [entry.place]: on }))}
+                  />
+                </div>
+              );
+            })}
+            <p className="text-xs text-muted-foreground">{KIN_TEAM_ADD_COPY.seesFooter}</p>
+          </fieldset>
           {problem === null ? null : (
             <Alert variant="error">
               <AlertDescription>{problem}</AlertDescription>

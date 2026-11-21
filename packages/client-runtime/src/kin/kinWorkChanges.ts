@@ -80,6 +80,7 @@ export const KIN_WORK_COPY = {
   waitingOn: "Waiting on",
   waitingOnNobody: "No one in particular",
   takeBack: "Take it back",
+  take: "Take it",
   keep: "Keep",
   decline: "Not needed",
   edit: "Edit",
@@ -246,6 +247,16 @@ const stops = (record: KinRecord, action: KinWorkAction): boolean => {
   }
 };
 
+/** The reader gave the task to whoever has it, so taking it is taking it back. */
+const kinWorkGaveIt = (record: Pick<KinRecord, "givenBy">, names: Pick<KinWorkNames, "me">) =>
+  record.givenBy?._tag === "person" && record.givenBy.personId === names.me;
+
+/** Taking a task someone else has: "Take it back" only where the reader gave it to them. */
+export const kinWorkTakeLabel = (
+  record: Pick<KinRecord, "givenBy">,
+  names: Pick<KinWorkNames, "me">,
+) => (kinWorkGaveIt(record, names) ? KIN_WORK_COPY.takeBack : KIN_WORK_COPY.take);
+
 /** What happened, in a few words, once the host says it did. */
 function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames): string {
   const holder = kinWorkName(record.owner, names);
@@ -274,7 +285,7 @@ function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames
     case "give":
       return `Given to ${kinWorkName(action.to, names, "you")}.${told}`;
     case "takeBack":
-      return `It's yours again.${told}`;
+      return `${kinWorkGaveIt(record, names) ? "It's yours again." : "It's yours now."}${told}`;
     case "place":
       if (action.party != null) return `Now under ${action.party.title}.`;
       if (action.project != null) return `Now in ${action.project.title}.`;

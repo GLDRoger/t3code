@@ -6,6 +6,7 @@ import {
   type KinPartyCreateInput,
   type KinPartyPageInput,
   type KinPartyUpdateInput,
+  type KinPartyWithDealCreateInput,
   type KinProjectCreateInput,
   type KinProjectPageInput,
   type KinProjectPeopleInput,
@@ -28,7 +29,7 @@ import { isSqlError, type SqlError } from "effect/sql/SqlError";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Crm from "./crm.ts";
-import { dealSeesField } from "./deals.ts";
+import { createdOut, createIn as createDealIn, dealSeesField } from "./deals.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
 import { fieldList, parseFields, type FieldValue, type ListName } from "./lists.ts";
 import {
@@ -728,6 +729,34 @@ export const createParty = Effect.fn("KinWork.createParty")(function* (
           )
           .pipe(workFailure);
   return viewer.teammate ? yield* memberOut(row, person) : yield* partyOut(row);
+});
+
+/**
+ * A new client and its first deal in one transaction, as the two forms would make them: a refusal
+ * of either keeps neither, and a retry returns both.
+ */
+export const createPartyWithDeal = Effect.fn("KinWork.createPartyWithDeal")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinPartyWithDealCreateInput,
+) {
+  const { deal, ...asked } = input;
+  const { party, made } = yield* (yield* SqlClient.SqlClient)
+    .withTransaction(
+      Effect.gen(function* () {
+        const party = yield* createParty(people, asked);
+        const made = yield* createDealIn(people, {
+          ...deal,
+          orgId: input.orgId,
+          party: party.key,
+          clientRequestId: input.clientRequestId,
+        });
+        return { party, made };
+      }),
+    )
+    .pipe(workFailure);
+  yield* (yield* KinRecords).announce(input.orgId, [made.row.recordId]);
+  const { deal: shown } = yield* createdOut(input.orgId, made);
+  return { party, deal: shown };
 });
 
 export const updateParty = Effect.fn("KinWork.updateParty")(function* (

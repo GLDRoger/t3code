@@ -536,6 +536,10 @@ export type KinWorkListInput = typeof KinWorkListInput.Type;
 export const KinWorkMoveGroup = Schema.Literals(["needsYou", "waiting", "rest"]);
 export type KinWorkMoveGroup = typeof KinWorkMoveGroup.Type;
 
+/** Where a Needs you row is drawn instead, outside the count (`kinWorkMoveUnder`). */
+export const KinWorkMoveUnder = Schema.Literals(["noDate", "comingUp"]);
+export type KinWorkMoveUnder = typeof KinWorkMoveUnder.Type;
+
 /** A card waiting on the reader about a task, with what its buttons post (`kin.widgets.act`). */
 export const KinWorkMoveCard = Schema.Struct({
   ...KinRecordWaiting.fields,
@@ -555,15 +559,24 @@ export const KinWorkRowMove = Schema.Struct({
   said: Schema.optional(KinText),
   /** When the reader last nudged its holder, if that was today. */
   nudgedAt: Schema.optional(IsoDateTime),
+  /** A task handed back to the reader: its holder's words on why, when they left any. */
+  handedBackNote: Schema.optional(KinText),
+  /** A task the reader holds: who last asked them today where it stands. */
+  askedBy: Schema.optional(KinPersonId),
+  /** A Needs you task nothing asks of yet: undated, or dated past the coming week. */
+  under: Schema.optional(KinWorkMoveUnder),
 });
 export type KinWorkRowMove = typeof KinWorkRowMove.Type;
 
 /** Every match of a `byMove` read, not just the page; `doneRecently` is done in the last 14 days. */
 export const KinWorkMoveCounts = Schema.Struct({
+  /** From a host that answers `under`, without the rows it puts there. */
   needsYou: NonNegativeInt,
   waiting: NonNegativeInt,
   rest: NonNegativeInt,
   doneRecently: NonNegativeInt,
+  noDate: Schema.optional(NonNegativeInt),
+  comingUp: Schema.optional(NonNegativeInt),
 });
 export type KinWorkMoveCounts = typeof KinWorkMoveCounts.Type;
 /** Ordered open first, then soonest due, then key. `seq` is the change number the page is as of. */

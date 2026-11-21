@@ -46,9 +46,13 @@ const MEMBER = [
   "kin.chats.clear",
   "kin.chats.createDirect",
   "kin.chats.mute",
+  "kin.chats.pin",
   "kin.chats.subscribe",
   "kin.chats.withPerson",
   "kin.docs.diff",
+  // A hand edit: `Docs.editSectionByHand` refuses all but the owner level and the doc's project
+  // lead, and keeps playbooks and What we sell to the owner level.
+  "kin.docs.editSection",
   "kin.docs.get",
   "kin.docs.history",
   "kin.docs.list",
@@ -96,6 +100,8 @@ const MEMBER = [
   // Deals': the gate lets a person through, and `deals.ts` decides the rest (Clients on, `crmSees`).
   "kin.work.createDeal",
   "kin.work.createParty",
+  // Both writes of `ownerClients.createParty` and `deals.createIn`, each deciding as alone.
+  "kin.work.createPartyWithDeal",
   "kin.work.dates",
   "kin.work.deal",
   "kin.work.dealStages",

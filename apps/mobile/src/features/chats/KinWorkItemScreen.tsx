@@ -8,6 +8,8 @@ import {
 } from "@t3tools/client-runtime/kin/kinLinked";
 import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import { useAtomValue } from "@effect/atom-react";
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinTaskProjectsAllowed } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_TASK_LINK,
@@ -22,6 +24,7 @@ import {
   kinRecordWho,
   kinTaskControls,
   kinTaskActivity,
+  kinTaskPeopleFolded,
   type KinActivityLine,
   type KinNextStepAct,
   type KinRecordChipTone,
@@ -53,6 +56,7 @@ import {
   kinWorkEditMoved,
   kinWorkStatusOffer,
   kinWorkItemNotice,
+  kinWorkTakeLabel,
   type KinWorkAction,
   type KinWorkNotice,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
@@ -101,10 +105,13 @@ import { KinAvatar } from "./components/KinAvatar";
 import { KinAttachments } from "./components/KinMessageBubble";
 import { KinTaskNoteComposer } from "./components/KinTaskNoteComposer";
 import { KinNextStep } from "./components/KinNextStep";
-import { KinWorkDueRow, KinWorkStatusRow } from "./components/KinWorkTaskMenus";
+import { connectionAtomRuntime } from "../../connection/runtime";
+import { KinDayField } from "./components/KinDayField";
+import { KinWorkStatusRow } from "./components/KinWorkTaskMenus";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinListEntryBody } from "./KinListEntry";
-import { KinMakeDocumentStep, type KinMakeStep } from "./KinInvoice";
+import { KinMakeDocumentStep } from "./KinInvoice";
+import type { KinMakeStep } from "./kinMakeStep";
 import { KinWorkFrame, KinWorkLoading, KinWorkTaskRow } from "./components/KinWorkPieces";
 import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
@@ -122,6 +129,7 @@ import {
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate, useKinHostAt } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
 export type KinWorkItemParams = {
   readonly environmentId: string;
@@ -274,10 +282,16 @@ function KinWorkItemBody(props: ItemTarget) {
   const work = useKinWork(props);
   // Make invoice and Make its PDF are a step of this page, never a sheet over it.
   const [making, setMaking] = useState<KinMakeStep | null>(null);
+  // Asked by and Held by, folded under one row when the card on top already names them.
+  const [peopleOpen, setPeopleOpen] = useState(false);
   // An older server has no clients or projects: the task shows as it always did.
   const opensClients = useKinOpensClients(environmentId);
   const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
   const choices = useKinWorkChoices(props, hostClients && canChange);
+  // A teammate moves a task only into a project they lead, as the host takes it.
+  const projectsAllowed = kinTaskProjectsAllowed(
+    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)),
+  );
   const now = new Date(useNowMinuteMs());
   const back = () => navigation.goBack();
   const task = state._tag === "ready" && state.item.list === undefined ? state.item : null;
@@ -467,6 +481,7 @@ function KinWorkItemBody(props: ItemTarget) {
   const heldBy = kinRecordWho(item.owner, names);
   const briefBy = kinBriefBy(shown, names, now);
   const chip = kinRecordChip(shown, view, names, now);
+  const folded = kinTaskPeopleFolded(shown, step);
   const controls = kinTaskControls({
     view,
     change: act !== null,
@@ -524,7 +539,7 @@ function KinWorkItemBody(props: ItemTarget) {
       ? [
           {
             id: "take-back",
-            title: KIN_WORK_COPY.takeBack,
+            title: kinWorkTakeLabel(item, names),
             onPress: () => void changes.run(item, { type: "takeBack" }, names),
           },
         ]
@@ -598,6 +613,8 @@ function KinWorkItemBody(props: ItemTarget) {
       actions={asker.actions}
       menus={[...asker.menus, ...menus]}
       form={edit !== null}
+      // The form opens at the top, wherever the page was scrolled to.
+      showTop={edit === null ? null : edit.key}
       {...(footer === undefined ? {} : { footer })}
     >
       <View className="gap-2.5 px-1">
@@ -632,7 +649,6 @@ function KinWorkItemBody(props: ItemTarget) {
                 accessibilityLabel="Title"
                 value={edit.title}
                 editable={!saving}
-                autoFocus
                 autoCapitalize="sentences"
                 returnKeyType="done"
                 onChangeText={(title) => changes.setEdit({ title })}
@@ -659,6 +675,8 @@ function KinWorkItemBody(props: ItemTarget) {
                 accessibilityLabel={KIN_TASK_RECORD.brief}
                 value={edit.notes}
                 editable={!saving}
+                // Opened from the brief's own Edit: the words go there, not into the title.
+                autoFocus
                 multiline
                 maxLength={KIN_WORK_NOTES_MAX}
                 onChangeText={(notes) => changes.setEdit({ notes })}
@@ -715,24 +733,26 @@ function KinWorkItemBody(props: ItemTarget) {
         />
       )}
       <ListSection title={KIN_TASK_RECORD.details}>
-        {askedBy === null ? null : (
+        {askedBy === null || (folded?.asked === true && !peopleOpen) ? null : (
           <KinDetailPerson
             icon="person.crop.circle"
             label={KIN_TASK_RECORD.askedBy}
             who={kinRecordWho(askedBy, names)}
           />
         )}
-        <KinDetailPerson
-          icon="person.fill.checkmark"
-          label={KIN_TASK_RECORD.heldBy}
-          who={view.owner.retired ? { ...heldBy, name: `${heldBy.name} (retired)` } : heldBy}
-          description={[
-            view.given,
-            step.words === null && view.reason !== null ? `“${view.reason}”` : null,
-          ]
-            .filter((line) => line !== null)
-            .join("\n")}
-        />
+        {folded?.held === true && !peopleOpen ? null : (
+          <KinDetailPerson
+            icon="person.fill.checkmark"
+            label={KIN_TASK_RECORD.heldBy}
+            who={view.owner.retired ? { ...heldBy, name: `${heldBy.name} (retired)` } : heldBy}
+            description={[
+              view.given,
+              step.words === null && view.reason !== null ? `“${view.reason}”` : null,
+            ]
+              .filter((line) => line !== null)
+              .join("\n")}
+          />
+        )}
         {view.owner.principal._tag === "agent" ? (
           <KinWorkLeadChat
             {...props}
@@ -752,19 +772,23 @@ function KinWorkItemBody(props: ItemTarget) {
           />
         )}
         {reword !== null && !view.closed ? (
-          <KinWorkDueRow
-            view={view}
-            now={now}
+          <KinDayField
+            icon="clock"
+            label={KIN_TASK_RECORD.due}
+            day={view.dueDay}
+            // A timed date has no one day to mark, so the row says it as it is.
+            {...(view.due !== null && view.dueDay === null ? { detail: capital(view.due) } : {})}
+            none={KIN_WORK_COPY.noDate}
             zone={names.zone}
+            now={now}
             disabled={saving}
-            onAct={reword}
-            late={view.late}
+            onPick={(day) => reword({ type: "due", day })}
           />
         ) : view.due === null ? null : (
           <ListRowLayout
             icon="clock"
             label={KIN_TASK_RECORD.due}
-            detail={view.due.charAt(0).toUpperCase() + view.due.slice(1)}
+            detail={capital(view.due)}
             {...(view.late ? { tone: "danger" as const } : {})}
           />
         )}
@@ -787,6 +811,7 @@ function KinWorkItemBody(props: ItemTarget) {
             held={view.project}
             choices={choices.projects}
             done={choices.doneProjects}
+            only={projectsAllowed}
             clearable={view.can.clearProject}
             disabled={saving}
             onPick={(project) => act({ type: "place", project })}
@@ -850,6 +875,13 @@ function KinWorkItemBody(props: ItemTarget) {
             icon="arrow.clockwise"
             label={KIN_WORK_REPEAT.label}
             detail={view.repeat.text}
+          />
+        )}
+        {folded === null || peopleOpen ? null : (
+          <ListRow
+            icon="person.crop.circle"
+            label={folded.label}
+            onPress={() => setPeopleOpen(true)}
           />
         )}
         {!hostClients ? null : (
@@ -947,6 +979,8 @@ function KinWorkItemBody(props: ItemTarget) {
   );
 }
 
+const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
 /** Where the task stands for this viewer, in one word or two, above its title. */
 function KinRecordChip(props: { readonly tone: KinRecordChipTone; readonly label: string }) {
   const look = CHIP[props.tone];
@@ -967,6 +1001,7 @@ function KinDetailPerson(props: {
   readonly who: KinRecordWho;
   readonly description?: string;
 }) {
+  const grows = useKinTextGrows();
   return (
     <View
       accessible
@@ -981,7 +1016,11 @@ function KinDetailPerson(props: {
         accessory={
           <View className="max-w-[55%] shrink flex-row items-center gap-1.5">
             <KinAvatar avatar={props.who.avatar} size="mini" />
-            <Text textRole="footnote" numberOfLines={1} className="shrink text-foreground-muted">
+            <Text
+              textRole="footnote"
+              numberOfLines={kinLines(1, grows)}
+              className="shrink text-foreground-muted"
+            >
               {props.who.name}
             </Text>
           </View>
@@ -1265,6 +1304,7 @@ export function KinLinkedSection(props: {
   readonly onOpen: (to: KinNotificationDestination) => void;
   readonly children?: ReactNode;
 }) {
+  const grows = useKinTextGrows();
   const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
   const linked = kinLinked(props.item, undefined, { expanded, parentsShown: props.parentsShown });
   const children = props.children ?? null;
@@ -1289,7 +1329,11 @@ export function KinLinkedSection(props: {
                     {item.name}
                   </Text>
                 )}
-                <Text textRole="body" numberOfLines={1} className="min-w-0 flex-1 text-foreground">
+                <Text
+                  textRole="body"
+                  numberOfLines={kinLines(1, grows)}
+                  className="min-w-0 flex-1 text-foreground"
+                >
                   {title}
                 </Text>
               </View>
