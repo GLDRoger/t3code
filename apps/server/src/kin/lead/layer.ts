@@ -77,6 +77,7 @@ import * as TaskWake from "./TaskWake.ts";
 import * as DelegatedTasks from "./DelegatedTasks.ts";
 import * as ChatWake from "./ChatWake.ts";
 import { archiveEarlierKinProjects } from "./leadProject.ts";
+import { withAlwaysLoaded } from "./deferredTools.ts";
 
 export class KinLeadStartupError extends Schema.TaggedError<KinLeadStartupError>()(
   "KinLeadStartupError",
@@ -292,12 +293,12 @@ const memoryPullRequests = Layer.unwrap(
 const registration = Layer.mergeAll(
   SocialMcp.registration,
   SalesMcp.registration,
-  McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers),
-  McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
-  McpHttpServer.toolkitRegistration(KinDocsToolkit, docHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinLeadToolkit), handlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinWorkToolkit), workHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocsToolkit), docHandlers),
   McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers),
-  McpHttpServer.toolkitRegistration(KinDocumentToolkit, documentHandlers),
-  McpHttpServer.toolkitRegistration(KinPulseToolkit, pulseHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocumentToolkit), documentHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPulseToolkit), pulseHandlers),
 );
 const toolkit = LeadMemory.layer.pipe(
   Layer.provide(KinSchedules.layer),

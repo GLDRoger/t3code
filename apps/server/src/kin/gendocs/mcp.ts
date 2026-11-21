@@ -20,7 +20,6 @@ import { fileDocument, writeRecipe } from "./agentFiles.ts";
 import * as Documents from "./leadDocuments.ts";
 import { KinDocRenderer } from "./render.ts";
 import { KinWorkspace } from "./workspace.ts";
-import { deferredMeta } from "../lead/deferredTools.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
 const enabled = McpToolAccess.threadBoundGate(() => {
@@ -75,27 +74,21 @@ export const KinDocumentToolkit = Toolkit.make(
       "Issue a draft entry of a numbered list, such as an invoice: Kin gives it the next number in its series for this financial year, dates it today if it had no date, marks it issued, and makes its documents again with the number, as new versions of the same docs. The number is for good: asking again returns it and makes again any of its documents that don't carry it yet, and a voided entry keeps it. void: true voids it instead; unvoid: true takes a void back with its number, so never issue a new one for it. An entry dated before one already issued still takes the next number, and the result's notice says so: warn the owner before issuing a backdated one. An invoice is issued with the total its own document shows, so make its document first when it has no amount; when the entry records a different amount, nothing is issued and the reason gives both: ask the owner which is right. Only when the owner asked, in a turn only the owner is in.",
     parameters: Documents.IssueInput,
     success: Documents.IssueResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_receipt", {
     ...shared,
     description:
       "Make a receipt for money received, numbered in the receipts series for this financial year, with its PDF in the receipt recipe's look; its card shows in the chat. For a payment recorded on an invoice, pass payment (its paymentId): the receipt is for the payment's own amount, and a receipt number the old system gave it in an imported payment's note is kept. For money received before any invoice, pass advance (client, amount as the owner said it, day) with towards: it is recorded as received, like a payment, and the owner sees it with their money. Later, pass entry (the advance's receipt) and against (an invoice of the same client) to set it against that invoice as a payment; Kin refuses one with no client, another client's invoice, or more than the invoice still owes. A receipt that would record money not already recorded as a live payment (any advance, or an entry with no payment) is not made: it returns status proposed and Kin shows the owner a Confirm card with the client, amount, day and what it is set against from the records, and your towards, mode and reference as your note. The owner's tap on Confirm records it and makes its receipt; in a later turn, call again with only proposal to read what was made. Cancel ends it, a card whose figures changed since is refused, and changed arguments are a new card. A receipt whose payment was taken back is void and is refused. Kin writes a receipt's payment, invoice and number itself; record_create and record_update can't. Asking again returns the same receipt and number. Only when the owner asked, in a turn only the owner is in.",
     parameters: Documents.ReceiptInput,
     success: Documents.ReceiptResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_recipe_undo", {
     ...shared,
     description:
       "Undo the last change to a recipe, such as a new look the owner doesn't like: Kin puts it back as it was before, as a new change, so undoing again redoes it. Only when the owner asked, in a turn only the owner is in.",
     parameters: Documents.UndoInput,
     success: Documents.UndoResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
 );
 
 const isKinChatError = Schema.is(KinChatError);

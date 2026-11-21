@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import * as CodexAdapterV2 from "../../../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { AGENT_THREAD_ENV } from "../../../../preview/PortScanner.ts";
 import { sessionVariablePatterns } from "../../../claudeConfinement.ts";
+import { KIN_ALWAYS_LOADED } from "../../deferredTools.ts";
 import { type KinSessionPlan, KinSessions, type KinShell } from "../session.ts";
 import type { KinProvider } from "./provider.ts";
 
@@ -19,7 +20,7 @@ type Json = Schema.Json;
 type Params = Readonly<Record<string, unknown>>;
 type Client = CodexClient.CodexAppServerClient["Service"];
 
-/** Kin's rare tools, mounted apart so Codex defers them as Claude Code's ToolSearch does. */
+/** Kin's tools beyond its core, mounted apart so Codex defers them as Claude Code's ToolSearch does. */
 export const KIN_RARE_SERVER = "t3-code-rare";
 /** The MCP servers T3 mounts on a Codex thread; Kin's endpoint arrives as the first. */
 const T3_SERVERS = ["t3-code", "t3-code-direct", KIN_RARE_SERVER];
@@ -76,36 +77,30 @@ const isServer = (value: Json | undefined): value is Server =>
 
 /**
  * Kin's tools as a Claude lead gets them. A model with tool search (gpt-6.1) defers every MCP tool
- * unless its server says otherwise, so the agent would look up each tool before using it. Kin's
- * endpoint shows up front, minus the plan's deferred tools, which a second mount of it leaves
- * deferred; with none deferred there is no second mount.
+ * unless its server says otherwise: Kin's endpoint shows only its core up front, and a second mount
+ * of it, left deferred, serves everything else. Without search there is one mount, all up front.
  */
-const kinToolLoading = (config: Record<string, Json>, deferred: ReadonlySet<string>) => {
+const kinToolLoading = (config: Record<string, Json>, toolSearch: boolean) => {
   const kin = config["mcp_servers.t3-code"];
   if (!isServer(kin)) return;
-  const rare = [...deferred];
-  if (rare.length === 0) {
+  if (!toolSearch) {
     config["mcp_servers.t3-code"] = { ...kin, omit_tools_from: ["deferred"] };
     return;
   }
+  const core = [...KIN_ALWAYS_LOADED];
   const disabled = Array.isArray(kin.disabled_tools) ? kin.disabled_tools : [];
-  const { disabled_tools: _, ...endpoint } = kin;
-  config["mcp_servers.t3-code"] = {
-    ...kin,
-    disabled_tools: [...disabled, ...rare],
-    omit_tools_from: ["deferred"],
-  };
-  config[`mcp_servers.${KIN_RARE_SERVER}`] = { ...endpoint, enabled_tools: rare };
+  config["mcp_servers.t3-code"] = { ...kin, enabled_tools: core, omit_tools_from: ["deferred"] };
+  config[`mcp_servers.${KIN_RARE_SERVER}`] = { ...kin, disabled_tools: [...disabled, ...core] };
 };
 
 /** T3's MCP servers, calls approved (Kin's gate checks each); the user's own servers off by name. */
 const kinServersOnly = (
   params: Params,
   userServers: ReadonlyArray<string>,
-  deferred: ReadonlySet<string>,
+  toolSearch: boolean,
 ) => {
   const config = { ...(params.config as Readonly<Record<string, Json>> | null | undefined) };
-  kinToolLoading(config, deferred);
+  kinToolLoading(config, toolSearch);
   for (const name of T3_SERVERS) {
     const server = config[`mcp_servers.${name}`];
     // Codex asks before an MCP call outside full access; nobody answers on a Kin thread.
@@ -201,7 +196,7 @@ const threadParams = (params: Params, plan: KinSessionPlan, user: UserConfig) =>
       approvalPolicy: "never",
       sandbox: "read-only",
       config: {
-        ...kinServersOnly(params, user.servers, plan.deferredTools),
+        ...kinServersOnly(params, user.servers, plan.toolSearch),
         ...CONFINED_CONFIG,
       },
     };
@@ -210,7 +205,7 @@ const threadParams = (params: Params, plan: KinSessionPlan, user: UserConfig) =>
     ...ASKING,
     sandbox: "danger-full-access",
     config: {
-      ...kinServersOnly(params, user.servers, plan.deferredTools),
+      ...kinServersOnly(params, user.servers, plan.toolSearch),
       ...FULL_SESSION_CONFIG,
       ...searchThrough(user.provider),
       ...(plan.shell === undefined ? {} : shellEnvironment(plan.shell)),
