@@ -22,12 +22,18 @@ import { personQuietUntil } from "./quietHold.ts";
 
 /** A delivered held line's message id is this before its first hold's id. */
 export const HELD_ID = "kin-held:";
+/**
+ * A teammate's direct message that reached someone in their quiet hours without ringing: its id
+ * follows. Posted already, so it is never a chat line; their banner waits for the hours' end.
+ */
+export const DM_NEWS = "kin-dm-news:";
 const decodeRelay = Schema.decodeUnknownOption(Schema.fromJsonString(KinMessageRelay));
 
 /**
  * Posts every held line now due, oldest first, one message per chat and kind. The message id
  * comes from the first line held, so a run repeated after a crash finds its own post. Task news
- * due goes as one banner per person and mover, and posts nothing.
+ * due goes as one banner per person and mover, and a direct message's waited ring as one per
+ * sender's chat; neither posts anything.
  */
 export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
   orgId: KinOrgId,
@@ -37,6 +43,7 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
   yield* deliverNews(orgId, now, push);
+  yield* deliverDms(orgId, now, push);
   const rows = yield* sql<{
     holdId: string;
     chatId: string;
@@ -52,6 +59,7 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
     FROM kin_held_posts
     WHERE org_id = ${orgId} AND delivered_at IS NULL AND deliver_at <= ${now}
       AND substr(kind, 1, ${TASK_NEWS.length}) != ${TASK_NEWS}
+      AND substr(kind, 1, ${DM_NEWS.length}) != ${DM_NEWS}
     ORDER BY held_at, rowid`;
   const groups = new Map<string, Array<(typeof rows)[number]>>();
   for (const row of rows) {
@@ -154,6 +162,38 @@ const deliverNews = Effect.fn("KinQuiet.deliverNews")(function* (
     yield* sql`UPDATE kin_held_posts SET delivered_at = ${now}
       WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
     if (push !== undefined) yield* push.notify({ _tag: "tasks", orgId, holdIds: ids });
+  }
+});
+
+/** Direct messages whose ring waited out someone's quiet hours: one banner per sender's chat. */
+const deliverDms = Effect.fn("KinQuiet.deliverDms")(function* (
+  orgId: KinOrgId,
+  now: number,
+  push: Pick<KinPushSender["Service"], "notify"> | undefined,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const due = yield* sql<{ holdId: string; personId: KinPersonId; chatId: string }>`SELECT
+      hold_id AS "holdId", person_id AS "personId", chat_id AS "chatId"
+    FROM kin_held_posts
+    WHERE org_id = ${orgId} AND delivered_at IS NULL AND deliver_at <= ${now}
+      AND substr(kind, 1, ${DM_NEWS.length}) = ${DM_NEWS}
+    ORDER BY held_at, rowid`;
+  const chats = new Map<string, Array<(typeof due)[number]>>();
+  for (const row of due) {
+    const key = `${row.personId}\0${row.chatId}`;
+    chats.set(key, [...(chats.get(key) ?? []), row]);
+  }
+  for (const group of chats.values()) {
+    const ids = group.map((row) => row.holdId);
+    const quietUntil = yield* personQuietUntil(orgId, group[0]!.personId, now);
+    if (quietUntil !== undefined) {
+      yield* sql`UPDATE kin_held_posts SET deliver_at = ${quietUntil}
+        WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+      continue;
+    }
+    yield* sql`UPDATE kin_held_posts SET delivered_at = ${now}
+      WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+    if (push !== undefined) yield* push.notify({ _tag: "dm", orgId, holdIds: ids });
   }
 });
 

@@ -3,7 +3,6 @@ import type {
   KinActionId,
   KinChatId,
   KinMemberId,
-  KinMessageId,
   KinOrgId,
   KinPendingAction,
   KinPersonId,
@@ -17,6 +16,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   KIN_DEVICE_LINKED_NOTICE,
+  KinMessageId,
   KinMessageRelay,
   kinGreeting,
   kinIsBrief,
@@ -29,6 +29,7 @@ import {
   kinWhenParts,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -46,7 +47,8 @@ import { withLinks } from "../chat/messageLinks.ts";
 import { memberReads } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
 import { isHolderNotice } from "../pulse/holderNotice.ts";
-import { personHoldNow } from "../triggers/quietHold.ts";
+import { DM_NEWS, HELD_ID } from "../triggers/heldDelivery.ts";
+import { personHoldNow, personQuietUntil } from "../triggers/quietHold.ts";
 import { taskNewsBanner } from "../work/assignNotices.ts";
 import { KinApnsTransport } from "./Apns.ts";
 import { KinPushDevices, kinPushDeviceId, type KinPushDevice } from "./KinPushDevices.ts";
@@ -70,6 +72,8 @@ export type KinPushNotification =
   | { readonly _tag: "device"; readonly orgId: KinOrgId; readonly sessionId: string }
   /** Task news held for one person from one mover (`deliverHeld`): one banner, opening Tasks. */
   | { readonly _tag: "tasks"; readonly orgId: KinOrgId; readonly holdIds: ReadonlyArray<string> }
+  /** A teammate's messages held from one reader's quiet hours (`deliverHeld`): one banner. */
+  | { readonly _tag: "dm"; readonly orgId: KinOrgId; readonly holdIds: ReadonlyArray<string> }
   /** A member's read mark moved: their other devices get the new badge, with no banner. */
   | {
       readonly _tag: "read";
@@ -185,12 +189,61 @@ const kinCardWords = (body: string, state: unknown) => {
   return undefined;
 };
 
-/** A banner's title: who wrote it, and in a group the group's name before them. */
+/**
+ * A banner's title: who wrote it, and in a group the group's name before them. In a direct chat
+ * the kind of notice follows, as in "Finance · Question".
+ */
 const kinBannerTitle = (
   chat: { readonly direct: boolean; readonly name: string },
   author: string | null,
+  kind?: string,
 ) =>
-  chat.direct ? (author ?? chat.name) : author === null ? chat.name : `${chat.name} · ${author}`;
+  chat.direct
+    ? `${author ?? chat.name}${kind === undefined ? "" : ` · ${kind}`}`
+    : author === null
+      ? chat.name
+      : `${chat.name} · ${author}`;
+
+/** What a brief is called on its banner: its check-in's name, else its hour's. */
+const kinBriefKind = (checkIn: string | null, greeting: string) =>
+  checkIn === "checkin-weekly"
+    ? "Weekly brief"
+    : checkIn === "checkin-morning"
+      ? "Morning brief"
+      : checkIn === "checkin-evening"
+        ? "Evening summary"
+        : checkIn !== null
+          ? "Check-in"
+          : greeting === "Good morning"
+            ? "Morning brief"
+            : greeting === "Good afternoon"
+              ? "Check-in"
+              : "Evening summary";
+
+/** What a card is called on its banner: what it asks of the reader. */
+const kinCardKind = (
+  card: { readonly type: string; readonly client_message_id: string | null },
+  state: unknown,
+) =>
+  card.client_message_id?.startsWith(TAKEN_CARD) === true
+    ? "Decided for you"
+    : typeof state === "object" && state !== null && "send" in state
+      ? "Ready to send"
+      : card.type === "deferral"
+        ? "Deferred task"
+        : card.type === "task"
+          ? "Task"
+          : card.type === "reminder"
+            ? "Reminder"
+            : card.type === "scheduled_task"
+              ? "Scheduled task"
+              : "Question";
+
+const HOLDER_ID = "kin-holder-";
+const ASSIGN_ID = "kin-assign-";
+const TAKEN_ID = "kin-default-taken:";
+/** A default-taken note posted as a card (`tellTaken`), as its stored client id reads. */
+const TAKEN_CARD = `send:${TAKEN_ID}`;
 
 // APNs docs, "Handling notification responses". A 410 is handled by its timestamp instead.
 const DEAD_TOKEN_REASONS = new Set(["BadDeviceToken"]);
@@ -217,6 +270,11 @@ const decodeIds = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(
 const decodeState = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const UNPROMPTED_RING_GAP_MS = 30 * 60_000;
 const decodeRelay = Schema.decodeUnknownOption(Schema.fromJsonString(KinMessageRelay));
+const decodeTurnCards = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Array(Schema.Struct({ messageId: KinMessageId, awaiting: Schema.Array(Schema.String) })),
+  ),
+);
 
 /**
  * Whether a message concerns someone enough to ring their phone. A direct chat is theirs; in a
@@ -355,6 +413,20 @@ const make = Effect.gen(function* () {
     return claimed.length > 0;
   });
 
+  /** Whether a capped push rang `personId` since `messageId` was posted (`mayRing`'s claim). */
+  const rangSince = Effect.fn("KinPushSender.rangSince")(function* (
+    orgId: KinOrgId,
+    personId: KinPersonId,
+    messageId: KinMessageId,
+  ) {
+    const [row] = yield* sql<{ rangAt: number; createdAt: string }>`SELECT r.rang_at AS "rangAt",
+        m.created_at AS "createdAt"
+      FROM kin_push_rings r JOIN kin_messages m ON m.org_id = r.org_id
+        AND m.message_id = ${messageId}
+      WHERE r.org_id = ${orgId} AND r.person_id = ${personId}`;
+    return row !== undefined && row.rangAt >= Date.parse(row.createdAt);
+  });
+
   /**
    * What `messageId` is about for `personId`, from the names in it they may open: what the chat
    * shows them. None when it can't be read; the push still opens the chat.
@@ -391,6 +463,23 @@ const make = Effect.gen(function* () {
       ),
     ),
   );
+
+  /**
+   * Kin's own notice about the reader's work ("work": given to them, due, late) or a default it
+   * took for them ("decided"), posted now or after a hold (`deliverHeld`); else undefined.
+   */
+  const ownNotice = Effect.fn("KinPushSender.ownNotice")(function* (
+    orgId: KinOrgId,
+    messageId: KinMessageId,
+  ) {
+    const [held] = messageId.startsWith(HELD_ID)
+      ? yield* sql<{ kind: string }>`SELECT kind FROM kin_held_posts
+          WHERE org_id = ${orgId} AND hold_id = ${messageId.slice(HELD_ID.length)}`
+      : [];
+    const kind = held?.kind ?? messageId;
+    if (kind.startsWith(TAKEN_ID)) return "decided" as const;
+    return kind.startsWith(HOLDER_ID) || kind.startsWith(ASSIGN_ID) ? ("work" as const) : undefined;
+  });
 
   /** The Chats list's unread total, from the same read, so the icon and the list agree. */
   const badgeFor = (orgId: KinOrgId, personId: KinPersonId) =>
@@ -440,12 +529,16 @@ const make = Effect.gen(function* () {
       asked_json: string;
       awaits_card: number;
       is_card: number;
-      owner_timed: number;
+      card_type: string | null;
+      timed: string | null;
+      check_in: string | null;
+      turn_cards: string;
       seq: number;
       relay_json: string | null;
+      client_message_id: string | null;
     }>`
       SELECT m.chat_id, m.seq, m.author_kind, m.author_person_id, m.author_member_id, m.body,
-        m.form, m.mentions_json, m.relay_json,
+        m.form, m.mentions_json, m.relay_json, m.client_message_id,
         COALESCE(
           (SELECT display_name FROM kin_agents a
             WHERE a.org_id = m.org_id AND a.agent_id = m.author_agent_id),
@@ -467,14 +560,33 @@ const make = Effect.gen(function* () {
           AND w.awaiting_json != '[]') AS awaits_card,
         EXISTS (SELECT 1 FROM kin_widgets w WHERE w.org_id = m.org_id
           AND w.message_id = m.message_id) AS is_card,
-        (EXISTS (SELECT 1 FROM kin_widgets w WHERE w.org_id = m.org_id
-            AND w.message_id = m.message_id AND w.type IN ('reminder', 'scheduled_task'))
-          OR EXISTS (SELECT 1 FROM kin_lead_deliveries d
+        (SELECT w.type FROM kin_widgets w WHERE w.org_id = m.org_id
+          AND w.message_id = m.message_id ORDER BY w.widget_id LIMIT 1) AS card_type,
+        COALESCE((SELECT w.type FROM kin_widgets w WHERE w.org_id = m.org_id
+            AND w.message_id = m.message_id AND w.type IN ('reminder', 'scheduled_task')
+            ORDER BY w.widget_id LIMIT 1),
+          (SELECT d.kind FROM kin_lead_deliveries d
             JOIN kin_events e ON e.org_id = d.org_id AND e.event_id = d.event_id
             JOIN kin_wakeups k ON k.org_id = e.org_id AND k.wakeup_id = e.wakeup_id
             WHERE d.org_id = m.org_id AND d.chat_id = m.chat_id
               AND d.agent_id = m.author_agent_id AND d.kind IN ('reminder', 'scheduled_task')
-              AND k.status = 'running')) AS owner_timed
+              AND k.status = 'running' ORDER BY d.event_id LIMIT 1)) AS timed,
+        -- The check-in the author's running wake-up writes, which names a brief's banner.
+        (SELECT json_extract(e.json, '$.checkIn.scheduleId') FROM kin_wakeups k
+          JOIN kin_events e ON e.org_id = k.org_id AND e.wakeup_id = k.wakeup_id
+            AND e.tag = 'pulse' AND json_extract(e.json, '$.checkIn.scheduleId') IS NOT NULL
+          WHERE k.org_id = m.org_id AND k.agent_id = m.author_agent_id AND k.status = 'running'
+          ORDER BY e.event_id LIMIT 1) AS check_in,
+        -- Open cards the same running wake-up posted in this chat, oldest first.
+        (SELECT COALESCE(json_group_array(json_object('messageId', t.message_id,
+            'awaiting', json(t.awaiting_json))), '[]') FROM (
+          SELECT c.message_id, w.awaiting_json FROM kin_wakeups k
+          JOIN kin_messages c ON c.org_id = k.org_id AND c.source_wakeup_id = k.wakeup_id
+            AND c.chat_id = m.chat_id AND c.message_id != m.message_id AND c.status = 'posted'
+          JOIN kin_widgets w ON w.org_id = c.org_id AND w.message_id = c.message_id
+            AND w.closed_at IS NULL AND w.awaiting_json != '[]'
+          WHERE k.org_id = m.org_id AND k.agent_id = m.author_agent_id AND k.status = 'running'
+          ORDER BY c.seq) t) AS turn_cards
       FROM kin_messages m
       WHERE m.org_id = ${orgId} AND m.message_id = ${messageId} AND m.status = 'posted'
         AND m.kind != 'widget_action' AND m.silent = 0
@@ -486,15 +598,23 @@ const make = Effect.gen(function* () {
     // its own (a chart, a doc) is seen in the chat and rings nobody.
     if (row === undefined || row.awaits_card === 1) return undefined;
     const relay = Option.getOrUndefined(decodeRelay(row.relay_json ?? undefined));
+    const brief = relay?.personId === undefined && kinIsBrief(row.body, row.form);
+    const greeting = brief ? kinGreeting(yield* ownerHour(orgId)) : undefined;
     const body = kinPushBody(
       relay?.personId !== undefined
         ? kinRelayWords(row.body)
-        : kinIsBrief(row.body, row.form)
-          ? `${kinGreeting(yield* ownerHour(orgId))} · ${kinPageGist(row.body)}`
+        : greeting !== undefined
+          ? `${greeting} · ${kinPageGist(row.body)}`
           : kinPageShape(row.body) === "page"
             ? kinPageGist(row.body)
             : kinPlainBody(row.body),
     );
+    const own =
+      row.client_message_id?.startsWith(TAKEN_CARD) === true
+        ? ("decided" as const)
+        : yield* ownNotice(orgId, messageId);
+    const ownerTimed = row.timed !== null;
+    const turnCards = yield* decodeTurnCards(row.turn_cards);
     if (row.is_card === 1 && body === "") return undefined;
     const chat = yield* chatName(orgId, row.chat_id);
     const mentions = new Set<string>(yield* decodeIds(row.mentions_json));
@@ -510,9 +630,70 @@ const make = Effect.gen(function* () {
         ? row.author_name
         : `${sender.name.split(" ")[0] ?? sender.name}, via ${row.author_name ?? "Kin"}`;
     const fromPerson = row.author_kind === "human" || sender !== undefined;
+    const kind = (answers: boolean) =>
+      fromPerson
+        ? undefined
+        : greeting !== undefined
+          ? kinBriefKind(row.check_in, greeting)
+          : own === "decided"
+            ? "Decided for you"
+            : own === "work"
+              ? "Your tasks"
+              : row.timed === "reminder" || row.card_type === "reminder"
+                ? "Reminder"
+                : row.timed === "scheduled_task" || row.card_type === "scheduled_task"
+                  ? "Scheduled task"
+                  : answers
+                    ? "Reply"
+                    : "Update";
+    const candidates = people
+      .filter(
+        (person) =>
+          person.joinedSeq <= row.seq &&
+          person.personId !== row.author_person_id &&
+          person.memberId !== row.author_member_id &&
+          kinPushConcerns({
+            direct: chat.direct,
+            mentioned: mentions.has(person.memberId),
+            repliesToThem: row.reply_author === person.personId || asked.has(person.personId),
+          }),
+      )
+      .map((person) => ({ personId: person.personId, silent: person.muted }));
+    // On their own clock: what someone timed rings whatever the hour; in quiet hours nothing else
+    // does (a teammate's word rings at their end, `later`); off hours, only a person or an answer.
+    // Kin's word on their own work or a default it took for them rings past the half hour cap
+    // that holds anything else from Kin or an agent.
+    const recipients: Array<Recipient> = [];
+    const later: Array<KinPersonId> = [];
+    let answersAnyone = false;
+    for (const recipient of candidates) {
+      const answers = row.reply_author === recipient.personId || asked.has(recipient.personId);
+      answersAnyone ||= answers;
+      const direct = chat.people && row.author_kind === "human";
+      const hold = ownerTimed ? undefined : yield* holdNow(orgId, recipient.personId);
+      if (direct && hold === "quiet" && !recipient.silent) later.push(recipient.personId);
+      const silent =
+        recipient.silent || hold === "quiet" || (hold === "off" && !fromPerson && !answers);
+      // A brief opens at itself; a reply whose turn left a card waiting on them, at the card.
+      const card = turnCards.find((one) => one.awaiting.includes(recipient.personId));
+      const subject =
+        row.is_card === 1 || brief
+          ? ({ _tag: "message", messageId } as const)
+          : card !== undefined
+            ? ({ _tag: "message", messageId: card.messageId } as const)
+            : yield* subjectFor(orgId, messageId, recipient.personId);
+      const told = subject === undefined ? recipient : { ...recipient, subject };
+      recipients.push(
+        silent
+          ? { ...told, silent: true }
+          : fromPerson || answers || ownerTimed || own !== undefined
+            ? told
+            : { ...told, capped: true },
+      );
+    }
     const push: Push = {
       category: "kin.message",
-      title: kinBannerTitle(chat, author),
+      title: kinBannerTitle(chat, author, kind(answersAnyone)),
       body: body || "New message",
       chatId: row.chat_id,
       source: messageId,
@@ -523,47 +704,9 @@ const make = Effect.gen(function* () {
         chatId: row.chat_id,
         deepLink: chatLink(orgId, row.chat_id),
       },
-      recipients: people
-        .filter(
-          (person) =>
-            person.joinedSeq <= row.seq &&
-            person.personId !== row.author_person_id &&
-            person.memberId !== row.author_member_id &&
-            kinPushConcerns({
-              direct: chat.direct,
-              mentioned: mentions.has(person.memberId),
-              repliesToThem: row.reply_author === person.personId || asked.has(person.personId),
-            }),
-        )
-        .map((person) => ({ personId: person.personId, silent: person.muted })),
+      recipients,
     };
-    // Each on their own clock. Reminders and scheduled runs come at the time someone chose, and a
-    // teammate writing to them directly is a person, not Kin: those ring whatever the hour. In
-    // quiet hours nothing else rings; outside the hours someone holds to, only a person's words or
-    // an answer to what they asked do. Anything else from Kin or an agent rings once per half hour.
-    const recipients: Array<Recipient> = [];
-    for (const recipient of push.recipients) {
-      const answers = row.reply_author === recipient.personId || asked.has(recipient.personId);
-      const hold =
-        row.owner_timed === 1 || (chat.people && row.author_kind === "human")
-          ? undefined
-          : yield* holdNow(orgId, recipient.personId);
-      const silent =
-        recipient.silent || hold === "quiet" || (hold === "off" && !fromPerson && !answers);
-      const subject =
-        row.is_card === 1
-          ? ({ _tag: "message", messageId } as const)
-          : yield* subjectFor(orgId, messageId, recipient.personId);
-      const told = subject === undefined ? recipient : { ...recipient, subject };
-      recipients.push(
-        silent
-          ? { ...told, silent: true }
-          : fromPerson || answers || row.owner_timed === 1
-            ? told
-            : { ...told, capped: true },
-      );
-    }
-    return { ...push, recipients } satisfies Push;
+    return { ...push, later: { chatId: row.chat_id, people: later } };
   });
 
   const widgetPush = Effect.fn("KinPushSender.widgetPush")(function* (
@@ -581,10 +724,13 @@ const make = Effect.gen(function* () {
       seq: number;
       message_id: KinMessageId;
       body: string;
+      form: string | null;
+      client_message_id: string | null;
       silent: number;
       author_name: string | null;
     }>`SELECT w.chat_id, w.type, w.revision, json_extract(w.state_json, '$.phase') AS phase,
-        w.state_json, w.awaiting_json, m.seq, m.message_id, m.body, m.silent,
+        w.state_json, w.awaiting_json, m.seq, m.message_id, m.body, m.form, m.client_message_id,
+        m.silent,
         COALESCE(
           (SELECT display_name FROM kin_agents a
             WHERE a.org_id = m.org_id AND a.agent_id = m.author_agent_id),
@@ -598,13 +744,20 @@ const make = Effect.gen(function* () {
     // An approval card can be posted by an agent and await anyone; its push comes from the
     // pending action and goes to approvers.
     if (row.type === "approval") return undefined;
+    const state = Option.getOrNull(decodeState(row.state_json));
+    // A brief that carries a card opens as the brief does on its own: under its greeting.
+    const greeting = kinIsBrief(row.body, row.form)
+      ? kinGreeting(yield* ownerHour(orgId))
+      : undefined;
+    const words = kinCardWords(row.body, state);
     const kind =
       row.type !== "deferral"
         ? ({
             category: "kin.message",
             body:
-              kinCardWords(row.body, Option.getOrNull(decodeState(row.state_json))) ??
-              "A card is waiting on you",
+              greeting !== undefined && words !== undefined
+                ? `${greeting} · ${words}`
+                : (words ?? "A card is waiting on you"),
           } as const)
         : row.phase === "confirmed" || row.phase === null
           ? ({ category: "kin.deferral.confirmed", body: "A deferral needs a look" } as const)
@@ -613,10 +766,16 @@ const make = Effect.gen(function* () {
             : undefined;
     if (kind === undefined) return undefined;
     const awaiting = new Set<string>(yield* decodeIds(row.awaiting_json));
-    // Whoever the turn's own words rang heard of the card with them: one event, one banner.
+    // Whoever the turn's own words rang heard of the card with them: one event, one banner. A
+    // word that only set their badge (muted, quiet hours, the half hour's ring spent) told nothing.
     for (const messageId of covered) {
       const said = yield* messagePush(orgId, messageId);
-      for (const recipient of said?.recipients ?? []) awaiting.delete(recipient.personId);
+      for (const recipient of said?.recipients ?? [])
+        if (
+          !recipient.silent &&
+          (recipient.capped !== true || (yield* rangSince(orgId, recipient.personId, messageId)))
+        )
+          awaiting.delete(recipient.personId);
     }
     const chat = yield* chatName(orgId, row.chat_id);
     const people = yield* chatPeople(orgId, row.chat_id);
@@ -633,7 +792,11 @@ const make = Effect.gen(function* () {
     }
     return {
       ...kind,
-      title: kinBannerTitle(chat, row.author_name),
+      title: kinBannerTitle(
+        chat,
+        row.author_name,
+        greeting !== undefined ? kinBriefKind(null, greeting) : kinCardKind(row, state),
+      ),
       chatId: row.chat_id,
       source: row.message_id,
       // A deferral keeps its own banner, which carries its buttons.
@@ -885,8 +1048,87 @@ const make = Effect.gen(function* () {
             ? `${base}/work`
             : `${base}/${news.opens.project ? "projects" : "work"}/${segment(news.opens.key)}`,
       },
-      recipients: [{ personId: news.personId, silent: muted, capped: true, subject }],
+      // Work now theirs always rings; the rest of what was done to their tasks, once a half hour.
+      recipients: [
+        {
+          personId: news.personId,
+          silent: muted,
+          ...(news.gives ? {} : { capped: true }),
+          subject,
+        },
+      ],
     } satisfies Push;
+  });
+
+  /**
+   * A teammate's direct messages that landed in the reader's quiet hours (`later`), as one banner
+   * when those end: the one message, or how many, of those still unread.
+   */
+  const dmPush = Effect.fn("KinPushSender.dmPush")(function* (
+    orgId: KinOrgId,
+    holdIds: ReadonlyArray<string>,
+  ) {
+    if (holdIds.length === 0) return undefined;
+    const held = yield* sql<{ personId: KinPersonId; chatId: KinChatId; messageId: string }>`
+      SELECT person_id AS "personId", chat_id AS "chatId", body AS "messageId"
+      FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(holdIds)}
+        AND substr(kind, 1, ${DM_NEWS.length}) = ${DM_NEWS}
+      ORDER BY held_at, rowid`;
+    const first = held[0];
+    if (first === undefined) return undefined;
+    const [reader] = (yield* chatPeople(orgId, first.chatId)).filter(
+      (person) => person.personId === first.personId,
+    );
+    if (reader === undefined) return undefined;
+    const unread = yield* sql<{ messageId: KinMessageId; body: string; name: string | null }>`
+      SELECT m.message_id AS "messageId", m.body, p.display_name AS name FROM kin_messages m
+      LEFT JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = m.author_person_id
+      WHERE m.org_id = ${orgId} AND m.chat_id = ${first.chatId} AND m.status = 'posted'
+        AND m.message_id IN ${sql.in(held.filter((row) => row.chatId === first.chatId).map((row) => row.messageId))}
+        AND m.seq > COALESCE((SELECT r.last_read_seq FROM kin_read_state r
+          WHERE r.org_id = m.org_id AND r.chat_id = m.chat_id AND r.member_id = ${reader.memberId}), 0)
+      ORDER BY m.seq`;
+    const [oldest] = unread;
+    if (oldest === undefined) return undefined;
+    const name = oldest.name ?? "Someone";
+    const one = kinPushBody(kinPlainBody(oldest.body));
+    return {
+      category: "kin.message",
+      title: name,
+      body: unread.length === 1 && one !== "" ? one : `${name} sent ${unread.length} messages`,
+      chatId: first.chatId,
+      source: oldest.messageId,
+      collapseId: kinPushCollapseId(orgId, first.chatId),
+      data: { kin: 1, orgId, chatId: first.chatId, deepLink: chatLink(orgId, first.chatId) },
+      recipients: [
+        {
+          personId: first.personId,
+          silent: reader.muted,
+          subject: { _tag: "message", messageId: oldest.messageId },
+        },
+      ],
+    } satisfies Push;
+  });
+
+  /** Holds a ring `messagePush` kept from a reader in their quiet hours, for `deliverHeld`. */
+  const holdDm = Effect.fn("KinPushSender.holdDm")(function* (
+    orgId: KinOrgId,
+    personId: KinPersonId,
+    chatId: KinChatId,
+    messageId: KinMessageId,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const at = yield* personQuietUntil(orgId, personId, now).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    if (at === undefined) return;
+    const kind = `${DM_NEWS}${messageId}`;
+    yield* sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id, kind, body,
+        audience, held_at, deliver_at)
+      SELECT ${SecureRandom.uuidV4Unsafe()}, ${orgId}, ${chatId}, ${personId}, ${kind},
+        ${messageId}, 'chat', ${now}, ${at}
+      WHERE NOT EXISTS (SELECT 1 FROM kin_held_posts WHERE org_id = ${orgId}
+        AND person_id = ${personId} AND kind = ${kind})`;
   });
 
   const devicePush = Effect.fn("KinPushSender.devicePush")(function* (
@@ -937,13 +1179,29 @@ const make = Effect.gen(function* () {
             ? yield* devicePush(notification.orgId, notification.sessionId)
             : notification._tag === "tasks"
               ? yield* tasksPush(notification.orgId, notification.holdIds)
-              : notification._tag === "message"
-                ? yield* messagePush(notification.orgId, notification.messageId)
-                : yield* widgetPush(
-                    notification.orgId,
-                    notification.widgetId,
-                    notification.covered ?? [],
-                  );
+              : notification._tag === "dm"
+                ? yield* dmPush(notification.orgId, notification.holdIds)
+                : notification._tag === "message"
+                  ? yield* messagePush(notification.orgId, notification.messageId).pipe(
+                      // A ring a teammate's message waits on, until the reader's quiet hours end.
+                      Effect.tap((said) =>
+                        said === undefined
+                          ? Effect.void
+                          : Effect.forEach(said.later.people, (personId) =>
+                              holdDm(
+                                notification.orgId,
+                                personId,
+                                said.later.chatId,
+                                notification.messageId,
+                              ),
+                            ),
+                      ),
+                    )
+                  : yield* widgetPush(
+                      notification.orgId,
+                      notification.widgetId,
+                      notification.covered ?? [],
+                    );
       if (push === undefined || push.recipients.length === 0) return nothing;
       const outcome: KinPushOutcome = {
         status: apns.status,
