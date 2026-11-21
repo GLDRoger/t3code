@@ -111,7 +111,13 @@ features:
     web: [home, section:Waiting on you, chat]
     phone: [tab:chats, KinWaiting]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    proof: [packages/client-runtime/src/kin/kinInboxModel.test.ts]
+    note: >-
+      Counts everything that waits on the viewer: questions, mails ready to send, drafts sent up
+      and approvals. A co-owner also sees, folded and read-only, what waits on the owner
+      ("Waiting for <name>"); every answer to those stays the owner's, refused for her at the host.
+    proof:
+      - packages/client-runtime/src/kin/kinInboxModel.test.ts
+      - apps/server/src/kin/questions/openQuestions.test.ts
 
   - id: open-questions
     name: An agent's question with its default and day, asked once
