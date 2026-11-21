@@ -292,6 +292,8 @@ export function KinMessageBubble(props: {
           onOpenTarget={onOpenTarget}
           head={kinPageHead(message, props.firstName ?? null)}
           foot={hasCard ? card : null}
+          // As in a bubble: the long press opens the sheet, not the system's text menu too.
+          selectable={onOpenActions === null}
         />
         {wideTable ? (
           <Text textRole="caption" className="text-foreground-muted">
