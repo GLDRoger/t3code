@@ -25,7 +25,6 @@ import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
-import { deferredMeta } from "../lead/deferredTools.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 
 export const enabled = McpToolAccess.threadBoundGate(() => {
@@ -106,9 +105,7 @@ const widget = Tool.make("kin_widget_upsert", {
     closed: Schema.optional(Schema.Boolean),
   }),
   success: KinWidget,
-})
-  .annotate(McpSchema.EnabledWhen, enabled)
-  .annotate(Tool.Meta, deferredMeta);
+}).annotate(McpSchema.EnabledWhen, enabled);
 export const KinChatToolkit = Toolkit.make(post, read, widget);
 
 export const agentServices = Effect.gen(function* () {

@@ -54,7 +54,7 @@ it.effect.each([
   [true, false],
   [false, true],
 ])(
-  "a confined Kin session loads no settings file, Kin tools up front and none of Claude Code's own (KIN_ENABLED=%s, lead wrapper outside=%s)",
+  "a confined Kin session loads no settings file, Kin's core up front and none of Claude Code's own (KIN_ENABLED=%s, lead wrapper outside=%s)",
   ([enabled, leadOutside]) =>
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -150,9 +150,9 @@ it.effect.each([
           ...builtinTools.filter((tool) => tool !== "WebSearch"),
         ],
         strictMcpConfig: true,
-        // Kin's tools load upfront; only those marked deferred wait for ToolSearch.
+        // Kin's core loads up front by its own marks; every other tool waits for ToolSearch.
         tools: ["ToolSearch", "WebSearch"],
-        mcpServers: { kin: { type: "http", url: "http://127.0.0.1/kin", alwaysLoad: true } },
+        mcpServers: { kin: { type: "http", url: "http://127.0.0.1/kin" } },
         // Only the owner's model credentials come from their settings.
         settings: {
           apiKeyHelper: "gateway-token",

@@ -107,7 +107,7 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
     .filter(isText)
     .map((block) => block.text)
     .join("\n\n");
-  // As Kin's sessions decide (`kinDeferredTools`): a tool waits only where the model can look it up.
+  // As Kin's sessions decide (`toolSearch`): a tool waits only where the model can look it up.
   const lookup = yield* Effect.promise(() => server.knowsModel(config.model));
   const deferred = new Set(lookup ? base.deferred.map((tool) => tool.name) : []);
   const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());

@@ -223,16 +223,23 @@ it("fills a Kin tool's left-out or message-id event as Kin's tool gate does", ()
 });
 
 it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with the owner's session, its default", () => {
-  const names = (kinSession: boolean) =>
+  const base = (kinSession: boolean) =>
     buildBase(template, {
       model: "claude-sonnet-5-5",
       keepUserInstructions: false,
       kinAgent: true,
       kinLead: true,
       kinSession,
-    }).nativeTools.map((tool) => tool.name);
+    });
+  // What the session offers: loaded up front, or waiting behind ToolSearch.
+  const names = (kinSession: boolean) =>
+    [...base(kinSession).nativeTools, ...base(kinSession).deferred].map((tool) => tool.name);
   const [before, after] = [names(false), names(true)];
   assert.notInclude(before, "mcp__t3-code__delegate_task");
+  // Only Kin's core loads up front; T3's tools wait to be searched for.
+  const upFront = base(true).nativeTools.map((tool) => tool.name);
+  assert.include(upFront, "mcp__t3-code__record_create");
+  assert.notInclude(upFront, "mcp__t3-code__delegate_task");
   assert.isFalse(before.some((name) => name.endsWith("Bash")));
   for (const name of ["mcp__t3-code__delegate_task", "mcp__t3-code__task_status"])
     assert.include(after, name);
