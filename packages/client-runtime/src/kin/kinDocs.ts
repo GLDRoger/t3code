@@ -932,19 +932,46 @@ export const kinDocCanEdit = (
   doc.version.version === doc.latest.version &&
   doc.version.file === undefined;
 
-/** What a hand edit sends: the section as it was read, so a newer one is refused. */
-export function kinDocEditInput(
-  orgId: KinOrgId,
-  doc: Pick<KinDocDetail, "key" | "outline">,
+/**
+ * What a hand edit is opened on, taken all at once: the doc, the section, its hash and its text as
+ * read then. The doc may refresh while the editor is open; the save still names what was opened,
+ * so a newer change to that section is refused, and one to another section is not.
+ */
+export interface KinDocEditOpened {
+  readonly key: KinDocDetail["key"];
+  readonly section: string;
+  readonly title: string;
+  readonly hash: string;
+  /** The section's markdown as opened, heading included: the editor's starting text. */
+  readonly was: string;
+}
+
+/** The section to open for a hand edit, or null when the body and the outline disagree. */
+export function kinDocEditOpen(
+  doc: Pick<KinDocDetail, "key" | "body" | "outline">,
   section: string,
+): KinDocEditOpened | null {
+  const read = doc.outline.find((one) => one.id === section);
+  const text = kinDocSections(doc.body, doc.outline)?.find((one) => one.id === section);
+  return read === undefined || text === undefined
+    ? null
+    : { key: doc.key, section: read.id, title: text.title, hash: read.hash, was: text.text };
+}
+
+/** What the save sends: what was opened, never the doc as it reads now. */
+export const kinDocEditInput = (
+  orgId: KinOrgId,
+  opened: KinDocEditOpened,
   text: string,
   clientRequestId: string,
-): KinDocEditSectionInput | null {
-  const read = doc.outline.find((one) => one.id === section);
-  return read === undefined
-    ? null
-    : { orgId, key: doc.key, section: read.id, hash: read.hash, text, clientRequestId };
-}
+): KinDocEditSectionInput => ({
+  orgId,
+  key: opened.key,
+  section: opened.section,
+  hash: opened.hash,
+  text,
+  clientRequestId,
+});
 
 export type KinDocEditOutcome =
   | { readonly _tag: "saved"; readonly doc: KinDocDetail }

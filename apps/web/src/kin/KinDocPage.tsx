@@ -16,7 +16,9 @@ import {
   kinDocCanEdit,
   kinDocCopyText,
   kinDocEditInput,
+  kinDocEditOpen,
   kinDocEditOutcome,
+  type KinDocEditOpened,
   kinDocDiffSummary,
   kinDocPdfInput,
   kinDocRestoreOutcome,
@@ -165,11 +167,8 @@ export function KinDocPage(
   /** The version that was latest before a restore, which restoring again undoes. */
   const [undo, setUndo] = useState<number | null>(null);
   const [filing, setFiling] = useState(false);
-  const [editing, setEditing] = useState<{
-    readonly id: string;
-    readonly title: string;
-    readonly text: string;
-  } | null>(null);
+  // Taken when the editor opens; the doc may refresh underneath without touching the draft.
+  const [editing, setEditing] = useState<KinDocEditOpened | null>(null);
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
 
   const run = async (target: NonNullable<Restoring>, undoing: boolean) => {
@@ -325,11 +324,11 @@ export function KinDocPage(
           )}
         </div>
       )}
-      {editing !== null && doc !== null ? (
+      {editing === null ? null : (
         <KinDocSectionEditor
           {...props}
-          doc={doc}
-          section={editing}
+          docTitle={doc?.title ?? editing.key}
+          opened={editing}
           onClose={() => setEditing(null)}
           onSaved={(version) => {
             setEditing(null);
@@ -337,7 +336,7 @@ export function KinDocPage(
             refresh();
           }}
         />
-      ) : null}
+      )}
       {filing && doc !== null ? (
         <KinDocFileDialog {...props} doc={doc} onClose={() => setFiling(false)} />
       ) : null}
@@ -394,7 +393,7 @@ export function KinDocPage(
           suggests={!ownerLevel}
           onCopyLink={copyLink}
           onCopyText={copyText}
-          onEdit={kinDocCanEdit(doc) ? setEditing : null}
+          onEdit={kinDocCanEdit(doc) ? (section) => setEditing(kinDocEditOpen(doc, section)) : null}
           onSeeChanges={(to) => onGo({ doc: key, changes: { to } })}
           onOpenLatest={() => onGo({ doc: key })}
           onHistory={() => onGo({ ...where, history: true })}
@@ -745,24 +744,24 @@ function KinDocHistory(
 /** One section changed by hand; a refusal keeps what was typed, and nothing else closes it. */
 function KinDocSectionEditor(
   props: KinWorkTarget & {
-    readonly doc: KinDocDetail;
-    readonly section: { readonly id: string; readonly title: string; readonly text: string };
+    readonly docTitle: string;
+    /** What the editor opened on (`kinDocEditOpen`): the save names it, never the doc as it reads now. */
+    readonly opened: KinDocEditOpened;
     readonly onClose: () => void;
     readonly onSaved: (version: number) => void;
   },
 ) {
-  const { environmentId, orgId, doc, section } = props;
+  const { environmentId, orgId, opened } = props;
   const send = useAtomCommand(kinClient.docEditSection, { reportFailure: false });
-  const [text, setText] = useState(section.text);
+  const [text, setText] = useState(opened.was);
   const [requestId] = useState(randomUUID);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const changed = text !== section.text;
+  const changed = text !== opened.was;
   const save = async () => {
     if (busy || !changed) return;
     if (!kinHostConnected(environmentId)) return setProblem(KIN_DOCS.editOffline);
-    const input = kinDocEditInput(orgId, doc, section.id, text, requestId);
-    if (input === null) return setProblem(KIN_DOCS.editMoved);
+    const input = kinDocEditInput(orgId, opened, text, requestId);
     setBusy(true);
     setProblem(null);
     const outcome = kinDocEditOutcome(await send({ environmentId, input }));
@@ -787,13 +786,13 @@ function KinDocSectionEditor(
           }}
         >
           <DialogHeader>
-            <DialogTitle>{KIN_DOCS.editing(section.title)}</DialogTitle>
-            <DialogDescription>{doc.title}</DialogDescription>
+            <DialogTitle>{KIN_DOCS.editing(opened.title)}</DialogTitle>
+            <DialogDescription>{props.docTitle}</DialogDescription>
           </DialogHeader>
           <DialogPanel>
             <div className="flex flex-col gap-3">
               <Textarea
-                aria-label={KIN_DOCS.editing(section.title)}
+                aria-label={KIN_DOCS.editing(opened.title)}
                 rows={14}
                 value={text}
                 disabled={busy}

@@ -23,6 +23,7 @@ import {
   kinDocChat,
   kinDocCopyText,
   kinDocEditInput,
+  kinDocEditOpen,
   kinDocEditOutcome,
   kinDocSuggestStarter,
   kinDocExport,
@@ -39,6 +40,7 @@ import {
   kinPendingRefAtom,
   kinPendingRefKey,
   type KinDocAsk,
+  type KinDocEditOpened,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_DOC_COMPANY, KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
@@ -263,13 +265,15 @@ export function useKinDocRestore(target: KinWorkTarget, key: KinRecordKey) {
   };
 }
 
-/** One section changed by hand, its typed text kept on any refusal. */
-function useKinDocEdit(target: KinWorkTarget, doc: KinDocDetail, onSaved: () => void) {
+/**
+ * One section changed by hand: it saves against the section as opened (`kinDocEditOpen`), however
+ * the doc refreshes meanwhile, and its typed text is kept on any refusal.
+ */
+function useKinDocEdit(target: KinWorkTarget, onSaved: () => void) {
   const { environmentId, orgId } = target;
   const send = useAtomCommand(kinClient.docEditSection, { reportFailure: false });
   const [editing, setEditing] = useState<{
-    readonly section: string;
-    readonly was: string;
+    readonly opened: KinDocEditOpened;
     readonly text: string;
     readonly requestId: string;
   } | null>(null);
@@ -279,8 +283,7 @@ function useKinDocEdit(target: KinWorkTarget, doc: KinDocDetail, onSaved: () => 
   const save = async () => {
     if (editing === null || busy) return;
     if (!kinHostConnected(environmentId)) return setProblem(KIN_DOCS.editOffline);
-    const input = kinDocEditInput(orgId, doc, editing.section, editing.text, editing.requestId);
-    if (input === null) return setProblem(KIN_DOCS.editMoved);
+    const input = kinDocEditInput(orgId, editing.opened, editing.text, editing.requestId);
     setBusy(true);
     setProblem(null);
     const outcome = kinDocEditOutcome(await send({ environmentId, input }));
@@ -300,15 +303,17 @@ function useKinDocEdit(target: KinWorkTarget, doc: KinDocDetail, onSaved: () => 
     problem,
     saved,
     dismissSaved: () => setSaved(null),
-    start: (section: string, text: string) => {
+    start: (doc: KinDocDetail, section: string) => {
+      const opened = kinDocEditOpen(doc, section);
+      if (opened === null) return;
       setSaved(null);
       setProblem(null);
-      setEditing({ section, was: text, text, requestId: uuidv4() });
+      setEditing({ opened, text: opened.was, requestId: uuidv4() });
     },
     type: (text: string) => setEditing((held) => (held === null ? held : { ...held, text })),
     save,
     cancel: () => {
-      if (editing === null || editing.text === editing.was) return close();
+      if (editing === null || editing.text === editing.opened.was) return close();
       Alert.alert(KIN_DOCS.discard.title, undefined, [
         { text: KIN_DOCS.discard.keep, style: "cancel" },
         { text: KIN_DOCS.discard.confirm, style: "destructive", onPress: close },
@@ -336,7 +341,7 @@ function KinDocBody(
   const styles = useMarkdownPreviewStyles();
   const openLink = useOpenPullRequest();
   const restore = useKinDocRestore(target, doc.key);
-  const edit = useKinDocEdit(target, doc, props.onRefresh);
+  const edit = useKinDocEdit(target, props.onRefresh);
   const canRender = useAtomValue(kinClient.docRender.permissionAtom(environmentId));
   const render = useAtomCommand(kinClient.docRender, { reportFailure: false });
   const [making, setMaking] = useState(false);
@@ -447,7 +452,7 @@ function KinDocBody(
     if (y !== undefined) scroll.current?.scrollTo({ y: y - bar, animated: true });
   };
   const act = (section: string | null, text: string, action: string) => {
-    if (action === "change" && byHand && section !== null) edit.start(section, text);
+    if (action === "change" && byHand && section !== null) edit.start(doc, section);
     else if (action === "ask" || action === "change") point(section, action);
     else if (action === "link") void copyLink(section);
     else if (action === "copy") void copyText(text);
@@ -488,7 +493,7 @@ function KinDocBody(
                 title: one.title,
                 onPress: () => {
                   jump(one.id);
-                  edit.start(one.id, one.text);
+                  edit.start(doc, one.id);
                 },
               })),
             }
@@ -497,7 +502,7 @@ function KinDocBody(
               title: byHand || ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest,
               onPress: () =>
                 byHand && sections[0] !== undefined
-                  ? edit.start(sections[0].id, sections[0].text)
+                  ? edit.start(doc, sections[0].id)
                   : point(null, "change"),
             },
         { id: "ask", title: KIN_DOCS.ask, onPress: () => point(null, "ask") },
@@ -531,6 +536,45 @@ function KinDocBody(
       ],
     },
   ];
+
+  const editor =
+    edit.editing === null ? null : (
+      <View className="mb-3 gap-2">
+        <TextInput
+          accessibilityLabel={KIN_DOCS.editing(edit.editing.opened.title)}
+          value={edit.editing.text}
+          editable={!edit.busy}
+          multiline
+          autoFocus
+          onChangeText={edit.type}
+          textAlignVertical="top"
+          placeholderTextColorClassName="accent-placeholder"
+          className="min-h-32 rounded-lg border border-border px-3 py-2 font-sans text-base text-foreground"
+        />
+        {edit.problem === null ? null : <Notice tone="danger" message={edit.problem} />}
+        <View className="flex-row gap-2">
+          <Button
+            tone="primary"
+            size="compact"
+            label={edit.busy ? KIN_DOCS.saving : KIN_DOCS.save}
+            loading={edit.busy}
+            disabled={edit.busy || edit.editing.text === edit.editing.opened.was}
+            onPress={() => void edit.save()}
+          />
+          <Button
+            tone="secondary"
+            size="compact"
+            label={KIN_DOCS.cancel}
+            disabled={edit.busy}
+            onPress={edit.cancel}
+          />
+        </View>
+      </View>
+    );
+  // A draft whose section no longer reads as opened is kept, above the doc.
+  const editorAside =
+    edit.editing !== null &&
+    !(sections ?? []).some((one) => one.id === edit.editing?.opened.section);
 
   const renderImage: MarkdownImageRenderer = (image) => {
     const attachmentId = kinDocFileId(image.href);
@@ -761,6 +805,7 @@ function KinDocBody(
               </View>
             ) : null}
           </View>
+          {editorAside ? editor : null}
           {doc.version.file === undefined ? null : (
             <KinDocFileRows environmentId={environmentId} file={doc.version.file} />
           )}
@@ -796,53 +841,21 @@ function KinDocBody(
                   }
                 }}
               >
-                {edit.editing?.section === section.id ? (
-                  <View className="mb-3 gap-2">
-                    <TextInput
-                      accessibilityLabel={KIN_DOCS.editing(section.title)}
-                      value={edit.editing.text}
-                      editable={!edit.busy}
-                      multiline
-                      autoFocus
-                      onChangeText={edit.type}
-                      textAlignVertical="top"
-                      placeholderTextColorClassName="accent-placeholder"
-                      className="min-h-32 rounded-lg border border-border px-3 py-2 font-sans text-base text-foreground"
-                    />
-                    {edit.problem === null ? null : <Notice tone="danger" message={edit.problem} />}
-                    <View className="flex-row gap-2">
-                      <Button
-                        tone="primary"
-                        size="compact"
-                        label={edit.busy ? KIN_DOCS.saving : KIN_DOCS.save}
-                        loading={edit.busy}
-                        disabled={edit.busy || edit.editing.text === edit.editing.was}
-                        onPress={() => void edit.save()}
-                      />
-                      <Button
-                        tone="secondary"
-                        size="compact"
-                        label={KIN_DOCS.cancel}
-                        disabled={edit.busy}
-                        onPress={edit.cancel}
-                      />
-                    </View>
-                  </View>
-                ) : (
-                  content(section.text, (children) => (
-                    <Menu
-                      title={section.title}
-                      shouldOpenOnLongPress
-                      accessibilityLabel={`${section.title}. Hold for actions`}
-                      actions={sectionActions(ownerLevel, byHand)}
-                      onPressAction={({ nativeEvent }) =>
-                        act(section.id, section.text, nativeEvent.event)
-                      }
-                    >
-                      {children}
-                    </Menu>
-                  ))
-                )}
+                {edit.editing?.opened.section === section.id
+                  ? editor
+                  : content(section.text, (children) => (
+                      <Menu
+                        title={section.title}
+                        shouldOpenOnLongPress
+                        accessibilityLabel={`${section.title}. Hold for actions`}
+                        actions={sectionActions(ownerLevel, byHand)}
+                        onPressAction={({ nativeEvent }) =>
+                          act(section.id, section.text, nativeEvent.event)
+                        }
+                      >
+                        {children}
+                      </Menu>
+                    ))}
               </View>
             ))
           )}

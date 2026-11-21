@@ -198,9 +198,7 @@ export function KinDocReader(
     /** Copies this markdown as clean text (`kinDocCopyText`). */
     readonly onCopyText: (markdown: string) => void;
     /** Opens a section to change by hand; null where this reader may not. */
-    readonly onEdit:
-      | ((section: { readonly id: string; readonly title: string; readonly text: string }) => void)
-      | null;
+    readonly onEdit: ((section: string) => void) | null;
     readonly onSeeChanges: (to: number) => void;
     readonly onOpenLatest: () => void;
     readonly onHistory: () => void;
@@ -229,7 +227,7 @@ export function KinDocReader(
   const { onEdit } = props;
   const editSection = (id: string | null) => {
     const found = id === null ? undefined : sections?.find((section) => section.id === id);
-    return onEdit === null || found === undefined ? null : () => onEdit(found);
+    return onEdit === null || found === undefined ? null : () => onEdit(found.id);
   };
   const hasTop = doc.outline[0]?.id === "top";
   const line = kinDocChangeLine(
@@ -374,7 +372,7 @@ export function KinDocReader(
                       </MenuSubTrigger>
                       <MenuSubPopup>
                         {sections.map((section) => (
-                          <MenuItem key={section.id} onClick={() => onEdit(section)}>
+                          <MenuItem key={section.id} onClick={() => onEdit(section.id)}>
                             {section.title}
                           </MenuItem>
                         ))}
