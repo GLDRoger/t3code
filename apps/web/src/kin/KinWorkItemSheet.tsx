@@ -789,7 +789,12 @@ function KinWorkItem(
                       variant={variant}
                       disabled={saving}
                       aria-busy={saving && index === 0}
-                      onClick={() => stepAct(act.id)}
+                      // A double click's second click would land on Reopen once Mark done lands.
+                      onClick={(event) =>
+                        event.detail > 1 && (act.id === "done" || act.id === "reopen")
+                          ? undefined
+                          : stepAct(act.id)
+                      }
                     >
                       {act.id === "keep" || act.id === "done" ? <CheckIcon /> : null}
                       {act.id === "reopen" ? <RotateCcwIcon /> : null}

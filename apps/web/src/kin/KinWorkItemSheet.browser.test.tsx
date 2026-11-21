@@ -159,7 +159,7 @@ async function retitle(title: string) {
 }
 
 describe("changing a task from its sheet", () => {
-  it("saves the edited title at the revision it was read at, then marks it done", async () => {
+  it("saves the edited title at the revision it was read at, then a double click marks it done once", async () => {
     await page.viewport(1440, 900);
     setup("T-41", null);
     await using _screen = await screen("T-41");
@@ -171,9 +171,9 @@ describe("changing a task from its sheet", () => {
       { orgId, key: "T-41", rev: 4, title: "Book the Ambermill van and driver" },
     ]);
 
-    await userEvent.click(page.getByRole("button", { name: "Mark done" }).first());
-    await vi.waitFor(() => expect(host.updates).toHaveLength(2));
-    expect(host.updates[1]).toEqual({ orgId, key: "T-41", rev: 5, state: "done" });
+    await userEvent.dblClick(page.getByRole("button", { name: "Mark done" }).first());
+    await expect.element(page.getByRole("button", { name: "Reopen" }).first()).toBeVisible();
+    expect(host.updates.slice(1)).toEqual([{ orgId, key: "T-41", rev: 5, state: "done" }]);
   });
 
   it("shows the host's refusal and keeps the title as typed", async () => {

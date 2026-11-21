@@ -596,7 +596,12 @@ function KinTaskRow(props: {
             disabled={props.saving}
             aria-label={`${TICK_LABEL[tick]}: ${row.title}`}
             title={TICK_LABEL[tick]}
-            onClick={() => onAct({ type: "state", state: tick === "done" ? "done" : "open" })}
+            // The second click of a double click would land on the flipped circle and undo it.
+            onClick={(event) =>
+              event.detail > 1
+                ? undefined
+                : onAct({ type: "state", state: tick === "done" ? "done" : "open" })
+            }
           >
             <KinWorkStateIcon state={row.state} />
           </Button>
@@ -977,7 +982,12 @@ export function KinWorkRow(props: {
             disabled={props.saving}
             aria-label={`${TICK_LABEL[tick]}: ${row.title}`}
             title={TICK_LABEL[tick]}
-            onClick={() => onAct({ type: "state", state: tick === "done" ? "done" : "open" })}
+            // The second click of a double click would land on the flipped circle and undo it.
+            onClick={(event) =>
+              event.detail > 1
+                ? undefined
+                : onAct({ type: "state", state: tick === "done" ? "done" : "open" })
+            }
           >
             <KinWorkStateIcon state={row.state} />
           </Button>
