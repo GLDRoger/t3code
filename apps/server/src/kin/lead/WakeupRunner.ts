@@ -1,3 +1,6 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous diagnostic hash; Digest would add a service.
+import * as NodeCrypto from "node:crypto";
+
 import {
   CommandId,
   KinAgentId,
@@ -14,6 +17,8 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  type TurnTokenUsage,
+  kinCharacterSeat,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -67,8 +72,11 @@ import {
   companyDefaultModel,
   isDevServer,
   leadModelProblem,
+  driverOf,
   leadProviderProblem,
 } from "./leadModels.ts";
+import { leadThreadInstructions } from "./turn/session.ts";
+import { isEngineeringDomain } from "./t3Tools.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { bootstrapLeadProject } from "./leadProject.ts";
 import * as RoutineContent from "./RoutineContent.ts";
@@ -463,9 +471,13 @@ const make = Effect.gen(function* () {
     const attempts = yield* sql<{ attemptId: string }>`SELECT attempt_id AS "attemptId"
       FROM orchestration_v2_projection_run_attempts
       WHERE thread_id = ${row.threadId} AND run_id IN ${sql.in([...runIds])} ORDER BY attempt_id`;
-    const { providerTurns } = yield* threads.getThreadRecords(row.threadId, ["providerTurns"], {
-      providerTurnAttemptIds: attempts.map((attempt) => RunAttemptId.make(attempt.attemptId)),
-    });
+    const { thread, providerTurns } = yield* threads.getThreadRecords(
+      row.threadId,
+      ["providerTurns"],
+      {
+        providerTurnAttemptIds: attempts.map((attempt) => RunAttemptId.make(attempt.attemptId)),
+      },
+    );
     const usage = providerTurns.map((turn) => ({
       providerTurnId: turn.id,
       ...(turn.turnTokenUsage === undefined ? {} : { turnTokenUsage: turn.turnTokenUsage }),
@@ -473,6 +485,50 @@ const make = Effect.gen(function* () {
       usedTokens: turn.tokenUsage?.usedTokens,
     }));
     yield* budget.charge({ orgId: row.orgId, wakeupId: row.wakeupId, usage });
+    // What the session carried and what the provider read from or wrote to its prompt cache; the
+    // endpoint's "Kin endpoint tool list." line has the tool list's hash for the same thread.
+    const threadId = row.threadId;
+    yield* Effect.gen(function* () {
+      const driver = driverOf(yield* settings.getSettings, thread.modelSelection);
+      const [lead] = yield* sql<{ domain: string }>`SELECT domain FROM kin_leads
+        WHERE org_id = ${row.orgId} AND agent_id = ${row.agentId} ORDER BY agent_id`;
+      const tokens = (pick: (usage: TurnTokenUsage) => number | undefined) =>
+        providerTurns.reduce(
+          (total, turn) =>
+            total + (turn.turnTokenUsage === undefined ? 0 : (pick(turn.turnTokenUsage) ?? 0)),
+          0,
+        );
+      yield* Effect.logInfo("Kin wake-up context.", {
+        agentId: row.agentId,
+        wakeupId: row.wakeupId,
+        threadId,
+        threadKind: threadId.startsWith(REVIEW_THREAD_PREFIX)
+          ? "review"
+          : threadId.startsWith(SHARED_THREAD_PREFIX)
+            ? "shared"
+            : "owner",
+        seat:
+          lead === undefined
+            ? null
+            : isEngineeringDomain(lead.domain)
+              ? "engineering"
+              : (kinCharacterSeat(lead.domain) ?? "custom"),
+        driver: driver ?? null,
+        model: thread.modelSelection.model,
+        instructionsSha256:
+          driver === undefined
+            ? null
+            : NodeCrypto.createHash("sha256")
+                .update(leadThreadInstructions(threadId, driver))
+                .digest("hex"),
+        providerTurns: providerTurns.length,
+        inputTokens: tokens((usage) => usage.inputTokens),
+        cacheReadTokens: tokens((usage) => usage.cachedInputTokens),
+        cacheWriteTokens: tokens((usage) => usage.cacheCreationTokens),
+      });
+    }).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("Kin wake-up context log failed", { cause })),
+    );
   });
   const wait = Effect.fn("WakeupRunner.wait")(
     function* (row: typeof RunningRow.Type, projectId: ProjectId) {

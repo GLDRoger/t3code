@@ -503,7 +503,11 @@ it.effect(
           tools: options?.tools,
           disallowedTools: options?.disallowedTools,
           mcpServers: Object.entries(options?.mcpServers ?? {}).map(([name, server]) => {
-            const { url: _url, headers: _headers, ...rest } = server as {
+            const {
+              url: _url,
+              headers: _headers,
+              ...rest
+            } = server as {
               url?: string;
               headers?: Record<string, string>;
             };
@@ -527,7 +531,9 @@ it.effect(
         // resumed sessions only).
         assert.strictEqual(first?.env?.MCP_CONNECTION_NONBLOCKING, "0", threadId);
         const system = first?.systemPrompt;
-        prompts.push(typeof system === "object" && "prompt" in system ? system.prompt : "");
+        prompts.push(
+          typeof system === "object" && "prompt" in system ? [system.prompt].flat().join("") : "",
+        );
       }
       assert.deepStrictEqual(prompts, [
         kinInstructions("owner", "claudeAgent"),
