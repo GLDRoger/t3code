@@ -44,7 +44,7 @@ import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { teammatesLimited } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
-import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
+import { approvedDraftTurn, ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
 import { codingAgentSource, outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
 import { commentsPage } from "./recordComments.ts";
@@ -1258,8 +1258,8 @@ const make = Effect.gen(function* () {
   /**
    * Whether a new entry starts kept, from who makes it, in the write's transaction. Made from a
    * suggestion, or asked to be one, it is one. A quote or invoice is real only on an owner-level
-   * person's word: theirs, or their ask in person of an agent. Anything else starts kept as it
-   * always did, unless its caller asks for less.
+   * person's word: theirs, their ask in person of an agent, or the owner's Approve of a sent-up
+   * draft (`approvedDraftTurn`). Anything else starts kept, unless its caller asks for less.
    */
   const startsKept = Effect.fn("KinRecords.startsKept")(function* (
     orgId: KinOrgId,
@@ -1274,7 +1274,12 @@ const make = Effect.gen(function* () {
       if (source !== undefined && isSuggestion(source)) return false;
     }
     if (!ISSUED_LISTS.has(list) || writer.actor._tag === "system") return true;
-    return yield* mayKeep(orgId, writer);
+    if (yield* mayKeep(orgId, writer)) return true;
+    return (
+      writer.actor._tag === "agent" &&
+      writer.wakeupId !== undefined &&
+      (yield* approvedDraftTurn(orgId, writer.actor.agentId, writer.wakeupId).pipe(provideSql))
+    );
   });
 
   /**

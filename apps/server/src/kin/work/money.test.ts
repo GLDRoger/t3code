@@ -2588,6 +2588,25 @@ describe("who keeps a suggestion", () => {
           for (const [i, who] of by.entries()) {
             const eventId = `event-${n}-${i}`;
             const message = `msg-${n}-${i}`;
+            // The owner's Approve on a sent-up draft (`approveDraft`), or the same unapproved.
+            if (who === "approved" || who === "unapproved") {
+              const questionId = `q-${n}-${i}`;
+              yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id,
+                  chat_id, kind, question, safe, asked_at, due_at, act_at, state, answer,
+                  for_chat_id, for_person_id, draft_json, approved_at)
+                VALUES (${questionId}, ${orgId}, ${lead}, ${ownerId}, 'lead-chat', 'card',
+                  'Approve the invoice?', 0, 0, 0, 0, 'answered', 'Approve', 'mate-chat', 'mate',
+                  '{"kind":"invoice","for":null,"text":"Invoice: ____"}',
+                  ${who === "approved" ? 1 : null})`;
+              yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+                  received_at, queued_at, state, wakeup_id)
+                VALUES (${eventId}, ${orgId}, ${lead}, 'deferral.due', 'P0', ${JSON.stringify({
+                  _tag: "deferral.due",
+                  provenance: { _tag: "system" },
+                  subject: { type: "question", questionId, answered: true, approved: true },
+                })}, 0, 0, 'claimed', ${wake})`;
+              continue;
+            }
             const said = who !== "routine" && who !== "reaction";
             if (said)
               yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
@@ -2621,6 +2640,8 @@ describe("who keeps a suggestion", () => {
         ["teammate asked", ["mate"]],
         ["nobody asked", ["routine"]],
         ["owner reacted", ["reaction"]],
+        ["owner approved a draft", ["approved"]],
+        ["a draft not approved", ["unapproved"]],
       ] as const;
       const asAgent = (by: ReadonlyArray<string>, records: ReadonlyArray<object>) =>
         Effect.gen(function* () {
@@ -2668,6 +2689,9 @@ describe("who keeps a suggestion", () => {
         "teammate asked": ["refused", "refused", "refused", "refused"],
         "nobody asked": [0, 0, 0, 0],
         "owner reacted": [0, 0, 0, 0],
+        // What his Approve's turn makes is real; the same turn unapproved makes suggestions.
+        "owner approved a draft": [1, 1, 1, 1],
+        "a draft not approved": [0, 0, 0, 0],
         [ownerId]: [1, 1, 1, 1],
         "co-owner": [1, 1, 1, 1],
         mate: [0, 0, 1, 1],
@@ -2777,6 +2801,9 @@ describe("who keeps a suggestion", () => {
         "teammate asked": 0,
         "nobody asked": 0,
         "owner reacted": 0,
+        // His Approve made the draft; it keeps nothing that was there before it.
+        "owner approved a draft": 0,
+        "a draft not approved": 0,
         [ownerId]: 1,
         "co-owner": 1,
         mate: 0,

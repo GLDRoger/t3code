@@ -45,7 +45,7 @@ import { effectiveAudience, SHARED_REFUSAL } from "../lead/Audience.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { inheritOutside, markOutside, outsideStamp, storedStamp } from "../lead/OutsideContent.ts";
-import { ownerLevelAsked } from "../people/KinAccess.ts";
+import { approvedDraftTurn, ownerLevelAsked } from "../people/KinAccess.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import type { KinDecision } from "../memory/MemoryWriter.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
@@ -1558,7 +1558,8 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       assert.lengthOf(yield* draftWakes, 1);
       assert.lengthOf(yield* team.kinLines(zoya.chatId), 1);
 
-      // Its turn is Rhea's own: her chat, owner-only, and counts as her ask in person.
+      // Its turn is Rhea's own: her chat, owner-only; what it makes starts kept, as on her ask
+      // in person, but it is no ask in person, so it keeps nothing else (`money.test.ts`).
       const wakeupId = yield* startAgentWakeup({
         orgId,
         agentId: chief,
@@ -1568,7 +1569,8 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       const turn = { orgId, agentId: chief, wakeupId };
       assert.strictEqual(Option.getOrThrow(yield* laneFor(turn)).chatId, chatOf("chief"));
       assert.strictEqual(yield* effectiveAudience(turn), "owner_only");
-      assert.isTrue(yield* ownerLevelAsked(org, chief, wakeupId));
+      assert.isTrue(yield* approvedDraftTurn(org, chief, wakeupId));
+      assert.isFalse(yield* ownerLevelAsked(org, chief, wakeupId));
 
       // It made nothing yet: Zoya hears nothing more. It makes the proposal, a doc she can't
       // open: she hears where it is, once, without its key.
@@ -1600,7 +1602,7 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       // Another company's question or turn is nobody's here.
       const other = KinOrgId.make("org-elsewhere");
       assert.isUndefined(yield* Questions.readQuestion(other, zoya.questionId));
-      assert.isFalse(yield* ownerLevelAsked(other, chief, wakeupId));
+      assert.isFalse(yield* approvedDraftTurn(other, chief, wakeupId));
       yield* tellDraftMade({ orgId: other, agentId: chief, wakeupId }, chats);
       assert.lengthOf(yield* team.kinLines(zoya.chatId), 2);
 
