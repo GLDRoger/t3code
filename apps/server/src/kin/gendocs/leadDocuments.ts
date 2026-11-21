@@ -106,11 +106,18 @@ export const DocumentResult = Schema.Struct({
 const RecipeInputRow = Schema.Struct({
   name: Schema.String,
   type: Schema.String,
-  /** `agent` when the agent gives it; otherwise where Kin reads it. */
+  /** Where Kin reads it. */
   from: Schema.String,
   required: Schema.Boolean,
   description: Schema.optional(Schema.String),
   columns: Schema.optional(Schema.Array(Schema.String)),
+});
+const AgentInputRow = RecipeInputRow.mapFields(({ from: _from, ...fields }) => fields);
+export const RecipesInput = Schema.Struct({
+  recipe: Schema.optional(recipeName).annotate({
+    description:
+      "One recipe to read in full: adds the inputs Kin reads itself (from is where), the fields Kin computes and its output files.",
+  }),
 });
 export const RecipesResult = Schema.Struct({
   recipes: Schema.Array(
@@ -118,47 +125,66 @@ export const RecipesResult = Schema.Struct({
       name: Schema.String,
       title: Schema.String,
       description: Schema.String,
-      kind: Schema.String,
       list: Schema.NullOr(Schema.String),
       numbered: Schema.Boolean,
       /** Starts only from an owner-only turn, and makes a sensitive doc. */
       confidential: Schema.Boolean,
-      inputs: Schema.Array(RecipeInputRow),
-      computed: Schema.Array(Schema.String),
-      outputs: Schema.Array(Schema.String),
+      /** The inputs the agent gives, with their rules and table columns. */
+      agentInputs: Schema.Array(AgentInputRow),
       /** The one to use for its list unless the owner asks for another. */
       default: Schema.optional(Schema.Literal(true)),
+      /** Only when one recipe is read. */
+      kind: Schema.optional(Schema.String),
+      storedInputs: Schema.optional(Schema.Array(RecipeInputRow)),
+      computed: Schema.optional(Schema.Array(Schema.String)),
+      outputs: Schema.optional(Schema.Array(Schema.String)),
     }),
   ),
 });
 
-export const recipes = leadTool("KinDocuments.recipes", (lead, _input: Record<string, never>) =>
+export const recipes = leadTool("KinDocuments.recipes", (lead, input: typeof RecipesInput.Type) =>
   Effect.gen(function* () {
-    yield* admitted(lead, "kin_recipes", {});
-    const stored = yield* (yield* KinWorkspace).recipes(lead.orgId);
+    yield* admitted(lead, "kin_recipes", input);
+    const all = yield* (yield* KinWorkspace).recipes(lead.orgId);
+    const stored =
+      input.recipe === undefined ? all : all.filter((recipe) => recipe.name === input.recipe);
+    if (input.recipe !== undefined && stored.length === 0)
+      return yield* invalid(
+        `No recipe is called ${input.recipe}. kin_recipes with no recipe lists them.`,
+      );
     const labelled = yield* Effect.forEach(stored, (recipe) => recipeLabelled(lead.orgId, recipe));
-    const defaults = yield* defaultRecipes(lead.orgId, stored);
+    const defaults = yield* defaultRecipes(lead.orgId, all);
     return {
-      recipes: stored.map((recipe, index) => ({
-        name: recipe.name,
-        title: recipe.title,
-        description: recipe.description,
-        kind: recipe.kind,
-        list: recipe.list,
-        numbered: recipe.numbered,
-        confidential: recipe.sensitive || labelled[index] === true,
-        inputs: recipe.inputs.map((input) => ({
-          name: input.name,
-          type: input.type,
-          from: input.from,
-          required: input.required,
-          ...(input.description === undefined ? {} : { description: input.description }),
-          ...(input.type === "table" ? { columns: Object.keys(input.columns) } : {}),
-        })),
-        computed: recipe.computed.map(([name]) => name),
-        outputs: [...recipe.outputs],
-        ...(defaults.has(recipe.name) ? { default: true as const } : {}),
-      })),
+      recipes: stored.map((recipe, index) => {
+        const inputs = recipe.inputs.map((one) => ({
+          name: one.name,
+          type: one.type,
+          from: one.from,
+          required: one.required,
+          ...(one.description === undefined ? {} : { description: one.description }),
+          ...(one.type === "table" ? { columns: Object.keys(one.columns) } : {}),
+        }));
+        return {
+          name: recipe.name,
+          title: recipe.title,
+          description: recipe.description,
+          list: recipe.list,
+          numbered: recipe.numbered,
+          confidential: recipe.sensitive || labelled[index] === true,
+          agentInputs: inputs
+            .filter((one) => one.from === "agent")
+            .map(({ from: _from, ...row }) => row),
+          ...(defaults.has(recipe.name) ? { default: true as const } : {}),
+          ...(input.recipe === undefined
+            ? {}
+            : {
+                kind: recipe.kind,
+                storedInputs: inputs.filter((one) => one.from !== "agent"),
+                computed: recipe.computed.map(([name]) => name),
+                outputs: [...recipe.outputs],
+              }),
+        };
+      }),
     };
   }),
 );
