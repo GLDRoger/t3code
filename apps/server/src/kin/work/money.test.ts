@@ -1041,6 +1041,34 @@ describe("repeating entries", () => {
       assert.deepStrictEqual(next.repeatJson === null ? null : JSON.parse(next.repeatJson).rule, {
         every: "month",
       });
+      // An issued invoice closes; its next one is a draft without the number, to be issued.
+      yield* defined(1, { template: "invoices" });
+      const { row: invoice } = yield* records.create(orgId, system, {
+        list: "invoices",
+        title: "Invented hosting",
+        owner,
+        amount: { minor: 236_000, currency: "INR" },
+        dueAt: Date.parse("2027-01-31T18:29:59.999Z"),
+        dueAllDay: true,
+        repeat: { every: "month" },
+        originKey: "hosting",
+      });
+      const issued = yield* OwnerMoney.issue(people, {
+        orgId,
+        key: KinRecordKey.make(invoice.key),
+      });
+      yield* records.update(orgId, system, invoice.key, { state: "done" });
+      const sql = yield* SqlClient.SqlClient;
+      const hosting = yield* sql<{ state: string; number: string | null }>`SELECT state,
+          json_extract(fields_json, '$.number') AS number FROM kin_records
+        WHERE register_id = 'invoices' AND title = 'Invented hosting' ORDER BY key`;
+      assert.deepStrictEqual(
+        hosting.map((one) => [one.state, one.number]),
+        [
+          ["done", issued.number],
+          ["open", null],
+        ],
+      );
     }).pipe(Effect.provide(layer)),
   );
 });
