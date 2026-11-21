@@ -79,7 +79,7 @@ function Permitted(props: KinWorkTarget) {
   if (gate === "failed") return <KinGateFailed />;
   if (state._tag === "loading") {
     return (
-      <div className="flex flex-col gap-2 p-4" role="status" aria-label="Loading company details">
+      <div className="flex flex-col gap-2 p-4" role="status" aria-label={KIN_COMPANY.loading}>
         <Skeleton className="h-4 w-2/5" />
         <Skeleton className="h-3.5 w-3/5" />
         <Skeleton className="h-3.5 w-1/2" />
@@ -225,6 +225,7 @@ function Profile(
                 ) : (
                   <Input
                     {...shared}
+                    type={field.day ? "date" : undefined}
                     autoComplete="off"
                     spellCheck={false}
                     autoCapitalize={field.code ? "characters" : undefined}

@@ -18,6 +18,7 @@ import { headStarts } from "./headStart.ts";
 import { covers, endedHolds } from "./holds.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { teamHoursNow } from "./nudge.ts";
+import { DEAL_SENSES } from "./senses/deals.ts";
 
 export const PULSE_RULE =
   "What needs attention, as Kin computed it from its own records just now. Nobody asked for these facts, so each one you raise arrives one tap from done: do what you may do alone and say it in a line; draft what leaves the company (mail to its writeTo, its document attached, from an account in mailFrom) so its card waits on him; or put one kin_ask with the real options and a default. When the head start can't be made, say once what is missing, such as no contact with an email; never ask whether to start. Leave a fact that needs nothing or is already in hand. Call pulse_handle once one is in hand or is not a problem. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
@@ -103,7 +104,9 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         ? fact.subject.title
         : `${recordName(fact.subject.key, fact.subject.number)} ${fact.subject.title}`,
     consequence: fact.consequence,
-    acts: who(fact.actor),
+    // A renewal's heads-up only mentions it; who drafts it acts from the draft day.
+    ...(fact.stage === "heads_up" ? {} : { acts: who(fact.actor) }),
+    ...(DEAL_SENSES.has(fact.sense) ? { heading: "Clients" } : {}),
     ...(fact.measure?.from._tag === "playbook"
       ? { playbook: `${fact.measure.from.title} (${fact.measure.from.key})` }
       : {}),
@@ -160,7 +163,8 @@ const ENDED_WITHIN_MS = 60 * 24 * 60 * 60_000;
 
 /**
  * For facts a check-in tells for the first time since a hold on them ended: "set aside by Finance
- * on Rhea's word on 2026-11-20 until 2026-12-17; that day came" (or "lifted by Rhea on …").
+ * on the owner's word on 2026-11-20 until 2026-12-17; that day came" (or "lifted by Meera on …").
+ * The reading agent's own owner is "the owner", as `acts` has it.
  */
 const asideEnded = Effect.fn("KinLeadPrompt.asideEnded")(function* (
   orgId: KinOrgId,
@@ -179,11 +183,13 @@ const asideEnded = Effect.fn("KinLeadPrompt.asideEnded")(function* (
   const named = yield* leadNamer(orgId, agentId);
   const zone = yield* ownerZone(orgId);
   const name = (kind: "person" | "agent", id: string) =>
-    named(
-      kind === "agent"
-        ? { _tag: "agent", agentId: KinAgentId.make(id) }
-        : { _tag: "person", personId: KinPersonId.make(id) },
-    );
+    kind === "person" && id === agent?.owner
+      ? "the owner"
+      : named(
+          kind === "agent"
+            ? { _tag: "agent", agentId: KinAgentId.make(id) }
+            : { _tag: "person", personId: KinPersonId.make(id) },
+        );
   for (const fact of facts) {
     const hold = holds.find((one) => covers(one, fact));
     if (hold === undefined || hold.endedAt === null || agent === undefined) continue;

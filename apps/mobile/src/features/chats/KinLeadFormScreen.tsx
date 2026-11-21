@@ -460,10 +460,10 @@ function LeadForm(props: {
         </View>
       ) : null}
       <View className="gap-2">
-        <ListSection title="What teammates see">
+        <ListSection title={KIN_AGENTS_COPY.introLabel}>
           <TextInput
             multiline
-            accessibilityLabel="What teammates see"
+            accessibilityLabel={KIN_AGENTS_COPY.introLabel}
             value={draft.intro}
             editable={allowed && !saving}
             maxLength={KIN_LEAD_INTRO_MAX}

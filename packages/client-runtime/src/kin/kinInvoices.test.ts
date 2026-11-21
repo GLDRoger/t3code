@@ -235,6 +235,21 @@ describe("kinInvoiceView", () => {
     const view = kinInvoiceView(invoice({ state: "dropped", late: true }), invoices, now);
     expect([view.void, view.balance]).toEqual([true, null]);
   });
+
+  it("shows a draft nothing came in on owing nothing, and a draft with a payment as it stands", () => {
+    const full = { minor: 10_000_000, currency: "INR" };
+    const figures = (patch: Partial<KinRecordDetail>) => {
+      const view = kinInvoiceView(invoice({ state: "open", ...patch }), invoices, now);
+      return [view.total, view.balance, view.received];
+    };
+    expect(figures({ balance: full })).toEqual(["₹1,00,000.00", null, null]);
+    expect(figures({ balance: full, received: { minor: 0, currency: "INR" } })).toEqual([
+      "₹1,00,000.00",
+      null,
+      null,
+    ]);
+    expect(figures({})).toEqual(["₹1,00,000.00", "₹60,000.00", "₹40,000.00"]);
+  });
 });
 
 describe("kinInvoiceMissingClient", () => {

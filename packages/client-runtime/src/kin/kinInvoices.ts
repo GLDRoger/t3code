@@ -14,6 +14,7 @@ import type {
 
 import { kinWorkDayOfTime, kinWorkDueLabel, type KinWorkNames } from "./kinWork.ts";
 import {
+  kinDraftShowsNoBalance,
   kinInvoiceBankText,
   kinMoneyText,
   kinParseMoney,
@@ -27,6 +28,7 @@ import {
  */
 
 export const KIN_INVOICES = {
+  loadFailed: "Couldn't load invoices",
   number: "Invoice number",
   sentTo: (to: string, day: string) =>
     `Sent to ${to} ${/^(today|yesterday)$/.test(day) ? day : `on ${day}`}`,
@@ -200,7 +202,7 @@ export interface KinInvoiceView {
   readonly received: string | null;
   /** TDS the client deducted, when there is any: not part of what was received. */
   readonly tdsDeducted: string | null;
-  /** Null on a void invoice: nothing is due on it. */
+  /** Null on a void invoice, and on a draft nothing came in on: nothing is due on it. */
   readonly balance: string | null;
   readonly settled: boolean;
   /** "Not recorded as paid. Bank known to 31 Oct." while some of it is owed; else null. */
@@ -235,6 +237,7 @@ export function kinInvoiceView(
 ): KinInvoiceView {
   const { number, description } = kinInvoiceTitle(item.title, numberFieldOf(item));
   const isVoid = item.state === "dropped";
+  const owesNothing = isVoid || kinDraftShowsNoBalance(item);
   // Older servers send no `received`: then everything that settled it came in.
   const received =
     item.received ??
@@ -258,9 +261,9 @@ export function kinInvoiceView(
     number,
     void: isVoid,
     total: item.amount === undefined ? null : kinMoneyText(item.amount, true),
-    received: received === null ? null : kinMoneyText(received, true),
+    received: received === null || owesNothing ? null : kinMoneyText(received, true),
     tdsDeducted: tds === null ? null : kinMoneyText(tds, true),
-    balance: isVoid || item.balance === undefined ? null : kinMoneyText(item.balance, true),
+    balance: owesNothing || item.balance === undefined ? null : kinMoneyText(item.balance, true),
     settled: item.balance?.minor === 0,
     bank: isVoid ? null : kinInvoiceBankText(item, now),
     payments: (item.payments ?? []).map((payment) => {

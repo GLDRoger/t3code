@@ -22,6 +22,7 @@ import { laneFor } from "../../reply/replyLane.ts";
 import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinServer } from "../../KinServer.ts";
 import * as Questions from "../../questions/openQuestions.ts";
+import { askPerson } from "../../questions/askPerson.ts";
 import * as CardActions from "../../widgets/cardActions.ts";
 import * as CardPlans from "../../widgets/cardPlans.ts";
 import * as ChoiceCard from "../../widgets/choiceCard.ts";
@@ -120,6 +121,15 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
     Effect.fn("KinLeadToolkit.teamSay")(function* (input) {
       return yield* (yield* KinTeam).say(yield* McpInvocationContext, input);
     }),
+  ),
+  kin_ask_person: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.askPerson")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return yield* askPerson({ ...lead, wakeupId: KinWakeupId.make(lead.wakeupId) }, input, {
+        chat: yield* KinChatService,
+        gate: yield* KinLevelGate,
+      });
+    }, Effect.mapError(failure)),
   ),
   kin_ask: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.ask")(function* (input) {

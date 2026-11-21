@@ -14,7 +14,7 @@ export type TurnAudience = "owner_only" | "shared";
 
 /**
  * Events that answer in the chat they name: a finished task names the chat its work was asked in,
- * and a teammate's task their direct chat with the lead.
+ * a teammate's task their direct chat with the lead, and an answer the chat that asked for it.
  */
 export const CHAT_ANSWER_TAGS = [
   "chat.message",
@@ -22,6 +22,7 @@ export const CHAT_ANSWER_TAGS = [
   "chat.reaction",
   "record.changed",
   "task.finished",
+  "deferral.due",
 ];
 
 /**
@@ -105,10 +106,12 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
           return "shared" as const;
         chats.add(event.chatId);
       } else if (
-        (event.tag === "record.changed" || event.tag === "task.finished") &&
+        (event.tag === "record.changed" ||
+          event.tag === "task.finished" ||
+          event.tag === "deferral.due") &&
         event.chatId !== null
       ) {
-        // A finished task answers in the chat it was asked for in, read by everyone there.
+        // A finished task, or an answer, answers where it was asked for, read by everyone there.
         answersChat = true;
         chats.add(event.chatId);
       }
@@ -345,6 +348,16 @@ export const askersDirectChat = Effect.fn("KinAudience.askersDirectChat")(functi
     AND chat_id = ${chatId} AND kind = 'direct' AND archived_at IS NULL
     AND substr(direct_key, ${-suffix.length}) = ${suffix} LIMIT 1`;
   return rows.length > 0;
+});
+
+/** Whether the turn may read `chatId`, by the rule its chat reads use (`KinLevelGate.read`). */
+export const mayReadChat = Effect.fn("KinAudience.mayReadChat")(function* (
+  turn: Turn,
+  chatId: string,
+) {
+  if (yield* aborted(turn)) return false;
+  if ((yield* effectiveAudience(turn)) === "shared") return yield* askedIn(turn, chatId);
+  return (yield* ownerAlone(turn)) || (yield* behindAllIn(turn, chatId));
 });
 
 /**

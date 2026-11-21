@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures read change lines against a fixed day.
 import {
   type KinAgentChange,
   KinRecordKey,
@@ -215,6 +216,16 @@ describe("kinAgentChangeLine and kinAgentChangeOffer", () => {
     });
     expect(kinAgentChangeLine(moved, new Map([["a-fin", "Finance"]]))).toBe(
       "D-3 Invented chase notes: holder a teammate → Finance",
+    );
+  });
+
+  it.each([
+    ["Pacific/Honolulu", "2026-11-28T09:59:59.999Z", "2026-11-23T09:59:59.999Z"],
+    ["Asia/Kolkata", "2026-11-27T18:29:59.999Z", "2026-11-22T18:29:59.999Z"],
+  ])("a due moved reads the company's days in %s, whatever this device's", (zone, from, to) => {
+    const moved = change({ kind: "updated", fields: [{ field: "due", from, to }] });
+    expect(kinAgentChangeLine(moved, new Map(), new Date("2026-11-18T09:00:00.000Z"), zone)).toBe(
+      "D-3 Invented chase notes: due Nov 27 → Nov 22",
     );
   });
 

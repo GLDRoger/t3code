@@ -1,10 +1,13 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { KIN_MARKETING, type KinCampaignResultId } from "./kinMarketing.ts";
 import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
-import { kinOwnerLevel, formatKinWhen } from "@t3tools/contracts";
+import { KIN_CAMPAIGN_SOURCE, kinOwnerLevel, formatKinWhen } from "@t3tools/contracts";
 import type {
   KinAccessMeResult,
   KinClientTouch,
   KinContact,
+  KinContactListInput,
+  KinDealsInput,
   KinOrgId,
   KinPartiesInput,
   KinPerson,
@@ -40,6 +43,7 @@ import {
   type KinWorkRef,
   type KinWorkRowView,
 } from "./kinWork.ts";
+import { kinCount } from "./kinCount.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -59,6 +63,8 @@ export const KIN_PROJECT_PEOPLE = {
   choose: "Who's on this project",
   detail:
     "People on a project see its tasks, milestones and docs, and are told they were added. Taken off, its tasks leave their list at once.",
+  privateDetail:
+    "People on a private project see its tasks and milestones, not its page or docs, and are told they were added. Taken off, its tasks leave their list at once.",
   agents: "Agents",
   people: "People",
   nobodyLeft: "Everyone is already on it.",
@@ -145,6 +151,8 @@ export const KIN_CLIENTS = {
   noTax: "No GSTIN or state yet. Invoices need one to work out GST.",
   all: "All clients",
   search: "Search clients",
+  /** A client the search found through one of its contacts. */
+  foundContact: (name: string) => `Contact: ${name}`,
   add: "New client",
   loadFailed: "Couldn't load your clients",
   weOwe: "To do for them",
@@ -263,7 +271,8 @@ export const KIN_PROJECTS = {
   reopen: "Reopen",
   noTarget: "No target date",
   privateLabel: "Keep private",
-  privateOn: "Private. Only you see this project and its tasks.",
+  privateOn:
+    "Private. Only you can open this project and its docs. People on it still see its tasks.",
   privateOff: "Your team will be able to see this project.",
   milestones: "Milestones",
   addMilestone: "Add milestone",
@@ -298,9 +307,6 @@ export const KIN_CLIENTS_OLDER_HOST = {
   title: "Your server needs an update",
   detail: "Clients and projects come with the next version. Tasks work as before.",
 };
-
-const plural = (count: number, one: string, many = `${one}s`) =>
-  `${count} ${count === 1 ? one : many}`;
 
 // Contact
 
@@ -339,7 +345,7 @@ export function kinClientContactLine(
   const at = party.lastContactAt;
   if (at === undefined) return null;
   const days = daysBetween(at ?? party.createdAt, now);
-  const ago = days === 0 ? "" : `, ${plural(days, "day")} ago`;
+  const ago = days === 0 ? "" : `, ${kinCount(days, "day")} ago`;
   if (at === null)
     return `No contact logged since they were added ${formatKinTime(new Date(party.createdAt), now)}${ago}`;
   return `Last contact ${formatKinTime(new Date(at), now)}${ago}${latest === undefined ? "" : `: ${latest.title}`}`;
@@ -420,6 +426,10 @@ export interface KinClientsFilter {
   readonly show: KinClientsShow;
   readonly lookedAfter: "anyone" | KinWorkPrincipal;
   readonly text: string;
+  /** A stored source, such as `campaign:P-3`; absent for anywhere. */
+  readonly cameFrom?: string | null;
+  /** A tag on them or one of their contacts; absent for any. */
+  readonly tag?: string | null;
 }
 
 export const KIN_CLIENTS_DEFAULT_FILTER: KinClientsFilter = {
@@ -451,7 +461,9 @@ const lookedAfterKey = (who: KinClientsFilter["lookedAfter"]) =>
 export const kinClientsSameFilter = (a: KinClientsFilter, b: KinClientsFilter) =>
   a.show === b.show &&
   lookedAfterKey(a.lookedAfter) === lookedAfterKey(b.lookedAfter) &&
-  a.text.trim() === b.text.trim();
+  a.text.trim() === b.text.trim() &&
+  (a.cameFrom ?? null) === (b.cameFrom ?? null) &&
+  (a.tag ?? null) === (b.tag ?? null);
 
 const SHOW_QUERY: Record<KinClientsShow, Partial<KinPartiesInput>> = {
   open: {},
@@ -471,6 +483,39 @@ export function kinClientsQuery(
     ...SHOW_QUERY[filter.show],
     ...(filter.lookedAfter === "anyone" ? {} : { owner: filter.lookedAfter }),
     ...(text === "" ? {} : { text }),
+    ...(filter.cameFrom == null ? {} : { source: filter.cameFrom }),
+    ...(filter.tag == null ? {} : { tag: filter.tag }),
+  };
+}
+
+/** The Clients list a campaign's count opens: who came from it, as that count reads them. */
+/** What a campaign's result row opens: the list that count counts, and its title. */
+export type KinCampaignResultOpen =
+  | { readonly to: "contacts"; readonly title: string; readonly input: KinContactListInput }
+  | { readonly to: "clients"; readonly title: string; readonly filter: KinClientsFilter }
+  | { readonly to: "deals"; readonly title: string; readonly input: KinDealsInput };
+
+export function kinCampaignResultOpens(
+  orgId: KinOrgId,
+  key: string,
+  name: string,
+  id: KinCampaignResultId,
+): KinCampaignResultOpen {
+  if (id === "audience") return { to: "contacts", title: name, input: { orgId, campaign: key } };
+  if (id === "deals" || id === "won")
+    return {
+      to: "deals",
+      title: `${id === "won" ? KIN_MARKETING.won : KIN_MARKETING.deals}: ${name}`,
+      input: { orgId, campaign: key as KinRecordKey, state: id === "won" ? "won" : "open" },
+    };
+  return {
+    to: "clients",
+    title: `${KIN_MARKETING.cameFrom}: ${name}`,
+    filter: {
+      ...KIN_CLIENTS_DEFAULT_FILTER,
+      show: id,
+      cameFrom: `${KIN_CAMPAIGN_SOURCE}${key}`,
+    },
   };
 }
 
@@ -519,7 +564,7 @@ export interface KinClientRowView {
   readonly name: string;
   /** "Prospect" ahead of the line, in the accent colour; null for a client or a vendor. */
   readonly mark: string | null;
-  /** "Vendor · 2 to do (1 late) · Waiting on 1", or a prospect's "Zoya" after its mark. */
+  /** "Vendor · 2 to do (1 late) · Waiting on 1", or a prospect's "Zoya" after its mark; "Contact: Ola · …" when the search found it through Ola. */
   readonly line: string;
   /** "Next: Monthly report, Fri 14 Nov", or "No next step"; null for a vendor with nothing owed. */
   readonly next: string | null;
@@ -538,6 +583,7 @@ export function kinClientRow(row: KinPartyRow, names: KinWorkNames, now: Date): 
   // A teammate's row comes without counts (and without a contact day): it names, it doesn't count.
   const counted = row.lastContactAt !== undefined;
   const line = [
+    row.contact === undefined ? null : KIN_CLIENTS.foundContact(row.contact),
     row.kind === "vendor" ? KIN_CLIENTS.kindVendor : null,
     prospect && who !== "You" ? who : null,
     !row.active ? KIN_CLIENTS.closed : prospect || !counted ? null : kinOwedLine(row),
@@ -647,6 +693,8 @@ export interface KinContactView {
   readonly notes: string | null;
   /** No longer someone to reach there. */
   readonly closed: boolean;
+  /** Each opens its list: every contact carrying it. */
+  readonly tags: ReadonlyArray<string>;
   readonly accessibilityLabel: string;
 }
 
@@ -689,6 +737,7 @@ function kinContactView(contact: KinContact): KinContactView {
     phones,
     notes: notes === "" ? null : notes,
     closed: !contact.active,
+    tags: contact.tags ?? [],
     accessibilityLabel: [contact.name, contact.role, contact.active ? null : "No longer a contact"]
       .filter((part) => part !== null)
       .join(". "),
@@ -1067,7 +1116,7 @@ export function kinWorkTimeline(
 /** "today", "1 day", "9 days": how long something has waited. */
 function waited(since: string, now: Date): string {
   const days = Math.floor((now.getTime() - new Date(since).getTime()) / DAY_MS);
-  return !Number.isFinite(days) || days < 1 ? "since today" : `for ${plural(days, "day")}`;
+  return !Number.isFinite(days) || days < 1 ? "since today" : `for ${kinCount(days, "day")}`;
 }
 
 export interface KinProjectPageView {
@@ -1140,6 +1189,10 @@ export interface KinProjectPageView {
   }>;
   /** Quoted, invoiced, received, unpaid, each per currency; empty when nothing is filed here. */
   readonly money: ReadonlyArray<{ readonly label: string; readonly value: string }>;
+  /** "Campaign" for a campaign, said beside its lead; null for an ordinary project. */
+  readonly kind: string | null;
+  /** A campaign's audience tag. */
+  readonly audience: string | null;
 }
 
 export interface KinMilestoneView {
@@ -1226,10 +1279,10 @@ export function kinProjectPageView(
       : [
           because.targetPassed ? "The target date has passed." : null,
           because.late > 0
-            ? `${plural(because.late, "task")} ${because.late === 1 ? "is" : "are"} late.`
+            ? `${kinCount(because.late, "task")} ${because.late === 1 ? "is" : "are"} late.`
             : null,
           because.waitingOverAWeek > 0
-            ? `${plural(because.waitingOverAWeek, "task")} ${because.waitingOverAWeek === 1 ? "has" : "have"} waited more than a week.`
+            ? `${kinCount(because.waitingOverAWeek, "task")} ${because.waitingOverAWeek === 1 ? "has" : "have"} waited more than a week.`
             : null,
         ].filter((part) => part !== null);
   const target = kinWorkDueText(
@@ -1246,6 +1299,8 @@ export function kinProjectPageView(
     ref,
     name: project.name,
     party: project.party === null ? null : { key: project.party.key, title: project.party.title },
+    kind: project.campaign === true ? KIN_MARKETING.campaign : null,
+    audience: project.audience ?? null,
     state: project.state,
     closed: PROJECT_CLOSED[project.state],
     health: project.health === null ? null : HEALTH[project.health],
@@ -1360,6 +1415,8 @@ export const kinProjectPageKeys = (page: KinProjectPage): ReadonlySet<string> =>
     ...(page.milestones ?? []).map((one) => one.key),
     ...(page.meetings ?? []).map((one) => one.key),
     ...(page.specChanged ?? []).map((one) => one.record.key),
+    // A campaign counts every client, contact and deal the reader sees, wherever it is.
+    ...(page.results === undefined ? [] : ["C-*", "CT-*", "DL-*"]),
   ]);
 
 /**

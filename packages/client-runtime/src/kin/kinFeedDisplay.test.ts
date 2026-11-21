@@ -1,7 +1,7 @@
-import type { KinFeedRow } from "@t3tools/client-runtime/kin/kinChatFeed";
+import type { KinFeedRow } from "./kinChatFeed.ts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinFeedDisplay } from "./kinFeedDisplay";
+import { kinFeedDisplay } from "./kinFeedDisplay.ts";
 
 function message(
   key: string,

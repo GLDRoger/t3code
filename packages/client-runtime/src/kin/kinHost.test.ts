@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { RpcClientError } from "effect/rpc";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -17,6 +17,7 @@ import {
   kinHostLink,
   kinHostIdToSave,
   kinStandInLine,
+  makeKinHostAtoms,
   resolveKinHost,
   resolveKinHostAt,
   type KinHost,
@@ -274,6 +275,32 @@ describe("resolveKinHost", () => {
         { savedHostId: c, phases: { ...retry, [b]: refused }, previous: standing },
       ),
     ).toMatchObject({ environmentId: c, connected: false });
+
+    // The app's host atom feeds its last answer back, on web as on the phone.
+    const phases =
+      Atom.make<Record<string, Pick<EnvironmentConnectionPresentation, "phase" | "error">>>(
+        failing,
+      );
+    const known: Array<EnvironmentId> = [];
+    const { hostAtom } = makeKinHostAtoms({
+      ready: () => true,
+      candidates: (get) =>
+        [b, c].map((environmentId) =>
+          kinHostCandidate(
+            environmentId,
+            get(phases)[environmentId] ?? { phase: "connected", error: null },
+          ),
+        ),
+      probe: () => (environmentId) => (environmentId === b ? ready : pending),
+      cachedOrgs: () => () => null,
+      savedHostId: () => c,
+      markKnown: (environmentId) => known.push(environmentId),
+    });
+    const registry = AtomRegistry.make();
+    expect(registry.get(hostAtom)).toMatchObject({ environmentId: b, standInFor: c });
+    registry.set(phases, retry);
+    expect(registry.get(hostAtom)).toMatchObject({ environmentId: b, standInFor: c });
+    expect(new Set(known)).toEqual(new Set([c]));
   });
 
   it("saves a host picked over a saved one that isn't Kin or has no identity", () => {

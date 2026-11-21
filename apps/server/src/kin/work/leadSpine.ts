@@ -16,7 +16,7 @@ import { projectPage } from "./crm.ts";
 import { sectionsOf } from "./docBody.ts";
 import { versionOf } from "./docs.ts";
 import { type FieldValue, fieldList, fieldText, isMoney, parseFields } from "./lists.ts";
-import { dayIn, formatMoney, parseAmount } from "./money.ts";
+import { dayIn, dayWords, formatMoney, parseAmount } from "./money.ts";
 import { principalOfText, principalText, specChangesOf } from "./projectSpine.ts";
 import type { ToolNamer } from "./toolNames.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
@@ -253,6 +253,7 @@ const Line = Schema.Struct({
   state: Schema.String,
   owner: Schema.optional(Schema.String),
   due: Schema.optional(Schema.String),
+  dueDay: Schema.optional(Schema.String),
   late: Schema.optional(Schema.Literal(true)),
   milestone: Schema.optional(Schema.String),
   size: Schema.optional(Schema.String),
@@ -266,6 +267,7 @@ export const ProjectRead = Schema.Struct({
       title: Schema.String,
       state: Schema.String,
       due: Schema.optional(Schema.String),
+      dueDay: Schema.optional(Schema.String),
       done: Schema.Number,
       total: Schema.Number,
       late: Schema.optional(Schema.Literal(true)),
@@ -347,6 +349,7 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
   const zone = yield* ownerZone(row.orgId as KinOrgId);
   const day = (at: string | null, allDay: boolean) =>
     at === null ? undefined : allDay ? dayIn(Date.parse(at), zone) : at;
+  const words = (at: string | null) => (at === null ? undefined : dayWords(Date.parse(at), zone));
   const line = (task: RecordRow) => {
     const record = toRecord(task, now);
     const fields = parseFields(task.fieldsJson);
@@ -356,6 +359,7 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
       state: record.state,
       owner: name(record.owner),
       due: day(record.dueAt, record.dueAllDay) ?? record.dateAt,
+      dueDay: words(record.dueAt),
       ...(record.late ? { late: true as const } : {}),
       milestone: fieldText(fields, "milestone") ?? undefined,
       size: fieldText(fields, "size") ?? undefined,
@@ -372,6 +376,7 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
       title: one.title,
       state: one.state,
       due: day(one.dueAt, one.dueAllDay),
+      dueDay: words(one.dueAt),
       done: one.done,
       total: one.total,
       ...(one.late ? { late: true as const } : {}),

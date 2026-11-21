@@ -14,6 +14,7 @@ import {
   kinAsideOf,
   kinAttention,
   kinAttentionCount,
+  kinGoalDraft,
   kinGoalView,
   kinNeedsYouBeside,
   kinPlainDates,
@@ -332,5 +333,18 @@ describe("kinAttention", () => {
     expect(
       kinGoalView({ ...goal, currency: "KWD", target: 2_000_000, current: 1_234_567 }, now).figure,
     ).toBe("KWD\u00a01,235 of KWD\u00a02,000");
+  });
+
+  it("starts a new goal on today in the company's zone, wherever the device is", () => {
+    // 20:00 UTC on 20 Nov is still the 20th in Los Angeles and already the 21st in Auckland.
+    const at = new Date("2026-11-20T20:00:00.000Z");
+    expect(kinGoalDraft(null, at, "America/Los_Angeles")).toMatchObject({
+      startsOn: "2026-11-20",
+      dueOn: "2027-02-20",
+    });
+    expect(kinGoalDraft(null, at, "Pacific/Auckland")).toMatchObject({
+      startsOn: "2026-11-21",
+      dueOn: "2027-02-21",
+    });
   });
 });

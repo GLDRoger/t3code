@@ -11,6 +11,7 @@ import {
   type KinRecordKey,
   type KinWorkPrincipal,
   formatKinWhen,
+  kinWhenParts,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -18,6 +19,7 @@ import { kinMoneyDraft, kinMoneyText, kinRecordName } from "./kinLists.ts";
 import { kinAskName } from "./kinAskRecord.ts";
 import { KIN_NEEDS_YOU_SHOWN, type KinNeedsYouRow } from "./kinWorkHome.ts";
 import { kinFailure } from "./kinAnswers.ts";
+import { kinIsDealKey } from "./kinDeals.ts";
 import { kinMidSentence, kinWorkName } from "./kinWork.ts";
 
 /**
@@ -42,7 +44,12 @@ export const KIN_ATTENTION = {
   setAsideSave: "Set aside",
   cancel: "Cancel",
   failed: "Couldn't save that.",
+  whatsNext: "What's next?",
+  notNow: "Not now",
 } as const;
+
+/** "Not now" on a deal with no next step: its own hold, this many days. */
+const KIN_NOT_NOW_DAYS = 14;
 
 /** Where a row opens: the entry itself, Money, or nowhere of its own (ask the agent instead). */
 export type KinAttentionOpen =
@@ -70,6 +77,8 @@ export interface KinAttentionRow {
   readonly money: boolean;
   /** The record it is about, which "Set aside until…" holds; null when it is not a record. */
   readonly record: KinRecordKey | null;
+  /** A deal with no next step: "What's next?" opens it, "Not now" holds it for 14 days. */
+  readonly whatsNext: KinRecordKey | null;
 }
 
 /** A record set aside, one row in Handled whatever it covers, with its Undo when it is yours. */
@@ -94,8 +103,16 @@ const URGENT = KIN_PULSE_URGENT;
 /** Open facts Needs you asks for: the rows it shows before "See all", and some to spare. */
 export const KIN_NEEDS_YOU_PAGE = 8;
 
+/** What a deal or prospect stopping moving reads as: Tasks lists these for whoever has it. */
+export const KIN_DEAL_SENSES: ReadonlySet<KinPulseFact["sense"]> = new Set<KinPulseFact["sense"]>([
+  "deal_no_next_step",
+  "deal_quiet",
+  "deal_date_passed",
+]);
+
 /** A client's own matters, and its tasks that are late or due. */
 const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
+  ...KIN_DEAL_SENSES,
   "task_late",
   "task_due_soon",
   "client_cold",
@@ -219,6 +236,10 @@ function kinAttentionRow(
     handled: handledText(fact, input.names, input.now),
     money: fact.family === "money",
     record: subject.kind === "record" ? subject.key : null,
+    whatsNext:
+      fact.sense === "deal_no_next_step" && subject.kind === "record" && kinIsDealKey(subject.key)
+        ? subject.key
+        : null,
   };
 }
 
@@ -510,6 +531,9 @@ export function kinSnoozeDays(now: Date) {
   ] as const;
 }
 
+/** The day "Not now" holds a deal with no next step until. */
+export const kinNotNowUntil = (now: Date) => dayOf(plusDays(now, KIN_NOT_NOW_DAYS));
+
 /** "Set aside until…": the first day it may be set to (tomorrow) and the day it starts on. */
 export function kinSetAsideDays(now: Date) {
   return { min: dayOf(plusDays(now, 1)), initial: dayOf(plusDays(now, 30)) } as const;
@@ -518,6 +542,7 @@ export function kinSetAsideDays(now: Date) {
 // Goals
 
 export const KIN_GOALS = {
+  unitPlaceholder: "For example: hires",
   saveFailed: "Couldn't save the goal.",
   title: "Goals",
   add: "Add goal",
@@ -607,9 +632,20 @@ export function kinGoalsSummary(views: ReadonlyArray<Pick<KinGoalView, "status">
     .join(", ");
 }
 
-/** A goal as its edit sheet starts: the figures as a person would type them. */
-export function kinGoalDraft(goal: KinGoal | null, now: Date) {
-  const today = dayOf(now);
+/** Today on `zone`'s calendar, the company's, else on this device. */
+const todayIn = (now: Date, zone: string | null) => {
+  if (zone === null) return dayOf(now);
+  try {
+    return kinWhenParts(now, zone).isoDay;
+  } catch {
+    return dayOf(now);
+  }
+};
+
+/** A goal as its edit sheet starts: the figures as a person would type them, days in `zone`. */
+export function kinGoalDraft(goal: KinGoal | null, now: Date, zone: string | null = null) {
+  const today = todayIn(now, zone);
+  const [year, month, date] = today.split("-").map(Number);
   if (goal === null)
     return {
       title: "",
@@ -618,7 +654,7 @@ export function kinGoalDraft(goal: KinGoal | null, now: Date) {
       current: "",
       unit: "",
       startsOn: today,
-      dueOn: dayOf(new Date(now.getFullYear(), now.getMonth() + 3, now.getDate())),
+      dueOn: dayOf(new Date(year ?? 1970, (month ?? 1) - 1 + 3, date ?? 1)),
     };
   return {
     title: goal.title,
