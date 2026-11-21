@@ -8,6 +8,7 @@ import type {
   KinContact,
   KinContactListInput,
   KinDealsInput,
+  KinMoney,
   KinOrgId,
   KinPartiesInput,
   KinPerson,
@@ -38,6 +39,7 @@ import {
   kinWorkName,
   kinWorkPrivacy,
   kinWorkRow,
+  type KinWorkDraft,
   type KinWorkNames,
   type KinWorkPrivacy,
   type KinWorkRef,
@@ -1487,3 +1489,109 @@ export const kinProjectClients = (
   rows: ReadonlyArray<Pick<KinProjectRow, "key" | "party">>,
 ): ReadonlyMap<string, string | null> =>
   new Map(rows.map((row) => [row.key, row.party?.key ?? null]));
+
+// Short forms: each asks its few things first and folds the rest under "More".
+
+export const KIN_SHORT_FORMS = {
+  more: "More",
+  addAnother: "Add another",
+  added: (title: string) => `Added “${title}”. Type the next one.`,
+  aboutHowMuch: "About how much?",
+  aboutHowMuchHint: "Fill it in and the deal is made with the client.",
+} as const;
+
+/** Each form's fields in the order shown: `first` always, `more` under the fold, by label. */
+const SHORT_FORM_FIELDS = {
+  task: {
+    first: ["title", "owner", "due"],
+    more: { repeat: "repeats", client: "client", project: "project", notes: "notes" },
+  },
+  party: {
+    first: ["name", "contact", "value"],
+    more: {
+      kind: "prospect, client or vendor",
+      source: "where they came from",
+      tags: "tags",
+      role: "their role",
+      terms: "terms",
+      address: "address",
+      tax: "tax details",
+      notes: "notes",
+      private: "keep private",
+    },
+  },
+  deal: {
+    first: ["client", "what", "value", "next"],
+    more: {
+      expected: "expected",
+      stage: "stage",
+      keeper: "who looks after it",
+      source: "where it came from",
+    },
+  },
+  touch: {
+    first: ["kind", "note"],
+    more: { when: "when", next: "next step" },
+  },
+} as const;
+
+type ShortForms = typeof SHORT_FORM_FIELDS;
+export type KinShortForm = keyof ShortForms;
+export type KinShortFormField<F extends KinShortForm> =
+  | ShortForms[F]["first"][number]
+  | (keyof ShortForms[F]["more"] & string);
+
+export interface KinShortFormFold<F extends KinShortForm> {
+  readonly first: ReadonlyArray<KinShortFormField<F>>;
+  readonly more: ReadonlyArray<KinShortFormField<F>>;
+  /** "Repeats, client, project and notes"; null when nothing is folded. */
+  readonly moreLine: string | null;
+}
+
+/**
+ * What a short form shows, in order. A folded field the form can't offer here is `absent`; one that
+ * already holds something when the form opens (a client it started from) is `held`, and is shown.
+ */
+export function kinShortFormFold<F extends KinShortForm>(
+  form: F,
+  options: {
+    readonly absent?: ReadonlyArray<KinShortFormField<F>>;
+    readonly held?: ReadonlyArray<KinShortFormField<F>>;
+  } = {},
+): KinShortFormFold<F> {
+  const fields = SHORT_FORM_FIELDS[form];
+  const labels: Readonly<Record<string, string>> = fields.more;
+  const absent = new Set<string>(options.absent ?? []);
+  const held = new Set<string>(options.held ?? []);
+  const folded = Object.keys(labels).filter((field) => !absent.has(field));
+  const first = [
+    ...fields.first.filter((field) => !absent.has(field)),
+    ...folded.filter((field) => held.has(field)),
+  ] as ReadonlyArray<KinShortFormField<F>>;
+  const more = folded.filter((field) => !held.has(field));
+  const names = more.map((field) => labels[field]!);
+  const line =
+    names.length === 0
+      ? null
+      : names.length === 1
+        ? names[0]!
+        : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  return {
+    first,
+    more: more as ReadonlyArray<KinShortFormField<F>>,
+    moreLine: line === null ? null : line.charAt(0).toUpperCase() + line.slice(1),
+  };
+}
+
+/** After "Add another": the next task keeps who, when and where, and starts with nothing typed. */
+export const kinWorkDraftAnother = (draft: KinWorkDraft): KinWorkDraft => ({
+  ...draft,
+  title: "",
+  notes: "",
+});
+
+/** A new client's deal from "About how much?": named as the client, at that amount. */
+export const kinPartyFirstDeal = (name: string, value: KinMoney) => ({
+  title: name.trim(),
+  value,
+});

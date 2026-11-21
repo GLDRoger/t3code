@@ -99,6 +99,8 @@ const MEMBER = [
   // Deals': the gate lets a person through, and `deals.ts` decides the rest (Clients on, `crmSees`).
   "kin.work.createDeal",
   "kin.work.createParty",
+  // Both writes of `ownerClients.createParty` and `deals.createIn`, each deciding as alone.
+  "kin.work.createPartyWithDeal",
   "kin.work.dates",
   "kin.work.deal",
   "kin.work.dealStages",

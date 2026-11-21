@@ -2,6 +2,11 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import { KIN_DEALS, kinDealStepHint } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinParseMoney } from "@t3tools/client-runtime/kin/kinLists";
 import {
+  KIN_SHORT_FORMS,
+  kinShortFormFold,
+  type KinShortFormField,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
+import {
   KIN_WORK_NEW_COPY,
   kinWorkOnlyOwner,
   type KinWorkRef,
@@ -18,6 +23,7 @@ import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
 import { KinDayField } from "./components/KinDayField";
+import { KinPageFold } from "./components/KinPageFold";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinGateView, KinWorkTextField, useKinAskBeforeDiscard } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
@@ -37,7 +43,7 @@ export type KinDealNewParams = {
   readonly partyName?: string;
 };
 
-/** New deal: for whom, what, how much, when, which stage, and its first next step or "None yet". */
+/** New deal: for whom, what, how much and its first next step or "None yet"; the rest under More. */
 export function KinDealNewScreen({ route }: StaticScreenProps<KinDealNewParams>) {
   const target = targetOf(route.params);
   if (target === null) return <FormMessage title={KIN_DEALS.newDeal}>{NO_LINK}</FormMessage>;
@@ -108,6 +114,87 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
       stepDay !== null ||
       noneYet,
   );
+
+  const fold = kinShortFormFold("deal", {
+    absent: [
+      ...(stages.length === 0 ? (["stage"] as const) : []),
+      ...(!ownerLevel || people.length === 0 ? (["keeper"] as const) : []),
+    ],
+  });
+  const field = (which: KinShortFormField<"deal">) => {
+    switch (which) {
+      case "client":
+      case "what":
+      case "value":
+      case "next":
+        return null;
+      case "expected":
+        return (
+          <ListSection key={which}>
+            <KinDayField
+              label={KIN_DEALS.expected}
+              day={expected}
+              zone={names.zone}
+              now={now}
+              disabled={saving}
+              onPick={setExpected}
+            />
+          </ListSection>
+        );
+      case "stage":
+        return (
+          <View key={which} className="gap-2">
+            <Text className="px-2 text-sm text-foreground-muted">{KIN_DEALS.stage}</Text>
+            <View className="flex-row flex-wrap gap-2">
+              {stages.map((held) => (
+                <Chip
+                  key={held.id}
+                  label={held.name}
+                  selected={held.id === stage}
+                  disabled={saving}
+                  onPress={() => setPicked(held.id)}
+                />
+              ))}
+            </View>
+          </View>
+        );
+      case "keeper":
+        return (
+          <View key={which} className="gap-2">
+            <Text className="px-2 text-sm text-foreground-muted">{KIN_DEALS.lookedAfterBy}</Text>
+            <View className="flex-row flex-wrap gap-2">
+              <Chip
+                label="You"
+                selected={owner === ME}
+                disabled={saving}
+                onPress={() => setOwner(ME)}
+              />
+              {people.map(([id, name]) => (
+                <Chip
+                  key={id}
+                  label={name}
+                  selected={owner === id}
+                  disabled={saving}
+                  onPress={() => setOwner(id)}
+                />
+              ))}
+            </View>
+          </View>
+        );
+      case "source":
+        return (
+          <ListSection key={which}>
+            <KinWorkTextField
+              label={KIN_DEALS.cameFrom}
+              value={source}
+              maxLength={120}
+              disabled={saving}
+              onChangeText={setSource}
+            />
+          </ListSection>
+        );
+    }
+  };
 
   const save = async () => {
     if (!canSave || party === null || saving) return;
@@ -181,53 +268,7 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
           hint={moneyBad ? KIN_DEALS.notAmount : KIN_DEALS.valueHint}
           onChangeText={setValue}
         />
-        <KinDayField
-          label={KIN_DEALS.expected}
-          day={expected}
-          zone={names.zone}
-          now={now}
-          disabled={saving}
-          onPick={setExpected}
-        />
       </ListSection>
-      {stages.length === 0 ? null : (
-        <View className="gap-2">
-          <Text className="px-2 text-sm text-foreground-muted">{KIN_DEALS.stage}</Text>
-          <View className="flex-row flex-wrap gap-2">
-            {stages.map((held) => (
-              <Chip
-                key={held.id}
-                label={held.name}
-                selected={held.id === stage}
-                disabled={saving}
-                onPress={() => setPicked(held.id)}
-              />
-            ))}
-          </View>
-        </View>
-      )}
-      {!ownerLevel || people.length === 0 ? null : (
-        <View className="gap-2">
-          <Text className="px-2 text-sm text-foreground-muted">{KIN_DEALS.lookedAfterBy}</Text>
-          <View className="flex-row flex-wrap gap-2">
-            <Chip
-              label="You"
-              selected={owner === ME}
-              disabled={saving}
-              onPress={() => setOwner(ME)}
-            />
-            {people.map(([id, name]) => (
-              <Chip
-                key={id}
-                label={name}
-                selected={owner === id}
-                disabled={saving}
-                onPress={() => setOwner(id)}
-              />
-            ))}
-          </View>
-        </View>
-      )}
       <ListSection title={KIN_DEALS.nextStep}>
         <KinWorkTextField
           label={KIN_DEALS.nextStep}
@@ -254,15 +295,11 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
           onValueChange={setNoneYet}
         />
       </ListSection>
-      <ListSection>
-        <KinWorkTextField
-          label={KIN_DEALS.cameFrom}
-          value={source}
-          maxLength={120}
-          disabled={saving}
-          onChangeText={setSource}
-        />
-      </ListSection>
+      {fold.moreLine === null ? null : (
+        <KinPageFold title={KIN_SHORT_FORMS.more} summary={fold.moreLine}>
+          {fold.more.map(field)}
+        </KinPageFold>
+      )}
     </FormShell>
   );
 }
