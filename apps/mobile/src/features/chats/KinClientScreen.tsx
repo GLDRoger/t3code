@@ -17,6 +17,7 @@ import {
   type KinOwedView,
   type KinTouchView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
+import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import {
   KIN_WORK_FORM_COPY,
   kinWorkSend,
@@ -167,6 +168,7 @@ function KinClientBody(
   const { state: changed, changes } = useKinWorkChanges(target);
   const ownerLevel = useKinIsOwnerLevel(environmentId);
   const canAddTask = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
+  const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
   const canChangeTasks =
     useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)) &&
     kinWorkHostEdits(work._tag === "ready" ? work.live.summary : null);
@@ -311,7 +313,7 @@ function KinClientBody(
       }
       onBack={() => navigation.goBack()}
       refresh={{ accessibilityLabel: "Refresh", onPress: props.onRefresh }}
-      {...(can.edit || can.owner
+      {...(can.edit || can.owner || canInvoice
         ? {
             actions: can.edit
               ? [
@@ -333,6 +335,22 @@ function KinClientBody(
                 title: "More",
                 icon: "ellipsis" as const,
                 items: [
+                  ...(canInvoice && !view.vendor && !view.closed
+                    ? [
+                        {
+                          id: "invoice",
+                          title: KIN_MONEY_FORMS.invoice.title,
+                          disabled: busy,
+                          onPress: () =>
+                            navigation.navigate("KinInvoiceNew", {
+                              environmentId,
+                              orgId,
+                              party: view.key,
+                              partyName: view.name,
+                            }),
+                        },
+                      ]
+                    : []),
                   ...(can.edit && !view.vendor
                     ? [
                         {

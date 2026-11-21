@@ -828,6 +828,9 @@ export function KinLinesFields(props: {
   readonly lines: ReadonlyArray<KinLineDraft>;
   readonly disabled: boolean;
   readonly onChange: (lines: ReadonlyArray<KinLineDraft>) => void;
+  /** Each line's SAC or HSN code, which only India's invoices carry; shown unless false. */
+  readonly codes?: boolean;
+  readonly detail?: string;
 }) {
   const set = (index: number, patch: Partial<KinLineDraft>) =>
     props.onChange(props.lines.map((one, at) => (at === index ? { ...one, ...patch } : one)));
@@ -838,7 +841,7 @@ export function KinLinesFields(props: {
           {KIN_LINES.title}
         </Text>
         <Text textRole="footnote" className="text-foreground-muted">
-          {KIN_LINES.detail}
+          {props.detail ?? KIN_LINES.detail}
         </Text>
       </View>
       {props.lines.map((line, index) => (
@@ -851,14 +854,16 @@ export function KinLinesFields(props: {
             disabled={props.disabled}
             onChangeText={(description) => set(index, { description })}
           />
-          <KinWorkTextField
-            label={KIN_LINES.sac}
-            value={line.sac}
-            maxLength={8}
-            keyboard="numbers"
-            disabled={props.disabled}
-            onChangeText={(sac) => set(index, { sac })}
-          />
+          {props.codes === false ? null : (
+            <KinWorkTextField
+              label={KIN_LINES.sac}
+              value={line.sac}
+              maxLength={8}
+              keyboard="numbers"
+              disabled={props.disabled}
+              onChangeText={(sac) => set(index, { sac })}
+            />
+          )}
           <KinWorkTextField
             label={KIN_LINES.quantity}
             value={line.quantity}

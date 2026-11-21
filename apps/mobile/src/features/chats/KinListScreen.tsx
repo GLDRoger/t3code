@@ -33,6 +33,7 @@ import {
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
@@ -387,6 +388,8 @@ function KinListEntries(
   const { def, environmentId, orgId } = props;
   const context = useKinListContext(props, props.directory);
   const canEdit = useAtomValue(kinClient.workListUpdate.permissionAtom(environmentId));
+  const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
+  const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(environmentId));
   const { state, entries, totals } = useKinListEntries(
     props,
     def.list,
@@ -419,6 +422,47 @@ function KinListEntries(
     refreshKinWorkLive(props);
     entries.refresh();
   };
+  const target = { environmentId: String(environmentId), orgId: String(orgId) };
+  // Invoices and Expenses take a new one typed by hand; no other list has a form of its own.
+  const add =
+    def.archivedAt !== null
+      ? null
+      : def.list === "invoices" && canInvoice
+        ? {
+            accessibilityLabel: KIN_MONEY_FORMS.invoice.title,
+            icon: "plus" as const,
+            onPress: () =>
+              navigation.navigate("KinInvoiceNew", {
+                ...target,
+                ...(filter.party === null
+                  ? {}
+                  : { party: filter.party.key, partyName: filter.party.title }),
+              }),
+          }
+        : def.list === "expenses" && canExpense
+          ? {
+              accessibilityLabel: KIN_MONEY_FORMS.expense.title,
+              icon: "plus" as const,
+              onPress: () => navigation.navigate("KinExpenseNew", target),
+            }
+          : null;
+  const actions = [
+    ...(add === null ? [] : [add]),
+    ...(canEdit && !def.builtIn
+      ? [
+          {
+            accessibilityLabel: KIN_LISTS.edit.title,
+            icon: "slider.horizontal.3" as const,
+            onPress: () =>
+              navigation.navigate("KinListSettings", {
+                environmentId,
+                orgId,
+                list: def.list,
+              }),
+          },
+        ]
+      : []),
+  ];
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
@@ -435,22 +479,7 @@ function KinListEntries(
             onChange: entries.setFilter,
           }),
         ]}
-        {...(canEdit && !def.builtIn
-          ? {
-              actions: [
-                {
-                  accessibilityLabel: KIN_LISTS.edit.title,
-                  icon: "slider.horizontal.3" as const,
-                  onPress: () =>
-                    navigation.navigate("KinListSettings", {
-                      environmentId,
-                      orgId,
-                      list: def.list,
-                    }),
-                },
-              ],
-            }
-          : {})}
+        {...(actions.length === 0 ? {} : { actions })}
         search={{
           value: filter.text,
           onChangeText: (text) => entries.setFilter({ ...filter, text }),

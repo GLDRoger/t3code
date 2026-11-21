@@ -18,6 +18,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinMoney";
 import { KIN_GOALS, type KinAttentionOpen } from "@t3tools/client-runtime/kin/kinAttention";
 import { KIN_BUDGETS, KIN_QUOTES } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
+import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions";
 import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
@@ -107,22 +108,50 @@ function AreaFrame(props: {
   const canBudget = useAtomValue(
     kinClient.workSetBudget.permissionAtom(props.target.environmentId),
   );
+  const canInvoice = useAtomValue(
+    kinClient.workNewInvoice.permissionAtom(props.target.environmentId),
+  );
+  const canExpense = useAtomValue(
+    kinClient.workNewExpense.permissionAtom(props.target.environmentId),
+  );
   const base = {
     environmentId: String(props.target.environmentId),
     orgId: String(props.target.orgId),
   };
   const offered: ReadonlyArray<AppBarMenuItem> = [
-    ...(agent === null
-      ? []
-      : [
+    ...(canInvoice
+      ? [
+          {
+            id: "invoice",
+            title: KIN_MONEY_FORMS.invoice.add,
+            subtitle: KIN_MONEY_FORMS.invoice.addDetail,
+            icon: "doc.text" as const,
+            onPress: () => navigation.navigate("KinInvoiceNew", base),
+          },
+        ]
+      : []),
+    // Typed by hand where the host takes it; else the agent logs it, as before.
+    ...(canExpense
+      ? [
           {
             id: "expense",
             title: KIN_WORK_HOME.addExpense,
-            subtitle: `${agent.name} logs it`,
+            subtitle: KIN_MONEY_FORMS.expense.addDetail,
             icon: "tag" as const,
-            onPress: () => agent.ask("Log an expense: "),
+            onPress: () => navigation.navigate("KinExpenseNew", base),
           },
-        ]),
+        ]
+      : agent === null
+        ? []
+        : [
+            {
+              id: "expense",
+              title: KIN_WORK_HOME.addExpense,
+              subtitle: `${agent.name} logs it`,
+              icon: "tag" as const,
+              onPress: () => agent.ask("Log an expense: "),
+            },
+          ]),
     ...(canReceipt
       ? [
           {
