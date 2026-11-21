@@ -3,6 +3,8 @@ import {
   KinCompanyBank,
   KinCompanyBrand,
   KinCompanyProfileSetInput,
+  type KinDateRow,
+  kinDateRowLate,
   KinDay,
   KinGstin,
   KinListFieldType,
@@ -55,7 +57,15 @@ import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { homeCurrency } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
 import { parseFields } from "./lists.ts";
-import { dates, moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
+import {
+  dates,
+  datesOnce,
+  invoiceDays,
+  isInvoice,
+  moneySection,
+  moneySummary,
+  ownerLevelStillToInvoice,
+} from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import {
   endOfDay,
@@ -621,8 +631,14 @@ export const DatesResult = Schema.Struct({
       title: Schema.String,
       list: Schema.String,
       state: Schema.String,
-      what: Schema.String,
-      on: Schema.String,
+      /** What the day is and the day, for anything but an invoice. */
+      what: Schema.optional(Schema.String),
+      on: Schema.optional(Schema.String),
+      /** An invoice's days in range, on one entry: issued (a suggestion's "date"), and due. */
+      issued: Schema.optional(Schema.String),
+      date: Schema.optional(Schema.String),
+      due: Schema.optional(Schema.String),
+      /** Its due day has passed. Nothing else is ever late. */
       late: Schema.optional(Schema.Literal(true)),
       amount: Schema.optional(Schema.String),
       sensitive: Schema.optional(Schema.Literal(true)),
@@ -648,27 +664,39 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
     },
     now,
   );
+  const entries = datesOnce(page.rows);
+  const day = (row: KinDateRow) =>
+    row.allDay ? dayIn(Date.parse(row.at), zone) : timeIn(Date.parse(row.at), zone);
   return {
     asOf: iso(now),
-    total: page.total,
-    dates: page.rows.map((row) => ({
-      key: row.record.key,
-      title: row.record.title,
-      list: row.listName,
-      state:
-        row.record.confirmed || row.record.state === "dropped"
-          ? row.stateLabel
-          : suggestedStateLabel(row.record.list ?? "work", row.record.state, row.stateLabel),
-      what: row.label,
-      on: row.allDay ? dayIn(Date.parse(row.at), zone) : timeIn(Date.parse(row.at), zone),
-      ...(row.record.late ? { late: true as const } : {}),
-      ...(row.record.amount === undefined
-        ? {}
-        : { amount: formatMoney(row.record.amount), sensitive: true as const }),
-      ...(row.record.sensitive || row.record.sensitiveInherited === true
-        ? { sensitive: true as const }
-        : {}),
-    })),
+    // The total counts an invoice's two days twice wherever both are listed.
+    total: page.total - (page.rows.length - entries.length),
+    dates: entries.map((entry): (typeof DatesResult.Type)["dates"][number] => {
+      const row = entry[0]!;
+      const { record } = row;
+      return {
+        key: record.key,
+        title: record.title,
+        list: row.listName,
+        state:
+          record.confirmed || record.state === "dropped"
+            ? row.stateLabel
+            : suggestedStateLabel(record.list ?? "work", record.state, row.stateLabel),
+        ...(isInvoice(entry)
+          ? invoiceDays(entry, day)
+          : {
+              what: row.label,
+              on: day(row),
+              ...(kinDateRowLate(row) ? { late: true as const } : {}),
+            }),
+        ...(record.amount === undefined
+          ? {}
+          : { amount: formatMoney(record.amount), sensitive: true as const }),
+        ...(record.sensitive || record.sensitiveInherited === true
+          ? { sensitive: true as const }
+          : {}),
+      };
+    }),
   };
 });
 export const datesQuery = leadTool("KinWorkTools.dates", runDates);
