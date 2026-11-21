@@ -172,6 +172,7 @@ export function KinBrandSection(
     >
       <KinSettingsRow
         title={KIN_BRAND.logo}
+        wrap
         detail={profile.logo === null ? KIN_BRAND_SETTINGS.logoNone : profile.logo.name}
         leading={
           profile.logo === null ? undefined : logoUrl === null ? (

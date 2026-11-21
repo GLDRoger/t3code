@@ -118,11 +118,13 @@ function Stages(
         <KinSettingsRow
           leading={<TrophyIcon aria-hidden className="size-4 text-success-foreground" />}
           title="Won"
+          wrap
           detail={KIN_DEAL_STAGES_SETTINGS.wonDetail}
         />
         <KinSettingsRow
           leading={<XIcon aria-hidden className="size-4 text-destructive-foreground" />}
           title="Lost"
+          wrap
           detail={KIN_DEAL_STAGES_SETTINGS.lostDetail}
         />
       </KinSettingsSection>

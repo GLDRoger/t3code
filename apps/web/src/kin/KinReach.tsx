@@ -472,6 +472,7 @@ function AgentRow(props: {
     <KinSettingsRow
       leading={<KinAvatar avatar={kinAgentAvatar(props.agentId)} size="sm" />}
       title={props.name}
+      wrap
       detail={props.detail}
       status={
         props.restricted ? (
