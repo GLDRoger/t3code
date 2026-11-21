@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
+import { KinChatService } from "../chat/KinChatService.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import {
   applyOperations,
@@ -443,7 +444,23 @@ const revise = Effect.fn("KinDocs.revise")(function* (
     [{ field: "version", from: String(current.version), to: String(version) }],
   );
   yield* guardPlaybook(orgId, row.recordId);
+  if (next.file === undefined) yield* refreshCards(orgId, row.recordId, next.body);
   return { ...(yield* settle(orgId, row.recordId)), created: true };
+});
+
+/** A draft's cards take its new text, and open chats read them again as they may see them now. */
+const refreshCards = Effect.fn("KinDocs.refreshCards")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  text?: string,
+) {
+  const chats = yield* Effect.serviceOption(KinChatService);
+  if (Option.isSome(chats))
+    yield* chats.value.refreshDocCards({
+      orgId,
+      recordId,
+      ...(text === undefined ? {} : { text }),
+    });
 });
 
 /** The same call again in the same turn returns what it made; anything else starts fresh. */
@@ -834,6 +851,7 @@ export const move = Effect.fn("KinDocs.move")(function* (
       );
       // A doc made a playbook, filed elsewhere or brought back is checked as one.
       yield* guardPlaybook(orgId, row.recordId);
+      yield* refreshCards(orgId, row.recordId);
       return yield* settle(orgId, row.recordId);
     }),
   );

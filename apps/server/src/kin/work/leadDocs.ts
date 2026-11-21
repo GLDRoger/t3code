@@ -5,7 +5,10 @@ import {
   KinChatId,
   KinDocKind,
   KinDocSectionId,
+  type KinDocCardDraft,
   type KinDocCardState,
+  KinDraftKind,
+  KinSocialPlatform,
   KinMessageId,
   KinPersonId,
   KinRecordId,
@@ -46,8 +49,9 @@ import {
   writerFor,
 } from "./leadWork.ts";
 import { iso, type RecordRow } from "./recordRows.ts";
+import { DRAFT_TEXT_MAX, draftCardOf } from "./draftCards.ts";
 import { search } from "./search.ts";
-import { KIN_OWNER_LEVEL, viewSees, viewerOfPeople } from "./teamView.ts";
+import { DRAFT_OWN_CHAT_ONLY, KIN_OWNER_LEVEL, viewSees, viewerOfPeople } from "./teamView.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
@@ -107,6 +111,17 @@ export const CreateInput = Schema.Struct({
       "The doc shows in this chat as a card the owner can open. Pass false only for a doc nobody asked for in this chat.",
   }),
   whatWeSell: Schema.optional(Schema.Literal(true)),
+  draft: Schema.optional(
+    Schema.Struct({
+      kind: KinDraftKind,
+      on: Schema.optional(KinSocialPlatform).annotate({
+        description: "For a post: where it goes.",
+      }),
+    }),
+  ).annotate({
+    description:
+      "This doc is one draft (a post, a mail, a proposal…): one doc per draft. Kin shows it as its own card with Copy text, and in a teammate's own chat Send to the owner.",
+  }),
 });
 export const WriteResult = Schema.Struct({
   key: Schema.String,
@@ -388,27 +403,28 @@ export const shown = Effect.fn("KinDocTools.shown")(function* (
   lead: Lead,
   written: Docs.Written,
   card: boolean | "answer" | undefined,
+  draft?: KinDocCardDraft,
 ) {
-  if (card !== true && card !== "answer") return;
+  if (card !== true && card !== "answer") return false;
   const turn = {
     orgId: lead.orgId,
     agentId: lead.agentId,
     wakeupId: KinWakeupId.make(lead.wakeupId),
   };
   const lane = yield* laneFor(turn);
-  if (Option.isNone(lane)) return;
+  if (Option.isNone(lane)) return false;
   if (card === "answer") {
-    if (lane.value.team === true) return;
+    if (lane.value.team === true) return false;
     if (lane.value.mode !== "reply") {
       const sql = yield* SqlClient.SqlClient;
       const checkIn = yield* sql`SELECT 1 FROM kin_events
         WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId} AND wakeup_id = ${turn.wakeupId}
           AND tag = 'pulse' AND json_type(json, '$.checkIn') = 'object' LIMIT 1`;
-      if (checkIn.length === 0) return;
+      if (checkIn.length === 0) return false;
     }
   }
   const version = Docs.toVersion(written.version);
-  yield* (yield* KinLevelGate).showCard(
+  const posted = (yield* KinLevelGate).showCard(
     { ...lead, wakeupId: turn.wakeupId },
     {
       chatId: lane.value.chatId,
@@ -426,8 +442,18 @@ export const shown = Effect.fn("KinDocTools.shown")(function* (
           summary: version.summary,
         },
         previousVersion: version.baseVersion,
+        ...(draft === undefined ? {} : { draft }),
       } satisfies KinDocCardState,
     },
+  );
+  if (draft === undefined) {
+    yield* posted;
+    return true;
+  }
+  // A draft is filed whatever its card meets: the agent is told so instead.
+  return yield* posted.pipe(
+    Effect.as(true),
+    Effect.catchTags({ KinChatError: () => Effect.succeed(false) }),
   );
 });
 
@@ -526,6 +552,8 @@ const draftUpLine = (owner: string, asker: string) =>
  * agent, names the way on: the draft goes to the owner on a card, which only such a turn may post.
  */
 const draftUp = Effect.fn("KinDocTools.draftUp")(function* (lead: Lead, refused: KinChatError) {
+  // Sent up, it would be refused for the same reason (`askPerson`'s `draftSource`).
+  if (refused.message === DRAFT_OWN_CHAT_ONLY.message) return refused;
   const behind = yield* turnPeople(lead);
   const asker = behind?.people.length === 1 ? behind.askers[0] : undefined;
   const chat = yield* turnChat(lead);
@@ -545,8 +573,34 @@ const draftUp = Effect.fn("KinDocTools.draftUp")(function* (lead: Lead, refused:
   });
 });
 
+/**
+ * What the agent is told of a draft it filed: its own card, when one was placed, and where it is,
+ * which a client without draft cards shows only as a doc; and what Kin can't do with it.
+ */
+const draftNote = (draft: KinDocCardDraft, key: string, placed: boolean) =>
+  [
+    placed
+      ? `This draft is its own card in the chat, with Copy text${draft.sendTo === undefined ? "" : ` and Send to ${draft.sendTo.name}`}: don't repeat it; say in one line it is filed as ${key}.`
+      : `Filed as ${key}, but its card couldn't be shown here: give the draft in your reply.`,
+    ...(draft.noAccount === undefined
+      ? []
+      : [
+          `No ${draft.noAccount.service} account is connected, so Kin can't post it; ${draft.noAccount.by.name} can connect one in Settings on a computer. Say so.`,
+        ]),
+  ].join(" ");
+const draftTooLong = (length: number) =>
+  invalid(
+    `A draft holds at most ${DRAFT_TEXT_MAX} characters so it can go up on a card; this is ${length}. File it without draft, or shorten it. Nothing was written.`,
+  );
+const DRAFT_BLANK = "A draft needs its text. Nothing was written.";
+const DRAFT_CARD_FULL =
+  "With who asks and who it is for, this draft is too long for the card it goes up on. Shorten it, or file it without draft. Nothing was written.";
+
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   if (input.whatWeSell === true) return yield* runStartOfferings(lead, input);
+  if (input.draft !== undefined && input.body.trim() === "") return yield* invalid(DRAFT_BLANK);
+  if (input.draft !== undefined && input.body.length > DRAFT_TEXT_MAX)
+    return yield* draftTooLong(input.body.length);
   const context = yield* writeContext(lead, "doc_create", input);
   const owner = yield* resolveWho(lead, input.owner ?? "you");
   const partyId = yield* refOrNull(lead, input.client, "clients");
@@ -555,7 +609,8 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     (input.project === undefined && input.company !== true
       ? yield* projectFor(lead, input, partyId ?? undefined)
       : undefined);
-  const written = yield* Docs.create(lead.orgId, context.writer, context.provenance, {
+  const sql = yield* SqlClient.SqlClient;
+  const filed = Docs.create(lead.orgId, context.writer, context.provenance, {
     title: input.title,
     body: input.body,
     owner,
@@ -580,6 +635,19 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       (error) => Effect.flatMap(draftUp(lead, error), Effect.fail),
     ),
   );
+  // Its Approve card must carry it whole, worked out on the doc as filed: else nothing is.
+  const { written, draft } = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const written = yield* filed;
+      if (input.draft === undefined) return { written, draft: undefined };
+      const drawn = yield* draftCardOf(lead, input.draft, {
+        text: written.version.body,
+        partyId: written.row.partyId,
+      });
+      if (!drawn.fits) return yield* invalid(DRAFT_CARD_FULL);
+      return { written, draft: drawn.card };
+    }),
+  );
   if (input.links !== undefined && input.links.length > 0)
     yield* Docs.link(lead.orgId, context.writer, { key: written.row.key }, input.links, "relates");
   // A proposal or client terms made under the owner's Approve is that approval's one result.
@@ -589,8 +657,16 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       recordId: written.row.recordId,
       key: written.row.key,
     });
-  yield* shown(lead, written, input.card ?? "answer");
-  return writeResult(written, written.created);
+  const placed = yield* shown(
+    lead,
+    written,
+    draft === undefined ? (input.card ?? "answer") : true,
+    draft,
+  );
+  return {
+    ...writeResult(written, written.created),
+    ...(draft === undefined ? {} : { note: draftNote(draft, written.row.key, placed) }),
+  };
 });
 export const create = leadTool("KinDocTools.create", runCreate);
 

@@ -131,6 +131,18 @@ export class KinLevelGate extends Context.Service<
       input: AskInput,
       bind: (widget: KinWidget | null) => Effect.Effect<void, SqlError.SqlError>,
     ) => Effect.Effect<KinWidget | HeldPost, KinChatError>;
+    /**
+     * `askTo` for a person's own press on a card in their chat with the lead (`draftCards`): no
+     * turn of the lead's is running or borrowed, so the caller has checked the press itself.
+     * The destination's level, their own direct chat and their quiet hours are checked as for
+     * `askTo`.
+     */
+    readonly askToOnPress: (
+      agent: AgentIdentity,
+      personId: KinPersonId,
+      input: AskInput,
+      bind: (widget: KinWidget | null) => Effect.Effect<void, SqlError.SqlError>,
+    ) => Effect.Effect<KinWidget | HeldPost, KinChatError>;
     /** A doc card, gated like a post. */
     /** Closes the agent's own unanswered choice cards that a newer card replaced. */
     readonly closeReplaced: (
@@ -403,6 +415,26 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  /** Kin's question card for one person, or held for their quiet hours: `bind` gets null. */
+  const askHeld = Effect.fn("KinLevelGate.askHeld")(
+    function* (
+      agent: AgentIdentity,
+      personId: KinPersonId,
+      input: AskInput,
+      bind: (widget: KinWidget | null) => Effect.Effect<void, SqlError.SqlError>,
+    ) {
+      const where = { orgId: agent.orgId, personId, chatId: input.chatId, unasked: true };
+      const held = yield* holdFor(where);
+      if (held === undefined)
+        return yield* chat
+          .ask({ ...agent, hostPosted: true }, { ...input, forChat: true })
+          .pipe(Effect.tap(bind));
+      yield* bind(null);
+      return { _tag: "held" as const, at: held.at, zone: held.zone, why: held.why };
+    },
+    Effect.provideService(SqlClient.SqlClient, sql),
+  );
+
   const read = Effect.fn("KinLevelGate.read")(
     function* (agent: AgentIdentity, input: ReadInput) {
       const turn = yield* turnOf(agent);
@@ -540,28 +572,44 @@ const make = Effect.gen(function* () {
       ),
     ),
     askTo: Effect.fn("KinLevelGate.askTo")((agent, personId, input, bind) =>
-      gated(
-        "gated ask to",
-        agent,
-        input.chatId,
-        Effect.gen(function* () {
-          const where = { orgId: agent.orgId, personId, chatId: input.chatId, unasked: true };
-          const held = yield* holdFor(where);
-          if (held === undefined)
-            return yield* chat
-              .ask({ ...agent, hostPosted: true }, { ...input, forChat: true })
-              .pipe(Effect.tap(bind));
-          yield* bind(null);
-          return { _tag: "held" as const, at: held.at, zone: held.zone, why: held.why };
-        }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-        {
-          personId,
-          text: [input.question, input.detail ?? "", ...input.options.map((one) => one.label)].join(
-            "\n",
+      gated("gated ask to", agent, input.chatId, askHeld(agent, personId, input, bind), {
+        personId,
+        text: [input.question, input.detail ?? "", ...input.options.map((one) => one.label)].join(
+          "\n",
+        ),
+        outside: true,
+      }),
+    ),
+    askToOnPress: Effect.fn("KinLevelGate.askToOnPress")((agent, personId, input, bind) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const level = yield* KinLevels.effectiveLevel({
+              orgId: agent.orgId,
+              agentId: agent.agentId,
+              chatId: input.chatId,
+            }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+            if (!KinLevels.atLeast(level, "L1") && !(yield* isOwnerChat(agent, input.chatId)))
+              return yield* notAllowed;
+            if (!(yield* theirDirect(agent, personId, input.chatId))) return yield* notAllowed;
+            return yield* askHeld(agent, personId, input, bind);
+          }),
+        )
+        .pipe(
+          Effect.catch((error) =>
+            isChatError(error)
+              ? Effect.fail(error)
+              : isLevelRefused(error)
+                ? Effect.fail(notAllowed)
+                : Effect.logError("Kin ask on a press failed", error).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+                      ),
+                    ),
+                  ),
           ),
-          outside: true,
-        },
-      ),
+        ),
     ),
     showCard: Effect.fn("KinLevelGate.showCard")((agent, input) =>
       gated("gated card", agent, input.chatId, chat.showCard(agent, input)),

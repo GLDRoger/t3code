@@ -37,6 +37,7 @@ export const approvedTurnText = Effect.fn("KinSentUpDraft.turnText")(function* (
       owner: draft.names.owner,
       from: draft.names.asker,
       kind: DRAFT_WORDS[draft.kind],
+      ...(draft.on === undefined ? {} : { on: draft.on }),
       ...(draft.for === null ? {} : { for: { key: draft.for.key, title: draft.for.title } }),
       question: approval.question,
       answer: approval.answer,

@@ -72,6 +72,9 @@ import { SessionStore } from "../../auth/SessionStore.ts";
 import { encodeLeadModel } from "../lead/leadModels.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import * as AskPerson from "./askPerson.ts";
+import * as DraftCards from "../work/draftCards.ts";
+import * as LeadDocs from "../work/leadDocs.ts";
+import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as Questions from "./openQuestions.ts";
 import { approvalOf, madeUnderApproval } from "./approval.ts";
 import { APPROVED_TURN_TEXT, approvedTurnText, tellDraftMade } from "./sentUpDraft.ts";
@@ -2098,6 +2101,254 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
           intent: "harbourline setup",
         }),
         "Not for Zoya Sheikh: “₹2,50,000” reads as an amount of money, which they may not see.",
+      );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// A2: each draft is its own doc card; "Send to" on hers is X7's send-up, from her, once, after her
+// turn ended, under the checks a message of hers there meets, with what the card holds.
+it.effect("a teammate's drafts are cards of their own, and Send to raises one Approve card", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const team = yield* askingTeam;
+      const { sql, orgId, person, chatOf, chiefChat, wakeOn, services } = team;
+      const identity = Context.get(services, KinIdentity);
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'clients', 'Clients', 'C', 1, 0) ON CONFLICT DO NOTHING`;
+      for (const [id, key, title, origin] of [
+        ["rec_harbourline", "C-7", "Harbourline Hotels", "harbourline"],
+        ["rec_long", "C-8", "Long ".repeat(60).trim(), "long"],
+      ] as const)
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at)
+          VALUES (${orgId}, ${id}, 'clients', ${key}, ${title}, 'person', ${team.owner.personId},
+            'person', ${origin}, 0, 0)`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = 'zoya'`;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-zoya', ${orgId}, 'zoya', 0)`;
+      // Our own Instagram works; Harbourline's group has none, so its posts can't go out yet.
+      yield* sql`INSERT INTO kin_social_groups (org_id, group_id, party_id, service, profile_id,
+          profile_name, accounts_json, problem, checked_at, created_at)
+        VALUES (${orgId}, 'g-own-ig', NULL, 'fixture', 'p-own-ig', 'Our own',
+          ${JSON.stringify([{ accountId: "a-ig", platform: "instagram", name: "Ambermill", handle: null, problem: null }])},
+          NULL, 0, 0)`;
+      const zoyaChat = yield* chiefChat("zoya");
+      const turn = yield* wakeOn("chief", "zoya", zoyaChat, "Three launch posts for Harbourline?");
+      const [event] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+        WHERE org_id = ${orgId} AND wakeup_id = ${turn} ORDER BY rowid`;
+      const file = (title: string, body: string, client = "C-7") =>
+        LeadDocs.create(scopeOf("chief"), {
+          sourceEventId: event!.eventId,
+          title,
+          body,
+          client,
+          draft: { kind: "post", on: "instagram" },
+        }).pipe(Effect.provideService(KinIdentity, identity));
+      const posts = [
+        yield* file("Teaser", "## Teaser\n\n**Soon** at Harbourline."),
+        yield* file("Launch day", "Open today."),
+        yield* file("Carousel", "Five rooms, five views."),
+        yield* file("Thank you", "Thank you for coming."),
+      ];
+      // Each a doc under her client, told to the agent as its own card that can't post yet.
+      const filed = yield* sql<{ key: string; party: string | null }>`SELECT key,
+          party_id AS party FROM kin_records WHERE org_id = ${orgId} AND register_id = 'docs'
+          AND json_extract(fields_json, '$.draftFor') = 'zoya'
+        ORDER BY rowid`;
+      assert.deepStrictEqual(
+        filed,
+        posts.map((post) => ({ key: post.key, party: "rec_harbourline" })),
+      );
+      assert.strictEqual(
+        posts[0]!.note,
+        `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it; say in one line it is filed as ${posts[0]!.key}. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
+      );
+      // A blank draft, or one whose Approve card would be too long to carry, files nothing.
+      const docCount = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'docs'
+          AND json_extract(fields_json, '$.draftFor') = 'zoya'`.pipe(
+        Effect.map((rows) => rows[0]!.n),
+      );
+      const reasonOf = (error: object) => ("reason" in error ? error.reason : undefined);
+      assert.strictEqual(reasonOf(yield* Effect.flip(file("Blank", "  \n "))), "invalid_state");
+      assert.strictEqual(
+        reasonOf(yield* Effect.flip(file("Long one", "x".repeat(1800), "C-8"))),
+        "invalid_state",
+      );
+      assert.strictEqual(yield* docCount, 4);
+      const cards = yield* sql<{ widgetId: string; state: string }>`SELECT widget_id AS "widgetId",
+          state_json AS state FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${zoyaChat}
+          AND type = 'doc' ORDER BY rowid`;
+      assert.lengthOf(cards, 4);
+      const first = JSON.parse(cards[0]!.state);
+      assert.strictEqual(first.key, posts[0]!.key);
+      assert.deepStrictEqual(first.draft, {
+        kind: "post",
+        text: "## Teaser\n\n**Soon** at Harbourline.\n",
+        on: "instagram",
+        client: { recordId: "rec_harbourline", key: "C-7", title: "Harbourline Hotels" },
+        sendTo: { personId: team.owner.personId, name: "Rhea Rao" },
+        noAccount: {
+          service: "Instagram",
+          by: { personId: team.owner.personId, name: "Rhea Rao" },
+        },
+      });
+      // Her turn revises a draft's text: its card takes the new text in the same write.
+      yield* LeadDocs.edit(scopeOf("chief"), {
+        key: posts[3]!.key,
+        sourceEventId: event!.eventId,
+        summary: "Warmer",
+        operations: [{ op: "replace_phrase", find: "coming", replace: "joining us" }],
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      const revised = yield* team.widgetOf(cards[3]!.widgetId);
+      assert.strictEqual(
+        (revised.state as { draft: { text: string } }).draft.text,
+        "Thank you for joining us.\n",
+      );
+
+      // The owner's own drafts, in her own turn, have nothing to send up: Copy text only.
+      const own = yield* wakeOn("chief", "rhea", chatOf("chief"), "A post for our own page?");
+      const [ownEvent] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+        FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${own} ORDER BY rowid`;
+      const mine = yield* LeadDocs.create(scopeOf("chief"), {
+        sourceEventId: ownEvent!.eventId,
+        title: "Our own teaser",
+        body: "Soon.",
+        draft: { kind: "post", on: "linkedin" },
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.strictEqual(
+        mine.note,
+        `This draft is its own card in the chat, with Copy text: don't repeat it; say in one line it is filed as ${mine.key}. No LinkedIn account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
+      );
+      const [ownCard] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+        WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'`;
+      assert.notProperty(JSON.parse(ownCard!.state).draft, "sendTo");
+      // Our own Instagram works, so our own Instagram post says nothing of accounts.
+      const later = yield* LeadDocs.create(scopeOf("chief"), {
+        sourceEventId: ownEvent!.eventId,
+        title: "Our own launch post",
+        body: "Open today.",
+        draft: { kind: "post", on: "instagram" },
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.notInclude(later.note ?? "", "connected");
+      const [laterCard] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+        WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'
+        ORDER BY rowid DESC LIMIT 1`;
+      assert.notProperty(JSON.parse(laterCard!.state).draft, "noAccount");
+
+      // She reads the reply and presses later: her turn is over; the owner's own still runs.
+      yield* sql`UPDATE kin_wakeups SET status = 'completed', ended_at = 0
+        WHERE org_id = ${orgId} AND wakeup_id = ${turn}`;
+      const ownRows = sql`SELECT e.event_id, e.state, w.status FROM kin_events e
+        JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+        WHERE e.org_id = ${orgId} AND e.wakeup_id = ${own} ORDER BY e.event_id`;
+      const ownBefore = yield* ownRows;
+      const press = (who: string, widgetId = cards[0]!.widgetId, chatId = zoyaChat) =>
+        DraftCards.sendUp([person(who)], {
+          orgId,
+          chatId,
+          widgetId: KinWidgetId.make(widgetId),
+        });
+      const ups = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_questions
+        WHERE org_id = ${orgId} AND draft_json IS NOT NULL`.pipe(Effect.map((rows) => rows[0]!.n));
+      // Someone else's card, or the owner's own look at it, sends nothing.
+      for (const who of ["arjun", "rhea"])
+        assert.strictEqual(
+          (yield* Effect.flip(press(who === "rhea" ? team.owner.personId : who))).reason,
+          "not_found",
+        );
+      // Nor does hers once she may only read that chat, as no message of hers there would go.
+      yield* sql`UPDATE kin_chat_members SET role = 'guest' WHERE org_id = ${orgId}
+        AND chat_id = ${zoyaChat} AND person_id = 'zoya'`;
+      assert.strictEqual((yield* Effect.flip(press("zoya"))).reason, "not_allowed");
+      yield* sql`UPDATE kin_chat_members SET role = 'owner' WHERE org_id = ${orgId}
+        AND chat_id = ${zoyaChat} AND person_id = 'zoya'`;
+      assert.strictEqual(yield* ups, 0);
+      assert.deepStrictEqual(yield* press("zoya"), { to: "Rhea Rao", held: false });
+      assert.deepStrictEqual(yield* press("zoya"), { to: "Rhea Rao", held: false });
+      assert.strictEqual(yield* ups, 1);
+      assert.deepStrictEqual(yield* ownRows, ownBefore);
+      // The owner's card is X7's: who asked, the draft as filed, and where it goes.
+      const [question] = yield* sql<{ questionId: string; chatId: string }>`SELECT
+          question_id AS "questionId", chat_id AS "chatId" FROM kin_questions
+        WHERE org_id = ${orgId} AND draft_json IS NOT NULL`;
+      assert.strictEqual(question!.chatId, chatOf("chief"));
+      const owners = yield* team.widgetOf((yield* team.cardOf(question!.questionId)).widgetId!);
+      assert.include(owners.state, {
+        detail:
+          "Zoya Sheikh asks, through Chief of staff.\n\n## Teaser\n\n**Soon** at Harbourline.\n\nPost for Instagram, for Harbourline Hotels",
+      });
+      // The owner's turn on his Approve knows where the post goes.
+      const [stored] = yield* sql<{
+        on: string | null;
+      }>`SELECT json_extract(draft_json, '$.on') AS "on"
+        FROM kin_questions WHERE org_id = ${orgId} AND question_id = ${question!.questionId}`;
+      assert.strictEqual(stored!.on, "Instagram");
+      // Her card now says it went up, and to whom.
+      const sent = yield* team.widgetOf(cards[0]!.widgetId);
+      assert.deepInclude((sent.state as { draft: { sent: object } }).draft.sent, {
+        name: "Rhea Rao",
+      });
+      assert.notProperty((sent.state as { draft: { sent: object } }).draft.sent, "held");
+      // With no turn of the agent's running at all, a press still goes up, once.
+      yield* sql`UPDATE kin_wakeups SET status = 'completed', ended_at = 0
+        WHERE org_id = ${orgId} AND wakeup_id = ${own}`;
+      assert.deepStrictEqual(yield* press("zoya", cards[3]!.widgetId), {
+        to: "Rhea Rao",
+        held: false,
+      });
+      assert.strictEqual(yield* ups, 2);
+      const [thanks] = yield* sql<{ questionId: string }>`SELECT question_id AS "questionId"
+        FROM kin_questions WHERE org_id = ${orgId} AND draft_json IS NOT NULL
+          AND about = ${posts[3]!.key}`;
+      assert.include(
+        (yield* team.widgetOf((yield* team.cardOf(thanks!.questionId)).widgetId!)).state,
+        {
+          detail:
+            "Zoya Sheikh asks, through Chief of staff.\n\nThank you for joining us.\n\nPost for Instagram, for Harbourline Hotels",
+        },
+      );
+      // Retitled by the owner since, the card no longer holds the doc as it is: nothing goes up.
+      yield* sql`UPDATE kin_records SET title = 'Launch day, final' WHERE org_id = ${orgId}
+        AND key = ${posts[1]!.key}`;
+      const stale = yield* Effect.flip(press("zoya", cards[1]!.widgetId));
+      assert.strictEqual(stale.reason, "invalid_state");
+      yield* sql`UPDATE kin_records SET title = 'Launch day' WHERE org_id = ${orgId}
+        AND key = ${posts[1]!.key}`;
+      // In the owner's quiet hours, a while after she last wrote there, it waits, as the agent's
+      // own send-up would, and says so.
+      yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"11:00","to":"13:00"}'
+        WHERE person_id = ${team.owner.personId}`;
+      yield* TestClock.adjust("40 minutes");
+      assert.deepStrictEqual(yield* press("zoya", cards[1]!.widgetId), {
+        to: "Rhea Rao",
+        held: true,
+      });
+      assert.strictEqual(yield* ups, 3);
+      const waiting = yield* team.widgetOf(cards[1]!.widgetId);
+      assert.deepInclude((waiting.state as { draft: { sent: object } }).draft.sent, {
+        name: "Rhea Rao",
+        held: true,
+      });
+      const [held] = yield* sql<{ widgetId: string | null }>`SELECT widget_id AS "widgetId"
+        FROM kin_questions WHERE org_id = ${orgId} AND draft_json IS NOT NULL
+        ORDER BY asked_at DESC, question_id LIMIT 1`;
+      assert.isNull(held!.widgetId);
+      // Marked private, her card is refreshed for open chats and carries none of the draft.
+      const before = (yield* team.widgetOf(cards[2]!.widgetId)).revision;
+      yield* OwnerDocs.label([team.owner], { orgId, key: posts[2]!.key, sensitive: true });
+      assert.isAbove((yield* team.widgetOf(cards[2]!.widgetId)).revision, before);
+      const [shown] = (yield* team.chats.history(person("zoya"), {
+        chatId: zoyaChat,
+        beforeSeq: 1000,
+        limit: 100,
+      })).widgets.filter((widget) => widget.widgetId === cards[2]!.widgetId);
+      assert.notProperty(shown!.state, "draft");
+      assert.strictEqual(
+        (yield* Effect.flip(press("zoya", cards[2]!.widgetId))).reason,
+        "not_found",
       );
     }).pipe(Effect.provide(layer)),
   ),

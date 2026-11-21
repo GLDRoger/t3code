@@ -346,3 +346,26 @@ export const idempotencyKey = (post: Pick<PostRow, "postId" | "digest">) =>
 /** "Mon 18 Nov · 19:00" in the owner's zone and `clock`'s locale. */
 export const whenLabel = (ms: number, clock: TextClock) =>
   `${formatKinWhen(ms, "day", clock)} · ${formatKinWhen(ms, "time", clock)}`;
+
+/**
+ * Whether Kin can post on this platform (any, without one) for this client (our own, without
+ * one): its connected group, with no problem of its own, holds a working account there. Social's
+ * "no account" fact.
+ */
+export const postsTo = Effect.fn("KinSocialRows.postsTo")(function* (
+  orgId: KinOrgId,
+  platform: KinSocialPlatform | undefined,
+  partyId: string | null,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const groups = yield* sql<Pick<GroupRow, "accountsJson">>`SELECT accounts_json AS "accountsJson"
+    FROM kin_social_groups WHERE org_id = ${orgId} AND removed_at IS NULL AND problem IS NULL
+      AND party_id IS ${partyId}
+    ORDER BY group_id`;
+  return groups.some((group) =>
+    accountsOf(group).some(
+      (account) =>
+        account.problem === null && (platform === undefined || account.platform === platform),
+    ),
+  );
+});

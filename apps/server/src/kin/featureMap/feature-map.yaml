@@ -1009,6 +1009,21 @@ features:
     tools: [doc_move]
     proof: [apps/server/src/kin/work/docs.test.ts]
 
+  - id: draft-cards
+    name: Each draft its own card, kept in Docs, sent up to the owner
+    tab: chats
+    web: [chat, card:Draft]
+    phone: [tab:chats, KinChat, card:Draft]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      A draft an agent files is its own doc, under its client or project, and its own card with
+      Copy text. In a teammate's own chat the card's Send to (kin.docs.sendUp) raises the owner's
+      Approve / Changes first card once; a post says when no account there is connected.
+    tools: [doc_create]
+    proof:
+      - apps/server/src/kin/questions/openQuestions.test.ts
+      - packages/client-runtime/src/kin/kinDocs.test.ts
+
   - id: list-settings
     name: Define or change a list
     tab: docs

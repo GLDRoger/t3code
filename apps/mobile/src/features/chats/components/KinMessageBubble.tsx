@@ -190,6 +190,8 @@ export function KinMessageBubble(props: {
   readonly viewerPersonId: KinPersonId | null;
   /** The card's agent by name when it is retired. */
   readonly heldFor?: string | null;
+  /** The viewer may only read this chat: its cards offer nothing that writes in it. */
+  readonly readOnly?: boolean;
   /** The chat's agents by id, for a doc card's "by Growth". */
   readonly agentNames?: ReadonlyMap<string, string>;
   readonly reactions: ReadonlyArray<KinReactionChip>;
@@ -271,6 +273,7 @@ export function KinMessageBubble(props: {
         viewerPersonId={props.viewerPersonId}
         onOpenLink={props.onLinkPress}
         heldFor={props.heldFor ?? null}
+        readOnly={props.readOnly === true}
         {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
         {...longPress}
       />

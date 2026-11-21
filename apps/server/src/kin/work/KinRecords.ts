@@ -137,6 +137,7 @@ import {
   ROOM_LISTS,
   teamSeesField,
   teamSeq,
+  teamVisible,
   viewGuard,
   viewReadsWhole,
   viewSees,
@@ -1382,10 +1383,17 @@ const make = Effect.gen(function* () {
         changes: false,
         input,
       }).pipe(provideSql);
-    if (writer.view !== undefined)
-      yield* viewGuard(orgId, writer.view, { row: existing, changes: false, input }).pipe(
-        provideSql,
-      );
+    const guarded =
+      writer.view === undefined
+        ? undefined
+        : yield* viewGuard(
+            orgId,
+            writer.view,
+            { row: existing, changes: false, input },
+            writer.actor._tag === "agent" && writer.wakeupId !== undefined
+              ? { agentId: writer.actor.agentId, wakeupId: writer.wakeupId }
+              : undefined,
+          ).pipe(provideSql);
     if (existing !== undefined) {
       const [stored] = yield* sql<{ hash: string | null }>`SELECT request_hash AS hash
         FROM kin_records WHERE org_id = ${orgId} AND record_id = ${recordId}`;
@@ -1438,8 +1446,19 @@ const make = Effect.gen(function* () {
     if (def.builtIn === null) yield* verifyRefs(orgId, def, fields).pipe(provideSql);
     const projectId = input.projectId ?? null;
     const project = projectId === null ? undefined : yield* target(orgId, projectId, "projects");
-    // An entry in a client's project is part of that client's record unless it names another.
-    const partyId = input.partyId !== undefined ? input.partyId : (project?.partyId ?? null);
+    // An entry in a client's project is part of that client's record unless it names another;
+    // a teammate's draft only when they see that client (`draftDoc`).
+    const inherited = project?.partyId ?? null;
+    const partyId =
+      input.partyId !== undefined
+        ? input.partyId
+        : guarded !== undefined &&
+            inherited !== null &&
+            !(yield* teamVisible(orgId, guarded.draftFor, [inherited]).pipe(provideSql)).has(
+              inherited,
+            )
+          ? null
+          : inherited;
     const invalidRefs = checkRefs(def, partyId, projectId);
     if (invalidRefs !== undefined) return yield* invalidRefs;
     const party = partyId === null ? undefined : yield* target(orgId, partyId, "clients");
@@ -1502,7 +1521,8 @@ const make = Effect.gen(function* () {
         ${assignedBy}, ${assignedBy === null ? null : now}, ${input.originKey},
         ${input.createdAt ?? now}, ${now}, ${isClosed(state) ? (input.closedAt ?? now) : null},
         ${partyId}, ${projectId}, ${input.repo ?? null},
-        ${yield* encodeFieldValues(fields)}, ${amount?.minor ?? null}, ${amount?.currency ?? null},
+        ${yield* encodeFieldValues(guarded === undefined ? fields : { ...fields, draftFor: guarded.draftFor })},
+        ${amount?.minor ?? null}, ${amount?.currency ?? null},
         ${input.dateAt ?? null}, ${input.dateAllDay === true ? 1 : 0},
         ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null},
         ${input.team === true || writer.teammate === true || writer.teamShared === true || (writer.view !== undefined && (ROOM_LISTS as ReadonlyArray<string>).includes(list)) ? 1 : 0},

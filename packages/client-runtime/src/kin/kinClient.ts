@@ -1689,6 +1689,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.docs.editSection",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
+    /** A teammate's own draft goes up to the agent's owner to approve; a second tap finds the first. */
+    docSendUp: createKinRpcCommand(runtime, {
+      label: "kin:docs:sendUp",
+      tag: "kin.docs.sendUp",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.widgetId },
+    }),
     /** Starts What we sell, or brings an archived one back; the same doc however often it is tapped. */
     docStartWhatWeSell: createKinRpcCommand(runtime, {
       label: "kin:docs:startWhatWeSell",
