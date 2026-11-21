@@ -10,6 +10,7 @@ import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { withAlwaysLoaded } from "../lead/deferredTools.ts";
 import {
   KinConnectionCallInput,
   KinConnectionCallResult,
@@ -100,4 +101,7 @@ const handlers = McpToolAccess.toLayer(KinConnectionsToolkit, {
   ),
 });
 
-export const registration = McpHttpServer.toolkitRegistration(KinConnectionsToolkit, handlers);
+export const registration = McpHttpServer.toolkitRegistration(
+  withAlwaysLoaded(KinConnectionsToolkit),
+  handlers,
+);

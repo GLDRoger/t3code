@@ -296,7 +296,7 @@ const registration = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinWorkToolkit), workHandlers),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocsToolkit), docHandlers),
   McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers),
-  McpHttpServer.toolkitRegistration(KinDocumentToolkit, documentHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocumentToolkit), documentHandlers),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPulseToolkit), pulseHandlers),
 );
 const toolkit = LeadMemory.layer.pipe(
