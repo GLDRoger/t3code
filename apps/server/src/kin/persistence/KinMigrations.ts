@@ -114,7 +114,7 @@ import RecordTitleIndex from "./migrations/K190_RecordTitleIndex.ts";
 import HistoryIndexes from "./migrations/K191_HistoryIndexes.ts";
 import RecordOwnerListIndex from "./migrations/K192_RecordOwnerListIndex.ts";
 import ScheduleOwnerTime from "./migrations/K193_ScheduleOwnerTime.ts";
-import SearchDocKinds from "./migrations/K192_SearchDocKinds.ts";
+import SearchDocKinds from "./migrations/K194_SearchDocKinds.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -309,7 +309,7 @@ const migrations = {
   "191_HistoryIndexes": HistoryIndexes,
   "192_RecordOwnerListIndex": RecordOwnerListIndex,
   "193_ScheduleOwnerTime": ScheduleOwnerTime,
-  "192_SearchDocKinds": SearchDocKinds,
+  "194_SearchDocKinds": SearchDocKinds,
 };
 const loader = Migrator.fromRecord(migrations);
 
