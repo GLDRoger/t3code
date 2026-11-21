@@ -2,8 +2,8 @@
   "mcpToolListJsonBytes": 60253,
   "kinToolListJsonBytes": 2933,
   "kinInstructionsBytes": {
-    "owner": 37701,
-    "confined": 37649
+    "owner": 37452,
+    "confined": 37400
   },
   "kinLeadToolListJsonBytes": {
     "engineering": 140187,
