@@ -5,10 +5,11 @@ import { useResolveClassNames } from "uniwind";
 import { RelativeTime } from "../../../components/RelativeTime";
 import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
+import { Menu } from "../../../components/ui/Menu";
 import { RowPressable } from "../../../components/ui/RowPressable";
 import { cn } from "../../../lib/cn";
 import { KIN_RETIRED_LABEL } from "@t3tools/client-runtime/kin/kinAgentRetire";
-import type { KinChatListRow } from "@t3tools/client-runtime/kin/kinChatListRows";
+import { KIN_CHATS_PIN, type KinChatListRow } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { KinAvatar } from "./KinAvatar";
 import { kinLines, useKinTextGrows } from "./kinTextGrows";
 
@@ -26,6 +27,8 @@ export function KinChatRow(props: {
   readonly onPress?: () => void;
   /** Who is in the company chat, under its last line. */
   readonly roomLine?: string | null;
+  /** Pin or unpin from a long press; unset on the rows that are always on top. */
+  readonly pin?: { readonly pinned: boolean; readonly onToggle: () => void };
 }) {
   const { row } = props;
   const { view } = row;
@@ -53,6 +56,15 @@ export function KinChatRow(props: {
               {view.title}
             </Text>
           )}
+          {props.pin?.pinned === true ? (
+            // T3's thread row marks a pinned row the same way.
+            <SymbolView
+              name="pin"
+              size={11}
+              tintColorClassName="accent-icon-muted"
+              type="monochrome"
+            />
+          ) : null}
           {view.sentAt === null ? null : (
             <Text textRole="caption" className="text-foreground-muted">
               <RelativeTime timestamp={view.sentAt} />
@@ -130,14 +142,30 @@ export function KinChatRow(props: {
       </View>
     );
   }
-  return (
+  const { pin } = props;
+  const pressable = (
     <KinPressableRow
       accessibilityLabel={props.accessibilityLabel}
       accessibilityHint="Opens the chat"
       onPress={props.onPress}
+      {...(pin === undefined ? {} : { pin })}
     >
       {content}
     </KinPressableRow>
+  );
+  if (pin === undefined) return pressable;
+  return (
+    <Menu
+      actions={[
+        pin.pinned
+          ? { id: "unpin", title: KIN_CHATS_PIN.unpin, image: "pin.slash" }
+          : { id: "pin", title: KIN_CHATS_PIN.pin, image: "pin" },
+      ]}
+      onPressAction={pin.onToggle}
+      shouldOpenOnLongPress
+    >
+      {pressable}
+    </Menu>
   );
 }
 
@@ -145,14 +173,24 @@ function KinPressableRow(props: {
   readonly accessibilityLabel: string;
   readonly accessibilityHint: string;
   readonly onPress: () => void;
+  readonly pin?: { readonly pinned: boolean; readonly onToggle: () => void };
   readonly children: ReactNode;
 }) {
   const ripple = useResolveClassNames("bg-subtle-strong");
+  const { pin } = props;
   return (
     <RowPressable
       accessibilityRole="button"
       accessibilityLabel={props.accessibilityLabel}
       accessibilityHint={props.accessibilityHint}
+      {...(pin === undefined
+        ? {}
+        : {
+            accessibilityActions: [
+              { name: "pin", label: pin.pinned ? KIN_CHATS_PIN.unpin : KIN_CHATS_PIN.pin },
+            ],
+            onAccessibilityAction: pin.onToggle,
+          })}
       onPress={props.onPress}
       android_ripple={{ color: ripple.backgroundColor }}
       unstable_pressDelay={Platform.OS === "android" ? 50 : undefined}

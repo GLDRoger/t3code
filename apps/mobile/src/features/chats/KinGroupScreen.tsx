@@ -6,6 +6,7 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   EnvironmentId,
+  KIN_COMPANY_CHAT_TEAM_ID,
   KIN_TEAM_ROOM_TEAM_ID,
   KinChatId,
   KinOrgId,
@@ -34,7 +35,8 @@ import {
   type KinGroupMemberView,
   KIN_GROUP_FORM,
 } from "@t3tools/client-runtime/kin/kinGroups";
-import { kinChatMuted } from "@t3tools/client-runtime/kin/kinScreenState";
+import { KIN_CHATS_PIN } from "@t3tools/client-runtime/kin/kinChatListRows";
+import { kinChatMuted, kinChatPinned } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -202,6 +204,11 @@ function KinGroupDetails(props: {
     group.chat.kind !== "direct";
   const canMute = useAtomValue(kinClient.mute.permissionAtom(environmentId));
   const runMute = useAtomCommand(kinClient.mute, "Muting this chat");
+  // The company chat is always on top, so it offers no pin.
+  const canPin =
+    useAtomValue(kinClient.pin.permissionAtom(environmentId)) &&
+    group.chat.teamId !== KIN_COMPANY_CHAT_TEAM_ID;
+  const runPin = useAtomCommand(kinClient.pin, KIN_CHATS_PIN.failed);
   const rename = useAtomCommand(kinClient.groupRename, { reportFailure: false });
   const setLead = useAtomCommand(kinClient.groupSetLead, { reportFailure: false });
   const removeMember = useAtomCommand(kinClient.groupRemoveMember, { reportFailure: false });
@@ -415,6 +422,18 @@ function KinGroupDetails(props: {
               void runMute({ environmentId, input: { chatId, muted: next } }).then(props.onChanged)
             }
           />
+          {canPin ? (
+            <ListToggleRow
+              label={KIN_CHATS_PIN.setting}
+              description={KIN_CHATS_PIN.settingDetail}
+              value={kinChatPinned(group, new Set([personId]))}
+              onValueChange={(next) =>
+                void runPin({ environmentId, input: { chatId, pinned: next } }).then(
+                  props.onChanged,
+                )
+              }
+            />
+          ) : null}
         </ListSection>
       ) : null}
       {canChange ? (

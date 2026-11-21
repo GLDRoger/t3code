@@ -34,7 +34,12 @@ import {
   kinClearChatKept,
   kinOwnsDirectChat,
 } from "@t3tools/client-runtime/kin/kinClearChat";
-import { kinAgentAvatar, kinChatMuted } from "@t3tools/client-runtime/kin/kinScreenState";
+import { KIN_CHATS_PIN } from "@t3tools/client-runtime/kin/kinChatListRows";
+import {
+  kinAgentAvatar,
+  kinChatMuted,
+  kinChatPinned,
+} from "@t3tools/client-runtime/kin/kinScreenState";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
@@ -196,6 +201,7 @@ function KinLeadBody(props: {
                     environmentId={environmentId}
                     orgId={lead.orgId}
                     chatId={lead.ownerChatId}
+                    pinnable={held?.teamAgentId !== agentId}
                   />
                 }
               />
@@ -254,6 +260,7 @@ function KinLeadBody(props: {
                 environmentId={environmentId}
                 orgId={contact.orgId}
                 chatId={contact.chatId}
+                pinnable={held?.teamAgentId !== agentId}
               />
               <KinLeadClearChat
                 environmentId={environmentId}
@@ -301,17 +308,21 @@ function KinLeadBody(props: {
 const mutedNow = (chat: KinChatSummary, personId: string) =>
   kinChatMuted(chat, new Set([personId]), Date.now());
 
-/** The viewer's mute for their chat with this lead; nothing until the chat and viewer are known. */
+/** The viewer's mute and pin for their chat with this lead; nothing until both are known. */
 function KinLeadNotifications(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly chatId: KinChatId;
+  /** The main agent's chat is always on top, so it offers no pin. */
+  readonly pinnable: boolean;
 }) {
   const { environmentId } = props;
   const host = useKinHostAt(environmentId);
   const inbox = useAtomValue(kinClient.inbox({ environmentId, input: {} }));
   const canMute = useAtomValue(kinClient.mute.permissionAtom(environmentId));
   const runMute = useAtomCommand(kinClient.mute, "Muting this chat");
+  const canPin = useAtomValue(kinClient.pin.permissionAtom(environmentId)) && props.pinnable;
+  const runPin = useAtomCommand(kinClient.pin, KIN_CHATS_PIN.failed);
   const { personId } = kinFeedViewer(
     host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
     props.orgId,
@@ -331,6 +342,16 @@ function KinLeadNotifications(props: {
           void runMute({ environmentId, input: { chatId: chat.chatId, muted: next } })
         }
       />
+      {canPin ? (
+        <ListToggleRow
+          label={KIN_CHATS_PIN.setting}
+          description={KIN_CHATS_PIN.settingDetail}
+          value={kinChatPinned(chat, new Set([personId]))}
+          onValueChange={(next) =>
+            void runPin({ environmentId, input: { chatId: chat.chatId, pinned: next } })
+          }
+        />
+      ) : null}
     </ListSection>
   );
 }
