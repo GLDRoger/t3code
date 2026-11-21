@@ -149,6 +149,13 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["kin budget agents usage spend limit"],
   },
   {
+    id: "kin-stop",
+    kinOnly: true,
+    title: "Stop all agents",
+    to: "/settings/company",
+    searchTerms: ["kin stop pause resume halt emergency all agents switch"],
+  },
+  {
     id: "kin-check-ins",
     kinOnly: true,
     title: "Check-ins",

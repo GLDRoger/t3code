@@ -77,6 +77,7 @@ import {
   quietFor,
   touchesOf,
 } from "./touches.ts";
+import { WEEK_MS } from "../durations.ts";
 
 /**
  * The light CRM's read model: the client page, the project page and their history, computed on
@@ -84,7 +85,6 @@ import {
  * stays inside one org. Callers check who may read; this answers for the owner.
  */
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const SUMMARY_CAP = 20;
 const TOUCHES_SHOWN = 5;
 const OPEN = ["open", "doing", "waiting"] as const;

@@ -1,7 +1,6 @@
 import type { MemoryItemFrontMatter } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-
-const day = 24 * 60 * 60 * 1000;
+import { DAY_MS } from "../durations.ts";
 
 export function defaultReviewBy(
   item: Pick<MemoryItemFrontMatter, "kind" | "due"> &
@@ -13,12 +12,14 @@ export function defaultReviewBy(
   switch (item.kind) {
     case "person":
     case "relationship":
-      return DateTime.formatIso(DateTime.makeUnsafe(recordedAt + 90 * day));
+      return DateTime.formatIso(DateTime.makeUnsafe(recordedAt + 90 * DAY_MS));
     case "claim":
-      return DateTime.formatIso(DateTime.makeUnsafe(recordedAt + 30 * day));
+      return DateTime.formatIso(DateTime.makeUnsafe(recordedAt + 30 * DAY_MS));
     case "objective":
       return (
-        nextMilestone ?? item.due ?? DateTime.formatIso(DateTime.makeUnsafe(recordedAt + 30 * day))
+        nextMilestone ??
+        item.due ??
+        DateTime.formatIso(DateTime.makeUnsafe(recordedAt + 30 * DAY_MS))
       );
     case "commitment":
     case "deferral":

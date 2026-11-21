@@ -22,7 +22,7 @@ import {
   recordName,
 } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
-import { DAY_MS } from "./thresholds.ts";
+import { DAY_MS, WEEK_MS } from "../durations.ts";
 
 export const WEEKLY_RULE =
   "This is the weekly brief, the owner's one post this morning. Kin writes the week's figures into the page as its own section: goals, money, overdue invoices, open quotes, renewals, cold and quiet clients, projects behind and meetings. Below is the rest of the week, for your judgement: how projects moved, last week's meetings, who is overloaded or free, and what falls due next week. In a few short lines: what matters most this week and why, and each decision as what you did or will do and how to stop it. A meeting that already happened is not coming up; a follow-up you set is not a meeting. An overdue invoice's fact says what mail went and what waits on a Confirm, as recorded now: never call something sent a draft.";
@@ -44,7 +44,6 @@ export const isMorningCheckIn = (event: KinEvent) =>
 const EVENING_CHECK_IN = "checkin-evening";
 export const isEveningCheckIn = (event: KinEvent) =>
   event._tag === "pulse" && event.checkIn?.scheduleId === EVENING_CHECK_IN;
-const WEEK_MS = 7 * DAY_MS;
 const FREE_HORIZON_MS = 3 * DAY_MS;
 const LATE_OVERLOAD = 3;
 const CAP = 20;

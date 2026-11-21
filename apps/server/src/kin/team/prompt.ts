@@ -3,7 +3,8 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { TEAM_MAX_MESSAGES, type TurnKind } from "./turns.ts";
+import { namedAgents } from "./teamRoom.ts";
+import { TEAM_MAX_MESSAGES, TEAM_MAX_NAMED, type TurnKind } from "./turns.ts";
 
 /** What each kind of turn asks of the agent woken for it: the speak-or-pass check among them. */
 const ASKED: Record<TurnKind, string> = {
@@ -62,10 +63,39 @@ export const teamTurnFacts = Effect.fn("KinTeam.turnFacts")(function* (
     WHERE m.org_id = ${orgId} AND m.discussion_id = ${discussionId} AND m.status = 'posted'
       AND m.author_kind = 'agent'
     ORDER BY m.seq`;
+  // A person's message opened it: the question is what they asked, of whom.
+  const [ask] = yield* sql<{ person: string | null; body: string; chatId: string }>`
+    SELECT p.display_name AS person, m.body, m.chat_id AS "chatId" FROM kin_messages m
+    LEFT JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = m.author_person_id
+    WHERE m.org_id = ${orgId} AND m.discussion_id = ${discussionId} AND m.author_kind = 'human'
+    ORDER BY m.seq LIMIT 1`;
+  const asked =
+    ask === undefined || row.widened === 1
+      ? []
+      : namedAgents(
+          ask.body,
+          yield* sql<{ agentId: string; name: string; ownerChatId: string }>`SELECT
+              l.agent_id AS "agentId", l.name, l.owner_chat_id AS "ownerChatId"
+            FROM kin_chat_members m JOIN kin_leads l ON l.org_id = m.org_id
+              AND l.agent_id = m.agent_id
+            JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+              AND a.retired_at IS NULL
+            WHERE m.org_id = ${orgId} AND m.chat_id = ${ask.chatId}
+              AND m.principal_kind = 'agent' AND m.left_at IS NULL ORDER BY l.agent_id`,
+        ).slice(0, TEAM_MAX_NAMED + 1);
+  const whom = [
+    ...asked.filter((agent) => agent.agentId === agentId).map(() => "you"),
+    ...asked.filter((agent) => agent.agentId !== agentId).map((agent) => agent.name),
+  ];
+  const of =
+    whom.length < 2 ? (whom[0] ?? "") : `${whom.slice(0, -1).join(", ")} and ${whom.at(-1)}`;
   return {
     discussion: discussionId,
     topic: row.topic,
-    question: row.question,
+    question:
+      ask === undefined || row.widened === 1
+        ? row.question
+        : `${ask.person ?? "A person"} asked${of === "" ? "" : ` ${of}`}: ${row.question}`,
     ...(row.widened === 1 ? { widened: "already, once" } : {}),
     whoseCall: row.decider ?? "the Chief of staff",
     yourTurn:

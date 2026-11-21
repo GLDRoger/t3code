@@ -27,12 +27,14 @@ import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { speakerOrder } from "../floor/KinFloor.ts";
 import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
+import { KinTeam } from "../team/KinTeam.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { RETIRED_NOTICE_PREFIX, retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
 import { teammatesLimited } from "./KinBudget.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import * as Reach from "./Reach.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
+import { HOUR_MS } from "../durations.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
@@ -73,7 +75,6 @@ const CATCH_UP_WINDOW = { hours: 24 } as const;
 const CATCH_UP_LIMIT_PER_ORG = 200;
 /** Kin's line once a teammate's day of turns is used up, and how often it is said again. */
 const LIMIT_ID = "kin-dm-limit-";
-const HOUR_MS = 60 * 60 * 1000;
 
 /**
  * Turns committed human chat posts and widget taps into `chat.message` and `widget.action`
@@ -87,6 +88,7 @@ const make = Effect.gen(function* () {
   const repo = yield* KinChatRepository;
   const queue = yield* KinEventQueue;
   const presence = yield* Effect.serviceOption(KinPresence);
+  const team = yield* Effect.serviceOption(KinTeam);
   const dailyTurns = yield* LeadAccess.dailyTurns;
   // The working line shows the moment a message is accepted, before any wake-up claims it.
   const showQueued = Effect.fn("KinChatWake.showQueued")(
@@ -239,6 +241,12 @@ const make = Effect.gen(function* () {
       if (message.kind !== "text" && message.kind !== "widget_action") return;
       // Kin's copy of a person's words (`kin_hand_off`) is woken once by the hand-off itself.
       if (message.origin !== undefined) return;
+      // Agents it names in the Team room talk it over: the discussion's turns answer it.
+      if (
+        Option.isSome(team) &&
+        (yield* team.value.personAsked(message).pipe(Effect.orElseSucceed(() => false)))
+      )
+        return;
       const leads = yield* sql<{
         agentId: string;
         memberId: string;
