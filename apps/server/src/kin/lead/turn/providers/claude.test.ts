@@ -14,6 +14,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../../../../config.ts";
 import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
@@ -168,6 +169,7 @@ it.effect.each([
           CLAUDE_CONFIG_DIR: configDir,
           ENABLE_TOOL_SEARCH: "true",
           CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+          MCP_CONNECTION_NONBLOCKING: "0",
         },
       });
       assert.deepStrictEqual(leadHooks?.PreToolUse?.length, 1);
@@ -404,6 +406,154 @@ it.effect(
       Effect.provide(
         Layer.mergeAll(
           ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-full-" }),
+          KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+);
+
+it.effect(
+  "two wake-ups of one agent open the same system prompt, tools and servers: the prompt cache's prefix",
+  () =>
+    Effect.gen(function* () {
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const sql = yield* SqlClient.SqlClient;
+      const memory = `${stateDir}/kin/demo-a/memory-read`;
+      yield* fs.makeDirectory(memory, { recursive: true });
+      const orgId = KinOrgId.make("org-prefix");
+      const agentId = KinAgentId.make("tech");
+      const services = Context.make(
+        KinAgentSessionPolicy,
+        KinAgentSessionPolicy.of({
+          refusal: (threadId) =>
+            fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          webSearch: (threadId) =>
+            webSearchRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          delegated: (threadId) =>
+            delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
+          agentName: (threadId) =>
+            leadNameOf(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        }),
+      ) as Context.Context<KinServices>;
+      const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
+      const base = Layer.succeed(
+        ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
+        ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
+          allocateSessionId: Effect.succeed("session"),
+          open: (input) =>
+            Effect.sync(() => opened.push(input.options)).pipe(
+              Effect.andThen(Effect.die("unused session")),
+            ),
+          forkSession: () => Effect.die("unused fork"),
+          subagentLaunchToolUseId: () => Effect.die("unused lookup"),
+          subagentModel: () => Effect.succeed(null),
+          assertComplete: Effect.void,
+        }),
+      );
+      // One wake-up: its own provider session, MCP address and token, at the clock's now.
+      const wakeUp = (threadId: string, wakeup: string) =>
+        Effect.gen(function* () {
+          const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
+          yield* runner
+            .open({
+              threadId: ThreadId.make(threadId),
+              providerSessionId: ProviderSessionId.make(`session-${wakeup}`),
+              options: ClaudeAdapterV2.makeClaudeQueryOptions({
+                modelSelection: {
+                  instanceId: ProviderInstanceId.make("claudeAgent"),
+                  model: "claude-sonnet-4-6",
+                },
+                nativeThreadId: `native-${wakeup}`,
+                resume: false,
+                cwd: memory,
+                attachmentsDir: "/attachments",
+                environment: { PATH: "/usr/bin", HOME: "/home/kin" },
+                mcpServers: {
+                  kin: {
+                    type: "http",
+                    url: `http://127.0.0.1:${wakeup.length}/kin/mcp?session=${wakeup}`,
+                    headers: { Authorization: `Bearer token-${wakeup}` },
+                  },
+                },
+              }),
+            })
+            .pipe(Effect.exit);
+          return opened.at(-1);
+        }).pipe(
+          Effect.provide(
+            claude.install(base).pipe(
+              Layer.provide(
+                Layer.succeed(KinServer, {
+                  taskCardUpdater: Layer.empty,
+                  services: Option.some(services),
+                  subscribeForViewer: Option.none(),
+                }),
+              ),
+              Layer.provide(
+                ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true })),
+              ),
+            ),
+          ),
+        );
+      const prefix = (options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions | undefined) =>
+        JSON.stringify({
+          systemPrompt: options?.systemPrompt,
+          tools: options?.tools,
+          disallowedTools: options?.disallowedTools,
+          mcpServers: Object.entries(options?.mcpServers ?? {}).map(([name, server]) => {
+            const { url: _url, headers: _headers, ...rest } = server as {
+              url?: string;
+              headers?: Record<string, string>;
+            };
+            return [name, rest];
+          }),
+        });
+      const prompts: Array<string> = [];
+      for (const threadId of [`kin:${agentId}`, `kin-shared:${agentId}`]) {
+        yield* ownerOnlyWakeup({ orgId, agentId, wakeupId: `${threadId}:first` });
+        yield* fs.writeFileString(`${memory}/notes.md`, "Ambermill invoices go out on the 1st.");
+        const first = yield* wakeUp(threadId, `first-${threadId}`);
+        // Minutes later, with new memory and new events between them.
+        yield* TestClock.adjust("3 minutes");
+        yield* fs.writeFileString(`${memory}/notes.md`, "Rhea moved invoicing to the 5th.");
+        yield* fs.writeFileString(`${memory}/clients.md`, "Orbit Dental pays late.");
+        yield* ownerOnlyWakeup({ orgId, agentId, wakeupId: `${threadId}:second` });
+        const second = yield* wakeUp(threadId, `second-${threadId}`);
+        assert.isDefined(first?.systemPrompt, threadId);
+        assert.strictEqual(prefix(second), prefix(first), threadId);
+        // Kin's tools are listed before the first request goes out (ClaudeAdapterV2 does this for
+        // resumed sessions only).
+        assert.strictEqual(first?.env?.MCP_CONNECTION_NONBLOCKING, "0", threadId);
+        const system = first?.systemPrompt;
+        prompts.push(typeof system === "object" && "prompt" in system ? system.prompt : "");
+      }
+      assert.deepStrictEqual(prompts, [
+        kinInstructions("owner", "claudeAgent"),
+        kinInstructions("confined", "claudeAgent"),
+      ]);
+      // The instructions name no time, id or path: they are the same for every agent and wake-up.
+      for (const [index, text] of prompts.entries()) {
+        const seat = index === 0 ? "owner" : "confined";
+        for (const pattern of [
+          /\d{4}-\d{2}-\d{2}/,
+          /T\d{2}:\d{2}/,
+          /\d{9,}/,
+          /[0-9a-f]{8}-[0-9a-f]{4}-/i,
+          /\b[0-9A-HJKMNP-TV-Z]{26}\b/,
+          /\b[0-9a-f]{12,}\b/,
+          /(?:^|[\s"'`(])~?\/[\w.-]+\//m,
+        ])
+          assert.notMatch(text, pattern, seat);
+        for (const fact of [agentId, orgId, stateDir, memory, "session-", "native-", "token-"])
+          assert.notInclude(text, fact, seat);
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-prefix-" }),
           KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
         ).pipe(Layer.provideMerge(NodeServices.layer)),
       ),
