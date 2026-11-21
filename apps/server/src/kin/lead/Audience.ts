@@ -3,6 +3,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { ownerLevelPeople, ownerLevelSql } from "../people/KinAccess.ts";
+import { outsideReview } from "./outsideReview.ts";
 
 /**
  * Who can read a lead turn's reply. Invariant: only an `owner_only` turn sees or changes the
@@ -56,6 +57,8 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
     readonly wakeupId: string;
   }) {
     const sql = yield* SqlClient.SqlClient;
+    // A stranger's pull request is reviewed as the team would read it.
+    if ((yield* outsideReview(input)) !== undefined) return "shared" as const;
     const [lead] = yield* sql<{ owner: string; ownerChatId: string }>`
       SELECT a.owner_person_id AS owner, l.owner_chat_id AS "ownerChatId" FROM kin_leads l
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id

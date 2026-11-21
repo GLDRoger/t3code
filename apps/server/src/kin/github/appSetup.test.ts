@@ -16,6 +16,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Setup from "./appSetup.ts";
+import { HOOK_EVENTS, KIN_GITHUB_HOOK_ROUTE } from "./appHook.ts";
 import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as AppKey from "./appKey.ts";
@@ -28,6 +29,7 @@ const T0 = Date.UTC(2026, 10, 17, 9, 0, 0);
 const owner = { _tag: "person" as const, orgId, personId: KinPersonId.make("owner") };
 const member = { _tag: "person" as const, orgId, personId: KinPersonId.make("member") };
 const ORIGIN = "https://kin.invented.example";
+const PUBLIC = "https://kin.public.example.test";
 
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -104,23 +106,44 @@ describe("making Kin's GitHub App from Settings", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("posts a manifest that needs no webhook and comes back to the owner's own Kin", () =>
-    Effect.gen(function* () {
-      const { flow } = yield* setup();
-      const { path } = yield* flow.start([owner], orgId);
-      const state = new URL(path, ORIGIN).searchParams.get("state") ?? "";
-      assert.isTrue(Option.isNone(yield* flow.page("forged", "", ORIGIN)));
-      const page = Option.getOrThrow(yield* flow.page(state, "  Kin   for Studio ", ORIGIN));
-      const manifest = JSON.parse(
-        (/name="manifest" value="([^"]+)"/.exec(page)?.[1] ?? "{}").replaceAll("&quot;", '"'),
-      ) as Record<string, unknown>;
-      assert.strictEqual(manifest.name, "Kin for Studio");
-      assert.strictEqual(manifest.redirect_url, `${ORIGIN}/api/kin/github-app/created`);
-      assert.isUndefined(manifest.hook_attributes);
-      assert.deepStrictEqual(manifest.default_events, []);
-      assert.notProperty(manifest.default_permissions as object, "administration");
-      assert.include(page, `action="https://github.com/settings/apps/new?state=${state}"`);
-    }).pipe(Effect.provide(layer)),
+  it.effect(
+    "posts a manifest that comes back to the owner's own Kin, with a webhook only where Kin has a public address",
+    () =>
+      Effect.gen(function* () {
+        const { flow } = yield* setup();
+        const manifestOf = Effect.fn("test.manifestOf")(function* (name: string) {
+          const { path } = yield* flow.start([owner], orgId);
+          const state = new URL(path, ORIGIN).searchParams.get("state") ?? "";
+          const page = Option.getOrThrow(yield* flow.page(state, name, ORIGIN));
+          assert.include(page, `action="https://github.com/settings/apps/new?state=${state}"`);
+          return JSON.parse(
+            (/name="manifest" value="([^"]+)"/.exec(page)?.[1] ?? "{}").replaceAll("&quot;", '"'),
+          ) as Record<string, unknown>;
+        });
+        assert.isTrue(Option.isNone(yield* flow.page("forged", "", ORIGIN)));
+        const manifest = yield* manifestOf("  Kin   for Studio ");
+        assert.strictEqual(manifest.name, "Kin for Studio");
+        assert.strictEqual(manifest.redirect_url, `${ORIGIN}/api/kin/github-app/created`);
+        assert.isUndefined(manifest.hook_attributes);
+        assert.deepStrictEqual(manifest.default_events, []);
+        assert.notProperty(manifest.default_permissions as object, "administration");
+
+        // The webhook goes to Kin's own public address, never the browser's origin.
+        const hooked = yield* manifestOf("").pipe(
+          Effect.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromUnknown({ KIN_ENABLED: true, KIN_PUBLIC_URL: PUBLIC }),
+            ),
+          ),
+        );
+        assert.deepStrictEqual(hooked.hook_attributes, {
+          url: `${PUBLIC}${KIN_GITHUB_HOOK_ROUTE}`,
+          active: true,
+        });
+        assert.deepStrictEqual(hooked.default_events, Object.keys(HOOK_EVENTS));
+        assert.strictEqual(hooked.redirect_url, `${ORIGIN}/api/kin/github-app/created`);
+        assert.deepStrictEqual(hooked.default_permissions, manifest.default_permissions);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect(

@@ -20,6 +20,7 @@ import {
   kinGitHubAgentsView,
   kinGitHubGuardAction,
   kinGitHubGuardLine,
+  kinGitHubInstantRow,
   kinGitHubRow,
   kinGitHubSheet,
   kinGitHubWatchLine,
@@ -262,6 +263,7 @@ function AgentIdentity(props: {
           {hint === null ? null : <p className="text-xs text-muted-foreground">{hint}</p>}
         </div>
       )}
+      <KinGitHubInstantLine agents={props.agents} now={now} />
       {view.installUrl === null ? null : (
         <div>
           <Button
@@ -287,6 +289,38 @@ function AgentIdentity(props: {
         </div>
       )}
     </div>
+  );
+}
+
+export function KinGitHubInstantLine(props: {
+  readonly agents: NonNullable<KinGitHubStatus["agents"]>;
+  readonly now: number;
+}) {
+  const row = kinGitHubInstantRow(props.agents, props.now);
+  if (row === null) return null;
+  return (
+    <ul className="flex flex-col divide-y rounded-md border">
+      <li className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-4">
+        <div className="flex min-w-0 flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate text-sm font-medium">{row.title}</span>
+            <Badge variant={TONE_BADGE[row.tone]}>{row.label}</Badge>
+          </div>
+          <p className="text-xs text-muted-foreground">{row.detail}</p>
+        </div>
+        {row.action === null ? null : (
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <Button
+              size="xs"
+              variant="outline"
+              render={<a href={row.action.url} target="_blank" rel="noreferrer noopener" />}
+            >
+              {row.action.label}
+            </Button>
+          </div>
+        )}
+      </li>
+    </ul>
   );
 }
 
