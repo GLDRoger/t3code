@@ -23,7 +23,9 @@ import {
   ProviderTurnId,
   ProjectId,
   ProviderInstanceId,
+  TurnItemId,
   type ChatAttachment,
+  type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as ChatService from "../chat/KinChatService.ts";
@@ -34,6 +36,7 @@ import * as LevelGate from "./LevelGate.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Floor from "../floor/KinFloor.ts";
 import { FLOOR_GRANT_TTL_MS } from "../floor/FloorManager.ts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -62,7 +65,6 @@ import * as KinStop from "./KinStop.ts";
 import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
-import { RUN_SILENCE_MS } from "./runSilence.ts";
 import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -1205,6 +1207,109 @@ describe("WakeupRunner", () => {
       }).pipe(provideDeterministicTestRuntime),
   );
 
+  it.effect("keeps an unused grant while a rescue turn works, and lets it lapse once silent", () =>
+    Effect.gen(function* () {
+      const rescuing = yield* Deferred.make<void>();
+      const rescued = yield* Deferred.make<void>();
+      const domainEvents = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
+      // The run ended owing a reply; the rescue turn writes while this holds.
+      const bridge = Layer.mock(KinReplyBridge)({
+        lane: () =>
+          Effect.succeedSome({
+            chatId: KinChatId.make("direct"),
+            mode: "reply" as const,
+            owed: true,
+            leadName: "Lead",
+          }),
+        preparing: () => Effect.void,
+        begin: () => Effect.void,
+        complete: () =>
+          Deferred.succeed(rescuing, undefined).pipe(Effect.andThen(Deferred.await(rescued))),
+        end: () => Effect.void,
+        failed: () => Effect.void,
+      });
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* KinChatRepository.KinChatRepository;
+        const floor = yield* Floor.KinFloor;
+        const at = "2026-11-08T00:00:00.000Z";
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+          VALUES ('direct', 'org', 'direct', 'owner:lead', 1, ${at})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES ('owner-member', 'org', 'direct', 'person', 'owner', 'owner', ${at})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+          VALUES ('lead-member', 'org', 'direct', 'agent', 'lead', 'member', ${at})`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+            author_member_id, author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('hi', 'org', 'direct', 1, 'human', 'owner', 'owner-member', 'owner', 'text', 'hi', '[]',
+            'posted', ${at})`;
+        const chat = Option.getOrThrow(
+          yield* repo.getChat({ orgId, chatId: KinChatId.make("direct") }),
+        );
+        const message = Option.getOrThrow(
+          yield* repo.getMessage({ orgId, messageId: KinMessageId.make("hi") }),
+        );
+        yield* floor.open(message, chat);
+        yield* (yield* KinEventQueue.KinEventQueue).enqueue(laneMessage("hi", "direct"));
+        const fiber = yield* run();
+        yield* Deferred.await(rescuing);
+        const [lead] = yield* sql<{
+          threadId: string;
+        }>`SELECT thread_id AS "threadId" FROM kin_leads`;
+        const threadId = ThreadId.make(lead!.threadId);
+        const grantLeft = Effect.gen(function* () {
+          const [grant] = yield* sql<{ expiresAt: number }>`SELECT expires_at AS "expiresAt"
+            FROM kin_floor_grants WHERE org_id = ${orgId} AND agent_id = ${agentId}
+              AND consumed_at IS NULL ORDER BY expires_at`;
+          return grant!.expiresAt - (yield* Clock.currentTimeMillis);
+        });
+        // The rescue turn makes a tool call every 10 minutes for half an hour.
+        for (let call = 1; call <= 3; call++) {
+          yield* TestClock.adjust("10 minutes");
+          const now = yield* DateTime.now;
+          yield* Queue.offer(domainEvents, {
+            id: EventId.make(`rescue-work-${call}`),
+            threadId,
+            occurredAt: now,
+            type: "turn-item.updated",
+            payload: {
+              id: TurnItemId.make(`rescue-tool-${call}`),
+              threadId,
+              runId: null,
+              nodeId: null,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 100 + call,
+              status: "completed",
+              title: null,
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              type: "dynamic_tool",
+              toolName: "Bash",
+              input: {},
+            },
+          });
+        }
+        yield* TestClock.adjust("10 minutes");
+        assert.isAbove(yield* grantLeft, 0, "a working rescue turn keeps the grant");
+        yield* TestClock.adjust("10 minutes");
+        assert.isAtMost(yield* grantLeft, 0, "a silent one lets it lapse");
+        yield* Deferred.succeed(rescued, undefined);
+        yield* Fiber.join(fiber);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(Floor.layer, KinChatRepository.layer).pipe(
+            Layer.provideMerge(harness({ domainEvents }).pipe(Layer.provide(bridge))),
+          ),
+        ),
+      );
+    }).pipe(provideDeterministicTestRuntime),
+  );
+
   it.effect("starts every wake-up in a fresh session with the full prompt, committing each", () =>
     Effect.gen(function* () {
       let commits = 0;
@@ -1408,7 +1513,7 @@ describe("WakeupRunner", () => {
       const holdRunning = yield* Deferred.make<void>();
       const work = yield* Queue.unbounded<void>();
       const outcomes: Array<string> = [];
-      const rescues: Array<number | null> = [];
+      const rescues: Array<boolean> = [];
       const bridge = Layer.mock(KinReplyBridge)({
         lane: () =>
           Effect.succeedSome({
@@ -1419,12 +1524,7 @@ describe("WakeupRunner", () => {
           }),
         preparing: () => Effect.void,
         begin: () => Effect.void,
-        // How long a rescue turn may take, counted from the run's end.
-        complete: (input) =>
-          Effect.map(
-            Effect.clockWith((clock) => clock.currentTimeMillis),
-            (now) => rescues.push(input.rescueUntil === null ? null : input.rescueUntil - now),
-          ),
+        complete: (input) => Effect.sync(() => void rescues.push(input.rescue)),
         end: () => Effect.void,
         failed: (input) => Effect.sync(() => void outcomes.push(input.outcome)),
       });
@@ -1473,7 +1573,7 @@ describe("WakeupRunner", () => {
             runs.map((entry) => entry.status),
             ["completed"],
           );
-          assert.deepStrictEqual(rescues, [RUN_SILENCE_MS]);
+          assert.deepStrictEqual(rescues, [true]);
           assert.deepStrictEqual(outcomes, []);
         } else {
           assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups`, [
@@ -1484,7 +1584,7 @@ describe("WakeupRunner", () => {
             ["interrupted"],
           );
           // Today's recovery for a timed-out wake-up: no rescue, an honest line, a retry.
-          assert.deepStrictEqual(rescues, [null]);
+          assert.deepStrictEqual(rescues, [false]);
           assert.deepStrictEqual(outcomes, ["retrying"]);
           assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
             { state: "queued", attempts: 1 },

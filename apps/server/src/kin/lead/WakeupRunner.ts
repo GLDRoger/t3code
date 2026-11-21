@@ -704,19 +704,29 @@ const make = Effect.gen(function* () {
             });
         }
         // The reply lands before memory commits, while the wake-up still owns its lane. Its run
-        // just ended, so a rescue turn and the floor's grant count from now.
+        // just ended, so the floor's grant counts from now; a rescue turn that keeps working
+        // keeps it a window at a time, as the run did, and one gone silent lets it lapse.
         if (Option.isSome(bridge) && !stopped && !abandoned) {
-          if (status === "completed") {
-            lastWork.set(threadId, yield* Clock.currentTimeMillis);
-            yield* keepFloor;
-          }
-          yield* bridge.value.complete({
+          const completing = bridge.value.complete({
             orgId: row.orgId,
             wakeupId: row.wakeupId,
             projectId,
             rootRunId: runId,
-            rescueUntil: status === "completed" ? quietUntil() : null,
+            rescue: status === "completed",
           });
+          if (status === "completed") {
+            lastWork.set(threadId, yield* Clock.currentTimeMillis);
+            yield* keepFloor;
+            const holdingFloor = Effect.gen(function* () {
+              while (true) {
+                const left = quietUntil() - (yield* Clock.currentTimeMillis);
+                if (left <= 0) return yield* Effect.never;
+                yield* Effect.sleep(left);
+                yield* keepFloor;
+              }
+            });
+            yield* Effect.raceFirst(completing, holdingFloor);
+          } else yield* completing;
         }
         // Settled unless a join aborted it first; a join after this has nothing to abort.
         if (!abandoned)

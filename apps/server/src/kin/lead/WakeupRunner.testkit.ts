@@ -1,5 +1,10 @@
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
-import type { ChatAttachment, KinAttachment, ThreadId } from "@t3tools/contracts";
+import type {
+  ChatAttachment,
+  KinAttachment,
+  OrchestrationV2DomainEvent,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -203,6 +208,8 @@ type HarnessOptions = {
   readonly wholeThreadReads?: Array<ThreadId>;
   /** Called each time the runner subscribes to T3's domain events. */
   readonly onDomainSubscribe?: () => void;
+  /** More of T3's events the runner hears, as if a turn outside the fake provider made them. */
+  readonly domainEvents?: Queue.Queue<OrchestrationV2DomainEvent>;
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -218,7 +225,9 @@ export function harness(options: HarnessOptions = {}) {
       streamDomainEvents: Stream.unwrap(
         Effect.sync(() => {
           options.onDomainSubscribe?.();
-          return service.streamDomainEvents;
+          return options.domainEvents === undefined
+            ? service.streamDomainEvents
+            : Stream.merge(service.streamDomainEvents, Stream.fromQueue(options.domainEvents));
         }),
       ),
     })),
