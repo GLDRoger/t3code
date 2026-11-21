@@ -53,6 +53,7 @@ import {
   kinWorkEditMoved,
   kinWorkStatusOffer,
   kinWorkItemNotice,
+  kinWorkTakeLabel,
   type KinWorkAction,
   type KinWorkNotice,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
@@ -524,7 +525,7 @@ function KinWorkItemBody(props: ItemTarget) {
       ? [
           {
             id: "take-back",
-            title: KIN_WORK_COPY.takeBack,
+            title: kinWorkTakeLabel(item, names),
             onPress: () => void changes.run(item, { type: "takeBack" }, names),
           },
         ]

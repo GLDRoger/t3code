@@ -47,6 +47,7 @@ import {
   kinWorkApplied,
   kinWorkStatusOffer,
   kinWorkEditMoved,
+  kinWorkTakeLabel,
   type KinWorkAction,
   type KinWorkEdit,
   type KinWorkNotice,
@@ -613,7 +614,7 @@ function KinWorkItem(
                     )}
                     {!controls.menu.takeBack || give === null ? null : (
                       <MenuItem onClick={() => give({ type: "takeBack" })}>
-                        {KIN_WORK_COPY.takeBack}
+                        {kinWorkTakeLabel(props.item, names)}
                       </MenuItem>
                     )}
                     {!controls.menu.handBack ? null : (
