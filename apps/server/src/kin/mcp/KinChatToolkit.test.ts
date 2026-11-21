@@ -259,6 +259,16 @@ it.effect(
         yield* read(agent, { chatId: chat.chatId, afterSeq: rows.at(-1)?.seq ?? 0 }),
         [],
       );
+      // With no cursor a read is the latest page; beforeSeq pages back from it.
+      assert.deepStrictEqual(yield* read(agent, { chatId: chat.chatId, limit: 1 }), rows.slice(1));
+      assert.deepStrictEqual(
+        yield* read(agent, { chatId: chat.chatId, beforeSeq: rows[1]?.seq ?? 0, limit: 1 }),
+        rows.slice(0, 1),
+      );
+      assert.deepStrictEqual(
+        yield* read(agent, { chatId: chat.chatId, afterSeq: 0, limit: 1 }),
+        rows.slice(0, 1),
+      );
       assert.include(rows[1]?.author, {
         _tag: "agent",
         agentId,
@@ -284,6 +294,8 @@ it.effect(
         { afterSeq: -1 },
         { afterSeq: 0.5 },
         { afterSeq: Number.MAX_SAFE_INTEGER + 1 },
+        { beforeSeq: 0 },
+        { beforeSeq: 1.5 },
         { limit: 101 },
       ]) {
         const result = yield* call("kin_chat_read", { chatId: chat.chatId, ...changed }).pipe(

@@ -275,6 +275,7 @@ export class KinChatService extends Context.Service<
       input: {
         readonly chatId: KinChatId;
         readonly afterSeq?: number | undefined;
+        readonly beforeSeq?: number | undefined;
         readonly limit?: number | undefined;
       },
     ) => Effect.Effect<ReadonlyArray<KinMessage>, ServiceError>;
@@ -446,6 +447,13 @@ const decodeRead = Schema.decodeUnknownEffect(
       Schema.Number.check(
         Schema.isInt(),
         Schema.isGreaterThanOrEqualTo(0),
+        Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+      ),
+    ),
+    beforeSeq: Schema.optional(
+      Schema.Number.check(
+        Schema.isInt(),
+        Schema.isGreaterThan(0),
         Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
       ),
     ),
@@ -2559,6 +2567,9 @@ const make = Effect.gen(function* () {
         orgId: identity.orgId,
         chatId: request.chatId,
         afterSeq: request.afterSeq ?? 0,
+        ...(request.beforeSeq === undefined ? {} : { beforeSeq: request.beforeSeq }),
+        // Without afterSeq a read is the latest page, so the newest message is one call away.
+        latest: request.afterSeq === undefined,
         limit: request.limit ?? 50,
         viewerMemberId: member.memberId,
         // Whatever page it asks for, a shared turn sees nothing below the chat's history floor.
