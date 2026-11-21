@@ -2039,6 +2039,17 @@ it.effect(
         posted.key,
       );
       assert.lengthOf(yield* docs, 1);
+      // A playbook sets how Kin works for everyone, so it stays the owner level's to file.
+      const playbook = yield* Effect.flip(
+        LeadDocs.create(scopeOf(lead), {
+          sourceEventId: "ask-event",
+          title: "Invented chasing rules",
+          kind: "playbook",
+          body: "Chase after two days.",
+        }),
+      );
+      assert.strictEqual(reasonOf(playbook), "not_allowed");
+      assert.lengthOf(yield* docs, 1);
       // A chat others share asks nobody outside it, so its refusal names no card.
       yield* sql`UPDATE kin_chats SET kind = 'team_group', direct_key = NULL WHERE chat_id = 'mate-chat'`;
       const inGroup = yield* propose;

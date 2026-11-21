@@ -361,6 +361,8 @@ const ROOM_FIELDS: ReadonlySet<string> = new Set(LISTS.work.fields);
 
 /** What a doc filed at one teammate's own ask may carry besides its text (`draftDoc`). */
 const DRAFT_DOC_FIELDS: ReadonlySet<string> = new Set(["list", "source", "partyId", "projectId"]);
+/** Kinds whose text sets how Kin works for everyone (`playbooks.ts`): the owner level's to file. */
+const COMPANY_DOC_KINDS: ReadonlyArray<unknown> = ["playbook", "policy"];
 
 /**
  * A doc filed at the one teammate's ask behind the turn, which they then see (`personSees`): no
@@ -382,6 +384,7 @@ const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
     view.askers.length !== 1 ||
     view.askers[0] !== person ||
     input.list !== "docs" ||
+    COMPANY_DOC_KINDS.includes(input.category) ||
     write.changes ||
     OWNERS_FIELDS.some((field) => input[field] !== undefined && !DRAFT_DOC_FIELDS.has(field))
   )
@@ -588,7 +591,9 @@ type TeamWrite = {
   readonly row: { readonly recordId: string; readonly key: string } | undefined;
   /** A change to the task, not a retry of the create that made it. */
   readonly changes: boolean;
-  readonly input: Readonly<Partial<Record<(typeof OWNERS_FIELDS)[number] | "state", unknown>>>;
+  readonly input: Readonly<
+    Partial<Record<(typeof OWNERS_FIELDS)[number] | "state" | "category", unknown>>
+  >;
 };
 
 /** What `teamRule` decides these entries' writes on: read once, inside the write's transaction. */
