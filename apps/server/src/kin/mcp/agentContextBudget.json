@@ -2,16 +2,16 @@
   "mcpToolListJsonBytes": 60253,
   "kinToolListJsonBytes": 2933,
   "kinInstructionsBytes": {
-    "owner": 37701,
-    "confined": 37649
+    "owner": 37949,
+    "confined": 37897
   },
   "kinLeadToolListJsonBytes": {
-    "engineering": 140187,
-    "finance": 119771,
-    "social": 122844,
-    "support": 119771,
-    "engineeringBesideFinanceAndSales": 127093,
-    "socialBesideFinanceAndSales": 109750,
-    "shared": 73273
+    "engineering": 140331,
+    "finance": 119915,
+    "social": 122988,
+    "support": 119915,
+    "engineeringBesideFinanceAndSales": 127237,
+    "socialBesideFinanceAndSales": 109894,
+    "shared": 73417
   }
 }
