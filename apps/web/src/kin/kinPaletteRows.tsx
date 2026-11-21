@@ -28,7 +28,7 @@ import { KinAvatar } from "./KinAvatar";
 import { kinDestinationLink } from "./kinListSwitch";
 import { KIN_PLACE_PATH } from "./kinPlaces";
 import { kinClient } from "./kinClient";
-import { kinHostTarget, useKinHost } from "./useKinHost";
+import { kinHostKeptTarget, useKinHost } from "./useKinHost";
 import { kinPlacesAtom } from "./kinPlacesAtom";
 
 const PLACE: Record<
@@ -70,7 +70,7 @@ const noPlacesAtom = Atom.make<KinPlaces | null>(null);
  */
 export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
   const navigate = useNavigate();
-  const target = kinHostTarget(useKinHost());
+  const target = kinHostKeptTarget(useKinHost());
   // T3's palette tests answer every atom with [], so the places may be absent there.
   const shown = useAtomValue(target === null ? noPlacesAtom : kinPlacesAtom(target));
   // The owner level's, as the host has it: the same gate the host applies to the call.

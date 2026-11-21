@@ -22,7 +22,6 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "../components/ui/sidebar";
-import { kinNewLeadTarget } from "./KinNewLeadButton";
 import {
   kinDestinationAt,
   kinDestinationLink,
@@ -30,7 +29,7 @@ import {
   kinListShownAt,
 } from "./kinListSwitch";
 import { useKinTasksNeedsYou } from "./useKinAttention";
-import { useKinHost } from "./useKinHost";
+import { kinHostKeptTarget, useKinHost } from "./useKinHost";
 import { useKinDestinations } from "./useKinPlaces";
 import type { KinWorkTarget } from "./useKinWork";
 
@@ -69,7 +68,7 @@ const badgeLabel = (destination: KinDestination, badge: string) =>
 
 /** Kin's five destinations at the top of the sidebar. T3's coding threads are not offered in Kin. */
 export function KinNav() {
-  const target = kinNewLeadTarget(useKinHost());
+  const target = kinHostKeptTarget(useKinHost());
   if (target === null) return null;
   return <KinNavList environmentId={target.environmentId} orgId={target.orgId} />;
 }

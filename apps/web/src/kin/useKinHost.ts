@@ -104,7 +104,12 @@ export function chooseKinHost(environmentId: EnvironmentId) {
 
 /** The company this browser's Kin host names first; null until a connected host has answered. */
 export function kinHostTarget(host: KinHost) {
-  if (host._tag !== "host" || !host.connected || host.probe._tag !== "ready") return null;
+  return host._tag === "host" && host.connected ? kinHostKeptTarget(host) : null;
+}
+
+/** The same company while its host is offline too, from its last answer: for finding your way. */
+export function kinHostKeptTarget(host: KinHost) {
+  if (host._tag !== "host" || host.probe._tag !== "ready") return null;
   const me = host.probe.orgs.me[0];
   return me === undefined ? null : { environmentId: host.environmentId, orgId: me.orgId };
 }
