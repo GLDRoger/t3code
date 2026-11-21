@@ -441,6 +441,7 @@ export const suggest = (
       why: "A salary",
     };
   const known = input.known
+    .filter((one) => !notAVendor(one.vendor))
     .map((one) => ({ one, fit: nameIn(one.vendor, text) }))
     .filter((one) => one.fit >= 0.5)
     .toSorted((left, right) => right.fit - left.fit)[0]?.one;
