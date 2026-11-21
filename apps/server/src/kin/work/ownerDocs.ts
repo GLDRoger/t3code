@@ -45,7 +45,7 @@ import * as Docs from "./docs.ts";
 import { KinRecords, type Tick } from "./KinRecords.ts";
 import { LISTS } from "./lists.ts";
 import { OFFERINGS_ORIGIN, startOfferings, withOfferings } from "./offerings.ts";
-import { inList, ownerWriter, theOwner, viewerOf } from "./ownerWork.ts";
+import { inList, ownerWriter, placeRefusals, theOwner, viewerOf } from "./ownerWork.ts";
 import {
   chatLinksFor,
   iso,
@@ -61,7 +61,6 @@ import { searchIndexed } from "./searchIndex.ts";
 import {
   clientMoneySeen,
   KIN_OWNER_LEVEL,
-  placesOf,
   seenBy,
   teamSeq,
   linkedFromOf,
@@ -85,11 +84,10 @@ const readerOf = Effect.fn("KinDocs.reader")(function* (
   people: ReadonlyArray<PersonIdentity>,
   orgId: KinOrgId,
 ) {
-  const viewer = yield* viewerOf(people, orgId);
+  const { viewer, refused } = yield* placeRefusals(people, orgId);
   const { personId } = viewer.person;
   if (!viewer.teammate) return { personId, team: undefined };
-  const places = yield* placesOf(orgId, personId).pipe(workFailure);
-  if (!places.reaches.docs) return yield* noDocs;
+  if (refused.docs) return yield* noDocs;
   return { personId, team: personId };
 });
 const reader = (people: ReadonlyArray<PersonIdentity>, orgId: KinOrgId) =>

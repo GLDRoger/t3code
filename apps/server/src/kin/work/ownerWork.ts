@@ -127,6 +127,20 @@ export const viewerOf = Effect.fn("KinWork.viewer")(function* (
   };
 });
 export type Viewer = Effect.Success<ReturnType<typeof viewerOf>>;
+
+/**
+ * The places the host refuses the caller: none for the owner level, else each one `placesOf` says
+ * they don't reach. Money's and Docs' gates and `kin.access.me` all answer from this.
+ */
+export const placeRefusals = Effect.fn("KinWork.placeRefusals")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  orgId: KinOrgId,
+) {
+  const viewer = yield* viewerOf(people, orgId);
+  if (!viewer.teammate) return { viewer, refused: { money: false, docs: false } };
+  const { reaches } = yield* placesOf(orgId, viewer.person.personId).pipe(workFailure);
+  return { viewer, refused: { money: !reaches.money, docs: !reaches.docs } };
+});
 export const writerOf = (viewer: Viewer): Writer =>
   viewer.teammate ? { ...ownerWriter(viewer.person), teammate: true } : ownerWriter(viewer.person);
 /** A teammate's write and its answer run in one transaction: what it checks holds as it commits. */

@@ -102,6 +102,13 @@ export function chooseKinHost(environmentId: EnvironmentId) {
   appAtomRegistry.refresh(kinHostAtoms.hostAtom);
 }
 
+/** The company this browser's Kin host names first; null until a connected host has answered. */
+export function kinHostTarget(host: KinHost) {
+  if (host._tag !== "host" || !host.connected || host.probe._tag !== "ready") return null;
+  const me = host.probe.orgs.me[0];
+  return me === undefined ? null : { environmentId: host.environmentId, orgId: me.orgId };
+}
+
 /** The connected environment that hosts Kin. `none` on plain T3 servers and with Kin off. */
 export function useKinHost(): KinHost {
   return useAtomValue(kinHostAtom);
