@@ -80,7 +80,7 @@ const linesOf = (
           ),
           where: cut(event.start, 200),
         })),
-      ].slice(0, LINES_PER_CONNECTION);
+      ];
     case "github":
       return activity.deliveries
         .slice(0, LINES_PER_CONNECTION)
