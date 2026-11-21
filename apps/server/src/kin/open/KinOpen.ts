@@ -67,11 +67,10 @@ export const dayEndFor = Effect.fn("KinOpen.dayEnd")(function* (
 });
 
 /** The person's tasks not closed and due by `dayEnd`, every one of them, soonest first. */
-export const ownTasks = Effect.fn("KinOpen.ownTasks")(function* (input: {
+const ownTasks = Effect.fn("KinOpen.ownTasks")(function* (input: {
   readonly orgId: KinOrgId;
   readonly personId: KinPersonId;
   readonly dayEnd: number;
-  readonly limit?: number | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
@@ -89,8 +88,7 @@ export const ownTasks = Effect.fn("KinOpen.ownTasks")(function* (input: {
     WHERE r.org_id = ${input.orgId} AND r.register_id = 'work' AND r.owner_kind = 'person'
       AND r.owner_id = ${input.personId} AND r.state NOT IN ('done', 'dropped')
       AND r.due_at IS NOT NULL AND r.due_at <= ${input.dayEnd}
-    ORDER BY r.due_at, r.key
-    ${input.limit === undefined ? sql`` : sql`LIMIT ${input.limit}`}`;
+    ORDER BY r.due_at, r.key`;
   return rows.map((row): OwnTask => ({ ...row, dueAllDay: row.dueAllDay === 1 }));
 });
 
