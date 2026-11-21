@@ -359,6 +359,8 @@ const payee = (text: string) => {
   }
   return rest;
 };
+/** The bank's own prose, such as "BEING AMOUNT PAID TOWARDS …": it names nobody. */
+const BANK_PROSE = /^(?:being|towards|chq|cheque)\b/i;
 export const vendorOf = (narration: string): string | undefined => {
   const said = narration.replace(/\s+/g, " ").trim();
   const parts = (text: string) =>
@@ -376,9 +378,10 @@ export const vendorOf = (narration: string): string | undefined => {
     );
   else if (/^ACH\s?D?[-\s]/i.test(said)) found = said.replace(/^ACH\s?D?[-\s]+/i, "").split("-")[0];
   else if (/^POS\b/i.test(said)) found = said.replace(/^POS\s+\S*\d{4}\S*\s+/i, "");
-  // A narration no rail or channel word explains is the bank's or payer's words, not a name.
-  else if (payee(said) !== said) found = said;
-  const cleaned = payee(found ?? "")
+  else found = said;
+  const named = payee(found ?? "");
+  if (BANK_PROSE.test(named)) return undefined;
+  const cleaned = named
     .replace(/\b(USD|EUR|GBP|SGD|AED|AUD|CAD)\s?[\d,.]+/gi, "")
     .replace(/\*.*$/, "")
     .replace(/\.(com|in|io|co)\b.*$/i, "")
