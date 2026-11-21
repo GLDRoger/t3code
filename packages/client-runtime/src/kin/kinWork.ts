@@ -238,7 +238,8 @@ export const KIN_WORK_DEFAULT_FILTER: KinWorkFilter = {
 const VIEWS: ReadonlyArray<{ readonly id: KinWorkViewId; readonly label: string }> = [
   { id: "open", label: "Open" },
   { id: "doing", label: "In progress" },
-  { id: "waiting", label: "Waiting" },
+  // Its status is Waiting; Tasks' "Waiting on others" is every task in someone else's hands.
+  { id: "waiting", label: "Marked waiting" },
   { id: "late", label: "Late" },
   { id: "week", label: "Due this week" },
   { id: "closed", label: "Closed" },

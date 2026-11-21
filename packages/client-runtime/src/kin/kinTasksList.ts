@@ -94,7 +94,7 @@ export const KIN_TASK_FILTER = {
   all: "All open",
   mine: "Mine",
   week: "This week",
-  waiting: "Waiting",
+  waiting: "Marked waiting",
   late: "Late",
   more: "More filters",
 } as const;
