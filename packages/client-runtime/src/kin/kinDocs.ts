@@ -8,6 +8,7 @@ import {
   type KinChatSummary,
   type KinDocDetail,
   type KinDocDiff,
+  type KinDocEditSectionInput,
   type KinDocEmbed,
   type KinDocRenderInput,
   type KinDocFileInput,
@@ -84,6 +85,17 @@ export const KIN_DOCS = {
   textCopied: "Text copied",
   more: "More",
   sharePdf: "Share as PDF",
+  save: "Save",
+  saving: "Saving…",
+  cancel: "Cancel",
+  editing: (section: string) => `Changing ${section}`,
+  saved: (version: number) =>
+    `Saved as version ${version}. The one before is in History, and can be restored.`,
+  editMoved:
+    "This section changed since you opened it, so your change wasn't saved. Copy what you wrote, then open the doc again.",
+  editFailed: "Couldn't save your change.",
+  editOffline: "You're offline. Save it when the connection is back; your text stays here.",
+  discard: { title: "Discard your change?", keep: "Keep changing", confirm: "Discard" },
   export: "Export as Markdown",
   exportPdf: "Export PDF",
   exportingPdf: "Making the PDF…",
@@ -908,6 +920,49 @@ export function kinDocRestoreOutcome(
   )
     return { _tag: "refused", moved: false, text: error.message };
   return { _tag: "refused", moved: false, text: kinFailureText(error, "Couldn't restore it.") };
+}
+
+// Changing a section by hand
+
+/** Whether this reader changes the shown version's sections by hand: the host said so, on the latest. */
+export const kinDocCanEdit = (
+  doc: Pick<KinDocDetail, "editable" | "version" | "latest">,
+): boolean =>
+  doc.editable === true &&
+  doc.version.version === doc.latest.version &&
+  doc.version.file === undefined;
+
+/** What a hand edit sends: the section as it was read, so a newer one is refused. */
+export function kinDocEditInput(
+  orgId: KinOrgId,
+  doc: Pick<KinDocDetail, "key" | "outline">,
+  section: string,
+  text: string,
+  clientRequestId: string,
+): KinDocEditSectionInput | null {
+  const read = doc.outline.find((one) => one.id === section);
+  return read === undefined
+    ? null
+    : { orgId, key: doc.key, section: read.id, hash: read.hash, text, clientRequestId };
+}
+
+export type KinDocEditOutcome =
+  | { readonly _tag: "saved"; readonly doc: KinDocDetail }
+  | { readonly _tag: "refused"; readonly text: string; readonly moved: boolean };
+
+/** The host's answer to a hand edit: the new version, or why not in words, the typed text kept. */
+export function kinDocEditOutcome(
+  result: AtomCommandResult<KinDocDetail, unknown>,
+): KinDocEditOutcome {
+  if (AsyncResult.isSuccess(result)) return { _tag: "saved", doc: result.value };
+  const error = squashAtomCommandFailure(result);
+  if (isKinChatError(error) && error.reason === "conflict")
+    return { _tag: "refused", moved: true, text: KIN_DOCS.editMoved };
+  return {
+    _tag: "refused",
+    moved: false,
+    text: kinFailureText(error, KIN_DOCS.editFailed, { gone: KIN_DOCS.gone.title }),
+  };
 }
 
 // Pointing at a part

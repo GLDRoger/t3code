@@ -33,7 +33,16 @@ import { kinDocFileId, kinDocMarkdown } from "@t3tools/client-runtime/kin/kinCha
 import ChatMarkdown from "../components/ChatMarkdown";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../components/ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
+  MenuTrigger,
+} from "../components/ui/menu";
 import {
   isSelectionRectVisible,
   observeSelectionActions,
@@ -125,9 +134,13 @@ const fileImageSource = (id: string) => `${FILE_IMAGE}${id}`;
 const fileImageAttachment = (src: string) =>
   src.startsWith(FILE_IMAGE) ? kinDocFileId(src.slice(1)) : null;
 
-/** Ask and Change show only where there is an agent to ask; a teammate suggests a change. */
+/**
+ * Change is by hand where the host lets this reader (`onEdit`); else Ask and Change show only
+ * where there is an agent to ask, and a teammate suggests a change.
+ */
 function AskItems(props: {
   readonly onAsk: ((intent: KinDocAsk) => void) | null;
+  readonly onEdit: (() => void) | null;
   readonly suggests: boolean;
   readonly onCopyLink: () => void;
   /** Null where the section's text can't be told apart from the rest. */
@@ -142,11 +155,19 @@ function AskItems(props: {
             <MessageCircleQuestionIcon />
             {KIN_DOCS.ask}
           </MenuItem>
-          <MenuItem onClick={() => onAsk("change")}>
-            <PencilLineIcon />
-            {props.suggests ? KIN_DOCS.suggest : KIN_DOCS.change}
-          </MenuItem>
+          {props.onEdit === null ? (
+            <MenuItem onClick={() => onAsk("change")}>
+              <PencilLineIcon />
+              {props.suggests ? KIN_DOCS.suggest : KIN_DOCS.change}
+            </MenuItem>
+          ) : null}
         </>
+      )}
+      {props.onEdit === null ? null : (
+        <MenuItem onClick={props.onEdit}>
+          <PencilLineIcon />
+          {KIN_DOCS.change}
+        </MenuItem>
       )}
       <MenuItem onClick={props.onCopyLink}>
         <LinkIcon />
@@ -176,6 +197,10 @@ export function KinDocReader(
     readonly onCopyLink: (section: string | null) => void;
     /** Copies this markdown as clean text (`kinDocCopyText`). */
     readonly onCopyText: (markdown: string) => void;
+    /** Opens a section to change by hand; null where this reader may not. */
+    readonly onEdit:
+      | ((section: { readonly id: string; readonly title: string; readonly text: string }) => void)
+      | null;
     readonly onSeeChanges: (to: number) => void;
     readonly onOpenLatest: () => void;
     readonly onHistory: () => void;
@@ -200,6 +225,11 @@ export function KinDocReader(
   const copySection = (id: string) => {
     const text = sections?.find((section) => section.id === id)?.text;
     return text === undefined ? null : () => props.onCopyText(text);
+  };
+  const { onEdit } = props;
+  const editSection = (id: string | null) => {
+    const found = id === null ? undefined : sections?.find((section) => section.id === id);
+    return onEdit === null || found === undefined ? null : () => onEdit(found);
   };
   const hasTop = doc.outline[0]?.id === "top";
   const line = kinDocChangeLine(
@@ -331,10 +361,26 @@ export function KinDocReader(
                 <MenuPopup align="end">
                   <AskItems
                     onAsk={point(null)}
+                    onEdit={sections?.length === 1 ? editSection(sections[0]!.id) : null}
                     suggests={props.suggests === true}
                     onCopyLink={() => props.onCopyLink(null)}
                     onCopyText={() => props.onCopyText(doc.body)}
                   />
+                  {onEdit === null || sections === null || sections.length < 2 ? null : (
+                    <MenuSub>
+                      <MenuSubTrigger>
+                        <PencilLineIcon />
+                        {KIN_DOCS.change}
+                      </MenuSubTrigger>
+                      <MenuSubPopup>
+                        {sections.map((section) => (
+                          <MenuItem key={section.id} onClick={() => onEdit(section)}>
+                            {section.title}
+                          </MenuItem>
+                        ))}
+                      </MenuSubPopup>
+                    </MenuSub>
+                  )}
                   <MenuSeparator />
                   <MenuItem onClick={props.onHistory}>
                     <HistoryIcon />
@@ -483,6 +529,7 @@ export function KinDocReader(
                 <MenuPopup align="start">
                   <AskItems
                     onAsk={point(id)}
+                    onEdit={editSection(id)}
                     suggests={props.suggests === true}
                     onCopyLink={() => props.onCopyLink(id)}
                     onCopyText={copySection(id)}
@@ -497,6 +544,8 @@ export function KinDocReader(
         root={article}
         resolve={(node) => (article === null ? null : sectionAt(article, headings, node, hasTop))}
         onAsk={onPoint === null ? null : (section, intent) => point(section)?.(intent)}
+        onEdit={(section) => editSection(section)?.()}
+        canEdit={onEdit !== null && sections !== null}
         suggests={props.suggests === true}
         onCopyLink={props.onCopyLink}
       />
@@ -509,6 +558,9 @@ function KinDocSelectionMenu(props: {
   readonly root: HTMLDivElement | null;
   readonly resolve: (node: Node) => string | null;
   readonly onAsk: ((section: string | null, intent: KinDocAsk) => void) | null;
+  /** Changes the selection's section by hand, where `canEdit`. */
+  readonly onEdit: (section: string | null) => void;
+  readonly canEdit: boolean;
   readonly suggests: boolean;
   readonly onCopyLink: (section: string | null) => void;
 }) {
@@ -602,19 +654,34 @@ function KinDocSelectionMenu(props: {
             <MessageCircleQuestionIcon />
             {KIN_DOCS.ask}
           </Button>
-          <Button
-            size="xs"
-            variant="ghost"
-            onClick={() => {
-              onAsk(section(), "change");
-              done();
-            }}
-          >
-            <PencilLineIcon />
-            {props.suggests ? KIN_DOCS.suggest : KIN_DOCS.change}
-          </Button>
+          {props.canEdit ? null : (
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={() => {
+                onAsk(section(), "change");
+                done();
+              }}
+            >
+              <PencilLineIcon />
+              {props.suggests ? KIN_DOCS.suggest : KIN_DOCS.change}
+            </Button>
+          )}
         </>
       )}
+      {props.canEdit ? (
+        <Button
+          size="xs"
+          variant="ghost"
+          onClick={() => {
+            props.onEdit(section());
+            done();
+          }}
+        >
+          <PencilLineIcon />
+          {KIN_DOCS.change}
+        </Button>
+      ) : null}
       <Button
         size="xs"
         variant="ghost"

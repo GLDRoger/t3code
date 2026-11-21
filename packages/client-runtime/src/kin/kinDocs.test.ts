@@ -2,8 +2,10 @@
 import {
   KinAgentId,
   KinChatError,
+  KinOrgId,
   KinPersonId,
   KinRecordId,
+  KinRecordKey,
   type KinDocRow,
   type KinDocSection,
   type KinDocVersion,
@@ -29,6 +31,8 @@ import {
   kinDocsQuery,
   kinDocRef,
   kinDocRefLabel,
+  kinDocEditInput,
+  kinDocEditOutcome,
   kinDocRestoreOutcome,
   kinDocSections,
   kinDocRow,
@@ -448,6 +452,43 @@ describe("kinDocRef", () => {
     expect(kinDocRefLabel(ref)).toBe("Launch plan › Pricing");
     // A section that is no longer in the doc points at the doc, not at nothing.
     expect(kinDocRefLabel(kinDocRef(doc, "gone"))).toBe("Launch plan");
+  });
+});
+
+describe("kinDocEditOutcome", () => {
+  it("sends the section as read, and says a newer one refused the change in its own words", () => {
+    const outline: ReadonlyArray<KinDocSection> = [
+      { id: "pricing", title: "Pricing", level: 2, chars: 20, hash: "abc123" },
+    ];
+    const doc = { key: KinRecordKey.make("D-3"), outline };
+    const orgId = KinOrgId.make("org");
+    expect(kinDocEditInput(orgId, doc, "pricing", "New text", "r-1")).toEqual({
+      orgId: "org",
+      key: "D-3",
+      section: "pricing",
+      hash: "abc123",
+      text: "New text",
+      clientRequestId: "r-1",
+    });
+    expect(kinDocEditInput(orgId, doc, "timeline", "New text", "r-1")).toBeNull();
+    const failed = (reason: "conflict" | "not_allowed", message: string) =>
+      kinDocEditOutcome(
+        AsyncResult.failure(Cause.fail(new KinChatError({ reason, message }))) as AtomCommandResult<
+          never,
+          unknown
+        >,
+      );
+    expect(failed("conflict", "Section pricing changed, hash 9f")).toEqual({
+      _tag: "refused",
+      moved: true,
+      text: KIN_DOCS.editMoved,
+    });
+    const refusal = "Only the owner, a co-owner or the project's lead can change this doc by hand.";
+    expect(failed("not_allowed", refusal)).toEqual({
+      _tag: "refused",
+      moved: false,
+      text: refusal,
+    });
   });
 });
 

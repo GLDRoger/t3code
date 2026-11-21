@@ -19,8 +19,11 @@ import {
   kinDocKindOf,
   kinDocUnfiled,
   kinDocChangeLine,
+  kinDocCanEdit,
   kinDocChat,
   kinDocCopyText,
+  kinDocEditInput,
+  kinDocEditOutcome,
   kinDocSuggestStarter,
   kinDocExport,
   kinDocHasContents,
@@ -46,7 +49,7 @@ import { AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 import { Fragment, useRef, useState, type ComponentRef, type ReactNode } from "react";
 import { File, Paths } from "expo-file-system";
-import { Alert, Pressable, View } from "react-native";
+import { Alert, Pressable, TextInput, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
 import type { AppBarMenu } from "../../components/ui/AppBar.types";
@@ -143,10 +146,14 @@ function useKinDocImageSource(environmentId: EnvironmentId): MarkdownImageSource
   };
 }
 
-/** A teammate's Change is a suggestion the owner decides on. */
-const sectionActions = (ownerLevel: boolean) => [
+/** Change is by hand for whoever may; else the owner level asks an agent and a teammate suggests. */
+const sectionActions = (ownerLevel: boolean, byHand: boolean) => [
   { id: "ask", title: KIN_DOCS.ask, image: "questionmark.bubble" },
-  { id: "change", title: ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest, image: "pencil" },
+  {
+    id: "change",
+    title: byHand || ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest,
+    image: "pencil",
+  },
   { id: "link", title: KIN_DOCS.copyLink, image: "link" },
   { id: "copy", title: KIN_DOCS.copyText, image: "doc.on.doc" },
 ];
@@ -256,6 +263,60 @@ export function useKinDocRestore(target: KinWorkTarget, key: KinRecordKey) {
   };
 }
 
+/** One section changed by hand, its typed text kept on any refusal. */
+function useKinDocEdit(target: KinWorkTarget, doc: KinDocDetail, onSaved: () => void) {
+  const { environmentId, orgId } = target;
+  const send = useAtomCommand(kinClient.docEditSection, { reportFailure: false });
+  const [editing, setEditing] = useState<{
+    readonly section: string;
+    readonly was: string;
+    readonly text: string;
+    readonly requestId: string;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [saved, setSaved] = useState<number | null>(null);
+  const save = async () => {
+    if (editing === null || busy) return;
+    if (!kinHostConnected(environmentId)) return setProblem(KIN_DOCS.editOffline);
+    const input = kinDocEditInput(orgId, doc, editing.section, editing.text, editing.requestId);
+    if (input === null) return setProblem(KIN_DOCS.editMoved);
+    setBusy(true);
+    setProblem(null);
+    const outcome = kinDocEditOutcome(await send({ environmentId, input }));
+    setBusy(false);
+    if (outcome._tag === "refused") return setProblem(outcome.text);
+    setEditing(null);
+    setSaved(outcome.doc.latest.version);
+    onSaved();
+  };
+  const close = () => {
+    setEditing(null);
+    setProblem(null);
+  };
+  return {
+    editing,
+    busy,
+    problem,
+    saved,
+    dismissSaved: () => setSaved(null),
+    start: (section: string, text: string) => {
+      setSaved(null);
+      setProblem(null);
+      setEditing({ section, was: text, text, requestId: uuidv4() });
+    },
+    type: (text: string) => setEditing((held) => (held === null ? held : { ...held, text })),
+    save,
+    cancel: () => {
+      if (editing === null || editing.text === editing.was) return close();
+      Alert.alert(KIN_DOCS.discard.title, undefined, [
+        { text: KIN_DOCS.discard.keep, style: "cancel" },
+        { text: KIN_DOCS.discard.confirm, style: "destructive", onPress: close },
+      ]);
+    },
+  };
+}
+
 function KinDocBody(
   props: DocTarget & {
     readonly doc: KinDocDetail;
@@ -275,6 +336,7 @@ function KinDocBody(
   const styles = useMarkdownPreviewStyles();
   const openLink = useOpenPullRequest();
   const restore = useKinDocRestore(target, doc.key);
+  const edit = useKinDocEdit(target, doc, props.onRefresh);
   const canRender = useAtomValue(kinClient.docRender.permissionAtom(environmentId));
   const render = useAtomCommand(kinClient.docRender, { reportFailure: false });
   const [making, setMaking] = useState(false);
@@ -289,6 +351,8 @@ function KinDocBody(
   const undo = props.undo !== null && props.undo < doc.latest.version ? props.undo : null;
 
   const sections = kinDocSections(doc.body, doc.outline);
+  // By hand only where the sections are cut as the host cuts them.
+  const byHand = kinDocCanEdit(doc) && sections !== null;
   const outline = kinDocOutline(doc.outline);
   const line = kinDocChangeLine(
     {
@@ -383,7 +447,8 @@ function KinDocBody(
     if (y !== undefined) scroll.current?.scrollTo({ y: y - bar, animated: true });
   };
   const act = (section: string | null, text: string, action: string) => {
-    if (action === "ask" || action === "change") point(section, action);
+    if (action === "change" && byHand && section !== null) edit.start(section, text);
+    else if (action === "ask" || action === "change") point(section, action);
     else if (action === "link") void copyLink(section);
     else if (action === "copy") void copyText(text);
   };
@@ -414,11 +479,27 @@ function KinDocBody(
         ...(doc.body.trim() === ""
           ? []
           : [{ id: "copy", title: KIN_DOCS.copyText, onPress: () => void copyText(doc.body) }]),
-        {
-          id: "change",
-          title: ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest,
-          onPress: () => point(null, "change"),
-        },
+        byHand && sections.length > 1
+          ? {
+              id: "change",
+              title: KIN_DOCS.change,
+              items: sections.map((one) => ({
+                id: `change:${one.id}`,
+                title: one.title,
+                onPress: () => {
+                  jump(one.id);
+                  edit.start(one.id, one.text);
+                },
+              })),
+            }
+          : {
+              id: "change",
+              title: byHand || ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest,
+              onPress: () =>
+                byHand && sections[0] !== undefined
+                  ? edit.start(sections[0].id, sections[0].text)
+                  : point(null, "change"),
+            },
         { id: "ask", title: KIN_DOCS.ask, onPress: () => point(null, "ask") },
         ...(canRender && kinDocPdfInput(orgId, doc, "pdf") !== null
           ? [
@@ -635,6 +716,9 @@ function KinDocBody(
             {restore.problem === null ? null : (
               <Notice tone="danger" message={restore.problem} onDismiss={restore.dismiss} />
             )}
+            {edit.saved === null ? null : (
+              <Notice message={KIN_DOCS.saved(edit.saved)} onDismiss={edit.dismissSaved} />
+            )}
             {copied === null ? null : <Notice message={copied} onDismiss={() => setCopied(null)} />}
             {undo === null ? null : (
               <Notice
@@ -690,7 +774,7 @@ function KinDocBody(
             content(doc.body, (children) => (
               <Menu
                 shouldOpenOnLongPress
-                actions={sectionActions(ownerLevel)}
+                actions={sectionActions(ownerLevel, false)}
                 onPressAction={({ nativeEvent }) => act(null, doc.body, nativeEvent.event)}
               >
                 {children}
@@ -712,19 +796,53 @@ function KinDocBody(
                   }
                 }}
               >
-                {content(section.text, (children) => (
-                  <Menu
-                    title={section.title}
-                    shouldOpenOnLongPress
-                    accessibilityLabel={`${section.title}. Hold for actions`}
-                    actions={sectionActions(ownerLevel)}
-                    onPressAction={({ nativeEvent }) =>
-                      act(section.id, section.text, nativeEvent.event)
-                    }
-                  >
-                    {children}
-                  </Menu>
-                ))}
+                {edit.editing?.section === section.id ? (
+                  <View className="mb-3 gap-2">
+                    <TextInput
+                      accessibilityLabel={KIN_DOCS.editing(section.title)}
+                      value={edit.editing.text}
+                      editable={!edit.busy}
+                      multiline
+                      autoFocus
+                      onChangeText={edit.type}
+                      textAlignVertical="top"
+                      placeholderTextColorClassName="accent-placeholder"
+                      className="min-h-32 rounded-lg border border-border px-3 py-2 font-sans text-base text-foreground"
+                    />
+                    {edit.problem === null ? null : <Notice tone="danger" message={edit.problem} />}
+                    <View className="flex-row gap-2">
+                      <Button
+                        tone="primary"
+                        size="compact"
+                        label={edit.busy ? KIN_DOCS.saving : KIN_DOCS.save}
+                        loading={edit.busy}
+                        disabled={edit.busy || edit.editing.text === edit.editing.was}
+                        onPress={() => void edit.save()}
+                      />
+                      <Button
+                        tone="secondary"
+                        size="compact"
+                        label={KIN_DOCS.cancel}
+                        disabled={edit.busy}
+                        onPress={edit.cancel}
+                      />
+                    </View>
+                  </View>
+                ) : (
+                  content(section.text, (children) => (
+                    <Menu
+                      title={section.title}
+                      shouldOpenOnLongPress
+                      accessibilityLabel={`${section.title}. Hold for actions`}
+                      actions={sectionActions(ownerLevel, byHand)}
+                      onPressAction={({ nativeEvent }) =>
+                        act(section.id, section.text, nativeEvent.event)
+                      }
+                    >
+                      {children}
+                    </Menu>
+                  ))
+                )}
               </View>
             ))
           )}

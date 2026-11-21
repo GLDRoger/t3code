@@ -10,6 +10,7 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  KinRecordKey,
   KinWidgetId,
   ProviderInstanceId,
   ThreadId,
@@ -577,10 +578,11 @@ it.effect("a turn others read reaches only docs they all see, and restores none"
     assert.strictEqual((yield* Docs.versionOf(orgId, created.row.recordId))!.version, 1);
     // A member reaches the doc reads, where the service shows them only their docs.
     const reads = ["kin.docs.list", "kin.docs.get", "kin.docs.history", "kin.docs.diff"];
+    // The service decides a hand edit (`Docs.editSectionByHand`).
     for (const rpc of KinDocsRpcs)
       assert.strictEqual(
         kinRpcAccess(rpc._tag) === "person",
-        [...reads, "kin.docs.subscribe", "kin.search"].includes(rpc._tag),
+        [...reads, "kin.docs.subscribe", "kin.search", "kin.docs.editSection"].includes(rpc._tag),
         rpc._tag,
       );
   }).pipe(Effect.provide(layer)),
@@ -792,6 +794,217 @@ it.effect(
         "not_allowed",
       );
       assert.strictEqual(yield* label(made.key), 1);
+    }).pipe(Effect.provide(layer)),
+);
+
+/**
+ * D3's people: Rhea owns the org, Meera is a co-owner, Dev leads Invented app (and holds a task in
+ * Invented site, which Zoya leads), Arjun only holds a task in Invented app. One doc per project and
+ * one of the company's, all reached by the people above.
+ */
+const handSeed = Effect.fn("KinDocsTest.handSeed")(function* () {
+  yield* seed;
+  const sql = yield* SqlClient.SqlClient;
+  const ids = {
+    meera: KinPersonId.make("meera"),
+    dev: mateId,
+    zoya: KinPersonId.make("zoya"),
+    arjun: KinPersonId.make("arjun"),
+  };
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+    VALUES (${ids.meera}, ${orgId}, 'meera', 'Meera', 'co_owner', ${at}),
+      (${ids.zoya}, ${orgId}, 'zoya', 'Zoya', NULL, ${at}),
+      (${ids.arjun}, ${orgId}, 'arjun', 'Arjun', NULL, ${at})`;
+  yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${ids.dev}`;
+  for (const person of [ids.meera, ids.dev, ids.zoya, ids.arjun])
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES (${`s-${person}`}, ${orgId}, ${person}, 0)`;
+  const records = yield* KinRecords.KinRecords;
+  const project = (title: string, personId: KinPersonId) =>
+    records.create(orgId, agentWriter(lead), {
+      list: "projects",
+      title,
+      owner: { _tag: "person", personId },
+      originKey: `test:project:${title}`,
+    });
+  const app = yield* project("Invented app", ids.dev);
+  const site = yield* project("Invented site", ids.zoya);
+  for (const [personId, projectId] of [
+    [ids.arjun, app.row.recordId],
+    [ids.dev, site.row.recordId],
+  ] as const)
+    yield* records.create(orgId, agentWriter(lead), {
+      title: `Invented task for ${personId}`,
+      owner: { _tag: "person", personId },
+      projectId,
+      originKey: `test:task:${personId}`,
+    });
+  const appDoc = yield* newDoc(plan, { title: "Invented app plan", projectId: app.row.recordId });
+  const siteDoc = yield* newDoc(plan, {
+    title: "Invented site plan",
+    projectId: site.row.recordId,
+  });
+  const companyDoc = yield* newDoc(plan, { title: "Invented company plan", company: true });
+  const as = (personId: KinPersonId) => [{ _tag: "person" as const, orgId, personId }];
+  const pricing = section(plan, "pricing");
+  const edit = (personId: KinPersonId, key: string, text: string, hash = pricing.hash) =>
+    OwnerDocs.editSection(as(personId), {
+      orgId,
+      key: KinRecordKey.make(key),
+      section: "pricing",
+      hash,
+      text,
+      clientRequestId: `test:${personId}:${text.length}`,
+    });
+  return { ids, as, edit, appDoc: appDoc.row, siteDoc: siteDoc.row, companyDoc: companyDoc.row };
+});
+
+it.effect(
+  "a project's lead changes a section of its doc by hand: a new version, kept beside the old, restorable and read by agents as any",
+  () =>
+    Effect.gen(function* () {
+      const { ids, as, edit, appDoc } = yield* handSeed();
+      const { key, recordId } = appDoc;
+      assert.isTrue((yield* OwnerDocs.get(as(ids.dev), { orgId, key })).editable);
+      const edited = yield* edit(ids.dev, key, "Starter costs 12 invented credits.");
+      assert.include(edited.body, "## Pricing\n\nStarter costs 12 invented credits.\n");
+      assert.include(edited.body, "Launch on the 10th.");
+      assert.include(edited.version, { version: 2, kind: "edited", baseVersion: 1 });
+      assert.strictEqual(edited.version.summary, 'Changed "Pricing" by hand');
+      assert.deepStrictEqual(edited.version.provenance.by, { _tag: "person", personId: ids.dev });
+      // The same request again returns what it made.
+      assert.strictEqual(
+        (yield* edit(ids.dev, key, "Starter costs 12 invented credits.")).version.version,
+        2,
+      );
+      // History keeps both, and the previous one comes back the way any version does.
+      assert.deepStrictEqual(
+        (yield* OwnerDocs.history([owner], { orgId, key })).versions.map((one) => [
+          one.version,
+          one.kind,
+        ]),
+        [
+          [2, "edited"],
+          [1, "created"],
+        ],
+      );
+      assert.strictEqual((yield* Docs.versionOf(orgId, recordId, 1))!.body, plan);
+      // An agent reads the hand-made version as the latest, like any other.
+      yield* turn();
+      const read = yield* LeadDocs.read(scopeOf(lead), { key });
+      assert.strictEqual(read.version, 2);
+      assert.include(read.body, "Starter costs 12 invented credits.");
+      const restored = yield* OwnerDocs.restore([owner], { orgId, key, version: 1, latest: 2 });
+      assert.strictEqual(restored.body, plan);
+      assert.include(restored.version, { version: 3, kind: "restored", restoredFrom: 1 });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a hand edit is refused for a member who isn't the lead, a lead on another project's doc, a doc with no project, and an agent's character; another org's doc looks unknown",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { ids, as, edit, appDoc, siteDoc, companyDoc } = yield* handSeed();
+      const refusal = <A, R>(effect: Effect.Effect<A, KinChatError, R>) =>
+        Effect.flip(effect).pipe(Effect.map((error) => [error.reason, error.message] as const));
+      const notAllowed = [
+        "not_allowed",
+        "Only the owner, a co-owner or the project's lead can change this doc by hand. Suggest a change instead; nothing was changed.",
+      ] as const;
+      // Each reads the doc, and none may change it.
+      for (const [personId, key] of [
+        [ids.arjun, appDoc.key],
+        [ids.dev, siteDoc.key],
+        [ids.dev, companyDoc.key],
+      ] as const) {
+        assert.isUndefined((yield* OwnerDocs.get(as(personId), { orgId, key })).editable);
+        assert.deepStrictEqual(yield* refusal(edit(personId, key, "Starter is free.")), notAllowed);
+      }
+      // A doc they can't read is no doc at all.
+      assert.strictEqual(
+        (yield* refusal(edit(ids.arjun, siteDoc.key, "Starter is free.")))[0],
+        "not_found",
+      );
+      // An agent's character is changed on its page, by anyone.
+      yield* seedCharacters(orgId);
+      const [character] = yield* characters(orgId);
+      const top = sectionsOf(character!.body).find((one) => one.id !== "top")!;
+      assert.isUndefined(
+        (yield* OwnerDocs.get([owner], { orgId, key: KinRecordKey.make(character!.key) })).editable,
+      );
+      assert.strictEqual(
+        (yield* refusal(
+          OwnerDocs.editSection([owner], {
+            orgId,
+            key: KinRecordKey.make(character!.key),
+            section: top.id,
+            hash: top.hash,
+            text: "Invented voice.",
+            clientRequestId: "test:character",
+          }),
+        ))[0],
+        "invalid_state",
+      );
+      // Another org's co-owner, asking in their own org, finds no such doc.
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, sees_docs,
+          created_at) VALUES ('outsider', ${elsewhere}, 'outsider', 'Outsider', 'co_owner', 1, ${at})`;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-outsider', ${elsewhere}, 'outsider', 0)`;
+      assert.strictEqual(
+        (yield* refusal(
+          OwnerDocs.editSection(
+            [{ _tag: "person", orgId: elsewhere, personId: KinPersonId.make("outsider") }],
+            {
+              orgId: elsewhere,
+              key: appDoc.key,
+              section: "pricing",
+              hash: section(plan, "pricing").hash,
+              text: "Leaked?",
+              clientRequestId: "test:outsider",
+            },
+          ),
+        ))[0],
+        "not_found",
+      );
+      for (const row of [appDoc, siteDoc, companyDoc])
+        assert.strictEqual((yield* Docs.versionOf(orgId, row.recordId))!.version, 1);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "the owner level changes any doc's section by hand; a stale edit is refused in plain words and loses nothing",
+  () =>
+    Effect.gen(function* () {
+      const { ids, as, edit, siteDoc, companyDoc } = yield* handSeed();
+      assert.isTrue((yield* OwnerDocs.get(as(ids.meera), { orgId, key: siteDoc.key })).editable);
+      assert.strictEqual(
+        (yield* edit(ids.meera, siteDoc.key, "Starter costs 11 invented credits.")).version.version,
+        2,
+      );
+      assert.strictEqual(
+        (yield* edit(ownerId, companyDoc.key, "Starter costs 9 invented credits.")).version.version,
+        2,
+      );
+      // Rhea read the site doc before Meera's change: her edit names the old section.
+      const stale: KinChatError = yield* Effect.flip(
+        edit(ownerId, siteDoc.key, "Starter costs 13 invented credits."),
+      );
+      assert.deepInclude(stale, {
+        reason: "conflict",
+        message:
+          "This section changed since you opened it, so your change wasn't saved. Copy what you wrote, then open the doc again.",
+      });
+      const latest = (yield* Docs.versionOf(orgId, siteDoc.recordId))!;
+      assert.strictEqual(latest.version, 2);
+      assert.include(latest.body, "Starter costs 11 invented credits.");
+      // Against the section as it is now, it goes through.
+      const now = section(latest.body, "pricing");
+      assert.strictEqual(
+        (yield* edit(ownerId, siteDoc.key, "Starter costs 13 invented credits.", now.hash)).version
+          .version,
+        3,
+      );
     }).pipe(Effect.provide(layer)),
 );
 

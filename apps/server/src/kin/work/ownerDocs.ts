@@ -2,6 +2,7 @@ import {
   KinChatError,
   type KinDocDetail,
   type KinDocDiffInput,
+  type KinDocEditSectionInput,
   type KinDocFileInput,
   type KinDocGetInput,
   type KinDocHistoryInput,
@@ -28,13 +29,16 @@ import {
   type KinSearchInput,
   kinSlimDocRow,
 } from "@t3tools/contracts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous retry key; Digest would add a service.
+import * as NodeCrypto from "node:crypto";
+import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { makeDocument } from "../gendocs/make.ts";
 import { defaultRecipes, setDefaultRecipe as setDefault } from "../gendocs/recipeDefaults.ts";
 import { recipeLabelled, setLabel, undoRecipe as undoLabelled } from "../gendocs/recipeLabels.ts";
@@ -72,7 +76,8 @@ import {
 /**
  * What people's clients read and do in Docs: read, compare, restore and search. The owner and
  * co-owners read every doc; anyone else with the Docs place, or leading a project, reads only the
- * docs `personSees` gives them and restores none. People never write a body.
+ * docs `personSees` gives them and restores none. People write a body only by hand, one section
+ * at a time, as `Docs.editSectionByHand` allows.
  */
 
 const noDocs = new KinChatError({
@@ -155,6 +160,10 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
     ...(yield* linkedFromOf(orgId, row.recordId, viewer)),
     seq: yield* recordSeq(orgId, row.recordId),
     embeds: yield* docEmbeds(orgId, row.recordId, shown.body),
+    ...((yield* Docs.handRefusal(orgId, readerId, viewer._tag === "ownerLevel", row, latest)) ===
+    undefined
+      ? { editable: true as const }
+      : {}),
   } satisfies KinDocDetail;
 });
 
@@ -357,6 +366,42 @@ export const restore = Effect.fn("KinDocs.restore")(
       },
     );
     return yield* detailOf(input.orgId, { key: input.key }, KIN_OWNER_LEVEL, person.personId);
+  },
+  Effect.catchTags({ SqlError: () => unavailable }),
+);
+
+/** D3: a person changes one section by hand; `Docs.editSectionByHand` decides who may. */
+export const editSection = Effect.fn("KinDocs.editSection")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocEditSectionInput) {
+    const { personId } = yield* readerOf(people, input.orgId);
+    const { owner } = yield* KinIdentity;
+    const asked = stableStringify({
+      key: input.key,
+      section: input.section,
+      hash: input.hash,
+      text: input.text,
+      clientRequestId: input.clientRequestId,
+    });
+    yield* Docs.editSectionByHand(
+      input.orgId,
+      personId,
+      owner,
+      { key: input.key },
+      {
+        section: input.section,
+        hash: input.hash,
+        text: input.text,
+        originKey: `person-edit:${personId}:${NodeCrypto.createHash("sha256").update(asked).digest("hex").slice(0, 32)}`,
+      },
+    );
+    // Read again after the write: the answer shows only what they read now.
+    const { team } = yield* readerOf(people, input.orgId);
+    return yield* detailOf(
+      input.orgId,
+      { key: input.key },
+      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+      personId,
+    );
   },
   Effect.catchTags({ SqlError: () => unavailable }),
 );

@@ -270,6 +270,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.docs.restore": Effect.fn("KinDocs.rpc.restore")(function* (input) {
         return yield* call((people) => Docs.restore(people, input));
       }),
+      "kin.docs.editSection": Effect.fn("KinDocs.rpc.editSection")(function* (input) {
+        return yield* call((people) => Docs.editSection(people, input));
+      }),
       "kin.docs.subscribe": (input) => stream((people) => Docs.subscribe(people, input)),
       "kin.docs.recipes": Effect.fn("KinDocs.rpc.recipes")(function* (input) {
         return yield* call((people) => Docs.recipes(people, input));
