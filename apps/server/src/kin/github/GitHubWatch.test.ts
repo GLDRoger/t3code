@@ -5,6 +5,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -36,6 +37,7 @@ import {
   withGuards,
 } from "./githubWatchStore.ts";
 import { WRITE_BRANCH_PREFIX } from "../memory/MemoryConfig.ts";
+import * as KinRecords from "../work/KinRecords.ts";
 
 const orgId = KinOrgId.make("org-gh");
 const T0 = Date.UTC(2026, 10, 16, 9, 0, 0);
@@ -93,14 +95,18 @@ const fakeCall =
     });
 
 /** The fake as `gh api` serves it to the watch. */
-const fakeApi = (github: FakeGitHub, signedIn: () => boolean) =>
+const fakeApi = (
+  github: FakeGitHub,
+  signedIn: () => boolean,
+  orgs: ReadonlyArray<string> = ["invented-co"],
+) =>
   Layer.succeed(GitHubWatch.KinGitHubApi, {
     connected: () =>
       Effect.sync(() =>
         !signedIn()
           ? null
           : github.world.down === null
-            ? { login: github.world.user, orgs: ["invented-co"] }
+            ? { login: github.world.user, orgs }
             : { login: github.world.user, orgs: [] },
       ),
     call: fakeCall(github),
@@ -172,13 +178,22 @@ const database = KinPersistence.layer.pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
-const setup = (options: { readonly app?: boolean; readonly signedIn?: () => boolean } = {}) => {
+const setup = (
+  options: {
+    readonly app?: boolean;
+    readonly signedIn?: () => boolean;
+    /** Kin's Work, for the entries the watch keeps of open issues and failing CI. */
+    readonly records?: boolean;
+    readonly orgs?: ReadonlyArray<string>;
+  } = {},
+) => {
   const github = new FakeGitHub(emptyWorld("invented-owner", T0));
   github.addRepo({ full_name: REPO, private: false });
   github.addRepo({ full_name: "invented-co/old-fork", fork: true });
   const layer = GitHubWatch.layer.pipe(
+    Layer.provideMerge(options.records === true ? KinRecords.layer : Layer.empty),
     Layer.provideMerge(KinEventQueue.layer),
-    Layer.provideMerge(fakeApi(github, options.signedIn ?? (() => true))),
+    Layer.provideMerge(fakeApi(github, options.signedIn ?? (() => true), options.orgs)),
     Layer.provideMerge(options.app === true ? fakeApp(github) : Layer.empty),
     Layer.provideMerge(database),
   );
@@ -1196,4 +1211,210 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
       );
     },
   );
+});
+
+describe("KinGitHubWatch keeps Work entries of GitHub", () => {
+  const entries = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql<{ title: string; state: string; owner: string; repo: string | null }>`
+      SELECT title, state, owner_kind || ':' || owner_id AS owner, repo FROM kin_records
+      WHERE org_id = ${orgId} AND register_id = 'work' ORDER BY created_at, key`;
+  });
+
+  it.effect("open issues and failing CI on the default branch are tasks until they close", () => {
+    const { github, layer } = setup({ records: true });
+    return Effect.gen(function* () {
+      yield* start(github);
+      const issue = github.openItem({
+        repo: REPO,
+        pull: false,
+        author: "teammate-a",
+        association: "COLLABORATOR",
+        title: "Login button does nothing",
+      });
+      github.openItem({
+        repo: REPO,
+        pull: true,
+        author: "teammate-a",
+        association: "COLLABORATOR",
+        title: "A PR is no issue",
+      });
+      github.run({ repo: REPO, workflow: 1, name: "CI", conclusion: "success" });
+      github.run({ repo: REPO, workflow: 1, name: "CI", conclusion: "failure" });
+      github.run({ repo: REPO, workflow: 2, name: "Lint", conclusion: "success" });
+      github.run({ repo: REPO, workflow: 3, name: "E2E", conclusion: "failure", branch: "wip" });
+      yield* look(github, 10);
+      const open = [
+        {
+          title: `Issue #${issue}: Login button does nothing`,
+          state: "open",
+          owner: "agent:tech",
+          repo: REPO,
+        },
+        { title: "CI failing on main: CI", state: "open", owner: "agent:tech", repo: REPO },
+      ];
+      assert.deepStrictEqual(yield* entries, open);
+
+      // Read again unchanged, nothing more is made.
+      yield* look(github, 10);
+      assert.deepStrictEqual(yield* entries, open);
+
+      github.close({ repo: REPO, number: issue, actor: "teammate-a" });
+      github.run({ repo: REPO, workflow: 1, name: "CI", conclusion: "success" });
+      yield* look(github, 10);
+      assert.deepStrictEqual(
+        (yield* entries).map((entry) => entry.state),
+        ["done", "done"],
+      );
+
+      // Failing again is a new task; the one closed stays closed.
+      github.run({ repo: REPO, workflow: 1, name: "CI", conclusion: "failure" });
+      yield* look(github, 10);
+      assert.deepStrictEqual(
+        (yield* entries).map((entry) => [entry.title, entry.state]),
+        [
+          [`Issue #${issue}: Login button does nothing`, "done"],
+          ["CI failing on main: CI", "done"],
+          ["CI failing on main: CI", "open"],
+        ],
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect(
+    "an organisation's repos aren't watched when GitHub won't list his organisations",
+    () => {
+      // `user/orgs` refused (403) comes back as no organisations at all.
+      const { github, layer } = setup({ records: true, orgs: [] });
+      github.world.refused = ["user/orgs"];
+      return Effect.gen(function* () {
+        yield* start(github);
+        assert.notInclude(
+          (yield* repoList(orgId)).filter((repo) => repo.watched).map((repo) => repo.repo),
+          REPO,
+        );
+        const problem = (yield* watchSummary(orgId, T0))?.problem ?? "";
+        assert.include(problem, "won't list this login's organisations (HTTP 403)");
+        assert.include(problem, "aren't watched");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("a reopened issue is a task again; a task a person closed stays closed", () => {
+    const { github, layer } = setup({ records: true });
+    return Effect.gen(function* () {
+      yield* start(github);
+      const issue = (title: string) =>
+        github.openItem({
+          repo: REPO,
+          pull: false,
+          author: "teammate-a",
+          association: "COLLABORATOR",
+          title,
+        });
+      const reopened = issue("Login button does nothing");
+      const setAside = issue("Dark mode");
+      yield* look(github, 10);
+      const states = Effect.map(entries, (rows) => rows.map((row) => [row.title, row.state]));
+
+      github.close({ repo: REPO, number: reopened, actor: "teammate-a" });
+      const records = Option.getOrThrow(yield* Effect.serviceOption(KinRecords.KinRecords));
+      const sql = yield* SqlClient.SqlClient;
+      const [aside] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+        WHERE org_id = ${orgId} AND title LIKE '%Dark mode'`;
+      yield* records.update(
+        orgId,
+        { actor: { _tag: "person", personId: KinPersonId.make("owner") }, via: "owner" },
+        aside!.key,
+        { state: "dropped" },
+      );
+      yield* look(github, 10);
+      github.reopen({ repo: REPO, number: reopened, actor: "teammate-a" });
+      yield* look(github, 10);
+      yield* look(github, 10);
+      assert.deepStrictEqual(yield* states, [
+        [`Issue #${setAside}: Dark mode`, "dropped"],
+        [`Issue #${reopened}: Login button does nothing`, "done"],
+        [`Issue #${reopened}: Login button does nothing`, "open"],
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("a repo's first read makes tasks of its 50 most recently updated open issues", () => {
+    const { github, layer } = setup({ records: true });
+    return Effect.gen(function* () {
+      yield* start(github);
+      const numbers = Array.from({ length: GitHubWatch.ISSUE_CAP + 2 }, (_, at) =>
+        github.openItem({
+          repo: REPO,
+          pull: false,
+          author: "teammate-a",
+          association: "COLLABORATOR",
+          title: `Backlog ${at}`,
+        }),
+      );
+      yield* look(github, 10);
+      const titles = (yield* entries).map((row) => row.title);
+      assert.lengthOf(titles, GitHubWatch.ISSUE_CAP);
+      assert.notInclude(titles, `Issue #${numbers[0]}: Backlog 0`);
+      assert.include(
+        (yield* watchSummary(orgId, T0 + 11 * MINUTE))?.problem ?? "",
+        `${REPO} has ${GitHubWatch.ISSUE_CAP + 2} open issues; Kin keeps tasks for the ${GitHubWatch.ISSUE_CAP} most recently updated.`,
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("a repo no longer watched drops its open issue and CI tasks, saying why", () => {
+    const { github, layer } = setup({ records: true });
+    return Effect.gen(function* () {
+      yield* start(github);
+      github.openItem({
+        repo: REPO,
+        pull: false,
+        author: "teammate-a",
+        association: "COLLABORATOR",
+        title: "Broken export",
+      });
+      github.run({ repo: REPO, workflow: 1, name: "CI", conclusion: "failure" });
+      yield* look(github, 10);
+      assert.deepStrictEqual(
+        (yield* entries).map((row) => row.state),
+        ["open", "open"],
+      );
+      yield* setRepo({ orgId, repo: REPO, watched: false }, T0);
+      yield* look(github, 10);
+      assert.deepStrictEqual(
+        (yield* entries).map((row) => row.state),
+        ["dropped", "dropped"],
+      );
+      const sql = yield* SqlClient.SqlClient;
+      const notes = yield* sql<{ label: string }>`SELECT DISTINCT label FROM kin_record_links
+        WHERE org_id = ${orgId} AND relation = 'relates'`;
+      assert.deepStrictEqual(notes, [{ label: `Kin stopped watching ${REPO}` }]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("GitHub refusing a repo's issues or CI shows on the watch line", () => {
+    const { github, layer } = setup({ records: true });
+    return Effect.gen(function* () {
+      yield* start(github);
+      github.world.refused = [`repos/${REPO}/actions/runs`];
+      github.openItem({
+        repo: REPO,
+        pull: false,
+        author: "teammate-a",
+        association: "COLLABORATOR",
+        title: "Broken export",
+      });
+      yield* look(github, 10);
+      assert.lengthOf(yield* entries, 1);
+      const summary = yield* watchSummary(orgId, T0 + 11 * MINUTE);
+      assert.include(summary?.problem ?? "", REPO);
+      assert.include(summary?.problem ?? "", "Actions");
+
+      github.world.refused = [];
+      yield* look(github, 10);
+      assert.isNull((yield* watchSummary(orgId, T0 + 21 * MINUTE))?.problem ?? null);
+    }).pipe(Effect.provide(layer));
+  });
 });
