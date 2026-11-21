@@ -30,6 +30,9 @@ import {
   kinClientsStartFilter,
   kinClientsTabShown,
   kinClientsTabs,
+  kinClientsSide,
+  kinMineChoices,
+  kinMineOpens,
   KIN_CLIENTS_DEFAULT_FILTER,
   kinLastContactLine,
   kinProjectPageView,
@@ -263,6 +266,50 @@ describe("the clients list's Show and Looked after by", () => {
       offerNew: true,
     });
     expect(nothing({ lookedAfter: arjun })).toMatchObject({ offerNew: false });
+    expect(
+      kinClientsNothing(
+        { ...KIN_CLIENTS_DEFAULT_FILTER, lookedAfter: { _tag: "person", personId: me } },
+        undefined,
+        me,
+        "Everyone",
+      ).detail,
+    ).toBe("Add a prospect, or show Everyone to see the rest.");
+  });
+});
+
+describe("Mine / Everyone", () => {
+  it("opens on Mine when Mine has something, else on Everyone, whatever was left last", () => {
+    // A brand-new teammate: nothing of theirs, a full company.
+    expect(kinMineOpens(null, { n: 0 })).toBe("everyone");
+    expect(kinMineOpens("mine", { n: 0 })).toBe("everyone");
+    expect(kinMineOpens(null, { n: 3 })).toBe("mine");
+    expect(kinMineOpens("mine", { n: 3 })).toBe("mine");
+    // Everyone left last stays, without waiting for Mine's count.
+    expect(kinMineOpens("everyone", null)).toBe("everyone");
+    expect(kinMineOpens("everyone", { n: 3 })).toBe("everyone");
+    // Nothing is shown on a guess while Mine's count is unread.
+    expect(kinMineOpens(null, null)).toBeNull();
+    expect(kinMineOpens("mine", null)).toBeNull();
+  });
+
+  it("puts each side's count beside it once read, so nothing reads as gone", () => {
+    expect(kinMineChoices({ mine: null, everyone: null }).map((one) => one.label)).toEqual([
+      "Mine",
+      "Everyone",
+    ]);
+    expect(
+      kinMineChoices({ mine: { n: 0 }, everyone: { n: 12, atLeast: true } }).map(
+        (one) => one.label,
+      ),
+    ).toEqual(["Mine · 0", "Everyone · 12+"]);
+  });
+
+  it("reads the clients filter's side from who looks after them", () => {
+    const zoya = KinPersonId.make("zoya");
+    expect(kinClientsSide("anyone", zoya)).toBe("everyone");
+    expect(kinClientsSide({ _tag: "person", personId: zoya }, zoya)).toBe("mine");
+    expect(kinClientsSide({ _tag: "person", personId: KinPersonId.make("dev") }, zoya)).toBeNull();
+    expect(kinClientsSide({ _tag: "person", personId: zoya }, null)).toBeNull();
   });
 });
 

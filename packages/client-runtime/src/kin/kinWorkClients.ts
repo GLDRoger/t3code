@@ -475,6 +475,97 @@ export const kinClientsChosenAtom = Atom.family((_viewer: string) =>
 export const kinClientsChosenKey = (environmentId: string, me: string | null) =>
   `${environmentId}\u0000${me ?? ""}`;
 
+// Mine / Everyone
+
+/** Which part of a list shows: the viewer's own, or all of the list they already get. */
+export type KinMineSide = "mine" | "everyone";
+
+export const KIN_MINE = {
+  mine: "Mine",
+  everyone: "Everyone",
+} as const;
+
+/** The clients and projects the viewer looks after or is on, by key, for what sits on them. */
+export interface KinMineHeld {
+  readonly me: KinPersonId | null;
+  readonly clients: ReadonlySet<string>;
+  readonly projects: ReadonlySet<string>;
+}
+
+/**
+ * The one rule for Clients, Deals and Docs: mine is what I look after or keep, or what sits on a
+ * client or project of mine. The host applies its first part to clients and deals (`owner`).
+ */
+export function kinIsMine(
+  row: {
+    readonly owner: KinWorkPrincipal;
+    readonly party?: { readonly key: string } | null;
+    readonly project?: { readonly key: string } | null;
+  },
+  held: KinMineHeld,
+): boolean {
+  if (held.me === null) return false;
+  if (row.owner._tag === "person" && row.owner.personId === held.me) return true;
+  return (
+    (row.party != null && held.clients.has(row.party.key)) ||
+    (row.project != null && held.projects.has(row.project.key))
+  );
+}
+
+/** Who a list's Mine asks the host for; null until the host has said who the viewer is. */
+export const kinMineOwner = (me: KinPersonId | null): KinWorkPrincipal | null =>
+  me === null ? null : { _tag: "person", personId: me };
+
+/**
+ * The side a list opens on: Everyone when that was left last, or when Mine has nothing (so nobody
+ * opens on an empty Mine above a full company); else Mine. Null while Mine's count is unread.
+ */
+export function kinMineOpens(
+  remembered: KinMineSide | null,
+  mine: KinMineCount | null,
+): KinMineSide | null {
+  if (remembered === "everyone") return "everyone";
+  if (mine === null) return null;
+  return mine.n > 0 ? "mine" : "everyone";
+}
+
+/** A side's count; `atLeast` when the list holds only part of what the host has. */
+export interface KinMineCount {
+  readonly n: number;
+  readonly atLeast?: boolean;
+}
+
+const mineLabel = (label: string, count: KinMineCount | null) =>
+  count === null ? label : `${label} · ${count.n}${count.atLeast === true ? "+" : ""}`;
+
+/** The switch's two sides, each with its count once read, so nothing reads as gone. */
+export function kinMineChoices(counts: {
+  readonly mine: KinMineCount | null;
+  readonly everyone: KinMineCount | null;
+}): ReadonlyArray<{ readonly value: KinMineSide; readonly label: string }> {
+  return [
+    { value: "mine", label: mineLabel(KIN_MINE.mine, counts.mine) },
+    { value: "everyone", label: mineLabel(KIN_MINE.everyone, counts.everyone) },
+  ];
+}
+
+/** The clients filter's side: Anyone is Everyone, the viewer is Mine; anyone else is neither. */
+export function kinClientsSide(
+  lookedAfter: KinClientsFilter["lookedAfter"],
+  me: KinPersonId | null,
+): KinMineSide | null {
+  if (lookedAfter === "anyone") return "everyone";
+  return lookedAfter._tag === "person" && lookedAfter.personId === me ? "mine" : null;
+}
+
+/**
+ * Which side Deals and Docs last showed, kept as `kinClientsChosenAtom` keeps Clients' (whose
+ * side is its `lookedAfter`), by the same key and for as long.
+ */
+export const kinMineChosenAtom = Atom.family((_viewer: string) =>
+  Atom.make<{ readonly deals?: KinMineSide; readonly docs?: KinMineSide }>({}).pipe(Atom.keepAlive),
+);
+
 const lookedAfterKey = (who: KinClientsFilter["lookedAfter"]) =>
   who === "anyone" ? who : kinWorkPrincipalKey(who);
 
@@ -645,6 +736,8 @@ export function kinClientsNothing(
   filter: KinClientsFilter,
   scope: KinViewerScope = KIN_SCOPE_ALL,
   me: KinPersonId | null = null,
+  /** What the rest is called where it is one tap away: the phone's switch says Everyone. */
+  rest: string = KIN_CLIENTS.anyone,
 ): {
   readonly title: string;
   readonly detail: string;
@@ -665,7 +758,7 @@ export function kinClientsNothing(
     return filter.lookedAfter._tag === "person" && filter.lookedAfter.personId === me
       ? {
           title: "You don't look after any yet",
-          detail: "Add a prospect, or show Anyone to see the rest.",
+          detail: `Add a prospect, or show ${rest} to see the rest.`,
           offerNew: true,
         }
       : {
