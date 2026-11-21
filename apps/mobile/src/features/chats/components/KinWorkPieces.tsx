@@ -12,6 +12,7 @@ import {
   type KinTaskLine,
   type KinTaskStep,
 } from "@t3tools/client-runtime/kin/kinTasksList";
+import type { KinTaskStepStatus } from "@t3tools/client-runtime/kin/kinTaskSteps";
 import { KIN_WORK_COPY, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkTimelineLine } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
@@ -270,12 +271,6 @@ export function KinWorkTaskRow(props: {
   );
 }
 
-/** What a row's step is doing: on its way, done in the host's words, or refused with its reason. */
-export type KinTaskStepStatus =
-  | { readonly kind: "busy"; readonly id: string }
-  | { readonly kind: "done"; readonly text: string; readonly widgetId?: string }
-  | { readonly kind: "failed"; readonly text: string; readonly widgetId?: string };
-
 const LEAD_TONE = {
   late: "text-danger-foreground",
   soon: "text-warning-foreground",
@@ -283,6 +278,14 @@ const LEAD_TONE = {
 } as const;
 
 const groupRadius = Platform.OS === "android" ? MOBILE_SHAPE.group.android : MOBILE_SHAPE.group.ios;
+
+/** A row's corners in its group's card: rounded at the card's ends. */
+export const kinCardCorners = (first: boolean, last: boolean) => ({
+  borderTopLeftRadius: first ? groupRadius : 0,
+  borderTopRightRadius: first ? groupRadius : 0,
+  borderBottomLeftRadius: last ? groupRadius : 0,
+  borderBottomRightRadius: last ? groupRadius : 0,
+});
 
 /**
  * One task on Tasks, inside its group's card: the circle that marks it done, the title on at most
@@ -313,12 +316,7 @@ export function KinTaskRow(props: {
   return (
     <View
       className="mx-4 overflow-hidden border-continuous bg-grouped-card"
-      style={{
-        borderTopLeftRadius: props.first ? groupRadius : 0,
-        borderTopRightRadius: props.first ? groupRadius : 0,
-        borderBottomLeftRadius: props.last ? groupRadius : 0,
-        borderBottomRightRadius: props.last ? groupRadius : 0,
-      }}
+      style={kinCardCorners(props.first, props.last)}
     >
       {props.first ? null : <View className="ml-12 h-px bg-border-subtle" />}
       <View className={cn("flex-row items-start", props.saving && "opacity-60")}>
@@ -636,7 +634,7 @@ export function KinWorkTextField(props: {
   readonly multiline?: boolean;
   readonly autoFocus?: boolean;
   readonly isPrivate?: boolean;
-  readonly hint?: string;
+  readonly hint?: string | undefined;
   readonly moved?: string | undefined;
   readonly keyboard?: "email" | "phone" | "numbers" | "plain";
   /** Takes this field off, beside its label. */
@@ -702,7 +700,7 @@ export function KinWorkTextField(props: {
       )}
       {props.moved === undefined ? null : (
         <Text textRole="footnote" className="text-foreground-muted">
-          It now says: {props.moved.trim() || "nothing"}
+          {KIN_WORK_COPY.nowSays(props.moved.trim() || "nothing")}
         </Text>
       )}
     </View>

@@ -51,8 +51,10 @@ import {
   writerFor,
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
+import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { homeCurrency } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
+import { parseFields } from "./lists.ts";
 import { dates, moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import {
@@ -61,6 +63,7 @@ import {
   isSuggestion,
   notFound,
   ownerZone,
+  recordName,
   suggestedStateLabel,
 } from "./recordRows.ts";
 import {
@@ -78,6 +81,7 @@ import {
   unknownList,
 } from "./registers.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
+import { DAY_MS } from "../durations.ts";
 
 /** The lead tools for lists and money. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -409,7 +413,7 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
         if (earlier.length > 0 && !(same("cash", cash) && same("tds", tds)))
           return yield* new KinChatError({
             reason: "not_allowed",
-            message: `This message already recorded a different payment on ${before.key} for ${paidOn}. Nothing was recorded. To correct it, void the earlier payment and record the right one from the owner's next message.`,
+            message: `This message already recorded a different payment on ${recordName(before.key, parseFields(before.fieldsJson).number)} for ${paidOn}. Nothing was recorded. To correct it, void the earlier payment and record the right one from the owner's next message.`,
           });
         const one = (money: KinMoney | undefined, withheld: boolean) =>
           money === undefined
@@ -455,6 +459,7 @@ export const MoneyResult = Schema.Struct({
   /** Per open project: what is agreed but not invoiced yet, beside what is owed on invoices. */
   stillToInvoice: Schema.optional(Schema.Unknown),
   nothing: Schema.optional(Schema.Literal(true)),
+  bank: Schema.optional(BankAnswer),
   sensitive: Schema.Literal(true),
 });
 const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
@@ -474,6 +479,7 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
       ? { nothing: true as const }
       : { summary: section }),
     ...(toInvoice.length === 0 ? {} : { stillToInvoice: toInvoice }),
+    bank: bankAnswer(yield* bankKnown(lead.orgId)),
     sensitive: true as const,
   };
 });
@@ -498,18 +504,21 @@ export const MoneyQueryResult = Schema.Struct({
   asOf: Schema.String,
   view: Schema.String,
   answer: Schema.Unknown,
+  bank: Schema.optional(BankAnswer),
   sensitive: Schema.Literal(true),
 });
 const runMoneyQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof MoneyQueryInput.Type) {
   yield* admitted(lead, "money_query", input);
   const now = yield* Clock.currentTimeMillis;
+  const cash = input.view === "cash" ? yield* cashPosition(lead.orgId, now) : undefined;
   const answer =
-    input.view === "cash"
-      ? cashAnswer(yield* cashPosition(lead.orgId, now))
+    cash !== undefined
+      ? cashAnswer(cash)
       : input.view === "outlook"
         ? outlookAnswer(yield* outlook(lead.orgId, now, input.days))
         : budgetsAnswer(yield* budgetsView(lead.orgId, now, input.month));
-  return { asOf: iso(now), view: input.view, answer, sensitive: true as const };
+  const bank = bankAnswer(cash?.bank ?? (yield* bankKnown(lead.orgId)), cash !== undefined);
+  return { asOf: iso(now), view: input.view, answer, bank, sensitive: true as const };
 });
 export const moneyQuery = leadTool("KinWorkTools.moneyQuery", runMoneyQuery);
 
@@ -663,7 +672,6 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
   };
 });
 export const datesQuery = leadTool("KinWorkTools.dates", runDates);
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 const ProfileText = Schema.NullOr(KinToolText(500));
 export const ProfileInput = Schema.Struct({

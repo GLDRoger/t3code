@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_INVOICES,
   kinBase64Bytes,
+  kinConfirmTotal,
   kinDocFileLine,
   kinInvoiceActions,
   kinInvoiceMissingClient,
@@ -19,7 +20,7 @@ import {
   type KinLineDraft,
   type KinQuoteRowView,
 } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
-import { kinDefaultTemplate } from "@t3tools/client-runtime/kin/kinTemplates";
+import { KIN_TEMPLATES, kinDefaultTemplate } from "@t3tools/client-runtime/kin/kinTemplates";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type {
   EnvironmentId,
@@ -190,6 +191,9 @@ export function KinInvoiceActions(
               {asking === "void" ? KIN_INVOICES.voidTitle : KIN_INVOICES.issueTitle}
             </AlertDialogTitle>
             <AlertDialogDescription>
+              {asking === "issue" && invoice.issueTotal !== null ? (
+                <span className="block">{invoice.issueTotal}</span>
+              ) : null}
               {asking === "void"
                 ? KIN_INVOICES.voidDetail
                 : next !== null && next !== "reading" && next.number !== null
@@ -253,6 +257,7 @@ export function KinQuoteActions(
   const [requestId] = useState(randomUUID);
   const busy = props.busy || actions.busy || invoicing.busy;
   const numbered = quote.number !== item.key;
+  const sendTotal = kinConfirmTotal(item.amount, item.party?.title);
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -351,7 +356,10 @@ export function KinQuoteActions(
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>{KIN_QUOTES.sendTitle}</AlertDialogTitle>
-            <AlertDialogDescription>{KIN_QUOTES.sendDetail}</AlertDialogDescription>
+            <AlertDialogDescription>
+              {sendTotal === null ? null : <span className="block">{sendTotal}</span>}
+              {KIN_QUOTES.sendDetail}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" />}>
@@ -473,7 +481,7 @@ export function KinMakeDocumentStep(
         ) : recipes.state._tag !== "ready" ? (
           <div className="flex flex-col items-start gap-2">
             <Alert variant="error">
-              <AlertDescription>Couldn't load your templates.</AlertDescription>
+              <AlertDescription>{KIN_TEMPLATES.loadFailed}</AlertDescription>
             </Alert>
             <Button size="sm" variant="outline" onClick={recipes.refresh}>
               Retry
@@ -601,7 +609,7 @@ export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
   const { invoice } = props;
   if (invoice.void) return <p className="text-sm text-muted-foreground">{KIN_INVOICES.voidNote}</p>;
   if (invoice.balance === null) return null;
-  return (
+  const figures = (
     <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
       <div className="flex flex-col">
         <dt className="text-xs text-muted-foreground">{KIN_INVOICES.balance}</dt>
@@ -620,6 +628,14 @@ export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
         </div>
       )}
     </dl>
+  );
+  return invoice.bank === null ? (
+    figures
+  ) : (
+    <>
+      {figures}
+      <p className="text-xs text-muted-foreground">{invoice.bank}</p>
+    </>
   );
 }
 
@@ -658,11 +674,12 @@ export function KinInvoicePayments(
                   >
                     {payment.amount}
                   </span>
-                  <span className="truncate text-xs text-muted-foreground">
+                  <span className="text-xs break-words text-muted-foreground">
                     {[
                       payment.tds ? KIN_INVOICES.tdsDeducted : null,
                       payment.when,
                       payment.note,
+                      payment.source,
                       payment.voided ? KIN_INVOICES.takenBack : null,
                     ]
                       .filter((part) => part !== null)

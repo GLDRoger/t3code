@@ -1,14 +1,17 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  KIN_TEAM_COPY,
   KIN_TEAM_ADD,
   KIN_TEAM_EMPTY,
   KIN_TEAM_LOAD_FAILED,
   KIN_TEAM_ONLY_OWNER,
   KIN_TEAM_TITLE,
   kinTeamEntrySummary,
+  kinTeamFooter,
   kinTeamView,
   type KinTeammate,
 } from "@t3tools/client-runtime/kin/kinTeam";
+import { KIN_ONLY } from "../../lib/kinOnly";
 import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -31,6 +34,7 @@ import { useKinOpenCounts } from "./state/useKinProfiles";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { KinGateView } from "./components/KinWorkPieces";
+import { KinReachListSection } from "./KinReachSections";
 
 export type KinTeamParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -132,7 +136,7 @@ function KinTeamBody(target: KinTeamTarget) {
                 className="items-center py-12"
                 accessible
                 accessibilityRole="progressbar"
-                accessibilityLabel="Loading your team"
+                accessibilityLabel={KIN_TEAM_COPY.loading}
               >
                 <AppActivityIndicator />
               </View>
@@ -153,7 +157,7 @@ function KinTeamBody(target: KinTeamTarget) {
           ) : (
             <>
               {team.edits.problem === null ? null : <ErrorBanner message={team.edits.problem} />}
-              <ListSection footer="Teammates chat with you and with the agents and groups you add them to. They can't see your code or settings.">
+              <ListSection footer={kinTeamFooter(KIN_ONLY)}>
                 {rows.map((row, index) => (
                   <View
                     key={row.key}
@@ -174,6 +178,7 @@ function KinTeamBody(target: KinTeamTarget) {
                   <ListActionRow label={KIN_TEAM_ADD} icon="plus" onPress={add} />
                 </View>
               </ListSection>
+              <KinReachListSection environmentId={environmentId} orgId={orgId} />
             </>
           )}
         </ScreenScrollView>

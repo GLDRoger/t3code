@@ -1,16 +1,18 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_PEOPLE_CHAT,
-  kinMessageablePeople,
+  kinNewChatList,
   kinPeopleChatProblem,
+  type KinNewChatAgent,
 } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { kinPersonSeed } from "@t3tools/client-runtime/kin/kinProfiles";
+import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import {
   Dialog,
@@ -25,6 +27,7 @@ import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
 import { useKinProfiles } from "./kinPictures";
 import { useKinMe } from "./KinProfileSheet";
+import { useKinOpenAgentChat } from "./useKinOpenChat";
 
 interface KinPeopleChatTarget {
   readonly environmentId: EnvironmentId;
@@ -66,18 +69,67 @@ export function KinPeoplePickerHost() {
   return <KinPeoplePicker key={`${target.environmentId}:${target.orgId}`} target={target} />;
 }
 
-/** New → Message a teammate: everyone else on the team, one tap to their chat. */
+/** New → Message someone: everyone else on the team, then the agents the viewer may message. */
 function KinPeoplePicker(props: { readonly target: KinPeopleChatTarget }) {
   const { environmentId, orgId } = props.target;
   const me = useKinMe(environmentId, orgId);
   const result = useKinProfiles(environmentId, orgId);
   const profiles =
     result === null ? null : (Option.getOrNull(AsyncResult.value(result))?.profiles ?? null);
-  const people = profiles === null ? null : kinMessageablePeople(profiles, me);
-  const open = useOpenKinPeopleChat();
-  const [busy, setBusy] = useState<KinPersonId | null>(null);
+  const leadsResult = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
+  // Without the agent list the people still show; a failed read lists no agents.
+  const leads = AsyncResult.isFailure(leadsResult)
+    ? { leads: [] }
+    : Option.getOrNull(AsyncResult.value(leadsResult));
+  const list = profiles === null || leads === null ? null : kinNewChatList(profiles, me, leads);
+  const openPerson = useOpenKinPeopleChat();
+  const openAgent = useKinOpenAgentChat();
+  const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const close = () => appAtomRegistry.set(kinPeoplePickAtom, null);
+  const pick = async (key: string, open: () => Promise<string | null>) => {
+    setBusy(key);
+    setProblem(null);
+    const failed = await open();
+    setBusy(null);
+    if (failed === null) close();
+    else setProblem(failed);
+  };
+  const row = (
+    key: string,
+    label: string,
+    avatar: ReactNode,
+    name: string,
+    detail: string | null,
+    onPick: () => Promise<string | null>,
+  ) => (
+    <li key={key}>
+      <button
+        type="button"
+        disabled={busy !== null}
+        aria-label={`${KIN_PEOPLE_CHAT.message} ${label}`}
+        className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset disabled:opacity-60"
+        onClick={() => void pick(key, onPick)}
+      >
+        {avatar}
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate">{name}</span>
+          {detail === null ? null : (
+            <span className="truncate text-xs text-muted-foreground">{detail}</span>
+          )}
+        </span>
+      </button>
+    </li>
+  );
+  const agentRow = (agent: KinNewChatAgent) =>
+    row(
+      `agent:${agent.agentId}`,
+      agent.name,
+      <KinAvatar avatar={kinAgentAvatar(agent.agentId)} size="sm" />,
+      agent.name,
+      agent.intro,
+      () => openAgent(environmentId, orgId, agent.agentId),
+    );
   return (
     <Dialog
       open
@@ -88,46 +140,49 @@ function KinPeoplePicker(props: { readonly target: KinPeopleChatTarget }) {
       <DialogPopup className="max-w-md">
         <DialogHeader>
           <DialogTitle>{KIN_PEOPLE_CHAT.pickTitle}</DialogTitle>
-          <DialogDescription>{KIN_PEOPLE_CHAT.pickDetail}</DialogDescription>
+          {list !== null && list.people.length === 0 && list.agents.length > 0 ? (
+            list.agentsNote === null ? null : (
+              <DialogDescription>{list.agentsNote}</DialogDescription>
+            )
+          ) : (
+            <DialogDescription>{KIN_PEOPLE_CHAT.pickDetail}</DialogDescription>
+          )}
         </DialogHeader>
         <DialogPanel>
-          {people === null ? (
+          {list === null ? (
             <p role="status" className="text-sm text-muted-foreground">
               Loading…
             </p>
-          ) : people.length === 0 ? (
+          ) : list.people.length === 0 && list.agents.length === 0 ? (
             <p className="text-sm text-muted-foreground">{KIN_PEOPLE_CHAT.noOne}</p>
           ) : (
-            <ul className="-mx-2 flex flex-col">
-              {people.map((person) => (
-                <li key={person.personId}>
-                  <button
-                    type="button"
-                    disabled={busy !== null}
-                    aria-label={`${KIN_PEOPLE_CHAT.message} ${person.displayName}`}
-                    className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset disabled:opacity-60"
-                    onClick={async () => {
-                      setBusy(person.personId);
-                      setProblem(null);
-                      const failed = await open({
-                        environmentId,
-                        orgId,
-                        personId: person.personId,
-                      });
-                      setBusy(null);
-                      if (failed === null) close();
-                      else setProblem(failed);
-                    }}
-                  >
-                    <KinAvatar
-                      avatar={{ kind: "person", seed: kinPersonSeed(person.personId) }}
-                      size="sm"
-                    />
-                    <span className="min-w-0 flex-1 truncate">{person.displayName}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <div className="flex flex-col gap-3">
+              {list.people.length === 0 ? null : (
+                <PickSection title={list.peopleTitle}>
+                  {list.people.map((person) =>
+                    row(
+                      `person:${person.personId}`,
+                      person.displayName,
+                      <KinAvatar
+                        avatar={{ kind: "person", seed: kinPersonSeed(person.personId) }}
+                        size="sm"
+                      />,
+                      person.displayName,
+                      null,
+                      () => openPerson({ environmentId, orgId, personId: person.personId }),
+                    ),
+                  )}
+                </PickSection>
+              )}
+              {list.agents.length === 0 ? null : (
+                <PickSection title={list.agentsTitle}>{list.agents.map(agentRow)}</PickSection>
+              )}
+              {list.people.length === 0 ||
+              list.agents.length === 0 ||
+              list.agentsNote === null ? null : (
+                <p className="text-xs text-muted-foreground">{list.agentsNote}</p>
+              )}
+            </div>
           )}
           {problem === null ? null : (
             <p role="alert" className="mt-2 text-sm text-destructive">
@@ -137,5 +192,16 @@ function KinPeoplePicker(props: { readonly target: KinPeopleChatTarget }) {
         </DialogPanel>
       </DialogPopup>
     </Dialog>
+  );
+}
+
+function PickSection(props: { readonly title: string | null; readonly children: ReactNode }) {
+  return (
+    <section className="flex flex-col gap-1" aria-label={props.title ?? undefined}>
+      {props.title === null ? null : (
+        <h3 className="text-xs font-medium text-muted-foreground">{props.title}</h3>
+      )}
+      <ul className="-mx-2 flex flex-col">{props.children}</ul>
+    </section>
   );
 }

@@ -28,8 +28,9 @@ import { startWakeupRun, authorityLayer } from "../chat/WakeupAuthority.testkit.
 import * as Memory from "../memory/Memory.ts";
 import { buildIndex } from "../memory/buildIndex.ts";
 import { authorise, fingerprint } from "../memory/sensitivity.ts";
+import { salesRules } from "../sales/instructions.ts";
 import { instructions } from "./instructions.ts";
-import { KinLeadPrompt, TURN_DIVIDER, type KinLeadPromptInput } from "./LeadPrompt.ts";
+import { KinLeadPrompt, TURN_DIVIDER, type KinLeadPromptInput, workForText } from "./LeadPrompt.ts";
 import { outsideRead } from "./OutsideContent.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { PRESETS } from "../work/registers.ts";
@@ -786,6 +787,17 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       "Invented-offering-1-zq",
     ])
       expect(shared).not.toContain(owners);
+    // An agent whose area sells carries the sales seat's rules where a teammate reads too, and
+    // nothing else of its charter; any other agent's shared prompt is the same without them.
+    expect(shared).not.toContain("# Selling (your seat)");
+    yield* sql`UPDATE kin_leads SET domain = 'sales-and-marketing' WHERE agent_id = ${agentId}`;
+    const selling = yield* build("shared-wake-sales");
+    expect(selling.split(TURN_DIVIDER)[0]).toContain(salesRules);
+    for (const owners of ["sales-and-marketing", "Invented-charter-zq", "Domain:", "Charter:"])
+      expect(selling).not.toContain(owners);
+    yield* sql`UPDATE kin_leads SET domain = 'engineering' WHERE agent_id = ${agentId}`;
+    expect(yield* build("shared-wake-engineering")).toBe(selling.replace(`${salesRules}\n\n`, ""));
+    yield* sql`UPDATE kin_leads SET domain = 'invented-domain-zq' WHERE agent_id = ${agentId}`;
     // With the Docs place, the teammate reads it, so the turn lists it.
     yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'rec-sells'`;
     expect(yield* build("shared-wake-archived")).not.toContain("What we sell");
@@ -2110,10 +2122,19 @@ it.effect(
       expect(built.split(TURN_DIVIDER)[0]).toContain("# Group rules");
       // The Team room has its own rules; no group-chat line about who answers or staying silent.
       yield* sql`UPDATE kin_chats SET team_id = ${KIN_TEAM_ROOM_TEAM_ID} WHERE chat_id = ${chatId}`;
+      // A person's message there is answered there: the turn says the room reads the reply.
+      const asked = yield* prompt.build({
+        ...input,
+        events: [event("now")],
+        lane: { chatId, mode: "reply" },
+      });
+      expect(asked.split(TURN_DIVIDER)[0]).toContain("# Team room");
+      expect(asked).toContain("Everyone in it reads your reply.");
+      expect(asked).not.toContain("Your plain text goes nowhere");
       const room = yield* prompt.build({
         ...input,
         events: [event("now")],
-        lane: { chatId, mode: "notice" },
+        lane: { chatId, mode: "notice", team: true },
       });
       expect(room.split(TURN_DIVIDER)[0]).toContain("# Team room");
       expect(room).not.toContain("# Group rules");
@@ -2125,6 +2146,19 @@ it.effect(
       expect(room).toContain(
         "Your plain text goes nowhere: speak only with team_say, and pass by ending the turn without it.",
       );
+      // A person's message Kin opened a discussion with: its first turn reads it as their question.
+      yield* sql`INSERT INTO kin_discussions (org_id, discussion_id, chat_id, topic, question,
+          decider_agent_id, opened_by_agent_id, origin, state, turn_json, created_at, last_at)
+        VALUES (${orgId}, 'TD-1', ${chatId}, 'Current question', 'Current question', ${agentId},
+          ${agentId}, 'owner', 'open', ${JSON.stringify({ agentId, kind: "named" })}, 0, 0)`;
+      yield* sql`UPDATE kin_messages SET discussion_id = 'TD-1' WHERE message_id = 'now'`;
+      const opened = yield* prompt.build({
+        ...input,
+        events: [event("now")],
+        lane: { chatId, mode: "notice", team: true },
+      });
+      expect(opened).toContain('"question":"Fixture asked: Current question"');
+      yield* sql`UPDATE kin_messages SET discussion_id = NULL WHERE message_id = 'now'`;
       yield* sql`UPDATE kin_chats SET team_id = NULL WHERE chat_id = ${chatId}`;
       const direct = KinChatId.make("direct-chat");
       yield* repo.createChat({
@@ -2145,6 +2179,21 @@ it.effect(
       yield* stored(input.wakeupId, [routineEvent]);
       const dm = yield* prompt.build({ ...input, lane: { chatId: direct, mode: "notice" } });
       expect(dm).not.toContain("# Group rules");
+      // The sales seat's rules, above the divider; any other domain's prompt is byte for byte
+      // the same without them.
+      expect(dm.split(TURN_DIVIDER)[0]).toContain(salesRules);
+      for (const domain of ["engineering", "finance", "chief-of-staff", "social", "content"]) {
+        yield* sql`UPDATE kin_leads SET domain = ${domain} WHERE agent_id = ${agentId}`;
+        const other = yield* prompt.build({ ...input, lane: { chatId: direct, mode: "notice" } });
+        expect(other).not.toContain("# Selling (your seat)");
+        if (domain === "engineering")
+          expect(other).toBe(
+            dm
+              .replace(`${salesRules}\n\n`, "")
+              .replace('Domain: "growth"', 'Domain: "engineering"'),
+          );
+      }
+      yield* sql`UPDATE kin_leads SET domain = 'growth' WHERE agent_id = ${agentId}`;
       // The owner's domain and charter, as data, on every turn.
       expect(dm.split(TURN_DIVIDER)[1]).toContain(
         `Domain: "growth"\nCharter: "Grow signups."\nYour reply goes to chat "${direct}", your direct chat with the owner.\nNobody is waiting on this turn: if nothing below is worth the owner's attention, write exactly NO_REPLY and nothing else.`,
@@ -2580,6 +2629,52 @@ it.effect("a started deferral says what it is for and whom, in a turn the owner 
       ),
     ),
   ),
+);
+
+// Work the owner started on a teammate's relayed request finished, and the asker never heard.
+it.effect(
+  "finished work done for a teammate's request tells the owner's turn to send them the outcome",
+  () =>
+    Effect.gen(function* () {
+      yield* leadWithOwner;
+      const finished = decodeEvent({
+        _tag: "task.finished",
+        orgId,
+        agentId,
+        eventId: "task-finished",
+        receivedAt: timestamp,
+        dedupeKey: "delegated-completion:1",
+        provenance: { _tag: "system" },
+        threadId: "fixture-thread",
+        messageId: "delegated-completion:1",
+        taskIds: ["task-1"],
+        chatId,
+      });
+      yield* stored(input.wakeupId, [finished]);
+      const prompt = yield* KinLeadPrompt;
+      const built = yield* prompt.build({
+        ...input,
+        lane: { chatId, mode: "reply" },
+        events: [finished],
+        workFor: new Map([[finished.eventId, ["Zoya"]]]),
+      });
+      expect(built).toContain(workForText("Zoya"));
+      // Without it, nothing names anyone to tell.
+      const plain = yield* prompt.build({
+        ...input,
+        lane: { chatId, mode: "reply" },
+        events: [finished],
+      });
+      expect(plain).not.toContain("kin_relay, in words they may read");
+    }).pipe(
+      Effect.provide(
+        KinLeadPrompt.layer.pipe(
+          Layer.provideMerge(Layer.merge(repository, markedMemory)),
+          Layer.provideMerge(database),
+          Layer.merge(teamMemory({})),
+        ),
+      ),
+    ),
 );
 
 it.effect(

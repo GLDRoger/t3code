@@ -158,6 +158,41 @@ function writeScriptProvider(instance: Instance) {
   writeJson(path, { ...settings, providerInstances: providers });
 }
 
+const PROVIDER_CLIS = [
+  "claude",
+  "codex",
+  "cursor-agent",
+  "opencode",
+  "grok",
+  "kiro-cli",
+  "gemini",
+  "agy",
+];
+
+/**
+ * The server's environment with every provider CLI failing first on PATH and no provider keys, so
+ * no turn reaches a real model. KIN_VERIFY_REAL_MODELS=1 keeps them, for provider-conformance.sh.
+ * KIN_VERIFY_NO_MODELS names stubs someone else made and counts (the release check's).
+ */
+export function withoutRealModels(base: NodeJS.ProcessEnv, own: string): NodeJS.ProcessEnv {
+  if (base.KIN_VERIFY_REAL_MODELS === "1") return base;
+  const stubs = base.KIN_VERIFY_NO_MODELS || own;
+  if (stubs === own) writeProviderStubs(stubs);
+  const { ANTHROPIC_API_KEY: _anthropic, OPENAI_API_KEY: _openai, ...rest } = base;
+  return { ...rest, PATH: [stubs, base.PATH].filter(Boolean).join(NodePath.delimiter) };
+}
+
+function writeProviderStubs(stubs: string) {
+  NodeFS.mkdirSync(stubs, { recursive: true });
+  const calls = NodePath.join(stubs, "calls.log");
+  for (const cli of PROVIDER_CLIS)
+    NodeFS.writeFileSync(
+      NodePath.join(stubs, cli),
+      `#!/bin/sh\necho "${cli} $*" >> ${JSON.stringify(calls)}\necho 'kin-verify: real models are off (KIN_VERIFY_REAL_MODELS=1 allows them)' >&2\nexit 1\n`,
+      { mode: 0o755 },
+    );
+}
+
 export const logPath = (instance: Instance) => NodePath.join(instance.meta, "dev.log");
 
 export function tailLog(instance: Instance, lines = 15): string {
@@ -193,7 +228,7 @@ export async function startServer(instance: Instance): Promise<InstanceState> {
   );
   const log = NodeFS.openSync(logPath(instance), "a");
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...withoutRealModels(process.env, NodePath.join(instance.meta, "no-models")),
     KIN_ENABLED: "true",
     T3CODE_DEV_SEED: "0",
     KIN_DEV_FAKE_MAIL: FAKE_MAIL,

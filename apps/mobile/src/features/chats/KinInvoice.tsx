@@ -143,8 +143,12 @@ export function KinInvoiceActions(
     setReading(false);
     Dialog.confirm({
       title: KIN_INVOICES.issueTitle,
-      message:
+      message: [
+        invoice.issueTotal,
         next === null ? KIN_INVOICES.issueDetail(invoice.prefix) : KIN_INVOICES.issueNumber(next),
+      ]
+        .filter((line) => line !== null)
+        .join("\n"),
       confirmText: KIN_INVOICES.issue,
       onConfirm: () => void actions.issue(itemKey),
     });
@@ -262,6 +266,11 @@ export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
           </Text>
         </View>
       )}
+      {invoice.bank === null ? null : (
+        <Text textRole="footnote" className="w-full text-foreground-muted">
+          {invoice.bank}
+        </Text>
+      )}
     </View>
   );
 }
@@ -295,6 +304,7 @@ export function KinInvoicePayments(
             payment.tds ? KIN_INVOICES.tdsDeducted : null,
             payment.when,
             payment.note,
+            payment.source,
             number === null ? null : `Receipt ${number}`,
             payment.voided ? KIN_INVOICES.takenBack : null,
           ]
@@ -886,7 +896,6 @@ function ReceiptForm(props: KinWorkTarget) {
         label={KIN_RECEIPTS.amount}
         value={draft.amount}
         onChangeText={(amount) => setDraft({ ...draft, amount })}
-        placeholder={KIN_RECEIPTS.amountPlaceholder}
         keyboard="numbers"
         autoFocus
       />
@@ -894,7 +903,6 @@ function ReceiptForm(props: KinWorkTarget) {
         label={KIN_RECEIPTS.towards}
         value={draft.towards}
         onChangeText={(towards) => setDraft({ ...draft, towards })}
-        placeholder={KIN_RECEIPTS.towardsPlaceholder}
         maxLength={300}
       />
       <ListSection>
@@ -1006,7 +1014,7 @@ function ApplyReceipt(
         <KinWorkLoading label="Loading invoices" />
       ) : invoices === null ? (
         <KinLoadFailed
-          title="Couldn't load invoices"
+          title={KIN_INVOICES.loadFailed}
           cause={held?.cause}
           onRetry={() => setAttempt((count) => count + 1)}
         />

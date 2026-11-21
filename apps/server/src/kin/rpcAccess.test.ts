@@ -69,6 +69,8 @@ const MEMBER = [
   "kin.people.revokeDevice",
   "kin.people.setGithubLogin",
   "kin.people.updateProfile",
+  // Set aside: the service makes a member's hold their own, seen and lifted by them alone.
+  "kin.pulse.aside",
   "kin.pulse.handle",
   "kin.pulse.read",
   "kin.pulse.subscribe",
@@ -86,6 +88,8 @@ const MEMBER = [
   "kin.work.comment",
   "kin.work.commentRemove",
   "kin.work.comments",
+  // Marketing's reads: `ownerMarketing.ts` shows what they see in Clients and refuses Clients off.
+  "kin.work.contactList",
   "kin.work.create",
   // The light CRM's: the gate lets a person through, and `ownerClients.ts` decides the rest.
   "kin.work.createContact",
@@ -97,6 +101,7 @@ const MEMBER = [
   "kin.work.dealStages",
   "kin.work.dealStep",
   "kin.work.deals",
+  "kin.work.exportContacts",
   "kin.work.get",
   "kin.work.handBack",
   "kin.work.handOver",
@@ -106,6 +111,7 @@ const MEMBER = [
   "kin.work.list",
   "kin.work.lists",
   "kin.work.logTouch",
+  "kin.work.marketing",
   "kin.work.money",
   "kin.work.moveDeal",
   "kin.work.nudge",
@@ -194,6 +200,12 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         // Team memory is the owner's call: a co-owner (now Meera) may set it, a member never.
         assert.isTrue(yield* allowed("meera", "kin.memory.setTeamMemory"));
         assert.isFalse(yield* allowed("ravi", "kin.memory.setTeamMemory"));
+        // Who may not message whom is set by owners and co-owners alone.
+        for (const method of ["kin.reach.list", "kin.reach.set"]) {
+          assert.isTrue(yield* allowed("meera", method));
+          assert.isFalse(yield* allowed("ravi", method));
+          assert.isFalse(yield* allowed("stranger", method));
+        }
 
         // The country refusal reaches a person with no name in it (an older phone hides names),
         // worded for who may choose the country now; any other refusal is as it was.

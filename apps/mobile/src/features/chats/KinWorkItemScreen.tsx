@@ -473,7 +473,6 @@ function KinWorkItemBody(props: ItemTarget) {
     give: canGive,
     step: step.acts,
   });
-  const repeatShown = view.repeat?.text ?? KIN_WORK_REPEAT.never;
   const dated = view.due !== null;
   const repeats = act !== null && view.can.repeat === true && !view.closed;
   const repeatMenu: ReadonlyArray<AppBarMenuItem> = !repeats
@@ -481,7 +480,7 @@ function KinWorkItemBody(props: ItemTarget) {
     : [
         {
           id: "repeat",
-          title: `${KIN_WORK_REPEAT.label}: ${repeatShown}`,
+          title: KIN_WORK_REPEAT.menu(view.repeat?.text ?? null),
           items: [
             ...(dated
               ? []
@@ -638,7 +637,6 @@ function KinWorkItemBody(props: ItemTarget) {
                 returnKeyType="done"
                 onChangeText={(title) => changes.setEdit({ title })}
                 textAlignVertical="center"
-                placeholder={KIN_WORK_NEW_COPY.titlePlaceholder}
                 placeholderTextColorClassName="accent-placeholder"
                 className="min-h-8 font-sans text-base text-foreground"
               />
@@ -672,7 +670,7 @@ function KinWorkItemBody(props: ItemTarget) {
             </View>
           </ListSection>
           {[
-            moved?.title == null ? null : `It now says: ${moved.title}`,
+            moved?.title == null ? null : KIN_WORK_COPY.nowSays(moved.title),
             moved?.notes == null ? null : `The brief now says: ${moved.notes}`,
           ].map((line) =>
             line === null ? null : (
@@ -776,6 +774,7 @@ function KinWorkItemBody(props: ItemTarget) {
               icon="folder"
               label={KIN_WORK_NEW_COPY.projectLabel}
               detail={view.project.title}
+              detailEllipsizeMode="tail"
               onPress={openProject}
             />
           )
@@ -800,6 +799,7 @@ function KinWorkItemBody(props: ItemTarget) {
               icon="person.2"
               label={KIN_WORK_NEW_COPY.clientLabel}
               detail={view.party.title}
+              detailEllipsizeMode="tail"
               {...(view.side === "theirs" ? { description: KIN_WORK_NEW_COPY.sideTheirs } : {})}
               onPress={openParty}
             />
@@ -808,6 +808,7 @@ function KinWorkItemBody(props: ItemTarget) {
               icon="person.2"
               label={KIN_WORK_NEW_COPY.clientLabel}
               detail={view.party.title}
+              detailEllipsizeMode="tail"
               {...(view.side === "theirs" ? { description: KIN_WORK_NEW_COPY.sideTheirs } : {})}
             />
           )
@@ -893,7 +894,7 @@ function KinWorkItemBody(props: ItemTarget) {
                       tone="text"
                       size="compact"
                       label={KIN_TASK_RECORD.edit}
-                      accessibilityLabel="Edit the brief"
+                      accessibilityLabel={KIN_TASK_RECORD.editBrief}
                       onPress={() => changes.startEdit(item)}
                     />
                   ),
@@ -1131,7 +1132,7 @@ function KinCommentBody(props: {
             tone="text"
             size="compact"
             label={KIN_TASK_NOTE_COPY.remove}
-            accessibilityLabel="Remove this note"
+            accessibilityLabel={KIN_TASK_NOTE_COPY.removeLabel}
             onPress={props.onRemove}
           />
         </View>
@@ -1280,28 +1281,32 @@ export function KinLinkedSection(props: {
           </Text>
           {group.items.map((item) => {
             const title = item.title ?? KIN_LINKED.message;
-            return (
+            const { open } = item;
+            const row = (
+              <View className="min-w-0 flex-row gap-2 px-4 py-3">
+                {item.kind === "message" ? null : (
+                  <Text textRole="body" className="text-foreground-muted">
+                    {item.name}
+                  </Text>
+                )}
+                <Text textRole="body" numberOfLines={1} className="min-w-0 flex-1 text-foreground">
+                  {title}
+                </Text>
+              </View>
+            );
+            return open === null ? (
+              <View key={item.key} accessibilityLabel={title} className="bg-grouped-card">
+                {row}
+              </View>
+            ) : (
               <RowPressable
                 key={item.key}
                 accessibilityRole="button"
-                accessibilityLabel={item.kind === "message" ? title : `${item.key}, ${title}`}
-                onPress={() => props.onOpen(item.open)}
+                accessibilityLabel={item.kind === "message" ? title : `${item.name}, ${title}`}
+                onPress={() => props.onOpen(open)}
                 className="bg-grouped-card"
               >
-                <View className="min-w-0 flex-row gap-2 px-4 py-3">
-                  {item.kind === "message" ? null : (
-                    <Text textRole="body" className="text-foreground-muted">
-                      {item.key}
-                    </Text>
-                  )}
-                  <Text
-                    textRole="body"
-                    numberOfLines={1}
-                    className="min-w-0 flex-1 text-foreground"
-                  >
-                    {title}
-                  </Text>
-                </View>
+                {row}
               </RowPressable>
             );
           })}

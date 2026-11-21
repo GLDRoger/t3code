@@ -12,7 +12,7 @@ import { seenBy, type KinViewer } from "./teamView.ts";
 /**
  * One search over entries and docs. `team` is what a teammate may find (design 9.1): nothing of
  * a sensitive entry, its own label or inherited, and no field that is sensitive whatever the
- * label. Only owner-only callers exist yet; the teammate view will pass `team`.
+ * label. Teammates' searches (`ownerDocs.search`, `leadDocs`) pass it today.
  */
 export type Viewer = "owner" | "team";
 
@@ -23,6 +23,8 @@ export type Hit = {
   readonly title: string;
   readonly snippet: string;
   readonly section?: { readonly id: string; readonly title: string };
+  /** A contact's client. */
+  readonly client?: string;
   readonly sensitive: boolean;
   readonly closed: boolean;
   readonly updatedAt: number;
@@ -36,6 +38,7 @@ type Row = {
   readonly state: string;
   readonly updatedAt: number;
   readonly sensitive: number;
+  readonly clientKey: string | null;
   readonly part: "public" | "sensitive";
   readonly snippet: string;
 };
@@ -88,7 +91,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
     readonly scope: KinViewer;
     /** With nothing that has every word, look again for any of them (`widened`). */
     readonly widen?: boolean;
-    /** Deals among `work`, and a deal by its exact key: a person's own search box asks. */
+    /** Deals too, and a deal by its exact key: a person's own search box asks. */
     readonly deals?: boolean;
   },
 ) {
@@ -97,8 +100,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
   const indexed = yield* searchIndexed();
   if (words.length === 0) return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
   const kinds = input.kinds === undefined || input.kinds.length === 0 ? KINDS : input.kinds;
-  const registers: ReadonlyArray<string> =
-    input.deals === true && kinds.includes("work") ? [...kinds, "deals"] : kinds;
+  const registers: ReadonlyArray<string> = input.deals === true ? [...kinds, "deals"] : kinds;
   const where = [
     sql`r.org_id = ${orgId}`,
     sql`r.register_id IN ${sql.in(registers)}`,
@@ -110,7 +112,11 @@ export const search = Effect.fn("KinSearch.search")(function* (
     seenBy(sql, input.scope),
   ];
   const columns = sql`r.record_id AS "recordId", r.register_id AS "registerId", r.key, r.title,
-    r.state, r.updated_at AS "updatedAt", CASE WHEN r.register_id IN ${sql.in([...MONEY])}
+    r.state, r.updated_at AS "updatedAt", CASE WHEN r.register_id = 'contacts'
+      THEN (SELECT p.key FROM kin_records p WHERE p.org_id = r.org_id
+        AND p.record_id = r.party_id AND EXISTS (SELECT 1 FROM kin_records r
+          WHERE r.org_id = p.org_id AND r.record_id = p.record_id
+            AND ${seenBy(sql, input.scope)})) END AS "clientKey", CASE WHEN r.register_id IN ${sql.in([...MONEY])}
       THEN ${inheritedSensitive(sql)} ELSE ${sensitiveNow(sql)} END AS sensitive`;
   const find = (any: boolean) =>
     indexed
@@ -169,6 +175,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
       ...(section === undefined || section.id === "top"
         ? {}
         : { section: { id: section.id, title: section.title } }),
+      ...(row.clientKey === null ? {} : { client: row.clientKey }),
       sensitive: row.sensitive === 1 || row.part === "sensitive",
       closed: row.state === "done" || row.state === "dropped",
       updatedAt: row.updatedAt,

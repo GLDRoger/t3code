@@ -22,6 +22,7 @@ import { laneFor } from "../../reply/replyLane.ts";
 import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinServer } from "../../KinServer.ts";
 import * as Questions from "../../questions/openQuestions.ts";
+import { askPerson } from "../../questions/askPerson.ts";
 import * as CardActions from "../../widgets/cardActions.ts";
 import * as CardPlans from "../../widgets/cardPlans.ts";
 import * as ChoiceCard from "../../widgets/choiceCard.ts";
@@ -34,6 +35,7 @@ import { readPeople } from "../peopleRead.ts";
 import { updatePeople } from "../peopleUpdate.ts";
 import { setAway } from "../awaySet.ts";
 import { updateAgent } from "../agentUpdate.ts";
+import { wordOf } from "../../pulse/holds.ts";
 import { KinLeadToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -120,6 +122,15 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       return yield* (yield* KinTeam).say(yield* McpInvocationContext, input);
     }),
   ),
+  kin_ask_person: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.askPerson")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return yield* askPerson({ ...lead, wakeupId: KinWakeupId.make(lead.wakeupId) }, input, {
+        chat: yield* KinChatService,
+        gate: yield* KinLevelGate,
+      });
+    }, Effect.mapError(failure)),
+  ),
   kin_ask: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.ask")(function* (input) {
       if (input.options.length < 2)
@@ -195,6 +206,9 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           defaultPlan === undefined
             ? undefined
             : yield* CardActions.untakenAtDay(lead.orgId, defaultPlan),
+        ownerLevelAsked:
+          (yield* wordOf({ orgId: lead.orgId, agentId: lead.agentId, wakeupId }))?.ownerLevel ===
+          true,
       });
       // Drawn again inside the card's transaction: what was checked is what is stored.
       const recheck = drawAll.pipe(

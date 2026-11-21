@@ -2,6 +2,7 @@ import { KinAgentId, KinChatId, KinMemoryItemId, type KinOrgId } from "@t3tools/
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
@@ -104,9 +105,9 @@ const daysAt = (
 
 /**
  * Keeps each default check-in the owner hasn't moved at its time in his zone as it is now: set
- * after seeding, changed, or across a clock change. One moved in chat or on T3's screen, its
- * time or only its days, stays put: its days must be a default's exactly as Kin put them, for
- * this host and zone or by the row's own host time, never any day set a shift could make.
+ * after seeding, changed, or across a clock change, and one set in Settings at the time he set.
+ * One moved in chat or on T3's screen stays put: a default's days must be exactly as Kin put
+ * them, for this host and zone or by its own host time; a Settings one's, as Kin last wrote.
  */
 export const followOwnerZone = Effect.fn("KinPulse.followOwnerZone")(function* (
   orgId: KinOrgId,
@@ -115,6 +116,7 @@ export const followOwnerZone = Effect.fn("KinPulse.followOwnerZone")(function* (
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
   const now = yield* Clock.currentTimeMillis;
+  const host = KinSchedules.hostTimeZone();
   for (const seed of CHECK_IN_SEEDS) {
     const row = yield* KinSchedules.readSchedule(sql, orgId, `checkin-${seed.slug}`);
     if (row === undefined || row.deletedAt !== null || row.sourceEvent !== seedSource(orgId))
@@ -123,7 +125,6 @@ export const followOwnerZone = Effect.fn("KinPulse.followOwnerZone")(function* (
     if (task === undefined || row.looseAt === null) continue;
     const current = KinSchedules.everyOf(task, row.looseAt);
     if (current === undefined || current.at !== row.looseAt) continue;
-    const host = KinSchedules.hostTimeZone();
     const seeded = [seed.days, EARLIER_DAYS[seed.slug] ?? seed.days].flatMap((days) => [
       onHostClock(seed.at, days, zone, host, now).days.join(),
       ...daysAt(seed.at, days, current.at, offsetMinutes(host, now)),
@@ -144,6 +145,36 @@ export const followOwnerZone = Effect.fn("KinPulse.followOwnerZone")(function* (
       every,
       around: true,
       checkIn: true,
+      keepWording: true,
+      now,
+    });
+  }
+  for (const row of yield* KinSchedules.listSchedules(sql, orgId)) {
+    const owner =
+      row.ownerTime === null
+        ? undefined
+        : Option.getOrUndefined(KinSchedules.decodeOwnerTime(row.ownerTime));
+    if (owner === undefined || row.deletedAt !== null) continue;
+    const task = yield* KinSchedules.readNativeTask(sql, row.taskId);
+    const current = task === undefined ? undefined : KinSchedules.everyOf(task, row.looseAt);
+    if (task === undefined || current === undefined) continue;
+    if (current.at !== owner.host.at || current.days.join() !== owner.host.days.join()) continue;
+    const every = onHostClock(owner.at, owner.days, zone, host, now);
+    if (every.at === current.at && every.days.join() === current.days.join()) continue;
+    yield* schedules.save({
+      orgId,
+      agentId: row.agentId,
+      scheduleId: row.scheduleId,
+      existing: true,
+      chatId: row.chatId,
+      sourceEvent: row.sourceEvent,
+      saidBy: row.saidBy,
+      title: task.title,
+      prompt: task.prompt,
+      every,
+      ownerTime: { at: owner.at, days: owner.days },
+      around: KinSchedules.isAround(task, row.looseAt),
+      checkIn: row.checkIn === 1,
       keepWording: true,
       now,
     });

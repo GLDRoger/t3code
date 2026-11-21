@@ -1,4 +1,5 @@
 import {
+  KIN_TEAM_COPY,
   KIN_INVITE_PHONE_NOTE,
   KIN_TEAMMATE_NAME_MAX,
   KIN_TEAM_ADD_COPY,
@@ -135,7 +136,7 @@ function NameForm(props: {
     >
       <DialogHeader>
         <DialogTitle>{KIN_TEAM_ADD_COPY.title}</DialogTitle>
-        <DialogDescription>{KIN_TEAM_ADD_COPY.detail}</DialogDescription>
+        <DialogDescription>{KIN_TEAM_ADD_COPY.detail(false)}</DialogDescription>
       </DialogHeader>
       <DialogPanel>
         <div className="flex flex-col gap-4">
@@ -145,7 +146,6 @@ function NameForm(props: {
               id={nameId}
               value={name}
               maxLength={KIN_TEAMMATE_NAME_MAX}
-              placeholder={KIN_TEAM_ADD_COPY.namePlaceholder}
               autoComplete="off"
               autoFocus
               onChange={(event) => setName(event.target.value)}
@@ -234,7 +234,7 @@ function InviteLink(props: {
         ) : (
           <div className="flex flex-col gap-3">
             <Label htmlFor={linkId} className="sr-only">
-              Invite link for {invite.displayName}
+              {KIN_TEAM_COPY.inviteLinkFor(invite.displayName)}
             </Label>
             <Textarea
               id={linkId}

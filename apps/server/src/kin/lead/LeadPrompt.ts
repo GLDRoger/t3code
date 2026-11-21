@@ -71,6 +71,7 @@ import {
 } from "../pulse/weekly.ts";
 import { OFFERINGS_NONE, offeringsArchived, offeringsPromptIndex } from "../work/offerings.ts";
 import { playbookIndex } from "../work/playbooks.ts";
+import { issuedNumber } from "../work/recordRows.ts";
 import { entriesShown, sensitiveShown, sourcesShown } from "../work/sensitiveReads.ts";
 import { KIN_OWNER_LEVEL, personSees, viewerOfPeople } from "../work/teamView.ts";
 import { promptLine as connectionsLine } from "../connections/ConnectionRows.ts";
@@ -81,6 +82,7 @@ import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules, teamRules } from "./instructions.ts";
 import { socialRules } from "../social/instructions.ts";
 import { isSocialDomain } from "../social/seat.ts";
+import { salesRulesFor } from "../sales/seat.ts";
 import { buildSeat } from "./seat.ts";
 import {
   answeredTurnText,
@@ -90,6 +92,7 @@ import {
   undoneTurnText,
 } from "../questions/openQuestions.ts";
 import { asksUndo, recentChanges, UNDO_RULE } from "./undoSection.ts";
+import { encoded, quote, quoteLines } from "./quote.ts";
 
 export class KinLeadPromptError extends Schema.TaggedError<KinLeadPromptError>()(
   "KinLeadPromptError",
@@ -108,10 +111,21 @@ export interface KinLeadPromptInput {
   readonly memoryHead: string;
   readonly budgetContext?: string;
   /** The chat the lead's plain text goes to; see the reply bridge. */
-  readonly lane?: { readonly chatId: KinChatId; readonly mode: "reply" | "notice" };
+  readonly lane?: {
+    readonly chatId: KinChatId;
+    readonly mode: "reply" | "notice";
+    /** Only Team-room discussion turns Kin handed on woke it: plain text is dropped. */
+    readonly team?: true;
+  };
   /** Server-gathered facts for a brief or summary event, by event id. */
   readonly routineFacts?: ReadonlyMap<string, string>;
+  /** Who a finished task's work was for (`workFor`), by its event id. */
+  readonly workFor?: ReadonlyMap<string, ReadonlyArray<string>>;
 }
+
+/** The finished work answered a teammate's request Kin relayed to the owner: it goes back to them. */
+export const workForText = (names: string) =>
+  `This work was for ${names}'s request, which Kin relayed to the owner. Send ${names} the outcome with kin_relay, in words they may read; the details stay here.`;
 
 export class KinLeadPrompt extends Context.Service<
   KinLeadPrompt,
@@ -249,7 +263,7 @@ export class KinLeadPrompt extends Context.Service<
       const quoteEvents = Effect.fnUntraced(function* (
         input: Pick<
           KinLeadPromptInput,
-          "orgId" | "agentId" | "wakeupId" | "events" | "routineFacts"
+          "orgId" | "agentId" | "wakeupId" | "events" | "routineFacts" | "workFor"
         > & {
           readonly laneChatId?: KinChatId | undefined;
           readonly audience?: TurnAudience | undefined;
@@ -555,6 +569,17 @@ export class KinLeadPrompt extends Context.Service<
             );
             continue;
           }
+          const forWhom =
+            event._tag === "task.finished" && ownerOnly
+              ? input.workFor?.get(event.eventId)
+              : undefined;
+          if (forWhom !== undefined) {
+            fromOwner = false;
+            replyDue = true;
+            const names = forWhom.join(" and ");
+            events.push(`${quote("event data", eventFacts(event), true)}\n\n${workForText(names)}`);
+            continue;
+          }
           if (event._tag !== "chat.message" && event._tag !== "widget.action") {
             fromOwner = false;
             if (ownerOnly) {
@@ -665,7 +690,8 @@ export class KinLeadPrompt extends Context.Service<
               true,
             ),
           );
-          if (message.discussionId !== undefined && message.author._tag === "agent") {
+          // Kin's outcome notice names its discussion too, but it is no turn.
+          if (message.discussionId !== undefined && message.author._tag !== "system") {
             const turn = yield* teamTurnFacts(orgId, agentId, message.discussionId).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.mapError(
@@ -1131,15 +1157,15 @@ export class KinLeadPrompt extends Context.Service<
             Effect.logWarning("Kin speaker names unavailable", cause).pipe(Effect.as(undefined)),
           ),
         );
-        const [charter] = ownerOnly
-          ? yield* sql<{ domain: string; charter: string }>`
+        // The domain picks the seat's static rules in every turn; the charter is the owner's.
+        const [stored] = yield* sql<{ domain: string; charter: string }>`
           SELECT domain, charter FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${agentId}
           ORDER BY agent_id`.pipe(
-              Effect.catch((cause) =>
-                Effect.logWarning("Kin lead charter unavailable", cause).pipe(Effect.as([])),
-              ),
-            )
-          : [];
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin lead charter unavailable", cause).pipe(Effect.as([])),
+          ),
+        );
+        const charter = ownerOnly ? stored : undefined;
         // What the owner chose to tell teammates about this lead, so any turn may carry it.
         const [intro] = yield* sql<{ text: string }>`SELECT public_intro AS text FROM kin_leads
           WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY agent_id`.pipe(
@@ -1159,7 +1185,13 @@ export class KinLeadPrompt extends Context.Service<
         // Owner-only this slice: the teammate view of Work comes with slice 2.
         const work =
           ownerOnly && input.lane !== undefined
-            ? yield* buildWorkSection({ orgId, agentId, chatId: input.lane.chatId, now }).pipe(
+            ? yield* buildWorkSection({
+                orgId,
+                agentId,
+                chatId: input.lane.chatId,
+                now,
+                wakeupId: input.wakeupId,
+              }).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
                 Effect.catch((cause) =>
                   Effect.logWarning("Kin Work section unavailable", cause).pipe(
@@ -1207,6 +1239,7 @@ export class KinLeadPrompt extends Context.Service<
                 now,
                 wokeFor: pulseWoke,
                 checkIn,
+                checkInEvents,
               }).pipe(
                 Effect.tap((section) =>
                   section?.byProject.some((group) => group.facts.some((fact) => fact.sensitive))
@@ -1420,7 +1453,8 @@ export class KinLeadPrompt extends Context.Service<
         // The instructions travel in the session's system prompt (`lead/turn/session.ts`); memory changes per head.
         // Every part is the owner's unless marked `shared`; a shared prompt keeps only those.
         // A Team-room turn says what it asks in its own quote; group-chat lines would contradict it.
-        const inTeamRoom = laneChat?.teamId === KIN_TEAM_ROOM_TEAM_ID;
+        // A person's message in the Team room is answered there like any group's.
+        const inTeamRoom = laneChat?.teamId === KIN_TEAM_ROOM_TEAM_ID && input.lane?.team === true;
         const header: ReadonlyArray<Part> = [
           sharedPart(`Agent name: ${encoded(leadName, true)}`),
           ...(intro === undefined || intro.text.trim() === ""
@@ -1526,6 +1560,7 @@ export class KinLeadPrompt extends Context.Service<
           ...(charter !== undefined && isSocialDomain(charter.domain)
             ? [ownerPart(socialRules)]
             : []),
+          ...salesRulesFor(stored?.domain).map(sharedPart),
           // Rooms shared with other people and agents.
           ...(laneChat !== undefined && laneChat.kind !== "direct"
             ? [sharedPart(laneChat.teamId === KIN_TEAM_ROOM_TEAM_ID ? teamRules : groupRules)]
@@ -1754,8 +1789,9 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
     dueAt: number | null;
     titleBy: string | null;
     notesBy: string | null;
+    number: unknown;
   }>`SELECT r.title, r.notes, r.due_at AS "dueAt", ${writer("title_by")} AS "titleBy",
-      ${writer("notes_by")} AS "notesBy"
+      ${writer("notes_by")} AS "notesBy", json_extract(r.fields_json, '$.number') AS number
     FROM kin_records r LEFT JOIN kin_agents a ON a.org_id = r.org_id AND a.agent_id = ${event.agentId}
     WHERE r.org_id = ${orgId} AND r.record_id = ${event.recordId}
       AND ${ownerOnly || teammate === undefined ? sql`1 = 1` : personSees(sql, teammate)}`.pipe(
@@ -1796,6 +1832,7 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
         ...(entry === undefined
           ? {}
           : {
+              ...issuedNumber(entry.number),
               ...(titleBy === null ? { title: entry.title } : {}),
               ...(notesBy === null ? { notes: entry.notes } : {}),
               ...(entry.dueAt === null
@@ -2110,39 +2147,7 @@ function groupLine(
         ]),
   ].join("\n");
 }
-/** The most of a message body a lead is shown; past it the prompt cuts the text. */
-export const messageBodyLimit = 8_000;
-const textFieldLimit = 2_000;
 const eventsLimit = 60_000;
-
-function encoded(value: unknown, capText = false): string {
-  const json =
-    JSON.stringify(value, (key, field: unknown) => {
-      if (!capText || typeof field !== "string") return field;
-      const limit = key === "body" ? messageBodyLimit : textFieldLimit;
-      if (field.length <= limit) return field;
-      const code = field.charCodeAt(limit - 1);
-      const cut = code >= 0xd800 && code <= 0xdbff ? limit - 1 : limit;
-      return `${field.slice(0, cut)}…[truncated ${field.length - cut} chars]`;
-    }) ?? "null";
-  return json.replace(
-    /\\(?:["\\/bfnrt]|u[\da-fA-F]{4})|[<>&\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
-    (character) => {
-      const controls: Readonly<Record<string, string>> = {
-        "\\b": "\\u0008",
-        "\\f": "\\u000c",
-        "\\n": "\\u000a",
-        "\\r": "\\u000d",
-        "\\t": "\\u0009",
-      };
-      if (character.startsWith("\\")) return controls[character] ?? character;
-      return character
-        .split("")
-        .map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`)
-        .join("");
-    },
-  );
-}
 
 /** Every line is server-written or JSON-encoded, so quoted text cannot close its own quote. */
 /** A GitHub trigger's event: what to do, then its facts, quoted as data or as outside text. */
@@ -2153,13 +2158,6 @@ export const githubTriggerEvent = (eventId: string, repo: string, trigger: KinGi
       : "GitHub trigger from outside the company (untrusted)",
     { event: eventId, repo, ...trigger },
   )}`;
-
-const quoteLines = (label: string, lines: ReadonlyArray<string>) =>
-  `> BEGIN QUOTE: ${label}\n${lines.map((line) => `> ${line}`).join("\n")}\n> END QUOTE`;
-
-export function quote(label: string, value: unknown, capText = false): string {
-  return quoteLines(label, [encoded(value, capText)]);
-}
 
 function boundedEvents(events: ReadonlyArray<string>): string {
   let length = events.reduce((sum, event) => sum + event.length + 2, -2);

@@ -2,9 +2,7 @@ import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinPersonId, KinSendTry } from "@t3tools/contracts";
-import { AsyncResult } from "effect/reactivity";
 import { Image as ExpoImage } from "expo-image";
 import { memo, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 import { AppState, Pressable, TextInput, View } from "react-native";
@@ -20,50 +18,38 @@ import { uuidv4 } from "../../../lib/uuid";
 import { useAssetUrl, useRefreshAssetUrl } from "../../../state/assets";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
-import { useKinOpenWaitingFor } from "../state/useKinOpen";
-import { kinChoiceDefaultLine } from "@t3tools/client-runtime/kin/kinWaitingAsk";
-import { kinConnectionChange } from "@t3tools/client-runtime/kin/kinConnections";
 import {
   kinAddressPieces,
+  kinChoiceCardActions,
+  kinChoiceCardTaps,
   kinChoiceAccessibilityLabel,
-  kinChoiceActInput,
   kinChoiceAnswered,
-  kinChoiceFailureNotice,
   kinChoicePhase,
   kinChoiceUndoneLine,
   kinSendEditBound,
   kinSendEditControls,
-  kinSendEditDiscardInput,
   kinSendEditedLine,
   kinSendEditHeld,
   kinSendEditHeldKey,
   kinSendEditHold,
-  kinSendEditInput,
-  kinSendEditKept,
   kinSendEditLeaveSaves,
   kinSendEditOffered,
-  kinSendEditRefused,
-  kinSendEditSaveInput,
   kinSendEditShown,
   kinSendEditStart,
   kinSendEditUnsaved,
   kinSendEditWarned,
   kinSendCheckPending,
   kinSendTicked,
-  kinSendTry,
   KIN_SEND_CHECKED,
   KIN_SEND_EDIT_COPY,
   type KinSendEditBusy,
+  type KinChoiceCardStatus,
   type KinChoiceCardView,
   type KinSendEditDraft,
   type KinSendEditAck,
   type KinSendEditing,
 } from "@t3tools/client-runtime/kin/kinChoicePresentation";
-import {
-  createKinCardActions,
-  visibleKinCardStatus,
-  type KinCardStatus,
-} from "@t3tools/client-runtime/kin/kinDeferralPresentation";
+import { visibleKinCardStatus } from "@t3tools/client-runtime/kin/kinDeferralPresentation";
 
 // A mid grey: a white logo and a black one both stand out on it, in light and dark themes.
 const IMAGE_GROUND = "#8c8c8c";
@@ -476,7 +462,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const nowMs = useNowMinuteMs();
   const canAct = useAtomValue(kinClient.widgetAction.permissionAtom(environmentId));
   const post = useAtomCommand(kinClient.widgetAction, { reportFailure: false });
-  const actions = useRef<ReturnType<typeof createKinCardActions<KinChoiceCardView, string>>>(null);
+  const [taps] = useState(kinChoiceCardTaps);
   const [pending, setPending] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
   const [switchProblem, setSwitchProblem] = useState<string | null>(null);
@@ -489,17 +475,10 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const [editBusy, setEditBusy] = useState<KinSendEditBusy>(null);
   // Kept with the editor closed: Edit before the card's update binds to what the host took.
   const [ack, setAck] = useState<KinSendEditAck | null>(null);
-  const [lastStatus, setLastStatus] = useState<
-    (KinCardStatus & { readonly optionId: string }) | null
-  >(null);
+  const [lastStatus, setLastStatus] = useState<KinChoiceCardStatus>(null);
   // The try the person ticked they checked the sent mail for; the press reads it when it posts.
   // It counts only while the card's warning names that try (`kinSendTicked`).
   const [ticked, setTicked] = useState<KinSendTry | null>(null);
-  const tickedNow = useRef<KinSendTry | null>(null);
-  const check = (next: boolean) => {
-    tickedNow.current = next ? kinSendTry(warnedView) : null;
-    setTicked(tickedNow.current);
-  };
   const status = visibleKinCardStatus(lastStatus, choice.revision);
   const phase = kinChoicePhase(choice, nowMs);
   // Until the answered card arrives, the tapped option already reads as chosen.
@@ -507,55 +486,6 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     status?.holding === true
       ? choice.options.find((option) => option.id === lastStatus?.optionId)
       : undefined;
-
-  const press = async (optionId: string) => {
-    if (pending !== null) return;
-    if (actions.current === null)
-      actions.current = createKinCardActions<KinChoiceCardView, string>({
-        newId: uuidv4,
-        toInput: (view, optionId, id) =>
-          kinChoiceActInput(view, optionId, id, kinSendTicked(view, tickedNow.current)),
-        failureNotice: kinChoiceFailureNotice,
-        post: async (input) => {
-          const result = await post({ environmentId, input });
-          return AsyncResult.isFailure(result)
-            ? { ok: false, cause: squashAtomCommandFailure(result) }
-            : { ok: true };
-        },
-      });
-    const revision = choice.revision;
-    const outcome = await actions.current(choice, optionId, () => {
-      setPending(optionId);
-      setLastStatus(null);
-    });
-    if (outcome.status === "ignored") return;
-    setPending(null);
-    setLastStatus(
-      outcome.status === "failed"
-        ? { revision, optionId, notice: outcome.notice, holding: false }
-        : { revision, optionId, notice: null, holding: true },
-    );
-  };
-
-  const pickFrom = async (choiceId: string) => {
-    if (switching || pending !== null) return;
-    setSwitching(true);
-    setSwitchProblem(null);
-    const failed = await kinConnectionChange(
-      setSendFrom({
-        environmentId,
-        input: {
-          orgId: choice.orgId,
-          widgetId: choice.widgetId,
-          revision: choice.revision,
-          choice: choiceId,
-        },
-      }),
-      "change who it's from",
-    );
-    setSwitching(false);
-    setSwitchProblem(failed);
-  };
 
   const answered = kinChoiceAnswered(choice, props.viewerPersonId, sentOption?.label ?? null);
   const editable =
@@ -565,67 +495,27 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   // The tick answers the press on screen: the editor's for the words typed, else the card's.
   const warnedView = kinSendEditWarned(choice, shownEdit, new Date(nowMs));
   const checked = kinSendTicked(warnedView, ticked) !== null;
-  const waiting = useKinOpenWaitingFor({ environmentId, orgId: choice.orgId });
-  const takes =
-    answered === null && phase === "open"
-      ? kinChoiceDefaultLine(choice.widgetId, waiting, nowMs)
-      : null;
   const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
 
-  /** The editor after the host answered: words it refused stay on this device until let go. */
-  const settle = (next: KinSendEditing | null, kept: KinSendEditing | null = next) => {
-    kinSendEditHold(heldKey, kept);
-    setEditing(next);
-  };
-  const sendEdit = async () => {
-    if (shownEdit === null || editBusy !== null || editBound?.ready !== true) return;
-    setEditBusy("sending");
-    const result = await sendEdited({
-      environmentId,
-      input: kinSendEditInput(choice, shownEdit, uuidv4(), kinSendTicked(warnedView, ticked)),
-    });
-    setEditBusy(null);
-    settle(
-      AsyncResult.isFailure(result)
-        ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
-        : null,
-    );
-  };
-  /** Save closes the editor; a save on leaving keeps it open over the saved card. */
-  const saveEdit = async (stay = false) => {
-    if (shownEdit === null || editBusy !== null || editBound?.ready !== true) return;
-    if (!kinSendEditUnsaved(shownEdit)) return settle(null);
-    setEditBusy("saving");
-    const result = await saveEdited({
-      environmentId,
-      input: kinSendEditSaveInput(choice, shownEdit),
-    });
-    setEditBusy(null);
-    if (AsyncResult.isFailure(result))
-      return settle(kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result)));
-    if (AsyncResult.isSuccess(result))
-      setAck({ revision: result.value.revision, saved: shownEdit.draft });
-    settle(
-      stay && AsyncResult.isSuccess(result)
-        ? kinSendEditKept(shownEdit, result.value.revision)
-        : null,
-      null,
-    );
-  };
-  const discardEdit = async () => {
-    if (shownEdit === null || editBusy !== null) return;
-    const input = kinSendEditDiscardInput(choice, shownEdit, editable);
-    if (input === null) return settle(null);
-    setEditBusy("discarding");
-    const result = await saveEdited({ environmentId, input });
-    setEditBusy(null);
-    if (AsyncResult.isSuccess(result)) setAck({ revision: result.value.revision, saved: null });
-    settle(
-      AsyncResult.isFailure(result)
-        ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
-        : null,
-    );
-  };
+  const { tick, press, pickFrom, sendEdit, saveEdit, discardEdit } = kinChoiceCardActions({
+    choice,
+    environmentId,
+    newId: uuidv4,
+    taps,
+    heldKey,
+    state: { pending, switching, editing: shownEdit, editBusy, editable, ticked, nowMs },
+    commands: { post, setSendFrom, sendEdited, saveEdited },
+    set: {
+      pending: setPending,
+      lastStatus: setLastStatus,
+      switching: setSwitching,
+      switchProblem: setSwitchProblem,
+      editBusy: setEditBusy,
+      editing: setEditing,
+      ack: setAck,
+      ticked: setTicked,
+    },
+  });
   const leave = useEffectEvent(() => {
     if (kinSendEditLeaveSaves(shownEdit, editBusy, editable)) void saveEdit(true);
     else if (shownEdit !== null && kinSendEditUnsaved(shownEdit))
@@ -664,19 +554,19 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       <View
         // Grouped for VoiceOver, except while Change or the editor sits inside: a group hides them.
         accessible={grouped}
-        accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? takes, edited, {
+        accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? null, edited, {
           message: true,
         })}
         className="gap-1.5"
       >
+        {choice.askedBy === null ? null : (
+          <Text textRole="footnote" className="text-foreground-secondary">
+            {choice.askedBy}
+          </Text>
+        )}
         <Text textRole="headline" className="font-t3-bold text-foreground">
           {choice.question}
         </Text>
-        {takes === null ? null : (
-          <Text textRole="footnote" className="text-foreground-secondary">
-            {takes}
-          </Text>
-        )}
         {choice.send !== null && shownEdit !== null ? (
           <SendEditor
             send={choice.send}
@@ -713,7 +603,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
           grouped={grouped}
           checked={checked}
           disabled={!canAct || pending !== null || editBusy !== null}
-          onChange={check}
+          onChange={tick}
         />
       )}
       {answered !== null ? (

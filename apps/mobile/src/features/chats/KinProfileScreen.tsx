@@ -41,6 +41,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -52,6 +53,7 @@ import { pickKinPicture } from "./state/kinPicture";
 import { useKinHostAt } from "./state/useKinHost";
 import { useKinProfiles } from "./state/useKinProfiles";
 import { KinAwaySection } from "./components/KinAway";
+import { KinGithubLoginSection } from "./components/KinGithubLogin";
 import { KinPersonTasks } from "./components/KinPersonTasks";
 import { KinTasksKeysSection } from "./components/KinTasksKeys";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -197,7 +199,7 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
           </Text>
           {target.runsWorkspace ? (
             <Text textRole="footnote" className="text-center text-foreground-muted">
-              Runs this workspace
+              {KIN_PROFILE_COPY.runsWorkspace}
             </Text>
           ) : null}
         </View>
@@ -239,19 +241,20 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
         </View>
       </ListSection>
       <ListSection title={KIN_PROFILE_COPY.hoursLabel}>
-        <View className="gap-0.5 px-4 py-3">
+        <View className="px-4 py-3">
           <Text
             textRole="body"
             className={hours === null ? "text-foreground-muted" : "text-foreground"}
           >
             {hours ?? KIN_PROFILE_COPY.noHours}
           </Text>
-          {profile.timeZone === null ? null : (
-            <Text textRole="footnote" className="text-foreground-muted">
-              {kinZoneLabel(profile.timeZone)}
-            </Text>
-          )}
         </View>
+        {profile.timeZone === null ? null : (
+          <ListRowLayout
+            label={KIN_PROFILE_COPY.timeZoneLabel}
+            detail={kinZoneLabel(profile.timeZone)}
+          />
+        )}
       </ListSection>
       <KinAwaySection
         environmentId={target.environmentId}
@@ -259,6 +262,12 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
         profile={profile}
         mine={target.mine}
         mayEdit={target.mayEdit}
+      />
+      <KinGithubLoginSection
+        environmentId={target.environmentId}
+        orgId={target.orgId}
+        profile={profile}
+        mine={target.mine}
       />
       {kinProfileShowsTasks({
         mine: target.mine,
@@ -435,7 +444,6 @@ function ProfileForm(props: {
         <Field
           label={KIN_PROFILE_COPY.tagsLabel}
           value={draft.tags}
-          placeholder="tech, ios"
           maxLength={200}
           autoCapitalize="none"
           borderTop
@@ -466,7 +474,6 @@ function ProfileForm(props: {
             value={draft.talkStyle}
             maxLength={KIN_PROFILE_TALK_MAX}
             onChangeText={(talkStyle) => set({ talkStyle })}
-            placeholder={KIN_PROFILE_COPY.talkPlaceholder}
             placeholderTextColorClassName="accent-placeholder"
             textAlignVertical="top"
             className="min-h-20 px-4 py-3 font-sans text-base leading-normal text-foreground"
@@ -493,7 +500,7 @@ function ProfileForm(props: {
         <Field
           label="Starts"
           value={draft.start}
-          placeholder="09:00"
+          placeholder="HH:MM"
           maxLength={5}
           autoCapitalize="none"
           borderTop
@@ -502,7 +509,7 @@ function ProfileForm(props: {
         <Field
           label="Ends"
           value={draft.end}
-          placeholder="18:00"
+          placeholder="HH:MM"
           maxLength={5}
           autoCapitalize="none"
           borderTop
@@ -515,7 +522,7 @@ function ProfileForm(props: {
           <Field
             label="From"
             value={draft.quietFrom}
-            placeholder="22:00"
+            placeholder="HH:MM"
             maxLength={5}
             autoCapitalize="none"
             onChange={(quietFrom) => set({ quietFrom })}
@@ -523,7 +530,7 @@ function ProfileForm(props: {
           <Field
             label="Until"
             value={draft.quietTo}
-            placeholder="07:00"
+            placeholder="HH:MM"
             maxLength={5}
             autoCapitalize="none"
             borderTop

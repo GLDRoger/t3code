@@ -5,6 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
+import { SALES_SHARED_TOOLS } from "../sales/policies.ts";
 import { aborted, askedIn, askersDirectChat, effectiveAudience, turnChat } from "./Audience.ts";
 
 type Turn = {
@@ -76,6 +77,8 @@ export const SHARED_TOOLS = {
   kin_ask: "allowed",
   // Closes a question to the person in the turn's chat; only its asker withdraws one.
   kin_ask_close: "allowed",
+  // Checked against everyone behind the turn, in its own transaction (`askPerson`).
+  kin_ask_person: "allowed",
   kin_react: "allowed",
   // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
   kin_chart: "allowed",
@@ -179,6 +182,7 @@ export const SHARED_TOOLS = {
   social_draft: "refused",
   social_week: "refused",
   social_pack: "refused",
+  ...SALES_SHARED_TOOLS,
   // A shell's worth of reach as the owner, on his GitHub login (`AgentSession`).
   ...t3ToolsRefused,
 } satisfies Record<string, SharedToolPolicy>;

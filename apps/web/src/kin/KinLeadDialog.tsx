@@ -200,7 +200,6 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                   id={nameId}
                   value={name}
                   maxLength={KIN_LEAD_NAME_MAX}
-                  placeholder="Growth lead"
                   autoFocus
                   onChange={(event) => setName(event.target.value)}
                 />
@@ -210,7 +209,6 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                 <Input
                   id={areaId}
                   value={area}
-                  placeholder="Growth"
                   aria-invalid={areaInvalid}
                   onChange={(event) => setArea(event.target.value)}
                 />
@@ -233,7 +231,6 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                   rows={5}
                   value={charter}
                   aria-invalid={charter.length > KIN_LEAD_CHARTER_MAX}
-                  placeholder="Owns growth: acquisition experiments, funnel numbers and a weekly note on what moved."
                   onChange={(event) => setCharter(event.target.value)}
                 />
                 <p
@@ -270,7 +267,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                 </fieldset>
               ) : null}
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor={introId}>What teammates see</Label>
+                <Label htmlFor={introId}>{KIN_AGENTS_COPY.introLabel}</Label>
                 <Textarea
                   id={introId}
                   rows={2}

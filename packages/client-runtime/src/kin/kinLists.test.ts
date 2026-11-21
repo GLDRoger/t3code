@@ -27,6 +27,7 @@ import {
   kinMoneyDraft,
   kinParseMoney,
   kinPrincipalValue,
+  kinListChips,
   kinListQuery,
   kinListRow,
   kinSuggestionKeep,
@@ -355,6 +356,38 @@ describe("a list by its definition", () => {
     ]);
     expect(entry.payments[0]).toMatchObject({ amount: "₹40,000.00", note: null, voided: false });
     expect(kinListRow(detail, invoices, context).owed).toBe("₹60,000 still owed");
+    // An Invoices draft nothing came in on leaves Left empty, and Mark paid still pays its amount;
+    // issued or paid, Left is as it was, and another list's open entry owes as before.
+    const amount = { minor: 10_000_000, currency: "INR" };
+    const billed = { ...detail, list: KinListId.make("invoices"), payments: [] };
+    const drafted = { ...billed, state: "open" as const, balance: amount };
+    expect(kinListRow(drafted, invoices, context).cells.owed).toBeUndefined();
+    expect(kinListEntryView(drafted, invoices, context).finish?.pays).toEqual(amount);
+    // A list of nothing but such drafts has no Left column; one issued invoice brings it back.
+    const columnIds = (rows: ReadonlyArray<KinRecord>) =>
+      kinListColumns(invoices, rows).map((column) => column.id);
+    expect(columnIds([drafted])).not.toContain("owed");
+    expect(columnIds([drafted, billed])).toContain("owed");
+    expect(kinListRow(billed, invoices, context).cells.owed).toBe("₹60,000.00");
+    expect(
+      kinListRow(
+        { ...billed, state: "done", balance: { minor: 0, currency: "INR" } },
+        invoices,
+        context,
+      ).cells.owed,
+    ).toBe("₹0.00");
+    expect(kinListRow({ ...drafted, list: undefined }, invoices, context).cells.owed).toBe(
+      "₹1,00,000.00",
+    );
+    // Named by its key until it is issued, then by its number.
+    expect(kinListRow(detail, invoices, context).line).toMatch(/^EQ-1 · /);
+    // Its due day wraps as one piece, the state before it staying on the first line.
+    const due = kinListRow({ ...detail, dueAt: "2026-12-06", dueAllDay: true }, invoices, context);
+    expect(due.line.split(" · ").at(-1)).toBe("Due\u00a0Sun,\u00a0Dec\u00a06");
+    expect(due.accessibilityLabel).toContain("Due ");
+    const numbered = { ...detail, fields: { number: "AM/26-27/004" } };
+    expect(kinListRow(numbered, invoices, context).line).toMatch(/^AM\/26-27\/004 · /);
+    expect(kinListEntryView(numbered, invoices, context).heading).toBe("AM/26-27/004 · Equipment");
     // A suggestion says so before its state, and is paid by nobody until it is kept; as a
     // deadline it is never overdue in a money list. Stored issued, it reads Suggested alone, and
     // its day is no issue day.
@@ -439,6 +472,24 @@ describe("a list by its definition", () => {
     expect(kinListNarrowings(counted)).toEqual([
       { id: "kept", label: "Counted in Money", cleared: { ...counted, kept: null } },
     ]);
+    // Each status pill asks for that status alone and is the one selected; All asks for all.
+    const cleared = { ...counted, kept: null };
+    for (const [id, states] of [
+      ["open", ["open"]],
+      ["waiting", ["waiting"]],
+      ["done", ["done"]],
+      ["dropped", ["dropped"]],
+      ["all", undefined],
+    ] as const) {
+      const picked = kinListChips(issued, cleared).find((chip) => chip.id === id)!.filter;
+      expect(kinListQuery(orgId, issued.list, picked).states, id).toEqual(states);
+      expect(
+        kinListChips(issued, picked)
+          .filter((chip) => chip.selected)
+          .map((chip) => chip.id),
+        id,
+      ).toEqual([id]);
+    }
   });
 
   it("sends only the names that changed when a list is renamed", () => {

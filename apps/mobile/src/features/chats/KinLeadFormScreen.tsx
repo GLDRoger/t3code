@@ -357,7 +357,6 @@ function LeadForm(props: {
           <Field
             label="Name"
             value={draft.name}
-            placeholder="Growth lead"
             maxLength={KIN_LEAD_NAME_MAX}
             editable={allowed && !saving}
             autoFocus={creating && initial.name === ""}
@@ -367,7 +366,6 @@ function LeadForm(props: {
           <Field
             label="Area"
             value={draft.area}
-            placeholder="Growth"
             maxLength={40}
             editable={allowed && !saving}
             autoCapitalize="sentences"
@@ -389,7 +387,6 @@ function LeadForm(props: {
             editable={allowed && !saving}
             maxLength={KIN_LEAD_CHARTER_MAX}
             onChangeText={(charter) => set({ charter })}
-            placeholder="Owns growth and marketing: launch plans, campaigns and the numbers behind them. Drafts for me to approve. Never publishes or spends on its own."
             placeholderTextColorClassName="accent-placeholder"
             textAlignVertical="top"
             className="min-h-36 px-4 py-3 font-sans text-base leading-normal text-foreground"
@@ -463,10 +460,10 @@ function LeadForm(props: {
         </View>
       ) : null}
       <View className="gap-2">
-        <ListSection title="What teammates see">
+        <ListSection title={KIN_AGENTS_COPY.introLabel}>
           <TextInput
             multiline
-            accessibilityLabel="What teammates see"
+            accessibilityLabel={KIN_AGENTS_COPY.introLabel}
             value={draft.intro}
             editable={allowed && !saving}
             maxLength={KIN_LEAD_INTRO_MAX}
@@ -504,7 +501,7 @@ function Note(props: { readonly problem: string | null; readonly hint: string })
 function Field(props: {
   readonly label: string;
   readonly value: string;
-  readonly placeholder: string;
+  readonly placeholder?: string;
   readonly maxLength: number;
   readonly editable: boolean;
   readonly autoFocus?: boolean;

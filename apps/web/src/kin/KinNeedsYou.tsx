@@ -8,7 +8,6 @@ import {
 } from "@t3tools/client-runtime/kin/kinAttention";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
-import { kinOpenNeeds } from "@t3tools/client-runtime/kin/kinOpenView";
 import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import {
   KIN_WORK_HOME,
@@ -31,7 +30,6 @@ import { useKinAttention, useKinAttentionHandle } from "./useKinAttention";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinInbox } from "./useKinHost";
-import { useKinOpen } from "./useKinOpen";
 import { kinListsOf, useKinLists, useKinMoneySummary } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
@@ -51,7 +49,6 @@ export interface KinNeedsYouGo {
 /**
  * What needs attention and what needs you, read for one screen: the attention rows, then your
  * late tasks, what clients owe past due, what an agent waits on you for, and your tasks today.
- * Where the host streams the open list they are its rows, and `mine` is only whether to show.
  * Null while `mine` is (still loading, or not asked for: then nothing is read).
  */
 function useKinNeedsRows(
@@ -60,20 +57,17 @@ function useKinNeedsRows(
 ) {
   const { environmentId, orgId, names } = props;
   const asked = mine !== null;
-  const open = useKinOpen(props);
-  const enabled = asked && open === null;
   const now = new Date(useNowMinuteMs());
-  const money = useKinMoneySummary(props, { enabled });
-  const lists = useKinLists(props, { enabled });
+  const money = useKinMoneySummary(props, { enabled: asked });
+  const lists = useKinLists(props, { enabled: asked });
   const inbox = useKinInbox();
   const [expanded, setExpanded] = useState(false);
-  // The first page until See all; then everything, the page standing in until it arrives. The
-  // open list has no answered facts, so their Undo still comes from the page.
+  // The first page until See all; then everything, the page standing in until it arrives.
   const pagedRead = useKinAttention(props, asked, true);
-  const fullRead = useKinAttention(props, enabled && expanded);
+  const fullRead = useKinAttention(props, asked && expanded);
   const attentionRead = expanded && fullRead !== null ? fullRead : pagedRead;
   const handler = useKinAttentionHandle(props);
-  if (mine === null || open === undefined) return null;
+  if (mine === null) return null;
   const attention = kinAttention(attentionRead, {
     scope: { type: "all" },
     names: kinAttentionNames(names),
@@ -83,20 +77,6 @@ function useKinNeedsRows(
     inbox.state._tag === "ready" && inbox.state.environmentId === environmentId
       ? inbox.state
       : null;
-  if (open !== null)
-    return {
-      ...kinOpenNeeds(open, {
-        names,
-        chats: ready?.inbox.value.chats ?? [],
-        agentNames: kinDirectory(inbox.host).agentNames,
-        now,
-      }),
-      handled: attention.handled,
-      handler,
-      expanded,
-      setExpanded,
-      openList: true,
-    };
   const before = kinNeedsYou({
     mine,
     // Where the host keeps money from this viewer, nothing owed shows here either.
@@ -122,10 +102,10 @@ function useKinNeedsRows(
     needs,
     hidden: split.hidden,
     handled: attention.handled,
+    asides: attention.asides,
     handler,
     expanded,
     setExpanded,
-    openList: false,
   };
 }
 
@@ -150,7 +130,7 @@ export function KinNeedsYou(
     attention: read.attention,
     needs: read.needs,
     hidden: read.hidden,
-    handled: read.handled.length,
+    handled: read.handled.length + read.asides.length,
     expanded: read.expanded,
   });
   return (
@@ -258,7 +238,7 @@ function KinNeedsBlock(
           {shown.slice(lead).map(needRow)}
         </ul>
       )}
-      <KinAttentionHandled rows={props.handled} handler={handler} />
+      <KinAttentionHandled rows={props.handled} asides={props.asides} handler={handler} />
       {handler.problem === null ? null : (
         <p role="alert" className="px-2 text-xs text-destructive-foreground">
           {handler.problem}

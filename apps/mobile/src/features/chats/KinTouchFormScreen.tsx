@@ -128,7 +128,6 @@ export function KinTouchFormScreen({ route }: StaticScreenProps<KinTouchFormPara
           autoFocus
           disabled={saving}
           maxLength={4_000}
-          placeholder={KIN_CLIENTS.touchNotePlaceholder}
           onChangeText={setNote}
         />
       </ListSection>

@@ -28,6 +28,7 @@ import {
   fieldDateAt,
   countedPayment,
   isSuggestion,
+  issuedNumber,
   iso,
   keptEntry,
   moneyDay,
@@ -40,13 +41,13 @@ import {
 import { LISTS, parseFields } from "./lists.ts";
 import { allLists, isBuiltIn, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * Read views over every list: the dates view and the Money summary, computed from stored
  * integer amounts by code. Whole for the owner; for anyone else, of what `personSees` gives them.
  */
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const DATES_CAP = 200;
 
 type DateHit = {
@@ -532,6 +533,7 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
     })),
     next30Days: summary.upcoming.slice(0, SECTION_DATES).map((row) => ({
       key: row.record.key,
+      ...issuedNumber(row.record.fields?.number),
       title: row.record.title,
       list: row.listName,
       [row.label.toLowerCase()]: row.allDay ? dayIn(Date.parse(row.at), zone) : row.at,

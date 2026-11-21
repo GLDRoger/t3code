@@ -3,7 +3,6 @@ import { useNavigate } from "@tanstack/react-router";
 
 import { KinNeedsYou } from "./KinNeedsYou";
 import { kinPlaceOfRecord } from "./kinPlaces";
-import { useKinOpen } from "./useKinOpen";
 import { useKinMyDueTasks } from "./useKinPlaces";
 import { useKinWork, useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 
@@ -17,15 +16,12 @@ export function KinToday(props: KinWorkTarget & { readonly fallback: React.React
   const state = useKinWork(props);
   const ready = state._tag === "ready";
   const directory = useKinWorkDirectory(props, ready);
-  // The open list holds your tasks itself; without it, they are read here.
-  const before = useKinOpen(props) === null;
-  const due = useKinMyDueTasks(
+  const mine = useKinMyDueTasks(
     props,
-    ready && before ? directory.names.me : null,
+    ready ? directory.names.me : null,
     ready && !state.stale ? kinWorkListsMoved(state.live, ["work"]) : null,
   );
   if (!ready) return props.fallback;
-  const mine = before ? due : [];
   const params = { environmentId, orgId };
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-3 px-6 py-8">

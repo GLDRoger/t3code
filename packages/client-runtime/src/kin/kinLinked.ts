@@ -6,6 +6,7 @@ import {
   type KinRecordRef,
 } from "@t3tools/contracts";
 
+import { kinRecordName } from "./kinLists.ts";
 import type { KinNotificationDestination } from "./kinNotificationDestination.ts";
 import type { KinWorkLinkView } from "./kinWork.ts";
 
@@ -34,6 +35,9 @@ export const KIN_LINKED = {
   } satisfies Record<KinLinkedGroupName, string>,
   /** A message link the host gave no label. */
   message: "Where this came from",
+  /** A message link into a chat this reader isn't in: told in words, not linked. */
+  closedChat: (agent: string | null) =>
+    agent === null ? "Where this came from: a chat" : `Where this came from: a chat with ${agent}`,
   more: (count: number) => `${count} more`,
   unlisted: (count: number) => `${count} more not shown`,
 } as const;
@@ -43,8 +47,11 @@ export type KinLinkedKind = RecordKind | "contact" | "message";
 export interface KinLinkedItem {
   readonly kind: KinLinkedKind;
   readonly key: string;
+  /** What the row calls it: an entry's issued number, else its key. */
+  readonly name: string;
   readonly title: string | null;
-  readonly open: KinNotificationDestination;
+  /** Null for a chat this reader may not open: the row is told, not tapped. */
+  readonly open: KinNotificationDestination | null;
 }
 export interface KinLinkedGroup {
   readonly group: KinLinkedGroupName;
@@ -81,11 +88,12 @@ const GROUP_OF: Readonly<Record<KinLinkedKind, KinLinkedGroupName>> = {
 const kinLinkedKindOf = (key: string): KeyKind =>
   KIND_BY_PREFIX[key.slice(0, key.indexOf("-"))] ?? "entry";
 
-const recordItem = (ref: Pick<KinRecordRef, "key" | "title">): KinLinkedItem => {
+const recordItem = (ref: Pick<KinRecordRef, "key" | "title">, number?: string): KinLinkedItem => {
   const kind = kinLinkedKindOf(ref.key);
   return {
     kind,
     key: ref.key,
+    name: kinRecordName(ref.key, number),
     title: ref.title,
     // A contact has no screen of its own; chat's key links open it as an entry too.
     open: { _tag: "record", chatId: null, key: ref.key, kind: kind === "contact" ? "entry" : kind },
@@ -95,6 +103,7 @@ const recordItem = (ref: Pick<KinRecordRef, "key" | "title">): KinLinkedItem => 
 const messageItem = (link: KinRecordLink, chatId: KinChatId): KinLinkedItem => ({
   kind: "message",
   key: link.target,
+  name: link.target,
   title: link.label,
   open: { _tag: "chat", chatId, messageId: KinMessageId.make(link.target) },
 });
@@ -129,8 +138,17 @@ export function kinLinked(
     for (const ref of [detail.party, detail.project, detail.milestone])
       if (ref !== undefined) add(recordItem(ref));
   for (const link of [...detail.links, ...(detail.linkedFrom ?? [])]) {
-    if (link.kind === "record" && link.record !== undefined) add(recordItem(link.record));
+    if (link.kind === "record" && link.record !== undefined)
+      add(recordItem(link.record, link.number));
     if (link.kind === "message" && link.chatId !== null) add(messageItem(link, link.chatId));
+    else if (link.kind === "message" && link.closedChat !== undefined)
+      add({
+        kind: "message",
+        key: link.target,
+        name: link.target,
+        title: KIN_LINKED.closedChat(link.closedChat.agent),
+        open: null,
+      });
   }
   const groups = KIN_LINKED_GROUPS.flatMap((group): ReadonlyArray<KinLinkedGroup> => {
     const all = items.filter((item) => GROUP_OF[item.kind] === group);

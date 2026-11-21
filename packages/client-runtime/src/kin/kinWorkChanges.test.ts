@@ -13,6 +13,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { AtomCommandResult } from "../state/runtime.ts";
 import {
   createKinWorkActions,
+  kinWorkAllDay,
   kinWorkNewest,
   type KinWorkAnswers,
   type KinWorkNames,
@@ -221,6 +222,14 @@ describe("createKinWorkChanges", () => {
     await moved;
     void h.changes.undo(names);
     expect(h.sent[1]).toEqual(["update", { orgId, key: "W-1", rev: 4, ...sent }]);
+  });
+
+  it("shows a picked day as that day where the company is while the host answers", () => {
+    const h = harness();
+    const kiritimati = { ...names, zone: "Pacific/Kiritimati" };
+    void h.changes.run(task(), { type: "due", day: "2026-11-14" }, kiritimati);
+    const shown = kinWorkApplied(task(), h.state());
+    expect(kinWorkAllDay(shown.dueAt, shown.dueAllDay, kiritimati)).toBe("2026-11-14");
   });
 
   it("drops a task's notice once a later change to it, such as Give to, is held", async () => {

@@ -3,10 +3,9 @@ import { KinAgentId, KinPersonId, ProviderInstanceId } from "@t3tools/contracts"
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  KIN_AGENTS_COPY,
+  kinChatReadOnlyLine,
   kinDomainLabel,
   kinDomainSlug,
-  kinLeadAccessChanged,
   kinLeadChanges,
   kinLeadDraftCheck,
   kinLeadDraftOf,
@@ -116,7 +115,7 @@ describe("lead draft", () => {
 describe("what a lead has in hand", () => {
   it("adds the due time when there is one", () => {
     expect(kinLeadTrackingDetail({ kind: "work" })).toBe("Working on it now");
-    expect(kinLeadTrackingDetail({ kind: "scheduled" })).toBe("Repeats");
+    expect(kinLeadTrackingDetail({ kind: "scheduled" })).toBeNull();
     expect(
       kinLeadTrackingDetail({ kind: "reminder", dueAt: "2026-11-13T09:00:00.000Z" }, "UTC"),
     ).toBe("Reminder, Fri, Nov 13, 9:00 AM");
@@ -125,6 +124,12 @@ describe("what a lead has in hand", () => {
     expect(kinLeadTrackingDetail(day, "UTC", new Date("2026-11-18T09:00:00.000Z"))).toBe(
       "Working on it now, due Fri, Nov 27",
     );
+    // Given no zone, the company's from `names`, never this device's: Friday in Honolulu.
+    const honolulu = { people: new Map(), agents: new Map(), me: null, zone: "Pacific/Honolulu" };
+    const friday = { ...day, dueAt: "2026-11-28T09:59:59.999Z" };
+    expect(
+      kinLeadTrackingDetail(friday, undefined, new Date("2026-11-18T09:00:00.000Z"), honolulu),
+    ).toBe("Working on it now, due Fri, Nov 27");
   });
 
   it("says a waiting task is waiting, as the Tasks list does, never that it is under way", () => {
@@ -210,32 +215,19 @@ describe("kinWorkingAgents", () => {
   });
 });
 
-describe("removing a person's access to a lead", () => {
-  // The row's own word from the server; an older server sends none, and nothing is claimed.
-  it.each([
-    [
-      "a co-owner",
-      true,
-      "Meera is a co-owner, so they can still message Finance. This matters only if they stop being one.",
-      "Meera can still message Finance as a co-owner.",
-    ],
-    [
-      "a member",
-      false,
-      "Meera keeps their chat with Finance to read, but can't send it anything more. You can add them back any time.",
-      "Meera can no longer message Finance.",
-    ],
-    [
-      "an older server",
-      undefined,
-      "This removes Meera's own access to Finance. You can add them back any time.",
-      "Removed Meera's own access to Finance.",
-    ],
-  ] as const)("for %s", (_, ownerLevel, dialog, after) => {
-    expect(KIN_AGENTS_COPY.removeAccess("Meera", "Finance", ownerLevel)).toBe(dialog);
-    expect(kinLeadAccessChanged("Meera", "Finance", false, ownerLevel)).toBe(after);
-    expect(kinLeadAccessChanged("Meera", "Finance", true, ownerLevel)).toBe(
-      "Meera can now message Finance.",
+describe("kinChatReadOnlyLine", () => {
+  it("names the agent, or the person in a chat between two people", () => {
+    expect(kinChatReadOnlyLine({ kind: "agent", name: "Finance" })).toBe(
+      "You can read this chat, but you can no longer message Finance.",
+    );
+    expect(kinChatReadOnlyLine({ kind: "agent", name: null })).toBe(
+      "You can read this chat, but you can no longer message this agent.",
+    );
+    expect(kinChatReadOnlyLine({ kind: "person", name: "Zoya Sheikh" })).toBe(
+      "You can read this chat, but you and Zoya Sheikh can no longer message each other.",
+    );
+    expect(kinChatReadOnlyLine({ kind: "person", name: null })).toBe(
+      "You can read this chat, but you two can no longer message each other.",
     );
   });
 });

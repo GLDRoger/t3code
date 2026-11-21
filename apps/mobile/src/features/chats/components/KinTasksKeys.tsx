@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   KIN_TASKS_KEYS_COPY,
+  kinTasksKeyGuide,
   kinTasksKeyLabelCheck,
   kinTasksKeyMade,
   kinTasksKeyMakeBlocked,
@@ -58,11 +59,23 @@ export function KinTasksKeysSection(props: {
   const [made, setMade] = useState<KinTasksKeysIssueResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const keys = Option.getOrNull(AsyncResult.value(result))?.keys ?? null;
+  const connection = Option.getOrNull(
+    useAtomValue(environmentSession.preparedConnectionValueAtom(environmentId)),
+  );
+  const listed = Option.getOrNull(AsyncResult.value(result));
+  const keys = listed?.keys ?? null;
   const live = keys?.filter((key) => !removed.has(key.sessionId)) ?? null;
   const rows = live === null ? null : kinTasksKeyRows(live);
   const blocked = live === null ? null : kinTasksKeyMakeBlocked(live.length);
   const refresh = () => appAtomRegistry.refresh(query);
+  const guide =
+    holder === null && listed !== null
+      ? kinTasksKeyGuide({
+          origin: listed.origin,
+          httpBaseUrl: connection?.httpBaseUrl ?? null,
+          device: "phone",
+        })
+      : undefined;
 
   const remove = async (row: KinTasksKeyRow) => {
     setProblem(null);
@@ -111,7 +124,6 @@ export function KinTasksKeysSection(props: {
     Dialog.prompt({
       title: KIN_TASKS_KEYS_COPY.makeTitle,
       message: `${KIN_TASKS_KEYS_COPY.labelLabel} ${KIN_TASKS_KEYS_COPY.labelHint}`,
-      placeholder: KIN_TASKS_KEYS_COPY.labelPlaceholder,
       initialValue: "",
       confirmText: KIN_TASKS_KEYS_COPY.create,
       onConfirm: (value) => void make(value),
@@ -172,6 +184,12 @@ export function KinTasksKeysSection(props: {
           </View>
         ) : null}
       </ListSection>
+      {guide === undefined ? null : (
+        <KinTasksKeyGuide
+          guide={guide}
+          onMake={canMake && rows?.length === 0 && blocked === null ? askLabel : null}
+        />
+      )}
       {problem === null ? null : <ErrorBanner message={problem} />}
       {made === null ? null : (
         <KinTasksKeyOnce made={made} environmentId={environmentId} onDone={() => setMade(null)} />
@@ -221,6 +239,51 @@ function KinTasksKeyOnce(props: {
         <CopyField key={setup.agent} label={setup.agent} value={setup.text} footer={setup.where} />
       ))}
       <Button tone="secondary" fullWidth label={KIN_TASKS_KEYS_COPY.done} onPress={props.onDone} />
+    </>
+  );
+}
+
+/** Where a key goes, always on your own section; the setup lines stay folded until asked for. */
+function KinTasksKeyGuide(props: {
+  readonly guide: ReturnType<typeof kinTasksKeyGuide>;
+  /** The next step for someone with no key yet; null when they have one or can't make one. */
+  readonly onMake: (() => void) | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const { guide } = props;
+  if (guide === null) return <ErrorBanner message={KIN_TASKS_KEYS_COPY.addressUnknown} />;
+  return (
+    <>
+      <CopyField
+        label={KIN_TASKS_KEYS_COPY.addressLabel}
+        value={guide.address}
+        footer={guide.addressNote ?? undefined}
+      />
+      <Button
+        tone="text"
+        size="compact"
+        icon={open ? "chevron.down" : "chevron.right"}
+        label={KIN_TASKS_KEYS_COPY.setupHow}
+        onPress={() => setOpen(!open)}
+      />
+      {open ? (
+        <>
+          <Text textRole="body" className="px-2 text-foreground-muted">
+            {KIN_TASKS_KEYS_COPY.standIn}
+          </Text>
+          {guide.setups.map((setup) => (
+            <CopyField
+              key={setup.agent}
+              label={setup.agent}
+              value={setup.text}
+              footer={setup.where}
+            />
+          ))}
+          {props.onMake === null ? null : (
+            <Button tone="secondary" label={KIN_TASKS_KEYS_COPY.makeTitle} onPress={props.onMake} />
+          )}
+        </>
+      ) : null}
     </>
   );
 }

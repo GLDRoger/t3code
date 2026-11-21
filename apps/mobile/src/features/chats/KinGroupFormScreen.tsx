@@ -234,7 +234,7 @@ function GroupForm(props: {
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
-        title={creating ? "New group" : "Add to group"}
+        title={creating ? KIN_GROUP_FORM.newGroup : KIN_GROUP_FORM.addTo}
         onClose={() => navigation.goBack()}
         confirm={{
           label: creating ? "Create" : "Add",
@@ -274,7 +274,6 @@ function GroupForm(props: {
                       setProblem(null);
                     }}
                     textAlignVertical="center"
-                    placeholder="Launch week"
                     placeholderTextColorClassName="accent-placeholder"
                     className="min-h-8 font-sans text-base text-foreground"
                   />

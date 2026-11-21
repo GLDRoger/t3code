@@ -14,7 +14,14 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { moneySummary } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL } from "./teamView.ts";
-import { daysOverdue, endOfDay, owedInvoices, startOfDay, termsDays } from "./recordRows.ts";
+import {
+  daysOverdue,
+  endOfDay,
+  owedInvoices,
+  recordName,
+  startOfDay,
+  termsDays,
+} from "./recordRows.ts";
 
 // Invented org, clients, invoices and payments only.
 const orgId = KinOrgId.make("org");
@@ -290,6 +297,16 @@ layer(testLayer)("money owed", (it) => {
         daysOverdue(endOfDay("2026-11-20", "Asia/Kolkata"), now, "Asia/Kolkata"),
         0,
       );
+    }),
+  );
+
+  it.effect("an issued invoice or quote is named by its number and key, a draft by its key", () =>
+    Effect.sync(() => {
+      assert.strictEqual(recordName("INV-1", "INV/26-27/004"), "INV/26-27/004 (INV-1)");
+      assert.strictEqual(recordName("Q-3", " 2026-Q-17 "), "2026-Q-17 (Q-3)");
+      assert.strictEqual(recordName("INV-2", undefined), "INV-2");
+      assert.strictEqual(recordName("INV-2", null), "INV-2");
+      assert.strictEqual(recordName("INV-2", "  "), "INV-2");
     }),
   );
 });

@@ -6,6 +6,7 @@ import type {
   ScopedProjectRef,
   ServerConfig,
 } from "@t3tools/contracts";
+import { isKinLeadProjectId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import type { EnvironmentProject } from "./models.ts";
@@ -13,6 +14,8 @@ import { scopeProject } from "./models.ts";
 import { isScratchProject } from "./projects.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import { arrayElementsEqual, parseProjectKey, projectKey, projectRefsEqual } from "./entities.ts";
+
+const isCodingProjectRef = (ref: ScopedProjectRef) => !isKinLeadProjectId(ref.projectId);
 
 const EMPTY_PROJECTS: ReadonlyArray<OrchestrationProjectShell> = Object.freeze([]);
 const EMPTY_PROJECT_INDEX: ReadonlyMap<ProjectId, OrchestrationProjectShell> = new Map();
@@ -93,7 +96,8 @@ export function createEnvironmentProjectAtoms(input: {
   const projectRefsAtom = Atom.make((get) => {
     const refs: ScopedProjectRef[] = [];
     for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
-      refs.push(...get(environmentProjectRefsAtom(environmentId)));
+      // A Kin lead's project holds its memory, not code; it still opens by ref.
+      refs.push(...get(environmentProjectRefsAtom(environmentId)).filter(isCodingProjectRef));
     }
     if (projectRefsEqual(previousProjectRefs, refs)) {
       return previousProjectRefs;

@@ -22,6 +22,7 @@ import { LISTS } from "./lists.ts";
 import {
   inheritedSensitive,
   iso,
+  issuedNumber,
   keySensitive,
   notFound,
   samePrincipal,
@@ -457,9 +458,10 @@ export const linkedFromOf = Effect.fn("KinTeamView.linkedFrom")(function* (
     recordId: KinRecordId;
     key: KinRecordKey;
     title: KinRecord["title"];
+    number: unknown;
     total: number;
   }>`SELECT l.relation, l.created_at AS "createdAt", r.record_id AS "recordId", r.key, r.title,
-      COUNT(*) OVER () AS total
+      json_extract(r.fields_json, '$.number') AS "number", COUNT(*) OVER () AS total
     FROM kin_record_links l
     JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
     WHERE l.org_id = ${orgId} AND l.kind = 'record' AND l.target = ${recordId}
@@ -481,6 +483,7 @@ export const linkedFromOf = Effect.fn("KinTeamView.linkedFrom")(function* (
             label: null,
             createdAt: iso(row.createdAt),
             record: { recordId: row.recordId, key: row.key, title: row.title },
+            ...issuedNumber(row.number),
           })),
         }),
     ...(more > 0 ? { linkedFromMore: more } : {}),
@@ -787,10 +790,13 @@ export const teamCan = Effect.fn("KinTeamView.can")(function* (
   );
 });
 
-/** `p` is a teammate who sees `r`: a person let in by an invite, never the owner's own session. */
+/**
+ * `p` is a teammate who sees `r`: a person let in by an invite, never the owner's own session.
+ * An IN list, not EXISTS: SQLite runs an EXISTS last, after `personSees` for everyone, owner too.
+ */
 const teammateSees = (sql: SqlClient.SqlClient) =>
-  sql`(EXISTS (SELECT 1 FROM kin_session_bindings b WHERE b.org_id = p.org_id
-    AND b.person_id = p.person_id) AND ${personSees(sql, sql`p.person_id`)})`;
+  sql`(p.person_id IN (SELECT b.person_id FROM kin_session_bindings b WHERE b.org_id = p.org_id)
+    AND ${personSees(sql, sql`p.person_id`)})`;
 
 /** Who sees which of these entries now, as person and record pairs, through the caller's transaction. */
 export const teamPairs = Effect.fn("KinTeamView.pairs")(function* (
@@ -881,18 +887,7 @@ export const teamSeesKey = Effect.fn("KinTeamView.seesKey")(function* (
   return rows.length > 0;
 });
 
-/** The keys of every task this teammate may see now, for telling them when one is hidden. */
-export const teamKeys = Effect.fn("KinTeamView.keys")(function* (
-  orgId: KinOrgId,
-  personId: KinPersonId,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
-    WHERE r.org_id = ${orgId} AND ${personSees(sql, personId)} ORDER BY r.key`;
-  return new Set(rows.map((row) => row.key));
-});
-
-/** `teamKeys`, with each entry's list. */
+/** The key and list of every entry this teammate may see now, for telling them when one is hidden. */
 export const teamKeyLists = Effect.fn("KinTeamView.keyLists")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,

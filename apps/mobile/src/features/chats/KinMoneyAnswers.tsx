@@ -1,8 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
-import { KIN_INVOICES } from "@t3tools/client-runtime/kin/kinInvoices";
-import { KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_INVOICES, kinConfirmTotal } from "@t3tools/client-runtime/kin/kinInvoices";
+import { KIN_BANK, KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_BUDGETS,
   KIN_CASH,
@@ -60,6 +60,7 @@ import { KinFoldSection, KinWorkFrame, KinWorkTextField } from "./components/Kin
 import { kinClient } from "./state/kinClient";
 import {
   kinListsOf,
+  useKinAskAgent,
   useKinListEntries,
   useKinLists,
   useKinMoneyActions,
@@ -158,6 +159,7 @@ const useOpenEntry = (target: KinWorkTarget) => {
 export function KinCashSection(props: Section) {
   const now = new Date(useNowMinuteMs());
   const { state, refresh } = useKinCash(props, true);
+  const agent = useKinAskAgent(props, "money");
   const [why, setWhy] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
   if (state._tag === "refused" || state._tag === "gone") return null;
@@ -199,6 +201,15 @@ export function KinCashSection(props: Section) {
               )}
             </Row>
           ))}
+          {agent !== null ? (
+            <ListActionRow
+              label={KIN_BANK.upload}
+              {...(view.bank === null ? {} : { description: view.bank })}
+              onPress={() => agent.ask(KIN_BANK.uploadMessage)}
+            />
+          ) : view.bank === null ? null : (
+            <Plain>{view.bank}</Plain>
+          )}
           {view.currencies.map((one) => (
             <View key={one.currency} className="gap-1 bg-grouped-card px-4 py-2.5">
               <View className="flex-row justify-between gap-3">
@@ -376,7 +387,7 @@ export function KinOutlookSection(props: Section) {
 }
 
 // As Money counts them: no suggestion is an open quote until it is kept.
-const OPEN_QUOTES = { ...KIN_LIST_DEFAULT_FILTER, show: "open" as const, kept: true };
+const OPEN_QUOTES = { ...KIN_LIST_DEFAULT_FILTER, show: "notClosed" as const, kept: true };
 
 /** Open quotes first, each opening the quote; See all opens the whole list. */
 export function KinQuotesSection(
@@ -656,7 +667,6 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
         <KinWorkTextField
           label={KIN_BUDGETS.limit}
           value={draft.limit}
-          placeholder={KIN_BUDGETS.limitPlaceholder}
           keyboard="numbers"
           disabled={setter.busy}
           onChangeText={(limit) => setDraft({ ...draft, limit })}
@@ -739,7 +749,9 @@ export function KinQuoteActions(
           onPress={() =>
             Dialog.confirm({
               title: KIN_QUOTES.sendTitle,
-              message: KIN_QUOTES.sendDetail,
+              message: [kinConfirmTotal(item.amount, item.party?.title), KIN_QUOTES.sendDetail]
+                .filter((line) => line !== null)
+                .join("\n"),
               confirmText: KIN_QUOTES.send,
               onConfirm: () => void actions.issue(item.key),
             })
@@ -842,7 +854,6 @@ export function KinLinesFields(props: {
           <KinWorkTextField
             label={KIN_LINES.sac}
             value={line.sac}
-            placeholder={KIN_LINES.sacPlaceholder}
             maxLength={8}
             keyboard="numbers"
             disabled={props.disabled}

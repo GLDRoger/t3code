@@ -5,7 +5,6 @@ import {
   KinPersonId,
   type KinConnectionSaveEditedInput,
   type KinConnectionSendEditedInput,
-  type KinWaitingItem,
   type KinWidget,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
@@ -39,8 +38,6 @@ const state = vi.hoisted(() => ({
   } | null>,
   /** How each save is answered, in the same way. */
   saveAnswers: [] as Array<{ reason: "widget_changed"; message: string } | null>,
-  /** What the open list says waits on the reader. */
-  waiting: null as ReadonlyArray<KinWaitingItem> | null,
 }));
 
 vi.mock(import("~/state/use-atom-command"), async () => {
@@ -81,6 +78,7 @@ vi.mock(import("./kinClient"), async () => {
   state.canEdit = Atom.make(true).pipe(Atom.keepAlive);
   const canEdit = state.canEdit;
   return {
+    markKinHostKnown: () => {},
     kinClient: {
       widgetAction: { label: "kin:widget:act", permissionAtom: () => allowed },
       connectionSetSendFrom: { label: "kin:connection:setSendFrom", permissionAtom: () => allowed },
@@ -99,7 +97,6 @@ vi.mock(import("../connection/catalog"), async () => {
     environmentCatalog: { catalogValueAtom: Atom.make({ isReady: false, entries: new Map() }) },
   } as never;
 });
-vi.mock(import("./useKinOpen"), () => ({ useKinOpenWaiting: () => state.waiting }) as never);
 vi.mock(import("./useKinOwnerLevel"), () => ({ useKinOwnerLevelKnown: () => true }) as never);
 vi.mock(import("./useKinClock"), () => ({ useNowMinuteMs: () => POSTED + 60_000 }) as never);
 
@@ -110,7 +107,6 @@ function setup() {
   state.acted.length = 0;
   state.answers.length = 0;
   state.saveAnswers.length = 0;
-  state.waiting = null;
   kinSendEditHold(kinSendEditHeldKey("env-1", KinPersonId.make("rhea"), "choice:m1"), null);
 }
 
@@ -497,44 +493,7 @@ const asked = (change: Record<string, unknown> = {}): KinWidget =>
     },
     ...change,
   }) as never;
-const waitingOn = (fallback: string | null): KinWaitingItem =>
-  ({
-    waitingId: "w-1",
-    orgId: "org-1",
-    personId: "rhea",
-    chatId: "cos-rhea",
-    messageId: "q1",
-    widgetId: "choice:q1",
-    reason: "question",
-    createdAt: "2026-11-19T09:00:00.000Z",
-    resolvedAt: null,
-    resolution: null,
-    ask: {
-      agent: "Chief of staff",
-      default: fallback,
-      by: "2026-11-20T14:00:00.000Z",
-      revision: 1,
-      options: [
-        { optionId: "option-1", label: "Keep open" },
-        { optionId: "option-2", label: "Mark W-1 done" },
-      ],
-    },
-  }) as never;
-
 describe("an agent's open question", () => {
-  it("names under the question what Kin takes, and when, if nobody answers", async () => {
-    setup();
-    state.waiting = [waitingOn("Mark W-1 done")];
-    await using screen = await render(view(asked()));
-    await expect
-      .element(page.getByText(/^If nobody answers by .+ at .+: Mark W-1 done\.$/))
-      .toBeVisible();
-    // Kin won't take it on its own: the card says nothing more than it did.
-    state.waiting = [waitingOn(null)];
-    await screen.rerender(view(asked({ revision: 2 })));
-    await expect.element(page.getByText(/If nobody answers/)).not.toBeInTheDocument();
-  });
-
   it("marks a taken default's note Undone, with who and when, once it is put back", async () => {
     setup();
     const note = (personId: string, name: string) =>
@@ -561,5 +520,100 @@ describe("an agent's open question", () => {
     await expect.element(page.getByRole("button", { name: "Undo" })).not.toBeInTheDocument();
     await screen.rerender(view(note("zoya", "Zoya Sheikh")));
     await expect.element(page.getByText(/^Undone by Zoya Sheikh at .+\.$/)).toBeVisible();
+  });
+});
+
+// Kin asked Rhea who takes what Zoya looked after when she left; Meera, a co-owner, has a copy.
+const HELD = "1 open deal and 2 clients";
+const leaver = (change: Record<string, unknown> = {}): KinWidget =>
+  ({
+    ...mail(),
+    widgetId: "choice:l1",
+    messageId: "l1",
+    revision: 1,
+    state: {
+      question: `Zoya left the team and looked after ${HELD}. Who takes them?`,
+      detail:
+        "Until someone chooses, they stay in Zoya's name and can still be found.\n\nGive them to Arjun: Arjun looks after every one from now on, and is told once\nLeave them as they are: They stay in Zoya's name, and are Zoya's again if Zoya comes back",
+      options: [
+        {
+          optionId: "option-1",
+          label: "Give them to Arjun",
+          action: { line: "Arjun looks after every one from now on, and is told once" },
+        },
+        {
+          optionId: "option-2",
+          label: "Leave them as they are",
+          action: { line: "They stay in Zoya's name, and are Zoya's again if Zoya comes back" },
+        },
+      ],
+      untilAnswered: true,
+      answer: null,
+    },
+    ...change,
+  }) as never;
+
+describe("a leaver's card", () => {
+  it("offers Give them to… and Leave them as they are with what each does, taps the one chosen, then says what happened", async () => {
+    setup();
+    await using screen = await render(view(leaver()));
+    await expect
+      .element(
+        page.getByText("Arjun looks after every one from now on, and is told once", {
+          exact: true,
+        }),
+      )
+      .toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Leave them as they are" }))
+      .toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Give them to Arjun" }));
+    expect(state.acted).toMatchObject([
+      { widgetId: "choice:l1", revision: 1, actionId: "choose", value: "option-1" },
+    ]);
+    const given = `Arjun now looks after ${HELD} that Zoya looked after, and was told. To move one on, change who looks after it on its page.`;
+    await screen.rerender(
+      view(
+        leaver({
+          revision: 2,
+          closedAt: "2026-11-19T09:00:30.000Z",
+          state: {
+            ...(leaver().state as object),
+            outcome: { title: "Given to Arjun", text: given },
+            answer: {
+              optionId: "option-1",
+              personId: "rhea",
+              via: "tap",
+              emoji: null,
+              answeredAt: "2026-11-19T09:00:30.000Z",
+            },
+          },
+        }),
+      ),
+    );
+    await expect.element(page.getByText("Given to Arjun", { exact: true })).toBeVisible();
+    await expect.element(page.getByText(given)).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Give them to Arjun" }))
+      .not.toBeInTheDocument();
+    // Meera's copy, closed by Rhea's answer: what was chosen, and no buttons.
+    const closed = `Rhea left them as they are. ${HELD} stay in Zoya's name. If Zoya comes back with a new link, they are Zoya's again.`;
+    await screen.rerender(
+      view(
+        leaver({
+          revision: 2,
+          closedAt: "2026-11-19T09:00:30.000Z",
+          awaiting: [],
+          state: {
+            ...(leaver().state as object),
+            outcome: { title: "Left as they are", text: closed },
+          },
+        }),
+      ),
+    );
+    await expect.element(page.getByText(closed)).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Leave them as they are" }))
+      .not.toBeInTheDocument();
   });
 });

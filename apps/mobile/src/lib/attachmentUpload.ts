@@ -13,11 +13,7 @@ import type {
   EnvironmentId,
   UploadChatImageAttachment,
 } from "@t3tools/contracts";
-import {
-  AuthKinChatScope,
-  AuthOrchestrationOperateScope,
-  PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
-} from "@t3tools/contracts";
+import { PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
@@ -39,11 +35,10 @@ import {
   attachmentUploadError,
   type AttachmentUploadError,
 } from "@t3tools/client-runtime/state/attachment-uploads";
+import { mayUploadAttachments } from "@t3tools/client-runtime/kin/kinAttachmentAccess";
 
-// A Kin teammate's chat-only session uploads too: the host lets it ask for upload URLs.
 const mayUpload = (environmentId: EnvironmentId) =>
-  readEnvironmentScope(environmentId, AuthOrchestrationOperateScope) ||
-  readEnvironmentScope(environmentId, AuthKinChatScope);
+  mayUploadAttachments((scope) => readEnvironmentScope(environmentId, scope));
 
 export type UploadedMobileAttachment =
   | UploadChatImageAttachment
