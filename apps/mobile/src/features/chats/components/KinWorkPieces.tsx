@@ -388,20 +388,24 @@ export function KinTaskRow(props: {
             </Text>
             {/* Who has it never gives way: the rest of the line cuts off before it does. */}
             <View className={cn("min-w-0 flex-row items-center gap-1.5", grows && "flex-wrap")}>
-              <KinAvatar avatar={props.avatar} size="mini" />
-              <Text
-                textRole="footnote"
-                numberOfLines={kinLines(1, grows)}
-                className={cn("text-foreground", !grows && "max-w-[50%] shrink-0")}
-              >
-                {line.holder}
-              </Text>
+              {line.holder === null ? null : (
+                <>
+                  <KinAvatar avatar={props.avatar} size="mini" />
+                  <Text
+                    textRole="footnote"
+                    numberOfLines={kinLines(1, grows)}
+                    className={cn("text-foreground", !grows && "max-w-[50%] shrink-0")}
+                  >
+                    {line.holder}
+                  </Text>
+                </>
+              )}
               <Text
                 textRole="footnote"
                 numberOfLines={kinLines(1, grows)}
                 className="min-w-0 shrink text-foreground-muted"
               >
-                {"· "}
+                {line.holder === null ? null : "· "}
                 {line.lead === null ? null : (
                   <Text className={cn("font-t3-medium", LEAD_TONE[line.lead.tone])}>
                     {line.lead.text}

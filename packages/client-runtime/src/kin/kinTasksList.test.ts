@@ -23,6 +23,8 @@ import { kinRecordMove } from "./kinTaskRecord.ts";
 import {
   kinNeedsYouCount,
   kinTaskLine,
+  kinTaskQuickFilters,
+  kinTasksSharedAbout,
   kinTaskStep,
   kinTaskStepStatusShown,
   kinTasksByMove,
@@ -37,7 +39,7 @@ import {
   type KinTaskTicked,
 } from "./kinTasksList.ts";
 import type { KinWorkNotice } from "./kinWorkChanges.ts";
-import type { KinWorkNames } from "./kinWork.ts";
+import { KIN_WORK_DEFAULT_FILTER, kinWorkOverview, type KinWorkNames } from "./kinWork.ts";
 
 // Ambermill, invented: owner Rhea; Meera, Zoya; agents Chief of staff and Finance.
 const rhea = { _tag: "person", personId: KinPersonId.make("ambermill-rhea") } as const;
@@ -686,7 +688,72 @@ describe("kinTaskStepStatusShown", () => {
   });
 });
 
+describe("kinTaskQuickFilters", () => {
+  const counts = { open: 9, doing: 1, waiting: 2, late: 3, dueThisWeek: 4 };
+  const summary = {
+    ...counts,
+    closed: 5,
+    owners: [{ owner: rhea, open: 6, doing: 0, waiting: 1, late: 2, dueThisWeek: 3 }],
+    seq: 1,
+    asOf: now.toISOString(),
+  } as unknown as KinWorkSummary;
+  const shown = (filter = KIN_WORK_DEFAULT_FILTER, me = names.me) =>
+    kinTaskQuickFilters(filter, kinWorkOverview(summary, filter, names), me);
+
+  it("offers five at a glance, each with its count, and a second tap takes one off", () => {
+    const quick = shown();
+    expect(quick.map((one) => [one.label, one.count, one.selected])).toEqual([
+      ["All open", 9, true],
+      ["Mine", 6, false],
+      ["This week", 4, false],
+      ["Waiting", 2, false],
+      ["Late", 3, false],
+    ]);
+    const mine = quick[1]!.next;
+    expect(mine.owner).toEqual(rhea);
+    // Mine keeps a view chosen with it; its counts are then the reader's own.
+    const mineLate = shown({ ...mine, view: "late" });
+    expect(mineLate.filter((one) => one.selected).map((one) => one.label)).toEqual([
+      "Mine",
+      "Late",
+    ]);
+    expect(mineLate[4]!.count).toBe(2);
+    expect(mineLate[4]!.next).toMatchObject({ view: "open", owner: rhea });
+    expect(mineLate[1]!.next).toMatchObject({ view: "late", owner: null });
+    expect(mineLate[0]!.next).toMatchObject({ view: "open", owner: null });
+    // Before the reader is known there is no Mine.
+    expect(shown(KIN_WORK_DEFAULT_FILTER, null).map((one) => one.id)).toEqual([
+      "all",
+      "week",
+      "waiting",
+      "late",
+    ]);
+  });
+});
+
 describe("kinTaskLine", () => {
+  it("drops You on your own list, and the client every row shares", () => {
+    const lumen = { key: "C-1", title: "Lumen Clinics" } as const;
+    const mine = row("A", { party: lumen, dueAt: "2026-11-24T23:59:59.000Z", dueAllDay: true });
+    const hers = row("B", { owner: zoya, party: lumen });
+    const shared = kinTasksSharedAbout([mine, hers]);
+    expect(shared).toBe("Lumen Clinics");
+    expect(kinTaskLine(mine, names, now, { ownList: true, sharedAbout: shared })).toMatchObject({
+      holder: null,
+      rest: "Due Tue, Nov 24",
+    });
+    expect(kinTaskLine(hers, names, now, { ownList: true, sharedAbout: shared }).holder).toBe(
+      "Zoya",
+    );
+    // Elsewhere, and once one row names another client or none, each row says its own.
+    expect(kinTaskLine(mine, names, now)).toMatchObject({
+      holder: "You",
+      rest: "Due Tue, Nov 24 · Lumen Clinics",
+    });
+    expect(kinTasksSharedAbout([mine, hers, row("C")])).toBeNull();
+    expect(kinTasksSharedAbout([mine])).toBeNull();
+  });
+
   it.each([
     ["late is one red word", row("A", late("2026-11-15T09:00:00.000Z")), "late", "3 days late", ""],
     [

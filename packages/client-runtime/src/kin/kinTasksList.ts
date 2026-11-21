@@ -27,8 +27,11 @@ import {
   kinWorkName,
   kinWorkPrincipalKey,
   type KinTaskGroupBy,
+  type KinWorkFilter,
   type KinWorkNames,
+  type KinWorkOverview,
   type KinWorkRef,
+  type KinWorkViewId,
 } from "./kinWork.ts";
 
 /** What the phone's Tasks says, in the drawing's words. */
@@ -81,6 +84,80 @@ export const KIN_TASK_GROUP_BY: ReadonlyArray<{
   { id: "status", label: "Status" },
 ];
 
+/** Tasks' Filter at a glance; client, project, who has it and grouping are under More filters. */
+export const KIN_TASK_FILTER = {
+  all: "All open",
+  mine: "Mine",
+  week: "This week",
+  waiting: "Waiting",
+  late: "Late",
+  more: "More filters",
+} as const;
+
+/** The views More filters still offers, besides those at a glance. */
+export const KIN_TASK_MORE_VIEWS: ReadonlyArray<KinWorkViewId> = ["doing", "closed"];
+
+export interface KinTaskQuickFilter {
+  readonly id: "all" | "mine" | "week" | "waiting" | "late";
+  readonly label: string;
+  readonly count: number | null;
+  readonly selected: boolean;
+  /** What a tap reads; a tap on a chosen one takes it off again. */
+  readonly next: KinWorkFilter;
+}
+
+/**
+ * The Filter's first five: everything open, your own (kept with a view), and Due this week,
+ * Waiting and Late. Mine is left out until the reader is known.
+ */
+export function kinTaskQuickFilters(
+  filter: KinWorkFilter,
+  overview: KinWorkOverview,
+  me: KinWorkNames["me"],
+): ReadonlyArray<KinTaskQuickFilter> {
+  const chip = (view: KinWorkViewId) => overview.chips.find((one) => one.id === view);
+  const isMine = filter.owner?._tag === "person" && filter.owner.personId === me;
+  const view = (id: "week" | "waiting" | "late"): KinTaskQuickFilter => ({
+    id,
+    label: KIN_TASK_FILTER[id],
+    count: chip(id)?.count ?? null,
+    selected: filter.view === id,
+    next: { ...filter, view: filter.view === id ? "open" : id },
+  });
+  const known = chip("open")?.count ?? null;
+  return [
+    {
+      id: "all",
+      label: KIN_TASK_FILTER.all,
+      count: filter.owner === null ? known : null,
+      selected: filter.view === "open" && filter.owner === null,
+      next: { ...filter, view: "open", owner: null },
+    },
+    ...(me === null
+      ? []
+      : [
+          {
+            id: "mine" as const,
+            label: KIN_TASK_FILTER.mine,
+            count:
+              known === null
+                ? null
+                : (overview.owners.find(
+                    (one) => one.owner._tag === "person" && one.owner.personId === me,
+                  )?.open ?? 0),
+            selected: isMine,
+            next: {
+              ...filter,
+              owner: isMine ? null : { _tag: "person" as const, personId: me },
+            },
+          },
+        ]),
+    view("week"),
+    view("waiting"),
+    view("late"),
+  ];
+}
+
 /** The chip that says the list is grouped some other way, and clears it; null for Me first. */
 export const kinTaskGroupedChip = (groupBy: KinTaskGroupBy | undefined): string | null => {
   if (groupBy === undefined || groupBy === "me") return null;
@@ -103,7 +180,8 @@ export const kinNeedsYouCount = (input: {
  * today in amber, an agent working in blue), then when it is due and its client or project.
  */
 export interface KinTaskLine {
-  readonly holder: string;
+  /** Null on the reader's own Tasks for a task they hold: the list is theirs. */
+  readonly holder: string | null;
   readonly lead: { readonly text: string; readonly tone: "late" | "soon" | "working" } | null;
   readonly rest: string;
 }
@@ -113,7 +191,14 @@ export function kinTaskLine(
   names: KinWorkNames,
   now: Date,
   /** The heading already names its project, or a step stands in for "No date". */
-  options: { readonly inProject?: boolean; readonly quietNoDate?: boolean } = {},
+  options: {
+    readonly inProject?: boolean;
+    readonly quietNoDate?: boolean;
+    /** The reader's own Tasks, where their own name needn't be said. */
+    readonly ownList?: boolean;
+    /** The client or project every row shares (`kinTasksSharedAbout`), said by none of them. */
+    readonly sharedAbout?: string | null;
+  } = {},
 ): KinTaskLine {
   const closed = kinWorkClosed(record.state);
   const working = record.working || (record.owner._tag === "agent" && record.state === "doing");
@@ -135,16 +220,27 @@ export function kinTaskLine(
         : closed || options.quietNoDate === true || lead !== null
           ? null
           : KIN_TASKS.noDate;
-  const about = options.inProject ? null : (record.party?.title ?? record.project?.title ?? null);
+  const named = record.party?.title ?? record.project?.title ?? null;
+  const about = options.inProject || named === (options.sharedAbout ?? null) ? null : named;
   const waiting =
     record.state === "waiting" && record.waitingOn !== null
       ? `Waiting on ${kinMidSentence(kinWorkName(record.waitingOn, names, "you"))}`
       : null;
+  const mine = record.owner._tag === "person" && record.owner.personId === names.me;
   return {
-    holder: kinWorkName(record.owner, names),
+    holder: options.ownList === true && mine ? null : kinWorkName(record.owner, names),
     lead,
     rest: [waiting, due, about].filter((part) => part !== null).join(" · "),
   };
+}
+
+/** The client (else project) every one of several tasks names, which their rows needn't repeat. */
+export function kinTasksSharedAbout(records: ReadonlyArray<KinRecord>): string | null {
+  const named = new Set(
+    records.map((record) => record.party?.title ?? record.project?.title ?? null),
+  );
+  const [only] = named;
+  return records.length > 1 && named.size === 1 ? (only ?? null) : null;
 }
 
 /** The one step a row carries for this reader, drawn under its line. */
