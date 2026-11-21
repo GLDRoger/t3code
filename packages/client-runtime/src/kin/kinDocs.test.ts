@@ -28,6 +28,8 @@ import {
   kinDocFileInput,
   kinDocLibrary,
   kinDocsChip,
+  kinDocsMine,
+  kinDocsMineHeld,
   kinDocsQuery,
   kinDocRef,
   kinDocRefLabel,
@@ -151,6 +153,41 @@ describe("kinSearchHit", () => {
     expect(
       kinSearchHit({ ...hitInput, key: "CT-2", kind: "contacts", client: "C-1" }).clientKey,
     ).toBe("C-1");
+  });
+});
+
+describe("kinDocsMine", () => {
+  const ref = (key: string) => ({ recordId: KinRecordId.make(`rec-${key}`), key, title: key });
+  const zoya = { _tag: "person", personId: KinPersonId.make("invented-zoya") } as const;
+  const held = kinDocsMineHeld(
+    zoya.personId,
+    [
+      { key: "C-1", owner: zoya },
+      { key: "C-2", owner: me },
+    ],
+    [{ key: "P-1" }],
+  );
+  const rows = [
+    row("D-1", { owner: zoya }),
+    row("D-2", { party: ref("C-1") }),
+    row("D-3", { project: ref("P-1") }),
+    row("D-4", { party: ref("C-2") }),
+    row("D-5", { project: ref("P-2"), owner: me }),
+    row("D-6", { company: true }),
+  ];
+
+  it("is mine when I keep it, or it is on a client I look after or a project I lead or am on", () => {
+    expect(kinDocsMine(rows, held, true).mine.map((one) => one.key)).toEqual(["D-1", "D-2", "D-3"]);
+    // Whoever has no id yet has nothing of theirs.
+    expect(kinDocsMine(rows, { ...held, me: null }, true).mine).toEqual([]);
+  });
+
+  it("counts both sides from the same rows, exactly only once the list holds every doc", () => {
+    expect(kinDocsMine(rows, held, true).counts).toEqual({ mine: { n: 3 }, everyone: { n: 6 } });
+    expect(kinDocsMine(rows, held, false).counts).toEqual({
+      mine: { n: 3, atLeast: true },
+      everyone: { n: 6, atLeast: true },
+    });
   });
 });
 

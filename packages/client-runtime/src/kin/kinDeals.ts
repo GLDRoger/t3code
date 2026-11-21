@@ -35,6 +35,7 @@ import {
   type KinWorkNames,
 } from "./kinWork.ts";
 import type { KinWorkReadState } from "./kinWorkForms.ts";
+import type { KinMineCount } from "./kinWorkClients.ts";
 
 /** A deal's key: the built-in Deals list's fixed prefix. */
 export const kinIsDealKey = (key: string) => key.startsWith("DL-");
@@ -73,6 +74,9 @@ export const KIN_DEALS = {
   someone: "Someone…",
   whose: "Whose deals",
   showEveryone: "Clear to show everyone's",
+  /** The By person row a list was opened from, as its chip names it. */
+  personChip: (name: string) => `Looked after by ${name}`,
+  clearPerson: "Clear it",
   which: "Which deals",
   dropWon: "Drop to win",
   dropLost: "Drop to lose",
@@ -289,6 +293,14 @@ export function kinDealsQuery(
     },
   };
 }
+
+/** How many deals a read finds under its filters, the ones past the cap included. */
+export const kinDealsCount = (
+  result: Pick<KinDealsResult, "deals" | "more" | "open">,
+  state: KinDealState,
+): KinMineCount => ({
+  n: state === "open" ? result.open.count : result.deals.length + result.more,
+});
 
 export const KIN_DEALS_STATES: ReadonlyArray<{
   readonly id: KinDealState;

@@ -51,6 +51,7 @@ import {
   type KinWorkNames,
 } from "./kinWork.ts";
 import { kinCount } from "./kinCount.ts";
+import { kinIsMine, type KinMineCount, type KinMineHeld } from "./kinWorkClients.ts";
 
 export const KIN_DOCS = {
   earlierVersions: "Show earlier versions",
@@ -110,6 +111,11 @@ export const KIN_DOCS = {
     title: "No docs yet",
     detail:
       "Ask an agent for a plan, a brief, a runbook or meeting notes. It lands here, and the agent keeps it current.",
+  },
+  noneMine: {
+    title: "Nothing of yours yet",
+    detail:
+      "Docs you keep, and docs on the clients and projects you look after or are on, show here. Everyone has the rest.",
   },
   noMatch: {
     title: "No doc says that",
@@ -455,6 +461,46 @@ export function kinDocLibrary(
 export const kinDocsOnPhone = <Row extends Pick<KinDocListRow, "character">>(
   rows: ReadonlyArray<Row>,
 ): ReadonlyArray<Row> => rows.filter((row) => row.character !== true);
+
+/**
+ * The viewer's clients and projects for `kinIsMine`: the clients they look after among those read,
+ * and the projects they lead or are on.
+ */
+export function kinDocsMineHeld(
+  me: KinPersonId | null,
+  clients: ReadonlyArray<{ readonly key: string; readonly owner: KinWorkPrincipal }>,
+  projects: ReadonlyArray<{ readonly key: string }>,
+): KinMineHeld {
+  return {
+    me,
+    clients: new Set(
+      clients
+        .filter((one) => one.owner._tag === "person" && one.owner.personId === me)
+        .map((one) => one.key),
+    ),
+    projects: new Set(projects.map((one) => one.key)),
+  };
+}
+
+/**
+ * Docs' Mine among the rows the list holds, and both sides' counts: exact once it holds every doc
+ * the host has, "at least" before. Everyone is the same rows, so Mine never shows more.
+ */
+export function kinDocsMine<Row extends Parameters<typeof kinIsMine>[0]>(
+  rows: ReadonlyArray<Row>,
+  held: KinMineHeld,
+  complete: boolean,
+): {
+  readonly mine: ReadonlyArray<Row>;
+  readonly counts: { readonly mine: KinMineCount; readonly everyone: KinMineCount };
+} {
+  const mine = rows.filter((row) => kinIsMine(row, held));
+  const atLeast = complete ? {} : { atLeast: true };
+  return {
+    mine,
+    counts: { mine: { n: mine.length, ...atLeast }, everyone: { n: rows.length, ...atLeast } },
+  };
+}
 
 /** The rows with What we sell first, once: `pinned` as read on its own, else the page's copy. */
 export function kinDocsPinned(

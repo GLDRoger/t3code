@@ -8,13 +8,17 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import {
   KIN_CLIENTS,
+  KIN_MINE,
+  kinClientsSide,
+  kinMineOpens,
+  kinMineOwner,
+  type KinMineSide,
   kinClientsShowChoices,
   kinClientsTabs,
   kinClientsTabShown,
   KIN_PROJECTS,
   KIN_PROJECT_VIEWS,
   kinClientRow,
-  kinClientsLookedAfterChoices,
   kinClientsChosenAtom,
   kinClientsChosenKey,
   kinClientsQuery,
@@ -30,13 +34,8 @@ import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinW
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import {
-  kinWorkOffline,
-  kinWorkPrincipalKey,
-  kinWorkSamePrincipal,
-  type KinWorkNames,
-} from "@t3tools/client-runtime/kin/kinWork";
-import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
+import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
+import type { EnvironmentId, KinPersonId, KinRecordKey } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
@@ -66,7 +65,7 @@ import {
 } from "./state/useKinWork";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { useKinHostAt } from "./state/useKinHost";
-import { KinDealsView } from "./KinDealsList";
+import { KinDealsView, KinListPinned, KinMineSwitch } from "./KinDealsList";
 import { useKinExportList, useKinMarketing } from "./KinMarketing";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
@@ -193,7 +192,7 @@ function NamedList(props: {
   readonly menu: AppBarMenu;
   readonly ask: AppBarAction | null;
   readonly stale: boolean;
-  /** Above the rows: which of Clients and Projects shows. */
+  /** Pinned above the rows: which of Clients, Deals and Projects shows, and whose. */
   readonly header: React.ReactNode;
   readonly items: ReadonlyArray<ListItem>;
   readonly shown: number;
@@ -248,6 +247,7 @@ function NamedList(props: {
         })}
       />
       <ScreenContent surface="screen">
+        <KinListPinned>{props.header}</KinListPinned>
         <LegendList<ListItem>
           renderScrollComponent={NativeScrollView}
           className="flex-1"
@@ -267,12 +267,11 @@ function NamedList(props: {
           onEndReached={() => void list.loadMore()}
           onEndReachedThreshold={0.5}
           ListHeaderComponent={
-            <View className="gap-2 px-4 pt-2">
-              {props.header}
-              {shown === "rows" && props.stale ? (
+            shown === "rows" && props.stale ? (
+              <View className="px-4 pt-2">
                 <KinWorkStaleNotice environmentId={props.environmentId} onRetry={list.refresh} />
-              ) : null}
-            </View>
+              </View>
+            ) : null
           }
           ListEmptyComponent={
             <View className="px-4 pt-4">
@@ -373,24 +372,15 @@ type Showing = {
   readonly view: KinProjectsFilter["view"];
 };
 
-/** Which clients, and for someone who sees them all, who looks after them. */
+/** Which clients, and for someone who sees them all, where they came from; whose is the switch. */
 function clientsMenu(
   showing: Showing,
   onShow: (showing: Showing) => void,
-  names: KinWorkNames,
   seesClients: boolean,
   marketing: KinMarketing,
   onExport: () => void,
 ): AppBarMenu["items"] {
   const { clients } = showing;
-  const pick = (lookedAfter: KinClientsFilter["lookedAfter"]) =>
-    onShow({ ...showing, clients: { ...clients, lookedAfter } });
-  const picked = (who: KinClientsFilter["lookedAfter"]) =>
-    who === "anyone" || clients.lookedAfter === "anyone"
-      ? who === clients.lookedAfter
-      : kinWorkSamePrincipal(who, clients.lookedAfter);
-  const me = names.me === null ? null : ({ _tag: "person", personId: names.me } as const);
-  const someone = kinClientsLookedAfterChoices(names);
   return [
     {
       id: "show",
@@ -410,43 +400,6 @@ function clientsMenu(
     ...(!seesClients
       ? []
       : [
-          {
-            id: "lookedAfter",
-            title: KIN_CLIENTS.lookedAfterBy,
-            inline: true,
-            items: [
-              {
-                id: "lookedAfter:anyone",
-                title: KIN_CLIENTS.anyone,
-                selected: picked("anyone"),
-                onPress: () => pick("anyone"),
-              },
-              ...(me === null
-                ? []
-                : [
-                    {
-                      id: "lookedAfter:me",
-                      title: KIN_CLIENTS.me,
-                      selected: picked(me),
-                      onPress: () => pick(me),
-                    },
-                  ]),
-              ...(someone.length === 0
-                ? []
-                : [
-                    {
-                      id: "lookedAfter:someone",
-                      title: KIN_CLIENTS.someone,
-                      items: someone.map((one) => ({
-                        id: `lookedAfter:${one.key}`,
-                        title: one.name,
-                        selected: picked(one.who),
-                        onPress: () => pick(one.who),
-                      })),
-                    },
-                  ]),
-            ],
-          },
           {
             id: "cameFrom",
             title: KIN_MARKETING.cameFrom,
@@ -494,7 +447,6 @@ function showMenu(
   tab: KinClientsTab,
   showing: Showing,
   onShow: (showing: Showing) => void,
-  names: KinWorkNames,
   seesClients: boolean,
   marketing: KinMarketing,
   onExport: () => void,
@@ -504,7 +456,7 @@ function showMenu(
     icon: "line.3.horizontal.decrease.circle",
     items:
       tab === "clients"
-        ? clientsMenu(showing, onShow, names, seesClients, marketing, onExport)
+        ? clientsMenu(showing, onShow, seesClients, marketing, onExport)
         : KIN_PROJECT_VIEWS.map((view) => ({
             id: view.id,
             title: view.label,
@@ -516,7 +468,8 @@ function showMenu(
 
 /** Clients, or their projects grouped under them, one segment at a time. */
 export function KinClientsList(props: ListProps & { readonly projects: boolean }) {
-  const remembered = kinClientsTabAtom(`${props.environmentId}:${props.directory.names.me ?? ""}`);
+  const { me } = props.directory.names;
+  const remembered = kinClientsTabAtom(`${props.environmentId}:${me ?? ""}`);
   const [asked, setTab] = useState<KinClientsTab>(() =>
     props.projects ? "projects" : appAtomRegistry.get(remembered),
   );
@@ -524,18 +477,18 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
   const seesClients = useKinSeesClients(props.environmentId) === true;
   // Deals are for someone with Clients on; the segment they last chose may no longer be theirs.
   const tab = kinClientsTabShown(asked, seesClients);
-  const chosen = kinClientsChosenAtom(
-    kinClientsChosenKey(props.environmentId, props.directory.names.me),
-  );
+  const chosen = kinClientsChosenAtom(kinClientsChosenKey(props.environmentId, me));
+  const [held] = useState(() => appAtomRegistry.get(chosen));
   const [showing, setShown] = useState<Showing>(() => ({
-    clients: appAtomRegistry.get(chosen) ?? {
-      show: start.show,
-      lookedAfter: start.lookedAfter,
-    },
+    clients: held ?? { show: start.show, lookedAfter: "anyone" },
     view: "open",
   }));
+  // The side picked here; until then the list opens as `kinMineOpens` says.
+  const [side, setSide] = useState<KinMineSide | null>(null);
+  const lookedAfterOf = (shown: KinMineSide): KinClientsFilter["lookedAfter"] =>
+    shown === "mine" ? (kinMineOwner(me) ?? "anyone") : "anyone";
   const setShowing = (next: Showing) => {
-    appAtomRegistry.set(chosen, next.clients);
+    if (next.clients !== showing.clients) appAtomRegistry.set(chosen, next.clients);
     setShown(next);
   };
   const marketing = useKinMarketing(props);
@@ -549,32 +502,35 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
           icon: "bubble.left" as const,
           onPress: () => agent.ask(kinWorkAskDraft("clients")),
         };
-  const view = {
-    menu: showMenu(
+  // Whatever changes, the side shown is kept with it.
+  const menuFor = (shown: KinMineSide) => {
+    const clients =
+      tab === "clients"
+        ? { ...showing.clients, lookedAfter: lookedAfterOf(shown) }
+        : showing.clients;
+    return showMenu(
       tab,
-      showing,
+      { ...showing, clients },
       setShowing,
-      props.directory.names,
       seesClients,
       marketing,
       () =>
         void exporter.run(
-          kinContactListOfClients(kinClientsQuery(props.orgId, { ...showing.clients, text: "" })),
+          kinContactListOfClients(kinClientsQuery(props.orgId, { ...clients, text: "" })),
         ),
-    ),
-    ask,
-    header: (
-      <SegmentedControl
-        options={kinClientsTabs(seesClients).map((held) => ({ value: held.id, label: held.label }))}
-        selected={tab}
-        onSelect={(next) => {
-          appAtomRegistry.set(remembered, next);
-          setTab(next);
-        }}
-        role="tab"
-      />
-    ),
+    );
   };
+  const header = (
+    <SegmentedControl
+      options={kinClientsTabs(seesClients).map((one) => ({ value: one.id, label: one.label }))}
+      selected={tab}
+      onSelect={(next) => {
+        appAtomRegistry.set(remembered, next);
+        setTab(next);
+      }}
+      role="tab"
+    />
+  );
   if (tab === "deals")
     return (
       <KinDealsView
@@ -582,24 +538,46 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
         orgId={props.orgId}
         directory={props.directory}
         stale={props.stale}
-        header={view.header}
+        header={header}
         ask={ask}
       />
     );
-  return tab === "clients" ? (
-    <ClientsView
-      key={`clients:${showing.clients.show}:${
-        showing.clients.lookedAfter === "anyone"
-          ? "anyone"
-          : kinWorkPrincipalKey(showing.clients.lookedAfter)
-      }:${showing.clients.cameFrom ?? ""}:${showing.clients.tag ?? ""}`}
-      {...props}
-      {...view}
-      showing={showing.clients}
-      canAdd={seesClients}
-    />
+  if (tab === "projects")
+    return (
+      <ProjectsView
+        key={`projects:${showing.view}`}
+        {...props}
+        menu={menuFor("mine")}
+        ask={ask}
+        header={header}
+        view={showing.view}
+      />
+    );
+  const key = `clients:${showing.clients.show}:${showing.clients.cameFrom ?? ""}:${showing.clients.tag ?? ""}`;
+  const clients = {
+    ...props,
+    ask,
+    header,
+    menuFor,
+    showing: {
+      show: showing.clients.show,
+      lookedAfter: "anyone",
+      ...(showing.clients.cameFrom == null ? {} : { cameFrom: showing.clients.cameFrom }),
+      ...(showing.clients.tag == null ? {} : { tag: showing.clients.tag }),
+      text: "",
+    } satisfies KinClientsFilter,
+    side,
+    remembered: held === null ? null : kinClientsSide(held.lookedAfter, me),
+    onSide: (next: KinMineSide) => {
+      setSide(next);
+      setShowing({ ...showing, clients: { ...showing.clients, lookedAfter: lookedAfterOf(next) } });
+    },
+    canAdd: seesClients,
+  };
+  return me === null ? (
+    <ClientsEveryone key={key} {...clients} />
   ) : (
-    <ProjectsView key={`projects:${showing.view}`} {...props} {...view} view={showing.view} />
+    <ClientsBoth key={key} {...clients} me={me} />
   );
 }
 
@@ -609,21 +587,60 @@ type ViewProps = ListProps & {
   readonly header: React.ReactNode;
 };
 
+type ClientsProps = Omit<ViewProps, "menu"> & {
+  readonly menuFor: (shown: KinMineSide) => AppBarMenu;
+  /** Which clients, whoever looks after them. */
+  readonly showing: KinClientsFilter;
+  readonly side: KinMineSide | null;
+  readonly remembered: KinMineSide | null;
+  readonly onSide: (side: KinMineSide) => void;
+  /** The owner level adds clients; a teammate with Clients on adds prospects. */
+  readonly canAdd: boolean;
+};
+
+type ClientsList = ReturnType<typeof useKinClientsList>;
+
+/** Both sides read at once, so each shows its count and the switch moves without a wait. */
+function ClientsBoth(props: ClientsProps & { readonly me: KinPersonId }) {
+  const seq = props.stale ? null : props.live.seq;
+  const mine = useKinClientsList(props, seq, {
+    ...props.showing,
+    lookedAfter: { _tag: "person", personId: props.me },
+  });
+  const everyone = useKinClientsList(props, seq, props.showing);
+  return <ClientsView {...props} mine={mine} everyone={everyone} />;
+}
+
+/** Until the host says who the viewer is, there is no Mine to show. */
+function ClientsEveryone(props: ClientsProps) {
+  const everyone = useKinClientsList(props, props.stale ? null : props.live.seq, props.showing);
+  return <ClientsView {...props} mine={null} everyone={everyone} />;
+}
+
+const clientsCount = (list: ClientsList | null) =>
+  list === null || list.state.total === null ? null : { n: list.state.total };
+
 function ClientsView(
-  props: ViewProps & {
-    readonly showing: Omit<KinClientsFilter, "text">;
-    /** The owner level adds clients; a teammate with Clients on adds prospects. */
-    readonly canAdd: boolean;
-  },
+  props: ClientsProps & { readonly mine: ClientsList | null; readonly everyone: ClientsList },
 ) {
   const navigation = useNavigation();
   const { environmentId, orgId } = props;
   const scope = useKinViewerScope(environmentId);
   const now = new Date(useNowMinuteMs());
-  const seq = props.stale ? null : props.live.seq;
-  const { state, list } = useKinClientsList(props, seq, { ...props.showing, text: "" });
+  const counts = { mine: clientsCount(props.mine), everyone: clientsCount(props.everyone) };
+  // A Mine that can't be read opens nothing of its own: the list opens on Everyone.
+  const opens =
+    props.side ??
+    kinMineOpens(
+      props.remembered,
+      props.mine === null
+        ? { n: 0 }
+        : (counts.mine ?? (props.mine.state.loading ? null : { n: 0 })),
+    );
+  // While Mine's count decides the side, its own read shows as loading.
+  const { state, list } = opens === "everyone" || props.mine === null ? props.everyone : props.mine;
   const { filter } = state;
-  const nothing = kinClientsNothing(filter, scope, props.directory.names.me);
+  const nothing = kinClientsNothing(filter, scope, props.directory.names.me, KIN_MINE.everyone);
   const add = props.canAdd
     ? {
         label: scope.all ? KIN_CLIENTS.add : KIN_CLIENTS.addProspect,
@@ -646,9 +663,16 @@ function ClientsView(
     <NamedList
       environmentId={environmentId}
       title={KIN_CLIENTS.title}
-      menu={props.menu}
+      menu={props.menuFor(opens ?? "mine")}
       ask={props.ask}
-      header={props.header}
+      header={
+        <>
+          {props.header}
+          {props.mine === null || opens === null ? null : (
+            <KinMineSwitch side={opens} counts={counts} onSelect={props.onSide} />
+          )}
+        </>
+      }
       stale={props.stale || state.stale}
       items={state.records.map((row) => ({
         type: "row" as const,
@@ -662,12 +686,17 @@ function ClientsView(
         // The counts are read again too: they may be what failed.
         refresh: () => {
           refreshKinWorkLive(props);
-          list.refresh();
+          props.mine?.list.refresh();
+          props.everyone.list.refresh();
         },
       }}
       extra={state}
       search={{ text: filter.text, placeholder: KIN_CLIENTS.search }}
-      onSearch={(text) => list.setFilter({ ...filter, text })}
+      // Both sides search alike, so each count says where the matches are.
+      onSearch={(text) => {
+        props.mine?.list.setFilter({ ...props.mine.state.filter, text });
+        props.everyone.list.setFilter({ ...props.everyone.state.filter, text });
+      }}
       nothing={
         <EmptyState
           variant="plain"
