@@ -13,6 +13,7 @@ import { Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import { AppText as Text } from "../../../components/ui/AppText";
 import type { FilePreviewSource } from "../../../components/ui/FilePreviewModal";
 import { FilePreviewGallery } from "../../../components/ui/FilePreviewGallery";
+import { Button } from "../../../components/ui/Button";
 import { Chip } from "../../../components/ui/Chip";
 import * as Dialog from "../../../components/ui/Dialog";
 import * as Haptics from "expo-haptics";
@@ -58,6 +59,7 @@ import {
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinTurnReceiptOpen, kinTurnReceiptLine } from "@t3tools/client-runtime/kin/kinTurnReceipt";
+import { kinReplyButtons, type KinReplyButton } from "@t3tools/client-runtime/kin/kinReplyButtons";
 import { kinCardDraws, KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   kinDraftMarkdown,
@@ -237,6 +239,7 @@ export function KinMessageBubble(props: {
     (!hasCard && attachments.length === 0) || hasBody || suggested || message.editedAt !== null;
   const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
   const receipt = deleted ? null : kinTurnReceiptLine(message.turnChanges);
+  const buttons = kinReplyButtons(message);
   // The sheet's actions, reachable without the long press.
   const sheetActions = [
     ...(onReact === null || deleted
@@ -453,6 +456,9 @@ export function KinMessageBubble(props: {
         </Pressable>
       )}
       {hasCard && page === null ? <View className="w-[85%]">{card}</View> : null}
+      {buttons.length === 0 ? null : (
+        <KinReplyButtons buttons={buttons} onOpenTarget={onOpenTarget} />
+      )}
       {receipt === null ? null : (
         <Pressable
           accessibilityRole="button"
@@ -485,6 +491,26 @@ export function KinMessageBubble(props: {
           ))}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/** Up to three buttons under an agent's reply, each opening what it named; they wrap, never cut. */
+function KinReplyButtons(props: {
+  readonly buttons: ReadonlyArray<KinReplyButton>;
+  readonly onOpenTarget: ReturnType<typeof useKinOpenTarget>;
+}) {
+  return (
+    <View className="max-w-full flex-row flex-wrap gap-2 px-1 pt-1">
+      {props.buttons.map((button) => (
+        <Button
+          key={button.id}
+          label={button.label}
+          tone="outline"
+          {...(button.note === null ? {} : { accessibilityHint: button.note })}
+          onPress={() => props.onOpenTarget(button.to)}
+        />
+      ))}
     </View>
   );
 }
