@@ -42,6 +42,8 @@ export const KIN_ALWAYS_LOADED: ReadonlySet<string> = new Set([
   "money_summary",
   "money_query",
   "pipeline_read",
+  "kin_document",
+  "kin_issue",
 ]);
 
 /** `Tool.Meta` that has Claude Code load a tool up front while ToolSearch holds the rest back. */
