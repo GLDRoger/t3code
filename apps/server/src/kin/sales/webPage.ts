@@ -46,7 +46,7 @@ export type WebPage = {
   readonly text: string;
   /** Its text ran past `PAGE_TEXT_CHARS`. */
   readonly cut: boolean;
-  /** The links its text shows, as absolute addresses. */
+  /** The links the whole page shows, past any cut, as absolute addresses. */
   readonly links: ReadonlyArray<string>;
 };
 

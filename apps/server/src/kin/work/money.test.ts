@@ -1048,6 +1048,34 @@ describe("repeating entries", () => {
       assert.deepStrictEqual(next.repeatJson === null ? null : JSON.parse(next.repeatJson).rule, {
         every: "month",
       });
+      // An issued invoice closes; its next one is a draft without the number, to be issued.
+      yield* defined(1, { template: "invoices" });
+      const { row: invoice } = yield* records.create(orgId, system, {
+        list: "invoices",
+        title: "Invented hosting",
+        owner,
+        amount: { minor: 236_000, currency: "INR" },
+        dueAt: Date.parse("2027-01-31T18:29:59.999Z"),
+        dueAllDay: true,
+        repeat: { every: "month" },
+        originKey: "hosting",
+      });
+      const issued = yield* OwnerMoney.issue(people, {
+        orgId,
+        key: KinRecordKey.make(invoice.key),
+      });
+      yield* records.update(orgId, system, invoice.key, { state: "done" });
+      const sql = yield* SqlClient.SqlClient;
+      const hosting = yield* sql<{ state: string; number: string | null }>`SELECT state,
+          json_extract(fields_json, '$.number') AS number FROM kin_records
+        WHERE register_id = 'invoices' AND title = 'Invented hosting' ORDER BY key`;
+      assert.deepStrictEqual(
+        hosting.map((one) => [one.state, one.number]),
+        [
+          ["done", issued.number],
+          ["open", null],
+        ],
+      );
     }).pipe(Effect.provide(layer)),
   );
 });
@@ -1596,6 +1624,37 @@ describe("invoices", () => {
         "C-1 still owes on 4 unpaid invoices: INV-1 (₹9,999.00 owed), INV-6 (₹3,000.00 owed), INV-3 (₹1,000.00 owed), INV-4 (₹1,000.00 owed). Record their payments or void them first.",
       );
       assert.strictEqual((yield* records.get(orgId, "C-1"))!.state, "open");
+
+      // W-18: an invoice dated ahead with no number hasn't gone out, so it is a Draft, not owed.
+      const owedNow = (yield* OwnerMoney.money(people, { orgId })).owed.total;
+      yield* LeadWork.create(scope, {
+        sourceEventId: overpaid,
+        records: [
+          {
+            list: "invoices",
+            title: "Invented December retainer",
+            client: "Invented Acme",
+            amount: "8,000",
+            date: "2026-12-01",
+            due: "2026-12-15",
+          },
+        ],
+      });
+      assert.strictEqual((yield* records.get(orgId, "INV-7"))!.state, "open");
+      assert.deepStrictEqual((yield* OwnerMoney.money(people, { orgId })).owed.total, owedNow);
+      assert.notInclude(
+        (yield* outlook(orgId, NOW)).incoming.map((one) => one.key),
+        "INV-7",
+      );
+      const december = yield* OwnerMoney.dates(people, {
+        orgId,
+        from: "2026-12-01T00:00:00.000Z",
+        to: "2026-12-31T00:00:00.000Z",
+      });
+      assert.deepStrictEqual(
+        december.rows.filter((one) => one.record.key === "INV-7").map((one) => one.label),
+        ["Date", "Due"],
+      );
     }).pipe(Effect.provide(layer)),
   );
 

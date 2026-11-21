@@ -49,6 +49,7 @@ import {
   rescueMessageId,
   type AgentIdentity,
 } from "../chat/KinIdentity.ts";
+import { askedForSuffix } from "../github/askedFor.ts";
 import { isClaudeThinkingItem } from "./claudeThinkingItem.ts";
 import { laneFor, type Lane } from "./replyLane.ts";
 import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
@@ -710,7 +711,7 @@ const make = Effect.gen(function* () {
         ? presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, messageId)
         : Effect.void;
     // In the Team room an agent speaks with team_say; what else it writes is its own thinking.
-    if (wake.lane.team === true) {
+    if (wake.lane.team === true || wake.lane.quiet === true) {
       segment.outcome = "dropped";
       return yield* end(null);
     }
@@ -771,9 +772,20 @@ const make = Effect.gen(function* () {
       lead === undefined
         ? null
         : yield* chat.replyCard(lead, wake.lane.chatId).pipe(Effect.orElseSucceed(() => null));
+    // A review someone asked for in Kin: the owner's line says who asked (`reviewAsk.ts`).
+    const askedFor =
+      slot === undefined && wake.posted === 0
+        ? yield* askedForSuffix(wake.orgId, wake.wakeupId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orElseSucceed(() => undefined),
+          )
+        : undefined;
     const opening =
       slot === undefined
-        ? yield* underMorningHeading(wake, text).pipe(Effect.orElseSucceed(() => text))
+        ? yield* underMorningHeading(
+            wake,
+            askedFor === undefined ? text : `${text} ${askedFor}`,
+          ).pipe(Effect.orElseSucceed(() => text))
         : text;
     const result = yield* slot !== undefined
       ? extend(wake, slot, text, segment.ordinal)

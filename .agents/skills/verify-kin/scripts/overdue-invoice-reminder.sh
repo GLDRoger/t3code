@@ -6,7 +6,7 @@ expect_in "$fact" '"key":"invoice_overdue:INV-1' "the owner's pulse has no overd
 expect_in "$fact" "past due" "the overdue fact doesn't say it is past due"
 expect_not_in "$(kv as zoya rpc kin.pulse.read)" "INV-1" "Zoya's pulse names the invoice"
 kv as owner web open money >/dev/null
-expect_in "$(kv as owner web snapshot)" "INV-1" "Money's Needs attention doesn't show INV-1"
+expect_in "$(kv as owner web snapshot)" "INV/26-27/004" "Money's Needs attention doesn't show INV-1 by its number"
 # The invoice's thread: its first sending, made here if no earlier script sent it.
 invoice="$(kv mail sent | grep 'INV/26-27/004' | grep -v inReplyTo | tail -1 || true)"
 if [[ -z "$invoice" ]]; then

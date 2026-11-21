@@ -188,9 +188,10 @@ features:
     note: >-
       Through the agent, which reads repos, PRs and runs with gh and posts as Kin's GitHub App
       where it is installed, else as the owner's login (Settings, Connections).
-    tools: [kin_github_review, kin_github_link, kin_github_watch]
+    tools: [kin_github_review, kin_github_review_ask, kin_github_link, kin_github_watch]
     proof:
       - apps/server/src/kin/github/GitHubWatch.test.ts
+      - apps/server/src/kin/github/reviewAsk.test.ts
       - apps/server/src/kin/triggers/githubReaders.test.ts
       - .agents/skills/verify-kin/scripts/github-events.sh
 
@@ -1154,6 +1155,7 @@ features:
       - apps/server/src/kin/connections/ghTool.test.ts
       - packages/client-runtime/src/kin/kinGitHub.test.ts
       - apps/server/src/kin/github/KinGitHubApp.test.ts
+      - apps/web/src/kin/KinGitHubConnect.browser.test.tsx
 
   - id: github-work
     name: The agent works on GitHub as Kin's GitHub App, or as the owner, through delegated tasks

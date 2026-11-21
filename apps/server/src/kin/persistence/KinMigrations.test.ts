@@ -1778,6 +1778,32 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect(
+    "K196 gives a host on K195 the review receipt column, keeps its rows, and runs again",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const receipts = sql<{ trigger_key: string; review_url: string | null }>`
+          SELECT trigger_key, review_url FROM kin_github_handled ORDER BY trigger_key`;
+        yield* runKinMigrations();
+        // A host on K195: no receipt column yet, one handled trigger.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
+        yield* sql`ALTER TABLE kin_github_handled DROP COLUMN review_url`;
+        yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, outcome, at)
+          VALUES ('org', 'review:ambermill/shop#7', 'ambermill/shop', 7, 'woke', 1)`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
+        assert.deepStrictEqual(yield* receipts, [
+          { trigger_key: "review:ambermill/shop#7", review_url: null },
+        ]);
+        // Already there: it changes nothing.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
+        assert.deepStrictEqual(yield* receipts, [
+          { trigger_key: "review:ambermill/shop#7", review_url: null },
+        ]);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("K197 rebuilds an upgraded search index so a doc is found by its kind", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
