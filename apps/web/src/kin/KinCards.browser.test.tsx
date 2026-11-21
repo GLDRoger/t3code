@@ -81,6 +81,7 @@ vi.mock(import("./kinClient"), async () => {
   state.canEdit = Atom.make(true).pipe(Atom.keepAlive);
   const canEdit = state.canEdit;
   return {
+    markKinHostKnown: () => {},
     kinClient: {
       widgetAction: { label: "kin:widget:act", permissionAtom: () => allowed },
       connectionSetSendFrom: { label: "kin:connection:setSendFrom", permissionAtom: () => allowed },
@@ -561,5 +562,100 @@ describe("an agent's open question", () => {
     await expect.element(page.getByRole("button", { name: "Undo" })).not.toBeInTheDocument();
     await screen.rerender(view(note("zoya", "Zoya Sheikh")));
     await expect.element(page.getByText(/^Undone by Zoya Sheikh at .+\.$/)).toBeVisible();
+  });
+});
+
+// Kin asked Rhea who takes what Zoya looked after when she left; Meera, a co-owner, has a copy.
+const HELD = "1 open deal and 2 clients";
+const leaver = (change: Record<string, unknown> = {}): KinWidget =>
+  ({
+    ...mail(),
+    widgetId: "choice:l1",
+    messageId: "l1",
+    revision: 1,
+    state: {
+      question: `Zoya left the team and looked after ${HELD}. Who takes them?`,
+      detail:
+        "Until someone chooses, they stay in Zoya's name and can still be found.\n\nGive them to Arjun: Arjun looks after every one from now on, and is told once\nLeave them as they are: They stay in Zoya's name, and are Zoya's again if Zoya comes back",
+      options: [
+        {
+          optionId: "option-1",
+          label: "Give them to Arjun",
+          action: { line: "Arjun looks after every one from now on, and is told once" },
+        },
+        {
+          optionId: "option-2",
+          label: "Leave them as they are",
+          action: { line: "They stay in Zoya's name, and are Zoya's again if Zoya comes back" },
+        },
+      ],
+      untilAnswered: true,
+      answer: null,
+    },
+    ...change,
+  }) as never;
+
+describe("a leaver's card", () => {
+  it("offers Give them to… and Leave them as they are with what each does, taps the one chosen, then says what happened", async () => {
+    setup();
+    await using screen = await render(view(leaver()));
+    await expect
+      .element(
+        page.getByText("Arjun looks after every one from now on, and is told once", {
+          exact: true,
+        }),
+      )
+      .toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Leave them as they are" }))
+      .toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Give them to Arjun" }));
+    expect(state.acted).toMatchObject([
+      { widgetId: "choice:l1", revision: 1, actionId: "choose", value: "option-1" },
+    ]);
+    const given = `Arjun now looks after ${HELD} that Zoya looked after, and was told. To move one on, change who looks after it on its page.`;
+    await screen.rerender(
+      view(
+        leaver({
+          revision: 2,
+          closedAt: "2026-11-19T09:00:30.000Z",
+          state: {
+            ...(leaver().state as object),
+            outcome: { title: "Given to Arjun", text: given },
+            answer: {
+              optionId: "option-1",
+              personId: "rhea",
+              via: "tap",
+              emoji: null,
+              answeredAt: "2026-11-19T09:00:30.000Z",
+            },
+          },
+        }),
+      ),
+    );
+    await expect.element(page.getByText("Given to Arjun", { exact: true })).toBeVisible();
+    await expect.element(page.getByText(given)).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Give them to Arjun" }))
+      .not.toBeInTheDocument();
+    // Meera's copy, closed by Rhea's answer: what was chosen, and no buttons.
+    const closed = `Rhea left them as they are. ${HELD} stay in Zoya's name. If Zoya comes back with a new link, they are Zoya's again.`;
+    await screen.rerender(
+      view(
+        leaver({
+          revision: 2,
+          closedAt: "2026-11-19T09:00:30.000Z",
+          awaiting: [],
+          state: {
+            ...(leaver().state as object),
+            outcome: { title: "Left as they are", text: closed },
+          },
+        }),
+      ),
+    );
+    await expect.element(page.getByText(closed)).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Leave them as they are" }))
+      .not.toBeInTheDocument();
   });
 });

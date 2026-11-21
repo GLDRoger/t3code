@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { CodingAgentConnection } from "../work/codingAgent.ts";
-import { dayIn } from "../work/money.ts";
+import { dayIn, dayWords } from "../work/money.ts";
 import { latestComments, personSeesRecord } from "../work/recordComments.ts";
 import { effectivelySensitive, ownerZone } from "../work/recordRows.ts";
 
@@ -46,6 +46,7 @@ const row = Effect.fn("KinYouProjection.row")(function* (
         : task.dueAllDay
           ? dayIn(Date.parse(task.dueAt), zone)
           : task.dueAt,
+    ...(task.dueAt === null ? {} : { dueDay: dayWords(Date.parse(task.dueAt), zone) }),
     project: yield* projectNamed(connection, task),
   };
 });

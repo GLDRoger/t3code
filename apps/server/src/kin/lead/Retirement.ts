@@ -77,7 +77,7 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (
     readonly retiredAt: string;
     readonly now: number;
   },
-  chat: Pick<KinChatService["Service"], "closeReplaced">,
+  chat: Pick<KinChatService["Service"], "closeReplaced" | "notice">,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, agentId, now } = input;
@@ -98,6 +98,31 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (
       OR (e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = e.org_id
         AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)))
     RETURNING event_id`;
+  // Someone whose message in their direct chat now goes unanswered hears why, once per chat.
+  const ids = expired.map((row) => String(row.event_id));
+  const unanswered =
+    ids.length === 0
+      ? []
+      : yield* sql<{ chatId: KinChatId; messageId: KinMessageId; name: string }>`
+          SELECT m.chat_id AS "chatId", MAX(m.message_id) AS "messageId",
+            COALESCE(l.name, a.display_name) AS name
+          FROM kin_events e
+          JOIN kin_messages m ON m.org_id = e.org_id AND m.author_kind = 'human'
+            AND m.message_id = json_extract(e.json, '$.messageId')
+          JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id AND c.kind = 'direct'
+          JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
+          LEFT JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
+          WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.tag = 'chat.message'
+            AND e.event_id IN ${sql.in(ids)}
+          GROUP BY m.chat_id ORDER BY m.chat_id`;
+  for (const row of unanswered)
+    yield* chat.notice({
+      orgId,
+      chatId: row.chatId,
+      messageId: retiredNoticeId(row.messageId),
+      audience: "chat",
+      body: retiredAgentNotice(row.name),
+    });
   // Kin-clock timers in chats no live agent answers: deferrals, reminders and scheduled runs.
   const chats = heldChats(sql, orgId, agentId);
   yield* sql`INSERT INTO kin_retirement_holds

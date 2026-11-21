@@ -1,5 +1,8 @@
-/** A task, which opens over the record page under it, and the search sheet, which it takes over. */
-const SHEETS: ReadonlySet<string> = new Set(["KinWorkItem", "KinSearch"]);
+/**
+ * A task, which opens over the record page under it, and the search and concern sheets, which it
+ * takes over.
+ */
+const SHEETS: ReadonlySet<string> = new Set(["KinWorkItem", "KinSearch", "KinDealsConcern"]);
 const RECORDS: ReadonlySet<string> = new Set([
   ...SHEETS,
   "KinClient",

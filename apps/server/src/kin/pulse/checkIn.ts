@@ -25,9 +25,10 @@ import {
   timeOnDayOf,
 } from "../triggers/kinSchedules.ts";
 import { dayIn } from "../work/money.ts";
-import { ownerZone } from "../work/recordRows.ts";
+import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { matchLines, type OutsideRead } from "./outside.ts";
+import { importedSince } from "./personMorning.ts";
 import { markTold, toldBy, untold } from "./told.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 
@@ -147,16 +148,9 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
 }) {
   const queue = yield* KinEventQueue.KinEventQueue;
   const { orgId, at } = input;
-  // A fact someone has in hand is still open: the check-in names it with who holds it and until
-  // when (`buildPulseSection`). One marked not a problem has no end and starts none.
-  const read = yield* KinPulse.read({
-    orgId,
-    at,
-    viewer: { _tag: "owner" },
-    includeHandled: true,
-    limit: 200,
-  });
-  const facts = read.facts.filter((fact) => fact.handled === null || fact.handled.until !== null);
+  // Only open facts: one in hand or set aside is not news, and comes back as news when it ends.
+  const read = yield* KinPulse.read({ orgId, at, viewer: { _tag: "owner" }, limit: 200 });
+  const facts = read.facts;
   const matched = yield* matchLines(orgId, input.outside.lines);
   const byId = new Map(matched.map(({ line }) => [`${line.source}\0${line.id}`, line]));
   const lines = input.outside.lines
@@ -207,7 +201,15 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
     FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${input.agentId}`;
   if (agent === undefined) return { _tag: "nothing_new" } as const;
   const told = { orgId, personId: agent.owner, at, zone: company };
-  const tell = input.manualId !== undefined ? facts : yield* untold({ ...told, facts });
+  const fresh = input.manualId !== undefined ? facts : yield* untold({ ...told, facts });
+  // An imported deal's facts wait for the next morning's page: an import is not news by itself.
+  const imported =
+    input.scheduleId === MORNING || input.manualId !== undefined
+      ? new Set<string>()
+      : yield* importedSince(orgId, fresh, startOfDay(dayIn(at, company), company));
+  const tell = fresh.filter(
+    (fact) => fact.subject.recordId === undefined || !imported.has(fact.subject.recordId),
+  );
   if (!brief && tell.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
   // Nobody asked for it: one that lands in the owner's quiet hours waits for them to end.
   const quietUntil =

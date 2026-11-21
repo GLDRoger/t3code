@@ -5,6 +5,7 @@ import {
   kinTeamAgentChoices,
   kinTeamAgentLabel,
 } from "@t3tools/client-runtime/kin/kinProfiles";
+import { kinTeamAgentDetail } from "@t3tools/client-runtime/kin/kinReach";
 import { KinAgentId, type EnvironmentId, type KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -30,6 +31,7 @@ export function KinTeamAgentRow(props: {
   const set = useAtomCommand(kinClient.teamAgentSet, { reportFailure: false });
   const [pending, setPending] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const reach = useAtomValue(kinClient.reach({ environmentId, input: { orgId } }));
   const held = Option.getOrNull(AsyncResult.value(result));
   if (held === null) return null;
   const choices = kinTeamAgentChoices(held.leads);
@@ -81,7 +83,9 @@ export function KinTeamAgentRow(props: {
           </MenuPopup>
         </Menu>
       </div>
-      <p className="ps-7 text-xs text-muted-foreground">{KIN_TEAM_AGENT_COPY.detail}</p>
+      <p className="ps-7 text-xs text-muted-foreground">
+        {kinTeamAgentDetail(Option.getOrNull(AsyncResult.value(reach)), current)}
+      </p>
       {problem === null ? null : (
         <p role="alert" className="ps-7 text-xs text-destructive-foreground">
           {problem}

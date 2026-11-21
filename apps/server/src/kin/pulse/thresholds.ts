@@ -13,13 +13,16 @@ const PLAYBOOK_UNITS = {
   stalled_after_days: "days",
   waiting_too_long_days: "days",
   chase_invoice_after_days: "days",
+  statement_due_days: "days",
   quote_follow_up_days: "days",
   renewal_heads_up_days: "days",
+  renewal_draft_days: "days",
   review_waiting_hours: "hours",
   pr_open_too_long_hours: "hours",
   milestone_heads_up_days: "days",
   project_quiet_days: "days",
   meeting_follow_up_hours: "hours",
+  deal_quiet_days: "days",
 } as const satisfies Partial<Record<PlaybookKey, "hours" | "days">>;
 export type ThresholdKey = keyof typeof PULSE_ONLY | keyof typeof PLAYBOOK_UNITS;
 

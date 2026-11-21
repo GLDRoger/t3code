@@ -27,6 +27,7 @@ vi.mock("./kinClient", async () => {
   const allowed = A.make(true);
   host.show = () => registry.refresh(list);
   return {
+    markKinHostKnown: () => {},
     kinClient: {
       recommendations: () => list,
       recommendationAskAgain: {

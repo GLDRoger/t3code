@@ -5,6 +5,8 @@ import { AuthSessionId, KinPersonId, type KinTasksKey } from "@t3tools/contracts
 
 import { formatKinTime } from "./kinScreenState.ts";
 import {
+  KIN_TASKS_KEY_STAND_IN,
+  kinTasksKeyGuide,
   kinTasksKeyLabelCheck,
   kinTasksKeyMade,
   kinTasksKeyMakeBlocked,
@@ -23,6 +25,9 @@ const key = (over: Partial<KinTasksKey> = {}): KinTasksKey => ({
   lastUsedAt: null,
   ...over,
 });
+
+const made = (httpBaseUrl: string, device: "browser" | "phone" = "browser", origin?: string) =>
+  kinTasksKeyMade({ key: key(), secret: "sekret-123", origin, httpBaseUrl, device });
 
 describe("kinTasksKeyRows", () => {
   it.each([
@@ -89,9 +94,6 @@ describe("kinTasksKeyRemoveCopy", () => {
 });
 
 describe("kinTasksKeyMade", () => {
-  const made = (httpBaseUrl: string, device: "browser" | "phone" = "browser", origin?: string) =>
-    kinTasksKeyMade({ key: key(), secret: "sekret-123", origin, httpBaseUrl, device });
-
   it("puts the key at the address this client reaches its host by, with each setup", () => {
     const panel = made("https://kin.ambermill.example/");
     expect(panel.address).toBe("https://kin.ambermill.example/kin/you/mcp");
@@ -147,5 +149,50 @@ describe("kinTasksKeyMade", () => {
       expect(panel.addressNote).toBeNull();
       expect(panel.setups[0]?.text).toContain(" https://ambermill.relay.example/kin/you/mcp ");
     }
+  });
+});
+
+describe("kinTasksKeyGuide", () => {
+  it("builds the panel's setup lines with one stand-in where the key goes", () => {
+    const guide = kinTasksKeyGuide({
+      httpBaseUrl: "https://kin.ambermill.example/",
+      device: "browser",
+    });
+    const panel = kinTasksKeyMade({
+      key: key(),
+      secret: KIN_TASKS_KEY_STAND_IN,
+      httpBaseUrl: "https://kin.ambermill.example/",
+      device: "browser",
+    });
+    expect(KIN_TASKS_KEY_STAND_IN).toBe("YOUR_KEY");
+    expect(guide).toEqual({
+      address: panel.address,
+      addressNote: null,
+      setups: panel.setups,
+    });
+    expect(guide?.setups.map((setup) => setup.text.split("YOUR_KEY").length - 1)).toEqual([
+      1, 1, 1, 1,
+    ]);
+    expect(guide?.setups[0]?.text).toBe(
+      'claude mcp add --transport http --scope user kin https://kin.ambermill.example/kin/you/mcp --header "Authorization: Bearer YOUR_KEY"',
+    );
+  });
+
+  it("takes the host's address first, keeps the panel's notes, and knows none without one", () => {
+    expect(
+      kinTasksKeyGuide({
+        origin: "https://ambermill.relay.example",
+        httpBaseUrl: null,
+        device: "phone",
+      }),
+    ).toMatchObject({ address: "https://ambermill.relay.example/kin/you/mcp", addressNote: null });
+    expect(
+      kinTasksKeyGuide({ httpBaseUrl: "http://127.0.0.1:3773", device: "browser" })?.addressNote,
+    ).toBe(made("http://127.0.0.1:3773").addressNote);
+    expect(
+      kinTasksKeyGuide({ httpBaseUrl: "https://kin.ambermill.example", device: "phone" })
+        ?.addressNote,
+    ).toBe(made("https://kin.ambermill.example", "phone").addressNote);
+    expect(kinTasksKeyGuide({ httpBaseUrl: null, device: "phone" })).toBeNull();
   });
 });

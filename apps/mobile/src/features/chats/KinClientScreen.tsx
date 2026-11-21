@@ -1,3 +1,4 @@
+import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useAtomValue } from "@effect/atom-react";
@@ -33,6 +34,7 @@ import * as Schema from "effect/Schema";
 import { useState } from "react";
 import { Alert, View } from "react-native";
 
+import { Chip } from "../../components/ui/Chip";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -71,7 +73,7 @@ import {
   useKinWorkHistory,
   type KinWorkTarget,
 } from "./state/useKinWork";
-import { KinAttentionSection } from "./KinAttention";
+import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { useKinOpenPlace } from "./state/kinHomeTab";
 import { useKinWorkLink } from "./state/kinWorkLink";
 
@@ -213,6 +215,7 @@ function KinClientBody(
   const { can } = view;
   // Clients on, or the owner level: what's owed, the contact log, notes and history show.
   const full = can.log;
+  const keepsContacts = can.contacts ?? can.edit;
   const act = (key: KinRecordKey, action: KinWorkAction) => {
     const record = [...page.weOwe.records, ...page.theyOwe.records].find(
       (held) => held.key === key,
@@ -387,6 +390,7 @@ function KinClientBody(
       {problem === null ? null : (
         <KinWorkProblemNotice problem={problem} onDismiss={() => setProblem(null)} />
       )}
+      <KinAsideNote {...target} record={view.key} names={names} />
       <KinAttentionSection
         {...target}
         scope={{ type: "client", key: view.key }}
@@ -483,7 +487,7 @@ function KinClientBody(
       >
         {view.contacts.length === 0 ? (
           <ListRowLayout
-            label={can.edit ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
+            label={keepsContacts ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
             disabled
           />
         ) : (
@@ -492,8 +496,11 @@ function KinClientBody(
               key={contact.key}
               contact={contact}
               onOpen={(href, what) => void open(href, what)}
+              onTag={(tag) =>
+                navigation.navigate("KinMarketingList", { environmentId, orgId, title: tag, tag })
+              }
               onEdit={
-                can.edit
+                keepsContacts
                   ? () =>
                       navigation.navigate("KinContactForm", {
                         environmentId,
@@ -506,7 +513,7 @@ function KinClientBody(
             />
           ))
         )}
-        {can.edit ? (
+        {keepsContacts ? (
           <ListActionRow
             label={KIN_CLIENTS.addContact}
             onPress={() =>
@@ -711,6 +718,7 @@ function KinClientBody(
 function KinContactRows(props: {
   readonly contact: KinContactView;
   readonly onOpen: (href: string, what: string) => void;
+  readonly onTag: (tag: string) => void;
   readonly onEdit: (() => void) | null;
 }) {
   const { contact, onEdit } = props;
@@ -747,6 +755,16 @@ function KinContactRows(props: {
       {onEdit === null ? <ListRowLayout {...who} /> : <ListRow {...who} onPress={onEdit} />}
       {contact.emails.map((one, at) => reach("envelope", one, at, "send email"))}
       {contact.phones.map((one, at) => reach("phone", one, at, "make calls"))}
+      {contact.tags.length === 0 ? null : (
+        <View
+          className="flex-row flex-wrap gap-2 px-4 py-2"
+          accessibilityLabel={KIN_MARKETING.tags}
+        >
+          {contact.tags.map((tag) => (
+            <Chip key={tag} label={tag} size="small" icon="tag" onPress={() => props.onTag(tag)} />
+          ))}
+        </View>
+      )}
     </>
   );
 }

@@ -3,6 +3,8 @@ export type KinDevice = "browser" | "phone";
 
 /** Sentences both clients say about the device they run on and the server it is paired with. */
 export const KIN_DEVICE_COPY = {
+  leaveTeam: "Leave this team",
+  leaveTeamTitle: "Leave this team?",
   pairAgain: "Pair it again with the server that runs Kin.",
   pairToOpen: "Pair it with the server this chat is on to open it.",
   cantReadChats: (device: KinDevice) => `This ${device} can't read Kin chats`,

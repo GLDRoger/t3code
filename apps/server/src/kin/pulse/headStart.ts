@@ -127,6 +127,8 @@ export const headStarts = Effect.fn("KinPulse.headStarts")(function* (
         said.set(row.recordId, { at: row.at, by: row.by ?? "someone", text: row.text });
   const zone = said.size === 0 ? "UTC" : yield* ownerZone(orgId);
   for (const fact of facts) {
+    // A renewal before its draft day is only mentioned: nothing to start on yet.
+    if (fact.stage === "heads_up") continue;
     const recordId = fact.subject.recordId;
     if (recordId === undefined) continue;
     const client = clients.get(recordId);

@@ -119,6 +119,7 @@ import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderInstallationGate from "../../provider/ProviderInstallationGate.ts";
 import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
+import { isClaudeThinkingItem } from "../../kin/reply/claudeThinkingItem.ts";
 import { withInlineContext } from "../ContextHandoffDelivery.ts";
 import { provideDeterministicTestRuntime } from "../testkit/DeterministicRuntime.ts";
 import { runOrchestratorV2Scenario } from "../testkit/OrchestratorScenario.ts";
@@ -8194,7 +8195,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       );
       assert.deepEqual(
-        [...said.values()].map((item) => [item.text, ClaudeAdapterV2.isClaudeThinkingItem(item)]),
+        [...said.values()].map((item) => [item.text, isClaudeThinkingItem(item)]),
         [
           [gist, true],
           [answer, false],

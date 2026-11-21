@@ -7,7 +7,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { budgetsAnswer, budgetsView } from "../../work/budgets.ts";
 import { formatMoneyPlain } from "../../work/money.ts";
 import { countedEntry, daysOverdue, endOfDay, invoiceDue } from "../../work/recordRows.ts";
-import { DAY_MS, type Threshold, threshold, toMs } from "../thresholds.ts";
+import { DAY_MS, thresholds, toMs } from "../thresholds.ts";
+import { statementSenses } from "./bank.ts";
 import {
   agentOrOwner,
   dayOf,
@@ -25,7 +26,11 @@ import {
 } from "./shared.ts";
 import { SENSE_CAP } from "./work.ts";
 
-type ClientKey = "chase_invoice_after_days" | "quote_follow_up_days" | "renewal_heads_up_days";
+type ClientKey =
+  | "chase_invoice_after_days"
+  | "quote_follow_up_days"
+  | "renewal_heads_up_days"
+  | "renewal_draft_days";
 // The longest heads-up a playbook may set (`playbooks.ts` bounds).
 const RENEWAL_WIDEST_MS = 120 * DAY_MS;
 
@@ -58,17 +63,10 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
   const sql = yield* SqlClient.SqlClient;
   const { orgId, at } = ctx;
   const facts: Array<SensedFact> = [];
-  const retainer = yield* threshold(orgId, "retainer_heads_up_days");
+  const limits = yield* thresholds(orgId);
+  const retainer = limits("retainer_heads_up_days");
   // A client's own playbook may set these, so SQL takes the widest window and each row is checked.
-  const cached = new Map<string, Threshold>();
-  const forClient = Effect.fnUntraced(function* (key: ClientKey, clientId: string | null) {
-    const id = `${key}:${clientId ?? ""}`;
-    const known = cached.get(id);
-    if (known !== undefined) return known;
-    const found = yield* threshold(orgId, key, clientId ?? undefined);
-    cached.set(id, found);
-    return found;
-  });
+  const forClient = (key: ClientKey, clientId: string | null) => limits(key, clientId ?? undefined);
 
   // invoice_overdue: issued, still owed, and past its due date (else its client's terms) plus the grace.
   const invoices = yield* sql<EntryRow & { base: number; paid: number }>`SELECT * FROM (
@@ -81,7 +79,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     WHERE base IS NOT NULL AND base <= ${at - DAY_MS} AND "amountMinor" > paid
     ORDER BY base, key LIMIT ${SENSE_CAP}`;
   for (const row of invoices) {
-    const chase = yield* forClient("chase_invoice_after_days", row.clientId);
+    const chase = forClient("chase_invoice_after_days", row.clientId);
     if (row.base > at - toMs(chase)) continue;
     const days = daysOverdue(row.base, at, ctx.zone);
     const owed = formatMoneyPlain({ minor: row.amountMinor! - row.paid, currency: row.currency! });
@@ -107,7 +105,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     WHERE "lastAt" <= ${at - DAY_MS}
     ORDER BY "lastAt", key LIMIT ${SENSE_CAP}`;
   for (const row of quotes) {
-    const followUp = yield* forClient("quote_follow_up_days", row.clientId);
+    const followUp = forClient("quote_follow_up_days", row.clientId);
     if (row.lastAt > at - toMs(followUp)) continue;
     const days = elapsed(row.lastAt, at, "days");
     const amount = amountText(row);
@@ -198,20 +196,24 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     });
   }
   for (const row of renewals.toSorted((a, b) => a.dueAt! - b.dueAt! || (a.key < b.key ? -1 : 1))) {
-    const renewal = yield* forClient("renewal_heads_up_days", row.clientId);
+    const renewal = forClient("renewal_heads_up_days", row.clientId);
     if (row.dueAt! > at + toMs(renewal)) continue;
+    // Mentioned from the heads-up; handed over to be drafted only from the draft day.
+    const draftFrom = row.dueAt! - toMs(forClient("renewal_draft_days", row.clientId));
+    const stage = at < draftFrom ? "heads_up" : "draft";
     const amount = amountText(row);
     const days = elapsed(at, row.dueAt!, "days");
-    facts.push(
-      moneyFact(ctx, row, {
+    facts.push({
+      ...moneyFact(ctx, row, {
         sense: "renewal_due",
         key: `renewal_due:${row.key}:due=${row.dueAt}`,
         since: iso(row.dueAt! - toMs(renewal)),
         measure: measure(days, renewal),
-        consequence: `Renewal due ${dayOf(ctx, row.dueAt!)}${row.dueAt! < at ? ", already passed" : `, in ${daysText(days)}`}${amount === undefined ? "" : ` (${amount})`}.`,
+        consequence: `Renewal due ${dayOf(ctx, row.dueAt!)}${row.dueAt! < at ? ", already passed" : `, in ${daysText(days)}`}${amount === undefined ? "" : ` (${amount})`}${stage === "heads_up" ? `; drafting starts ${dayOf(ctx, draftFrom)}, not before` : ""}.`,
         wake: "sweep",
       }),
-    );
+      stage,
+    });
   }
 
   // budget_over and budget_near: this month's spending against each limit.
@@ -244,5 +246,6 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
       wake: sense === "budget_over" ? "now" : "brief",
     });
   });
+  facts.push(...(yield* statementSenses(ctx)));
   return facts;
 });

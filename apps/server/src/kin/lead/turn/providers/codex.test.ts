@@ -69,6 +69,7 @@ const kinServer = Layer.succeed(KinServer, {
       KinAgentSessionPolicy,
       KinAgentSessionPolicy.of({
         refusal: () => Effect.undefined,
+        webSearch: () => Effect.undefined,
         delegated: (threadId) => Effect.succeed(threadId === "task-from-lead"),
         toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
         agentName: () => Effect.succeed("Tech lead"),
@@ -303,6 +304,8 @@ it.effect(
               Effect.andThen(fullSessionRefusal(threadId)),
               Effect.provideService(SqlClient.SqlClient, sql),
             ),
+          // Codex's own web search stays off in a confined session: nothing asks this.
+          webSearch: () => Effect.die("unused web search"),
           delegated: () => Effect.succeed(false),
           toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
           agentName: () => Effect.succeed("Tech lead"),

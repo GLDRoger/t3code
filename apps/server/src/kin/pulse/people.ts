@@ -2,6 +2,7 @@ import {
   KIN_PULSE_LATER_SENSES,
   KinChatError,
   type KinOrgId,
+  type KinPulseAsideInput,
   type KinPulseFact,
   type KinPulseHandleInput,
   type KinPulseListInput,
@@ -23,6 +24,7 @@ import { KinRecords } from "../work/KinRecords.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
+import type { SensedFact } from "./senses/shared.ts";
 
 /** "Needs attention" on people's screens: the same read and handling agents use, as that person. */
 
@@ -87,12 +89,15 @@ export const screenFacts = <F extends KinPulseFact>(
 export const read = Effect.fn("KinPulsePeople.read")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPulseListInput,
+  sensed?: ReadonlyArray<SensedFact>,
 ) {
-  const { viewer } = yield* viewerIn(people, input.orgId);
+  const { person, viewer } = yield* viewerIn(people, input.orgId);
   const read = yield* KinPulse.read({
     orgId: input.orgId,
     at: yield* Clock.currentTimeMillis,
     viewer,
+    sensed,
+    personId: person.personId,
     includeHandled: input.includeHandled,
     scope: input.scope,
     limit: SCREEN_CAP,
@@ -152,11 +157,30 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinPulse
         diff: kinPulseDiff,
         apply: kinPulseApply,
       });
-      return coalesced(Stream.merge(pulse, work), () =>
-        read(people, listInput).pipe(Effect.map(live.next)),
+      // Moved by the pulse, it shows what the last tick sensed, if no older than what it shows; a
+      // member's Work change is sensed afresh, so it shows at once.
+      let shownAt: number | undefined;
+      return coalesced(Stream.merge(pulse, work), (asked) =>
+        Effect.gen(function* () {
+          const tick = KinPulse.lastTick(input.orgId);
+          const reuse =
+            !asked.includes(-1) &&
+            shownAt !== undefined &&
+            tick !== undefined &&
+            tick.at >= shownAt;
+          shownAt = reuse ? tick.at : yield* Clock.currentTimeMillis;
+          return live.next(yield* read(people, listInput, reuse ? tick.facts : undefined));
+        }),
       );
     }),
   );
+
+/** An owner-level person's hold is the company's; a teammate's hides it for them alone. */
+const holdingOf = (viewer: KinPulse.Viewer, person: PersonIdentity): KinPulse.Holding => ({
+  _tag: "may",
+  forPersonId: viewer._tag === "owner" ? null : person.personId,
+  onWordOf: null,
+});
 
 export const handle = Effect.fn("KinPulsePeople.handle")(function* (
   people: ReadonlyArray<PersonIdentity>,
@@ -164,6 +188,7 @@ export const handle = Effect.fn("KinPulsePeople.handle")(function* (
 ) {
   const { person, viewer } = yield* viewerIn(people, input.orgId);
   return yield* KinPulse.handle({
+    holding: holdingOf(viewer, person),
     orgId: input.orgId,
     at: yield* Clock.currentTimeMillis,
     viewer,
@@ -175,4 +200,27 @@ export const handle = Effect.fn("KinPulsePeople.handle")(function* (
         ? undefined
         : startOfDay(input.until, yield* ownerZone(input.orgId)),
   }).pipe(Effect.catchTags({ SqlError: unavailableOn, SchemaError: unavailableOn }));
+});
+
+/** `kin.pulse.aside`: a record set aside, or its hold lifted, by the person asking. */
+export const aside = Effect.fn("KinPulsePeople.aside")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinPulseAsideInput,
+) {
+  const { person, viewer } = yield* viewerIn(people, input.orgId);
+  const held = yield* KinPulse.aside({
+    orgId: input.orgId,
+    at: yield* Clock.currentTimeMillis,
+    viewer,
+    by: { _tag: "person", personId: person.personId },
+    recordKey: input.record,
+    action: input.action,
+    until:
+      input.until === undefined || input.action === "lift"
+        ? null
+        : startOfDay(input.until, yield* ownerZone(input.orgId)),
+    note: null,
+    holding: holdingOf(viewer, person),
+  }).pipe(Effect.catchTags({ SqlError: unavailableOn }));
+  return { aside: held };
 });

@@ -22,6 +22,7 @@ import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions"
 import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { useAtomValue } from "@effect/atom-react";
+import { useState } from "react";
 import type { KinMoneySummary } from "@t3tools/contracts";
 import {
   KIN_CURRENCY,
@@ -392,6 +393,8 @@ export function KinMoneyArea(props: Shared) {
     enabled: true,
     use: datesAllowed ? "screen" : "rows",
   });
+  const [allClients, setAllClients] = useState(false);
+  const every = useKinMoneySummary(target, { enabled: allClients, use: "allClients" });
   const lists = useKinLists(target, { enabled: true, money: true });
   const agent = useKinAskAgent(target);
   const rates = useKinRates(target);
@@ -478,6 +481,11 @@ export function KinMoneyArea(props: Shared) {
   }
   const summary = state.value;
   const view = kinMoneyView(summary, kinListsOf(lists));
+  const owing = allClients && every.state._tag === "ready" ? every.state.value.owed : summary.owed;
+  const clients =
+    owing === summary.owed
+      ? view.clients
+      : kinMoneyView({ ...summary, owed: owing }, kinListsOf(lists)).clients;
   const openRecord = (to: KinAttentionOpen) => {
     if (to.type === "record") navigation.navigate("KinWorkItem", { ...target, task: to.key });
   };
@@ -551,7 +559,7 @@ export function KinMoneyArea(props: Shared) {
       ...summary.spent.thisMonth.total,
       ...summary.receivedThisFinancialYear,
       ...summary.spentThisFinancialYear,
-      ...summary.owed.byClient.flatMap((client) => client.owed),
+      ...owing.byClient.flatMap((client) => client.owed),
     ],
     rates,
   );
@@ -586,7 +594,7 @@ export function KinMoneyArea(props: Shared) {
               {kinNothingOwed(scope)}
             </Text>
           ) : (
-            view.clients.map((client) => {
+            clients.map((client) => {
               const { open } = client;
               return (
                 <AmountRow
@@ -600,6 +608,19 @@ export function KinMoneyArea(props: Shared) {
                 />
               );
             })
+          )}
+          {view.clientsMore === null ? null : (
+            <View className="items-start bg-grouped-card px-4 py-2">
+              <Button
+                tone="text"
+                size="compact"
+                label={
+                  allClients && owing !== summary.owed ? KIN_MONEY.clientsFewer : view.clientsMore
+                }
+                disabled={allClients && every.state._tag === "loading"}
+                onPress={() => setAllClients(!allClients)}
+              />
+            </View>
           )}
         </ListSection>
       </View>

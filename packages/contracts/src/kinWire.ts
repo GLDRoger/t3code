@@ -211,12 +211,14 @@ export function kinPulseDiff(
     updated,
   );
   const outlineMoved = JSON.stringify(held.outline) !== JSON.stringify(next.outline);
+  const asideMoved = JSON.stringify(held.setAside ?? []) !== JSON.stringify(next.setAside ?? []);
   const orderMoved = !sameKeys(natural, order);
   if (
     removed.length === 0 &&
     updated.length === 0 &&
     !orderMoved &&
     !outlineMoved &&
+    !asideMoved &&
     held.total === next.total
   )
     return null;
@@ -224,6 +226,7 @@ export function kinPulseDiff(
     asOf: next.asOf,
     total: next.total,
     ...(outlineMoved && next.outline !== undefined ? { outline: next.outline } : {}),
+    ...(asideMoved ? { setAside: next.setAside ?? [] } : {}),
     updated,
     removed,
     ...(orderMoved ? { order } : {}),
@@ -246,10 +249,12 @@ export function kinPulseApply(
       change.updated,
     );
   const outline = change.outline ?? held.outline;
+  const setAside = change.setAside ?? held.setAside;
   return {
     asOf: change.asOf,
     total: change.total,
     facts: order.flatMap((key) => byKey.get(key) ?? []),
     ...(outline === undefined ? {} : { outline }),
+    ...(setAside === undefined ? {} : { setAside }),
   };
 }

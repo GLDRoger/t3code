@@ -20,11 +20,11 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { awayBackOn, heldUntil, holdFor, holdLine } from "../triggers/quietHold.ts";
 import { textLocale, type TextClock } from "./companyProfile.ts";
 import { parseFields } from "./lists.ts";
-import { byId, isClosed, ownerZone, type RecordRow } from "./recordRows.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { byId, dueWhenText, isClosed, ownerZone, type RecordRow } from "./recordRows.ts";
 
 /**
  * What a turn did to one person's task: gave it to them, took it from them, or gave it back; or
@@ -120,11 +120,13 @@ export const movedNotices = (
   ];
 };
 
-const dueText = (row: RecordRow, clock: TextClock) => {
-  if (row.dueAt === null) return "";
-  const style = row.dueAllDay === 1 ? "day" : "dayTime";
-  return `, due ${formatKinWhen(row.dueAt, style, clock).replace(/,/g, "")}`;
-};
+/** The reader's clock and the company's zone, whose calendar a due day is on. */
+type NoticeClock = TextClock & { readonly company: string };
+
+const dueText = (row: RecordRow, clock: NoticeClock) =>
+  row.dueAt === null
+    ? ""
+    : `, due ${dueWhenText(row.dueAt, row.dueAllDay === 1, clock.company, clock).replace(/,/g, "")}`;
 
 const meetingAt = (row: RecordRow, clock: TextClock) =>
   row.dateAt === null ? "" : ` on ${formatKinWhen(row.dateAt, "dayTime", clock).replace(/,/g, "")}`;
@@ -139,7 +141,7 @@ const meetingLine = (agent: string, notice: AssignNotice, clock: TextClock, now:
 };
 
 /** `gaveTo` names who a taken task went to, or is null when whoever moved it took it. */
-const line = (notice: AssignNotice, clock: TextClock, gaveTo: string | null = null) => {
+const line = (notice: AssignNotice, clock: NoticeClock, gaveTo: string | null = null) => {
   const task = `${notice.row.key} ${notice.row.title}`;
   const why = notice.why === null ? "" : `: ${notice.why}`;
   if (notice.kind === "added") return `added you to ${task}`;
@@ -162,7 +164,7 @@ const ended = (text: string) => (/[.!?…]["”’)]?$/.test(text) ? text : `${t
 const bodyFor = (
   agent: string,
   notices: ReadonlyArray<AssignNotice>,
-  clock: TextClock,
+  clock: NoticeClock,
   now: number,
   gaveTo: (notice: AssignNotice) => string | null,
 ) => {
@@ -235,10 +237,8 @@ export const heldGivenBody = Effect.fn("KinAssignNotices.heldGiven")(function* (
   if (byGiver.size === 0) return undefined;
   const [profile] = yield* sql<{ zone: string | null }>`SELECT time_zone AS zone FROM kin_people
     WHERE org_id = ${orgId} AND person_id = ${personId}`;
-  const clock = {
-    zone: profile?.zone ?? (yield* ownerZone(orgId)),
-    locale: yield* textLocale(orgId),
-  };
+  const company = yield* ownerZone(orgId);
+  const clock = { zone: profile?.zone ?? company, company, locale: yield* textLocale(orgId) };
   const now = yield* Clock.currentTimeMillis;
   return [...byGiver]
     .map(([by, notices]) => bodyFor(by, notices, clock, now, () => null))
@@ -309,7 +309,6 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
       owner_person_id AS owner FROM kin_agents
     WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId}`;
   if (agent === undefined) return { told, waits };
-  const teamAgent = yield* LeadAccess.teamAgent(turn.orgId);
   const fallbackZone = yield* ownerZone(turn.orgId);
   const byPerson = new Map<string, Array<AssignNotice>>();
   for (const notice of notices)
@@ -324,11 +323,8 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
         AND left_at IS NULL LIMIT 1`;
       if (reading.length > 0) continue;
     }
-    const mayMessage =
-      agent.owner === person ||
-      (yield* ownerLevel(turn.orgId, person)) ||
-      (yield* LeadAccess.allowed({ orgId: turn.orgId, agentId: turn.agentId, personId: person }));
-    const via = mayMessage ? turn.agentId : teamAgent;
+    // No agent that may message them carries it: the task is on their own Tasks all the same.
+    const via = yield* Reach.carrierFor(turn.orgId, person, turn.agentId);
     if (via === null) continue;
     const [open] = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId" FROM kin_chats c
       JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
@@ -373,7 +369,11 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
       if (holder !== undefined) names.set(notice, holder.name);
     }
     const giver = turn.by ?? agent.name;
-    const clock = { zone: profile?.zone ?? fallbackZone, locale: yield* textLocale(turn.orgId) };
+    const clock = {
+      zone: profile?.zone ?? fallbackZone,
+      company: fallbackZone,
+      locale: yield* textLocale(turn.orgId),
+    };
     const now = yield* Clock.currentTimeMillis;
     const gaveTo = (notice: AssignNotice) => names.get(notice) ?? null;
     const body = bodyFor(giver, theirs, clock, now, gaveTo);

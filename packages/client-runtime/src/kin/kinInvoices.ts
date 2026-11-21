@@ -12,8 +12,15 @@ import type {
   KinRecordKey,
 } from "@t3tools/contracts";
 
-import { kinWorkDayOfTime, kinWorkDueLabel } from "./kinWork.ts";
-import { kinMoneyText, kinParseMoney, kinSuggestion } from "./kinLists.ts";
+import { kinWorkDayOfTime, kinWorkDueLabel, type KinWorkNames } from "./kinWork.ts";
+import {
+  kinDraftShowsNoBalance,
+  kinInvoiceBankText,
+  kinMoneyText,
+  kinParseMoney,
+  kinPaymentSourceText,
+  kinSuggestion,
+} from "./kinLists.ts";
 
 /**
  * Invoices and receipts as the owner reads and handles them: an invoice's own number, what came
@@ -21,6 +28,7 @@ import { kinMoneyText, kinParseMoney, kinSuggestion } from "./kinLists.ts";
  */
 
 export const KIN_INVOICES = {
+  loadFailed: "Couldn't load invoices",
   number: "Invoice number",
   sentTo: (to: string, day: string) =>
     `Sent to ${to} ${/^(today|yesterday)$/.test(day) ? day : `on ${day}`}`,
@@ -177,6 +185,8 @@ export interface KinInvoicePaymentView {
   readonly tds: boolean;
   /** Null on a voided payment or a TDS line, which get no receipt. */
   readonly receipt: KinPaymentReceiptView | null;
+  /** "from the bank statement", "recorded by Rhea"; null from an older host. */
+  readonly source: string | null;
 }
 
 export interface KinInvoiceView {
@@ -192,9 +202,11 @@ export interface KinInvoiceView {
   readonly received: string | null;
   /** TDS the client deducted, when there is any: not part of what was received. */
   readonly tdsDeducted: string | null;
-  /** Null on a void invoice: nothing is due on it. */
+  /** Null on a void invoice, and on a draft nothing came in on: nothing is due on it. */
   readonly balance: string | null;
   readonly settled: boolean;
+  /** "Not recorded as paid. Bank known to 31 Oct." while some of it is owed; else null. */
+  readonly bank: string | null;
   readonly payments: ReadonlyArray<KinInvoicePaymentView>;
   /** Newest first. */
   readonly documents: ReadonlyArray<{ readonly key: KinRecordKey; readonly title: string }>;
@@ -221,9 +233,11 @@ export function kinInvoiceView(
   item: KinRecordDetail,
   def: KinListDefinition | null,
   now: Date,
+  names: Pick<KinWorkNames, "people" | "agents"> = { people: new Map(), agents: new Map() },
 ): KinInvoiceView {
   const { number, description } = kinInvoiceTitle(item.title, numberFieldOf(item));
   const isVoid = item.state === "dropped";
+  const owesNothing = isVoid || kinDraftShowsNoBalance(item);
   // Older servers send no `received`: then everything that settled it came in.
   const received =
     item.received ??
@@ -247,10 +261,11 @@ export function kinInvoiceView(
     number,
     void: isVoid,
     total: item.amount === undefined ? null : kinMoneyText(item.amount, true),
-    received: received === null ? null : kinMoneyText(received, true),
+    received: received === null || owesNothing ? null : kinMoneyText(received, true),
     tdsDeducted: tds === null ? null : kinMoneyText(tds, true),
-    balance: isVoid || item.balance === undefined ? null : kinMoneyText(item.balance, true),
+    balance: owesNothing || item.balance === undefined ? null : kinMoneyText(item.balance, true),
     settled: item.balance?.minor === 0,
+    bank: isVoid ? null : kinInvoiceBankText(item, now),
     payments: (item.payments ?? []).map((payment) => {
       const withheld = payment.withheld === true;
       const receipt = payment.voidedAt !== null || withheld ? null : receiptOf(payment);
@@ -264,6 +279,7 @@ export function kinInvoiceView(
         voided: payment.voidedAt !== null,
         tds: withheld,
         receipt,
+        source: kinPaymentSourceText(payment.source, names),
       };
     }),
     documents: documents.reverse(),

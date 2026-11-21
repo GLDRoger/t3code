@@ -107,6 +107,13 @@ import TasksKeyMakers from "./migrations/K183_TasksKeyMakers.ts";
 import Recommendations from "./migrations/K184_Recommendations.ts";
 import AskedFor from "./migrations/K185_AskedFor.ts";
 import TasksKeysWithoutMaker from "./migrations/K186_TasksKeysWithoutMaker.ts";
+import Holds from "./migrations/K187_Holds.ts";
+import ReachLimits from "./migrations/K188_ReachLimits.ts";
+import MorningPages from "./migrations/K189_MorningPages.ts";
+import RecordTitleIndex from "./migrations/K190_RecordTitleIndex.ts";
+import HistoryIndexes from "./migrations/K191_HistoryIndexes.ts";
+import RecordOwnerListIndex from "./migrations/K192_RecordOwnerListIndex.ts";
+import ScheduleOwnerTime from "./migrations/K193_ScheduleOwnerTime.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -149,7 +156,7 @@ import RetireLevelCards from "./migrations/K035_RetireLevelCards.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
-const loader = Migrator.fromRecord({
+const migrations = {
   "1_ChatCore": ChatCore,
   "2_Lead": Lead,
   "3_Triggers": Triggers,
@@ -294,7 +301,23 @@ const loader = Migrator.fromRecord({
   "184_Recommendations": Recommendations,
   "185_AskedFor": AskedFor,
   "186_TasksKeysWithoutMaker": TasksKeysWithoutMaker,
-});
+  "187_Holds": Holds,
+  "188_ReachLimits": ReachLimits,
+  "189_MorningPages": MorningPages,
+  "190_RecordTitleIndex": RecordTitleIndex,
+  "191_HistoryIndexes": HistoryIndexes,
+  "192_RecordOwnerListIndex": RecordOwnerListIndex,
+  "193_ScheduleOwnerTime": ScheduleOwnerTime,
+};
+const loader = Migrator.fromRecord(migrations);
+
+/** Every Kin migration as `[id, name]`, in the order they run. */
+export const kinMigrations = Object.keys(migrations)
+  .map((key) => {
+    const at = key.indexOf("_");
+    return [Number(key.slice(0, at)), key.slice(at + 1)] as const;
+  })
+  .toSorted(([a], [b]) => a - b);
 
 // The Migrator skips every id at or below the latest applied one, so a migration that
 // merged out of order would silently never run. Refuse to start instead.

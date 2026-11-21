@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { KinOrgId, KinTriggerFired } from "@t3tools/contracts";
+import { KinMemoryItemId, KinOrgId, KinTriggerFired } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -9,6 +9,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
+import { scheduleTaskId } from "./kinSchedules.ts";
 
 const database = KinPersistence.layer.pipe(
   Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
@@ -20,18 +21,20 @@ const timestamp = "2026-11-07T00:00:00.000Z";
 
 const decodeFire = Schema.decodeUnknownSync(KinTriggerFired);
 
-function event(deliveryId: string, orgId = orgA) {
+const MORNING = KinMemoryItemId.make("checkin-morning");
+
+/** A run of a native schedule, as the sink puts it. */
+function event(run: string, orgId = orgA, itemId = MORNING) {
   return decodeFire({
-    fireId: `gh:${orgId}:${deliveryId}`,
+    fireId: `ns:${scheduleTaskId(orgId, itemId)}:${run}`,
     orgId,
     dueAt: timestamp,
     firedAt: timestamp,
     lateByMs: 0,
     payload: {
-      kind: "github",
-      sourceId: "source",
-      scheduledTaskId: `task-${orgId}`,
-      deliveryId,
+      kind: "time",
+      triggerId: `native:${itemId}`,
+      subject: { type: "scheduled_task", itemId },
     },
   });
 }
@@ -41,9 +44,10 @@ const seed = Effect.gen(function* () {
   yield* sql`PRAGMA foreign_keys = ON`;
   for (const org of [orgA, orgB]) {
     yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES (${org}, 'Kin', ${timestamp})`;
-    yield* sql`INSERT INTO kin_webhook_sources
-      (source_id, org_id, repo, scheduled_task_id, inbox_thread_id, github_hook_id, bot_login, status)
-      VALUES ('source', ${org}, 'org/repo', ${`task-${org}`}, 'inbox', NULL, 'kin', 'active')`;
+    yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+        source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
+      VALUES (${scheduleTaskId(org, MORNING)}, ${org}, ${MORNING}, 'lead', 'chat', 'seed', 'owner',
+        'owner_only', 'sha', 'inbox', 0, 0)`;
   }
 });
 
@@ -70,7 +74,7 @@ describe("KinTriggerInbox", () => {
       assert.isTrue(plan.some((row) => row.detail.includes("idx_kin_trigger_inbox_pending")));
       assert.isFalse(plan.some((row) => row.detail.includes("TEMP B-TREE")));
       yield* sql`CREATE TRIGGER reject_consume BEFORE UPDATE OF consumed_at ON kin_trigger_inbox
-        WHEN NEW.fire_id = 'gh:org-a:b' BEGIN SELECT RAISE(ABORT, 'unavailable'); END`;
+        WHEN NEW.fire_id LIKE '%:b' BEGIN SELECT RAISE(ABORT, 'unavailable'); END`;
       assert.isTrue(
         Exit.isFailure(yield* Effect.exit(inbox.markConsumed(orgA, [a.fireId, b.fireId]))),
       );
@@ -111,18 +115,6 @@ describe("KinTriggerInbox", () => {
           {
             ...a,
             payload: {
-              kind: "time",
-              triggerId: "trigger",
-              subject: { type: "reminder", itemId: "item" },
-            },
-          },
-          "identity_conflict",
-        ],
-        [
-          {
-            ...a,
-            payload: {
-              ...a.payload,
               kind: "github",
               sourceId: "source",
               scheduledTaskId: "task",
@@ -133,56 +125,49 @@ describe("KinTriggerInbox", () => {
         ],
         [
           {
-            ...event("time"),
+            ...event("reminder"),
             payload: {
               kind: "time",
               triggerId: "trigger",
               subject: { type: "reminder", itemId: "item" },
             },
           },
-          "not_github",
+          "not_a_schedule_run",
         ],
+        // Kin's GitHub webhook task is retired: nothing puts its fires or recheck requests.
+        [
+          {
+            ...event("delivery"),
+            fireId: `gh:${orgA}:delivery`,
+            payload: {
+              kind: "github",
+              sourceId: "source",
+              scheduledTaskId: "task",
+              deliveryId: "delivery",
+            },
+          },
+          "not_a_schedule_run",
+        ],
+        [
+          {
+            ...event("recheck"),
+            fireId: `gh:${orgA}:recheck:delivery`,
+            payload: {
+              kind: "github_recheck",
+              repo: null,
+              reason: "repo_unknown",
+              sourceFireId: `gh:${orgA}:delivery`,
+            },
+          },
+          "not_a_schedule_run",
+        ],
+        [event("unknown", orgA, KinMemoryItemId.make("checkin-gone")), "unknown_source"],
       ]) {
         const error = yield* Effect.flip(inbox.put(decodeFire(candidate), 0));
         assert.strictEqual(error._tag, "KinTriggerInboxConflict");
         assert.isTrue("reason" in error);
         if ("reason" in error) assert.strictEqual(error.reason, reason);
       }
-      for (const payload of [
-        { sourceId: "unknown", scheduledTaskId: "task-org-a" },
-        { sourceId: "source", scheduledTaskId: "unknown" },
-        { sourceId: "source", scheduledTaskId: "task-org-b" },
-      ]) {
-        const candidate = decodeFire({
-          ...event("new"),
-          payload: { ...event("new").payload, ...payload },
-        });
-        const error = yield* Effect.flip(inbox.put(candidate, 0));
-        assert.strictEqual(error._tag, "KinTriggerInboxConflict");
-        if ("reason" in error) assert.strictEqual(error.reason, "unknown_source");
-      }
-      const source = event("delivery:x");
-      const recheck = (fireId: string, sourceFireId: string = source.fireId) =>
-        decodeFire({
-          ...source,
-          fireId,
-          payload: { kind: "github_recheck", repo: null, reason: "repo_unknown", sourceFireId },
-        });
-      const recheckId = KinTriggerInbox.recheckFireId(orgA, source.fireId);
-      for (const [candidate, reason] of [
-        [recheck(recheckId), "unknown_source"],
-        [recheck(`${source.fireId}:recheck`), "invalid_fire_id"],
-        [recheck(recheckId, event("delivery:x", orgB).fireId), "invalid_fire_id"],
-      ] as const) {
-        const error = yield* Effect.flip(inbox.put(candidate, 0));
-        if ("reason" in error) assert.strictEqual(error.reason, reason);
-      }
-      assert.isTrue(yield* inbox.put(source, 0));
-      assert.isTrue(yield* inbox.put(recheck(recheckId), 0));
-      assert.isFalse(yield* inbox.put(recheck(recheckId), 0));
-      assert.deepStrictEqual(yield* inbox.listPending(orgA, 100, undefined, ["github_recheck"]), [
-        recheck(recheckId),
-      ]);
       yield* sql`DELETE FROM kin_trigger_inbox WHERE org_id = ${orgA}`;
       for (const invalid of [NaN, 1.5, Infinity, -1, Number.MAX_SAFE_INTEGER + 1]) {
         assert.isTrue(Exit.isFailure(yield* Effect.exit(inbox.put(a, invalid))));
