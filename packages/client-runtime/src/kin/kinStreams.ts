@@ -60,6 +60,17 @@ export const KIN_CHAT_LABEL = "kin:chat";
 const KIN_CACHE_SAVE_INTERVAL = Duration.millis(1500);
 
 const inboxCache = persistQuery(Schema.Struct({ inbox: KinInboxState, savedAt: Schema.String }));
+/** Offline the viewer sees their own waiting only: someone else's rows are kept live, never here. */
+const ownWaiting = <A extends { readonly inbox: KinInboxState }>(cached: A): A =>
+  cached.inbox.waiting.some((item) => item.waitsFor !== undefined)
+    ? {
+        ...cached,
+        inbox: {
+          ...cached.inbox,
+          waiting: cached.inbox.waiting.filter((item) => item.waitsFor === undefined),
+        },
+      }
+    : cached;
 const chatCache = persistQuery(Schema.Struct({ chat: KinChatState, savedAt: Schema.String }));
 
 const isKinChatError = Schema.is(KinChatError);
@@ -257,11 +268,11 @@ export function kinInboxStream(input: KinChatsSubscribeInput) {
     Effect.gen(function* () {
       const environmentId = yield* currentEnvironmentId;
       const key = queryPersistenceKey(KIN_INBOX_LABEL, input);
-      const cached = yield* inboxCache.load(environmentId, key);
+      const cached = Option.map(yield* inboxCache.load(environmentId, key), ownWaiting);
       let state = Option.match(cached, { onNone: () => emptyKinInbox, onSome: (c) => c.inbox });
       let live = false;
       const saver = yield* throttledSave((value: { inbox: KinInboxState; savedAt: string }) =>
-        inboxCache.save(environmentId, key, value),
+        inboxCache.save(environmentId, key, ownWaiting(value)),
       );
       const events: Stream.Stream<
         KinInboxEvent,
