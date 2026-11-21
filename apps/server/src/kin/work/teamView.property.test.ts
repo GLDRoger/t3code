@@ -30,6 +30,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as Tracer from "effect/Tracer";
 
 import { ServerConfig } from "../../config.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -1504,6 +1505,66 @@ layer(testLayer)("Work's live stream", (it) => {
           ),
           `ana kept ${late.key}: ${JSON.stringify(sent)}`,
         );
+      }),
+    ),
+  );
+
+  it.effect("one change is counted once for every owner-level screen, and a member her own", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(at + 3_600_000);
+        yield* install(emptyWorld);
+        const records = yield* KinRecords.KinRecords;
+        const pull = yield* Stream.toPull(records.changes(orgId));
+        const opening = (yield* pull)[0]!.seq;
+        const task = (title: string, owner: string) =>
+          OwnerWork.create(peopleOf("owner"), {
+            orgId,
+            clientRequestId: `counted-${title}`,
+            title,
+            owner: { _tag: "person", personId: KinPersonId.make(owner) },
+          });
+        yield* task("The owner's own", "owner");
+        const screens = yield* Effect.forEach(["owner", CO_OWNER, "owner", "ana"] as const, (who) =>
+          Effect.gen(function* () {
+            const session = yield* WorkStream.makeWorkStream(peopleOf(who), {
+              orgId,
+              acceptRows: true,
+            });
+            yield* session.start(opening);
+            return { who, session };
+          }),
+        );
+        const made = yield* task("Hers", "ana");
+        const ticks: Array<KinRecords.Tick> = [];
+        while (!ticks.some((tick) => tick.key === made.key)) ticks.push(...(yield* pull));
+        let counted = 0;
+        const tracer = Tracer.make({
+          span(options) {
+            const span = new Tracer.NativeSpan(options);
+            const end = span.end.bind(span);
+            span.end = (endTime, exit) => {
+              end(endTime, exit);
+              const text = span.attributes.get("db.query.text");
+              if (typeof text === "string" && text.includes("SUM(r.state = 'doing')")) counted += 1;
+            };
+            return span;
+          },
+        });
+        const open = new Map<string, number>();
+        for (const { who, session } of screens) {
+          const sent = yield* session
+            .batch(ticks.flatMap((tick) => session.pendingOf(tick)))
+            .pipe(Effect.withTracer(tracer));
+          const counts = sent.find((event) => event._tag === "counts");
+          if (counts !== undefined) open.set(who, counts.open);
+        }
+        assert.strictEqual(counted, 2, "one read for the owner-level screens, one for hers");
+        assert.strictEqual(open.get(CO_OWNER), 2);
+        assert.strictEqual(open.get("owner"), 2);
+        const hers = yield* OwnerWork.summary(peopleOf("ana"), { orgId });
+        assert.strictEqual(open.get("ana"), hers.open);
+        assert.strictEqual(hers.open, 1, "a member's counts are her own");
       }),
     ),
   );

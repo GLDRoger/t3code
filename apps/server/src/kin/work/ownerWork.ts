@@ -793,7 +793,15 @@ export const summary = Effect.fn("KinWork.summary")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: { readonly orgId: KinOrgId },
 ) {
-  const viewer = yield* viewerOf(people, input.orgId);
+  return yield* summaryOf(yield* viewerOf(people, input.orgId), input);
+});
+
+/** `summary` for a viewer already read; an owner-level one counts the same for every such person. */
+// oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- `viewer` is `viewerOf`'s, applied as `team`
+export const summaryOf = Effect.fn("KinWork.summaryOf")(function* (
+  viewer: Viewer,
+  input: { readonly orgId: KinOrgId },
+) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
   const now = yield* Clock.currentTimeMillis;
