@@ -570,6 +570,18 @@ describe("kinTaskLine", () => {
       "Due tomorrow",
     ],
     ["no date says so", row("C"), null, null, "No date"],
+    [
+      "waiting names who it waits on",
+      row("D", {
+        state: "waiting",
+        waitingOn: zoya,
+        dueAt: "2026-11-24T23:59:59.000Z",
+        dueAllDay: true,
+      }),
+      null,
+      null,
+      "Waiting on Zoya · Due Tue, Nov 24",
+    ],
   ] as const)("%s", (_name, record, tone, text, rest) => {
     const line = kinTaskLine(record, names, now);
     expect(line.lead?.tone ?? null).toBe(tone);

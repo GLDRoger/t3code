@@ -129,10 +129,14 @@ export function kinTaskLine(
           ? null
           : KIN_TASKS.noDate;
   const about = options.inProject ? null : (record.party?.title ?? record.project?.title ?? null);
+  const waiting =
+    record.state === "waiting" && record.waitingOn !== null
+      ? `Waiting on ${kinMidSentence(kinWorkName(record.waitingOn, names, "you"))}`
+      : null;
   return {
     holder: kinWorkName(record.owner, names),
     lead,
-    rest: [due, about].filter((part) => part !== null).join(" · "),
+    rest: [waiting, due, about].filter((part) => part !== null).join(" · "),
   };
 }
 

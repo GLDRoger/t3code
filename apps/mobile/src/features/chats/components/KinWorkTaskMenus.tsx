@@ -89,6 +89,7 @@ export function KinWorkStatusRow(props: {
           icon="circle.dashed"
           label={KIN_WORK_COPY.status}
           detail={view.status}
+          detailEllipsizeMode="tail"
           disabled={props.disabled}
         />
       </View>
