@@ -158,7 +158,7 @@ function KinJoinedName(props: {
       <Notice
         icon="person.crop.circle"
         message={`You joined as ${mine.displayName}. Is that your name?`}
-        dismissLabel="Yes"
+        dismissLabel="Keep this name"
         onDismiss={() => setJoined(null)}
         action={{
           label: "Change it",
