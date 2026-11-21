@@ -2,6 +2,9 @@ const DIALOG_BACKDROP_BASE_CLASS =
   "fixed inset-0 z-50 transition-all duration-200 data-ending-style:opacity-0 data-starting-style:opacity-0";
 
 const DIALOG_BACKDROP_CLASS = `dialog-backdrop ${DIALOG_BACKDROP_BASE_CLASS}`;
+// No backdrop-filter: Chrome re-blurs the whole viewport on every frame that damages the area
+// above it, so a large scrolling dialog drops frames on retina displays.
+const DIALOG_DIM_BACKDROP_CLASS = `${DIALOG_BACKDROP_BASE_CLASS} bg-background/92`;
 const DIALOG_MEDIA_BACKDROP_CLASS = `${DIALOG_BACKDROP_BASE_CLASS} bg-black/75 backdrop-blur-none`;
 
 const DIALOG_POPUP_BASE_CLASS =
@@ -15,6 +18,7 @@ const DIALOG_MOBILE_SHEET_CLASS =
 
 export {
   DIALOG_BACKDROP_CLASS,
+  DIALOG_DIM_BACKDROP_CLASS,
   DIALOG_MEDIA_BACKDROP_CLASS,
   DIALOG_MOBILE_SHEET_CLASS,
   DIALOG_POPUP_CLASS,
