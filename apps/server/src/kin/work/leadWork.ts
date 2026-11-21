@@ -356,8 +356,12 @@ export const QueryResult = Schema.Struct({
   keys: Schema.optional(Schema.Array(Schema.String)),
   /** The offset of the next page, while matches remain past this one. */
   next: Schema.optional(Schema.Number),
-  /** Every match's amounts added up, one figure per currency. */
+  /** Every match's amounts added up, one figure per currency; absent for bank transactions. */
   totals: Schema.optional(Schema.Array(Schema.String)),
+  /** Bank transactions only, in place of totals: money in, money out, and in less out. */
+  moneyIn: Schema.optional(Schema.Array(Schema.String)),
+  moneyOut: Schema.optional(Schema.Array(Schema.String)),
+  net: Schema.optional(Schema.Array(Schema.String)),
   groups: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -365,6 +369,9 @@ export const QueryResult = Schema.Struct({
         count: Schema.Number,
         late: Schema.optional(Schema.Number),
         totals: Schema.optional(Schema.Array(Schema.String)),
+        moneyIn: Schema.optional(Schema.Array(Schema.String)),
+        moneyOut: Schema.optional(Schema.Array(Schema.String)),
+        net: Schema.optional(Schema.Array(Schema.String)),
         sensitive: Schema.optional(Schema.Literal(true)),
       }),
     ),
@@ -1830,11 +1837,28 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
     ...next,
     ...(totals === undefined || totals.total.length === 0
       ? {}
-      : { totals: totals.total.map(formatMoney), sensitive: true as const }),
+      : { ...amountsOf(totals), sensitive: true as const }),
     ...(groups === undefined ? {} : { groups }),
   };
 });
 export const query = leadTool("KinWorkTools.query", runQuery);
+
+/** The bank list's in, out and net replace its plain sum, which counts both ways as one. */
+const amountsOf = (sums: {
+  readonly total?: ReadonlyArray<KinMoney>;
+  readonly moneyIn?: ReadonlyArray<KinMoney>;
+  readonly moneyOut?: ReadonlyArray<KinMoney>;
+  readonly net?: ReadonlyArray<KinMoney>;
+}) =>
+  sums.moneyIn === undefined || sums.moneyOut === undefined || sums.net === undefined
+    ? sums.total === undefined || sums.total.length === 0
+      ? {}
+      : { totals: sums.total.map(formatMoney) }
+    : {
+        moneyIn: sums.moneyIn.map(formatMoney),
+        moneyOut: sums.moneyOut.map(formatMoney),
+        net: sums.net.map(formatMoney),
+      };
 
 const DIRECTORIES = new Set<string | null>(["clients", "contacts", "projects"]);
 const TOTALS_BY: Record<NonNullable<typeof QueryInput.Type.groupBy>, TotalsBy> = {
@@ -1859,6 +1883,9 @@ const labelGroups = Effect.fn("KinWorkTools.labelGroups")(function* (
     readonly count: number;
     readonly late?: number;
     readonly total?: ReadonlyArray<KinMoney>;
+    readonly moneyIn?: ReadonlyArray<KinMoney>;
+    readonly moneyOut?: ReadonlyArray<KinMoney>;
+    readonly net?: ReadonlyArray<KinMoney>;
   }>,
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -1889,9 +1916,7 @@ const labelGroups = Effect.fn("KinWorkTools.labelGroups")(function* (
     group: label(row.group),
     count: row.count,
     ...(row.late === undefined ? {} : { late: row.late }),
-    ...(row.total === undefined || row.total.length === 0
-      ? {}
-      : { totals: row.total.map(formatMoney) }),
+    ...amountsOf(row),
     ...((row.group !== null && titles.get(row.group)?.sensitive === 1) || row.total !== undefined
       ? { sensitive: true as const }
       : {}),
