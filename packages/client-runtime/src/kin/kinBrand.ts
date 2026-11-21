@@ -35,18 +35,6 @@ export const KIN_BRAND = {
   badColor: "Use a colour like #1F4E79.",
 };
 
-/** Colours a phone offers as taps beside the hex field; the field takes any. */
-export const KIN_BRAND_SWATCHES = [
-  "#1F4E79",
-  "#0F766E",
-  "#166534",
-  "#7C2D12",
-  "#B4532A",
-  "#9F1239",
-  "#5B21B6",
-  "#1F2937",
-] as const;
-
 export const KIN_BRAND_FONTS: ReadonlyArray<KinCompanyBrand["font"] & string> = KIN_RECIPE_FONTS;
 
 /** `#abc`, `abc` or `#AABBCC` as `#AABBCC`; `null` when empty; `undefined` when it isn't a colour. */
