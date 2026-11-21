@@ -30,7 +30,7 @@ import { companyMoney } from "../work/companyProfile.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as Docs from "../work/docs.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
-import { defaultCharacterFor, shippedLines } from "./characterDefaults.ts";
+import { type CharacterMoney, defaultCharacterFor, shippedLines } from "./characterDefaults.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import {
   type Character,
@@ -131,7 +131,7 @@ it("the owner's part of an old character doc is his lines that no default Kin sh
     readonly name: string;
     readonly doc: string;
     readonly domain?: string;
-    readonly money?: typeof pounds;
+    readonly money?: CharacterMoney;
     readonly own: string;
   }> = [
     { name: "a default untouched", doc: `${growthNow}\n`, own: "" },
