@@ -3774,6 +3774,37 @@ it.effect(
       yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'wake'`;
       const handedBack = yield* LeadWork.get(scope, { key: "W-2" });
       assert.propertyVal(yield* encodeGet(handedBack), "handedBackBy", "Mate");
+      // Ticked done, nothing reads it as handed back; Undo's reopen brings the hand-back back.
+      const heldBack = yield* OwnerWork.get([owner], { orgId, key: "W-2" });
+      const ticked = yield* OwnerWork.update([owner], {
+        orgId,
+        key: "W-2",
+        rev: heldBack.rev,
+        state: "done",
+        waitingOn: null,
+      });
+      assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-2" })).handedBack);
+      assert.notProperty(yield* encodeGet(yield* LeadWork.get(scope, { key: "W-2" })), "handedBackBy");
+      const closedRow = (yield* KinRecords.KinRecords.pipe(
+        Effect.flatMap((records) => records.moveRows(orgId, { keys: ["W-2"] })),
+      )).find((one) => one.key === "W-2");
+      assert.isNull(closedRow?.handedBackAt);
+      yield* OwnerWork.update([owner], {
+        orgId,
+        key: "W-2",
+        rev: ticked.rev,
+        state: heldBack.state,
+        waitingOn: heldBack.waitingOn ?? null,
+      });
+      assert.deepStrictEqual(
+        (yield* OwnerWork.get([owner], { orgId, key: "W-2" })).handedBack,
+        heldBack.handedBack,
+      );
+      assert.propertyVal(
+        yield* encodeGet(yield* LeadWork.get(scope, { key: "W-2" })),
+        "handedBackBy",
+        "Mate",
+      );
       yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
       // Given on from one teammate to another, each reads who gave it to whom from their side.
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)

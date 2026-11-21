@@ -623,7 +623,9 @@ export const untakenAtDay = Effect.fn("KinCardActions.untakenAtDay")(function* (
   if (!takesAsDefault(plan)) return undefined;
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ repeat: string | null; handedBack: number | null }>`SELECT
-      repeat_json AS repeat, handed_back_at AS "handedBack" FROM kin_records
+      repeat_json AS repeat,
+      CASE WHEN state IN ('done', 'dropped') THEN NULL ELSE handed_back_at END AS "handedBack"
+    FROM kin_records
     WHERE org_id = ${orgId} AND record_id = ${plan.recordId}`;
   return row === undefined ? undefined : outgrowsUndo(row);
 });
@@ -653,7 +655,8 @@ export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
     handedBack: number | null;
     waitingKind: string | null;
     waitingId: string | null;
-  }>`SELECT repeat_json AS repeat, handed_back_at AS "handedBack",
+  }>`SELECT repeat_json AS repeat,
+      CASE WHEN state IN ('done', 'dropped') THEN NULL ELSE handed_back_at END AS "handedBack",
       waiting_on_kind AS "waitingKind", waiting_on_id AS "waitingId" FROM kin_records
     WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
   if (more === undefined || outgrowsUndo(more) !== undefined) return false;

@@ -514,7 +514,12 @@ const givenOf = (row: RecordRow): { readonly givenBy?: KinWorkPrincipal } => {
 };
 
 const handedBackOf = (row: RecordRow) => {
-  if (row.registerId !== "work" || row.handedBackAt === null || row.handedBackId === null)
+  if (
+    row.registerId !== "work" ||
+    isClosed(row.state) ||
+    row.handedBackAt === null ||
+    row.handedBackId === null
+  )
     return {};
   const by: KinWorkPrincipal =
     row.handedBackKind === "agent"
