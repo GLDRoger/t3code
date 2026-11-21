@@ -2325,7 +2325,7 @@ it.effect(
       assert.notProperty(cleared, "checklist");
       assert.notProperty(cleared, "steps");
       // A teammate who may not change it hears of no such task, as for any other change.
-      const unknown = { reason: "not_found", message: `No entry ${made.key} in Work.` };
+      const unknown = { reason: "not_found" as const, message: `No entry ${made.key} in Work.` };
       assert.deepInclude(
         yield* Effect.flip(
           OwnerWork.tickStep([mate], {

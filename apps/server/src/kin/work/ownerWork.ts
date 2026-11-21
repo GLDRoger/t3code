@@ -276,7 +276,7 @@ const cansOf = Effect.fn("KinWork.cansOf")(function* (
     const def = defs.get(entry.registerId);
     return def === undefined ? [] : [{ ...entry, states: def.states }];
   });
-  const tasks = new Set(
+  const tasks = new Set<string>(
     entries.flatMap((entry) => (entry.registerId === "work" ? [entry.recordId] : [])),
   );
   if (viewer.teammate) {
