@@ -11,7 +11,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinJoin";
 import type { SessionGrantInput } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -211,7 +211,12 @@ function KinBadgedDock(props: KinWorkTarget & KinDockProps) {
 /** The Chats list's unread total, the same count as the app icon's badge. */
 function useKinUnreadBadge() {
   const { state } = useKinInbox();
-  return state._tag === "ready" ? kinAttentionBadge(kinBadgeCount(state.inbox.value)) : null;
+  const known = state._tag === "ready" ? kinBadgeCount(state.inbox.value) : null;
+  // Offline before the inbox is read again, the badge keeps the last number it showed.
+  const [last, setLast] = useState(known);
+  if (known !== null && known !== last) setLast(known);
+  const count = known ?? last;
+  return count === null ? null : kinAttentionBadge(count);
 }
 
 /** A tab's state that isn't its list, inside the scroll view that clears the floating bar. */
