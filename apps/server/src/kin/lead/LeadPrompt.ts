@@ -91,6 +91,7 @@ import {
   openQuestionsSection,
   undoneTurnText,
 } from "../questions/openQuestions.ts";
+import { approvedTurnText } from "../questions/sentUpDraft.ts";
 import { asksUndo, recentChanges, UNDO_RULE } from "./undoSection.ts";
 import { encoded, quote, quoteLines } from "./quote.ts";
 
@@ -482,6 +483,31 @@ export class KinLeadPrompt extends Context.Service<
               `${quote("event data", { event: event.eventId })}\n\n${
                 undone ?? "Kin couldn't read that question just now."
               } If nothing else needs saying, write exactly ${SILENT_REPLY}.`,
+            );
+            continue;
+          }
+          if (
+            event._tag === "deferral.due" &&
+            event.subject.type === "question" &&
+            event.subject.approved === true
+          ) {
+            fromOwner = false;
+            const made = yield* approvedTurnText(orgId, event.subject.questionId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin sent-up draft unreadable", cause).pipe(Effect.as(undefined)),
+              ),
+            );
+            const eventQuote = quote("event data", { event: event.eventId });
+            if (made === undefined) {
+              events.push(
+                `${eventQuote}\n\nKin couldn't read that approved draft just now. Write exactly ${SILENT_REPLY}.`,
+              );
+              continue;
+            }
+            replyDue = true;
+            events.push(
+              `${eventQuote}\n\n${made.text}\n\n${quote("approved draft (data)", made.data, true)}`,
             );
             continue;
           }

@@ -36,8 +36,16 @@ import { heldUntil } from "../triggers/quietHold.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
-import { unreadableBy } from "../work/teamView.ts";
-import { askedBy, encodeHeldCard, openFor, personClock, readQuestion } from "./openQuestions.ts";
+import { personSees, unreadableBy } from "../work/teamView.ts";
+import {
+  askedBy,
+  DRAFT_KINDS,
+  encodeHeldCard,
+  encodeStoredDraft,
+  openFor,
+  personClock,
+  readQuestion,
+} from "./openQuestions.ts";
 import { defaultDue, namedDue, normaliseAbout, normaliseIntent, raiseAt } from "./rules.ts";
 
 /** What an agent asks someone outside the chat: `kin_ask`'s card, with no default or actions. */
@@ -53,6 +61,19 @@ export const AskPersonInput = Schema.Struct({
     Schema.Array(KinTrimmedText.check(Schema.isMaxLength(20))).check(Schema.isMaxLength(8)),
   ),
   intent: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
+  draft: Schema.optional(
+    Schema.Struct({
+      kind: Schema.Literals(DRAFT_KINDS),
+      for: Schema.optional(
+        KinTrimmedText.check(Schema.isMaxLength(20)).annotate({
+          description: "The key of the client or deal it is for.",
+        }),
+      ),
+    }).annotate({
+      description:
+        "Only from a teammate's own chat, to the owner: detail is a draft of what only the owner may finish for them. Mark the one option that approves it kind yes; that tap has you make it at the owner's level.",
+    }),
+  ),
 });
 
 /** What `kin_ask_person` returns: where the question is, and what to tell whoever asked. */
@@ -159,6 +180,37 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
           ? null
           : ((yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
               WHERE org_id = ${orgId} AND person_id = ${asker}`)[0]?.name ?? null);
+      // A sent-up draft is a teammate's, to the agent's owner only: his Approve has it made.
+      let draft: string | null = null;
+      if (input.draft !== undefined) {
+        if (ownerTurn || asker === null)
+          return yield* refuse(
+            "Only a teammate's own request sends a draft up; here you act at the owner's level, so make it yourself.",
+          );
+        if (target.id !== self.owner) {
+          const [owner] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+            WHERE org_id = ${orgId} AND person_id = ${self.owner}`;
+          return yield* refuse(`A draft goes up only to ${owner?.name ?? "the owner"}.`);
+        }
+        if (input.options.filter((one) => one.kind === "yes").length !== 1)
+          return yield* refuse("Mark exactly one option, the one that approves it, kind yes.");
+        if (input.detail === undefined || input.detail.trim() === "")
+          return yield* refuse("Put the draft itself in detail.");
+        const key = input.draft.for;
+        const [party] =
+          key === undefined
+            ? []
+            : yield* sql<{ key: string; title: string }>`SELECT r.key, r.title FROM kin_records r
+                WHERE r.org_id = ${orgId} AND r.key = ${key}
+                  AND r.register_id IN ('clients', 'deals') AND ${personSees(sql, asker)}`;
+        if (key !== undefined && party === undefined)
+          return yield* refuse(`No client or deal ${key} that ${askerName ?? "they"} sees.`);
+        draft = yield* encodeStoredDraft({
+          kind: input.draft.kind,
+          for: party ?? null,
+          text: input.detail,
+        });
+      }
       // Their own direct chat with this agent: opening it is their own reach check (`Reach`).
       const unreached = new KinChatError({
         reason: "not_allowed",
@@ -290,12 +342,12 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
       const store = (widgetId: string | null) =>
         sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
             widget_id, question, options_json, default_label, safe, about, intent, asked_at, due_at,
-            act_at, state, for_chat_id, for_person_id, card_json)
+            act_at, state, for_chat_id, for_person_id, card_json, draft_json)
           VALUES (${questionId}, ${orgId}, ${agentId}, ${target.id}, ${direct.chatId}, 'card',
             ${widgetId}, ${card.question}, ${JSON.stringify(options)}, NULL, 0, ${about.join(" ")},
             ${intent}, ${now}, ${dueAt}, ${raiseAt(dueAt, clock.zone, clock.work)}, 'open',
             ${here.chatId}, ${asker},
-            ${widgetId === null ? heldCard : null})
+            ${widgetId === null ? heldCard : null}, ${draft})
           ON CONFLICT (question_id) DO NOTHING`.pipe(Effect.asVoid);
       const posted = yield* deps.gate.askTo(
         lead,
