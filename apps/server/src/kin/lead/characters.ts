@@ -51,6 +51,10 @@ export const wholeCharacter = (character: Pick<Character, "kin" | "body">) => {
   return own === "" ? character.kin : `${character.kin}\n\n${own}`;
 };
 
+/** The fixed line between Kin's part and the owner's, which says his wins. */
+export const OWN_WORDS =
+  "The company's own words for you follow; where they differ from the above, they win.";
+
 /**
  * The character as a turn carries it: whole, with the doc to change it, in the owner's own turns;
  * the voice alone where others read, since examples may carry figures.
@@ -64,10 +68,12 @@ export const characterForTurn = (character: Character, ownerOnly: boolean) => {
   }
   const own = character.body.trim();
   if (ownerOnly)
-    return `Doc ${character.key}. When the owner tells you how to sound, change it with doc_edit and confirm in one line; doc_restore brings the last one back.\n${wholeCharacter(character)}`;
+    return own === ""
+      ? `Doc ${character.key} holds the owner's part, empty now: when he tells you how to sound, write it there with doc_edit and confirm in one line.\n${character.kin}`
+      : `Doc ${character.key} holds the owner's part, the last below: when he tells you how to sound, change it there with doc_edit and confirm in one line; doc_restore brings the last one back.\n${character.kin}\n\n${OWN_WORDS}\n${own}`;
   const voice = parseCharacter(character.kin).voice;
   const ownVoice = own === "" ? "" : parseCharacter(own).voice;
-  return ownVoice === "" ? voice : `${voice}\n\n${ownVoice}`;
+  return ownVoice === "" ? voice : `${voice}\n\n${OWN_WORDS}\n${ownVoice}`;
 };
 
 const LINE_CAP = 160;

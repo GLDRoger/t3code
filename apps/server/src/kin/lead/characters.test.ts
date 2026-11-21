@@ -34,6 +34,7 @@ import { defaultCharacterFor, shippedLines } from "./characterDefaults.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import {
   type Character,
+  OWN_WORDS,
   characterForTurn,
   characters,
   colleagueLine,
@@ -217,11 +218,15 @@ it("a turn reads Kin's part, then the owner's under one line, and neither when a
   // Owner-only turns: the doc to change, Kin's part, and the owner's after it when he has one.
   assert.match(characterForTurn(kinOnly, true), /^Doc D-7\b/);
   assert.isTrue(characterForTurn(kinOnly, true).endsWith(kin));
+  assert.include(characterForTurn(kinOnly, true), "empty now");
+  assert.notInclude(characterForTurn(kinOnly, true), OWN_WORDS);
   const whole = characterForTurn(both, true);
-  assert.isTrue(whole.indexOf(kin) < whole.indexOf("Never on a Sunday."));
+  assert.isTrue(
+    whole.endsWith(`${kin}\n\n${OWN_WORDS}\nTo colleagues: Talk tiles.\n\nNever on a Sunday.`),
+  );
   // Where others read: the voices alone, Kin's then the owner's, no examples.
   assert.notInclude(characterForTurn(kinOnly, false), "## Examples");
-  assert.isTrue(characterForTurn(both, false).endsWith("Never on a Sunday."));
+  assert.isTrue(characterForTurn(both, false).endsWith(`${OWN_WORDS}\nNever on a Sunday.`));
   assert.notInclude(characterForTurn(both, false), "To colleagues");
   // No default: the doc is the whole character, as before there were two parts.
   assert.isTrue(characterForTurn(custom, true).endsWith("# Growth\n\nInvented: our own."));
