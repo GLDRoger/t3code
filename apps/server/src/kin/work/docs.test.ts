@@ -4,7 +4,7 @@ import { assert, it } from "@effect/vitest";
 import {
   EnvironmentId,
   KinAgentId,
-  type KinChatError,
+  KinChatError,
   KinChatId,
   KinDocsRpcs,
   KinMessageId,
@@ -2165,16 +2165,57 @@ it.effect(
           body: "Doors open soon.",
         }),
       );
+      const ownChatOnly =
+        "A teammate's doc is filed only at their own word in their own chat with you. Nothing was written.";
       const grouped = yield* fileIt;
-      assert.strictEqual(reasonOf(grouped), "not_allowed");
+      assert.strictEqual("message" in grouped ? grouped.message : "", ownChatOnly);
       yield* sql`UPDATE kin_chats SET kind = 'direct', direct_key = ${`${mateId}:${lead}`}
         WHERE chat_id = 'mate-chat'`;
       yield* sql`UPDATE kin_messages SET origin_json = ${JSON.stringify({ messageId: "elsewhere" })}
         WHERE message_id = 'ask'`;
       const carried = yield* fileIt;
-      assert.strictEqual(reasonOf(carried), "not_allowed");
+      assert.strictEqual("message" in carried ? carried.message : "", ownChatOnly);
       assert.lengthOf(yield* docs, 5);
     }).pipe(Effect.provide(layer)),
+);
+
+// A draft is filed whatever its card meets; the agent then hears where it is, with no card.
+it.effect("a draft whose card can't be shown is filed, and the agent is told so", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* turn();
+    const filed = yield* LeadDocs.create(scopeOf(lead), {
+      sourceEventId: "ask-event",
+      title: "Invented teaser",
+      body: "Soon.",
+      draft: { kind: "mail" },
+    });
+    assert.strictEqual(
+      filed.note,
+      `Filed as ${filed.key}, but its card couldn't be shown here: give the draft in your reply.`,
+    );
+    const sql = yield* SqlClient.SqlClient;
+    assert.lengthOf(
+      yield* sql`SELECT 1 FROM kin_records WHERE org_id = ${orgId} AND key = ${filed.key}`,
+      1,
+    );
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        KinRecords.layer,
+        identity,
+        Layer.mock(KinLevelGate)({
+          showCard: () =>
+            Effect.fail(new KinChatError({ reason: "not_allowed", message: "Not here." })),
+        }),
+      ).pipe(
+        Layer.provideMerge(KinEventQueue.layer),
+        Layer.provideMerge(KinPersistence.layer),
+        Layer.provideMerge(Sqlite.layerMemory),
+        Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+      ),
+    ),
+  ),
 );
 
 it.effect("a teammate with Docs reads What we sell, and their turn's agent can't change it", () =>

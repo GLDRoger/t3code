@@ -2116,12 +2116,19 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       );
       assert.strictEqual(
         posts[0]!.note,
-        `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it in your reply. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
+        `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it; say in one line it is filed as ${posts[0]!.key}. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
       );
+      // A blank draft, or one whose Approve card would be too long to carry, files nothing.
       const docCount = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
         WHERE org_id = ${orgId} AND register_id = 'docs'
           AND json_extract(fields_json, '$.draftFor') = 'zoya'`.pipe(
         Effect.map((rows) => rows[0]!.n),
+      );
+      const reasonOf = (error: object) => ("reason" in error ? error.reason : undefined);
+      assert.strictEqual(reasonOf(yield* Effect.flip(file("Blank", "  \n "))), "invalid_state");
+      assert.strictEqual(
+        reasonOf(yield* Effect.flip(file("Long one", "x".repeat(1800), "C-8"))),
+        "invalid_state",
       );
       assert.strictEqual(yield* docCount, 4);
       const cards = yield* sql<{ widgetId: string; state: string }>`SELECT widget_id AS "widgetId",
@@ -2166,7 +2173,7 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       }).pipe(Effect.provideService(KinIdentity, identity));
       assert.strictEqual(
         mine.note,
-        `This draft is its own card in the chat, with Copy text: don't repeat it in your reply. No LinkedIn account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
+        `This draft is its own card in the chat, with Copy text: don't repeat it; say in one line it is filed as ${mine.key}. No LinkedIn account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
       );
       const [ownCard] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
         WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'`;
@@ -2226,6 +2233,12 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
         detail:
           "Zoya Sheikh asks, through Chief of staff.\n\n## Teaser\n\n**Soon** at Harbourline.\n\nPost for Instagram, for Harbourline Hotels",
       });
+      // The owner's turn on his Approve knows where the post goes.
+      const [stored] = yield* sql<{
+        on: string | null;
+      }>`SELECT json_extract(draft_json, '$.on') AS "on"
+        FROM kin_questions WHERE org_id = ${orgId} AND question_id = ${question!.questionId}`;
+      assert.strictEqual(stored!.on, "Instagram");
       // Her card now says it went up, and to whom.
       const sent = yield* team.widgetOf(cards[0]!.widgetId);
       assert.deepInclude((sent.state as { draft: { sent: object } }).draft.sent, {

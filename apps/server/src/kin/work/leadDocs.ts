@@ -51,7 +51,7 @@ import {
 import { iso, type RecordRow } from "./recordRows.ts";
 import { DRAFT_TEXT_MAX, draftCardOf } from "./draftCards.ts";
 import { search } from "./search.ts";
-import { KIN_OWNER_LEVEL, viewSees, viewerOfPeople } from "./teamView.ts";
+import { DRAFT_OWN_CHAT_ONLY, KIN_OWNER_LEVEL, viewSees, viewerOfPeople } from "./teamView.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
@@ -552,6 +552,8 @@ const draftUpLine = (owner: string, asker: string) =>
  * agent, names the way on: the draft goes to the owner on a card, which only such a turn may post.
  */
 const draftUp = Effect.fn("KinDocTools.draftUp")(function* (lead: Lead, refused: KinChatError) {
+  // Sent up, it would be refused for the same reason (`askPerson`'s `draftSource`).
+  if (refused.message === DRAFT_OWN_CHAT_ONLY.message) return refused;
   const behind = yield* turnPeople(lead);
   const asker = behind?.people.length === 1 ? behind.askers[0] : undefined;
   const chat = yield* turnChat(lead);
@@ -571,10 +573,15 @@ const draftUp = Effect.fn("KinDocTools.draftUp")(function* (lead: Lead, refused:
   });
 });
 
-/** What the agent is told of a draft it filed: it is its own card, and what Kin can't do with it. */
-const draftNote = (draft: KinDocCardDraft) =>
+/**
+ * What the agent is told of a draft it filed: its own card, when one was placed, and where it is,
+ * which a client without draft cards shows only as a doc; and what Kin can't do with it.
+ */
+const draftNote = (draft: KinDocCardDraft, key: string, placed: boolean) =>
   [
-    `This draft is its own card in the chat, with Copy text${draft.sendTo === undefined ? "" : ` and Send to ${draft.sendTo.name}`}: don't repeat it in your reply.`,
+    placed
+      ? `This draft is its own card in the chat, with Copy text${draft.sendTo === undefined ? "" : ` and Send to ${draft.sendTo.name}`}: don't repeat it; say in one line it is filed as ${key}.`
+      : `Filed as ${key}, but its card couldn't be shown here: give the draft in your reply.`,
     ...(draft.noAccount === undefined
       ? []
       : [
@@ -585,9 +592,13 @@ const draftTooLong = (length: number) =>
   invalid(
     `A draft holds at most ${DRAFT_TEXT_MAX} characters so it can go up on a card; this is ${length}. File it without draft, or shorten it. Nothing was written.`,
   );
+const DRAFT_BLANK = "A draft needs its text. Nothing was written.";
+const DRAFT_CARD_FULL =
+  "With who asks and who it is for, this draft is too long for the card it goes up on. Shorten it, or file it without draft. Nothing was written.";
 
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   if (input.whatWeSell === true) return yield* runStartOfferings(lead, input);
+  if (input.draft !== undefined && input.body.trim() === "") return yield* invalid(DRAFT_BLANK);
   if (input.draft !== undefined && input.body.length > DRAFT_TEXT_MAX)
     return yield* draftTooLong(input.body.length);
   const context = yield* writeContext(lead, "doc_create", input);
@@ -624,6 +635,7 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       (error) => Effect.flatMap(draftUp(lead, error), Effect.fail),
     ),
   );
+  // Its Approve card must carry it whole, worked out on the doc as filed: else nothing is.
   const { written, draft } = yield* sql.withTransaction(
     Effect.gen(function* () {
       const written = yield* filed;
@@ -632,6 +644,7 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
         text: written.version.body,
         partyId: written.row.partyId,
       });
+      if (!drawn.fits) return yield* invalid(DRAFT_CARD_FULL);
       return { written, draft: drawn.card };
     }),
   );
@@ -644,10 +657,15 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       recordId: written.row.recordId,
       key: written.row.key,
     });
-  yield* shown(lead, written, draft === undefined ? (input.card ?? "answer") : true, draft);
+  const placed = yield* shown(
+    lead,
+    written,
+    draft === undefined ? (input.card ?? "answer") : true,
+    draft,
+  );
   return {
     ...writeResult(written, written.created),
-    ...(draft === undefined ? {} : { note: draftNote(draft) }),
+    ...(draft === undefined ? {} : { note: draftNote(draft, written.row.key, placed) }),
   };
 });
 export const create = leadTool("KinDocTools.create", runCreate);

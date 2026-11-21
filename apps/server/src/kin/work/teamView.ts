@@ -347,7 +347,11 @@ export const viewGuard = Effect.fn("KinTeamView.viewGuard")(function* (
     yield* teamGuard(orgId, person, {
       ...write,
       changes: write.changes && view.askers.includes(person),
-    });
+    }).pipe(
+      Effect.mapError((error) =>
+        draft === "elsewhere" && error === TEAM_REFUSED ? DRAFT_OWN_CHAT_ONLY : error,
+      ),
+    );
 });
 
 /** Lists a turn others read writes for the room, shared with the team (`KinRecords.insert`). */
@@ -413,6 +417,12 @@ const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
   return typeof input.projectId !== "string" || (yield* inProject(orgId, person, input.projectId))
     ? ("filed" as const)
     : undefined;
+});
+
+export const DRAFT_OWN_CHAT_ONLY = new KinChatError({
+  reason: "not_allowed",
+  message:
+    "A teammate's doc is filed only at their own word in their own chat with you. Nothing was written.",
 });
 
 /**
