@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
+  KinMemoryItemId,
   KinOrgId,
   KinTriggerFired,
   KinTriggerFireId,
@@ -420,7 +421,7 @@ const seedFires = Effect.fn("test.seedFires")(function* (
   }
 });
 
-it.live("a fixture dream pushes dream/<date> with its changes and records dream.json", () =>
+it.live("a fixture dream lands its changes on the default branch and records dream.json", () =>
   fixture(({ git, remote, main, root, turns, notices }) =>
     Effect.gen(function* () {
       const runner = yield* DreamRunner.DreamRunner;
@@ -428,11 +429,10 @@ it.live("a fixture dream pushes dream/<date> with its changes and records dream.
       expect(outcome._tag).toBe("succeeded");
       if (outcome._tag !== "succeeded") return;
       expect(outcome.branch).toBe("dream/2026-11-08");
-      expect(
-        yield* git(root, ["--git-dir", remote, "rev-parse", "refs/heads/dream/2026-11-08"]),
-      ).toBe(outcome.head);
-      expect(yield* git(root, ["--git-dir", remote, "rev-parse", "main"])).toBe(main);
+      expect(yield* git(root, ["ls-remote", "--heads", remote])).toContain("dream/2026-11-08");
+      expect(yield* git(root, ["--git-dir", remote, "rev-parse", "main"])).toBe(outcome.head);
       expect(yield* git(root, ["--git-dir", remote, "rev-parse", `${outcome.head}^`])).toBe(main);
+
       expect(
         yield* git(root, ["--git-dir", remote, "show", `${outcome.head}:claims/new.md`]),
       ).toContain("clm-002");
@@ -465,6 +465,56 @@ it.live("a fixture dream pushes dream/<date> with its changes and records dream.
       expect(yield* fs.exists(`${root}/state/dreams/${outcome.dreamId}`)).toBe(false);
     }),
   ),
+);
+
+it.live.each([
+  { moved: "claims/existing.md", lands: true },
+  { moved: "journal/2026/11-07.md", lands: false },
+] as const)(
+  "memory that moved during the dream at $moved: the dream lands on top only if it left that file alone",
+  ({ moved, lands }) =>
+    fixture(({ git, remote, root, main, hooks }) =>
+      Effect.gen(function* () {
+        const runner = yield* DreamRunner.DreamRunner;
+        const writer = yield* Writer.MemoryWriter;
+        hooks.extracted = () =>
+          (moved === "claims/existing.md"
+            ? Effect.asVoid(
+                writer.retire(orgId, { itemId: KinMemoryItemId.make("clm-001"), by: "owner" }),
+              )
+            : Effect.asVoid(
+                writer.landDream(orgId, {
+                  base: main,
+                  files: new Map([[moved, "\n## 10:00 · wake-up\n## 03:10 · a later note\n"]]),
+                  message: "kin: a later note\n",
+                  landed: () => Effect.void,
+                }),
+              )
+          ).pipe(Effect.orDie);
+        const outcome = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" });
+        const moving = yield* git(root, ["--git-dir", remote, "rev-parse", "main"]);
+        const [row] = yield* runRow();
+        if (lands) {
+          expect(outcome._tag).toBe("succeeded");
+          expect(outcome._tag === "succeeded" ? outcome.head : "").toBe(moving);
+          expect(
+            yield* git(root, ["--git-dir", remote, "show", `${moving}:claims/new.md`]),
+          ).toContain("clm-002");
+          expect(
+            yield* git(root, ["--git-dir", remote, "show", `${moving}:claims/existing.md`]),
+          ).not.toContain("invalid_at: null");
+          return;
+        }
+        expect(outcome._tag).toBe("failed");
+        if (outcome._tag === "failed")
+          expect(outcome.failures.join("\n")).toContain("MemorySyncConflict");
+        expect(
+          yield* git(root, ["--git-dir", remote, "ls-tree", "-r", "--name-only", moving]),
+        ).not.toContain("claims/new.md");
+        // Nothing was dreamed, so the next night reads the same material again.
+        expect(row).toMatchObject({ status: "failed", head: null });
+      }),
+    ),
 );
 
 const hiddenQuote = "invented words from a message now gone";
@@ -565,21 +615,33 @@ it.live("a cancel after the dream decides returns false and the outcome stands",
   ),
 );
 
-it.live("a cancel after the dream pushed but before it decides wins", () =>
-  fixture(({ git, remote, root, hooks }) =>
+it.live("a cancel before the dream lands wins, and one after it starts landing loses", () =>
+  fixture(({ git, remote, root, main, hooks }) =>
     Effect.gen(function* () {
       const runner = yield* DreamRunner.DreamRunner;
       const answers: Array<boolean> = [];
-      // The dream removes its checkout last, after the push and right before it decides.
-      hooks.removed = (target) =>
-        /\/dreams\/dream_[^/]+$/.test(target)
-          ? runner.cancel(orgId).pipe(Effect.map((answer) => void answers.push(answer)))
-          : Effect.void;
-      const outcome = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" });
+      // Uninterruptible: a cancel that wins ends the very fiber that asked for it.
+      const cancel = runner.cancel(orgId).pipe(
+        Effect.map((answer) => void answers.push(answer)),
+        Effect.uninterruptible,
+      );
+      hooks.extracted = () => cancel;
+      const before = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" });
       expect(answers).toEqual([true]);
-      expect(outcome._tag).toBe("cancelled");
+      expect(before._tag).toBe("cancelled");
       expect((yield* runRow())[0]?.status).toBe("cancelled");
-      expect(yield* git(root, ["ls-remote", "--heads", remote])).not.toContain("dream/");
+      expect(yield* git(root, ["--git-dir", remote, "rev-parse", "main"])).toBe(main);
+
+      // The dream removes its checkout last, once its memory has landed.
+      hooks.extracted = () => Effect.void;
+      hooks.removed = (target) => (/\/dreams\/dream_[^/]+$/.test(target) ? cancel : Effect.void);
+      const after = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-09" });
+      expect(answers).toEqual([true, false]);
+      expect(after._tag).toBe("succeeded");
+      expect((yield* runRow()).map((row) => row.status)).toEqual(["cancelled", "succeeded"]);
+      expect(yield* git(root, ["--git-dir", remote, "rev-parse", "main"])).toBe(
+        after._tag === "succeeded" ? after.head : "",
+      );
     }),
   ),
 );

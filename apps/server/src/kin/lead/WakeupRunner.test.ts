@@ -172,6 +172,7 @@ describe("WakeupRunner", () => {
         Writer.MemoryWriter.of({
           dreamBase: () => Effect.die("unused"),
           commitDream: () => Effect.die("unused"),
+          landDream: () => Effect.die("unused"),
           deleteDreamBranch: () => Effect.die("unused"),
           reconcileSharing: () => Effect.void,
           stripQuotes: () => Effect.void,
@@ -641,6 +642,7 @@ describe("WakeupRunner", () => {
         Writer.MemoryWriter.of({
           dreamBase: () => Effect.die("unused"),
           commitDream: () => Effect.die("unused"),
+          landDream: () => Effect.die("unused"),
           deleteDreamBranch: () => Effect.die("unused"),
           reconcileSharing: () => Effect.void,
           stripQuotes: () => Effect.void,
@@ -768,6 +770,7 @@ describe("WakeupRunner", () => {
                   stage: () => Effect.die("unused"),
                   dreamBase: () => Effect.die("unused"),
                   commitDream: () => Effect.die("unused"),
+                  landDream: () => Effect.die("unused"),
                   deleteDreamBranch: () => Effect.die("unused"),
                   reconcileSharing: () => Effect.void,
                   stripQuotes: () => Effect.void,
