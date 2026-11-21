@@ -25,7 +25,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
-import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
+import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
+import { KinDocRenderer } from "../gendocs/render.ts";
+import { LeadMemory } from "../lead/LeadMemory.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -35,6 +39,7 @@ import * as KinRecords from "./KinRecords.ts";
 import * as LeadClients from "./leadClients.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
+import { handlers as workHandlers } from "./mcp/handlers.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Deals from "./deals.ts";
@@ -1272,6 +1277,88 @@ it.effect(
       assert.isFalse(lowered.sensitive);
       const after = yield* OwnerWork.get([owner], { orgId, key: "W-1" });
       assert.notProperty(after, "sensitiveInherited");
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "records_query says its rows' marks once, and a mixed page still names each sensitive row and field",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* setup("ask-event");
+      yield* LeadWork.update(scope, { key: "C-1", sourceEventId: "ask-event", sensitive: true });
+      const toolkit = yield* KinWorkToolkit.pipe(
+        Effect.provide(McpToolAccess.HandlersLayer.layer(workHandlers)),
+      );
+      const unused = Layer.mergeAll(
+        Layer.mock(ThreadManagementService)({}),
+        Layer.mock(KinDocRenderer)({}),
+        Layer.mock(LeadMemory)({}),
+      );
+      // What the agent is sent, as the toolkit encodes it.
+      const sent = (input: Parameters<typeof toolkit.handle<"records_query">>[1]) =>
+        toolkit.handle("records_query", input).pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.map((chunk) => chunk.at(-1)!.encodedResult as Record<string, unknown>),
+          Effect.provideService(McpInvocationContext, scope),
+          Effect.provide(unused),
+        );
+      // Each row's marks as the page's say them, beside what Kin marked that row.
+      const rowMarks = (input: { readonly list: string }) =>
+        Effect.gen(function* () {
+          const page = yield* sent(input);
+          const rows = page.records as ReadonlyArray<Record<string, unknown>>;
+          for (const row of rows) {
+            assert.notProperty(row, "sensitive");
+            assert.notProperty(row, "sensitiveFields");
+          }
+          const fields = page.sensitiveFields;
+          const said = rows.map((row) => {
+            const key = row.key as string;
+            const own = Array.isArray(fields)
+              ? fields
+              : Object.entries((fields ?? {}) as Record<string, ReadonlyArray<string>>)
+                  .filter(([, keys]) => keys.includes(key))
+                  .map(([field]) => field);
+            const rowsSaid = page.sensitiveRows;
+            const sensitive =
+              rowsSaid === "all" || (Array.isArray(rowsSaid) && rowsSaid.includes(key));
+            return [key, sensitive, own.toSorted()];
+          });
+          const kin = (yield* LeadWork.query(scope, input)).records.map((row) => [
+            row.key,
+            row.sensitive === true,
+            [...(row.sensitiveFields ?? [])].toSorted(),
+          ]);
+          assert.deepStrictEqual(said, kin);
+          return page;
+        });
+      const contacts = yield* rowMarks({ list: "contacts" });
+      assert.deepInclude(contacts, { sensitiveRows: "all", sensitiveFields: ["email", "phone"] });
+      const tasks = yield* rowMarks({ list: "work" });
+      assert.notProperty(tasks, "sensitiveRows");
+      assert.notProperty(tasks, "sensitiveFields");
+      yield* LeadWork.update(scope, { key: "W-2", sourceEventId: "ask-event", sensitive: true });
+      yield* LeadWork.create(scope, {
+        sourceEventId: "again-event",
+        records: [
+          { title: "Invented printing", amount: "₹1,200" },
+          { list: "clients", title: "Invented Bolt" },
+          { list: "contacts", title: "Invented Asha", client: "Invented Bolt" },
+        ],
+      });
+      const mixedTasks = yield* rowMarks({ list: "work" });
+      const mixedContacts = yield* rowMarks({ list: "contacts" });
+      // A mixed page names exactly the rows and, per field, the rows that are sensitive.
+      assert.deepInclude(mixedTasks, {
+        sensitiveRows: ["W-2"],
+        sensitiveFields: { amount: ["W-7"] },
+      });
+      assert.deepInclude(mixedContacts, {
+        sensitiveRows: ["CT-1", "CT-2"],
+        sensitiveFields: ["email", "phone"],
+      });
     }).pipe(Effect.provide(layer)),
 );
 
