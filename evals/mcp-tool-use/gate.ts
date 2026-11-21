@@ -70,6 +70,8 @@ const unanimous = ({ passes, finished }: Tally) =>
  * with did not agree unanimously with them, so a candidate has the baseline's evidence or more.
  */
 export const needsTopUp = (first: Tally, baseline?: Tally) => {
+  // More samples of a case whose samples all errored buy more errors, not evidence.
+  if (first.finished === 0) return false;
   if (!unanimous(first)) return true;
   if (baseline === undefined || baseline.finished === 0) return false;
   const passed = first.passes > 0;
@@ -155,6 +157,7 @@ export const compare = (baseline: Run, candidates: ReadonlyArray<Run>) => {
   });
   const notRun = Object.keys(baseline.manifest.cases).filter((id) => !requests.has(id));
   const worse = cases.filter((row) => row.verdict === "worse");
+  const noData = cases.filter((row) => row.verdict === "no data");
   return {
     refused,
     cases,
@@ -163,7 +166,7 @@ export const compare = (baseline: Run, candidates: ReadonlyArray<Run>) => {
     sameText: [...requests].every(
       ([id, request]) => baseline.manifest.cases[id]?.request === request,
     ),
-    pass: refused.length === 0 && worse.length === 0,
+    pass: refused.length === 0 && worse.length === 0 && noData.length === 0,
   };
 };
 
@@ -186,6 +189,11 @@ export const report = (result: ReturnType<typeof compare>) => {
     ...(result.sameText ? ["Both sides sent identical requests: every difference is noise."] : []),
     ...(result.notRun.length > 0
       ? [`Not in the candidate run: ${result.notRun.length} baseline cases.`]
+      : []),
+    ...(count("no data") > 0
+      ? [
+          `No data means every sample of a case errored on one side, so nothing shows it is not worse: run those cases again.`,
+        ]
       : []),
     `Worse and better mean a one-sided Fisher exact p <= ${ALPHA}, unless the case is unstable on both sides.`,
     ...(worse.length > 0 && result.batches === 1

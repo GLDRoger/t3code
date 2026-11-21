@@ -6,20 +6,27 @@ import {
   KIN_STATEMENT_REVIEW_CARD,
   KinStatementPasswordCard,
   KinStatementReviewCard,
+  type EnvironmentId,
   type KinOrgId,
   type KinStatementApplyInput,
+  type KinStatementRereadInput,
   type KinStatementRereadResult,
+  type KinStatementResult,
   type KinStatementRowChoice,
   type KinStatementRowsInput,
   type KinStatementRowsResult,
   type KinStatementSection,
   type KinStatementSelectChange,
+  type KinStatementSelectInput,
   type KinStatementSelection,
   type KinStatementTarget,
+  type KinStatementUndoInput,
   type KinWidget,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { AsyncResult } from "effect/reactivity";
 
 import { KIN_SEND_FAILED_TEXT } from "./kinDeferralPresentation.ts";
 
@@ -265,7 +272,7 @@ export const kinStatementApplyInput = (
 });
 
 /** The next page of a section, after the rows this device has. */
-export const kinStatementRowsInput = (
+const kinStatementRowsInput = (
   view: KinStatementReviewView,
   section: KinStatementSection,
   offset: number,
@@ -459,6 +466,8 @@ export const kinStatementFailureText = (cause: unknown): string =>
 
 /** A bank statement's review card. */
 export const KIN_STATEMENT_COPY = {
+  undo: "Undo this statement",
+  forgetPassword: "Forget the password",
   takeSuggestions: (rows?: number) =>
     rows === undefined
       ? "Use Kin's suggestions"
@@ -466,3 +475,95 @@ export const KIN_STATEMENT_COPY = {
   remember: "Remember for this account, so the next statement opens on its own",
   leftRows: "Rows you leave stay unexplained for later.",
 } as const;
+
+type KinStatementSend<I, A> = (value: {
+  readonly environmentId: EnvironmentId;
+  readonly input: I;
+}) => Promise<AsyncResult.Success<A, unknown> | AsyncResult.Failure<A, unknown>>;
+
+export type KinStatementPending = "apply" | "undo" | "reread" | null;
+
+/**
+ * What a review card's taps do, the same on every client: each app holds the state and draws it.
+ * `pending` guards one apply, undo or reread at a time; a reply for an older hash is dropped.
+ */
+export function kinStatementReviewActions(options: {
+  readonly review: KinStatementReviewView;
+  readonly environmentId: EnvironmentId;
+  readonly shown: ReturnType<typeof kinStatementShown>;
+  readonly pending: KinStatementPending;
+  readonly commands: {
+    readonly select: KinStatementSend<KinStatementSelectInput, KinStatementResult>;
+    readonly rows: KinStatementSend<KinStatementRowsInput, KinStatementRowsResult>;
+    readonly apply: KinStatementSend<KinStatementApplyInput, KinStatementResult>;
+    readonly undo: KinStatementSend<KinStatementUndoInput, KinStatementResult>;
+    readonly reread: KinStatementSend<KinStatementRereadInput, KinStatementRereadResult>;
+  };
+  readonly set: {
+    readonly local: (update: (prev: KinStatementLocal) => KinStatementLocal) => void;
+    readonly failure: (text: string | null) => void;
+    readonly pending: (pending: KinStatementPending) => void;
+    readonly rereadNote: (text: string | null) => void;
+  };
+}) {
+  const { review, environmentId, shown, pending, commands, set } = options;
+  const { card, selection } = shown;
+  const failed = (result: { readonly cause: Cause.Cause<unknown> }) =>
+    set.failure(kinStatementFailureText(Cause.squash(result.cause)));
+  const target = { orgId: review.orgId, statementId: card.statementId };
+
+  const change = async (next: KinStatementSelectChange) => {
+    const hash = card.hash;
+    set.failure(null);
+    set.local((prev) => kinStatementQueue(prev, hash, next));
+    const result = await commands.select({
+      environmentId,
+      input: { ...target, hash, change: next },
+    });
+    const reply = Option.getOrNull(AsyncResult.value(result))?.card ?? null;
+    set.local((prev) => kinStatementAnswered(prev, hash, reply));
+    if (AsyncResult.isFailure(result)) failed(result);
+  };
+  /** True when a page arrived, so the section can say whether more is left. */
+  const load = async (section: KinStatementSection) => {
+    const hash = card.hash;
+    const result = await commands.rows({
+      environmentId,
+      input: kinStatementRowsInput(review, section, shown.rows[section].length),
+    });
+    if (AsyncResult.isFailure(result)) {
+      failed(result);
+      return false;
+    }
+    const page = Option.getOrNull(AsyncResult.value(result));
+    if (page !== null) set.local((prev) => kinStatementLoaded(prev, hash, page));
+    return page !== null;
+  };
+  const send = async (what: "apply" | "undo") => {
+    if (pending !== null) return;
+    set.pending(what);
+    set.failure(null);
+    set.rereadNote(null);
+    const result =
+      what === "apply"
+        ? await commands.apply({ environmentId, input: kinStatementApplyInput(review, selection) })
+        : await commands.undo({ environmentId, input: target });
+    set.pending(null);
+    if (AsyncResult.isFailure(result)) failed(result);
+  };
+  const readAgain = async () => {
+    if (pending !== null) return;
+    set.pending("reread");
+    set.failure(null);
+    set.rereadNote(null);
+    const result = await commands.reread({ environmentId, input: target });
+    set.pending(null);
+    if (AsyncResult.isFailure(result)) {
+      failed(result);
+      return;
+    }
+    const answer = Option.getOrNull(AsyncResult.value(result));
+    if (answer !== null) set.rereadNote(kinStatementRereadText(answer.status));
+  };
+  return { change, load, send, readAgain };
+}

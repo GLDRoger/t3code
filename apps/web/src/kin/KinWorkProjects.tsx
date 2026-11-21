@@ -12,10 +12,12 @@ import {
   KIN_PROJECT_REFUSED,
   KIN_PROJECT_GONE,
   KIN_PROJECT_LEAD,
+  kinCampaignResultOpens,
   kinProjectLeadChoices,
   kinProjectPageView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinWorkSend, type KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
+import type { KinCampaignResultId } from "@t3tools/client-runtime/kin/kinMarketing";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
@@ -30,6 +32,7 @@ import { useId, useState } from "react";
 
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { Button } from "../components/ui/button";
+import { Dialog, DialogHeader, DialogPopup, DialogTitle } from "../components/ui/dialog";
 import { Label } from "../components/ui/label";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Radio, RadioGroup } from "../components/ui/radio-group";
@@ -48,6 +51,9 @@ import { KinDocsUnder } from "./KinDocsList";
 import { KinProjectNoteSection } from "./KinProjectNote";
 import { KinProjectPeopleSection } from "./KinProjectPeople";
 import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
+import { KinCampaignDealsDialog } from "./KinDeals";
+import { KinCampaignResultsSection, KinContactListDialog } from "./KinMarketing";
+import { KinWorkClientsList } from "./KinWorkClients";
 import {
   KinWorkHealthBadge,
   KinWorkNotice,
@@ -134,9 +140,12 @@ function ProjectPage(
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
   const [choosingLead, setChoosingLead] = useState(false);
+  const [openResult, setOpenResult] = useState<KinCampaignResultId | null>(null);
   const privateId = useId();
   const view = kinProjectPageView(page, names, now);
   const { party } = view;
+  const opened =
+    openResult === null ? null : kinCampaignResultOpens(orgId, view.key, view.name, openResult);
   const change = async (input: {
     readonly state?: KinProjectState;
     readonly sensitive?: boolean;
@@ -199,6 +208,7 @@ function ProjectPage(
                   {" · "}
                 </>
               )}
+              {view.kind === null ? null : `${view.kind} · `}
               {view.target}
               {view.ledBy === null ? null : ` · ${view.ledBy}`}
             </p>
@@ -278,6 +288,13 @@ function ProjectPage(
           </Button>
         ) : null}
       </div>
+      {page.results === undefined ? null : (
+        <KinCampaignResultsSection
+          results={page.results}
+          audience={view.audience}
+          onOpen={setOpenResult}
+        />
+      )}
       {page.can?.note === undefined ? null : (
         <KinProjectNoteSection
           environmentId={environmentId}
@@ -597,6 +614,55 @@ function ProjectPage(
           onClose={() => setChoosingLead(false)}
         />
       ) : null}
+      {opened === null ? null : opened.to === "contacts" ? (
+        <KinContactListDialog
+          environmentId={environmentId}
+          orgId={orgId}
+          input={opened.input}
+          title={opened.title}
+          onOpenClient={(key) => {
+            setOpenResult(null);
+            props.onOpenClient(key);
+          }}
+          onClose={() => setOpenResult(null)}
+        />
+      ) : opened.to === "deals" ? (
+        <KinCampaignDealsDialog
+          environmentId={environmentId}
+          orgId={orgId}
+          input={opened.input}
+          title={opened.title}
+          directory={props.directory}
+          onOpen={(key) => {
+            setOpenResult(null);
+            props.onOpenTask(key);
+          }}
+          onClose={() => setOpenResult(null)}
+        />
+      ) : (
+        <Dialog open onOpenChange={(open) => (open ? undefined : setOpenResult(null))}>
+          <DialogPopup className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>{opened.title}</DialogTitle>
+            </DialogHeader>
+            <div className="flex h-[60vh] min-h-0 flex-col">
+              <KinWorkClientsList
+                environmentId={environmentId}
+                orgId={orgId}
+                live={props.live}
+                stale={props.stale}
+                directory={props.directory}
+                start={opened.filter}
+                onOpen={(key) => {
+                  setOpenResult(null);
+                  props.onOpenClient(key);
+                }}
+                onAdd={null}
+              />
+            </div>
+          </DialogPopup>
+        </Dialog>
+      )}
       {editing ? (
         <KinProjectDialog
           environmentId={environmentId}

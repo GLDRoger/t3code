@@ -292,7 +292,12 @@ const samples = {
     waiting,
     { ...waiting, messageId: null, widgetId: "widget-1", resolvedAt: at, resolution: "superseded" },
   ],
-  KinChatSummary: [summary, { ...summary, lastMessage: null }],
+  KinChatPreview: [{ gist: "Approve the venue deposit", brief: true }],
+  KinChatSummary: [
+    summary,
+    { ...summary, lastMessage: null },
+    { ...summary, lastPreview: { gist: "Approve the venue deposit", brief: false } },
+  ],
   KinChatListEvent: [
     { _tag: "snapshot", chats: [summary], waiting: [waiting] },
     { _tag: "chat", chat: summary },
@@ -353,7 +358,7 @@ const samples = {
     },
     { orgs: [{ ...org, agents: [] }], me: [] },
   ],
-  KinChatsSubscribeInput: [{}, { orgId: "org-1" }],
+  KinChatsSubscribeInput: [{}, { orgId: "org-1" }, { acceptPreview: true }],
   KinChatsCreateDirectInput: [{ orgId: "org-1", agentId: "agent-1" }],
   KinChatsWithPersonInput: [{ orgId: "org-1", personId: "person-1" }],
   KinGroupTitle: ["Launch"],

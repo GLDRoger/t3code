@@ -11,6 +11,7 @@ import {
   KIN_FIGURE_SCHEME,
   KinEmbed,
   KIN_TEAM_ROOM_TEAM_ID,
+  KIN_PEOPLE_CHAT_TEAM_PREFIX,
   kinIsPeopleChat,
   KinChatError,
   KinChatId,
@@ -99,6 +100,8 @@ import * as SocialCards from "../social/cards.ts";
 import { answerChange } from "../work/companyProfile.ts";
 import { KinRefreshObserver } from "./KinRefreshHub.ts";
 import { docsForViewer } from "./privateDocs.ts";
+import { previewRow } from "./chatRowPreview.ts";
+import { withLinks } from "./messageLinks.ts";
 import * as Hub from "./KinChatHub.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { effectiveAudience } from "../lead/Audience.ts";
@@ -112,6 +115,7 @@ import { KinAttachmentStore } from "./KinAttachmentStore.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as Reactions from "./reactions.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { memberReads } from "./sharing.ts";
 
@@ -207,6 +211,8 @@ export class KinChatService extends Context.Service<
       readonly silent?: true;
       /** The time `body` names, which each reader's client puts on their own clock. */
       readonly when?: KinMessageWhen;
+      /** A page Kin wrote under the reader's greeting, such as a teammate's morning page. */
+      readonly form?: "brief";
     }) => Effect.Effect<
       { readonly message: KinMessage; readonly waiting: KinWaitingItem | null },
       ServiceError
@@ -695,12 +701,73 @@ const make = Effect.gen(function* () {
           threadId: identity.threadId,
           memberId: member.memberId,
         };
+  /**
+   * Whether a two-party chat joins a pair that may not message each other now (`Reach`): checked
+   * at every write, so no member row, promotion or demotion carries a write across it.
+   */
+  const pairClosed = Effect.fn("KinChatService.pairClosed")(
+    function* (identity: Identity, member: KinChatMember) {
+      const others = yield* sql<{ personId: KinPersonId | null; agentId: KinAgentId | null }>`
+        SELECT m.person_id AS "personId", m.agent_id AS "agentId" FROM kin_chats c
+        JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+          AND m.left_at IS NULL AND m.member_id <> ${member.memberId}
+        WHERE c.org_id = ${member.orgId} AND c.chat_id = ${member.chatId}
+          AND (c.kind = 'direct' OR (c.kind = 'team_group'
+            AND substr(c.team_id, 1, ${KIN_PEOPLE_CHAT_TEAM_PREFIX.length}) = ${KIN_PEOPLE_CHAT_TEAM_PREFIX}))
+        ORDER BY m.member_id`;
+      const other = others.length === 1 ? others[0] : undefined;
+      if (other === undefined) return false;
+      const party =
+        other.agentId !== null
+          ? Reach.agent(other.agentId)
+          : other.personId !== null
+            ? Reach.person(other.personId)
+            : undefined;
+      if (party === undefined) return false;
+      const self =
+        identity._tag === "person"
+          ? Reach.person(identity.personId)
+          : Reach.agent(identity.agentId);
+      return (
+        (yield* Reach.mayReach(member.orgId, self, party).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        )) === "restricted"
+      );
+    },
+    Effect.mapError(toPersistenceSqlError("KinChatService.pairClosed")),
+  );
+  /** A person's direct chat with an agent that can answer: retired, or no lead to wake, refuses. */
+  const answerable = Effect.fn("KinChatService.answerable")(function* (
+    person: PersonIdentity,
+    chatId: KinChatId,
+  ) {
+    const [agent] = yield* sql<{ name: string; retired: number; lead: number }>`
+        SELECT a.display_name AS name, a.retired_at IS NOT NULL AS retired,
+          a.role = 'lead' AS lead
+        FROM kin_chats c
+        JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+          AND m.principal_kind = 'agent' AND m.left_at IS NULL
+        JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
+        WHERE c.org_id = ${person.orgId} AND c.chat_id = ${chatId} AND c.kind = 'direct'
+        ORDER BY a.agent_id LIMIT 1`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinChatService.answerable")),
+    );
+    if (agent === undefined || (agent.retired === 0 && agent.lead === 1)) return;
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message:
+        agent.retired === 1
+          ? `${agent.name} has been retired, so this wasn't sent.`
+          : `${agent.name} doesn't answer messages here, so this wasn't sent.`,
+    });
+  });
   const canWrite = Effect.fn("KinChatService.canWrite")(function* (
     identity: Identity,
     member: KinChatMember,
   ) {
     if (!mayWrite(member, identity._tag === "agent", yield* Clock.currentTimeMillis))
       return yield* notAllowed;
+    if (yield* pairClosed(identity, member)) return yield* notAllowed;
   });
   /** The chat's owner, or a co-owner in her own direct chat with a lead: owner-level there. */
   const ownerSide = Effect.fn("KinChatService.ownerSide")(function* (
@@ -1278,12 +1345,22 @@ const make = Effect.gen(function* () {
     // A card still asking the owner something is theirs to see.
     return !(widget.value.closedAt === null && (phase === "heads_up" || phase === "asked"));
   });
-  const summary = Effect.fn("KinChatService.summary")(function* (
+  /**
+   * A chat's row with its last message not yet linked. The list passes what it already read: the
+   * viewer's member row (checked readable), the chat and its unread count.
+   */
+  const unlinkedSummary = Effect.fn("KinChatService.unlinkedSummary")(function* (
     identity: PersonIdentity,
     chatId: KinChatId,
+    known?: {
+      readonly member: KinChatMember;
+      readonly chat: KinChat & { readonly lastSeq: number };
+      readonly unread: number | undefined;
+    },
   ): Effect.fn.Return<KinChatSummary, ServiceError> {
-    const member = yield* memberFor(identity, chatId);
-    const chat = yield* requireRecord(repo.getChat({ orgId: identity.orgId, chatId }));
+    const member = known?.member ?? (yield* memberFor(identity, chatId));
+    const chat =
+      known?.chat ?? (yield* requireRecord(repo.getChat({ orgId: identity.orgId, chatId })));
     // Owners' history keeps dismissed messages, which no feed draws; the preview skips them.
     const history = yield* repo.history({
       ...chat,
@@ -1291,6 +1368,7 @@ const make = Effect.gen(function* () {
       limit: PREVIEW_LOOKBACK,
       viewerMemberId: member.memberId,
       receipts: false,
+      links: false,
     });
     let lastMessage: KinMessage | null = null;
     for (const message of history.messages.toReversed()) {
@@ -1339,8 +1417,8 @@ const make = Effect.gen(function* () {
       ...(Option.isSome(author) ? { lastAuthorName: author.value.displayName } : {}),
       // The Team room never counts toward a badge: a quiet "new" dot at most.
       ...(chat.teamId === KIN_TEAM_ROOM_TEAM_ID
-        ? { unread: 0, fresh: (yield* repo.unreadCount(member)) > 0 }
-        : { unread: yield* repo.unreadCount(member) }),
+        ? { unread: 0, fresh: (known?.unread ?? (yield* repo.unreadCount(member))) > 0 }
+        : { unread: known?.unread ?? (yield* repo.unreadCount(member)) }),
       working:
         Option.isSome(presence) &&
         presence.value
@@ -1348,17 +1426,50 @@ const make = Effect.gen(function* () {
           .some((line) => WORKING_PRESENCE.has(line.state)),
     };
   });
+  /** The rows' last messages linked for the viewer: one read of what they may open, for all. */
+  const linkRows = Effect.fn("KinChatService.linkRows")(function* (
+    identity: PersonIdentity,
+    rows: ReadonlyArray<KinChatSummary>,
+  ) {
+    const lasts = rows.flatMap((row) => (row.lastMessage === null ? [] : [row.lastMessage]));
+    const linked = yield* withLinks(identity.orgId, identity, lasts, { receipts: false }).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError(toPersistenceSqlError("KinChatService.linkRows")),
+    );
+    const byId = new Map(linked.map((message) => [message.messageId, message]));
+    return rows.map((row) =>
+      row.lastMessage === null
+        ? row
+        : { ...row, lastMessage: byId.get(row.lastMessage.messageId) ?? row.lastMessage },
+    );
+  });
+  const summary = Effect.fn("KinChatService.summary")(function* (
+    identity: PersonIdentity,
+    chatId: KinChatId,
+  ) {
+    const [row] = yield* linkRows(identity, [yield* unlinkedSummary(identity, chatId)]);
+    return row!;
+  });
   const snapshot = Effect.fn("KinChatService.snapshot")(
     function* (identities: ReadonlyArray<PersonIdentity>) {
       const chats: Array<KinChatSummary> = [];
       const waiting: Array<KinWaitingItem> = [];
       for (const identity of identities) {
+        const unread = yield* repo.unreadCounts(identity);
+        const rows: Array<KinChatSummary> = [];
         for (const member of yield* repo.listMembersByPerson(identity)) {
           if (member.leftAt !== null) continue;
           const chat = yield* requireRecord(repo.getChat(member));
           if (!(yield* roomReadable(identity, chat))) continue;
-          chats.push(yield* summary(identity, member.chatId));
+          rows.push(
+            yield* unlinkedSummary(identity, member.chatId, {
+              member,
+              chat,
+              unread: unread.get(member.chatId),
+            }),
+          );
         }
+        chats.push(...(yield* linkRows(identity, rows)));
         waiting.push(
           ...(yield* waitingFor(identity).pipe(
             Effect.provideService(Repository.KinChatRepository, repo),
@@ -1379,6 +1490,7 @@ const make = Effect.gen(function* () {
     const request = yield* decodeSend(input).pipe(Effect.mapError(() => invalidState));
     const member = yield* memberFor(identity, request.chatId);
     yield* canWrite(identity, member);
+    if (identity._tag === "person") yield* answerable(identity, request.chatId);
     // A lead posts text; only a person's message can be files alone, or point at a doc.
     if (identity._tag === "agent" && request.body.trim().length === 0) return yield* invalidState;
     if (identity._tag === "agent" && (request.refs?.length ?? 0) > 0) return yield* invalidState;
@@ -1719,6 +1831,7 @@ const make = Effect.gen(function* () {
         ...(input.discussionId === undefined ? {} : { discussionId: input.discussionId }),
         ...(input.silent === undefined ? {} : { silent: input.silent }),
         ...(input.when === undefined ? {} : { when: input.when }),
+        ...(input.form === undefined ? {} : { form: input.form }),
         intent: null,
         mentions: [],
         replyTo: null,
@@ -1782,14 +1895,15 @@ const make = Effect.gen(function* () {
         Effect.fn("KinChatService.org")(function* (identity) {
           const org = yield* requireRecord(repo.getOrg(identity));
           const agents = yield* repo.listAgents(identity);
-          // The agents this person owns (the owner owns every one), may message, or shares a chat
-          // with; the rest only by name, so a task's holder is never "an agent".
+          // The agents this person owns (the owner owns every one), may message (any not
+          // restricted for them), or shares a chat with; the rest only by name, so a task's holder
+          // is never "an agent".
           const visible = yield* sql<{ agentId: string }>`SELECT a.agent_id AS "agentId"
             FROM kin_agents a WHERE a.org_id = ${identity.orgId} AND (
               a.owner_person_id = ${identity.personId}
-              OR EXISTS (SELECT 1 FROM kin_lead_access x WHERE x.org_id = a.org_id
-                AND x.agent_id = a.agent_id AND x.person_id = ${identity.personId}
-                AND x.revoked_at IS NULL)
+              OR NOT EXISTS (SELECT 1 FROM kin_people p0 WHERE p0.org_id = a.org_id
+                AND p0.person_id = ${identity.personId}
+                AND ${sql.literal(Reach.restrictedSql("a.org_id", "a.agent_id", "p0.person_id"))})
               OR EXISTS (SELECT 1 FROM kin_chat_members p JOIN kin_chat_members m
                 ON m.org_id = p.org_id AND m.chat_id = p.chat_id AND m.principal_kind = 'agent'
                   AND m.agent_id = a.agent_id AND m.left_at IS NULL
@@ -2153,12 +2267,34 @@ const make = Effect.gen(function* () {
               ),
           );
           const initial = yield* snapshot(viewers);
-          const summaries = new Map(
-            initial.chats.map((chat) => [`${chat.orgId}:${chat.chatId}`, JSON.stringify(chat)]),
-          );
-          const waiting = new Map(
-            initial.waiting.map((item) => [item.waitingId, JSON.stringify(item)]),
-          );
+          // With `acceptPreview`: the open waiting items' messages, and the rows sent short.
+          const open = new Map<string, string>();
+          const short = new Map<string, KinMessageId>();
+          const keyOf = (chat: { orgId: KinOrgId; chatId: KinChatId }) =>
+            `${chat.orgId}:${chat.chatId}`;
+          const rowFor = (chat: KinChatSummary) => {
+            if (input.acceptPreview !== true) return chat;
+            const waited = new Set(open.values());
+            const row = previewRow(chat, (messageId) => waited.has(`${chat.orgId}:${messageId}`));
+            if (row.lastPreview !== undefined && row.lastMessage !== null)
+              short.set(keyOf(row), row.lastMessage.messageId);
+            else short.delete(keyOf(row));
+            return row;
+          };
+          const waiting = new Map<string, string>();
+          /** Whether the item reads differently from when it was last sent. */
+          const heardWaiting = (item: KinWaitingItem) => {
+            if (item.resolvedAt === null && item.messageId !== null)
+              open.set(item.waitingId, `${item.orgId}:${item.messageId}`);
+            else open.delete(item.waitingId);
+            const value = JSON.stringify(item);
+            if (waiting.get(item.waitingId) === value) return false;
+            waiting.set(item.waitingId, value);
+            return true;
+          };
+          for (const item of initial.waiting) heardWaiting(item);
+          const first = { ...initial, chats: initial.chats.map(rowFor) };
+          const summaries = new Map(first.chats.map((chat) => [keyOf(chat), JSON.stringify(chat)]));
           const live = Stream.mergeAll(streams, { concurrency: "unbounded" }).pipe(
             Stream.mapEffect(({ viewer, event }) =>
               Effect.gen(function* (): Effect.fn.Return<KinChatListEvent, ServiceError> {
@@ -2204,22 +2340,40 @@ const make = Effect.gen(function* () {
             Stream.filter(Option.isSome),
             Stream.map((event) => event.value),
           );
+          const changed = (chat: KinChatSummary): ReadonlyArray<KinChatListEvent> => {
+            const row = rowFor(chat);
+            const value = JSON.stringify(row);
+            if (summaries.get(keyOf(row)) === value) return [];
+            summaries.set(keyOf(row), value);
+            return [{ _tag: "chat", chat: row }];
+          };
           return Stream.concat(
-            Stream.succeed(initial),
+            Stream.succeed(first),
             live.pipe(
-              Stream.filter((event) => {
-                if (event._tag === "chat") {
-                  const key = `${event.chat.orgId}:${event.chat.chatId}`;
-                  const value = JSON.stringify(event.chat);
-                  if (summaries.get(key) === value) return false;
-                  summaries.set(key, value);
-                } else if (event._tag === "waiting") {
-                  const value = JSON.stringify(event.item);
-                  if (waiting.get(event.item.waitingId) === value) return false;
-                  waiting.set(event.item.waitingId, value);
-                }
-                return true;
-              }),
+              Stream.mapEffect(
+                // Once per list event: a span each would outnumber the reads they wrap.
+                Effect.fnUntraced(function* (event) {
+                  if (event._tag === "chat") return changed(event.chat);
+                  if (event._tag !== "waiting") return [event];
+                  const { item } = event;
+                  if (!heardWaiting(item)) return [];
+                  const viewer = viewers.find((identity) => identity.orgId === item.orgId);
+                  // A row already sent short is read again once an item waits on its message.
+                  if (
+                    viewer === undefined ||
+                    item.resolvedAt !== null ||
+                    item.messageId === null ||
+                    short.get(keyOf(item)) !== item.messageId
+                  )
+                    return [event];
+                  const again = yield* summary(viewer, item.chatId).pipe(
+                    Effect.map(changed),
+                    Effect.orElseSucceed(() => []),
+                  );
+                  return [event, ...again];
+                }),
+              ),
+              Stream.flattenIterable,
             ),
           );
         }),
@@ -2230,16 +2384,13 @@ const make = Effect.gen(function* () {
       if (identity.orgId !== input.orgId) return yield* notFound;
       const person = yield* requireRecord(repo.getPerson(identity));
       const agent = yield* requireRecord(repo.getAgent(input));
-      if (agent.retiredAt !== null) return yield* notAllowed;
       const own = ownsAgent(agent, person.personId);
-      // Someone else's lead: a co-owner messages every one, anyone else while its owner allows.
       if (
-        !own &&
-        !(yield* ownerLevel(input.orgId, person.personId).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.mapError(toPersistenceSqlError("KinChatService.createDirect")),
-        )) &&
-        !(yield* LeadAccess.allowed({ ...input, personId: person.personId }).pipe(
+        !(yield* Reach.reaches(
+          input.orgId,
+          Reach.person(person.personId),
+          Reach.agent(agent.agentId),
+        ).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError(toPersistenceSqlError("KinChatService.createDirect")),
         ))

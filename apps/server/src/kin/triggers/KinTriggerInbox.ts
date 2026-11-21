@@ -31,7 +31,7 @@ export class KinTriggerInboxConflict extends Schema.TaggedError<KinTriggerInboxC
   {
     orgId: KinOrgId,
     reason: Schema.Literals([
-      "not_github",
+      "not_a_schedule_run",
       "invalid_fire_id",
       "identity_conflict",
       "unknown_source",
@@ -52,9 +52,6 @@ const PendingRequest = Schema.Struct({
   kinds: Schema.optional(Schema.Array(FireKind)),
 });
 
-/** The `github_recheck` request a `github` fire turns into: one per fire, in the webhook id space. */
-export const recheckFireId = (orgId: KinOrgId, sourceFireId: KinTriggerFireId) =>
-  KinTriggerFireId.make(`gh:${orgId}:recheck:${sourceFireId.slice(`gh:${orgId}:`.length)}`);
 /**
  * A pending fire whose timer retiring an agent held (`Retirement.retire`): it stays in the inbox,
  * unconsumed and unread, until the restore lifts the hold. `inbox` names the inbox row's table.
@@ -144,17 +141,7 @@ const make = Effect.gen(function* () {
               const existing = yield* decodeInboxRow(rows[0]);
               const previous = existing.payload.payload;
               const incoming = event.payload;
-              if (
-                previous.kind !== incoming.kind ||
-                (previous.kind === "github" &&
-                  incoming.kind === "github" &&
-                  (previous.deliveryId !== incoming.deliveryId ||
-                    previous.sourceId !== incoming.sourceId ||
-                    previous.scheduledTaskId !== incoming.scheduledTaskId)) ||
-                (previous.kind === "github_recheck" &&
-                  incoming.kind === "github_recheck" &&
-                  previous.sourceFireId !== incoming.sourceFireId)
-              ) {
+              if (previous.kind !== incoming.kind) {
                 return yield* new KinTriggerInboxConflict({
                   orgId: event.orgId,
                   reason: "identity_conflict",
@@ -166,28 +153,6 @@ const make = Effect.gen(function* () {
               VALUES (${event.fireId}, ${event.orgId}, ${payload}, ${at})
               ON CONFLICT (org_id, fire_id) DO NOTHING RETURNING fire_id
             `.pipe(Effect.map((rows) => rows.length === 1));
-            if (event.payload.kind === "github_recheck") {
-              if (
-                !event.payload.sourceFireId.startsWith(`gh:${event.orgId}:delivery:`) ||
-                event.fireId !== recheckFireId(event.orgId, event.payload.sourceFireId)
-              ) {
-                return yield* new KinTriggerInboxConflict({
-                  orgId: event.orgId,
-                  reason: "invalid_fire_id",
-                });
-              }
-              const origin = yield* sql`
-                SELECT fire_id FROM kin_trigger_inbox
-                WHERE org_id = ${event.orgId} AND fire_id = ${event.payload.sourceFireId}
-              `;
-              if (origin.length === 0) {
-                return yield* new KinTriggerInboxConflict({
-                  orgId: event.orgId,
-                  reason: "unknown_source",
-                });
-              }
-              return yield* insert;
-            }
             // A native schedule's run, which only the sink writes, for a schedule Kin has a row for.
             if (
               event.payload.kind === "time" &&
@@ -209,30 +174,10 @@ const make = Effect.gen(function* () {
                 });
               return yield* insert;
             }
-            if (event.payload.kind !== "github") {
-              return yield* new KinTriggerInboxConflict({
-                orgId: event.orgId,
-                reason: "not_github",
-              });
-            }
-            if (event.fireId !== `gh:${event.orgId}:${event.payload.deliveryId}`) {
-              return yield* new KinTriggerInboxConflict({
-                orgId: event.orgId,
-                reason: "invalid_fire_id",
-              });
-            }
-            const source = yield* sql`
-              SELECT source_id FROM kin_webhook_sources
-              WHERE org_id = ${event.orgId} AND source_id = ${event.payload.sourceId}
-                AND scheduled_task_id = ${event.payload.scheduledTaskId}
-            `;
-            if (source.length === 0) {
-              return yield* new KinTriggerInboxConflict({
-                orgId: event.orgId,
-                reason: "unknown_source",
-              });
-            }
-            return yield* insert;
+            return yield* new KinTriggerInboxConflict({
+              orgId: event.orgId,
+              reason: "not_a_schedule_run",
+            });
           }),
         );
       },

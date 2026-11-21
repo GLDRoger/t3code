@@ -1,9 +1,26 @@
 import { formatKinWhen, isKinCurrency, KIN_TEXT_LOCALE } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-/** The company sits together 10:30 to 19:30: a question's day ends at 19:30, a raise comes at 10:30. */
+/**
+ * A person's working day, as their profile's hours give it. Without hours a question's day ends at
+ * 19:30 and a raise comes at 10:30, on their clock.
+ */
+export type Workday = {
+  readonly days: ReadonlyArray<number>;
+  readonly start: string;
+  readonly end: string;
+};
 const DAY_ENDS = { hour: 19, minute: 30 } as const;
 const MORNING = { hour: 10, minute: 30 } as const;
+const timeOf = (text: string) => {
+  const [hour, minute] = text.split(":").map(Number);
+  return { hour: hour ?? 0, minute: minute ?? 0 };
+};
+/** Their own start and end when the day has both in order; an overnight shift keeps the defaults. */
+const bounds = (work: Workday | undefined) =>
+  work !== undefined && work.start < work.end
+    ? { morning: timeOf(work.start), ends: timeOf(work.end) }
+    : { morning: MORNING, ends: DAY_ENDS };
 const WEEKDAYS: ReadonlyArray<number> = [1, 2, 3, 4, 5];
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -47,18 +64,19 @@ const nextWorkingAt = (
   return after + DAY_MS;
 };
 
-const endOfToday = (now: number, zone: string) =>
-  Math.max(now, wallTime(partsIn(now, zone), DAY_ENDS, zone));
-
 /** The day a question is answered by when the asker names none: the end of the next working day. */
-export const defaultDue = (now: number, zone: string, days?: ReadonlyArray<number>) =>
-  nextWorkingAt(endOfToday(now, zone), zone, DAY_ENDS, days);
+export const defaultDue = (now: number, zone: string, work?: Workday) => {
+  const { ends } = bounds(work);
+  const endOfToday = Math.max(now, wallTime(partsIn(now, zone), ends, zone));
+  return nextWorkingAt(endOfToday, zone, ends, work?.days);
+};
 
-/** A `YYYY-MM-DD` the asker named, as 19:30 that day on the person's clock; why not, when it can't be. */
+/** A `YYYY-MM-DD` the asker named, as the end of that day on the person's clock; why not, when it can't be. */
 export const namedDue = (
   by: string,
   now: number,
   zone: string,
+  work?: Workday,
 ): { readonly at: number } | { readonly refused: string } => {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(by.trim());
   const at =
@@ -66,7 +84,7 @@ export const namedDue = (
       ? Number.NaN
       : wallTime(
           { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) },
-          DAY_ENDS,
+          bounds(work).ends,
           zone,
         );
   if (!Number.isFinite(at) || at < now + SOONEST_MS || at > now + LATEST_MS)
@@ -78,8 +96,8 @@ export const namedDue = (
 };
 
 /** When a question with no safe default is raised once more: the next working morning after its day. */
-export const raiseAt = (due: number, zone: string, days?: ReadonlyArray<number>) =>
-  nextWorkingAt(due, zone, MORNING, days);
+export const raiseAt = (due: number, zone: string, work?: Workday) =>
+  nextWorkingAt(due, zone, bounds(work).morning, work?.days);
 
 const STOP = new Set(
   "a an the to for of on in at by with and or should shall i we you me my our us it its them they this that these those please can could will would do does did be is are was were if about any some let".split(

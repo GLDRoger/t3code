@@ -26,6 +26,7 @@ import {
   type KinWorkPrincipal,
   canonicalTimeZone,
   formatKinLate,
+  formatKinWhen,
   KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -209,8 +210,8 @@ export const keptEntry = (sql: SqlClient.SqlClient) => sql`r.confirmed = 1`;
  */
 export const suggestedStateLabel = (list: string, state: string, label: string) =>
   state === "open" && (list === "quotes" || list === "invoices")
-    ? `${label}, suggested, not kept yet`
-    : "Suggested, not kept yet";
+    ? `${label}, suggested: waits for the owner or a co-owner to keep it`
+    : "Suggested: waits for the owner or a co-owner to keep it";
 /** The one refusal for anything done to a suggestion before it is kept, whoever asks. */
 export const stillSuggestion = (key: string) =>
   `${key} is still a suggestion: the owner or a co-owner hasn't kept it. They keep it with Keep on its page, or by asking you to keep it themselves. Nothing changed.`;
@@ -990,6 +991,17 @@ export const overdueFor = (dueAt: number, days: number, now: number, zone: strin
 /** A calendar day's last millisecond in `zone`: an all-day entry is late only once it is over. */
 export const endOfDay = (day: string, zone: string) =>
   DateTime.toEpochMillis(DateTime.add(dayStart(day, zone), { days: 1 })) - 1;
+/** A due as a person reads it: a day is the company's calendar day for anyone, a time their own. */
+export const dueWhenText = (
+  at: number,
+  allDay: boolean,
+  company: string,
+  clock: { readonly zone: string; readonly locale: string },
+  timed: "day" | "dayTime" = "dayTime",
+) =>
+  allDay
+    ? formatKinWhen(at, "day", { zone: company, locale: clock.locale })
+    : formatKinWhen(at, timed, clock);
 /** A date field's value as an instant: a day is its last millisecond, as an all-day entry's is. */
 export const fieldDateAt = (value: string, zone: string) => {
   if (value.length === 10) return { at: endOfDay(value, zone), allDay: true };
