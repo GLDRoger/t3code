@@ -51,6 +51,7 @@ import {
   stampEvent,
 } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { readProfile } from "../work/companyProfile.ts";
 import { presetDefinition } from "../work/registers.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
 import {
@@ -2512,6 +2513,8 @@ describe("KinConnections sending", () => {
               name: "INV-26-27-001.pdf",
               label: "Invoice INV/26-27/001 · ₹1,18,000.00",
               bytes: PDF(1).length,
+              // The company has no bank details: the card says the invoice can't say how to pay.
+              bankMissing: true,
             },
           ],
           outcome: null,
@@ -2566,6 +2569,20 @@ describe("KinConnections sending", () => {
             json_extract(result_json, '$.threadId') AS "threadId"
           FROM kin_connection_asks WHERE entry_record_id = 'rec_inv' AND state = 'sent'`;
         assert.deepStrictEqual(onInvoice, [{ to: '["ana@client.example"]', threadId: "t-sent" }]);
+
+        // With a UPI id or an account to be paid to, an invoice card carries no such line.
+        const { rev: _rev, updatedAt: _at, ...company } = yield* readProfile(orgId);
+        yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+            updated_by_kind, updated_by_id)
+          VALUES (${orgId}, ${JSON.stringify({ ...company, bank: { ...company.bank, upi: "invented@bank" } })},
+            1, 1, 'person', ${ownerId})`;
+        yield* sendCall("mail_send", {
+          to: ["ana@client.example"],
+          subject: "Invoice INV/26-27/001, again",
+          body,
+          attachments: ["INV-1"],
+        });
+        assert.notProperty(cards.at(-1)!.send!.attachments[0], "bankMissing");
       }),
     ),
   );

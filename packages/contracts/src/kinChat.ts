@@ -472,6 +472,8 @@ export const KinSendCard = Schema.Struct({
       /** "Invoice INV/26-27/004 · ₹1,18,000.00", read by the server from the record. */
       label: Schema.NullOr(KinText.check(Schema.isMaxLength(200))),
       bytes: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      /** An invoice's, drawn while the company had no bank account or UPI id to be paid to. */
+      bankMissing: Schema.optionalKey(Schema.Literal(true)),
     }),
   ).check(Schema.isMaxLength(10)),
   outcome: Schema.NullOr(
