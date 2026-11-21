@@ -1,6 +1,7 @@
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import type { KinOrgId, KinAgentId, MemoryTrust } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import * as Struct from "effect/Struct";
 import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
 import {
@@ -216,11 +217,17 @@ export const ReadResult = Schema.Union([
   }),
   Schema.Struct({ item: SharedItem }),
 ]);
+/** What the owner's search returns of an item: enough to choose what to read, nothing more. */
+const SearchHit = Schema.Struct({
+  ...Struct.pick(MemoryItemFrontMatter.fields, ["id", "kind", "title", "what", "status", "due"]),
+  reviewOverdue: Schema.Boolean,
+  misleading: Schema.optional(Schema.Literal(true)),
+  supersededBy: Schema.optional(KinMemoryItemId),
+  duplicate: Schema.Boolean,
+});
+const SEARCH_WHAT_CHARS = 200;
 export const SearchResult = Schema.Array(
-  Schema.Union([
-    Schema.Struct({ ...MemoryItemHead.fields, duplicate: Schema.Boolean }),
-    Schema.Struct({ ...SharedHead.fields, duplicate: Schema.Boolean }),
-  ]),
+  Schema.Union([SearchHit, Schema.Struct({ ...SharedHead.fields, duplicate: Schema.Boolean })]),
 );
 /** An authority refusal: who is calling, or when. Its reason is never spelled out. */
 const denied = () =>
@@ -1135,14 +1142,28 @@ const make = Effect.gen(function* () {
         },
         { lead: ctx.agentId },
       );
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
       const counts = new Map<string, number>();
       for (const item of found) counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
-      return yield* ownersView(
-        ctx,
-        found
-          .map((item) => ({ ...item, duplicate: (counts.get(item.id) ?? 0) > 1 }))
-          .slice(0, input.limit ?? 50),
-      );
+      return found.slice(0, input.limit ?? 50).map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        title: item.title,
+        ...(item.what === undefined
+          ? {}
+          : {
+              what:
+                item.what.length <= SEARCH_WHAT_CHARS
+                  ? item.what
+                  : `${item.what.slice(0, SEARCH_WHAT_CHARS - 1)}…`,
+            }),
+        status: item.status,
+        due: item.due,
+        reviewOverdue: reviewOverdueBy(item, now),
+        ...(item.invalid_at === null ? {} : { misleading: true as const }),
+        ...(item.superseded_by === null ? {} : { supersededBy: item.superseded_by }),
+        duplicate: (counts.get(item.id) ?? 0) > 1,
+      }));
     }, Effect.mapError(failure)),
     read: Effect.fn("LeadMemory.read")(function* (scope, input) {
       const { ctx, audience } = yield* turn(scope);
