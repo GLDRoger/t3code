@@ -210,12 +210,13 @@ function KinBadgedDock(props: KinWorkTarget & KinDockProps) {
 
 /** The Chats list's unread total, the same count as the app icon's badge. */
 function useKinUnreadBadge() {
-  const { state } = useKinInbox();
+  const { host, state } = useKinInbox();
   const known = state._tag === "ready" ? kinBadgeCount(state.inbox.value) : null;
   // Offline before the inbox is read again, the badge keeps the last number it showed.
-  const [last, setLast] = useState(known);
-  if (known !== null && known !== last) setLast(known);
-  const count = known ?? last;
+  const key = host._tag === "host" ? host.environmentId : null;
+  const [last, setLast] = useState({ key, count: known });
+  if (known !== null && (known !== last.count || key !== last.key)) setLast({ key, count: known });
+  const count = known ?? (last.key === key ? last.count : null);
   return count === null ? null : kinAttentionBadge(count);
 }
 

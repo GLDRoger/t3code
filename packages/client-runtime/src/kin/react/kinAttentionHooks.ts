@@ -109,9 +109,11 @@ export function makeKinAttentionHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinAt
     const dealFacts = kinTasksDealFactsOf(pulse, { ownerLevel, me: me?.personId ?? null });
     const known = kinNeedsYouCount({ counts, dealFacts: dealFacts.length });
     // Offline or reconnecting the count can't be read; the badge keeps the last one it showed.
-    const [last, setLast] = useState(known);
-    if (known !== null && known !== last) setLast(known);
-    return known ?? last;
+    const key = `${environmentId}:${orgId}`;
+    const [last, setLast] = useState({ key, count: known });
+    if (known !== null && (known !== last.count || key !== last.key))
+      setLast({ key, count: known });
+    return known ?? (last.key === key ? last.count : null);
   }
 
   /**
