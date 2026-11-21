@@ -29,6 +29,7 @@ import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Deals from "../work/deals.ts";
 import * as KinRecords from "../work/KinRecords.ts";
+import * as LeadDocs from "../work/leadDocs.ts";
 import * as LeadWork from "../work/leadWork.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
 import * as Clients from "../work/ownerClients.ts";
@@ -415,6 +416,34 @@ it.effect(
       // Both tools may run where others read; pipeline_read shapes itself as above.
       assert.isTrue(yield* sharedToolAllowed(turn, "pipeline_read", {}));
       assert.isTrue(yield* sharedToolAllowed(turn, "web_page", {}));
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an agent's search finds a deal by its words and its key, as the asking person sees it",
+  () =>
+    Effect.gen(function* () {
+      const { stock, pilot, renewal } = yield* seed;
+      const found = (text: string, kinds?: ReadonlyArray<"docs" | "work">) =>
+        LeadDocs.searchTool(scope, { text, ...(kinds === undefined ? {} : { kinds }) }).pipe(
+          Effect.map((result) => result.hits.map((hit) => hit.key)),
+        );
+      // A key typed whole comes first; its words may match more.
+      for (const text of ["stock and orders", stock.deal.key, stock.deal.key.toLowerCase()]) {
+        assert.strictEqual((yield* found(text))[0], stock.deal.key, text);
+        assert.strictEqual((yield* found(text, ["work"]))[0], stock.deal.key, text);
+        assert.deepStrictEqual(yield* found(text, ["docs"]), [], text);
+      }
+      assert.deepStrictEqual(yield* found("clinic pilot"), [pilot.deal.key]);
+      assert.strictEqual((yield* found(renewal.deal.key))[0], renewal.deal.key);
+      // Zoya's turn: her deal, and not the private one nor the one under a private client.
+      yield* zoyasTurn;
+      assert.strictEqual((yield* found(stock.deal.key))[0], stock.deal.key);
+      for (const text of ["clinic pilot", pilot.deal.key, "care plan", renewal.deal.key]) {
+        const hits = yield* found(text);
+        assert.notInclude(hits, pilot.deal.key, text);
+        assert.notInclude(hits, renewal.deal.key, text);
+      }
     }).pipe(Effect.provide(layer)),
 );
 

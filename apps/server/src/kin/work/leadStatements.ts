@@ -17,7 +17,7 @@ import { countryFirst, homeCurrency } from "./companyProfile.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { turnChat } from "../lead/Audience.ts";
-import { quote } from "../lead/LeadPrompt.ts";
+import { quote } from "../lead/quote.ts";
 import { turnFiles } from "./leadFields.ts";
 import { admitted, type Lead, leadTool, ownerTurn, sourceOf } from "./leadWork.ts";
 import { formatMoney } from "./money.ts";

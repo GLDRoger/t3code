@@ -84,6 +84,7 @@ import { KinCompanyProfileSettings } from "./KinCompanyProfile";
 import { KinCompanyTimeZoneSetting } from "./KinCompanyTimeZone";
 import { KinConnectionsSettings } from "./KinConnections";
 import { KinDailyLimitSetting } from "./KinDailyLimit";
+import { KinStopSetting } from "./KinStopSetting";
 import { KinMemoryView } from "./KinMemoryView";
 import { KinSettingsNotifications } from "./KinNotifications";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
@@ -393,6 +394,7 @@ function KinSettingsPageBody(props: {
           </SettingsSection>
           <KinCompanyTimeZoneSetting />
           <KinDailyLimitSetting />
+          <KinStopSetting />
         </SettingsPageContainer>
       );
     case "approvals":

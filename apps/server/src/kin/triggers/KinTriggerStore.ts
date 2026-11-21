@@ -332,3 +332,15 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(KinTriggerStore, make);
+
+/** Stops triggers firing, in the caller's transaction; their next write turns them on again. */
+export const pauseTriggers = Effect.fn("KinTriggerStore.pauseTriggers")(function* (
+  orgId: KinOrgId,
+  triggerIds: ReadonlyArray<string>,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
+    updated_at = max(updated_at, ${now})
+    WHERE org_id = ${orgId} AND trigger_id IN ${sql.in(triggerIds)}`;
+});

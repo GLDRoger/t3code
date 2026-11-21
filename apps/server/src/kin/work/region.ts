@@ -15,6 +15,8 @@ export interface CompanyRegion {
   readonly filings: ReadonlyArray<readonly [key: string, label: string]>;
   /** The locale server text for a company here is written in; it picks the clock. */
   readonly locale?: string;
+  /** A client here pays an invoice less tax it withholds at source (TDS). */
+  readonly withholdsAtSource?: true;
 }
 
 const vat = (currency: string, financialYearStartMonth = 1): CompanyRegion => ({
@@ -36,6 +38,7 @@ const REGIONS: Readonly<Record<string, CompanyRegion>> = {
       ["gst", "GST"],
       ["tds", "TDS"],
     ],
+    withholdsAtSource: true,
     // oxlint-disable-next-line t3code/kin-one-format -- the region table is where India's locale lives.
     locale: "en-IN",
   },

@@ -20,6 +20,7 @@ import {
 } from "./MailProvider.ts";
 import { looksLikeSignInMail, senderCheck, WITHHELD } from "./MailText.ts";
 import type { ListedTool } from "./Pinning.ts";
+import { DAY_MS } from "../durations.ts";
 
 /** Kin's mail tools, arguments, errors, cutting and limits: the same for every mail vendor. */
 
@@ -59,7 +60,6 @@ export const answeredWith = (error: KinGatewayError, status: number) =>
 const MAX_RECIPIENTS = 10;
 const MESSAGE_CHARS = 12_000;
 const PREVIEW_CHARS = 300;
-const DAY_MS = 24 * 60 * 60 * 1000;
 const LINE_BREAK = /[\r\n]/;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
@@ -433,8 +433,9 @@ const activity = Effect.fn("KinMail.activity")(function* (
   context: MailContext,
   since: number,
   cursor: string | null,
+  now: number,
 ) {
-  const found = yield* vendor.activity(context, since, cursor);
+  const found = yield* vendor.activity(context, since, cursor, now);
   return {
     mail: found.threads
       .filter((thread) => thread.length > 0)
@@ -455,6 +456,7 @@ const activity = Effect.fn("KinMail.activity")(function* (
       updated,
     })),
     cursor: found.cursor,
+    ...(found.until === undefined ? {} : { until: found.until }),
   };
 });
 
@@ -479,8 +481,8 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
     sendAs: vendor.sendAs,
     call: (http, token, mailbox, tool, args, now) =>
       call(vendor, { http, token, mailbox }, tool, args, now),
-    activity: (http, token, mailbox, since, cursor) =>
-      activity(vendor, { http, token, mailbox }, since, cursor),
+    activity: (http, token, mailbox, since, cursor, now) =>
+      activity(vendor, { http, token, mailbox }, since, cursor, now),
     replyTarget: (http, token, mailbox, threadId) =>
       replyTarget(vendor, { http, token, mailbox }, threadId),
     sendMessage: vendor.sendMessage,

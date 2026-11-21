@@ -1,5 +1,7 @@
+import { currencyDigits } from "../money.ts";
 import { RAILS } from "./statementRegion.ts";
 import type { StatementRow } from "./statementTable.ts";
+import { DAY_MS } from "../../durations.ts";
 import { notAVendor } from "../vendorName.ts";
 
 /**
@@ -85,8 +87,6 @@ export type RowMatch = {
 
 /** Rates of TDS Indian clients commonly deduct (194J, 194C, 194H, 194I, 194Q). */
 const TDS_RATES = [10, 2, 1, 5, 20, 0.1] as const;
-/** TDS is rounded to the rupee, so a payment within this of the expected is the same. */
-const TDS_SLACK_MINOR = 100;
 /** One candidate this far ahead of the next is the answer; closer, the owner chooses. */
 const CONFIDENT = 60;
 const MARGIN = 20;
@@ -131,7 +131,6 @@ const nameIn = (name: string, narration: string) => {
   return found.length / wanted.length;
 };
 
-const DAY_MS = 86_400_000;
 const dayNumber = (day: string) =>
   Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10))) / DAY_MS;
 const daysBetween = (from: string, to: string) => dayNumber(to) - dayNumber(from);
@@ -140,6 +139,7 @@ const invoiceCandidate = (
   row: StatementRow,
   invoice: InvoiceCandidate,
   currency: string,
+  withholdsAtSource: boolean,
 ): Candidate | undefined => {
   // Money for an invoice in another currency is proved only by that amount in the narration.
   const foreign = invoice.currency !== currency;
@@ -162,7 +162,9 @@ const invoiceCandidate = (
     fit = "exact";
     score += 50;
     why.push("same amount");
-  } else if (invoice.paidMinor === 0 && row.amountMinor < balance) {
+  } else if (withholdsAtSource && invoice.paidMinor === 0 && row.amountMinor < balance) {
+    // Withheld tax is rounded to the currency's whole unit, so a payment within one is the same.
+    const slack = 10 ** currencyDigits(currency);
     const bases = [
       invoice.amountMinor,
       ...(invoice.taxMinor === null ? [] : [invoice.amountMinor - invoice.taxMinor]),
@@ -170,10 +172,7 @@ const invoiceCandidate = (
     for (const base of bases)
       for (const rate of TDS_RATES) {
         const tds = Math.round((base * rate) / 100);
-        if (
-          tdsMinor === undefined &&
-          Math.abs(balance - tds - row.amountMinor) <= TDS_SLACK_MINOR
-        ) {
+        if (tdsMinor === undefined && Math.abs(balance - tds - row.amountMinor) <= slack) {
           tdsMinor = balance - row.amountMinor;
           fit = "tds";
           score += 40;
@@ -496,6 +495,8 @@ export const matchRows = (
   rows: ReadonlyArray<StatementRow>,
   input: {
     readonly currency: string;
+    /** The company's country withholds tax at source: a short credit may be a TDS cut. */
+    readonly withholdsAtSource: boolean;
     readonly invoices: ReadonlyArray<InvoiceCandidate>;
     readonly payments?: ReadonlyArray<PaymentCandidate>;
     readonly expenses: ReadonlyArray<ExpenseCandidate>;
@@ -509,7 +510,9 @@ export const matchRows = (
     const candidates = (
       row.direction === "credit"
         ? [
-            ...input.invoices.map((invoice) => invoiceCandidate(row, invoice, input.currency)),
+            ...input.invoices.map((invoice) =>
+              invoiceCandidate(row, invoice, input.currency, input.withholdsAtSource),
+            ),
             ...(input.payments ?? []).map((payment) =>
               paymentCandidate(row, payment, input.currency),
             ),

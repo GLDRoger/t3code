@@ -28,7 +28,6 @@ import {
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
@@ -48,7 +47,6 @@ import {
   requestHashOf,
   type Patch,
   type QueryInput,
-  type Tick,
   type Totals,
   type Writer,
 } from "./KinRecords.ts";
@@ -60,6 +58,7 @@ import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import { type AssignNotice, movedNotices, tellPeople, toldWhenBack } from "./assignNotices.ts";
 import { teamAgent as theTeamAgent } from "../lead/LeadAccess.ts";
 import {
+  chatLinksFor,
   endOfDay,
   isClosed,
   iso,
@@ -83,16 +82,15 @@ import {
   taskClients,
   teamClients,
   teamDetail,
-  teamKeys,
   teamRecord,
   teamRecordIn,
   linkedFromOf,
   personSees,
   placesOf,
-  teamSeesKey,
   teamSeq,
   teamVisible,
 } from "./teamView.ts";
+import { DAY_MS, WEEK_MS } from "../durations.ts";
 
 /**
  * What people's clients read and do in Work. The owner reads and does everything; a teammate
@@ -103,7 +101,6 @@ export const ownerOnly = new KinChatError({
   reason: "not_allowed",
   message: "Only the owner or a co-owner can do that in Work.",
 });
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const theOwner = Effect.fn("KinWork.owner")(function* (
   people: ReadonlyArray<PersonIdentity>,
@@ -130,6 +127,20 @@ export const viewerOf = Effect.fn("KinWork.viewer")(function* (
   };
 });
 export type Viewer = Effect.Success<ReturnType<typeof viewerOf>>;
+
+/**
+ * The places the host refuses the caller: none for the owner level, else each one `placesOf` says
+ * they don't reach. Money's and Docs' gates and `kin.access.me` all answer from this.
+ */
+export const placeRefusals = Effect.fn("KinWork.placeRefusals")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  orgId: KinOrgId,
+) {
+  const viewer = yield* viewerOf(people, orgId);
+  if (!viewer.teammate) return { viewer, refused: { money: false, docs: false } };
+  const { reaches } = yield* placesOf(orgId, viewer.person.personId).pipe(workFailure);
+  return { viewer, refused: { money: !reaches.money, docs: !reaches.docs } };
+});
 export const writerOf = (viewer: Viewer): Writer =>
   viewer.teammate ? { ...ownerWriter(viewer.person), teammate: true } : ownerWriter(viewer.person);
 /** A teammate's write and its answer run in one transaction: what it checks holds as it commits. */
@@ -447,7 +458,6 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
     (yield* listDef(input.orgId, input.list).pipe(workFailure)) === undefined
   )
     return yield* unknownList(input.list);
-  const DAY_MS = 24 * 60 * 60 * 1000;
   const zone =
     input.dateFrom === undefined && input.dateTo === undefined
       ? "UTC"
@@ -710,13 +720,14 @@ const getAs = Effect.fn("KinWork.getAs")(function* (
  */
 const shownTo = Effect.fn("KinWork.shownTo")(function* (
   viewer: Viewer,
-  detail: Effect.Success<ReturnType<KinRecords["Service"]["detail"]>>,
+  read: Effect.Success<ReturnType<KinRecords["Service"]["detail"]>>,
   row: Pick<RecordRow, "registerId" | "projectId">,
   ref: { readonly key: string } | { readonly recordId: string },
   seq?: number,
   /** Their own write just made it private: they saw it until then, so the answer still reads. */
   justHidden = false,
 ) {
+  const detail = yield* chatLinksFor(read.orgId, viewer.person.personId, read).pipe(workFailure);
   const can = (yield* cansOf(viewer, detail.orgId, [{ ...detail, registerId: row.registerId }]))(
     detail.recordId,
   );
@@ -793,7 +804,15 @@ export const summary = Effect.fn("KinWork.summary")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: { readonly orgId: KinOrgId },
 ) {
-  const viewer = yield* viewerOf(people, input.orgId);
+  return yield* summaryOf(yield* viewerOf(people, input.orgId), input);
+});
+
+/** `summary` for a viewer already read; an owner-level one counts the same for every such person. */
+// oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- `viewer` is `viewerOf`'s, applied as `team`
+export const summaryOf = Effect.fn("KinWork.summaryOf")(function* (
+  viewer: Viewer,
+  input: { readonly orgId: KinOrgId },
+) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
   const now = yield* Clock.currentTimeMillis;
@@ -855,63 +874,6 @@ export const summary = Effect.fn("KinWork.summary")(function* (
     asOf: iso(now),
   } satisfies KinWorkSummary;
 });
-
-export const subscribe = (
-  people: ReadonlyArray<PersonIdentity>,
-  input: { readonly orgId: KinOrgId },
-) =>
-  Stream.unwrap(
-    Effect.gen(function* () {
-      const viewer = yield* viewerOf(people, input.orgId);
-      const records = yield* KinRecords;
-      const changes = records.changes(input.orgId);
-      const named = (tick: Tick) => ({
-        _tag: "changed" as const,
-        seq: tick.seq,
-        ...(tick.key === undefined ? {} : { key: tick.key }),
-        ...(tick.key === undefined || tick.registerId === undefined
-          ? {}
-          : { list: tick.registerId }),
-      });
-      if (!viewer.teammate) return changes.pipe(Stream.map(named));
-      const { personId } = viewer.person;
-      // What they could read when the stream began or were told of since: only these are ever
-      // named once hidden. Whether they see one now is read as each change is delivered.
-      let seen = new Set<string>();
-      return changes.pipe(
-        Stream.mapEffect((tick) =>
-          Effect.gen(function* () {
-            if (tick.key === undefined) {
-              seen = yield* teamKeys(input.orgId, personId);
-              return [{ _tag: "changed" as const, seq: yield* teamSeq(input.orgId, personId) }];
-            }
-            const seq = tick.team?.get(personId);
-            if (seq === undefined) return [];
-            // The keys a client's or project's label moves are its tasks, not entries of its list.
-            const told = (key: string) => named({ seq, key });
-            if (tick.registerId === "clients" || tick.registerId === "projects") {
-              // A client's or project's label shows or hides its tasks without a change to them.
-              const now = yield* teamKeys(input.orgId, personId);
-              const moved = [
-                ...[...seen].filter((key) => !now.has(key)),
-                ...[...now].filter((key) => !seen.has(key)),
-              ];
-              seen = now;
-              return moved.map(told);
-            }
-            const { key } = tick;
-            const own = named({ ...tick, seq });
-            if (yield* teamSeesKey(input.orgId, personId, key)) {
-              seen.add(key);
-              return [own];
-            }
-            return seen.delete(key) ? [own] : [];
-          }).pipe(workFailure),
-        ),
-        Stream.flattenIterable,
-      );
-    }),
-  );
 
 /** The owner's own words, so it is confirmed; given to a lead, it is an instruction to do it. */
 export const create = Effect.fn("KinWork.create")(function* (

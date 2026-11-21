@@ -240,7 +240,8 @@ export class KinEventQueue extends Context.Service<
     /**
      * A failed wake-up's events retry only when it showed nothing. Of the rest, `stranded`
      * had no reply (the chat is owed a notice) and `replied` were already answered; `retried`
-     * counts requeued events and `failedEventIds` those that used their last try.
+     * counts requeued events, `retryInMs` the longest wait before one runs again, and
+     * `failedEventIds` those that used their last try.
      */
     readonly finish: (input: typeof FinishInput.Type) => Effect.Effect<
       {
@@ -248,6 +249,7 @@ export class KinEventQueue extends Context.Service<
         readonly stranded: number;
         readonly replied: number;
         readonly retried: number;
+        readonly retryInMs: number;
       },
       PersistenceSqlError | PersistenceDecodeError
     >;
@@ -265,7 +267,7 @@ export class KinEventQueue extends Context.Service<
  */
 const FIRST_RETRY_MS = 15_000;
 const LATER_RETRY_MS = 60_000;
-const LAST_RETRY_MS = 900_000;
+export const LAST_RETRY_MS = 900_000;
 const RUN_ATTEMPTS = 4;
 
 /**
@@ -822,7 +824,7 @@ const make = Effect.gen(function* () {
       const result = yield* sql.withTransaction(
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
-          const none = { failedEventIds: [], stranded: 0, replied: 0, retried: 0 };
+          const none = { failedEventIds: [], stranded: 0, replied: 0, retried: 0, retryInMs: 0 };
           // Aborted for its audience (`abortChatTurns`): whatever it ran to, a fresh
           // wake-up answers its events, without spending an attempt or telling anyone.
           const requeued = yield* sql`UPDATE kin_wakeups SET status = 'released', ended_at = ${now}
@@ -868,17 +870,24 @@ const make = Effect.gen(function* () {
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
             RETURNING replied_at IS NOT NULL AS replied`;
             const replied = rows.filter((row) => row.replied === 1).length;
-            return { failedEventIds: [], stranded: rows.length - replied, replied, retried: 0 };
+            return {
+              failedEventIds: [],
+              stranded: rows.length - replied,
+              replied,
+              retried: 0,
+              retryInMs: 0,
+            };
           }
           const rows = yield* sql<{
             event_id: string;
             state: string;
+            not_before: number;
           }>`UPDATE kin_events SET attempts = attempts + 1,
             state = CASE WHEN attempts + 1 >= ${RUN_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
             wakeup_id = NULL,
             not_before = ${now} + CASE WHEN attempts = 0 THEN ${FIRST_RETRY_MS}
               WHEN attempts = 1 THEN ${LATER_RETRY_MS} ELSE ${LAST_RETRY_MS} END
-            WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed' RETURNING event_id, state`;
+            WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed' RETURNING event_id, state, not_before`;
           return {
             failedEventIds: rows
               .filter((row) => row.state === "failed")
@@ -887,6 +896,10 @@ const make = Effect.gen(function* () {
             stranded: 0,
             replied: 0,
             retried: rows.filter((row) => row.state === "queued").length,
+            retryInMs: Math.max(
+              0,
+              ...rows.filter((row) => row.state === "queued").map((row) => row.not_before - now),
+            ),
           };
         }),
       );
