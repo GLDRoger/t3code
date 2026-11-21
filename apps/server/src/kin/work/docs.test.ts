@@ -742,6 +742,26 @@ it.effect(
         [yield* seen(prd.key), yield* seen(made.key), yield* seen(quote.key)],
         [true, false, false],
       );
+      // A proposal filed under the project: lowered, its people read it; raised again, they don't.
+      const proposal = yield* LeadDocs.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        title: "Invented proposal",
+        kind: "proposal",
+        body: "Invented: 20 credits",
+      });
+      yield* sql`UPDATE kin_records SET project_id = ${project.row.recordId}
+        WHERE key = ${proposal.key}`;
+      assert.isFalse(yield* seen(proposal.key));
+      const lowered = yield* OwnerDocs.label([owner], {
+        orgId,
+        key: proposal.key,
+        sensitive: false,
+      });
+      assert.isFalse(lowered.sensitive);
+      assert.isTrue(yield* seen(proposal.key));
+      yield* OwnerDocs.label([owner], { orgId, key: proposal.key, sensitive: true });
+      assert.isFalse(yield* seen(proposal.key));
+      yield* sql`UPDATE kin_records SET project_id = NULL WHERE key = ${proposal.key}`;
       // A doc written for the project, by its name or for its tasks, is filed under it; one that
       // names no project stays unfiled.
       const forIt = (title: string, links?: ReadonlyArray<string>) =>

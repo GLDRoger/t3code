@@ -13,6 +13,7 @@ import {
   KinRecordState,
   KinSacCode,
   KinWakeupId,
+  KinWidgetId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
@@ -28,6 +29,8 @@ import { takeLogo } from "../gendocs/brand.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
+import * as CardActions from "../widgets/cardActions.ts";
+import { sealPlans } from "../widgets/cardPlans.ts";
 import { budgetsAnswer, budgetsView, setBudget } from "./budgets.ts";
 import {
   attachChangeCard,
@@ -76,6 +79,7 @@ import {
   propose,
   proposalFor,
   stateLabel,
+  storedProposal,
   isRecipeList,
   listOrPreset,
   unknownList,
@@ -101,6 +105,9 @@ const tooLongForCard = (detail: string) =>
  * was made for, bound to it by `bind` in the card's own commit. A retry with the same
  * `clientMessageId` finds the same card. Its detail is shown whole or not at all.
  */
+/** The yes option's id on an `askOwner` card: it is listed first. */
+const OWNER_CARD_YES = "option-1";
+
 export const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
   lead: Lead,
   input: {
@@ -261,7 +268,7 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
       return made;
     }
   }
-  const proposal = yield* proposalFor(lead.orgId, input);
+  const asked = yield* proposalFor(lead.orgId, input);
   const chat = yield* turnChat(lead);
   if (chat === undefined) return yield* invalid("This turn has no chat to propose a list in.");
   const proposalId = yield* propose({
@@ -269,9 +276,11 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
     agentId: lead.agentId,
     wakeupId: lead.wakeupId,
     chatId: chat.chatId,
-    proposal,
+    proposal: asked,
     now,
   });
+  // An open proposal of this list is the one its card shows, so the turn reads that one.
+  const proposal = (yield* storedProposal(lead.orgId, proposalId)) ?? asked;
   const shown =
     proposal._tag === "new"
       ? {
@@ -289,6 +298,16 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
           fields: shownFields(proposal.fields),
           categories: [...proposal.categories],
         };
+  // A new list's yes runs as the card's own action, so the tap makes it with no turn to wake;
+  // a turn that couldn't make it here offers the plain card. A typed yes works without either.
+  const chatId = KinChatId.make(chat.chatId);
+  const create =
+    proposal._tag === "new"
+      ? yield* CardActions.draw(lead, chatId, { kind: "create_list", target: proposalId }).pipe(
+          Effect.map((drawn) => drawn.plan),
+          Effect.catchTags({ KinChatError: () => Effect.undefined }),
+        )
+      : undefined;
   // The card is how a tap answers this proposal and no other; a typed yes still works without it.
   const card = yield* askOwner(
     lead,
@@ -306,7 +325,18 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
       yes: proposal._tag === "new" ? "Create it" : "Add them",
       no: "Not now",
     },
-    (widgetId) => attachCard({ orgId: lead.orgId, proposalId, widgetId }),
+    (widgetId) =>
+      Effect.gen(function* () {
+        yield* attachCard({ orgId: lead.orgId, proposalId, widgetId });
+        if (create !== undefined)
+          yield* sealPlans({
+            orgId: lead.orgId,
+            chatId,
+            widgetId: KinWidgetId.make(widgetId),
+            plans: [{ optionId: OWNER_CARD_YES, plan: create }],
+            now,
+          });
+      }),
   ).pipe(
     Effect.catchTags({
       KinChatError: (error) =>
