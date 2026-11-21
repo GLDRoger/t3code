@@ -217,6 +217,24 @@ export class KinGitHubApp extends Context.Service<
       | { readonly source: "seed" }
       | { readonly source: "none" }
     >;
+    /**
+     * The four calls the App's webhook needs, each one fixed method and path signed as the App
+     * named by its id; undefined where Kin holds no key for that App.
+     */
+    readonly hook?: {
+      readonly config: (appId: string) => Effect.Effect<ApiAnswer | undefined>;
+      readonly setConfig: (
+        appId: string,
+        config: {
+          readonly url: string;
+          readonly content_type: "json";
+          readonly insecure_ssl: "0";
+          readonly secret: string;
+        },
+      ) => Effect.Effect<ApiAnswer | undefined>;
+      readonly about: (appId: string) => Effect.Effect<ApiAnswer | undefined>;
+      readonly latestDelivery: (appId: string) => Effect.Effect<ApiAnswer | undefined>;
+    };
   }
 >()("t3/kin/github/KinGitHubApp") {}
 
@@ -487,7 +505,13 @@ export const make = Effect.gen(function* () {
       });
       visibility = {
         at: now,
-        public: listed.status === 200 ? true : listed.status === 404 ? false : null,
+        // A throttle or an error says nothing about the App: what Kin saw last stands.
+        public:
+          listed.status === 200
+            ? true
+            : listed.status === 404
+              ? false
+              : (visibility?.public ?? null),
       };
     }
     return {
@@ -693,7 +717,8 @@ export const make = Effect.gen(function* () {
 
   const lookAgain = Effect.fn("KinGitHubApp.lookAgain")(function* () {
     yield* Ref.set(describedAt, null);
-    visibility = null;
+    if (visibility !== null)
+      visibility = { at: Number.NEGATIVE_INFINITY, public: visibility.public };
     yield* refresh();
   });
 
@@ -705,7 +730,27 @@ export const make = Effect.gen(function* () {
       : ({ source: "kin", app: app.stored } as const);
   });
 
-  return KinGitHubApp.of({ state, on, refresh, lookAgain, origin });
+  const asApp = Effect.fnUntraced(function* (appId: string, input: ApiRequest) {
+    const token = yield* jwt(appId);
+    return token === undefined ? undefined : yield* request(token, input);
+  });
+  const hook = {
+    config: Effect.fn("KinGitHubApp.hookConfig")((appId: string) =>
+      asApp(appId, { path: "app/hook/config" }),
+    ),
+    setConfig: Effect.fn("KinGitHubApp.setHookConfig")(
+      (
+        appId: string,
+        config: Parameters<NonNullable<KinGitHubApp["Service"]["hook"]>["setConfig"]>[1],
+      ) => asApp(appId, { method: "PATCH", path: "app/hook/config", body: config }),
+    ),
+    about: Effect.fn("KinGitHubApp.about")((appId: string) => asApp(appId, { path: "app" })),
+    latestDelivery: Effect.fn("KinGitHubApp.latestDelivery")((appId: string) =>
+      asApp(appId, { path: "app/hook/deliveries?per_page=1" }),
+    ),
+  };
+
+  return KinGitHubApp.of({ state, on, refresh, lookAgain, origin, hook });
 });
 
 /** Looks once at startup and then every 30 seconds, for as long as Kin runs. */

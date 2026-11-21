@@ -505,15 +505,21 @@ once, from Kin, with your GitHub login (GitHub asks for admin on each repo; if i
 why and links to the page). Each repo in the watched list says whether agents work there as the App
 or as you. Only an organization's owners can put the App on it; if you aren't one, GitHub sends
 them your request. An App that is private to one account can't go on another until you make it public in its
-settings on GitHub. The section also lists the last few things done as you.
+settings on GitHub; then choose **Check again** on its row. The section also lists the last few things done as you.
 
 #### When things happen on GitHub
 
-With GitHub connected, Kin checks it about once a minute with your login, so there is no webhook
-to set up. On your repos and your organizations' repos, these start an agent on their own:
+Kin hears at once about repos its GitHub App is on, and about your other watched repos within a
+minute, from its own checks with your login. When your Kin has a public address, Kin sets up the
+webhook of an App it made; for an App it didn't make, choose **Let Kin set it up** under **How fast
+Kin hears from GitHub**, on the web or desktop. It leaves a webhook that points somewhere else alone.
+If **Settings → Connections → GitHub** lists events to tick, tick them once on GitHub; it links to
+the page. On your repos and your organizations' repos, these start an agent on their own:
 
 - **A teammate opens a pull request**, or marks a draft ready: it is reviewed and the review posted.
   On your own pull requests the review is a comment, since GitHub doesn't let you approve your own.
+- **New commits on a pull request Kin reviewed**: one more review of what changed, five minutes
+  after the last push.
 - **A call in a comment, an issue or a line comment**: a line that starts with `/kin`, or with an
   agent's name and a comma ("Tech lead, rename this"), which goes to that agent. On an issue the
   agent says what it will do, works on a branch and opens a pull request that closes the issue. On a
@@ -523,8 +529,9 @@ to set up. On your repos and your organizations' repos, these start an agent on 
 - **A review requested from you**, and **failing checks on an agent's own pull request**, which it
   fixes or explains.
 
-Only people who can write to the repo can call an agent. Anyone else's `/kin` starts nothing, and
-their pull request gets a comment review from its diff: their code never runs. An agent never reacts
+Only people GitHub lets write to the repo can call an agent or start one with the `kin` label.
+Anyone else's `/kin` starts nothing, and their pull request gets one comment review from its diff
+and nothing else: their code never runs, and that review is written knowing nothing private. An agent never reacts
 to its own posts, and a mention of you doesn't call it unless you tell it in chat to let mentions
 of you call it in a repo. Everything an agent posts on GitHub ends with its name ("_Tech lead, via
 Kin_"). It tells you once, in one line with the link; quiet hours hold that line, not the work. A

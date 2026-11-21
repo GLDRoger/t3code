@@ -6,12 +6,15 @@ import {
   createKinGitHubAppRepoActions,
   createKinGitHubAppSetupActions,
   createKinGitHubGuardActions,
+  createKinGitHubHookActions,
+  createKinGitHubLookActions,
   KIN_GITHUB_APP_SETUP_COPY as SETUP,
   kinGitHubAppCreatePath,
   KIN_GITHUB_AGENTS_COPY as AGENTS,
   KIN_GITHUB_APP_REPOS_COPY as PICK,
   KIN_GITHUB_COPY as COPY,
   KIN_GITHUB_GUARD_COPY as GUARD,
+  KIN_GITHUB_INSTANT_COPY as INSTANT,
   type KinGitHubGuardOutcome,
   KIN_GITHUB_WATCH_COPY as WATCH,
   kinGitHubAccountRepos,
@@ -20,6 +23,7 @@ import {
   kinGitHubAgentsView,
   kinGitHubGuardAction,
   kinGitHubGuardLine,
+  kinGitHubInstantRow,
   kinGitHubRow,
   kinGitHubSheet,
   kinGitHubWatchLine,
@@ -223,7 +227,7 @@ function AgentIdentity(props: {
                   </div>
                   <p className="text-xs text-muted-foreground">{row.detail}</p>
                 </div>
-                {row.action === null && !row.pickable ? null : (
+                {row.action === null && !row.pickable && row.checkAgain !== true ? null : (
                   <div className="flex shrink-0 flex-wrap gap-2">
                     {row.pickable ? (
                       <Button
@@ -246,6 +250,9 @@ function AgentIdentity(props: {
                         {row.action.label}
                       </Button>
                     )}
+                    {row.checkAgain === true ? (
+                      <CheckAgain environmentId={props.environmentId} orgId={props.orgId} />
+                    ) : null}
                   </div>
                 )}
                 {picking === row.key ? (
@@ -262,6 +269,12 @@ function AgentIdentity(props: {
           {hint === null ? null : <p className="text-xs text-muted-foreground">{hint}</p>}
         </div>
       )}
+      <KinGitHubInstantLine
+        environmentId={props.environmentId}
+        orgId={props.orgId}
+        agents={props.agents}
+        now={now}
+      />
       {view.installUrl === null ? null : (
         <div>
           <Button
@@ -285,6 +298,118 @@ function AgentIdentity(props: {
             ))}
           </ul>
         </div>
+      )}
+    </div>
+  );
+}
+
+export function KinGitHubInstantLine(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly agents: NonNullable<KinGitHubStatus["agents"]>;
+  readonly now: number;
+}) {
+  const row = kinGitHubInstantRow(props.agents, props.now);
+  if (row === null) return null;
+  return (
+    <ul className="flex flex-col divide-y rounded-md border">
+      <li className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-4">
+        <div className="flex min-w-0 flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate text-sm font-medium">{row.title}</span>
+            <Badge variant={TONE_BADGE[row.tone]}>{row.label}</Badge>
+          </div>
+          <p className="text-xs text-muted-foreground">{row.detail}</p>
+        </div>
+        {row.action === null ? null : (
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <Button
+              size="xs"
+              variant="outline"
+              render={<a href={row.action.url} target="_blank" rel="noreferrer noopener" />}
+            >
+              {row.action.label}
+            </Button>
+          </div>
+        )}
+        {row.offer === true ? (
+          <AllowHook environmentId={props.environmentId} orgId={props.orgId} />
+        ) : null}
+      </li>
+    </ul>
+  );
+}
+
+/** Asks Kin to look at its App on GitHub now; every open screen redraws from what it sees. */
+function CheckAgain(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
+  const { environmentId, orgId } = props;
+  const allowed = useAtomValue(kinClient.githubAppLook.permissionAtom(environmentId));
+  const reload = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const look = useAtomCommand(kinClient.githubAppLook, { reportFailure: false });
+  const actions = createKinGitHubLookActions({
+    orgId,
+    look: (input) => look({ environmentId, input }),
+    refresh: reload,
+  });
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
+  if (!allowed) return null;
+  return (
+    <>
+      <Button
+        size="xs"
+        variant="outline"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          setSaid(null);
+          void actions.look().then((line) => {
+            setBusy(false);
+            setSaid(line);
+          });
+        }}
+      >
+        {AGENTS.checkAgain}
+      </Button>
+      {said === null ? null : <p className="w-full text-xs text-muted-foreground">{said}</p>}
+    </>
+  );
+}
+
+/** The owner's yes to Kin setting the webhook of an App it didn't make; the row then redraws. */
+function AllowHook(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
+  const { environmentId, orgId } = props;
+  const allowed = useAtomValue(kinClient.githubAppHookAllow.permissionAtom(environmentId));
+  const reload = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const allow = useAtomCommand(kinClient.githubAppHookAllow, { reportFailure: false });
+  const actions = createKinGitHubHookActions({
+    orgId,
+    allow: (input) => allow({ environmentId, input }),
+    refresh: reload,
+  });
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  if (!allowed) return null;
+  return (
+    <div className="flex shrink-0 flex-col gap-2">
+      <Button
+        size="xs"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          setProblem(null);
+          void actions.allow().then((outcome) => {
+            setBusy(false);
+            if (!outcome.ok) setProblem(outcome.problem);
+          });
+        }}
+      >
+        {INSTANT.allow}
+      </Button>
+      {problem === null ? null : (
+        <Alert variant="error">
+          <AlertDescription>{problem}</AlertDescription>
+        </Alert>
       )}
     </div>
   );

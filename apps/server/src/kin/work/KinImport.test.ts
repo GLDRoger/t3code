@@ -352,6 +352,40 @@ describe("KinImport", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("starts an invoice the file gives no state as a new one would", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const invoice = (source: string, date: string, extra: object = {}) => ({
+        entry: {
+          source,
+          list: "invoices",
+          title: `Invoice ${source}`,
+          amount: "100",
+          date,
+          ...extra,
+        },
+      });
+      const report = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf(header, [
+          invoice("ahead", "2026-12-01"),
+          invoice("past", "2026-11-01"),
+          invoice("numbered", "2026-12-01", { number: "OBK/26-27/009" }),
+          invoice("paid", "2026-12-01", {
+            payments: [{ source: "pay1", amount: "100", paidOn: "2026-11-10" }],
+          }),
+        ]),
+      );
+      assert.deepStrictEqual(report.problems, []);
+      const states = [];
+      for (const source of ["ahead", "past", "numbered", "paid"])
+        states.push((yield* recordOf(source))!.state);
+      assert.deepStrictEqual(states, ["open", "waiting", "waiting", "done"]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("leaves an entry the owner changed after import alone, with its payments", () =>
     Effect.gen(function* () {
       yield* seed;

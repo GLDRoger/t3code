@@ -40,7 +40,7 @@ export const dailyTurns = Config.Int("KIN_TEAMMATE_DAILY_TURNS").pipe(
 );
 
 /**
- * The lead turns this person's messages, taps and tasks have asked for in the last 24 hours, in every
+ * The lead turns this person's messages, taps, tasks and asked reviews have asked for in the last 24 hours, in every
  * chat and of every lead they do not own: messages answered in one turn count once, dropped ones
  * not at all.
  * `oldestAt` is when the earliest of them was sent, so the window is known to move on.
@@ -56,16 +56,18 @@ export const recentTurns = Effect.fn("KinLeadAccess.recentTurns")(function* (inp
       MIN(e.received_at) AS "oldestAt"
     FROM kin_events e
     JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
-    WHERE e.org_id = ${input.orgId} AND e.tag IN ('chat.message', 'widget.action', 'record.changed')
-      AND e.state <> 'expired' AND e.received_at > ${input.now - DAY_MS}
-      AND json_extract(e.json, '$.provenance.personId') = ${input.personId}
+    WHERE e.org_id = ${input.orgId} AND e.state <> 'expired' AND e.received_at > ${input.now - DAY_MS}
+      AND ((e.tag IN ('chat.message', 'widget.action', 'record.changed')
+          AND json_extract(e.json, '$.provenance.personId') = ${input.personId})
+        OR (e.tag = 'github' AND json_extract(e.json, '$.askedBy') = ${input.personId}))
       AND a.owner_person_id <> ${input.personId}`;
   return { turns: row?.turns ?? 0, oldestAt: row?.oldestAt ?? null };
 });
 
 /**
- * A person's messages, tasks and answers still waiting for the lead in their direct chat never
- * run, nor do those an aborted turn holds, which its finish would otherwise put back on the queue.
+ * A person's messages, tasks, answers and asked reviews still waiting for the lead in their
+ * direct chat never run, nor do those an aborted turn holds, which its finish would otherwise put
+ * back on the queue.
  */
 export const dropQueued = Effect.fn("KinLeadAccess.dropQueued")(function* (
   pair: Pick<Pair, "orgId" | "agentId">,
@@ -76,9 +78,12 @@ export const dropQueued = Effect.fn("KinLeadAccess.dropQueued")(function* (
     WHERE e.org_id = ${pair.orgId} AND e.agent_id = ${pair.agentId}
       AND (e.state = 'queued' OR (e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w
         WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)))
-      AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction', 'record.changed',
-        'deferral.due')
-      AND json_extract(e.json, '$.chatId') = ${chatId}
+      AND ((e.tag IN ('chat.message', 'widget.action', 'chat.reaction', 'record.changed',
+            'deferral.due')
+          AND json_extract(e.json, '$.chatId') = ${chatId})
+        OR (e.tag = 'github' AND EXISTS (SELECT 1 FROM kin_chats c WHERE c.org_id = e.org_id
+          AND c.chat_id = ${chatId} AND c.kind = 'direct'
+          AND c.direct_key = json_extract(e.json, '$.askedBy') || ':' || e.agent_id)))
     RETURNING event_id`;
   return dropped.length;
 });
