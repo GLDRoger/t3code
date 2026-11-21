@@ -268,6 +268,22 @@ export const { useKinDeals } = makeKinDealsHooks(kinHookApp);
     assert.lengthOf(later.problems, 1);
     assert.include(later.problems[0], "commits after f6");
     assert.include(later.problems[0], "apps/web/src/kin/Brief.tsx");
+    // Every file changed after the last line is named.
+    const two = check({ ...screen, sha: "f7", files: ["apps/web/src/kin/Money.tsx"] }, screen, {
+      sha: "f8",
+      message: "fix(kin): x\n\nPeople-change: none",
+      files: [],
+    });
+    assert.lengthOf(two.problems, 1);
+    assert.include(two.problems[0], "apps/web/src/kin/Money.tsx");
+    assert.include(two.problems[0], "apps/web/src/kin/Brief.tsx");
+    // The last commit restates the branch's lines, even when only tests came after them.
+    const stale = check(
+      { sha: "g9", message: "test: more", files: ["apps/web/src/kin/Brief.browser.test.tsx"] },
+      { ...screen, sha: "h1", message: "fix(kin): the brief\n\nPeople-change: none" },
+    );
+    assert.lengthOf(stale.problems, 1);
+    assert.include(stale.problems[0], "g9");
     // The word alone is not a line.
     assert.lengthOf(check({ ...screen, message: "fix: x\n\nPeople-change:" }).problems, 1);
   });
