@@ -607,6 +607,22 @@ describe("lists through the tools", () => {
         ["software", ["$13.00"]],
         ["travel", ["₹0.30"]],
       ]);
+      // summary keeps the count, exact totals and groups, and shrinks each row to its key.
+      const compact = yield* LeadWork.query(scope, {
+        list: "expenses",
+        groupBy: "category",
+        summary: true,
+      });
+      const { records: allRows, ...rest } = all;
+      assert.deepStrictEqual(compact, {
+        ...rest,
+        records: [],
+        keys: allRows.map((one) => one.key),
+      });
+      assert.deepStrictEqual(
+        (yield* LeadWork.query(scope, { list: "expenses", summary: true, limit: 2 })).next,
+        2,
+      );
       // The service figures are integers per currency, never a float sum.
       const records = yield* KinRecords.KinRecords;
       const totals = yield* records.totals(orgId, { list: "expenses" });
