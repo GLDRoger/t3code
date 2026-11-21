@@ -81,6 +81,7 @@ import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -316,6 +317,8 @@ export class KinChatService extends Context.Service<
       readonly orgId: KinOrgId;
       readonly widgetId: KinWidgetId;
       readonly outcome?: KinChoiceOutcome;
+      /** The newer card that replaces it: its answer is told on this one too. */
+      readonly by?: KinWidgetId;
     }) => Effect.Effect<void, ServiceError>;
     /**
      * Server-only: a choice card `closeReplaced` closed with an outcome takes taps again, as it was
@@ -530,16 +533,39 @@ const WORKING_PRESENCE: ReadonlySet<KinPresenceState> = new Set([
   "stalled",
 ]);
 
-/** What waits on a person in chats they are still in: the chat list's rule, and the open list's. */
+/**
+ * What waits on a person in chats they are still in: the chat list's rule, and the open list's.
+ * With `others`, after them, what `othersWaitingFor` lets them see.
+ */
 export const waitingFor = Effect.fn("KinChatService.waitingFor")(function* (
   identity: PersonIdentity,
+  options?: { readonly others: boolean },
 ) {
   const repo = yield* Repository.KinChatRepository;
   const waiting: Array<KinWaitingItem> = [];
   for (const item of yield* repo.listOpenWaiting(identity))
     if (Option.isSome(yield* repo.activeMember({ ...item, principal: identity })))
       waiting.push(item);
-  return waiting;
+  if (options?.others !== true) return waiting;
+  return [...waiting, ...(yield* othersWaitingFor(identity, waiting))];
+});
+
+/**
+ * The one rule for seeing what waits on someone else: a co-owner sees what waits on the owner,
+ * marked `waitsFor`, to look at only (every answer still checks the card's own `awaiting`).
+ * Nobody else sees anyone's. A card already waiting on the viewer shows once, as theirs.
+ */
+export const othersWaitingFor = Effect.fn("KinChatService.othersWaitingFor")(function* (
+  identity: PersonIdentity,
+  own: ReadonlyArray<KinWaitingItem>,
+) {
+  const repo = yield* Repository.KinChatRepository;
+  const keyOf = (item: KinWaitingItem) => item.widgetId ?? item.messageId;
+  const mine = new Set(own.map(keyOf).filter((key) => key !== null));
+  return (yield* repo.listOwnersOpenWaiting(identity)).filter((item) => {
+    const key = keyOf(item);
+    return key === null || !mine.has(key);
+  });
 });
 
 const make = Effect.gen(function* () {
@@ -1265,12 +1291,17 @@ const make = Effect.gen(function* () {
     for (const item of yield* repo.listOpenWaiting(identity))
       if (item.widgetId === widget.widgetId) yield* resolve(item, "acted");
     if (answer !== null) {
+      const decidedBy = {
+        personId: identity.personId,
+        name: (yield* requireRecord(repo.getPerson(identity))).displayName,
+      };
       // Compare-and-set on the revision the tap saw: the first answer settles the card.
       const answered = yield* repo.updateWidget({
         ...widget,
         audience: "chat",
         state: {
           ...answer,
+          decidedBy,
           ...((changed ?? handled) === undefined ? {} : { outcome: changed ?? handled }),
         },
         awaiting: [],
@@ -1282,8 +1313,39 @@ const make = Effect.gen(function* () {
       yield* sql.afterCommit(
         hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: answered }),
       );
+      if (choice !== null)
+        yield* tellReplaced(answered, { name: decidedBy.name, label: choice.option.label });
     }
     return message;
+  });
+  /** The cards a newer one replaced say what was chosen on it, once (`closeReplaced`'s `by`). */
+  const tellReplaced = Effect.fn("KinChatService.tellReplaced")(function* (
+    newer: KinWidget,
+    decided: { readonly name: string; readonly label: string },
+  ) {
+    const rows = yield* sql<{ widgetId: KinWidgetId }>`SELECT widget_id AS "widgetId"
+      FROM kin_widgets WHERE org_id = ${newer.orgId} AND type = 'choice'
+        AND json_extract(state_json, '$.replacedBy.widgetId') = ${newer.widgetId}
+        AND json_extract(state_json, '$.replacedBy.decided') IS NULL
+      ORDER BY widget_id`.pipe(Effect.mapError(toPersistenceSqlError("KinChatService.tellReplaced")));
+    for (const row of rows) {
+      const older = yield* requireRecord(repo.getWidget({ orgId: newer.orgId, ...row }));
+      const card = yield* decodeChoiceCard(older.state).pipe(Effect.mapError(() => invalidState));
+      const widget = yield* repo.updateWidget({
+        ...older,
+        audience: "chat",
+        state: {
+          ...card,
+          replacedBy: {
+            widgetId: newer.widgetId,
+            decided: { name: decided.name.slice(0, 200), label: decided.label.slice(0, 80) },
+          },
+        },
+        expectedRevision: older.revision,
+        updatedAt: yield* now,
+      });
+      yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId: newer.orgId, widget }));
+    }
   });
   const setChoiceOutcome = Effect.fn("KinChatService.setChoiceOutcome")(function* (
     agent: AgentIdentity,
@@ -1458,7 +1520,7 @@ const make = Effect.gen(function* () {
     return row!;
   });
   const snapshot = Effect.fn("KinChatService.snapshot")(
-    function* (identities: ReadonlyArray<PersonIdentity>) {
+    function* (identities: ReadonlyArray<PersonIdentity>, others: boolean) {
       const chats: Array<KinChatSummary> = [];
       const waiting: Array<KinWaitingItem> = [];
       for (const identity of identities) {
@@ -1478,7 +1540,7 @@ const make = Effect.gen(function* () {
         }
         chats.push(...(yield* linkRows(identity, rows)));
         waiting.push(
-          ...(yield* waitingFor(identity).pipe(
+          ...(yield* waitingFor(identity, { others }).pipe(
             Effect.provideService(Repository.KinChatRepository, repo),
           )),
         );
@@ -2287,7 +2349,8 @@ const make = Effect.gen(function* () {
                 Effect.map((stream) => stream.pipe(Stream.map((event) => ({ viewer, event })))),
               ),
           );
-          const initial = yield* snapshot(viewers);
+          const others = input.acceptWaitsFor === true;
+          const initial = yield* snapshot(viewers, others);
           // With `acceptPreview`: the open waiting items' messages, and the rows sent short.
           const open = new Map<string, string>();
           const short = new Map<string, KinMessageId>();
@@ -2314,6 +2377,49 @@ const make = Effect.gen(function* () {
             return true;
           };
           for (const item of initial.waiting) heardWaiting(item);
+          // What of someone else's this stream showed: it leaves once it may no longer show.
+          const shownOthers = new Map(
+            initial.waiting.flatMap((item) =>
+              item.waitsFor === undefined ? [] : [[item.waitingId, item] as const],
+            ),
+          );
+          const othersLive = Stream.mergeAll(
+            others
+              ? yield* Effect.forEach(viewers, (viewer) =>
+                  hub.subscribeWaiting(viewer.orgId).pipe(
+                    Effect.map(
+                      Stream.filterMapEffect(
+                        Effect.fnUntraced(function* (changed) {
+                          if (changed.personId === viewer.personId) return Result.failVoid;
+                          const own = yield* waitingFor(viewer).pipe(
+                            Effect.provideService(Repository.KinChatRepository, repo),
+                          );
+                          const seen = (yield* othersWaitingFor(viewer, own).pipe(
+                            Effect.provideService(Repository.KinChatRepository, repo),
+                          )).find((one) => one.waitingId === changed.waitingId);
+                          if (seen !== undefined) {
+                            shownOthers.set(seen.waitingId, seen);
+                            return Result.succeed({ _tag: "waiting" as const, item: seen });
+                          }
+                          const shown = shownOthers.get(changed.waitingId);
+                          if (shown === undefined) return Result.failVoid;
+                          shownOthers.delete(changed.waitingId);
+                          return Result.succeed({
+                            _tag: "waiting" as const,
+                            item: {
+                              ...shown,
+                              resolvedAt: changed.resolvedAt ?? (yield* now),
+                              resolution: changed.resolution ?? "closed",
+                            },
+                          });
+                        }, Effect.orElseSucceed(() => Result.failVoid)),
+                      ),
+                    ),
+                  ),
+                )
+              : [],
+            { concurrency: "unbounded" },
+          );
           const first = { ...initial, chats: initial.chats.map(rowFor) };
           const summaries = new Map(first.chats.map((chat) => [keyOf(chat), JSON.stringify(chat)]));
           const live = Stream.mergeAll(streams, { concurrency: "unbounded" }).pipe(
@@ -2370,7 +2476,7 @@ const make = Effect.gen(function* () {
           };
           return Stream.concat(
             Stream.succeed(first),
-            live.pipe(
+            Stream.merge(live, othersLive).pipe(
               Stream.mapEffect(
                 // Once per list event: a span each would outnumber the reads they wrap.
                 Effect.fnUntraced(function* (event) {
@@ -2752,7 +2858,11 @@ const make = Effect.gen(function* () {
         audience: "chat",
         state:
           input.outcome === undefined
-            ? { ...card, replaced: true }
+            ? {
+                ...card,
+                replaced: true,
+                ...(input.by === undefined ? {} : { replacedBy: { widgetId: input.by } }),
+              }
             : { ...card, outcome: input.outcome },
         awaiting: [],
         expectedRevision: existing.value.revision,

@@ -30,6 +30,7 @@ import * as Repository from "./KinChatRepository.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -98,6 +99,13 @@ export class KinChatHub extends Context.Service<
       never,
       Scope.Scope
     >;
+    /**
+     * One org's waiting changes, anyone's, unchecked: only for a server rule that decides what of
+     * them a viewer may see (`KinChatService.othersWaitingFor`). Bounded as a viewer's screen is.
+     */
+    readonly subscribeWaiting: (
+      orgId: KinOrgId,
+    ) => Effect.Effect<Stream.Stream<KinWaitingItem, KinChatError>, never, Scope.Scope>;
     /** Every organization's committed events, unfiltered. Server consumers only, never a client. */
     readonly subscribeAll: Effect.Effect<Stream.Stream<KinChatHubEvent>, never, Scope.Scope>;
   }
@@ -165,6 +173,24 @@ const make = Effect.gen(function* () {
       }
       return Stream.fromEffectRepeat(PubSub.take(yield* PubSub.subscribe(all)));
     }).pipe(Effect.withSpan("KinChatHub.subscribeAll")),
+    subscribeWaiting: Effect.fn("KinChatHub.subscribeWaiting")(function* (orgId) {
+      const queue = yield* Queue.dropping<KinChatHubEvent, KinChatError>(KIN_CHAT_HUB_BACKLOG);
+      const queues = screens.get(orgId) ?? new Set();
+      screens.set(orgId, queues);
+      queues.add(queue);
+      yield* Effect.addFinalizer(() =>
+        Effect.suspend(() => {
+          queues.delete(queue);
+          if (queues.size === 0 && screens.get(orgId) === queues) screens.delete(orgId);
+          return Queue.shutdown(queue);
+        }),
+      );
+      return Stream.fromQueue(queue).pipe(
+        Stream.filterMap((event) =>
+          event.type === "waiting.updated" ? Result.succeed(event.item) : Result.failVoid,
+        ),
+      );
+    }),
     subscribeForViewer: Effect.fn("KinChatHub.subscribeForViewer")(function* (identity, only) {
       const queue = yield* Queue.dropping<KinChatHubEvent, KinChatError>(KIN_CHAT_HUB_BACKLOG);
       const queues = screens.get(identity.orgId) ?? new Set();

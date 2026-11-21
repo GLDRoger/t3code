@@ -2542,6 +2542,7 @@ const make = Effect.gen(function* () {
         : null;
     const now = yield* Clock.currentTimeMillis;
     const replaced: Array<string> = [];
+    let newer: KinWidgetId | undefined;
     const savedOver: Array<{ readonly name: string; readonly quoted: string }> = [];
     // Every older card for the mail goes, so one card can send. A person's saved words stay on it,
     // and are read to this call only when this agent drew it in this chat.
@@ -2663,9 +2664,10 @@ const make = Effect.gen(function* () {
         sql`UPDATE kin_connection_asks SET widget_id = ${widget.widgetId}
           WHERE org_id = ${turn.orgId} AND ask_id = ${askId} AND widget_id IS NULL`.pipe(
           Effect.andThen(replaceOlder()),
+          Effect.tap(() => Effect.sync(() => (newer = widget.widgetId))),
         ),
     );
-    if (replaced.length > 0) yield* levelGate.closeReplaced(turn, replaced);
+    if (replaced.length > 0) yield* levelGate.closeReplaced(turn, replaced, newer);
     // A mail filed under an entry shows on its Tasks row, in place of any card this replaced.
     if (entryRecordId !== null)
       yield* sql.afterCommit(

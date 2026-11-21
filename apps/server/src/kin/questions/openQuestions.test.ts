@@ -8,6 +8,7 @@ import {
   KinAgentId,
   type KinChatId,
   KinEvent,
+  type KinChatListEvent,
   KinMemoryItemId,
   type KinMessageId,
   KinOrgId,
@@ -26,6 +27,8 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
@@ -36,7 +39,7 @@ import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
-import { KinChatService } from "../chat/KinChatService.ts";
+import { KinChatService, waitingFor } from "../chat/KinChatService.ts";
 import { KinGroups } from "../chat/KinGroups.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
@@ -616,6 +619,22 @@ it.effect("a question with no safe default is raised once, then waits for its an
         answer: "Hold it",
       });
       assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 0);
+      // Each card says who settled it: the raised one who chose, the first what was chosen on it.
+      const firstId = KinWidgetId.make(
+        (yield* sql<{ widgetId: string }>`SELECT widget_id AS "widgetId" FROM kin_questions
+          WHERE question_id = ${questionId}`)[0]!.widgetId,
+      );
+      const stateOf = (widgetId: KinWidgetId) =>
+        repo
+          .getWidget({ orgId, widgetId })
+          .pipe(Effect.map((widget) => Option.getOrThrow(widget).state));
+      assert.deepInclude(yield* stateOf(raised.widgetId), {
+        decidedBy: { personId: owner.personId, name: "Rhea Rao" },
+      });
+      assert.deepInclude(yield* stateOf(firstId), {
+        replaced: true,
+        replacedBy: { widgetId: raised.widgetId, decided: { name: "Rhea Rao", label: "Hold it" } },
+      });
       // The answer is a decision memory keeps, in the card's own words, once.
       yield* Deferred.await(saved);
       assert.lengthOf(decisions, 1);
@@ -2388,5 +2407,183 @@ it.effect("a question asked for someone away waits for them, then is raised once
       yield* inheritOutside({ ...next, eventIds: [answered!.eventId] });
       assert.strictEqual(yield* outsideStamp(next), "mail-connection");
     }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// Meera, a co-owner, sees what waits on Rhea, the owner, marked as Rhea's, live; Dev, a teammate,
+// sees none of it. Every one of them stays Rhea's alone: each of Meera's taps is refused as before.
+it.effect("a co-owner sees what waits on the owner, read-only, and answers none of it", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const team = yield* askingTeam;
+      const { sql, chats, orgId, owner, person, chatOf, chiefChat, askFor, wakeOn, tap } = team;
+      const rhea = { personId: owner.personId, name: "Rhea Rao" };
+      // Dev asks Rhea, and Zoya sends a draft up to her.
+      const devChat = yield* chiefChat("dev");
+      const fromDev = yield* askFor(
+        "chief",
+        yield* wakeOn("chief", "dev", devChat, "Can Rhea decide the shoot date?"),
+        { to: "Rhea", intent: "shoot date for dev" },
+      );
+      const zoyaChat = yield* chiefChat("zoya");
+      const draft = yield* askFor(
+        "chief",
+        yield* wakeOn("chief", "zoya", zoyaChat, "Draft the workshop invoice"),
+        {
+          to: "Rhea",
+          question: "Approve the workshop proposal?",
+          options: undefined,
+          detail: "## Workshop proposal\n- Six hours on site\n- Price: ____\n- Starts in March",
+          intent: "workshop proposal for zoya",
+          draft: { kind: "proposal" },
+        },
+      );
+      // Finance's mail, ready for Rhea's Confirm in her chat with it.
+      const finance = {
+        _tag: "agent" as const,
+        orgId,
+        agentId: KinAgentId.make("finance"),
+        ownerPersonId: owner.personId,
+        threadId: ThreadId.make("finance-thread"),
+        hostPosted: true as const,
+      };
+      const mail = yield* chats.ask(finance, {
+        chatId: chatOf("finance"),
+        clientMessageId: "finance-mail",
+        question: "Send this reminder to Orbit Dental?",
+        options: [
+          { label: "Confirm", kind: "yes" },
+          { label: "Cancel", kind: "no" },
+        ],
+        send: {
+          service: "Gmail",
+          action: "email",
+          from: "accounts@ambermill.example",
+          to: ["billing@orbit.example"],
+          cc: [],
+          subject: "INV-8 is past due",
+          body: "A gentle reminder that INV-8 is past due.",
+          attachments: [],
+          outcome: null,
+        },
+      });
+      // An approval card waiting on Rhea, as Kin draws one.
+      yield* chats.notice({
+        orgId,
+        chatId: chatOf("chief"),
+        messageId: "approval-note" as KinMessageId,
+        audience: "owner",
+        body: "Approval needed.",
+      });
+      yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+          type, revision, state_json, awaiting_json, updated_at)
+        VALUES ('kin-approval:act-1', ${orgId}, ${chatOf("chief")}, 'approval-note', 'native',
+          'approval', 1, '{"actionId":"act-1","revision":0,"state":"awaiting_approval"}',
+          ${JSON.stringify([owner.personId])}, ${at})`;
+      yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, message_id,
+          widget_id, reason, created_at)
+        VALUES ('wait-approval', ${orgId}, ${owner.personId}, ${chatOf("chief")}, 'approval-note',
+          'kin-approval:act-1', 'approval', ${at})`;
+
+      const read = (who: string) =>
+        waitingFor(who === "rhea" ? owner : person(who), { others: true }).pipe(
+          Effect.provideService(KinChatRepository, Context.get(team.services, KinChatRepository)),
+        );
+      const fromDevCard = (yield* team.cardOf(fromDev.questionId)).widgetId!;
+      const draftCard = (yield* team.cardOf(draft.questionId)).widgetId!;
+      const meeraSees = yield* read("meera");
+      const byCard = (a: readonly unknown[], b: readonly unknown[]) =>
+        String(a[0]) < String(b[0]) ? -1 : 1;
+      assert.deepStrictEqual(
+        meeraSees
+          .map((item) => [item.widgetId, item.reason, item.card, item.waitsFor])
+          .toSorted(byCard),
+        [
+          [fromDevCard, "question", undefined, rhea],
+          [draftCard, "question", "draft", rhea],
+          [mail.widgetId, "question", "mail", rhea],
+          ["kin-approval:act-1", "approval", undefined, rhea],
+        ].toSorted(byCard),
+      );
+      // A draft's row shows its first lines; a mail's shows none of its words.
+      assert.strictEqual(
+        meeraSees.find((item) => item.widgetId === draftCard)?.excerpt,
+        "Workshop proposal\nSix hours on site\nPrice: ____",
+      );
+      assert.isUndefined(meeraSees.find((item) => item.widgetId === mail.widgetId)?.excerpt);
+      // Nobody else sees anyone's: not a teammate, not the owner himself.
+      for (const who of ["dev", "zoya", "rhea"])
+        assert.isFalse((yield* read(who)).some((item) => item.waitsFor !== undefined));
+      // Her chat list carries them only when her client says it shows them read-only.
+      const firstOf = (input: { readonly acceptWaitsFor?: boolean }) =>
+        chats.subscribeChats([person("meera")], { orgId, ...input }).pipe(Stream.runHead);
+      const plain = Option.getOrThrow(yield* firstOf({}));
+      assert.isTrue(plain._tag === "snapshot" && plain.waiting.length === 0);
+      const shown = Option.getOrThrow(yield* firstOf({ acceptWaitsFor: true }));
+      assert.isTrue(shown._tag === "snapshot" && shown.waiting.length === 4);
+
+      // Each tap of hers is refused as it was: Dev's question, the draft's Approve, the mail's
+      // Confirm and the approval are Rhea's alone.
+      const refusal = (widgetId: string, value: string, actionId = "choose") =>
+        Effect.gen(function* () {
+          const widget = yield* team.widgetOf(widgetId);
+          const error = yield* Effect.flip(
+            chats.act(person("meera"), {
+              widgetId: widget.widgetId,
+              revision: widget.revision,
+              actionId,
+              value,
+              clientActionId: `meera-${widgetId}`,
+            }),
+          );
+          return error._tag === "KinChatError" ? error.reason : error._tag;
+        });
+      assert.deepStrictEqual(
+        [
+          yield* refusal(fromDevCard, "option-1"),
+          yield* refusal(draftCard, "option-1"),
+          yield* refusal(mail.widgetId, "option-1"),
+          yield* refusal("kin-approval:act-1", "approve", "approve"),
+        ],
+        ["not_found", "not_found", "not_found", "not_found"],
+      );
+      for (const id of [fromDev.questionId, draft.questionId])
+        assert.strictEqual((yield* questionRow(sql, id)).state, "open");
+      assert.lengthOf(yield* read("meera"), 4);
+
+      // Live: a new card for Rhea reaches Meera's list as Rhea's, and leaves once Rhea answers.
+      const events = yield* Queue.unbounded<KinChatListEvent>();
+      yield* Effect.forkScoped(
+        chats
+          .subscribeChats([person("meera")], { orgId, acceptWaitsFor: true })
+          .pipe(Stream.runForEach((event) => Queue.offer(events, event))),
+      );
+      assert.strictEqual((yield* Queue.take(events))._tag, "snapshot");
+      const fresh = yield* chats.ask(finance, {
+        chatId: chatOf("finance"),
+        clientMessageId: "finance-ask",
+        question: "Chase Lumen Grove today?",
+        options: [{ label: "Chase" }, { label: "Wait" }],
+      });
+      const arrived = yield* Queue.take(events);
+      assert.deepInclude(arrived, { _tag: "waiting" });
+      assert.isTrue(
+        arrived._tag === "waiting" &&
+          arrived.item.widgetId === fresh.widgetId &&
+          arrived.item.resolvedAt === null &&
+          arrived.item.waitsFor?.name === "Rhea Rao",
+      );
+      yield* tap(owner, fromDev.questionId, "option-2", "rhea-answers");
+      const left = yield* Queue.take(events);
+      assert.isTrue(
+        left._tag === "waiting" && left.item.widgetId === fromDevCard && left.item.resolvedAt !== null,
+      );
+      // Rhea decided it, and the card says so; Dev hears it once in the chat he asked in.
+      assert.deepInclude((yield* team.widgetOf(fromDevCard)).state, { decidedBy: rhea });
+      assert.deepStrictEqual(yield* team.kinLines(devChat), [
+        "Rhea Rao answered “Keep the date” to “Does the shoot move to Friday?”",
+      ]);
+    }).pipe(Effect.provide(layer), Effect.scoped),
   ),
 );

@@ -166,7 +166,7 @@ const choice = { question: "Ship today?", detail: null, options: choiceOptions, 
 const decidedCard = {
   ...choice,
   replaced: true,
-  replacedBy: { name: "Meera", label: "Cancel" },
+  replacedBy: { widgetId: "widget-2", decided: { name: "Meera", label: "Cancel" } },
   answer: {
     optionId: "yes",
     personId: "person-1",

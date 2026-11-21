@@ -337,20 +337,66 @@ const waitingColumns = `${waitingBaseColumns}, (SELECT json_extract(g.state_json
   LEFT JOIN kin_leads l ON l.org_id = q.org_id AND l.agent_id = q.agent_id
   LEFT JOIN kin_agents a ON a.org_id = q.org_id AND a.agent_id = q.agent_id
   WHERE q.org_id = kin_waiting.org_id AND q.state = 'open'
-    AND (q.widget_id = kin_waiting.widget_id OR q.raise_widget_id = kin_waiting.widget_id)) AS "ask"`;
+    AND (q.widget_id = kin_waiting.widget_id OR q.raise_widget_id = kin_waiting.widget_id)) AS "ask",
+ (SELECT CASE WHEN json_extract(g.state_json, '$.send.action') IN ('email', 'reply') THEN 'mail'
+    WHEN EXISTS (SELECT 1 FROM kin_questions q WHERE q.org_id = g.org_id AND q.draft_json IS NOT NULL
+      AND (q.widget_id = g.widget_id OR q.raise_widget_id = g.widget_id)) THEN 'draft' END
+  FROM kin_widgets g WHERE g.org_id = kin_waiting.org_id AND g.widget_id = kin_waiting.widget_id) AS "card",
+ (SELECT json_object('detail', json_extract(g.state_json, '$.detail'),
+    'askedBy', json_extract(g.state_json, '$.askedBy'), 'whileOpen', json_extract(g.state_json, '$.whileOpen'))
+  FROM kin_widgets g WHERE g.org_id = kin_waiting.org_id AND g.widget_id = kin_waiting.widget_id
+    AND json_extract(g.state_json, '$.send') IS NULL) AS "about"`;
 const WaitingAskRow = Schema.Struct({
   ...KinWaitingItem.fields,
   ask: Schema.optional(Schema.NullOr(Schema.fromJsonString(KinWaitingAsk))),
+  card: Schema.optional(Schema.NullOr(KinWaitingItem.fields.card)),
+  about: Schema.optional(
+    Schema.NullOr(
+      Schema.fromJsonString(
+        Schema.Struct({
+          detail: Schema.NullOr(Schema.String),
+          askedBy: Schema.NullOr(Schema.String),
+          whileOpen: Schema.NullOr(Schema.String),
+        }),
+      ),
+    ),
+  ),
+  waitsForName: Schema.optional(Schema.NullOr(Schema.String)),
 });
+const EXCERPT_LINES = 3;
+const EXCERPT_CHARS = 300;
+/** A card's first lines of what it asks about, past the asker's and while-open lines. */
+const excerptOf = (about: { detail: string | null; askedBy: string | null; whileOpen: string | null }) => {
+  let text = about.detail ?? "";
+  for (const lead of [about.askedBy, about.whileOpen])
+    if (lead !== null && text.startsWith(lead)) text = text.slice(lead.length);
+  const lines = text
+    .split("\n")
+    .map((line) => line.replace(/^[\s#>*-]+/, "").trim())
+    .filter((line) => line !== "")
+    .slice(0, EXCERPT_LINES)
+    .join("\n");
+  if (lines === "") return undefined;
+  return lines.length <= EXCERPT_CHARS ? lines : `${lines.slice(0, EXCERPT_CHARS - 1).trimEnd()}…`;
+};
 const withoutNoQuestion = ({
   question,
   ask,
+  card,
+  about,
+  waitsForName,
   ...item
-}: typeof WaitingAskRow.Type): KinWaitingItem => ({
-  ...item,
-  ...(question == null ? {} : { question }),
-  ...(ask == null ? {} : { ask }),
-});
+}: typeof WaitingAskRow.Type): KinWaitingItem => {
+  const excerpt = about == null ? undefined : excerptOf(about);
+  return {
+    ...item,
+    ...(question == null ? {} : { question }),
+    ...(ask == null ? {} : { ask }),
+    ...(card == null ? {} : { card }),
+    ...(excerpt === undefined ? {} : { excerpt }),
+    ...(waitsForName == null ? {} : { waitsFor: { personId: item.personId, name: waitsForName } }),
+  };
+};
 const AgentThreadRow = KinAgentThread;
 const ActiveAgentThreadRow = Schema.Struct({
   ...KinAgentThread.fields,
@@ -493,6 +539,10 @@ export class KinChatRepository extends Context.Service<
       RepositoryError
     >;
     readonly listOpenWaiting: (
+      input: Scope & { readonly personId: KinPersonId },
+    ) => Effect.Effect<ReadonlyArray<KinWaitingItem>, RepositoryError>;
+    /** What waits on the owner, for a co-owner to see: `KinChatService.othersWaitingFor`'s rows. */
+    readonly listOwnersOpenWaiting: (
       input: Scope & { readonly personId: KinPersonId },
     ) => Effect.Effect<ReadonlyArray<KinWaitingItem>, RepositoryError>;
     readonly insertOrg: (input: KinOrg) => Effect.Effect<void, RepositoryError>;
@@ -1530,6 +1580,37 @@ const make = Effect.gen(function* () {
         );
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listOpenWaiting")),
+    ),
+    listOwnersOpenWaiting: Effect.fn("KinChatRepository.listOwnersOpenWaiting")(
+      function* (input) {
+        return yield* SqlSchema.findAll({
+          Request: Schema.Unknown,
+          Result: WaitingAskRow,
+          // A co-owner, not removed, sees the owner's open asks in chats he is still in; a
+          // mention is between people, so it stays theirs. Nobody else gets a row.
+          execute: () =>
+            sql`SELECT ${sql.literal(waitingColumns)},
+                (SELECT p.display_name FROM kin_people p WHERE p.org_id = kin_waiting.org_id
+                  AND p.person_id = kin_waiting.person_id) AS "waitsForName"
+              FROM kin_waiting
+              WHERE org_id = ${input.orgId} AND resolved_at IS NULL AND reason <> 'mention'
+                AND person_id <> ${input.personId}
+                AND EXISTS (SELECT 1 FROM kin_people v WHERE v.org_id = kin_waiting.org_id
+                  AND v.person_id = ${input.personId} AND v.removed_at IS NULL
+                  AND ${sql.literal(accessSql("v"))} = 'co_owner')
+                AND EXISTS (SELECT 1 FROM kin_people o WHERE o.org_id = kin_waiting.org_id
+                  AND o.person_id = kin_waiting.person_id AND o.removed_at IS NULL
+                  AND ${sql.literal(accessSql("o"))} = 'owner')
+                AND EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = kin_waiting.org_id
+                  AND m.chat_id = kin_waiting.chat_id AND m.person_id = kin_waiting.person_id
+                  AND m.left_at IS NULL)
+              ORDER BY created_at, waiting_id`,
+        })(input).pipe(
+          NodeSqliteClient.readOnly,
+          Effect.map((rows) => rows.map(withoutNoQuestion)),
+        );
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.listOwnersOpenWaiting")),
     ),
     insertOrg: Effect.fn("KinChatRepository.insertOrg")(
       function* (input) {

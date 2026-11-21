@@ -526,11 +526,16 @@ export const KinChoiceCardState = Schema.Struct({
   send: Schema.optionalKey(KinSendCard),
   /** Set when a newer card for the same thing closed this one. */
   replaced: Schema.optionalKey(Schema.Literal(true)),
-  /** On a replaced card, once the newer one was answered: who chose what on it. */
+  /** On a replaced card: the newer one, and once that was answered, who chose what on it. */
   replacedBy: Schema.optionalKey(
     Schema.Struct({
-      name: KinTrimmedText.check(Schema.isMaxLength(200)),
-      label: KinTrimmedText.check(Schema.isMaxLength(80)),
+      widgetId: KinWidgetId,
+      decided: Schema.optionalKey(
+        Schema.Struct({
+          name: KinTrimmedText.check(Schema.isMaxLength(200)),
+          label: KinTrimmedText.check(Schema.isMaxLength(80)),
+        }),
+      ),
     }),
   ),
   /** Who settled the card, by name at the time; set by the host beside `answer`. */
