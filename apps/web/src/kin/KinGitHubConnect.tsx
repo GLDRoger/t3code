@@ -352,19 +352,27 @@ function CheckAgain(props: { readonly environmentId: EnvironmentId; readonly org
     refresh: reload,
   });
   const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
   if (!allowed) return null;
   return (
-    <Button
-      size="xs"
-      variant="outline"
-      disabled={busy}
-      onClick={() => {
-        setBusy(true);
-        void actions.look().then(() => setBusy(false));
-      }}
-    >
-      {AGENTS.checkAgain}
-    </Button>
+    <>
+      <Button
+        size="xs"
+        variant="outline"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          setSaid(null);
+          void actions.look().then((line) => {
+            setBusy(false);
+            setSaid(line);
+          });
+        }}
+      >
+        {AGENTS.checkAgain}
+      </Button>
+      {said === null ? null : <p className="w-full text-xs text-muted-foreground">{said}</p>}
+    </>
   );
 }
 

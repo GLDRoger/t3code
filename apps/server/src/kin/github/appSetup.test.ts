@@ -230,7 +230,7 @@ describe("making Kin's GitHub App from Settings", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("Check again looks at the App now, at most once in 30 seconds, for owners only", () =>
+  it.effect("Check again looks at the App now, at most once in two minutes, for owners only", () =>
     Effect.gen(function* () {
       const { github, app, flow } = yield* setup();
       const state = new URL((yield* flow.start([owner], orgId)).path, ORIGIN).searchParams.get(
@@ -251,10 +251,10 @@ describe("making Kin's GitHub App from Settings", () => {
       assert.isFalse(yield* visible());
       assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: true });
       assert.isTrue(yield* visible());
-      // A second ask within 30 seconds sends nothing and keeps what Kin saw.
+      // A second ask within two minutes sends nothing and keeps what Kin saw.
       const asked = unsigned();
       github.world.app!.public = false;
-      yield* TestClock.adjust("29 seconds");
+      yield* TestClock.adjust("119 seconds");
       assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: false });
       assert.strictEqual(unsigned(), asked);
       assert.isTrue(yield* visible());
@@ -262,6 +262,29 @@ describe("making Kin's GitHub App from Settings", () => {
       assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: true });
       assert.strictEqual(unsigned(), asked + 1);
       assert.isFalse(yield* visible());
+      // GitHub throttling the unsigned look says nothing about the App: what Kin saw stands.
+      github.world.failing = ["apps/kin-for-invented-studio"];
+      yield* TestClock.adjust("2 minutes");
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: true });
+      assert.strictEqual(unsigned(), asked + 2);
+      assert.isFalse(yield* visible());
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("Check again with no App, or no key to ask with, asks nothing and spends no wait", () =>
+    Effect.gen(function* () {
+      const { github, store, flow } = yield* setup();
+      github.world.calls.length = 0;
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: false });
+      const state = new URL((yield* flow.start([owner], orgId)).path, ORIGIN).searchParams.get(
+        "state",
+      )!;
+      yield* flow.complete(state, "code-1");
+      const key = Option.getOrThrow(yield* store.get(AppKey.appKeyName("9100")));
+      yield* store.remove(AppKey.appKeyName("9100"));
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: false });
+      yield* store.set(AppKey.appKeyName("9100"), key);
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: true });
     }).pipe(Effect.provide(layer)),
   );
 

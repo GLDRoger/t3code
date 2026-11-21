@@ -277,8 +277,20 @@ function CheckAgain(props: { readonly target: KinConnectionsTarget }) {
     look: (input) => look({ environmentId, input }),
     refresh: reload,
   });
+  const [said, setSaid] = useState<string | null>(null);
   if (!allowed) return null;
-  return <ListActionRow label={AGENTS.checkAgain} onPress={() => void actions.look()} />;
+  return (
+    <>
+      <ListActionRow
+        label={AGENTS.checkAgain}
+        onPress={() => {
+          setSaid(null);
+          void actions.look().then(setSaid);
+        }}
+      />
+      {said === null ? null : <Notice message={said} />}
+    </>
+  );
 }
 
 function AppSetUp(props: {

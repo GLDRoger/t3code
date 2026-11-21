@@ -16,7 +16,6 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import { HttpClient, HttpClientRequest } from "effect/http";
 
@@ -40,8 +39,8 @@ import { appSettingsPage, KinGitHubApp, KinGitHubAppConfig } from "./KinGitHubAp
 
 export const APP_SETUP_ROUTE = "/api/kin/github-app";
 const STATE_TTL_MS = 55 * 60_000;
-/** Part of the look is unsigned, and GitHub's unsigned allowance is small. */
-const LOOK_EVERY_MS = 30_000;
+/** Part of the look is unsigned: thirty an hour at most, beside the background look's four. */
+const LOOK_EVERY_MS = 2 * 60_000;
 const NAME_MAX = 34;
 
 /**
@@ -117,7 +116,7 @@ export class KinGitHubAppSetup extends Context.Service<
       people: ReadonlyArray<PersonIdentity>,
       orgId: KinOrgId,
     ) => Effect.Effect<KinGitHubHookAllowed, KinChatError>;
-    /** Owner-level: looks at the App on GitHub now, at most once in 30 seconds. */
+    /** Owner-level: asks GitHub about the App again now, at most once in two minutes. */
     readonly look: (
       people: ReadonlyArray<PersonIdentity>,
       orgId: KinOrgId,
@@ -143,8 +142,6 @@ export const make = Effect.gen(function* () {
   const app = yield* KinGitHubApp;
   const refreshes = yield* KinRefreshObserver;
   const hook = yield* KinGitHubHook;
-  /** The App's record is read and written whole: a yes never brings back one being disconnected. */
-  const record = yield* Semaphore.make(1);
   const files = Context.make(FileSystem.FileSystem, yield* FileSystem.FileSystem).pipe(
     Context.add(Path.Path, yield* Path.Path),
     Context.add(ServerConfig, yield* ServerConfig),
@@ -301,14 +298,13 @@ export const make = Effect.gen(function* () {
           "Kin's secret store on this computer refused it, so Kin can't use the App. Delete it on GitHub, then start again.",
         link: { label: "The App on GitHub", url: settingsUrl },
       } satisfies SetupOutcome;
-    yield* writeStoredApp({
-      appId: id,
-      slug,
-      name,
-      owner: owner?.login ?? "",
-      at: yield* Clock.currentTimeMillis,
-      by: entry.by,
-    }).pipe(Effect.provideContext(files), Effect.orDie);
+    const at = yield* Clock.currentTimeMillis;
+    yield* hook.exclusive(
+      writeStoredApp({ appId: id, slug, name, owner: owner?.login ?? "", at, by: entry.by }).pipe(
+        Effect.provideContext(files),
+        Effect.orDie,
+      ),
+    );
     yield* app.lookAgain();
     yield* refreshes.touch(entry.orgId, "connections");
     return {
@@ -325,7 +321,7 @@ export const make = Effect.gen(function* () {
   ) {
     yield* ownerAt(people, orgId);
     const state = yield* app.state();
-    const stored = yield* record.withPermits(1)(
+    const stored = yield* hook.exclusive(
       Effect.gen(function* () {
         // Declined before removing the record, so no restart in between adopts the host's App again.
         if (Option.isSome(config.appId))
@@ -362,7 +358,7 @@ export const make = Effect.gen(function* () {
   ) {
     const by = yield* ownerAt(people, orgId);
     const now = yield* Clock.currentTimeMillis;
-    const kept = yield* record.withPermits(1)(
+    const kept = yield* hook.exclusive(
       Effect.gen(function* () {
         const stored = yield* readStoredApp.pipe(Effect.provideContext(files));
         if (Option.isNone(stored)) return false;
@@ -389,6 +385,10 @@ export const make = Effect.gen(function* () {
     orgId: KinOrgId,
   ) {
     yield* ownerAt(people, orgId);
+    // With no App or no key there is nothing to ask GitHub, and the guard isn't spent.
+    const stored = yield* readStoredApp.pipe(Effect.provideContext(files));
+    if (Option.isNone(stored) || Option.isNone(yield* appKey.get(String(stored.value.appId))))
+      return { looked: false } satisfies KinGitHubAppLooked;
     const now = yield* Clock.currentTimeMillis;
     if (lookedAt !== undefined && now - lookedAt < LOOK_EVERY_MS)
       return { looked: false } satisfies KinGitHubAppLooked;

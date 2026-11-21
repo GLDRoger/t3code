@@ -686,7 +686,10 @@ export const KinGitHubAppDisconnected = Schema.Struct({
 });
 export type KinGitHubAppDisconnected = typeof KinGitHubAppDisconnected.Type;
 
-/** Whether Kin asked GitHub about its App again now; a second ask within 30 seconds isn't sent. */
+/**
+ * Whether Kin asked GitHub about its App again, nothing more: false within two minutes of the last
+ * ask, or with no App or key to ask with.
+ */
 export const KinGitHubAppLooked = Schema.Struct({ looked: Schema.Boolean });
 export type KinGitHubAppLooked = typeof KinGitHubAppLooked.Type;
 

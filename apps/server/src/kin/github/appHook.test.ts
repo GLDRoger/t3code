@@ -9,6 +9,7 @@ import { KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Mac from "effect/crypto/Mac";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
@@ -18,7 +19,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
-import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import { HttpClient, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -42,6 +43,8 @@ const owner = { _tag: "person" as const, orgId, personId: KinPersonId.make("owne
 const member = { _tag: "person" as const, orgId, personId: KinPersonId.make("member") };
 const PUBLIC = "https://kin.ambermill.example.test";
 const HOOK_URL = `${PUBLIC}${AppHook.KIN_GITHUB_HOOK_ROUTE}`;
+const OLD_PUBLIC = "https://old.ambermill.example.test";
+const OLD_HOOK_URL = `${OLD_PUBLIC}${AppHook.KIN_GITHUB_HOOK_ROUTE}`;
 const REPO = "ambermill/app";
 const ALL_EVENTS = Object.keys(AppHook.HOOK_EVENTS);
 
@@ -67,11 +70,55 @@ const seed = Effect.gen(function* () {
     ])}, 0)`;
 });
 
+/** What a race test holds back: a hook call on its way to GitHub, the hook's store, the fence. */
+interface Holds {
+  readonly http?: (
+    method: string,
+    path: string,
+    signedAs: string | undefined,
+  ) => Effect.Effect<void>;
+  /** After GitHub handled a request. */
+  readonly landed?: (method: string) => Effect.Effect<void>;
+  readonly secrets?: (
+    store: ServerSecretStore.ServerSecretStore["Service"],
+  ) => ServerSecretStore.ServerSecretStore["Service"];
+  readonly fence?: (hook: AppHook.KinGitHubHook["Service"]) => AppHook.KinGitHubHook["Service"];
+}
+
+/** The App id an App JWT was signed for. */
+const signedAs = (authorization: string | undefined) => {
+  const payload = /^bearer [^.]+\.([^.]+)\./i.exec(authorization ?? "")?.[1];
+  if (payload === undefined) return undefined;
+  const iss: unknown = JSON.parse(Buffer.from(payload, "base64url").toString()).iss;
+  return typeof iss === "string" ? iss : undefined;
+};
+
+/** The fake GitHub behind `fakeHttp`, with each request first passing `hold`. */
+const heldHttp = (github: FakeGitHub, holds: Holds) =>
+  Layer.effect(
+    HttpClient.HttpClient,
+    Effect.gen(function* () {
+      const inner = yield* HttpClient.HttpClient;
+      return HttpClient.make((request) =>
+        (holds.http ?? (() => Effect.void))(
+          request.method,
+          new URL(request.url).pathname.replace(/^\//, ""),
+          signedAs(request.headers.authorization),
+        ).pipe(
+          Effect.andThen(inner.execute(request)),
+          Effect.tap(() => holds.landed?.(request.method) ?? Effect.void),
+        ),
+      );
+    }),
+  ).pipe(Layer.provide(fakeHttp(github)));
+
 /**
  * Kin's App over the fake GitHub, its key in a real store: one Kin made (Settings' record), or
  * one the host's environment named (`seeded`).
  */
-const setup = (options: { readonly app?: boolean; readonly seeded?: boolean } = {}) =>
+const setup = (
+  options: { readonly app?: boolean; readonly seeded?: boolean; readonly holds?: Holds } = {},
+) =>
   Effect.gen(function* () {
     yield* seed;
     yield* TestClock.setTime(T0);
@@ -99,7 +146,9 @@ const setup = (options: { readonly app?: boolean; readonly seeded?: boolean } = 
         appId: options.app === false ? Option.none() : Option.some("9001"),
         botLogin: Option.none(),
       }),
-      fakeHttp(github),
+      options.holds?.http === undefined && options.holds?.landed === undefined
+        ? fakeHttp(github)
+        : heldHttp(github, options.holds),
       Layer.mock(KinIdentity)({
         owner: { orgId, personId: KinPersonId.make("owner") } as never,
         isAgentThread: () => false,
@@ -109,11 +158,17 @@ const setup = (options: { readonly app?: boolean; readonly seeded?: boolean } = 
     );
     const app = yield* makeApp.pipe(Effect.provide(services));
     yield* app.refresh();
-    const hook = yield* AppHook.make.pipe(Effect.provideService(KinGitHubApp, app));
+    const hook = yield* AppHook.make.pipe(
+      Effect.provideService(KinGitHubApp, app),
+      Effect.provideService(
+        ServerSecretStore.ServerSecretStore,
+        options.holds?.secrets?.(store) ?? store,
+      ),
+    );
     const flow = yield* Setup.make.pipe(
       Effect.provide(services),
       Effect.provideService(KinGitHubApp, app),
-      Effect.provideService(AppHook.KinGitHubHook, hook),
+      Effect.provideService(AppHook.KinGitHubHook, options.holds?.fence?.(hook) ?? hook),
     );
     const secretText = store
       .get(AppKey.hookSecretName("9001"))
@@ -131,14 +186,17 @@ const layer = KinPersistence.layer.pipe(
 );
 
 /** Kin with a public address, as `KIN_PUBLIC_URL` names one. */
-const addressed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(
-    Effect.provide(
-      ConfigProvider.layer(
-        ConfigProvider.fromUnknown({ KIN_ENABLED: true, KIN_PUBLIC_URL: PUBLIC }),
+const addressedAt =
+  (url: string) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromUnknown({ KIN_ENABLED: true, KIN_PUBLIC_URL: url }),
+        ),
       ),
-    ),
-  );
+    );
+const addressed = addressedAt(PUBLIC);
 
 const sign = (secret: string, body: string) =>
   `sha256=${NodeCrypto.createHmac("sha256", secret).update(body).digest("hex")}`;
@@ -404,9 +462,15 @@ describe("Kin sets the App's webhook up itself", () => {
         assert.strictEqual(yield* hook.ensure(), "address");
         assert.deepStrictEqual(github.world.calls, []);
 
-        assert.strictEqual(yield* addressed(hook.ensure()), "set");
+        // First at an address Kin had before, which GitHub confirms.
+        assert.strictEqual(yield* addressedAt(OLD_PUBLIC)(hook.ensure()), "set");
         const secret = Option.getOrThrow(yield* secretText);
         assert.match(secret, /^[0-9a-f]{64}$/);
+        assert.strictEqual(github.world.app?.hook?.url, OLD_HOOK_URL);
+        assert.strictEqual(patches(), 1);
+
+        // The host's address changed: Kin's confirmed old address is moved here, same secret.
+        assert.strictEqual(yield* addressed(hook.ensure()), "set");
         assert.deepStrictEqual(github.world.app?.hook, {
           url: HOOK_URL,
           content_type: "json",
@@ -414,22 +478,22 @@ describe("Kin sets the App's webhook up itself", () => {
           secret,
         });
         assert.strictEqual(yield* addressed(hook.ensure()), "set");
-        assert.strictEqual(patches(), 1);
+        assert.strictEqual(patches(), 2);
 
-        // Kin's route at an address Kin had before: pointed here again, with the same secret.
-        github.world.app!.hook = {
-          url: `https://old.ambermill.example.test${AppHook.KIN_GITHUB_HOOK_ROUTE}`,
+        // Another host's receiver on the same path is someone else's: never taken over.
+        const sameRoute = {
+          url: `https://other.example.test${AppHook.KIN_GITHUB_HOOK_ROUTE}`,
           content_type: "json",
           insecure_ssl: "0",
         };
-        assert.strictEqual(yield* addressed(hook.ensure()), "set");
+        github.world.app!.hook = { ...sameRoute };
+        assert.strictEqual(yield* addressed(hook.ensure()), "elsewhere");
+        assert.deepStrictEqual(github.world.app?.hook, sameRoute);
         assert.strictEqual(patches(), 2);
-        assert.deepStrictEqual(github.world.app?.hook, {
-          url: HOOK_URL,
-          content_type: "json",
-          insecure_ssl: "0",
-          secret,
-        });
+        assert.strictEqual(
+          (yield* addressed(hook.instant([owner], orgId)))?.instant?.elsewhere,
+          true,
+        );
 
         // Someone else's hook on it: left alone, said once in a fixed line.
         const theirs = {
@@ -636,12 +700,13 @@ describe("Kin sets the App's webhook up itself", () => {
       const { github, hook } = yield* setup();
       const reads = () =>
         github.world.calls.filter((call) => call === "GET app/hook/config").length;
+      // Read once to decide, and again right before the write, as making the secret was a wait.
       yield* addressed(hook.tick());
-      yield* addressed(hook.tick());
-      assert.strictEqual(reads(), 1);
-      yield* TestClock.adjust("24 hours");
       yield* addressed(hook.tick());
       assert.strictEqual(reads(), 2);
+      yield* TestClock.adjust("24 hours");
+      yield* addressed(hook.tick());
+      assert.strictEqual(reads(), 3);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -690,6 +755,174 @@ describe("Kin sets the App's webhook up itself", () => {
         yield* hook.deliver(REPO, [6]);
         assert.strictEqual(yield* Queue.size(looks), 0);
       }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+});
+
+/** A hook whose `exclusive` says when it is asked for, so a race test can tell who waits on it. */
+const announcing =
+  (asked: Deferred.Deferred<void>) => (hook: AppHook.KinGitHubHook["Service"]) => ({
+    ...hook,
+    exclusive: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      Deferred.succeed(asked, undefined).pipe(Effect.andThen(hook.exclusive(effect))),
+  });
+
+describe("one change to the App or its webhook at a time", () => {
+  it.effect(
+    "Disconnect waits for an ensure in flight, which leaves no secret or confirmation",
+    () =>
+      Effect.gen(function* () {
+        const sent = yield* Deferred.make<void>();
+        const land = yield* Deferred.make<void>();
+        const asked = yield* Deferred.make<void>();
+        let first = true;
+        const { flow, hook, store, secretText } = yield* setup({
+          holds: {
+            // The first PATCH waits on its way to GitHub until the test lets it land.
+            http: (method) =>
+              method === "PATCH" && first
+                ? Effect.sync(() => (first = false)).pipe(
+                    Effect.andThen(Deferred.succeed(sent, undefined)),
+                    Effect.andThen(Deferred.await(land)),
+                  )
+                : Effect.void,
+            fence: announcing(asked),
+          },
+        });
+        const ensuring = yield* addressed(hook.ensure()).pipe(Effect.forkScoped);
+        yield* Deferred.await(sent);
+        const leaving = yield* flow.disconnect([owner], orgId).pipe(Effect.forkScoped);
+        // The PATCH lands once Disconnect is done, or waits on the fence.
+        yield* Effect.raceFirst(Fiber.await(leaving), Deferred.await(asked));
+        yield* Deferred.succeed(land, undefined);
+        yield* Fiber.join(ensuring);
+        yield* Fiber.join(leaving);
+        assert.isTrue(Option.isNone(yield* secretText));
+        assert.isTrue(Option.isNone(yield* store.get(AppKey.hookSetName("9001"))));
+        assert.isTrue(Option.isNone(yield* readStoredApp));
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect(
+    "an App made current while an ensure is in flight never gets the first App's secret",
+    () =>
+      Effect.gen(function* () {
+        const reading = yield* Deferred.make<void>();
+        const answer = yield* Deferred.make<void>();
+        const patchedAs: Array<string | undefined> = [];
+        let first = true;
+        const { github, hook, store } = yield* setup({
+          holds: {
+            http: (method, path, as) =>
+              method === "PATCH"
+                ? Effect.sync(() => void patchedAs.push(as))
+                : path === "app/hook/config" && first
+                  ? Effect.sync(() => (first = false)).pipe(
+                      Effect.andThen(Deferred.succeed(reading, undefined)),
+                      Effect.andThen(Deferred.await(answer)),
+                    )
+                  : Effect.void,
+          },
+        });
+        const ensuring = yield* addressed(hook.ensure()).pipe(Effect.forkScoped);
+        yield* Deferred.await(reading);
+        // Another App becomes Settings' App outside the fence, with its own key.
+        yield* store.set(AppKey.appKeyName("9002"), new TextEncoder().encode(appKeyJson()));
+        yield* writeStoredApp({
+          appId: 9002,
+          slug: "invented-next",
+          name: "Invented Next",
+          owner: "rhea-gh",
+          at: T0,
+          by: "owner",
+        });
+        yield* Deferred.succeed(answer, undefined);
+        assert.strictEqual(yield* Fiber.join(ensuring), "none");
+        assert.deepStrictEqual(patchedAs, ["9001"]);
+        // The first App's write is not confirmed, and the secret made for it is gone.
+        assert.isTrue(Option.isNone(yield* store.get(AppKey.hookSetName("9001"))));
+        assert.isTrue(Option.isNone(yield* store.get(AppKey.hookSecretName("9001"))));
+        assert.isTrue(Option.isNone(yield* store.get(AppKey.hookSecretName("9002"))));
+        assert.isDefined(github.world.app?.hook?.secret);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect("two set-ups started together leave GitHub signing with the one secret Kin holds", () =>
+    Effect.gen(function* () {
+      const asked = yield* Deferred.make<void>();
+      // Without one fence: the second reads no secret before the first makes one, removes
+      // it, makes its own, and the first's PATCH lands last.
+      const secondRead = yield* Deferred.make<void>();
+      const firstMade = yield* Deferred.make<void>();
+      const secondPatched = yield* Deferred.make<void>();
+      const name = AppKey.hookSecretName("9001");
+      let reads = 0;
+      let creates = 0;
+      let removes = 0;
+      let patches = 0;
+      const either = (signal: Deferred.Deferred<void>) =>
+        Effect.raceFirst(Deferred.await(signal), Deferred.await(asked));
+      const { github, hook, flow, secretText } = yield* setup({
+        holds: {
+          http: (method) =>
+            method === "PATCH" && ++patches === 1 ? either(secondPatched) : Effect.void,
+          landed: (method) =>
+            method === "PATCH" && patches === 2
+              ? Deferred.succeed(secondPatched, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+          secrets: (store) => ({
+            ...store,
+            get: (key) =>
+              store
+                .get(key)
+                .pipe(
+                  Effect.tap(() =>
+                    key === name && ++reads === 2
+                      ? Deferred.succeed(secondRead, undefined)
+                      : Effect.void,
+                  ),
+                ),
+            getOrCreateRandom: (key, bytes) =>
+              key === name && ++creates === 1
+                ? either(secondRead).pipe(
+                    Effect.andThen(store.getOrCreateRandom(key, bytes)),
+                    Effect.tap(() => Deferred.succeed(firstMade, undefined)),
+                  )
+                : store.getOrCreateRandom(key, bytes),
+            remove: (key) =>
+              key === name && ++removes === 2
+                ? either(firstMade).pipe(Effect.andThen(store.remove(key)))
+                : store.remove(key),
+          }),
+          fence: announcing(asked),
+        },
+      });
+      const [first, second] = yield* Effect.all(
+        [addressed(hook.ensure()), addressed(flow.allowHook([owner], orgId))],
+        { concurrency: "unbounded" },
+      );
+      assert.strictEqual(first, "set");
+      assert.deepStrictEqual(second, { outcome: "set" });
+      assert.strictEqual(github.world.app?.hook?.secret, Option.getOrThrow(yield* secretText));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a delivery signed with bytes left on disk for an adopted App without the yes is refused",
+    () =>
+      Effect.gen(function* () {
+        const { hook, store } = yield* setup({ seeded: true });
+        const left = "c3".repeat(32);
+        yield* store.set(AppKey.hookSecretName("9001"), Buffer.from(left, "hex"));
+        const body = pullEvent(4);
+        const request = delivery(body, {
+          "x-github-event": "pull_request",
+          "x-hub-signature-256": sign(left, body),
+        });
+        assert.deepStrictEqual(yield* send(Option.some(hook), request), {
+          status: 401,
+          body: "Unauthorized",
+        });
+      }).pipe(Effect.provide(layer)),
   );
 });
 

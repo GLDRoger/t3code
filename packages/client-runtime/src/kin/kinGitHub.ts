@@ -177,10 +177,15 @@ export function createKinGitHubLookActions(options: {
   readonly refresh: () => void;
 }) {
   return {
+    /** What to say after the press: null once Kin asked GitHub again. */
     look: async () => {
       const outcome = await answer(options.look({ orgId: options.orgId }), "check the App again");
       options.refresh();
-      return outcome;
+      return outcome.ok
+        ? outcome.value.looked
+          ? null
+          : KIN_GITHUB_AGENTS_COPY.lookedRecently
+        : outcome.problem;
     },
   };
 }
@@ -440,6 +445,8 @@ export const KIN_GITHUB_AGENTS_COPY = {
   usesTitle: "Done as you lately",
   accountsTitle: "Where the App is",
   checkAgain: "Check again",
+  // oxlint-disable-next-line t3code/kin-failure-words -- not a failure: the guard's wait, in the owner's words
+  lookedRecently: "Kin looked a moment ago. Try again in a couple of minutes.",
   /** Under the rows while one of them sends the owner to GitHub. */
   accountsHint: "On GitHub, choose All repositories, then confirm. New repos are covered too.",
 } as const;

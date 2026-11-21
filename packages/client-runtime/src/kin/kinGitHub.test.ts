@@ -10,6 +10,7 @@ import { AsyncResult } from "effect/reactivity";
 
 import {
   createKinGitHubGuardActions,
+  createKinGitHubLookActions,
   KIN_GITHUB_GUARD_COPY,
   kinGitHubAccountRepos,
   kinGitHubGuardAction,
@@ -328,6 +329,19 @@ describe("kinGitHubAccountRows", () => {
     const { accounts: _accounts, ...unknown } = { ...agents, accounts: undefined };
     expect(kinGitHubAccountRows(unknown)).toEqual([]);
     expect(kinGitHubAgentsView(unknown, null, 0).installUrl).toBe(agents.installUrl);
+  });
+});
+
+describe("createKinGitHubLookActions", () => {
+  it("says nothing once Kin asked GitHub again, and says so in words when it waited", async () => {
+    const look = (looked: boolean) =>
+      createKinGitHubLookActions({
+        orgId: KinOrgId.make("org"),
+        look: async () => AsyncResult.success({ looked }),
+        refresh: () => {},
+      }).look();
+    expect(await look(true)).toBeNull();
+    expect(await look(false)).toBe("Kin looked a moment ago. Try again in a couple of minutes.");
   });
 });
 
