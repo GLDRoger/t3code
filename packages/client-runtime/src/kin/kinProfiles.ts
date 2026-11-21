@@ -24,6 +24,11 @@ export const KIN_PROFILE_COPY = {
   title: "Profile",
   mine: "Your profile",
   edit: "Edit profile",
+  /** Settings → Profile's one sentence. */
+  purpose: "How your teammates and agents see you, and when Kin can reach you.",
+  editOf: (what: string) => `Edit ${what.toLowerCase()}`,
+  saveProfile: "Save profile",
+  pictureLabel: "Picture",
   save: "Save",
   saving: "Saving…",
   failed: "Couldn't save.",
@@ -62,6 +67,11 @@ export const KIN_GITHUB_LOGIN = {
   set: "Add GitHub username…",
   change: "Change",
   remove: "Remove",
+  removeTitle: "Remove the GitHub username?",
+  removeDetail: (mine: boolean) =>
+    mine
+      ? "Kin stops finding your pull requests until you add it again."
+      : "Kin stops finding their pull requests until it's added again.",
   save: "Save",
   saving: "Saving…",
   invalid:

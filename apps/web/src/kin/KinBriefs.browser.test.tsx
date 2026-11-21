@@ -73,21 +73,23 @@ describe("Settings → Briefs", () => {
     await expect.element(page.getByText("08:00 · Weekdays")).toBeVisible();
     await expect.element(page.getByText(/Times are in/)).toBeVisible();
 
+    // The switch says on or off; the line keeps saying when.
     await userEvent.click(page.getByRole("switch", { name: "Morning page: On" }));
-    await expect.element(page.getByText("Off · 08:00 · Weekdays")).toBeVisible();
-    await userEvent.click(page.getByRole("switch", { name: "Morning page: Off" }));
+    await expect.element(page.getByRole("switch", { name: "Morning page: Off" })).not.toBeChecked();
     await expect.element(page.getByText("08:00 · Weekdays", { exact: true })).toBeVisible();
+    await userEvent.click(page.getByRole("switch", { name: "Morning page: Off" }));
+    await expect.element(page.getByRole("switch", { name: "Morning page: On" })).toBeChecked();
     expect(host.saves.map((save) => [save.on, save.changed])).toEqual([
       [false, ["on"]],
       [true, ["on"]],
     ]);
 
-    await userEvent.click(page.getByRole("button", { name: "Change: Morning page" }));
+    await userEvent.click(page.getByRole("button", { name: "Edit brief: Morning page" }));
     const sheet = page.getByRole("dialog");
     await expect.element(sheet.getByText("Morning page")).toBeVisible();
     await userEvent.fill(sheet.getByLabelText("Time"), "07:15");
     await userEvent.click(sheet.getByRole("button", { name: "Fri" }));
-    await userEvent.click(sheet.getByRole("button", { name: "Save" }));
+    await userEvent.click(sheet.getByRole("button", { name: "Save brief" }));
     await expect.element(sheet).not.toBeInTheDocument();
     await expect.element(page.getByText("07:15 · Mon, Tue, Wed, Thu")).toBeVisible();
     expect(host.saves.at(-1)).toEqual({
