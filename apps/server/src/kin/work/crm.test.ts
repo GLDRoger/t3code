@@ -355,6 +355,31 @@ it.effect(
         now: 0,
       });
       assert.strictEqual(section.open, 5);
+      // W-29, W-30: a dropped client or duplicate project is listed only when asked for.
+      const dropped = yield* LeadWork.create(scope, {
+        sourceEventId: "again-event",
+        records: [
+          { list: "clients", title: "Invented test client", state: "dropped" },
+          { list: "projects", title: "Invented site copy", client: "C-1", state: "dropped" },
+        ],
+      });
+      const keys = (input: Parameters<typeof LeadWork.query>[1]) =>
+        LeadWork.query(scope, input).pipe(Effect.map((page) => page.records.map((row) => row.key)));
+      const [droppedClient, droppedProject] = dropped.records.map((row) => row.key);
+      assert.deepStrictEqual(yield* keys({ list: "clients" }), ["C-1"]);
+      assert.deepStrictEqual(yield* keys({ list: "projects" }), ["P-1"]);
+      assert.deepStrictEqual(yield* keys({ list: "projects", open: false }), [droppedProject]);
+      assert.deepStrictEqual(yield* keys({ list: "clients", states: ["open", "dropped"] }), [
+        "C-1",
+        droppedClient,
+      ]);
+      assert.deepStrictEqual(yield* keys({ list: "projects", keys: [droppedProject!] }), [
+        droppedProject,
+      ]);
+      assert.deepStrictEqual(
+        (yield* LeadWork.get(scope, { key: "C-1" })).projects!.map((row) => row.key),
+        ["P-1"],
+      );
     }).pipe(Effect.provide(layer)),
 );
 
