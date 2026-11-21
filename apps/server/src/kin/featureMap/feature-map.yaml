@@ -20,12 +20,14 @@
 features:
   # ── Chats ──────────────────────────────────────────────────────────────────────────────────
   - id: chat-list
-    name: Chats with agents and people
+    name: Chats with agents and people, a few on top and the rest under Settled; pin one to keep it up
     tab: chats
     web: [home]
     phone: [KinChats]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    proof: [packages/client-runtime/src/kin/kinChatListRows.test.ts]
+    proof:
+      - packages/client-runtime/src/kin/kinChatListRows.test.ts
+      - apps/server/src/kin/chat/KinChatService.test.ts
 
   - id: chat-agent
     name: Talk to an agent

@@ -46,6 +46,7 @@ const MEMBER = [
   "kin.chats.clear",
   "kin.chats.createDirect",
   "kin.chats.mute",
+  "kin.chats.pin",
   "kin.chats.subscribe",
   "kin.chats.withPerson",
   "kin.docs.diff",

@@ -52,6 +52,7 @@ import * as Layer from "effect/Layer";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as DateTime from "effect/DateTime";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
@@ -1598,6 +1599,7 @@ describe("KinChatService", () => {
         service.history(foreign, { chatId: chat.chatId, beforeSeq: 99, limit: 100 }),
         service.markRead(foreign, { chatId: chat.chatId, seq: 1 }),
         service.mute(foreign, { chatId: chat.chatId, muted: true }),
+        service.pin(foreign, { chatId: chat.chatId, pinned: true }),
         service.upsertWidget(foreign, {
           chatId: chat.chatId,
           widgetId: widget.widgetId,
@@ -2519,6 +2521,37 @@ describe("KinChatService", () => {
         (yield* service.mute(person, { chatId: chat.chatId, muted: false })).mutedUntil,
       );
       assert.deepStrictEqual(yield* mine, { person: null, agent: null });
+    }).pipe(Effect.provide(presenceLayer)),
+  );
+  it.effect("pins and unpins a chat for the caller only, live in their list", () =>
+    Effect.gen(function* () {
+      const { service, person, chat } = yield* seed();
+      const updates = yield* Stream.toQueue(service.subscribeChats([person], {}), {
+        capacity: "unbounded",
+      });
+      assert.strictEqual((yield* Queue.take(updates))._tag, "snapshot");
+      const mine = Effect.map(Queue.take(updates), (event) =>
+        event._tag === "chat"
+          ? Object.fromEntries(
+              event.chat.members.map((member) => [member.principal._tag, member.pinnedAt]),
+            )
+          : event._tag,
+      );
+      const at = DateTime.formatIso(yield* DateTime.now);
+      const pinned = yield* service.pin(person, { chatId: chat.chatId, pinned: true });
+      assert.strictEqual(pinned.pinnedAt, at);
+      assert.deepStrictEqual(yield* mine, { person: pinned.pinnedAt, agent: undefined });
+      // Pinning again keeps the first pin's time, so the order pinned holds.
+      yield* TestClock.adjust("5 seconds");
+      assert.strictEqual(
+        (yield* service.pin(person, { chatId: chat.chatId, pinned: true })).pinnedAt,
+        pinned.pinnedAt,
+      );
+      assert.notProperty(
+        yield* service.pin(person, { chatId: chat.chatId, pinned: false }),
+        "pinnedAt",
+      );
+      assert.deepStrictEqual(yield* mine, { person: undefined, agent: undefined });
     }).pipe(Effect.provide(presenceLayer)),
   );
   it.effect("marks a chat working in the list while its agent's run is live", () =>

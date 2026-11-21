@@ -178,8 +178,18 @@ const chatColumns = `org_id AS "orgId", chat_id AS "chatId", kind AS "kind", tit
 const MemberRow = Schema.Struct({
   ...KinChatMember.fields,
   principal: Schema.fromJsonString(KinChatMember.fields.principal),
+  // An unpinned member's row carries no `pinnedAt` at all, as before pins.
+  pinnedAt: Schema.optionalKey(Schema.NullOr(IsoDateTime)).pipe(
+    Schema.decodeTo(
+      Schema.optionalKey(IsoDateTime),
+      SchemaTransformation.transformOptional<IsoDateTime, IsoDateTime | null>({
+        decode: Option.filter((at) => at !== null),
+        encode: (at) => at,
+      }),
+    ),
+  ),
 });
-const memberColumns = `org_id AS "orgId", chat_id AS "chatId", member_id AS "memberId", role AS "role", joined_at AS "joinedAt", left_at AS "leftAt", muted_until AS "mutedUntil", CASE principal_kind WHEN 'person' THEN json_object('_tag', 'person', 'personId', person_id)
+const memberColumns = `org_id AS "orgId", chat_id AS "chatId", member_id AS "memberId", role AS "role", joined_at AS "joinedAt", left_at AS "leftAt", muted_until AS "mutedUntil", strftime('%Y-%m-%dT%H:%M:%fZ', pinned_at / 1000.0, 'unixepoch') AS "pinnedAt", CASE principal_kind WHEN 'person' THEN json_object('_tag', 'person', 'personId', person_id)
  ELSE json_object('_tag', principal_kind, 'agentId', agent_id) END AS principal`;
 const StoredAttachments = Schema.Array(KinAttachment);
 const encodeAttachments = Schema.encodeEffect(Schema.fromJsonString(StoredAttachments));
@@ -494,6 +504,10 @@ export class KinChatRepository extends Context.Service<
     /** Sets an active member's mute; `null` unmutes. None when the member isn't active. */
     readonly setMute: (
       input: MemberScope & { readonly mutedUntil: IsoDateTime | null },
+    ) => Effect.Effect<Option.Option<KinChatMember>, RepositoryError>;
+    /** Pins an active member's chat at `pinnedAt` (epoch ms); `null` unpins. None when not active. */
+    readonly setPin: (
+      input: MemberScope & { readonly pinnedAt: number | null },
     ) => Effect.Effect<Option.Option<KinChatMember>, RepositoryError>;
     /** A person's role in a chat they are in; never to or from the chat's owner. */
     readonly setRole: (
@@ -1625,6 +1639,14 @@ const make = Effect.gen(function* () {
         return changed.length === 0 ? Option.none() : yield* memberOne(input);
       },
       Effect.mapError(toRepositoryError("KinChatRepository.setMute")),
+    ),
+    setPin: Effect.fn("KinChatRepository.setPin")(
+      function* (input) {
+        const changed = yield* sql`UPDATE kin_chat_members SET pinned_at = ${input.pinnedAt}
+ WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND member_id = ${input.memberId} AND left_at IS NULL RETURNING member_id`;
+        return changed.length === 0 ? Option.none() : yield* memberOne(input);
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.setPin")),
     ),
     setRole: Effect.fn("KinChatRepository.setRole")(
       function* (input) {
