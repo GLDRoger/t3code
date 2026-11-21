@@ -1091,7 +1091,10 @@ const digitsOf = (run: string) => run.replace(/[.,]00?$/, "").replace(/\D/g, "")
 /** `text` without the figures that `own` also carries, however each is grouped ("2,50,000"). */
 export const withoutOwnFigures = (text: string, own: string) => {
   const mine = new Set([...own.matchAll(FIGURE_RUN)].map(([run]) => digitsOf(run)));
-  return text.replace(FIGURE_RUN, (run) => (mine.has(digitsOf(run)) ? "" : run));
+  // An entry key's number ("INV-3") is no figure of hers: it stays for the hidden-entry check.
+  return text.replace(FIGURE_RUN, (run, at: number) =>
+    mine.has(digitsOf(run)) && !/[A-Z]-$/.test(text.slice(0, at)) ? "" : run,
+  );
 };
 const fold = (text: string) => text.toLowerCase().replace(/\s+/g, " ");
 
