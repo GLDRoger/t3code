@@ -11,6 +11,7 @@ import {
   kinCompanyCountrySuggestion,
   kinCompanyDraftOf,
   kinCompanyEditSections,
+  kinCompanyGlance,
   kinCompanyInput,
   kinCompanyRead,
 } from "./kinCompanyProfile.ts";
@@ -355,5 +356,42 @@ describe("company details", () => {
     });
     expect(kinCompanyCountrySuggestion({ ...fresh, country: "GB" }, "IN", true)).toBeNull();
     expect(kinCompanyCountrySuggestion(kinCompanyDraftOf(unsaved, "IN"), "IN", false)).toBeNull();
+  });
+
+  it("reads on the phone as one screen: the country in words, the company's own tax", () => {
+    const glance = (company: unknown) =>
+      kinCompanyGlance(company as never).map((section) => ({
+        title: section.title,
+        rows: section.rows.map((row) => `${row.label}: ${row.value}`),
+      }));
+    const india = { ...(profile as object), country: "IN", gstin: "29ABCDE1234F1Z5" };
+    expect(glance(india)).toEqual([
+      {
+        title: "Company",
+        rows: ["Legal name: Invented Studio Private Limited", "Registered address: Not set"],
+      },
+      {
+        title: "Tax",
+        rows: ["Country: India", "GSTIN: 29ABCDE1234F1Z5", "Place of supply: Not set"],
+      },
+      {
+        title: "Bank",
+        rows: [
+          "Account name: Not set",
+          "Account number: Not set",
+          "IFSC: HDFC0001234",
+          "Bank: Not set",
+        ],
+      },
+    ]);
+    const nz = {
+      ...(profile as object),
+      country: "NZ",
+      tax: { name: "Invented levy", rate: "15", pricesInclude: null },
+      bank: { ...(profile as { bank: object }).bank, accountNumber: "0212340123456700" },
+    };
+    const tax = glance(nz).find((section) => section.title === "Tax")?.rows;
+    expect(tax).toEqual(["Country: New Zealand", "Tax charged: Invented levy at 15%"]);
+    expect(JSON.stringify(glance(nz))).not.toMatch(/GST|IFSC/);
   });
 });

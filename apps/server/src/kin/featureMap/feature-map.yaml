@@ -1022,10 +1022,15 @@ features:
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [company_profile]
+    note: >-
+      The phone reads one screen (legal name and address, tax, bank, time zone, Stop all agents)
+      and takes the phone's country in one tap while a new company has none; editing, brand,
+      templates and the data export are on the computer.
     depth_reason: >-
       A long settings form (legal details, brand, templates) that stays a page like the rest of
       Settings; the owner's rule says forms are sheets, so this is an open exception.
     proof:
+      - packages/client-runtime/src/kin/kinMoney.test.ts
       - packages/client-runtime/src/kin/kinBrand.test.ts
       - packages/client-runtime/src/kin/kinTemplates.test.ts
 
