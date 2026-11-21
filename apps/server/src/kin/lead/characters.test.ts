@@ -3,6 +3,7 @@ import "../chat/KinChatService.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  KIN_CHARACTER_SEATS,
   KinAgentId,
   KinChatError,
   KinChatId,
@@ -137,6 +138,9 @@ it("each area people type for selling resolves to the sales seat's character", (
     assert.deepStrictEqual(salesRulesFor(domain), [], domain);
   assert.include(defaultCharacterFor("content", money) ?? "", "# Social");
   assert.include(defaultCharacterFor("social", money) ?? "", "# Social");
+  // The New agent form says a ready-made character comes exactly when one does.
+  for (const seat of KIN_CHARACTER_SEATS) assert.isString(defaultCharacterFor(seat, money), seat);
+  assert.isUndefined(defaultCharacterFor("hiring", money));
 });
 
 it.effect("a new company's Growth starts with the new character, and is offered nothing", () =>
