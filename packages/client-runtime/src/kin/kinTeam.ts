@@ -194,6 +194,14 @@ export const KIN_PLACE_SWITCHES = [
   },
 ] as const;
 
+/** Whether Add teammate asks before it closes: a name typed, or a switch moved from where it starts. */
+export const kinInviteTyped = (draft: {
+  readonly name: string;
+  readonly sees: KinPersonPlaceSwitches;
+}): boolean =>
+  draft.name.trim() !== "" ||
+  KIN_PLACE_SWITCHES.some(({ place }) => draft.sees[place] !== KIN_NEW_TEAMMATE_SEES[place]);
+
 /** "Leads Atlas, Billing": the projects someone runs, or nothing. */
 const kinLeadsLine = (places: KinPersonPlaces | null) =>
   places === null || places.leads.length === 0

@@ -14,9 +14,11 @@ import { AsyncResult } from "effect/reactivity";
 import type { AtomCommandResult } from "../state/runtime.ts";
 
 import {
+  KIN_NEW_TEAMMATE_SEES,
   KIN_TEAM_NO_EDITS,
   createKinTeamActions,
   kinInviteLink,
+  kinInviteTyped,
   KIN_INVITE_LOCAL_ONLY_NOTE,
   kinShareLink,
   kinNamesakeHandle,
@@ -234,6 +236,17 @@ describe("kinInviteLink", () => {
       httpBaseUrl: "https://kin.example.test:8443/",
       kinInvite: true,
     });
+  });
+});
+
+describe("kinInviteTyped", () => {
+  it.each([
+    ["nothing typed", "", KIN_NEW_TEAMMATE_SEES, false],
+    ["only spaces", "   ", KIN_NEW_TEAMMATE_SEES, false],
+    ["a name", "Ishaan", KIN_NEW_TEAMMATE_SEES, true],
+    ["a switch moved", "", { ...KIN_NEW_TEAMMATE_SEES, money: true }, true],
+  ] as const)("%s: asks before closing is %s", (_what, name, sees, typed) => {
+    expect(kinInviteTyped({ name, sees })).toBe(typed);
   });
 });
 

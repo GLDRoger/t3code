@@ -6,6 +6,7 @@ import {
   KIN_TEAM_ADD_COPY,
   KIN_TEAM_COPY,
   KIN_TEAM_ONLY_OWNER,
+  kinInviteTyped,
   kinRemovedNamesake,
   kinTeammateNameCheck,
   kinTeammateNameMatch,
@@ -30,7 +31,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinInviteLink } from "./components/KinInviteLink";
 import { useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
-import { KinGateView } from "./components/KinWorkPieces";
+import { KinGateView, useKinAskBeforeDiscard } from "./components/KinWorkPieces";
 
 export type KinInviteParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -76,6 +77,8 @@ function KinInviteForm(target: KinTeamTarget) {
   const [sees, setSees] = useState<KinPersonPlaceSwitches>(KIN_NEW_TEAMMATE_SEES);
   const checked = kinTeammateNameCheck(name);
   const match = kinTeammateNameMatch(list, name);
+  // Once the link is made there is nothing left to lose.
+  useKinAskBeforeDiscard(made === null && kinInviteTyped({ name, sees }));
 
   const save = async (person: ReturnType<typeof kinRemovedNamesake> = null, newPerson?: true) => {
     if (saving || !allowed) return;
