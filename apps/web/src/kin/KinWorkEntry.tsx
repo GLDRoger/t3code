@@ -31,6 +31,7 @@ import {
   kinIsInvoice,
   kinInvoiceFileDoc,
   kinInvoiceDraftNote,
+  kinIssuedAmountQuestion,
 } from "@t3tools/client-runtime/kin/kinInvoices";
 import type { KinFieldValue, KinFileRef, KinRecordDetail, KinRecordKey } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -546,6 +547,12 @@ export function KinListEntry(
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
   const [paying, setPaying] = useState(false);
   const [takingBack, setTakingBack] = useState<string | null>(null);
+  // The amount box waits on this question's answer: the reason it wasn't saved, or null.
+  const [askingAmount, setAskingAmount] = useState<{
+    readonly question: NonNullable<ReturnType<typeof kinIssuedAmountQuestion>>;
+    readonly save: () => Promise<string | null>;
+    readonly done: (failed: string | null) => void;
+  } | null>(null);
   // Make invoice and Make its PDF are a step of this sheet, never a dialog over it.
   const [making, setMaking] = useState<"invoice" | "pdf" | null>(null);
   const today = kinWorkDayOf(props.now);
@@ -624,9 +631,13 @@ export function KinListEntry(
                   disabled={busy}
                   onSave={async (text) => {
                     const checked = kinAmountCheck(text, amountEdit.currency, amountEdit.received);
-                    return checked.ok
-                      ? changes.edit(item.rev, { amount: checked.value })
-                      : checked.problem;
+                    if (!checked.ok) return checked.problem;
+                    const save = () => changes.edit(item.rev, { amount: checked.value });
+                    const question = kinIssuedAmountQuestion(item, checked.value);
+                    if (question === null) return save();
+                    return new Promise<string | null>((done) =>
+                      setAskingAmount({ question, save, done }),
+                    );
                   }}
                 />
               </div>
@@ -1086,6 +1097,35 @@ export function KinListEntry(
         )}
       </div>
       <ExpandedImageDialogHost threadKey={previewKey} />
+      <AlertDialog
+        open={askingAmount !== null}
+        onOpenChange={(next) => {
+          if (next || askingAmount === null) return;
+          setAskingAmount(null);
+          askingAmount.done(null);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{askingAmount?.question.title}</AlertDialogTitle>
+            <AlertDialogDescription>{askingAmount?.question.message}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>
+              {KIN_WORK_COPY.cancel}
+            </AlertDialogClose>
+            <Button
+              onClick={() => {
+                const asked = askingAmount;
+                setAskingAmount(null);
+                if (asked !== null) void asked.save().then(asked.done);
+              }}
+            >
+              {askingAmount?.question.confirm}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       <AlertDialog
         open={takingBack !== null}
         onOpenChange={(next) => {

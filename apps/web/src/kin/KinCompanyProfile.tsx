@@ -174,7 +174,13 @@ function Profile(
                 {section.rows.map((row) => (
                   <div key={row.id} className="contents">
                     <dt className="text-muted-foreground">{row.label}</dt>
-                    <dd className="min-w-0 whitespace-pre-wrap break-words text-foreground">
+                    <dd
+                      className={
+                        row.missing
+                          ? "min-w-0 text-muted-foreground"
+                          : "min-w-0 whitespace-pre-wrap break-words text-foreground"
+                      }
+                    >
                       {row.value}
                     </dd>
                   </div>

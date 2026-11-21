@@ -1506,6 +1506,8 @@ const make = Effect.gen(function* () {
     const owner = principal(row.ownerKind, row.ownerId);
     if (owner === null) return;
     const files = new Set(def.fields.filter((one) => one.type === "file").map((one) => one.key));
+    // A numbered list's next entry gets its own number when it is issued, never this one's.
+    if (numberingOf(def) !== undefined) files.add("number");
     const kept = Object.fromEntries(
       Object.entries(parseFields(row.fieldsJson)).filter(([key]) => !files.has(key)),
     );

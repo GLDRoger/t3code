@@ -949,41 +949,45 @@ describe("goals through the tools", () => {
 });
 
 describe("a list proposed again", () => {
-  it.effect("after the owner's yes is the same proposal and card; after a no it is a new one", () =>
-    Effect.gen(function* () {
-      yield* seed;
-      const sql = yield* SqlClient.SqlClient;
-      const cards = () =>
-        sql`SELECT 1 FROM kin_widgets WHERE type = 'choice' AND state_json LIKE '%Create the list%'`;
-      // Kin's own quotes list is made at once, with no card to tap.
-      const quotes = yield* turn(9, "Track quotes");
-      const plain = yield* LeadMoney.define(scope, { sourceEventId: quotes, template: "quotes" });
-      assert.strictEqual(plain.status, "defined");
-      assert.lengthOf(yield* cards(), 0);
-      const asked = yield* turn(1, "Track dates");
-      const first = yield* LeadMoney.define(scope, { sourceEventId: asked, template: "dates" });
-      // The owner taps Create it; the tap's turn proposes the same list instead of carrying it out.
-      const yes = yield* tap(2, cardOf(`kin-list:${first.proposal!}`), "yes");
-      const again = yield* LeadMoney.define(scope, { sourceEventId: yes, template: "dates" });
-      assert.strictEqual(again.proposal, first.proposal);
-      assert.lengthOf(yield* cards(), 1);
-      const made = yield* LeadMoney.define(scope, {
-        sourceEventId: yes,
-        proposal: again.proposal!,
-      });
-      assert.strictEqual(made.status, "defined");
-      // A no stands: asked again later, it is a new question on a new card.
-      const later = yield* turn(3, "Track expenses");
-      const declined = yield* LeadMoney.define(scope, {
-        sourceEventId: later,
-        template: "expenses",
-      });
-      yield* tap(4, cardOf(`kin-list:${declined.proposal!}`), "no");
-      const asks = yield* turn(5, "Actually, do track expenses");
-      const fresh = yield* LeadMoney.define(scope, { sourceEventId: asks, template: "expenses" });
-      assert.notStrictEqual(fresh.proposal, declined.proposal);
-      assert.lengthOf(yield* cards(), 3);
-    }).pipe(Effect.provide(layer)),
+  it.effect(
+    "after a co-owner's yes is the same proposal and card; after a no it is a new one",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('co-owner', ${orgId}, 'co', 'Co', ${at}, 'co_owner')`;
+        const cards = () =>
+          sql`SELECT 1 FROM kin_widgets WHERE type = 'choice' AND state_json LIKE '%Create the list%'`;
+        // Kin's own quotes list is made at once, with no card to tap.
+        const quotes = yield* turn(9, "Track quotes");
+        const plain = yield* LeadMoney.define(scope, { sourceEventId: quotes, template: "quotes" });
+        assert.strictEqual(plain.status, "defined");
+        assert.lengthOf(yield* cards(), 0);
+        const asked = yield* turn(1, "Track dates");
+        const first = yield* LeadMoney.define(scope, { sourceEventId: asked, template: "dates" });
+        // A co-owner taps Create it; the tap's turn proposes the same list instead of carrying it out.
+        const yes = yield* tap(2, cardOf(`kin-list:${first.proposal!}`), "yes", "co-owner");
+        const again = yield* LeadMoney.define(scope, { sourceEventId: yes, template: "dates" });
+        assert.strictEqual(again.proposal, first.proposal);
+        assert.lengthOf(yield* cards(), 1);
+        const made = yield* LeadMoney.define(scope, {
+          sourceEventId: yes,
+          proposal: again.proposal!,
+        });
+        assert.strictEqual(made.status, "defined");
+        // A no stands: asked again later, it is a new question on a new card.
+        const later = yield* turn(3, "Track expenses");
+        const declined = yield* LeadMoney.define(scope, {
+          sourceEventId: later,
+          template: "expenses",
+        });
+        yield* tap(4, cardOf(`kin-list:${declined.proposal!}`), "no", "co-owner");
+        const asks = yield* turn(5, "Actually, do track expenses");
+        const fresh = yield* LeadMoney.define(scope, { sourceEventId: asks, template: "expenses" });
+        assert.notStrictEqual(fresh.proposal, declined.proposal);
+        assert.lengthOf(yield* cards(), 3);
+      }).pipe(Effect.provide(layer)),
   );
 });
 
@@ -1048,6 +1052,40 @@ describe("repeating entries", () => {
       assert.deepStrictEqual(next.repeatJson === null ? null : JSON.parse(next.repeatJson).rule, {
         every: "month",
       });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("start a numbered entry's next one with no number of its own", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const records = yield* KinRecords.KinRecords;
+      const owner = { _tag: "person" as const, personId: ownerId };
+      const writer = { actor: owner, via: "owner" } as const;
+      yield* defined(1, { template: "invoices" });
+      // Issued elsewhere, so typed with its own number, and billed every month.
+      const { row } = yield* records.create(orgId, writer, {
+        list: "invoices",
+        title: "Invented retainer",
+        owner,
+        originKey: "retainer",
+        fields: { number: "OLD/2026/041" },
+        amount: { minor: 4_720_000, currency: "INR" },
+        dueAt: Date.parse("2027-01-31T18:29:59.999Z"),
+        dueAllDay: true,
+        repeat: { every: "month" },
+      });
+      yield* records.update(orgId, writer, row.key, { state: "done" });
+      const sql = yield* SqlClient.SqlClient;
+      const all = yield* sql<{ key: string; state: string; fields: string }>`SELECT key, state,
+          fields_json AS fields FROM kin_records
+        WHERE org_id = ${orgId} AND title = 'Invented retainer' ORDER BY created_at, key`;
+      assert.deepStrictEqual(
+        all.map((one) => [one.state, JSON.parse(one.fields).number ?? null]),
+        [
+          ["done", "OLD/2026/041"],
+          ["open", null],
+        ],
+      );
     }).pipe(Effect.provide(layer)),
   );
 });

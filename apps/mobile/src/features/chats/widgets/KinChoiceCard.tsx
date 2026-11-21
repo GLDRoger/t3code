@@ -41,6 +41,7 @@ import {
   kinSendCheckPending,
   kinSendTicked,
   KIN_SEND_CHECKED,
+  KIN_SEND_COPY,
   KIN_SEND_EDIT_COPY,
   type KinSendEditBusy,
   type KinChoiceCardStatus,
@@ -98,7 +99,7 @@ function SendMessage(props: { readonly body: string | null; readonly quoted: str
   );
 }
 
-/** Exactly what a send card sends: who, the subject, the whole body and each file. */
+/** Exactly what a send card sends: who, the subject, each file and, unless it folds, the body. */
 function SendDetail(props: {
   readonly send: NonNullable<KinChoiceCardView["send"]>;
   /** "Edited by you" while the words shown are a person's saved edit. */
@@ -195,12 +196,7 @@ function SendDetail(props: {
           {pickFrom.problem}
         </Text>
       )}
-      <SendMessage body={send.body} quoted={send.quoted} />
-      {props.edited === null ? null : (
-        <Text textRole="footnote" className="text-foreground-muted">
-          {props.edited}
-        </Text>
-      )}
+      {send.folds ? null : <SendMessage body={send.body} quoted={send.quoted} />}
       {send.attachments.map((file) => (
         <View key={file.name} className="gap-0.5">
           <Text textRole="footnote" className="font-t3-medium text-foreground">
@@ -213,6 +209,16 @@ function SendDetail(props: {
           )}
         </View>
       ))}
+      {send.noBank === null ? null : (
+        <Text textRole="footnote" className="text-warning-foreground">
+          {send.noBank}
+        </Text>
+      )}
+      {props.edited === null ? null : (
+        <Text textRole="footnote" className="text-foreground-muted">
+          {props.edited}
+        </Text>
+      )}
       {send.outcome === null ? null : (
         <Text
           accessibilityRole="text"
@@ -225,6 +231,24 @@ function SendDetail(props: {
           {send.outcome.text}
         </Text>
       )}
+    </View>
+  );
+}
+
+/** A mail's whole body, folded under its card's first screen so Confirm is in reach. */
+function SendFold(props: { readonly send: NonNullable<KinChoiceCardView["send"]> }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View className="gap-2">
+      <View className="flex-row">
+        <Button
+          tone="text"
+          size="compact"
+          label={open ? KIN_SEND_COPY.hideAll : KIN_SEND_COPY.readAll}
+          onPress={() => setOpen(!open)}
+        />
+      </View>
+      {open ? <SendMessage body={props.send.body} quoted={props.send.quoted} /> : null}
     </View>
   );
 }
@@ -594,6 +618,9 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
           </Text>
         )}
       </View>
+      {choice.send !== null && shownEdit === null && choice.send.folds ? (
+        <SendFold send={choice.send} />
+      ) : null}
       {choice.image === null ? null : (
         <ChoiceImage environmentId={environmentId} image={choice.image} />
       )}

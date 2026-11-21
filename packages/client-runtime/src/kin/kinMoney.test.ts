@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  KIN_COMPANY,
   kinCompanyCountrySuggestion,
   kinCompanyDraftOf,
   kinCompanyEditSections,
@@ -275,6 +276,32 @@ describe("company details", () => {
         .find((row) => row.id === "lutDate")?.value,
     ).toBe("Apr 1, 2026");
     expect(kinCompanyDraftOf(filed).lutDate).toBe("2026-04-01");
+    // What an invoice needs reads "Not set" while empty, so a missing GSTIN is seen; the rest
+    // is left out. A UPI id is a way to be paid, so the account is then no gap.
+    const read = (company: unknown) =>
+      kinCompanyRead(company as never)
+        .flatMap((one) => one.rows)
+        .filter((row) => row.missing)
+        .map((row) => row.id);
+    expect(read(profile)).toEqual([
+      "address",
+      "country",
+      "gstin",
+      "placeOfSupply",
+      "accountName",
+      "accountNumber",
+      "bankName",
+    ]);
+    const upi = {
+      ...(profile as { bank: object }),
+      bank: { ...(profile as { bank: object }).bank, upi: "invented@hdfcbank" },
+    };
+    expect(read(upi)).toEqual(["address", "country", "gstin", "placeOfSupply"]);
+    expect(
+      kinCompanyRead(profile)
+        .flatMap((one) => one.rows)
+        .find((row) => row.id === "gstin")?.value,
+    ).toBe(KIN_COMPANY.notSet);
     // An IFSC kept from before shows only while the company is in India.
     expect(kinCompanyRead(uk).flatMap((one) => one.rows.map((row) => row.id))).not.toContain(
       "ifsc",

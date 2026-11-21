@@ -44,6 +44,7 @@ export const KIN_ATTENTION = {
   failed: "Couldn't save that.",
   whatsNext: "What's next?",
   notNow: "Not now",
+  menu: (title: string) => `Snooze or set aside ${title}`,
 } as const;
 
 /** "Not now" on a deal with no next step: its own hold, this many days. */

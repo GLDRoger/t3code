@@ -18,6 +18,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import {
   fieldText,
   type FieldValue,
@@ -937,17 +938,16 @@ export const propose = Effect.fn("KinRegisters.propose")(function* (input: {
     WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
   if (chat === undefined) return yield* invalid("This turn has no chat to propose a list in.");
   // The same list asked again in this chat, from a later turn such as the owner's tap on it, is
-  // that question still: one card. Only a no the owner gave closes it.
-  const [open] = yield* sql<{ proposalId: string; widgetId: string | null; owner: string }>`
-    SELECT p.proposal_id AS "proposalId", p.widget_id AS "widgetId", a.owner_person_id AS owner
+  // that question still: one card. Only a no an owner or co-owner gave closes it.
+  const [open] = yield* sql<{ proposalId: string; widgetId: string | null }>`
+    SELECT p.proposal_id AS "proposalId", p.widget_id AS "widgetId"
     FROM kin_list_proposals p
-    JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = p.agent_id
     WHERE p.org_id = ${input.orgId} AND p.agent_id = ${input.agentId}
       AND p.chat_id = ${input.chatId} AND p.definition_json = ${json} AND p.defined_at IS NULL
     ORDER BY p.proposed_at DESC, p.proposal_id LIMIT 1`;
   if (
     open !== undefined &&
-    (open.widgetId === null || (yield* cardAnswer(input.orgId, open.widgetId, open.owner)) !== "no")
+    (open.widgetId === null || (yield* cardAnswer(input.orgId, open.widgetId)) !== "no")
   )
     return open.proposalId;
   const proposalId = proposalIdFor(input.orgId, input.agentId, input.wakeupId, json);
@@ -1045,12 +1045,9 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
     definedAt: number | null;
     registerId: string;
     widgetId: string | null;
-    owner: string;
   }>`SELECT p.chat_id AS "chatId", p.definition_json AS json, p.chat_seq AS "chatSeq",
-      p.defined_at AS "definedAt", p.register_id AS "registerId", p.widget_id AS "widgetId",
-      a.owner_person_id AS owner
+      p.defined_at AS "definedAt", p.register_id AS "registerId", p.widget_id AS "widgetId"
     FROM kin_list_proposals p
-    JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = p.agent_id
     WHERE p.org_id = ${input.orgId} AND p.proposal_id = ${input.proposalId}
       AND p.agent_id = ${input.agentId}`;
   if (row === undefined)
@@ -1059,16 +1056,15 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
       message: `No proposal ${input.proposalId.slice(0, 40)} of yours. Propose the list first.`,
     });
   if (row.definedAt !== null) return { id: row.registerId, created: false };
-  const tapped =
-    row.widgetId === null ? undefined : yield* cardAnswer(input.orgId, row.widgetId, row.owner);
+  const tapped = row.widgetId === null ? undefined : yield* cardAnswer(input.orgId, row.widgetId);
   if (tapped === "no")
     return yield* new KinChatError({
       reason: "not_allowed",
       message:
         "The owner said no to this proposal on its card, so nothing was created. Propose it again only if they ask for it.",
     });
-  // Every person here is read from the stored event and the stored message both: a tap is the
-  // owner's own tap row on this proposal's card, a message is the owner's own text after it.
+  // Every person here is read from the stored event and the stored message both: a tap is an
+  // owner's or co-owner's own tap row on this proposal's card, a message their own text after it.
   const answered = yield* sql`SELECT 1 FROM kin_events e
     JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
       AND m.chat_id = json_extract(e.json, '$.chatId')
@@ -1076,8 +1072,8 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
       AND e.wakeup_id = ${input.wakeupId} AND m.chat_id = ${row.chatId}
       AND json_extract(e.json, '$.origin.personId') IS NULL
       AND json_extract(e.json, '$.provenance._tag') = 'human'
-      AND json_extract(e.json, '$.provenance.personId') = ${row.owner}
-      AND m.author_kind = 'human' AND m.author_person_id = ${row.owner}
+      AND json_extract(e.json, '$.provenance.personId') = m.author_person_id
+      AND m.author_kind = 'human' AND ${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))}
       AND ((e.tag = 'chat.message' AND m.kind = 'text' AND m.seq > ${row.chatSeq})
         OR (e.tag = 'widget.action' AND m.kind = 'widget_action'
           AND m.widget_id = ${row.widgetId ?? ""} AND ${tapped === "yes" ? 1 : 0} = 1))

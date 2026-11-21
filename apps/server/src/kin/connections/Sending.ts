@@ -21,7 +21,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { chatReaders, keysIn } from "../chat/messageLinks.ts";
 import { readStoredFile } from "../gendocs/brand.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
-import type { TextClock } from "../work/companyProfile.ts";
+import { readProfile, type TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { formatMoney } from "../work/money.ts";
 import { listDef, stateLabel } from "../work/registers.ts";
@@ -47,6 +47,8 @@ const Attachment = Schema.Struct({
   entryRecordId: Schema.NullOr(Schema.String),
   /** The entry's revision when the card was drawn: a Confirm approves that, not a later edit. */
   entryRev: Schema.optionalKey(Schema.Number),
+  /** An invoice's, while the company has no bank account or UPI id to be paid to. */
+  bankMissing: Schema.optionalKey(Schema.Literal(true)),
 });
 export type Attachment = typeof Attachment.Type;
 const From = Schema.Struct({ address: Schema.String, name: Schema.NullOr(Schema.String) });
@@ -205,6 +207,7 @@ export const attachmentOf = Effect.fn("KinSending.attachment")(function* (
         ]
           .filter((part) => part !== undefined)
           .join(" · ");
+  const bank = entry?.registerId === "invoices" ? (yield* readProfile(orgId)).bank : undefined;
   return {
     key: version.key,
     recordId: docId,
@@ -217,6 +220,9 @@ export const attachmentOf = Effect.fn("KinSending.attachment")(function* (
     label,
     entryRecordId: version.entryId,
     ...(entry === undefined ? {} : { entryRev: entry.rev }),
+    ...(bank !== undefined && bank.accountNumber === null && bank.upi === null
+      ? { bankMissing: true as const }
+      : {}),
   } satisfies Attachment;
 });
 
@@ -656,6 +662,7 @@ const cardOf = (
           name: one.name,
           label: one.label,
           bytes: one.bytes,
+          ...(one.bankMissing === true ? { bankMissing: true as const } : {}),
         })),
         outcome: null,
       },
