@@ -314,10 +314,17 @@ describe("kinGitHubAccountRows", () => {
     expect(shown([{ ...org, installable: false }])).toEqual([
       [
         "Not installed",
-        "Invented Kin is private to Invented-Owner, so GitHub can't install it on invented-co and agents work as you here. On GitHub, open the App's settings → Advanced, then choose Make public.",
+        "Invented Kin is private to Invented-Owner, so GitHub can't install it on invented-co and agents work as you here. On GitHub, open the App's settings → Advanced, then choose Make public. Then come back and choose Check again.",
         "Open Advanced on GitHub -> https://github.com/settings/apps/invented-kin/advanced",
       ],
     ]);
+    // Only the private App's row offers Check again beside its link.
+    expect(
+      kinGitHubAccountRows({
+        ...agents,
+        accounts: [row, org, { ...org, installable: false }],
+      }).map((entry) => entry.checkAgain === true),
+    ).toEqual([false, false, true]);
     const { accounts: _accounts, ...unknown } = { ...agents, accounts: undefined };
     expect(kinGitHubAccountRows(unknown)).toEqual([]);
     expect(kinGitHubAgentsView(unknown, null, 0).installUrl).toBe(agents.installUrl);

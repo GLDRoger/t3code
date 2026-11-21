@@ -505,7 +505,7 @@ once, from Kin, with your GitHub login (GitHub asks for admin on each repo; if i
 why and links to the page). Each repo in the watched list says whether agents work there as the App
 or as you. Only an organization's owners can put the App on it; if you aren't one, GitHub sends
 them your request. An App that is private to one account can't go on another until you make it public in its
-settings on GitHub. The section also lists the last few things done as you.
+settings on GitHub; then choose **Check again** on its row. The section also lists the last few things done as you.
 
 #### When things happen on GitHub
 

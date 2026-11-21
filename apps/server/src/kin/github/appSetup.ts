@@ -1,7 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off - random state for GitHub's manifest flow.
 import * as NodeCrypto from "node:crypto";
 
-import { KinChatError, type KinGitHubHookAllowed, type KinOrgId } from "@t3tools/contracts";
+import {
+  KinChatError,
+  type KinGitHubAppLooked,
+  type KinGitHubHookAllowed,
+  type KinOrgId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -35,6 +40,8 @@ import { appSettingsPage, KinGitHubApp, KinGitHubAppConfig } from "./KinGitHubAp
 
 export const APP_SETUP_ROUTE = "/api/kin/github-app";
 const STATE_TTL_MS = 55 * 60_000;
+/** Part of the look is unsigned, and GitHub's unsigned allowance is small. */
+const LOOK_EVERY_MS = 30_000;
 const NAME_MAX = 34;
 
 /**
@@ -110,6 +117,11 @@ export class KinGitHubAppSetup extends Context.Service<
       people: ReadonlyArray<PersonIdentity>,
       orgId: KinOrgId,
     ) => Effect.Effect<KinGitHubHookAllowed, KinChatError>;
+    /** Owner-level: looks at the App on GitHub now, at most once in 30 seconds. */
+    readonly look: (
+      people: ReadonlyArray<PersonIdentity>,
+      orgId: KinOrgId,
+    ) => Effect.Effect<KinGitHubAppLooked, KinChatError>;
   }
 >()("t3/kin/github/appSetup/KinGitHubAppSetup") {}
 
@@ -138,6 +150,7 @@ export const make = Effect.gen(function* () {
     Context.add(ServerConfig, yield* ServerConfig),
   );
   const pending = new Map<string, Pending>();
+  let lookedAt: number | undefined;
   const refuse = (message: string) => new KinChatError({ reason: "not_allowed", message });
 
   const ownerAt = Effect.fn("KinGitHubAppSetup.ownerAt")(function* (
@@ -371,7 +384,21 @@ export const make = Effect.gen(function* () {
     return { outcome } satisfies KinGitHubHookAllowed;
   });
 
-  return KinGitHubAppSetup.of({ start, page, complete, disconnect, allowHook });
+  const look = Effect.fn("KinGitHubAppSetup.look")(function* (
+    people: ReadonlyArray<PersonIdentity>,
+    orgId: KinOrgId,
+  ) {
+    yield* ownerAt(people, orgId);
+    const now = yield* Clock.currentTimeMillis;
+    if (lookedAt !== undefined && now - lookedAt < LOOK_EVERY_MS)
+      return { looked: false } satisfies KinGitHubAppLooked;
+    lookedAt = now;
+    yield* app.lookAgain();
+    yield* refreshes.touch(orgId, "connections");
+    return { looked: true } satisfies KinGitHubAppLooked;
+  });
+
+  return KinGitHubAppSetup.of({ start, page, complete, disconnect, allowHook, look });
 });
 
 export const layer = Layer.effect(KinGitHubAppSetup, make);

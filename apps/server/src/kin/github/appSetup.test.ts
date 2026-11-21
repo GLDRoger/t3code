@@ -230,6 +230,41 @@ describe("making Kin's GitHub App from Settings", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("Check again looks at the App now, at most once in 30 seconds, for owners only", () =>
+    Effect.gen(function* () {
+      const { github, app, flow } = yield* setup();
+      const state = new URL((yield* flow.start([owner], orgId)).path, ORIGIN).searchParams.get(
+        "state",
+      )!;
+      yield* flow.complete(state, "code-1");
+      github.world.app!.public = false;
+      yield* app.lookAgain();
+      const visible = () =>
+        app.state().pipe(Effect.map((now) => (now._tag === "ok" ? now.app.public : undefined)));
+      const unsigned = () =>
+        github.world.calls.filter((call) => call === "GET apps/kin-for-invented-studio").length;
+      assert.isFalse(yield* visible());
+      // Made public on GitHub: one look sees it at once, not after the quarter-hour.
+      github.world.app!.public = true;
+      for (const people of [[member], []])
+        assert.strictEqual((yield* Effect.flip(flow.look(people, orgId))).reason, "not_allowed");
+      assert.isFalse(yield* visible());
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: true });
+      assert.isTrue(yield* visible());
+      // A second ask within 30 seconds sends nothing and keeps what Kin saw.
+      const asked = unsigned();
+      github.world.app!.public = false;
+      yield* TestClock.adjust("29 seconds");
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: false });
+      assert.strictEqual(unsigned(), asked);
+      assert.isTrue(yield* visible());
+      yield* TestClock.adjust("1 second");
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: true });
+      assert.strictEqual(unsigned(), asked + 1);
+      assert.isFalse(yield* visible());
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "an App the host's environment names is adopted once; Settings owns it after, and its Disconnect outlives a restart",
     () =>

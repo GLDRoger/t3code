@@ -191,6 +191,13 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
       const people = yield* Context.get(kin.value.services.value, KinIdentity).resolve(session);
       return yield* setup.value.allowHook(people, input.orgId);
     }),
+    "kin.github.app.look": Effect.fn("KinGitHubAppSetup.look.rpc")(function* (input) {
+      const setup = setupOf();
+      if (Option.isNone(setup) || Option.isNone(kin) || Option.isNone(kin.value.services))
+        return yield* disabled;
+      const people = yield* Context.get(kin.value.services.value, KinIdentity).resolve(session);
+      return yield* setup.value.look(people, input.orgId);
+    }),
     "kin.github.app.repos.set": Effect.fn("KinGitHubApp.setRepos.rpc")(function* (input) {
       const people = yield* github((g, found) =>
         g.status(found, { orgId: input.orgId }).pipe(Effect.as(found)),

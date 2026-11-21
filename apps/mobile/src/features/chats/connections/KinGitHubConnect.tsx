@@ -7,6 +7,7 @@ import {
   createKinGitHubAppRepoActions,
   createKinGitHubAppSetupActions,
   createKinGitHubGuardActions,
+  createKinGitHubLookActions,
   KIN_GITHUB_APP_SETUP_COPY as SETUP,
   kinGitHubAppCreatePath,
   KIN_GITHUB_AGENTS_COPY as AGENTS,
@@ -220,6 +221,7 @@ function AgentIdentity(props: {
                     onPress={() => void Linking.openURL(action.url)}
                   />
                 )}
+                {row.checkAgain === true ? <CheckAgain target={props.target} /> : null}
                 {picking === row.key ? (
                   <AccountRepos
                     target={props.target}
@@ -264,6 +266,21 @@ function AgentIdentity(props: {
 }
 
 /** Makes Kin's own GitHub App on GitHub, or forgets the one made here. */
+/** Asks Kin to look at its App on GitHub now; every open screen redraws from what it sees. */
+function CheckAgain(props: { readonly target: KinConnectionsTarget }) {
+  const { environmentId, orgId } = props.target;
+  const allowed = useAtomValue(kinClient.githubAppLook.permissionAtom(environmentId));
+  const reload = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const look = useAtomCommand(kinClient.githubAppLook, { reportFailure: false });
+  const actions = createKinGitHubLookActions({
+    orgId,
+    look: (input) => look({ environmentId, input }),
+    refresh: reload,
+  });
+  if (!allowed) return null;
+  return <ListActionRow label={AGENTS.checkAgain} onPress={() => void actions.look()} />;
+}
+
 function AppSetUp(props: {
   readonly target: KinConnectionsTarget;
   readonly view: ReturnType<typeof kinGitHubAgentsView>;

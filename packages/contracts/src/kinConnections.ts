@@ -686,6 +686,10 @@ export const KinGitHubAppDisconnected = Schema.Struct({
 });
 export type KinGitHubAppDisconnected = typeof KinGitHubAppDisconnected.Type;
 
+/** Whether Kin asked GitHub about its App again now; a second ask within 30 seconds isn't sent. */
+export const KinGitHubAppLooked = Schema.Struct({ looked: Schema.Boolean });
+export type KinGitHubAppLooked = typeof KinGitHubAppLooked.Type;
+
 /** What setting the App's webhook did once an owner allowed it; `elsewhere` left another's address. */
 export const KinGitHubHookAllowed = Schema.Struct({
   outcome: Schema.Literals(["set", "address", "none", "elsewhere", "error"]),
@@ -856,6 +860,11 @@ export const KinConnectionRpcs = [
     success: KinGitHubAppDisconnected,
     error: KinError,
   }),
+  Rpc.make("kin.github.app.look", {
+    payload: KinGitHubInput,
+    success: KinGitHubAppLooked,
+    error: KinError,
+  }),
   Rpc.make("kin.github.app.hook.allow", {
     payload: KinGitHubInput,
     success: KinGitHubHookAllowed,
@@ -903,4 +912,5 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.github.app.create": AuthKinChatScope,
   "kin.github.app.disconnect": AuthKinChatScope,
   "kin.github.app.hook.allow": AuthKinChatScope,
+  "kin.github.app.look": AuthKinChatScope,
 } as const;

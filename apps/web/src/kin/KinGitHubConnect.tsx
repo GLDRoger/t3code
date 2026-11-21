@@ -7,6 +7,7 @@ import {
   createKinGitHubAppSetupActions,
   createKinGitHubGuardActions,
   createKinGitHubHookActions,
+  createKinGitHubLookActions,
   KIN_GITHUB_APP_SETUP_COPY as SETUP,
   kinGitHubAppCreatePath,
   KIN_GITHUB_AGENTS_COPY as AGENTS,
@@ -226,7 +227,7 @@ function AgentIdentity(props: {
                   </div>
                   <p className="text-xs text-muted-foreground">{row.detail}</p>
                 </div>
-                {row.action === null && !row.pickable ? null : (
+                {row.action === null && !row.pickable && row.checkAgain !== true ? null : (
                   <div className="flex shrink-0 flex-wrap gap-2">
                     {row.pickable ? (
                       <Button
@@ -249,6 +250,9 @@ function AgentIdentity(props: {
                         {row.action.label}
                       </Button>
                     )}
+                    {row.checkAgain === true ? (
+                      <CheckAgain environmentId={props.environmentId} orgId={props.orgId} />
+                    ) : null}
                   </div>
                 )}
                 {picking === row.key ? (
@@ -333,6 +337,34 @@ export function KinGitHubInstantLine(props: {
         ) : null}
       </li>
     </ul>
+  );
+}
+
+/** Asks Kin to look at its App on GitHub now; every open screen redraws from what it sees. */
+function CheckAgain(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
+  const { environmentId, orgId } = props;
+  const allowed = useAtomValue(kinClient.githubAppLook.permissionAtom(environmentId));
+  const reload = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const look = useAtomCommand(kinClient.githubAppLook, { reportFailure: false });
+  const actions = createKinGitHubLookActions({
+    orgId,
+    look: (input) => look({ environmentId, input }),
+    refresh: reload,
+  });
+  const [busy, setBusy] = useState(false);
+  if (!allowed) return null;
+  return (
+    <Button
+      size="xs"
+      variant="outline"
+      disabled={busy}
+      onClick={() => {
+        setBusy(true);
+        void actions.look().then(() => setBusy(false));
+      }}
+    >
+      {AGENTS.checkAgain}
+    </Button>
   );
 }
 

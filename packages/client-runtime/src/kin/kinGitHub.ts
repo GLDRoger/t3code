@@ -6,6 +6,7 @@ import {
   type KinGitHubAppAccount,
   type KinGitHubAppCreateStart,
   type KinGitHubAppDisconnected,
+  type KinGitHubAppLooked,
   type KinGitHubHookAllowed,
   type KinGitHubAppReposResult,
   type KinGitHubAppReposSetInput,
@@ -168,6 +169,21 @@ const answer = async <A>(sent: Sent<A>, doing: string) => {
         }),
       } as const);
 };
+
+/** Asks Kin to look at its App on GitHub now, as after the owner changed it there. */
+export function createKinGitHubLookActions(options: {
+  readonly orgId: KinOrgId;
+  readonly look: (input: KinGitHubInput) => Sent<KinGitHubAppLooked>;
+  readonly refresh: () => void;
+}) {
+  return {
+    look: async () => {
+      const outcome = await answer(options.look({ orgId: options.orgId }), "check the App again");
+      options.refresh();
+      return outcome;
+    },
+  };
+}
 
 /** The owner's yes to Kin setting the webhook of a GitHub App it didn't make. */
 export function createKinGitHubHookActions(options: {
@@ -423,6 +439,7 @@ export const KIN_GITHUB_AGENTS_COPY = {
   install: "Install on more repos",
   usesTitle: "Done as you lately",
   accountsTitle: "Where the App is",
+  checkAgain: "Check again",
   /** Under the rows while one of them sends the owner to GitHub. */
   accountsHint: "On GitHub, choose All repositories, then confirm. New repos are covered too.",
 } as const;
@@ -445,6 +462,8 @@ export interface KinGitHubAccountRow {
   readonly watched: number;
   /** The installation's page on GitHub, offered when GitHub refuses a change made from Kin. */
   readonly settingsUrl: string | null;
+  /** Kin looks at the App on GitHub only now and then: the owner may ask it to look again now. */
+  readonly checkAgain?: true;
 }
 
 /** Making Kin's GitHub App from Settings, and letting it go. */
@@ -589,7 +608,8 @@ function accountState(
         return {
           tone: "muted",
           label: "Not installed",
-          detail: `${app} is private to ${agents.appOwner ?? "the account that owns it"}, so GitHub can't install it on ${row.account} and agents work as you here. On GitHub, open the App's settings → Advanced, then choose Make public.`,
+          detail: `${app} is private to ${agents.appOwner ?? "the account that owns it"}, so GitHub can't install it on ${row.account} and agents work as you here. On GitHub, open the App's settings → Advanced, then choose Make public. Then come back and choose Check again.`,
+          checkAgain: true,
           action:
             agents.appSettingsUrl === undefined
               ? null
