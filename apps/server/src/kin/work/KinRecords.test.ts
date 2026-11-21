@@ -265,6 +265,37 @@ it.effect("record_create makes many entries in one call and a retry makes none",
     assert.include(yield* LeadWork.get(scopeOf(lead), { key: "W-3" }), { owner: "owner" });
     // Its own entries, and the owner's, wake nobody.
     assert.lengthOf(yield* assignedEvents, 0);
+    // A task's steps are lines on it, never rows of their own, and the rows it reads carry them.
+    const stepped = yield* LeadWork.create(scopeOf(lead), {
+      sourceEventId: "ask-event",
+      records: [
+        {
+          title: "Invented: design the appointment screen",
+          steps: [{ title: "Wireframe" }, { title: "Review with Zoya", done: true }],
+          urgent: true,
+        },
+      ],
+    });
+    assert.lengthOf(yield* sql`SELECT 1 FROM kin_records`, 4);
+    const key = stepped.records[0]!.key;
+    const shown = {
+      steps: [{ title: "Wireframe" }, { title: "Review with Zoya", done: true }],
+      urgent: true,
+    };
+    assert.deepInclude(yield* LeadWork.get(scopeOf(lead), { key }), shown);
+    // As the tool's result reaches the agent, encoded by its schema.
+    const listed = yield* LeadWork.query(scopeOf(lead), { keys: [key] });
+    assert.deepInclude(Schema.encodeSync(LeadWork.QueryResult)(listed).records[0], shown);
+    const changed = yield* LeadWork.update(scopeOf(lead), {
+      key,
+      sourceEventId: "ask-event",
+      steps: [{ title: "Wireframe", done: true }],
+      urgent: false,
+    });
+    assert.includeMembers([...(changed.changed ?? [])], ["steps", "urgent"]);
+    const after = yield* LeadWork.get(scopeOf(lead), { key });
+    assert.deepStrictEqual(after.steps, [{ title: "Wireframe", done: true }]);
+    assert.notProperty(after, "urgent");
   }).pipe(Effect.provide(layer)),
 );
 
@@ -3728,7 +3759,9 @@ it.effect(
       });
       // The agent reads who handed it back on the record, with no chat line to quote.
       yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'wake'`;
-      assert.propertyVal(yield* LeadWork.get(scope, { key: "W-2" }), "handedBackBy", "Mate");
+      const handedBack = yield* LeadWork.get(scope, { key: "W-2" });
+      // As the tool's result reaches the agent, encoded by its schema.
+      assert.propertyVal(Schema.encodeSync(LeadWork.GetResult)(handedBack), "handedBackBy", "Mate");
       yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
       // Given on from one teammate to another, each reads who gave it to whom from their side.
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
