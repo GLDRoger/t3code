@@ -81,7 +81,6 @@ import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -100,7 +99,7 @@ import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as SocialCards from "../social/cards.ts";
 import { answerChange } from "../work/companyProfile.ts";
-import { KinRefreshObserver } from "./KinRefreshHub.ts";
+import { KinRefreshHub, KinRefreshObserver } from "./KinRefreshHub.ts";
 import { docsForViewer } from "./privateDocs.ts";
 import { previewRow } from "./chatRowPreview.ts";
 import { withLinks } from "./messageLinks.ts";
@@ -535,7 +534,7 @@ const WORKING_PRESENCE: ReadonlySet<KinPresenceState> = new Set([
 
 /**
  * What waits on a person in chats they are still in: the chat list's rule, and the open list's.
- * With `others`, after them, what `othersWaitingFor` lets them see.
+ * With `others`, after them, what of someone else's they may see (`listOwnersOpenWaiting`).
  */
 export const waitingFor = Effect.fn("KinChatService.waitingFor")(function* (
   identity: PersonIdentity,
@@ -547,25 +546,25 @@ export const waitingFor = Effect.fn("KinChatService.waitingFor")(function* (
     if (Option.isSome(yield* repo.activeMember({ ...item, principal: identity })))
       waiting.push(item);
   if (options?.others !== true) return waiting;
-  return [...waiting, ...(yield* othersWaitingFor(identity, waiting))];
+  return [...waiting, ...(yield* repo.listOwnersOpenWaiting(identity))];
 });
 
-/**
- * The one rule for seeing what waits on someone else: a co-owner sees what waits on the owner,
- * marked `waitsFor`, to look at only (every answer still checks the card's own `awaiting`).
- * Nobody else sees anyone's. A card already waiting on the viewer shows once, as theirs.
- */
-export const othersWaitingFor = Effect.fn("KinChatService.othersWaitingFor")(function* (
-  identity: PersonIdentity,
-  own: ReadonlyArray<KinWaitingItem>,
-) {
-  const repo = yield* Repository.KinChatRepository;
-  const keyOf = (item: KinWaitingItem) => item.widgetId ?? item.messageId;
-  const mine = new Set(own.map(keyOf).filter((key) => key !== null));
-  return (yield* repo.listOwnersOpenWaiting(identity)).filter((item) => {
-    const key = keyOf(item);
-    return key === null || !mine.has(key);
-  });
+/** Someone else's row leaving a viewer's list: its ids and that it is settled, nothing it says. */
+const waitingGone = (
+  item: KinWaitingItem,
+  resolvedAt: NonNullable<KinWaitingItem["resolvedAt"]>,
+  resolution: KinWaitingItem["resolution"],
+): KinWaitingItem => ({
+  waitingId: item.waitingId,
+  orgId: item.orgId,
+  personId: item.personId,
+  chatId: item.chatId,
+  messageId: item.messageId,
+  widgetId: item.widgetId,
+  reason: item.reason,
+  createdAt: item.createdAt,
+  resolvedAt,
+  resolution,
 });
 
 const make = Effect.gen(function* () {
@@ -581,6 +580,8 @@ const make = Effect.gen(function* () {
   const clearedAt = (clearedSeq: number) => (clearedSeq > 0 ? { clearedSeq } : {});
   const sql = yield* SqlClient.SqlClient;
   const refresh = yield* KinRefreshObserver;
+  // Absent outside the server's layer: a chat list then hears no change of role while open.
+  const refreshes = yield* Effect.serviceOption(KinRefreshHub);
   let onChoice: ChoiceAnswerHandler | undefined;
   let onRefused: ChoiceRefusedHandler | undefined;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -1525,6 +1526,8 @@ const make = Effect.gen(function* () {
     function* (identities: ReadonlyArray<PersonIdentity>, others: boolean) {
       const chats: Array<KinChatSummary> = [];
       const waiting: Array<KinWaitingItem> = [];
+      // Those of `identities` that see others' rows, read in the same transaction as the rows.
+      const seeing = new Set<PersonIdentity>();
       for (const identity of identities) {
         const unread = yield* repo.unreadCounts(identity);
         const rows: Array<KinChatSummary> = [];
@@ -1541,13 +1544,15 @@ const make = Effect.gen(function* () {
           );
         }
         chats.push(...(yield* linkRows(identity, rows)));
+        const sees = others && (yield* repo.seesOwnersWaiting(identity));
+        if (sees) seeing.add(identity);
         waiting.push(
-          ...(yield* waitingFor(identity, { others }).pipe(
+          ...(yield* waitingFor(identity, { others: sees }).pipe(
             Effect.provideService(Repository.KinChatRepository, repo),
           )),
         );
       }
-      return { _tag: "snapshot" as const, chats, waiting };
+      return { list: { _tag: "snapshot" as const, chats, waiting }, seeing };
     },
     (effect) => transaction(effect).pipe(NodeSqliteClient.readOnly),
   );
@@ -2352,7 +2357,27 @@ const make = Effect.gen(function* () {
               ),
           );
           const others = input.acceptWaitsFor === true;
-          const initial = yield* snapshot(viewers, others);
+          // Registered before the snapshot is read, so what settles meanwhile still reaches it.
+          const feeds = others
+            ? yield* Effect.forEach(viewers, (viewer) =>
+                Effect.gen(function* () {
+                  const feed = yield* hub.subscribeWaiting(viewer.orgId);
+                  // A change of role, removal or the owner moves `people` (`KinPeople`).
+                  const revisions: Stream.Stream<number> = Option.isNone(refreshes)
+                    ? Stream.never
+                    : refreshes.value.changes(viewer.orgId).pipe(
+                        Stream.map((now) => now.people),
+                        Stream.changes,
+                      );
+                  const since = yield* Stream.runHead(revisions);
+                  const moved = revisions.pipe(
+                    Stream.filter((people) => Option.isNone(since) || people !== since.value),
+                  );
+                  return { viewer, feed, moved };
+                }),
+              )
+            : [];
+          const { list: initial, seeing } = yield* snapshot(viewers, others);
           // With `acceptPreview`: the open waiting items' messages, and the rows sent short.
           const open = new Map<string, string>();
           const short = new Map<string, KinMessageId>();
@@ -2379,50 +2404,71 @@ const make = Effect.gen(function* () {
             return true;
           };
           for (const item of initial.waiting) heardWaiting(item);
-          // What of someone else's this stream showed: it leaves once it may no longer show.
-          const shownOthers = new Map(
-            initial.waiting.flatMap((item) =>
-              item.waitsFor === undefined ? [] : [[item.waitingId, item] as const],
-            ),
-          );
           const othersLive = Stream.mergeAll(
-            others
-              ? yield* Effect.forEach(viewers, (viewer) =>
-                  hub.subscribeWaiting(viewer.orgId).pipe(
-                    Effect.map(
-                      Stream.filterMapEffect(
-                        Effect.fnUntraced(
-                          function* (changed) {
-                            if (changed.personId === viewer.personId) return Result.failVoid;
-                            const own = yield* waitingFor(viewer).pipe(
-                              Effect.provideService(Repository.KinChatRepository, repo),
-                            );
-                            const seen = (yield* othersWaitingFor(viewer, own).pipe(
-                              Effect.provideService(Repository.KinChatRepository, repo),
-                            )).find((one) => one.waitingId === changed.waitingId);
-                            if (seen !== undefined) {
-                              shownOthers.set(seen.waitingId, seen);
-                              return Result.succeed({ _tag: "waiting" as const, item: seen });
-                            }
-                            const shown = shownOthers.get(changed.waitingId);
-                            if (shown === undefined) return Result.failVoid;
-                            shownOthers.delete(changed.waitingId);
-                            return Result.succeed({
-                              _tag: "waiting" as const,
-                              item: {
-                                ...shown,
-                                resolvedAt: changed.resolvedAt ?? (yield* now),
-                                resolution: changed.resolution ?? "closed",
-                              },
-                            });
-                          },
-                          Effect.orElseSucceed(() => Result.failVoid),
-                        ),
-                      ),
-                    ),
-                  ),
-                )
-              : [],
+            feeds.map(({ viewer, feed, moved }) => {
+              let sees = seeing.has(viewer);
+              // What of someone else's this stream showed: it leaves once it may no longer show.
+              const shown = new Map(
+                initial.waiting.flatMap((item) =>
+                  item.orgId === viewer.orgId && item.waitsFor !== undefined
+                    ? [[item.waitingId, item] as const]
+                    : [],
+                ),
+              );
+              const gone = (
+                item: KinWaitingItem,
+                resolvedAt: NonNullable<KinWaitingItem["resolvedAt"]>,
+                resolution: KinWaitingItem["resolution"],
+              ) => {
+                shown.delete(item.waitingId);
+                return waitingGone(item, resolvedAt, resolution);
+              };
+              return Stream.merge(
+                feed.pipe(Stream.map((changed) => Option.some(changed))),
+                moved.pipe(Stream.as(Option.none<KinWaitingItem>())),
+              ).pipe(
+                // One at a time, so a re-check and a row's own change never cross. Once per
+                // waiting change in the org: a span each would outnumber the reads they wrap.
+                Stream.mapEffect(
+                  Effect.fnUntraced(function* (signal) {
+                    if (Option.isNone(signal)) {
+                      // Fails closed: a check that can't be read shows none of it.
+                      sees = yield* repo
+                        .seesOwnersWaiting(viewer)
+                        .pipe(Effect.orElseSucceed(() => false));
+                      const rows = sees
+                        ? yield* repo
+                            .listOwnersOpenWaiting(viewer)
+                            .pipe(Effect.orElseSucceed((): ReadonlyArray<KinWaitingItem> => []))
+                        : [];
+                      const kept = new Set(rows.map((item) => item.waitingId));
+                      const at = yield* now;
+                      const left = [...shown.values()]
+                        .filter((item) => !kept.has(item.waitingId))
+                        .map((item) => gone(item, at, "closed"));
+                      for (const item of rows) shown.set(item.waitingId, item);
+                      return [...left, ...rows];
+                    }
+                    const changed = signal.value;
+                    if (!sees || changed.personId === viewer.personId) return [];
+                    const seen = yield* repo
+                      .getOwnersOpenWaiting({ ...viewer, waitingId: changed.waitingId })
+                      .pipe(Effect.orElseSucceed(() => Option.none<KinWaitingItem>()));
+                    if (Option.isSome(seen)) {
+                      shown.set(seen.value.waitingId, seen.value);
+                      return [seen.value];
+                    }
+                    const was = shown.get(changed.waitingId);
+                    if (was === undefined) return [];
+                    return [
+                      gone(was, changed.resolvedAt ?? (yield* now), changed.resolution ?? "closed"),
+                    ];
+                  }),
+                ),
+                Stream.flattenIterable,
+                Stream.map((item) => ({ _tag: "waiting" as const, item })),
+              );
+            }),
             { concurrency: "unbounded" },
           );
           const first = { ...initial, chats: initial.chats.map(rowFor) };

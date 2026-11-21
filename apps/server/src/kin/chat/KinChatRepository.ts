@@ -545,10 +545,18 @@ export class KinChatRepository extends Context.Service<
     readonly listOpenWaiting: (
       input: Scope & { readonly personId: KinPersonId },
     ) => Effect.Effect<ReadonlyArray<KinWaitingItem>, RepositoryError>;
-    /** What waits on the owner, for a co-owner to see: `KinChatService.othersWaitingFor`'s rows. */
+    /** What waits on the owner that this viewer, a co-owner, may see (`ownersWaiting`). */
     readonly listOwnersOpenWaiting: (
       input: Scope & { readonly personId: KinPersonId },
     ) => Effect.Effect<ReadonlyArray<KinWaitingItem>, RepositoryError>;
+    /** One row of `listOwnersOpenWaiting`, by the same rule: none once she may not see it. */
+    readonly getOwnersOpenWaiting: (
+      input: Scope & { readonly personId: KinPersonId; readonly waitingId: KinWaitingId },
+    ) => Effect.Effect<Option.Option<KinWaitingItem>, RepositoryError>;
+    /** Whether `ownersWaiting` gives this viewer any row at all: a co-owner, not removed. */
+    readonly seesOwnersWaiting: (
+      input: Scope & { readonly personId: KinPersonId },
+    ) => Effect.Effect<boolean, RepositoryError>;
     readonly insertOrg: (input: KinOrg) => Effect.Effect<void, RepositoryError>;
     readonly insertPerson: (
       input: KinPerson & { readonly createdAt: IsoDateTime },
@@ -912,6 +920,35 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toRepositoryError("KinChatRepository.getWaiting")),
   );
+  const coOwnerViewer = (input: Scope & { readonly personId: KinPersonId }) =>
+    sql`EXISTS (SELECT 1 FROM kin_people v WHERE v.org_id = ${input.orgId}
+      AND v.person_id = ${input.personId} AND v.removed_at IS NULL
+      AND ${sql.literal(accessSql("v"))} = 'co_owner')`;
+  /**
+   * The one rule for seeing what waits on someone else: a co-owner, not removed, sees the owner's
+   * open asks in chats he is still in, to look at only. A mention is between people, and a card
+   * already waiting on her shows once, as hers. Nobody else gets a row.
+   */
+  const ownersWaiting = (input: Scope & { readonly personId: KinPersonId }) =>
+    sql`SELECT ${sql.literal(waitingColumns)},
+        (SELECT p.display_name FROM kin_people p WHERE p.org_id = kin_waiting.org_id
+          AND p.person_id = kin_waiting.person_id) AS "waitsForName"
+      FROM kin_waiting
+      WHERE org_id = ${input.orgId} AND resolved_at IS NULL AND reason <> 'mention'
+        AND person_id <> ${input.personId} AND ${coOwnerViewer(input)}
+        AND EXISTS (SELECT 1 FROM kin_people o WHERE o.org_id = kin_waiting.org_id
+          AND o.person_id = kin_waiting.person_id AND o.removed_at IS NULL
+          AND ${sql.literal(accessSql("o"))} = 'owner')
+        AND EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = kin_waiting.org_id
+          AND m.chat_id = kin_waiting.chat_id AND m.person_id = kin_waiting.person_id
+          AND m.left_at IS NULL)
+        AND NOT EXISTS (SELECT 1 FROM kin_waiting mine JOIN kin_chat_members mm
+            ON mm.org_id = mine.org_id AND mm.chat_id = mine.chat_id
+              AND mm.person_id = mine.person_id AND mm.left_at IS NULL
+          WHERE mine.org_id = kin_waiting.org_id AND mine.person_id = ${input.personId}
+            AND mine.resolved_at IS NULL
+            AND COALESCE(mine.widget_id, mine.message_id)
+              = COALESCE(kin_waiting.widget_id, kin_waiting.message_id))`;
   const agentThreadOne = Effect.fn("KinChatRepository.getAgentThread")(
     function (input: Scope & { readonly threadId: ThreadId }) {
       return SqlSchema.findOneOption({
@@ -1590,31 +1627,32 @@ const make = Effect.gen(function* () {
         return yield* SqlSchema.findAll({
           Request: Schema.Unknown,
           Result: WaitingAskRow,
-          // A co-owner, not removed, sees the owner's open asks in chats he is still in; a
-          // mention is between people, so it stays theirs. Nobody else gets a row.
-          execute: () =>
-            sql`SELECT ${sql.literal(waitingColumns)},
-                (SELECT p.display_name FROM kin_people p WHERE p.org_id = kin_waiting.org_id
-                  AND p.person_id = kin_waiting.person_id) AS "waitsForName"
-              FROM kin_waiting
-              WHERE org_id = ${input.orgId} AND resolved_at IS NULL AND reason <> 'mention'
-                AND person_id <> ${input.personId}
-                AND EXISTS (SELECT 1 FROM kin_people v WHERE v.org_id = kin_waiting.org_id
-                  AND v.person_id = ${input.personId} AND v.removed_at IS NULL
-                  AND ${sql.literal(accessSql("v"))} = 'co_owner')
-                AND EXISTS (SELECT 1 FROM kin_people o WHERE o.org_id = kin_waiting.org_id
-                  AND o.person_id = kin_waiting.person_id AND o.removed_at IS NULL
-                  AND ${sql.literal(accessSql("o"))} = 'owner')
-                AND EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = kin_waiting.org_id
-                  AND m.chat_id = kin_waiting.chat_id AND m.person_id = kin_waiting.person_id
-                  AND m.left_at IS NULL)
-              ORDER BY created_at, waiting_id`,
+          execute: () => sql`${ownersWaiting(input)} ORDER BY created_at, waiting_id`,
         })(input).pipe(
           NodeSqliteClient.readOnly,
           Effect.map((rows) => rows.map(withoutNoQuestion)),
         );
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listOwnersOpenWaiting")),
+    ),
+    getOwnersOpenWaiting: Effect.fn("KinChatRepository.getOwnersOpenWaiting")(
+      function* (input) {
+        return yield* SqlSchema.findOneOption({
+          Request: Schema.Unknown,
+          Result: WaitingAskRow,
+          execute: () => sql`${ownersWaiting(input)} AND waiting_id = ${input.waitingId}`,
+        })(input).pipe(NodeSqliteClient.readOnly, Effect.map(Option.map(withoutNoQuestion)));
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.getOwnersOpenWaiting")),
+    ),
+    seesOwnersWaiting: Effect.fn("KinChatRepository.seesOwnersWaiting")(
+      function* (input) {
+        const [row] = yield* sql<{ sees: number }>`SELECT ${coOwnerViewer(input)} AS sees`.pipe(
+          NodeSqliteClient.readOnly,
+        );
+        return row?.sees === 1;
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.seesOwnersWaiting")),
     ),
     insertOrg: Effect.fn("KinChatRepository.insertOrg")(
       function* (input) {

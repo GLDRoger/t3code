@@ -37,6 +37,7 @@ import {
   type KinReactionEmoji,
   KinTaskCardState,
   KinWaitingId,
+  type KinWaitingItem,
   KinWakeupId,
   KinWidgetId,
   ProviderInstanceId,
@@ -90,6 +91,42 @@ const database = authorityLayer;
 const repositories = Layer.provideMerge(Repository.layer, database);
 const dependencies = Layer.provideMerge(Layer.merge(Hub.layer, RefreshHub.layer), repositories);
 const layer = Layer.provideMerge(Service.layer, dependencies).pipe(Layer.provideMerge(environment));
+/**
+ * The owner settles the first of his waiting rows a co-owner's list reads, the moment it read it:
+ * an answer committing while her list is being opened.
+ */
+const answeredAsRead = Layer.effect(
+  Repository.KinChatRepository,
+  Effect.gen(function* () {
+    const repo = yield* Repository.KinChatRepository;
+    const hub = yield* Hub.KinChatHub;
+    const sql = yield* SqlClient.SqlClient;
+    let answered = false;
+    const answer = (item: KinWaitingItem) =>
+      Effect.gen(function* () {
+        answered = true;
+        const resolved = { ...item, resolvedAt: timestamp, resolution: "answered" };
+        yield* sql`UPDATE kin_waiting SET resolved_at = ${timestamp}, resolution = 'answered'
+          WHERE org_id = ${item.orgId} AND waiting_id = ${item.waitingId}`.pipe(Effect.orDie);
+        yield* hub.publish({ type: "waiting.updated", orgId: item.orgId, item: resolved });
+      });
+    return Repository.KinChatRepository.of({
+      ...repo,
+      listOwnersOpenWaiting: (input) =>
+        repo
+          .listOwnersOpenWaiting(input)
+          .pipe(
+            Effect.tap((rows) =>
+              answered || rows[0] === undefined ? Effect.void : answer(rows[0]),
+            ),
+          ),
+    });
+  }),
+);
+const answeredAsReadLayer = Layer.provideMerge(
+  Service.layer,
+  Layer.provideMerge(answeredAsRead, dependencies),
+).pipe(Layer.provideMerge(environment));
 const attachmentLayer = Layer.provideMerge(
   Service.layer,
   Layer.provideMerge(
@@ -2377,6 +2414,39 @@ describe("KinChatService", () => {
         const row = list.chats.find((candidate) => candidate.chatId === chat.chatId);
         assert.strictEqual(row?.lastMessage?.messageId, hello.messageId);
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("an owner's answer landing as a co-owner's list reads it still leaves her list", () =>
+    Effect.gen(function* () {
+      const { service, person, chat } = yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('meera', ${person.orgId}, 'meera', 'Meera Shah', ${timestamp}, 'co_owner')`;
+      yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, message_id,
+          widget_id, reason, created_at)
+        VALUES ('owner-ask', ${person.orgId}, ${person.personId}, ${chat.chatId}, NULL, NULL,
+          'question', ${timestamp})`;
+      const meera = { ...person, personId: decodeKinPersonId("meera") };
+      const list = yield* Stream.toQueue(
+        service.subscribeChats([meera], { orgId: person.orgId, acceptWaitsFor: true }),
+        { capacity: "unbounded" },
+      );
+      // Her snapshot read it open; the owner settled it before the list was handed out.
+      const first = yield* Queue.take(list);
+      assert.deepStrictEqual(
+        first._tag === "snapshot" && first.waiting.map((item) => item.waitingId),
+        [decodeKinWaitingId("owner-ask")],
+      );
+      const [row] = yield* sql<{ resolvedAt: string | null }>`SELECT resolved_at AS "resolvedAt"
+        FROM kin_waiting WHERE waiting_id = 'owner-ask'`;
+      assert.isNotNull(row?.resolvedAt);
+      const left = yield* Queue.take(list);
+      assert.isTrue(
+        left._tag === "waiting" &&
+          left.item.waitingId === "owner-ask" &&
+          left.item.resolvedAt !== null,
+      );
+    }).pipe(Effect.scoped, Effect.provide(answeredAsReadLayer)),
   );
   it.effect(
     "sends a page's line for its body to a list that reads previews, whole while an item waits on it",

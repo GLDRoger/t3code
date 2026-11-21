@@ -101,7 +101,7 @@ export class KinChatHub extends Context.Service<
     >;
     /**
      * One org's waiting changes, anyone's, unchecked: only for a server rule that decides what of
-     * them a viewer may see (`KinChatService.othersWaitingFor`). Bounded as a viewer's screen is.
+     * them a viewer may see (`KinChatRepository.getOwnersOpenWaiting`). Bounded as a screen is.
      */
     readonly subscribeWaiting: (
       orgId: KinOrgId,

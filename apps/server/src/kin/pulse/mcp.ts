@@ -33,7 +33,6 @@ import { isHeld } from "../lead/LevelGate.ts";
 import { theirTime } from "../triggers/quietHold.ts";
 import { SHARED_REFUSAL, effectiveAudience, turnAsker, turnPeople } from "../lead/Audience.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
-import { othersWaitingFor, waitingFor } from "../chat/KinChatService.ts";
 import { accessOf, accessSql } from "../people/KinAccess.ts";
 import { type Lead, leadTool } from "../work/leadWork.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
@@ -144,8 +143,8 @@ const WAITS_KIND: Record<string, string> = {
 
 /**
  * In a co-owner's own turn at the owner's level, what waits on the owner, by the one rule a
- * co-owner sees it by (`othersWaitingFor`): so the agent says whom it waits for, and that only
- * they answer it. Undefined for anyone else's turn.
+ * co-owner sees it by (`listOwnersOpenWaiting`): so the agent says whom it waits for, and that
+ * only they answer it. Undefined for anyone else's turn.
  */
 const waitsForOwner = Effect.fnUntraced(function* (lead: Lead) {
   if ((yield* effectiveAudience(lead)) !== "owner_only") return undefined;
@@ -160,10 +159,7 @@ const waitsForOwner = Effect.fnUntraced(function* (lead: Lead) {
     orgId: lead.orgId,
     personId: KinPersonId.make(asker),
   };
-  const own = yield* waitingFor(identity).pipe(Effect.provideService(KinChatRepository, repo));
-  const theirs = yield* othersWaitingFor(identity, own).pipe(
-    Effect.provideService(KinChatRepository, repo),
-  );
+  const theirs = yield* repo.listOwnersOpenWaiting(identity);
   const sql = yield* SqlClient.SqlClient;
   const [named] = yield* sql<{ name: string }>`SELECT p.display_name AS name FROM kin_people p
     WHERE p.org_id = ${lead.orgId} AND p.removed_at IS NULL

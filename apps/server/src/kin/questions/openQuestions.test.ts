@@ -32,6 +32,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
+import * as Tracer from "effect/Tracer";
 import { McpSchema, McpServer } from "effect/ai";
 
 import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -39,6 +40,7 @@ import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { KIN_REFRESH_SETTLE } from "../chat/KinRefreshHub.ts";
 import { KinChatService, waitingFor } from "../chat/KinChatService.ts";
 import { KinGroups } from "../chat/KinGroups.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -2412,6 +2414,22 @@ it.effect("a question asked for someone away waits for them, then is raised once
   ),
 );
 
+/** Counts the chat repository's reads made under its tracer, by name. */
+const countedReads = () => {
+  const reads = new Map<string, number>();
+  const tracer = Tracer.make({
+    span: (options) => {
+      reads.set(options.name, (reads.get(options.name) ?? 0) + 1);
+      return new Tracer.NativeSpan(options);
+    },
+  });
+  return {
+    tracer,
+    of: (...names: ReadonlyArray<string>) =>
+      names.map((name) => reads.get(`KinChatRepository.${name}`) ?? 0),
+  };
+};
+
 // Meera, a co-owner, sees what waits on Rhea, the owner, marked as Rhea's, live; Dev, a teammate,
 // sees none of it. Every one of them stays Rhea's alone: each of Meera's taps is refused as before.
 it.effect("a co-owner sees what waits on the owner, read-only, and answers none of it", () =>
@@ -2554,11 +2572,14 @@ it.effect("a co-owner sees what waits on the owner, read-only, and answers none 
       assert.lengthOf(yield* read("meera"), 4);
 
       // Live: a new card for Rhea reaches Meera's list as Rhea's, and leaves once Rhea answers.
+      // Each costs her list one read of that one row; her own list is not read again for it.
+      const meeraReads = countedReads();
       const events = yield* Queue.unbounded<KinChatListEvent>();
       yield* Effect.forkScoped(
-        chats
-          .subscribeChats([person("meera")], { orgId, acceptWaitsFor: true })
-          .pipe(Stream.runForEach((event) => Queue.offer(events, event))),
+        chats.subscribeChats([person("meera")], { orgId, acceptWaitsFor: true }).pipe(
+          Stream.runForEach((event) => Queue.offer(events, event)),
+          Effect.withTracer(meeraReads.tracer),
+        ),
       );
       assert.strictEqual((yield* Queue.take(events))._tag, "snapshot");
       const fresh = yield* chats.ask(finance, {
@@ -2574,6 +2595,10 @@ it.effect("a co-owner sees what waits on the owner, read-only, and answers none 
           arrived.item.widgetId === fresh.widgetId &&
           arrived.item.resolvedAt === null &&
           arrived.item.waitsFor?.name === "Rhea Rao",
+      );
+      assert.deepStrictEqual(
+        meeraReads.of("getOwnersOpenWaiting", "listOwnersOpenWaiting", "listOpenWaiting"),
+        [1, 1, 1],
       );
       yield* tap(owner, fromDev.questionId, "option-2", "rhea-answers");
       const left = yield* Queue.take(events);
@@ -2603,6 +2628,143 @@ it.effect("a co-owner sees what waits on the owner, read-only, and answers none 
       assert.deepStrictEqual(yield* team.kinLines(devChat), [
         "Rhea Rao answered “Keep the date” to “Does the shoot move to Friday?”",
       ]);
+
+      // A chat a teammate reads too carries none of it, though the co-owner asks there.
+      const mixed = (yield* Context.get(team.services, KinGroups).create([person("meera")], {
+        orgId,
+        title: "Studio",
+        agentIds: [KinAgentId.make("chief")],
+        personIds: [KinPersonId.make("dev")],
+      })).chatId;
+      yield* wakeOn("chief", "meera", mixed, "What needs a yes?");
+      assert.notProperty((yield* callAs("chief", "pulse_read", {})).value, "waitsFor");
+
+      // Dev's list, open: what waits on Rhea costs it no read while he is a teammate.
+      const devReads = countedReads();
+      const devEvents = yield* Queue.unbounded<KinChatListEvent>();
+      yield* Effect.forkScoped(
+        chats.subscribeChats([person("dev")], { orgId, acceptWaitsFor: true }).pipe(
+          Stream.runForEach((event) => Queue.offer(devEvents, event)),
+          Effect.withTracer(devReads.tracer),
+        ),
+      );
+      const devFirst = yield* Queue.take(devEvents);
+      assert.isTrue(
+        devFirst._tag === "snapshot" && devFirst.waiting.every((item) => !item.waitsFor),
+      );
+      const venue = yield* chats.ask(finance, {
+        chatId: chatOf("finance"),
+        clientMessageId: "finance-venue",
+        question: "Book the venue for Friday?",
+        options: [{ label: "Book" }, { label: "Wait" }],
+      });
+      // Meera's list has it, so Dev's, which heard it with hers, is past it.
+      let heard = yield* Queue.take(events);
+      while (heard._tag !== "waiting" || heard.item.widgetId !== venue.widgetId)
+        heard = yield* Queue.take(events);
+      assert.deepStrictEqual(
+        devReads.of("getOwnersOpenWaiting", "listOwnersOpenWaiting", "seesOwnersWaiting"),
+        [0, 0, 1],
+      );
+      // Made a co-owner with his list open, Rhea's rows arrive in it by themselves.
+      const people = yield* People.KinPeople.pipe(
+        Effect.provide(
+          People.layer.pipe(
+            Layer.provide(
+              Layer.mock(SessionStore)({ cookieName: "kin", legacyCookieName: undefined }),
+            ),
+            Layer.provide(Layer.succeedContext(team.services)),
+          ),
+        ),
+      );
+      const rheaSession = {
+        sessionId: AuthSessionId.make("owner"),
+        subject: "browser",
+        method: "browser-session-cookie" as const,
+        scopes: AuthStandardClientScopes,
+      };
+      yield* people.setAccess(rheaSession, {
+        orgId,
+        personId: KinPersonId.make("dev"),
+        access: "co_owner",
+      });
+      yield* TestClock.adjust(KIN_REFRESH_SETTLE);
+      const rheasFor = (who: string) =>
+        read(who).pipe(
+          Effect.map((rows) =>
+            rows
+              .flatMap((item) => (item.waitsFor === undefined ? [] : [item.waitingId]))
+              .toSorted(),
+          ),
+        );
+      const devShould = yield* rheasFor("dev");
+      assert.isTrue(
+        (yield* read("dev")).some((item) => item.widgetId === venue.widgetId && !!item.waitsFor),
+      );
+      const devGot = new Set<string>();
+      while (devGot.size < devShould.length) {
+        const event = yield* Queue.take(devEvents);
+        if (event._tag === "waiting" && event.item.waitsFor?.name === "Rhea Rao")
+          devGot.add(event.item.waitingId);
+      }
+      assert.deepStrictEqual([...devGot].toSorted(), devShould);
+      assert.deepStrictEqual(
+        devReads.of("getOwnersOpenWaiting", "listOwnersOpenWaiting", "seesOwnersWaiting"),
+        [0, 1, 2],
+      );
+
+      // Meera's list, open again.
+      const again = yield* Queue.unbounded<KinChatListEvent>();
+      yield* Effect.forkScoped(
+        chats
+          .subscribeChats([person("meera")], { orgId, acceptWaitsFor: true })
+          .pipe(Stream.runForEach((event) => Queue.offer(again, event))),
+      );
+      const reopened = yield* Queue.take(again);
+      const meeraShown =
+        reopened._tag === "snapshot"
+          ? reopened.waiting.flatMap((item) => (item.waitsFor ? [item.waitingId] : []))
+          : [];
+      assert.isNotEmpty(meeraShown);
+      // What leaves her list says which row and that it is settled, nothing of what it asks.
+      const bare = [
+        "chatId",
+        "createdAt",
+        "messageId",
+        "orgId",
+        "personId",
+        "reason",
+        "resolution",
+        "resolvedAt",
+        "waitingId",
+        "widgetId",
+      ];
+
+      // Made a teammate with nothing of Rhea's changed: every row of hers leaves, bare.
+      yield* people.setAccess(rheaSession, {
+        orgId,
+        personId: KinPersonId.make("meera"),
+        access: "member",
+      });
+      yield* TestClock.adjust(KIN_REFRESH_SETTLE);
+      const removed = new Map<string, ReadonlyArray<string>>();
+      while (removed.size < meeraShown.length) {
+        const event = yield* Queue.take(again);
+        if (event._tag === "waiting" && meeraShown.includes(event.item.waitingId)) {
+          assert.isNotNull(event.item.resolvedAt);
+          removed.set(event.item.waitingId, Object.keys(event.item).toSorted());
+        }
+      }
+      for (const keys of removed.values()) assert.deepStrictEqual(keys, bare);
+      const open = yield* sql<{ waitingId: string }>`SELECT waiting_id AS "waitingId"
+        FROM kin_waiting WHERE org_id = ${orgId} AND resolved_at IS NULL
+          AND person_id = ${owner.personId}`;
+      for (const id of meeraShown)
+        assert.isTrue(
+          open.some((row) => row.waitingId === id),
+          `${id} is still open for Rhea`,
+        );
+      assert.deepStrictEqual(yield* rheasFor("meera"), []);
     }).pipe(Effect.provide(layer), Effect.scoped),
   ),
 );
