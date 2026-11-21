@@ -1931,11 +1931,17 @@ describe("Kin migrations", () => {
         [197, 198, 199],
       );
       const all = ["pinned_at", "sees_by_person_id", "sees_json", "steps_json", "urgent"];
-      assert.deepStrictEqual((yield* added).map(({ name }) => name), all);
+      assert.deepStrictEqual(
+        (yield* added).map(({ name }) => name),
+        all,
+      );
       for (const from of [197, 198, 199]) {
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
-        assert.deepStrictEqual((yield* added).map(({ name }) => name), all);
+        assert.deepStrictEqual(
+          (yield* added).map(({ name }) => name),
+          all,
+        );
       }
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
