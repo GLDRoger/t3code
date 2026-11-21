@@ -99,7 +99,8 @@ const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fra
 /**
  * What a non-owner-level person sees everywhere: a task they hold, attend or marked private; unlabelled,
  * what they made, gave or share, their projects with those projects' entries and docs (never a
- * private task), company docs with Docs on, and with Clients on the deals of clients they see.
+ * private task), docs filed at their ask, company docs with Docs on, and with Clients on the deals
+ * of clients they see.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
@@ -114,6 +115,7 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
     (r.register_id = 'projects' AND ${onProject(sql, personId, sql`r.record_id`)})
     OR (r.register_id IN ('clients', 'contacts') AND ${placeOn(sql, personId, "sees_clients")})
     OR (r.register_id = 'docs' AND r.project_id IS NOT NULL AND ${projectPerson(sql, personId)})
+    OR (r.register_id = 'docs' AND r.asked_by_person_id = ${personId})
     OR (r.register_id = 'docs' AND (r.team_shared = 1
       OR json_extract(r.fields_json, '$.home') = 'company')
       AND ${placeOn(sql, personId, "sees_docs")})))
@@ -335,6 +337,7 @@ export const viewGuard = Effect.fn("KinTeamView.viewGuard")(function* (
 ) {
   if (view.people.length === 0) return yield* noLongerTeam;
   if (yield* roomWork(orgId, view.people, write)) return;
+  if (yield* draftDoc(orgId, view, write)) return;
   for (const person of view.people)
     yield* teamGuard(orgId, person, {
       ...write,
@@ -355,6 +358,47 @@ const ROOM_REFUSED = [
   "links",
 ] as const;
 const ROOM_FIELDS: ReadonlySet<string> = new Set(LISTS.work.fields);
+
+/** What a doc filed at one teammate's own ask may carry besides its text (`draftDoc`). */
+const DRAFT_DOC_FIELDS: ReadonlySet<string> = new Set(["list", "source", "partyId", "projectId"]);
+
+/**
+ * A doc filed at the one teammate's ask behind the turn, which they then see (`personSees`): no
+ * label, sharing, money or company home, under a client they see and a project they are in.
+ */
+const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
+  orgId: KinOrgId,
+  view: { readonly people: ReadonlyArray<KinPersonId>; readonly askers: ReadonlyArray<KinPersonId> },
+  write: Parameters<typeof teamGuard>[2],
+) {
+  const { row, input } = write;
+  const [person] = view.people;
+  if (
+    person === undefined ||
+    view.people.length !== 1 ||
+    view.askers.length !== 1 ||
+    view.askers[0] !== person ||
+    input.list !== "docs" ||
+    write.changes ||
+    OWNERS_FIELDS.some((field) => input[field] !== undefined && !DRAFT_DOC_FIELDS.has(field))
+  )
+    return false;
+  const facts = yield* teamFactsOf(
+    orgId,
+    person,
+    row === undefined ? [] : [row.recordId],
+    typeof input.partyId === "string" ? [input.partyId] : [],
+  );
+  const own = facts(row?.recordId);
+  if (!own.member) return yield* noLongerTeam;
+  if (row !== undefined) return own.seen !== null && own.seen !== undefined;
+  if (
+    typeof input.partyId === "string" &&
+    !(own.clients.on && own.clients.seen.has(input.partyId))
+  )
+    return false;
+  return typeof input.projectId !== "string" || (yield* inProject(orgId, person, input.projectId));
+});
 
 /** Whether the write is team-visible work everyone behind the turn sees, before and after. */
 const roomWork = Effect.fn("KinTeamView.roomWork")(function* (

@@ -2024,6 +2024,17 @@ it.effect(
       );
       const docs = sql`SELECT 1 FROM kin_records WHERE org_id = ${orgId} AND register_id = 'docs'`;
       assert.lengthOf(yield* docs, 0);
+      // A draft with no price files in their own chat, and with Docs on they read it there.
+      yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${mateId}`;
+      const posted = yield* LeadDocs.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        title: "Invented launch teaser",
+        body: "Doors open on the 10th.",
+      });
+      assert.deepInclude(posted, { changed: true, kind: "other" });
+      const mate = { _tag: "person" as const, orgId, personId: mateId };
+      assert.strictEqual((yield* OwnerDocs.get([mate], { orgId, key: posted.key })).key, posted.key);
+      assert.lengthOf(yield* docs, 1);
       // A chat others share asks nobody outside it, so its refusal names no card.
       yield* sql`UPDATE kin_chats SET kind = 'team_group', direct_key = NULL WHERE chat_id = 'mate-chat'`;
       const inGroup = yield* propose;
@@ -2031,7 +2042,7 @@ it.effect(
         "message" in inGroup ? inGroup.message : "",
         "Only the owner or a co-owner changes that.",
       );
-      assert.lengthOf(yield* docs, 0);
+      assert.lengthOf(yield* docs, 1);
     }).pipe(Effect.provide(layer)),
 );
 
