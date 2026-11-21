@@ -10,6 +10,7 @@ import { cn } from "../../../lib/cn";
 import { KIN_RETIRED_LABEL } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import type { KinChatListRow } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { KinAvatar } from "./KinAvatar";
+import { kinLines, useKinTextGrows } from "./kinTextGrows";
 
 // The thread list row's insets (`THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME`).
 const ROW_CLASS_NAME = "min-h-16 flex-row items-center gap-3 px-5 py-2.5";
@@ -29,6 +30,7 @@ export function KinChatRow(props: {
   const { row } = props;
   const { view } = row;
   const unread = view.unread > 0;
+  const grows = useKinTextGrows();
   const content = (
     <>
       <KinAvatar avatar={view.avatar} />
@@ -41,7 +43,7 @@ export function KinChatRow(props: {
           ) : (
             <Text
               textRole="body"
-              numberOfLines={1}
+              numberOfLines={kinLines(1, grows)}
               className={cn(
                 "min-w-0 flex-1",
                 row.retired ? "text-foreground-muted" : "text-foreground",

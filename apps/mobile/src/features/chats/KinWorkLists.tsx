@@ -62,6 +62,7 @@ import {
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { KinDealsView } from "./KinDealsList";
 import { useKinExportList, useKinMarketing } from "./KinMarketing";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
 const HEALTH_TONE: Record<KinHealthView["tone"], string> = {
   good: "text-foreground-muted",
@@ -100,6 +101,7 @@ export function KinWorkNamedRow(props: {
   /** Inside a rounded section the divider keeps to the section's edges. */
   readonly inset?: boolean;
 }) {
+  const grows = useKinTextGrows();
   const { row } = props;
   return (
     <>
@@ -114,13 +116,21 @@ export function KinWorkNamedRow(props: {
       >
         <View className="min-w-0 flex-1 gap-0.5">
           <View className="flex-row items-center gap-2">
-            <Text textRole="body" numberOfLines={2} className="min-w-0 shrink text-foreground">
+            <Text
+              textRole="body"
+              numberOfLines={kinLines(2, grows)}
+              className="min-w-0 shrink text-foreground"
+            >
               {row.name}
             </Text>
             {row.private ? <KinWorkPrivateMark label="" /> : null}
           </View>
           {row.mark == null && row.line === "" ? null : (
-            <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+            <Text
+              textRole="footnote"
+              numberOfLines={kinLines(1, grows)}
+              className="text-foreground-muted"
+            >
               {row.mark == null ? null : (
                 <Text textRole="footnote" className="font-t3-medium text-primary-text">
                   {row.mark}
@@ -133,7 +143,7 @@ export function KinWorkNamedRow(props: {
           {row.next == null ? null : (
             <Text
               textRole="footnote"
-              numberOfLines={1}
+              numberOfLines={kinLines(1, grows)}
               className={row.noNext ? "text-warning-foreground" : "text-foreground-muted"}
             >
               {row.next}

@@ -44,6 +44,7 @@ import { useKinHost, useKinHostAt } from "../state/useKinHost";
 import { KinLoadFailed } from "./KinLoadFailed";
 import { KinAvatar } from "./KinAvatar";
 import { KinWorkStateSymbol } from "./KinWorkStateSymbol";
+import { kinLines, useKinTextGrows } from "./kinTextGrows";
 
 type Bar = React.ComponentProps<typeof AppBar>;
 
@@ -177,6 +178,7 @@ export function KinWorkTaskRow(props: {
 }) {
   const { row, onAct } = props;
   const tick = onAct === null ? null : row.tick;
+  const grows = useKinTextGrows();
   return (
     <>
       <View className={cn("flex-row items-start", props.saving && "opacity-60")}>
@@ -205,23 +207,23 @@ export function KinWorkTaskRow(props: {
           )}
         >
           <View className="min-w-0 flex-1 gap-0.5">
-            <Text textRole="body" numberOfLines={2} className="text-foreground">
+            <Text textRole="body" numberOfLines={kinLines(2, grows)} className="text-foreground">
               {row.title}
             </Text>
             {/* Who has it never gives way: the rest of the line cuts off before it does. */}
-            <View className="min-w-0 flex-row items-center gap-1.5">
+            <View className={cn("min-w-0 flex-row items-center gap-1.5", grows && "flex-wrap")}>
               <KinAvatar avatar={row.ownerAvatar} size="mini" />
               <Text
                 textRole="footnote"
-                numberOfLines={1}
-                className="max-w-[60%] shrink-0 text-foreground"
+                numberOfLines={kinLines(1, grows)}
+                className={cn("text-foreground", !grows && "max-w-[60%] shrink-0")}
               >
                 {row.holder}
               </Text>
               {row.detail === "" ? null : (
                 <Text
                   textRole="footnote"
-                  numberOfLines={1}
+                  numberOfLines={kinLines(1, grows)}
                   className="min-w-0 shrink text-foreground-muted"
                 >
                   {`· ${row.detail}`}
@@ -311,6 +313,7 @@ export function KinTaskRow(props: {
 }) {
   const { row, line, step, status, onAct } = props;
   const tick = onAct === null ? null : row.tick;
+  const grows = useKinTextGrows();
   const busy = status?.kind === "busy";
   const symbol = <KinWorkStateSymbol state={row.state} />;
   return (
@@ -340,22 +343,22 @@ export function KinTaskRow(props: {
             onPress={props.onPress}
             className="gap-0.5 active:opacity-60"
           >
-            <Text textRole="body" numberOfLines={2} className="text-foreground">
+            <Text textRole="body" numberOfLines={kinLines(2, grows)} className="text-foreground">
               {row.title}
             </Text>
             {/* Who has it never gives way: the rest of the line cuts off before it does. */}
-            <View className="min-w-0 flex-row items-center gap-1.5">
+            <View className={cn("min-w-0 flex-row items-center gap-1.5", grows && "flex-wrap")}>
               <KinAvatar avatar={props.avatar} size="mini" />
               <Text
                 textRole="footnote"
-                numberOfLines={1}
-                className="max-w-[50%] shrink-0 text-foreground"
+                numberOfLines={kinLines(1, grows)}
+                className={cn("text-foreground", !grows && "max-w-[50%] shrink-0")}
               >
                 {line.holder}
               </Text>
               <Text
                 textRole="footnote"
-                numberOfLines={1}
+                numberOfLines={kinLines(1, grows)}
                 className="min-w-0 shrink text-foreground-muted"
               >
                 {"· "}
@@ -379,7 +382,7 @@ export function KinTaskRow(props: {
               />
               <Text
                 textRole="footnote"
-                numberOfLines={2}
+                numberOfLines={kinLines(2, grows)}
                 className="min-w-0 flex-1 text-foreground"
               >
                 {step.line}

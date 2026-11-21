@@ -77,11 +77,13 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { Toast } from "../../components/ui/Toast";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { useNowMinuteMs } from "../../lib/clock";
+import { cn } from "../../lib/cn";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { KinAttentionItem } from "./KinAttention";
 import { KinSearchHits } from "./KinDocsList";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 import { kinTabBar, useKinTab, kinTabFoot } from "./components/KinTab";
 import {
   KinTaskRow,
@@ -580,9 +582,14 @@ function KinTasksHeading(props: {
 }) {
   const { item } = props;
   const { project } = item;
+  const grows = useKinTextGrows();
   const body = (
-    <View className="min-w-0 flex-1 flex-row items-baseline gap-1.5">
-      <Text textRole="headline" numberOfLines={1} className="shrink text-foreground">
+    <View className={cn("min-w-0 flex-row items-baseline gap-1.5", !grows && "flex-1")}>
+      <Text
+        textRole="headline"
+        numberOfLines={kinLines(1, grows)}
+        className="shrink text-foreground"
+      >
         {item.title}
       </Text>
       {item.count === null ? null : (
@@ -602,12 +609,16 @@ function KinTasksHeading(props: {
   );
   const aside =
     item.aside === null ? null : (
-      <Text textRole="footnote" numberOfLines={1} className="shrink-0 text-foreground-muted">
+      <Text
+        textRole="footnote"
+        numberOfLines={kinLines(1, grows)}
+        className={cn("text-foreground-muted", !grows && "shrink-0")}
+      >
         {item.aside}
       </Text>
     );
   return project === null ? (
-    <View className="flex-row items-baseline gap-3 px-5 pt-5 pb-2">
+    <View className={cn("px-5 pt-5 pb-2", grows ? "gap-0.5" : "flex-row items-baseline gap-3")}>
       {body}
       {aside}
     </View>
@@ -619,7 +630,10 @@ function KinTasksHeading(props: {
         .join(", ")}
       accessibilityHint="Opens the project"
       onPress={() => props.onOpenProject(project)}
-      className="flex-row items-baseline gap-3 px-5 pt-5 pb-2 active:opacity-60"
+      className={cn(
+        "px-5 pt-5 pb-2 active:opacity-60",
+        grows ? "gap-0.5" : "flex-row items-baseline gap-3",
+      )}
     >
       {body}
       {aside}

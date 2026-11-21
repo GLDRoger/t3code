@@ -72,6 +72,7 @@ import {
 import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinChart } from "./widgets/KinChart";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
 type Shared = KinWorkTarget & {
   readonly live: KinWorkLive;
@@ -291,6 +292,7 @@ function AmountRow(props: {
   readonly estimates?: ReadonlyMap<string, KinEstimate>;
   readonly onOpen: (() => void) | null;
 }) {
+  const grows = useKinTextGrows();
   const { onOpen } = props;
   return (
     <Pressable
@@ -303,13 +305,13 @@ function AmountRow(props: {
       className="min-h-11 flex-row items-center gap-3 bg-grouped-card px-4 py-2.5 active:opacity-60"
     >
       <View className="min-w-0 flex-1 gap-0.5">
-        <Text textRole="body" numberOfLines={1} className="text-foreground">
+        <Text textRole="body" numberOfLines={kinLines(1, grows)} className="text-foreground">
           {props.label}
         </Text>
         {props.note == null ? null : (
           <Text
             textRole="footnote"
-            numberOfLines={1}
+            numberOfLines={kinLines(1, grows)}
             className={props.late ? "text-danger-foreground" : "text-foreground-muted"}
           >
             {props.note}
@@ -344,6 +346,7 @@ export function KinDateRowLine(props: {
   readonly dated?: boolean;
   readonly onPress: () => void;
 }) {
+  const grows = useKinTextGrows();
   const { row } = props;
   return (
     <Pressable
@@ -355,12 +358,16 @@ export function KinDateRowLine(props: {
       <View className="min-w-0 flex-1 gap-0.5">
         <Text
           textRole="body"
-          numberOfLines={2}
+          numberOfLines={kinLines(2, grows)}
           className={row.closed ? "text-foreground-muted" : "text-foreground"}
         >
           {row.title}
         </Text>
-        <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+        <Text
+          textRole="footnote"
+          numberOfLines={kinLines(1, grows)}
+          className="text-foreground-muted"
+        >
           {[props.dated ? row.when : null, row.time, row.line]
             .filter((part) => part !== null)
             .join(" · ")}
