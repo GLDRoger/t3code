@@ -49,10 +49,14 @@ export const KIN_ATTENTION = {
 /** "Not now" on a deal with no next step: its own hold, this many days. */
 const KIN_NOT_NOW_DAYS = 14;
 
-/** Where a row opens: the entry itself, Money, or nowhere of its own (ask the agent instead). */
+/**
+ * Where a row opens: the entry itself, Money, a connection's page on Connections, or nowhere of
+ * its own (ask the agent instead).
+ */
 export type KinAttentionOpen =
   | { readonly type: "record"; readonly key: KinRecordKey }
   | { readonly type: "money" }
+  | { readonly type: "connection"; readonly connectionId: string }
   | { readonly type: "none" };
 
 export interface KinAttentionRow {
@@ -152,7 +156,9 @@ const openOf = (fact: KinPulseFact): KinAttentionOpen =>
     ? { type: "money" }
     : fact.subject.kind === "record"
       ? { type: "record", key: fact.subject.key }
-      : { type: "none" };
+      : fact.subject.kind === "connection"
+        ? { type: "connection", connectionId: fact.subject.key }
+        : { type: "none" };
 
 const dayLabel = (at: DateTime.Utc, now: Date) =>
   formatKinWhen(

@@ -1678,8 +1678,8 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             wake: "sweep",
           });
           assert.deepInclude(first!.subject, { kind: "connection", key: hello, title: HELLO });
-          assert.match(first!.consequence, /^Kin hasn't read this account's mail since /);
-          assert.include(first!.consequence, "Open it in Connections");
+          // One short line, the fix first; Connections says why.
+          assert.strictEqual(first!.consequence, "Mail isn't syncing: try signing in again.");
           yield* TestClock.adjust("3 minutes");
           yield* read;
           const [again] = yield* stopped;
@@ -1709,7 +1709,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           yield* TestClock.adjust("25 hours");
           const [quiet] = yield* stopped;
           assert.strictEqual(quiet?.key, `mail_not_syncing:${hello}`);
-          assert.include(quiet!.consequence, "Kin keeps trying");
+          assert.match(quiet!.consequence, /^No mail read since .+: try signing in again\.$/);
           assert.isTrue((yield* sync)?.stopped);
           yield* read;
           assert.lengthOf(yield* stopped, 0);
@@ -1719,7 +1719,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           yield* TestClock.adjust("3 minutes");
           yield* read;
           const [expired] = yield* stopped;
-          assert.include(expired!.consequence, "sign in again in Connections");
+          assert.strictEqual(expired!.consequence, "Mail isn't syncing: sign in again.");
           fake.setExpired(HELLO, false);
           const started = yield* connections.signInStart(people(owner), {
             orgId,

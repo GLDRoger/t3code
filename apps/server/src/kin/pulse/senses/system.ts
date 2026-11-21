@@ -96,10 +96,6 @@ const mailSenses = Effect.fn("KinPulse.mailSenses")(function* (ctx: SenseContext
     const stop = mailStopOf(row, yield* toolsOf(ctx.orgId, row.connectionId), ctx.at);
     if (stop === null || stop === undefined) continue;
     const readAt = row.readOkAt ?? row.createdAt;
-    const last =
-      row.readOkAt === null
-        ? `since it was connected on ${whenOf(ctx, readAt)}`
-        : `since ${whenOf(ctx, readAt)}`;
     facts.push({
       sense: "mail_not_syncing",
       family: "system",
@@ -111,7 +107,7 @@ const mailSenses = Effect.fn("KinPulse.mailSenses")(function* (ctx: SenseContext
       },
       scope: {},
       since: iso(stop === "quiet" ? readAt + MAIL_QUIET_MS : (row.readFailedAt ?? readAt)),
-      consequence: mailConsequence(stop, last, row.readError).slice(0, 500),
+      consequence: mailConsequence(stop, whenOf(ctx, readAt)),
       actor: { _tag: "owner" },
       sensitive: true,
       wake: "sweep",
@@ -120,18 +116,18 @@ const mailSenses = Effect.fn("KinPulse.mailSenses")(function* (ctx: SenseContext
   return facts;
 });
 
-const mailConsequence = (stop: MailStop, last: string, error: string | null) => {
-  const unread = `Kin hasn't read this account's mail ${last}, so new bills and receipts aren't recorded.`;
+/** One line a row shows whole: the fix first. Connections says why, and since when. */
+const mailConsequence = (stop: MailStop, readAt: string) => {
   switch (stop) {
     case "signed_out":
-      return `${unread} Its sign-in ran out: sign in again in Connections.`;
+      return "Mail isn't syncing: sign in again.";
     case "unreachable":
-      return `${unread} Kin can't reach it: open it in Connections to see why.`;
+      return "Mail isn't syncing: Kin can't reach it.";
     case "review":
-      return `${unread} A tool on it changed: look it over in Connections.`;
+      return "Mail isn't syncing: a tool on it changed.";
     case "failing":
-      return `${unread} Reading it fails${error === null ? "" : `: ${error.slice(0, 200)}`}. Open it in Connections; signing in again often fixes it.`;
+      return "Mail isn't syncing: try signing in again.";
     case "quiet":
-      return `${unread} Kin keeps trying; if this stays, open it in Connections.`;
+      return `No mail read since ${readAt}: try signing in again.`;
   }
 };
