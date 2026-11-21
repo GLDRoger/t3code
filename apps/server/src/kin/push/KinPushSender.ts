@@ -16,6 +16,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   KIN_DEVICE_LINKED_NOTICE,
+  KinChoiceCardState,
   KinMessageId,
   KinMessageRelay,
   kinGreeting,
@@ -238,6 +239,24 @@ const kinCardKind = (
             : card.type === "scheduled_task"
               ? "Scheduled task"
               : "Question";
+
+const decodeChoiceCard = Schema.decodeUnknownOption(KinChoiceCardState);
+
+/**
+ * The two answers a notice shows as buttons, or none. Only an agent's open question (`asked`,
+ * in `kin_questions`) with exactly two plain options: Kin's own Confirm cards (money, mail, a
+ * company change) are no open question, and an option that runs an action or sends needs the card.
+ */
+export const kinNoticeChoices = (state: unknown, asked: boolean) => {
+  if (!asked) return undefined;
+  const card = Option.getOrUndefined(decodeChoiceCard(state));
+  if (card === undefined || card.answer !== null || card.replaced === true) return undefined;
+  if (card.send !== undefined || card.options.length !== 2) return undefined;
+  const [first, second] = card.options;
+  if (first === undefined || second === undefined) return undefined;
+  if (first.action !== undefined || second.action !== undefined) return undefined;
+  return { question: card.question, options: [first, second] as const };
+};
 
 const HOLDER_ID = "kin-holder-";
 const ASSIGN_ID = "kin-assign-";
@@ -728,9 +747,12 @@ const make = Effect.gen(function* () {
       client_message_id: string | null;
       silent: number;
       author_name: string | null;
+      asked: number;
     }>`SELECT w.chat_id, w.type, w.revision, json_extract(w.state_json, '$.phase') AS phase,
         w.state_json, w.awaiting_json, m.seq, m.message_id, m.body, m.form, m.client_message_id,
         m.silent,
+        EXISTS (SELECT 1 FROM kin_questions q WHERE q.org_id = w.org_id AND q.state = 'open'
+          AND (q.widget_id = w.widget_id OR q.raise_widget_id = w.widget_id)) AS asked,
         COALESCE(
           (SELECT display_name FROM kin_agents a
             WHERE a.org_id = m.org_id AND a.agent_id = m.author_agent_id),
@@ -750,20 +772,34 @@ const make = Effect.gen(function* () {
       ? kinGreeting(yield* ownerHour(orgId))
       : undefined;
     const words = kinCardWords(row.body, state);
+    const choices = row.type === "choice" ? kinNoticeChoices(state, row.asked === 1) : undefined;
     const kind =
-      row.type !== "deferral"
+      choices !== undefined
         ? ({
-            category: "kin.message",
-            body:
-              greeting !== undefined && words !== undefined
-                ? `${greeting} · ${words}`
-                : (words ?? "A card is waiting on you"),
+            category: "kin.choice",
+            body: [
+              `${greeting === undefined ? "" : `${greeting} · `}${kinPushBody(choices.question)}`,
+              ...choices.options.map(
+                (option, index) => `${index + 1} · ${option.label.replace(/\s+/g, " ")}`,
+              ),
+            ].join("\n"),
           } as const)
-        : row.phase === "confirmed" || row.phase === null
-          ? ({ category: "kin.deferral.confirmed", body: "A deferral needs a look" } as const)
-          : row.phase === "heads_up"
-            ? ({ category: "kin.deferral.heads_up", body: "A deferred task starts soon" } as const)
-            : undefined;
+        : row.type !== "deferral"
+          ? ({
+              category: "kin.message",
+              body:
+                greeting !== undefined && words !== undefined
+                  ? `${greeting} · ${words}`
+                  : (words ?? "A card is waiting on you"),
+            } as const)
+          : row.phase === "confirmed" || row.phase === null
+            ? ({ category: "kin.deferral.confirmed", body: "A deferral needs a look" } as const)
+            : row.phase === "heads_up"
+              ? ({
+                  category: "kin.deferral.heads_up",
+                  body: "A deferred task starts soon",
+                } as const)
+              : undefined;
     if (kind === undefined) return undefined;
     const awaiting = new Set<string>(yield* decodeIds(row.awaiting_json));
     // Whoever the turn's own words rang heard of the card with them: one event, one banner. A
@@ -799,7 +835,7 @@ const make = Effect.gen(function* () {
       ),
       chatId: row.chat_id,
       source: row.message_id,
-      // A deferral keeps its own banner, which carries its buttons.
+      // A notice with buttons keeps its own banner.
       ...(kind.category === "kin.message"
         ? { collapseId: kinPushCollapseId(orgId, row.chat_id) }
         : {}),
@@ -809,6 +845,9 @@ const make = Effect.gen(function* () {
         chatId: row.chat_id,
         widgetId,
         revision: row.revision,
+        ...(choices === undefined
+          ? {}
+          : { choices: [choices.options[0].optionId, choices.options[1].optionId] as const }),
         deepLink: chatLink(orgId, row.chat_id),
       },
       recipients,

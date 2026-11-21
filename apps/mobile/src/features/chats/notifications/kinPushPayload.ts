@@ -6,11 +6,16 @@ import {
   type KinChatId,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
+import { kinChoiceActInput } from "@t3tools/client-runtime/kin/kinChoicePresentation";
 import { kinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { KIN_NOTIFICATION_CATEGORIES, type KinNotificationAction } from "./kinCategories";
+import {
+  KIN_CHOICE_ANSWERS,
+  KIN_NOTIFICATION_CATEGORIES,
+  type KinNotificationAction,
+} from "./kinCategories";
 
 /** expo-notifications' `DEFAULT_ACTION_IDENTIFIER`: the banner itself was tapped. */
 export const KIN_DEFAULT_ACTION_IDENTIFIER = "expo.modules.notifications.actions.DEFAULT";
@@ -155,13 +160,27 @@ function linkTarget(data: KinPushData): { environmentId: string; path: string } 
   return null;
 }
 
-function deferralAct(
+/** A button's widget action: a question's answer exactly as a tap on its card posts it. */
+function buttonAct(
   data: KinPushData,
   action: KinNotificationAction,
   notificationId: string,
 ): KinWidgetsActInput | null {
   if (action.identifier === "review") return null;
   if (data.widgetId === undefined || data.revision === undefined || data.revision < 1) return null;
+  // The host dedupes on this, so a replayed response can't act twice.
+  const clientActionId = `push:${notificationId}:${action.identifier}`;
+  const answer = KIN_CHOICE_ANSWERS.findIndex((one) => one === action.identifier);
+  if (answer >= 0) {
+    const optionId = data.choices?.[answer];
+    return optionId === undefined
+      ? null
+      : kinChoiceActInput(
+          { widgetId: data.widgetId, revision: data.revision },
+          optionId,
+          clientActionId,
+        );
+  }
   const itemId = kinDeferralItemIdFromWidgetId(data.orgId, data.widgetId);
   if (itemId === null) return null;
   return {
@@ -169,8 +188,7 @@ function deferralAct(
     revision: data.revision,
     actionId: action.identifier,
     value: itemId,
-    // The host dedupes on this, so a replayed response can't act twice.
-    clientActionId: `push:${notificationId}:${action.identifier}`,
+    clientActionId,
   };
 }
 
@@ -199,7 +217,7 @@ export function kinNotificationRoute(response: unknown): KinNotificationRoute | 
     responseKey: `${notificationId}\u0000${pressed}`,
     environmentId: EnvironmentId.make(target.environmentId),
     paths: landing(data, read.subject, target),
-    act: action === undefined ? null : deferralAct(data, action, notificationId),
+    act: action === undefined ? null : buttonAct(data, action, notificationId),
   };
 }
 
