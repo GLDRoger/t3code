@@ -1273,6 +1273,7 @@ export function kinProjectPageView(
   const { project, counts } = page;
   const ref = { key: project.key, title: project.name };
   const because = project.healthBecause;
+  const client = project.party?.title ?? "the client";
   const why =
     project.health === null
       ? []
@@ -1284,6 +1285,14 @@ export function kinProjectPageView(
           because.waitingOverAWeek > 0
             ? `${kinCount(because.waitingOverAWeek, "task")} ${because.waitingOverAWeek === 1 ? "has" : "have"} waited more than a week.`
             : null,
+          (because.overdueInvoices ?? 0) > 0
+            ? `${kinCount(because.overdueInvoices!, "invoice")} for this project ${because.overdueInvoices === 1 ? "is" : "are"} overdue.`
+            : null,
+          because.noContact === undefined
+            ? null
+            : because.noContact.lastContactAt === null
+              ? `No contact recorded with ${client}.`
+              : `No contact with ${client} for ${kinCount(because.noContact.days, "day")}.`,
         ].filter((part) => part !== null);
   const target = kinWorkDueText(
     { dueAt: project.targetAt, dueAllDay: project.targetAllDay },
