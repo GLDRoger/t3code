@@ -84,7 +84,7 @@ describe("Settings → Daily limit", () => {
     setup();
     await using _screen = await render(setting());
     const trigger = page.getByRole("combobox", { name: "Daily limit" });
-    await expect.element(trigger).toHaveTextContent("The usual");
+    await expect.element(trigger).toHaveTextContent("The usual (2M units a day)");
 
     await pick("No limit");
     const ask = page.getByRole("alertdialog");
@@ -103,8 +103,8 @@ describe("Settings → Daily limit", () => {
       .element(page.getByText("Used today: agents 2.5M units, tasks they started 40k units"))
       .toBeVisible();
 
-    await pick("Twice the usual");
-    await expect.element(trigger).toHaveTextContent("Twice the usual");
+    await pick("Twice the usual (4M units a day)");
+    await expect.element(trigger).toHaveTextContent("Twice the usual (4M units a day)");
     expect(page.getByRole("alertdialog").elements()).toHaveLength(0);
     expect(host.calls.at(-1)).toEqual({
       leadUnits: 4_000_000,
