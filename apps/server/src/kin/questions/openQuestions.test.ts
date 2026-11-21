@@ -1629,6 +1629,7 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       const drawn = yield* team.widgetOf((yield* team.cardOf(zoya.questionId)).widgetId!);
       assert.include(drawn.state, {
         detail: `Zoya Sheikh asks, through Chief of staff.\n\n${injected}\n\nProposal for Harbourline Hotels`,
+        draft: injected,
       });
       assert.deepStrictEqual(
         (drawn.state as { options: ReadonlyArray<{ label: string; kind?: string }> }).options.map(
@@ -2033,6 +2034,7 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
         readonly options: ReadonlyArray<{ readonly label: string; readonly kind?: string }>;
       };
       assert.include(raiseState.detail, "Harbourline follow-up proposal: price: ____\n\nProposal");
+      assert.include(raiseCard.state, { draft: "Harbourline follow-up proposal: price: ____" });
       assert.deepStrictEqual(
         raiseState.options.map(({ label, kind }) => ({ label, kind })),
         [

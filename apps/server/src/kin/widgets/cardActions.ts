@@ -43,7 +43,7 @@ import {
 import type { KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
 import { repeatOf } from "../work/recordRows.ts";
-import { defineProposed, proposalToCreate } from "../work/registers.ts";
+import { defineProposed, listPlace, proposalToCreate, proposedList } from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
 import {
   type CardActionInput,
@@ -803,7 +803,10 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
           now: tap.now,
         }));
       if (why !== undefined) return nothingDone(why);
-      return { title: "List created", text: `Created the list ${quoted(plan.name, 60)}.` };
+      const made = proposedList(plan.definition);
+      if (made === undefined) return { title: "List created", text: "Created." };
+      const { words, ...open } = yield* listPlace(orgId, made);
+      return { title: "List created", text: `Created. It's in ${words}.`, open };
     }
   }
 });

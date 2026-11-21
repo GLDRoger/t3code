@@ -1,5 +1,6 @@
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_MISSING_CARD_TEXT,
@@ -33,6 +34,10 @@ import {
   kinSendTicked,
   KIN_SEND_CHECKED,
   KIN_SEND_EDIT_COPY,
+  KIN_CHOICE_DRAFT_COPY,
+  KIN_CHOICE_OPEN_LABEL,
+  type KinChoiceDraftView,
+  type KinChoiceOpen,
   type KinSendEditBusy,
   type KinChoiceCardStatus,
   type KinChoiceCardView,
@@ -66,6 +71,8 @@ import { kinListedModelName } from "@t3tools/client-runtime/kin/kinLeadPresentat
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinPersonId, KinSendTry, KinWidget } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
+import ChatMarkdown from "../components/ChatMarkdown";
+import type { KinPlaceSearch } from "./kinPlaces";
 import { AsyncResult } from "effect/reactivity";
 import { FileTextIcon } from "lucide-react";
 import {
@@ -510,6 +517,8 @@ function KinChoiceCard(props: {
               : null
           }
         />
+      ) : choice.draft !== null ? (
+        <KinChoiceDraft draft={choice.draft} environmentId={environmentId} />
       ) : choice.detail === null ? null : (
         <p className="whitespace-pre-line text-xs text-muted-foreground">{choice.detail}</p>
       )}
@@ -526,7 +535,16 @@ function KinChoiceCard(props: {
       )}
       {answered !== null ? (
         answered.text === null ? null : (
-          <p className="text-xs font-medium text-muted-foreground">{answered.text}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-xs font-medium text-muted-foreground">{answered.text}</p>
+            {choice.outcome?.open == null ? null : (
+              <KinChoiceOpenLink
+                open={choice.outcome.open}
+                environmentId={environmentId}
+                orgId={choice.orgId}
+              />
+            )}
+          </div>
         )
       ) : phase === "expired" ? (
         <p className="text-xs text-muted-foreground">{choice.closedText}</p>
@@ -928,6 +946,66 @@ function KinSendDetail(props: {
  * The card's picture, such as a logo to confirm, at a bounded size on a mid grey that a white
  * logo and a black one both stand out on. Its bytes load from the viewer's signed asset URL.
  */
+/** Opens what a tap made where it lives: a list in Money, Clients or Docs. */
+function KinChoiceOpenLink(props: {
+  readonly open: KinChoiceOpen;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+}) {
+  const { open } = props;
+  const params = { environmentId: props.environmentId, orgId: props.orgId };
+  const search: KinPlaceSearch =
+    open.subscriptions === true ? { subscriptions: true } : { list: open.list };
+  return (
+    <Button
+      size="xs"
+      variant="outline"
+      render={
+        open.place === "money" ? (
+          <Link to="/kin/$environmentId/$orgId/money" params={params} search={search} />
+        ) : open.place === "clients" ? (
+          <Link to="/kin/$environmentId/$orgId/clients" params={params} search={search} />
+        ) : (
+          <Link to="/kin/$environmentId/$orgId/docs" params={params} search={search} />
+        )
+      }
+    >
+      {KIN_CHOICE_OPEN_LABEL}
+    </Button>
+  );
+}
+
+/** A teammate's sent-up draft, rendered as a doc is; a long one opens under Show all. */
+function KinChoiceDraft(props: {
+  readonly draft: KinChoiceDraftView;
+  readonly environmentId: EnvironmentId;
+}) {
+  const { draft } = props;
+  const [open, setOpen] = useState(false);
+  const line = (text: string | null) =>
+    text === null ? null : (
+      <p className="whitespace-pre-line text-xs text-muted-foreground">{text}</p>
+    );
+  return (
+    <>
+      {line(draft.before)}
+      <div className="rounded-md border border-border px-3 py-2 text-sm">
+        <ChatMarkdown
+          text={kinBodyMarkdown(draft.folds && !open ? draft.preview : draft.markdown)}
+          cwd={undefined}
+          environmentId={props.environmentId}
+        />
+        {draft.folds ? (
+          <Button size="xs" variant="ghost" onClick={() => setOpen(!open)}>
+            {open ? KIN_CHOICE_DRAFT_COPY.showLess : KIN_CHOICE_DRAFT_COPY.showAll}
+          </Button>
+        ) : null}
+      </div>
+      {line(draft.after)}
+    </>
+  );
+}
+
 function KinChoiceImage(props: {
   readonly environmentId: EnvironmentId;
   readonly image: NonNullable<KinChoiceCardView["image"]>;

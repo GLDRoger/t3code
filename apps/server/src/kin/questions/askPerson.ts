@@ -378,6 +378,7 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
         question: flat(input.question),
         detail,
         askedBy: by,
+        ...(sentUp === undefined ? {} : { draft: sentUp.text }),
         options:
           sentUp !== undefined
             ? DRAFT_OPTIONS.map((one) => ({ ...one }))

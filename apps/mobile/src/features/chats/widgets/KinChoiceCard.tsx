@@ -1,5 +1,6 @@
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId, KinPersonId, KinSendTry } from "@t3tools/contracts";
@@ -12,6 +13,8 @@ import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
 import { cn } from "../../../lib/cn";
+import { SelectableMarkdownText } from "../../../native/SelectableMarkdownText";
+import { useMarkdownPreviewStyles } from "../../files/FileMarkdownPreview";
 import { assetImageSource } from "../../../lib/assetImageSource";
 import { useNowMinuteMs } from "../../../lib/clock";
 import { uuidv4 } from "../../../lib/uuid";
@@ -43,6 +46,10 @@ import {
   KIN_SEND_CHECKED,
   KIN_SEND_COPY,
   KIN_SEND_EDIT_COPY,
+  KIN_CHOICE_DRAFT_COPY,
+  KIN_CHOICE_OPEN_LABEL,
+  type KinChoiceDraftView,
+  type KinChoiceOpen,
   type KinSendEditBusy,
   type KinChoiceCardStatus,
   type KinChoiceCardView,
@@ -236,6 +243,42 @@ function SendDetail(props: {
 }
 
 /** A mail's whole body, folded under its card's first screen so Confirm is in reach. */
+/** A teammate's sent-up draft, rendered as a doc is; a long one opens under Show all. */
+function ChoiceDraft(props: { readonly draft: KinChoiceDraftView }) {
+  const { draft } = props;
+  const [open, setOpen] = useState(false);
+  const styles = useMarkdownPreviewStyles();
+  const line = (text: string | null) =>
+    text === null ? null : (
+      <Text textRole="footnote" className="text-foreground-secondary">
+        {text}
+      </Text>
+    );
+  return (
+    <View className="gap-2">
+      {line(draft.before)}
+      <View className="rounded-lg border border-border-subtle px-3 py-2">
+        <SelectableMarkdownText
+          markdown={kinBodyMarkdown(draft.folds && !open ? draft.preview : draft.markdown)}
+          textStyle={styles.nativeTextStyle}
+          selectable
+        />
+        {draft.folds ? (
+          <View className="flex-row">
+            <Button
+              tone="text"
+              size="compact"
+              label={open ? KIN_CHOICE_DRAFT_COPY.showLess : KIN_CHOICE_DRAFT_COPY.showAll}
+              onPress={() => setOpen(!open)}
+            />
+          </View>
+        ) : null}
+      </View>
+      {line(draft.after)}
+    </View>
+  );
+}
+
 function SendFold(props: { readonly send: NonNullable<KinChoiceCardView["send"]> }) {
   const [open, setOpen] = useState(false);
   return (
@@ -546,6 +589,12 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       kinSendEditHold(heldKey, shownEdit);
   });
   const navigation = useNavigation();
+  const openMade = (open: KinChoiceOpen) => {
+    const target = { environmentId: String(environmentId), orgId: String(choice.orgId) };
+    if (open.subscriptions === true) navigation.navigate("KinSubscriptions", target);
+    else navigation.navigate("KinList", { ...target, list: open.list });
+  };
+  const made = choice.outcome?.open ?? null;
   const editorOpen = shownEdit !== null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- unsaved words are kept when the app goes to the background, the chat loses focus or is left.
   useEffect(() => {
@@ -612,6 +661,8 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
           />
         ) : choice.send !== null ? (
           <SendDetail send={choice.send} edited={edited} pickFrom={fromPicker} />
+        ) : choice.draft !== null ? (
+          <ChoiceDraft draft={choice.draft} />
         ) : choice.detail === null ? null : (
           <Text textRole="footnote" className="text-foreground-secondary">
             {choice.detail}
@@ -635,14 +686,26 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       )}
       {answered !== null ? (
         answered.text === null ? null : (
-          <Text
-            textRole="footnote"
-            className="font-t3-medium text-foreground-secondary"
-            importantForAccessibility="no"
-            accessibilityElementsHidden
-          >
-            {answered.text}
-          </Text>
+          <View className="gap-1">
+            <Text
+              textRole="footnote"
+              className="font-t3-medium text-foreground-secondary"
+              importantForAccessibility="no"
+              accessibilityElementsHidden
+            >
+              {answered.text}
+            </Text>
+            {made === null ? null : (
+              <View className="flex-row">
+                <Button
+                  tone="text"
+                  size="compact"
+                  label={KIN_CHOICE_OPEN_LABEL}
+                  onPress={() => openMade(made)}
+                />
+              </View>
+            )}
+          </View>
         )
       ) : phase === "expired" ? (
         <Text textRole="footnote" className="text-foreground-muted">

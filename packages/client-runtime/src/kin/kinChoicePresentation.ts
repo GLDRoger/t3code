@@ -60,7 +60,12 @@ export interface KinChoiceCardView {
     readonly personId: KinPersonId;
   } | null;
   /** What the answer did, in the owner's words, on a card Kin asked itself. */
-  readonly outcome: { readonly title: string; readonly text: string } | null;
+  readonly outcome: {
+    readonly title: string;
+    readonly text: string;
+    /** Where what it made lives, to open from the card: a list, in its place. */
+    readonly open: KinChoiceOpen | null;
+  } | null;
   /** Who undid what a default Kin took, by name then, and when; null on any other card. */
   readonly undone: {
     readonly personId: KinPersonId;
@@ -69,11 +74,50 @@ export interface KinChoiceCardView {
   } | null;
   /** What a send card would send, in full: shown instead of `detail`. */
   readonly send: KinSendView | null;
+  /** A teammate's draft sent up for approval: rendered as a doc is, instead of `detail`. */
+  readonly draft: KinChoiceDraftView | null;
   /** When an unanswered card stops taking taps; the host refuses later ones. */
   readonly expiresAtMs: number;
   readonly closed: boolean;
   /** What a closed or expired card says instead of its buttons. */
   readonly closedText: string;
+}
+
+export type KinChoiceOpen = NonNullable<NonNullable<KinChoiceCardState["outcome"]>["open"]>;
+
+export const KIN_CHOICE_OPEN_LABEL = "Open";
+
+export interface KinChoiceDraftView {
+  /** The card's own words around the draft, such as "Proposal for Harbourline". */
+  readonly before: string | null;
+  readonly markdown: string;
+  readonly after: string | null;
+  /** Long, it opens to its first blocks under Show all; `preview` is those blocks. */
+  readonly folds: boolean;
+  readonly preview: string;
+}
+
+export const KIN_CHOICE_DRAFT_COPY = { showAll: "Show all", showLess: "Show less" } as const;
+
+const DRAFT_FOLD_LINES = 12;
+const DRAFT_PREVIEW_LINES = 8;
+
+/** The draft's place in the card's detail, which carries it for older clients. */
+function choiceDraft(detail: string | null, draft: string | undefined): KinChoiceDraftView | null {
+  if (draft === undefined || detail === null) return null;
+  const at = detail.indexOf(draft);
+  if (at < 0) return null;
+  const around = (text: string) => (text.trim() === "" ? null : text.trim());
+  const lines = draft.trim().split("\n");
+  // Folded at a blank line where it can be, so no list or table is cut through.
+  const cut = lines.findLastIndex((text, index) => index <= DRAFT_PREVIEW_LINES && text === "");
+  return {
+    before: around(detail.slice(0, at)),
+    markdown: draft.trim(),
+    after: around(detail.slice(at + draft.length)),
+    folds: lines.length > DRAFT_FOLD_LINES,
+    preview: lines.slice(0, cut > 0 ? cut : DRAFT_PREVIEW_LINES).join("\n"),
+  };
 }
 
 export interface KinSendView {
@@ -413,7 +457,11 @@ export function kinChoiceCardView(
     outcome:
       card.answer === null || card.outcome === undefined
         ? null
-        : { title: line(card.outcome.title), text: card.outcome.text.trim() },
+        : {
+            title: line(card.outcome.title),
+            text: card.outcome.text.trim(),
+            open: card.outcome.open ?? null,
+          },
     undone:
       card.outcome?.undone === undefined
         ? null
@@ -423,6 +471,7 @@ export function kinChoiceCardView(
             atMs: Date.parse(card.outcome.undone.at),
           },
     detail: own === null || own.trim() === "" ? null : own.trim(),
+    draft: choiceDraft(own, card.draft),
     options,
     image: card.image === undefined ? null : card.image,
     send,
