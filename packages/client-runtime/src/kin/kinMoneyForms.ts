@@ -25,7 +25,7 @@ export const KIN_MONEY_FORMS = {
     add: "Invoice",
     addDetail: "A draft, typed by hand",
     title: "New invoice",
-    detail: "Saved as a draft: it isn't numbered or owed until you issue it.",
+    detail: "Saving makes a draft: it isn't numbered or owed until you issue it.",
     party: "Client",
     pickClient: "Pick a client",
     noClients: "Add the client in Clients first.",
