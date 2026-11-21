@@ -1,5 +1,6 @@
 import {
   KIN_DOCS,
+  kinDocChangeItem,
   kinDocChangeLine,
   kinDocExport,
   kinDocHasContents,
@@ -135,11 +136,13 @@ const fileImageAttachment = (src: string) =>
   src.startsWith(FILE_IMAGE) ? kinDocFileId(src.slice(1)) : null;
 
 /**
- * Change is by hand where the host lets this reader (`onEdit`); else Ask and Change show only
- * where there is an agent to ask, and a teammate suggests a change.
+ * One Change item (`kinDocChangeItem`): by hand where the host lets this reader (`byHand`, with
+ * `onEdit` for one section, else the caller's own list of them); else through an agent where
+ * there is one to ask, which a teammate's is a suggestion.
  */
 function AskItems(props: {
   readonly onAsk: ((intent: KinDocAsk) => void) | null;
+  readonly byHand: boolean;
   readonly onEdit: (() => void) | null;
   readonly suggests: boolean;
   readonly onCopyLink: () => void;
@@ -147,6 +150,7 @@ function AskItems(props: {
   readonly onCopyText: (() => void) | null;
 }) {
   const { onAsk } = props;
+  const change = kinDocChangeItem({ byHand: props.byHand, ownerLevel: !props.suggests });
   return (
     <>
       {onAsk === null ? null : (
@@ -155,20 +159,20 @@ function AskItems(props: {
             <MessageCircleQuestionIcon />
             {KIN_DOCS.ask}
           </MenuItem>
-          {props.onEdit === null ? (
+          {change.by === "agent" ? (
             <MenuItem onClick={() => onAsk("change")}>
               <PencilLineIcon />
-              {props.suggests ? KIN_DOCS.suggest : KIN_DOCS.change}
+              {change.label}
             </MenuItem>
           ) : null}
         </>
       )}
-      {props.onEdit === null ? null : (
+      {change.by === "hand" && props.onEdit !== null ? (
         <MenuItem onClick={props.onEdit}>
           <PencilLineIcon />
-          {KIN_DOCS.change}
+          {change.label}
         </MenuItem>
-      )}
+      ) : null}
       <MenuItem onClick={props.onCopyLink}>
         <LinkIcon />
         {KIN_DOCS.copyLink}
@@ -359,6 +363,7 @@ export function KinDocReader(
                 <MenuPopup align="end">
                   <AskItems
                     onAsk={point(null)}
+                    byHand={onEdit !== null && sections !== null && sections.length > 0}
                     onEdit={sections?.length === 1 ? editSection(sections[0]!.id) : null}
                     suggests={props.suggests === true}
                     onCopyLink={() => props.onCopyLink(null)}
@@ -527,6 +532,7 @@ export function KinDocReader(
                 <MenuPopup align="start">
                   <AskItems
                     onAsk={point(id)}
+                    byHand={editSection(id) !== null}
                     onEdit={editSection(id)}
                     suggests={props.suggests === true}
                     onCopyLink={() => props.onCopyLink(id)}
@@ -629,6 +635,7 @@ function KinDocSelectionMenu(props: {
     setHeld(null);
   };
   const { onAsk } = props;
+  const change = kinDocChangeItem({ byHand: props.canEdit, ownerLevel: !props.suggests });
   const section = () => props.resolve(held.node);
   return createPortal(
     <div
@@ -652,7 +659,7 @@ function KinDocSelectionMenu(props: {
             <MessageCircleQuestionIcon />
             {KIN_DOCS.ask}
           </Button>
-          {props.canEdit ? null : (
+          {change.by === "agent" ? (
             <Button
               size="xs"
               variant="ghost"
@@ -662,12 +669,12 @@ function KinDocSelectionMenu(props: {
               }}
             >
               <PencilLineIcon />
-              {props.suggests ? KIN_DOCS.suggest : KIN_DOCS.change}
+              {change.label}
             </Button>
-          )}
+          ) : null}
         </>
       )}
-      {props.canEdit ? (
+      {change.by === "hand" ? (
         <Button
           size="xs"
           variant="ghost"
@@ -677,7 +684,7 @@ function KinDocSelectionMenu(props: {
           }}
         >
           <PencilLineIcon />
-          {KIN_DOCS.change}
+          {change.label}
         </Button>
       ) : null}
       <Button

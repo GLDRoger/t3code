@@ -18,6 +18,7 @@ import {
   KIN_DOC_KIND_LABELS,
   kinDocKindOf,
   kinDocUnfiled,
+  kinDocChangeItem,
   kinDocChangeLine,
   kinDocCanEdit,
   kinDocChat,
@@ -153,7 +154,7 @@ const sectionActions = (ownerLevel: boolean, byHand: boolean) => [
   { id: "ask", title: KIN_DOCS.ask, image: "questionmark.bubble" },
   {
     id: "change",
-    title: byHand || ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest,
+    title: kinDocChangeItem({ byHand, ownerLevel }).label,
     image: "pencil",
   },
   { id: "link", title: KIN_DOCS.copyLink, image: "link" },
@@ -499,7 +500,7 @@ function KinDocBody(
             }
           : {
               id: "change",
-              title: byHand || ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest,
+              title: kinDocChangeItem({ byHand, ownerLevel }).label,
               onPress: () =>
                 byHand && sections[0] !== undefined
                   ? edit.start(doc, sections[0].id)
