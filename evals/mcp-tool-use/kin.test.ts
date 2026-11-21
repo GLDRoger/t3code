@@ -1,7 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // Kin's cases of the MCP tool-use runner, for its part in kin.ts; run.test.ts keeps T3's.
 import * as NodeFS from "node:fs";
+import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { assert, it } from "@effect/vitest";
 
 import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../apps/server/src/kin/reply/classify.ts";
@@ -13,7 +18,9 @@ import {
   McpToolUseCase,
   normalizeToolInput,
   normalizeToolName,
+  runSample,
   type SampleRun,
+  summarize,
 } from "./run.ts";
 
 const failed = (expect: Parameters<typeof gradeSample>[0], run: SampleRun) =>
@@ -305,4 +312,121 @@ it.each([
     .filter((line) => line.includes(section));
   assert.isNotEmpty(lines);
   for (const line of lines) assert.include(line, quoted);
+});
+
+const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0 };
+const toolTurn = (index: number) => ({
+  content: [
+    {
+      type: "tool_use",
+      id: `t${index}`,
+      name: "mcp__host__term_Bash",
+      input: { command: "echo hi" },
+    },
+  ],
+  stop_reason: "tool_use",
+  usage,
+});
+/** A model that runs `echo` eleven times, then ends its turn with a reply. */
+const elevenToolCallsThenReply = () => {
+  const replies = [
+    ...Array.from({ length: 11 }, (_, index) => toolTurn(index)),
+    { content: [{ type: "text", text: "All twelve calls done." }], stop_reason: "end_turn", usage },
+  ];
+  let next = 0;
+  return Layer.mergeAll(
+    NodeServices.layer,
+    PlatformNodeCrypto.layer,
+    Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(request, new Response(JSON.stringify(replies[next++]))),
+        ),
+      ),
+    ),
+  );
+};
+
+it.effect("runs a Kin sample with no step limit until the model ends its turn", () =>
+  Effect.gen(function* () {
+    const longCase: McpToolUseCase = {
+      id: "kin-long-turn",
+      area: "kin",
+      kind: "control",
+      pattern: "a turn longer than the old step limit",
+      experience: "Nothing stops a Kin agent after a set number of steps.",
+      setup: { role: "top", shellMocks: [{ match: "^echo", output: "hi" }] },
+      prompt: "Check twelve times, then say so.",
+      expect: { finalTextMust: ["All twelve calls done"] },
+      // Ignored with no limit.
+      maxSteps: 2,
+    };
+    const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+    const config = (maxSteps: number) =>
+      ({
+        apiKey: "key",
+        model: "claude-sonnet-5-5",
+        effort: "high",
+        maxSteps,
+        shellModel: "claude-haiku-5-5",
+      }) as const;
+    const spent = () => ({
+      usage: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+      shellUsage: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+    });
+    const kin = yield* runSample(longCase, config(0), base, spent()).pipe(
+      Effect.provide(elevenToolCallsThenReply()),
+    );
+    assert.strictEqual(kin.stopReason, "end_turn");
+    assert.strictEqual("modelCalls" in kin && kin.modelCalls, 12);
+    assert.lengthOf(kin.calls, 11);
+    assert.deepEqual(failed(longCase.expect, kin), []);
+    // T3's runs keep their limit: the case's own 2 calls, then cut off before any reply.
+    const t3 = yield* runSample(longCase, config(6), base, spent()).pipe(
+      Effect.provide(elevenToolCallsThenReply()),
+    );
+    assert.strictEqual(t3.stopReason, "max_steps");
+    assert.strictEqual("modelCalls" in t3 && t3.modelCalls, 2);
+    assert.deepEqual(failed(longCase.expect, t3), ["finalTextMust /All twelve calls done/"]);
+  }),
+);
+
+it("reports a no-limit run's model calls and never a step-limit cut-off", () => {
+  const tokens = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+  const row = (id: string, modelCalls: number, error?: string) => ({
+    id,
+    kind: "bad" as const,
+    pattern: "p",
+    role: "top",
+    pass: true,
+    usage: tokens,
+    shellUsage: tokens,
+    stopReason: "end_turn",
+    modelCalls,
+    ...(error === undefined ? {} : { error }),
+  });
+  const rows = [
+    ...[2, 3, 4].map((calls) => row("a", calls)),
+    ...[5, 6, 7, 8, 9, 10, 41].map((calls, index) => row(`c${index}`, calls)),
+    // A provider error is an error, as before, and not a model-call figure.
+    row("err", 99, "Model API 500"),
+  ];
+  const options = {
+    header: "run",
+    shellModel: "claude-haiku-5-5",
+    model: "claude-haiku-5-5",
+  } as const;
+  const summary = summarize(rows, { ...options, noStepLimit: true });
+  assert.include(
+    summary,
+    "- No step limit. Model calls per sample: mean 9.5, p90 41, largest 41, over 10 samples.",
+  );
+  assert.include(
+    summary,
+    "- Most model calls: `c6` (largest 41, mean 41.0), `c5` (largest 10, mean 10.0), `c4` (largest 9, mean 9.0), `c3` (largest 8, mean 8.0), `c2` (largest 7, mean 7.0).",
+  );
+  assert.include(summary, "- Errored: err ×1.");
+  assert.notInclude(summary, "cut off");
+  assert.notInclude(summarize(rows, options), "Model calls per sample");
 });

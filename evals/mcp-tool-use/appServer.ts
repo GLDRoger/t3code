@@ -29,7 +29,7 @@ export type AppServerTurn = {
   readonly prompt: string;
   /** Answers one tool call with the text Codex hands back to the model. */
   readonly onToolCall: (tool: string, args: Json) => Promise<{ text: string; failed: boolean }>;
-  /** Interrupts the turn after this many tool calls. */
+  /** Interrupts the turn after this many tool calls; `Infinity` never does. */
   readonly maxToolCalls: number;
 };
 
