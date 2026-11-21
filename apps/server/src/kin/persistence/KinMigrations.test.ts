@@ -1928,12 +1928,10 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect(
-    "a host on K196 migrates through 197, 198, 199, 200 and 201, and again",
-    () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        const added = sql<{ name: string }>`
+  it.effect("a host on K196 migrates through 197, 198, 199, 200 and 201, and again", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const added = sql<{ name: string }>`
         SELECT name FROM pragma_table_info('kin_people_invites')
           WHERE name IN ('sees_json', 'sees_by_person_id')
         UNION ALL SELECT name FROM pragma_table_info('kin_chat_members') WHERE name = 'pinned_at'
@@ -1942,41 +1940,41 @@ describe("Kin migrations", () => {
         UNION ALL SELECT name FROM pragma_table_info('kin_questions')
           WHERE name IN ('draft_json', 'approved_at', 'draft_made_json')
         ORDER BY name`;
-        yield* runKinMigrations();
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 197`;
-        for (const column of ["sees_json", "sees_by_person_id"])
-          yield* sql`ALTER TABLE kin_people_invites DROP COLUMN ${sql.literal(column)}`;
-        yield* undoChatPins;
-        yield* undoTaskSteps;
-        yield* undoSentUpDrafts;
-        assert.deepStrictEqual(yield* added, []);
-        assert.deepStrictEqual(
-          (yield* runKinMigrations()).map(([id]) => id),
-          [197, 198, 199, 200, 201],
-        );
-        const all = [
-          "approved_at",
-          "draft_json",
-          "draft_made_json",
-          "pinned_at",
-          "sees_by_person_id",
-          "sees_json",
-          "steps_json",
-          "urgent",
-        ];
+      yield* runKinMigrations();
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 197`;
+      for (const column of ["sees_json", "sees_by_person_id"])
+        yield* sql`ALTER TABLE kin_people_invites DROP COLUMN ${sql.literal(column)}`;
+      yield* undoChatPins;
+      yield* undoTaskSteps;
+      yield* undoSentUpDrafts;
+      assert.deepStrictEqual(yield* added, []);
+      assert.deepStrictEqual(
+        (yield* runKinMigrations()).map(([id]) => id),
+        [197, 198, 199, 200, 201],
+      );
+      const all = [
+        "approved_at",
+        "draft_json",
+        "draft_made_json",
+        "pinned_at",
+        "sees_by_person_id",
+        "sees_json",
+        "steps_json",
+        "urgent",
+      ];
+      assert.deepStrictEqual(
+        (yield* added).map(({ name }) => name),
+        all,
+      );
+      for (const from of [197, 198, 199, 200, 201]) {
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
         assert.deepStrictEqual(
           (yield* added).map(({ name }) => name),
           all,
         );
-        for (const from of [197, 198, 199, 200, 201]) {
-          yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
-          assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
-          assert.deepStrictEqual(
-            (yield* added).map(({ name }) => name),
-            all,
-          );
-        }
-      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+      }
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect(
