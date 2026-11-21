@@ -576,6 +576,9 @@ export class KinChatRepository extends Context.Service<
     readonly messagesAfter: (
       input: ChatScope & {
         readonly afterSeq: typeof NonNegativeInt.Type;
+        readonly beforeSeq?: number;
+        /** The newest `limit` in range rather than the oldest, still returned oldest first. */
+        readonly latest?: boolean;
         readonly limit: number;
         readonly viewerMemberId?: KinMemberId;
         /** A shared turn's read: nothing below the chat's history floor (`historyFloor`). */
@@ -2158,16 +2161,18 @@ const make = Effect.gen(function* () {
           Result: MessageRow,
           execute:
             () => sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages WHERE org_id = ${input.orgId}
- AND chat_id = ${input.chatId} AND seq > ${request.afterSeq}
+ AND chat_id = ${input.chatId} AND seq > ${request.afterSeq}${input.beforeSeq === undefined ? sql`` : sql` AND seq < ${input.beforeSeq}`}
  AND (${input.viewerMemberId ?? null} IS NULL OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${input.viewerMemberId ?? null} OR EXISTS (SELECT 1 FROM kin_chat_members WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND member_id = ${input.viewerMemberId ?? null} AND role = 'owner'))
- AND ${readableBy(sql, input.orgId, input.viewerMemberId, input.fromHistoryFloor === true ? input.chatId : undefined)} ORDER BY seq LIMIT ${request.limit}`,
+ AND ${readableBy(sql, input.orgId, input.viewerMemberId, input.fromHistoryFloor === true ? input.chatId : undefined)} ORDER BY seq ${input.latest === true ? sql`DESC` : sql`ASC`} LIMIT ${request.limit}`,
         })(input).pipe(
           NodeSqliteClient.readOnly,
           Effect.flatMap((messages) =>
             linked(
               input.orgId,
               viewer?.principal,
-              messages.map((m) => messageForViewer(m, viewer?.principal)),
+              (input.latest === true ? messages.toReversed() : messages).map((m) =>
+                messageForViewer(m, viewer?.principal),
+              ),
             ),
           ),
         );
