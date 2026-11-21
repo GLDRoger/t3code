@@ -491,18 +491,26 @@ export function kinTasksBlock(input: {
   const total = rows + onMe + input.needs.reduce((sum, row) => sum + (row.count ?? 1) - 1, 0);
   // The rows it shows, so the list below keeps every task the block doesn't. A money row leads,
   // so a long run of attention rows never hides it.
+  // What waits on the viewer is never cut: it lists what the sidebar's "Waiting on you" lists.
   const limit = input.expanded ? rows : KIN_NEEDS_YOU_SHOWN;
   const lead = needs[0]?.id === "attention:money" ? 1 : 0;
-  const shownAttention = attention.slice(0, Math.max(0, limit - lead));
+  const waiting = needs.filter((row) => row.kind === "waiting");
+  const room = Math.max(0, limit - lead - waiting.length);
+  const shownAttention = attention.slice(0, room);
+  const rest = new Set(
+    needs
+      .slice(lead)
+      .filter((row) => row.kind !== "waiting")
+      .slice(0, Math.max(0, room - shownAttention.length)),
+  );
   return {
     attention: shownAttention,
-    needs: [
-      ...needs.slice(0, lead),
-      ...needs.slice(lead, lead + Math.max(0, limit - lead - shownAttention.length)),
-    ],
+    needs: needs.filter(
+      (row, index) => index < lead || row.kind === "waiting" || rest.has(row),
+    ),
     total,
     onMe,
-    more: rows > KIN_NEEDS_YOU_SHOWN,
+    more: rows > Math.max(KIN_NEEDS_YOU_SHOWN, lead + waiting.length),
   };
 }
 
