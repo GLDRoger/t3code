@@ -221,7 +221,11 @@ function Profile(
               {section.rows.map((row) => (
                 <View key={row.id} className="min-h-14 justify-center gap-1 px-4 py-3">
                   <Text className="text-sm text-foreground-muted">{row.label}</Text>
-                  <Text textRole="body" selectable className="text-foreground">
+                  <Text
+                    textRole="body"
+                    selectable={!row.missing}
+                    className={row.missing ? "text-foreground-muted" : "text-foreground"}
+                  >
                     {row.value}
                   </Text>
                 </View>
