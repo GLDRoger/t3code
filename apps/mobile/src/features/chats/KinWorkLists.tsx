@@ -204,6 +204,7 @@ function NamedList(props: {
     readonly moreFailed: boolean;
     readonly loadingMore: boolean;
     readonly total: number | null;
+    readonly readAt: number | null;
   };
   readonly list: { readonly refresh: () => void; readonly loadMore: () => Promise<void> | void };
   readonly search: { readonly text: string; readonly placeholder: string };
@@ -269,7 +270,11 @@ function NamedList(props: {
           ListHeaderComponent={
             shown === "rows" && props.stale ? (
               <View className="px-4 pt-2">
-                <KinWorkStaleNotice environmentId={props.environmentId} onRetry={list.refresh} />
+                <KinWorkStaleNotice
+                  environmentId={props.environmentId}
+                  onRetry={list.refresh}
+                  readAt={state.readAt}
+                />
               </View>
             ) : null
           }

@@ -440,7 +440,11 @@ export function KinDocsList(
         ListHeaderComponent={
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
             {shown === "rows" && (props.stale || state.stale) ? (
-              <KinWorkStaleLine environmentId={props.environmentId} onRetry={list.refresh} />
+              <KinWorkStaleLine
+                environmentId={props.environmentId}
+                onRetry={list.refresh}
+                readAt={state.readAt}
+              />
             ) : null}
             <Input
               type="search"

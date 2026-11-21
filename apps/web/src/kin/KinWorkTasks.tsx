@@ -317,7 +317,11 @@ export function KinWorkTaskList(
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
             {props.header}
             {shown === "rows" && (props.stale || listState.stale) ? (
-              <KinWorkStaleLine environmentId={environmentId} onRetry={list.refresh} />
+              <KinWorkStaleLine
+                environmentId={environmentId}
+                onRetry={list.refresh}
+                readAt={listState.readAt}
+              />
             ) : null}
             <KinWorkFilters
               overview={overview}

@@ -45,7 +45,12 @@ import type { KinLink } from "./kinHost.ts";
 import { KIN_SCOPE_ALL, kinScopeNote, type KinViewerScope } from "./kinViewerScope.ts";
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { kinLinkLabel } from "./kinLinks.ts";
-import { formatKinTime, kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
+import {
+  formatKinTime,
+  kinAgentAvatar,
+  kinLastUpdated,
+  type KinAvatarView,
+} from "./kinScreenState.ts";
 import { kinPickablePeople } from "./kinTeam.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
 
@@ -62,11 +67,16 @@ export const KIN_WORK_REFRESH_FAILED = "Couldn't refresh. Showing the last updat
  */
 export function kinWorkStaleNotice(
   link: KinLink,
+  /** When the rows shown were last read, as the chat's offline line says it; null unknown. */
+  readAt: number | null = null,
+  formatTime: (date: Date) => string = formatKinTime,
 ): { readonly message: string; readonly retry: boolean } | null {
   if (link === "connecting") return null;
-  return link === "offline"
-    ? { message: KIN_WORK_STALE, retry: false }
-    : { message: KIN_WORK_REFRESH_FAILED, retry: true };
+  if (link !== "offline") return { message: KIN_WORK_REFRESH_FAILED, retry: true };
+  return {
+    message: readAt === null ? KIN_WORK_STALE : `Offline. ${kinLastUpdated(readAt, formatTime)}`,
+    retry: false,
+  };
 }
 /** Kin's work pages, each reached from the sidebar. */
 export type KinWorkPageName = "tasks" | "money" | "clients" | "docs";

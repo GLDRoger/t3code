@@ -297,6 +297,14 @@ describe("kinWorkStaleNotice", () => {
   ] as const)("on a held page that is behind, with the link %s, says %j", (link, notice) => {
     expect(kinWorkStaleNotice(link)).toEqual(notice);
   });
+
+  it("offline, says when the rows shown were last read, as a chat's offline line does", () => {
+    const readAt = Date.parse("2026-11-11T08:00:00.000Z");
+    expect(kinWorkStaleNotice("offline", readAt, (date) => date.toISOString())).toEqual({
+      message: "Offline. Last updated 2026-11-11T08:00:00.000Z.",
+      retry: false,
+    });
+  });
 });
 
 describe("kinWorkOnlyOwner", () => {
