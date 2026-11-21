@@ -183,6 +183,8 @@ export const KinCard = memo(function KinCard(props: {
   readonly orgId: string;
   readonly viewerPersonId: KinPersonId | null;
   readonly heldFor: string | null;
+  /** The viewer may only read this chat: a draft's card offers no Send to. */
+  readonly readOnly?: boolean;
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const ownerLevel = useKinOwnerLevelKnown(props.environmentId);
@@ -233,6 +235,7 @@ export const KinCard = memo(function KinCard(props: {
           environmentId={props.environmentId}
           orgId={props.orgId}
           ownerLevel={ownerLevel !== false}
+          readOnly={props.readOnly === true}
         />
       );
     case "statement_review":
@@ -326,9 +329,10 @@ function KinDocCard(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: string;
   readonly ownerLevel: boolean;
+  readonly readOnly: boolean;
 }) {
   const { doc } = props;
-  const draft = kinDocCardDraft(doc, props.ownerLevel);
+  const draft = kinDocCardDraft(doc, props.ownerLevel, props.readOnly);
   const sendUp = useAtomCommand(kinClient.docSendUp, { reportFailure: false });
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);

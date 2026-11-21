@@ -182,6 +182,8 @@ export function KinMessageRow(props: {
   readonly viewerPersonId: KinPersonId | null;
   /** The card's agent by name when it is retired, so its reminders and schedules read as on hold. */
   readonly heldFor: string | null;
+  /** The viewer may only read this chat: its cards offer nothing that writes in it. */
+  readonly readOnly?: boolean;
   readonly reactions: ReadonlyArray<KinReactionChip>;
   /** Toggles the viewer's reaction; null where they can't react, such as a privileged card. */
   readonly onReact: ((emoji: KinReactionEmoji) => void) | null;
@@ -229,6 +231,7 @@ export function KinMessageRow(props: {
         orgId={props.orgId}
         viewerPersonId={props.viewerPersonId}
         heldFor={props.heldFor}
+        readOnly={props.readOnly === true}
       />
     ) : (
       <KinCardGroup

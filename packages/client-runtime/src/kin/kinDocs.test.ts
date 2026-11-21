@@ -433,27 +433,34 @@ describe("kinDocCopyText", () => {
       sendTo: rhea,
       noAccount: { service: "Instagram", by: rhea },
     };
-    const teammate = kinDocCardDraft({ draft }, false);
+    const teammate = kinDocCardDraft({ draft }, false, false);
     expect(teammate).toEqual({
       copyText: "Teaser\n\nSoon at Harbourline.",
       sendTo: "Send to Rhea",
       sent: null,
       noAccount: "No Instagram account is connected. Rhea can connect one on their computer.",
     });
-    expect(kinDocCardDraft({ draft }, true)).toEqual({
+    expect(kinDocCardDraft({ draft }, true, false)).toEqual({
       ...teammate,
       sendTo: null,
       noAccount:
         "No Instagram account is connected. You can connect one in Settings on your computer.",
     });
     const sent = { ...draft, sent: { name: "Rhea", at: "2026-11-16T06:00:00.000Z" } };
-    expect(kinDocCardDraft({ draft: sent }, false)).toMatchObject({
+    expect(kinDocCardDraft({ draft: sent }, false, false)).toMatchObject({
       sendTo: null,
       sent: "Sent to Rhea to approve.",
     });
     const { sendTo: _sendTo, ...ownersOwn } = draft;
-    expect(kinDocCardDraft({ draft: ownersOwn }, true)?.sendTo).toBeNull();
-    expect(kinDocCardDraft({ draft: null }, false)).toBeNull();
+    expect(kinDocCardDraft({ draft: ownersOwn }, true, false)?.sendTo).toBeNull();
+    // A chat she may only read takes no send from her, so the card offers none.
+    expect(kinDocCardDraft({ draft }, false, true)?.sendTo).toBeNull();
+    // Waiting for the owner to be back, it says so rather than that it reached them.
+    const held = { ...draft, sent: { ...sent.sent, held: true as const } };
+    expect(kinDocCardDraft({ draft: held }, false, false)?.sent).toBe(
+      "Sent. Rhea gets it to approve when they're back.",
+    );
+    expect(kinDocCardDraft({ draft: null }, false, false)).toBeNull();
   });
 });
 

@@ -155,6 +155,7 @@ export const KIN_DOCS = {
   sendTo: (name: string) => `Send to ${name}`,
   sending: "Sending…",
   sentTo: (name: string) => `Sent to ${name} to approve.`,
+  sentHeld: (name: string) => `Sent. ${name} gets it to approve when they're back.`,
   sendFailed: "Couldn't send it.",
   sendOffline: "You're offline. Send it when the connection is back.",
   noAccount: (service: string, by: string | null) =>
@@ -1200,21 +1201,28 @@ export interface KinDocCardDraftView {
 
 /**
  * A draft card for its reader: Copy text for everyone; Send to only for the teammate whose own
- * draft it is, until sent. The owner and a co-owner have nothing to send up, so Copy text only.
+ * draft it is, until sent, while they may still write in that chat. The owner and a co-owner
+ * have nothing to send up, so Copy text only.
  */
 export function kinDocCardDraft(
   card: Pick<KinDocCardView, "draft">,
   ownerLevel: boolean,
+  readOnly: boolean,
 ): KinDocCardDraftView | null {
   const { draft } = card;
   if (draft === null) return null;
   return {
     copyText: kinDocCopyText(draft.text),
     sendTo:
-      draft.sendTo === undefined || draft.sent !== undefined || ownerLevel
+      draft.sendTo === undefined || draft.sent !== undefined || ownerLevel || readOnly
         ? null
         : KIN_DOCS.sendTo(draft.sendTo.name),
-    sent: draft.sent === undefined ? null : KIN_DOCS.sentTo(draft.sent.name),
+    sent:
+      draft.sent === undefined
+        ? null
+        : draft.sent.held === true
+          ? KIN_DOCS.sentHeld(draft.sent.name)
+          : KIN_DOCS.sentTo(draft.sent.name),
     noAccount:
       draft.noAccount === undefined
         ? null

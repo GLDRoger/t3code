@@ -31,6 +31,8 @@ export const KinDocCard = memo(function KinDocCard(props: {
   readonly orgId: string;
   /** The owner or a co-owner: nothing to send up, so Copy text only. */
   readonly ownerLevel: boolean;
+  /** The viewer may only read this chat: no Send to. */
+  readonly readOnly: boolean;
   readonly agentNames?: ReadonlyMap<string, string>;
   /** The message's own long press: the card takes presses across its face, so it passes this on. */
   readonly onLongPress?: () => void;
@@ -42,7 +44,7 @@ export const KinDocCard = memo(function KinDocCard(props: {
   const where = { environmentId: props.environmentId, orgId: props.orgId, doc: doc.key };
   const open = () => openRecord("KinDoc", where);
   const { previousVersion } = doc;
-  const draft = kinDocCardDraft(doc, props.ownerLevel);
+  const draft = kinDocCardDraft(doc, props.ownerLevel, props.readOnly);
   const sendUp = useAtomCommand(kinClient.docSendUp, { reportFailure: false });
   const [sending, setSending] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
