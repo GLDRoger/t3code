@@ -9,7 +9,9 @@ import {
   kinBriefTitle,
   kinBriefTurnsOff,
   kinCheckInDays,
-  kinCheckInsBeyondBriefs,
+  kinBriefSheetFields,
+  kinClockChoices,
+  kinWeeklyBrief,
 } from "./kinCheckIns.ts";
 
 describe("kinCheckInDays", () => {
@@ -69,17 +71,41 @@ describe("a brief", () => {
   });
 });
 
-describe("kinCheckInsBeyondBriefs", () => {
-  const checkIn = (scheduleId: string) => ({ scheduleId }) as unknown as KinCheckIn;
-  const company = ["checkin-weekly", "checkin-morning", "checkin-evening", "sched-1"].map(checkIn);
-  it("drops the check-ins this person already sees as briefs, and only those", () => {
-    expect(
-      kinCheckInsBeyondBriefs(company, [{ kind: "morning" }, { kind: "evening" }]).map(
-        (one) => one.scheduleId,
-      ),
-    ).toEqual(["checkin-weekly", "sched-1"]);
-    expect(kinCheckInsBeyondBriefs(company, [])).toEqual(company);
-    // Kin's own page is not the company's morning check-in.
-    expect(kinCheckInsBeyondBriefs(company, [{ kind: "morning", page: true }])).toEqual(company);
+describe("the phone's brief sheet", () => {
+  const checkIn = (scheduleId: string, numbers?: KinCheckIn["numbers"]) =>
+    ({ scheduleId, ...(numbers === undefined ? {} : { numbers }) }) as unknown as KinCheckIn;
+  it("lists the weekly brief with the briefs, and leaves every other check-in to its agent", () => {
+    const company = ["checkin-morning", "sched-1", "checkin-weekly"].map((id) => checkIn(id));
+    expect(kinWeeklyBrief(company)?.scheduleId).toBe("checkin-weekly");
+    expect(kinWeeklyBrief(company.slice(0, 2))).toBeNull();
+  });
+  it("holds on or off, the time and the days; never a name, what it's for or Remove", () => {
+    expect(kinBriefSheetFields({ brief: { kind: "morning" } })).toEqual(["time", "days"]);
+    expect(kinBriefSheetFields({ brief: { kind: "morning", page: true } })).toEqual([
+      "on",
+      "time",
+      "days",
+    ]);
+    expect(kinBriefSheetFields({ brief: { kind: "evening" } })).toEqual(["on", "time"]);
+    expect(kinBriefSheetFields({ checkIn: checkIn("checkin-weekly", ["pipeline"]) })).toEqual([
+      "on",
+      "time",
+      "days",
+      "pipeline",
+      "runNow",
+    ]);
+    expect(kinBriefSheetFields({ checkIn: checkIn("sched-1") })).toEqual([
+      "on",
+      "time",
+      "days",
+      "runNow",
+    ]);
+  });
+  it("offers each half hour, keeping a time set between them", () => {
+    const grid = kinClockChoices("09:30");
+    expect([grid.length, grid[0], grid.at(-1)]).toEqual([48, "00:00", "23:30"]);
+    const kept = kinClockChoices("07:45");
+    expect(kept.length).toBe(49);
+    expect(kept.slice(15, 18)).toEqual(["07:30", "07:45", "08:00"]);
   });
 });

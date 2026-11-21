@@ -138,20 +138,46 @@ export function kinBriefLine(brief: KinBrief): string {
   return brief.on ? line : `${KIN_BRIEFS.off} · ${line}`;
 }
 
-/** The check-in a brief is: the server seeds each as `checkin-<kind>`. */
-export const kinBriefScheduleId = (kind: KinBrief["kind"]) => `checkin-${kind}`;
+const WEEKLY_BRIEF = "checkin-weekly";
 
-/** The company's check-ins less the ones this person already sees as their briefs. */
-export const kinCheckInsBeyondBriefs = (
-  checkIns: ReadonlyArray<KinCheckIn>,
-  briefs: ReadonlyArray<Pick<KinBrief, "kind" | "page">>,
-) =>
-  checkIns.filter(
-    (checkIn) =>
-      !briefs.some(
-        (brief) => brief.page !== true && checkIn.scheduleId === kinBriefScheduleId(brief.kind),
-      ),
+/** The weekly brief, which the phone lists with a person's briefs; other check-ins are their agent's. */
+export const kinWeeklyBrief = (checkIns: ReadonlyArray<KinCheckIn>) =>
+  checkIns.find((checkIn) => checkIn.scheduleId === WEEKLY_BRIEF) ?? null;
+
+/** The times a brief's sheet offers, every half hour, with its own time kept if it is between. */
+export function kinClockChoices(at: string): ReadonlyArray<string> {
+  const grid = Array.from(
+    { length: 48 },
+    (_, slot) => `${String(Math.floor(slot / 2)).padStart(2, "0")}:${slot % 2 === 0 ? "00" : "30"}`,
   );
+  return CLOCK.test(at) && !grid.includes(at) ? [...grid, at].sort() : grid;
+}
+
+export type KinBriefSheetField = "on" | "time" | "days" | "pipeline" | "runNow";
+
+/**
+ * What one brief's sheet holds on the phone: on or off, the time and the days, plus Run now and the
+ * weekly brief's pipeline switch for a check-in. Its name, what it's for and Remove are on the computer.
+ */
+export function kinBriefSheetFields(
+  sheet:
+    | { readonly brief: Pick<KinBrief, "kind" | "page"> }
+    | { readonly checkIn: Pick<KinCheckIn, "numbers"> },
+): ReadonlyArray<KinBriefSheetField> {
+  if ("brief" in sheet)
+    return [
+      ...(kinBriefTurnsOff(sheet.brief) ? (["on"] as const) : []),
+      "time",
+      ...(kinBriefHasDays(sheet.brief.kind) ? (["days"] as const) : []),
+    ];
+  return [
+    "on",
+    "time",
+    "days",
+    ...(kinCheckInPipeline(sheet.checkIn) === null ? [] : (["pipeline"] as const)),
+    "runNow",
+  ];
+}
 
 /** The morning brief comes on the days its person picks; the other two are on or off. */
 export const kinBriefHasDays = (kind: KinBrief["kind"]) => kind === "morning";
