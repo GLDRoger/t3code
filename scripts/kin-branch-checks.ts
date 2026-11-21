@@ -423,13 +423,19 @@ export const checkPeopleChange = (input: {
         .flatMap((commit) => commit.files),
     ),
   ].filter(readByPeople);
-  const files = `${read[0]}${read.length > 1 ? ` and ${read.length - 1} more` : ""}`;
+  const ask =
+    "Add a line to the last commit message: `People-change: <what a person already had that now looks, reads or works differently, or is gone>`, or `People-change: none`.";
   if (read.length > 0)
     problems.push(
       (newestSaid === -1
-        ? `People-change: this branch changes what a person or an agent reads (${files}), and no commit says what they will notice.\n`
-        : `People-change: commits after ${input.commits[newestSaid]!.sha}, the last with a People-change line, change what a person or an agent reads (${files}), and none says what they will notice.\n`) +
-        "Add a line to the last commit message: `People-change: <what a person already had that now looks, reads or works differently, or is gone>`, or `People-change: none`.",
+        ? `People-change: this branch changes what a person or an agent reads (${read.join(", ")}), and no commit says what they will notice.\n`
+        : `People-change: commits after ${input.commits[newestSaid]!.sha}, the last with a People-change line, change what a person or an agent reads (${read.join(", ")}), and none says what they will notice.\n`) +
+        ask,
+    );
+  // The last commit restates the branch's lines, so whoever merges reads them in one place.
+  else if (newestSaid > 0 && changed.some(readByPeople))
+    problems.push(
+      `People-change: the last commit, ${input.commits[0]!.sha}, has no People-change line, and this branch changes what a person or an agent reads.\n${ask}`,
     );
   const approvedItems = new Set(
     said.flatMap(({ text }) => /^approved-item\s+(\S+?):\s*\S/.exec(text)?.[1] ?? []),

@@ -103,7 +103,7 @@ const oneChange = Effect.fn("KinWireBudget.oneChange")(function* (
     Effect.gen(function* () {
       const ready = yield* Deferred.make<void>();
       let count = 0;
-      const fiber = yield* Work.subscribe(as(personId), { orgId }).pipe(
+      const fiber = yield* WorkStream.subscribeChanged(as(personId), { orgId }).pipe(
         Stream.tap(() => (count++ === 0 ? Deferred.succeed(ready, undefined) : Effect.void)),
         // The first item is where things stand; the next one without a key closes the window.
         Stream.takeUntil((item) => count > 1 && item.key === undefined),

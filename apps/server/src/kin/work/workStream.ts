@@ -365,6 +365,59 @@ export const subscribeRows = (
   );
 
 /**
+ * `kin.work.subscribe` without `acceptRows`, for an older phone: the row stream's session, tick by
+ * tick, told as `changed`. The first is where things stand; a change names each entry the row
+ * stream would send, and a fresh read is one that names none.
+ */
+export const subscribeChanged = (
+  people: ReadonlyArray<PersonIdentity>,
+  input: { readonly orgId: KinOrgId },
+) =>
+  Stream.unwrap(
+    Effect.gen(function* () {
+      const records = yield* KinRecords;
+      const session = yield* makeWorkStream(people, { orgId: input.orgId, acceptRows: true });
+      let started = false;
+      return records.changes(input.orgId).pipe(
+        Stream.mapEffect((tick) =>
+          Effect.gen(function* () {
+            if (started) {
+              const pending = session.pendingOf(tick);
+              return pending.length === 0 ? NONE : changedOf(yield* session.batch(pending));
+            }
+            started = true;
+            const opening = yield* session.start(tick.seq);
+            return opening.slice(0, 1).map(({ seq }): Changed => ({ _tag: "changed", seq }));
+          }),
+        ),
+        Stream.flattenIterable,
+      );
+    }),
+  );
+
+type Changed = Extract<Out, { readonly _tag: "changed" }>;
+const NONE: ReadonlyArray<Changed> = [];
+const changedOf = (events: ReadonlyArray<Out>): ReadonlyArray<Changed> => {
+  const named = events.flatMap((event): ReadonlyArray<Changed> => {
+    if (event._tag === "upsert")
+      return [{ _tag: "changed", seq: event.seq, key: event.record.key, list: event.list }];
+    if (event._tag === "removed")
+      return [
+        {
+          _tag: "changed",
+          seq: event.seq,
+          key: event.key,
+          ...(event.list === undefined ? {} : { list: event.list }),
+        },
+      ];
+    return [];
+  });
+  if (named.length > 0) return named;
+  const fresh = events.find((event) => event._tag === "snapshot-required");
+  return fresh === undefined ? [] : [{ _tag: "changed", seq: fresh.seq }];
+};
+
+/**
  * The entries changed after `after` up to `seq`, each at its newest number, or null when the gap
  * is longer than a replay or has a hole an undo left (`announce`). Owner-level only.
  */

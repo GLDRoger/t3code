@@ -28,7 +28,6 @@ import {
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
@@ -48,7 +47,6 @@ import {
   requestHashOf,
   type Patch,
   type QueryInput,
-  type Tick,
   type Totals,
   type Writer,
 } from "./KinRecords.ts";
@@ -84,13 +82,11 @@ import {
   taskClients,
   teamClients,
   teamDetail,
-  teamKeys,
   teamRecord,
   teamRecordIn,
   linkedFromOf,
   personSees,
   placesOf,
-  teamSeesKey,
   teamSeq,
   teamVisible,
 } from "./teamView.ts";
@@ -864,63 +860,6 @@ export const summaryOf = Effect.fn("KinWork.summaryOf")(function* (
     asOf: iso(now),
   } satisfies KinWorkSummary;
 });
-
-export const subscribe = (
-  people: ReadonlyArray<PersonIdentity>,
-  input: { readonly orgId: KinOrgId },
-) =>
-  Stream.unwrap(
-    Effect.gen(function* () {
-      const viewer = yield* viewerOf(people, input.orgId);
-      const records = yield* KinRecords;
-      const changes = records.changes(input.orgId);
-      const named = (tick: Tick) => ({
-        _tag: "changed" as const,
-        seq: tick.seq,
-        ...(tick.key === undefined ? {} : { key: tick.key }),
-        ...(tick.key === undefined || tick.registerId === undefined
-          ? {}
-          : { list: tick.registerId }),
-      });
-      if (!viewer.teammate) return changes.pipe(Stream.map(named));
-      const { personId } = viewer.person;
-      // What they could read when the stream began or were told of since: only these are ever
-      // named once hidden. Whether they see one now is read as each change is delivered.
-      let seen = new Set<string>();
-      return changes.pipe(
-        Stream.mapEffect((tick) =>
-          Effect.gen(function* () {
-            if (tick.key === undefined) {
-              seen = yield* teamKeys(input.orgId, personId);
-              return [{ _tag: "changed" as const, seq: yield* teamSeq(input.orgId, personId) }];
-            }
-            const seq = tick.team?.get(personId);
-            if (seq === undefined) return [];
-            // The keys a client's or project's label moves are its tasks, not entries of its list.
-            const told = (key: string) => named({ seq, key });
-            if (tick.registerId === "clients" || tick.registerId === "projects") {
-              // A client's or project's label shows or hides its tasks without a change to them.
-              const now = yield* teamKeys(input.orgId, personId);
-              const moved = [
-                ...[...seen].filter((key) => !now.has(key)),
-                ...[...now].filter((key) => !seen.has(key)),
-              ];
-              seen = now;
-              return moved.map(told);
-            }
-            const { key } = tick;
-            const own = named({ ...tick, seq });
-            if (yield* teamSeesKey(input.orgId, personId, key)) {
-              seen.add(key);
-              return [own];
-            }
-            return seen.delete(key) ? [own] : [];
-          }).pipe(workFailure),
-        ),
-        Stream.flattenIterable,
-      );
-    }),
-  );
 
 /** The owner's own words, so it is confirmed; given to a lead, it is an instruction to do it. */
 export const create = Effect.fn("KinWork.create")(function* (
