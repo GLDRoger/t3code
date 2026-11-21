@@ -3813,16 +3813,30 @@ describe("money answers", () => {
         yield* sql`INSERT INTO kin_bank_statement_entries (org_id, statement_id, seq, row_index,
             bank_record_id, action, target_record_id)
           VALUES (${orgId}, 'st_card', 1, 0, ${bank.recordId}, 'expense_linked', ${hotel.recordId})`;
-        yield* records.link(orgId, system, hotel.recordId, {
+        const evidence = records.link(orgId, system, hotel.recordId, {
           kind: "record",
           target: bank.recordId,
           relation: "evidence",
         });
-        assert.deepStrictEqual((yield* OwnerMoney.money(people, { orgId })).about?.spentThisMonth, {
-          home: "USD",
-          total: { minor: 113_500, currency: "USD" },
-          missing: [],
-        });
+        const spent = (minor: number) =>
+          Effect.gen(function* () {
+            assert.deepStrictEqual(
+              (yield* OwnerMoney.money(people, { orgId })).about?.spentThisMonth,
+              { home: "USD", total: { minor, currency: "USD" }, missing: [] },
+            );
+          });
+        yield* evidence;
+        yield* spent(113_500);
+        // Remove link takes the match off the expense, not the statement's entry: back to the rate.
+        const [hotelLink] = yield* sql<{ shown: string; at: number }>`SELECT
+            COALESCE(label, target) AS shown, created_at AS at FROM kin_record_links
+          WHERE org_id = ${orgId} AND record_id = ${hotel.recordId} AND target = ${bank.recordId}`;
+        assert.isTrue(
+          yield* records.unlink(orgId, system, hotel.recordId, { kind: "record", ...hotelLink! }),
+        );
+        yield* spent(112_900);
+        yield* evidence;
+        yield* spent(113_500);
         // Corrected to €800 after the match, the line no longer answers it: back to the rate.
         yield* records.update(orgId, system, hotel.key, {
           amount: { minor: 80_000, currency: "EUR" },

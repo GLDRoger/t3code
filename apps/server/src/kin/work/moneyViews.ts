@@ -207,8 +207,9 @@ const dateRow = (row: RecordRow, def: ListDef, hit: DateHit, now: number): KinDa
 
 /**
  * What the bank took in `home` for each foreign expense a confirmed statement matched to one debit
- * line, while the line's foreign amount still equals the expense's: an edited expense or an undone
- * statement falls back to the rates. One line to one expense, both ways. `seen` filters lines as `r`.
+ * line, while the line's foreign amount still equals the expense's and the expense still links it as
+ * evidence: an edited expense, a removed link or an undone statement falls back to the rates. One
+ * line to one expense, both ways. `seen` filters lines as `r`.
  */
 const chargedAtBank = Effect.fn("KinMoneyViews.chargedAtBank")(function* (
   orgId: KinOrgId,
@@ -239,6 +240,9 @@ const chargedAtBank = Effect.fn("KinMoneyViews.chargedAtBank")(function* (
     WHERE m.id IN ${sql.in(expenseIds)}
       AND (SELECT COUNT(DISTINCT o.bank) FROM m o WHERE o.id = m.id) = 1
       AND (SELECT COUNT(DISTINCT o.id) FROM m o WHERE o.bank = m.bank) = 1
+      AND EXISTS (SELECT 1 FROM kin_record_links l WHERE l.org_id = ${orgId}
+        AND l.record_id = m.id AND l.kind = 'record' AND l.relation = 'evidence'
+        AND l.target = m.bank)
       AND EXISTS (SELECT 1 FROM json_each(m.json, '$.statement.rows') w
         WHERE json_extract(w.value, '$.index') = m.row
           AND json_extract(w.value, '$.direction') = 'debit'
