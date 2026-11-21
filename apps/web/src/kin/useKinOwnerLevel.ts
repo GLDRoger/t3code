@@ -3,7 +3,6 @@ import {
   kinAccessAtom,
   kinAccessKnownAtom,
   kinAccessMeAtom,
-  kinOwnerLevelAtom,
 } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinDealsStartFilter, type KinDealsFilter } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinPlaceReach, type KinPlaceReach } from "@t3tools/client-runtime/kin/kinJoin";
@@ -19,20 +18,16 @@ import {
   type KinViewerScope,
 } from "@t3tools/client-runtime/kin/kinViewerScope";
 import { kinOwnerLevel, type EnvironmentId } from "@t3tools/contracts";
-
 import { useEffect } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { isChatOnlySession } from "../environments/primary";
 import { refreshKinAccessMe } from "./kinClient";
+import { kinOwnerLevelHereAtom } from "./kinPlacesAtom";
 
-/**
- * Whether the viewer runs the company here: the owner's own session always does; a chat-only
- * session does once the host says its person is the owner or a co-owner.
- */
+/** Whether the viewer runs the company here (`kinOwnerLevelHereAtom`). */
 export function useKinOwnerLevel(environmentId: EnvironmentId): boolean {
-  const stored = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
-  return !isChatOnlySession() || stored;
+  return useAtomValue(kinOwnerLevelHereAtom(environmentId));
 }
 
 /** As `useKinOwnerLevel`, but undefined while a chat-only session waits for the host to say. */

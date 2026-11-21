@@ -5,5 +5,10 @@ import { useKinMoneyLive } from "./useKinMoneyLive";
 import { useKinOpenChat } from "./useKinOpenChat";
 import { kinWorkLiveAtom } from "./useKinWork";
 
-export const { useKinAttention, useKinAttentionHandle, useKinAskAbout, useKinGoals } =
-  makeKinAttentionHooks(kinHookApp, { useKinOpenChat, useKinMoneyLive, kinWorkLiveAtom });
+export const {
+  useKinAttention,
+  useKinTasksNeedsYou,
+  useKinAttentionHandle,
+  useKinAskAbout,
+  useKinGoals,
+} = makeKinAttentionHooks(kinHookApp, { useKinOpenChat, useKinMoneyLive, kinWorkLiveAtom });

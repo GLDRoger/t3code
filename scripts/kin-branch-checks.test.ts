@@ -184,12 +184,8 @@ export const { useKinDeals } = makeKinDealsHooks(kinHookApp);
       ).map((problem) => problem.split(":")[1]!.trim().split(" ")[0]);
     const web = "apps/web/src/kin/";
     const phone = "apps/mobile/src/features/chats/state/";
-    const changes = "export function useKinWorkChanges() {}\n";
     assert.deepStrictEqual(
-      check(
-        { [`${web}useKinDeals.ts`]: caller + changes },
-        { [`${phone}useKinDeals.ts`]: caller + changes },
-      ),
+      check({ [`${web}useKinDeals.ts`]: caller }, { [`${phone}useKinDeals.ts`]: caller }),
       [],
     );
     assert.deepStrictEqual(
@@ -197,19 +193,19 @@ export const { useKinDeals } = makeKinDealsHooks(kinHookApp);
         { [`${web}useKinPeople.ts`]: "export function useKinPeople() {}\n" },
         { [`${phone}useKinPeople.ts`]: "export function useKinPeople() {}\n" },
       ),
-      [`${web}useKinPeople.ts`, "useKinWorkChanges"],
+      [`${web}useKinPeople.ts`],
     );
     const both = caller + "export function useKinDealCount() {}\n";
     assert.deepStrictEqual(
       check({ [`${web}useKinDeals.ts`]: both }, { [`${phone}useKinDeals.ts`]: both }),
-      ["useKinDealCount", "useKinWorkChanges"],
+      ["useKinDealCount"],
     );
     assert.deepStrictEqual(
-      check({ [`${web}KinDeals.tsx`]: "export function useKinDeals() {}\n" + changes }, {}),
+      check({ [`${web}KinDeals.tsx`]: "export function useKinDeals() {}\n" }, {}),
       [`${web}KinDeals.tsx`],
     );
     const gone = checkKinHookCopies(new Map(), new Map(), shared);
-    assert.deepStrictEqual(gone.length, Object.keys(KIN_HOOK_FILES_IN_BOTH).length + 1);
+    assert.deepStrictEqual(gone.length, Object.keys(KIN_HOOK_FILES_IN_BOTH).length);
   });
 
   it("asks a branch people will notice to say what changes for them, and prints what it says", () => {
@@ -272,6 +268,22 @@ export const { useKinDeals } = makeKinDealsHooks(kinHookApp);
     assert.lengthOf(later.problems, 1);
     assert.include(later.problems[0], "commits after f6");
     assert.include(later.problems[0], "apps/web/src/kin/Brief.tsx");
+    // Every file changed after the last line is named.
+    const two = check({ ...screen, sha: "f7", files: ["apps/web/src/kin/Money.tsx"] }, screen, {
+      sha: "f8",
+      message: "fix(kin): x\n\nPeople-change: none",
+      files: [],
+    });
+    assert.lengthOf(two.problems, 1);
+    assert.include(two.problems[0], "apps/web/src/kin/Money.tsx");
+    assert.include(two.problems[0], "apps/web/src/kin/Brief.tsx");
+    // The last commit restates the branch's lines, even when only tests came after them.
+    const stale = check(
+      { sha: "g9", message: "test: more", files: ["apps/web/src/kin/Brief.browser.test.tsx"] },
+      { ...screen, sha: "h1", message: "fix(kin): the brief\n\nPeople-change: none" },
+    );
+    assert.lengthOf(stale.problems, 1);
+    assert.include(stale.problems[0], "g9");
     // The word alone is not a line.
     assert.lengthOf(check({ ...screen, message: "fix: x\n\nPeople-change:" }).problems, 1);
   });

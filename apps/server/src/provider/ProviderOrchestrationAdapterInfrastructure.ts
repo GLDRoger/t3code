@@ -8,10 +8,7 @@ import * as CursorAgentSdk from "@t3tools/provider-cursor/server/CursorAgentSdk"
 import * as CursorSdk from "@t3tools/provider-cursor/server/CursorSdk";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
-import * as KinDreamIsolation from "../kin/dreaming/DreamIsolation.ts";
-import { acp as kinOnAcp } from "../kin/lead/turn/providers/acp.ts";
-import { claude as kinOnClaude } from "../kin/lead/turn/providers/claude.ts";
-import { codex as kinOnCodex } from "../kin/lead/turn/providers/codex.ts";
+import { kinAdapters } from "../kin/lead/turn/providers/infrastructure.ts";
 
 export type ProviderOrchestrationAdapterInfrastructure =
   | ClaudeAdapterV2.ClaudeAgentSdkQueryRunner
@@ -40,9 +37,7 @@ export const layerIdAllocator = Layer.unwrap(
 
 /** Reuse the continuation worker's exact layer reference so memoization shares one queue. */
 export const layer = Layer.mergeAll(
-  kinOnClaude.install(KinDreamIsolation.claudeQueryRunner(ClaudeAdapterV2.layerQueryRunner)),
-  kinOnCodex.install(CodexAdapterV2.layerAppServerClientFactory),
-  kinOnAcp.install(Layer.empty),
+  kinAdapters(ClaudeAdapterV2.layerQueryRunner, CodexAdapterV2.layerAppServerClientFactory),
   CursorAgentSdk.layer.pipe(Layer.provideMerge(CursorSdk.layer)),
   layerIdAllocator,
   ProviderContinuationRequests.layer,

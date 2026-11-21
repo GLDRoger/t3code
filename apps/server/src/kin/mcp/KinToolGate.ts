@@ -5,7 +5,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
+import * as McpToolPolicy from "./toolPolicy.ts";
 import { McpInvocationContext, type McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { KinServer, type Services } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -15,6 +15,7 @@ import { toolAdmitted } from "../lead/SharedTools.ts";
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
+import * as ReadTools from "./readTools.ts";
 
 type Check = (
   turn: Parameters<typeof toolAdmitted>[0],
@@ -89,7 +90,7 @@ const gate = (name: string, check: Check) =>
  * message or tap, else its first event; a message id becomes its event. Anything else stays, and
  * the tool refuses it as before, except where the event only names the turn (`TURN_ONLY_EVENT_TOOLS`). The call's arguments are filled in before they are decoded.
  */
-const turnEvents = McpHttpServer.toolCallPrepare(
+const turnEvents = McpToolPolicy.toolCallPrepare(
   Effect.fn("KinToolGate.turnEvents")(
     function* (name: string, args: Record<string, unknown>) {
       if (!TURN_EVENT_TOOLS.has(name)) return;
@@ -182,13 +183,18 @@ export const workerPolicy = (services: Context.Context<Services>) => {
  * none of these checks follow; nothing reaches the owner's context in a turn others read
  * (`SharedTools`); no run outside text could steer (`OutsideContent`); no task past the limit.
  */
-export const layer = Layer.mergeAll(
-  turnEvents,
-  McpHttpServer.toolCallGate(
-    (_tool, args) => Effect.map(namesOtherMachine(args), (other) => !other),
-    REMOTE_REFUSAL,
+export const layer = ReadTools.layer.pipe(
+  // Built last, so outermost: a read tool's gates read on the reader too.
+  Layer.provideMerge(
+    Layer.mergeAll(
+      turnEvents,
+      McpToolPolicy.toolCallGate(
+        (_tool, args) => Effect.map(namesOtherMachine(args), (other) => !other),
+        REMOTE_REFUSAL,
+      ),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", toolAdmitted), SHARED_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outsideToolAllowed), OUTSIDE_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
+    ),
   ),
-  McpHttpServer.toolCallGate(gate("KinToolGate.admitted", toolAdmitted), SHARED_REFUSAL),
-  McpHttpServer.toolCallGate(gate("KinToolGate.outside", outsideToolAllowed), OUTSIDE_REFUSAL),
-  McpHttpServer.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
 );

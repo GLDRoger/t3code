@@ -9,6 +9,7 @@ import type {
   KinPeopleListResult,
   KinProjectPage,
   KinProjectRow,
+  KinRecordDetail,
   KinWorkHistoryItem,
   KinRecordKey,
 } from "@t3tools/contracts";
@@ -19,8 +20,17 @@ import { useEffect, useState } from "react";
 import { kinHostLink, type KinRouteHost } from "../kinHost.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import { kinInvitedPeople } from "../kinTeam.ts";
-import { kinWorkNames, kinWorkScreenState, type KinWorkScreenState } from "../kinWork.ts";
-import { createKinWorkItemWatch } from "../kinWorkChanges.ts";
+import {
+  kinWorkNames,
+  kinWorkScreenState,
+  type KinWorkAnswers,
+  type KinWorkScreenState,
+} from "../kinWork.ts";
+import {
+  createKinWorkChanges,
+  createKinWorkItemWatch,
+  kinWorkChangesStart,
+} from "../kinWorkChanges.ts";
 import {
   KIN_PROJECTS_DEFAULT_FILTER,
   kinClientPageKeys,
@@ -61,6 +71,8 @@ export interface KinWorkUses {
     readonly isReady: boolean;
     readonly entries: { readonly has: (id: EnvironmentId) => boolean };
   }>;
+  /** The phone keeps the host's answers to a task's changes for every screen of that task. */
+  readonly keepAnswers?: boolean;
 }
 
 // Read only by a session that may read Work; others ask the host nothing.
@@ -104,6 +116,61 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
   const { useKinHostAt, catalogValueAtom } = uses;
   const kinWorkLiveAtom = ({ environmentId, orgId }: KinScreenTarget) =>
     kinClient.workLive({ environmentId, input: { orgId } });
+
+  // The host's answers to the owner's changes, per host and org, read by every screen of a task.
+  const kinWorkAnswersAtom = Atom.family((_key: string) =>
+    Atom.make<Readonly<Record<string, KinRecordDetail>>>({}).pipe(Atom.keepAlive),
+  );
+  const answersAtomOf = ({ environmentId, orgId }: KinScreenTarget) =>
+    kinWorkAnswersAtom(JSON.stringify([environmentId, orgId]));
+
+  function kinWorkAnswersOf(target: KinScreenTarget): KinWorkAnswers {
+    const atom = answersAtomOf(target);
+    return {
+      get: (key) => registry.get(atom)[key],
+      put: (item) => {
+        const held = registry.get(atom);
+        if ((held[item.key]?.rev ?? -1) >= item.rev) return;
+        registry.set(atom, { ...held, [item.key]: item });
+      },
+    };
+  }
+
+  /** The host's latest answer to a change to this task from any screen; null with none. */
+  function useKinWorkAnswer(target: KinScreenTarget, key: KinRecordKey) {
+    return useAtomValue(answersAtomOf(target))[key] ?? null;
+  }
+
+  /** The owner's changes to tasks on one host, for a list or a task on screen. */
+  function useKinWorkChanges(
+    { environmentId, orgId }: KinScreenTarget,
+    /** A form that opens already typing over this task. */
+    editing?: KinRecordDetail,
+  ) {
+    const update = app.useAtomCommand(kinClient.workUpdate, { reportFailure: false });
+    const assign = app.useAtomCommand(kinClient.workAssign, { reportFailure: false });
+    const confirm = app.useAtomCommand(kinClient.workConfirm, { reportFailure: false });
+    const decline = app.useAtomCommand(kinClient.workDecline, { reportFailure: false });
+    const [state, setState] = useState(() => kinWorkChangesStart(editing));
+    const [changes] = useState(() =>
+      createKinWorkChanges({
+        orgId,
+        update: (input) => update({ environmentId, input }),
+        assign: (input) => assign({ environmentId, input }),
+        confirm: (input) => confirm({ environmentId, input }),
+        decline: (input) => decline({ environmentId, input }),
+        reread: (key) =>
+          registry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
+        online: () => kinHostConnected(environmentId),
+        ...(uses.keepAnswers === true
+          ? { answers: kinWorkAnswersOf({ environmentId, orgId }) }
+          : {}),
+        ...(editing === undefined ? {} : { editing }),
+        onChange: setState,
+      }),
+    );
+    return { state, changes };
+  }
 
   /** Work's counts and change number as one screen state, kept current by the host. */
   function useKinWork(target: KinScreenTarget): KinWorkScreenState {
@@ -475,9 +542,13 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     useKinWorkChoices,
     useKinPickerSearch,
     useKinWorkForm,
+    kinWorkAnswersOf,
+    useKinWorkAnswer,
+    useKinWorkChanges,
   };
 }
 
 export type KinWorkHooks = ReturnType<typeof makeKinWorkHooks>;
+export type KinWorkChangesHandle = ReturnType<KinWorkHooks["useKinWorkChanges"]>;
 export type KinWorkDirectory = ReturnType<KinWorkHooks["useKinWorkDirectory"]>;
 export type KinWorkChoices = ReturnType<KinWorkHooks["useKinWorkChoices"]>;

@@ -14,15 +14,13 @@ import { ServerConfig } from "../config.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Chat from "./chat/KinChatService.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./lead/orgLeads.ts";
+import { DAY_MS, HOUR_MS, WEEK_MS } from "./durations.ts";
 
 /** Written by ops/kin/host/backup.sh into the server's state directory after every run. */
 export const BACKUP_STATUS_FILE = "kin-backup-status.json";
 
-const HOUR = 60 * 60 * 1000;
-const DAY = 24 * HOUR;
-const WEEK = 7 * DAY;
-const STALE_AFTER = 36 * HOUR;
-const CHECK_EVERY = HOUR;
+const STALE_AFTER = 36 * HOUR_MS;
+const CHECK_EVERY = HOUR_MS;
 
 const BackupStatus = Schema.fromJsonString(
   Schema.Struct({
@@ -34,7 +32,7 @@ const BackupStatus = Schema.fromJsonString(
 const decodeStatus = Schema.decodeUnknownOption(BackupStatus);
 
 const ago = (ms: number) =>
-  ms < 2 * DAY ? `${Math.floor(ms / HOUR)} hours ago` : `${Math.floor(ms / DAY)} days ago`;
+  ms < 2 * DAY_MS ? `${Math.floor(ms / HOUR_MS)} hours ago` : `${Math.floor(ms / DAY_MS)} days ago`;
 
 const statusOf = (statusFile: string | undefined) =>
   statusFile === undefined ? Option.none() : decodeStatus(statusFile);
@@ -72,8 +70,8 @@ export const check = Effect.fn("KinHostBackup.check")(function* () {
   const problem = backupProblem(file, now);
   if (problem === undefined) return;
   const period = neverGood(statusOf(file))
-    ? `week:${Math.floor(now / WEEK)}`
-    : Math.floor(now / DAY);
+    ? `week:${Math.floor(now / WEEK_MS)}`
+    : Math.floor(now / DAY_MS);
   // The host's backup covers every company it serves.
   const orgs = yield* sql<{
     orgId: string;
