@@ -100,8 +100,11 @@ export function kinHostCandidate(
 export type KinHost =
   /** Still loading the saved host or waiting on a probe. */
   | { readonly _tag: "searching" }
-  /** No environment hosts Kin; hide every Kin entry point. */
-  | { readonly _tag: "none" }
+  /**
+   * No environment hosts Kin; hide every Kin entry point. `unreachable`: some saved here aren't
+   * answering, so Kin may be on one of them, rather than none running it.
+   */
+  | { readonly _tag: "none"; readonly unreachable?: true }
   | {
       readonly _tag: "host";
       readonly environmentId: EnvironmentId;
@@ -211,7 +214,10 @@ export function resolveKinHost(input: {
       fallback = { _tag: "host", environmentId: candidate.environmentId, connected: true, probe };
     }
   }
-  return fallback ?? { _tag: "none" };
+  if (fallback !== null) return fallback;
+  return input.candidates.some((candidate) => !candidate.connected)
+    ? { _tag: "none", unreachable: true }
+    : { _tag: "none" };
 }
 
 /**

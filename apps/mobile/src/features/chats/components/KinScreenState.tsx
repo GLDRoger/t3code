@@ -1,7 +1,13 @@
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_HOST_OFFLINE, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_ONLY } from "../../../lib/kinOnly";
-import { KIN_ONLY_NO_HOST, KIN_ONLY_UNAUTHORIZED } from "../kinOnlyCopy";
+import {
+  KIN_ONLY_NO_HOST,
+  KIN_ONLY_UNAUTHORIZED,
+  KIN_ONLY_UNREACHABLE,
+  KIN_TEAMMATE_NO_HOST,
+  KIN_TEAMMATE_UNREACHABLE,
+} from "../kinOnlyCopy";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -98,14 +104,16 @@ export function KinScreenState(props: {
       return teammate ? (
         <EmptyState
           variant="plain"
-          title="Your team's Kin isn't available"
-          detail="It may be restarting. If it stays this way, ask your team whether something changed."
+          {...(state.unreachable === true ? KIN_TEAMMATE_UNREACHABLE : KIN_TEAMMATE_NO_HOST)}
         />
       ) : (
         <EmptyState
           variant="plain"
           {...(KIN_ONLY
-            ? { ...KIN_ONLY_NO_HOST, onAction: () => navigation.navigate("SettingsEnvironmentNew") }
+            ? {
+                ...(state.unreachable === true ? KIN_ONLY_UNREACHABLE : KIN_ONLY_NO_HOST),
+                onAction: () => navigation.navigate("SettingsEnvironmentNew"),
+              }
             : {
                 title: "No server with Kin yet",
                 detail: "Connect this phone to a T3 Code server that has Kin turned on.",
