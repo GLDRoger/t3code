@@ -3791,7 +3791,7 @@ it.effect(
         value: "€20,000.00",
         expected: "2026-12-15",
         expectedDay: "Tue 15 Dec 2026",
-        lookedAfterBy: "owner",
+        lookedAfterBy: "Owner (owner)",
         next: {
           key: stepped.deal.next!.key,
           title: "Invented: call Ingrid",

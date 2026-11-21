@@ -1,4 +1,10 @@
-import type { KinAgentId, KinOrgId, KinPulseActor, KinPulseFact } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  type KinOrgId,
+  KinPersonId,
+  type KinPulseActor,
+  type KinPulseFact,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -6,9 +12,10 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { sentMail, type SentMail } from "../connections/Sending.ts";
 import { dayIn, timeIn } from "../work/money.ts";
 import { ownerZone, recordName } from "../work/recordRows.ts";
+import { leadNamer } from "../work/toolNames.ts";
 import { clientHistory } from "./clientHistory.ts";
 import { headStarts } from "./headStart.ts";
-import { covers, endedHolds, holdNames } from "./holds.ts";
+import { covers, endedHolds } from "./holds.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { teamHoursNow } from "./nudge.ts";
 import { DEAL_SENSES } from "./senses/deals.ts";
@@ -41,7 +48,6 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   /** The check-in events, so a fact first told since its hold ended says it was set aside. */
   readonly checkInEvents?: ReadonlyArray<string> | undefined;
 }) {
-  const sql = yield* SqlClient.SqlClient;
   const tell = input.checkIn;
   const checkIn = tell !== undefined;
   const read = yield* KinPulse.read({
@@ -70,21 +76,10 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
       });
       if (sent !== undefined) mailed.set(fact.key, sent);
     }
-  const names = new Map(
-    (yield* sql<{ id: string; name: string }>`SELECT agent_id AS id, display_name AS name
-      FROM kin_agents WHERE org_id = ${input.orgId}
-      UNION ALL SELECT person_id AS id, display_name AS name
-      FROM kin_people WHERE org_id = ${input.orgId}
-      ORDER BY id`).map((row) => [row.id, row.name]),
-  );
+  const name = yield* leadNamer(input.orgId, input.agentId);
+  // "owner" is the role, not a person: whoever holds owner-level access acts.
   const who = (actor: KinPulseActor | NonNullable<KinPulseFact["handled"]>["by"]) =>
-    actor._tag === "owner"
-      ? "the owner"
-      : actor._tag === "agent"
-        ? actor.agentId === input.agentId
-          ? "you"
-          : (names.get(actor.agentId) ?? "another agent")
-        : (names.get(actor.personId) ?? "a teammate");
+    actor._tag === "owner" ? "the owner" : name(actor);
   // A client gone quiet or cold comes with what we did for them, so a suggestion has substance.
   const histories = new Map<string, Effect.Success<ReturnType<typeof clientHistory>>>();
   for (const fact of shown)
@@ -185,10 +180,16 @@ const asideEnded = Effect.fn("KinLeadPrompt.asideEnded")(function* (
   const sql = yield* SqlClient.SqlClient;
   const [agent] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner FROM kin_agents
     WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
-  const names = yield* holdNames(orgId);
+  const named = yield* leadNamer(orgId, agentId);
   const zone = yield* ownerZone(orgId);
-  const name = (id: string | null) =>
-    id === null ? undefined : id === agent?.owner ? "the owner" : names.get(id);
+  const name = (kind: "person" | "agent", id: string) =>
+    kind === "person" && id === agent?.owner
+      ? "the owner"
+      : named(
+          kind === "agent"
+            ? { _tag: "agent", agentId: KinAgentId.make(id) }
+            : { _tag: "person", personId: KinPersonId.make(id) },
+        );
   for (const fact of facts) {
     const hold = holds.find((one) => covers(one, fact));
     if (hold === undefined || hold.endedAt === null || agent === undefined) continue;
@@ -198,14 +199,14 @@ const asideEnded = Effect.fn("KinLeadPrompt.asideEnded")(function* (
         ${events.length === 0 ? sql`` : sql`AND event_id NOT IN ${sql.in(events)}`}
       LIMIT 1`;
     if (since.length > 0) continue;
-    const word = hold.onWordOf === null ? "" : ` on ${name(hold.onWordOf) ?? "a person"}'s word`;
+    const word = hold.onWordOf === null ? "" : ` on ${name("person", hold.onWordOf)}'s word`;
     const end =
-      hold.liftedById === null
+      hold.liftedById === null || hold.liftedByKind === null
         ? "that day came"
-        : `lifted by ${name(hold.liftedById) ?? "someone"} on ${dayIn(hold.endedAt, zone)}`;
+        : `lifted by ${name(hold.liftedByKind, hold.liftedById)} on ${dayIn(hold.endedAt, zone)}`;
     lines.set(
       fact.key,
-      `set aside by ${name(hold.byId) ?? "someone"}${word} on ${dayIn(hold.setAt, zone)}${hold.until === null ? "" : ` until ${dayIn(hold.until, zone)}`}; ${end}`,
+      `set aside by ${name(hold.byKind, hold.byId)}${word} on ${dayIn(hold.setAt, zone)}${hold.until === null ? "" : ` until ${dayIn(hold.until, zone)}`}; ${end}`,
     );
   }
   return lines;

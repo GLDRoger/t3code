@@ -9,6 +9,7 @@ import {
   type KinPulseScope,
   type KinPulseScreenRead,
   type KinRecordKey,
+  type KinWorkPrincipal,
   formatKinWhen,
   kinWhenParts,
 } from "@t3tools/contracts";
@@ -19,6 +20,7 @@ import { kinAskName } from "./kinAskRecord.ts";
 import { KIN_NEEDS_YOU_SHOWN, type KinNeedsYouRow } from "./kinWorkHome.ts";
 import { kinFailure } from "./kinAnswers.ts";
 import { kinIsDealKey } from "./kinDeals.ts";
+import { kinMidSentence, kinWorkName } from "./kinWork.ts";
 
 /**
  * "Needs attention": what Kin worked out needs someone, on the screens it is about. One model for
@@ -164,10 +166,7 @@ const dayLabel = (at: DateTime.Utc, now: Date) =>
 const handledText = (fact: KinPulseFact, names: ReadonlyMap<string, string>, now: Date) => {
   const handled = fact.handled;
   if (handled === null) return null;
-  const by =
-    handled.by._tag === "agent"
-      ? (names.get(handled.by.agentId) ?? "An agent")
-      : (names.get(handled.by.personId) ?? "Someone");
+  const by = kinWorkName(handled.by, { people: names, agents: names });
   return handled.until === null
     ? `${by}: not a problem`
     : `${by} has it until ${dayLabel(handled.until, now)}`;
@@ -251,17 +250,15 @@ function kinAsideText(aside: KinPulseAside, names: ReadonlyMap<string, string>, 
     aside.until === null
       ? "Set aside until lifted"
       : `Set aside until ${dayLabel(aside.until, now)}`;
-  const setBy =
-    aside.by._tag === "agent"
-      ? (names.get(aside.by.agentId) ?? "an agent")
-      : (names.get(aside.by.personId) ?? "someone");
-  const by = aside.byYou ? "by you" : `by ${setBy}`;
+  const name = (who: KinWorkPrincipal) =>
+    kinMidSentence(kinWorkName(who, { people: names, agents: names }));
+  const by = aside.byYou ? "by you" : `by ${name(aside.by)}`;
   const word = aside.yourWord
     ? ", on your word"
     : aside.onWordOf === null ||
         aside.onWordOf === (aside.by._tag === "person" ? aside.by.personId : null)
       ? ""
-      : `, on ${names.get(aside.onWordOf) ?? "someone"}'s word`;
+      : `, on ${name({ _tag: "person", personId: aside.onWordOf })}'s word`;
   return `${until} · ${by}${word}`;
 }
 

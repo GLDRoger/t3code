@@ -18,6 +18,7 @@ import * as NodeCrypto from "node:crypto";
 import { outsideRead } from "../lead/OutsideContent.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { dayIn } from "../work/money.ts";
+import type { ToolNamer } from "../work/toolNames.ts";
 import { iso } from "./senses/shared.ts";
 
 /**
@@ -149,31 +150,17 @@ export const subjectText = (aside: Pick<KinPulseAside, "record" | "covers">) =>
  * One line on a hold for an agent: "INV-9 Site build only is set aside until 2026-12-17, by
  * Finance on Rhea's word (2026-11-20)". `names` maps agent and person ids to names.
  */
-export const asideLine = (
-  aside: KinPulseAside,
-  names: ReadonlyMap<string, string>,
-  zone: string,
-) => {
-  const byId = aside.by._tag === "agent" ? aside.by.agentId : aside.by.personId;
-  const who = names.get(byId) ?? (aside.by._tag === "agent" ? "an agent" : "a person");
+export const asideLine = (aside: KinPulseAside, name: ToolNamer, zone: string) => {
   const word =
-    aside.onWordOf === null ? "" : ` on ${names.get(aside.onWordOf) ?? "a person"}'s word`;
+    aside.onWordOf === null
+      ? ""
+      : ` on ${name({ _tag: "person", personId: aside.onWordOf })}'s word`;
   const until =
     aside.until === null
       ? "until someone lifts it"
       : `until ${dayIn(DateTime.toEpochMillis(aside.until), zone)}`;
-  return `${subjectText(aside)} is set aside ${until}, by ${who}${word} (${dayIn(DateTime.toEpochMillis(aside.at), zone)})${aside.note === null ? "" : `: ${aside.note}`}`;
+  return `${subjectText(aside)} is set aside ${until}, by ${name(aside.by)}${word} (${dayIn(DateTime.toEpochMillis(aside.at), zone)})${aside.note === null ? "" : `: ${aside.note}`}`;
 };
-
-/** Agents' and people's names in an org, for hold lines. */
-export const holdNames = Effect.fn("KinHolds.names")(function* (orgId: KinOrgId) {
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ id: string; name: string }>`SELECT agent_id AS id,
-      display_name AS name FROM kin_agents WHERE org_id = ${orgId}
-    UNION ALL SELECT person_id AS id, display_name AS name FROM kin_people WHERE org_id = ${orgId}
-    ORDER BY id`;
-  return new Map(rows.map((row) => [row.id, row.name]));
-});
 
 /** The record a hold is on, by key, in this org. */
 export const holdRecord = Effect.fn("KinHolds.record")(function* (orgId: KinOrgId, key: string) {
@@ -347,8 +334,8 @@ export const liftHold = Effect.fn("KinHolds.lift")(function* (input: {
 });
 
 /** A refusal to ask about a held record: the subject, the day and whose word it was. */
-export const refusalText = (hold: Hold, names: ReadonlyMap<string, string>, zone: string) =>
-  `${asideLine(asideView(hold, { _tag: "owner" }), names, zone)}. Kin won't ask about it before then.`;
+export const refusalText = (hold: Hold, name: ToolNamer, zone: string) =>
+  `${asideLine(asideView(hold, { _tag: "owner" }), name, zone)}. Kin won't ask about it before then.`;
 
 /**
  * The live hold on any of these records, or on its project or client, that counts for `personId`
