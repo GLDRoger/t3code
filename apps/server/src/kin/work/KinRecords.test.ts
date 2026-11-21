@@ -3054,16 +3054,22 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     assert.strictEqual(named.title, "Invented Priya");
     assert.notInclude(JSON.stringify(named), "priya@acme");
     // Run 4: Money counted a lead's coming-up dates, then refused to list them. One read, one
-    // rule: the list holds what the count counted, and not the owner's own dates.
+    // rule: the list holds what the count counted, and not the owner's own dates. Money's dates
+    // are money's: a task due as soon is on neither.
     const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'dates', 'Dates', 'DT', 0, 0, ${JSON.stringify(presetDefinition("dates", "INR"))})`;
     const [project] = yield* sql<{ id: string }>`SELECT record_id AS id FROM kin_records
       WHERE org_id = ${orgId} AND register_id = 'projects'`;
     const now = yield* Clock.currentTimeMillis;
-    for (const [originKey, title, projectId] of [
-      ["their date", "Invented app review", project!.id],
-      ["owner date", "Invented rent renewal", undefined],
+    for (const [originKey, title, projectId, list] of [
+      ["their date", "Invented app review", project!.id, "dates"],
+      ["owner date", "Invented rent renewal", undefined, "dates"],
+      ["their task", "Invented app demo", project!.id, "work"],
     ] as const)
       yield* records.create(orgId, ownerWrites, {
+        list,
         originKey,
         title,
         dueAt: now + 5 * 86_400_000,

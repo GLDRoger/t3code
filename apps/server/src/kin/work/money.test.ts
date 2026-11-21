@@ -46,8 +46,13 @@ import * as LeadWork from "./leadWork.ts";
 import { aboutTotal, addUp, financialYearOf, formatMinor, parseAmount } from "./money.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
-import { moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
-import { viewerOfPeople } from "./teamView.ts";
+import {
+  dates as datesView,
+  moneySection,
+  moneySummary,
+  ownerLevelStillToInvoice,
+} from "./moneyViews.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import { listDef, proposalFor } from "./registers.ts";
 import { waitLine } from "./statements/passwordBudget.ts";
@@ -2260,11 +2265,8 @@ describe("the owner's taps", () => {
           ],
         );
         // As work and a date it is still there, late as any deadline is.
-        const agenda = yield* OwnerMoney.dates(people, {
-          orgId,
-          from: "2026-11-01T00:00:00.000Z",
-          to: "2026-11-30T00:00:00.000Z",
-        });
+        const window = { from: Date.parse("2026-11-01"), to: Date.parse("2026-11-30") };
+        const agenda = yield* datesView(orgId, { ...window, viewer: KIN_OWNER_LEVEL }, NOW);
         const tasks = yield* OwnerWork.list(people, { orgId });
         assert.deepStrictEqual(
           [
@@ -2278,6 +2280,16 @@ describe("the owner's taps", () => {
           agenda.rows.filter((one) => one.record.key === "INV-1").map((one) => one.label),
           ["Date", "Due"],
         );
+        // People's Money reads money's dates alone: no task, and no invoice still a draft.
+        const peoples = yield* OwnerMoney.dates(people, {
+          orgId,
+          from: "2026-11-01T00:00:00.000Z",
+          to: "2026-11-30T00:00:00.000Z",
+        });
+        assert.deepStrictEqual(
+          [peoples.total, peoples.rows.map((one) => one.record.key)],
+          [1, ["DT-1"]],
+        );
         const told = yield* LeadMoney.datesQuery(scope, {
           from: "2026-11-01",
           to: "2026-11-29",
@@ -2289,9 +2301,17 @@ describe("the owner's taps", () => {
             ["Due", "Draft, suggested: waits for the owner or a co-owner to keep it"],
           ],
         );
+        // An agent's summary still reads every date ahead; people's Money, money's alone.
+        const told30 = yield* moneySummary(orgId, NOW, KIN_OWNER_LEVEL);
         assert.deepStrictEqual(
-          [summary.upcomingTotal, summary.upcoming.map((one) => one.record.key)],
-          [1, ["W-2"]],
+          [
+            [told30.upcomingTotal, told30.upcoming.map((one) => one.record.key)],
+            [summary.upcomingTotal, summary.upcoming.map((one) => one.record.key)],
+          ],
+          [
+            [1, ["W-2"]],
+            [0, []],
+          ],
         );
         // Past Money's newest 20, the rest open as a list; a paid one keeps its Keep.
         yield* LeadWork.create(scope, {
