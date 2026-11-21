@@ -280,5 +280,9 @@ describe("statement matching", () => {
     assert.strictEqual(vendorOf("UPI DR 412345 CLOUDNEST"), "Cloudnest");
     assert.strictEqual(vendorOf("DR FIGMA INC"), "Figma Inc");
     assert.strictEqual(vendorOf("POS DR THIRD WAVE COFFEE"), "Third Wave Coffee");
+    // W-26: a narration no rail or channel word explains names nobody, and a generic word isn't one.
+    assert.strictEqual(vendorOf("BEING AMOUNT PAID TOWARDS MAINTENANCE NOV"), undefined);
+    assert.strictEqual(vendorOf("CHQ PAID 004512 CLEARING"), undefined);
+    assert.strictEqual(vendorOf("BIL/INVOICE 22"), undefined);
   });
 });

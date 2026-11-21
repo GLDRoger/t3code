@@ -1,5 +1,6 @@
 import { RAILS } from "./statementRegion.ts";
 import type { StatementRow } from "./statementTable.ts";
+import { notAVendor } from "../vendorName.ts";
 
 /**
  * Which invoice a credit pays and which expense a debit is, by plain rules: the exact amount
@@ -376,7 +377,8 @@ export const vendorOf = (narration: string): string | undefined => {
     );
   else if (/^ACH\s?D?[-\s]/i.test(said)) found = said.replace(/^ACH\s?D?[-\s]+/i, "").split("-")[0];
   else if (/^POS\b/i.test(said)) found = said.replace(/^POS\s+\S*\d{4}\S*\s+/i, "");
-  else found = said;
+  // A narration no rail or channel word explains is the bank's or payer's words, not a name.
+  else if (payee(said) !== said) found = said;
   const cleaned = payee(found ?? "")
     .replace(/\b(USD|EUR|GBP|SGD|AED|AUD|CAD)\s?[\d,.]+/gi, "")
     .replace(/\*.*$/, "")
@@ -387,7 +389,7 @@ export const vendorOf = (narration: string): string | undefined => {
     .split(/\s+/)
     .slice(0, 3)
     .join(" ");
-  if (cleaned.length < 2) return undefined;
+  if (cleaned.length < 2 || notAVendor(cleaned)) return undefined;
   return cleaned
     .toLowerCase()
     .replace(/\b[a-z]/g, (letter) => letter.toUpperCase())
