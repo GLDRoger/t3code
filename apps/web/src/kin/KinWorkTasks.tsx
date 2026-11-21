@@ -245,27 +245,27 @@ export function KinWorkTaskList(
     shown !== "rows"
       ? []
       : within === undefined && kinWorkByMove(filter)
-      ? kinTasksByMove({
-          records,
-          moves: list.moves(),
-          counts,
-          needsYou,
-          ownerLevel,
-          names,
-          facts,
-          read: listState.seq !== null,
-        })
-      : within === undefined && groupBy !== "me" && !searching
-        ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
-        : records.map((record, index) => ({
-            type: "task" as const,
-            key: record.key,
-            record,
-            move: null,
-            inProject: within !== undefined,
-            first: index === 0,
-            last: index === records.length - 1,
-          }));
+        ? kinTasksByMove({
+            records,
+            moves: list.moves(),
+            counts,
+            needsYou,
+            ownerLevel,
+            names,
+            facts,
+            read: listState.seq !== null,
+          })
+        : within === undefined && groupBy !== "me" && !searching
+          ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
+          : records.map((record, index) => ({
+              type: "task" as const,
+              key: record.key,
+              record,
+              move: null,
+              inProject: within !== undefined,
+              first: index === 0,
+              last: index === records.length - 1,
+            }));
   const steps = useKinTaskSteps({ environmentId, orgId });
   const answers = useKinAttentionHandle({ environmentId, orgId });
   const act = (key: KinRecordKey, action: KinWorkAction) => {

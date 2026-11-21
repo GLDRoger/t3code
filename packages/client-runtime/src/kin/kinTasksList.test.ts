@@ -215,7 +215,17 @@ describe("kinTasksByMove", () => {
     ]);
     const counts = { needsYou: 0, waiting: 60, rest: 1, doneRecently: 16 };
     expect(
-      groups(kinTasksByMove({ records, moves, counts, needsYou: 0, ownerLevel: true, names, read: true })),
+      groups(
+        kinTasksByMove({
+          records,
+          moves,
+          counts,
+          needsYou: 0,
+          ownerLevel: true,
+          names,
+          read: true,
+        }),
+      ),
     ).toEqual([
       "Needs you 0",
       "clear",
@@ -227,7 +237,15 @@ describe("kinTasksByMove", () => {
     ]);
     // Nothing read yet, as offline before the first answer: no group, so not all clear either.
     expect(
-      kinTasksByMove({ records: [], moves: new Map(), counts: null, needsYou: null, ownerLevel: true, names, read: false }),
+      kinTasksByMove({
+        records: [],
+        moves: new Map(),
+        counts: null,
+        needsYou: null,
+        ownerLevel: true,
+        names,
+        read: false,
+      }),
     ).toEqual([]);
   });
 

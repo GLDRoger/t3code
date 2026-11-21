@@ -556,10 +556,30 @@ describe("createKinPickerSearch", () => {
 describe("kinListShown", () => {
   it.each([
     ["rows held, offline", { seq: 4, loading: false, failed: null }, "offline", "rows"],
-    ["nothing held, offline, the read pending", { seq: null, loading: true, failed: null }, "offline", "offline"],
-    ["nothing held, offline, the read failed", { seq: null, loading: false, failed: "down" }, "offline", "offline"],
-    ["nothing held, still connecting", { seq: null, loading: true, failed: null }, "connecting", "loading"],
-    ["nothing held, connected, failed", { seq: null, loading: false, failed: "down" }, "connected", "failed"],
+    [
+      "nothing held, offline, the read pending",
+      { seq: null, loading: true, failed: null },
+      "offline",
+      "offline",
+    ],
+    [
+      "nothing held, offline, the read failed",
+      { seq: null, loading: false, failed: "down" },
+      "offline",
+      "offline",
+    ],
+    [
+      "nothing held, still connecting",
+      { seq: null, loading: true, failed: null },
+      "connecting",
+      "loading",
+    ],
+    [
+      "nothing held, connected, failed",
+      { seq: null, loading: false, failed: "down" },
+      "connected",
+      "failed",
+    ],
   ] as const)("%s", (_, state, link, shown) => {
     expect(kinListShown(state, link)).toBe(shown);
   });
