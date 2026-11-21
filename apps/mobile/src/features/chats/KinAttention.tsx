@@ -119,7 +119,7 @@ export function KinAttentionItem(
         <Menu
           title={row.title}
           accessibilityRole="button"
-          accessibilityLabel={`Answer ${row.title}`}
+          accessibilityLabel={KIN_ATTENTION.menu(row.title)}
           actions={[
             ...(row.whatsNext === null
               ? []
