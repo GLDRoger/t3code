@@ -9,6 +9,7 @@ import {
 import { KIN_RETIRED_LABEL, kinRetiredDirectAgentId } from "./kinAgentRetire.ts";
 import { kinAttachmentSummary } from "./kinAttachments.ts";
 import type { KinInboxView } from "./kinInboxModel.ts";
+import { kinMessageableAgents, type KinNewChatAgent } from "./kinPeopleChat.ts";
 import {
   kinChatRowLabel,
   kinChatRowView,
@@ -127,6 +128,42 @@ export function kinChatListRowLabel(row: KinChatListRow, time: (date: Date) => s
     .filter((part) => part !== null)
     .join(" ");
 }
+
+/**
+ * The agents the host lets the viewer message that have no chat with them yet, listed under the
+ * chats with what each is for. Not chats: nothing here is unread or raises a badge.
+ */
+export function kinChatListAgents(
+  chats: ReadonlyArray<Pick<KinChatSummary, "kind" | "members">>,
+  leads: Parameters<typeof kinMessageableAgents>[0],
+  me: ReadonlySet<string>,
+): ReadonlyArray<KinNewChatAgent> {
+  const talking = new Set(
+    chats
+      .filter(
+        (chat) =>
+          chat.kind === "direct" &&
+          chat.members.some(
+            (member) => member.principal._tag === "person" && me.has(member.principal.personId),
+          ),
+      )
+      .flatMap((chat) =>
+        chat.members.flatMap((member) =>
+          member.principal._tag === "agent" ? [member.principal.agentId] : [],
+        ),
+      ),
+  );
+  return kinMessageableAgents(leads).filter((agent) => !talking.has(agent.agentId));
+}
+
+/** Above the agents not yet talked to: each row opens a chat with that agent. */
+export const KIN_CHATS_AGENTS_TITLE = "Agents you can message";
+
+/** One line on the first Chats screen until the person dismisses it on this phone. */
+export const KIN_CHATS_INTRO = {
+  line: "Kin is your company's assistant: tell one of its agents what you need, and it gets started.",
+  dismiss: "Dismiss",
+} as const;
 
 /** A teammate's first look, before anyone has started a chat with them. */
 export const KIN_TEAMMATE_WELCOME = {

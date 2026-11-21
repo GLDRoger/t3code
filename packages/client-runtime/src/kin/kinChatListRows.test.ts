@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinChatListRowLabel, kinChatListRows, kinRoomLine } from "./kinChatListRows.ts";
+import {
+  kinChatListAgents,
+  kinChatListRowLabel,
+  kinChatListRows,
+  kinRoomLine,
+} from "./kinChatListRows.ts";
 import type { KinInboxRow, KinInboxView } from "./kinInboxModel.ts";
 import type { KinDirectory } from "./kinScreenState.ts";
 
@@ -186,6 +191,43 @@ describe("kinChatListRows", () => {
     expect(list([row("group", { body: "On it." }, { kind: "team_group" })])[0]).toMatchObject({
       author: "Tech lead",
     });
+  });
+});
+
+describe("kinChatListAgents", () => {
+  const agent = (agentId: string, name: string, intro: string) =>
+    ({ orgId: "org", agentId, name, intro, ownerName: "Rhea" }) as never;
+  const leads = {
+    leads: [],
+    messageable: [
+      agent("lead", "Tech lead", "Runs engineering."),
+      agent("growth", "Growth", "  Finds and follows up new clients. "),
+      agent("social", "Social", ""),
+    ],
+  };
+
+  it("lists an agent the viewer may message but has no chat with, with what it is for", () => {
+    const chats = [
+      row("lead-chat", { body: "Done." }),
+      row("group", null, { agentId: "growth", kind: "team_group" }),
+    ].map((held) => held.chat);
+    expect(kinChatListAgents(chats, leads, directory.me)).toEqual([
+      { agentId: "growth", name: "Growth", intro: "Finds and follows up new clients." },
+      { agentId: "social", name: "Social", intro: null },
+    ]);
+  });
+
+  it("drops an agent once the viewer has a chat with it, even an empty one", () => {
+    const chats = [row("lead", null), row("growth", null, { agentId: "growth" })].map(
+      (held) => held.chat,
+    );
+    expect(kinChatListAgents(chats, leads, directory.me).map((item) => item.agentId)).toEqual([
+      "social",
+    ]);
+  });
+
+  it("lists nothing before the host has said who may be messaged", () => {
+    expect(kinChatListAgents([], null, directory.me)).toEqual([]);
   });
 });
 

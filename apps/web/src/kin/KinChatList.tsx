@@ -3,8 +3,10 @@ import { KIN_CHAT_COPY } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_MONEY } from "@t3tools/client-runtime/kin/kinMoney";
 import {
+  kinChatListAgents,
   kinChatListRowLabel,
   kinChatListRows,
+  KIN_CHATS_AGENTS_TITLE,
   KIN_TEAMMATE_WELCOME,
   type KinChatListRow,
   kinRoomLine,
@@ -46,6 +48,7 @@ import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { useSidebar } from "../components/ui/sidebar";
 import { Skeleton } from "../components/ui/skeleton";
+import { toastManager } from "../components/ui/toast";
 import { cn } from "../lib/utils";
 import { ApproveOnPhone } from "./ApproveOnPhone";
 import { KinRestoreButton, useKinRestore } from "./KinAgentRetire";
@@ -59,6 +62,8 @@ import { kinWaitingAskView } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { KinStandInLine } from "./KinStandInLine";
 import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinInbox } from "./useKinHost";
+import { useKinOpenAgentChat } from "./useKinOpenChat";
+import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 
 const STATE_COPY: Record<
   Exclude<KinInboxScreenState["_tag"], "ready" | "loading" | "error">,
@@ -180,6 +185,15 @@ export function KinChatList() {
           ))}
         </ul>
       )}
+      {mine === null ? null : (
+        <KinAgentsToMessage
+          environmentId={mine.environmentId}
+          orgId={mine.orgId}
+          chats={inbox.chats}
+          me={directory.me}
+          onOpen={closeSidebar}
+        />
+      )}
       {retiredRows.length === 0 ? null : (
         <KinRetiredChats
           rows={retiredRows}
@@ -191,6 +205,62 @@ export function KinChatList() {
           onOpen={closeSidebar}
         />
       )}
+    </div>
+  );
+}
+
+/** Agents the host lets this person message that they have no chat with yet; never counted unread. */
+function KinAgentsToMessage(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly chats: ReadonlyArray<KinChatSummary>;
+  readonly me: ReadonlySet<string>;
+  readonly onOpen: () => void;
+}) {
+  const leads = Option.getOrNull(
+    AsyncResult.value(
+      useAtomValue(
+        kinClient.leads({ environmentId: props.environmentId, input: { orgId: props.orgId } }),
+      ),
+    ),
+  );
+  const openAgentChat = useKinOpenAgentChat();
+  const agents = kinChatListAgents(props.chats, leads, props.me);
+  if (agents.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-col">
+      <p className="px-2 py-1 text-xs text-sidebar-muted-foreground">{KIN_CHATS_AGENTS_TITLE}</p>
+      <ul className="flex flex-col gap-0.5">
+        {agents.map((agent) => (
+          <li key={agent.agentId}>
+            <button
+              type="button"
+              aria-label={`Message ${agent.name}`}
+              onClick={() => {
+                props.onOpen();
+                void openAgentChat(props.environmentId, props.orgId, agent.agentId).then(
+                  (problem) => {
+                    if (problem !== null) toastManager.add({ type: "error", title: problem });
+                  },
+                );
+              }}
+              className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-start outline-none ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset"
+            >
+              <KinAvatar avatar={kinAgentAvatar(agent.agentId)} />
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="truncate text-sm font-medium text-sidebar-foreground">
+                  {agent.name}
+                </span>
+                {agent.intro === null ? null : (
+                  <span className="truncate text-xs text-sidebar-muted-foreground">
+                    {agent.intro}
+                  </span>
+                )}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
