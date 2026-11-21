@@ -36,7 +36,9 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
 import { fromConnections, poll } from "../pulse/outside.ts";
+import { factSig } from "../pulse/told.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import { presetDefinition } from "../work/registers.ts";
 import { waitingCards } from "../work/recordComments.ts";
@@ -1622,6 +1624,119 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             0,
           );
           assert.lengthOf(fake.sent(), 1);
+        }),
+      ),
+  );
+
+  it.effect(
+    "a mail account that stops syncing is one line for the owner, gone once reads work",
+    () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const connections = yield* KinConnections;
+          const hello = yield* connect(fake, "microsoft", HELLO);
+          const source = yield* outside;
+          const read = Effect.gen(function* () {
+            const at = yield* Clock.currentTimeMillis;
+            yield* poll(orgId, at, source);
+          });
+          const stopped = Effect.gen(function* () {
+            const at = yield* Clock.currentTimeMillis;
+            const pulse = yield* KinPulse.read({
+              orgId,
+              at,
+              viewer: { _tag: "owner" },
+              includeHandled: true,
+              limit: 200,
+            });
+            return pulse.facts.filter((fact) => fact.sense === "mail_not_syncing");
+          });
+          const sync = connections
+            .list(people(owner), { orgId })
+            .pipe(
+              Effect.map(
+                (view) => view.connections.find((one) => one.connectionId === hello)?.mailSync,
+              ),
+            );
+
+          yield* read;
+          assert.lengthOf(yield* stopped, 0);
+          assert.deepStrictEqual(yield* sync, { readAt: NOW, error: null, stopped: false });
+
+          // Reads fail: one line, the same however many reads fail, so it is told once.
+          fake.failWith(HELLO, 503);
+          yield* TestClock.adjust("3 minutes");
+          yield* read;
+          const [first, ...more] = yield* stopped;
+          assert.lengthOf(more, 0);
+          assert.deepInclude(first!, {
+            key: `mail_not_syncing:${hello}`,
+            family: "system",
+            actor: { _tag: "owner" },
+            sensitive: true,
+            wake: "sweep",
+          });
+          assert.deepInclude(first!.subject, { kind: "connection", key: hello, title: HELLO });
+          assert.match(first!.consequence, /^Kin hasn't read this account's mail since /);
+          assert.include(first!.consequence, "Open it in Connections");
+          yield* TestClock.adjust("3 minutes");
+          yield* read;
+          const [again] = yield* stopped;
+          assert.strictEqual(again!.key, first!.key);
+          assert.strictEqual(
+            DateTime.toEpochMillis(again!.since),
+            DateTime.toEpochMillis(first!.since),
+          );
+          assert.strictEqual(factSig(again!, NOW + 6 * 60_000, "UTC"), factSig(first!, NOW, "UTC"));
+          const failing = yield* sync;
+          assert.isTrue(failing?.stopped);
+          assert.strictEqual(failing?.readAt, NOW);
+          assert.isNotNull(failing?.error ?? null);
+
+          // A read that works again clears it, on Connections too.
+          fake.failWith(HELLO, null);
+          yield* TestClock.adjust("3 minutes");
+          yield* read;
+          assert.lengthOf(yield* stopped, 0);
+          assert.deepStrictEqual(yield* sync, {
+            readAt: NOW + 9 * 60_000,
+            error: null,
+            stopped: false,
+          });
+
+          // A day with no read that worked, on an account still active, says so by itself.
+          yield* TestClock.adjust("25 hours");
+          const [quiet] = yield* stopped;
+          assert.strictEqual(quiet?.key, `mail_not_syncing:${hello}`);
+          assert.include(quiet!.consequence, "Kin keeps trying");
+          assert.isTrue((yield* sync)?.stopped);
+          yield* read;
+          assert.lengthOf(yield* stopped, 0);
+
+          // A sign-in that ran out stops the reader for good; it says to sign in again.
+          fake.setExpired(HELLO, true);
+          yield* TestClock.adjust("3 minutes");
+          yield* read;
+          const [expired] = yield* stopped;
+          assert.include(expired!.consequence, "sign in again in Connections");
+          fake.setExpired(HELLO, false);
+          const started = yield* connections.signInStart(people(owner), {
+            orgId,
+            connectionId: hello,
+            returnTo: "web",
+          });
+          yield* connections.signInFinish(people(owner), {
+            orgId,
+            response: fake.approve(started.authorizationUrl, HELLO),
+          });
+          yield* read;
+          assert.lengthOf(yield* stopped, 0);
+
+          // Paused is the owner's own choice: nothing to warn of, however long it stays paused.
+          yield* connections.update(people(owner), { orgId, connectionId: hello, paused: true });
+          yield* TestClock.adjust("3 days");
+          assert.lengthOf(yield* stopped, 0);
+          assert.isFalse((yield* sync)?.stopped);
         }),
       ),
   );

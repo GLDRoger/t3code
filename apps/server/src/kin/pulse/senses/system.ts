@@ -3,9 +3,16 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import {
+  liveConnections,
+  MAIL_QUIET_MS,
+  mailStopOf,
+  type MailStop,
+  toolsOf,
+} from "../../connections/ConnectionRows.ts";
 import { heldWork } from "../../lead/KinBudget.ts";
 import { DAY_MS } from "../thresholds.ts";
-import { agentOrOwner, iso, type SenseContext, type SensedFact } from "./shared.ts";
+import { agentOrOwner, iso, whenOf, type SenseContext, type SensedFact } from "./shared.ts";
 import { SENSE_CAP } from "./work.ts";
 
 export const systemSenses = Effect.fn("KinPulse.systemSenses")(function* (ctx: SenseContext) {
@@ -74,5 +81,57 @@ export const systemSenses = Effect.fn("KinPulse.systemSenses")(function* (ctx: S
       wake: "brief",
     });
   }
+  facts.push(...(yield* mailSenses(ctx)));
   return facts;
 });
+
+/**
+ * mail_not_syncing: a mail account Kin reads has stopped giving it new mail. One fact per
+ * account, gone once a read works again; a pause or a removal is the owner's choice and says
+ * nothing.
+ */
+const mailSenses = Effect.fn("KinPulse.mailSenses")(function* (ctx: SenseContext) {
+  const facts: Array<SensedFact> = [];
+  for (const row of yield* liveConnections(ctx.orgId)) {
+    const stop = mailStopOf(row, yield* toolsOf(ctx.orgId, row.connectionId), ctx.at);
+    if (stop === null || stop === undefined) continue;
+    const readAt = row.readOkAt ?? row.createdAt;
+    const last =
+      row.readOkAt === null
+        ? `since it was connected on ${whenOf(ctx, readAt)}`
+        : `since ${whenOf(ctx, readAt)}`;
+    facts.push({
+      sense: "mail_not_syncing",
+      family: "system",
+      key: `mail_not_syncing:${row.connectionId}`,
+      subject: {
+        kind: "connection",
+        key: row.connectionId,
+        title: (row.accountLabel ?? row.label).slice(0, 280),
+      },
+      scope: {},
+      since: iso(stop === "quiet" ? readAt + MAIL_QUIET_MS : (row.readFailedAt ?? readAt)),
+      consequence: mailConsequence(stop, last, row.readError).slice(0, 500),
+      actor: { _tag: "owner" },
+      sensitive: true,
+      wake: "sweep",
+    });
+  }
+  return facts;
+});
+
+const mailConsequence = (stop: MailStop, last: string, error: string | null) => {
+  const unread = `Kin hasn't read this account's mail ${last}, so new bills and receipts aren't recorded.`;
+  switch (stop) {
+    case "signed_out":
+      return `${unread} Its sign-in ran out: sign in again in Connections.`;
+    case "unreachable":
+      return `${unread} Kin can't reach it: open it in Connections to see why.`;
+    case "review":
+      return `${unread} A tool on it changed: look it over in Connections.`;
+    case "failing":
+      return `${unread} Reading it fails${error === null ? "" : `: ${error.slice(0, 200)}`}. Open it in Connections; signing in again often fixes it.`;
+    case "quiet":
+      return `${unread} Kin keeps trying; if this stays, open it in Connections.`;
+  }
+};

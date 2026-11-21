@@ -50,6 +50,7 @@ const KIN_PULSE_SENSES = [
   "deal_no_next_step",
   "deal_quiet",
   "deal_date_passed",
+  "mail_not_syncing",
 ] as const;
 /**
  * Senses newer than the first phones: a screen read sends them only to a client that lists them
@@ -61,6 +62,7 @@ export const KIN_PULSE_LATER_SENSES = [
   "deal_no_next_step",
   "deal_quiet",
   "deal_date_passed",
+  "mail_not_syncing",
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;
@@ -135,9 +137,21 @@ export const KinPulseFact = Schema.Struct({
   /** Sense, subject and episode: a moved due date is a new key, so a new fact. */
   key: TrimmedNonEmptyString.check(Schema.isMaxLength(300)),
   subject: Schema.Struct({
-    // `bank` comes only with a later sense, so an older client never meets it.
-    kind: Schema.Literals(["record", "worker", "task", "budget", "agent", "pull_request", "bank"]),
-    /** A record's key (INV-4), a task's thread, an agent id, a budget id, or owner/name#12 (PR). */
+    // `bank` and `connection` come only with later senses, so an older client never meets them.
+    kind: Schema.Literals([
+      "record",
+      "worker",
+      "task",
+      "budget",
+      "agent",
+      "pull_request",
+      "bank",
+      "connection",
+    ]),
+    /**
+     * A record's key (INV-4), a task's thread, an agent id, a budget id, owner/name#12 (PR), or a
+     * connection id.
+     */
     key: TrimmedNonEmptyString,
     title: Schema.String.check(Schema.isMaxLength(280)),
     recordId: Schema.optional(KinRecordId),

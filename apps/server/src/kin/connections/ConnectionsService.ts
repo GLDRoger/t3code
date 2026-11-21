@@ -83,6 +83,7 @@ import {
   connectionEverById,
   connectionView,
   liveConnections,
+  MAIL_QUIET_MS,
   pausedRefusal as paused,
   resolveConnection,
   sendAsOf,
@@ -769,7 +770,10 @@ const make = Effect.gen(function* () {
     const row = yield* live(orgId, connectionId);
     const tools = yield* toolsOf(orgId, connectionId).pipe(provideSql);
     return {
-      connection: yield* withSendState(row, connectionView(row, tools)),
+      connection: yield* withSendState(
+        row,
+        connectionView(row, tools, yield* Clock.currentTimeMillis),
+      ),
       tools: tools.map((tool) =>
         alwaysAsk(row, tool.name) ? { ...toolView(tool), alwaysAsk: true } : toolView(tool),
       ),
@@ -791,10 +795,11 @@ const make = Effect.gen(function* () {
   });
   const view = Effect.fn("KinConnections.view")(function* (orgId: KinOrgId) {
     const rows = yield* liveConnections(orgId).pipe(provideSql);
+    const now = yield* Clock.currentTimeMillis;
     const connections = yield* Effect.forEach(rows, (row) =>
       toolsOf(orgId, row.connectionId).pipe(
         provideSql,
-        Effect.flatMap((tools) => withSendState(row, connectionView(row, tools))),
+        Effect.flatMap((tools) => withSendState(row, connectionView(row, tools, now))),
       ),
     );
     return {
@@ -1219,6 +1224,9 @@ const make = Effect.gen(function* () {
         listedAt: null,
         lastOkAt: null,
         lastError: null,
+        readOkAt: null,
+        readFailedAt: null,
+        readError: null,
         pausedAt: null,
         removedAt: null,
       };
@@ -1646,6 +1654,7 @@ const make = Effect.gen(function* () {
         );
         yield* gateway.invalidate(row.connectionId);
         yield* sql`UPDATE kin_connections SET state = 'active', last_error = NULL,
+            read_failed_at = NULL, read_error = NULL,
             account_label = COALESCE(${account}, account_label), issuer = ${issuer},
             resource = ${entry.plan.resource ?? null}, updated_at = ${now}
           WHERE org_id = ${input.orgId} AND connection_id = ${row.connectionId}
@@ -1702,6 +1711,9 @@ const make = Effect.gen(function* () {
         listedAt: null,
         lastOkAt: null,
         lastError: null,
+        readOkAt: null,
+        readFailedAt: null,
+        readError: null,
         pausedAt: null,
         removedAt: null,
       };
@@ -1749,6 +1761,23 @@ const make = Effect.gen(function* () {
     }),
   );
 
+  /** A failed read is kept with when reading first failed, until one works again. */
+  const readFailed = Effect.fn("KinConnections.readFailed")(
+    function* (orgId: KinOrgId, connectionId: string, at: number, cause: unknown) {
+      const message =
+        isChatError(cause) || isGatewayError(cause) ? cause.message : "Kin couldn't read it.";
+      const [moved] = yield* sql<{ changed: number }>`UPDATE kin_connections SET
+          read_failed_at = COALESCE(read_failed_at, ${at}), read_error = ${message.slice(0, 500)}
+        WHERE org_id = ${orgId} AND connection_id = ${connectionId} AND removed_at IS NULL
+          AND read_error IS NOT ${message.slice(0, 500)}
+        RETURNING 1 AS changed`;
+      if (moved !== undefined) yield* touched(orgId);
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin couldn't note a failed mail read", { cause }),
+    ),
+  );
+
   const activity = Effect.fn("KinConnections.activity")(function* (
     orgId: KinOrgId,
     connectionId: string,
@@ -1772,22 +1801,36 @@ const make = Effect.gen(function* () {
       );
       const mail = read.has(MAIL_TOOL.list) || read.has(MAIL_TOOL.search);
       const calendar = read.has(MAIL_TOOL.events);
-      const found =
-        mail || calendar
-          ? yield* withSignIn(orgId, row, (force) =>
-              signInOf(orgId, row, force).pipe(
-                Effect.flatMap((secret) =>
-                  provider.activity(
-                    http,
-                    secret.accessToken,
-                    mailboxOf(row),
-                    since,
-                    cursor?.calendarCursor ?? null,
-                  ),
-                ),
-              ),
-            )
-          : { mail: [], calendar: [], cursor: cursor?.calendarCursor ?? null };
+      if (!mail && !calendar)
+        return {
+          _tag: "mail",
+          connectionId: row.connectionId,
+          since,
+          until,
+          account: row.accountLabel,
+          cursor: cursor?.calendarCursor ?? null,
+          mail: [],
+          calendar: [],
+        } as const;
+      const found = yield* withSignIn(orgId, row, (force) =>
+        signInOf(orgId, row, force).pipe(
+          Effect.flatMap((secret) =>
+            provider.activity(
+              http,
+              secret.accessToken,
+              mailboxOf(row),
+              since,
+              cursor?.calendarCursor ?? null,
+            ),
+          ),
+        ),
+      ).pipe(Effect.tapError((cause) => readFailed(orgId, row.connectionId, until, cause)));
+      // Mail recorded as read, so an account that stops syncing shows on its own.
+      yield* sql`UPDATE kin_connections SET read_ok_at = ${until}, read_failed_at = NULL,
+          read_error = NULL
+        WHERE org_id = ${orgId} AND connection_id = ${row.connectionId}`;
+      if (row.readError !== null || until - (row.readOkAt ?? row.createdAt) > MAIL_QUIET_MS)
+        yield* touched(orgId);
       return {
         _tag: "mail",
         connectionId: row.connectionId,
