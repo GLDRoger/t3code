@@ -20,6 +20,7 @@ import {
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
+import { useNavigation } from "@react-navigation/native";
 import { type ComponentRef, createContext, useEffect, useRef, useState } from "react";
 import { Platform, Pressable, TextInput, View } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
@@ -75,6 +76,13 @@ export function KinWorkFrame(
   },
 ) {
   const { form, showTop, footer, children, ...bar } = props;
+  const navigation = useNavigation();
+  const guarded = props.guardBack === true;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a guarded step turns its screen's swipe and Back off (AppBar); options merge, so leaving the step must turn them on again
+  useEffect(() => {
+    if (!guarded) return;
+    return () => navigation.setOptions({ gestureEnabled: true });
+  }, [guarded, navigation]);
   const [footerHeight, setFooterHeight] = useState(0);
   const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
   const footerSpace = useRef(0);
