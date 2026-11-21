@@ -16,11 +16,12 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
-import { orchestrationHarness, orgId } from "../lead/WakeupRunner.testkit.ts";
+import { orchestrationHarness, orgId, toolCall } from "../lead/WakeupRunner.testkit.ts";
 import * as DreamSession from "./DreamSession.ts";
 
 const model = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-haiku-4-5" };
@@ -107,6 +108,59 @@ it.effect("interrupting a dream turn interrupts its provider run", () =>
       Effect.provide(
         DreamSession.layer.pipe(
           Layer.provideMerge(orchestrationHarness({ claude: true, entered, hold })),
+        ),
+      ),
+    );
+  }).pipe(provideDeterministicTestRuntime),
+);
+
+it.effect.each([
+  ["a dream turn that works for an hour is not interrupted and ends as its run ends", 7, false],
+  ["a dream turn silent for 15 minutes is ended", 0, true],
+] as const)("%s", ([, calls, quiet]) =>
+  Effect.gen(function* () {
+    const holdRunning = yield* Deferred.make<void>();
+    const work = yield* Queue.unbounded<void>();
+    return yield* Effect.gen(function* () {
+      const session = yield* DreamSession.DreamSession;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const threadId = DreamSession.dreamThreadId(turn.dreamId, turn.turn);
+      const fiber = yield* session.run(turn).pipe(Effect.forkScoped);
+      yield* threads.streamStoredEventsFrom({ threadId, eventType: "provider-turn.updated" }).pipe(
+        Stream.filter(
+          ({ event }) =>
+            event.type === "provider-turn.updated" && event.payload.status === "running",
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      for (let call = 1; call <= calls; call++) {
+        yield* toolCall(work, threadId);
+        if (call < calls) yield* TestClock.adjust("10 minutes");
+      }
+      const runStatuses = Effect.map(threads.getThreadProjection(threadId), (projection) =>
+        projection.runs.map((run) => run.status),
+      );
+      if (quiet) {
+        yield* TestClock.adjust("14 minutes");
+        assert.deepStrictEqual(yield* runStatuses, ["running"]);
+        yield* TestClock.adjust("1 minute");
+      } else {
+        assert.deepStrictEqual(yield* runStatuses, ["running"]);
+        yield* Deferred.succeed(holdRunning, undefined);
+      }
+      assert.strictEqual((yield* Fiber.join(fiber)).status, quiet ? "timed_out" : "completed");
+      assert.deepStrictEqual(yield* runStatuses, [quiet ? "interrupted" : "completed"]);
+    }).pipe(
+      Effect.provide(
+        DreamSession.layer.pipe(
+          Layer.provideMerge(
+            orchestrationHarness(
+              quiet
+                ? { claude: true, untilInterrupted: true }
+                : { claude: true, holdRunning, work },
+            ),
+          ),
         ),
       ),
     );

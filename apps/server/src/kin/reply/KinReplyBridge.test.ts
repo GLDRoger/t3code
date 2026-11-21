@@ -36,6 +36,8 @@ import {
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -92,6 +94,10 @@ type Fake = {
   rescueItems: ReadonlyArray<OrchestrationV2TurnItem>;
   rescues: number;
   prompts: Array<string>;
+  /** Set to hold the rescue run until it completes, waiting as T3 does, on the clock. */
+  rescueRun?: Deferred.Deferred<void>;
+  rescueSent?: Deferred.Deferred<void>;
+  interrupts: Array<RunId | undefined>;
 };
 
 // The lead thread as the bridge sees it: the real wake-up run, with turn items the test scripts.
@@ -142,6 +148,7 @@ const fakeThreads = (fake: Fake, wakeupId: KinWakeupId) =>
           Effect.gen(function* () {
             fake.rescues++;
             fake.prompts.push(input.text);
+            if (fake.rescueSent !== undefined) yield* Deferred.succeed(fake.rescueSent, undefined);
             const current = yield* projection;
             return {
               dispatch: { sequence: 0, storedEvents: [] },
@@ -152,7 +159,18 @@ const fakeThreads = (fake: Fake, wakeupId: KinWakeupId) =>
               delivery: "queued" as const,
             };
           }),
-        waitForThread: () => Effect.succeed({ threadId, run: null, timedOut: false }),
+        waitForThread: (input) =>
+          input.runId !== rescueRunId || fake.rescueRun === undefined
+            ? Effect.succeed({ threadId, run: null, timedOut: false })
+            : Deferred.await(fake.rescueRun).pipe(
+                Effect.timeoutOption(Duration.millis(Math.max(1, input.timeoutMs))),
+                Effect.map((done) => ({ threadId, run: null, timedOut: Option.isNone(done) })),
+              ),
+        interruptThread: (input) =>
+          Effect.sync(() => {
+            fake.interrupts.push(input.runId);
+            return { type: "no_active_run" as const };
+          }),
       });
     }),
   );
@@ -347,6 +365,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
     rescueItems: [],
     rescues: 0,
     prompts: [],
+    interrupts: [],
   };
   const context = yield* Layer.build(
     ReplyBridge.layer.pipe(
@@ -369,7 +388,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
     wakeupId,
     projectId,
     rootRunId: runId,
-    rescueUntil: Number.MAX_SAFE_INTEGER,
+    rescue: true,
   });
   const posted = sql<{
     body: string;
@@ -768,7 +787,7 @@ it.effect.each<{
           wakeupId,
           projectId,
           rootRunId: runId,
-          rescueUntil: null,
+          rescue: false,
         });
     // A card's own message has no words.
     const rows = yield* sql<{ body: string; form: string | null }>`SELECT body, form
@@ -1317,7 +1336,7 @@ it.effect.each([
         wakeupId,
         projectId,
         rootRunId: runId,
-        rescueUntil: null,
+        rescue: false,
       });
       const lane = Option.getOrThrow(yield* bridge.lane({ orgId: owner.orgId, agentId, wakeupId }));
       yield* bridge.failed({ orgId: owner.orgId, wakeupId, lane, outcome: "replied" });
@@ -1572,7 +1591,7 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
       wakeupId,
       projectId,
       rootRunId: runId,
-      rescueUntil: null,
+      rescue: false,
     });
     const lane = { chatId, mode: "reply" as const, owed: true, leadName: "Ada" };
     const fail = (id: KinWakeupId) =>
@@ -1643,7 +1662,7 @@ it.effect("keeps a provider's error text out of the chat when its run failed", (
       wakeupId,
       projectId,
       rootRunId: runId,
-      rescueUntil: null,
+      rescue: false,
     });
     assert.deepStrictEqual(yield* posted, []);
   }).pipe(Effect.provide(layer)),
@@ -1893,6 +1912,45 @@ it.effect(
       for (const n of [1, 2, 3, 4, 5, 6, 7]) yield* send(n);
       assert.include(yield* send(8).pipe(Effect.flip), { reason: "limit" });
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  ["lands the reply of a rescue turn that keeps working for ten minutes", true],
+  ["ends a rescue turn silent from its start after the silence window, and says so", false],
+] as const)("%s", ([, working]) =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, posted, sql } = yield* setup({ ask: "Did the deploy finish?" });
+    fake.items = [text("a", 1, "NO_REPLY", runId)];
+    // The runner holds the unused grant while the rescue works (`WakeupRunner`); none runs here.
+    yield* sql`UPDATE kin_floor_grants SET expires_at = ${Number.MAX_SAFE_INTEGER}
+      WHERE consumed_at IS NULL`;
+    fake.rescueRun = yield* Deferred.make<void>();
+    fake.rescueSent = yield* Deferred.make<void>();
+    const fiber = yield* complete.pipe(Effect.forkChild);
+    yield* Deferred.await(fake.rescueSent);
+    if (working) {
+      for (let minute = 1; minute <= 10; minute++) {
+        yield* TestClock.adjust("1 minute");
+        yield* Queue.offer(fake.live, {
+          ...itemEvent(tool(`w${minute}`, 10 + minute, "Bash", rescueRunId)),
+          occurredAt: yield* DateTime.now,
+        });
+      }
+      fake.rescueItems = [text("r", 30, "Sorry, here it is: the deploy is done.", rescueRunId)];
+      yield* Deferred.succeed(fake.rescueRun, undefined);
+    } else {
+      yield* TestClock.adjust("14 minutes");
+      assert.deepStrictEqual(fake.interrupts, []);
+      yield* TestClock.adjust("1 minute");
+    }
+    yield* Fiber.join(fiber);
+    assert.strictEqual(fake.rescues, 1);
+    assert.deepStrictEqual(fake.interrupts, working ? [] : [rescueRunId]);
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
+      working ? ["agent:Sorry, here it is: the deploy is done."] : ["system:Ada didn't reply."],
+    );
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each([
