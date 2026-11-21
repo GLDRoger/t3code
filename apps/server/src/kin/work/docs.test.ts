@@ -967,6 +967,20 @@ it.effect(
         ))[0],
         "not_found",
       );
+      // The owner of this org naming another org in the request finds no such doc either.
+      assert.strictEqual(
+        (yield* refusal(
+          OwnerDocs.editSection([owner], {
+            orgId: elsewhere,
+            key: appDoc.key,
+            section: "pricing",
+            hash: section(plan, "pricing").hash,
+            text: "Leaked?",
+            clientRequestId: "test:wrong-org",
+          }),
+        ))[0],
+        "not_found",
+      );
       for (const row of [appDoc, siteDoc, companyDoc])
         assert.strictEqual((yield* Docs.versionOf(orgId, row.recordId))!.version, 1);
     }).pipe(Effect.provide(layer)),

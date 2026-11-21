@@ -373,6 +373,8 @@ export const restore = Effect.fn("KinDocs.restore")(
 /** D3: a person changes one section by hand; `Docs.editSectionByHand` decides who may. */
 export const editSection = Effect.fn("KinDocs.editSection")(
   function* (people: ReadonlyArray<PersonIdentity>, input: KinDocEditSectionInput) {
+    // A company the caller isn't in has no doc of that name for them.
+    if (!people.some((one) => one.orgId === input.orgId)) return yield* Docs.docNotFound(input.key);
     const { personId } = yield* readerOf(people, input.orgId);
     const { owner } = yield* KinIdentity;
     const asked = stableStringify({
