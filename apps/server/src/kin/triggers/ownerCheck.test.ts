@@ -31,6 +31,7 @@ const memoryItems = [
   item("last-review", { review_by: "2026-11-02" }),
   item("sixth", { links: [] }),
   item("invalid", { invalid_at: "2026-11-01", review_by: "2026-10-01" }),
+  item("cancelled", { status: "cancelled", review_by: "2026-10-01" }),
   item("other", { orgId: otherOrg, review_by: "2026-10-01" }),
 ];
 it.effect("picks five distinct, valid same-org items in the specified category order", () =>

@@ -56,6 +56,7 @@ const runWebPage = Effect.fnUntraced(function* (lead: Lead, input: typeof WebPag
   const page = yield* (yield* KinWebPages).read(address);
   yield* markOutside(lead, `web:${new URL(page.url).hostname.slice(0, 120)}`);
   yield* rememberPages(lead, [address, page.url, ...page.links]);
+  const moreLinks = page.links.filter((link) => !page.text.includes(`(${link})`));
   const shown = new URL(page.url);
   shown.search = "";
   return {
@@ -64,6 +65,8 @@ const runWebPage = Effect.fnUntraced(function* (lead: Lead, input: typeof WebPag
       url: shown.href,
       title: page.title,
       text: page.text,
+      // A link past the cut is one the text above no longer shows.
+      ...(moreLinks.length > 0 ? { more_links: moreLinks } : {}),
     }),
     ...(page.cut ? { cut: true as const } : {}),
     answer: pageLine(page.text.length, page.cut),
