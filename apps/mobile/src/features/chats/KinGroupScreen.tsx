@@ -2,9 +2,21 @@ import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinListRoute } from "./state/kinHome";
 import { kinStackWithoutChat } from "./state/kinChatStack";
 import { resetRootStack } from "../../lib/root-stack-reset";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { EnvironmentId, KinChatId, KinOrgId, type KinChatMembersResult } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  KIN_TEAM_ROOM_TEAM_ID,
+  KinChatId,
+  KinOrgId,
+  type KinChatMembersResult,
+} from "@t3tools/contracts";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_TEAM_ROOM_TEAMMATES } from "@t3tools/client-runtime/kin/kinNavigation";
+import {
+  KIN_COMPANY_CHAT_COPY,
+  kinTeamAgentChoices,
+} from "@t3tools/client-runtime/kin/kinProfiles";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_CLEAR_CHAT_ACTION,
@@ -43,10 +55,12 @@ import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
+import { Menu } from "../../components/ui/Menu";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { SettingsRow } from "../settings/components/SettingsRow";
 import { KinAvatar } from "./components/KinAvatar";
 import { kinClient } from "./state/kinClient";
 import { useKinHostAt } from "./state/useKinHost";
@@ -389,6 +403,9 @@ function KinGroupDetails(props: {
           ))}
         </ListSection>
       ) : null}
+      {group.chat.teamId === KIN_TEAM_ROOM_TEAM_ID ? (
+        <KinTeamRoomTeammates environmentId={environmentId} orgId={orgId} />
+      ) : null}
       {canMute && personId !== null ? (
         <ListSection title="Notifications">
           <ListToggleRow
@@ -434,5 +451,74 @@ function KinGroupDetails(props: {
         </ListSection>
       ) : null}
     </>
+  );
+}
+
+/**
+ * Whether teammates are in the Team room, said plainly: they never are, so the owner level opens
+ * the company chat to them here and picks who answers there.
+ */
+function KinTeamRoomTeammates(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  const leadsAtom = kinClient.leads({
+    environmentId: props.environmentId,
+    input: { orgId: props.orgId },
+  });
+  const result = useAtomValue(leadsAtom);
+  const refresh = useAtomRefresh(leadsAtom);
+  const canSet = useAtomValue(kinClient.groupSetCompany.permissionAtom(props.environmentId));
+  const set = useAtomCommand(kinClient.groupSetCompany, { reportFailure: false });
+  const list = Option.getOrNull(AsyncResult.value(result));
+  const current = list?.companyChat?.leadAgentId ?? null;
+  const choices = kinTeamAgentChoices(list?.leads ?? []);
+  const shown = choices.find((choice) => choice.agentId !== null && choice.agentId === current);
+  const label = (agentId: string | null, name: string) =>
+    agentId === null ? name : `On, ${name} answers`;
+  return (
+    <ListSection
+      title={KIN_TEAM_ROOM_TEAMMATES.title}
+      footer={
+        shown === undefined
+          ? KIN_TEAM_ROOM_TEAMMATES.notIn
+          : KIN_TEAM_ROOM_TEAMMATES.companyOn(shown.label)
+      }
+    >
+      {canSet ? (
+        <Menu
+          actions={choices.map((choice) => ({
+            id: choice.agentId ?? "off",
+            title: label(choice.agentId, choice.label),
+            state: choice.agentId === current ? ("on" as const) : ("off" as const),
+          }))}
+          onPressAction={({ nativeEvent }) => {
+            const picked = choices.find(
+              (choice) => (choice.agentId ?? "off") === nativeEvent.event,
+            );
+            if (picked === undefined || picked.agentId === current) return;
+            void set({
+              environmentId: props.environmentId,
+              input: { orgId: props.orgId, leadAgentId: picked.agentId },
+            }).then((outcome) => {
+              if (AsyncResult.isFailure(outcome))
+                Dialog.alert(
+                  kinFailureText(squashAtomCommandFailure(outcome), KIN_COMPANY_CHAT_COPY.failed),
+                );
+              refresh();
+            });
+          }}
+        >
+          <SettingsRow
+            labelWholeWords
+            icon="person.2"
+            label={KIN_COMPANY_CHAT_COPY.label}
+            value={list === null ? "…" : shown === undefined ? "Off" : shown.label}
+            valuePosition="trailing"
+            disabled={list === null}
+          />
+        </Menu>
+      ) : null}
+    </ListSection>
   );
 }

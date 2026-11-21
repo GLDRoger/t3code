@@ -1,15 +1,17 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  KIN_BRIEFS,
   KIN_CHECK_INS,
   KIN_WEEKDAYS,
-  kinCheckInDraft,
+  kinBriefProblem,
+  kinBriefSheetFields,
   kinCheckInLine,
   kinCheckInPipeline,
+  kinClockChoices,
   kinCoveredLine,
-  kinCheckInProblem,
-  type KinCheckInDraft,
 } from "@t3tools/client-runtime/kin/kinCheckIns";
+import { KIN_SET_UP_ON_COMPUTER } from "@t3tools/client-runtime/kin/kinNavigation";
 import type {
   KinCheckIn,
   KinCheckInActInput,
@@ -21,14 +23,14 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 
-import * as Dialog from "../../components/ui/Dialog";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
+import { Menu } from "../../components/ui/Menu";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsRow } from "../settings/components/SettingsRow";
-import { KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
+import { KinWorkLoading } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { kinClient, refreshKinBriefs } from "./state/kinClient";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -53,13 +55,8 @@ export function useCheckIns(target: Target) {
   };
 }
 
-/** The company's check-ins beyond the person's own briefs, in the Briefs section; each opens its sheet. */
-export function KinCheckInRows(
-  props: Target & {
-    readonly result: KinCheckInsResult;
-    readonly beyond: ReadonlyArray<KinCheckIn>;
-  },
-) {
+/** Check-ins as Settings rows, each opening its sheet; adding one is on the computer. */
+export function KinCheckInRows(props: Target & { readonly beyond: ReadonlyArray<KinCheckIn> }) {
   const navigation = useNavigation();
   return (
     <>
@@ -87,19 +84,6 @@ export function KinCheckInRows(
           }
         />
       ))}
-      {props.result.agents.length === 0 ? null : (
-        <SettingsRow
-          labelWholeWords
-          icon="plus"
-          label={KIN_CHECK_INS.add}
-          onPress={() =>
-            navigation.navigate("KinCheckInForm", {
-              environmentId: props.environmentId,
-              orgId: props.orgId,
-            })
-          }
-        />
-      )}
     </>
   );
 }
@@ -110,52 +94,77 @@ export type KinCheckInFormParams = {
   readonly checkIn?: string;
 };
 
-/** Add a check-in, or change, run, turn off or remove one, as a sheet over Settings. */
-export function KinCheckInFormScreen({ route }: StaticScreenProps<KinCheckInFormParams>) {
-  const target = targetOf(route.params);
-  const title = route.params.checkIn === undefined ? KIN_CHECK_INS.add : KIN_CHECK_INS.edit;
-  if (target === null) return <FormMessage title={title}>{NO_LINK}</FormMessage>;
-  return <CheckInFormRead {...target} scheduleId={route.params.checkIn ?? null} title={title} />;
+/** A brief's time from a list of half hours, never typed. */
+export function KinClockRow(props: {
+  readonly label: string;
+  readonly at: string;
+  readonly disabled: boolean;
+  readonly onPick: (at: string) => void;
+}) {
+  return (
+    <Menu
+      actions={kinClockChoices(props.at).map((at) => ({
+        id: at,
+        title: at,
+        state: at === props.at ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent }) => {
+        if (nativeEvent.event !== props.at) props.onPick(nativeEvent.event);
+      }}
+    >
+      <SettingsRow
+        labelWholeWords
+        icon="clock"
+        label={props.label}
+        value={props.at}
+        valuePosition="trailing"
+        disabled={props.disabled}
+      />
+    </Menu>
+  );
 }
 
-function CheckInFormRead(
-  props: Target & { readonly scheduleId: string | null; readonly title: string },
-) {
+/** One check-in's sheet: on or off, its time and days, and Run now. The rest is on the computer. */
+export function KinCheckInFormScreen({ route }: StaticScreenProps<KinCheckInFormParams>) {
+  const target = targetOf(route.params);
+  if (target === null || route.params.checkIn === undefined)
+    return (
+      <FormMessage title={KIN_CHECK_INS.title}>
+        {target === null ? NO_LINK : KIN_SET_UP_ON_COMPUTER.checkInAdd}
+      </FormMessage>
+    );
+  return <CheckInFormRead {...target} scheduleId={route.params.checkIn} />;
+}
+
+function CheckInFormRead(props: Target & { readonly scheduleId: string }) {
   const { value, refresh } = useCheckIns(props);
   if (value === null)
     return (
-      <FormMessage title={props.title}>
+      <FormMessage title={KIN_CHECK_INS.title}>
         <KinWorkLoading label="Loading check-ins" />
       </FormMessage>
     );
-  const checkIn =
-    props.scheduleId === null
-      ? null
-      : (value.checkIns.find((one) => one.scheduleId === props.scheduleId) ?? null);
-  if (props.scheduleId !== null && checkIn === null)
-    return <FormMessage title={props.title}>{NO_LINK}</FormMessage>;
+  const checkIn = value.checkIns.find((one) => one.scheduleId === props.scheduleId) ?? null;
+  if (checkIn === null) return <FormMessage title={KIN_CHECK_INS.title}>{NO_LINK}</FormMessage>;
   return <CheckInForm {...props} checkIn={checkIn} result={value} refresh={refresh} />;
 }
 
 function CheckInForm(
   props: Target & {
-    readonly checkIn: KinCheckIn | null;
+    readonly checkIn: KinCheckIn;
     readonly result: KinCheckInsResult;
-    readonly title: string;
     readonly refresh: () => void;
   },
 ) {
   const navigation = useNavigation();
   const { checkIn, result } = props;
+  const fields = kinBriefSheetFields({ checkIn });
   const save = useAtomCommand(kinClient.checkInSave, { reportFailure: false });
   const act = useAtomCommand(kinClient.checkInAct, { reportFailure: false });
-  const [draft, setDraft] = useState<KinCheckInDraft>(() =>
-    kinCheckInDraft(checkIn, result.agents[0]?.agentId ?? null),
-  );
+  const [draft, setDraft] = useState({ at: checkIn.at, days: checkIn.days });
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const edit = (patch: Partial<KinCheckInDraft>) => setDraft({ ...draft, ...patch });
-  const invalid = kinCheckInProblem(draft);
+  const invalid = kinBriefProblem(draft);
   const environmentId = props.environmentId;
 
   const finish = async (
@@ -171,24 +180,22 @@ function CheckInForm(
       setProblem(kinFailureText(squashAtomCommandFailure(done), KIN_CHECK_INS.failed));
     else if (close) navigation.goBack();
   };
-  const tap = (action: KinCheckInActInput["action"]) => {
-    if (checkIn === null) return;
+  const tap = (action: KinCheckInActInput["action"]) =>
     void finish(
       act({ environmentId, input: { orgId: props.orgId, scheduleId: checkIn.scheduleId, action } }),
-      action === "remove",
+      false,
     );
-  };
   const send = () => {
-    if (saving || invalid !== null || draft.agentId === null) return;
+    if (saving || invalid !== null) return;
     void finish(
       save({
         environmentId,
         input: {
           orgId: props.orgId,
-          ...(draft.scheduleId === undefined ? {} : { scheduleId: draft.scheduleId }),
-          agentId: draft.agentId,
-          title: draft.title.trim(),
-          what: draft.what.trim(),
+          scheduleId: checkIn.scheduleId,
+          agentId: checkIn.agentId,
+          title: checkIn.title,
+          what: checkIn.what,
           at: draft.at,
           days: draft.days,
         },
@@ -199,7 +206,7 @@ function CheckInForm(
 
   return (
     <FormShell
-      title={props.title}
+      title={checkIn.title}
       submit={KIN_CHECK_INS.save}
       saving={saving}
       canSave={invalid === null}
@@ -207,26 +214,23 @@ function CheckInForm(
       onSave={send}
     >
       <ListSection
-        footer={[KIN_CHECK_INS.zone(result.zone), checkIn === null ? null : kinCoveredLine(checkIn)]
+        footer={[KIN_CHECK_INS.zone(result.zone), kinCoveredLine(checkIn)]
           .filter((line) => line !== null)
           .join(" ")}
       >
-        <KinWorkTextField
-          label={KIN_CHECK_INS.name}
-          value={draft.title}
-          disabled={saving}
-          maxLength={200}
-          onChangeText={(title) => edit({ title })}
-        />
-        <KinWorkTextField
+        {fields.includes("on") ? (
+          <ListToggleRow
+            label={KIN_BRIEFS.on}
+            value={checkIn.on}
+            disabled={saving}
+            onValueChange={(on) => tap(on ? "turn_on" : "turn_off")}
+          />
+        ) : null}
+        <KinClockRow
           label={KIN_CHECK_INS.time}
-          value={draft.at}
-          keyboard="numbers"
+          at={draft.at}
           disabled={saving}
-          maxLength={5}
-          placeholder="HH:MM"
-          hint={invalid === "Set a time such as 09:30." ? invalid : undefined}
-          onChangeText={(at) => edit({ at: at.trim() })}
+          onPick={(at) => setDraft({ ...draft, at })}
         />
       </ListSection>
       <ListSection title={KIN_CHECK_INS.days}>
@@ -237,7 +241,8 @@ function CheckInForm(
             selected={draft.days.includes(day)}
             disabled={saving}
             onPress={() =>
-              edit({
+              setDraft({
+                ...draft,
                 days: draft.days.includes(day)
                   ? draft.days.filter((each) => each !== day)
                   : [...draft.days, day],
@@ -246,69 +251,24 @@ function CheckInForm(
           />
         ))}
       </ListSection>
-      {checkIn === null || kinCheckInPipeline(checkIn) === null ? null : (
+      {fields.includes("pipeline") ? (
         <ListSection footer={KIN_CHECK_INS.pipelineDetail}>
           <ListToggleRow
             label={KIN_CHECK_INS.pipeline}
-            value={kinCheckInPipeline(checkIn)}
+            value={kinCheckInPipeline(checkIn) === true}
             disabled={saving}
             onValueChange={(on) => tap(on ? "numbers_on" : "numbers_off")}
           />
         </ListSection>
-      )}
-      {checkIn === null ? (
-        <ListSection title={KIN_CHECK_INS.agent}>
-          {result.agents.map((agent) => (
-            <ListChoiceRow
-              key={agent.agentId}
-              label={agent.name}
-              selected={draft.agentId === agent.agentId}
-              disabled={saving}
-              onPress={() => edit({ agentId: agent.agentId })}
-            />
-          ))}
-        </ListSection>
       ) : null}
-      <ListSection>
-        <KinWorkTextField
-          label={KIN_CHECK_INS.what}
-          value={draft.what}
-          multiline
-          disabled={saving}
-          maxLength={2000}
-          onChangeText={(what) => edit({ what })}
+      <ListSection footer={`${KIN_CHECK_INS.agent}: ${checkIn.agentName}`}>
+        <ListActionRow
+          icon="play"
+          label={checkIn.runNowPending ? KIN_CHECK_INS.runNowPending : KIN_CHECK_INS.runNow}
+          disabled={saving || checkIn.runNowPending}
+          onPress={() => tap("run_now")}
         />
       </ListSection>
-      {checkIn === null ? null : (
-        <ListSection footer={`${KIN_CHECK_INS.agent}: ${checkIn.agentName}`}>
-          <ListActionRow
-            icon="play"
-            label={checkIn.runNowPending ? KIN_CHECK_INS.runNowPending : KIN_CHECK_INS.runNow}
-            disabled={saving || checkIn.runNowPending}
-            onPress={() => tap("run_now")}
-          />
-          <ListActionRow
-            icon={checkIn.on ? "pause" : "clock"}
-            label={checkIn.on ? KIN_CHECK_INS.turnOff : KIN_CHECK_INS.turnOn}
-            disabled={saving}
-            onPress={() => tap(checkIn.on ? "turn_off" : "turn_on")}
-          />
-          <ListActionRow
-            icon="trash"
-            tone="danger"
-            label={KIN_CHECK_INS.remove}
-            disabled={saving}
-            onPress={() =>
-              Dialog.confirm({
-                title: KIN_CHECK_INS.removeConfirm,
-                confirmText: KIN_CHECK_INS.remove,
-                destructive: true,
-                onConfirm: () => tap("remove"),
-              })
-            }
-          />
-        </ListSection>
-      )}
     </FormShell>
   );
 }
