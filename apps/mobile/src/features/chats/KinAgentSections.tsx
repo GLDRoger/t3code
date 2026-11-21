@@ -215,17 +215,24 @@ function Playbooks(props: {
 }) {
   const { environmentId, orgId, page } = props;
   const navigation = useNavigation();
-  return page.playbooks.length === 0 ? (
-    <Empty text={KIN_AGENT_PAGE.playbooksNone} />
-  ) : (
-    page.playbooks.map((playbook) => (
-      <View key={playbook.key} className={ROW}>
-        <ListRow
-          label={playbook.title}
-          onPress={() => navigation.navigate("KinDoc", { environmentId, orgId, doc: playbook.key })}
-        />
-      </View>
-    ))
+  return (
+    <>
+      {page.playbooks.length === 0 ? (
+        <Empty text={KIN_AGENT_PAGE.playbooksNone} />
+      ) : (
+        page.playbooks.map((playbook) => (
+          <View key={playbook.key} className={ROW}>
+            <ListRow
+              label={playbook.title}
+              onPress={() =>
+                navigation.navigate("KinDoc", { environmentId, orgId, doc: playbook.key })
+              }
+            />
+          </View>
+        ))
+      )}
+      <Note text={KIN_AGENT_PAGE.playbooksDetail} />
+    </>
   );
 }
 

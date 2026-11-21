@@ -396,6 +396,7 @@ function AgentPageBody(props: {
             ))}
           </ul>
         )}
+        <p className="text-xs text-muted-foreground">{KIN_AGENT_PAGE.playbooksDetail}</p>
       </KinAgentSection>
       <AgentInHand
         lead={lead}
