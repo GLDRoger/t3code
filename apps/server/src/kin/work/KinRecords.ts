@@ -126,6 +126,7 @@ import { contactFields } from "./contactDetails.ts";
 import { directionOf, findBankList } from "./statements/bankList.ts";
 import { cleanTags } from "./tags.ts";
 import { notAVendor } from "./vendorName.ts";
+import { withArticle } from "../article.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
   bumpTeamSeqs,
@@ -529,13 +530,16 @@ const checkInput = (
   },
 ): KinChatError | undefined => {
   if (input.steps === true && def.id !== "work")
-    return invalid(`Only a task has steps or an urgent mark; a ${def.noun} has neither.`);
+    return invalid(
+      `Only a task has steps or an urgent mark; ${withArticle(def.noun)} has neither.`,
+    );
   if (input.title !== undefined && mentionsKinMoney(input.title))
     return invalid(
       "A title never holds an amount: give the amount on its own and keep the title to what it was for.",
     );
   if (input.amount !== undefined && input.amount !== null) {
-    if (!def.amount && def.builtIn !== "work") return invalid(`A ${def.noun} has no amount.`);
+    if (!def.amount && def.builtIn !== "work")
+      return invalid(`${withArticle(def.noun, "A")} has no amount.`);
     if (!isCurrency(input.amount.currency))
       return invalid(`${input.amount.currency} is not a currency code.`);
     if (input.amount.minor < 0) return invalid("An amount never goes below zero; give 0 or more.");
@@ -547,14 +551,14 @@ const checkInput = (
     def.builtIn !== null &&
     def.builtIn !== "work"
   )
-    return invalid(`A ${def.noun} has no date of its own; use due.`);
+    return invalid(`${withArticle(def.noun, "A")} has no date of its own; use due.`);
   if (
     input.repeat !== undefined &&
     input.repeat !== null &&
     def.builtIn !== null &&
     def.builtIn !== "work"
   )
-    return invalid(`A ${def.noun} doesn't repeat.`);
+    return invalid(`${withArticle(def.noun, "A")} doesn't repeat.`);
   if (def.builtIn !== null) return checkFor(def.builtIn, input);
   if (input.state !== undefined && !def.states.includes(input.state))
     return invalid(
@@ -1237,7 +1241,7 @@ const make = Effect.gen(function* () {
           : list !== "work" && list !== "docs" && list !== "milestones" && projectId !== null
             ? new KinChatError({
                 reason: "invalid_state",
-                message: `A ${LISTS[list].noun} has no project.`,
+                message: `${withArticle(LISTS[list].noun, "A")} has no project.`,
               })
             : undefined;
 
@@ -1269,7 +1273,7 @@ const make = Effect.gen(function* () {
     if (row !== undefined) {
       const error = {
         reason: "conflict" as const,
-        message: `There is already a ${LISTS[list].noun} named ${title.slice(0, 80)}: ${row.key}.`,
+        message: `There is already ${withArticle(LISTS[list].noun)} named ${title.slice(0, 80)}: ${row.key}.`,
       };
       return yield* row.sensitive === 1 ? new SensitiveRefusal(error) : new KinChatError(error);
     }

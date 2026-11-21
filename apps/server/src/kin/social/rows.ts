@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { withArticle } from "../article.ts";
 import type { TextClock } from "../work/companyProfile.ts";
 
 /** What each platform takes, checked before a post reaches a card. Conservative on purpose. */
@@ -121,7 +122,7 @@ export const mediaProblem = (
   }
   const video = VIDEO_TYPES.has(media.mimeType);
   if (!video && !IMAGE_TYPES.has(media.mimeType))
-    return `${media.name} is a ${media.mimeType} file; posts take JPEG, PNG, WebP or GIF pictures and MP4 or MOV videos.`;
+    return `${media.name} is ${withArticle(media.mimeType)} file; posts take JPEG, PNG, WebP or GIF pictures and MP4 or MOV videos.`;
   if (rule.needs === "video" && !video) return `${rule.label} needs a video, not a picture.`;
   const limitMb = video ? rule.videoMb : rule.imageMb;
   if (media.bytes > limitMb * 1024 * 1024)

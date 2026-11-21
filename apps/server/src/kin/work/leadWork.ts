@@ -153,6 +153,7 @@ import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { DAY_MS } from "../durations.ts";
+import { withArticle } from "../article.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -1511,7 +1512,9 @@ const moneyPatch = Effect.fn("KinWorkTools.moneyPatch")(function* (
     row.fields === undefined
       ? undefined
       : def.builtIn !== null
-        ? yield* invalid(`A ${def.noun}'s details are named fields of their own, not fields.`)
+        ? yield* invalid(
+            `${withArticle(def.noun, "A")}'s details are named fields of their own, not fields.`,
+          )
         : yield* typedFields(def, row.fields, {
             who: (text) => resolveWho(lead, text),
             ref: (text, list) => resolveRef(lead, text, list),
