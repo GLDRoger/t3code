@@ -113,7 +113,7 @@ export const transport = (base: typeof McpHttpServer.layer) =>
             KinConnectionsMcp.registration.pipe(
               Layer.provide(Layer.succeedContext(kin.services.value)),
             ),
-            KinLead.layerMcp.pipe(
+            KinLead.layerRuntime.pipe(
               // Agents' turns run on Kin's clock; T3's orchestration keeps the one its worker reads.
               Layer.provide(
                 Layer.mergeAll(

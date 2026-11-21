@@ -460,5 +460,5 @@ const unconfigured = containStartup(
   ),
 );
 
-export const layerServer = configured(layer);
-export const layerMcp = configured(production);
+/** Kin's agent runtime as the server builds it, inside the Kin MCP endpoint (`kin/mcp/layer.ts`). */
+export const layerRuntime = configured(production);
