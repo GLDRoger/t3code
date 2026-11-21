@@ -237,6 +237,7 @@ function ClientFormRead(props: KinWorkTarget & { readonly clientKey: KinRecordKe
       {...props}
       editing={state.value.party}
       can={state.value.can ?? null}
+      contacts={state.value.contacts}
       start="client"
     />
   );
@@ -246,6 +247,8 @@ type ClientFormProps = KinWorkTarget & {
   readonly editing: KinPartyDetail | null;
   /** What the host says this reader may change; null for a new one or from an older host. */
   readonly can: KinPartyPage["can"] | null;
+  /** An existing one's contacts, whose emails and phones are edited in their own form. */
+  readonly contacts?: ReadonlyArray<KinContact>;
   readonly start: KinClientDraftKind;
 };
 
@@ -328,6 +331,7 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
     vendor: COPY.party.kindVendor,
   };
   const newProspect = editing === null && draft.kind === "prospect";
+  const keepsContacts = props.can?.contacts ?? props.can?.edit ?? !member;
   const india = kinIndiaFields(useKinCompanyCountry(props));
   const gstinNote = kinClientGstinNote(draft);
   const placeId = draft.abroad ? ABROAD : draft.placeOfSupply || NO_PLACE;
@@ -414,6 +418,38 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
           onChangeText={(tags) => form.edit({ tags })}
         />
       </ListSection>
+      {editing === null || (!keepsContacts && (props.contacts ?? []).length === 0) ? null : (
+        <ListSection title={KIN_CLIENTS.contacts} footer={COPY.contact.detailsHint}>
+          {(props.contacts ?? []).map((contact) => (
+            <ListActionRow
+              key={contact.key}
+              icon="person.crop.circle"
+              label={contact.name}
+              description={[contact.role, ...contact.phones, ...contact.emails]
+                .filter((part) => part !== null && part !== "")
+                .join(" · ")}
+              disabled={!keepsContacts}
+              onPress={() =>
+                navigation.navigate("KinContactForm", {
+                  environmentId,
+                  orgId,
+                  party: editing.key,
+                  contact: contact.key,
+                })
+              }
+            />
+          ))}
+          {keepsContacts ? (
+            <ListActionRow
+              icon="plus"
+              label={KIN_CLIENTS.addContact}
+              onPress={() =>
+                navigation.navigate("KinContactForm", { environmentId, orgId, party: editing.key })
+              }
+            />
+          ) : null}
+        </ListSection>
+      )}
       {editing !== null ? null : (
         <ListSection
           title={COPY.party.contact}
