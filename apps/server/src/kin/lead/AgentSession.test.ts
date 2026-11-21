@@ -5,8 +5,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
-import { delegatedTurn } from "./AgentSession.ts";
-import { ownerOnlyWakeup } from "./Audience.testkit.ts";
+import { delegatedTurn, fullSessionRefusal } from "./AgentSession.ts";
+import { SESSION_REFUSAL } from "./Audience.ts";
+import { approvedWakeup, ownerOnlyWakeup } from "./Audience.testkit.ts";
 
 const orgId = KinOrgId.make("org-ambermill");
 const agentId = KinAgentId.make("chief-of-staff");
@@ -108,5 +109,44 @@ it.effect(
         delegated: true,
         turn: undefined,
       });
+    }).pipe(Effect.provide(authorityLayer)),
+);
+
+// A turn whose content a teammate's turn wrote keeps no shell: the owner's Approve authorises
+// the one thing the card showed, not built-ins, and a task it delegates follows it.
+it.effect(
+  "an approved draft's turn, or one naming an approval it isn't, has no built-in tools; nor have its tasks",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const wakeupId = "wake-approved";
+      yield* ownerOnlyWakeup({ orgId, agentId, wakeupId });
+      const run = yield* startWakeupRun(lead, wakeupId);
+      yield* sql`UPDATE kin_wakeups SET thread_id = ${lead}, run_id = ${run.id}, status = 'running',
+        audience = 'owner_only' WHERE wakeup_id = ${wakeupId}`;
+      yield* delegation(lead, run.id, "task-of-approval");
+      const task = ThreadId.make("task-of-approval");
+      // The same agent's ordinary owner-only turn, and its task, keep them as before.
+      assert.isUndefined(yield* fullSessionRefusal(lead));
+      assert.isUndefined(yield* fullSessionRefusal(task));
+      for (const canonical of [true, false]) {
+        yield* approvedWakeup({ orgId, agentId, wakeupId, canonical });
+        assert.strictEqual(
+          yield* fullSessionRefusal(lead),
+          SESSION_REFUSAL.approved,
+          `${canonical}`,
+        );
+        assert.strictEqual(
+          yield* fullSessionRefusal(task),
+          SESSION_REFUSAL.approved,
+          `${canonical}`,
+        );
+      }
+      yield* sql`DELETE FROM kin_events WHERE wakeup_id = ${wakeupId}`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state, wakeup_id)
+        VALUES ('wake-approved:brief', ${orgId}, ${agentId}, 'routine', 'P2', '{"_tag":"routine"}',
+          0, 0, 'claimed', ${wakeupId})`;
+      assert.isUndefined(yield* fullSessionRefusal(lead));
     }).pipe(Effect.provide(authorityLayer)),
 );

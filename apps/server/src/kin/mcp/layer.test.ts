@@ -33,7 +33,7 @@ import { isSocialTool } from "../social/mcp.ts";
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
 import { visibleOnKinEndpoint } from "../lead/AgentSession.ts";
 import { REVIEW_REFUSAL, REVIEW_THREAD_PREFIX, REVIEW_TOOLS } from "../lead/outsideReview.ts";
-import { APPROVED_REFUSAL } from "../lead/approvedDraft.ts";
+import { APPROVED_REFUSAL, approvedToolAllowed } from "../lead/approvedDraft.ts";
 import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import { kinInstructions } from "../lead/turn/session.ts";
@@ -1118,6 +1118,25 @@ it.effect.each([true, false])(
           ["kin_connection_call", { connection: "Gmail", tool: "mail_send", arguments: {} }],
         ] as const)
           assert.include(yield* call(name, args), APPROVED_REFUSAL, name);
+        // T3's own tools a lead reaches (delegation, threads, projects, worktrees, pull requests,
+        // browser, devices) pass the same gate.
+        // t3_environment_links is hidden while links are off (`hiddenWhileLinksOff`), so no call
+        // reaches a gate here; the check it would meet refuses it.
+        const approvalTurn = { orgId: person.orgId, agentId, wakeupId: running!.wakeupId };
+        const unserved: Array<string> = [];
+        for (const name of LEAD_T3_TOOLS) {
+          const answer = yield* call(name, {});
+          if (answer.includes(`Tool '${name}' not found`)) {
+            unserved.push(name);
+            assert.isFalse(
+              yield* approvedToolAllowed(approvalTurn, name, {}).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              ),
+              name,
+            );
+          } else assert.include(answer, APPROVED_REFUSAL, name);
+        }
+        assert.deepStrictEqual(unserved, ["t3_environment_links"]);
         for (const [name, args] of [
           ["records_query", {}],
           ["kin_ask", { question: "What is the price?" }],
