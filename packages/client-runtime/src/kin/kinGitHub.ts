@@ -678,7 +678,7 @@ export function kinGitHubInstantRow(
         tone: "attention",
         label: "Every minute",
         detail:
-          "Kin couldn't set up GitHub to tell it at once, so it checks GitHub every minute instead. It tries again by itself within the hour.",
+          "Kin couldn't set up GitHub to tell it at once. Kin keeps checking GitHub every minute instead.",
         action: null,
       };
   }
