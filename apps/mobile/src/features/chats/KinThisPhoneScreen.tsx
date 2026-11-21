@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import { KIN_DEVICES_COPY } from "@t3tools/client-runtime/kin/kinDevices";
-import { KIN_THIS_PHONE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
+import { KIN_THIS_PHONE_COPY, kinSignOutExits } from "@t3tools/client-runtime/kin/kinDevice";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { View } from "react-native";
@@ -89,16 +89,26 @@ export function KinThisPhoneScreen() {
       : environment.label;
   const heldOf = (environmentId: EnvironmentId) =>
     held.find((one) => one.environmentId === environmentId) ?? null;
-  const teamOf = (environment: EnvironmentPresentation) =>
+  const knownTeamOf = (environment: EnvironmentPresentation) =>
     (environment.environmentId === hostId ? probe?.orgs.orgs[0]?.name : null) ??
     heldOf(environment.environmentId)?.team ??
-    environment.label;
+    null;
+  const teamOf = (environment: EnvironmentPresentation) =>
+    knownTeamOf(environment) ?? environment.label;
   // The coding app signs out of a computer it runs from its own Environments.
-  const exits: ReadonlyArray<EnvironmentPresentation> = [...yourKin, ...otherTeams]
-    .filter((one) => !inCodingApp || teammateIds.includes(one.environmentId))
-    // The computer Kin opens on answers for its team, so its team's other copies offer Forget.
-    .sort((a, b) => Number(b.environmentId === hostId) - Number(a.environmentId === hostId))
-    .filter((one, index, all) => all.findIndex((other) => teamOf(other) === teamOf(one)) === index);
+  const leavable = [...yourKin, ...otherTeams].filter(
+    (one) => !inCodingApp || teammateIds.includes(one.environmentId),
+  );
+  const exitIds = kinSignOutExits(
+    leavable.map((one) => ({
+      environmentId: one.environmentId,
+      label: one.label,
+      team: knownTeamOf(one),
+      connected: one.connection.phase === "connected",
+    })),
+    hostId,
+  );
+  const exits = exitIds.flatMap((id) => leavable.filter((one) => one.environmentId === id));
   const hasExit = (environmentId: EnvironmentId) =>
     exits.some((one) => one.environmentId === environmentId);
 
