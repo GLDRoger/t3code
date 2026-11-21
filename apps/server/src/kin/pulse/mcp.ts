@@ -64,7 +64,7 @@ export const PulseHandleInput = Schema.Struct({
   }),
   action: Schema.optional(KinPulseHandleAction).annotate({
     description:
-      "got_it (default): you or someone has it in hand; it comes back after until, or 3 days. not_a_problem: drop it until what it is about changes. set_aside: a person said to leave it; its record is set aside until the day in until, or until someone lifts it. undo: take any of these back.",
+      "got_it (default): you or someone has it in hand; it comes back after until, or 3 days. not_a_problem: drop it until what it is about changes; an overdue invoice comes back at its next chase. set_aside: a person said to leave it; its record is set aside until the day in until, or until someone lifts it. undo: take any of these back.",
   }),
   until: Schema.optional(
     Schema.Union([
