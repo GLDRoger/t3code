@@ -367,8 +367,11 @@ features:
     name: What Kin remembers
     tab: chats
     web: [settings, section:Memory]
-    phone: [SettingsKin, KinMemory]
+    phone: [tab:chats, KinMemory]
     roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      On the phone it opens from its row on Chats and from a link in a chat; Settings says memory
+      is set up on the computer.
     tools: [memory_search, memory_read, memory_write, kin_journal, memory_label]
     proof:
       - apps/server/src/kin/memory/Memory.test.ts
@@ -831,11 +834,12 @@ features:
     name: The company's deal stages
     tab: settings
     web: [settings, section:Deals]
-    phone: [SettingsKin, KinDealStages]
-    roles: { owner: both, co_owner: both, lead: both, member: both }
+    phone: [KinDealStages]
+    roles: { owner: web, co_owner: web, lead: web, member: web }
     note: >-
       The owner and co-owners rename, reorder, add and remove stages; removing one with open deals
-      moves them first. A member with Clients on reads them.
+      moves them first. A member with Clients on reads them. The phone's Settings leaves them to
+      the computer; the phone screen opens only from an old link.
     proof:
       - apps/server/src/kin/work/deals.test.ts
       - apps/web/src/kin/KinDeals.browser.test.tsx
@@ -974,7 +978,9 @@ features:
       On web Settings is a modal over the open page (`?settings=<section>`), from the gear at the
       bottom left of the sidebar, or on Chats in a narrow window. Everyone has You; the owner
       level adds Company; the owner on Kin's computer adds This computer. A section someone can't
-      open shows their profile.
+      open shows their profile. The phone keeps the day's rows (you, notifications, appearance,
+      briefs, and for the owner level Team, Agents, Company details and Stop all agents) and one
+      line naming what is set up on the computer.
     proof: [.agents/skills/verify-kin/scripts/checkin-new-agent.sh]
 
   - id: company
@@ -996,9 +1002,13 @@ features:
     name: Time zone and the daily spending limit
     tab: settings
     web: [settings, section:Company details, section:Daily limit]
-    phone: [SettingsKin, section:Daily limit]
-    roles: { owner: both, co_owner: both, lead: none, member: none }
-    proof: [apps/server/src/kin/lead/KinBudget.test.ts]
+    roles: { owner: web, co_owner: web, lead: none, member: none }
+    note: >-
+      Set on the computer; on the phone each agent held for the limit says "Waiting until
+      tomorrow" on its row on the Agents page. Each choice names its amount.
+    proof:
+      - apps/server/src/kin/lead/KinBudget.test.ts
+      - packages/client-runtime/src/kin/kinBudget.test.ts
 
   - id: company-stop
     name: Stop every agent for the whole company, and resume
@@ -1017,11 +1027,12 @@ features:
     name: Stop all agents, and resume them
     tab: settings
     web: [settings, section:Company details, section:All agents]
-    phone: [SettingsKin, KinCompany, section:All agents]
+    phone: [SettingsKin, section:Stop all agents]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     note: >-
       While agents are stopped, every chat with an agent says so above the box, for every member
-      (a member cannot stop or resume them), and it follows the switch without a reload.
+      (a member cannot stop or resume them), and it follows the switch without a reload. On the
+      phone it is a Settings row, and still on Company details too.
     proof:
       - packages/client-runtime/src/kin/kinStop.test.ts
       - apps/server/src/kin/lead/KinStop.test.ts
@@ -1030,14 +1041,14 @@ features:
     name: Recommendations, a setting Kin suggests changing
     tab: settings
     web: [settings, section:Recommendations]
-    phone: [SettingsKin, KinRecommendations]
-    roles: { owner: both, co_owner: none, lead: none, member: none }
+    roles: { owner: web, co_owner: none, lead: none, member: none }
     note: >-
       When the same hold-up keeps happening and a setting would end it, Kin puts one silent card in
       the owner's chat with Chief of staff (so it waits in Needs you); Do it makes the same change
       the setting's own control makes: a teammate's access to an agent, the daily limit one step up,
       or resuming a paused connection or agent. Settings lists each suggestion and what came of it;
-      a done one opens where that setting lives, and a put-off one can Ask again.
+      a done one opens where that setting lives, and a put-off one can Ask again. The list is on
+      web only; on the phone the cards still come in Needs you.
     proof:
       - apps/server/src/kin/recommend/KinRecommend.test.ts
       - apps/web/src/kin/KinRecommendations.browser.test.tsx
@@ -1051,8 +1062,8 @@ features:
     roles: { owner: both, co_owner: both, lead: none, member: none }
     note: >-
       Settings is a modal, so on web the form opens as a dialog over it; on the phone, a sheet.
-      On the phone check-ins sit in Briefs after the person's own briefs, each listed once; a
-      brief's sheet opens its check-in's for Run now, Remove and its words.
+      On the phone the weekly brief sits in Briefs after the person's own briefs; its sheet is
+      time, days, on or off and Run now. Adding one, its words and Remove are on the computer.
       A check-in tells only what the owner hasn't been told; on the weekly brief's day the morning
       check-in is the brief; one in quiet hours (22:00 to 07:00 unless set) waits for their end.
     proof:
@@ -1085,8 +1096,11 @@ features:
     name: Mail and tool connections
     tab: settings
     web: [settings, section:Connections]
-    phone: [SettingsKin, KinConnections, KinConnection]
-    roles: { owner: both, co_owner: both, lead: none, member: none }
+    phone: [KinConnections, KinConnection]
+    roles: { owner: web, co_owner: web, lead: none, member: none }
+    note: >-
+      Set up on the computer. The phone's Settings says so; its Connections screens open only
+      from an old link.
     proof:
       - apps/server/src/kin/connections/ConnectionsService.test.ts
       - packages/client-runtime/src/kin/kinConnections.test.ts
@@ -1095,8 +1109,8 @@ features:
     name: Social accounts, our own and each client's
     tab: settings
     web: [settings, section:Connections, section:Social accounts]
-    phone: [SettingsKin, KinConnections]
-    roles: { owner: both, co_owner: both, lead: none, member: none }
+    phone: [KinConnections]
+    roles: { owner: web, co_owner: web, lead: none, member: none }
     note: One key per group, limited to one profile at the service; a broken connection says why.
     proof:
       - apps/server/src/kin/social/Social.test.ts
@@ -1107,9 +1121,9 @@ features:
     name: Connect social accounts with a profile key
     tab: settings
     web: [settings, section:Connections, section:Social accounts, dialog:Connect social accounts]
-    phone: [SettingsKin, KinConnections, KinSocialConnect]
+    phone: [KinConnections, KinSocialConnect]
     form: true
-    roles: { owner: both, co_owner: both, lead: none, member: none }
+    roles: { owner: web, co_owner: web, lead: none, member: none }
     proof:
       - apps/server/src/kin/social/Social.test.ts
       - .agents/skills/verify-kin/scripts/social-week.sh
@@ -1118,36 +1132,36 @@ features:
     name: Send a connect link for an account
     tab: settings
     web: [settings, section:Connections, section:Social accounts, dialog:A connect link]
-    phone: [SettingsKin, KinConnections, KinSocialLink]
+    phone: [KinConnections, KinSocialLink]
     form: true
-    roles: { owner: both, co_owner: both, lead: none, member: none }
+    roles: { owner: web, co_owner: web, lead: none, member: none }
     proof: [apps/server/src/kin/social/Social.test.ts]
 
   - id: connection-add
     name: Add a connection
     tab: settings
     web: [settings, section:Connections, dialog:Add connection]
-    phone: [SettingsKin, KinConnections, KinConnectionAdd]
+    phone: [KinConnections, KinConnectionAdd]
     form: true
-    roles: { owner: both, co_owner: both, lead: none, member: none }
+    roles: { owner: web, co_owner: web, lead: none, member: none }
     proof: [packages/client-runtime/src/kin/kinConnections.test.ts]
 
   - id: connection-edit
     name: Rename a connection, change its key or note
     tab: settings
     web: [settings, section:Connections, section:Connection, dialog:Rename]
-    phone: [SettingsKin, KinConnections, KinConnection, KinConnectionEdit]
+    phone: [KinConnections, KinConnection, KinConnectionEdit]
     form: true
-    roles: { owner: both, co_owner: both, lead: none, member: none }
+    roles: { owner: web, co_owner: web, lead: none, member: none }
     proof: [apps/server/src/kin/connections/ConnectionsService.test.ts]
 
   - id: github-login
     name: Connect GitHub as the owner, and see who agents work as
     tab: settings
     web: [settings, section:Connections, dialog:Connect GitHub]
-    phone: [SettingsKin, KinConnections, KinGitHubConnect]
+    phone: [KinConnections, KinGitHubConnect]
     form: true
-    roles: { owner: both, co_owner: both, lead: none, member: none }
+    roles: { owner: web, co_owner: web, lead: none, member: none }
     tools: [kin_connection_offer]
     proof:
       - apps/server/src/kin/connections/GitHubLogin.test.ts
