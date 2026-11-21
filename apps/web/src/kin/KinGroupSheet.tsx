@@ -15,7 +15,13 @@ import {
   KIN_GROUP_FORM,
 } from "@t3tools/client-runtime/kin/kinGroups";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, KinChatMembersResult, KinOrgId } from "@t3tools/contracts";
+import { kinChatPinned } from "@t3tools/client-runtime/kin/kinScreenState";
+import {
+  KIN_COMPANY_CHAT_TEAM_ID,
+  type EnvironmentId,
+  type KinChatMembersResult,
+  type KinOrgId,
+} from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { useId, useState } from "react";
@@ -46,6 +52,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
+import { KinPinSwitch } from "./KinPinSwitch";
 import { announceKinClearKept, useKinClearPreview } from "./useKinClearPreview";
 import { kinGroupFormAtom } from "./kinGroupForm";
 
@@ -279,6 +286,16 @@ export function KinGroupSheet(props: {
                   }
                 />
               </div>
+              {
+                // The company chat is always on top, so it offers no pin.
+                group.chat.teamId === KIN_COMPANY_CHAT_TEAM_ID || personId === null ? null : (
+                  <KinPinSwitch
+                    environmentId={environmentId}
+                    chatId={chatId}
+                    pinned={kinChatPinned(group, new Set([personId]))}
+                  />
+                )
+              }
             </Section>
           ) : null}
           {canChange ? (

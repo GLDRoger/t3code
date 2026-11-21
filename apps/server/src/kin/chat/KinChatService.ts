@@ -58,6 +58,7 @@ import {
   type KinMessageWhen,
   type KinMessagesMarkReadInput,
   type KinChatsMuteInput,
+  type KinChatsPinInput,
   type KinChatsClearInput,
   type KinChatsClearResult,
   type KinPersonId,
@@ -236,6 +237,11 @@ export class KinChatService extends Context.Service<
     readonly mute: (
       identity: PersonCaller,
       input: KinChatsMuteInput,
+    ) => Effect.Effect<KinChatMember, ServiceError>;
+    /** Pins or unpins a chat on the caller's own list; nobody else's row changes. */
+    readonly pin: (
+      identity: PersonCaller,
+      input: KinChatsPinInput,
     ) => Effect.Effect<KinChatMember, ServiceError>;
     /**
      * Empties a chat for everyone in it, for good; memory, members and settings stay. The
@@ -1941,6 +1947,20 @@ const make = Effect.gen(function* () {
       const mutedUntil = input.muted ? KIN_MUTED_FOREVER : null;
       if (member.mutedUntil === mutedUntil) return member;
       const updated = yield* requireRecord(repo.setMute({ ...member, mutedUntil }));
+      yield* hub.publish({
+        type: "member.updated",
+        orgId: identity.orgId,
+        chatId: input.chatId,
+        member: updated,
+      });
+      return updated;
+    }, transaction),
+    pin: Effect.fn("KinChatService.pin")(function* (caller, input) {
+      const identity = yield* personFor(caller, input);
+      const member = yield* memberFor(identity, input.chatId);
+      if ((member.pinnedAt !== undefined) === input.pinned) return member;
+      const pinnedAt = input.pinned ? yield* Clock.currentTimeMillis : null;
+      const updated = yield* requireRecord(repo.setPin({ ...member, pinnedAt }));
       yield* hub.publish({
         type: "member.updated",
         orgId: identity.orgId,

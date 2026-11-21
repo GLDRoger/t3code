@@ -1069,6 +1069,11 @@ export function makeKinClient<R, ER>(
       tag: KIN_CHAT_WS_METHODS.chatsMute,
       concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
     }),
+    pin: createKinRpcCommand(runtime, {
+      label: "kin:pin",
+      tag: KIN_CHAT_WS_METHODS.chatsPin,
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
+    }),
     /** Empties this chat for everyone in it, for good; one in flight per chat. */
     clear: createKinRpcCommand(runtime, {
       label: "kin:clear",

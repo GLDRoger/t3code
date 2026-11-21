@@ -1,9 +1,13 @@
+import { KinChatId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  KIN_CHATS_UP_AT_LEAST,
   kinChatListAgents,
+  kinChatListFold,
   kinChatListRowLabel,
   kinChatListRows,
+  kinChatsKeptUp,
   kinRoomLine,
 } from "./kinChatListRows.ts";
 import type { KinInboxRow, KinInboxView } from "./kinInboxModel.ts";
@@ -19,7 +23,12 @@ const directory: KinDirectory = {
   retiredAgents: new Set(["old"]),
 };
 
-const member = (principal: object) => ({ principal, role: "member", leftAt: null });
+const member = (principal: object, extra: object = {}) => ({
+  principal,
+  role: "member",
+  leftAt: null,
+  ...extra,
+});
 
 function row(
   chatId: string,
@@ -29,6 +38,10 @@ function row(
     readonly kind?: string;
     readonly agentId?: string;
     readonly teamId?: string;
+    readonly unread?: number;
+    readonly working?: boolean;
+    /** The viewer's own member row: a pin or a mute. */
+    readonly mine?: object;
   } = {},
 ): KinInboxRow {
   return {
@@ -41,7 +54,7 @@ function row(
       createdAt: "2026-11-08T09:00:00.000Z",
       lastMessageAt: lastMessage === null ? null : "2026-11-08T09:30:00.000Z",
       members: [
-        member({ _tag: "person", personId: "owner" }),
+        member({ _tag: "person", personId: "owner" }, extra.mine),
         member({ _tag: "agent", agentId: extra.agentId ?? "lead" }),
       ],
       lastMessage:
@@ -54,7 +67,8 @@ function row(
               widgetId: null,
               ...lastMessage,
             },
-      unread: 0,
+      unread: extra.unread ?? 0,
+      ...(extra.working === undefined ? {} : { working: extra.working }),
     },
     waitingCount: extra.fold === "needsYou" ? 1 : 0,
     fold: extra.fold ?? "rest",
@@ -246,5 +260,139 @@ describe("kinRoomLine", () => {
         directory.me,
       ),
     ).toBe("You, Priya · Tech lead");
+  });
+});
+
+describe("kinChatListFold", () => {
+  const said = { body: "Done." };
+  const pinned = (at: string) => ({ mine: { pinnedAt: at } });
+  const muted = { mutedUntil: "9999-01-01T00:00:00.000Z" };
+  const company = row("company", said, { kind: "team_group", teamId: "company" });
+  const chief = row("chief", said, { agentId: "chief" });
+  const old = (chatId: string) => row(chatId, said, { agentId: chatId });
+  const fold = (
+    rows: ReadonlyArray<KinInboxRow>,
+    options: Partial<Parameters<typeof kinChatListFold>[1]> = {},
+  ) => {
+    const result = kinChatListFold(list(rows), { mainAgentId: "chief" as never, ...options });
+    return {
+      up: result.up.map((item) => item.chat.chatId),
+      settled: result.settled.map((item) => item.chat.chatId),
+    };
+  };
+  it.each([
+    {
+      name: "the company chat and the main agent's chat stay up; the rest settle",
+      rows: [old("sales"), company, chief, old("books")],
+      up: ["company", "chief"],
+      settled: ["sales", "books"],
+    },
+    {
+      name: "without a company chat, the main agent's chat alone is up",
+      rows: [old("sales"), chief],
+      up: ["chief"],
+      settled: ["sales"],
+    },
+    {
+      name: "with no main agent, the company chat alone is up",
+      rows: [company, chief, old("sales")],
+      mainAgentId: null,
+      up: ["company"],
+      settled: ["chief", "sales"],
+    },
+    {
+      name: "pinned chats come next, in the order they were pinned",
+      rows: [
+        row("later", said, { agentId: "a", ...pinned("2026-11-20T10:00:00.000Z") }),
+        old("sales"),
+        row("first", said, { agentId: "b", ...pinned("2026-11-19T10:00:00.000Z") }),
+        chief,
+      ],
+      up: ["chief", "first", "later"],
+      settled: ["sales"],
+    },
+    {
+      name: "a pin on the main agent's chat changes nothing",
+      rows: [row("chief", said, { agentId: "chief", ...pinned("2026-11-19T10:00:00.000Z") })],
+      up: ["chief"],
+      settled: [],
+    },
+    {
+      name: "an unread chat comes up after the pins",
+      rows: [chief, old("sales"), row("books", said, { agentId: "books", unread: 2 })],
+      up: ["chief", "books"],
+      settled: ["sales"],
+    },
+    {
+      name: "a chat waiting on the viewer comes up",
+      rows: [chief, row("books", said, { agentId: "books", fold: "needsYou" }), old("sales")],
+      up: ["chief", "books"],
+      settled: ["sales"],
+    },
+    {
+      name: "a chat an agent is working in comes up",
+      rows: [chief, old("sales"), row("books", said, { agentId: "books", working: true })],
+      up: ["chief", "books"],
+      settled: ["sales"],
+    },
+    {
+      name: "a muted chat with unread words still comes up",
+      rows: [chief, row("books", said, { agentId: "books", unread: 1, mine: muted })],
+      up: ["chief", "books"],
+      settled: [],
+    },
+    {
+      name: "read again with nothing waiting, it settles",
+      rows: [chief, row("books", said, { agentId: "books", mine: muted })],
+      up: ["chief"],
+      settled: ["books"],
+    },
+    {
+      name: "read again while the list is on screen, it stays up",
+      rows: [chief, old("books"), old("sales")],
+      keptUp: new Set(["books"]),
+      up: ["chief", "books"],
+      settled: ["sales"],
+    },
+    {
+      name: "with nobody settled, there is no fold",
+      rows: [company, chief],
+      up: ["company", "chief"],
+      settled: [],
+    },
+    {
+      name: "a new teammate's one chat is up, not alone under the fold",
+      rows: [old("welcome")],
+      mainAgentId: null,
+      up: ["welcome"],
+      settled: [],
+    },
+    {
+      name: `with nothing up, the newest ${KIN_CHATS_UP_AT_LEAST} come up and the rest settle`,
+      rows: [old("a"), old("b"), old("c"), old("d")],
+      up: ["a", "b", "c"],
+      settled: ["d"],
+    },
+  ] as const)("$name", ({ rows, up, settled, ...options }) => {
+    expect(fold(rows, options as never)).toEqual({ up, settled });
+  });
+
+  it("names the two rows that are always up, so neither offers a pin", () => {
+    const result = kinChatListFold(list([company, chief, old("sales")]), {
+      mainAgentId: "chief" as never,
+    });
+    expect([...result.fixed]).toEqual(["company", "chief"]);
+  });
+
+  it("only adds to who stays up while the list is on screen", () => {
+    const rows = list([chief, old("books")]);
+    const kept: ReadonlySet<KinChatId> = new Set([KinChatId.make("chief")]);
+    expect(kinChatsKeptUp(kept, rows.slice(0, 1))).toBe(kept);
+    expect([...kinChatsKeptUp(kept, rows)]).toEqual(["chief", "books"]);
+  });
+
+  it("says a pinned chat is pinned", () => {
+    const [pinnedRow] = list([row("sales", said, pinned("2026-11-19T10:00:00.000Z"))]);
+    expect(kinChatListRowLabel(pinnedRow!, () => "9:30")).toMatch(/Pinned\.$/);
   });
 });

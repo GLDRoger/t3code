@@ -118,6 +118,7 @@ import DropWebhookSources from "./migrations/K194_DropWebhookSources.ts";
 import DreamCharges from "./migrations/K195_DreamCharges.ts";
 import GitHubReviewReceipts from "./migrations/K196_GitHubReviewReceipts.ts";
 import InvitePlaces from "./migrations/K197_InvitePlaces.ts";
+import ChatPins from "./migrations/K198_ChatPins.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -316,6 +317,7 @@ const migrations = {
   "195_DreamCharges": DreamCharges,
   "196_GitHubReviewReceipts": GitHubReviewReceipts,
   "197_InvitePlaces": InvitePlaces,
+  "198_ChatPins": ChatPins,
 };
 const loader = Migrator.fromRecord(migrations);
 

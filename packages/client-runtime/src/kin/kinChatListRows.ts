@@ -2,6 +2,8 @@ import {
   KIN_COMPANY_CHAT_TEAM_ID,
   KIN_TEAM_ROOM_TEAM_ID,
   kinIsPeopleChat,
+  type KinAgentId,
+  type KinChatId,
   type KinChatMembersResult,
   type KinChatSummary,
 } from "@t3tools/contracts";
@@ -35,6 +37,8 @@ export interface KinChatListRow {
   readonly teamRoom: boolean;
   /** Something new in the Team room: a quiet dot, never a count or a badge. */
   readonly quietNew: boolean;
+  /** When the viewer pinned this chat to the top of their list; null when they haven't. */
+  readonly pinnedAt: string | null;
 }
 
 // A card posted without words has no body to preview, so its id's prefix says what it was.
@@ -102,6 +106,13 @@ export function kinChatListRows(
       company: row.chat.teamId === KIN_COMPANY_CHAT_TEAM_ID,
       teamRoom: row.chat.teamId === KIN_TEAM_ROOM_TEAM_ID,
       quietNew: row.chat.fresh === true,
+      pinnedAt:
+        row.chat.members.find(
+          (member) =>
+            member.leftAt === null &&
+            member.principal._tag === "person" &&
+            directory.me.has(member.principal.personId),
+        )?.pinnedAt ?? null,
     };
   });
   const live = rows.filter((row) => !row.retired && !row.company && !row.teamRoom);
@@ -115,6 +126,93 @@ export function kinChatListRows(
   ];
 }
 
+/** The list with no chat up still shows this many of the newest, so it never opens on a fold. */
+export const KIN_CHATS_UP_AT_LEAST = 3;
+
+export interface KinChatListFold {
+  /** The company chat, the chat with the main agent, pinned chats, then any that want a look. */
+  readonly up: ReadonlyArray<KinChatListRow>;
+  /** The rest, newest first, under one "Settled (N)" line. */
+  readonly settled: ReadonlyArray<KinChatListRow>;
+  /** Always up, so never offered a pin: the company chat and the chat with the main agent. */
+  readonly fixed: ReadonlySet<KinChatId>;
+}
+
+/**
+ * The few chats on top and the rest settled. A chat comes up while it has unread words (muted or
+ * not), waits on the viewer or has an agent working, and stays up while its id is in `keptUp`,
+ * so a list on screen never moves a row from under a finger. The main agent is the host's team
+ * agent (`teamAgentId`), never matched by name.
+ */
+export function kinChatListFold(
+  rows: ReadonlyArray<KinChatListRow>,
+  options: {
+    readonly mainAgentId: KinAgentId | null;
+    readonly keptUp?: ReadonlySet<KinChatId>;
+  },
+): KinChatListFold {
+  const { mainAgentId } = options;
+  const main = (row: KinChatListRow) =>
+    mainAgentId !== null &&
+    row.chat.kind === "direct" &&
+    row.chat.members.some(
+      (member) =>
+        member.leftAt === null &&
+        member.principal._tag === "agent" &&
+        member.principal.agentId === mainAgentId,
+    );
+  const fixed = [
+    ...rows.filter((row) => row.company),
+    ...rows.filter((row) => !row.company && main(row)),
+  ];
+  const fixedIds = new Set(fixed.map((row) => row.chat.chatId));
+  const rest = rows.filter((row) => !fixedIds.has(row.chat.chatId));
+  const pinned = rest
+    .flatMap((row) => (row.pinnedAt === null ? [] : [{ row, at: row.pinnedAt }]))
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .map(({ row }) => row);
+  const comesUp = (row: KinChatListRow) =>
+    row.view.unread > 0 ||
+    row.needsYou ||
+    row.working ||
+    options.keptUp?.has(row.chat.chatId) === true;
+  const loose = rest.filter((row) => row.pinnedAt === null);
+  const up = [...fixed, ...pinned, ...loose.filter(comesUp)];
+  const settled = loose.filter((row) => !comesUp(row));
+  return up.length === 0
+    ? {
+        up: settled.slice(0, KIN_CHATS_UP_AT_LEAST),
+        settled: settled.slice(KIN_CHATS_UP_AT_LEAST),
+        fixed: fixedIds,
+      }
+    : { up, settled, fixed: fixedIds };
+}
+
+/**
+ * Who stays up while the list is on screen: who was up when it came into view, and anyone that
+ * came up since. The same set back when nothing new came up, so a render can compare it.
+ */
+export function kinChatsKeptUp(
+  kept: ReadonlySet<KinChatId>,
+  up: ReadonlyArray<KinChatListRow>,
+): ReadonlySet<KinChatId> {
+  return up.every((row) => kept.has(row.chat.chatId))
+    ? kept
+    : new Set([...kept, ...up.map((row) => row.chat.chatId)]);
+}
+
+/** The line over the settled chats on web; T3's shelf header on the phone draws its own. */
+export const KIN_CHATS_SETTLED = "Settled";
+
+/** Beside Mute: a pin keeps a chat on top of this person's own list. */
+export const KIN_CHATS_PIN = {
+  pin: "Pin",
+  unpin: "Unpin",
+  failed: "Pinning this chat",
+  setting: "Pin to top",
+  settingDetail: "Keeps this chat on top of your Chats list.",
+} as const;
+
 /** "Tech lead, agent. Payments test fixed. 9:30. 3 unread. Working." */
 export function kinChatListRowLabel(row: KinChatListRow, time: (date: Date) => string): string {
   const label = kinChatRowLabel({ ...row.view, author: row.author, preview: row.preview }, time);
@@ -124,6 +222,7 @@ export function kinChatListRowLabel(row: KinChatListRow, time: (date: Date) => s
     row.working ? "Working." : null,
     row.needsYou ? "Needs you." : null,
     row.quietNew ? "New messages." : null,
+    row.pinnedAt === null ? null : "Pinned.",
   ]
     .filter((part) => part !== null)
     .join(" ");

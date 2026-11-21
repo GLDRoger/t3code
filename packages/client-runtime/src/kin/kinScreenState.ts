@@ -352,6 +352,20 @@ export function kinChatMuted(
   );
 }
 
+/** Whether the viewer pinned this chat to the top of their own list. */
+export function kinChatPinned(
+  chat: Pick<KinChatSummary, "members">,
+  me: ReadonlySet<string>,
+): boolean {
+  return chat.members.some(
+    (member) =>
+      member.leftAt === null &&
+      member.principal._tag === "person" &&
+      me.has(member.principal.personId) &&
+      member.pinnedAt !== undefined,
+  );
+}
+
 export function kinChatRowView(
   row: KinInboxRow,
   directory: KinDirectory,

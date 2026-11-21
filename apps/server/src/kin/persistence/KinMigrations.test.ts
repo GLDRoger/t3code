@@ -451,6 +451,11 @@ const undoChatSharing = Effect.gen(function* () {
   yield* sql`ALTER TABLE kin_chats DROP COLUMN shared_at`;
 });
 
+const undoChatPins = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE kin_chat_members DROP COLUMN pinned_at`;
+});
+
 const undoApproverKeyConfirmations = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`DROP TABLE kin_approver_key_confirmations`;
@@ -785,6 +790,7 @@ describe("Kin migrations", () => {
       yield* undoGroupLead;
       yield* undoWakeupAudience;
       yield* undoChatSharing;
+      yield* undoChatPins;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 5`;
       assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(5));
       assert.deepStrictEqual(
@@ -1502,6 +1508,31 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("K198 gives every chat member no pin, keeps a pin, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* undoChatPins;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 198`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Ambermill', ${timestamp})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('rhea', 'org', 'rhea', 'Rhea', ${timestamp})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('chat', 'org', 'project_group', 0, ${timestamp})`;
+      yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, member_id, role, joined_at,
+          principal_kind, person_id)
+        VALUES ('org', 'chat', 'member', 'owner', ${timestamp}, 'person', 'rhea')`;
+      const pinned = sql`SELECT member_id AS "memberId", pinned_at AS "pinnedAt"
+        FROM kin_chat_members`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(198));
+      assert.deepStrictEqual(yield* pinned, [{ memberId: "member", pinnedAt: null }]);
+      yield* sql`UPDATE kin_chat_members SET pinned_at = 5`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 198`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(198));
+      assert.deepStrictEqual(yield* pinned, [{ memberId: "member", pinnedAt: 5 }]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("K185 runs after K184 and only once, with K186 behind it", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -1839,7 +1870,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 197");
+      assert.include(String(exit), "below the latest applied migration 198");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

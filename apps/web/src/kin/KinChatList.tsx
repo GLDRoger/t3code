@@ -4,8 +4,11 @@ import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_MONEY } from "@t3tools/client-runtime/kin/kinMoney";
 import {
   kinChatListAgents,
+  kinChatListFold,
   kinChatListRowLabel,
   kinChatListRows,
+  kinChatsKeptUp,
+  KIN_CHATS_SETTLED,
   KIN_CHATS_AGENTS_TITLE,
   KIN_TEAMMATE_WELCOME,
   type KinChatListRow,
@@ -31,6 +34,7 @@ import { KIN_CHIEF_OF_STAFF } from "@t3tools/client-runtime/kin/kinLeadPresentat
 import type {
   EnvironmentId,
   KinAgentId,
+  KinChatId,
   KinChatSummary,
   KinLeadsListResult,
   KinOrgId,
@@ -39,8 +43,9 @@ import type {
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { Link, useParams } from "@tanstack/react-router";
-import { BellOffIcon, ChevronDownIcon, ChevronRightIcon, BotIcon } from "lucide-react";
-import { useState } from "react";
+import * as Schema from "effect/Schema";
+import { BellOffIcon, ChevronDownIcon, ChevronRightIcon, BotIcon, PinIcon } from "lucide-react";
+import { useState, useSyncExternalStore } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
@@ -49,6 +54,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/
 import { useSidebar } from "../components/ui/sidebar";
 import { Skeleton } from "../components/ui/skeleton";
 import { toastManager } from "../components/ui/toast";
+import { useLocalStorage } from "../hooks/useLocalStorage";
 import { cn } from "../lib/utils";
 import { ApproveOnPhone } from "./ApproveOnPhone";
 import { KinRestoreButton, useKinRestore } from "./KinAgentRetire";
@@ -171,19 +177,15 @@ export function KinChatList() {
           <KinFirstAgent target={mine} />
         )
       ) : (
-        <ul className="flex flex-col gap-0.5">
-          {liveRows.map((row) => (
-            <KinChatListItem
-              key={row.chat.chatId}
-              row={row}
-              me={directory.me}
-              environmentId={state.environmentId}
-              active={row.chat.chatId === openChatId}
-              now={now}
-              onOpen={closeSidebar}
-            />
-          ))}
-        </ul>
+        <KinFoldedChats
+          rows={liveRows}
+          me={directory.me}
+          environmentId={state.environmentId}
+          target={mine}
+          openChatId={openChatId}
+          now={now}
+          onOpen={closeSidebar}
+        />
       )}
       {mine === null ? null : (
         <KinAgentsToMessage
@@ -206,6 +208,100 @@ export function KinChatList() {
         />
       )}
     </div>
+  );
+}
+
+const SETTLED_OPEN_KEY = "kin:chats:settled-open";
+const NOBODY_KEPT: ReadonlySet<KinChatId> = new Set();
+type LeadsResult = AsyncResult.AsyncResult<KinLeadsListResult, unknown>;
+const noLeadsAtom: Atom.Atom<LeadsResult> = Atom.make<LeadsResult>(AsyncResult.initial());
+
+const subscribeVisibility = (onChange: () => void) => {
+  document.addEventListener("visibilitychange", onChange);
+  return () => document.removeEventListener("visibilitychange", onChange);
+};
+const pageVisible = () => document.visibilityState === "visible";
+
+/**
+ * The chats on top, then "Settled (N)" over the rest, opened or closed as this browser last left
+ * it. Who is up is worked out when the page comes back into view; while it is in view a row only
+ * ever joins the top, so nothing moves from under the pointer.
+ */
+function KinFoldedChats(props: {
+  readonly rows: ReadonlyArray<KinChatListRow>;
+  readonly me: ReadonlySet<string>;
+  readonly environmentId: EnvironmentId;
+  readonly target: KinLeadFormTarget | null;
+  readonly openChatId: string | null;
+  readonly now: Date;
+  readonly onOpen: () => void;
+}) {
+  const { target } = props;
+  const leads = Option.getOrNull(
+    AsyncResult.value(
+      useAtomValue(
+        target === null
+          ? noLeadsAtom
+          : kinClient.leads({
+              environmentId: target.environmentId,
+              input: { orgId: target.orgId },
+            }),
+      ),
+    ),
+  );
+  const inView = useSyncExternalStore(subscribeVisibility, pageVisible, () => true);
+  const [kept, setKept] = useState({ inView: false, ids: NOBODY_KEPT });
+  const entering = inView && !kept.inView;
+  const fold = kinChatListFold(props.rows, {
+    mainAgentId: leads?.teamAgentId ?? null,
+    keptUp: entering ? NOBODY_KEPT : kept.ids,
+  });
+  const keptNext = kinChatsKeptUp(entering ? NOBODY_KEPT : kept.ids, fold.up);
+  if (inView !== kept.inView || keptNext !== kept.ids) setKept({ inView, ids: keptNext });
+  const [open, setOpen] = useLocalStorage(SETTLED_OPEN_KEY, false, Schema.Boolean);
+  const [toggled, setToggled] = useState<boolean | null>(null);
+  // The open chat's row is in sight until the fold is closed by hand.
+  const showSettled =
+    toggled ?? (open || fold.settled.some((row) => row.chat.chatId === props.openChatId));
+  const item = (row: KinChatListRow) => (
+    <KinChatListItem
+      key={row.chat.chatId}
+      row={row}
+      me={props.me}
+      environmentId={props.environmentId}
+      active={row.chat.chatId === props.openChatId}
+      pinned={!fold.fixed.has(row.chat.chatId) && row.pinnedAt !== null}
+      now={props.now}
+      onOpen={props.onOpen}
+    />
+  );
+  return (
+    <>
+      <ul className="flex flex-col gap-0.5">{fold.up.map(item)}</ul>
+      {fold.settled.length === 0 ? null : (
+        <div className="mt-1 flex flex-col">
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-expanded={showSettled}
+            className="justify-start"
+            onClick={() => {
+              setToggled(!showSettled);
+              setOpen(!showSettled);
+            }}
+          >
+            {showSettled ? <ChevronDownIcon /> : <ChevronRightIcon />}
+            <span className="min-w-0 flex-1 text-start font-normal text-sidebar-muted-foreground">
+              {KIN_CHATS_SETTLED}
+            </span>
+            <span className="text-xs font-normal text-sidebar-muted-foreground tabular-nums">
+              {fold.settled.length}
+            </span>
+          </Button>
+          {showSettled ? <ul className="flex flex-col gap-0.5">{fold.settled.map(item)}</ul> : null}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -406,6 +502,8 @@ function KinChatListItem(props: {
   readonly me?: ReadonlySet<string>;
   readonly environmentId: EnvironmentId;
   readonly active: boolean;
+  /** Pinned to the top by this person; the rows always on top show no pin. */
+  readonly pinned?: boolean;
   readonly now: Date;
   readonly onOpen: () => void;
 }) {
@@ -435,6 +533,9 @@ function KinChatListItem(props: {
             >
               {view.title ?? <Skeleton className="h-3.5 w-1/2" aria-hidden />}
             </span>
+            {props.pinned === true ? (
+              <PinIcon aria-hidden className="size-3 shrink-0 text-sidebar-muted-foreground" />
+            ) : null}
             {view.sentAt === null ? null : (
               <span className="shrink-0 text-xs text-sidebar-muted-foreground tabular-nums">
                 {time(new Date(view.sentAt))}

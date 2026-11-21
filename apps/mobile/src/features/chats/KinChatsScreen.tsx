@@ -4,16 +4,17 @@ import { LegendList } from "@legendapp/list/react-native";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinNewChatAgent } from "@t3tools/client-runtime/kin/kinPeopleChat";
-import { useNavigation } from "@react-navigation/native";
+import { useIsFocused, useNavigation } from "@react-navigation/native";
 import {
   EnvironmentId,
   type KinAgentId,
+  type KinChatId,
   type KinLeadsListResult,
   type KinOrgId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useState, type ReactNode } from "react";
+import { useState, type ReactElement, type ReactNode } from "react";
 import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -26,21 +27,27 @@ import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
+import { useAppActive } from "../../lib/appState";
 import { KIN_ONLY } from "../../lib/kinOnly";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { ThreadListV2SettledShelfHeader } from "../threads/thread-list-v2-items";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { KinMemoryEntry } from "./KinMemoryScreen";
 import { KinTeamEntry } from "./KinTeamScreen";
 import { KinWorkEntry } from "./KinWorkScreen";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
-import { KinInboxNotice, KinScreenState, KinStandInNotice } from "./components/KinScreenState";
+import { KinInboxNotice, KinScreenState } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   kinChatListAgents,
+  kinChatListFold,
   kinChatListRowLabel,
   kinChatListRows,
+  kinChatsKeptUp,
   kinRoomLine,
+  KIN_CHATS_PIN,
   type KinChatListRow,
   KIN_CHATS_AGENTS_TITLE,
   KIN_CHATS_EMPTY,
@@ -60,6 +67,7 @@ import {
   kinIntroDismissedAtom,
   kinIntroPersonKey,
 } from "./state/kinIntroDismissed";
+import { kinChatsSettledOpenAtom, setKinChatsSettledOpenAtom } from "./state/kinChatsSettledOpen";
 import { kinJoinedNameAtom } from "./state/kinJoin";
 import { useKinOpenAgentChat } from "./state/useKinOpenChat";
 import { useKinInbox } from "./state/useKinInbox";
@@ -131,6 +139,7 @@ export function KinChatsList({
           onRetry={retry}
           bottomClearance={bottomClearance}
           {...(empty === undefined ? {} : { empty })}
+          mainAgentId={leads?.teamAgentId ?? null}
           agents={agents}
           onOpenAgent={(agentId) => {
             if (newLeadAt === null) return;
@@ -330,6 +339,8 @@ export function KinChatsView(props: {
   /** Agents the viewer may message and has no chat with yet, under the chats. */
   readonly agents?: ReadonlyArray<KinNewChatAgent>;
   readonly onOpenAgent?: (agentId: KinAgentId) => void;
+  /** The host's team agent, whose chat stays on top; null when off or not read yet. */
+  readonly mainAgentId?: KinAgentId | null;
 }) {
   const { state, onOpenChat } = props;
   const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
@@ -385,7 +396,89 @@ export function KinChatsView(props: {
       </ScreenScrollView>
     );
   }
-  const rows = kinChatListRows(view, props.directory);
+  return (
+    <KinChatsFoldedList
+      state={state}
+      rows={kinChatListRows(view, props.directory)}
+      directory={props.directory}
+      mainAgentId={props.mainAgentId ?? null}
+      bottomClearance={props.bottomClearance ?? 0}
+      banner={banner}
+      memory={props.memory}
+      agents={agents}
+      onOpenWaiting={props.onOpenWaiting}
+      onOpenChat={onOpenChat}
+    />
+  );
+}
+
+type KinChatsItem =
+  | { readonly type: "chat"; readonly row: KinChatListRow; readonly pinnable: boolean }
+  | { readonly type: "settled"; readonly count: number };
+
+const NOBODY_KEPT: ReadonlySet<KinChatId> = new Set();
+
+/**
+ * The chats on top, then one "Settled (N)" line over the rest. Who is up is worked out when the
+ * list comes into view (the tab is focused, the app comes back); while it stays in view a row
+ * only ever joins the top, so nothing moves from under a finger.
+ */
+function KinChatsFoldedList(props: {
+  readonly state: Extract<KinInboxScreenState, { _tag: "ready" }>;
+  readonly rows: ReadonlyArray<KinChatListRow>;
+  readonly directory: KinDirectory;
+  readonly mainAgentId: KinAgentId | null;
+  readonly bottomClearance: number;
+  readonly banner: ReturnType<typeof kinWaitingBannerView>;
+  readonly memory: ReactNode;
+  readonly agents: ReactElement | null;
+  readonly onOpenWaiting: () => void;
+  readonly onOpenChat: (chatId: KinChatRowView["chatId"]) => void;
+}) {
+  const { state, onOpenChat, banner } = props;
+  const focused = useIsFocused();
+  const active = useAppActive();
+  const inView = focused && active;
+  const [kept, setKept] = useState({ inView: false, ids: NOBODY_KEPT });
+  const entering = inView && !kept.inView;
+  const fold = kinChatListFold(props.rows, {
+    mainAgentId: props.mainAgentId,
+    keptUp: entering ? NOBODY_KEPT : kept.ids,
+  });
+  const keptNext = kinChatsKeptUp(entering ? NOBODY_KEPT : kept.ids, fold.up);
+  if (inView !== kept.inView || keptNext !== kept.ids) setKept({ inView, ids: keptNext });
+  const saved = useAtomValue(kinChatsSettledOpenAtom);
+  const saveOpen = useAtomSet(setKinChatsSettledOpenAtom);
+  const [openNow, setOpenNow] = useState<boolean | null>(null);
+  const open = openNow ?? (AsyncResult.isSuccess(saved) && saved.value);
+  const canPin = useAtomValue(kinClient.pin.permissionAtom(state.environmentId));
+  const runPin = useAtomCommand(kinClient.pin, KIN_CHATS_PIN.failed);
+  const pinOf = (row: KinChatListRow) =>
+    canPin
+      ? {
+          pinned: row.pinnedAt !== null,
+          onToggle: () => {
+            void runPin({
+              environmentId: state.environmentId,
+              input: { chatId: row.chat.chatId, pinned: row.pinnedAt === null },
+            });
+          },
+        }
+      : undefined;
+  const chat = (row: KinChatListRow): KinChatsItem => ({
+    type: "chat",
+    row,
+    pinnable: !fold.fixed.has(row.chat.chatId),
+  });
+  const items: ReadonlyArray<KinChatsItem> = [
+    ...fold.up.map(chat),
+    ...(fold.settled.length === 0
+      ? []
+      : [
+          { type: "settled" as const, count: fold.settled.length },
+          ...(open ? fold.settled.map(chat) : []),
+        ]),
+  ];
   return (
     <LegendList
       renderScrollComponent={NativeScrollView}
@@ -393,38 +486,52 @@ export function KinChatsView(props: {
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{
         paddingTop: 4,
-        paddingBottom: kinTabFoot(props.bottomClearance ?? 0),
+        paddingBottom: kinTabFoot(props.bottomClearance),
       }}
-      data={rows}
-      keyExtractor={(row) => row.chat.chatId}
+      data={items}
+      keyExtractor={(item) => (item.type === "chat" ? item.row.chat.chatId : "settled")}
+      getItemType={(item) => item.type}
       estimatedItemSize={64}
       recycleItems
-      renderItem={({ item, index }) => (
-        <>
-          {item.company ? (
-            <KinCompanyChatRow
-              row={item}
-              environmentId={state.environmentId}
-              me={props.directory.me}
-              onPress={() => onOpenChat(item.chat.chatId)}
+      renderItem={({ item, index }) => {
+        if (item.type === "settled")
+          return (
+            <ThreadListV2SettledShelfHeader
+              count={item.count}
+              expanded={open}
+              onToggle={() => {
+                setOpenNow(!open);
+                saveOpen(!open);
+              }}
             />
-          ) : (
-            <KinChatRow
-              row={item}
-              accessibilityLabel={kinChatListRowLabel(item, (date) => formatKinTime(date))}
-              onPress={() => onOpenChat(item.chat.chatId)}
-            />
-          )}
-          {index < rows.length - 1 ? <View className="ml-5 h-px bg-border-subtle" /> : null}
-        </>
-      )}
+          );
+        const pin = item.pinnable ? pinOf(item.row) : undefined;
+        return (
+          <>
+            {item.row.company ? (
+              <KinCompanyChatRow
+                row={item.row}
+                environmentId={state.environmentId}
+                me={props.directory.me}
+                onPress={() => onOpenChat(item.row.chat.chatId)}
+              />
+            ) : (
+              <KinChatRow
+                row={item.row}
+                accessibilityLabel={kinChatListRowLabel(item.row, (date) => formatKinTime(date))}
+                onPress={() => onOpenChat(item.row.chat.chatId)}
+                {...(pin === undefined ? {} : { pin })}
+              />
+            )}
+            {items[index + 1]?.type === "chat" ? (
+              <View className="ml-5 h-px bg-border-subtle" />
+            ) : null}
+          </>
+        );
+      }}
       ListHeaderComponent={
         <>
-          {state._tag === "ready" ? (
-            <KinInboxNotice state={state} className="px-4 pb-2 pt-2" />
-          ) : (
-            <KinStandInNotice className="px-4 pb-2 pt-2" />
-          )}
+          <KinInboxNotice state={state} className="px-4 pb-2 pt-2" />
           {banner === null ? null : (
             <>
               <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
@@ -434,7 +541,7 @@ export function KinChatsView(props: {
           {props.memory}
         </>
       }
-      ListFooterComponent={agents}
+      ListFooterComponent={props.agents}
     />
   );
 }
