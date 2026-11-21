@@ -1783,16 +1783,29 @@ const make = Effect.gen(function* () {
                     mailboxOf(row),
                     since,
                     cursor?.calendarCursor ?? null,
+                    until,
                   ),
                 ),
               ),
             )
           : { mail: [], calendar: [], cursor: cursor?.calendarCursor ?? null };
+      // A read that stopped at its bound moves the cursor only as far as it read.
+      const cut = "until" in found ? found.until : undefined;
+      const readUntil = cut === undefined ? until : Math.max(since + 1, Math.min(until, cut));
+      if (readUntil < until)
+        yield* Effect.logInfo(
+          "Kin read a connection's activity up to its bound; the rest comes next",
+          {
+            orgId,
+            connectionId: row.connectionId,
+            readUntil,
+          },
+        );
       return {
         _tag: "mail",
         connectionId: row.connectionId,
         since,
-        until,
+        until: readUntil,
         account: row.accountLabel,
         cursor: found.cursor,
         mail: mail ? found.mail : [],

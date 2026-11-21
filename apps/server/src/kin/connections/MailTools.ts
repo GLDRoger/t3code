@@ -433,8 +433,9 @@ const activity = Effect.fn("KinMail.activity")(function* (
   context: MailContext,
   since: number,
   cursor: string | null,
+  now: number,
 ) {
-  const found = yield* vendor.activity(context, since, cursor);
+  const found = yield* vendor.activity(context, since, cursor, now);
   return {
     mail: found.threads
       .filter((thread) => thread.length > 0)
@@ -455,6 +456,7 @@ const activity = Effect.fn("KinMail.activity")(function* (
       updated,
     })),
     cursor: found.cursor,
+    ...(found.until === undefined ? {} : { until: found.until }),
   };
 });
 
@@ -479,8 +481,8 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
     sendAs: vendor.sendAs,
     call: (http, token, mailbox, tool, args, now) =>
       call(vendor, { http, token, mailbox }, tool, args, now),
-    activity: (http, token, mailbox, since, cursor) =>
-      activity(vendor, { http, token, mailbox }, since, cursor),
+    activity: (http, token, mailbox, since, cursor, now) =>
+      activity(vendor, { http, token, mailbox }, since, cursor, now),
     replyTarget: (http, token, mailbox, threadId) =>
       replyTarget(vendor, { http, token, mailbox }, threadId),
     sendMessage: vendor.sendMessage,

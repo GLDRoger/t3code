@@ -1415,7 +1415,7 @@ unlisted:
   "rpc:kin.lead.access.list": Served; no client shows an agent's access grants yet.
   "rpc:kin.lead.access.grant": Served; no client grants an agent access yet.
   "rpc:kin.lead.access.revoke": Served; no client revokes an agent's access yet.
-  "rpc:kin.approvals.list": Served; clients read approvals one at a time (kin.approvals.get), none lists them.
+  "rpc:kin.approvals.list": Deprecated; always answers unavailable, and no client ever called it (clients read approvals one at a time, kin.approvals.get). Kept until no supported build predates its deprecation.
   "rpc:kin.audit.list": Served; no client shows the audit log yet.
   "rpc:kin.audit.verify": Served; no client checks the audit log yet.
   "rpc:kin.levels.get": Served; no client shows levels yet.

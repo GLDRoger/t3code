@@ -4,6 +4,7 @@ import {
   ModelSelection,
   type KinRoutine,
   type KinTriggerFireId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -22,6 +23,7 @@ import { isSqlError } from "effect/sql/SqlError";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { nextScheduledRunAt } from "../../scheduledTasks/Schedule.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
@@ -88,6 +90,13 @@ const encodeDream = Schema.encodeEffect(Schema.fromJsonString(DreamJson));
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const FAILED_NIGHTS_NOTICE = 3;
+/**
+ * The owner's choice: whether a night that read its material and landed nothing (no model ran,
+ * or it changed nothing) counts that material as dreamed. Off, it is offered again next night.
+ */
+const EMPTY_DREAM_CONSUMES_MATERIAL = false;
+/** The owner's choice: whether a dream may start once the day's budget is spent. Off, it waits. */
+const DREAM_RUNS_ON_A_SPENT_BUDGET = false;
 const emptyDream: DreamJson = { changes: [], merges: [], supersessions: [], contradictions: [] };
 const zoned = (ms: number, timeZone: string) => DateTime.makeZonedUnsafe(ms, { timeZone });
 
@@ -125,6 +134,7 @@ const make = Effect.gen(function* () {
   const store = yield* KinTriggerStore.KinTriggerStore;
   const ticks = yield* Scheduler.Scheduler;
   const vcs = yield* VcsProcess;
+  const threads = yield* ThreadManagement.ThreadManagementService;
   /** One dream per org, reserved before its claim; `cancel` acts once it is claimed. `decided` marks whether the dream or `cancel` won. */
   const live = new Map<
     KinOrgId,
@@ -210,9 +220,11 @@ const make = Effect.gen(function* () {
     outcome: DreamOutcome,
   ) {
     const now = yield* Clock.currentTimeMillis;
+    // A landed dream was settled in the transaction that landed it.
     if (outcome._tag === "succeeded") {
       yield* sql`UPDATE kin_dream_runs SET status = 'succeeded', head = ${outcome.head},
-        dream_json = ${yield* encodeDream(outcome.dream)}, ended_at = ${now}
+        dream_json = ${yield* encodeDream(outcome.dream)}, ended_at = ${now},
+        material_until = ${EMPTY_DREAM_CONSUMES_MATERIAL ? sql`material_until` : sql`material_from`}
         WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
       return;
     }
@@ -355,12 +367,36 @@ const make = Effect.gen(function* () {
       ),
   );
 
+  /** A dream turn spends from the day's budget as a wake-up does; a failed read only logs. */
+  const charge = Effect.fn("DreamRunner.charge")(
+    function* (orgId: KinOrgId, threadId: ThreadId) {
+      const { providerTurns } = yield* threads.getThreadRecords(threadId, ["providerTurns"]);
+      yield* budget.chargeDream({
+        orgId,
+        threadId,
+        usage: providerTurns.map((turn) => ({
+          providerTurnId: turn.id,
+          ...(turn.turnTokenUsage === undefined ? {} : { turnTokenUsage: turn.turnTokenUsage }),
+          ...(turn.tokenUsage === undefined ? {} : { tokenUsage: turn.tokenUsage }),
+          usedTokens: turn.tokenUsage?.usedTokens,
+        })),
+      });
+    },
+    (effect, orgId, threadId) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't charge a dream turn", { orgId, threadId, cause }),
+        ),
+      ),
+  );
+
   const dream = Effect.fn("DreamRunner.dream")(function* (
     orgId: KinOrgId,
     claimed: NonNullable<Effect.Success<ReturnType<typeof claim>>>,
     ownerDate: string,
     full: boolean,
     timeZone: string,
+    decide: Effect.Effect<boolean>,
   ) {
     const { dreamId, branch } = claimed;
     const failed = (failures: ReadonlyArray<string>): DreamOutcome => ({
@@ -430,14 +466,16 @@ const make = Effect.gen(function* () {
         // Recorded before the turn starts, so the stop switch's fan-out can interrupt it.
         yield* sql`UPDATE kin_dream_runs SET thread_id = ${DreamSession.dreamThreadId(dreamId, name)}
           WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
-        const result = yield* session.run({
-          orgId,
-          dreamId,
-          turn: name,
-          workspaceRoot: root,
-          model,
-          text,
-        });
+        const result = yield* session
+          .run({
+            orgId,
+            dreamId,
+            turn: name,
+            workspaceRoot: root,
+            model,
+            text,
+          })
+          .pipe(Effect.ensuring(charge(orgId, DreamSession.dreamThreadId(dreamId, name))));
         return (yield* paused) ? "paused" : result.status;
       });
       const extracted = yield* turn(
@@ -513,9 +551,8 @@ const make = Effect.gen(function* () {
       });
       // A pause during the checks or the push fails the dream, and settling deletes its branch.
       if (yield* paused) return failed([pausedFailure]);
-      // The branch waits for the owner, so who may know each item until then is kept here. What
-      // it would let the team know is only suggested: a reworded item stops reaching the team
-      // when its new words land, until the owner confirms them.
+      // Who may know each item is kept before it lands. What it would let the team know is only
+      // suggested: a reworded item stops reaching the team once it lands, until the owner confirms.
       yield* Effect.gen(function* () {
         yield* classify(orgId, classified);
         for (const [itemId, content] of suggested) yield* suggest(orgId, itemId, content);
@@ -523,11 +560,43 @@ const make = Effect.gen(function* () {
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.provideService(KinRefreshObserver, refresh),
       );
+      if (changes.size === 0)
+        return {
+          _tag: "succeeded",
+          dreamId,
+          branch,
+          head: commit,
+          dream: checked.dream,
+        } satisfies DreamOutcome;
+      // From here a cancel loses: memory lands as a wake-up's does, and the run is settled
+      // in the transaction that records it, so its material counts as dreamed only once landed.
+      if (!(yield* decide)) return yield* Effect.never;
+      const dreamText = yield* encodeDream(checked.dream);
+      const landed = yield* writer.value
+        .landDream(orgId, {
+          base: base.head,
+          files: changes,
+          message: `kin(dream): ${ownerDate}\n\nKin-Dream: ${dreamId}\nMaterial-Until: ${iso(claimed.until)}\n`,
+          landed: Effect.fn("DreamRunner.landed")(
+            function* (head: string) {
+              const now = yield* Clock.currentTimeMillis;
+              const rows =
+                yield* sql`UPDATE kin_dream_runs SET status = 'succeeded', head = ${head},
+                dream_json = ${dreamText}, ended_at = ${now}
+              WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running'
+              RETURNING dream_id`;
+              if (rows.length !== 1)
+                return yield* Effect.die(new Error("The dream run ended before it landed"));
+            },
+            Effect.mapError(toPersistenceSqlError("DreamRunner.landed")),
+          ),
+        })
+        .pipe(Effect.uninterruptible);
       return {
         _tag: "succeeded",
         dreamId,
         branch,
-        head: commit,
+        head: landed.commit,
         dream: checked.dream,
       } satisfies DreamOutcome;
     }).pipe(Effect.ensuring(fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore)));
@@ -543,8 +612,14 @@ const make = Effect.gen(function* () {
   ) {
     const { dreamId, branch } = claimed;
     const cancelled: DreamOutcome = { _tag: "cancelled", dreamId, branch };
+    let landing = false;
+    const decide = Effect.sync(() => {
+      if (slot.decided) return false;
+      slot.decided = landing = true;
+      return true;
+    });
     const outcome = yield* Effect.raceFirst(
-      dream(orgId, claimed, ownerDate, full, timeZone).pipe(
+      dream(orgId, claimed, ownerDate, full, timeZone, decide).pipe(
         Effect.catchCauseIf(
           (cause) => !Cause.hasInterruptsOnly(cause),
           (cause) => {
@@ -562,7 +637,7 @@ const make = Effect.gen(function* () {
           },
         ),
         Effect.flatMap((outcome) => {
-          if (slot.decided) return Effect.never;
+          if (slot.decided && !landing) return Effect.never;
           slot.decided = true;
           return Effect.succeed(outcome);
         }),
@@ -686,7 +761,7 @@ const make = Effect.gen(function* () {
         const paused =
           yield* sql`SELECT 1 FROM kin_org_state WHERE org_id = ${orgId} AND paused = 1 ORDER BY org_id`;
         if (paused.length > 0) continue;
-        if (!(yield* budget.admit(orgId, "P4")).allowed) continue;
+        if (!DREAM_RUNS_ON_A_SPENT_BUDGET && !(yield* budget.admit(orgId, "P4")).allowed) continue;
         const outcome = yield* run(orgId, {
           full: routine === "dream_full",
           ownerDate: DateTime.formatIsoDate(due),

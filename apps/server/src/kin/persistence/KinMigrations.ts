@@ -115,6 +115,7 @@ import HistoryIndexes from "./migrations/K191_HistoryIndexes.ts";
 import RecordOwnerListIndex from "./migrations/K192_RecordOwnerListIndex.ts";
 import ScheduleOwnerTime from "./migrations/K193_ScheduleOwnerTime.ts";
 import DropWebhookSources from "./migrations/K194_DropWebhookSources.ts";
+import DreamCharges from "./migrations/K195_DreamCharges.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -310,6 +311,7 @@ const migrations = {
   "192_RecordOwnerListIndex": RecordOwnerListIndex,
   "193_ScheduleOwnerTime": ScheduleOwnerTime,
   "194_DropWebhookSources": DropWebhookSources,
+  "195_DreamCharges": DreamCharges,
 };
 const loader = Migrator.fromRecord(migrations);
 

@@ -781,8 +781,29 @@ const make = Effect.gen(function* () {
     row: typeof RunningRow.Type,
     interrupted = false,
   ) {
-    if (Option.isSome(writer))
-      yield* writer.value.discard(row.orgId, row.wakeupId).pipe(Effect.ignore);
+    // Only a stopping server interrupts a wake-up: what it staged lands then, as the agent may
+    // already have said it saved it, and its events may be done. Otherwise it is dropped.
+    if (Option.isSome(writer)) {
+      const memory = writer.value;
+      const landed =
+        interrupted &&
+        (yield* memory.staged(row.orgId, row.wakeupId).pipe(Effect.orElseSucceed(() => false)))
+          ? yield* memory.commitWakeup(row.orgId, row.wakeupId, "completed").pipe(
+              Effect.tap(
+                ({ commit }) =>
+                  sql`UPDATE kin_wakeups SET memory_commit = ${commit} WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`,
+              ),
+              Effect.as(true),
+              Effect.catchCause((cause) =>
+                Effect.logError("Kin couldn't land a stopped wake-up's memory", {
+                  wakeupId: row.wakeupId,
+                  cause,
+                }).pipe(Effect.as(false)),
+              ),
+            )
+          : false;
+      if (!landed) yield* memory.discard(row.orgId, row.wakeupId).pipe(Effect.ignore);
+    }
     yield* endReply(row);
     const [running] =
       yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND status = 'running'`;

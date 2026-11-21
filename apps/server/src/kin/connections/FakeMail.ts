@@ -118,6 +118,12 @@ const plain = (who: string) => lower(/<([^<>]+)>/.exec(who)?.[1] ?? who).trim();
 const nameIn = (who: string) => /^\s*"?([^"<]*?)"?\s*</.exec(who)?.[1]?.trim() || undefined;
 const rfc2822 = (ms: number) => new Date(ms).toUTCString().replace("GMT", "+0000");
 const iso = (ms: number) => new Date(ms).toISOString();
+/** One page of `items` as the vendors cut them: `size` from an offset, and the offset after. */
+const pageOf = <A>(items: ReadonlyArray<A>, size: string | null, offset: string | null) => {
+  const from = Number(offset ?? 0);
+  const to = size === null ? items.length : from + Number(size);
+  return { items: items.slice(from, to), next: to < items.length ? String(to) : undefined };
+};
 
 const headerBlock = (head: string) => {
   const headers = new Map<string, string>();
@@ -380,7 +386,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
   const matches = (message: FakeMailMessage, words: string) =>
     words
       .split(/\s+/)
-      .filter((word) => word !== "" && !word.startsWith("in:") && !word.startsWith("after:"))
+      .filter((word) => word !== "" && !/^(?:in|after|before):/.test(word))
       .every((word) => {
         const from = /^from:(.+)$/.exec(word)?.[1];
         return from !== undefined
@@ -517,6 +523,9 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         });
       if (path === `${GMAIL}/threads`) {
         const after = Number(/after:(\d+)/.exec(url.searchParams.get("q") ?? "")?.[1] ?? 0);
+        const before = Number(
+          /before:(\d+)/.exec(url.searchParams.get("q") ?? "")?.[1] ?? Infinity,
+        );
         const inboxOnly =
           url.searchParams.get("labelIds") === "INBOX" ||
           (url.searchParams.get("q") ?? "").includes("in:inbox");
@@ -524,10 +533,19 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
           (one) =>
             (!inboxOnly || !one.sent) &&
             one.at >= after * 1000 &&
+            one.at < before * 1000 &&
             matches(one, url.searchParams.get("q") ?? ""),
         );
         const ids = [...new Set(found.toSorted((a, b) => b.at - a.at).map((one) => one.threadId))];
-        return json({ threads: ids.map((id) => ({ id })) });
+        const page = pageOf(
+          ids,
+          url.searchParams.get("maxResults"),
+          url.searchParams.get("pageToken"),
+        );
+        return json({
+          threads: page.items.map((id) => ({ id })),
+          ...(page.next === undefined ? {} : { nextPageToken: page.next }),
+        });
       }
       const thread = /^\/gmail\/v1\/users\/me\/threads\/([^/]+)$/.exec(path)?.[1];
       if (thread !== undefined) {
@@ -557,7 +575,19 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
             start < Date.parse(params.get("timeMax") ?? "9999-01-01T00:00:00Z") &&
             lower(event.title).includes(lower(params.get("q") ?? "")),
         );
-        if (eventPath[1] === undefined) return json({ items: items.map(googleEvent) });
+        if (eventPath[1] === undefined) {
+          const page = pageOf(
+            params.get("orderBy") === "updated"
+              ? items.toSorted((a, b) => a.event.updated - b.event.updated)
+              : items,
+            params.get("maxResults"),
+            params.get("pageToken"),
+          );
+          return json({
+            items: page.items.map(googleEvent),
+            ...(page.next === undefined ? {} : { nextPageToken: page.next }),
+          });
+        }
         const one = occurrences(state, account, true).find(
           (item) => item.id === decodeURIComponent(eventPath[1]!),
         );
@@ -619,10 +649,19 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         });
       if (path === `${GRAPH}/mailFolders/inbox/messages`) {
         const since = odata(filter, "receivedDateTime");
+        const found = mine.filter(
+          (one) => !one.sent && (since === undefined || iso(one.at) >= since),
+        );
+        const page = pageOf(
+          url.searchParams.get("$orderby")?.endsWith(" asc") ? found.toReversed() : found,
+          url.searchParams.get("$top"),
+          url.searchParams.get("$skip"),
+        );
+        const nextLink = new URL(url);
+        nextLink.searchParams.set("$skip", page.next ?? "");
         return json({
-          value: mine
-            .filter((one) => !one.sent && (since === undefined || iso(one.at) >= since))
-            .map(graphMessage),
+          value: page.items.map(graphMessage),
+          ...(page.next === undefined ? {} : { "@odata.nextLink": nextLink.href }),
         });
       }
       if (path === `${GRAPH}/messages` && request.method === "GET") {
