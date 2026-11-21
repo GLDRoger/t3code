@@ -116,7 +116,7 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
         stream((people) =>
           input.acceptRows === true
             ? WorkStream.subscribeRows(people, input)
-            : Work.subscribe(people, input),
+            : WorkStream.subscribeChanged(people, input),
         ),
       "kin.work.create": Effect.fn("KinWork.rpc.create")(function* (input) {
         return yield* call((people) => Work.create(people, input));

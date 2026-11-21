@@ -10,7 +10,7 @@ export const TEAM_UNITS_CAP = TEAM_MAX_MESSAGES * 33_000;
 export const TEAM_IDLE_MS = 24 * 60 * 60 * 1000;
 /** The Chief of staff's chair check comes once, at this many messages. */
 const TEAM_CHAIR_AT = 10;
-const TEAM_MAX_NAMED = 2;
+export const TEAM_MAX_NAMED = 2;
 /** How often one agent may be offered a pitch-in in one discussion, unless it is named. */
 const TEAM_PITCH_OFFERS = 2;
 /** Messages after an objection before the Chief of staff closes it. */
@@ -81,6 +81,23 @@ export const opened = (input: {
   offers: {},
   speakers: [],
   chaired: false,
+});
+
+/**
+ * A person's message named the agents: the first-named holds the first turn, in the opener's seat,
+ * and up to two more are asked after it. Nobody has said anything yet.
+ */
+export const askedByPerson = (input: {
+  readonly first: string;
+  readonly asked: ReadonlyArray<string>;
+  readonly decider: string;
+  readonly chair: string;
+}): Discussion => ({
+  ...opened({ openedBy: input.first, decider: input.decider, chair: input.chair }),
+  pending: [...new Set(input.asked)]
+    .filter((agentId) => agentId !== input.first)
+    .slice(0, TEAM_MAX_NAMED)
+    .map((agentId) => ({ agentId, kind: "named" })),
 });
 
 /** Whether another discussion may open: agents start at most 6 a day and 2 at once. */

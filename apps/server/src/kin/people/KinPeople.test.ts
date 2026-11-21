@@ -42,6 +42,8 @@ import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.
 import { personHoldNow } from "../triggers/quietHold.ts";
 import { newCompanyProfileJson, readProfile, setProfile } from "../work/companyProfile.ts";
 import * as Records from "../work/KinRecords.ts";
+import { money as moneySummary } from "../work/ownerMoney.ts";
+import { makeDocsStream } from "../work/ownerDocs.ts";
 import { KinPushSender, type KinPushNotification } from "../push/KinPushSender.ts";
 import * as TasksKeys from "../tasksKey/TasksKeys.ts";
 import * as People from "./KinPeople.ts";
@@ -1061,6 +1063,27 @@ it.effect(
         service.accessMe(session, { orgId }).pipe(Effect.map((me) => me.places));
       assert.deepEqual(yield* placesOf(raviSession), { clients: true, docs: true, money: false });
       assert.deepEqual(yield* placesOf(ownerSession), { clients: true, docs: true, money: true });
+      // What `me` says is refused, Money's summary and Docs' stream refuse alike; the owner, neither.
+      const refusals = (session: Parameters<typeof service.accessMe>[0]) =>
+        Effect.gen(function* () {
+          const people = yield* identity.resolve(session);
+          const refusedBy = <A, E, R>(read: Effect.Effect<A, E, R>) =>
+            Effect.map(Effect.result(read), (result) => result._tag === "Failure");
+          return {
+            me: (yield* service.accessMe(session, { orgId })).refused,
+            host: {
+              money: yield* refusedBy(moneySummary(people, { orgId, upcomingRows: false })),
+              docs: yield* refusedBy(makeDocsStream(people, { orgId })),
+            },
+          };
+        });
+      const alike = (session: Parameters<typeof service.accessMe>[0], refused: object) =>
+        Effect.map(refusals(session), (both) => {
+          assert.deepEqual(both.me, refused);
+          assert.deepEqual(both.host, refused);
+        });
+      yield* alike(raviSession, { money: true, docs: false });
+      yield* alike(ownerSession, { money: false, docs: false });
       const switched = yield* service.setPlaces(ownerSession, {
         orgId,
         personId: ravi.person.personId,
@@ -1069,6 +1092,7 @@ it.effect(
       });
       assert.deepInclude(switched, { clients: true, docs: false, money: true, leads: [] });
       assert.deepEqual(yield* placesOf(raviSession), { clients: true, docs: false, money: true });
+      yield* alike(raviSession, { money: false, docs: true });
       // Every kind is told the host's public address for the links it makes, and nothing while it has none.
       const coOwner = yield* service.setAccess(ownerSession, {
         orgId,

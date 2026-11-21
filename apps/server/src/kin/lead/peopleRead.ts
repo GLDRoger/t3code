@@ -11,7 +11,8 @@ import { playbookThreshold } from "../work/playbooks.ts";
 import { accessSql } from "../people/KinAccess.ts";
 import { signedInPeople } from "../people/signedIn.ts";
 import { effectiveAudience } from "./Audience.ts";
-import { cappedText } from "./LeadPrompt.ts";
+import { cappedText } from "./quote.ts";
+import { WEEK_MS } from "../durations.ts";
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const decodeTags = Schema.decodeUnknownEffect(Schema.fromJsonString(KinRoleTags));
@@ -68,8 +69,6 @@ export const describeHours = (hours: KinWorkHours) => {
     : days.map((day) => DAYS[day]).join(", ");
   return `${named} ${hours.start}–${hours.end}`;
 };
-
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * What each person and agent holds in Work now, counted on read: open tasks, late ones, due

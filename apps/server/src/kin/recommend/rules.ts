@@ -17,14 +17,14 @@ import { USUAL_LIMITS } from "../lead/KinBudget.ts";
 import * as Reach from "../lead/Reach.ts";
 import type { RecommendPlan } from "../widgets/cardPlans.ts";
 import { dayIn } from "../work/money.ts";
+import { DAY_MS } from "../durations.ts";
+export { DAY_MS };
 
 /*
  * Kin's recommendation rules: each one query over rows Kin already keeps, counted over a window
  * and held to a threshold. No model writes or picks anything. A rule answers for every subject it
  * counted, firing or silent and why; the tap asks again for its one subject.
  */
-
-export const DAY_MS = 24 * 60 * 60 * 1000;
 
 export type RuleContext = {
   readonly orgId: KinOrgId;

@@ -84,6 +84,7 @@ import {
   type SocialProvider,
 } from "./SocialProvider.ts";
 import { zernio } from "./Zernio.ts";
+import { DAY_MS } from "../durations.ts";
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const notAllowed = (message: string) => new KinChatError({ reason: "not_allowed", message });
@@ -94,7 +95,6 @@ const isProviderError = Schema.is(SocialProviderError);
 const asKinError = (cause: unknown) =>
   isKinError(cause) ? cause : unavailable("Kin couldn't do that just now. Try again in a minute.");
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
-const DAY_MS = 86_400_000;
 /** A key waits this long between Kin showing what it reaches and the owner's Confirm. */
 const CHECK_TTL_MS = 10 * 60_000;
 /** Reads are kept this long: a week's numbers don't move by the minute, and X charges per read. */
