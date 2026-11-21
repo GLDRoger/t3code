@@ -97,6 +97,30 @@ export const kinSalesLead = <L extends { readonly agentId: string; readonly doma
   );
 };
 
+/** The areas Kin has a ready-made character for; any other area starts on a plain one. */
+export const KIN_CHARACTER_SEATS = [
+  "chief-of-staff",
+  "engineering",
+  "social",
+  "finance",
+  "growth",
+] as const;
+export type KinCharacterSeat = (typeof KIN_CHARACTER_SEATS)[number];
+const KIN_CHARACTER_SEAT_ALIASES: Readonly<Record<string, KinCharacterSeat>> = {
+  tech: "engineering",
+  "tech-lead": "engineering",
+  marketing: "growth",
+  content: "social",
+  sales: "growth",
+  "sales-and-marketing": "growth",
+  "business-development": "growth",
+  chief: "chief-of-staff",
+};
+/** The ready-made seat an area takes, its own or the one people commonly mean by it; else null. */
+export const kinCharacterSeat = (domain: string): KinCharacterSeat | null =>
+  KIN_CHARACTER_SEATS.find((seat) => seat === domain) ??
+  (Object.hasOwn(KIN_CHARACTER_SEAT_ALIASES, domain) ? KIN_CHARACTER_SEAT_ALIASES[domain]! : null);
+
 /** What teammates see about a lead: a line or two the owner writes, shown to people it may talk to. */
 export const KinLeadIntro = Schema.String.check(Schema.isMaxLength(200));
 export type KinLeadIntro = typeof KinLeadIntro.Type;

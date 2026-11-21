@@ -1,13 +1,16 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format change dates for React render, outside an Effect runtime.
+import { kinDomainSlug } from "./kinLeadPresentation.ts";
 import { kinNow } from "./kinNow.ts";
 import { kinWorkAllDay } from "./kinWork.ts";
 import {
   type KinAgentPage,
+  type KinCharacterSeat,
   type KinPersonAccess,
   type ModelSelection,
   type ProviderOptionDescriptor,
   type ServerProviderModel,
   formatKinWhen,
+  kinCharacterSeat,
   KIN_PROVIDER_FACTS,
   KIN_TAKEN_DEFAULT_FIELD,
 } from "@t3tools/contracts";
@@ -103,7 +106,79 @@ export const KIN_AGENT_PAGE = {
   characterField: "Character",
   characterPlaceholder:
     "Who it is: an archetype, what it loves, what it pushes back on, how it writes.",
+  setOnComputer: "Character, model and effort are set on your computer.",
+  introPlaceholder: "What teammates can ask it for, in a line.",
 } as const;
+
+const counted = (n: number, one: string, many: string) =>
+  n === 0 ? "None" : `${n} ${n === 1 ? one : many}`;
+
+export type KinAgentFold = {
+  readonly id: "checkIns" | "reach" | "playbooks" | "changed";
+  readonly title: string;
+  /** Null while the count isn't read yet. */
+  readonly summary: string | null;
+};
+
+/**
+ * The agent page's folded blocks, in order, each with its count. `checkIns` is this agent's count,
+ * null until read; an older host that sends no changes gets no "Changed lately".
+ */
+export function kinAgentPageFolds(
+  page: Pick<KinAgentPage, "connections" | "playbooks" | "changed">,
+  checkIns: number | null,
+): ReadonlyArray<KinAgentFold> {
+  return [
+    {
+      id: "checkIns",
+      title: KIN_AGENT_PAGE.checkIns,
+      summary: checkIns === null ? null : counted(checkIns, "check-in", "check-ins"),
+    },
+    {
+      id: "reach",
+      title: KIN_AGENT_PAGE.reach,
+      summary: counted(page.connections.length, "account", "accounts"),
+    },
+    {
+      id: "playbooks",
+      title: KIN_AGENT_PAGE.playbooks,
+      summary: counted(page.playbooks.length, "playbook", "playbooks"),
+    },
+    ...(page.changed === undefined
+      ? []
+      : [
+          {
+            id: "changed" as const,
+            title: KIN_AGENT_CHANGES.title,
+            summary: counted(page.changed.length, "change", "changes"),
+          },
+        ]),
+  ];
+}
+
+const SEAT_WORDS: Readonly<Record<KinCharacterSeat, string>> = {
+  "chief-of-staff": "chief of staff",
+  engineering: "tech lead",
+  social: "social media",
+  finance: "finance",
+  growth: "sales",
+};
+
+/**
+ * Said on New agent when the area it will take (typed, else its name) brings one of Kin's
+ * ready-made characters; null when it starts on a plain one.
+ */
+export function kinAgentReadyCharacterLine(draft: {
+  readonly name: string;
+  readonly area: string;
+}): string | null {
+  const name = draft.name.trim();
+  const domain = kinDomainSlug(draft.area.trim() === "" ? name : draft.area);
+  const seat = domain === null ? null : kinCharacterSeat(domain);
+  return seat === null
+    ? null
+    : `Kin gives ${name} a ready-made ${SEAT_WORDS[seat]} character; change it on your computer.`;
+}
 
 /** Kin's advice on reasoning effort, the same on every client and for any provider. */
 export const KIN_AGENT_EFFORT = {

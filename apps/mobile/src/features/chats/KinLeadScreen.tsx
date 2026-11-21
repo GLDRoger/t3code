@@ -78,8 +78,9 @@ const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 
 /**
- * A lead as its owner sees it: who it is, what it is for, who can message it and what it has in
- * hand. A person let message someone else's lead sees its name and what its owner wrote for them.
+ * A lead as its owner sees it: who it is, what it is for, what it has in hand and who can message
+ * it, with the rest folded. A person let message someone else's lead sees its name and what its
+ * owner wrote for them.
  */
 export function KinLeadScreen({ route }: StaticScreenProps<KinLeadParams>) {
   const navigation = useNavigation();
@@ -186,11 +187,17 @@ function KinLeadBody(props: {
                   )
                 }
               />
-              <KinAgentSections environmentId={environmentId} orgId={orgId} lead={lead} />
-              <KinLeadNotifications
+              <KinAgentSections
                 environmentId={environmentId}
-                orgId={lead.orgId}
-                chatId={lead.ownerChatId}
+                orgId={orgId}
+                lead={lead}
+                mute={
+                  <KinLeadNotifications
+                    environmentId={environmentId}
+                    orgId={lead.orgId}
+                    chatId={lead.ownerChatId}
+                  />
+                }
               />
               <KinLeadClearChat
                 environmentId={environmentId}
@@ -236,6 +243,9 @@ function KinLeadBody(props: {
                   {retireOffer.why}
                 </Text>
               )}
+              <Text textRole="footnote" className="px-4 text-foreground-muted">
+                {KIN_AGENT_PAGE.setOnComputer}
+              </Text>
             </>
           ) : contact !== null ? (
             <>
@@ -419,7 +429,7 @@ export function KinLeadProfileView({
   readonly working?: boolean;
   /** Who a waiting task waits on is named from these, as Tasks names them. */
   readonly names?: KinWorkNames | null;
-  /** The owner's "Who can message" section, placed under what the lead is for. */
+  /** The owner's "Who can message" section, placed under what it has in hand. */
   readonly access?: ReactNode;
 }) {
   const charter = lead.charter.trim();
@@ -462,7 +472,6 @@ export function KinLeadProfileView({
           </Text>
         </View>
       </ListSection>
-      {access}
       <ListSection title={retired === undefined ? "In hand" : "On hold"}>
         {lead.tracking.length === 0 ? (
           <View className="px-4 py-3">
@@ -485,6 +494,7 @@ export function KinLeadProfileView({
           ))
         )}
       </ListSection>
+      {access}
     </>
   );
 }
