@@ -152,14 +152,15 @@ export const sendUp = Effect.fn("KinDraftCards.sendUp")(
       },
       { chat, gate: yield* KinLevelGate },
     ).pipe(
-      Effect.catchTag("KinChatError", (error) =>
-        Effect.fail(
-          new KinChatError({
-            reason: error.reason,
-            message: `This draft couldn't go to ${draft.sendTo?.name ?? "the owner"} from here. Ask in this chat instead.`,
-          }),
-        ),
-      ),
+      Effect.catchTags({
+        KinChatError: (error) =>
+          Effect.fail(
+            new KinChatError({
+              reason: error.reason,
+              message: `This draft couldn't go to ${draft.sendTo?.name ?? "the owner"} from here. Ask in this chat instead.`,
+            }),
+          ),
+      }),
     );
     yield* chat.setDocCardSent({
       orgId: input.orgId,

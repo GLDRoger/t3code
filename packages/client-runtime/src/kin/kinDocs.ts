@@ -155,7 +155,7 @@ export const KIN_DOCS = {
   sendTo: (name: string) => `Send to ${name}`,
   sending: "Sending…",
   sentTo: (name: string) => `Sent to ${name} to approve.`,
-  sendFailed: "Couldn't send it. Try again.",
+  sendFailed: "Couldn't send it.",
   sendOffline: "You're offline. Send it when the connection is back.",
   noAccount: (service: string, by: string | null) =>
     `No ${service} account is connected. ${by === null ? "You can connect one in Settings on your computer." : `${by} can connect one on their computer.`}`,

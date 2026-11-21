@@ -572,7 +572,7 @@ export const KinSearchResult = Schema.Struct({
 export type KinSearchResult = typeof KinSearchResult.Type;
 
 /** What an agent's draft is of; the owner's Approve on it makes that one thing. */
-export const KIN_DRAFT_KINDS = ["proposal", "quote", "invoice", "terms", "mail", "post"] as const;
+const KIN_DRAFT_KINDS = ["proposal", "quote", "invoice", "terms", "mail", "post"] as const;
 export const KinDraftKind = Schema.Literals(KIN_DRAFT_KINDS);
 export type KinDraftKind = typeof KinDraftKind.Type;
 
