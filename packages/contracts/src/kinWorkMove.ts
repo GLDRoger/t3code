@@ -45,7 +45,7 @@ export function kinWorkMove(
 }
 
 /** How far ahead a dated task of the reader's still counts in Needs you. */
-export const KIN_WORK_SOON_MS = 7 * 24 * 60 * 60 * 1000;
+const KIN_WORK_SOON_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * A Needs you task drawn outside its count: one the reader holds that nothing asks of them yet
@@ -89,12 +89,6 @@ export function kinWorkMoveOrder(
   if (a.createdMs !== b.createdMs) return a.createdMs - b.createdMs;
   return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 }
-
-export const KIN_WORK_MOVE_GROUPS: ReadonlyArray<KinWorkMoveGroup> = [
-  "needsYou",
-  "waiting",
-  "rest",
-];
 
 /** Where a `byMove` row is drawn, in Tasks' order: its `under` when it has one, else its group. */
 export type KinWorkMovePlace = KinWorkMoveGroup | KinWorkMoveUnder;
