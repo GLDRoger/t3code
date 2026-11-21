@@ -105,6 +105,32 @@ echo "database at $(heads)"`);
     expect(said).toContain("healthy: up, answering, migrations at 80/K149");
   });
 
+  it.each([
+    { ends: 2, said: "no agent turn or dream is running now (waited 10s)" },
+    { ends: 99, said: "1 still running after 20s; stopping the server anyway" },
+  ])(
+    "waits for a running agent turn before it stops the server ($said)",
+    ({ ends, said: words }) => {
+      const { out, said } = onFakeHost(`
+NEW="$(build new 149)"
+TURN_WAIT=20
+sqlite3 "$DB" "CREATE TABLE kin_wakeups (status TEXT); INSERT INTO kin_wakeups VALUES ('running');
+  CREATE TABLE kin_dream_runs (status TEXT);"
+waits=0
+sleep() { waits=$((waits + 1)); [ "$waits" -lt ${ends} ] || sqlite3 "$DB" "UPDATE kin_wakeups SET status = 'completed'"; echo "sleep $waits" >>"$HOME/calls"; }
+${deploy}
+grep -m1 -E "^(sleep|systemctl --user stop)" "$HOME/calls"
+grep -E "^sleep|^systemctl --user stop" "$HOME/calls" | grep -n "systemctl --user stop" | head -n1 | cut -d: -f1`);
+      expect(out[0], said).toBe("status 0");
+      expect(out[1]).toBe("sleep 1");
+      expect(Number(out[2])).toBe(Math.min(ends, 4) + 1);
+      expect(said).toContain(
+        "waiting for 1 running agent turn(s) or dream to finish before stopping the server (up to 20s)",
+      );
+      expect(said).toContain(words);
+    },
+  );
+
   it("goes back to the previous build when the new one's migrations don't run", () => {
     const { out, said } = onFakeHost(`
 NEW="$(build new 149)"
