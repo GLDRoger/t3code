@@ -162,6 +162,8 @@ type Press = {
   readonly widgetId: string;
   /** A post's service, by name, as the draft's card holds it. */
   readonly on?: string;
+  /** The turn that wrote the card: what she wrote it from is hers here too (`draftSource`). */
+  readonly madeIn?: KinWakeupId | undefined;
   /** Checks the press as a message of theirs in that chat would be checked (`send`). */
   readonly mayPost: ReturnType<KinChatService["Service"]["mayPost"]>;
 };
@@ -258,7 +260,9 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           return yield* refuse(
             "Kin writes this card's buttons, Approve and Changes first: leave out options when you send a draft up.",
           );
-        if (turn !== null) hers = yield* draftSource(turn, here.chatId, asker);
+        const source =
+          turn ?? (press?.madeIn === undefined ? null : { orgId, agentId, wakeupId: press.madeIn });
+        if (source !== null) hers = yield* draftSource(source, here.chatId, asker);
         if (turn !== null && hers === undefined)
           return yield* refuse(
             `A draft goes up only from ${askerName ?? "the teammate"}'s own message here, or after the owner's Changes first on one of theirs.`,

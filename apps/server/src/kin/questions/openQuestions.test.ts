@@ -2135,7 +2135,12 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
           ${JSON.stringify([{ accountId: "a-ig", platform: "instagram", name: "Ambermill", handle: null, problem: null }])},
           NULL, 0, 0)`;
       const zoyaChat = yield* chiefChat("zoya");
-      const turn = yield* wakeOn("chief", "zoya", zoyaChat, "Three launch posts for Harbourline?");
+      const turn = yield* wakeOn(
+        "chief",
+        "zoya",
+        zoyaChat,
+        "Three launch posts for Harbourline? And mail them our retainer, ₹2,50,000 a month.",
+      );
       const [event] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
         WHERE org_id = ${orgId} AND wakeup_id = ${turn} ORDER BY rowid`;
       const file = (title: string, body: string, client = "C-7") =>
@@ -2207,6 +2212,17 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
         (revised.state as { draft: { text: string } }).draft.text,
         "Thank you for joining us.\n",
       );
+      // A mail at the retainer she named, and one with a figure she didn't give: pressed below.
+      const mail = (title: string, body: string) =>
+        LeadDocs.create(scopeOf("chief"), {
+          sourceEventId: event!.eventId,
+          title,
+          body,
+          client: "C-7",
+          draft: { kind: "mail" },
+        }).pipe(Effect.provideService(KinIdentity, identity));
+      const hers = yield* mail("Retainer", "Our retainer is ₹2,50,000 a month.");
+      const others = yield* mail("Setup", "Setup is ₹2,50,000 once, plus ₹40,000 travel.");
 
       // The owner's own drafts, in her own turn, have nothing to send up: Copy text only.
       const own = yield* wakeOn("chief", "rhea", chatOf("chief"), "A post for our own page?");
@@ -2349,6 +2365,35 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       assert.strictEqual(
         (yield* Effect.flip(press("zoya", cards[2]!.widgetId))).reason,
         "not_found",
+      );
+      // Her own figure rides up from her press as from the agent's send-up; one she didn't give
+      // is still not for her.
+      // The owner has settled the three already up, so none counts against what may wait on him.
+      yield* sql`UPDATE kin_people SET quiet_hours_json = NULL WHERE person_id = ${team.owner.personId}`;
+      yield* sql`UPDATE kin_questions SET state = 'answered' WHERE org_id = ${orgId}
+        AND draft_json IS NOT NULL`;
+      const mailCards = yield* sql<{ widgetId: string }>`SELECT widget_id AS "widgetId"
+        FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${zoyaChat} AND type = 'doc'
+          AND json_extract(state_json, '$.key') IN (${hers.key}, ${others.key})
+        ORDER BY rowid`;
+      assert.deepStrictEqual(yield* press("zoya", mailCards[0]!.widgetId), {
+        to: "Rhea Rao",
+        held: false,
+      });
+      const [retainer] = yield* sql<{ questionId: string }>`SELECT question_id AS "questionId"
+        FROM kin_questions WHERE org_id = ${orgId} AND draft_json IS NOT NULL
+          AND about = ${hers.key}`;
+      assert.include(
+        (
+          (yield* team.widgetOf((yield* team.cardOf(retainer!.questionId)).widgetId!)).state as {
+            detail: string;
+          }
+        ).detail,
+        "Our retainer is ₹2,50,000 a month.",
+      );
+      assert.strictEqual(
+        (yield* Effect.flip(press("zoya", mailCards[1]!.widgetId))).message,
+        "This draft couldn't go to Rhea Rao from here. Ask in this chat instead.",
       );
     }).pipe(Effect.provide(layer)),
   ),

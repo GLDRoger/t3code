@@ -49,7 +49,7 @@ import {
   writerFor,
 } from "./leadWork.ts";
 import { iso, type RecordRow } from "./recordRows.ts";
-import { DRAFT_TEXT_MAX, draftCardOf } from "./draftCards.ts";
+import { DRAFT_TEXT_MAX, docCardId, draftCardOf } from "./draftCards.ts";
 import { search } from "./search.ts";
 import { DRAFT_OWN_CHAT_ONLY, KIN_OWNER_LEVEL, viewSees, viewerOfPeople } from "./teamView.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
@@ -428,7 +428,7 @@ export const shown = Effect.fn("KinDocTools.shown")(function* (
     { ...lead, wakeupId: turn.wakeupId },
     {
       chatId: lane.value.chatId,
-      clientMessageId: `kin-doc:${turn.wakeupId}:${written.row.recordId}:${written.version.version}`,
+      clientMessageId: docCardId(turn.wakeupId, written.row.recordId, written.version.version),
       type: KIN_DOC_CARD,
       state: {
         recordId: KinRecordId.make(written.row.recordId),

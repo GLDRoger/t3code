@@ -12,6 +12,7 @@ import {
   KinRecordId,
   KinRecordKey,
   type KinSocialPlatform,
+  KinWakeupId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -32,6 +33,16 @@ import { postsTo } from "../social/rows.ts";
 import type { Lead } from "./leadWork.ts";
 import { iso, unavailable } from "./recordRows.ts";
 import { personSees } from "./teamView.ts";
+
+const DOC_CARD_ID = "kin-doc:";
+/** A doc card's client message id: one per turn, doc and version, so a retry finds the same card. */
+export const docCardId = (wakeupId: string, recordId: string, version: number) =>
+  `${DOC_CARD_ID}${wakeupId}:${recordId}:${version}`;
+/** The turn that showed a doc card, read back from its stored client message id ("send:…"). */
+const docCardTurn = (stored: string | null) =>
+  stored?.startsWith(`send:${DOC_CARD_ID}`) === true
+    ? KinWakeupId.make(stored.slice(`send:${DOC_CARD_ID}`.length).split(":")[0]!)
+    : undefined;
 
 /** A draft travels up on its card's text, which holds at most this (`kin_ask_person`'s detail). */
 export const DRAFT_TEXT_MAX = 1800;
@@ -142,8 +153,10 @@ export const sendUp = Effect.fn("KinDraftCards.sendUp")(
       owner: string;
       threadId: string | null;
       directKey: string | null;
+      clientMessageId: string | null;
     }>`SELECT w.state_json AS state, m.author_agent_id AS "agentId", a.owner_person_id AS owner,
-      l.thread_id AS "threadId", c.direct_key AS "directKey"
+      l.thread_id AS "threadId", c.direct_key AS "directKey",
+      m.client_message_id AS "clientMessageId"
     FROM kin_widgets w
     JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
       AND m.author_kind = 'agent'
@@ -196,6 +209,7 @@ export const sendUp = Effect.fn("KinDraftCards.sendUp")(
         chatId: input.chatId,
         widgetId: input.widgetId,
         ...(draft.on === undefined ? {} : { on: KIN_SOCIAL_PLATFORM_LABELS[draft.on] }),
+        madeIn: docCardTurn(row.clientMessageId),
       },
       {
         to: row.owner,
