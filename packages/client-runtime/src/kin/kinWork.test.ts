@@ -521,14 +521,33 @@ describe("kinWorkItemView", () => {
       { title: "Fields and states", done: true },
       { title: "Wireframe", done: true },
     ];
+    const changed = (seq: number, field: string, to: string) =>
+      ({
+        seq,
+        at: "2026-11-10T09:00:00.000Z",
+        by: lead,
+        via: "lead",
+        kind: "updated",
+        fields: [{ field, from: null, to }],
+      }) as const;
     const view = kinWorkItemView(
-      detail({ can, checklist, steps: { done: 2, of: 2 }, urgent: true }),
+      detail({
+        can,
+        checklist,
+        steps: { done: 2, of: 2 },
+        urgent: true,
+        changes: [changed(2, "urgent", "true"), changed(1, "steps", "Wireframe (done)")],
+      }),
       names,
       now,
       50,
       place,
     );
     expect(view.urgent).toBe(true);
+    expect(view.history.map((line) => line.text)).toEqual([
+      "Tech lead marked it urgent",
+      "Tech lead changed its steps",
+    ]);
     expect(view.steps).toMatchObject({
       count: "2 of 2",
       editable: true,

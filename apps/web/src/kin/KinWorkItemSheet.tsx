@@ -12,7 +12,10 @@ import {
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
   KIN_WORK_REPEAT,
+  KIN_WORK_STEPS,
+  KIN_WORK_URGENT,
   kinSameRepeat,
+  kinWorkStepProblem,
   kinWorkAssignees,
   kinWorkClientStays,
   kinWorkDayOf,
@@ -25,6 +28,7 @@ import {
   type KinWorkItemView,
   type KinWorkLinkView,
   type KinWorkRef,
+  type KinWorkStepsView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_LINKED,
@@ -87,6 +91,7 @@ import {
   PlayIcon,
   RepeatIcon,
   RotateCcwIcon,
+  FlagIcon,
   XIcon,
 } from "lucide-react";
 import { useId, useState, type ComponentProps } from "react";
@@ -96,6 +101,7 @@ import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Calendar } from "../components/ui/calendar";
+import { Checkbox } from "../components/ui/checkbox";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import {
@@ -119,6 +125,8 @@ import {
   SheetTitle,
 } from "../components/ui/sheet";
 import { Skeleton } from "../components/ui/skeleton";
+import { Switch } from "../components/ui/switch";
+import { cn } from "../lib/utils";
 import { Textarea } from "../components/ui/textarea";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -452,6 +460,103 @@ function KinWorkNoticeLine(props: {
   );
 }
 
+/**
+ * A task's checklist: a box ticks a step, the field at the foot adds one (Enter), the cross takes
+ * one off. Ticking every step leaves the task open: done is still the top card's to say.
+ */
+function KinTaskSteps(props: {
+  readonly steps: KinWorkStepsView;
+  readonly saving: boolean;
+  readonly onAct: ((action: KinWorkAction) => void) | null;
+}) {
+  const { steps, onAct } = props;
+  const [draft, setDraft] = useState("");
+  const fieldId = useId();
+  const held = steps.items.map((item) => ({ title: item.title, done: item.done }));
+  const problem = draft.trim() === "" ? null : kinWorkStepProblem(draft, held.length);
+  const add = () => {
+    const title = draft.trim();
+    if (onAct === null || title === "" || problem !== null) return;
+    onAct({ type: "steps", steps: [...held, { title, done: false }], said: "added" });
+    setDraft("");
+  };
+  return (
+    <Section
+      title={
+        steps.count === null ? KIN_WORK_STEPS.title : `${KIN_WORK_STEPS.title} · ${steps.count}`
+      }
+    >
+      <ul className="flex flex-col">
+        {steps.items.map((item) => (
+          <li key={`${item.index}:${item.title}`} className="group flex min-h-8 items-center gap-2">
+            <Checkbox
+              checked={item.done}
+              disabled={onAct === null || props.saving}
+              aria-label={onAct === null ? item.title : item.label}
+              onCheckedChange={(checked) =>
+                onAct?.({ type: "tick", index: item.index, title: item.title, done: checked })
+              }
+            />
+            <span
+              className={cn(
+                "min-w-0 flex-1 text-sm wrap-break-word",
+                item.done ? "text-muted-foreground line-through" : "text-foreground",
+              )}
+            >
+              {item.title}
+            </span>
+            {onAct === null ? null : (
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                disabled={props.saving}
+                aria-label={`${KIN_WORK_STEPS.remove}: ${item.title}`}
+                title={KIN_WORK_STEPS.remove}
+                onClick={() =>
+                  onAct({
+                    type: "steps",
+                    steps: held.filter((_, index) => index !== item.index),
+                    said: "removed",
+                  })
+                }
+              >
+                <XIcon />
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {onAct === null ? null : (
+        <div className="flex flex-col gap-1">
+          <Input
+            id={fieldId}
+            value={draft}
+            disabled={props.saving}
+            placeholder={KIN_WORK_STEPS.placeholder}
+            aria-label={KIN_WORK_STEPS.add}
+            aria-invalid={problem !== null}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                add();
+              }
+            }}
+          />
+          {problem === null ? null : (
+            <p role="alert" className="text-xs text-destructive-foreground">
+              {problem}
+            </p>
+          )}
+        </div>
+      )}
+      {steps.allDone === null ? null : (
+        <p className="text-xs text-muted-foreground">{steps.allDone}</p>
+      )}
+    </Section>
+  );
+}
+
 /** A person or agent in Details, with their picture so an agent reads as one at a glance. */
 function DetailPerson(props: {
   readonly label: string;
@@ -576,6 +681,12 @@ function KinWorkItem(
         <div className="flex flex-col gap-2 pe-8 wrap-break-word">
           <div className="flex flex-wrap items-center gap-2">
             <KinRecordChip tone={chip.tone} label={chip.label} />
+            {view.urgent && !view.closed ? (
+              <span className="flex items-center gap-1 text-xs font-medium text-warning-foreground">
+                <FlagIcon aria-hidden className="size-3 fill-current" />
+                {KIN_WORK_URGENT.label}
+              </span>
+            ) : null}
             <Frame.Description>
               {view.heading === "Task" ? view.key : `${view.key} · ${view.heading}`}
             </Frame.Description>
@@ -844,6 +955,13 @@ function KinWorkItem(
             <KinWorkNoticeLine notice={props.notice} saving={saving} onUndo={props.onUndo} />
           )}
         </div>
+        {view.steps === null ? null : (
+          <KinTaskSteps
+            steps={view.steps}
+            saving={saving}
+            onAct={change !== null && view.steps.editable ? change : null}
+          />
+        )}
         <Section title={KIN_TASK_RECORD.details}>
           <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 text-sm">
             {askedBy === null ? null : (
@@ -978,6 +1096,19 @@ function KinWorkItem(
                   >
                     <span className="max-w-60 truncate">{view.milestone.title}</span>
                   </Button>
+                </dd>
+              </>
+            )}
+            {change === null || view.can.steps !== true || view.closed ? null : (
+              <>
+                <dt className="text-muted-foreground">{KIN_WORK_URGENT.label}</dt>
+                <dd className="flex min-w-0 items-center gap-2 text-foreground">
+                  <Switch
+                    checked={view.urgent}
+                    disabled={saving}
+                    onCheckedChange={(checked) => change({ type: "urgent", urgent: checked })}
+                    aria-label={KIN_WORK_URGENT.label}
+                  />
                 </dd>
               </>
             )}
