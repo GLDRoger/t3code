@@ -246,7 +246,11 @@ function KinSettingsModal(props: { readonly target: KinSettingsTarget; readonly 
               landing(node);
               setScroller(node);
             }}
-            className={cn("flex min-h-0 flex-1 flex-col overflow-y-auto", KIN_FOUND_MARK)}
+            className={cn(
+              // A stable gutter, so a page tall enough to scroll keeps its column where the rest have it.
+              "flex min-h-0 flex-1 flex-col overflow-y-auto [scrollbar-gutter:stable]",
+              KIN_FOUND_MARK,
+            )}
           >
             <KinSettingsTrail value={{ back: backSlot, trail: trailSlot, scroller }}>
               {/* Keyed by page, so a drill-in left open on one page never shows on the next. */}

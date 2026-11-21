@@ -135,7 +135,7 @@ function SocialSection(props: { readonly environmentId: EnvironmentId; readonly 
             <KinSettingsLoading rows={1} />
           )
         ) : rows.length === 0 ? (
-          <KinSettingsEmpty>{COPY.empty}</KinSettingsEmpty>
+          <KinSettingsEmpty>{COPY.settingsEmpty}</KinSettingsEmpty>
         ) : (
           rows
             .toSorted((a, b) => Number(a.tone === "ok") - Number(b.tone === "ok"))

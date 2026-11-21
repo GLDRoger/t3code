@@ -23,7 +23,7 @@ export const KIN_APPROVER_PHONES_TITLE = "Phones that can approve";
 /** Web Settings → Approvals, said to whoever runs the company. */
 export const KIN_APPROVALS_SETTINGS = {
   purpose:
-    "Some steps, like changing what an agent may do, wait for a yes with Face ID on one of these phones. To add a phone, open Approvals in the Kin app on it.",
+    "Some steps, like changing what an agent may do, wait for your yes on one of these phones. To add a phone, open Approvals in the Kin app on it.",
   phonesDetail: "You get a message in your chat whenever a phone is added or removed.",
   empty: "No phone can approve yet, so anything that needs approval waits.",
   noHost: "Connect to the computer that runs Kin to see the phones that approve.",

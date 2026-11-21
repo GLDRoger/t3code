@@ -206,7 +206,7 @@ export const KIN_OTHER_PROVIDER_AGENTS = {
   /** Settings → Agents' row, last on the page. */
   section: "Experiments",
   row: `Let agents run on ${switched.map((facts) => facts.label).join(" and ")} models`,
-  rowDetail: "Set it up under This computer, Providers first.",
+  rowDetail: `Set ${switched.map((facts) => facts.label).join(" and ")} up first, under This computer, Providers and models.`,
   title: "Agents on other providers",
   detail: `An experiment: agents may also run on ${switched.map((facts) => facts.label).join(" and ")} models. As on Claude, in your own chats they have a shell, files and the web, each step checked by Kin, and in chats others read only their Kin tools. Set the provider up under Settings, Providers first.`,
 };

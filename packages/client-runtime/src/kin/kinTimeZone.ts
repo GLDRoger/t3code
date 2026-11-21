@@ -52,7 +52,11 @@ const FIXED_OFFSET = /^Etc\/GMT([+-])(\d{1,2})$/;
  * A zone as a person names it, in the platform's words for this device's language: "India
  * Standard Time", "Pacific Time". Never the id; "Kolkata" where the platform has no name for it.
  */
+const UNIVERSAL = /^(?:Etc\/)?(?:UTC|UCT|GMT|GMT0|Universal|Zulu|Greenwich)$/;
+
 export function kinZoneLabel(zone: string, locale?: string, at = kinNowMs()): string {
+  // People say "UTC"; the platform's long name ("Coordinated Universal Time") reads as jargon.
+  if (UNIVERSAL.test(zone)) return "UTC";
   for (const style of ["longGeneric", "long"] as const) {
     try {
       const name = new Intl.DateTimeFormat(locale, { timeZone: zone, timeZoneName: style })

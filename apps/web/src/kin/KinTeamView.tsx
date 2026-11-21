@@ -50,13 +50,7 @@ import { PlusIcon, XIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "../components/ui/button";
-import {
-  Select,
-  SelectItem,
-  SelectPopup,
-  SelectTrigger,
-  SelectValue,
-} from "../components/ui/select";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Switch } from "../components/ui/switch";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -589,24 +583,22 @@ function KinTeammateProjects(props: {
       problem={save.problem}
       action={
         view === null || view.addable.length === 0 ? undefined : (
-          <Select
-            value=""
-            disabled={save.busy !== null}
-            onValueChange={(key) => {
-              if (typeof key === "string" && key !== "") void change(key, true);
-            }}
-          >
-            <SelectTrigger size="sm" className="w-44" aria-label={KIN_TEAMMATE_PROJECTS.add}>
-              <SelectValue>{KIN_TEAMMATE_PROJECTS.add}</SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
+          // Picking whom or what to add from a menu on the title line, as "Restrict messaging with…".
+          <Menu>
+            <MenuTrigger
+              render={<Button size="xs" variant="outline" disabled={save.busy !== null} />}
+            >
+              <PlusIcon />
+              {KIN_TEAMMATE_PROJECTS.add}
+            </MenuTrigger>
+            <MenuPopup align="end">
               {view.addable.map((row) => (
-                <SelectItem key={row.key} value={row.key}>
+                <MenuItem key={row.key} onClick={() => void change(row.key, true)}>
                   {row.title}
-                </SelectItem>
+                </MenuItem>
               ))}
-            </SelectPopup>
-          </Select>
+            </MenuPopup>
+          </Menu>
         )
       }
     >
@@ -677,7 +669,7 @@ function KinTeammatePlaces(props: {
   return (
     <KinSettingsSection
       title={KIN_TEAM_COPY.canSee}
-      description={KIN_TEAM_COPY.sharedAlways}
+      description={KIN_TEAM_COPY.sharedAlwaysLine}
       problem={problem}
     >
       {KIN_PLACE_SWITCHES.map((entry) => (
@@ -745,7 +737,9 @@ function KinTeammateTasks(props: {
   return (
     <KinSettingsSection
       title={KIN_PERSON_TASKS.title}
-      description={held === null || held.total === 0 ? undefined : KIN_PERSON_TASKS.count(held.total)}
+      description={
+        held === null || held.total === 0 ? undefined : KIN_PERSON_TASKS.count(held.total)
+      }
       action={
         profile === null || (profile.load?.open ?? 0) === 0 ? undefined : (
           <KinHandOverButton

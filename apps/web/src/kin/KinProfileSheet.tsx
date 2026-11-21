@@ -461,23 +461,23 @@ function KinProfileRows(props: {
       {row(
         "tags",
         KIN_PROFILE_COPY.tagsLabel,
-        profile.roleTags.length === 0 ? KIN_PROFILE_COPY.noTags : profile.roleTags.join(", "),
+        profile.roleTags.length === 0 ? KIN_PROFILE_COPY.rowEmpty : profile.roleTags.join(", "),
       )}
       {row(
         "skills",
         KIN_PROFILE_COPY.skillsLabel,
-        profile.skills === "" ? KIN_PROFILE_COPY.noSkills : profile.skills,
+        profile.skills === "" ? KIN_PROFILE_COPY.rowEmpty : profile.skills,
       )}
       {row(
         "talk",
         KIN_PROFILE_COPY.talkLabel,
-        (profile.talkStyle ?? "") === "" ? KIN_PROFILE_COPY.noTalk : (profile.talkStyle ?? ""),
+        (profile.talkStyle ?? "") === "" ? KIN_PROFILE_COPY.rowEmpty : (profile.talkStyle ?? ""),
       )}
       {row(
         "hours",
         KIN_PROFILE_COPY.hoursLabel,
         hours === null
-          ? KIN_PROFILE_COPY.noHours
+          ? KIN_PROFILE_COPY.rowEmpty
           : `${hours}${profile.timeZone === null ? "" : `, ${kinZoneLabel(profile.timeZone)}`}`,
         "kin-working-hours",
       )}
@@ -664,90 +664,102 @@ function KinProfileForm(props: {
         )}
       </KinSettingsField>
       <KinSettingsField name="name" label={KIN_PROFILE_COPY.nameLabel}>
-          {(ids) => (
-            <Input
-              id={ids.control}
-              value={draft.displayName}
-              maxLength={KIN_PROFILE_NAME_MAX}
-              onChange={(event) => set({ displayName: event.target.value })}
-            />
-          )}
-        </KinSettingsField>
-      <KinSettingsField name="tags" label={KIN_PROFILE_COPY.tagsLabel} help={KIN_PROFILE_COPY.tagsHint}>
-          {(ids) => (
-            <Input
-              id={ids.control}
-              value={draft.tags}
-              onChange={(event) => set({ tags: event.target.value })}
-            />
-          )}
-        </KinSettingsField>
-      <KinSettingsField name="skills" label={KIN_PROFILE_COPY.skillsLabel} help={KIN_PROFILE_COPY.skillsHint}>
+        {(ids) => (
+          <Input
+            id={ids.control}
+            value={draft.displayName}
+            maxLength={KIN_PROFILE_NAME_MAX}
+            onChange={(event) => set({ displayName: event.target.value })}
+          />
+        )}
+      </KinSettingsField>
+      <KinSettingsField
+        name="tags"
+        label={KIN_PROFILE_COPY.tagsLabel}
+        help={KIN_PROFILE_COPY.tagsHint}
+      >
+        {(ids) => (
+          <Input
+            id={ids.control}
+            value={draft.tags}
+            onChange={(event) => set({ tags: event.target.value })}
+          />
+        )}
+      </KinSettingsField>
+      <KinSettingsField
+        name="skills"
+        label={KIN_PROFILE_COPY.skillsLabel}
+        help={KIN_PROFILE_COPY.skillsHint}
+      >
+        {(ids) => (
+          <Textarea
+            id={ids.control}
+            value={draft.skills}
+            maxLength={KIN_PROFILE_SKILLS_MAX}
+            placeholder={KIN_PROFILE_COPY.skillsExample}
+            onChange={(event) => set({ skills: event.target.value })}
+          />
+        )}
+      </KinSettingsField>
+      {props.mine ? (
+        <KinSettingsField
+          name="talk"
+          label={KIN_PROFILE_COPY.talkLabel}
+          help={KIN_PROFILE_COPY.talkHint}
+        >
           {(ids) => (
             <Textarea
               id={ids.control}
-              value={draft.skills}
-              maxLength={KIN_PROFILE_SKILLS_MAX}
-              placeholder={KIN_PROFILE_COPY.skillsExample}
-              onChange={(event) => set({ skills: event.target.value })}
+              value={draft.talkStyle}
+              maxLength={KIN_PROFILE_TALK_MAX}
+              onChange={(event) => set({ talkStyle: event.target.value })}
             />
           )}
         </KinSettingsField>
-      {props.mine ? (
-        <KinSettingsField name="talk" label={KIN_PROFILE_COPY.talkLabel} help={KIN_PROFILE_COPY.talkHint}>
-            {(ids) => (
-              <Textarea
-                id={ids.control}
-                value={draft.talkStyle}
-                maxLength={KIN_PROFILE_TALK_MAX}
-                onChange={(event) => set({ talkStyle: event.target.value })}
-              />
-            )}
-          </KinSettingsField>
       ) : null}
       <KinSettingsField name="hours" label={KIN_PROFILE_COPY.hoursLabel}>
-          {(ids) => (
-            <div role="group" aria-labelledby={ids.label} className="flex flex-col gap-2">
-              <div className="flex flex-wrap gap-1">
-                {KIN_DAY_LABELS.map((label, day) => (
-                  <Toggle
-                    key={label}
-                    size="sm"
-                    variant="outline"
-                    pressed={draft.days.includes(day)}
-                    onPressedChange={(pressed) =>
-                      set({
-                        days: pressed
-                          ? [...draft.days, day]
-                          : draft.days.filter((held) => held !== day),
-                      })
-                    }
-                  >
-                    {label}
-                  </Toggle>
-                ))}
-              </div>
-              <div className="flex items-center gap-2">
-                <Input
-                  id={ids.control}
-                  type="time"
-                  aria-label="Starts"
-                  value={draft.start}
-                  disabled={draft.days.length === 0}
-                  onChange={(event) => set({ start: event.target.value })}
-                />
-                <span className="text-sm text-muted-foreground">to</span>
-                <Input
-                  type="time"
-                  aria-label="Ends"
-                  value={draft.end}
-                  disabled={draft.days.length === 0}
-                  onChange={(event) => set({ end: event.target.value })}
-                />
-              </div>
+        {(ids) => (
+          <div role="group" aria-labelledby={ids.label} className="flex flex-col gap-2">
+            <div className="flex flex-wrap gap-1">
+              {KIN_DAY_LABELS.map((label, day) => (
+                <Toggle
+                  key={label}
+                  size="sm"
+                  variant="outline"
+                  pressed={draft.days.includes(day)}
+                  onPressedChange={(pressed) =>
+                    set({
+                      days: pressed
+                        ? [...draft.days, day]
+                        : draft.days.filter((held) => held !== day),
+                    })
+                  }
+                >
+                  {label}
+                </Toggle>
+              ))}
             </div>
-          )}
-        </KinSettingsField>
+            <div className="flex items-center gap-2">
+              <Input
+                id={ids.control}
+                type="time"
+                aria-label="Starts"
+                value={draft.start}
+                disabled={draft.days.length === 0}
+                onChange={(event) => set({ start: event.target.value })}
+              />
+              <span className="text-sm text-muted-foreground">to</span>
+              <Input
+                type="time"
+                aria-label="Ends"
+                value={draft.end}
+                disabled={draft.days.length === 0}
+                onChange={(event) => set({ end: event.target.value })}
+              />
+            </div>
+          </div>
+        )}
+      </KinSettingsField>
       <KinSettingsField label={KIN_PROFILE_COPY.timeZoneLabel}>
         {(ids) => (
           <>
@@ -767,26 +779,30 @@ function KinProfileForm(props: {
         )}
       </KinSettingsField>
       {props.mine ? (
-        <KinSettingsField name="quiet" label={KIN_PROFILE_COPY.quietLabel} help={KIN_PROFILE_COPY.quietHint}>
-            {(ids) => (
-              <div role="group" aria-labelledby={ids.label} className="flex items-center gap-2">
-                <Input
-                  id={ids.control}
-                  type="time"
-                  aria-label="Quiet from"
-                  value={draft.quietFrom}
-                  onChange={(event) => set({ quietFrom: event.target.value })}
-                />
-                <span className="text-sm text-muted-foreground">to</span>
-                <Input
-                  type="time"
-                  aria-label="Quiet until"
-                  value={draft.quietTo}
-                  onChange={(event) => set({ quietTo: event.target.value })}
-                />
-              </div>
-            )}
-          </KinSettingsField>
+        <KinSettingsField
+          name="quiet"
+          label={KIN_PROFILE_COPY.quietLabel}
+          help={KIN_PROFILE_COPY.quietHint}
+        >
+          {(ids) => (
+            <div role="group" aria-labelledby={ids.label} className="flex items-center gap-2">
+              <Input
+                id={ids.control}
+                type="time"
+                aria-label="Quiet from"
+                value={draft.quietFrom}
+                onChange={(event) => set({ quietFrom: event.target.value })}
+              />
+              <span className="text-sm text-muted-foreground">to</span>
+              <Input
+                type="time"
+                aria-label="Quiet until"
+                value={draft.quietTo}
+                onChange={(event) => set({ quietTo: event.target.value })}
+              />
+            </div>
+          )}
+        </KinSettingsField>
       ) : null}
       {props.mine ? (
         <div className="flex items-start justify-between gap-4">

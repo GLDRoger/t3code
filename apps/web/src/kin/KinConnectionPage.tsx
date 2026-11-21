@@ -346,11 +346,11 @@ export function KinConnectionPage(props: {
           />
         ) : null}
         <KinSettingsRow
-          title={COPY.reachTitle}
+          title={COPY.reachRow}
           detail={COPY.reachShort}
           control={
             <Switch
-              aria-label={COPY.reachTitle}
+              aria-label={COPY.reachRow}
               checked={connection.reach === "closed"}
               disabled={save.busy !== null}
               onCheckedChange={(checked) =>

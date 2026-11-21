@@ -5,7 +5,7 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
@@ -55,10 +55,12 @@ export function KinSettingsChoice<T extends string>(props: {
       <SelectTrigger
         size="sm"
         aria-label={props.label}
-        className="w-auto max-w-64"
-        // As wide as the longest choice needs (about half an em a letter), so none is cut; the
-        // cap keeps the row's title room.
-        style={{ minWidth: `max(10rem, calc(${longest / 2}em + 2.75rem))` }}
+        className="w-auto max-w-64 min-w-32 sm:min-w-(--kin-choice-width)"
+        // From sm up, as wide as the longest choice needs (about half an em a letter), so none is
+        // cut; narrower, the row's title keeps its room and a long choice truncates.
+        style={
+          { "--kin-choice-width": `max(10rem, calc(${longest / 2}em + 2.75rem))` } as CSSProperties
+        }
       >
         <SelectValue>{shown ?? KIN_SETTINGS_COPY.mixed}</SelectValue>
       </SelectTrigger>
@@ -157,7 +159,9 @@ export function KinSettingsFormDialog(props: {
         className="max-w-lg"
         {...(openAt === null
           ? {}
-          : { initialFocus: (openType: string) => kinFieldToFocus(form.current, openAt, openType) })}
+          : {
+              initialFocus: (openType: string) => kinFieldToFocus(form.current, openAt, openType),
+            })}
       >
         <form
           ref={form}

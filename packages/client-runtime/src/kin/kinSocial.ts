@@ -93,6 +93,9 @@ export const KIN_SOCIAL_COPY = {
   loadFailed: "Couldn't load your social accounts",
   loading: "Loading…",
   empty: "Nothing connected yet. Social can still draft, and hands you ready-to-post packs.",
+  /** Web Settings: the agent may not be called Social, so the line names no agent. */
+  settingsEmpty:
+    "Nothing connected yet. Your agents can still draft posts for you to put up yourself.",
   open: "Open",
   noAccountsYet: "No accounts yet. Send a connect link to add one.",
 } as const;

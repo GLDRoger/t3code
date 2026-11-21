@@ -125,7 +125,8 @@ export const KIN_CONNECTIONS_COPY = {
   noCalls: "No agent has used this yet.",
   openWeb: "Can reach the open web",
   reachTitle: "Reaches only this service",
-  reachShort: "Turn off if it can fetch from elsewhere on the web.",
+  reachRow: "Only reads this service",
+  reachShort: "Turn off if it can also read other websites.",
   reachDetail:
     "Turn this off if the service can fetch pages or data from elsewhere. Agents then stop using it in a chat once they have read anything from outside.",
   pause: "Pause",

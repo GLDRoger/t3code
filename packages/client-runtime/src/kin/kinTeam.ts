@@ -746,6 +746,8 @@ export const KIN_TEAM_COPY = {
   canDoBack: "What they can do when they're back",
   canSee: "What they can see",
   sharedAlways: "Tasks shared with the team, always.",
+  /** Web's section line: the same, as a sentence. */
+  sharedAlwaysLine: "They always see Tasks shared with the team.",
 } as const;
 
 /** Settings → Team, the page and its list, in the owner's words. */

@@ -54,6 +54,8 @@ export const KIN_PROFILE_COPY = {
   noHours: "Not set",
   noSkills: "Nothing yet",
   noTags: "No roles yet",
+  /** Web's profile rows: one word for every empty value. */
+  rowEmpty: "Not set",
   pictureAdd: "Add picture",
   pictureChange: "Change picture",
   pictureRemove: "Remove picture",
