@@ -104,6 +104,10 @@ export function formatKinTime(date: Date, now: Date = kinNow()): string {
     : kinDayFormat.format(date);
 }
 
+/** "Last updated 9:41.": when what is shown offline was last read. */
+export const kinLastUpdated = (atMs: number, formatTime: (date: Date) => string) =>
+  `Last updated ${formatTime(new Date(atMs))}.`;
+
 /** Where the Reconnect action on the Offline notice is: idle, waiting on the attempt, or failed. */
 export type KinReconnectStatus = "idle" | "pending" | "failed";
 
@@ -128,7 +132,7 @@ export function kinStaleNotice(
 ): KinStaleNotice | null {
   if ((data.connected && data.live) || data.savedAt === null) return null;
   if (!data.connected && !data.offline && reconnect === "idle") return null;
-  const updated = `Last updated ${formatTime(new Date(data.savedAt))}.`;
+  const updated = kinLastUpdated(Date.parse(data.savedAt), formatTime);
   if (data.connected) return { offline: false, message: `Updating. ${updated}` };
   const status =
     reconnect === "pending"

@@ -2056,7 +2056,7 @@ it.effect(
       assert.strictEqual(reasonOf(refused), "not_allowed");
       assert.strictEqual(
         "message" in refused ? refused.message : "",
-        "Only the owner or a co-owner changes that. Nothing was written. Draft it for Owner instead: put the draft in kin_ask_person to Owner as its detail, with draft naming its kind and the client or deal key, leaving blank what only Owner decides, such as a price; Kin adds the buttons Approve and Changes first. Then tell Mate in one line that it is with Owner to approve, with the draft under that line.",
+        "Only the owner or a co-owner changes that. Nothing was written. Draft it for Owner instead: put the draft in kin_ask_person to Owner as its detail, with draft naming its kind and the client or deal key, keeping a price or term Mate gave, named as theirs, and leaving blank any other only Owner decides; Kin adds the buttons Approve and Changes first. Then tell Mate in one line that it is with Owner to approve, with the draft under that line.",
       );
       const docs = sql`SELECT 1 FROM kin_records WHERE org_id = ${orgId} AND register_id = 'docs'`;
       assert.lengthOf(yield* docs, 0);

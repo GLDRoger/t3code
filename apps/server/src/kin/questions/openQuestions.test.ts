@@ -1659,6 +1659,7 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       const drawn = yield* team.widgetOf((yield* team.cardOf(zoya.questionId)).widgetId!);
       assert.include(drawn.state, {
         detail: `Zoya Sheikh asks, through Chief of staff.\n\n${injected}\n\nProposal for Harbourline Hotels`,
+        draft: injected,
       });
       assert.deepStrictEqual(
         (drawn.state as { options: ReadonlyArray<{ label: string; kind?: string }> }).options.map(
@@ -2063,6 +2064,7 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
         readonly options: ReadonlyArray<{ readonly label: string; readonly kind?: string }>;
       };
       assert.include(raiseState.detail, "Harbourline follow-up proposal: price: ____\n\nProposal");
+      assert.include(raiseCard.state, { draft: "Harbourline follow-up proposal: price: ____" });
       assert.deepStrictEqual(
         raiseState.options.map(({ label, kind }) => ({ label, kind })),
         [
@@ -2081,6 +2083,21 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       assert.include(
         (yield* draftWakes).map((one) => one.key),
         `question-approved:${late.questionId}`,
+      );
+
+      // Her own figure rides up in the draft; one she didn't give is still not for her.
+      yield* drained;
+      const priced = yield* sendUp("zoya", "Harbourline retainer: monthly fee ₹2,50,000");
+      assert.strictEqual(priced.state, "posted");
+      const pricedCard = yield* team.widgetOf((yield* team.cardOf(priced.questionId)).widgetId!);
+      assert.include((pricedCard.state as { detail: string }).detail, "monthly fee ₹2,50,000");
+      const unpriced = yield* wakeOn("chief", "zoya", zoyaChat, "Draft the Harbourline setup");
+      yield* refused(
+        askFor("chief", unpriced, {
+          ...upInput("zoya", "Harbourline setup: one-off fee ₹2,50,000 and ₹40,000 travel"),
+          intent: "harbourline setup",
+        }),
+        "Not for Zoya Sheikh: “₹2,50,000” reads as an amount of money, which they may not see.",
       );
     }).pipe(Effect.provide(layer)),
   ),

@@ -1,7 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers compare due times with the reader's local day, outside an Effect runtime.
 import {
   KIN_WORK_MOVE_PLACES,
-  kinWorkHandedBackOpen,
   kinWorkMove,
   kinWorkMoveOrder,
   type KinChoiceOption,
@@ -342,11 +341,8 @@ export function kinTaskStep(
   const holder = record.owner;
   if (holder._tag === "person" && holder.personId === names.me) {
     const first = (by: KinRecord["owner"]) => kinWorkName(by, names).split(/\s+/)[0] ?? "";
-    // Shown while it keeps the task in Needs you (`kinWorkMoveUnder`), so the two agree.
-    if (
-      record.handedBack !== undefined &&
-      kinWorkHandedBackOpen(Date.parse(record.handedBack.at), Date.parse(record.updatedAt))
-    )
+    // From the stored hand-back, as the task's page reads it: a change and its Undo keep it.
+    if (record.handedBack !== undefined)
       return {
         kind: "told",
         line: KIN_TASKS.handedBack(first(record.handedBack.by), move.handedBackNote ?? null),

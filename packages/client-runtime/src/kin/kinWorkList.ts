@@ -30,6 +30,7 @@ import {
   type KinWorkRef,
 } from "./kinWork.ts";
 import { kinFailure } from "./kinAnswers.ts";
+import { kinNowMs } from "./kinNow.ts";
 import type { KinLink } from "./kinHost.ts";
 import { kinWorkRefOf } from "./kinWorkClients.ts";
 
@@ -60,6 +61,8 @@ export interface KinPagedListState<Filter, Row> {
   readonly moreFailed: boolean;
   /** A read-again failed, so the rows shown are older than the host's. */
   readonly stale: boolean;
+  /** When the rows shown were last read or caught up, epoch ms; null before the first answer. */
+  readonly readAt: number | null;
 }
 
 export type KinWorkListState = KinPagedListState<KinWorkFilter, KinRecord>;
@@ -76,6 +79,7 @@ const emptyState = <Filter, Row>(filter: Filter): KinPagedListState<Filter, Row>
   loadingMore: false,
   moreFailed: false,
   stale: false,
+  readAt: null,
 });
 
 /**
@@ -123,6 +127,7 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
   readonly onChange: (state: KinPagedListState<Filter, Row>) => void;
   /** Runs `run` after `ms`; returns its cancel. */
   readonly schedule: (run: () => void, ms: number) => () => void;
+  readonly now?: () => number;
   /**
    * The rows held brought up to date without a read, from what the host already sent; null when
    * only a read can. `moved` says rows came or went, so the next page reads from the top.
@@ -141,6 +146,7 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
     return [...held, ...page.filter((row) => !seen.has(options.idOf(row)))];
   };
   const sameFilter = options.sameFilter;
+  const now = options.now ?? kinNowMs;
   let state: State = emptyState(options.initial);
   // Bumped whenever what is being read stops mattering: a new filter, a manual refresh, the end.
   let generation = 0;
@@ -217,6 +223,7 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
       loadingMore: false,
       moreFailed: false,
       stale: false,
+      readAt: now(),
     });
     afterRead();
   };
@@ -247,8 +254,9 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
       caught.records.length === state.records.length &&
       caught.records.every((row, index) => row === state.records[index]);
     // Nothing shown moved: the number advances without a redraw.
-    if (same) state = { ...state, seq };
-    else set({ records: caught.records, total: caught.total, more: caught.more, seq });
+    if (same) state = { ...state, seq, readAt: now() };
+    else
+      set({ records: caught.records, total: caught.total, more: caught.more, seq, readAt: now() });
   }
 
   const abandon = () => {
@@ -357,6 +365,7 @@ export function createKinWorkList(options: {
     idOf: (record) => record.recordId,
     onChange: options.onChange,
     schedule: options.schedule,
+    now: options.now,
     read: async (filter, page) => {
       const input = {
         ...kinWorkListQuery(options.orgId, filter, options.now(), options.hostFilters()),

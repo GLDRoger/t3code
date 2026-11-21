@@ -513,6 +513,11 @@ export const KinChoiceCardState = Schema.Struct({
    * card is open, never once it is settled. `detail` opens with it for older clients.
    */
   whileOpen: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(600))),
+  /**
+   * A teammate's draft sent up for approval, as written (markdown): shown rendered, as a doc is.
+   * `detail` carries the same words for older clients.
+   */
+  draft: Schema.optionalKey(KinText.check(Schema.isMaxLength(2000))),
   // An agent's kin_ask offers at most four; Kin's own cards, such as a statement's currency, up to eight.
   options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
   /** A picture of what is asked about, such as a new logo: a file in this card's chat. */
@@ -555,6 +560,15 @@ export const KinChoiceCardState = Schema.Struct({
     Schema.Struct({
       title: KinTrimmedText.check(Schema.isMaxLength(120)),
       text: KinText.check(Schema.isMaxLength(600)),
+      /** Where what the tap made lives, for the card to open: a list, in its place. */
+      open: Schema.optionalKey(
+        Schema.Struct({
+          place: Schema.Literals(["money", "clients", "docs"]),
+          list: KinTrimmedText.check(Schema.isMaxLength(40)),
+          /** Money's Subscriptions, which shows this list. */
+          subscriptions: Schema.optionalKey(Schema.Literal(true)),
+        }),
+      ),
       /** Set when the person undid what a default Kin took: who, by name then, and when. */
       undone: Schema.optionalKey(
         Schema.Struct({

@@ -1212,6 +1212,7 @@ const postHeldCard = Effect.fn("KinQuestions.postHeldCard")(function* (
       question: row.question,
       detail: card.detail,
       ...(card.askedBy === undefined ? {} : { askedBy: card.askedBy }),
+      ...(row.draft === null ? {} : { draft: row.draft.text }),
       options: card.options,
       untilAnswered: true,
       chatId: row.chatId,
@@ -1523,6 +1524,7 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
           ? said
           : `${by}\n${said}`,
     ...(by === undefined ? {} : { askedBy: by }),
+    ...(row.draft === null ? {} : { draft: row.draft.text }),
     options:
       row.draft !== null
         ? DRAFT_OPTIONS.map((one) => ({ ...one }))

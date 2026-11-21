@@ -10,6 +10,7 @@ import {
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
@@ -36,10 +37,11 @@ import { heldUntil } from "../triggers/quietHold.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
-import { personSees, unreadableBy } from "../work/teamView.ts";
+import { personSees, unreadableBy, withoutOwnFigures } from "../work/teamView.ts";
 import {
   DRAFT_KINDS,
   answeredEventId,
+  decodeStoredDraft,
   DRAFT_OPTIONS,
   DRAFT_WORDS,
   draftDetail,
@@ -186,6 +188,7 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
       // A sent-up draft is a teammate's, to the agent's owner only: his Approve has it made.
       let draft: string | null = null;
       let sentUp: StoredDraft | undefined;
+      let hers: ReadonlyArray<string> | undefined;
       if (input.draft !== undefined) {
         if (ownerTurn || asker === null)
           return yield* refuse(
@@ -200,7 +203,8 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
           return yield* refuse(
             "Kin writes this card's buttons, Approve and Changes first: leave out options when you send a draft up.",
           );
-        if (!(yield* draftSource(turn, here.chatId, asker)))
+        hers = yield* draftSource(turn, here.chatId, asker);
+        if (hers === undefined)
           return yield* refuse(
             `A draft goes up only from ${askerName ?? "the teammate"}'s own message here, or after the owner's Changes first on one of theirs.`,
           );
@@ -348,7 +352,12 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
           );
       }
       if (!ownerTurn && asker !== null) {
-        const why = yield* unreadableBy(orgId, asker, words);
+        // A figure she wrote herself is no secret from her: only the company's others are held.
+        const why = yield* unreadableBy(
+          orgId,
+          asker,
+          hers === undefined ? words : withoutOwnFigures(words, hers.join("\n")),
+        );
         if (why !== undefined) return yield* refuse(`Not for ${askerName ?? "the asker"}: ${why}.`);
       }
       const now = yield* Clock.currentTimeMillis;
@@ -369,6 +378,7 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
         question: flat(input.question),
         detail,
         askedBy: by,
+        ...(sentUp === undefined ? {} : { draft: sentUp.text }),
         options:
           sentUp !== undefined
             ? DRAFT_OPTIONS.map((one) => ({ ...one }))
@@ -465,7 +475,8 @@ const passedOn = Effect.fn("KinQuestions.passedOn")(function* (turn: {
 /**
  * Where a sent-up draft may start: the teammate's own message in her direct chat with this agent,
  * or the turn carrying the owner's answer to a draft she sent up through this agent before (his
- * Changes first, from `sendBack`). No other turn that merely carries her as its origin.
+ * Changes first, from `sendBack`). No other turn that merely carries her as its origin. Its words
+ * are hers to read: her message, or the draft she sent up, which was held to her then.
  */
 const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
   turn: { readonly orgId: string; readonly agentId: string; readonly wakeupId: string },
@@ -473,17 +484,18 @@ const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
   asker: KinPersonId,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const own = yield* sql`SELECT 1 FROM kin_events e
+  const own = yield* sql<{ body: string }>`SELECT m.body FROM kin_events e
     JOIN kin_messages m ON m.org_id = e.org_id
       AND m.message_id = json_extract(e.json, '$.messageId')
     WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId}
       AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message'
       AND json_extract(e.json, '$.origin') IS NULL AND m.chat_id = ${chatId}
       AND m.author_kind = 'human' AND m.author_person_id = ${asker} AND m.origin_json IS NULL
-    LIMIT 1`;
-  if (own.length > 0) return true;
-  const answered = yield* sql<{ eventId: string; questionId: string }>`SELECT
-      e.event_id AS "eventId", q.question_id AS "questionId" FROM kin_events e
+    ORDER BY e.event_id`;
+  if (own.length > 0) return own.map((one) => one.body);
+  const answered = yield* sql<{ eventId: string; questionId: string; draft: string }>`SELECT
+      e.event_id AS "eventId", q.question_id AS "questionId", q.draft_json AS draft
+    FROM kin_events e
     JOIN kin_questions q ON q.org_id = e.org_id
       AND q.question_id = json_extract(e.json, '$.subject.questionId')
     WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId}
@@ -499,5 +511,10 @@ const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
       AND q.for_chat_id = ${chatId} AND q.draft_json IS NOT NULL
       AND q.state = 'answered' AND q.approved_at IS NULL
     ORDER BY e.event_id`;
-  return answered.some((one) => one.eventId === answeredEventId(turn.orgId, one.questionId));
+  const earlier = answered.filter(
+    (one) => one.eventId === answeredEventId(turn.orgId, one.questionId),
+  );
+  return earlier.length === 0
+    ? undefined
+    : earlier.flatMap((one) => Option.toArray(decodeStoredDraft(one.draft)).map((d) => d.text));
 });

@@ -747,7 +747,11 @@ export function KinDocsList(
               <View className="gap-2 pt-2">
                 {shown === "rows" && (props.stale || state.stale) ? (
                   <View className="px-4">
-                    <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
+                    <KinWorkStaleNotice
+                      environmentId={environmentId}
+                      onRetry={refresh}
+                      readAt={state.readAt}
+                    />
                   </View>
                 ) : null}
                 <View className="flex-row flex-wrap gap-2 px-4">
