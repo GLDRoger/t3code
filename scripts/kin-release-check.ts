@@ -200,8 +200,8 @@ export const run = (
       if (settled) return;
       settled = true;
       if (child.pid !== undefined) children.delete(child.pid);
-      out.end();
-      resolve({ code, output });
+      // The log opens asynchronously: answer once it is closed, so a caller may remove its folder.
+      out.end(() => resolve({ code, output }));
     };
     // A program that can't start (not on PATH, not executable) is a failed stage, not a crashed check.
     child.on("error", (error) => {
@@ -919,8 +919,7 @@ export const streamRemote = (command: string, args: string[], logPath: string) =
     child.stderr.on("data", take);
     child.on("close", (exit) => {
       if (child.pid !== undefined) children.delete(child.pid);
-      log.end();
-      resolve({ code: exit ?? 255, output: text });
+      log.end(() => resolve({ code: exit ?? 255, output: text }));
     });
   });
 

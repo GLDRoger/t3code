@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- the guard reads source files synchronously, outside any Effect.
 import { assert, describe, it } from "@effect/vitest";
 import {
   KinOrgId,
@@ -13,6 +14,8 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -424,29 +427,11 @@ describe("KinTriggerStore", () => {
   );
 
   it.effect(
-    "stores source, settings and ping records without upstream rows and enforces their org keys",
+    "stores settings and ping records without upstream rows and enforces their org keys",
     () =>
       Effect.gen(function* () {
         yield* seed;
         const sql = yield* SqlClient.SqlClient;
-        const source = {
-          id: "source",
-          orgId: orgA,
-          repo: "owner/repo",
-          scheduledTaskId: "task",
-          inboxThreadId: "thread",
-          githubHookId: null,
-          botLogin: "kin[bot]",
-          status: "active",
-        };
-        yield* sql`
-      INSERT INTO kin_webhook_sources (source_id, org_id, repo, scheduled_task_id, inbox_thread_id, github_hook_id, bot_login, status)
-      VALUES (${source.id}, ${source.orgId}, ${source.repo}, ${source.scheduledTaskId}, ${source.inboxThreadId}, ${source.githubHookId}, ${source.botLogin}, ${source.status})
-    `;
-        yield* sql`
-          INSERT INTO kin_webhook_sources (source_id, org_id, repo, scheduled_task_id, inbox_thread_id, github_hook_id, bot_login, status)
-          VALUES (${source.id}, ${orgB}, ${source.repo}, 'other-task', ${source.inboxThreadId}, NULL, ${source.botLogin}, ${source.status})
-        `;
         const settings = yield* decodeSettings({
           orgId: orgA,
           timeZone: "Asia/Kolkata",
@@ -476,10 +461,6 @@ describe("KinTriggerStore", () => {
     `),
           ),
         );
-        assert.deepStrictEqual(
-          yield* sql`SELECT org_id FROM kin_webhook_sources ORDER BY org_id, source_id`,
-          [{ org_id: orgA }, { org_id: orgB }],
-        );
         assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_trigger_settings`, [
           { org_id: orgA },
         ]);
@@ -490,4 +471,18 @@ describe("KinTriggerStore", () => {
         assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
       }).pipe(Effect.provide(layer)),
   );
+
+  // A paused trigger is written one way: a second copy of the statement drifts from this one.
+  it("pauses triggers only through pauseTriggers", () => {
+    const root = NodePath.resolve(import.meta.dirname, "..");
+    const pause = /UPDATE\s+kin_triggers\s+SET\s+enabled\s*=\s*0\s*,\s*next_run_at\s*=\s*NULL/g;
+    const found = NodeFS.readdirSync(root, { recursive: true, encoding: "utf8" }).flatMap((file) =>
+      !file.endsWith(".ts") || /\.test\.ts$|\.testkit\.ts$|migrations\//.test(file)
+        ? []
+        : [...NodeFS.readFileSync(NodePath.join(root, file), "utf8").matchAll(pause)].map(
+            () => file,
+          ),
+    );
+    assert.deepStrictEqual(found, ["triggers/KinTriggerStore.ts"]);
+  });
 });

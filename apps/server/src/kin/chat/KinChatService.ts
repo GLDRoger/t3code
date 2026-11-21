@@ -2044,7 +2044,7 @@ const make = Effect.gen(function* () {
       Stream.unwrap(
         Effect.gen(function* () {
           const identity = yield* personFor(caller, input);
-          const live = yield* hub.subscribeForViewer(identity);
+          const live = yield* hub.subscribeForViewer(identity, input.chatId);
           const member = yield* memberFor(identity, input.chatId);
           const viewed = Effect.fn("KinChatService.viewed")(function* <
             T extends {

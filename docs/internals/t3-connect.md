@@ -82,6 +82,8 @@ devices working and lists them for review, including any that got in before.
 See `issueConnectCredential` in the
 [environment auth service](../../apps/server/src/auth/EnvironmentAuth.ts).
 
+On a Kin host the CLI's revoke ends only the session; see [Kin's sign-in rules](../kin/auth.md).
+
 Managed tunnels expose only this server's own loopback HTTP origin. The link
 proof signs that origin from the server's listening address and ignores the
 caller's, so any client holding `relay:configure`, local or remote, can link

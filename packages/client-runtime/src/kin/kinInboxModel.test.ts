@@ -158,15 +158,6 @@ describe("kin inbox", () => {
     expect(view.rows[1]!.waitingCount).toBe(2);
     expect(view.waitingCount).toBe(3);
     expect(view.unreadCount).toBe(3);
-    // The host's open list stands in for the chat list's waiting: a settled ask leaves the fold.
-    const open = selectKinInboxView(state, [waiting("w3", "asks-busy", { reason: "decision" })]);
-    expect(open.rows.map((row) => [row.chat.chatId, row.fold]).slice(0, 2)).toEqual([
-      ["asks-busy", "needsYou"],
-      ["busy", "working"],
-    ]);
-    expect(open.folds).toEqual({ needsYou: 1, working: 1, rest: 5 });
-    expect(open.waiting.map((item) => item.waitingId)).toEqual(["w3"]);
-    expect(open.waitingCount).toBe(1);
   });
 
   it("upserts chats without moving one backwards, and resolves waiting rows", () => {

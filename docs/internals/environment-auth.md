@@ -3,6 +3,7 @@
 The environment issues its own sessions and enforces their capabilities. Cloud
 identity and relay credentials belong to a separate trust boundary, described in
 [T3 Connect](./t3-connect.md). A relay token is never an environment login.
+On a Kin host, [Kin's sign-in rules](../kin/auth.md) add scopes and change revoking.
 
 ## Authority survives transport changes
 
