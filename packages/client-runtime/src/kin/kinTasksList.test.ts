@@ -775,7 +775,7 @@ describe("kinTaskQuickFilters", () => {
       ["All open", 9, true],
       ["Mine", 6, false],
       ["This week", 4, false],
-      ["Waiting", 2, false],
+      ["Marked waiting", 2, false],
       ["Late", 3, false],
     ]);
     const mine = quick[1]!.next;

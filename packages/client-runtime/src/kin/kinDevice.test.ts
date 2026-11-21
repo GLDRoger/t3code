@@ -1,6 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { kinJoinSignedInAs, kinReplacedComputers, type KinHeldComputer } from "./kinDevice.ts";
+import {
+  kinJoinSignedInAs,
+  kinReplacedComputers,
+  kinSignOutExits,
+  type KinExitCandidate,
+  type KinHeldComputer,
+} from "./kinDevice.ts";
 
 const rhea = { orgId: "org-ambermill", personId: "person-rhea" };
 const held = (
@@ -66,6 +72,65 @@ describe("kinReplacedComputers", () => {
     ];
     for (const one of cases) {
       expect(kinReplacedComputers(one.held), one.name).toEqual(one.replaced);
+    }
+  });
+});
+
+describe("kinSignOutExits", () => {
+  it("gives each team one Sign out, and none to a row that is down and never named its team", () => {
+    const row = (
+      environmentId: string,
+      overrides: Partial<KinExitCandidate> = {},
+    ): KinExitCandidate => ({
+      environmentId,
+      label: "Studio desktop",
+      team: "Ambermill",
+      connected: true,
+      ...overrides,
+    });
+    const cases: ReadonlyArray<{
+      readonly name: string;
+      readonly rows: ReadonlyArray<KinExitCandidate>;
+      readonly host: string | null;
+      readonly exits: ReadonlyArray<string>;
+    }> = [
+      {
+        name: "one team beside old pairings that never answered",
+        rows: [
+          row("old-1", { team: null, connected: false }),
+          row("live"),
+          row("old-2", { team: null, connected: false }),
+        ],
+        host: "live",
+        exits: ["live"],
+      },
+      {
+        name: "two teams",
+        rows: [row("live"), row("other", { team: "Lumen Grove", label: "Lumen office" })],
+        host: "live",
+        exits: ["live", "other"],
+      },
+      {
+        name: "another team off for now keeps its Sign out",
+        rows: [row("live"), row("other", { team: "Lumen Grove", connected: false })],
+        host: "live",
+        exits: ["live", "other"],
+      },
+      {
+        name: "the computer Kin opens on, before it names its team",
+        rows: [row("live", { team: null })],
+        host: "live",
+        exits: ["live"],
+      },
+      {
+        name: "no host yet: the connected copy of a team answers for it",
+        rows: [row("down", { connected: false }), row("up")],
+        host: null,
+        exits: ["up"],
+      },
+    ];
+    for (const one of cases) {
+      expect(kinSignOutExits(one.rows, one.host), one.name).toEqual(one.exits);
     }
   });
 });

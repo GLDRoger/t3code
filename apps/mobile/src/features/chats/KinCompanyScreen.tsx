@@ -34,7 +34,6 @@ import {
   KinWorkPrivateMark,
 } from "./components/KinWorkPieces";
 import { KinLoadFailed, KinLoadFailedRow } from "./components/KinLoadFailed";
-import { KinStopRows } from "./KinStopRows";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected, useKinGate } from "./state/useKinHost";
 import { useKinCompanyProfile, useKinCountryNeeded } from "./state/useKinMoney";
@@ -141,7 +140,6 @@ function Profile(
         ))
       )}
       <CompanyTimeZone environmentId={environmentId} orgId={orgId} />
-      <KinStopRows environmentId={environmentId} orgId={orgId} />
       {canEdit ? (
         <Text textRole="footnote" className="px-2 text-foreground-muted">
           {KIN_COMPANY.onComputer}

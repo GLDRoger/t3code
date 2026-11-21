@@ -449,6 +449,7 @@ function KinTasksKeyGuide(props: {
                   rows={Math.min(10, setup.text.split("\n").length + 1)}
                 />
               ))}
+              <p className="text-sm text-muted-foreground">{KIN_TASKS_KEYS_COPY.check}</p>
             </div>
           )}
         </DialogPanel>

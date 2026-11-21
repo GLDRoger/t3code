@@ -398,42 +398,47 @@ export function KinTaskRow(props: {
               {row.title}
             </Text>
             {/* Who has it never gives way: the rest of the line cuts off before it does. */}
-            <View className={cn("min-w-0 flex-row items-center gap-1.5", grows && "flex-wrap")}>
-              {line.urgent ? (
-                <SymbolView
-                  name={KIN_URGENT_SYMBOL}
-                  size={11}
-                  tintColorClassName="accent-warning-foreground"
-                  type="monochrome"
-                />
-              ) : null}
-              {line.holder === null ? null : (
-                <>
-                  <KinAvatar avatar={props.avatar} size="mini" />
-                  <Text
-                    textRole="footnote"
-                    numberOfLines={kinLines(1, grows)}
-                    className={cn("text-foreground", !grows && "max-w-[50%] shrink-0")}
-                  >
-                    {line.holder}
-                  </Text>
-                </>
-              )}
-              <Text
-                textRole="footnote"
-                numberOfLines={kinLines(1, grows)}
-                className="min-w-0 shrink text-foreground-muted"
-              >
-                {line.holder === null ? null : "· "}
-                {line.lead === null ? null : (
-                  <Text className={cn("font-t3-medium", LEAD_TONE[line.lead.tone])}>
-                    {line.lead.text}
-                  </Text>
+            {!line.urgent &&
+            line.holder === null &&
+            line.lead === null &&
+            line.rest === "" ? null : (
+              <View className={cn("min-w-0 flex-row items-center gap-1.5", grows && "flex-wrap")}>
+                {line.urgent ? (
+                  <SymbolView
+                    name={KIN_URGENT_SYMBOL}
+                    size={11}
+                    tintColorClassName="accent-warning-foreground"
+                    type="monochrome"
+                  />
+                ) : null}
+                {line.holder === null ? null : (
+                  <>
+                    <KinAvatar avatar={props.avatar} size="mini" />
+                    <Text
+                      textRole="footnote"
+                      numberOfLines={kinLines(1, grows)}
+                      className={cn("text-foreground", !grows && "max-w-[50%] shrink-0")}
+                    >
+                      {line.holder}
+                    </Text>
+                  </>
                 )}
-                {line.lead !== null && line.rest !== "" ? " · " : null}
-                {line.rest}
-              </Text>
-            </View>
+                <Text
+                  textRole="footnote"
+                  numberOfLines={kinLines(1, grows)}
+                  className="min-w-0 shrink text-foreground-muted"
+                >
+                  {line.holder === null ? null : "· "}
+                  {line.lead === null ? null : (
+                    <Text className={cn("font-t3-medium", LEAD_TONE[line.lead.tone])}>
+                      {line.lead.text}
+                    </Text>
+                  )}
+                  {line.lead !== null && line.rest !== "" ? " · " : null}
+                  {line.rest}
+                </Text>
+              </View>
+            )}
           </Pressable>
           {step === null || step.line === null ? null : (
             <View className="flex-row items-start gap-1.5">

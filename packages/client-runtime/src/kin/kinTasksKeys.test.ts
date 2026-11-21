@@ -111,7 +111,9 @@ describe("kinTasksKeyMade", () => {
       ],
       [
         "Codex",
-        'export KIN_TASKS_KEY="sekret-123"\ncodex mcp add kin --url https://kin.ambermill.example/kin/you/mcp --bearer-token-env-var KIN_TASKS_KEY',
+        `[mcp_servers.kin]
+url = "https://kin.ambermill.example/kin/you/mcp"
+http_headers = { "Authorization" = "Bearer sekret-123" }`,
       ],
       [
         "Cursor",
@@ -128,6 +130,11 @@ describe("kinTasksKeyMade", () => {
       ],
       ["Another MCP client", "Authorization: Bearer sekret-123"],
     ]);
+    // Codex's key sits in its own config: nothing hangs on a terminal's environment.
+    const codex = panel.setups.find((setup) => setup.agent === "Codex")!.text;
+    expect(codex).not.toMatch(/export|KIN_TASKS_KEY|env/);
+    expect(codex.split("sekret-123").length - 1).toBe(1);
+    expect(codex.split("https://kin.ambermill.example/kin/you/mcp").length - 1).toBe(1);
   });
 
   it("says when the address works only here, or is the phone's own", () => {
@@ -176,6 +183,7 @@ describe("kinTasksKeyGuide", () => {
     expect(guide?.setups[0]?.text).toBe(
       'claude mcp add --transport http --scope user kin https://kin.ambermill.example/kin/you/mcp --header "Authorization: Bearer YOUR_KEY"',
     );
+    expect(guide?.setups[1]?.text).toContain('"Authorization" = "Bearer YOUR_KEY"');
   });
 
   it("takes the host's address first, keeps the panel's notes, and knows none without one", () => {
