@@ -13,7 +13,7 @@ import { KinSocialToolkit } from "../social/mcp.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
-import { KIN_DEFERRED_TOOLS } from "./deferredTools.ts";
+import { KIN_ALWAYS_LOADED, withAlwaysLoaded } from "./deferredTools.ts";
 import { KinLeadToolkit } from "./mcp/tools.ts";
 
 const kinTools = [
@@ -29,20 +29,25 @@ const kinTools = [
   KinSalesToolkit,
 ].flatMap((toolkit) => Object.values(toolkit.tools) as Array<Tool.Any>);
 
-it("a Kin tool waits for ToolSearch exactly when it is named deferred", () => {
-  const marked = kinTools
-    .filter(
-      (tool) =>
-        Context.getOrUndefined(tool.annotations, Tool.Meta)?.["anthropic/alwaysLoad"] === false,
-    )
+const alwaysLoads = (tool: Tool.Any) =>
+  Context.getOrUndefined(tool.annotations, Tool.Meta)?.["anthropic/alwaysLoad"];
+
+it("one set decides which Kin tools load up front: no tool marks itself, and every name in it is a Kin tool", () => {
+  assert.deepStrictEqual(
+    kinTools.filter((tool) => alwaysLoads(tool) !== undefined).map((tool) => tool.name),
+    [],
+  );
+  assert.includeMembers(
+    kinTools.map((tool) => tool.name),
+    [...KIN_ALWAYS_LOADED],
+  );
+  const marked = Object.values(withAlwaysLoaded(KinLeadToolkit).tools)
+    .filter((tool) => alwaysLoads(tool) === true)
     .map((tool) => tool.name);
   assert.sameMembers(
     marked,
-    kinTools.map((tool) => tool.name).filter((name) => KIN_DEFERRED_TOOLS.has(name)),
+    Object.keys(KinLeadToolkit.tools).filter((name) => KIN_ALWAYS_LOADED.has(name)),
   );
-  // The reply path never waits on a search.
-  for (const name of ["kin_chat_post", "kin_ask", "kin_react", "kin_relay", "records_query"])
-    assert.notInclude(marked, name);
 });
 
 const utf8 = (text: string) => Buffer.byteLength(text, "utf8");

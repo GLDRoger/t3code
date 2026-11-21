@@ -5,7 +5,6 @@ import * as Layer from "effect/Layer";
 import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { hookDecision } from "../../../claudeConfinement.testkit.ts";
 import type { ProviderFake } from "../conformance.testkit.ts";
-import { KIN_DEFERRED_TOOLS } from "../../deferredTools.ts";
 import { claude } from "./claude.ts";
 
 const Runner = ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
@@ -68,12 +67,12 @@ export const claudeFake: ProviderFake = {
           typeof prompt === "object" && !Array.isArray(prompt) && prompt.type === "custom"
             ? String(prompt.prompt)
             : undefined,
-        kinToolsUpFront:
-          servers.length > 0 &&
-          servers.every((server) => "alwaysLoad" in server && server.alwaysLoad === true),
-        // Each rare tool carries `deferredMeta` (`deferredTools.ts`); Claude Code holds it back
-        // only while ToolSearch is on, and turns that off itself for a model without it.
-        heldBack: searchable ? [...KIN_DEFERRED_TOOLS] : [],
+        // Kin's server is mounted; its core carries `anthropic/alwaysLoad` from registration
+        // (the endpoint's list is checked in `kin/mcp/layer.test.ts`).
+        kinToolsUpFront: servers.length > 0,
+        // Claude Code holds back every other MCP tool only while ToolSearch is on, and turns that
+        // off itself for a model without it.
+        holdsBack: searchable,
         deferredFindable: searchable,
         personalConfig: !(
           options.settingSources?.length === 0 &&

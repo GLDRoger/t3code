@@ -38,6 +38,7 @@ import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import { kinInstructions } from "../lead/turn/session.ts";
 import { instructions } from "../lead/instructions.ts";
+import { KIN_ALWAYS_LOADED } from "../lead/deferredTools.ts";
 import * as FileSystem from "effect/FileSystem";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import contextBudget from "./agentContextBudget.json" with { type: "json" };
@@ -46,6 +47,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 import * as Option from "effect/Option";
@@ -558,6 +560,14 @@ it.effect.each([true, false])(
             description,
             inputSchema,
           }));
+          // What Claude Code loads before any search: the tools marked to load up front.
+          const upFront = read.filter((_, index) => {
+            const meta = tools[index]?._meta;
+            return (
+              Predicate.hasProperty(meta, "anthropic/alwaysLoad") &&
+              meta["anthropic/alwaysLoad"] === true
+            );
+          });
           // A group chat's thread lists what its rules allow of the same tools.
           const group = [];
           for (const tool of read)
@@ -568,6 +578,8 @@ it.effect.each([true, false])(
             t3: LEAD_T3_TOOLS.filter((name) => names.includes(name)),
             bytes: Buffer.byteLength(JSON.stringify(read), "utf8"),
             sharedBytes: Buffer.byteLength(JSON.stringify(group), "utf8"),
+            upFront: upFront.map((tool) => tool.name),
+            upFrontBytes: Buffer.byteLength(JSON.stringify(upFront), "utf8"),
           };
         });
         const engineering = yield* seatList("engineering");
@@ -638,6 +650,13 @@ it.effect.each([true, false])(
             homed.filter((name) => seat.names.includes(name)),
             [],
           );
+        // One core loads up front in every seat, so every agent's request starts with the same bytes.
+        assert.sameMembers(engineering.upFront, [...KIN_ALWAYS_LOADED]);
+        for (const seat of [...Object.values(seats), ...Object.values(beside)])
+          assert.deepStrictEqual(
+            { upFront: seat.upFront, bytes: seat.upFrontBytes },
+            { upFront: engineering.upFront, bytes: engineering.upFrontBytes },
+          );
         assert.includeMembers((yield* seatList("support")).names, homed);
         assert.includeMembers((yield* seatList("chief-of-staff")).names, homed);
         yield* sql`UPDATE kin_agents SET retired_at = '1970-01-02T00:00:00.000Z'
@@ -655,6 +674,7 @@ it.effect.each([true, false])(
           },
           contextBudget.kinLeadToolListJsonBytes,
         );
+        assert.strictEqual(engineering.upFrontBytes, contextBudget.kinLeadAlwaysLoadedToolBytes);
         yield* sql`UPDATE kin_leads SET domain = 'engineering' WHERE agent_id = ${agentId}`;
         // A provider caches its request from the tool list on: one agent's wake-ups, and agents
         // of one seat kind beside the same seats, are served the same bytes whatever happened between.

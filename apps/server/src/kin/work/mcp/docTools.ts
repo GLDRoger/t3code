@@ -11,7 +11,6 @@ import { KinIdentity } from "../../chat/KinIdentity.ts";
 import { KinLevelGate } from "../../lead/LevelGate.ts";
 import { KinRecords } from "../KinRecords.ts";
 import * as Docs from "../leadDocs.ts";
-import { deferredMeta } from "../../lead/deferredTools.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
@@ -71,25 +70,19 @@ export const KinDocsToolkit = Toolkit.make(
     description: `Replace a doc's whole body, only when most of it changes, with baseVersion the version you read and summary saying why. Kin refuses a rewrite that changes under a third of the lines and names the sections that differ: change those with doc_edit instead. ${writes}`,
     parameters: Docs.RewriteInput,
     success: Docs.WriteResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("doc_move", {
     ...shared,
     description: `File a doc under another client or project (null clears) or as the company's own (company true), change its kind, give it to another owner, mark it sensitive, or archive it (archived false brings it back). Rename with doc_edit retitle. ${writes}`,
     parameters: Docs.MoveInput,
     success: Docs.MoveResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("doc_link", {
     ...shared,
     description: `Link a doc to entries (W-12) or other docs (D-3), both ways, so each shows the other: a plan to the entries it became, notes to the client's work. ${writes}`,
     parameters: Docs.LinkInput,
     success: Docs.LinkResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("docs_search", {
     ...shared,
     description: `Search docs and Work entries, clients, contacts, projects and deals by words (a deal also by its key), best match first. A doc hit names the section the words are in. Use it to find a doc before writing a new one. Read-only. ${data} ${marked}`,
@@ -101,15 +94,11 @@ export const KinDocsToolkit = Toolkit.make(
     description: `List a doc's versions, newest first: when, by whom, the one-line summary and the sections each touched. Read-only.`,
     parameters: Docs.HistoryInput,
     success: Docs.HistoryResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("doc_restore", {
     ...shared,
     description: `Undo a doc's changes: brings back version as a new latest version, so nothing is lost and it can be undone again. latest is the newest version from doc_history; if it moved, nothing changes. ${writes}`,
     parameters: Docs.RestoreInput,
     success: Docs.WriteResult,
-  })
-    .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
 );
