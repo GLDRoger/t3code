@@ -3688,11 +3688,11 @@ it.effect(
       const turnOf = { orgId, agentId: lead, wakeupId: "wake" };
       yield* TestClock.setTime(Date.parse("2026-11-16T00:00:00.000Z"));
       assert.include(
-        (yield* readPeople(turnOf)).quoted,
+        JSON.stringify(yield* readPeople(turnOf)),
         '"load":{"open":3,"late":0,"dueThisWeek":1,"openBySize":{"S":0,"M":1,"L":0,"unsized":2},"overloaded":false}',
       );
       yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
-      assert.notInclude((yield* readPeople(turnOf)).quoted, '"load"');
+      assert.notInclude(JSON.stringify(yield* readPeople(turnOf)), '"load"');
       // Handed back from the app, it goes to the owner who asked for it.
       assert.deepStrictEqual(
         yield* OwnerWork.handBack([mate], { orgId, key: "W-2", note: "I'm on the release" }),
