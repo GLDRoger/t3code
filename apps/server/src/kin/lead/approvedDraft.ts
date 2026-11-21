@@ -16,7 +16,7 @@ export const APPROVED_REFUSAL =
   "This turn only makes the draft the owner approved. Nothing else ran.";
 
 /** What it may read: the owner lane's read tools. */
-export const APPROVED_READS: ReadonlySet<string> = new Set([
+const APPROVED_READS: ReadonlySet<string> = new Set([
   ...KIN_READ_TOOLS,
   "memory_search",
   "memory_read",
@@ -28,10 +28,10 @@ export const APPROVED_READS: ReadonlySet<string> = new Set([
 ]);
 
 /** It may ask the owner, in his chat, for a price or term the draft leaves blank. */
-export const APPROVED_ASKS: ReadonlySet<string> = new Set(["kin_ask"]);
+const APPROVED_ASKS: ReadonlySet<string> = new Set(["kin_ask"]);
 
 /** The one make each kind allows: a doc, an entry on its list, or Kin's own draft-to-Confirm path. */
-export const APPROVED_MAKES: Record<DraftKind, ReadonlySet<string>> = {
+const APPROVED_MAKES: Record<DraftKind, ReadonlySet<string>> = {
   proposal: new Set(["doc_create"]),
   terms: new Set(["doc_create"]),
   quote: new Set(["record_create"]),
