@@ -499,8 +499,8 @@ export interface KinMineHeld {
 export function kinIsMine(
   row: {
     readonly owner: KinWorkPrincipal;
-    readonly party?: { readonly key: string } | null;
-    readonly project?: { readonly key: string } | null;
+    readonly party?: { readonly key: string } | null | undefined;
+    readonly project?: { readonly key: string } | null | undefined;
   },
   held: KinMineHeld,
 ): boolean {
