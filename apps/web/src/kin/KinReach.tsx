@@ -403,9 +403,7 @@ function PersonReachBody(props: Parameters<typeof KinPersonReach>[0]) {
           action={
             view.offered.length === 0 ? undefined : (
               <Menu>
-                <MenuTrigger
-                  render={<Button size="xs" variant="outline" disabled={state.busy} />}
-                >
+                <MenuTrigger render={<Button size="xs" variant="outline" disabled={state.busy} />}>
                   {KIN_REACH_COPY.restrictWith}
                 </MenuTrigger>
                 <MenuPopup align="end">

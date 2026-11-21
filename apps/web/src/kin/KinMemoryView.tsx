@@ -197,15 +197,17 @@ function KinMemoryBody({
               ) : undefined
             }
           >
-            {(showAll.has(group.row.key) ? group.items : group.items.slice(0, SHOWN)).map((item) => (
-              <KinSettingsRow
-                key={item.itemId}
-                title={item.title}
-                detail={item.preview ?? item.from ?? item.origin?.line}
-                openLabel={`${KIN_MEMORY_SETTINGS.open}: ${item.title}`}
-                onOpen={() => setOpened(item.itemId)}
-              />
-            ))}
+            {(showAll.has(group.row.key) ? group.items : group.items.slice(0, SHOWN)).map(
+              (item) => (
+                <KinSettingsRow
+                  key={item.itemId}
+                  title={item.title}
+                  detail={item.preview ?? item.from ?? item.origin?.line}
+                  openLabel={`${KIN_MEMORY_SETTINGS.open}: ${item.title}`}
+                  onOpen={() => setOpened(item.itemId)}
+                />
+              ),
+            )}
             {showAll.has(group.row.key) || group.items.length <= SHOWN ? null : (
               <KinSettingsShowAll
                 label={KIN_SETTINGS_COPY.showAll(group.items.length)}
@@ -329,23 +331,23 @@ function KinMemoryForgotten(props: KinMemoryTarget & { readonly onRestored: () =
         .reverse()
         .slice(0, all ? undefined : SHOWN)
         .map((item) => (
-        <KinSettingsRow
-          key={item.itemId}
-          title={item.title}
-          detail={item.preview}
-          control={
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={busy !== null}
-              aria-label={`${KIN_MEMORY_FORGOTTEN.restore} ${item.title}`}
-              onClick={() => void bringBack(item.itemId)}
-            >
-              {KIN_MEMORY_FORGOTTEN.restore}
-            </Button>
-          }
-        />
-      ))}
+          <KinSettingsRow
+            key={item.itemId}
+            title={item.title}
+            detail={item.preview}
+            control={
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={busy !== null}
+                aria-label={`${KIN_MEMORY_FORGOTTEN.restore} ${item.title}`}
+                onClick={() => void bringBack(item.itemId)}
+              >
+                {KIN_MEMORY_FORGOTTEN.restore}
+              </Button>
+            }
+          />
+        ))}
       {all || items.length <= SHOWN ? null : (
         <KinSettingsShowAll
           label={KIN_SETTINGS_COPY.showAll(items.length)}

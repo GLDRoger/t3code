@@ -43,11 +43,7 @@ import { KinConfirm } from "./KinConfirm";
 
 import { kinClient } from "./kinClient";
 import { KinSettingsField, KinSettingsFormDialog } from "./settings/KinSettingsControls";
-import {
-  KinSettingsFacts,
-  KinSettingsRow,
-  KinSettingsSection,
-} from "./settings/KinSettingsLayout";
+import { KinSettingsFacts, KinSettingsRow, KinSettingsSection } from "./settings/KinSettingsLayout";
 import { kinHostConnected } from "./useKinHost";
 import { useKinAskAgent } from "./useKinMoney";
 import { type KinWorkTarget } from "./useKinWork";
