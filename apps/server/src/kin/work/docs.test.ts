@@ -1364,6 +1364,15 @@ it.effect(
         (yield* Docs.docRow(orgId, { key: mine!.key }, KIN_OWNER_LEVEL)).key,
         mine!.key,
       );
+      // Docs marks it by its origin, so the phone's Docs can leave it out; other docs are unmarked.
+      yield* newDoc();
+      const listed = (yield* OwnerDocs.list([owner], { orgId })).docs;
+      assert.deepStrictEqual(listed.map((doc) => [doc.title, doc.character === true]).toSorted(), [
+        ["Invented launch plan", false],
+        ["Lead lead's character", true],
+        ["Lead other's character", true],
+      ]);
+      assert.isTrue((yield* OwnerDocs.get([owner], { orgId, key: mine!.key })).character);
       // The owner's own text from the host is a new version; the old one stays in its history.
       const own = "# Finance\n\nTo colleagues: Invented line.\n\nInvented voice.\n";
       assert.strictEqual((yield* setCharacter(orgId, lead, own)).outcome, "set");

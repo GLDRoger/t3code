@@ -18,6 +18,7 @@ import {
   createKinSearch,
   KIN_DOCS,
   kinDocChangeLine,
+  kinDocCopyText,
   kinDocPieces,
   kinSearchHit,
   KIN_DOCS_DEFAULT_FILTER,
@@ -328,6 +329,55 @@ describe("kinDocSections", () => {
     expect(
       kinDocSections(body, [section("plan", "Plan", 1), section("pricing", "Pricing", 2)]),
     ).toBeNull();
+  });
+});
+
+describe("kinDocCopyText", () => {
+  it("gives clean text: no marks, a list's items as lines, a table's rows as tab-separated cells", () => {
+    const body = [
+      "# Ambermill launch post",
+      "",
+      "We **finally** ship the _invented_ [planner](https://example.com/planner) on `Monday`.",
+      "",
+      "- Faster sync",
+      "- [ ] Offline mode",
+      "  1. On the phone",
+      "",
+      "3. Book the room",
+      "4. Send the invite",
+      "",
+      "> Rhea: ~~maybe~~ yes.",
+      "",
+      "| Plan | Price |",
+      "| --- | ---: |",
+      "| Starter | 10 |",
+      "| Team | *20* |",
+      "",
+      "```kin_chart",
+      '{"type":"bar"}',
+      "```",
+      "",
+      "---",
+      "",
+      "Read [the invented thread](t3-thread:abc) or https://example.com/faq.",
+    ].join("\n");
+    expect(kinDocCopyText(body)).toBe(
+      [
+        "Ambermill launch post",
+        "",
+        "We finally ship the invented planner (https://example.com/planner) on Monday.",
+        "",
+        "Faster sync\nOffline mode\n1. On the phone",
+        "",
+        "3. Book the room\n4. Send the invite",
+        "",
+        "Rhea: maybe yes.",
+        "",
+        "Plan\tPrice\nStarter\t10\nTeam\t20",
+        "",
+        "Read the invented thread or https://example.com/faq.",
+      ].join("\n"),
+    );
   });
 });
 

@@ -93,6 +93,14 @@ const readerOf = Effect.fn("KinDocs.reader")(function* (
 const reader = (people: ReadonlyArray<PersonIdentity>, orgId: KinOrgId) =>
   readerOf(people, orgId).pipe(Effect.map(({ team }) => team));
 
+/** A row as people's Docs reads it: What we sell and an agent's character marked by their origin. */
+const docRowOf = (...[row, ...rest]: Parameters<typeof Docs.toDocRow>) => {
+  const doc = withOfferings(Docs.toDocRow(row, ...rest), row);
+  return row.originKey.startsWith(Docs.CHARACTER_ORIGIN)
+    ? { ...doc, character: true as const }
+    : doc;
+};
+
 const badCursor = new KinChatError({
   reason: "invalid_state",
   message: "That page cursor is stale.",
@@ -132,7 +140,7 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
       linked = new Set([...(linked ?? seen)].filter((id) => seen.has(id)));
     }
   return {
-    ...withOfferings(Docs.toDocRow(row, latest, now), row),
+    ...docRowOf(row, latest, now),
     version: Docs.toVersion(shown),
     body: shown.body,
     outline: [...outlineOf(shown.body)],
@@ -242,7 +250,7 @@ export const list = Effect.fn("KinDocs.list")(
       docs: rows.flatMap((row) => {
         const version = latest.get(row.recordId);
         if (version === undefined) return [];
-        const doc = withOfferings(Docs.toDocRow(row, version, now), row);
+        const doc = docRowOf(row, version, now);
         return [input.acceptSlimLatest === true ? kinSlimDocRow(doc) : doc];
       }),
       total: count?.total ?? 0,
@@ -469,7 +477,7 @@ const listedOf = Effect.fn("KinDocs.listedOf")(
       total: count?.total ?? 0,
       ...(row === undefined || version === undefined
         ? { unlisted: true as const }
-        : { row: kinSlimDocRow(withOfferings(Docs.toDocRow(row, version, now), row)) }),
+        : { row: kinSlimDocRow(docRowOf(row, version, now)) }),
     };
   },
   Effect.catchTags({ SqlError: () => unavailable }),

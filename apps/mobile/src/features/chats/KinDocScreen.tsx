@@ -20,6 +20,7 @@ import {
   kinDocUnfiled,
   kinDocChangeLine,
   kinDocChat,
+  kinDocCopyText,
   kinDocSuggestStarter,
   kinDocExport,
   kinDocHasContents,
@@ -147,7 +148,7 @@ const sectionActions = (ownerLevel: boolean) => [
   { id: "ask", title: KIN_DOCS.ask, image: "questionmark.bubble" },
   { id: "change", title: ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest, image: "pencil" },
   { id: "link", title: KIN_DOCS.copyLink, image: "link" },
-  { id: "copy", title: "Copy text", image: "doc.on.doc" },
+  { id: "copy", title: KIN_DOCS.copyText, image: "doc.on.doc" },
 ];
 
 /** A doc as a document: who last changed it and how, then everything the agent wrote. */
@@ -282,7 +283,7 @@ function KinDocBody(
   const bar = useContentTopInset();
   const offsets = useRef(new Map<string, number>());
   const arrived = useRef(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
   const [preview, setPreview] = useState<FilePreviewSource | null>(null);
   const resolveImageSource = useKinDocImageSource(environmentId);
   const undo = props.undo !== null && props.undo < doc.latest.version ? props.undo : null;
@@ -343,7 +344,11 @@ function KinDocBody(
     const url = Linking.createURL(`kin/${environmentId}/${orgId}/docs/${doc.key}`, {
       queryParams: section === null ? {} : { section },
     });
-    if (await tryCopyTextWithHaptic(url, { target: "link" })) setCopied(true);
+    if (await tryCopyTextWithHaptic(url, { target: "link" })) setCopied(KIN_DOCS.copied);
+  };
+  const copyText = async (markdown: string) => {
+    if (await tryCopyTextWithHaptic(kinDocCopyText(markdown), { target: "text" }))
+      setCopied(KIN_DOCS.textCopied);
   };
   const share = async () => {
     const exported = kinDocExport(doc);
@@ -380,7 +385,7 @@ function KinDocBody(
   const act = (section: string | null, text: string, action: string) => {
     if (action === "ask" || action === "change") point(section, action);
     else if (action === "link") void copyLink(section);
-    else if (action === "copy") void tryCopyTextWithHaptic(text, { target: "section" });
+    else if (action === "copy") void copyText(text);
   };
   const onLinkPress = (href: string) => {
     const url = kinLinkToOpen(href);
@@ -404,34 +409,44 @@ function KinDocBody(
     {
       title: "More",
       icon: "ellipsis" as const,
+      // The few used in the day first; the rest fold under More.
       items: [
-        { id: "ask", title: KIN_DOCS.ask, onPress: () => point(null, "ask") },
+        ...(doc.body.trim() === ""
+          ? []
+          : [{ id: "copy", title: KIN_DOCS.copyText, onPress: () => void copyText(doc.body) }]),
         {
           id: "change",
           title: ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest,
           onPress: () => point(null, "change"),
         },
-        { id: "link", title: KIN_DOCS.copyLink, onPress: () => void copyLink(null) },
-        {
-          id: "history",
-          title: KIN_DOCS.history,
-          onPress: () =>
-            navigation.navigate("KinDocHistory", { environmentId, orgId, doc: doc.key }),
-        },
-        { id: "export", title: KIN_DOCS.export, onPress: () => void share() },
+        { id: "ask", title: KIN_DOCS.ask, onPress: () => point(null, "ask") },
         ...(canRender && kinDocPdfInput(orgId, doc, "pdf") !== null
           ? [
               {
                 id: "pdf",
-                title: making ? KIN_DOCS.exportingPdf : KIN_DOCS.exportPdf,
+                title: making ? KIN_DOCS.exportingPdf : KIN_DOCS.sharePdf,
                 onPress: () => void exportPdf(),
               },
             ]
           : []),
-        ...(canFile ? [{ id: "file", title: KIN_DOC_HOMES.fileTitle, onPress: fileIt }] : []),
-        ...(label.action === null
-          ? []
-          : [{ id: "label", title: label.action.label, onPress: label.ask }]),
+        {
+          id: "more",
+          title: KIN_DOCS.more,
+          items: [
+            {
+              id: "history",
+              title: KIN_DOCS.history,
+              onPress: () =>
+                navigation.navigate("KinDocHistory", { environmentId, orgId, doc: doc.key }),
+            },
+            { id: "link", title: KIN_DOCS.copyLink, onPress: () => void copyLink(null) },
+            { id: "export", title: KIN_DOCS.export, onPress: () => void share() },
+            ...(canFile ? [{ id: "file", title: KIN_DOC_HOMES.fileTitle, onPress: fileIt }] : []),
+            ...(label.action === null
+              ? []
+              : [{ id: "label", title: label.action.label, onPress: label.ask }]),
+          ],
+        },
       ],
     },
   ];
@@ -620,9 +635,7 @@ function KinDocBody(
             {restore.problem === null ? null : (
               <Notice tone="danger" message={restore.problem} onDismiss={restore.dismiss} />
             )}
-            {copied ? (
-              <Notice message={KIN_DOCS.copied} onDismiss={() => setCopied(false)} />
-            ) : null}
+            {copied === null ? null : <Notice message={copied} onDismiss={() => setCopied(null)} />}
             {undo === null ? null : (
               <Notice
                 message={KIN_DOCS.restored(doc.latest.version)}

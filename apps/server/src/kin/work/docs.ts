@@ -109,6 +109,9 @@ const failed = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect
 const transaction = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.flatMap(SqlClient.SqlClient, (sql) => failed(sql.withTransaction(effect)));
 
+/** An agent's character is a doc found by this origin (`characters.ts`), changed on its page. */
+export const CHARACTER_ORIGIN = "kin-character:";
+
 export const docNotFound = (key: string) =>
   new KinChatError({ reason: "not_found", message: `No doc ${key.slice(0, 40)}.` });
 const fileOnly = (key: string) =>

@@ -13,6 +13,7 @@ import {
   KIN_DOC_KIND_LABELS,
   kinDocKindOf,
   kinDocUnfiled,
+  kinDocCopyText,
   kinDocDiffSummary,
   kinDocPdfInput,
   kinDocRestoreOutcome,
@@ -190,6 +191,12 @@ export function KinDocPage(
       () => setProblem("Couldn't copy the link."),
     );
   };
+  const copyText = (markdown: string) => {
+    void navigator.clipboard.writeText(kinDocCopyText(markdown)).then(
+      () => toastManager.add({ type: "success", title: KIN_DOCS.textCopied }),
+      () => setProblem("Couldn't copy the text."),
+    );
+  };
 
   return (
     <>
@@ -355,6 +362,7 @@ export function KinDocPage(
           onPoint={ask}
           suggests={!ownerLevel}
           onCopyLink={copyLink}
+          onCopyText={copyText}
           onSeeChanges={(to) => onGo({ doc: key, changes: { to } })}
           onOpenLatest={() => onGo({ doc: key })}
           onHistory={() => onGo({ ...where, history: true })}

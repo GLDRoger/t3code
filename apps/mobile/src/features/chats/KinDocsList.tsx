@@ -14,6 +14,7 @@ import {
   KIN_WHAT_WE_SELL,
   kinDocLibrary,
   kinDocRow,
+  kinDocsOnPhone,
   kinDocsPinned,
   kinDocUnfiled,
   kinDocsChip,
@@ -431,7 +432,8 @@ export function KinDocsList(
   const pinned = useKinWhatWeSell(props, pinShown);
   const starter = useKinWhatWeSellStart(props);
   const pin = pinShown ? (pinned ?? null) : null;
-  const library = kinDocLibrary(state.records, pin);
+  const records = kinDocsOnPhone(state.records);
+  const library = kinDocLibrary(records, pin);
   const whatWeSell: ReadonlyArray<Item> =
     !refused && pinShown && pinned === null && starter !== null
       ? [{ type: "whatWeSell", id: "what-we-sell" }]
@@ -457,7 +459,7 @@ export function KinDocsList(
   const docItems: ReadonlyArray<Item> = refused
     ? []
     : !everything || searching
-      ? kinDocsPinned(state.records, searching ? null : pin).map((row): Item => ({
+      ? kinDocsPinned(records, searching ? null : pin).map((row): Item => ({
           type: "doc",
           id: row.recordId,
           row,

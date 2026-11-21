@@ -165,6 +165,8 @@ export const KinDocRow = Schema.Struct({
   archived: Schema.Boolean,
   /** The company's What we sell, pinned first in Docs. */
   whatWeSell: Schema.optional(Schema.Literal(true)),
+  /** An agent's character, which its page changes; the phone's Docs leaves it out. */
+  character: Schema.optional(Schema.Literal(true)),
   bodyKind: KinDocBodyKind,
   /** The latest version, with its "what changed" line. */
   latest: KinDocVersion,

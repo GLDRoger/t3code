@@ -9,10 +9,12 @@ import {
   kinDocPrevious,
   kinDocPrivacy,
   kinDocRef,
+  kinDocSections,
   type KinDocAsk,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import type { KinDocDetail, KinDocSection, KinMessageRef } from "@t3tools/contracts";
 import {
+  CopyIcon,
   EllipsisIcon,
   FileDownIcon,
   HistoryIcon,
@@ -128,6 +130,8 @@ function AskItems(props: {
   readonly onAsk: ((intent: KinDocAsk) => void) | null;
   readonly suggests: boolean;
   readonly onCopyLink: () => void;
+  /** Null where the section's text can't be told apart from the rest. */
+  readonly onCopyText: (() => void) | null;
 }) {
   const { onAsk } = props;
   return (
@@ -148,6 +152,12 @@ function AskItems(props: {
         <LinkIcon />
         {KIN_DOCS.copyLink}
       </MenuItem>
+      {props.onCopyText === null ? null : (
+        <MenuItem onClick={props.onCopyText}>
+          <CopyIcon />
+          {KIN_DOCS.copyText}
+        </MenuItem>
+      )}
     </>
   );
 }
@@ -164,6 +174,8 @@ export function KinDocReader(
     /** A teammate's Change this is a suggestion the owner decides on. */
     readonly suggests?: boolean;
     readonly onCopyLink: (section: string | null) => void;
+    /** Copies this markdown as clean text (`kinDocCopyText`). */
+    readonly onCopyText: (markdown: string) => void;
     readonly onSeeChanges: (to: number) => void;
     readonly onOpenLatest: () => void;
     readonly onHistory: () => void;
@@ -184,6 +196,11 @@ export function KinDocReader(
   const [article, setArticle] = useState<HTMLDivElement | null>(null);
   const [headings, setHeadings] = useState<ReadonlyMap<string, HTMLElement>>(new Map());
   const outline = kinDocOutline(doc.outline);
+  const sections = kinDocSections(doc.body, doc.outline);
+  const copySection = (id: string) => {
+    const text = sections?.find((section) => section.id === id)?.text;
+    return text === undefined ? null : () => props.onCopyText(text);
+  };
   const hasTop = doc.outline[0]?.id === "top";
   const line = kinDocChangeLine(
     {
@@ -316,6 +333,7 @@ export function KinDocReader(
                     onAsk={point(null)}
                     suggests={props.suggests === true}
                     onCopyLink={() => props.onCopyLink(null)}
+                    onCopyText={() => props.onCopyText(doc.body)}
                   />
                   <MenuSeparator />
                   <MenuItem onClick={props.onHistory}>
@@ -467,6 +485,7 @@ export function KinDocReader(
                     onAsk={point(id)}
                     suggests={props.suggests === true}
                     onCopyLink={() => props.onCopyLink(id)}
+                    onCopyText={copySection(id)}
                   />
                 </MenuPopup>
               </Menu>,
