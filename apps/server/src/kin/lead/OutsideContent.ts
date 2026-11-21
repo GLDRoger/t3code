@@ -81,6 +81,8 @@ export const OUTSIDE_TOOLS = {
   // Posts on its own only to the company's repos; anywhere else on the owner's Confirm.
   kin_github_review: "allowed",
   kin_github_link: "allowed",
+  // Outside text could start reviews in a person's name.
+  kin_github_review_ask: "refused",
   // Outside text could tell Kin to stop watching a repo.
   kin_github_watch: "refused",
   records_query: "allowed",
