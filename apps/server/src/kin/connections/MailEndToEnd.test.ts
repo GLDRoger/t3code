@@ -35,6 +35,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
+import { runKinMigrations } from "../persistence/KinMigrations.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { fromConnections, poll } from "../pulse/outside.ts";
@@ -1739,6 +1740,46 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.isFalse((yield* sync)?.stopped);
         }),
       ),
+  );
+
+  it.effect("an account Kin read before the upgrade warns only after a day of real quiet", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const hello = yield* connect(fake, "microsoft", HELLO);
+        const stopped = Effect.gen(function* () {
+          const pulse = yield* KinPulse.read({
+            orgId,
+            at: yield* Clock.currentTimeMillis,
+            viewer: { _tag: "owner" },
+            includeHandled: true,
+            limit: 200,
+          });
+          return pulse.facts.filter((fact) => fact.sense === "mail_not_syncing");
+        });
+        const sync = (yield* KinConnections)
+          .list(people(owner), { orgId })
+          .pipe(
+            Effect.map(
+              (view) => view.connections.find((one) => one.connectionId === hello)?.mailSync,
+            ),
+          );
+        // Read for weeks by a build that kept no record of reads, then upgraded.
+        yield* TestClock.adjust("30 days");
+        for (const column of ["read_ok_at", "read_failed_at", "read_error"])
+          yield* sql.unsafe(`ALTER TABLE kin_connections DROP COLUMN ${column}`);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 194`;
+        yield* runKinMigrations();
+        const upgraded = yield* Clock.currentTimeMillis;
+        assert.lengthOf(yield* stopped, 0);
+        assert.deepStrictEqual(yield* sync, { readAt: upgraded, error: null, stopped: false });
+        yield* TestClock.adjust("23 hours");
+        assert.lengthOf(yield* stopped, 0);
+        // A whole day with no read that worked is real quiet.
+        yield* TestClock.adjust("2 hours");
+        assert.lengthOf(yield* stopped, 1);
+      }),
+    ),
   );
 
   it.effect("a deleted Outlook meeting is in the next read of what changed", () =>

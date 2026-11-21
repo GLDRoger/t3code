@@ -1,3 +1,4 @@
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -12,8 +13,13 @@ export default Effect.gen(function* () {
       (row) => row.name,
     ),
   );
-  if (!columns.has("read_ok_at"))
+  if (!columns.has("read_ok_at")) {
     yield* sql`ALTER TABLE kin_connections ADD COLUMN read_ok_at INTEGER`;
+    // Kin was already reading these but kept no record, so their quiet day counts from now.
+    // `last_ok_at` is an agent's last tool call, not a read, so it can't stand in.
+    yield* sql`UPDATE kin_connections SET read_ok_at = ${yield* Clock.currentTimeMillis}
+      WHERE kind = 'builtin' AND preset IN ('google', 'microsoft') AND removed_at IS NULL`;
+  }
   if (!columns.has("read_failed_at"))
     yield* sql`ALTER TABLE kin_connections ADD COLUMN read_failed_at INTEGER`;
   if (!columns.has("read_error"))
