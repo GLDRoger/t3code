@@ -101,6 +101,7 @@ const dispatching = Effect.gen(function* () {
         Layer.mock(ApproverKeys)({ changes: PubSub.subscribe(keyChanges) }),
         Layer.mock(KinPushSender)({
           status: "ready",
+          statusFor: () => "ready",
           flushKeyPushes: Effect.succeed(0),
           notify: (notification) =>
             Queue.offer(asked, notification).pipe(

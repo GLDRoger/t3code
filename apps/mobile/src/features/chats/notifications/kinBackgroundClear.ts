@@ -7,12 +7,13 @@ import { kinClearedChat, kinSettledNotificationIds } from "./kinPushPayload";
 const KIN_CLEAR_TASK = "kin-clear-read-chat";
 
 /**
- * A chat read on another device or the web arrives as a badge push that wakes the app; this takes
- * that chat's banners off the pane while the app stays in the background. iOS may skip such wakes,
- * so the foreground reconcile in `kinNotificationSync` still clears what this missed.
+ * A chat read on another device or the web arrives as a badge push (on Android, a data message)
+ * that wakes the app; this takes that chat's banners off the pane while the app stays in the
+ * background. Either OS may skip such wakes, so the foreground reconcile in `kinNotificationSync`
+ * still clears what this missed.
  */
 export function defineKinBackgroundClear(): void {
-  if (Platform.OS !== "ios") return;
+  if (Platform.OS !== "ios" && Platform.OS !== "android") return;
   TaskManager.defineTask<Notifications.NotificationTaskPayload>(
     KIN_CLEAR_TASK,
     async ({ data }) => {

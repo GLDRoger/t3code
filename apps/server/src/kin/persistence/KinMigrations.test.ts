@@ -1891,7 +1891,7 @@ describe("Kin migrations", () => {
           VALUES ('org', 'review:ambermill/shop#7', 'ambermill/shop', 7, 'woke', 1)`;
         assert.deepStrictEqual(
           (yield* runKinMigrations()).map(([id]) => id),
-          [196, 197, 198, 199],
+          [196, 197, 198, 199, 903],
         );
         assert.deepStrictEqual(yield* receipts, [
           { trigger_key: "review:ambermill/shop#7", review_url: null },
@@ -1928,16 +1928,73 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* added, []);
       assert.deepStrictEqual(
         (yield* runKinMigrations()).map(([id]) => id),
-        [197, 198, 199],
+        [197, 198, 199, 903],
       );
       const all = ["pinned_at", "sees_by_person_id", "sees_json", "steps_json", "urgent"];
-      assert.deepStrictEqual((yield* added).map(({ name }) => name), all);
+      assert.deepStrictEqual(
+        (yield* added).map(({ name }) => name),
+        all,
+      );
       for (const from of [197, 198, 199]) {
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
-        assert.deepStrictEqual((yield* added).map(({ name }) => name), all);
+        assert.deepStrictEqual(
+          (yield* added).map(({ name }) => name),
+          all,
+        );
       }
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K903 lets a push device be an Android phone, keeps every iPhone's row, and reruns",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        // A host on K199: the table as K021 made it, holding one iPhone.
+        yield* sql`DROP TABLE kin_push_devices`;
+        yield* sql`CREATE TABLE kin_push_devices (
+        org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
+        token TEXT NOT NULL,
+        person_id TEXT NOT NULL REFERENCES kin_people(person_id),
+        platform TEXT NOT NULL CHECK (platform IN ('ios')),
+        aps_environment TEXT NOT NULL CHECK (aps_environment IN ('development', 'production')),
+        device_label TEXT,
+        session_id TEXT NOT NULL,
+        proof_key_thumbprint TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (org_id, token)
+      )`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 903`;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('rhea', 'org', 'rhea', 'Rhea', 1)`;
+        const device = (token: string, platform: string) =>
+          sql`INSERT INTO kin_push_devices (org_id, token, person_id, platform, aps_environment,
+            device_label, session_id, created_at, updated_at)
+          VALUES ('org', ${token}, 'rhea', ${platform}, 'production', 'Rhea phone', 's1', 1, 2)`;
+        yield* device("a".repeat(64), "ios");
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(device("fcm:token", "android"))));
+        const rows = sql`SELECT token, platform, device_label, updated_at FROM kin_push_devices
+        ORDER BY token`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(903));
+        yield* device("fcm:token", "android");
+        const both = [
+          { token: "a".repeat(64), platform: "ios", device_label: "Rhea phone", updated_at: 2 },
+          { token: "fcm:token", platform: "android", device_label: "Rhea phone", updated_at: 2 },
+        ];
+        assert.deepStrictEqual(yield* rows, both);
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(device("other", "windows"))));
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM sqlite_master WHERE name = 'idx_kin_push_devices_person'`,
+          1,
+        );
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 903`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(903));
+        assert.deepStrictEqual(yield* rows, both);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
@@ -1950,7 +2007,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 199");
+      assert.include(String(exit), "below the latest applied migration 903");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
