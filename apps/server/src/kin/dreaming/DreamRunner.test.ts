@@ -101,6 +101,8 @@ const fixture = <A, E>(
     readonly notices: Array<string>;
     readonly refuseBudget: () => void;
     readonly hooks: RunnerHooks;
+    /** Each dream turn's thread as the budget was charged for it. */
+    readonly charged: Array<string>;
   }) => Effect.Effect<
     A,
     E,
@@ -172,6 +174,7 @@ const fixture = <A, E>(
 
     let behavior: Behavior = "good";
     let budgetAllowed = true;
+    const charged: Array<string> = [];
     const hooks: RunnerHooks = {
       beforeDelete: Effect.void,
       removed: () => Effect.void,
@@ -309,6 +312,11 @@ const fixture = <A, E>(
                 remaining: 1,
                 heldBy: budgetAllowed ? null : ("org" as const),
               })),
+            chargeDream: (input) =>
+              Effect.sync(() => {
+                charged.push(`${input.threadId} ${input.usage.map((turn) => turn.usedTokens)}`);
+                return { day: "2026-11-08", units: 1 };
+              }),
           }),
           Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void }),
         ),
@@ -318,7 +326,12 @@ const fixture = <A, E>(
           config,
           recovery,
           Scan.layer,
-          Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: () =>
+              Effect.succeed({
+                providerTurns: [{ id: "turn-1", tokenUsage: { usedTokens: 42 } }],
+              } as never),
+          }),
         ),
       ),
     );
@@ -348,6 +361,7 @@ const fixture = <A, E>(
           budgetAllowed = false;
         },
         hooks,
+        charged,
       });
     }).pipe(Effect.provide(runner));
   }).pipe(
@@ -422,7 +436,7 @@ const seedFires = Effect.fn("test.seedFires")(function* (
 });
 
 it.live("a fixture dream lands its changes on the default branch and records dream.json", () =>
-  fixture(({ git, remote, main, root, turns, notices }) =>
+  fixture(({ git, remote, main, root, turns, notices, charged }) =>
     Effect.gen(function* () {
       const runner = yield* DreamRunner.DreamRunner;
       const outcome = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" });
@@ -451,6 +465,8 @@ it.live("a fixture dream lands its changes on the default branch and records dre
       expect(turns.map((turn) => [turn.turn, turn.model.model])).toEqual([
         ["extract", model.model],
       ]);
+      // The night's model turn counts against the day's budget, under its own thread.
+      expect(charged).toEqual([`${DreamSession.dreamThreadId(outcome.dreamId, "extract")} 42`]);
       const [row] = yield* runRow();
       expect(row).toMatchObject({
         status: "succeeded",

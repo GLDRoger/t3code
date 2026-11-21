@@ -78,6 +78,7 @@ const tableNames = [
   "kin_doc_job_figures",
   "kin_doc_jobs",
   "kin_doc_versions",
+  "kin_dream_charges",
   "kin_dream_runs",
   "kin_event_outside",
   "kin_events",
@@ -1744,7 +1745,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 193");
+      assert.include(String(exit), "below the latest applied migration 905");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
