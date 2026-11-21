@@ -19,7 +19,7 @@ export const rules: Record<string, string> = {
   ToldOnce: "You are told a discussion's outcome once, never twice.",
   ReportOnce: "A hand-off's answer comes back to the agent who asked once.",
   AskAnsweredOnce:
-    "Your Team-room message naming two agents gets one answer: their discussion, or while another is open an ordinary reply; never both, and never twice.",
+    "Your Team-room message naming two agents gets one answer: their discussion, or while another is open an ordinary reply; never both, never twice, and never a second discussion beside the one Kin opened.",
   AlwaysEnds: "Every discussion ends: decided, parked, or brought to you.",
   OwnerTold:
     "You are always told how a discussion ended: at once if you asked for it, else with your next check-in.",
@@ -91,6 +91,11 @@ export const variants = [
     name: "plain-forgotten",
     breaks: "AskAnsweredOnce",
     what: "your message answered plainly while another discussion was open opens one too when handled again after that one ends (the code before this change)",
+  },
+  {
+    name: "open-beside",
+    breaks: "AskAnsweredOnce",
+    what: "the agent whose turn it is in the discussion your message opened opens a second one for the same ask (the code before this change)",
   },
   {
     name: "report-unclaimed",
@@ -185,6 +190,8 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "Its turn ends: the answer goes back to the asker";
     case "AskHandled":
       return "Kin reads your message naming two agents";
+    case "OpensBeside":
+      return `${who(from)} opens a second discussion for your ask`;
     default:
       return null;
   }
