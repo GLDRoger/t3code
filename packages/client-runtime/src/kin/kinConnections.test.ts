@@ -218,9 +218,7 @@ describe("kinToolRows", () => {
     expect(kinOffersSignIn(connection({ auth: "oauth", mailSync: stopped }))).toBe(true);
     expect(kinOffersSignIn(connection({ auth: "oauth" }))).toBe(false);
     expect(kinMailReadText(null)).toBe("No mail read yet");
-    expect(kinMailReadText(Date.UTC(2026, 10, 17, 9), new Date(2026, 10, 17, 18))).toMatch(
-      /^Mail last read /,
-    );
+    expect(kinMailReadText(Date.UTC(2026, 10, 17, 9))).toMatch(/^Mail last read /);
   });
 });
 

@@ -224,7 +224,8 @@ export const kinConnectionProvider = (connection: Pick<KinConnection, "preset" |
 export const kinMailReadText = (readAt: number | null, now?: Date) =>
   readAt === null
     ? KIN_CONNECTIONS_COPY.mailNotRead
-    : `${KIN_CONNECTIONS_COPY.mailReadAt} ${formatKinTime(new Date(readAt), now)}`;
+    : // @effect-diagnostics-next-line globalDate:off - the shared clock-and-day label takes a Date.
+      `${KIN_CONNECTIONS_COPY.mailReadAt} ${formatKinTime(new Date(readAt), now)}`;
 
 /** A mail account whose reads stopped: signing in again is the owner's first fix. */
 export const kinOffersSignIn = (connection: KinConnection) =>
