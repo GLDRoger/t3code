@@ -7,7 +7,9 @@ import {
   KIN_PROJECTS,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
+  KIN_FORM_DISCARD,
   KIN_WORK_FORM_COPY,
+  kinFormTyped,
   KIN_WORK_FORM_LIMITS,
   KIN_GST_STATE_NAMES,
   kinClientCreateInput,
@@ -46,6 +48,14 @@ import { PlusIcon, XIcon } from "lucide-react";
 import { useId, useRef, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
 import {
   Dialog,
@@ -102,13 +112,20 @@ export function FormShell(props: {
   readonly aside?: React.ReactNode;
   /** The field whose hint says why Save waits, read with the button. */
   readonly waitsOn?: string | undefined;
+  /** Something typed and not saved: closing asks before it is thrown away. */
+  readonly typed?: boolean;
   readonly children: React.ReactNode;
 }) {
+  const [asking, setAsking] = useState(false);
+  const close = () => {
+    if (props.typed === true) setAsking(true);
+    else props.onClose();
+  };
   return (
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open && !props.saving) props.onClose();
+        if (!open && !props.saving) close();
       }}
     >
       <DialogPopup className="max-w-lg">
@@ -132,7 +149,7 @@ export function FormShell(props: {
           </DialogPanel>
           <DialogFooter>
             {props.aside === undefined ? null : <div className="me-auto">{props.aside}</div>}
-            <Button type="button" variant="outline" disabled={props.saving} onClick={props.onClose}>
+            <Button type="button" variant="outline" disabled={props.saving} onClick={close}>
               {COPY.cancel}
             </Button>
             <Button
@@ -147,6 +164,21 @@ export function FormShell(props: {
             </Button>
           </DialogFooter>
         </form>
+        <AlertDialog open={asking} onOpenChange={setAsking}>
+          <AlertDialogPopup>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{KIN_FORM_DISCARD.title}</AlertDialogTitle>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogClose render={<Button variant="outline" />}>
+                {KIN_FORM_DISCARD.keep}
+              </AlertDialogClose>
+              <Button variant="destructive" onClick={props.onClose}>
+                {KIN_FORM_DISCARD.discard}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogPopup>
+        </AlertDialog>
       </DialogPopup>
     </Dialog>
   );
@@ -378,6 +410,7 @@ export function KinClientDialog(
       onOpenExisting={props.onOpenExisting}
       onSave={() => void save()}
       onClose={props.onClose}
+      typed={kinFormTyped(state.from, draft)}
     >
       <Field id={ids.name} label={COPY.party.name} moved={moved.name}>
         <Input
@@ -710,6 +743,7 @@ export function KinContactDialog(
       problem={state.problem ?? aside.problem}
       // Two people at one client can't share a name; the one there is on this same page.
       onOpenExisting={props.onClose}
+      typed={kinFormTyped(state.from, draft)}
       {...(editing === null
         ? {}
         : {
@@ -885,6 +919,7 @@ export function KinProjectDialog(
       onOpenExisting={props.onOpenExisting}
       onSave={() => void save()}
       onClose={props.onClose}
+      typed={kinFormTyped(state.from, draft) || members.length > 0}
     >
       <Field id={ids.name} label={COPY.project.name} moved={moved.name}>
         <Input
@@ -1125,6 +1160,7 @@ export function KinMilestoneDialog(
       onOpenExisting={props.onOpenExisting}
       onSave={() => void save()}
       onClose={props.onClose}
+      typed={name.trim() !== "" || due !== ""}
     >
       <Field id={ids.name} label={COPY.project.name}>
         <Input

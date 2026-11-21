@@ -19,7 +19,7 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
 import { KinDayField } from "./components/KinDayField";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
-import { KinGateView, KinWorkTextField } from "./components/KinWorkPieces";
+import { KinGateView, KinWorkTextField, useKinAskBeforeDiscard } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { kinWorkRefParam } from "./KinWorkScreen";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
@@ -97,6 +97,15 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
   const stepHint = kinDealStepHint(step, noneYet);
   const canSave = party !== null && title.trim() !== "" && !moneyBad && stepHint === undefined;
   const people = [...names.people.entries()].filter(([id]) => id !== names.me);
+  const leave = useKinAskBeforeDiscard(
+    party?.key !== props.party?.key ||
+      [title, value, source, step].some((typed) => typed.trim() !== "") ||
+      expected !== null ||
+      picked !== null ||
+      owner !== ME ||
+      stepDay !== null ||
+      noneYet,
+  );
 
   const save = async () => {
     if (!canSave || party === null || saving) return;
@@ -124,6 +133,7 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
     });
     setSaving(false);
     if (!outcome.ok) return setProblem(outcome.problem);
+    leave();
     navigation.goBack();
     navigation.navigate("KinDeal", { environmentId, orgId, deal: outcome.value.deal.key });
   };

@@ -23,6 +23,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_CLIENTS, kinNewTaskChoices } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -50,7 +51,11 @@ import {
   useKinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
-import { KinGateView, KinWorkAboveKeyboard } from "./components/KinWorkPieces";
+import {
+  KinGateView,
+  KinWorkAboveKeyboard,
+  useKinAskBeforeDiscard,
+} from "./components/KinWorkPieces";
 import { useKinGate } from "./state/useKinHost";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
@@ -131,6 +136,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
   const [requestId] = useState(uuidv4);
   const [opened] = useState(() => new Date());
   const [draft, setDraft] = useState<KinWorkDraft>(props.start);
+  const leave = useKinAskBeforeDiscard(kinFormTyped(props.start, draft));
   const work = useKinWork(target);
   // An older server has no clients or projects to put a task under.
   const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
@@ -166,8 +172,9 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
     setProblem(null);
     const outcome = await actions.add(checked.input, requestId);
     setSaving(false);
-    if (outcome.ok) navigation.goBack();
-    else setProblem(outcome.problem);
+    if (!outcome.ok) return setProblem(outcome.problem);
+    leave();
+    navigation.goBack();
   };
 
   return (

@@ -90,6 +90,7 @@ import {
   KinWorkLoading,
   KinWorkPrivateMark,
   KinWorkTextField,
+  useKinAskBeforeDiscard,
 } from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import { kinClient } from "./state/kinClient";
@@ -940,6 +941,9 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
   const [problem, setProblem] = useState<string | null>(null);
   const [requestId] = useState(uuidv4);
   const [month, setMonth] = useState<string | null>(null);
+  const leave = useKinAskBeforeDiscard(
+    [draft.amount, draft.note, draft.tds ?? ""].some((typed) => typed.trim() !== ""),
+  );
   const close = () => navigation.goBack();
   const title = KIN_LISTS.entry.recordPayment;
   if (!allowed) {
@@ -988,7 +992,9 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
       ...(draft.note.trim() === "" ? {} : { note: draft.note.trim() }),
       clientRequestId: requestId,
     });
-    if (saved) close();
+    if (!saved) return;
+    leave();
+    close();
   };
   const shown = problem ?? changes.problem;
   return (

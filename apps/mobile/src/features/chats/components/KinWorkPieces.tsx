@@ -16,9 +16,11 @@ import type { KinTaskStepStatus } from "@t3tools/client-runtime/kin/kinTaskSteps
 import { KIN_WORK_COPY, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkTimelineLine } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
+  KIN_FORM_DISCARD,
   KIN_WORK_FORM_COPY,
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
+import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
 import { type ComponentRef, createContext, useEffect, useRef, useState } from "react";
 import { Platform, Pressable, TextInput, View } from "react-native";
@@ -29,6 +31,7 @@ import { AppBar } from "../../../components/ui/AppBar";
 import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
+import * as Dialog from "../../../components/ui/Dialog";
 import { EmptyState } from "../../../components/ui/EmptyState";
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { ListSection } from "../../../components/ui/ListSection";
@@ -54,6 +57,30 @@ type Bar = React.ComponentProps<typeof AppBar>;
 export const KinWorkAboveKeyboard = createContext<
   ((node: ComponentRef<typeof View>) => void) | null
 >(null);
+
+/**
+ * Closing a form sheet that holds typed, unsaved words asks once, whether by its ✕, a swipe down or
+ * Android's Back; an untouched one closes at once. Call the returned `leave` before closing it
+ * after a save, so the save itself is never asked about.
+ */
+export function useKinAskBeforeDiscard(typed: boolean) {
+  const navigation = useNavigation();
+  const left = useRef(false);
+  usePreventRemove(typed, ({ data }) => {
+    if (left.current) return navigation.dispatch(data.action);
+    Dialog.alert(KIN_FORM_DISCARD.title, undefined, [
+      { text: KIN_FORM_DISCARD.keep, style: "cancel" },
+      {
+        text: KIN_FORM_DISCARD.discard,
+        style: "destructive",
+        onPress: () => navigation.dispatch(data.action),
+      },
+    ]);
+  });
+  return () => {
+    left.current = true;
+  };
+}
 
 /** A Work screen that isn't a list: everything sits in the scroll view that clears the bar. */
 export function KinWorkFrame(

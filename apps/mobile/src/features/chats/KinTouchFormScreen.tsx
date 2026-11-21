@@ -27,7 +27,7 @@ import { Notice } from "../../components/ui/Notice";
 import { uuidv4 } from "../../lib/uuid";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { KinWorkFrame, KinWorkTextField } from "./components/KinWorkPieces";
+import { KinWorkFrame, KinWorkTextField, useKinAskBeforeDiscard } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 
 export type KinTouchFormParams = {
@@ -57,6 +57,9 @@ export function KinTouchFormScreen({ route }: StaticScreenProps<KinTouchFormPara
   const [opened] = useState(() => new Date());
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
+  const leave = useKinAskBeforeDiscard(
+    [note, nextTitle, nextDay].some((typed) => typed.trim() !== ""),
+  );
   if (environmentId === null || orgId === null || party === null)
     return (
       <KinWorkFrame form title={KIN_CLIENTS.logContact} onClose={() => navigation.goBack()}>
@@ -91,6 +94,7 @@ export function KinTouchFormScreen({ route }: StaticScreenProps<KinTouchFormPara
     if (result._tag !== "Success")
       return setFailed(kinFailureText(squashAtomCommandFailure(result), KIN_CLIENTS.touchFailed));
     appAtomRegistry.refresh(kinClient.workClient({ environmentId, input: { orgId, key: party } }));
+    leave();
     navigation.goBack();
   };
   return (
