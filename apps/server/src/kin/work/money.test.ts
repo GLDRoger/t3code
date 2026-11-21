@@ -55,6 +55,7 @@ import {
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import { listDef, proposalFor } from "./registers.ts";
+import { ensureBankList } from "./statements/bankList.ts";
 import { waitLine } from "./statements/passwordBudget.ts";
 import * as OwnerMoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as OwnerWork from "./ownerWork.ts";
@@ -4233,6 +4234,9 @@ describe("money answers", () => {
       readonly status?: string;
       readonly standing?: "confirmed" | "unconfirmed" | "undone";
       readonly check?: "adds_up" | "off";
+      readonly kind?: "account" | "card";
+      /** Rows as Kin read them, kept whole: what a confirmed match points at. */
+      readonly readRows?: ReadonlyArray<unknown>;
       /** As a CSV export gives them: no period or balances printed, a running balance per row. */
       readonly rows?: ReadonlyArray<readonly [string, "credit" | "debit", number, number]>;
     },
@@ -4242,7 +4246,7 @@ describe("money answers", () => {
       const csv = input.rows !== undefined;
       const review = {
         statement: {
-          kind: "account",
+          kind: input.kind ?? "account",
           bank: input.bank ?? null,
           account: input.account,
           currency: input.currency,
@@ -4250,16 +4254,18 @@ describe("money answers", () => {
           to: csv ? null : input.to,
           openingMinor: input.opening ?? null,
           closingMinor: input.closing,
-          rows: (input.rows ?? []).map(([date, direction, amountMinor, balanceMinor], index) => ({
-            index,
-            date,
-            description: "Invented row",
-            reference: null,
-            amountMinor,
-            direction,
-            balanceMinor,
-            foreign: null,
-          })),
+          rows:
+            input.readRows ??
+            (input.rows ?? []).map(([date, direction, amountMinor, balanceMinor], index) => ({
+              index,
+              date,
+              description: "Invented row",
+              reference: null,
+              amountMinor,
+              direction,
+              balanceMinor,
+              foreign: null,
+            })),
           check: { status: input.check ?? "adds_up", line: "" },
         },
         format: "csv",
@@ -4332,11 +4338,12 @@ describe("money answers", () => {
 
         yield* defined(4, { template: "expenses" });
         const records = yield* KinRecords.KinRecords;
+        const made = new Map<string, { recordId: string; key: string }>();
         for (const [key, money] of [
           ["flight", { minor: 30_000, currency: "USD" }],
           ["hotel", { minor: 76_800, currency: "EUR" }],
-        ] as const)
-          yield* records.create(orgId, system, {
+        ] as const) {
+          const { row } = yield* records.create(orgId, system, {
             list: "expenses",
             title: `Invented ${key}`,
             owner,
@@ -4346,6 +4353,8 @@ describe("money answers", () => {
             dateAt: on("2026-11-05"),
             originKey: key,
           });
+          made.set(key, row);
+        }
         yield* OwnerMoneyAnswers.setBudget(people, {
           orgId,
           category: "travel",
@@ -4366,6 +4375,74 @@ describe("money answers", () => {
         assert.deepStrictEqual((yield* OwnerMoney.money(people, { orgId })).about?.spentThisMonth, {
           home: "USD",
           total: { minor: 112_900, currency: "USD" },
+          missing: [],
+        });
+        // Once a confirmed card statement matches it to its line, the hotel counts at the $835.10
+        // that line charged, not at the owner's one rate.
+        yield* ensureBankList(orgId, now);
+        const { row: bank } = yield* records.create(orgId, system, {
+          list: "bank_transactions",
+          title: "Invented card hotel charge",
+          owner,
+          amount: { minor: 83_510, currency: "USD" },
+          dateAt: on("2026-11-06"),
+          originKey: "hotel-bank",
+        });
+        const hotel = made.get("hotel")!;
+        yield* statement("st_card", {
+          kind: "card",
+          account: "4321",
+          currency: "USD",
+          to: "2026-11-30",
+          closing: 83_510,
+          readRows: [
+            {
+              index: 0,
+              date: "2026-11-06",
+              amountMinor: 83_510,
+              direction: "debit",
+              description: "INVENTED HOTEL EUR 768.00",
+              reference: null,
+              balanceMinor: null,
+              foreign: { currency: "EUR", amountMinor: 76_800 },
+            },
+          ],
+        });
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_bank_statement_entries (org_id, statement_id, seq, row_index,
+            bank_record_id, action, target_record_id)
+          VALUES (${orgId}, 'st_card', 1, 0, ${bank.recordId}, 'expense_linked', ${hotel.recordId})`;
+        const evidence = records.link(orgId, system, hotel.recordId, {
+          kind: "record",
+          target: bank.recordId,
+          relation: "evidence",
+        });
+        const spent = (minor: number) =>
+          Effect.gen(function* () {
+            assert.deepStrictEqual(
+              (yield* OwnerMoney.money(people, { orgId })).about?.spentThisMonth,
+              { home: "USD", total: { minor, currency: "USD" }, missing: [] },
+            );
+          });
+        yield* evidence;
+        yield* spent(113_500);
+        // Remove link takes the match off the expense, not the statement's entry: back to the rate.
+        const [hotelLink] = yield* sql<{ shown: string; at: number }>`SELECT
+            COALESCE(label, target) AS shown, created_at AS at FROM kin_record_links
+          WHERE org_id = ${orgId} AND record_id = ${hotel.recordId} AND target = ${bank.recordId}`;
+        assert.isTrue(
+          yield* records.unlink(orgId, system, hotel.recordId, { kind: "record", ...hotelLink! }),
+        );
+        yield* spent(112_900);
+        yield* evidence;
+        yield* spent(113_500);
+        // Corrected to €800 after the match, the line no longer answers it: back to the rate.
+        yield* records.update(orgId, system, hotel.key, {
+          amount: { minor: 80_000, currency: "EUR" },
+        });
+        assert.deepStrictEqual((yield* OwnerMoney.money(people, { orgId })).about?.spentThisMonth, {
+          home: "USD",
+          total: { minor: 116_400, currency: "USD" },
           missing: [],
         });
         // The euros have a budget of their own now, so the dollar one leaves nothing out.
