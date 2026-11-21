@@ -176,11 +176,11 @@ export function selectKinInboxView(state: KinInboxState): KinInboxView {
   return {
     rows,
     folds,
-    waiting: waiting.toSorted(byAge),
+    waiting: [...waiting].sort(byAge),
     waitsFor: [...groups].map(([personId, group]) => ({
       personId,
       name: group.name,
-      items: group.items.toSorted(byAge),
+      items: [...group.items].sort(byAge),
     })),
     unreadCount: kinBadgeCount(state),
     waitingCount: kinWaitingCount(waiting),

@@ -619,13 +619,11 @@ describe("Kin chat contracts", () => {
 
   // A phone in the field decodes with the schemas as they were before `waitsFor` and `decidedBy`.
   it("an older client still reads a waiting row and a card with the newer fields", () => {
-    expect(Schema.decodeUnknownSync(KinWaitingItemBefore)(waitsForRow)).toStrictEqual(
-      Schema.decodeUnknownSync(KinWaitingItemBefore)({ ...waiting, widgetId: "widget-1" }),
+    expect(decodeWaitingBefore(waitsForRow)).toStrictEqual(
+      decodeWaitingBefore({ ...waiting, widgetId: "widget-1" }),
     );
     const { decidedBy: _decided, replacedBy: _replaced, ...before } = decidedCard;
-    expect(Schema.decodeUnknownSync(KinChoiceCardStateBefore)(decidedCard)).toStrictEqual(
-      Schema.decodeUnknownSync(KinChoiceCardStateBefore)(before),
-    );
+    expect(decodeCardBefore(decidedCard)).toStrictEqual(decodeCardBefore(before));
   });
 });
 
@@ -682,3 +680,5 @@ const KinChoiceCardStateBefore = Schema.Struct({
     }),
   ),
 });
+const decodeWaitingBefore = Schema.decodeUnknownSync(KinWaitingItemBefore);
+const decodeCardBefore = Schema.decodeUnknownSync(KinChoiceCardStateBefore);

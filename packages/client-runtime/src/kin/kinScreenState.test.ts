@@ -22,6 +22,7 @@ import {
   kinReconnectStep,
   kinWaitingBannerView,
   kinWaitingRowView,
+  kinWaitsForDetail,
 } from "./kinScreenState.ts";
 
 const environmentId = EnvironmentId.make("env-kin");
@@ -584,6 +585,21 @@ describe("kinWaitingRowView", () => {
       excerpt: "Workshop proposal\nSix hours on site",
       waitsFor: "Waits for Rhea Rao",
     });
+    // Opened, it shows what it asks and whose it is, with its answers as words, never buttons.
+    expect(
+      kinWaitsForDetail({
+        ...(theirs as object),
+        ask: {
+          agent: "Chief of staff",
+          options: [{ label: "Approve" }, { label: "Changes first" }],
+        },
+      } as never),
+    ).toEqual([
+      "Workshop proposal\nSix hours on site",
+      "Answers: Approve / Changes first",
+      "Only Rhea Rao can answer this. You can look at it here.",
+    ]);
+    expect(kinWaitsForDetail(item("m-2"))).toEqual([]);
   });
 
   it("has no text when the inbox doesn't carry the message", () => {

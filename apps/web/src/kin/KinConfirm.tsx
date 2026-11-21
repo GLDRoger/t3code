@@ -33,6 +33,8 @@ export function KinConfirm(props: {
     readonly detail: string;
     readonly action: string;
     readonly destructive?: boolean;
+    /** The way out's label, where "Cancel" would read as the action itself. */
+    readonly keep?: string;
   } | null;
   readonly onConfirm: () => void;
   readonly onClose: () => void;
@@ -52,7 +54,7 @@ export function KinConfirm(props: {
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogClose render={<Button variant="outline" />}>
-            {KIN_WORK_COPY.cancel}
+            {ask?.keep ?? KIN_WORK_COPY.cancel}
           </AlertDialogClose>
           <Button
             variant={ask?.destructive === true ? "destructive" : "default"}

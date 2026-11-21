@@ -15,6 +15,12 @@ import {
   kinChoiceCardTaps,
   kinChoiceAccessibilityLabel,
   kinChoiceAnswered,
+  kinChoiceDecidedLine,
+  createKinHeldPress,
+  kinDeviceTimers,
+  kinMailCancels,
+  KIN_MAIL_CANCEL_COPY,
+  KIN_MAIL_CANCEL_UNDO_MS,
   kinChoicePhase,
   kinChoiceUndoneLine,
   kinSendEditControls,
@@ -91,6 +97,7 @@ import {
 import { useAssetUrls } from "../assets/assetUrls";
 import { AttachmentImage } from "../components/media/AttachmentImage";
 import { environmentCatalog } from "../connection/catalog";
+import { KinConfirm } from "./KinConfirm";
 import { ApproveOnPhone } from "./ApproveOnPhone";
 import { useKinOwnerLevelKnown } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
@@ -474,9 +481,47 @@ function KinChoiceCard(props: {
     };
   }, [editorOpen]);
   const edited = kinSendEditedLine(choice, props.viewerPersonId);
+  const decided = kinChoiceDecidedLine(choice, props.viewerPersonId);
+  // A mail's Cancel is asked first, then waits a few seconds for Undo before it is sent.
+  const [asking, setAsking] = useState<string | null>(null);
+  const [held, setHeld] = useState<string | null>(null);
+  const sendHeld = useEffectEvent(() => {
+    const optionId = held;
+    setHeld(null);
+    if (optionId !== null) void press(optionId);
+  });
+  const [heldPress] = useState(() =>
+    createKinHeldPress({
+      delayMs: KIN_MAIL_CANCEL_UNDO_MS,
+      send: () => sendHeld(),
+      timers: kinDeviceTimers,
+    }),
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a held Cancel is sent when its card leaves the screen.
+  useEffect(() => () => heldPress.flush(), [heldPress]);
+  const choose = (optionId: string) =>
+    kinMailCancels(choice, optionId) ? setAsking(optionId) : void press(optionId);
 
   return (
     <CardFrame label={kinChoiceAccessibilityLabel(choice, answered?.text ?? null, edited)}>
+      <KinConfirm
+        ask={
+          asking === null
+            ? null
+            : {
+                title: KIN_MAIL_CANCEL_COPY.ask,
+                detail: KIN_MAIL_CANCEL_COPY.detail,
+                action: KIN_MAIL_CANCEL_COPY.yes,
+                keep: KIN_MAIL_CANCEL_COPY.no,
+                destructive: true,
+              }
+        }
+        onConfirm={() => {
+          setHeld(asking);
+          heldPress.hold();
+        }}
+        onClose={() => setAsking(null)}
+      />
       {choice.askedBy === null ? null : (
         <p className="text-xs text-muted-foreground">{choice.askedBy}</p>
       )}
@@ -532,7 +577,23 @@ function KinChoiceCard(props: {
         <p className="text-xs text-muted-foreground">{choice.closedText}</p>
       ) : !canAct ? (
         <p className="text-xs text-muted-foreground">{CANT_ACT_TEXT}</p>
-      ) : shownEdit !== null ? null : (
+      ) : shownEdit !== null ? null : held !== null ? (
+        <div className="flex items-center gap-2 pt-1">
+          <p role="status" className="min-w-0 flex-1 text-xs font-medium text-muted-foreground">
+            {KIN_MAIL_CANCEL_COPY.held}
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              heldPress.undo();
+              setHeld(null);
+            }}
+          >
+            {KIN_MAIL_CANCEL_COPY.undo}
+          </Button>
+        </div>
+      ) : (
         <>
           <CardNotice notice={status?.notice} />
           <div className="flex flex-col gap-1.5 pt-1">
@@ -545,7 +606,7 @@ function KinChoiceCard(props: {
                   disabled={
                     pending !== null || switching || kinSendCheckPending(choice, ticked, option.id)
                   }
-                  onClick={() => void press(option.id)}
+                  onClick={() => choose(option.id)}
                 >
                   {option.label}
                 </Button>
@@ -569,6 +630,7 @@ function KinChoiceCard(props: {
           </div>
         </>
       )}
+      {decided === null ? null : <p className="text-xs text-muted-foreground">{decided}</p>}
       {undone === null ? null : <p className="text-xs text-muted-foreground">{undone}</p>}
     </CardFrame>
   );

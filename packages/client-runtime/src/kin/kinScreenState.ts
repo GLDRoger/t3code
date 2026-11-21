@@ -442,7 +442,7 @@ const WAITING_KIND_NOUNS: Record<KinWaitingKind, readonly [string, string]> = {
 
 /** What waits on someone else, in a person's words: "Waiting for Rhea Rao", "Waits for Rhea Rao". */
 export const KIN_WAITS_FOR_COPY = {
-  fold: (name: string) => `Waiting for ${name}`,
+  fold: (name: string, count: number) => `Waiting for ${name} · ${count}`,
   row: (name: string) => `Waits for ${name}`,
   onlyThey: (name: string) => `Only ${name} can answer this. You can look at it here.`,
   answers: (labels: ReadonlyArray<string>) => `Answers: ${labels.join(" / ")}`,
@@ -450,6 +450,17 @@ export const KIN_WAITS_FOR_COPY = {
   foldLabel: (count: number, name: string) =>
     `Waiting for ${name}, ${count === 1 ? "1 item" : `${count} items`}`,
 } as const;
+
+/** What a read-only row shows once opened: the draft's first lines, its answers, whose it is. */
+export function kinWaitsForDetail(item: KinWaitingItem): ReadonlyArray<string> {
+  if (item.waitsFor === undefined) return [];
+  const labels = item.ask?.options.map((option) => option.label) ?? [];
+  return [
+    ...(item.excerpt === undefined ? [] : [item.excerpt]),
+    ...(labels.length === 0 ? [] : [KIN_WAITS_FOR_COPY.answers(labels)]),
+    KIN_WAITS_FOR_COPY.onlyThey(item.waitsFor.name),
+  ];
+}
 
 export interface KinWaitingBannerView {
   /** What waits on the viewer (`kinWaitingCount`); others' are named in `summary` only. */
