@@ -59,6 +59,7 @@ function KinLeaveTeam() {
     <KinSettingsSection problem={failed ? KIN_LEAVE_TEAM.failed : null}>
       <KinSettingsRow
         title={KIN_LEAVE_TEAM.button}
+        wrap
         detail={KIN_LEAVE_TEAM.rowDetail}
         control={
           <Button

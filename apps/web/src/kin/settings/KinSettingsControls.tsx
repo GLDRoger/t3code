@@ -26,6 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../../components/ui/select";
+import { useKinFormDiscard } from "../KinFormDiscard";
 
 /**
  * One choice among a few, saved the moment it is picked. `value: null` is a setting said once
@@ -141,6 +142,8 @@ export function KinSettingsFormDialog(props: {
   readonly secondary?: ReactNode;
   /** The `name` of the field to open on, when a row named one: "Working hours" opens there. */
   readonly openAt?: string | null;
+  /** Something typed and not saved: closing asks before it is thrown away. */
+  readonly typed?: boolean;
   readonly onSubmit: () => void;
   readonly onClose: () => void;
   readonly children: ReactNode;
@@ -148,11 +151,12 @@ export function KinSettingsFormDialog(props: {
   const notReady = props.notReady ?? null;
   const form = useRef<HTMLFormElement>(null);
   const openAt = props.openAt ?? null;
+  const discard = useKinFormDiscard(props.typed === true, props.onClose);
   return (
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open && !props.busy) props.onClose();
+        if (!open && !props.busy) discard.close();
       }}
     >
       <DialogPopup
@@ -194,7 +198,7 @@ export function KinSettingsFormDialog(props: {
           <DialogFooter>
             {props.remove === undefined ? null : <div className="sm:me-auto">{props.remove}</div>}
             {props.secondary}
-            <Button type="button" variant="outline" disabled={props.busy} onClick={props.onClose}>
+            <Button type="button" variant="outline" disabled={props.busy} onClick={discard.close}>
               {KIN_SETTINGS_COPY.cancel}
             </Button>
             <Button type="submit" disabled={props.busy || notReady !== null} aria-busy={props.busy}>
@@ -202,6 +206,7 @@ export function KinSettingsFormDialog(props: {
             </Button>
           </DialogFooter>
         </form>
+        {discard.ask}
       </DialogPopup>
     </Dialog>
   );

@@ -324,6 +324,7 @@ export function KinConnectionPage(props: {
         {connection.auth === "key" ? (
           <KinSettingsRow
             title={COPY.keyLabel}
+            wrap
             detail={MAIL.keyDetail}
             openLabel={COPY.replaceKeyTitle}
             onOpen={() => setEditing("key")}
@@ -332,6 +333,7 @@ export function KinConnectionPage(props: {
         {connection.auth === "oauth" && !signInNeeded ? (
           <KinSettingsRow
             title={MAIL.signInTitle}
+            wrap
             detail={MAIL.signInDetail}
             control={
               <Button
@@ -347,6 +349,7 @@ export function KinConnectionPage(props: {
         ) : null}
         <KinSettingsRow
           title={COPY.reachRow}
+          wrap
           detail={COPY.reachShort}
           control={
             <Switch
@@ -404,6 +407,7 @@ export function KinConnectionPage(props: {
             {suggested.length > 0 ? (
               <KinSettingsRow
                 title={COPY.suggested}
+                wrap
                 detail={COPY.suggestedDetail}
                 control={
                   <Button
@@ -424,6 +428,7 @@ export function KinConnectionPage(props: {
             {toolRows}
             <KinSettingsRow
               title={COPY.refresh}
+              wrap
               detail={MAIL.refreshDetail}
               control={
                 <Button
@@ -464,6 +469,7 @@ export function KinConnectionPage(props: {
       <KinSettingsSection title={MAIL.pauseOrRemove} problem={problemAt("end")}>
         <KinSettingsRow
           title={connection.paused ? MAIL.resumeTitle : MAIL.pauseTitle}
+          wrap
           detail={connection.paused ? MAIL.pausedDetail : MAIL.pauseDetail}
           control={
             <Button
@@ -482,6 +488,7 @@ export function KinConnectionPage(props: {
         />
         <KinSettingsRow
           title={mail ? MAIL.removeAccount : MAIL.removeService}
+          wrap
           detail={MAIL.removeRowDetail}
           control={
             <Button
@@ -578,7 +585,8 @@ function EditDialog(props: {
 }) {
   const rename = props.editing === "rename";
   const note = props.editing === "note";
-  const [value, setValue] = useState(rename || note ? props.value : "");
+  const [opened] = useState(rename || note ? props.value : "");
+  const [value, setValue] = useState(opened);
   const [busy, setBusy] = useState(false);
   const [tried, setTried] = useState(false);
   const max = rename ? 80 : note ? 200 : 4096;
@@ -598,6 +606,7 @@ function EditDialog(props: {
       busy={busy}
       notReady={notReady}
       problem={tried ? props.problem : null}
+      typed={value.trim() !== opened.trim()}
       onSubmit={() => {
         setBusy(true);
         setTried(true);

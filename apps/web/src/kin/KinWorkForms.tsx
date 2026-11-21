@@ -7,7 +7,6 @@ import {
   KIN_PROJECTS,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
-  KIN_FORM_DISCARD,
   KIN_WORK_FORM_COPY,
   kinFormTyped,
   KIN_WORK_FORM_LIMITS,
@@ -48,14 +47,6 @@ import { PlusIcon, XIcon } from "lucide-react";
 import { useId, useRef, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
-import {
-  AlertDialog,
-  AlertDialogClose,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogPopup,
-  AlertDialogTitle,
-} from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
 import {
   Dialog,
@@ -81,6 +72,7 @@ import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinCountryFirstField } from "./KinCountryFirst";
+import { useKinFormDiscard } from "./KinFormDiscard";
 import { KinCameFromField, KinTagEditor, useKinMarketing } from "./KinMarketing";
 import { useKinCompanyCountry, useKinHomeCurrency } from "./useKinMoney.ts";
 import { KinProjectPeoplePicker } from "./KinProjectPeople";
@@ -116,11 +108,7 @@ export function FormShell(props: {
   readonly typed?: boolean;
   readonly children: React.ReactNode;
 }) {
-  const [asking, setAsking] = useState(false);
-  const close = () => {
-    if (props.typed === true) setAsking(true);
-    else props.onClose();
-  };
+  const { close, ask } = useKinFormDiscard(props.typed === true, props.onClose);
   return (
     <Dialog
       open
@@ -164,21 +152,7 @@ export function FormShell(props: {
             </Button>
           </DialogFooter>
         </form>
-        <AlertDialog open={asking} onOpenChange={setAsking}>
-          <AlertDialogPopup>
-            <AlertDialogHeader>
-              <AlertDialogTitle>{KIN_FORM_DISCARD.title}</AlertDialogTitle>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogClose render={<Button variant="outline" />}>
-                {KIN_FORM_DISCARD.keep}
-              </AlertDialogClose>
-              <Button variant="destructive" onClick={props.onClose}>
-                {KIN_FORM_DISCARD.discard}
-              </Button>
-            </AlertDialogFooter>
-          </AlertDialogPopup>
-        </AlertDialog>
+        {ask}
       </DialogPopup>
     </Dialog>
   );
