@@ -434,7 +434,7 @@ export function KinTaskRow(props: {
               {step.mayHaveGone}
             </Text>
           )}
-          {step === null ? null : status?.kind === "done" ? (
+          {step === null || step.kind === "told" ? null : status?.kind === "done" ? (
             <Text textRole="footnote" className="font-t3-medium text-foreground">
               {status.text}
             </Text>
@@ -498,6 +498,7 @@ function KinTaskStepButtons(props: {
   const { step, busyId, onChoose } = props;
   const busy = busyId !== null;
   const label = (what: string) => `${what}: ${props.title}`;
+  if (step.kind === "told") return null;
   if (step.kind === "nudge")
     return (
       <View className="flex-row flex-wrap items-center gap-2">

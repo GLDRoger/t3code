@@ -47,6 +47,7 @@ import { memberReads } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
 import { isHolderNotice } from "../pulse/holderNotice.ts";
 import { personHoldNow } from "../triggers/quietHold.ts";
+import { taskNewsBanner } from "../work/assignNotices.ts";
 import { KinApnsTransport } from "./Apns.ts";
 import { KinPushDevices, kinPushDeviceId, type KinPushDevice } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
@@ -67,6 +68,8 @@ export type KinPushNotification =
     }
   /** A person linked one more device themself: their other phones hear of it, every time. */
   | { readonly _tag: "device"; readonly orgId: KinOrgId; readonly sessionId: string }
+  /** Task news held for one person from one mover (`deliverHeld`): one banner, opening Tasks. */
+  | { readonly _tag: "tasks"; readonly orgId: KinOrgId; readonly holdIds: ReadonlyArray<string> }
   /** A member's read mark moved: their other devices get the new badge, with no banner. */
   | {
       readonly _tag: "read";
@@ -845,6 +848,47 @@ const make = Effect.gen(function* () {
     return { sent: count("sent"), suppressed: count("suppressed"), failed: count("failed") };
   });
 
+  /**
+   * What someone did to the recipient's tasks on their own screen, as Kin's own words: in no chat,
+   * so it leaves the badge as it is. Their mute of the chat it once came in keeps it silent, and
+   * like any unprompted post it rings once per half hour.
+   */
+  const tasksPush = Effect.fn("KinPushSender.tasksPush")(function* (
+    orgId: KinOrgId,
+    holdIds: ReadonlyArray<string>,
+  ) {
+    const news = yield* taskNewsBanner(orgId, holdIds).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    if (news === undefined) return undefined;
+    const muted =
+      news.chatId !== undefined &&
+      (yield* chatPeople(orgId, news.chatId)).some(
+        (person) => person.personId === news.personId && person.muted,
+      );
+    const subject: KinPushSubject =
+      news.opens === undefined
+        ? { _tag: "tasks" }
+        : { _tag: "record", key: news.opens.key, kind: news.opens.project ? "project" : "task" };
+    const base = `/kin/${host}/${segment(orgId)}`;
+    return {
+      category: "kin.message",
+      title: "Tasks",
+      body: news.body,
+      chatId: undefined,
+      source: undefined,
+      data: {
+        kin: 1,
+        orgId,
+        deepLink:
+          news.opens === undefined
+            ? `${base}/work`
+            : `${base}/${news.opens.project ? "projects" : "work"}/${segment(news.opens.key)}`,
+      },
+      recipients: [{ personId: news.personId, silent: muted, capped: true, subject }],
+    } satisfies Push;
+  });
+
   const devicePush = Effect.fn("KinPushSender.devicePush")(function* (
     orgId: KinOrgId,
     sessionId: string,
@@ -891,13 +935,15 @@ const make = Effect.gen(function* () {
           ? yield* approvalPush(notification.orgId, notification.actionId)
           : notification._tag === "device"
             ? yield* devicePush(notification.orgId, notification.sessionId)
-            : notification._tag === "message"
-              ? yield* messagePush(notification.orgId, notification.messageId)
-              : yield* widgetPush(
-                  notification.orgId,
-                  notification.widgetId,
-                  notification.covered ?? [],
-                );
+            : notification._tag === "tasks"
+              ? yield* tasksPush(notification.orgId, notification.holdIds)
+              : notification._tag === "message"
+                ? yield* messagePush(notification.orgId, notification.messageId)
+                : yield* widgetPush(
+                    notification.orgId,
+                    notification.widgetId,
+                    notification.covered ?? [],
+                  );
       if (push === undefined || push.recipients.length === 0) return nothing;
       const outcome: KinPushOutcome = {
         status: apns.status,

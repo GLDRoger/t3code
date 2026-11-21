@@ -54,6 +54,7 @@ import { TEAMMATE_WORDS, workEventText } from "../lead/LeadPrompt.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import { readPeople } from "../lead/peopleRead.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { taskNewsBanner } from "./assignNotices.ts";
 import { keepAllDayDays } from "./allDayZone.ts";
 import { importWork } from "./importWork.ts";
 import { newCompanyProfileJson } from "./companyProfile.ts";
@@ -3500,36 +3501,54 @@ it.effect(
         ),
         { reason: "not_found" },
       );
-      // H15: the owner moving a task on his screen tells its holders as an agent would, and the
-      // agent's why goes with the agent's assignment.
+      // H15: the owner moving a task on his screen posts no chat line: its holders' news waits for
+      // one banner (`tellOnTasks`). The agent's why goes with the agent's assignment.
       yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
         VALUES (${orgId}, ${lead}, ${ownerId}, ${at})`;
       const notices = sql<{ body: string }>`SELECT body FROM kin_messages
         WHERE chat_id = 'mate-chat' AND message_id LIKE 'kin-assign-%' ORDER BY seq`;
       const before = (yield* notices).length;
+      const news = (personId: string) =>
+        sql<{ line: string }>`SELECT json_extract(body, '$.name') || ' ' ||
+            json_extract(body, '$.kind') || ' ' || json_extract(body, '$.key') AS line
+          FROM kin_held_posts WHERE person_id = ${personId}
+            AND substr(kind, 1, 14) = 'kin-task-news:'
+          ORDER BY held_at, rowid`.pipe(Effect.map((rows) => rows.map((row) => row.line)));
       const mateHolds = { _tag: "person" as const, personId: mateId };
       yield* OwnerWork.assign([owner], { orgId, key: "W-2", to: null });
       yield* OwnerWork.assign([owner], { orgId, key: "W-3", to: null });
       yield* OwnerWork.assign([owner], { orgId, key: "W-2", to: mateHolds });
       // Given again, it is no longer marked handed back.
       assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-2" })).handedBack);
-      assert.deepStrictEqual(
-        (yield* notices).slice(before).map((row) => row.body),
-        [
-          "Owner took over W-3 Invented: salary review.",
-          "Owner gave you W-2 Invented: fix the login screen, due Fri 20 Nov.",
-        ],
-      );
+      assert.deepStrictEqual((yield* notices).slice(before), []);
+      assert.deepStrictEqual(yield* news(mateId), ["Owner taken W-3", "Owner given W-2"]);
       assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-3" })).reason);
-      // Model tasks: handed back on the screen to the person who gave it, that person is told.
+      // Model tasks: handed back on the screen to the person who gave it, that person is told,
+      // on their Tasks and in a banner, not in a chat.
       yield* OwnerWork.handBack([mate], { orgId, key: "W-2", note: "Invented: blocked on design" });
       assert.deepStrictEqual(
-        (yield* sql<{ body: string }>`SELECT body FROM kin_messages
-          WHERE chat_id = 'lead-chat' AND message_id LIKE 'kin-assign-%' ORDER BY seq`).map(
-          (row) => row.body,
-        ),
-        ["Mate handed W-2 Invented: fix the login screen back: Invented: blocked on design."],
+        yield* sql`SELECT body FROM kin_messages
+          WHERE chat_id = 'lead-chat' AND message_id LIKE 'kin-assign-%' ORDER BY seq`,
+        [],
       );
+      // The two from before the company had a team agent are news too: no agent need carry it.
+      assert.deepStrictEqual(yield* news(ownerId), [
+        "Mate returned W-2",
+        "Mate returned W-1",
+        "Mate returned W-2",
+      ]);
+      // His Tasks row says who handed it back (the record) and why (the row's step).
+      const back = (yield* OwnerWork.list([owner], { orgId, byMove: true })).moves?.find(
+        (one) => one.key === "W-2",
+      );
+      assert.deepInclude(back, {
+        group: "needsYou",
+        handedBackNote: "Invented: blocked on design",
+      });
+      // The agent reads who handed it back on the record, with no chat line to quote.
+      yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'wake'`;
+      assert.propertyVal(yield* LeadWork.get(scope, { key: "W-2" }), "handedBackBy", "Mate");
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
       // Given on from one teammate to another, each reads who gave it to whom from their side.
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
         VALUES ('mate-2', ${orgId}, 'mate2', 'Mate Two', ${at})`;
@@ -3562,18 +3581,13 @@ it.effect(
       assert.deepStrictEqual(
         (yield* notices).slice(givenOn).map((row) => row.body),
         [
-          "Owner gave you W-1 Invented: draft the onboarding copy.",
-          "Owner gave W-1 Invented: draft the onboarding copy to Mate Two.",
           "Lead lead gave you W-1 Invented: draft the onboarding copy. Why: Invented: on leave.",
           "Lead lead took over W-1 Invented: draft the onboarding copy: Invented: quicker.",
         ],
       );
       assert.deepStrictEqual(
         (yield* mateTwoNotices).map((row) => row.body),
-        [
-          "Owner gave you W-1 Invented: draft the onboarding copy.",
-          "Lead lead gave W-1 Invented: draft the onboarding copy to Mate: Invented: on leave.",
-        ],
+        ["Lead lead gave W-1 Invented: draft the onboarding copy to Mate: Invented: on leave."],
       );
       // K016: tell false gives it to her without a word; given to her again, she is told once.
       const quiet = (yield* notices).length;
@@ -3641,7 +3655,9 @@ it.effect(
         coming!,
         /^Lead lead added you to the meeting W-\d+ Invented review .+ on Thu 19 Nov \d{1,2}:\d\d [ap]m\.$/u,
       );
-      // Put on a project from the app, or made its lead, they are told once, with its key.
+      // Put on a project from the app, or made its lead, they are told once, with its key, on
+      // their Tasks and in a banner: no chat line.
+      const posted = (yield* notices).length;
       const portal = yield* OwnerClients.createProject([owner], {
         orgId,
         name: "Invented portal",
@@ -3659,13 +3675,11 @@ it.effect(
         rev: added.rev,
         owner: mateHolds,
       });
-      assert.deepStrictEqual(
-        (yield* notices).slice(-2).map((row) => row.body),
-        [
-          `Owner added you to ${portal.key} Invented portal.`,
-          `Owner made you the lead of ${portal.key} Invented portal.`,
-        ],
-      );
+      assert.lengthOf((yield* notices).slice(posted), 0);
+      assert.deepStrictEqual((yield* news(mateId)).slice(-2), [
+        `Owner added ${portal.key}`,
+        `Owner lead ${portal.key}`,
+      ]);
     }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
 );
 
@@ -4057,11 +4071,18 @@ it.effect(
         mateHolds,
       );
       yield* keepsItsWay();
-      // Told once for both.
-      const after = (yield* told).slice(before).map((row) => row.body);
-      assert.lengthOf(after, 1);
-      assert.include(after[0], keys[0]!);
-      assert.include(after[0], keys[1]!);
+      // Told once for both, in one banner, and in no chat.
+      assert.lengthOf((yield* told).slice(before), 0);
+      const holds = yield* sql<{ id: string }>`SELECT hold_id AS id FROM kin_held_posts
+        WHERE person_id = ${mateId} AND substr(kind, 1, 14) = 'kin-task-news:'
+          AND delivered_at IS NULL ORDER BY rowid`;
+      assert.strictEqual(
+        (yield* taskNewsBanner(
+          orgId,
+          holds.map((row) => row.id),
+        ))?.body,
+        "Meera reassigned 2 of your tasks",
+      );
       // Undo gives exactly those back.
       yield* OwnerWork.assign([owner], { orgId, key: keys[2]!, to: meeraHolds }).pipe(
         Effect.ignore,

@@ -228,7 +228,8 @@ export const heldUntil = (
 export const holdFor = Effect.fn("KinQuiet.holdFor")(function* (input: {
   readonly orgId: KinOrgId;
   readonly personId: KinPersonId;
-  readonly chatId: KinChatId;
+  /** None for a banner told outside any chat: nothing they wrote answers it. */
+  readonly chatId: KinChatId | undefined;
   readonly notBefore?: number | undefined;
   /** Nothing they said asks for it (a task handed to them): while they are away it waits anyway. */
   readonly unasked?: boolean;
@@ -238,8 +239,8 @@ export const holdFor = Effect.fn("KinQuiet.holdFor")(function* (input: {
   const quiet = yield* personQuiet(input.orgId, input.personId, now);
   const at = Math.max(quiet.endsAt, input.notBefore ?? now);
   if (at <= now) return undefined;
-  if (input.unasked === true && quiet.why === "away")
-    return { at, zone: quiet.zone, why: quiet.why };
+  if ((input.unasked === true && quiet.why === "away") || input.chatId === undefined)
+    return { at, zone: quiet.zone, why: quiet.why ?? ("off" as const) };
   const [answers] = yield* sql`SELECT 1 FROM kin_messages
     WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
       AND author_person_id = ${input.personId} AND origin_json IS NULL

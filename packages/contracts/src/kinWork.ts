@@ -555,6 +555,10 @@ export const KinWorkRowMove = Schema.Struct({
   said: Schema.optional(KinText),
   /** When the reader last nudged its holder, if that was today. */
   nudgedAt: Schema.optional(IsoDateTime),
+  /** A task handed back to the reader: its holder's words on why, when they left any. */
+  handedBackNote: Schema.optional(KinText),
+  /** A task the reader holds: who last asked them today where it stands. */
+  askedBy: Schema.optional(KinPersonId),
 });
 export type KinWorkRowMove = typeof KinWorkRowMove.Type;
 

@@ -1138,16 +1138,21 @@ it.effect(
         const hers = yield* rowsIn(sql, orgId, zoyasChat);
         const [notice, ...again] = told(hers);
         assert.deepStrictEqual(again, []);
-        // One message, worded from each task as it stands now, whoever gave it.
+        // One message, worded from each task as it stands now. What Rhea gave on her screen is
+        // no chat line: it is told in her banner, at the same minute.
         assert.strictEqual(
           notice?.body,
           [
             "Chief of staff gave you 2 tasks:",
             `• ${prices} Invented price sheet. Why: She knows the client`,
             `• ${poster} Invented poster. Why: She drew the last one`,
-            "",
-            `Rhea Kapoor gave you ${venues} Invented venue list.`,
           ].join("\n"),
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT json_extract(body, '$.key') AS key FROM kin_held_posts
+            WHERE org_id = ${orgId} AND person_id = ${zoyaId} AND delivered_at = ${back}
+              AND substr(kind, 1, 14) = 'kin-task-news:'`,
+          [{ key: venues }],
         );
         for (const key of [flyer!, banner!])
           assert.isFalse(
@@ -1343,15 +1348,21 @@ const awayThenBack = (how: "date" | "early" | "restart") =>
       assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
       assert.deepStrictEqual(yield* arjunReads, [
         {
-          body: [
-            `Rhea Kapoor gave you ${wording} Invented reminder wording.`,
-            "",
-            `Meera Iyer gave you ${clinics} Invented clinic list.`,
-            "",
-            `Chief of staff gave you ${phone} Invented phone number screen. Why: He built the reminders.`,
-          ].join("\n"),
+          body: `Chief of staff gave you ${phone} Invented phone number screen. Why: He built the reminders.`,
         },
       ]);
+      // What the owner and the co-owner gave on their screens is no chat line: one banner each
+      // went with it, once.
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(body, '$.name') AS name, json_extract(body, '$.key') AS key
+          FROM kin_held_posts WHERE org_id = ${orgId} AND person_id = ${arjunId}
+            AND substr(kind, 1, 14) = 'kin-task-news:' AND delivered_at IS NOT NULL
+          ORDER BY held_at, rowid`,
+        [
+          { name: "Rhea Kapoor", key: wording },
+          { name: "Meera Iyer", key: clinics },
+        ],
+      );
       assert.isUndefined(yield* toldOn(owner, wording!));
     }).pipe(Effect.provide(layer)),
   );

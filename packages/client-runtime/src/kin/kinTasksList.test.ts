@@ -541,6 +541,30 @@ describe("kinTaskStep", () => {
       { key: "W", group: "waiting" },
       null,
     ],
+    [
+      "handed back to you: who, and why in their words",
+      row("B", { handedBack: { by: meera, at: "2026-11-18T08:30:00.000Z" } }),
+      { key: "B", group: "needsYou", handedBackNote: "The clinic wants Zoya on it." },
+      { kind: "told", line: "Meera handed this back: “The clinic wants Zoya on it.”" },
+    ],
+    [
+      "handed back to you with no words: who",
+      row("C", { handedBack: { by: zoya, at: "2026-11-18T08:30:00.000Z" } }),
+      { key: "C", group: "needsYou" },
+      { kind: "told", line: "Zoya handed this back" },
+    ],
+    [
+      "yours, and someone asked today where it stands",
+      row("D", { ...late("2026-11-15T00:00:00.000Z") }),
+      { key: "D", group: "needsYou", askedBy: meera.personId },
+      { kind: "told", line: "Meera asked where this stands" },
+    ],
+    [
+      "yours, nothing told: no step",
+      row("E", { ...late("2026-11-15T00:00:00.000Z") }),
+      { key: "E", group: "needsYou" },
+      null,
+    ],
   ] as const)("%s", (_name, record, move, expected) => {
     const step = kinTaskStep(record, move as KinWorkRowMove, names, now);
     if (expected === null) return expect(step).toBeNull();
@@ -552,6 +576,7 @@ describe("kinTaskStep", () => {
     }
     if (step?.kind === "question" && "options" in expected)
       expect(step.options.map((option) => option.label)).toEqual(expected.options);
+    if (step?.kind === "told" && "line" in expected) expect(step.line).toBe(expected.line);
     if (step?.kind === "nudge" && "name" in expected)
       expect({ name: step.name, line: step.line, nudged: step.nudged }).toEqual({
         name: expected.name,
