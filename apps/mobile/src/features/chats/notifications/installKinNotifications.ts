@@ -1,3 +1,4 @@
+import { kinChoiceFailureNotice } from "@t3tools/client-runtime/kin/kinChoicePresentation";
 import {
   environmentSessionGenerationAtom,
   runAtomCommand,
@@ -5,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   EnvironmentAuthorizationError,
+  KIN_CHOICE_CARD_ACTION,
   KinChatError,
   type EnvironmentId,
   type KinWidgetsActInput,
@@ -90,6 +92,13 @@ function createActionDelivery() {
           // The chat is open by now, and its card shows the current state.
           pending.delete(key);
           console.warn("A Kin notification action was refused", failure.message);
+          if (target.input.actionId === KIN_CHOICE_CARD_ACTION)
+            Dialog.alert(
+              "Your answer wasn't recorded",
+              failure._tag === "KinChatError"
+                ? kinChoiceFailureNotice(failure).text
+                : failure.message,
+            );
         }
       });
     }

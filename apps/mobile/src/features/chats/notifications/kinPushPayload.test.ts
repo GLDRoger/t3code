@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { EnvironmentId } from "@t3tools/contracts";
+import { kinChoiceActInput } from "@t3tools/client-runtime/kin/kinChoicePresentation";
+import { EnvironmentId, KinWidgetId } from "@t3tools/contracts";
 
 import {
   KIN_DEFAULT_ACTION_IDENTIFIER,
@@ -223,6 +224,43 @@ describe("kinNotificationRoute", () => {
         clientActionId: "push:note-1:monday",
       },
     });
+  });
+
+  it("answers a two-answer question as a tap on its card would", () => {
+    const question = {
+      kin: 1,
+      orgId: "kin-default",
+      chatId: "chat-1",
+      widgetId: "w-ask",
+      revision: 1,
+      choices: ["option-1", "option-2"],
+      subject: { _tag: "message", messageId: "msg-ask" },
+      deepLink: chatLink,
+    };
+    const answer = (action: string, data: object = question) =>
+      kinNotificationRoute(response({ data, action, category: "kin.choice" }));
+    for (const [action, optionId] of [
+      ["answer_1", "option-1"],
+      ["answer_2", "option-2"],
+    ] as const)
+      expect(answer(action)).toEqual({
+        responseKey: `note-1\u0000${action}`,
+        environmentId: "env-1",
+        // Opened at the card, which shows the answer once the host records it.
+        paths: [`${chatLink}?message=msg-ask`],
+        act: kinChoiceActInput(
+          { widgetId: KinWidgetId.make("w-ask"), revision: 1 },
+          optionId,
+          `push:note-1:${action}`,
+        ),
+      });
+    // The banner itself, or a push without its choices, opens the card and answers nothing.
+    expect(answer(KIN_DEFAULT_ACTION_IDENTIFIER)?.act).toBeNull();
+    expect(answer("answer_2", { ...question, choices: undefined })?.act).toBeNull();
+    // A build that doesn't know the category opens the card from either button.
+    expect(
+      kinNotificationRoute(response({ data: question, action: "answer_1", category: "kin.later" })),
+    ).toMatchObject({ paths: [`${chatLink}?message=msg-ask`], act: null });
   });
 
   it("acts once per notification and button, whichever path delivers it", () => {
