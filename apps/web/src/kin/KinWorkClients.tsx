@@ -24,6 +24,8 @@ import {
   KIN_CLIENTS_DEFAULT_FILTER,
   KIN_CLIENTS_SHOW,
   kinClientsShowChoices,
+  kinClientsChosenAtom,
+  kinClientsChosenKey,
   kinClientsQuery,
   type KinClientsFilter,
   kinClientPageView,
@@ -72,6 +74,7 @@ import { Label } from "../components/ui/label";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Switch } from "../components/ui/switch";
 import { cn } from "../lib/utils";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinClientContact } from "./KinClientTouches";
@@ -133,11 +136,24 @@ export function KinWorkClientsList(
   const scope = useKinViewerScope(props.environmentId);
   const seesClients = useKinSeesClients(props.environmentId);
   const viewerStart = useKinClientsStart(props.environmentId);
+  // A list opened on its own start, such as a campaign's prospects, neither reads nor keeps it.
+  const chosen =
+    props.start === undefined
+      ? kinClientsChosenAtom(kinClientsChosenKey(props.environmentId, names.me))
+      : null;
+  const remembered = chosen === null ? null : appAtomRegistry.get(chosen);
   const { state, list } = useKinClientsList(
     props,
     props.stale ? null : props.live.seq,
-    props.start ?? viewerStart,
+    props.start ?? (remembered === null ? viewerStart : { ...remembered, text: "" }),
   );
+  const setFilter = (next: KinClientsFilter) => {
+    if (chosen !== null) {
+      const { text: _text, ...kept } = next;
+      appAtomRegistry.set(chosen, kept);
+    }
+    list.setFilter(next);
+  };
   const marketing = useKinMarketing(props);
   const { filter } = state;
   const nothing = kinClientsNothing(filter, scope, names.me);
@@ -164,7 +180,7 @@ export function KinWorkClientsList(
   const lookedAfterValue =
     filter.lookedAfter === "anyone" ? ANYONE : mine ? ME : kinWorkPrincipalKey(filter.lookedAfter);
   const pickLookedAfter = (value: string) =>
-    list.setFilter({
+    setFilter({
       ...filter,
       lookedAfter:
         value === ANYONE || (value === ME && names.me === null)
@@ -195,12 +211,12 @@ export function KinWorkClientsList(
                 aria-label={KIN_CLIENTS.search}
                 placeholder={KIN_CLIENTS.search}
                 value={filter.text}
-                onChange={(event) => list.setFilter({ ...filter, text: event.currentTarget.value })}
+                onChange={(event) => setFilter({ ...filter, text: event.currentTarget.value })}
               />
             </div>
             <KinFilter
               chip={chip === "" ? null : chip}
-              onClear={() => list.setFilter({ ...KIN_CLIENTS_DEFAULT_FILTER, text: filter.text })}
+              onClear={() => setFilter({ ...KIN_CLIENTS_DEFAULT_FILTER, text: filter.text })}
               groups={[
                 {
                   label: KIN_CLIENTS.show,
@@ -210,7 +226,7 @@ export function KinWorkClientsList(
                     label: one.label,
                   })),
                   onChange: (value) =>
-                    list.setFilter({
+                    setFilter({
                       ...filter,
                       show:
                         kinClientsShowChoices(seesClients).find((one) => one.id === value)?.id ??
@@ -251,7 +267,7 @@ export function KinWorkClientsList(
                           })),
                         ],
                         onChange: (value: string) =>
-                          list.setFilter({
+                          setFilter({
                             ...filter,
                             cameFrom: value === ANYWHERE ? null : value,
                           }),
@@ -265,7 +281,7 @@ export function KinWorkClientsList(
                           ...marketing.tags.map((tag) => ({ value: tag, label: tag })),
                         ],
                         onChange: (value: string) =>
-                          list.setFilter({ ...filter, tag: value === ANYWHERE ? null : value }),
+                          setFilter({ ...filter, tag: value === ANYWHERE ? null : value }),
                         long: true,
                       },
                     ]

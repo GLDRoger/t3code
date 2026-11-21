@@ -44,6 +44,7 @@ import {
   type KinWorkRowView,
 } from "./kinWork.ts";
 import { kinCount } from "./kinCount.ts";
+import { Atom } from "effect/reactivity";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -460,6 +461,17 @@ export function kinClientsStartFilter(
     lookedAfter: { _tag: "person", personId: me.personId },
   };
 }
+
+/**
+ * The clients a person last chose to show (which, whose, came from, tag), kept on this device
+ * while the app stays open, so a trip elsewhere doesn't put the list back where it starts. Keyed
+ * by `kinClientsChosenKey`: someone else signing in on the same device starts on their own.
+ */
+export const kinClientsChosenAtom = Atom.family((_viewer: string) =>
+  Atom.make<Omit<KinClientsFilter, "text"> | null>(null).pipe(Atom.keepAlive),
+);
+export const kinClientsChosenKey = (environmentId: string, me: string | null) =>
+  `${environmentId}\u0000${me ?? ""}`;
 
 const lookedAfterKey = (who: KinClientsFilter["lookedAfter"]) =>
   who === "anyone" ? who : kinWorkPrincipalKey(who);

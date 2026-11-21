@@ -15,6 +15,8 @@ import {
   KIN_PROJECT_VIEWS,
   kinClientRow,
   kinClientsLookedAfterChoices,
+  kinClientsChosenAtom,
+  kinClientsChosenKey,
   kinClientsQuery,
   kinClientsNothing,
   type KinClientsFilter,
@@ -504,10 +506,20 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
   const seesClients = useKinSeesClients(props.environmentId) === true;
   // Deals are for someone with Clients on; the segment they last chose may no longer be theirs.
   const tab = kinClientsTabShown(asked, seesClients);
-  const [showing, setShowing] = useState<Showing>(() => ({
-    clients: { show: start.show, lookedAfter: start.lookedAfter },
+  const chosen = kinClientsChosenAtom(
+    kinClientsChosenKey(props.environmentId, props.directory.names.me),
+  );
+  const [showing, setShown] = useState<Showing>(() => ({
+    clients: appAtomRegistry.get(chosen) ?? {
+      show: start.show,
+      lookedAfter: start.lookedAfter,
+    },
     view: "open",
   }));
+  const setShowing = (next: Showing) => {
+    appAtomRegistry.set(chosen, next.clients);
+    setShown(next);
+  };
   const marketing = useKinMarketing(props);
   const exporter = useKinExportList(props);
   const agent = useKinAskAgent(props, "clients");

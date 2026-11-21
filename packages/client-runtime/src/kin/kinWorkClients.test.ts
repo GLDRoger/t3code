@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Fixtures build times relative to a fixed clock.
+import { AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -17,6 +18,8 @@ import {
   kinNewTaskChoices,
   kinClientContactLine,
   kinClientPageView,
+  kinClientsChosenAtom,
+  kinClientsChosenKey,
   kinClientRow,
   kinClientsNothing,
   kinClientsQuery,
@@ -255,6 +258,20 @@ describe("the clients list's Show and Looked after by", () => {
       offerNew: true,
     });
     expect(nothing({ lookedAfter: arjun })).toMatchObject({ offerNew: false });
+  });
+});
+
+describe("kinClientsChosenAtom", () => {
+  it("keeps a person's choice of Anyone for the next time the list opens, and only theirs", () => {
+    const registry = AtomRegistry.make();
+    const zoya = kinClientsChosenAtom(kinClientsChosenKey("env-1", "zoya"));
+    registry.set(zoya, { show: "open", lookedAfter: "anyone" });
+    expect(registry.get(kinClientsChosenAtom(kinClientsChosenKey("env-1", "zoya")))).toEqual({
+      show: "open",
+      lookedAfter: "anyone",
+    });
+    expect(registry.get(kinClientsChosenAtom(kinClientsChosenKey("env-1", "dev")))).toBeNull();
+    expect(registry.get(kinClientsChosenAtom(kinClientsChosenKey("env-2", "zoya")))).toBeNull();
   });
 });
 
