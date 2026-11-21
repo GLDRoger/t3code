@@ -945,10 +945,14 @@ it.effect(
           return `event:${yield* startAgentWakeup({ orgId, agentId: chief, threadId, message })}`;
         });
         // Her profile as agents read it: the same column her profile screen reads and sets.
+        // The answer is the roster itself, not the roster encoded again inside a string.
         const awayUntil = call("people_read", {}).pipe(
-          Effect.map(
-            ({ value }) => /"Zoya Sheikh".*?"awayUntil":"([\d-]+)"/.exec(String(value.quoted))?.[1],
-          ),
+          Effect.map(({ value }) => {
+            assert.isArray(value.people);
+            assert.isArray(value.agents);
+            const people = value.people as ReadonlyArray<Record<string, unknown>>;
+            return people.find((person) => person.name === "Zoya Sheikh")?.awayUntil;
+          }),
         );
 
         const setup = yield* says(owner, ownerChat, "Set up the brochure work.");
