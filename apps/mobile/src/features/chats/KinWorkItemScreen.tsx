@@ -670,7 +670,7 @@ function KinWorkItemBody(props: ItemTarget) {
             </View>
           </ListSection>
           {[
-            moved?.title == null ? null : `It now says: ${moved.title}`,
+            moved?.title == null ? null : KIN_WORK_COPY.nowSays(moved.title),
             moved?.notes == null ? null : `The brief now says: ${moved.notes}`,
           ].map((line) =>
             line === null ? null : (
@@ -894,7 +894,7 @@ function KinWorkItemBody(props: ItemTarget) {
                       tone="text"
                       size="compact"
                       label={KIN_TASK_RECORD.edit}
-                      accessibilityLabel="Edit the brief"
+                      accessibilityLabel={KIN_TASK_RECORD.editBrief}
                       onPress={() => changes.startEdit(item)}
                     />
                   ),
@@ -1132,7 +1132,7 @@ function KinCommentBody(props: {
             tone="text"
             size="compact"
             label={KIN_TASK_NOTE_COPY.remove}
-            accessibilityLabel="Remove this note"
+            accessibilityLabel={KIN_TASK_NOTE_COPY.removeLabel}
             onPress={props.onRemove}
           />
         </View>
@@ -1281,28 +1281,32 @@ export function KinLinkedSection(props: {
           </Text>
           {group.items.map((item) => {
             const title = item.title ?? KIN_LINKED.message;
-            return (
+            const { open } = item;
+            const row = (
+              <View className="min-w-0 flex-row gap-2 px-4 py-3">
+                {item.kind === "message" ? null : (
+                  <Text textRole="body" className="text-foreground-muted">
+                    {item.name}
+                  </Text>
+                )}
+                <Text textRole="body" numberOfLines={1} className="min-w-0 flex-1 text-foreground">
+                  {title}
+                </Text>
+              </View>
+            );
+            return open === null ? (
+              <View key={item.key} accessibilityLabel={title} className="bg-grouped-card">
+                {row}
+              </View>
+            ) : (
               <RowPressable
                 key={item.key}
                 accessibilityRole="button"
                 accessibilityLabel={item.kind === "message" ? title : `${item.name}, ${title}`}
-                onPress={() => props.onOpen(item.open)}
+                onPress={() => props.onOpen(open)}
                 className="bg-grouped-card"
               >
-                <View className="min-w-0 flex-row gap-2 px-4 py-3">
-                  {item.kind === "message" ? null : (
-                    <Text textRole="body" className="text-foreground-muted">
-                      {item.name}
-                    </Text>
-                  )}
-                  <Text
-                    textRole="body"
-                    numberOfLines={1}
-                    className="min-w-0 flex-1 text-foreground"
-                  >
-                    {title}
-                  </Text>
-                </View>
+                {row}
               </RowPressable>
             );
           })}

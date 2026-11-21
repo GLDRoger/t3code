@@ -257,7 +257,7 @@ function GoalForm(props: {
               value={draft.unit}
               disabled={saving}
               maxLength={40}
-              placeholder="For example: hires"
+              placeholder={KIN_GOALS.unitPlaceholder}
               onChangeText={(unit) => edit({ unit })}
             />
           </>

@@ -237,6 +237,19 @@ export class MemoryWriter extends Context.Service<
     ) => Effect.Effect<{ commit: string }, Failure>;
     readonly deleteDreamBranch: (orgId: KinOrgId, branch: string) => Effect.Effect<void, Failure>;
     /**
+     * Lands a dream's files on the default branch as an owner change lands, when none of them
+     * changed there since `base`. `landed` runs in the transaction that records the new head.
+     */
+    readonly landDream: (
+      orgId: KinOrgId,
+      input: {
+        readonly base: string;
+        readonly files: ReadonlyMap<string, string>;
+        readonly message: string;
+        readonly landed: (commit: string) => Effect.Effect<void, Failure>;
+      },
+    ) => Effect.Effect<{ commit: string }, Failure>;
+    /**
      * The owner's Undo of one item a wake-up changed: a new commit on the same branch that
      * restores the item from `base`, or invalidates it if the wake-up created it. Compare-and-set:
      * `stale` when the item differs from what `commit` wrote.
@@ -351,11 +364,37 @@ const make = Effect.gen(function* () {
     : config.directMainPush === true
       ? "direct"
       : "refused";
-  const filesAt = (orgId: KinOrgId, writer: string, commit: string) =>
-    readFiles(orgId, writer, commit).pipe(
+  // A commit's tree and files never change, so the last read per org is kept: a wake-up's
+  // stages and its commit's replay of them all read the same head.
+  const lastFiles = new Map<KinOrgId, { commit: string; files: ReadonlyMap<string, Buffer> }>();
+  const lastTree = new Map<
+    KinOrgId,
+    { commit: string; entries: ReadonlyArray<{ sha: string; relative: string; mode: string }> }
+  >();
+  const filesAt = (orgId: KinOrgId, writer: string, commit: string) => {
+    const kept = lastFiles.get(orgId);
+    if (kept?.commit === commit) return Effect.succeed(kept.files);
+    return readFiles(orgId, writer, commit).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(VcsProcess, vcs),
+      Effect.map((files): ReadonlyMap<string, Buffer> => {
+        lastFiles.set(orgId, { commit, files });
+        return files;
+      }),
     );
+  };
+  const treeAt = (orgId: KinOrgId, writer: string, commit: string) => {
+    const kept = lastTree.get(orgId);
+    if (kept?.commit === commit) return Effect.succeed(kept.entries);
+    return readTree(orgId, writer, commit).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(VcsProcess, vcs),
+      Effect.map((entries) => {
+        lastTree.set(orgId, { commit, entries });
+        return entries;
+      }),
+    );
+  };
   const commitAt = (orgId: KinOrgId, writer: string, commit: string) =>
     readCommit(orgId, writer, commit).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -657,10 +696,7 @@ const make = Effect.gen(function* () {
     writer: string,
     commit: string,
   ) {
-    const entries = yield* readTree(orgId, writer, commit).pipe(
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(VcsProcess, vcs),
-    );
+    const entries = yield* treeAt(orgId, writer, commit);
     return new Set(
       entries
         .filter((entry) => ["100644", "100755"].includes(entry.mode))
@@ -701,10 +737,7 @@ const make = Effect.gen(function* () {
           ...(yield* memoryIdentity(config, app)),
         };
         yield* git(orgId, writer, ["read-tree", "--empty"], env);
-        const entries = yield* readTree(orgId, writer, parent).pipe(
-          Effect.provideService(FileSystem.FileSystem, fs),
-          Effect.provideService(VcsProcess, vcs),
-        );
+        const entries = yield* treeAt(orgId, writer, parent);
         const metadata = new Map(entries.map((entry) => [entry.relative, entry]));
         const finalFiles = new Map(parentFiles);
         for (const [file, bytes] of changes) finalFiles.set(file, bytes);
@@ -771,9 +804,24 @@ const make = Effect.gen(function* () {
       readonly headFiles: ReadonlyMap<string, Buffer>;
       readonly files: ReadonlyMap<string, string>;
       readonly message: string;
+      /** Runs in the transaction that records the new head. */
+      readonly landed?: (commit: string) => Effect.Effect<void, Failure>;
     },
   ) {
     const { writer, branch, head, headFiles } = input;
+    const record = (commit: string) =>
+      input.landed === undefined
+        ? memory.record(orgId, branch, head, commit)
+        : sql
+            .withTransaction(
+              memory.record(orgId, branch, head, commit).pipe(Effect.andThen(input.landed(commit))),
+            )
+            .pipe(
+              Effect.catchTags({
+                SqlError: (cause) =>
+                  Effect.fail(toPersistenceSqlError("MemoryWriter.landed")(cause)),
+              }),
+            );
     const onMain = branch === (config.defaultBranch ?? "main");
     const changes = new Map(
       [...input.files].map(([path, content]) => [path, Buffer.from(content)] as const),
@@ -793,7 +841,7 @@ const make = Effect.gen(function* () {
     const commit = yield* writeCommit(orgId, writer, head, headFiles, changes, input.message);
     if (onMain && mainWrites === "pull_request") {
       yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, head]);
-      yield* memory.record(orgId, branch, head, commit);
+      yield* record(commit);
       yield* lander.signal(orgId);
     } else {
       // Push first, so a rejected push leaves the local branch where it was.
@@ -813,7 +861,7 @@ const make = Effect.gen(function* () {
         ),
       );
       yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, head]);
-      yield* memory.record(orgId, branch, head, commit);
+      yield* record(commit);
     }
     yield* memory.rebuildCache(orgId).pipe(
       Effect.catch((error) =>
@@ -863,10 +911,7 @@ const make = Effect.gen(function* () {
     const items = [];
     const bodies = new Map<string, string>();
     const regular = new Set(
-      (yield* readTree(orgId, writer, recorded).pipe(
-        Effect.provideService(FileSystem.FileSystem, fs),
-        Effect.provideService(VcsProcess, vcs),
-      ))
+      (yield* treeAt(orgId, writer, recorded))
         .filter((entry) => ["100644", "100755"].includes(entry.mode))
         .map((entry) => entry.relative),
     );
@@ -1427,6 +1472,63 @@ const make = Effect.gen(function* () {
           ]);
           if (advertised)
             yield* git(orgId, writer, ["push", "--", repo.repoUrl, `:refs/heads/${branch}`]);
+        }),
+      ),
+    ),
+    landDream: Effect.fn("MemoryWriter.landDream")((orgId, input) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
+          const repo = yield* repoFor(orgId);
+          // As the nightly retire: the owner is not told; the material waits for a later night.
+          if (mainWrites === "refused")
+            return yield* new MemorySyncConflict({
+              orgId,
+              operation: "push",
+              reason: "Memory writes to the default branch are refused",
+            });
+          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
+          const head = yield* branchHead(orgId, writer, main);
+          const headFiles = yield* filesAt(orgId, writer, head);
+          if (head !== input.base) {
+            const baseFiles = yield* filesAt(orgId, writer, input.base).pipe(
+              Effect.orElseSucceed((): ReadonlyMap<string, Buffer> => new Map()),
+            );
+            const moved = [...input.files.keys()].filter((path) => {
+              const before = baseFiles.get(path);
+              const now = headFiles.get(path);
+              return before === undefined || now === undefined
+                ? before !== now
+                : !before.equals(now);
+            });
+            if (baseFiles.size === 0 || moved.length > 0)
+              return yield* new MemorySyncConflict({
+                orgId,
+                operation: "push",
+                reason: "Memory changed since the dream read it, so it did not land",
+              });
+          }
+          const ending = [];
+          for (const [path, text] of input.files) {
+            if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
+            const { frontMatter } = yield* parseFrontMatter(orgId, path, text);
+            if (retired(frontMatter)) ending.push(frontMatter.id);
+          }
+          yield* endSharing(orgId, ending);
+          const commit = yield* ownerCommit(orgId, {
+            writer,
+            repoUrl: repo.repoUrl,
+            branch: main,
+            head,
+            headFiles,
+            files: input.files,
+            message: input.message,
+            landed: input.landed,
+          });
+          return { commit };
         }),
       ),
     ),

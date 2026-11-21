@@ -39,8 +39,21 @@ import type { KinWorkReadState } from "./kinWorkForms.ts";
 /** A deal's key: the built-in Deals list's fixed prefix. */
 export const kinIsDealKey = (key: string) => key.startsWith("DL-");
 
+/** The deals a list's own search box keeps: its title or client has the words, or its key is typed whole. */
+export function kinDealsMatching(deals: ReadonlyArray<KinDealRow>, text: string) {
+  const folded = text.trim().toLocaleLowerCase();
+  if (folded === "") return deals;
+  return deals.filter(
+    (deal) =>
+      deal.key.toLocaleLowerCase() === folded ||
+      deal.title.toLocaleLowerCase().includes(folded) ||
+      deal.party.title.toLocaleLowerCase().includes(folded),
+  );
+}
+
 /** Every word Deals shows, on the web and the phone alike. */
 export const KIN_DEALS = {
+  stagesFailed: "Stages didn't load",
   title: "Deals",
   newDeal: "New deal",
   search: "Search deals",
@@ -52,6 +65,7 @@ export const KIN_DEALS = {
   moveTo: "Move to…",
   stage: "Stage",
   noNextStep: "No next step",
+  nextHidden: "Next step isn't shared with you",
   noneYet: "None yet",
   mine: "Mine",
   everyone: "Everyone",
@@ -317,14 +331,20 @@ export interface KinDealNextView {
   readonly text: string;
 }
 
-/** An open deal's next step, or that it has none (amber), or that it is late (red). */
+/**
+ * An open deal's next step, or that it has none (amber), or that it is late (red); one the reader
+ * isn't shown reads as such, plainly, for it isn't missing.
+ */
 export function kinDealNext(
-  deal: Pick<KinDealRow, "state" | "next">,
+  deal: Pick<KinDealRow, "state" | "next" | "nextHidden">,
   names: Pick<KinWorkNames, "zone">,
   now: Date,
 ): KinDealNextView | null {
   if (deal.state !== "open") return null;
-  if (deal.next === null) return { tone: "missing", text: KIN_DEALS.noNextStep };
+  if (deal.next === null)
+    return deal.nextHidden === true
+      ? { tone: "plain", text: KIN_DEALS.nextHidden }
+      : { tone: "missing", text: KIN_DEALS.noNextStep };
   if (deal.next.late) return { tone: "late", text: KIN_DEALS.late(deal.next.title) };
   return {
     tone: "plain",
@@ -624,6 +644,10 @@ export function kinDealsNothing(filter: KinDealsFilter): {
 }
 
 /** One line of a deal's activity: its moves in the deal's own words, anything else as a task's. */
+/** When a change happened, "today, 8:59 AM", on this device's clock as chat reads it. */
+export const kinDealChangeWhen = (change: Pick<KinRecordChange, "at">, now: Date) =>
+  kinWorkDueText({ dueAt: change.at, dueAllDay: false }, { zone: null }, now);
+
 export function kinDealChangeText(change: KinRecordChange, names: KinWorkNames, now: Date): string {
   const who = kinWorkActorName(change.by, names);
   if (change.kind === "created") return `${who} added this deal`;

@@ -34,6 +34,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as DateTime from "effect/DateTime";
@@ -53,12 +54,14 @@ import { TEAMMATE_WORDS, workEventText } from "../lead/LeadPrompt.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import { readPeople } from "../lead/peopleRead.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { keepAllDayDays } from "./allDayZone.ts";
 import { importWork } from "./importWork.ts";
 import { newCompanyProfileJson } from "./companyProfile.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
+import { dayIn } from "./money.ts";
 import { KIN_OWNER_LEVEL, type KinViewer, teamVisible, viewerOfPeople } from "./teamView.ts";
 import { sensitiveShown } from "./sensitiveReads.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
@@ -67,6 +70,7 @@ import * as OwnerClients from "./ownerClients.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import * as WorkStream from "./workStream.ts";
 import { presetDefinition } from "./registers.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
@@ -2793,23 +2797,63 @@ it.effect("a teammate's change numbers move only with what they can see, on ever
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a teammate's live changes name only tasks they see, and one hidden from them once", () =>
+it.effect("a teammate's Tasks and Search find the projects they lead by its own index", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    // As the server runs: `Sqlite.setup` deletes the planner's statistics at every start.
+    assert.lengthOf(yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`, 0);
+    yield* OwnerWork.create([mate], { orgId, title: "Invented: theirs", clientRequestId: "t" });
+    const asked: Array<readonly [string, ReadonlyArray<unknown>]> = [];
+    const watched = Effect.provideService(Statement.CurrentTransformer, (statement) => {
+      const [text, params] = statement.compile();
+      if (text.includes("lp.register_id = 'projects'")) asked.push([text, params]);
+      return Effect.succeed(statement);
+    });
+    // Tasks' count and page, then Search: each reads through the same visibility.
+    yield* OwnerWork.list([mate], { orgId, open: true }).pipe(watched);
+    const read = asked.length;
+    assert.isAtLeast(read, 2);
+    yield* OwnerDocs.search([mate], { orgId, text: "theirs" }).pipe(watched);
+    assert.isAbove(asked.length, read);
+    for (const [text, params] of asked) {
+      const plan = yield* sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${text}`, params);
+      const led = plan.map((row) => row.detail).filter((detail) => /\blp\b/u.test(detail));
+      assert.deepStrictEqual(
+        led.map((detail) => detail.includes("idx_kin_records_owner_list")),
+        led.map(() => true),
+        led.join("\n"),
+      );
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("old live changes name to a teammate only what they see, to the owner all", () =>
   Effect.gen(function* () {
     yield* seed;
     const records = yield* KinRecords.KinRecords;
     const sql = yield* SqlClient.SqlClient;
     const heard = yield* Queue.unbounded<{
       readonly seq: number;
-      readonly key?: string;
-      readonly list?: string;
+      readonly key?: string | undefined;
+      readonly list?: string | undefined;
     }>();
-    yield* OwnerWork.subscribe([mate], { orgId }).pipe(
+    yield* WorkStream.subscribeChanged([mate], { orgId }).pipe(
       Stream.runForEach((event) => Queue.offer(heard, event)),
+      Effect.forkChild,
+    );
+    const told = yield* Queue.unbounded<{
+      readonly key?: string | undefined;
+      readonly list?: string | undefined;
+    }>();
+    yield* WorkStream.subscribeChanged([owner], { orgId }).pipe(
+      Stream.runForEach((event) => Queue.offer(told, event)),
       Effect.forkChild,
     );
     // Each is taken before the next write: a notice nobody should get would come first instead.
     const next = Queue.take(heard).pipe(Effect.map((event) => [event.key ?? null, event.seq]));
     assert.deepStrictEqual(yield* next, [null, 0]);
+    assert.strictEqual((yield* Queue.take(told)).key, undefined);
     const create = (title: string, owner = ownerId) =>
       records.create(orgId, ownerWrites, {
         originKey: title,
@@ -2818,6 +2862,14 @@ it.effect("a teammate's live changes name only tasks they see, and one hidden fr
       });
     yield* create("owner's");
     yield* create("for mate", mateId);
+    // The owner is told of both, by the company's numbers.
+    assert.deepStrictEqual(
+      [yield* Queue.take(told), yield* Queue.take(told)].map((event) => [event.key, event.list]),
+      [
+        ["W-1", "work"],
+        ["W-2", "work"],
+      ],
+    );
     // Their own numbers: one more for each change to what they could see, so nothing else shows.
     // The list is named, so their screens read again only what Work's own list can change.
     const theirs = yield* Queue.take(heard);
@@ -2945,6 +2997,14 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     );
     assert.isNull(page.party.terms);
     assert.notInclude(JSON.stringify(page), "net 30");
+    // Search finds the contact with its client, whose page opens for it.
+    assert.deepStrictEqual(
+      (yield* OwnerDocs.search([mate], { orgId, text: "Priya" })).hits.map((hit) => [
+        hit.key,
+        "client" in hit ? hit.client : undefined,
+      ]),
+      [[priya.row.key, client.key]],
+    );
     assert.include(yield* Effect.flip(OwnerDocs.list([mate], { orgId })), {
       reason: "not_allowed",
     });
@@ -3357,6 +3417,9 @@ it.effect(
       yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'America/Los_Angeles', '08:30',
           '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')
         ON CONFLICT (org_id) DO UPDATE SET time_zone = 'America/Los_Angeles'`;
+      // Her own clock is a day ahead: a due day is still the company's, not hers.
+      yield* sql`UPDATE kin_people SET time_zone = 'Pacific/Auckland'
+        WHERE org_id = ${orgId} AND person_id = ${mateId}`;
       const scope = scopeOf("lead");
       // G03: the owner's turn has seen a price; what it writes is still not private for that.
       yield* sensitiveShown({ orgId, wakeupId: "wake" });
@@ -3388,8 +3451,13 @@ it.effect(
       assert.lengthOf(told, 1);
       assert.include(told[0]!.body, "gave you 3 tasks");
       assert.include(told[0]!.body, "W-2 Invented: fix the login screen, due Fri 20 Nov. Why: iOS");
+      yield* sql`UPDATE kin_people SET time_zone = NULL
+        WHERE org_id = ${orgId} AND person_id = ${mateId}`;
       // The agent reads the day the owner named, west of UTC too.
-      assert.include(yield* LeadWork.get(scope, { key: "W-2" }), { due: "2026-11-20" });
+      assert.include(yield* LeadWork.get(scope, { key: "W-2" }), {
+        due: "2026-11-20",
+        dueDay: "Fri 20 Nov 2026",
+      });
       // The owner asked, so the owner gave it; the agent only carried it.
       const given = yield* OwnerWork.get([mate], { orgId, key: "W-2" });
       assert.deepInclude(given, {
@@ -3596,6 +3664,71 @@ it.effect(
         [
           `Owner added you to ${portal.key} Invented portal.`,
           `Owner made you the lead of ${portal.key} Invented portal.`,
+        ],
+      );
+    }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
+);
+
+// Play-test (Nov 2026): the owner opened Kin where it was the next day, his device stored that
+// zone as the company's, and a due read a day later on Tasks, to the agent, in a hand-over
+// notice and on a Changes line made before.
+it.effect(
+  "a due keeps its day for everyone when the company's zone moves east across midnight",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* mateMayMessage;
+      yield* turn();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Etc/GMT+5', '08:30', '18:30',
+        '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')`;
+      const scope = scopeOf("lead");
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented: send the plan", due: "2026-11-22" }],
+      });
+      yield* LeadWork.update(scope, { key: "W-1", sourceEventId: "ask-event", due: "2026-11-27" });
+      // What `KinRoutines.setTimeZone` writes, in one transaction: the zone, and the days kept.
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Asia/Kolkata' WHERE org_id = ${orgId}`;
+          yield* keepAllDayDays(orgId, "Etc/GMT+5", "Asia/Kolkata");
+        }),
+      );
+      const zone = "Asia/Kolkata";
+      // (a) Tasks.
+      const [task] = (yield* OwnerWork.list([owner], { orgId })).records;
+      assert.strictEqual(dayIn(Date.parse(task!.dueAt!), zone), "2026-11-27");
+      // (b) The agent's work tool.
+      assert.include(yield* LeadWork.get(scope, { key: "W-1" }), {
+        due: "2026-11-27",
+        dueDay: "Fri 27 Nov 2026",
+      });
+      // (c) A hand-over after the move, at 11:30 on the company's clock, outside quiet hours.
+      yield* TestClock.setTime(Date.parse("2026-11-11T06:00:00.000Z"));
+      yield* LeadWork.assign(scope, {
+        sourceEventId: "ask-event",
+        tasks: [{ key: "W-1", to: "Mate", reason: "she has the plan" }],
+      });
+      const [notice] = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE chat_id = 'mate-chat' ORDER BY seq DESC LIMIT 1`;
+      assert.include(notice!.body, "W-1 Invented: send the plan, due Fri 27 Nov.");
+      // (d) The Changes line made before the move, on the agent's page and the entry's.
+      const moved = (yield* agentChanges(KIN_OWNER_LEVEL, orgId, lead))
+        .flatMap((change) => (change.kind === "updated" ? change.fields : []))
+        .find((one) => one.field === "due")!;
+      assert.deepStrictEqual(
+        [moved.from, moved.to].map((one) => dayIn(Date.parse(one!), zone)),
+        ["2026-11-22", "2026-11-27"],
+      );
+      const history = (yield* OwnerWork.get([owner], { orgId, key: "W-1" })).changes.flatMap(
+        (change) => change.fields.filter((one) => one.field === "due"),
+      );
+      assert.deepStrictEqual(
+        history.map((one) => [one.from, one.to].map((at) => at && dayIn(Date.parse(at), zone))),
+        [
+          ["2026-11-22", "2026-11-27"],
+          [null, "2026-11-22"],
         ],
       );
     }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
@@ -4413,4 +4546,62 @@ it.effect(
       // The Undo is the owner's change, never counted in the agent's turn.
       assert.strictEqual(after.turnChanges!.count, 2);
     }).pipe(Effect.provide(receiptLayer)),
+);
+
+it.effect("an announcement reaches screens only once its transaction commits", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO sqlite_sequence (name, seq) SELECT 'kin_record_changes', 0
+      WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'kin_record_changes')`;
+    const pull = yield* Stream.toPull(records.changes(orgId));
+    const opening = (yield* pull)[0]!.seq;
+    // Screens read on readers: told before the commit, they would read what it undoes.
+    yield* sql
+      .withTransaction(records.announce(orgId).pipe(Effect.andThen(Effect.fail("rolled back"))))
+      .pipe(Effect.flip);
+    yield* sql`UPDATE sqlite_sequence SET seq = seq + 10 WHERE name = 'kin_record_changes'`;
+    yield* records.announce(orgId);
+    assert.deepStrictEqual(
+      (yield* pull).map((tick) => tick.seq),
+      [opening + 11],
+    );
+  }).pipe(Effect.scoped, Effect.provide(layer)),
+);
+
+it.effect("an entry's announcement reaches screens once, after its transaction commits", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
+    const { row } = yield* records.create(orgId, ownerWrites, {
+      list: "clients",
+      originKey: "Invented Grove",
+      title: "Invented Grove",
+      owner: { _tag: "person", personId: ownerId },
+    });
+    const pull = yield* Stream.toPull(records.changes(orgId));
+    const opening = (yield* pull)[0]!.seq;
+    yield* sql
+      .withTransaction(
+        records.announce(orgId, [row.recordId]).pipe(Effect.andThen(Effect.fail("rolled back"))),
+      )
+      .pipe(Effect.flip);
+    // Told at once, the entry's tick would overtake the whole org's one announced before it.
+    yield* sql.withTransaction(
+      records.announce(orgId).pipe(Effect.andThen(records.announce(orgId, [row.recordId]))),
+    );
+    yield* records.announce(orgId);
+    const heard = [];
+    for (let i = 0; i < 3; i++) heard.push(...(yield* pull));
+    assert.deepStrictEqual(
+      heard.map((tick) => [tick.seq, tick.key]),
+      [
+        [opening + 1, undefined],
+        [opening + 2, row.key],
+        [opening + 3, undefined],
+      ],
+    );
+  }).pipe(Effect.scoped, Effect.provide(layer)),
 );

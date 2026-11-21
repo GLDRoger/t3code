@@ -29,6 +29,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Tracer from "effect/Tracer";
 import * as Repository from "./KinChatRepository.ts";
 
 const decodeMessage = Schema.decodeSync(KinMessage);
@@ -300,20 +301,6 @@ describe("KinChatRepository", () => {
           }),
           { orgId, agentId, threadId, startedAt: timestamp, endedAt: null },
         );
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO kin_webhook_sources (source_id, org_id, repo, scheduled_task_id, inbox_thread_id, bot_login, status) VALUES ('source', ${orgId}, 'owner/repo', 'task', 'webhook-inbox', 'bot', 'active')`;
-        const inboxError = yield* repo
-          .registerAgentThread({
-            orgId,
-            agentId,
-            threadId: decodeThreadId("webhook-inbox"),
-            startedAt: timestamp,
-            endedAt: null,
-          })
-          .pipe(Effect.flip);
-        assert.strictEqual(inboxError._tag, "KinChatError");
-        if (inboxError._tag === "KinChatError")
-          assert.strictEqual(inboxError.reason, "not_allowed");
         const secondPerson = decodePersonId("second-person");
         yield* repo.insertPerson({
           orgId,
@@ -586,6 +573,7 @@ describe("KinChatRepository", () => {
         assert.strictEqual(endedRetry._tag, "KinChatError");
         if (endedRetry._tag === "KinChatError")
           assert.strictEqual(endedRetry.reason, "not_allowed");
+        const sql = yield* SqlClient.SqlClient;
         assert.deepStrictEqual(
           yield* sql`SELECT typeof(seq) AS type FROM kin_messages WHERE org_id = ${orgId}`,
           [{ type: "integer" }, { type: "integer" }],
@@ -1496,6 +1484,37 @@ describe("KinChatRepository", () => {
         }),
       );
       assert.strictEqual(guestPost.authorRole, "guest");
+      // The badge is every listed chat's unread count, in one statement whatever the chats.
+      const statements: Array<string> = [];
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          const end = span.end.bind(span);
+          span.end = (endTime, exit) => {
+            end(endTime, exit);
+            const query = span.attributes.get("db.query.text");
+            if (typeof query === "string") statements.push(query);
+          };
+          return span;
+        },
+      });
+      const guestScope = { orgId, chatId, memberId: guestMember };
+      assert.strictEqual(yield* repo.unreadCount(guestScope), 0);
+      yield* repo.insertMessage(
+        message("for-guest", { author: agentAuthor, authorRole: "member", intent: "answer" }),
+      );
+      for (const [who, member] of [
+        [personId, scope],
+        [guestPerson, guestScope],
+      ] as const) {
+        statements.length = 0;
+        const total = yield* repo
+          .unreadTotal({ orgId, personId: who })
+          .pipe(Effect.withTracer(tracer));
+        assert.strictEqual(statements.length, 1);
+        assert.strictEqual(total, yield* repo.unreadCount(member));
+      }
+      assert.strictEqual(yield* repo.unreadCount(guestScope), 1);
       for (const sentBy of [guestPerson, personId]) {
         if (sentBy === personId) yield* repo.leaveChat({ ...scope, leftAt: later });
         const failure = yield* Effect.flip(

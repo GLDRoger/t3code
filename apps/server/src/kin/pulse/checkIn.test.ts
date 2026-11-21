@@ -636,6 +636,41 @@ describe("pulse check-ins", () => {
       assert.strictEqual(again._tag === "duplicate" ? again.notBefore : 0, MONDAY + DAY + 8 * HOUR);
       const asked = yield* at("checkin-late", "run-now-2");
       assert.strictEqual(asked._tag === "queued" ? asked.notBefore : 0, night);
+      // Away until Friday: the week's morning briefs wait for them, and only the latest goes, with
+      // what the earlier ones carried.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET away_until = '2026-11-20' WHERE person_id = ${owner}`;
+      yield* record({ key: "W-2", list: "work", title: "Invented brochure", dueAt: MONDAY - DAY });
+      const morning = (day: number, outside: OutsideRead = nothingOutside) =>
+        queueCheckIn({
+          orgId,
+          agentId: chief,
+          scheduleId: KinMemoryItemId.make("checkin-morning"),
+          title: "Morning brief",
+          what: "Check-in.",
+          dueAt: MONDAY + day * DAY + 9 * HOUR,
+          looseAt: null,
+          zone: "UTC",
+          at: MONDAY + day * DAY + 9 * HOUR,
+          outside,
+        });
+      assert.include(
+        yield* morning(1, { lines: [mail("m-1", "Zoya", "Invented brief")], seen: [] }),
+        {
+          _tag: "queued",
+          facts: 1,
+        },
+      );
+      assert.include(yield* morning(2), { _tag: "queued", facts: 1, outside: 1 });
+      assert.include(yield* morning(3), { _tag: "queued", facts: 1, outside: 1 });
+      const briefs = yield* sql<{ key: string; state: string }>`SELECT dedupe_key AS key, state
+        FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'checkin:checkin-morning:%'
+        ORDER BY dedupe_key`;
+      assert.deepStrictEqual(briefs, [
+        { key: "checkin:checkin-morning:2026-11-17", state: "expired" },
+        { key: "checkin:checkin-morning:2026-11-18", state: "expired" },
+        { key: "checkin:checkin-morning:2026-11-19", state: "queued" },
+      ]);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -992,6 +1027,55 @@ describe("pulse check-ins", () => {
         );
         assert.isTrue(saved.every((input) => input.keepWording === true));
       }).pipe(Effect.provide(layer)),
+  );
+  it.effect("a check-in set in Settings keeps the owner's time across a clock change", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* companyClock("America/New_York");
+      const host = KinSchedules.hostTimeZone();
+      const weekdays = [1, 2, 3, 4, 5];
+      const JULY = Date.UTC(2026, 6, 13);
+      const DECEMBER = Date.UTC(2026, 11, 14);
+      // Set at 09:00 his time in July; "moved" was changed on T3's screen since.
+      const july = onHostClock("09:00", weekdays, "America/New_York", host, JULY);
+      for (const slug of ["mine", "moved"]) {
+        const at = slug === "moved" ? onHostClock("11:00", weekdays, "UTC", host, JULY) : july;
+        yield* scheduleRow({ slug, at: at.at, days: at.days, source: "kin-settings:check-ins" });
+        yield* sql`UPDATE kin_schedules SET owner_time_json = ${JSON.stringify({
+          at: "09:00",
+          days: weekdays,
+          host: july,
+        })} WHERE schedule_id = ${`checkin-${slug}`}`;
+      }
+      const saved: Array<KinSchedules.SaveInput> = [];
+      const schedules = KinSchedules.KinSchedules.of({
+        save: (input) => Effect.sync(() => void saved.push(input)),
+        cancel: () => Effect.void,
+        applyTaps: () => Effect.void,
+      });
+      yield* TestClock.setTime(JULY);
+      yield* followOwnerZone(orgId, schedules);
+      assert.deepStrictEqual(saved, []);
+      yield* TestClock.setTime(DECEMBER);
+      yield* followOwnerZone(orgId, schedules);
+      assert.deepStrictEqual(
+        saved.map(({ scheduleId, every, ownerTime, keepWording }) => ({
+          scheduleId,
+          every,
+          ownerTime,
+          keepWording,
+        })),
+        [
+          {
+            scheduleId: KinMemoryItemId.make("checkin-mine"),
+            every: onHostClock("09:00", weekdays, "America/New_York", host, DECEMBER),
+            ownerTime: { at: "09:00", days: weekdays },
+            keepWording: true,
+          },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
   );
   it.effect.each([
     { name: "Friday taken off", days: [1, 2, 3, 4] },

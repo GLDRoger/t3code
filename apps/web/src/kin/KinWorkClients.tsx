@@ -4,7 +4,7 @@ import {
   useKinSeesClients,
   useKinViewerScope,
 } from "./useKinOwnerLevel";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   kinWorkDraftFor,
   kinWorkPrincipalKey,
@@ -531,7 +531,7 @@ function KinListMore(props: {
   return (
     <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6 py-3">
       <p className="text-xs text-muted-foreground" role="status">
-        {props.failed ? "Couldn't load more." : props.shown}
+        {props.failed ? KIN_MORE_FAILED : props.shown}
       </p>
       <Button
         size="xs"

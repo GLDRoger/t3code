@@ -45,6 +45,7 @@ import * as OwnerWork from "./ownerWork.ts";
 import * as Docs from "./docs.ts";
 import * as Search from "./search.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import * as Numbers from "../gendocs/numbering.ts";
 import { sectionsOf } from "./docBody.ts";
 import { milestoneRisk } from "./projectSpine.ts";
 import { effectivelySensitive } from "./recordRows.ts";
@@ -72,6 +73,13 @@ type Services =
   | FileSystem.FileSystem
   | ServerConfig;
 
+/** The lead issues them on the owner's ask, as kin_issue does: an agent's invoice is a draft. */
+const issuedByLead = (...keys: ReadonlyArray<string>) =>
+  Effect.forEach(
+    keys,
+    (key) => Numbers.issue(orgId, { actor: { _tag: "agent", agentId: lead }, via: "lead" }, key),
+    { discard: true },
+  );
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("fixture"),
   requestNamespace: "fixture",
@@ -298,6 +306,34 @@ it.effect(
       assert.deepStrictEqual(client.projects, [
         { key: "P-1", title: "Invented site", health: "on_track" },
       ]);
+      // Mail Kin sent to any of a contact's emails, not only the main one, shows on the client.
+      const db = yield* SqlClient.SqlClient;
+      yield* db`UPDATE kin_records SET fields_json = json_set(fields_json, '$.emails',
+          json('["ravi@x.invalid","ravi.home@x.invalid"]'))
+        WHERE org_id = ${orgId} AND title = 'Invented Ravi'`;
+      yield* db`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,
+          reach, state, created_at, updated_at)
+        VALUES (${orgId}, 'mail', 'Mail', 'remote', 'mail.invalid', 'none', 'open', 'active', 1, 1)`;
+      const mail = {
+        _tag: "email",
+        to: ["Ravi.Home@x.invalid"],
+        cc: [],
+        subject: "Invented kickoff",
+        body: "Invented body",
+        threadId: null,
+        inReplyTo: null,
+        references: null,
+        attachments: [],
+      };
+      yield* db`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+          pin_digest, payload_json, agent_id, wakeup_id, chat_id, widget_id, proposed_at, state,
+          done_at)
+        VALUES (${orgId}, 'ask-mail', 'mail', 'mail_send', 'pin', ${JSON.stringify(mail)}, ${lead},
+          'wake', 'chief-chat', 'card', 0, 'sent', 1)`;
+      assert.deepStrictEqual(
+        (yield* LeadWork.get(scope, { key: "C-1" })).mailed?.map((one) => one.subject),
+        ["Invented kickoff"],
+      );
       // Fields a list doesn't have, and a client that isn't there, are refused with nothing written.
       for (const records of [
         [{ title: "Invented", email: "a@x.invalid" }],
@@ -1019,6 +1055,7 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         },
       ],
     });
+    yield* issuedByLead("INV-1");
     // One row per tool the lead has: a tool added without one fails to typecheck and here.
     // A definition shows no entry, so proposing one marks nothing.
     const calls = {
@@ -1336,14 +1373,24 @@ it.effect("a teammate gets none of the client calls, and a client change ticks s
     const subscribed = yield* Deferred.make<void>();
     const ticks = yield* records.changes(orgId).pipe(
       Stream.tap(() => Deferred.succeed(subscribed, undefined)),
-      Stream.take(2),
+      Stream.take(3),
       Stream.runCollect,
       Effect.forkChild,
     );
     yield* Deferred.await(subscribed);
     yield* Clients.updateParty([owner], { orgId, key: "C-1", rev: 1, name: "Invented Acme Ltd" });
-    const [, tick] = yield* Fiber.join(ticks);
+    // A logged contact moves its client's page alone, and only for those who see that client.
+    yield* Clients.logTouch([owner], {
+      orgId,
+      party: "C-1",
+      kind: "call",
+      note: "Invented call",
+      clientRequestId: "owner-call",
+    });
+    const [, tick, touched] = yield* Fiber.join(ticks);
     assert.strictEqual(tick?.key, "C-1");
+    assert.include(touched, { key: "C-1", registerId: "clients" });
+    assert.deepStrictEqual([...(touched?.team?.keys() ?? [])], []);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -2204,6 +2251,9 @@ it.effect(
         ],
       });
       const overdue = made.records.find((one) => one.title === "Invented overdue invoice")!.key;
+      yield* issuedByLead(
+        ...made.records.filter((one) => one.key.startsWith("INV-")).map((one) => one.key),
+      );
       yield* LeadMoney.payment(scope, {
         sourceEventId: "ask-event",
         key: overdue,
@@ -2932,9 +2982,12 @@ it.effect(
             client: "C-1",
             amount: "900",
             state: "waiting",
+            // Issued the day before: Issue dates it the end of a day, no contact until then.
+            date: "1970-01-14",
           },
         ],
       });
+      yield* issuedByLead("INV-1");
       yield* LeadMoney.payment(scope, {
         sourceEventId: "ask-event",
         key: "INV-1",
@@ -3087,6 +3140,28 @@ it.effect(
         }),
       );
       assert.include(missed.message, "Nearest: Invented Harbourline Logistics (C-2)");
+      // The grouped read answers what the per-client subqueries it replaced did.
+      const today = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      for (const at of [DAY, today, today + 400 * DAY])
+        assert.deepStrictEqual(
+          yield* Touches.clientRows(orgId, at),
+          yield* sql`SELECT c.record_id AS "partyId", c.key, c.title, c.sensitive,
+              c.created_at AS "createdAt", COALESCE(c.category, 'client') = 'prospect' AS prospect,
+              (SELECT COUNT(*) FROM kin_records p WHERE p.org_id = c.org_id
+                AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'open')
+                AS "openProjects",
+              (SELECT MAX(p.closed_at) FROM kin_records p WHERE p.org_id = c.org_id
+                AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'done'
+                AND p.closed_at <= ${at}) AS "lastProjectAt",
+              (SELECT MIN(w.due_at) FROM kin_records w WHERE w.org_id = c.org_id
+                AND w.register_id = 'work' AND w.party_id = c.record_id AND w.side = 'ours'
+                AND w.category = 'obligation' AND w.state IN ('open', 'doing', 'waiting')
+                AND w.due_at < ${at}) AS "dueAt"
+            FROM kin_records c
+            WHERE c.org_id = ${orgId} AND c.register_id = 'clients' AND c.state = 'open'
+              AND COALESCE(c.category, 'client') IN ('client', 'prospect')
+            ORDER BY c.key`,
+        );
     }).pipe(Effect.provide(layer)),
 );
 
@@ -3181,7 +3256,15 @@ it.effect(
       const first = (yield* LeadWork.get(scope, { key: "P-1" })).plan!;
       // A milestone brings its project; its tasks count towards it.
       assert.deepStrictEqual(first.milestones, [
-        { key: "M-1", title: "Invented beta", state: "open", due: "1970-01-20", done: 0, total: 2 },
+        {
+          key: "M-1",
+          title: "Invented beta",
+          state: "open",
+          due: "1970-01-20",
+          dueDay: "Tue 20 Jan 1970",
+          done: 0,
+          total: 2,
+        },
       ]);
       assert.include(
         first.people.find((one) => one.name === "Mate"),
@@ -3545,8 +3628,14 @@ it.effect(
         stage: "Proposal",
         value: "€20,000.00",
         expected: "2026-12-15",
+        expectedDay: "Tue 15 Dec 2026",
         lookedAfterBy: "owner",
-        next: { key: stepped.deal.next!.key, title: "Invented: call Ingrid", due: "2026-11-24" },
+        next: {
+          key: stepped.deal.next!.key,
+          title: "Invented: call Ingrid",
+          due: "2026-11-24",
+          dueDay: "Tue 24 Nov 2026",
+        },
       };
       assert.deepStrictEqual(of(hers, stepped.deal.key), pilot);
       assert.deepInclude(of(hers, bare.deal.key), { stage: "New", next: null });
@@ -3986,6 +4075,23 @@ it.effect(
         (yield* Clients.parties([mate], { orgId, tag: "clinics" })).parties.map((one) => one.name),
         ["Invented Tallmoor"],
       );
+      // A contact's name finds its client, which says which contact; only where its reader sees it.
+      const foundBy = (who: typeof owner, text: string) =>
+        Clients.parties([who], { orgId, text }).pipe(
+          Effect.map((page) => page.parties.map((one) => [one.name, one.contact])),
+        );
+      assert.deepStrictEqual(yield* foundBy(owner, " OLA "), [
+        ["Invented Tallmoor", 'Invented Ola, "the buyer"'],
+      ]);
+      assert.deepStrictEqual(yield* foundBy(mate, "ola"), [
+        ["Invented Tallmoor", 'Invented Ola, "the buyer"'],
+      ]);
+      assert.deepStrictEqual(yield* foundBy(owner, "hidden"), [
+        ["Invented Quietbay", "Invented Hidden"],
+      ]);
+      assert.deepStrictEqual(yield* foundBy(mate, "hidden"), []);
+      assert.deepStrictEqual(yield* foundBy(owner, "gone"), []);
+      assert.deepStrictEqual(yield* foundBy(owner, "tallmoor"), [["Invented Tallmoor", undefined]]);
       // A deal made on the prospect came from the campaign, and reads it by name.
       assert.strictEqual(pilot.source, "Invented harbour fair");
       // The audience as a list: the owner's four, the teammate's three.

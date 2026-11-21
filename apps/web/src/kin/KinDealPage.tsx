@@ -12,6 +12,7 @@ import {
   kinDealStrip,
   kinDealWithoutConcern,
   kinDealWhen,
+  kinDealChangeWhen,
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
 import { kinWorkAssignees, kinWorkDueText, kinWorkName } from "@t3tools/client-runtime/kin/kinWork";
@@ -468,7 +469,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
           {deal.state === "open" && next !== null ? (
             <>
               <dt className="text-muted-foreground">{KIN_DEALS.nextStep}</dt>
-              <dd>{deal.next?.title ?? KIN_DEALS.noNextStep}</dd>
+              <dd>{deal.next?.title ?? next.text}</dd>
             </>
           ) : null}
           {deal.source === undefined ? null : (
@@ -558,7 +559,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
                   {kinDealChangeText(change, names, now)}
                 </span>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  {kinWorkDueText({ dueAt: change.at, dueAllDay: false }, names, now)}
+                  {kinDealChangeWhen(change, now)}
                 </span>
               </li>
             ))}

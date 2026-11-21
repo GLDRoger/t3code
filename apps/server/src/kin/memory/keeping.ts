@@ -1,6 +1,7 @@
 import type { MemoryItemHead } from "@t3tools/contracts";
 
 import { memoryDateMillis } from "./frontMatter.ts";
+import { DAY_MS } from "../durations.ts";
 
 /** What memory is for, written once: `memory_write` carries it and the nightly pass extracts by it. */
 export const MEMORY_RULE =
@@ -8,7 +9,6 @@ export const MEMORY_RULE =
 
 /** One item holds one thing; a body past this is several. */
 export const BODY_MAX = 2000;
-const DAY_MS = 24 * 60 * 60 * 1000;
 /** A follow-up minutes or hours away is over a day later; other to-dos and progress get a week. */
 const SOON_SPENT_MS = DAY_MS;
 const SPENT_MS = 7 * DAY_MS;

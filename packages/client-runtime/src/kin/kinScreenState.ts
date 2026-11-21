@@ -321,14 +321,17 @@ export function kinPreviewText(body: string): string {
 }
 
 /** A chat's last message as one plain line for a list. */
-function kinMessagePreview(last: KinChatSummary["lastMessage"]): string {
+function kinMessagePreview(
+  last: KinChatSummary["lastMessage"],
+  preview: KinChatSummary["lastPreview"],
+): string {
   if (last === null) return "No messages yet";
   if (last.status === "deleted") return "Message deleted";
   if (last.kind === "widget_action") return kinTapText(last.body);
   // Hosts before the quiet-turn change posted their own bookkeeping as system rows.
   if (last.kind === "system" && last.widgetId?.startsWith("memory-changes:")) return "Saved a note";
   if (last.kind === "system" && last.widgetId?.startsWith("deferral:")) return "Set a reminder";
-  return kinPreviewText(kinMessageGistMarkdown(last)) || "Message";
+  return kinPreviewText(kinMessageGistMarkdown(last, preview)) || "Message";
 }
 
 /** Whether the viewer's own membership mutes this chat's pushes right now. */
@@ -376,7 +379,7 @@ export function kinChatRowView(
           : directory.me.has(last.author.personId)
             ? "You"
             : (chat.lastAuthorName ?? null);
-  const preview = kinMessagePreview(last);
+  const preview = kinMessagePreview(last, chat.lastPreview);
   return {
     chatId: chat.chatId,
     title,

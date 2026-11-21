@@ -29,6 +29,7 @@ import {
 import { findBankList } from "./statements/bankList.ts";
 import { reviewOf } from "./statements/statementReview.ts";
 import type { Statement } from "./statements/statementTable.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * The owner's money questions, answered by code from what Kin stores: cash from the statements
@@ -36,7 +37,6 @@ import type { Statement } from "./statements/statementTable.ts";
  * integer minor units, one per currency. Owner only; callers check that before calling.
  */
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 /** A closing balance older than this many days is reported as stale. */
 const STALE_DAYS = 7;
 const HORIZONS = [30, 60, 90] as const;

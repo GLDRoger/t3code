@@ -32,6 +32,8 @@ vars == <<ev, tries, wake, covered, replies, answered, promise, notes, fails, th
           worked, floor, presence, restarts, shown, asked, twice>>
 
 Claimed == {m \in Msgs : ev[m] = "claimed"}
+\* KinEventQueue RUN_ATTEMPTS: retries 15 s, 1 min and 15 min after a start that showed nothing.
+StartAttempts == 4
 
 Init ==
   /\ ev = [m \in Msgs |-> "none"] /\ tries = [m \in Msgs |-> 0]
@@ -167,7 +169,7 @@ RunCompletes ==
    (KinEventQueue.finish `stranded` / `replied`). With every message replied, a line follows only
    for what the reply promised and the turn left undone (KinReplyBridge.failed "replied":
    missingCard, unkeptPromise); otherwise it is only logged. Nothing visible → retried with
-   "trying again" (not final), and the third try fails with "won't try again on its own." *)
+   "trying again" (not final), and the fourth try fails with "won't try again on its own." *)
 RunFails ==
   /\ wake = "running"
   /\ IF worked
@@ -181,9 +183,9 @@ RunFails ==
                /\ UNCHANGED tries
        ELSE /\ tries' = [m \in Msgs |-> IF m \in Claimed THEN tries[m] + 1 ELSE tries[m]]
             /\ ev' = [m \in Msgs |-> IF m \in Claimed
-                                     THEN IF tries[m] + 1 >= 3 THEN "failed" ELSE "queued"
+                                     THEN IF tries[m] + 1 >= StartAttempts THEN "failed" ELSE "queued"
                                      ELSE ev[m]]
-            /\ fails' = [m \in Msgs |-> IF m \in Claimed /\ tries[m] + 1 >= 3
+            /\ fails' = [m \in Msgs |-> IF m \in Claimed /\ tries[m] + 1 >= StartAttempts
                                         THEN fails[m] + 1 ELSE fails[m]]
             /\ UNCHANGED notes
   /\ wake' = "idle"

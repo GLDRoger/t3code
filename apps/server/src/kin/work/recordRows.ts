@@ -3,6 +3,7 @@ import {
   KIN_RECORD_CHANGES_CAP,
   KinAgentId,
   KinChatError,
+  KIN_TEAM_ROOM_TEAM_ID,
   KinChatId,
   KinMessageId,
   KinPersonId,
@@ -26,6 +27,7 @@ import {
   type KinWorkPrincipal,
   canonicalTimeZone,
   formatKinLate,
+  formatKinWhen,
   KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -35,9 +37,11 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import { listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
+import { DAY_MS } from "../durations.ts";
 
 /** The plain rows behind `KinRecords`: reads and the shapes they decode into. No writes here. */
 
@@ -211,6 +215,8 @@ export const suggestedStateLabel = (list: string, state: string, label: string) 
   state === "open" && (list === "quotes" || list === "invoices")
     ? `${label}, suggested: waits for the owner or a co-owner to keep it`
     : "Suggested: waits for the owner or a co-owner to keep it";
+/** A kept invoice nobody has issued, as an agent's tool result names it. */
+export const UNISSUED_INVOICE = "Draft: waits for the owner or a co-owner to issue it";
 /** The one refusal for anything done to a suggestion before it is kept, whoever asks. */
 export const stillSuggestion = (key: string) =>
   `${key} is still a suggestion: the owner or a co-owner hasn't kept it. They keep it with Keep on its page, or by asking you to keep it themselves. Nothing changed.`;
@@ -231,8 +237,6 @@ export const countedEntry = (
 /** A payment `p` not taken back, on an entry `r` that counts. */
 export const countedPayment = (sql: SqlClient.SqlClient) =>
   sql`p.voided_at IS NULL AND ${countedEntry(sql)}`;
-
-const DAY = 86_400_000;
 
 /** `termsDays` in SQL, for the forms its test names; null where it finds no days. */
 const termsDaysSql = (sql: SqlClient.SqlClient, terms: Statement.Fragment) => sql`(
@@ -259,7 +263,7 @@ const termsDaysSql = (sql: SqlClient.SqlClient, terms: Statement.Fragment) => sq
  * Overdue is past it, the same in the pulse, Money, the client page and every brief.
  */
 export const invoiceDue = (sql: SqlClient.SqlClient) => sql`COALESCE(r.due_at,
-  r.date_at + ${DAY} * ${termsDaysSql(
+  r.date_at + ${DAY_MS} * ${termsDaysSql(
     sql,
     sql`(SELECT json_extract(c.fields_json, '$.terms') FROM kin_records c
       WHERE c.org_id = r.org_id AND c.register_id = 'clients' AND c.record_id = COALESCE(r.party_id,
@@ -660,6 +664,60 @@ const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, reco
   }));
 });
 
+/**
+ * A record's chat links as `personId` may follow them, by the rule a chat opens by (an active
+ * member; the Team room only owner-level). A chat they can't open keeps no id or label, only the
+ * agent it was with; a source in one is not theirs.
+ */
+export const chatLinksFor = Effect.fn("KinRecords.chatLinksFor")(function* <
+  A extends {
+    readonly links: ReadonlyArray<KinRecordLink>;
+    readonly source?: KinRecordDetail["source"];
+  },
+>(orgId: KinOrgId, personId: KinPersonId, detail: A) {
+  const chatIds = [
+    ...new Set([
+      ...detail.links.flatMap((link) =>
+        link.kind === "message" && link.chatId !== null ? [link.chatId] : [],
+      ),
+      ...(detail.source?.chatId == null ? [] : [detail.source.chatId]),
+    ]),
+  ];
+  if (chatIds.length === 0) return detail;
+  const sql = yield* SqlClient.SqlClient;
+  // `me` binds the reader once, so the owner-level rule reads trusted column names.
+  const rows = yield* sql<{ chatId: string; open: number; agent: string | null }>`
+    SELECT c.chat_id AS "chatId",
+      EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id
+          AND m.principal_kind = 'person' AND m.person_id = me.person_id AND m.left_at IS NULL)
+        AND (c.team_id IS NOT ${KIN_TEAM_ROOM_TEAM_ID}
+          OR ${sql.literal(ownerLevelSql("me.org_id", "me.person_id"))}) AS open,
+      (SELECT CASE WHEN COUNT(DISTINCT a.agent_id) = 1 THEN MIN(a.display_name) END
+        FROM kin_chat_members m JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
+        WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id AND m.principal_kind = 'agent') AS agent
+    FROM kin_chats c, (SELECT ${orgId} AS org_id, ${personId} AS person_id) me
+    WHERE c.org_id = ${orgId} AND c.chat_id IN ${sql.in(chatIds)}
+    ORDER BY c.chat_id`;
+  const chats = new Map(rows.map((row) => [row.chatId, row]));
+  const opens = (chatId: string) => chats.get(chatId)?.open === 1;
+  return {
+    ...detail,
+    links: detail.links.map((link): KinRecordLink =>
+      link.kind !== "message" || link.chatId === null || opens(link.chatId)
+        ? link
+        : {
+            ...link,
+            chatId: null,
+            label: null,
+            closedChat: { agent: chats.get(link.chatId)?.agent ?? null },
+          },
+    ),
+    ...(detail.source?.chatId == null || opens(detail.source.chatId)
+      ? {}
+      : { source: { chatId: null, messageId: null } }),
+  };
+});
+
 export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
   row: RecordRow,
   now: number,
@@ -973,7 +1031,7 @@ const calendarDay = (ms: number, zone: string) =>
  * day `dueAt` falls on to today's. Due the 8th, on the 20th that is 12; due today, 0.
  */
 export const daysOverdue = (dueAt: number, now: number, zone: string) =>
-  Math.max(0, Math.round((calendarDay(now, zone) - calendarDay(dueAt, zone)) / DAY));
+  Math.max(0, Math.round((calendarDay(now, zone) - calendarDay(dueAt, zone)) / DAY_MS));
 /** How long an owed invoice is overdue, after "overdue": "for 12 days" counted as `daysOverdue`. */
 export const overdueFor = (dueAt: number, days: number, now: number, zone: string) =>
   days >= 2 && days < 60
@@ -982,6 +1040,17 @@ export const overdueFor = (dueAt: number, days: number, now: number, zone: strin
 /** A calendar day's last millisecond in `zone`: an all-day entry is late only once it is over. */
 export const endOfDay = (day: string, zone: string) =>
   DateTime.toEpochMillis(DateTime.add(dayStart(day, zone), { days: 1 })) - 1;
+/** A due as a person reads it: a day is the company's calendar day for anyone, a time their own. */
+export const dueWhenText = (
+  at: number,
+  allDay: boolean,
+  company: string,
+  clock: { readonly zone: string; readonly locale: string },
+  timed: "day" | "dayTime" = "dayTime",
+) =>
+  allDay
+    ? formatKinWhen(at, "day", { zone: company, locale: clock.locale })
+    : formatKinWhen(at, timed, clock);
 /** A date field's value as an instant: a day is its last millisecond, as an all-day entry's is. */
 export const fieldDateAt = (value: string, zone: string) => {
   if (value.length === 10) return { at: endOfDay(value, zone), allDay: true };

@@ -74,7 +74,10 @@ export type KinLeadDomain = typeof KinLeadDomain.Type;
 export const KinLeadCharter = Schema.String.check(Schema.isMaxLength(1_000));
 export type KinLeadCharter = typeof KinLeadCharter.Type;
 
-/** Seats that sell, as owners name them. */
+/** A domain that sells: its agent's prompt carries the sales rules, and it may keep What we sell. */
+export const isKinSalesDomain = (domain: string) =>
+  /^(growth|sales|business|marketing)/.test(domain);
+/** The selling seats as owners name them, kept first so no company's keeper moves to another. */
 const KIN_SALES_DOMAINS: ReadonlyArray<string> = ["growth", "sales", "business-development"];
 /**
  * The agent that keeps What we sell: a selling seat's, else the Chief of staff's, else any. By
@@ -88,6 +91,7 @@ export const kinSalesLead = <L extends { readonly agentId: string; readonly doma
   );
   return (
     byId.find((lead) => KIN_SALES_DOMAINS.includes(lead.domain)) ??
+    byId.find((lead) => isKinSalesDomain(lead.domain)) ??
     byId.find((lead) => lead.domain === "chief-of-staff") ??
     byId[0]
   );
@@ -934,6 +938,9 @@ export const KinBudget = Schema.Struct({
   /** The owner's view: today's lead units on turns a teammate asked for, within `leadUnits`. */
   teammateUnits: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
   limits: KinBudgetLimits,
+  /** The owner's view: today's lead input tokens, and how many the provider read from its cache. */
+  inputTokens: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+  cachedInputTokens: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
   /** The owner's view: the daily limit a client offers as "the usual", to scale its choices from. */
   usual: Schema.optional(Schema.Struct({ leadUnits: KinBudgetUnits, workerUnits: KinBudgetUnits })),
   /** Work held for a limit, by agent: it runs when the day turns or a limit is raised. */

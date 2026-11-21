@@ -3,6 +3,7 @@ import {
   KIN_EXPORT_LEAVES,
   KIN_EXPORT_ROUTE,
   KinChatError,
+  KinAttachment,
   KinDocFile,
   type KinExportLink,
   type KinExportLinkInput,
@@ -52,6 +53,9 @@ export const EXPORT_READS = [
   "kin_issued_numbers",
   "kin_doc_versions",
   "kin_doc_files",
+  "kin_record_comments",
+  "kin_client_touches",
+  "kin_people",
 ] as const;
 
 /** Rows `kin import` takes as entries; the rest are rows of their own or files here. */
@@ -464,6 +468,82 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
     Stream.flatMap((entries) => Stream.fromIterable(entries)),
   );
 
+  /** Each entry's comments, oldest first, and the files they hold. */
+  const commentRows = Stream.paginate({ key: "", seq: 0 }, (after: { key: string; seq: number }) =>
+    sql<{
+      key: string;
+      seq: number;
+      at: number;
+      byKind: string;
+      by: string | null;
+      body: string;
+      filesJson: string;
+    }>`
+      SELECT r.key, c.seq, c.created_at AS at, c.author_kind AS "byKind",
+        p.display_name AS by, c.body, c.files_json AS "filesJson"
+      FROM kin_record_comments c
+      JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
+      LEFT JOIN kin_people p ON c.author_kind = 'person' AND p.org_id = c.org_id
+        AND p.person_id = c.author_id
+      WHERE c.org_id = ${orgId} AND c.removed_at IS NULL AND (r.key, c.seq) > (${after.key}, ${after.seq})
+      ORDER BY r.key, c.seq LIMIT ${PAGE}`.pipe(
+      Effect.map((rows) => {
+        const lines = rows.map((row) => {
+          const files = Option.getOrElse(decodeCommentFiles(row.filesJson), () => []);
+          for (const one of files) keepFile(`files/${row.key}`, one.id, safeName(one.name));
+          return line({
+            entry: row.key,
+            at: iso(row.at),
+            by: row.byKind === "agent" ? "agent" : (row.by ?? "person"),
+            text: row.body,
+            ...(files.length === 0 ? {} : { files: files.map((one) => safeName(one.name)) }),
+          });
+        });
+        const last = rows.at(-1);
+        return [
+          lines,
+          rows.length < PAGE || last === undefined
+            ? Option.none()
+            : Option.some({ key: last.key, seq: last.seq }),
+        ] as const;
+      }),
+    ),
+  ).pipe(Stream.flatMap((lines) => Stream.fromIterable(lines)));
+
+  /** Contact logged with each client, oldest first. */
+  const contactRows = Stream.paginate("", (after: string) =>
+    sql<{
+      touchId: string;
+      client: string;
+      at: number;
+      kind: string;
+      who: string | null;
+      note: string;
+    }>`
+      SELECT t.touch_id AS "touchId", r.key AS client, t.at, t.kind, p.display_name AS who, t.note
+      FROM kin_client_touches t
+      JOIN kin_records r ON r.org_id = t.org_id AND r.record_id = t.party_id
+      LEFT JOIN kin_people p ON p.org_id = t.org_id AND p.person_id = t.person_id
+      WHERE t.org_id = ${orgId} AND t.removed_at IS NULL AND t.touch_id > ${after}
+      ORDER BY t.touch_id LIMIT ${PAGE}`.pipe(
+      Effect.map(
+        (rows) =>
+          [
+            rows.map((row) =>
+              line({
+                client: row.client,
+                at: iso(row.at),
+                kind: row.kind,
+                ...some("who", row.who),
+                ...some("note", row.note),
+              }),
+            ),
+            rows.length < PAGE ? Option.none() : Option.some(rows.at(-1)!.touchId),
+          ] as const,
+      ),
+    ),
+  ).pipe(Stream.flatMap((lines) => Stream.fromIterable(lines)));
+
   const fileEntries = Stream.suspend(() => Stream.fromIterable(files)).pipe(
     Stream.mapEffect((one) =>
       Effect.gen(function* () {
@@ -488,7 +568,9 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
     "           Restore it on the computer running Kin with: t3 kin import --file kin.jsonl --apply",
     "           What it makes is owned by whoever imports it.",
     "docs/      Each doc as it reads now, and the files docs show.",
-    "files/     Files kept on entries, such as invoice PDFs and receipts.",
+    "files/     Files kept on entries, such as invoice PDFs and receipts, and on their comments.",
+    "comments.jsonl  Each entry's comments, oldest first.",
+    "contacts.jsonl  The contact logged with each client: calls, meetings, emails and messages.",
     "",
   ].join("\n");
 
@@ -501,6 +583,8 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
     Stream.fromIterable<ZipEntry<SqlError.SqlError, never>>([
       { name: "README.txt", data: text(readme) },
       { name: "kin.jsonl", data: lines.pipe(Stream.encodeText) },
+      { name: "comments.jsonl", data: commentRows.pipe(Stream.encodeText) },
+      { name: "contacts.jsonl", data: contactRows.pipe(Stream.encodeText) },
     ]).pipe(
       Stream.concat(docEntries),
       // Last: the docs and entries above named the files.
@@ -517,6 +601,9 @@ const safeName = (name: string) =>
     .slice(0, 80) || "untitled";
 const extname = (path: string) => /\.[A-Za-z0-9]{1,10}$/.exec(path)?.[0] ?? "";
 const decodeDocFile = Schema.decodeUnknownOption(Schema.fromJsonString(KinDocFile));
+const decodeCommentFiles = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(KinAttachment)),
+);
 const fileNameOf = (json: string | null) =>
   json === null ? undefined : Option.getOrUndefined(decodeDocFile(json))?.name;
 const text = (value: string) => Stream.make(new TextEncoder().encode(value));

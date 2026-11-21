@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Kin's provider conformance, live: the same fixed turns on one real model, each checked from the
 # chat and the turn's own items, printed as a table. It spends real model turns. Start the instance
-# with the provider's credentials in its environment; a provider behind the host's switch gets the
+# with KIN_VERIFY_REAL_MODELS=1 and the provider's credentials in its environment; a provider behind the host's switch gets the
 # switch turned on. The rules a model can't show (personal config, a refused shell, the App key)
 # are proven per provider by apps/server/src/kin/lead/turn/conformance.test.ts.
 #   provider-conformance.sh <provider instance id> <model> [effort]

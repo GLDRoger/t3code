@@ -6,8 +6,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { codingAgentSource, codingAgentTextShown } from "../lead/OutsideContent.ts";
 import { SILENT_REPLY } from "../reply/classify.ts";
-import { dayIn, timeIn } from "./money.ts";
+import { dayIn, dayWords, timeIn } from "./money.ts";
 import { ownerZone } from "./recordRows.ts";
+import { WEEK_MS } from "../durations.ts";
 
 /**
  * The Work section of a lead's prompt, built by SQL at turn time. Status has one home: counts of
@@ -21,7 +22,6 @@ const decodeFields = Schema.decodeUnknownOption(
     Schema.Array(Schema.Struct({ field: Schema.String, to: Schema.NullOr(Schema.String) })),
   ),
 );
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const CHANGED_CAP = 15;
 
 export type WorkSection = {
@@ -36,6 +36,7 @@ export type WorkSection = {
     readonly title: string;
     readonly state: string;
     readonly due: string | null;
+    readonly dueDay?: string;
     readonly changes: ReadonlyArray<string>;
   }>;
   readonly moreChanged: number;
@@ -170,6 +171,7 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
           : row.dueAllDay === 1
             ? dayIn(row.dueAt, zone)
             : timeIn(row.dueAt, zone),
+      ...(row.dueAt === null ? {} : { dueDay: dayWords(row.dueAt, zone) }),
       changes: lines.slice(-4),
     })),
     moreChanged: Math.max(0, all.length - CHANGED_CAP),

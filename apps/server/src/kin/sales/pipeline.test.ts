@@ -29,9 +29,11 @@ import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Deals from "../work/deals.ts";
 import * as KinRecords from "../work/KinRecords.ts";
+import * as LeadDocs from "../work/leadDocs.ts";
 import * as LeadWork from "../work/leadWork.ts";
-import { formatMoney } from "../work/money.ts";
+import { dayIn, formatMoney } from "../work/money.ts";
 import * as Clients from "../work/ownerClients.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import { PipelineResult, pipelineRead as readPipeline } from "./pipeline.ts";
 import { webPage } from "./read.ts";
 import {
@@ -417,6 +419,34 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "an agent's search finds a deal by its words and its key, as the asking person sees it",
+  () =>
+    Effect.gen(function* () {
+      const { stock, pilot, renewal } = yield* seed;
+      const found = (text: string, kinds?: ReadonlyArray<"docs" | "work">) =>
+        LeadDocs.searchTool(scope, { text, ...(kinds === undefined ? {} : { kinds }) }).pipe(
+          Effect.map((result) => result.hits.map((hit) => hit.key)),
+        );
+      // A key typed whole comes first; its words may match more.
+      for (const text of ["stock and orders", stock.deal.key, stock.deal.key.toLowerCase()]) {
+        assert.strictEqual((yield* found(text))[0], stock.deal.key, text);
+        assert.strictEqual((yield* found(text, ["work"]))[0], stock.deal.key, text);
+        assert.deepStrictEqual(yield* found(text, ["docs"]), [], text);
+      }
+      assert.deepStrictEqual(yield* found("clinic pilot"), [pilot.deal.key]);
+      assert.strictEqual((yield* found(renewal.deal.key))[0], renewal.deal.key);
+      // Zoya's turn: her deal, and not the private one nor the one under a private client.
+      yield* zoyasTurn;
+      assert.strictEqual((yield* found(stock.deal.key))[0], stock.deal.key);
+      for (const text of ["clinic pilot", pilot.deal.key, "care plan", renewal.deal.key]) {
+        const hits = yield* found(text);
+        assert.notInclude(hits, pilot.deal.key, text);
+        assert.notInclude(hits, renewal.deal.key, text);
+      }
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("a deal's concerns: short labels, each once, cleared by an empty list", () =>
   Effect.gen(function* () {
     const seeded = yield* seed;
@@ -685,7 +715,10 @@ it.effect(
       assert.include(stepped.changed, "next");
       const page = yield* Deals.page([zoya], { orgId, key: stockKey });
       assert.deepInclude(page.deal.next, { title: "Invented: send the plan" });
-      assert.strictEqual(page.deal.next?.dueAt?.slice(0, 10), "2026-11-27");
+      assert.strictEqual(
+        dayIn(Date.parse(page.deal.next!.dueAt!), yield* ownerZone(orgId)),
+        "2026-11-27",
+      );
       assert.deepStrictEqual(
         page.deal.concerns?.map((concern) => concern.label),
         ["Past failure", "Price"],

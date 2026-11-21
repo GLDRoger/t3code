@@ -1,4 +1,5 @@
 import {
+  KIN_MORE_FAILED,
   KIN_CHECK_CONNECTION,
   KIN_RETRY,
   kinFailure,
@@ -637,7 +638,7 @@ function KinListEntries(
             footer === null ? null : (
               <View className="items-start gap-2 px-5 py-4">
                 <Text textRole="footnote" className="text-foreground-muted">
-                  {state.moreFailed ? "Couldn't load more." : footer}
+                  {state.moreFailed ? KIN_MORE_FAILED : footer}
                 </Text>
                 {state.more ? (
                   <Button

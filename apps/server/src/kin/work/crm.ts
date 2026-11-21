@@ -68,6 +68,7 @@ import {
 import { contactAll, contactSensitive } from "./contactDetails.ts";
 import { spellingsOf } from "./tags.ts";
 import { lastContacts, touchesOf } from "./touches.ts";
+import { WEEK_MS } from "../durations.ts";
 
 /**
  * The light CRM's read model: the client page, the project page and their history, computed on
@@ -75,7 +76,6 @@ import { lastContacts, touchesOf } from "./touches.ts";
  * stays inside one org. Callers check who may read; this answers for the owner.
  */
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const SUMMARY_CAP = 20;
 const TOUCHES_SHOWN = 5;
 const OPEN = ["open", "doing", "waiting"] as const;
@@ -396,11 +396,36 @@ export const parties = Effect.fn("KinCrm.parties")(function* (
   const where = yield* partiesWhere(orgId, input, viewer);
   const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM kin_records c
     WHERE ${sql.and([sql`c.org_id = ${orgId}`, sql`c.register_id = 'clients'`, ...where])}`;
-  const rows = yield* partyRowsWhere(orgId, now, where, "attention", limit, offset, viewer);
+  const shown = yield* partyRowsWhere(orgId, now, where, "attention", limit, offset, viewer);
+  const text = input.text?.trim().toLowerCase() ?? "";
+  // A client the words found through a contact, not its own name, says which contact.
+  const contacts =
+    text === "" || shown.length === 0
+      ? []
+      : yield* sql<{ partyId: string; title: string }>`SELECT ct.party_id AS "partyId", ct.title
+          FROM kin_records ct JOIN kin_records c ON c.org_id = ct.org_id
+            AND c.record_id = ct.party_id
+          WHERE ct.org_id = ${orgId} AND ct.register_id = 'contacts' AND ct.state = 'open'
+            AND ct.party_id IN ${sql.in(shown.map((row) => row.recordId))}
+            AND instr(lower(c.title), ${text}) = 0 AND instr(lower(ct.title), ${text}) > 0
+            AND ${contactSeen(sql, viewer)}
+          ORDER BY ct.party_id, lower(ct.title), ct.key`;
+  const contactOf = new Map<string, string>();
+  for (const one of contacts)
+    if (!contactOf.has(one.partyId)) contactOf.set(one.partyId, one.title);
+  const rows = shown.map((row) =>
+    contactOf.has(row.recordId) ? { ...row, contact: titled(contactOf.get(row.recordId)!) } : row,
+  );
   const total = count?.total ?? 0;
   const next = offset + rows.length;
   return { rows, total, nextCursor: next < total ? `o:${next}` : null };
 });
+
+/** What of a client's contacts this viewer reads in Clients, over `ct`. */
+const contactSeen = (sql: Sql, viewer: KinViewer) =>
+  viewer._tag === "ownerLevel"
+    ? sql`1 = 1`
+    : sql.and(viewer.people.map((person) => crmSeesAs(sql, person, "ct")));
 
 /** The Clients filter as SQL over `c`, for the list and for the contacts at what it shows. */
 export const partiesWhere = Effect.fn("KinCrm.partiesWhere")(function* (
@@ -419,10 +444,6 @@ export const partiesWhere = Effect.fn("KinCrm.partiesWhere")(function* (
   const sql = yield* SqlClient.SqlClient;
   const spellings =
     input.tag === undefined ? undefined : yield* spellingsOf(orgId, input.tag, viewer);
-  const contactSeen =
-    viewer._tag === "ownerLevel"
-      ? sql`1 = 1`
-      : sql.and(viewer.people.map((person) => crmSeesAs(sql, person, "ct")));
   return [
     ...(viewer._tag === "ownerLevel"
       ? []
@@ -439,7 +460,13 @@ export const partiesWhere = Effect.fn("KinCrm.partiesWhere")(function* (
         ]),
     ...(input.text === undefined || input.text.trim() === ""
       ? []
-      : [sql`instr(lower(c.title), ${input.text.trim().toLowerCase()}) > 0`]),
+      : [
+          sql`(instr(lower(c.title), ${input.text.trim().toLowerCase()}) > 0
+            OR EXISTS (SELECT 1 FROM kin_records ct WHERE ct.org_id = c.org_id
+              AND ct.register_id = 'contacts' AND ct.party_id = c.record_id AND ct.state = 'open'
+              AND ${contactSeen(sql, viewer)}
+              AND instr(lower(ct.title), ${input.text.trim().toLowerCase()}) > 0))`,
+        ]),
     ...(input.source === undefined
       ? []
       : [sql`json_extract(c.fields_json, '$.source') = ${input.source.trim()}`]),
@@ -450,7 +477,7 @@ export const partiesWhere = Effect.fn("KinCrm.partiesWhere")(function* (
               WHERE t.value IN ${sql.in(spellings)})
             OR EXISTS (SELECT 1 FROM kin_records ct, json_each(ct.fields_json, '$.tags') t
               WHERE ct.org_id = c.org_id AND ct.register_id = 'contacts'
-                AND ct.party_id = c.record_id AND ct.state = 'open' AND ${contactSeen}
+                AND ct.party_id = c.record_id AND ct.state = 'open' AND ${contactSeen(sql, viewer)}
                 AND t.value IN ${sql.in(spellings)}))`,
         ]),
   ];

@@ -1585,7 +1585,11 @@ const olderHostCan = (
 });
 
 /** An all-day date as `YYYY-MM-DD` where the owner is; null with no date or a timed one. */
-export function kinWorkAllDay(at: string | null, allDay: boolean, names: KinWorkNames) {
+export function kinWorkAllDay(
+  at: string | null,
+  allDay: boolean,
+  names: Pick<KinWorkNames, "zone">,
+) {
   const date = at === null ? null : new Date(at);
   return date === null || !allDay || Number.isNaN(date.getTime())
     ? null

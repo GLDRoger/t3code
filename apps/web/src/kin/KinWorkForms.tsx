@@ -1,3 +1,4 @@
+import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
 import {
@@ -42,7 +43,7 @@ import type {
   KinWorkPrincipal,
 } from "@t3tools/contracts";
 import { PlusIcon, XIcon } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
@@ -176,7 +177,7 @@ export function Field(props: {
       )}
       {props.moved === undefined ? null : (
         <p className="whitespace-pre-wrap text-xs text-muted-foreground">
-          It now says: {props.moved.trim() || "nothing"}
+          {KIN_WORK_COPY.nowSays(props.moved.trim() || "nothing")}
         </p>
       )}
     </div>
@@ -297,6 +298,7 @@ export function KinClientDialog(
     noun: "client",
     start: kinClientDraftOf(editing ?? undefined, member ? "prospect" : (props.start ?? "client")),
     editing: editing === null ? null : { key: editing.key, rev: editing.rev },
+    latest: editing === null ? null : kinClientDraftOf(editing),
     nameOf: (draft) => draft.name,
     check: kinClientDraftCheck,
     send: (change) =>
@@ -319,10 +321,6 @@ export function KinClientDialog(
         appAtomRegistry.refresh(kinClient.workClient({ environmentId, input: { orgId, key } }));
     },
   });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the form a newer read of the client being edited, so saving again goes against it
-  useEffect(() => {
-    if (editing !== null) form.latest(kinClientDraftOf(editing), editing.rev);
-  }, [form, editing]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
   const ids = {
@@ -571,7 +569,7 @@ export function KinClientDialog(
                   </Select>
                   {moved.placeOfSupply === undefined ? null : (
                     <p className="text-xs text-muted-foreground">
-                      It now says: {moved.placeOfSupply.trim() || COPY.party.placeNone}
+                      {KIN_WORK_COPY.nowSays(moved.placeOfSupply.trim() || COPY.party.placeNone)}
                     </p>
                   )}
                 </div>
@@ -644,6 +642,7 @@ export function KinContactDialog(
     noun: "contact",
     start: kinContactDraftOf(editing ?? undefined),
     editing: editing === null ? null : { key: editing.key, rev: editing.rev },
+    latest: editing === null ? null : kinContactDraftOf(editing),
     nameOf: (draft) => draft.name,
     check: kinContactDraftCheck,
     send: (change) =>
@@ -671,10 +670,6 @@ export function KinContactDialog(
         kinClient.workClient({ environmentId, input: { orgId, key: party.key } }),
       ),
   });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the form a newer read of the contact being edited, so saving again goes against it
-  useEffect(() => {
-    if (editing !== null) form.latest(kinContactDraftOf(editing), editing.rev);
-  }, [form, editing]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
   const ids = {
@@ -831,6 +826,8 @@ export function KinProjectDialog(
     noun: "project",
     start: kinProjectDraftOf(editing?.project, editing?.targetDay, props.party, home),
     editing: editing === null ? null : { key: editing.project.key, rev: editing.project.rev },
+    latest:
+      editing === null ? null : kinProjectDraftOf(editing.project, editing.targetDay, null, home),
     nameOf: (draft) => draft.name,
     check: kinProjectDraftCheck,
     send: (change) =>
@@ -858,14 +855,6 @@ export function KinProjectDialog(
         appAtomRegistry.refresh(kinClient.workProject({ environmentId, input: { orgId, key } }));
     },
   });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the form a newer read of the project being edited, so saving again goes against it
-  useEffect(() => {
-    if (editing !== null)
-      form.latest(
-        kinProjectDraftOf(editing.project, editing.targetDay, null, home),
-        editing.project.rev,
-      );
-  }, [form, editing, home]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
   const ids = {
@@ -920,7 +909,7 @@ export function KinProjectDialog(
           />
           {moved.party === undefined ? null : (
             <p className="text-xs text-muted-foreground">
-              It now says: {moved.party?.title ?? COPY.project.noClient}
+              {KIN_WORK_COPY.nowSays(moved.party?.title ?? COPY.project.noClient)}
             </p>
           )}
         </div>

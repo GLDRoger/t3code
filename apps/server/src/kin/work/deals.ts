@@ -84,6 +84,7 @@ import {
   viewerOfPeople,
   type KinViewer,
 } from "./teamView.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * KinDeals. Every rule is decided here, in the write's transaction, from stored rows; `KinRecords`
@@ -310,13 +311,14 @@ const addStep = Effect.fn("KinDeals.addStep")(function* (
   deal: RecordRow,
   step: KinDealStepInput,
   originKey: string,
+  holder: KinWorkPrincipal = actor.person === null ? ownerOf(deal) : me(actor.person),
 ) {
   const records = yield* KinRecords;
   return yield* records.create(actor.orgId, actor.writer, {
     originKey,
     requestHash: requestHashOf({ clientRequestId: originKey, ...step }),
     title: step.title,
-    owner: actor.person === null ? ownerOf(deal) : me(actor.person),
+    owner: holder,
     category: "task",
     side: "ours",
     partyId: deal.partyId,
@@ -344,7 +346,10 @@ export type DealDraft = {
   readonly requestHash?: string | undefined;
 };
 
-/** Makes a deal, and its first next step when given, in one transaction. A retry makes one. */
+/**
+ * Makes a deal, and its first next step when given, in one transaction. A retry makes one. The
+ * step written with the deal is its keeper's, whoever wrote it; `notices` tells them it is theirs.
+ */
 export const createAs = Effect.fn("KinDeals.create")(function* (
   actor: DealActor,
   draft: DealDraft,
@@ -394,8 +399,15 @@ export const createAs = Effect.fn("KinDeals.create")(function* (
   });
   // Decided on the stored row, so the one rule is a hand-over's; a refusal rolls the write back.
   yield* seesItAfter(actor.orgId, row, owner, "the new deal");
-  if (draft.next !== undefined) yield* addStep(actor, row, draft.next, `${draft.originKey}-next`);
-  return { row, created };
+  const step =
+    draft.next === undefined
+      ? undefined
+      : yield* addStep(actor, row, draft.next, `${draft.originKey}-next`, owner);
+  return {
+    row,
+    created,
+    notices: step?.created === true ? movedNotices(undefined, step.row) : [],
+  };
 });
 
 /** The change a caller asks for, refs resolved; `undefined` leaves a field as it is. */
@@ -642,7 +654,10 @@ const canFor = (viewer: KinViewer, row: RecordRow): KinDealCan => {
     : NOTHING_CAN;
 };
 
-/** Open follow-ups linked to these deals that this viewer reads in Clients (`crmSeenBy`), soonest first. */
+/**
+ * Open follow-ups linked to these deals that this viewer reads in Clients (`crmSeenBy`), soonest
+ * first, and the deals that have such a step this viewer doesn't read (`hidden`): only that.
+ */
 const stepsFor = Effect.fn("KinDeals.steps")(function* (
   orgId: KinOrgId,
   viewer: KinViewer,
@@ -650,7 +665,8 @@ const stepsFor = Effect.fn("KinDeals.steps")(function* (
   now: number,
 ) {
   const out = new Map<string, Array<KinDealNext>>();
-  if (dealIds.length === 0) return out;
+  const hidden = new Set<string>();
+  if (dealIds.length === 0) return { steps: out, hidden };
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
     dealId: string;
@@ -658,14 +674,18 @@ const stepsFor = Effect.fn("KinDeals.steps")(function* (
     title: string;
     dueAt: number | null;
     dueAllDay: number;
+    seen: number;
   }>`SELECT l.target AS "dealId", r.key, r.title, r.due_at AS "dueAt",
-      r.due_all_day AS "dueAllDay"
+      r.due_all_day AS "dueAllDay", CASE WHEN ${crmSeenBy(sql, viewer)} THEN 1 ELSE 0 END AS seen
     FROM kin_record_links l JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
     WHERE l.org_id = ${orgId} AND l.kind = 'record' AND l.target IN ${sql.in([...dealIds])}
       AND r.register_id = 'work' AND r.state NOT IN ('done', 'dropped') AND r.side = 'ours'
-      AND ${crmSeenBy(sql, viewer)}
     ORDER BY r.due_at IS NULL, r.due_at, r.created_at, r.key`;
   for (const row of rows) {
+    if (row.seen !== 1) {
+      hidden.add(row.dealId);
+      continue;
+    }
     const steps = out.get(row.dealId) ?? [];
     if (steps.some((step) => step.key === row.key)) continue;
     steps.push({
@@ -677,7 +697,7 @@ const stepsFor = Effect.fn("KinDeals.steps")(function* (
     });
     out.set(row.dealId, steps);
   }
-  return out;
+  return { steps: out, hidden };
 });
 
 /** The newest linked quote of each deal that this viewer may see. */
@@ -747,6 +767,7 @@ const dealOf = (
   row: RecordRow,
   viewer: KinViewer,
   steps: ReadonlyArray<KinDealNext> | undefined,
+  nextHidden: boolean,
   quote: KinDealQuote | undefined,
   campaigns: ReadonlyMap<string, KinRecordRef> = new Map(),
 ): KinDealRow => {
@@ -777,6 +798,7 @@ const dealOf = (
       : { lostReason: lostReason as KinDealRow["title"] }),
     sensitive: row.sensitive === 1 || row.inheritedSensitive === 1,
     next: steps?.[0] ?? null,
+    ...(steps === undefined && nextHidden ? { nextHidden: true } : {}),
     ...(quote === undefined ? {} : { quote }),
     ...(concerns.length === 0 ? {} : { concerns }),
     can: canFor(viewer, row),
@@ -795,7 +817,7 @@ const dealsOut = Effect.fn("KinDeals.out")(function* (
 ) {
   const now = yield* Clock.currentTimeMillis;
   const ids = rows.map((row) => row.recordId);
-  const steps = yield* stepsFor(orgId, viewer, ids, now);
+  const { steps, hidden } = yield* stepsFor(orgId, viewer, ids, now);
   const quotes = yield* quotesFor(orgId, viewer, ids);
   const campaigns = yield* campaignsNamed(
     orgId,
@@ -803,7 +825,14 @@ const dealsOut = Effect.fn("KinDeals.out")(function* (
     viewer,
   );
   return rows.map((row) =>
-    dealOf(row, viewer, steps.get(row.recordId), quotes.get(row.recordId), campaigns),
+    dealOf(
+      row,
+      viewer,
+      steps.get(row.recordId),
+      hidden.has(row.recordId),
+      quotes.get(row.recordId),
+      campaigns,
+    ),
   );
 });
 
@@ -1002,7 +1031,6 @@ export const pipelineConcerns = Effect.fn("KinDeals.pipelineConcerns")(function*
 
 // Numbers: every figure counted here, in SQL, over the deals the viewer sees (`crmSeenBy`).
 
-const DAY_MS = 86_400_000;
 const WIN_RATE_DAYS = 90;
 const WEEK_ROWS_CAP = 50;
 
@@ -1467,7 +1495,7 @@ export const page = Effect.fn("KinDeals.page")(function* (
   const row = yield* dealIn(actor, input.key).pipe(workFailure);
   const now = yield* Clock.currentTimeMillis;
   const [deal] = yield* dealsOut(input.orgId, viewer, [row]).pipe(workFailure);
-  const steps = yield* stepsFor(input.orgId, viewer, [row.recordId], now).pipe(workFailure);
+  const { steps } = yield* stepsFor(input.orgId, viewer, [row.recordId], now).pipe(workFailure);
   const { stages } = yield* stagesOf(input.orgId).pipe(workFailure);
   const detail = yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
   const quotes =
@@ -1490,10 +1518,14 @@ export const page = Effect.fn("KinDeals.page")(function* (
 const written = Effect.fn("KinDeals.written")(function* <A, E extends { readonly _tag: string }, R>(
   orgId: KinOrgId,
   write: Effect.Effect<A, E, R>,
+  moved?: (result: A) => RecordRow,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const result = yield* sql.withTransaction(write).pipe(workFailure);
-  yield* (yield* KinRecords).announce(orgId);
+  yield* (yield* KinRecords).announce(
+    orgId,
+    moved === undefined ? undefined : [moved(result).recordId],
+  );
   return result;
 });
 const answer = Effect.fn("KinDeals.answer")(function* (
@@ -1513,13 +1545,13 @@ export const create = Effect.fn("KinDeals.rpc.create")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinDealCreateInput,
 ) {
-  const { actor, viewer } = yield* personActor(people, input.orgId);
+  const { actor, viewer, person } = yield* personActor(people, input.orgId);
   const { clientRequestId, orgId: _orgId, ...asked } = input;
-  const row = yield* written(
+  const { row, notices } = yield* written(
     input.orgId,
     Effect.gen(function* () {
       const due = yield* expectedAt(input.orgId, input.expectedOn);
-      return (yield* createAs(actor, {
+      return yield* createAs(actor, {
         partyKey: input.party,
         title: input.title,
         stage: input.stage,
@@ -1533,9 +1565,12 @@ export const create = Effect.fn("KinDeals.rpc.create")(function* (
         next: input.next,
         originKey: `${originOf(actor)}:${clientRequestId}`,
         requestHash: requestHashOf({ clientRequestId, ...asked }),
-      })).row;
+      });
     }),
+    (made) => made.row,
   );
+  for (const notice of notices)
+    yield* tellOnScreen(person, `${notice.row.recordId}:${notice.row.rev}`, [notice]);
   return yield* answer(input.orgId, viewer, row, false);
 });
 
@@ -1572,6 +1607,7 @@ export const update = Effect.fn("KinDeals.rpc.update")(function* (
         input.rev,
       );
     }),
+    (made) => made.row,
   );
   yield* tellOnScreen(person, `${row.recordId}:${row.rev}`, notices);
   return yield* answer(input.orgId, viewer, row, false);
@@ -1582,7 +1618,11 @@ export const move = Effect.fn("KinDeals.rpc.move")(function* (
   input: KinDealMoveInput,
 ) {
   const { actor, viewer } = yield* personActor(people, input.orgId);
-  const moved = yield* written(input.orgId, moveAs(actor, input.key, input.to, input.rev));
+  const moved = yield* written(
+    input.orgId,
+    moveAs(actor, input.key, input.to, input.rev),
+    (made) => made.row,
+  );
   return yield* answer(input.orgId, viewer, moved.row, moved.becameClient);
 });
 
@@ -1594,6 +1634,7 @@ export const step = Effect.fn("KinDeals.rpc.step")(function* (
   const row = yield* written(
     input.orgId,
     stepAs(actor, input.key, input.step, `${originOf(actor)}-step:${input.clientRequestId}`),
+    (row) => row,
   );
   return yield* answer(input.orgId, viewer, row, false);
 });

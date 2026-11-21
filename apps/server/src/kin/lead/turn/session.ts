@@ -66,7 +66,7 @@ const kinDeferredTools = (toolLookup: boolean) =>
 
 /** GPT agents rarely asked with a card or made the Confirm card (evals, Nov 2026); true for all. */
 const ALL_MODELS_NOTE =
-  "When a decision is the owner's, ask with kin_ask and the default you'll take, not in prose. Mail, invoices, quotes, payments and social posts go out only by calling the tool that makes their Confirm card, never as a draft in the chat. Work on his own and his orgs' GitHub repos needs no card: do it.";
+  "When a decision is the owner's, ask with kin_ask and the default you'll take, not in prose. Mail, invoices, quotes, payments and social posts go out only by calling the tool that makes their Confirm card, never as a draft in the chat. Work on the owner's own and their orgs' GitHub repos needs no card: do it.";
 const CONFINED_NOTE =
   "This session has no shell, files or built-in web search: act only through your tools, and don't try those. web_page reads one public page.";
 const CONFINED_SEARCH_NOTE =

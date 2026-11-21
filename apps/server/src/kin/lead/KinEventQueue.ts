@@ -111,7 +111,23 @@ const STORED_AUTHOR = `LEFT JOIN kin_messages m ON m.org_id = e.org_id
 const AUTHOR_OF = `COALESCE(m.author_person_id,
   CASE WHEN e.tag = 'chat.reaction' THEN json_extract(e.json, '$.provenance.personId') END)`;
 
-/** An owner message waits only for the rest of its burst, and never longer than the cap. */
+/** A person's message waits only for the rest of its burst, and never longer than the cap. */
+/**
+ * The lead row aliased `lead` has a turn going on its thread (a queued or active run, or an
+ * unfinished provider turn) that no wake-up may claim into yet: the run T3 started for a finished
+ * task is the one exception, and waits for the wake-up that takes it over.
+ */
+export const leadThreadBusy = (sql: SqlClient.SqlClient, lead: string) => {
+  const thread = sql.literal(`${lead}.thread_id`);
+  return sql`(EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r
+        WHERE r.thread_id = ${thread} AND r.status IN ${sql.in(["queued", ...ACTIVE_RUN_STATUSES])})
+      OR EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_turns t
+        WHERE t.thread_id = ${thread} AND t.completed_at IS NULL))
+    AND NOT EXISTS (SELECT 1 FROM kin_events f WHERE f.org_id = ${sql.literal(`${lead}.org_id`)}
+      AND f.agent_id = ${sql.literal(`${lead}.agent_id`)} AND f.tag = 'task.finished'
+      AND f.state = 'queued' AND json_extract(f.json, '$.threadId') = ${thread})`;
+};
+
 const OWNER_BURST_MS = 300;
 const OWNER_WINDOW_MS = 2_000;
 
@@ -225,7 +241,8 @@ export class KinEventQueue extends Context.Service<
     /**
      * A failed wake-up's events retry only when it showed nothing. Of the rest, `stranded`
      * had no reply (the chat is owed a notice) and `replied` were already answered; `retried`
-     * counts requeued events and `failedEventIds` those that used their last try.
+     * counts requeued events, `retryInMs` the longest wait before one runs again, and
+     * `failedEventIds` those that used their last try.
      */
     readonly finish: (input: typeof FinishInput.Type) => Effect.Effect<
       {
@@ -233,6 +250,7 @@ export class KinEventQueue extends Context.Service<
         readonly stranded: number;
         readonly replied: number;
         readonly retried: number;
+        readonly retryInMs: number;
       },
       PersistenceSqlError | PersistenceDecodeError
     >;
@@ -244,9 +262,14 @@ export class KinEventQueue extends Context.Service<
   }
 >()("t3/kin/lead/KinEventQueue") {}
 
-/** A failed start that showed nothing retries soon, so the owner's "trying again" is true. */
+/**
+ * A failed start that showed nothing retries soon, so the owner's "trying again" is true, and
+ * once more a quarter of an hour on, so a provider down for minutes doesn't lose the request.
+ */
 const FIRST_RETRY_MS = 15_000;
 const LATER_RETRY_MS = 60_000;
+export const LAST_RETRY_MS = 900_000;
+const RUN_ATTEMPTS = 4;
 
 /**
  * Every passed route to this agent whose wake-up expired, for any reason, settles as stale, and
@@ -502,8 +525,11 @@ const make = Effect.gen(function* () {
       SELECT
         MIN(CASE WHEN COALESCE(not_before, queued_at) <= ${now} THEN queued_at END) AS first_at,
         MAX(CASE WHEN COALESCE(not_before, queued_at) <= ${now} THEN queued_at END) AS last_at,
-        -- A finished task's run is already going: it can't wait for a batch.
-        MIN(CASE WHEN (priority = 'P0' OR tag = 'task.finished')
+        -- A finished task's run is already going, and a person is waiting on what they wrote:
+        -- neither waits out the batch window. A person's place in the budget stays their priority.
+        MIN(CASE WHEN (priority = 'P0' OR tag = 'task.finished'
+            OR (tag IN ('chat.message', 'widget.action')
+              AND json_extract(json, '$.provenance._tag') = 'human'))
           AND COALESCE(not_before, queued_at) <= ${now} THEN queued_at END) AS urgent_at,
         MIN(CASE WHEN not_before > ${now} THEN not_before END) AS deferred_at
       FROM kin_events
@@ -807,7 +833,7 @@ const make = Effect.gen(function* () {
       const result = yield* sql.withTransaction(
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
-          const none = { failedEventIds: [], stranded: 0, replied: 0, retried: 0 };
+          const none = { failedEventIds: [], stranded: 0, replied: 0, retried: 0, retryInMs: 0 };
           // Aborted for its audience (`abortChatTurns`): whatever it ran to, a fresh
           // wake-up answers its events, without spending an attempt or telling anyone.
           const requeued = yield* sql`UPDATE kin_wakeups SET status = 'released', ended_at = ${now}
@@ -864,16 +890,24 @@ const make = Effect.gen(function* () {
             RETURNING event_id, replied_at IS NOT NULL AS replied`;
             yield* settle(rows);
             const replied = rows.filter((row) => row.replied === 1).length;
-            return { failedEventIds: [], stranded: rows.length - replied, replied, retried: 0 };
+            return {
+              failedEventIds: [],
+              stranded: rows.length - replied,
+              replied,
+              retried: 0,
+              retryInMs: 0,
+            };
           }
           const rows = yield* sql<{
             event_id: string;
             state: string;
+            not_before: number;
           }>`UPDATE kin_events SET attempts = attempts + 1,
-            state = CASE WHEN attempts + 1 >= 3 THEN 'failed' ELSE 'queued' END,
+            state = CASE WHEN attempts + 1 >= ${RUN_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
             wakeup_id = NULL,
-            not_before = ${now} + CASE WHEN attempts = 0 THEN ${FIRST_RETRY_MS} ELSE ${LATER_RETRY_MS} END
-            WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed' RETURNING event_id, state`;
+            not_before = ${now} + CASE WHEN attempts = 0 THEN ${FIRST_RETRY_MS}
+              WHEN attempts = 1 THEN ${LATER_RETRY_MS} ELSE ${LAST_RETRY_MS} END
+            WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed' RETURNING event_id, state, not_before`;
           yield* settle(rows.filter((row) => row.state === "failed"));
           return {
             failedEventIds: rows
@@ -883,6 +917,10 @@ const make = Effect.gen(function* () {
             stranded: 0,
             replied: 0,
             retried: rows.filter((row) => row.state === "queued").length,
+            retryInMs: Math.max(
+              0,
+              ...rows.filter((row) => row.state === "queued").map((row) => row.not_before - now),
+            ),
           };
         }),
       );
@@ -954,19 +992,8 @@ const make = Effect.gen(function* () {
         FROM kin_events e JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
         WHERE e.org_id = ${orgId} AND e.state = 'queued' AND a.retired_at IS NULL
           AND a.paused_at IS NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM kin_leads l
-            WHERE l.org_id = e.org_id AND l.agent_id = e.agent_id AND (
-              EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r
-                WHERE r.thread_id = l.thread_id AND r.status IN ${sql.in(["queued", ...ACTIVE_RUN_STATUSES])})
-              OR EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_turns t
-                WHERE t.thread_id = l.thread_id AND t.completed_at IS NULL)
-            )
-            -- The run T3 started for a finished task waits for the wake-up that takes it over.
-            AND NOT EXISTS (SELECT 1 FROM kin_events f WHERE f.org_id = l.org_id
-              AND f.agent_id = l.agent_id AND f.tag = 'task.finished' AND f.state = 'queued'
-              AND json_extract(f.json, '$.threadId') = l.thread_id)
-          )
+          AND NOT EXISTS (SELECT 1 FROM kin_leads l
+            WHERE l.org_id = e.org_id AND l.agent_id = e.agent_id AND ${leadThreadBusy(sql, "l")})
         GROUP BY e.agent_id ORDER BY e.agent_id`;
       const candidates = yield* Effect.forEach(rows, (row) =>
         Effect.gen(function* () {

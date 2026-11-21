@@ -258,6 +258,11 @@ export const KinRecordLink = Schema.Struct({
   target: Schema.String,
   /** Message links name their chat so a client can open it. */
   chatId: Schema.NullOr(KinChatId),
+  /**
+   * Set on a message link into a chat this reader may not open; `chatId` and `label` are then
+   * null. `agent` is the name of the agent that chat was with, when it had one.
+   */
+  closedChat: Schema.optional(Schema.Struct({ agent: Schema.NullOr(KinText) })),
   // Server-written: a PR number, a worker title. Plain text, never markup.
   label: Schema.NullOr(KinText),
   createdAt: IsoDateTime,
@@ -1035,6 +1040,8 @@ export const KinPartyRow = Schema.Struct({
   /** The campaign it came from, when the reader sees that campaign. */
   campaign: Schema.optional(KinRecordRef),
   tags: Schema.optional(Tags),
+  /** The contact whose name the list's search found, when the client's own name didn't have it. */
+  contact: Schema.optional(KinTrimmedText),
   /** The soonest open entry we owe them. */
   next: Schema.NullOr(
     Schema.Struct({

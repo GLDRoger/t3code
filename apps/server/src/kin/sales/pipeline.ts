@@ -13,7 +13,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { turnAsker } from "../lead/Audience.ts";
 import * as Deals from "../work/deals.ts";
 import { leadTool, type Lead, viewOf } from "../work/leadWork.ts";
-import { dayIn, formatMoney, timeIn } from "../work/money.ts";
+import { dayIn, dayWords, formatMoney, timeIn } from "../work/money.ts";
 import { iso, ownerZone, workFailure } from "../work/recordRows.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { concernsLine, mineLine, PIPELINE_MINE_NOBODY, totalsLine } from "./text.ts";
@@ -72,11 +72,13 @@ export const PipelineResult = Schema.Struct({
         stage: Schema.String,
         value: Schema.optional(Schema.String),
         expected: Schema.optional(Schema.String),
+        expectedDay: Schema.optional(Schema.String),
         next: Schema.NullOr(
           Schema.Struct({
             key: Schema.String,
             title: Schema.String,
             due: Schema.optional(Schema.String),
+            dueDay: Schema.optional(Schema.String),
             late: Schema.optional(Schema.Literal(true)),
           }),
         ),
@@ -234,7 +236,10 @@ const runPipeline = Effect.fnUntraced(function* (lead: Lead, input: typeof Pipel
           ...(deal.value === undefined ? {} : { value: formatMoney(deal.value) }),
           ...(deal.expectedAt === null
             ? {}
-            : { expected: dayOrTime(deal.expectedAt, deal.expectedAllDay, zone) }),
+            : {
+                expected: dayOrTime(deal.expectedAt, deal.expectedAllDay, zone),
+                expectedDay: dayWords(Date.parse(deal.expectedAt), zone),
+              }),
           next:
             deal.next === null
               ? null
@@ -243,7 +248,10 @@ const runPipeline = Effect.fnUntraced(function* (lead: Lead, input: typeof Pipel
                   title: deal.next.title,
                   ...(deal.next.dueAt === null
                     ? {}
-                    : { due: dayOrTime(deal.next.dueAt, deal.next.dueAllDay, zone) }),
+                    : {
+                        due: dayOrTime(deal.next.dueAt, deal.next.dueAllDay, zone),
+                        dueDay: dayWords(Date.parse(deal.next.dueAt), zone),
+                      }),
                   ...(deal.next.late ? { late: true as const } : {}),
                 },
           ...(deal.concerns === undefined

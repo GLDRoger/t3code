@@ -79,6 +79,7 @@ import { kinClient, retryKinAccess } from "./kinClient";
 import {
   KIN_PLACE_PATH,
   kinRecordOf,
+  kinSearchDialogPlace,
   kinSearchOf,
   kinTaskAddress,
   type KinPlace,
@@ -193,6 +194,9 @@ export function KinPlacesRoute() {
           window.location.href,
         ).toString()
       }
+      onLeave={(to) =>
+        void navigate({ ...to, params, replace: search.open !== undefined, state: { kinDepth: 0 } })
+      }
       dialog={search.open ?? null}
       person={search.person ?? null}
       onDialog={(next) => {
@@ -285,6 +289,7 @@ export function KinPlaceView({
   dialog,
   onDialog,
   docLink,
+  onLeave,
   tab: askedTab,
   onTab,
   person = null,
@@ -306,6 +311,8 @@ export function KinPlaceView({
   readonly onDialog: (dialog: KinPlaceDialog | null) => void;
   /** The address of a doc, or one section of it, for Copy link. */
   readonly docLink: (doc: KinRecordKey, section: string | null) => string;
+  /** A search hit that lives in another place or tab opens there, in the dialog's stead. */
+  readonly onLeave: (to: NonNullable<ReturnType<typeof kinSearchDialogPlace>>) => void;
 }) {
   const { environmentId } = props;
   const router = useRouter();
@@ -821,11 +828,15 @@ export function KinPlaceView({
           onClose={() => onDialog(null)}
           // Whatever a hit opens takes the dialog's place in the address.
           onOpen={(hit) => {
-            if (hit.kind === "docs") openDoc(hit.key, hit.section?.id);
+            const away = kinSearchDialogPlace({ place, tab }, hit);
+            if (away !== null) onLeave(away);
+            else if (hit.kind === "docs") openDoc(hit.key, hit.section?.id);
             else if (hit.kind === "clients") openClient(hit.key);
             else if (hit.kind === "projects") openProject(hit.key);
             else if (hit.kind === "memory") openKinMemoryInstead(router.history, hit.title, "open");
-            // A contact has no page of its own, and a money entry opens on its sheet.
+            // A contact has no page of its own: its client's opens.
+            else if (hit.clientKey !== null) openClient(hit.clientKey);
+            // A money entry opens on its sheet.
             else setOpenKey(hit.key);
           }}
         />

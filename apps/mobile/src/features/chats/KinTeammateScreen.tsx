@@ -455,7 +455,7 @@ function KinTeammatePlaces(props: {
       { label: "kin:person:set-places", reportFailure: false, reportDefect: true },
     );
     if (AsyncResult.isFailure(result))
-      setProblem(kinFailureText(squashAtomCommandFailure(result), "That didn't save."));
+      setProblem(kinFailureText(squashAtomCommandFailure(result), KIN_TEAM_COPY.saveFailed));
     await refreshKinTeam(target);
     setAsked((held) => {
       const rest = { ...held };

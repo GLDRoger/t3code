@@ -261,7 +261,7 @@ function KinTeamBody(
       <div
         className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4"
         role="status"
-        aria-label="Loading your team"
+        aria-label={KIN_TEAM_COPY.loading}
       >
         {[0, 1, 2].map((index) => (
           <div key={index} className="flex items-center gap-3">
@@ -787,7 +787,7 @@ function KinTeammatePlaces(props: {
     setAsked((held) => ({ ...held, [place]: on }));
     const result = await setPlaces({ environmentId, input: { orgId, personId, [place]: on } });
     if (AsyncResult.isFailure(result))
-      setProblem(kinFailureText(squashAtomCommandFailure(result), "That didn't save."));
+      setProblem(kinFailureText(squashAtomCommandFailure(result), KIN_TEAM_COPY.saveFailed));
     await refreshKinTeam({ environmentId, orgId });
     setAsked((held) => {
       const rest = { ...held };

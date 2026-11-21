@@ -17,11 +17,14 @@ semicolons or tabs, up to 50,000 rows and 10 MB. Nothing is added until you impo
    wrong, or leave a column out. A contact may have several emails and phones: give each its own
    column, or put several in one cell, separated by `;` (emails also by `,`).
 2. **Check.** Kin shows what it will add, which rows match clients you already have and how it
-   knows (a contact's email, the web domain of an email, or the same name), and what needs a
-   look. Rows of one company in the file become one client the same way.
+   knows, and what needs a look. Each row goes under the company its own row names: it matches a
+   client you have only by the same name (case, spacing and punctuation aside), and rows naming
+   the same company become one client. A row that names no company goes with the client of a
+   contact's email, or of the email's web domain.
 3. **Decide.** A name only close to one you have, such as "Lumen Grove (Oslo)" beside Lumen
-   Grove, is never merged by itself: it is marked **Decide**, and you pick the client it is, a new
-   one, or leave its rows out. A deal stage that isn't one of yours is never made up: pick which
+   Grove, or one whose contact's email is already at another client, is never merged by itself:
+   it is marked **Decide**, and you pick the client it is, a new one, or leave its rows out. Names
+   that differ in their numbers, such as Works 001 and Works 002, are different companies. A deal stage that isn't one of yours is never made up: pick which
    of your stages those deals go in. Kin also asks the currency of amounts written without one,
    and whether days like 03/04/2026 are written day first or month first.
 4. **Import.** A client or contact you already have only gains what it lacks; nothing you typed
@@ -31,7 +34,8 @@ semicolons or tabs, up to 50,000 rows and 10 MB. Nothing is added until you impo
 **Earlier imports** lists each file with who brought it in, when and what it added. **Undo this
 import** takes away what that import added, and empties what it filled in on clients and contacts
 you had. Anything someone changed since, or that something else now uses, stays and is listed
-with the reason. An import already undone says so.
+with the reason. A client or prospect someone logged a call, meeting or email with stays too, with
+its contacts. An undo that can't finish takes nothing away. An import already undone says so.
 
 A "Why we may mail them" column isn't imported yet; it is listed under "Not imported".
 
@@ -109,10 +113,11 @@ t3 kin import --undo oldbooks --apply
 Undo removes the clients, projects, entries and payments the batch made, and lists it made that
 hold nothing else. It leaves alone, and lists, entries someone changed since the import (add
 `--include-changed` to remove those too), and anything still used by a record that stays, such as
-a client you've since added work for. An invoice or receipt you've paid in Kin or given a Kin
-number always stays, with or without `--include-changed`. Invoice numbering doesn't go back, so no
-number is ever issued twice. You can apply the same file again afterwards. Entry keys such as `INV-4` do go back
-when nothing came after them, so a corrected file applied again gets the keys the batch had.
+a client you've since added work for or logged contact with. An invoice or receipt you've paid in
+Kin or given a Kin number always stays, with or without `--include-changed`. Invoice numbering
+doesn't go back, so no number is ever issued twice. You can apply the same file again afterwards.
+Entry keys such as `C-4` don't go back either, so what an agent remembers about a removed entry
+never passes to a new one; only a list the undo removed starts its keys again if it is made again.
 
 ## What an import doesn't do
 

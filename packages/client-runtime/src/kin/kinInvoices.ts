@@ -3,6 +3,7 @@ import type {
   KinIssueResult,
   KinListDefinition,
   KinMakeReceiptInput,
+  KinMoney,
   KinMakeReceiptResult,
   KinOrgId,
   KinPayment,
@@ -27,7 +28,22 @@ import {
  * in against it and the receipt for each payment, the documents made for it, and Money's receipts.
  */
 
+/**
+ * The line a confirmation before issuing or sending money shows: "Total ₹1,18,000 to Lumen Grove."
+ * A draft with no amount yet says only who it is to, never "0".
+ */
+export function kinConfirmTotal(
+  amount: KinMoney | null | undefined,
+  client: string | null | undefined,
+): string | null {
+  const total = amount == null || amount.minor === 0 ? null : kinMoneyText(amount);
+  const to = client == null || client.trim() === "" ? null : client.trim();
+  if (total === null) return to === null ? null : `To ${to}.`;
+  return to === null ? `Total ${total}.` : `Total ${total} to ${to}.`;
+}
+
 export const KIN_INVOICES = {
+  loadFailed: "Couldn't load invoices",
   number: "Invoice number",
   sentTo: (to: string, day: string) =>
     `Sent to ${to} ${/^(today|yesterday)$/.test(day) ? day : `on ${day}`}`,
@@ -211,6 +227,8 @@ export interface KinInvoiceView {
   readonly documents: ReadonlyArray<{ readonly key: KinRecordKey; readonly title: string }>;
   /** The series prefix the next number comes from, for Issue's confirmation. */
   readonly prefix: string | null;
+  /** Issue's confirmation line with the total and the client, from `kinConfirmTotal`. */
+  readonly issueTotal: string | null;
   /** "Sent to ana@client.com on 15 Nov", newest first. */
   readonly sent: ReadonlyArray<string>;
 }
@@ -283,6 +301,7 @@ export function kinInvoiceView(
     }),
     documents: documents.reverse(),
     prefix: def?.numbering?.prefix ?? null,
+    issueTotal: kinConfirmTotal(item.amount, item.party?.title),
     sent: (item.sent ?? []).map((mail) =>
       KIN_INVOICES.sentTo(
         mail.to.join(", "),

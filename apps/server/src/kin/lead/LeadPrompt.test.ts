@@ -2282,10 +2282,19 @@ it.effect(
       expect(built.split(TURN_DIVIDER)[0]).toContain("# Group rules");
       // The Team room has its own rules; no group-chat line about who answers or staying silent.
       yield* sql`UPDATE kin_chats SET team_id = ${KIN_TEAM_ROOM_TEAM_ID} WHERE chat_id = ${chatId}`;
+      // A person's message there is answered there: the turn says the room reads the reply.
+      const asked = yield* prompt.build({
+        ...input,
+        events: [event("now")],
+        lane: { chatId, mode: "reply" },
+      });
+      expect(asked.split(TURN_DIVIDER)[0]).toContain("# Team room");
+      expect(asked).toContain("Everyone in it reads your reply.");
+      expect(asked).not.toContain("Your plain text goes nowhere");
       const room = yield* prompt.build({
         ...input,
         events: [event("now")],
-        lane: { chatId, mode: "notice" },
+        lane: { chatId, mode: "notice", team: true },
       });
       expect(room.split(TURN_DIVIDER)[0]).toContain("# Team room");
       expect(room).not.toContain("# Group rules");
@@ -2297,6 +2306,19 @@ it.effect(
       expect(room).toContain(
         "Your plain text goes nowhere: speak only with team_say, and pass by ending the turn without it.",
       );
+      // A person's message Kin opened a discussion with: its first turn reads it as their question.
+      yield* sql`INSERT INTO kin_discussions (org_id, discussion_id, chat_id, topic, question,
+          decider_agent_id, opened_by_agent_id, origin, state, turn_json, created_at, last_at)
+        VALUES (${orgId}, 'TD-1', ${chatId}, 'Current question', 'Current question', ${agentId},
+          ${agentId}, 'owner', 'open', ${JSON.stringify({ agentId, kind: "named" })}, 0, 0)`;
+      yield* sql`UPDATE kin_messages SET discussion_id = 'TD-1' WHERE message_id = 'now'`;
+      const opened = yield* prompt.build({
+        ...input,
+        events: [event("now")],
+        lane: { chatId, mode: "notice", team: true },
+      });
+      expect(opened).toContain('"question":"Fixture asked: Current question"');
+      yield* sql`UPDATE kin_messages SET discussion_id = NULL WHERE message_id = 'now'`;
       yield* sql`UPDATE kin_chats SET team_id = NULL WHERE chat_id = ${chatId}`;
       const direct = KinChatId.make("direct-chat");
       yield* repo.createChat({

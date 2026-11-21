@@ -14,6 +14,7 @@ const NAMED = 2;
  * older host, which has no receipt.
  */
 export const KIN_TURN_RECEIPT_LABEL = "What this reply changed";
+export const kinTurnReceiptOpen = (line: string) => `${line}. Show the changes`;
 
 export function kinTurnReceiptLine(turn: KinTurnChanges | undefined): string | null {
   if (turn === undefined || turn.count === 0) return null;

@@ -21,11 +21,12 @@ import {
   type KinDocsListInput,
   type KinDocsSubscribeInput,
   type KinBudgetGetInput,
+  type KinOrgGetInput,
   type KinGoalsInput,
   type KinBriefsInput,
   type KinCheckInsInput,
-  type KinOpenReadInput,
   type KinPulseListInput,
+  type KinPulseSubscribeInput,
   type KinMemoryListInput,
   type KinPeopleListInput,
   type KinPeopleListDevicesInput,
@@ -80,7 +81,6 @@ import { kinReachPairKey } from "./kinReach.ts";
 import type { KinChatState } from "./kinInboxModel.ts";
 import { KIN_MONEY_LIVE_LABEL, kinMoneyLiveStream } from "./kinMoneyStream.ts";
 import { KIN_PULSE_LIVE_LABEL, kinPulseLiveStream } from "./kinPulseStream.ts";
-import { KIN_OPEN_LIVE_LABEL, kinOpenLiveStream } from "./kinOpenStream.ts";
 import {
   createKinDirectoryTrigger,
   createKinRefreshTriggers,
@@ -284,6 +284,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.budget.get",
   });
   const readBudget = kinGuardedRead(budgetRead);
+  const orgStateRead = createKinRpcCommand(runtime, {
+    label: "kin:org:read",
+    tag: "kin.org.get",
+  });
+  const readOrgState = kinGuardedRead(orgStateRead);
   const pulseRead = createKinRpcCommand(runtime, {
     label: "kin:pulse:read",
     tag: "kin.pulse.read",
@@ -572,7 +577,7 @@ export function makeKinClient<R, ER>(
           result.orgs.map((org) => org.orgId),
         );
         if (platform.onOrgs !== undefined) yield* platform.onOrgs(environmentId, result);
-        syncKinOwnerTimeZone(
+        void syncKinOwnerTimeZone(
           registry,
           environmentId,
           result.me.map((me) => me.orgId),
@@ -1222,19 +1227,11 @@ export function makeKinClient<R, ER>(
     /** `attention` as the host streams it, for a host that does (`attentionStreamed`). */
     attentionLive: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: KIN_PULSE_LIVE_LABEL,
-      subscribe: (input: KinPulseListInput) =>
+      subscribe: (input: Omit<KinPulseSubscribeInput, "held">) =>
         kinPulseLiveStream({ ...input, acceptSenses: KIN_PULSE_LATER_SENSES }),
     }),
     /** Whether the host streams Needs attention; null until its refreshes say. */
     attentionStreamed: kinRefreshOn.serves("pulse"),
-    /** Everything open for the viewer as the host streams it (`kin.open.subscribe`). */
-    openLive: createEnvironmentSubscriptionAtomFamily(runtime, {
-      label: KIN_OPEN_LIVE_LABEL,
-      subscribe: (input: KinOpenReadInput) =>
-        kinOpenLiveStream({ ...input, acceptSenses: KIN_PULSE_LATER_SENSES }),
-    }),
-    /** Whether the host streams the open list; null until its refreshes say. */
-    openStreamed: kinRefreshOn.serves("open"),
     /** Money's parts as the host streams them to the owner level (`useKinMoneyLive`). */
     moneyLive: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: KIN_MONEY_LIVE_LABEL,
@@ -1311,11 +1308,41 @@ export function makeKinClient<R, ER>(
       tag: "kin.budget.set",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
     }),
+    /** The company stop switch, for every member; the reason only reaches owners. */
+    orgState: createKinQueryAtomFamily(runtime, {
+      label: "kin:org",
+      execute: Effect.fn("KinClient.orgState")(function* (input: KinOrgGetInput) {
+        return yield* readOrgState(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinRefreshOn("stop"),
+    }),
+    orgPause: createKinRpcCommand(runtime, {
+      label: "kin:org:pause",
+      tag: "kin.org.pause",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
+    orgResume: createKinRpcCommand(runtime, {
+      label: "kin:org:resume",
+      tag: "kin.org.resume",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
     workLive,
     /** Its `permissionAtom` says whether this session may read Work at all. */
     workRead: workSummaryRead,
     /** One page of a filter; the list's controller decides when. */
     workList: workListRead,
+    /** Tasks' counts by move, for the badge on a host whose Needs attention doesn't carry them. */
+    workMoveCounts: createKinQueryAtomFamily(runtime, {
+      label: "kin:work:move-counts",
+      execute: Effect.fn("KinClient.workMoveCounts")(function* (input: {
+        readonly orgId: KinOrgId;
+      }) {
+        const page = yield* readWorkList({ ...input, open: true, byMove: true, limit: 1 });
+        return page.counts ?? null;
+      }),
+      refreshTrigger: kinWorkRefreshOn(["work"]),
+    }),
     /** One task with its links and history. */
     workItem: createKinQueryAtomFamily(runtime, {
       label: "kin:work:item",

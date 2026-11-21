@@ -133,7 +133,7 @@ const toRow = (raw: Raw): QuestionRow => ({
 });
 
 /**
- * The person's clock and working days: the owner's is the company's (`ownerZone`), anyone
+ * The person's clock and working hours: the owner's zone is the company's (`ownerZone`), anyone
  * else's their profile's, else the company's.
  */
 export const personClock = Effect.fn("KinQuestions.personClock")(function* (
@@ -148,7 +148,7 @@ export const personClock = Effect.fn("KinQuestions.personClock")(function* (
   const company = yield* ownerZone(orgId);
   const own = person?.owner === 1 || person?.zone == null ? undefined : person.zone;
   const zone = own !== undefined && validZone(own) ? own : company;
-  return { zone, days: storedWorkHours(person?.hours)?.days };
+  return { zone, work: storedWorkHours(person?.hours) };
 });
 
 /** The one person in a direct chat; questions are stored only where one person is asked. */
@@ -271,9 +271,10 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   const [seen] = yield* sql<{ id: string }>`SELECT question_id AS id FROM kin_questions
     WHERE org_id = ${input.orgId} AND question_id = ${questionId}`;
   const clock = yield* personClock(input.orgId, personId);
-  const named = input.by === undefined ? undefined : namedDue(input.by, input.now, clock.zone);
+  const named =
+    input.by === undefined ? undefined : namedDue(input.by, input.now, clock.zone, clock.work);
   if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
-  const dueAt = named?.at ?? defaultDue(input.now, clock.zone, clock.days);
+  const dueAt = named?.at ?? defaultDue(input.now, clock.zone, clock.work);
   const about = normaliseAbout(input.about);
   if (input.ownerLevelAsked !== true) {
     const hold = yield* holdOverAbout({ orgId: input.orgId, at: input.now, keys: about, personId });
@@ -286,7 +287,7 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
       aboutMoney: yield* aboutMoney(input.orgId, about),
     }) ?? (input.acts === undefined || takesAsDefault(input.acts) ? input.held : "action");
   const safe = untaken === undefined;
-  const actAt = safe ? dueAt : raiseAt(dueAt, clock.zone, clock.days);
+  const actAt = safe ? dueAt : raiseAt(dueAt, clock.zone, clock.work);
   const intent = normaliseIntent(input.intent);
   if (seen === undefined)
     for (const open of yield* openFor(input.orgId, personId))
@@ -363,7 +364,7 @@ export const recordTextQuestion = Effect.fn("KinQuestions.recordText")(function*
   if (personId === undefined) return undefined;
   const clock = yield* personClock(input.orgId, personId);
   const questionId = `q-${hash(`text:${input.wakeupId}`).slice(0, 12)}`;
-  const dueAt = defaultDue(input.now, clock.zone, clock.days);
+  const dueAt = defaultDue(input.now, clock.zone, clock.work);
   yield* sql`UPDATE kin_questions SET state = 'withdrawn', closed_at = ${input.now}
     WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND chat_id = ${input.chatId}
       AND kind = 'text' AND state = 'open' AND question_id <> ${questionId}`;
@@ -983,8 +984,8 @@ export const reopenRetiredQuestions = Effect.fn("KinQuestions.reopenRetired")(fu
     ORDER BY asked_at, question_id`;
   for (const row of rows) {
     const clock = yield* personClock(input.orgId, row.personId);
-    const dueAt = defaultDue(input.now, clock.zone, clock.days);
-    const actAt = row.safe === 1 ? dueAt : raiseAt(dueAt, clock.zone, clock.days);
+    const dueAt = defaultDue(input.now, clock.zone, clock.work);
+    const actAt = row.safe === 1 ? dueAt : raiseAt(dueAt, clock.zone, clock.work);
     yield* sql`UPDATE kin_questions SET state = 'open', closed_at = NULL, raised_at = NULL,
         due_at = ${dueAt}, act_at = ${actAt}
       WHERE org_id = ${input.orgId} AND question_id = ${row.questionId} AND state = 'withdrawn'`;
@@ -1146,9 +1147,9 @@ const postHeldCard = Effect.fn("KinQuestions.postHeldCard")(function* (
   );
   // Its day counts from the minute it reached them, never earlier than the day it named.
   const clock = yield* personClock(orgId, row.personId);
-  const dueAt = Math.max(row.dueAt, defaultDue(now, clock.zone, clock.days));
+  const dueAt = Math.max(row.dueAt, defaultDue(now, clock.zone, clock.work));
   yield* sql`UPDATE kin_questions SET widget_id = ${widget.widgetId}, card_json = NULL,
-      due_at = ${dueAt}, act_at = ${raiseAt(dueAt, clock.zone, clock.days)}
+      due_at = ${dueAt}, act_at = ${raiseAt(dueAt, clock.zone, clock.work)}
     WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'
       AND widget_id IS NULL`;
 });
@@ -1282,7 +1283,7 @@ const takeDefault = Effect.fn("KinQuestions.takeDefault")(function* (
       (yield* takeAtDay(orgId, plan, row, deps.records));
     if (!ran) {
       yield* sql`UPDATE kin_questions SET state = 'open', closed_at = NULL, raised_at = NULL,
-          safe = 0, act_at = ${raiseAt(row.dueAt, clock.zone, clock.days)}
+          safe = 0, act_at = ${raiseAt(row.dueAt, clock.zone, clock.work)}
         WHERE org_id = ${orgId} AND question_id = ${row.questionId}`;
       return true;
     }

@@ -824,6 +824,7 @@ it.effect(
       // With no step it shows as having none at once; a step added later is its next.
       const bare = yield* Deals.create([zoya], newDeal(corran, "Invented training"));
       assert.isNull(bare.deal.next);
+      assert.isUndefined(bare.deal.nextHidden);
       const stepped = yield* Deals.step([zoya], {
         orgId,
         key: bare.deal.key,
@@ -849,6 +850,43 @@ it.effect(
         (party) => party.key === corran,
       );
       assert.notStrictEqual(row?.next?.title, "Invented: owner's call");
+      // A step the owner writes with a deal she gives Zoya is the deal's first, so it is Zoya's.
+      const given = yield* Deals.create(
+        [owner],
+        newDeal(corran, "Invented rollout", {
+          owner: asZoya,
+          next: { title: "Invented: send the rollout plan" },
+        }),
+      );
+      const hers = yield* Deals.page([zoya], { orgId, key: given.deal.key });
+      assert.strictEqual(hers.deal.next?.title, "Invented: send the rollout plan");
+      const [held] = yield* sql<{ ownerId: string }>`SELECT owner_id AS "ownerId" FROM kin_records
+        WHERE register_id = 'work' AND title = 'Invented: send the rollout plan'`;
+      assert.strictEqual(held?.ownerId, zoyaId);
+      // The owner's deal whose only step is the owner's: Zoya learns it has one she isn't shown,
+      // and nothing of the step itself; the owner reads it as ever.
+      const signage = yield* Deals.create(
+        [owner],
+        newDeal(corran, "Invented signage", {
+          next: { title: "Invented: send the drawings", dueAt: "2026-11-24", dueAllDay: true },
+        }),
+      );
+      const zoyas = yield* Deals.page([zoya], { orgId, key: signage.deal.key });
+      assert.isNull(zoyas.deal.next);
+      assert.isTrue(zoyas.deal.nextHidden);
+      assert.deepStrictEqual(zoyas.steps, []);
+      const [step] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+        WHERE register_id = 'work' AND title = 'Invented: send the drawings'`;
+      const sent = JSON.stringify(zoyas);
+      for (const hidden of ["Invented: send the drawings", step!.key, "2026-11-24"])
+        assert.notInclude(sent, hidden);
+      const ownersView = yield* Deals.page([owner], { orgId, key: signage.deal.key });
+      assert.strictEqual(ownersView.deal.next?.title, "Invented: send the drawings");
+      assert.isUndefined(ownersView.deal.nextHidden);
+      // Where she sees a step of her own, that is its next step and nothing is said hidden.
+      assert.isUndefined(
+        (yield* Deals.page([zoya], { orgId, key: bare.deal.key })).deal.nextHidden,
+      );
     }).pipe(Effect.provide(layer)),
 );
 
@@ -971,17 +1009,23 @@ it.effect("a deal is found by its key and its title by whoever sees it, and by n
       newDeal(corran, "Invented scheduling pilot", { owner: asZoya }),
     );
     const kept = yield* Deals.create([owner], newDeal(hush, "Invented confidential pilot"));
-    const found = (who: typeof owner, text: string) =>
-      OwnerDocs.search([who], { orgId, text }).pipe(
+    // The phone's Tasks box asks for what is not a task: clients, contacts, projects, docs, deals.
+    const elsewhere = { kinds: ["clients", "contacts", "projects", "docs"], deals: true } as const;
+    const found = (who: typeof owner, text: string, only: object = {}) =>
+      OwnerDocs.search([who], { orgId, text, ...only }).pipe(
         Effect.map((result) => result.hits.map((hit) => `${hit.key} ${hit.kind}: ${hit.snippet}`)),
       );
     // Its stored fields (a stage id, a value in minor units) are no one's words to show.
     const shown = `${open.deal.key} work: Invented scheduling pilot`;
     for (const text of [open.deal.key, open.deal.key.toLowerCase(), "scheduling pilot"]) {
-      assert.deepStrictEqual(yield* found(owner, text), [shown], `owner: ${text}`);
-      assert.deepStrictEqual(yield* found(zoya, text), [shown], `zoya: ${text}`);
-      // Dev, with Clients off, sees no deals anywhere.
-      assert.deepStrictEqual(yield* found(dev, text), [], `dev: ${text}`);
+      for (const only of [{}, elsewhere]) {
+        assert.deepStrictEqual(yield* found(owner, text, only), [shown], `owner: ${text}`);
+        assert.deepStrictEqual(yield* found(zoya, text, only), [shown], `zoya: ${text}`);
+        // Dev, with Clients off, sees no deals anywhere.
+        assert.deepStrictEqual(yield* found(dev, text, only), [], `dev: ${text}`);
+      }
+      // Docs' own box finds docs alone.
+      assert.deepStrictEqual(yield* found(owner, text, { kinds: ["docs"] }), [], `docs: ${text}`);
     }
     // Under a client kept private, the owner level finds it and a teammate doesn't.
     for (const text of [kept.deal.key, "confidential"]) {

@@ -328,7 +328,7 @@ function KinDocHistory(props: KinWorkTarget & { readonly docKey: KinRecordKey })
         <Button
           tone="secondary"
           size="compact"
-          label={state.moreFailed ? KIN_RETRY : "Show earlier versions"}
+          label={state.moreFailed ? KIN_RETRY : KIN_DOCS.earlierVersions}
           loading={state.loadingMore}
           disabled={state.loadingMore}
           onPress={() => void list.loadMore()}

@@ -1,5 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format change dates for React render, outside an Effect runtime.
 import { kinNow } from "./kinNow.ts";
+import { kinWorkAllDay } from "./kinWork.ts";
 import {
   type KinAgentPage,
   type KinPersonAccess,
@@ -59,6 +60,8 @@ export function kinAgentPageCan(viewer: {
 }
 
 export const KIN_AGENT_PAGE = {
+  changeFailed: "Couldn't change that.",
+  charterNone: "Nothing written yet. Add a few lines so it knows what to focus on.",
   loadFailed: "Couldn't load this agent",
   ownerLevelOnly: "Only the owner and co-owners see this agent's details.",
   notTeamAgent:
@@ -268,6 +271,8 @@ export function kinAgentChangeLine(
   change: Change,
   names: ReadonlyMap<string, string>,
   now: Date = kinNow(),
+  /** The company's, whose calendar a due or date is on; this device's until it is read. */
+  zone: string | null = null,
 ): string {
   const record = `${change.key} ${change.title}`;
   if (change.kind === "created") return `Added ${record}`;
@@ -294,10 +299,12 @@ export function kinAgentChangeLine(
       const title = change.named?.find((one) => one.key === shown)?.title;
       return title === undefined ? shown : short(`${shown} ${title}`);
     }
-    if ((field === "due" || field === "date") && !Number.isNaN(Date.parse(shown)))
+    const day = field === "due" || field === "date" ? kinWorkAllDay(shown, true, { zone }) : null;
+    if (day !== null)
       return formatKinWhen(
-        new Date(shown),
-        new Date(shown).getFullYear() === now.getFullYear() ? "date" : "dateYear",
+        Date.parse(`${day}T12:00:00Z`),
+        Number(day.slice(0, 4)) === now.getFullYear() ? "date" : "dateYear",
+        { zone: "UTC" },
       );
     return short(shown);
   };

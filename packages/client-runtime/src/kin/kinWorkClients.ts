@@ -43,6 +43,7 @@ import {
   type KinWorkRef,
   type KinWorkRowView,
 } from "./kinWork.ts";
+import { kinCount } from "./kinCount.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -150,6 +151,8 @@ export const KIN_CLIENTS = {
   noTax: "No GSTIN or state yet. Invoices need one to work out GST.",
   all: "All clients",
   search: "Search clients",
+  /** A client the search found through one of its contacts. */
+  foundContact: (name: string) => `Contact: ${name}`,
   add: "New client",
   loadFailed: "Couldn't load your clients",
   weOwe: "To do for them",
@@ -305,9 +308,6 @@ export const KIN_CLIENTS_OLDER_HOST = {
   detail: "Clients and projects come with the next version. Tasks work as before.",
 };
 
-const plural = (count: number, one: string, many = `${one}s`) =>
-  `${count} ${count === 1 ? one : many}`;
-
 // Contact
 
 export const KIN_TOUCH_KINDS = [
@@ -345,7 +345,7 @@ export function kinClientContactLine(
   const at = party.lastContactAt;
   if (at === undefined) return null;
   const days = daysBetween(at ?? party.createdAt, now);
-  const ago = days === 0 ? "" : `, ${plural(days, "day")} ago`;
+  const ago = days === 0 ? "" : `, ${kinCount(days, "day")} ago`;
   if (at === null)
     return `No contact logged since they were added ${formatKinTime(new Date(party.createdAt), now)}${ago}`;
   return `Last contact ${formatKinTime(new Date(at), now)}${ago}${latest === undefined ? "" : `: ${latest.title}`}`;
@@ -564,7 +564,7 @@ export interface KinClientRowView {
   readonly name: string;
   /** "Prospect" ahead of the line, in the accent colour; null for a client or a vendor. */
   readonly mark: string | null;
-  /** "Vendor · 2 to do (1 late) · Waiting on 1", or a prospect's "Zoya" after its mark. */
+  /** "Vendor · 2 to do (1 late) · Waiting on 1", or a prospect's "Zoya" after its mark; "Contact: Ola · …" when the search found it through Ola. */
   readonly line: string;
   /** "Next: Monthly report, Fri 14 Nov", or "No next step"; null for a vendor with nothing owed. */
   readonly next: string | null;
@@ -583,6 +583,7 @@ export function kinClientRow(row: KinPartyRow, names: KinWorkNames, now: Date): 
   // A teammate's row comes without counts (and without a contact day): it names, it doesn't count.
   const counted = row.lastContactAt !== undefined;
   const line = [
+    row.contact === undefined ? null : KIN_CLIENTS.foundContact(row.contact),
     row.kind === "vendor" ? KIN_CLIENTS.kindVendor : null,
     prospect && who !== "You" ? who : null,
     !row.active ? KIN_CLIENTS.closed : prospect || !counted ? null : kinOwedLine(row),
@@ -1115,7 +1116,7 @@ export function kinWorkTimeline(
 /** "today", "1 day", "9 days": how long something has waited. */
 function waited(since: string, now: Date): string {
   const days = Math.floor((now.getTime() - new Date(since).getTime()) / DAY_MS);
-  return !Number.isFinite(days) || days < 1 ? "since today" : `for ${plural(days, "day")}`;
+  return !Number.isFinite(days) || days < 1 ? "since today" : `for ${kinCount(days, "day")}`;
 }
 
 export interface KinProjectPageView {
@@ -1278,10 +1279,10 @@ export function kinProjectPageView(
       : [
           because.targetPassed ? "The target date has passed." : null,
           because.late > 0
-            ? `${plural(because.late, "task")} ${because.late === 1 ? "is" : "are"} late.`
+            ? `${kinCount(because.late, "task")} ${because.late === 1 ? "is" : "are"} late.`
             : null,
           because.waitingOverAWeek > 0
-            ? `${plural(because.waitingOverAWeek, "task")} ${because.waitingOverAWeek === 1 ? "has" : "have"} waited more than a week.`
+            ? `${kinCount(because.waitingOverAWeek, "task")} ${because.waitingOverAWeek === 1 ? "has" : "have"} waited more than a week.`
             : null,
         ].filter((part) => part !== null);
   const target = kinWorkDueText(

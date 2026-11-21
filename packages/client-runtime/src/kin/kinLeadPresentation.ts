@@ -156,7 +156,7 @@ export function kinLeadTrackingDetail(
   // A due day has no time: the day where the owner is, as Tasks says it.
   const when =
     item.dueAllDay === true && item.dueAt !== undefined
-      ? `due ${kinWorkDueText({ dueAt: item.dueAt, dueAllDay: true }, { zone: timeZone ?? null }, now)}`
+      ? `due ${kinWorkDueText({ dueAt: item.dueAt, dueAllDay: true }, { zone: timeZone ?? names?.zone ?? null }, now)}`
       : formatKinDeferralTime(due, timeZone);
   return kind === null ? when : `${kind}, ${when}`;
 }
@@ -315,6 +315,9 @@ export function kinChatReadOnlyLine(other: {
 
 /** The owner's list of agents, and what a teammate is shown of one. */
 export const KIN_AGENTS_COPY = {
+  saveFailed: "Couldn't save that.",
+  noneTitle: "No agents yet",
+  introLabel: "What teammates see",
   seesIntro: (intro: string) => `They see its name and this: ${intro}`,
   charterExample: "Handles billing questions and invoices.",
   charterLabel: "What it's responsible for",
@@ -323,6 +326,8 @@ export const KIN_AGENTS_COPY = {
   explain:
     "An agent looks after one part of the company, such as engineering or finance, and you talk to it in a chat.",
   loadFailed: "Couldn't load your agents.",
+  /** The heading form, for a failure with Retry. */
+  loadFailedTitle: "Couldn't load your agents",
   teammateViewHint: "Optional. Teammates see this and nothing above.",
 } as const;
 

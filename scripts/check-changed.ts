@@ -40,8 +40,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
-import { MIGRATIONS, kinBranchChecks } from "./kin-branch-checks.ts";
-import { modelsFor } from "./kin-model.ts";
+import { MIGRATIONS, SHIPPING_BRANCH, kinBranchChecks } from "./kin-branch-checks.ts";
+import { modelsFor, modelsToReconfirm } from "./kin-model.ts";
 
 const GiB = 1024 ** 3;
 
@@ -199,10 +199,12 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
 ) {
   const candidates = Option.isSome(explicitRef)
     ? [{ ref: explicitRef.value, rev: explicitRef.value }]
-    : (yield* gitLines(root, ["remote"])).map((name) => ({
-        ref: name + "/main",
-        rev: "refs/remotes/" + name + "/main",
-      }));
+    : (yield* gitLines(root, ["remote"])).flatMap((name) =>
+        ["main", SHIPPING_BRANCH].map((branch) => ({
+          ref: name + "/" + branch,
+          rev: "refs/remotes/" + name + "/" + branch,
+        })),
+      );
   let closest: { ref: string; base: string; ahead: number } | undefined;
   for (const { ref, rev } of candidates) {
     const base = yield* git(root, ["merge-base", "HEAD", rev]).pipe(
@@ -643,6 +645,11 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   if (ciOnly.length > 0) summary.push(`  CI also runs: ${ciOnly.join(", ")}`);
   if (!runPatchCheck) summary.push("  unused patch check skipped: no dependency files changed");
   if (!runKnip) summary.push("  knip skipped: no code or manifest changed");
+  const reconfirm = modelsToReconfirm(files);
+  if (reconfirm.length > 0)
+    summary.push(
+      `  kin model ${reconfirm.join(", ")}: covered code changed, the model didn't; re-confirm it against the change (verification/kin/<name>/README.md)`,
+    );
   yield* Console.log(`\n${summary.join("\n")}`);
 
   if (results.some((result) => result.outcome !== "pass")) return false;

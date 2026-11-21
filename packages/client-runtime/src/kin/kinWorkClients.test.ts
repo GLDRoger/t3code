@@ -116,6 +116,13 @@ describe("kinClientRow", () => {
     expect(kinClientRow(row, names, now).line).toBe("");
   });
 
+  it("says which contact the search found it through", () => {
+    const found = kinClientRow({ ...row, lastContactAt: null, contact: "Ola" }, names, now);
+    expect(found.line).toBe("Contact: Ola · Nothing open · No logged contact yet");
+    expect(found.accessibilityLabel).toContain("Contact: Ola");
+    expect(kinClientRow({ ...row, contact: "Ola" }, names, now).line).toBe("Contact: Ola");
+  });
+
   const zoya = KinPersonId.make("zoya");
   const named = { ...names, people: new Map([[zoya, "Zoya"]]) };
   const prospect: KinPartyRow = {

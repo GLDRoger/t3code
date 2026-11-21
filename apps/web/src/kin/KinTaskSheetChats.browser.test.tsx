@@ -125,6 +125,7 @@ function Tasks() {
       dialog={null}
       onDialog={() => {}}
       docLink={() => ""}
+      onLeave={() => {}}
     />
   );
 }

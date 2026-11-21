@@ -439,6 +439,79 @@ describe("KinGitHubWatch", () => {
     },
   );
 
+  it.effect(
+    "the agents' post log is read on from where it stopped and moves aside past a week; old weigh-only rows go",
+    () => {
+      const { github, layer } = setup();
+      return Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const issue = github.openItem({
+          repo: REPO,
+          pull: false,
+          author: "teammate-a",
+          association: "MEMBER",
+          title: "Rename the config",
+        });
+        yield* start(github);
+        const { stateDir } = yield* ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const log = `${stateDir}/kin/${GH_APP_FOLDER}/${AGENT_POSTS_FILE}`;
+        const line = (at: number, text: string) => `${Math.floor(at / 1000)}\t${postKey(text)}\n`;
+        yield* fs.makeDirectory(`${stateDir}/kin/${GH_APP_FOLDER}`, { recursive: true });
+        yield* fs.writeFileString(
+          log,
+          line(T0 - 8 * 24 * HOUR, "/kin an old post") + line(T0, "/kin rename it all\n"),
+        );
+        const ownerSays = (body: string) =>
+          github.comment({
+            repo: REPO,
+            number: issue,
+            author: "invented-owner",
+            association: "OWNER",
+            body,
+          });
+        ownerSays("/kin rename it all");
+        yield* look(github);
+        // Its first line was past the week, so the log moved aside; its keys are still known.
+        assert.isTrue(yield* fs.exists(`${log}.1`));
+        assert.isFalse(yield* fs.exists(log));
+        assert.lengthOf(yield* events, 0);
+        // A shell writes the next post to a new log, half a line at first.
+        const next = line(T0 + 2 * MINUTE, "/kin second post");
+        yield* fs.writeFileString(log, next.slice(0, 20));
+        yield* look(github);
+        yield* fs.writeFileString(log, next, { flag: "w" });
+        ownerSays("/kin second post");
+        ownerSays("/kin rename it all");
+        ownerSays("/kin go ahead");
+        yield* look(github);
+        assert.deepStrictEqual(
+          (yield* events).map((trigger) => trigger.text),
+          ["/kin go ahead"],
+        );
+
+        // A month on, rows that only stop a re-weigh go; what stops a second wake stays.
+        const old = T0 - 31 * 24 * HOUR;
+        for (const [key, outcome] of [
+          [`seen:${REPO}#${issue}:c1`, "seen"],
+          [`call:${REPO}#${issue}:c2`, "stale"],
+          [`capnote:${REPO}#${issue}:1`, "note"],
+          [`label:${REPO}#${issue}`, "woke"],
+          [`review:${REPO}#${issue}`, "capped"],
+          [`draft:${REPO}#${issue}`, "seen"],
+        ] as const)
+          yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
+            VALUES (${orgId}, ${key}, ${REPO}, ${issue}, NULL, ${outcome}, ${old})`;
+        yield* look(github, 24 * 60);
+        assert.deepStrictEqual(
+          (yield* sql<{ key: string }>`SELECT trigger_key AS key FROM kin_github_handled
+            WHERE org_id = ${orgId} AND at = ${old} ORDER BY trigger_key`).map((row) => row.key),
+          [`draft:${REPO}#${issue}`, `label:${REPO}#${issue}`, `review:${REPO}#${issue}`],
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("Kin's own memory PRs never wake anyone, in the memory repo or any other", () => {
     const { github, layer } = setup();
     github.addRepo({ full_name: MEMORY_REPO, private: true });

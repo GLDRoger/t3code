@@ -2,7 +2,7 @@ import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
-import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import { KIN_WAITING_TITLE, selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   KIN_DAILY_LIMIT,
   kinDailyLimitAsks,
@@ -54,7 +54,6 @@ import { openKinNotificationSettings } from "./notifications/installKinNotificat
 import { useChatOnlyEnvironments, useKinOwnerLevel, useKinSeesClients } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinInbox } from "./state/useKinInbox";
-import { useKinOpenWaiting } from "./state/useKinOpen";
 import { useKinProfiles } from "./state/useKinProfiles";
 import { useKinReconnect } from "./state/useKinReconnect";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -181,9 +180,7 @@ export function KinSettings(props: {
   });
   const you = groups[0]!;
   const companyGroup = groups.find((group) => group.id === "company");
-  const openWaiting = useKinOpenWaiting(host, state._tag === "ready" ? state.inbox.value : null);
-  const waiting =
-    state._tag === "ready" ? selectKinInboxView(state.inbox.value, openWaiting).waiting.length : 0;
+  const waiting = state._tag === "ready" ? selectKinInboxView(state.inbox.value).waiting.length : 0;
 
   // Two computers with one name are told apart by the address their rows show.
   const nameOf = (environment: EnvironmentPresentation) =>
@@ -214,7 +211,9 @@ export function KinSettings(props: {
   };
   const leave = (environmentId: EnvironmentId) =>
     Dialog.alert(
-      teamOf(environmentId) === null ? "Leave this team?" : `Leave ${teamOf(environmentId)}?`,
+      teamOf(environmentId) === null
+        ? KIN_DEVICE_COPY.leaveTeamTitle
+        : `Leave ${teamOf(environmentId)}?`,
       KIN_DEVICE_COPY.leave("phone"),
       [
         { text: "Cancel", style: "cancel" },
@@ -374,7 +373,7 @@ export function KinSettings(props: {
               >
                 <SettingsRow
                   icon="exclamationmark.circle"
-                  label="Waiting on you"
+                  label={KIN_WAITING_TITLE}
                   value={waiting === 0 ? "Nothing" : `${waiting}`}
                   valuePosition="trailing"
                   onPress={() => navigation.navigate("KinWaiting")}
@@ -412,7 +411,7 @@ export function KinSettings(props: {
               fullWidth
               label={
                 teamOf(environmentId) === null
-                  ? "Leave this team"
+                  ? KIN_DEVICE_COPY.leaveTeam
                   : `Leave ${teamOf(environmentId)}`
               }
               onPress={() => leave(environmentId)}

@@ -1,5 +1,5 @@
 import { useKinOwnerLevel, useKinViewerScope } from "./useKinOwnerLevel";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_TASK_GROUP_BY,
@@ -97,7 +97,6 @@ import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinAttention, useKinAttentionHandle } from "./useKinAttention";
-import { useKinOpen } from "./useKinOpen";
 import { useKinTaskSteps, type KinTaskStepStatus } from "./useKinTaskSteps";
 import {
   kinWorkLiveAtom,
@@ -230,12 +229,11 @@ export function KinWorkTaskList(
     kinWorkApplied(record, changed),
   );
   const ownerLevel = useKinOwnerLevel(environmentId);
-  const open = useKinOpen({ environmentId, orgId });
-  const pulse = useKinAttention({ environmentId, orgId }, within === undefined && open === null);
-  const facts = kinTasksDealFacts(open, { ownerLevel, names, now, pulse });
+  const pulse = useKinAttention({ environmentId, orgId }, within === undefined);
+  const facts = kinTasksDealFacts({ ownerLevel, names, now, pulse });
   const counts = list.counts();
   // The same number the nav's Tasks count shows (`useKinTasksNeedsYou`).
-  const needsYou = kinNeedsYouCount({ open: open ?? null, counts, dealFacts: facts.length });
+  const needsYou = kinNeedsYouCount({ counts, dealFacts: facts.length });
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";
   const items: ReadonlyArray<KinTasksItem<KinRecord>> =
@@ -357,7 +355,7 @@ export function KinWorkTaskList(
           footer === null ? null : (
             <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6 py-3">
               <p className="text-xs text-muted-foreground" role="status">
-                {listState.moreFailed ? "Couldn't load more." : footer}
+                {listState.moreFailed ? KIN_MORE_FAILED : footer}
               </p>
               <Button
                 size="xs"
@@ -598,7 +596,12 @@ function KinTaskRow(props: {
             disabled={props.saving}
             aria-label={`${TICK_LABEL[tick]}: ${row.title}`}
             title={TICK_LABEL[tick]}
-            onClick={() => onAct({ type: "state", state: tick === "done" ? "done" : "open" })}
+            // The second click of a double click would land on the flipped circle and undo it.
+            onClick={(event) =>
+              event.detail > 1
+                ? undefined
+                : onAct({ type: "state", state: tick === "done" ? "done" : "open" })
+            }
           >
             <KinWorkStateIcon state={row.state} />
           </Button>
@@ -979,7 +982,12 @@ export function KinWorkRow(props: {
             disabled={props.saving}
             aria-label={`${TICK_LABEL[tick]}: ${row.title}`}
             title={TICK_LABEL[tick]}
-            onClick={() => onAct({ type: "state", state: tick === "done" ? "done" : "open" })}
+            // The second click of a double click would land on the flipped circle and undo it.
+            onClick={(event) =>
+              event.detail > 1
+                ? undefined
+                : onAct({ type: "state", state: tick === "done" ? "done" : "open" })
+            }
           >
             <KinWorkStateIcon state={row.state} />
           </Button>

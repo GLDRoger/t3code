@@ -182,6 +182,7 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
       title: "Invented: book the hall",
       state: "open" as const,
       due: "2026-12-01T10:00:00.000Z",
+      dueDay: "Tue 1 Dec 2026",
       project: "Invented: launch",
     };
     assert.deepStrictEqual(yield* listMine(zoyaKey), { tasks: [task], more: false });

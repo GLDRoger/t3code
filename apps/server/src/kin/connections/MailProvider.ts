@@ -58,9 +58,15 @@ export type ReplyTarget = {
 };
 
 /** What arrived and changed since a time, as metadata only. */
+/** The most one activity read takes from a mailbox; the next read goes on from where it stopped. */
+export const ACTIVITY_MAIL = 100;
+export const ACTIVITY_EVENTS = 200;
+
 export type MailActivity = {
   /** Where the vendor's change feed stopped, for the next read; null for a vendor that keeps none. */
   readonly cursor: string | null;
+  /** Set when a read stopped at its bound: what came before this time was read whole. */
+  readonly until?: number;
   readonly mail: ReadonlyArray<{
     readonly threadId: string;
     readonly receivedBy: string | null;
@@ -230,16 +236,19 @@ export interface MailVendor {
   ) => Call<MailCalendarEvent>;
   /**
    * Inbox mail that arrived and events that changed, were cancelled or deleted since `since`,
-   * each occurrence of a series on its own. `cursor` is what the last read returned.
+   * each occurrence of a series on its own. `cursor` is what the last read returned. A read holds
+   * at most `ACTIVITY_MAIL` threads and `ACTIVITY_EVENTS` events; one that stops there sets `until`.
    */
   readonly activity: (
     context: MailContext,
     since: number,
     cursor: string | null,
+    now: number,
   ) => Call<{
     readonly threads: MailThreads;
     readonly events: ReadonlyArray<MailCalendarEvent>;
     readonly cursor: string | null;
+    readonly until?: number;
   }>;
   readonly account: MailProvider["account"];
   readonly sendAs: MailProvider["sendAs"];
@@ -296,6 +305,7 @@ export interface MailProvider {
     mailbox: Mailbox,
     since: number,
     cursor: string | null,
+    now: number,
   ) => Call<MailActivity>;
   /** A thread of another account is not found: a reply stays in its own account. */
   readonly replyTarget: (

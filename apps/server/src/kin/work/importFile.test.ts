@@ -258,17 +258,17 @@ describe("proposing columns", () => {
 const HEADERS =
   "Company,Status,Contact name,E-mail,Email 2,Phone,Address,Opportunity,Amount,Pipeline stage,Close date,Owner,Why we may mail them";
 const ROWS = [
-  // Rule 1: a contact's email Kin has.
+  // Named otherwise than Kin's client: a contact's email Kin has only asks.
   "Kestrel Freight Ltd,Customer,Lars Holm,lars@kestrel.example,,,Harbour Road 1,,,,,,yes",
-  // Rule 2: the web domain of another contact's email, at one client.
+  // So does the web domain of another contact's email, at one client.
   "Orbit Dental Group,Customer,Mia Berg,mia@orbitdental.example,,,,,,,,,",
-  // Rule 3: the folded name.
+  // The folded name.
   "INVENTED  LUMEN GROVE,Customer,,,,,,,,,,,",
   // Close to Lumen Grove: never merged by itself.
   "Invented Lumen Grove (Oslo),Prospect,,,,,,,,,,,",
   // A public mail domain says nothing: Corner Cafe's contact is at gmail too.
   "Invented Pebble Bakery,Lead,Pia Lund,pia.bakery@gmail.com,,,,,,,,,",
-  // One client three times: by name in another case, then by its web domain.
+  // One client twice, by name in another case; a third name at its web domain is its own client.
   "Invented Harbour Tiles,Prospect,Oda Dahl,oda@harbourtiles.example,,+47 900 00 001,,Showroom refit,18000,Negotiation,03/04/2026,Zoya,",
   "invented harbour tiles,,Oda Dahl,ODA@harbourtiles.example,,+47 900 00 002,,,,,,,",
   "Harbour Tiles Holdings,,Per Dahl,per@harbourtiles.example; sales@harbourtiles.example,per.dahl@harbourtiles.example,+47 900 00 003; +47 900 00 004,,Second site,EUR 2400,In talks,05/04/2026,Someone Else,",
@@ -303,11 +303,7 @@ describe("bringing a file in", () => {
         });
         assert.deepStrictEqual(
           first.matches.map((one) => [one.name, one.key, one.by, one.kept]),
-          [
-            ["Kestrel Freight Ltd", kestrel, "email", []],
-            ["Orbit Dental Group", orbit, "domain", []],
-            ["INVENTED  LUMEN GROVE", lumen, "name", []],
-          ],
+          [["INVENTED  LUMEN GROVE", lumen, "name", []]],
         );
         assert.deepStrictEqual(
           first.decide.map((one) => [
@@ -315,7 +311,11 @@ describe("bringing a file in", () => {
             one.candidates.map((candidate) => candidate.key),
             one.decision,
           ]),
-          [["Invented Lumen Grove (Oslo)", [lumen], null]],
+          [
+            ["Kestrel Freight Ltd", [kestrel], null],
+            ["Orbit Dental Group", [orbit], null],
+            ["Invented Lumen Grove (Oslo)", [lumen], null],
+          ],
         );
         assert.deepStrictEqual(first.stages, [{ value: "Negotiation", rows: 1, decision: null }]);
         assert.isFalse(first.ready);
@@ -324,11 +324,14 @@ describe("bringing a file in", () => {
           orgId,
           file,
           mapping: mapping(ready),
-          decisions: { clients: { r5: "new" }, stages: { negotiation: "deciding" } },
+          decisions: {
+            clients: { r2: kestrel, r3: orbit, r5: "new" },
+            stages: { negotiation: "deciding" },
+          },
         });
         assert.isTrue(decided.ready);
-        // Pebble and Oslo are prospects; Harbour Tiles' three rows are one prospect.
-        assert.deepStrictEqual(decided.will, { prospects: 3, clients: 0, contacts: 4, deals: 2 });
+        // Pebble and Oslo are prospects; Harbour Tiles' two rows are one prospect.
+        assert.deepStrictEqual(decided.will, { prospects: 3, clients: 1, contacts: 4, deals: 2 });
         assert.strictEqual(decided.matched, 3);
         assert.strictEqual(decided.ownersUnknown, 1);
         // Checking writes nothing.
@@ -342,9 +345,12 @@ describe("bringing a file in", () => {
 
   it.effect("finds each same name by the title index as it did without it", () =>
     Effect.gen(function* () {
-      yield* seed;
+      const { kestrel, orbit } = yield* seed;
       const sql = yield* SqlClient.SqlClient;
-      const decisions = { clients: { r5: "new" as const }, stages: { negotiation: "deciding" } };
+      const decisions = {
+        clients: { r2: kestrel, r3: orbit, r5: "new" as const },
+        stages: { negotiation: "deciding" },
+      };
       const first = fileOf(csvText);
       const { batch } = yield* ImportFile.check([rhea], {
         orgId,
@@ -397,10 +403,13 @@ describe("bringing a file in", () => {
     "imports as checked: in-file duplicates collapse, several emails and phones, deals through Deals, and a rerun changes nothing",
     () =>
       Effect.gen(function* () {
-        const { kestrel } = yield* seed;
+        const { kestrel, orbit } = yield* seed;
         const sql = yield* SqlClient.SqlClient;
         const file = fileOf(csvText);
-        const decisions = { clients: { r5: "new" as const }, stages: { negotiation: "deciding" } };
+        const decisions = {
+          clients: { r2: kestrel, r3: orbit, r5: "new" as const },
+          stages: { negotiation: "deciding" },
+        };
         const checked = yield* ImportFile.check([rhea], {
           orgId,
           file,
@@ -414,7 +423,7 @@ describe("bringing a file in", () => {
           decisions,
           batch: checked.batch,
         });
-        assert.deepStrictEqual(applied.added, { prospects: 3, clients: 0, contacts: 4, deals: 2 });
+        assert.deepStrictEqual(applied.added, { prospects: 3, clients: 1, contacts: 4, deals: 2 });
         assert.strictEqual(applied.matched, 3);
         assert.strictEqual(applied.filled, 1);
         assert.deepStrictEqual(applied.noticed, { noNextStep: 2, datesPassed: 2 });
@@ -426,14 +435,16 @@ describe("bringing a file in", () => {
           harbour.map((one) => [one.category, one.owner]),
           [["prospect", "zoya"]],
         );
-        const people = yield* sql<{ name: string; fields: string }>`SELECT title AS name,
-          fields_json AS fields FROM kin_records
-        WHERE org_id = ${orgId} AND register_id = 'contacts' AND party_id = ${harbour[0]!.recordId}
-        ORDER BY title`;
+        const people = yield* sql<{ client: string; name: string; fields: string }>`SELECT
+          p.title AS client, c.title AS name, c.fields_json AS fields FROM kin_records c
+          JOIN kin_records p ON p.org_id = c.org_id AND p.record_id = c.party_id
+        WHERE c.org_id = ${orgId} AND c.register_id = 'contacts' AND p.title LIKE '%Harbour Tiles%'
+        ORDER BY c.title`;
         assert.deepStrictEqual(
-          people.map((one) => [one.name, JSON.parse(one.fields)]),
+          people.map((one) => [one.client, one.name, JSON.parse(one.fields)]),
           [
             [
+              "Invented Harbour Tiles",
               "Oda Dahl",
               {
                 email: "oda@harbourtiles.example",
@@ -442,6 +453,7 @@ describe("bringing a file in", () => {
               },
             ],
             [
+              "Harbour Tiles Holdings",
               "Per Dahl",
               {
                 email: "per@harbourtiles.example",
@@ -454,7 +466,7 @@ describe("bringing a file in", () => {
                 phones: ["+47 900 00 003", "+47 900 00 004"],
               },
             ],
-          ].map(([name, fields]) => [name, fields]),
+          ],
         );
         const deals = yield* sql<{
           title: string;
@@ -473,7 +485,8 @@ describe("bringing a file in", () => {
             dayIn(one.dueAt, ZONE),
           ]),
           [
-            ["Second site", "in-talks", { minor: 240000, currency: "EUR" }, "zoya", "2026-04-05"],
+            // Its owner is no one Kin knows, so whoever imported it.
+            ["Second site", "in-talks", { minor: 240000, currency: "EUR" }, "rhea", "2026-04-05"],
             [
               "Showroom refit",
               "deciding",
@@ -593,6 +606,231 @@ describe("bringing a file in", () => {
   );
 
   it.effect(
+    "undo keeps a client or prospect someone logged contact with, and its contacts, and takes the rest",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const file = fileOf(
+          "Company,Status,Contact name,E-mail\nInvented Fenn Bakery,,Ida Lund,ida@fenn.example\nInvented Fenn Bakery,,Ola Lund,ola@fenn.example\nInvented Tarn Optics,Prospect,Per Vik,per@tarn.example\nInvented Moss Hall,,Eva Moss,eva@moss.example\nInvented Sund Yard,,Tor Sund,tor@sund.example\n",
+        );
+        const columns: ReadonlyArray<KinImportTarget> = [
+          "client.name",
+          "client.kind",
+          "contact.name",
+          "contact.email",
+        ];
+        const checked = yield* ImportFile.check([rhea], { orgId, file, mapping: { columns } });
+        yield* ImportFile.apply([rhea], {
+          orgId,
+          file,
+          mapping: { columns },
+          batch: checked.batch,
+        });
+        const keyOf = (title: string) =>
+          sql<{ key: string }>`SELECT key FROM kin_records
+            WHERE org_id = ${orgId} AND title = ${title}`.pipe(Effect.map((rows) => rows[0]?.key));
+        // Each way contact reaches a client: logged and kept, logged then taken back, none.
+        const cases = [
+          { client: "Invented Fenn Bakery", contacts: ["Ida Lund", "Ola Lund"], touch: "logged" },
+          { client: "Invented Tarn Optics", contacts: ["Per Vik"], touch: "removed" },
+          { client: "Invented Moss Hall", contacts: ["Eva Moss"], touch: "none" },
+          { client: "Invented Sund Yard", contacts: ["Tor Sund"], touch: "none" },
+        ] as const;
+        for (const one of cases) {
+          if (one.touch === "none") continue;
+          const logged = yield* Clients.logTouch([rhea], {
+            orgId,
+            party: (yield* keyOf(one.client))!,
+            kind: "email",
+            clientRequestId: one.client,
+          });
+          if (one.touch === "removed")
+            yield* Clients.removeTouch([rhea], { orgId, touchId: logged.id });
+        }
+        // The client is kept by the contact logged with it and by its own contacts, kept with it.
+        const keptWhy = yield* Effect.forEach(
+          cases.filter((one) => one.touch !== "none"),
+          (one) =>
+            Effect.gen(function* () {
+              const contacts = yield* Effect.forEach(one.contacts, keyOf);
+              return [
+                { key: (yield* keyOf(one.client))!, by: [...contacts, "a logged contact"] },
+                ...contacts.map((key) => ({ key: key!, by: ["a logged contact"] })),
+              ];
+            }),
+        );
+
+        const undone = yield* ImportFile.undo([rhea], { orgId, batch: checked.batch });
+        assert.deepStrictEqual(undone.removed, { clients: 2, contacts: 2, deals: 0, other: 0 });
+        assert.deepStrictEqual(
+          undone.kept,
+          keptWhy
+            .flat()
+            .map(({ key, by }) => ({
+              key,
+              reason: `${by.join(", ")} ${by.length === 1 ? "uses" : "use"} it`,
+            }))
+            .toSorted((a, b) => (a.key < b.key ? -1 : 1)),
+        );
+        for (const one of cases)
+          assert.deepStrictEqual(
+            yield* Effect.forEach([one.client, ...one.contacts], keyOf).pipe(
+              Effect.map((keys) => keys.map((key) => key !== undefined)),
+            ),
+            [one.client, ...one.contacts].map(() => one.touch !== "none"),
+            one.client,
+          );
+        const after = yield* ImportFile.runs([rhea], { orgId });
+        assert.strictEqual(after.runs[0]?.undone?.by, ownerId);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "puts each contact under the company its own row names, however alike the names and emails",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const pad = (value: number, width: number) => String(value).padStart(width, "0");
+        // Every email at one domain, as a test file or a shared mail host has them.
+        const person = (n: number) =>
+          [`Fenvale Contact ${pad(n, 4)}`, `fenvale${pad(n, 4)}@example.invalid`] as const;
+        const bring = Effect.fn("test.bring")(function* (
+          text: string,
+          name: string,
+          columns: ReadonlyArray<KinImportTarget>,
+        ) {
+          const file = fileOf(text, name);
+          const checked = yield* ImportFile.check([rhea], { orgId, file, mapping: { columns } });
+          assert.isTrue(checked.ready);
+          const applied = yield* ImportFile.apply([rhea], {
+            orgId,
+            file,
+            mapping: { columns },
+            batch: checked.batch,
+          });
+          return { checked, applied };
+        });
+        const underWhom = sql<{ contact: string; client: string }>`SELECT c.title AS contact,
+            p.title AS client FROM kin_records c JOIN kin_records p
+            ON p.org_id = c.org_id AND p.record_id = c.party_id
+          WHERE c.org_id = ${orgId} AND c.register_id = 'contacts' AND p.title LIKE 'Fenmere%'
+          ORDER BY c.title, p.title`;
+
+        // 5 contacts at each of 200 companies whose names differ only in their last digits.
+        const first = Array.from({ length: 1_000 }, (_, index) => {
+          const [contact, email] = person(index + 1);
+          return { contact, email, client: `Fenmere Works ${pad(Math.floor(index / 5) + 1, 3)}` };
+        });
+        const one = yield* bring(
+          `Name,Client,Role,Main email\n${first
+            .map((row) => `${row.contact},${row.client},Buyer,${row.email}`)
+            .join("\n")}\n`,
+          "fenmere.csv",
+          ["contact.name", "client.name", "contact.role", "contact.email"],
+        );
+        const made = { prospects: 0, clients: 200, contacts: 1_000, deals: 0 };
+        assert.deepStrictEqual([one.checked.will, one.applied.added], [made, made]);
+        assert.deepStrictEqual(
+          yield* underWhom,
+          first.map((row) => ({ contact: row.contact, client: row.client })),
+        );
+
+        // A second file at the same domain: new names that differ from Kin's only in digits are
+        // new companies; one Kin has, written in another case and spacing, is that one.
+        const header = "Name,Client,Role,Main email,Phone,Status,Deal,Stage";
+        const second = [
+          ...[201, 202, 203, 204].flatMap((company) =>
+            Array.from({ length: 5 }, (_, index) => {
+              const [contact, email] = person(company * 10 + index);
+              const lead = index === 0 && company <= 202;
+              return {
+                line: `${contact},Fenmere Works ${company},Buyer,${email},,${lead && company === 201 ? "Prospect" : ""},${lead ? `Pilot ${company}` : ""},${lead ? "In talks" : ""}`,
+                contact,
+                client: `Fenmere Works ${company}`,
+              };
+            }),
+          ),
+          ...(["FENMERE  works 001", "Fenmere Works - 001"] as const).map((client, index) => {
+            const [contact, email] = person(5_000 + index);
+            return {
+              line: `${contact},${client},Buyer,${email},,,,`,
+              contact,
+              client: "Fenmere Works 001",
+            };
+          }),
+          // Named in words, not digits, that Kin has nothing like.
+          {
+            line: `Harrow Contact,Fenmere Harrow Mills,Buyer,harrow@example.invalid,,,,`,
+            contact: "Harrow Contact",
+            client: "Fenmere Harrow Mills",
+          },
+        ];
+        const two = yield* bring(
+          `${header}\n${[
+            ...second.map((row) => row.line),
+            // No company named: with the row whose email it shares, as today.
+            `,,,${person(2_021)[1]},+47 900 00 021,,,`,
+            // No company and no email: left out, saying why.
+            "Nobody Known,,Buyer,,,,,",
+          ].join("\n")}\n`,
+          "fenmere-more.csv",
+          [
+            "contact.name",
+            "client.name",
+            "contact.role",
+            "contact.email",
+            "contact.phone",
+            "client.kind",
+            "deal.title",
+            "deal.stage",
+          ],
+        );
+        const more = { prospects: 1, clients: 4, contacts: 23, deals: 2 };
+        assert.deepStrictEqual([two.checked.will, two.applied.added], [more, more]);
+        assert.deepStrictEqual(
+          [two.checked.matches.map((match) => [match.name, match.by]), two.checked.decide],
+          [[["FENMERE  works 001", "name"]], []],
+        );
+        assert.strictEqual(two.applied.matched, 1);
+        assert.deepStrictEqual(
+          two.applied.leftOut.map((left) => left.reason),
+          ["This row names no client and no email, so Kin can't tell whose it is."],
+        );
+        assert.deepStrictEqual(
+          yield* underWhom,
+          [...first, ...second]
+            .map((row) => ({ contact: row.contact, client: row.client }))
+            .toSorted((a, b) => (a.contact < b.contact ? -1 : a.contact > b.contact ? 1 : 0)),
+        );
+        const [phoned] = yield* sql<{ phone: string }>`SELECT
+            json_extract(fields_json, '$.phone') AS phone FROM kin_records
+          WHERE org_id = ${orgId} AND title = ${person(2_021)[0]}`;
+        assert.strictEqual(phoned?.phone, "+47 900 00 021");
+        const deals = yield* sql<{ deal: string; client: string; category: string }>`SELECT
+            d.title AS deal, p.title AS client, p.category FROM kin_records d JOIN kin_records p
+            ON p.org_id = d.org_id AND p.record_id = d.party_id
+          WHERE d.org_id = ${orgId} AND d.register_id = 'deals' ORDER BY d.title`;
+        assert.deepStrictEqual(
+          deals.map((deal) => [deal.deal, deal.client, deal.category]),
+          [
+            ["Pilot 201", "Fenmere Works 201", "prospect"],
+            ["Pilot 202", "Fenmere Works 202", "client"],
+          ],
+        );
+
+        // Undo takes away exactly what the second file made.
+        const undone = yield* ImportFile.undo([rhea], { orgId, batch: two.checked.batch });
+        assert.deepStrictEqual(undone.removed, { clients: 5, contacts: 23, deals: 2, other: 0 });
+        assert.deepStrictEqual(
+          yield* underWhom,
+          first.map((row) => ({ contact: row.contact, client: row.client })),
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
     "is the owner level's: a co-owner brings a file in, a teammate is refused at every call",
     () =>
       Effect.gen(function* () {
@@ -630,6 +868,73 @@ describe("bringing a file in", () => {
             }),
           ),
           "invalid_state: This isn't the file you checked. Check it again before importing.",
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "holds the file after its first read, for its reader only, and lets it go once imported",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const file = fileOf("Company\nInvented Fjord Labs\n");
+        const mapping = { columns: ["client.name" as const] };
+        const first = yield* ImportFile.check([rhea], { orgId, file });
+        const upload = first.upload!;
+        assert.strictEqual(upload.hash.slice(0, 16), first.batch.slice(1));
+        const held = { name: file.name, upload };
+        const again = yield* ImportFile.check([rhea], { orgId, file: held, mapping });
+        assert.deepStrictEqual(
+          [again.batch, again.upload, again.will.clients],
+          [first.batch, upload, 1],
+        );
+        // Sent whole again, the same file keeps its id.
+        assert.deepStrictEqual((yield* ImportFile.check([rhea], { orgId, file })).upload, upload);
+
+        const gone = "not_found: Kin no longer has this file. Choose it again.";
+        const notChecked =
+          "invalid_state: This isn't the file you checked. Check it again before importing.";
+        const wrongHash = { ...held, upload: { ...upload, hash: "0".repeat(64) } };
+        assert.deepStrictEqual(
+          [
+            // A co-owner may import, but not with the file Rhea sent.
+            yield* refusal(ImportFile.check([meera], { orgId, file: held, mapping })),
+            yield* refusal(
+              ImportFile.apply([meera], { orgId, file: held, mapping, batch: first.batch }),
+            ),
+            yield* refusal(ImportFile.check([rhea], { orgId, file: wrongHash, mapping })),
+          ],
+          [gone, gone, notChecked],
+        );
+
+        const applied = yield* ImportFile.apply([rhea], {
+          orgId,
+          file: held,
+          mapping,
+          batch: first.batch,
+        });
+        assert.strictEqual(applied.added.clients, 1);
+        assert.strictEqual(yield* refusal(ImportFile.check([rhea], { orgId, file: held })), gone);
+
+        // An hour unused, it is gone; the file sent whole still imports.
+        const next = fileOf("Company\nInvented Harbour Tiles\n");
+        const later = (yield* ImportFile.check([rhea], { orgId, file: next })).upload!;
+        yield* TestClock.adjust("60 minutes");
+        const batch = (yield* ImportFile.check([rhea], { orgId, file: next, mapping })).batch;
+        assert.strictEqual(
+          yield* refusal(
+            ImportFile.apply([rhea], {
+              orgId,
+              file: { name: next.name, upload: later },
+              mapping,
+              batch,
+            }),
+          ),
+          gone,
+        );
+        assert.strictEqual(
+          (yield* ImportFile.apply([rhea], { orgId, file: next, mapping, batch })).added.clients,
+          1,
         );
       }).pipe(Effect.provide(layer)),
   );
@@ -730,6 +1035,19 @@ describe("bringing a file in", () => {
         assert.deepStrictEqual(
           left.runs.find((one) => one.batch === "cut"),
           cut,
+        );
+        // One another process runs, as the command line does, beats on its row: it is going.
+        yield* sql`INSERT INTO kin_import_runs (org_id, batch, action, person_id, started_at,
+            summary_json)
+          VALUES (${orgId}, 'shell', 'apply', ${ownerId}, ${NOW},
+            ${JSON.stringify({ done: 40, rows: 150, file: "shell.jsonl", beat: NOW })})`;
+        assert.deepStrictEqual(
+          (yield* ImportFile.runs([rhea], { orgId })).running?.map((one) => [
+            one.batch,
+            one.file,
+            one.done,
+          ]),
+          [["shell", "shell.jsonl", 40]],
         );
       }).pipe(Effect.provide(layer)),
   );

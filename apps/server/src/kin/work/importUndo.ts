@@ -73,8 +73,6 @@ const kinNumbered = (sql: SqlClient.SqlClient, orgId: KinOrgId, ids: Statement.F
         WHERE c.org_id = n.org_id AND c.record_id = n.record_id AND c.via <> 'import'
           AND json_extract(f.value, '$.field') = 'number')
     ORDER BY n.record_id`;
-/** Entries go before the projects and clients they point at, so a late keep strands nothing. */
-const ORDER: Record<string, number> = { entry: 0, deal: 0, contact: 0, project: 1, client: 2 };
 const changedSinceFilled = (fields: ReadonlyArray<string>) =>
   `it changed since the import filled in its ${fields.join(", ")}, so they stay`;
 
@@ -88,12 +86,17 @@ const batchRange = (sql: SqlClient.SqlClient, batch: string) => {
   };
 };
 
+const GENERATED = "a generated document";
+const LOGGED = "a logged contact";
+
 /**
  * What outside the removal points at `ids`: their client or project, a link, a link field, a
- * generated document (`by` null). Each keeps its target.
+ * generated document, contact logged with a client, which keeps its contacts too (`by` null).
+ * Each keeps its target. Every table with a foreign key to a record an import makes (it makes no
+ * docs) is here or deleted with it, so nothing refuses the delete.
  */
 const usersOf = (sql: SqlClient.SqlClient, orgId: KinOrgId, ids: Statement.Fragment) =>
-  sql<{ target: string; by: string | null; byKey: string | null }>`
+  sql<{ target: string; by: string | null; byKey: string }>`
     SELECT r.party_id AS target, r.record_id AS "by", r.key AS "byKey" FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.party_id IN ${ids}
     UNION ALL SELECT r.project_id, r.record_id, r.key FROM kin_records r
@@ -103,83 +106,45 @@ const usersOf = (sql: SqlClient.SqlClient, orgId: KinOrgId, ids: Statement.Fragm
       WHERE l.org_id = ${orgId} AND l.kind = 'record' AND l.target IN ${ids}
     UNION ALL SELECT j.value, r.record_id, r.key FROM kin_records r, json_each(r.fields_json) j
       WHERE r.org_id = ${orgId} AND j.type = 'text' AND j.value IN ${ids}
-    UNION ALL SELECT d.entry_record_id, NULL, NULL FROM kin_doc_jobs d
-      WHERE d.org_id = ${orgId} AND d.entry_record_id IN ${ids}`;
+    UNION ALL SELECT d.entry_record_id, NULL, ${GENERATED} FROM kin_doc_jobs d
+      WHERE d.org_id = ${orgId} AND d.entry_record_id IN ${ids}
+    UNION ALL SELECT DISTINCT t.party_id, NULL, ${LOGGED} FROM kin_client_touches t
+      WHERE t.org_id = ${orgId} AND t.party_id IN ${ids}
+    UNION ALL SELECT DISTINCT c.record_id, NULL, ${LOGGED} FROM kin_records c
+      JOIN kin_client_touches t ON t.org_id = c.org_id AND t.party_id = c.party_id
+      WHERE c.org_id = ${orgId} AND c.register_id = 'contacts' AND c.record_id IN ${ids}`;
 
-/**
- * Deletes one chunk of a batch's rows in one transaction. What to keep is worked out again inside
- * it, so a payment, change or use made while the undo runs keeps its row; those are returned and
- * taken out of `removing`.
- */
-export const removeChunk = Effect.fn("KinImport.removeChunk")(function* (
+/** Deletes these records and what hangs off them, inside the undo's transaction. */
+const removeChunk = Effect.fn("KinImport.removeChunk")(function* (
   orgId: KinOrgId,
-  batch: string,
   chunk: ReadonlyArray<string>,
-  removing: Set<string>,
-  options: { readonly includeChanged: boolean; readonly indexed: boolean },
+  indexed: boolean,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const { inBatch } = batchRange(sql, batch);
-  return yield* sql.withTransaction(
-    Effect.gen(function* () {
-      const asked = sql.in(chunk);
-      const held = new Set(
-        (yield* sql<{ id: string }>`SELECT p.record_id AS id FROM kin_record_payments p
-          WHERE p.org_id = ${orgId} AND p.record_id IN ${asked} AND NOT (${inBatch("p.origin_key")})
-          UNION SELECT n.id FROM (${kinNumbered(sql, orgId, sql`${asked}`)}) n
-          ${
-            options.includeChanged
-              ? sql``
-              : sql`UNION SELECT c.record_id FROM kin_record_changes c
-                WHERE c.org_id = ${orgId} AND c.via <> 'import' AND c.record_id IN ${asked}`
-          }`).map((one) => one.id),
-      );
-      const refs = yield* usersOf(sql, orgId, sql`${asked}`);
-      let moved = true;
-      while (moved) {
-        moved = false;
-        for (const ref of refs) {
-          if (held.has(ref.target) || ref.by === ref.target) continue;
-          if (ref.by !== null && removing.has(ref.by) && !held.has(ref.by)) continue;
-          held.add(ref.target);
-          moved = true;
-        }
-      }
-      for (const id of held) removing.delete(id);
-      const gone = chunk.filter((id) => !held.has(id));
-      if (gone.length > 0) {
-        const these = sql.in(gone);
-        if (options.indexed)
-          yield* sql`DELETE FROM kin_search WHERE rowid IN (SELECT id FROM kin_search_rows
-            WHERE org_id = ${orgId} AND record_id IN ${these})`;
-        yield* sql`DELETE FROM kin_search_rows WHERE org_id = ${orgId} AND record_id IN ${these}`;
-        yield* sql`DELETE FROM kin_record_links WHERE org_id = ${orgId} AND record_id IN ${these}`;
-        yield* sql`DELETE FROM kin_record_payments WHERE org_id = ${orgId} AND record_id IN ${these}`;
-        // Its number goes with it; the series stays where it is, so none is issued twice.
-        yield* sql`DELETE FROM kin_issued_numbers WHERE org_id = ${orgId} AND record_id IN ${these}`;
-        yield* sql`DELETE FROM kin_record_comment_files WHERE org_id = ${orgId}
-          AND comment_id IN (SELECT comment_id FROM kin_record_comments
-            WHERE org_id = ${orgId} AND record_id IN ${these})`;
-        yield* sql`DELETE FROM kin_record_comments WHERE org_id = ${orgId} AND record_id IN ${these}`;
-        yield* sql`DELETE FROM kin_record_changes WHERE org_id = ${orgId} AND record_id IN ${these}`;
-        yield* sql`DELETE FROM kin_records WHERE org_id = ${orgId} AND record_id IN ${these}`;
-      }
-      return chunk.filter((id) => held.has(id));
-    }),
-  );
+  const these = sql.in(chunk);
+  if (indexed)
+    yield* sql`DELETE FROM kin_search WHERE rowid IN (SELECT id FROM kin_search_rows
+      WHERE org_id = ${orgId} AND record_id IN ${these})`;
+  yield* sql`DELETE FROM kin_search_rows WHERE org_id = ${orgId} AND record_id IN ${these}`;
+  yield* sql`DELETE FROM kin_record_links WHERE org_id = ${orgId} AND record_id IN ${these}`;
+  yield* sql`DELETE FROM kin_record_payments WHERE org_id = ${orgId} AND record_id IN ${these}`;
+  // Its number goes with it; the series stays where it is, so none is issued twice.
+  yield* sql`DELETE FROM kin_issued_numbers WHERE org_id = ${orgId} AND record_id IN ${these}`;
+  yield* sql`DELETE FROM kin_record_comment_files WHERE org_id = ${orgId}
+    AND comment_id IN (SELECT comment_id FROM kin_record_comments
+      WHERE org_id = ${orgId} AND record_id IN ${these})`;
+  yield* sql`DELETE FROM kin_record_comments WHERE org_id = ${orgId} AND record_id IN ${these}`;
+  yield* sql`DELETE FROM kin_record_changes WHERE org_id = ${orgId} AND record_id IN ${these}`;
+  yield* sql`DELETE FROM kin_records WHERE org_id = ${orgId} AND record_id IN ${these}`;
 });
 
-/** Takes a batch away: what it made that nobody changed, paid in Kin or uses since, in chunks. */
-export const undoBatch = Effect.fn("KinImport.undo")(function* (
+/** What taking a batch away would do: what it made that nobody changed, paid in Kin or uses since. */
+const decide = Effect.fn("KinImport.undoPlan")(function* (
   orgId: KinOrgId,
-  owner: KinPersonId,
   batch: string,
   options: { readonly apply: boolean; readonly includeChanged: boolean },
-  /** How far it is, for whoever watches; its row's `seq` once it has one. */
-  entry?: { seq: number | null; done: number; of: number },
 ) {
   const sql = yield* SqlClient.SqlClient;
-  if (!BATCH.test(batch)) return yield* invalid(`${batch} isn't a batch name.`);
   const { from, inBatch } = batchRange(sql, batch);
   const rows = yield* sql<{
     recordId: string;
@@ -235,7 +200,7 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
     if (!keyOf.has(target) || removing.has(target) || by === target) continue;
     if ((edited.has(target) && !options.includeChanged) || (by !== null && removing.has(by)))
       continue;
-    users.set(target, (users.get(target) ?? new Set()).add(ref.byKey ?? "a generated document"));
+    users.set(target, (users.get(target) ?? new Set()).add(ref.byKey));
   }
   const kept = [...new Set([...paid, ...numbered.keys(), ...users.keys()])]
     .map((target) => {
@@ -255,9 +220,7 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
     .toSorted((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 
   const kindOf = (originKey: string) => originKey.slice(from.length).split(":")[0] ?? "";
-  const gone = rows
-    .filter((one) => removing.has(one.recordId))
-    .toSorted((a, b) => (ORDER[kindOf(a.originKey)] ?? 0) - (ORDER[kindOf(b.originKey)] ?? 0));
+  const gone = rows.filter((one) => removing.has(one.recordId));
   const keptPaid = yield* sql<{ id: string; n: number }>`SELECT record_id AS id, COUNT(*) AS n
     FROM kin_record_payments WHERE org_id = ${orgId} AND record_id IN (${ids}) GROUP BY record_id`;
   const payments = keptPaid.reduce((sum, one) => sum + (removing.has(one.id) ? one.n : 0), 0);
@@ -326,122 +289,92 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
     kept: [...kept, ...changedFills].slice(0, MAX_LISTED),
     lists,
   };
-  if (!options.apply) return report;
+  return { report, gone, restoring, lists };
+});
 
+export const IMPORT_BUSY =
+  "Kin is importing or undoing a file for this company now. Wait for it to finish, then try again.";
+/** An unfinished apply's row is held this long past its last chunk (`$.beat`); past it, its host stopped. */
+const IMPORT_LEASE_MS = 60_000;
+export const beating = (beat: number | undefined, now: number) =>
+  beat !== undefined && beat > now - IMPORT_LEASE_MS;
+
+/** In the caller's transaction: refused while any process on this database applies for the org. */
+export const notImporting = Effect.fn("KinImport.notImporting")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  const [held] = yield* sql<{ seq: number }>`SELECT seq FROM kin_import_runs
+    WHERE org_id = ${orgId} AND action = 'apply' AND finished_at IS NULL
+      AND json_extract(summary_json, '$.beat') > ${now - IMPORT_LEASE_MS}
+    ORDER BY seq LIMIT 1`;
+  if (held !== undefined)
+    return yield* new KinChatError({ reason: "conflict", message: IMPORT_BUSY });
+});
+
+/**
+ * Takes a batch away, or with `apply` false says what that would do. Applied, it is one
+ * transaction that decides again inside it: whatever refuses part way (a busy or full database)
+ * takes nothing away. Keys never go back, as memory and chats name entries by key.
+ */
+export const undoBatch = Effect.fn("KinImport.undo")(function* (
+  orgId: KinOrgId,
+  owner: KinPersonId,
+  batch: string,
+  options: { readonly apply: boolean; readonly includeChanged: boolean },
+  /** How far it is, for whoever watches. */
+  entry?: { done: number; of: number },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if (!BATCH.test(batch)) return yield* invalid(`${batch} isn't a batch name.`);
+  if (!options.apply) return (yield* decide(orgId, batch, options)).report;
   const records = yield* KinRecords;
   const writer = { actor: { _tag: "person" as const, personId: owner }, via: "import" as const };
-  const refreshes = yield* KinRefreshObserver;
-  const [started] = yield* sql<{ seq: number }>`INSERT INTO kin_import_runs (org_id, batch,
-      action, person_id, started_at, summary_json)
-    VALUES (${orgId}, ${batch}, 'undo', ${owner}, ${yield* Clock.currentTimeMillis},
-      ${encodeJson({ done: 0, rows: gone.length })})
-    RETURNING seq`;
-  const seq = started?.seq ?? null;
-  if (entry !== undefined) {
-    entry.seq = seq;
-    entry.of = gone.length;
-  }
-  yield* refreshes.touch(orgId, "imports");
-  let restored = 0;
-  const lateFills: Array<string> = [];
-  for (const fill of restoring) {
-    const fields: Record<string, null> = {};
-    for (const name of fill.fields) {
-      if (name === "notes") continue;
-      fields[name] = null;
-      if (name === "email" || name === "phone") fields[`${name}s`] = null;
-    }
-    // Its rev is checked as it writes: a change made while the undo runs keeps it.
-    const done = yield* records
-      .update(
-        orgId,
-        writer,
-        fill.key,
-        {
-          ...(Object.keys(fields).length === 0 ? {} : { fields }),
-          ...(fill.fields.includes("notes") ? { notes: "" } : {}),
-        },
-        fill.rev,
-      )
-      .pipe(Effect.as(true), Effect.catchTags({ KinChatError: () => Effect.succeed(false) }));
-    if (done) restored += 1;
-    else lateFills.push(fill.key);
-  }
-
-  const indexed = yield* searchIndexed();
-  const late: Array<string> = [];
-  for (let index = 0; index < gone.length; index += CHUNK) {
-    const chunk = gone.slice(index, index + CHUNK).map((one) => one.recordId);
-    late.push(
-      ...(yield* removeChunk(orgId, batch, chunk, removing, {
-        includeChanged: options.includeChanged,
-        indexed,
-      })),
-    );
-    const done = Math.min(gone.length, index + CHUNK);
-    yield* sql`UPDATE kin_import_runs SET summary_json = json_set(summary_json, '$.done', ${done})
-      WHERE seq = ${seq}`;
-    if (entry !== undefined) entry.done = done;
-    yield* refreshes.touch(orgId, "imports");
-  }
-  const stayed = new Set(late);
-  const removed = gone.filter((one) => !stayed.has(one.recordId));
-  const final: UndoReport =
-    late.length === 0
-      ? { ...report, restored }
-      : {
-          ...report,
-          removes: {
-            clients: removed.filter((one) => kindOf(one.originKey) === "client").length,
-            projects: removed.filter((one) => kindOf(one.originKey) === "project").length,
-            entries: removed.filter((one) => kindOf(one.originKey) === "entry").length,
-            payments: keptPaid.reduce((sum, one) => sum + (stayed.has(one.id) ? 0 : one.n), 0),
-            contacts: removed.filter((one) => kindOf(one.originKey) === "contact").length,
-            deals: removed.filter((one) => kindOf(one.originKey) === "deal").length,
-          },
-          restored,
-          kept: [
-            ...report.kept,
-            ...late.map((id) => ({
-              key: keyOf.get(id) ?? id,
-              reason: "it changed while the undo ran",
-            })),
-          ].slice(0, MAX_LISTED),
-        };
-  const settled: UndoReport =
-    lateFills.length === 0
-      ? final
-      : {
-          ...final,
-          kept: [
-            ...final.kept,
-            ...lateFills.map((key) => ({ key, reason: "it changed while the undo ran" })),
-          ].slice(0, MAX_LISTED),
-        };
-  const touched = [...new Set(gone.map((one) => one.registerId))];
-  yield* sql.withTransaction(
+  const { report, lists } = yield* sql.withTransaction(
     Effect.gen(function* () {
-      // Keys past every entry still on a list were the batch's alone; the next entry reuses them.
-      if (touched.length > 0)
-        yield* sql`UPDATE kin_registers SET next_number = MIN(next_number, 1 + COALESCE((
-            SELECT MAX(CAST(substr(r.key, length(rtrim(r.key, '0123456789')) + 1) AS INTEGER))
-            FROM kin_records r
-            WHERE r.org_id = kin_registers.org_id AND r.register_id = kin_registers.register_id
-          ), 0))
-          WHERE org_id = ${orgId} AND register_id IN ${sql.in(touched)}`;
+      yield* notImporting(orgId);
+      const started = yield* Clock.currentTimeMillis;
+      const plan = yield* decide(orgId, batch, options);
+      const { gone, restoring, lists } = plan;
+      if (entry !== undefined) entry.of = gone.length;
+      for (const fill of restoring) {
+        const fields: Record<string, null> = {};
+        for (const name of fill.fields) {
+          if (name === "notes") continue;
+          fields[name] = null;
+          if (name === "email" || name === "phone") fields[`${name}s`] = null;
+        }
+        yield* records.update(
+          orgId,
+          writer,
+          fill.key,
+          {
+            ...(Object.keys(fields).length === 0 ? {} : { fields }),
+            ...(fill.fields.includes("notes") ? { notes: "" } : {}),
+          },
+          fill.rev,
+        );
+      }
+      const indexed = yield* searchIndexed();
+      for (let index = 0; index < gone.length; index += CHUNK) {
+        const chunk = gone.slice(index, index + CHUNK).map((one) => one.recordId);
+        yield* removeChunk(orgId, chunk, indexed);
+        if (entry !== undefined) entry.done = Math.min(gone.length, index + CHUNK);
+      }
       // A list's number series outlives it: defined again, the list carries on its numbers.
       for (const one of lists)
-        if (one.action === "remove") {
+        if (one.action === "remove")
           yield* sql`DELETE FROM kin_registers WHERE org_id = ${orgId} AND register_id = ${one.list}
             AND NOT EXISTS (SELECT 1 FROM kin_records WHERE org_id = ${orgId} AND register_id = ${one.list})`;
-          yield* (yield* KinRefreshObserver).touch(orgId, "workLists");
-        }
-      const finished = yield* Clock.currentTimeMillis;
-      yield* sql`UPDATE kin_import_runs SET finished_at = ${finished},
-          lists_json = ${encodeJson(lists.filter((one) => one.action === "remove").map((one) => one.list))},
-          summary_json = ${encodeJson({ ...settled.removes, restored, changed: report.changed.length, kept: settled.kept.length, includeChanged: options.includeChanged })}
-        WHERE seq = ${seq}`;
+      const { report } = plan;
+      yield* sql`INSERT INTO kin_import_runs (org_id, batch, action, person_id, started_at,
+          finished_at, lists_json, summary_json)
+        VALUES (${orgId}, ${batch}, 'undo', ${owner}, ${started}, ${yield* Clock.currentTimeMillis},
+          ${encodeJson(lists.filter((one) => one.action === "remove").map((one) => one.list))},
+          ${encodeJson({ ...report.removes, restored: report.restored, changed: report.changed.length, kept: report.kept.length, includeChanged: options.includeChanged })})`;
+      return plan;
     }),
   );
-  return settled;
+  if (lists.some((one) => one.action === "remove"))
+    yield* (yield* KinRefreshObserver).touch(orgId, "workLists");
+  return report;
 }, workFailure);

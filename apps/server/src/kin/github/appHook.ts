@@ -17,6 +17,7 @@ import { publicAddress } from "../publicAddress.ts";
 import { hookSecretName, hookSetName } from "./appKey.ts";
 import { repoList } from "./githubWatchStore.ts";
 import { appSettingsPage, KinGitHubApp } from "./KinGitHubApp.ts";
+import { HOUR_MS, MINUTE_MS } from "../durations.ts";
 
 /**
  * GitHub telling Kin at once: the App's webhook, which Kin sets up itself where it has a public
@@ -43,11 +44,9 @@ export const HOOK_EVENTS = {
 export const LOOKS_PER_HOUR = 300;
 /** Looks waiting at once, across every org; past it a delivery is dropped for the poll to find. */
 export const LOOKS_PENDING = 100;
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-const ENSURE_EVERY_MS = 24 * HOUR;
-const ENSURE_RETRY_MS = HOUR;
-const STATUS_KEPT_MS = 3 * MINUTE;
+const ENSURE_EVERY_MS = 24 * HOUR_MS;
+const ENSURE_RETRY_MS = HOUR_MS;
+const STATUS_KEPT_MS = 3 * MINUTE_MS;
 
 const HookConfig = Schema.Struct({ url: Schema.optional(Schema.NullOr(Schema.String)) });
 const decodeHookConfig = Schema.decodeUnknownOption(HookConfig);
@@ -147,8 +146,8 @@ export const make = Effect.gen(function* () {
       const entry = pending.get(look.key);
       if (entry !== undefined && (!entry.running || entry.again)) return Effect.void;
       if (entry === undefined && pending.size >= LOOKS_PENDING) return Effect.void;
-      if (Math.floor(now / HOUR) !== hour) {
-        hour = Math.floor(now / HOUR);
+      if (Math.floor(now / HOUR_MS) !== hour) {
+        hour = Math.floor(now / HOUR_MS);
         spent = 0;
       }
       if (spent >= LOOKS_PER_HOUR) return Effect.void;

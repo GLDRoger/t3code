@@ -458,9 +458,7 @@ export function KinLeadProfileView({
             selectable
             className={charter === "" ? "text-foreground-muted" : "text-foreground"}
           >
-            {charter === ""
-              ? "Nothing written yet. Add a few lines so it knows what to focus on."
-              : charter}
+            {charter === "" ? KIN_AGENT_PAGE.charterNone : charter}
           </Text>
         </View>
       </ListSection>

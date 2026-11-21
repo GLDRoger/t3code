@@ -76,11 +76,12 @@ import {
   spineShown,
   taskSpecChanged,
 } from "./leadSpine.ts";
-import { contactFields, contactSensitive } from "./contactDetails.ts";
+import { contactAll, contactFields, contactSensitive } from "./contactDetails.ts";
 import { fieldList, fieldText, isMoney, LISTS, listOf, parseFields, shownField } from "./lists.ts";
 import {
   addUp,
   dayIn,
+  dayWords,
   farAbove,
   formatMoney,
   issuedAfterDue,
@@ -104,6 +105,7 @@ import {
   sensitiveNow,
   suggestedStateLabel,
   toRecord,
+  UNISSUED_INVOICE,
   workFailure,
 } from "./recordRows.ts";
 import {
@@ -139,6 +141,7 @@ import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
+import { DAY_MS } from "../durations.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -156,6 +159,7 @@ const Due = Schema.NullOr(
   description:
     "A calendar day in the owner's time zone (2026-11-20), or a time with its offset (2026-11-20T18:00+05:30). null clears it.",
 });
+const WaitingOn = KinToolText(120, "Who it waits on, written as owner is.");
 const Title = KinToolText(280);
 const Notes = Schema.String.check(Schema.isMaxLength(4_000));
 const List = KinListId.annotate({
@@ -251,12 +255,14 @@ const DealShown = Schema.Struct({
   stage: Schema.String,
   value: Schema.optional(Schema.String),
   expected: Schema.optional(Schema.String),
+  expectedDay: Schema.optional(Schema.String),
   lookedAfterBy: Schema.String,
   next: Schema.NullOr(
     Schema.Struct({
       key: Schema.String,
       title: Schema.String,
       due: Schema.optional(Schema.String),
+      dueDay: Schema.optional(Schema.String),
       late: Schema.optional(Schema.Literal(true)),
     }),
   ).annotate({ description: "Its soonest open follow-up they see; null when there is none." }),
@@ -276,6 +282,7 @@ const Row = Schema.Struct({
   owner: Schema.String,
   waitingOn: Schema.optional(Schema.String),
   due: Schema.optional(Schema.String),
+  dueDay: Schema.optional(Schema.String),
   late: Schema.optional(Schema.Literal(true)),
   suggested: Schema.optional(Schema.Literal(true)),
   working: Schema.optional(Schema.Literal(true)),
@@ -445,7 +452,10 @@ export const GetResult = Schema.Struct({
   projectNote: Schema.optional(Schema.Struct({ from: Schema.String, text: Schema.String })),
 });
 /** A deal's next step: a task of ours on its client, linked to the deal, as its page adds one. */
-const DealNext = Schema.Struct({ title: Title, due: Schema.optional(Due) }).annotate({
+const DealNext = Schema.Struct({
+  title: Title,
+  due: Schema.optional(Due.annotate({ description: "Written as due is." })),
+}).annotate({
   description:
     "A deal's next step, with due as its day: a task of ours on its client, linked to the deal. Only on a deal.",
 });
@@ -454,7 +464,7 @@ const CreateRow = Schema.Struct({
   title: Title,
   owner: Schema.optional(Who),
   state: Schema.optional(KinRecordState),
-  waitingOn: Schema.optional(Who),
+  waitingOn: Schema.optional(WaitingOn),
   due: Schema.optional(Due),
   notes: Schema.optional(Notes),
   category: Schema.optional(Category),
@@ -526,7 +536,7 @@ export const CreateResult = Schema.Struct({
       created: Schema.Boolean,
       /** A meeting whose start has passed: recorded as held, not booked. */
       past: Schema.optional(Schema.Literal(true)),
-      /** On a suggestion only: the state it was stored in, whatever the row asked for. */
+      /** On a suggestion or an invoice draft only: the state it was stored in, whatever was asked. */
       state: Schema.optional(KinRecordState),
       stateLabel: Schema.optional(Schema.String),
       suggested: Schema.optional(Schema.Literal(true)),
@@ -551,7 +561,7 @@ export const UpdateInput = Schema.Struct({
   sourceEventId: TurnEvent,
   title: Schema.optional(Title),
   state: Schema.optional(KinRecordState),
-  waitingOn: Schema.optional(Who),
+  waitingOn: Schema.optional(WaitingOn),
   owner: Schema.optional(Who),
   due: Schema.optional(Due),
   notes: Schema.optional(Notes),
@@ -593,6 +603,8 @@ const Updated = Schema.Struct({
   key: Schema.String,
   rev: Schema.Number,
   state: KinRecordState,
+  /** On an invoice an agent asked to issue or settle by its state: still a draft. */
+  stateLabel: Schema.optional(Schema.String),
   changed: Schema.Array(Schema.String),
   ...Marks.fields,
   /** Other contacts with the same email. */
@@ -609,6 +621,7 @@ export const UpdateResult = Schema.Struct({
   key: Schema.optional(Updated.fields.key),
   rev: Schema.optional(Updated.fields.rev),
   state: Schema.optional(Updated.fields.state),
+  stateLabel: Updated.fields.stateLabel,
   changed: Schema.optional(Updated.fields.changed),
   ...Marks.fields,
   sameEmail: Updated.fields.sameEmail,
@@ -1025,7 +1038,12 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     state: record.state,
     owner: name(record.owner) ?? "someone",
     ...(waitingOn === undefined ? {} : { waitingOn }),
-    ...(record.dueAt === null ? {} : { due: dayOrTime(record.dueAt, record.dueAllDay, view.zone) }),
+    ...(record.dueAt === null
+      ? {}
+      : {
+          due: dayOrTime(record.dueAt, record.dueAllDay, view.zone),
+          dueDay: dayWords(Date.parse(record.dueAt), view.zone),
+        }),
     ...(record.late ? { late: true as const } : {}),
     ...(record.confirmed ? {} : { suggested: true as const }),
     ...(record.working ? { working: true as const } : {}),
@@ -1088,7 +1106,10 @@ const dealsShown = Effect.fnUntraced(function* (
         ...(deal.value === undefined ? {} : { value: formatMoney(deal.value) }),
         ...(deal.expectedAt === null
           ? {}
-          : { expected: dayOrTime(deal.expectedAt, deal.expectedAllDay, view.zone) }),
+          : {
+              expected: dayOrTime(deal.expectedAt, deal.expectedAllDay, view.zone),
+              expectedDay: dayWords(Date.parse(deal.expectedAt), view.zone),
+            }),
         lookedAfterBy: view.name(deal.owner) ?? "someone",
         next:
           deal.next === null
@@ -1098,7 +1119,10 @@ const dealsShown = Effect.fnUntraced(function* (
                 title: deal.next.title,
                 ...(deal.next.dueAt === null
                   ? {}
-                  : { due: dayOrTime(deal.next.dueAt, deal.next.dueAllDay, view.zone) }),
+                  : {
+                      due: dayOrTime(deal.next.dueAt, deal.next.dueAllDay, view.zone),
+                      dueDay: dayWords(Date.parse(deal.next.dueAt), view.zone),
+                    }),
                 ...(deal.next.late ? { late: true as const } : {}),
               },
         ...(deal.quote === undefined
@@ -1744,7 +1768,6 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
 });
 export const query = leadTool("KinWorkTools.query", runQuery);
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const TOTALS_BY: Record<NonNullable<typeof QueryInput.Type.groupBy>, TotalsBy> = {
   client: "party",
   project: "project",
@@ -1891,15 +1914,15 @@ const mailedFor = Effect.fnUntraced(function* (
   if (!MAILED_LISTS.has(row.registerId)) return [];
   if (row.registerId !== "clients") return yield* sentMail({ orgId, recordIds: [row.recordId] });
   const sql = yield* SqlClient.SqlClient;
-  const related = yield* sql<{ recordId: string; email: string | null }>`SELECT record_id AS
-      "recordId", json_extract(fields_json, '$.email') AS email
+  const related = yield* sql<{ recordId: string; fieldsJson: string }>`SELECT record_id AS
+      "recordId", fields_json AS "fieldsJson"
     FROM kin_records WHERE org_id = ${orgId} AND party_id = ${row.recordId}
       AND register_id IN ('invoices', 'quotes', 'receipts', 'contacts')
     ORDER BY record_id`;
   return yield* sentMail({
     orgId,
     recordIds: related.map((one) => one.recordId),
-    addresses: related.flatMap((one) => (typeof one.email === "string" ? [one.email] : [])),
+    addresses: related.flatMap((one) => contactAll(parseFields(one.fieldsJson), "email")),
   });
 });
 const COMMENTS_SHOWN = 10;
@@ -2158,7 +2181,8 @@ const createRow = Effect.fnUntraced(function* (
   const def = yield* listFor(lead, row.list ?? "work");
   const list = def.id;
   // A deal's rules are `deals.ts`'s, whoever writes it.
-  if (list === "deals") return yield* dealRow(lead, sourceEventId, writer, def, lists, row);
+  if (list === "deals")
+    return yield* dealRow(lead, sourceEventId, writer, def, lists, row, notices);
   if (row.next !== undefined) return yield* NEXT_IS_A_DEALS;
   // For a teammate alone in the turn, a prospect or a contact is what their own Clients form adds
   // (`memberAdds`, `memberAddsContact`).
@@ -2361,7 +2385,9 @@ const createRow = Effect.fnUntraced(function* (
           ),
           suggested: true as const,
         }
-      : {}),
+      : isInvoiceDraft(stored.registerId, stored.state)
+        ? { state: stored.state, stateLabel: UNISSUED_INVOICE }
+        : {}),
     ...marksOf(lists, stored),
     ...(created && alsoOpen.length > 0 ? { alsoOpen } : {}),
     ...(alsoNamed === undefined ? {} : { alsoNamed }),
@@ -2403,6 +2429,7 @@ const dealRow = Effect.fnUntraced(function* (
   def: ListDef,
   lists: Lists,
   row: typeof CreateRow.Type,
+  notices: Array<AssignNotice>,
 ) {
   if (row.client === undefined)
     return yield* invalid("A deal needs its client or prospect: give client.");
@@ -2417,7 +2444,7 @@ const dealRow = Effect.fnUntraced(function* (
   const actor = yield* Deals.agentActor(lead.orgId, writer);
   const originKey = `lead:${lead.agentId}:${sourceEventId}:${retryKey(`deals|${party.recordId}|${titleKey(row.title)}`)}`;
   yield* dealsOpenOn(actor, party.recordId, party.name, originKey, row.besides ?? []);
-  const { row: stored, created } = yield* Deals.createAs(actor, {
+  const made = yield* Deals.createAs(actor, {
     partyKey: party.key,
     title: row.title,
     ...(fields.stage === undefined || fields.stage === null ? {} : { stage: fields.stage }),
@@ -2433,6 +2460,8 @@ const dealRow = Effect.fnUntraced(function* (
     ...(row.next === undefined ? {} : { next: stepOf(row.next) }),
     originKey,
   });
+  const { row: stored, created } = made;
+  notices.push(...made.notices);
   return {
     key: stored.key,
     title: stored.title,
@@ -2648,7 +2677,6 @@ const PARTY_KIND: Partial<Record<string, KinPartyKind>> = {
   receipts: "client",
 };
 
-const DAY = 86_400_000;
 const NEAR_DAYS = 3;
 const REPEAT_CANDIDATES = 2000;
 const REPEATS_SHOWN = 5;
@@ -2680,7 +2708,7 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
     paid === undefined
       ? sql`r.state NOT IN ('done', 'dropped')`
       : sql`r.state != 'dropped' AND r.amount_minor = ${paid.minor} AND r.currency = ${paid.currency}
-          AND abs(r.date_at - ${row.dateAt}) <= ${(NEAR_DAYS + 1) * DAY}`;
+          AND abs(r.date_at - ${row.dateAt}) <= ${(NEAR_DAYS + 1) * DAY_MS}`;
   const rows = yield* sql<{
     key: string;
     title: string;
@@ -2711,7 +2739,7 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
     if (
       paid !== undefined &&
       !sameDay &&
-      Math.abs(Date.parse(day(one.dateAt)!) - Date.parse(day(row.dateAt)!)) > NEAR_DAYS * DAY
+      Math.abs(Date.parse(day(one.dateAt)!) - Date.parse(day(row.dateAt)!)) > NEAR_DAYS * DAY_MS
     )
       return [];
     const differs = [
@@ -3054,6 +3082,12 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
       key: after.key,
       rev: after.rev,
       state: after.state,
+      ...(input.state !== undefined &&
+      input.state !== after.state &&
+      !isSuggestion(after) &&
+      isInvoiceDraft(after.registerId, after.state)
+        ? { stateLabel: UNISSUED_INVOICE }
+        : {}),
       changed,
       ...marksOf(lists, after),
       ...(hiddenFrom.length === 0 ? {} : { noLongerSeenBy: hiddenFrom }),
