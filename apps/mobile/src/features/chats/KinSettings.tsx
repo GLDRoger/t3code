@@ -1,6 +1,7 @@
 import { KIN_THIS_PHONE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, useRoute } from "@react-navigation/native";
+import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import { KIN_PROFILE_COPY, kinRoleLine } from "@t3tools/client-runtime/kin/kinProfiles";
 import {
   KIN_NOTIFICATIONS_OPENS,
@@ -30,7 +31,7 @@ import { KIN_CONNECTION_LABEL } from "./KinThisPhoneScreen";
 import { useKinOwnerLevel } from "./state/kinChatOnly";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinProfiles } from "./state/useKinProfiles";
-import { useForgetReplacedComputers } from "./state/useKinReconnect";
+import { useForgetReplacedComputers, useKinLeaving } from "./state/useKinReconnect";
 
 const noSessionAtom = Atom.make(null);
 
@@ -64,7 +65,11 @@ export function KinSettings(props: {
   const settingsBack = useSettingsPageBack();
   const bottomClearance = useKinTab()?.bottomClearance ?? 0;
   const inbox = useKinInbox();
-  const host = inbox.host;
+  const { leaving } = useKinLeaving();
+  const host: KinHost =
+    inbox.host._tag === "host" && leaving.includes(inbox.host.environmentId)
+      ? { _tag: "none" }
+      : inbox.host;
   const session = useAtomValue(
     host._tag === "host"
       ? environmentSession.sessionStateValueAtom(host.environmentId)

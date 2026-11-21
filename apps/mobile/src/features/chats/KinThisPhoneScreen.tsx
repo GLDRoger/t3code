@@ -4,7 +4,6 @@ import { KIN_DEVICES_COPY } from "@t3tools/client-runtime/kin/kinDevices";
 import { KIN_THIS_PHONE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
-import { useState } from "react";
 import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -16,7 +15,6 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
 import { environmentSession } from "../../state/session";
-import { useConnectionController } from "../connection/useConnectionController";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { useKinIsHome } from "./state/kinHome";
@@ -25,6 +23,7 @@ import { useKinInbox } from "./state/useKinInbox";
 import {
   kinHeldComputersAtom,
   kinReplacedComputersAtom,
+  useKinLeaving,
   useKinReconnect,
 } from "./state/useKinReconnect";
 
@@ -52,14 +51,12 @@ const shortAddress = (url: string) =>
 export function KinThisPhoneScreen() {
   const inCodingApp = !useKinIsHome();
   const navigation = useNavigation();
-  const controller = useConnectionController();
   const { environments } = useEnvironments();
   const held = useAtomValue(kinHeldComputersAtom);
   const replaced = useAtomValue(kinReplacedComputersAtom);
-  // Signed out or forgotten here: nothing about that computer shows while the phone lets it go.
-  const [left, setLeft] = useState<ReadonlySet<EnvironmentId>>(() => new Set());
+  const { leaving: left, forget } = useKinLeaving();
   const gone = (environmentId: EnvironmentId) =>
-    left.has(environmentId) || (!inCodingApp && replaced.includes(environmentId));
+    left.includes(environmentId) || (!inCodingApp && replaced.includes(environmentId));
   const teammateIds = useChatOnlyEnvironments().filter((id) => !gone(id));
   const inbox = useKinInbox();
   const hostId =
@@ -105,17 +102,6 @@ export function KinThisPhoneScreen() {
   const hasExit = (environmentId: EnvironmentId) =>
     exits.some((one) => one.environmentId === environmentId);
 
-  const forget = (environmentId: EnvironmentId) => {
-    setLeft((was) => new Set(was).add(environmentId));
-    void controller.removeEnvironment(environmentId).then((result) => {
-      if (result._tag === "Success") return;
-      setLeft((was) => {
-        const next = new Set(was);
-        next.delete(environmentId);
-        return next;
-      });
-    });
-  };
   const askForget = (environment: EnvironmentPresentation) =>
     Dialog.alert(
       KIN_THIS_PHONE_COPY.forgetTitle(nameOf(environment)),
