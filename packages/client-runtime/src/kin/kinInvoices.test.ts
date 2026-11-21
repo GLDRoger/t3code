@@ -15,6 +15,7 @@ import {
   kinAdvanceDraft,
   kinAdvanceInput,
   KIN_INVOICES,
+  kinConfirmTotal,
   kinInvoiceActions,
   kinInvoiceDraftNote,
   kinInvoiceTitle,
@@ -91,6 +92,19 @@ describe("kinInvoiceTitle", () => {
     ["INV-12 notes: nothing", null, null, "INV-12 notes: nothing"],
   ])("reads %j with number field %j", (title, field, number, description) => {
     expect(kinInvoiceTitle(title, field)).toEqual({ number, description });
+  });
+});
+
+describe("kinConfirmTotal", () => {
+  it.each([
+    [{ minor: 11_800_000, currency: "INR" }, "Lumen Grove", "Total ₹1,18,000 to Lumen Grove."],
+    [{ minor: 245_050, currency: "USD" }, "Lumen Grove", "Total $2,450.50 to Lumen Grove."],
+    [{ minor: 11_800_000, currency: "INR" }, null, "Total ₹1,18,000."],
+    [undefined, "Lumen Grove", "To Lumen Grove."],
+    [{ minor: 0, currency: "INR" }, "Lumen Grove", "To Lumen Grove."],
+    [undefined, null, null],
+  ] as const)("%j to %s says %s", (amount, client, line) => {
+    expect(kinConfirmTotal(amount, client)).toBe(line);
   });
 });
 

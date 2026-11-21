@@ -52,7 +52,7 @@ export default Effect.gen(function* () {
   const indexed = yield* sql`SELECT 1 FROM sqlite_master WHERE name = 'kin_search'`;
   if (indexed.length > 0) return;
   // An SQLite without FTS5 fails with SQLITE_ERROR; search then scans. Other failures fail here,
-  // so the next start retries. K194 rebuilds it with a `kind` column and fills it.
+  // so the next start retries. K197 rebuilds it with a `kind` column and fills it.
   yield* sql`CREATE VIRTUAL TABLE kin_search USING fts5(
       title, body, tokenize = 'unicode61 remove_diacritics 2')`.pipe(
     Effect.catchIf(

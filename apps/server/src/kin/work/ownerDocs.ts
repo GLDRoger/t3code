@@ -14,6 +14,7 @@ import {
   type KinDocsEvent,
   type KinDocsSubscribeInput,
   type KinOrgId,
+  type KinPersonId,
   type KinRecipeClearLabelResult,
   type KinRecipeDefaultInput,
   type KinRecipeDefaultResult,
@@ -44,8 +45,9 @@ import * as Docs from "./docs.ts";
 import { KinRecords, type Tick } from "./KinRecords.ts";
 import { LISTS } from "./lists.ts";
 import { OFFERINGS_ORIGIN, startOfferings, withOfferings } from "./offerings.ts";
-import { inList, ownerWriter, theOwner, viewerOf } from "./ownerWork.ts";
+import { inList, ownerWriter, placeRefusals, theOwner, viewerOf } from "./ownerWork.ts";
 import {
+  chatLinksFor,
   iso,
   principalId,
   recordSeq,
@@ -59,7 +61,6 @@ import { docKindWords, searchIndexed } from "./searchIndex.ts";
 import {
   clientMoneySeen,
   KIN_OWNER_LEVEL,
-  placesOf,
   seenBy,
   teamSeq,
   linkedFromOf,
@@ -78,17 +79,19 @@ const noDocs = new KinChatError({
   reason: "not_allowed",
   message: "Only the owner or a co-owner can open Docs for you.",
 });
-/** The caller; for anyone besides the owner, only with the Docs place or a project they lead. */
-const reader = Effect.fn("KinDocs.reader")(function* (
+/** The caller, and who they are if not owner-level: only with the Docs place or a project they lead. */
+const readerOf = Effect.fn("KinDocs.reader")(function* (
   people: ReadonlyArray<PersonIdentity>,
   orgId: KinOrgId,
 ) {
-  const viewer = yield* viewerOf(people, orgId);
-  if (!viewer.teammate) return undefined;
-  const places = yield* placesOf(orgId, viewer.person.personId).pipe(workFailure);
-  if (!places.reaches.docs) return yield* noDocs;
-  return viewer.person.personId;
+  const { viewer, refused } = yield* placeRefusals(people, orgId);
+  const { personId } = viewer.person;
+  if (!viewer.teammate) return { personId, team: undefined };
+  if (refused.docs) return yield* noDocs;
+  return { personId, team: personId };
 });
+const reader = (people: ReadonlyArray<PersonIdentity>, orgId: KinOrgId) =>
+  readerOf(people, orgId).pipe(Effect.map(({ team }) => team));
 
 const badCursor = new KinChatError({
   reason: "invalid_state",
@@ -104,6 +107,7 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
   orgId: KinOrgId,
   ref: { readonly key: string } | { readonly recordId: string },
   viewer: KinViewer,
+  readerId: KinPersonId,
   version?: number,
 ) {
   const records = yield* KinRecords;
@@ -117,7 +121,7 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
       message: `${row.key} has no version ${version}; it is at ${latest.version}.`,
     });
   const now = yield* Clock.currentTimeMillis;
-  const detail = yield* records.detail(row, 0);
+  const detail = yield* chatLinksFor(orgId, readerId, yield* records.detail(row, 0));
   const ids = detail.links.flatMap((link) =>
     link.kind === "record" && link.record !== undefined ? [link.record.recordId] : [],
   );
@@ -253,11 +257,12 @@ export const list = Effect.fn("KinDocs.list")(
 
 export const get = Effect.fn("KinDocs.get")(
   function* (people: ReadonlyArray<PersonIdentity>, input: KinDocGetInput) {
-    const team = yield* reader(people, input.orgId);
+    const { personId, team } = yield* readerOf(people, input.orgId);
     return yield* detailOf(
       input.orgId,
       "key" in input ? { key: input.key } : { recordId: input.recordId },
       team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+      personId,
       input.version,
     );
   },
@@ -344,7 +349,7 @@ export const restore = Effect.fn("KinDocs.restore")(
         originKey: `owner-restore:${person.personId}:${input.key}:${input.version}:${input.latest}`,
       },
     );
-    return yield* detailOf(input.orgId, { key: input.key }, KIN_OWNER_LEVEL);
+    return yield* detailOf(input.orgId, { key: input.key }, KIN_OWNER_LEVEL, person.personId);
   },
   Effect.catchTags({ SqlError: () => unavailable }),
 );
@@ -354,7 +359,12 @@ export const startWhatWeSell = Effect.fn("KinDocs.startWhatWeSell")(
   function* (people: ReadonlyArray<PersonIdentity>, input: KinDocStartWhatWeSellInput) {
     const person = yield* theOwner(people, input.orgId);
     const { row } = yield* startOfferings(input.orgId, ownerWriter(person), person.personId);
-    return yield* detailOf(input.orgId, { recordId: row.recordId }, KIN_OWNER_LEVEL);
+    return yield* detailOf(
+      input.orgId,
+      { recordId: row.recordId },
+      KIN_OWNER_LEVEL,
+      person.personId,
+    );
   },
   Effect.catchTags({ SqlError: () => unavailable }),
 );
@@ -709,7 +719,7 @@ export const label = Effect.fn("KinDocs.label")(
         sensitive: input.sensitive,
       },
     );
-    return yield* detailOf(input.orgId, { key: input.key }, KIN_OWNER_LEVEL);
+    return yield* detailOf(input.orgId, { key: input.key }, KIN_OWNER_LEVEL, person.personId);
   },
   Effect.catchTags({ SqlError: () => unavailable }),
 );
@@ -738,7 +748,7 @@ export const file = Effect.fn("KinDocs.file")(
       },
       input.rev,
     );
-    return yield* detailOf(input.orgId, { key: input.key }, KIN_OWNER_LEVEL);
+    return yield* detailOf(input.orgId, { key: input.key }, KIN_OWNER_LEVEL, person.personId);
   },
   Effect.catchTags({ SqlError: () => unavailable }),
 );

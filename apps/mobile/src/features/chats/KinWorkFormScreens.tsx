@@ -57,7 +57,7 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -289,6 +289,7 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
     noun: "client",
     start: kinClientDraftOf(editing ?? undefined, member ? "prospect" : props.start),
     editing: editing === null ? null : { key: editing.key, rev: editing.rev },
+    latest: editing === null ? null : kinClientDraftOf(editing),
     nameOf: (draft) => draft.name,
     check: kinClientDraftCheck,
     send: (change) =>
@@ -311,10 +312,6 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
         appAtomRegistry.refresh(kinClient.workClient({ environmentId, input: { orgId, key } }));
     },
   });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the form a newer read of the client being edited, so saving again goes against it
-  useEffect(() => {
-    if (editing !== null) form.latest(kinClientDraftOf(editing), editing.rev);
-  }, [form, editing]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
   const kinds: ReadonlyArray<KinClientDraftKind> = !member
@@ -655,6 +652,7 @@ function ContactForm(
     noun: "contact",
     start: kinContactDraftOf(editing ?? undefined),
     editing: editing === null ? null : { key: editing.key, rev: editing.rev },
+    latest: editing === null ? null : kinContactDraftOf(editing),
     nameOf: (draft) => draft.name,
     check: kinContactDraftCheck,
     send: (change) =>
@@ -679,10 +677,6 @@ function ContactForm(
           }),
     reread,
   });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the form a newer read of the contact being edited, so saving again goes against it
-  useEffect(() => {
-    if (editing !== null) form.latest(kinContactDraftOf(editing), editing.rev);
-  }, [form, editing]);
   const marketing = useKinMarketing(props);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
@@ -937,6 +931,8 @@ function ProjectForm(
     noun: "project",
     start: kinProjectDraftOf(editing?.project, editing?.targetDay, props.party, home),
     editing: editing === null ? null : { key: editing.project.key, rev: editing.project.rev },
+    latest:
+      editing === null ? null : kinProjectDraftOf(editing.project, editing.targetDay, null, home),
     nameOf: (draft) => draft.name,
     check: kinProjectDraftCheck,
     send: (change) =>
@@ -964,14 +960,6 @@ function ProjectForm(
         appAtomRegistry.refresh(kinClient.workProject({ environmentId, input: { orgId, key } }));
     },
   });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the form a newer read of the project being edited, so saving again goes against it
-  useEffect(() => {
-    if (editing !== null)
-      form.latest(
-        kinProjectDraftOf(editing.project, editing.targetDay, null, home),
-        editing.project.rev,
-      );
-  }, [form, editing, home]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
   const openProject = (project: KinRecordKey) => {

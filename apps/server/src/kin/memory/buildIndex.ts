@@ -3,8 +3,8 @@ import * as DateTime from "effect/DateTime";
 
 import { memoryDateMillis } from "./frontMatter.ts";
 import type { SharedItem } from "./sensitivity.ts";
+import { WEEK_MS } from "../durations.ts";
 
-const week = 7 * 24 * 60 * 60 * 1000;
 const oneLine = (value: string) => value.replace(/[\r\n\u2028\u2029]/g, " ");
 const compareText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const dateOrder = (value: string | null) => {
@@ -86,7 +86,7 @@ export function buildIndex(
           (Object.hasOwn(readHistory, item.id)
             ? (readHistory[item.id] ?? recordedAt)
             : recordedAt) <
-        8 * week,
+        8 * WEEK_MS,
     )
     .map(({ item, due, reviewBy }) => {
       const overdue = reviewBy < now || (item.status === "open" && due < now);

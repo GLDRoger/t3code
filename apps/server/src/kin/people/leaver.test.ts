@@ -13,6 +13,7 @@ import {
   ThreadId,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -29,6 +30,7 @@ import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
 import type { Services } from "../KinServer.ts";
 import * as Deals from "../work/deals.ts";
 import { KinRecords } from "../work/KinRecords.ts";
@@ -435,4 +437,112 @@ it.effect(
         });
       }),
     ),
+);
+
+// Every column that holds a person or an agent, as last reviewed. A new one fails here until
+// someone decides what removing the person (`KinPeople.removeAccess`) and retiring the agent
+// (`lead/Retirement.ts`) do to it, tests that, and lists it.
+const HOLDS_SOMEONE: Record<string, string> = {
+  kin_agent_threads: "agent_id",
+  kin_agents: "agent_id owner_person_id retired_by_person_id",
+  kin_bank_statements: "agent_id applied_by",
+  kin_chat_levels: "agent_id",
+  kin_chat_members: "agent_id member_id person_id",
+  kin_chats: "lead_agent_id",
+  kin_client_touches: "logged_by_id person_id",
+  kin_company_profile: "updated_by_id",
+  kin_connection_asks: "agent_id decided_by",
+  kin_connection_calls: "agent_id",
+  kin_discussions: "ask_agent_id decider_agent_id opened_by_agent_id",
+  kin_doc_jobs: "agent_id answered_author_id asked_by_person_id",
+  kin_doc_versions: "actor_id answered_author_id",
+  kin_events: "agent_id",
+  kin_floor_grants: "agent_id",
+  kin_floor_notices: "agent_id",
+  kin_floor_runs: "opened_by",
+  kin_github_handled: "agent_id",
+  kin_handoffs: "from_agent_id to_agent_id",
+  kin_held_posts: "agent_id person_id",
+  kin_holds: "for_person_id lifted_by_id set_by_id",
+  kin_import_runs: "person_id",
+  kin_issued_numbers: "issued_by_id",
+  kin_lead_access: "agent_id granted_by person_id",
+  kin_lead_deliveries: "agent_id",
+  kin_leads: "agent_id created_by_person_id",
+  kin_list_proposals: "agent_id",
+  kin_memory_shared_writes: "person_id",
+  kin_messages: "author_agent_id author_member_id author_owner_person_id author_person_id sent_by",
+  kin_money_budgets: "set_by_id",
+  kin_org_state: "paused_by",
+  kin_pending_actions: "requested_by_agent_id",
+  kin_people: "person_id",
+  kin_people_invites: "made_by_person_id person_id",
+  kin_ping_deliveries: "person",
+  kin_ping_items: "person",
+  kin_ping_ledger: "person",
+  kin_pr_review_posts: "agent_id",
+  kin_profile_changes: "agent_id",
+  kin_pull_requests: "author",
+  kin_pulse_facts: "handled_by_id",
+  kin_pulse_nudges: "agent_id person_id",
+  kin_pulse_told: "person_id",
+  kin_push_devices: "person_id",
+  kin_push_rings: "person_id",
+  kin_questions: "agent_id for_person_id person_id",
+  kin_reach_limits: "lifted_by_person_id one_id other_id set_by_person_id",
+  kin_reactions: "member_id",
+  kin_read_state: "member_id",
+  kin_receipt_proposals: "agent_id",
+  kin_recipe_defaults: "set_by_person_id",
+  kin_recipe_labels: "cleared_by_person_id",
+  kin_recommendations: "decided_by",
+  kin_record_changes: "actor_id asked_by_person_id",
+  kin_record_comments: "asked_by_person_id author_id removed_by_id",
+  kin_record_cursors: "agent_id",
+  kin_record_payments: "created_by_id",
+  kin_records:
+    "asked_by_person_id assigned_by_agent_id assigned_by_person_id created_by_id handed_back_id marked_by_person_id notes_by owner_id title_by waiting_on_id",
+  kin_retirement_holds: "agent_id",
+  kin_schedules: "agent_id said_by",
+  kin_session_bindings: "person_id",
+  kin_shadow_entries: "agent_id",
+  kin_social_posts: "agent_id confirmed_by",
+  kin_tasks_keys: "person_id",
+  kin_team_agents: "agent_id set_by",
+  kin_team_memory: "set_by",
+  kin_team_seqs: "person_id",
+  kin_turn_figures: "agent_id",
+  kin_visual_hosts: "added_by",
+  kin_waiting: "person_id",
+  kin_wakeups: "agent_id",
+  kin_worker_attempts: "agent_id approved_by declined_by",
+  kin_worker_network: "changed_by",
+  kin_workers: "agent_id",
+};
+const holdsSomeone = (column: string, columns: ReadonlyArray<string>) =>
+  /(?:^|_)(?:person|agent|member|author|actor|holder|asker|decider|principal)(?:_id)?$|_by(?:_person_id|_agent_id|_id)?$/.test(
+    column,
+  ) ||
+  (column.endsWith("_id") && columns.includes(column.replace(/_id$/, "_kind")));
+
+it.effect("lists every column that holds a person or an agent, so leaving covers new ones", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const tables = yield* sql<{ name: string }>`SELECT name FROM sqlite_master
+      WHERE type = 'table' AND substr(name, 1, 4) = 'kin_' ORDER BY name`;
+    const found: Record<string, string> = {};
+    for (const { name } of tables) {
+      const columns = (yield* sql<{ name: string }>`SELECT name FROM pragma_table_info(${name})
+        ORDER BY name`).map((one) => one.name);
+      const held = columns.filter((column) => holdsSomeone(column, columns));
+      if (held.length > 0) found[name] = held.join(" ");
+    }
+    assert.deepStrictEqual(found, HOLDS_SOMEONE);
+  }).pipe(
+    Effect.provide(
+      KinPersistence.layer.pipe(
+        Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
+      ),
+    ),
+  ),
 );

@@ -39,6 +39,7 @@ import { type GithubLinkState, readGithubLinks, readGithubLinkSets } from "./def
 import { cardChatFor } from "./deferralOrigin.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isScheduledTask, syncScheduledTasks } from "./scheduledTasks.ts";
+import { pauseTriggers } from "./KinTriggerStore.ts";
 
 export class KinTriggerSyncError extends Schema.TaggedError<KinTriggerSyncError>()(
   "KinTriggerSyncError",
@@ -189,8 +190,9 @@ const make = Effect.gen(function* () {
   ) {
     const id = deferralTriggerId(itemId, phase);
     if (runAt === undefined)
-      return yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
-        updated_at = max(updated_at, ${now}) WHERE org_id = ${orgId} AND trigger_id = ${id}`;
+      return yield* pauseTriggers(orgId, [id], now).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
     const schedule = yield* encodeSchedule({ type: "once", runAt: iso(runAt) });
     const subject = yield* encodeSubject({ type: "deferral", itemId, phase });
     const inserted = yield* sql`
@@ -388,9 +390,11 @@ export const undoDeferral = Effect.fn("KinTriggerService.undoDeferral")(function
     WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt} AND state = 'armed'
     RETURNING item_id`;
   if (undone.length === 0) return false;
-  yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
-    updated_at = max(updated_at, ${now}) WHERE org_id = ${orgId}
-      AND trigger_id IN (${deferralTriggerId(itemId, "heads_up")}, ${deferralTriggerId(itemId, "due")})`;
+  yield* pauseTriggers(
+    orgId,
+    [deferralTriggerId(itemId, "heads_up"), deferralTriggerId(itemId, "due")],
+    now,
+  );
   return true;
 });
 
@@ -410,9 +414,11 @@ export const cancelDeferralRun = Effect.fn("KinTriggerService.cancelDeferralRun"
     WHERE org_id = ${orgId} AND item_id = ${itemId}
       AND state IN ('armed', 'heads_up', 'grace', 'asked', 'snoozed') RETURNING item_id`;
     if (stopped.length === 0) return false;
-    yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
-    updated_at = max(updated_at, ${now}) WHERE org_id = ${orgId}
-      AND trigger_id IN (${deferralTriggerId(itemId, "heads_up")}, ${deferralTriggerId(itemId, "due")})`;
+    yield* pauseTriggers(
+      orgId,
+      [deferralTriggerId(itemId, "heads_up"), deferralTriggerId(itemId, "due")],
+      now,
+    );
     return true;
   },
 );

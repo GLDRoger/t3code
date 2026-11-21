@@ -1,5 +1,6 @@
 import { formatKinWhen, isKinCurrency, KIN_TEXT_LOCALE } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { DAY_MS, HOUR_MS } from "../durations.ts";
 
 /**
  * A person's working day, as their profile's hours give it. Without hours a question's day ends at
@@ -22,8 +23,6 @@ const bounds = (work: Workday | undefined) =>
     ? { morning: timeOf(work.start), ends: timeOf(work.end) }
     : { morning: MORNING, ends: DAY_ENDS };
 const WEEKDAYS: ReadonlyArray<number> = [1, 2, 3, 4, 5];
-const HOUR_MS = 60 * 60_000;
-const DAY_MS = 24 * HOUR_MS;
 /** A day the asker names is at least this far off, and at most a month. */
 const SOONEST_MS = HOUR_MS;
 const LATEST_MS = 31 * DAY_MS;
