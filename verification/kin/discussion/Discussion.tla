@@ -21,11 +21,12 @@ VARIABLES
   hs, reports,                 \* a hand-off: none, passed, claimed, replied, done; replies carried back
   asks, opened, plain,         \* the owner's naming message handled; discussions it opened; plain replies
   phase, final, turn, pending, msgs, widened, objUsed, afterObj, last, offers, chaired,
-  turnMsgs, pitches, objections, origin, told, checkIns
+  turnMsgs, pitches, objections, origin, told, checkIns,
+  beside                       \* discussions opened for the same ask beside the one Kin opened
 
 side == <<openNow, started, access, room, leak, changes, hs, reports, asks, opened, plain>>
 talk == <<phase, final, turn, pending, msgs, widened, objUsed, afterObj, last, offers,
-          chaired, turnMsgs, pitches, objections, origin, told, checkIns>>
+          chaired, turnMsgs, pitches, objections, origin, told, checkIns, beside>>
 vars == <<stage, side, talk>>
 
 TalkInit ==
@@ -33,6 +34,7 @@ TalkInit ==
   /\ msgs = 0 /\ widened = FALSE /\ objUsed = FALSE /\ afterObj = -1 /\ last = "none"
   /\ offers = [a \in Touchable |-> 0] /\ chaired = FALSE /\ turnMsgs = 0
   /\ pitches = 0 /\ objections = 0 /\ origin \in {"owner", "agent", "person"} /\ told = 0 /\ checkIns = 0
+  /\ beside = 0
   \* team/turns.ts askedByPerson: O, named first, holds the first turn; the other named is asked next.
   /\ pending \in IF origin = "person" THEN {<<Turn(a, "named")>> : a \in {"D", "C"}} ELSE {<<>>}
 
@@ -271,7 +273,7 @@ Say(who, intent, to, widen, end, touches) ==
                              \* KinTeam.settle reusing the stored turn when said was ignored
                              THEN Settle(phase, FALSE, turn, Tail(r.turns), turnMsgs + 1)
                              ELSE Settle(phase, FALSE, Head(r.turns), Tail(r.turns), 0)
-  /\ UNCHANGED <<stage, side, origin, checkIns>>
+  /\ UNCHANGED <<stage, side, origin, checkIns, beside>>
 
 (* KinTeam.wakeupEnded: the turn's wake-up ended without team_say, or the sweep found its event
    expired or failed. turns.ts afterPass. *)
@@ -283,7 +285,7 @@ Pass ==
        [] OTHER -> Settle(phase, FALSE, Head(pending), Tail(pending), 0)
   /\ pitches' = 0
   /\ UNCHANGED <<stage, side, msgs, widened, objUsed, afterObj, last, offers, chaired,
-                 objections, origin, checkIns>>
+                 objections, origin, checkIns, beside>>
 
 (* KinTeam.wakeupEnded charges a wake-up's units (turns.ts afterUnits), and KinTeam.sweep closes
    a discussion a day idle (afterIdle): only the closing turn is left; an idle close parks it. *)
@@ -292,14 +294,14 @@ Cut ==
   /\ Settle("closing", FALSE, Closing.turn, <<>>, 0)
   /\ pitches' = 0
   /\ UNCHANGED <<stage, side, msgs, widened, objUsed, afterObj, last, offers, chaired,
-                 objections, origin, checkIns>>
+                 objections, origin, checkIns, beside>>
 
 IdleClose ==
   /\ stage = "talk" /\ ~final /\ phase = "closing"
   /\ Settle("parked", TRUE, NoTurn, <<>>, 0)
   /\ pitches' = 0
   /\ UNCHANGED <<stage, side, msgs, widened, objUsed, afterObj, last, offers, chaired,
-                 objections, origin, checkIns>>
+                 objections, origin, checkIns, beside>>
 
 (* WakeupRunner.finishWakeup after a check-in: KinTeam.deliverHeld tells what agents settled
    on their own, once each, claimed by told_at. *)
@@ -310,7 +312,17 @@ CheckInRuns ==
   /\ stage = "talk" /\ checkIns < 2 /\ Delivers
   /\ checkIns' = checkIns + 1 /\ told' = told + 1
   /\ UNCHANGED <<stage, side, phase, final, turn, pending, msgs, widened, objUsed, afterObj, last,
-                 offers, chaired, turnMsgs, pitches, objections, origin>>
+                 offers, chaired, turnMsgs, pitches, objections, origin, beside>>
+
+(* KinTeam.open from the agent whose turn it is in a discussion a person's message opened
+   (open_key message:…), its rules saying such an ask starts with team_open: refused, naming that
+   discussion and team_say, so nothing changes. The variant opens a second for the same ask. *)
+OpensBeside ==
+  /\ stage = "talk" /\ origin = "person" /\ ~final /\ turn.who # "none"
+  /\ Broken = "open-beside" /\ beside = 0
+  /\ beside' = 1
+  /\ UNCHANGED <<stage, side, phase, final, turn, pending, msgs, widened, objUsed, afterObj, last,
+                 offers, chaired, turnMsgs, pitches, objections, origin, told, checkIns>>
 
 Move ==
   \/ \E who \in Agents, intent \in {"plain", "objection"}, to \in Agents \cup {"none"},
@@ -322,7 +334,7 @@ Next ==
   \/ AgentOpens \/ AgentDiscussionEnds \/ NewDay \/ RoomSweep \/ HandOff \/ ReceiverWakes
   \/ ReceiverAnswers \/ ReceiverFails \/ ReceiverEnds \/ AskHandled \/ StartTalk
   \/ \E p \in {"co", "mem"} : SetAccess(p) \/ OwnerAdds(p) \/ Reads(p)
-  \/ Move \/ Cut \/ IdleClose \/ CheckInRuns
+  \/ Move \/ Cut \/ IdleClose \/ CheckInRuns \/ OpensBeside
 
 Fair ==
   /\ WF_vars(ReceiverEnds) /\ WF_vars(ReceiverWakes) /\ SF_vars(ReceiverAnswers)
@@ -341,7 +353,8 @@ OneObjection == objections <= 1
 TeammateNeverReads == ~leak
 ToldOnce == told <= 1
 ReportOnce == reports <= 1
-AskAnsweredOnce == opened + plain <= 1
+\* Once Kin's own discussion for the ask is the one followed, none opens beside it.
+AskAnsweredOnce == opened + plain <= 1 /\ beside = 0
 AlwaysEnds == stage = "talk" ~> (final /\ phase \in {"decided", "parked", "escalated"})
 OwnerTold == final ~> told = 1
 AskerGetsReply == hs = "replied" ~> reports = 1
