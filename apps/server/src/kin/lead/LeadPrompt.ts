@@ -82,6 +82,7 @@ import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules, teamRules } from "./instructions.ts";
 import { socialRules } from "../social/instructions.ts";
 import { isSocialDomain } from "../social/seat.ts";
+import { salesRulesFor } from "../sales/seat.ts";
 import { buildSeat } from "./seat.ts";
 import {
   answeredTurnText,
@@ -112,7 +113,13 @@ export interface KinLeadPromptInput {
   readonly lane?: { readonly chatId: KinChatId; readonly mode: "reply" | "notice" };
   /** Server-gathered facts for a brief or summary event, by event id. */
   readonly routineFacts?: ReadonlyMap<string, string>;
+  /** Who a finished task's work was for (`workFor`), by its event id. */
+  readonly workFor?: ReadonlyMap<string, ReadonlyArray<string>>;
 }
+
+/** The finished work answered a teammate's request Kin relayed to the owner: it goes back to them. */
+export const workForText = (names: string) =>
+  `This work was for ${names}'s request, which Kin relayed to the owner. Send ${names} the outcome with kin_relay, in words they may read; the details stay here.`;
 
 export class KinLeadPrompt extends Context.Service<
   KinLeadPrompt,
@@ -250,7 +257,7 @@ export class KinLeadPrompt extends Context.Service<
       const quoteEvents = Effect.fnUntraced(function* (
         input: Pick<
           KinLeadPromptInput,
-          "orgId" | "agentId" | "wakeupId" | "events" | "routineFacts"
+          "orgId" | "agentId" | "wakeupId" | "events" | "routineFacts" | "workFor"
         > & {
           readonly laneChatId?: KinChatId | undefined;
           readonly audience?: TurnAudience | undefined;
@@ -554,6 +561,17 @@ export class KinLeadPrompt extends Context.Service<
                 true,
               ),
             );
+            continue;
+          }
+          const forWhom =
+            event._tag === "task.finished" && ownerOnly
+              ? input.workFor?.get(event.eventId)
+              : undefined;
+          if (forWhom !== undefined) {
+            fromOwner = false;
+            replyDue = true;
+            const names = forWhom.join(" and ");
+            events.push(`${quote("event data", eventFacts(event), true)}\n\n${workForText(names)}`);
             continue;
           }
           if (event._tag !== "chat.message" && event._tag !== "widget.action") {
@@ -1132,15 +1150,15 @@ export class KinLeadPrompt extends Context.Service<
             Effect.logWarning("Kin speaker names unavailable", cause).pipe(Effect.as(undefined)),
           ),
         );
-        const [charter] = ownerOnly
-          ? yield* sql<{ domain: string; charter: string }>`
+        // The domain picks the seat's static rules in every turn; the charter is the owner's.
+        const [stored] = yield* sql<{ domain: string; charter: string }>`
           SELECT domain, charter FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${agentId}
           ORDER BY agent_id`.pipe(
-              Effect.catch((cause) =>
-                Effect.logWarning("Kin lead charter unavailable", cause).pipe(Effect.as([])),
-              ),
-            )
-          : [];
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin lead charter unavailable", cause).pipe(Effect.as([])),
+          ),
+        );
+        const charter = ownerOnly ? stored : undefined;
         // What the owner chose to tell teammates about this lead, so any turn may carry it.
         const [intro] = yield* sql<{ text: string }>`SELECT public_intro AS text FROM kin_leads
           WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY agent_id`.pipe(
@@ -1160,7 +1178,13 @@ export class KinLeadPrompt extends Context.Service<
         // Owner-only this slice: the teammate view of Work comes with slice 2.
         const work =
           ownerOnly && input.lane !== undefined
-            ? yield* buildWorkSection({ orgId, agentId, chatId: input.lane.chatId, now }).pipe(
+            ? yield* buildWorkSection({
+                orgId,
+                agentId,
+                chatId: input.lane.chatId,
+                now,
+                wakeupId: input.wakeupId,
+              }).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
                 Effect.catch((cause) =>
                   Effect.logWarning("Kin Work section unavailable", cause).pipe(
@@ -1528,6 +1552,7 @@ export class KinLeadPrompt extends Context.Service<
           ...(charter !== undefined && isSocialDomain(charter.domain)
             ? [ownerPart(socialRules)]
             : []),
+          ...salesRulesFor(stored?.domain).map(sharedPart),
           // Rooms shared with other people and agents.
           ...(laneChat !== undefined && laneChat.kind !== "direct"
             ? [sharedPart(laneChat.teamId === KIN_TEAM_ROOM_TEAM_ID ? teamRules : groupRules)]

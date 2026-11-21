@@ -61,6 +61,17 @@ const chief = KinAgentId.make("chief");
 const threadId = ThreadId.make("chief-thread");
 const providerInstanceId = ProviderInstanceId.make("codex");
 const at = "2026-10-01T00:00:00.000Z";
+
+/** `personId` has signed in to Kin: a device session bound to them that is still live. */
+const signIn = (orgId: string, personId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO auth_sessions (session_id, subject, scopes, method, issued_at, expires_at)
+      VALUES (${`${personId}-session`}, ${personId}, '[]', 'bearer-access-token', ${at},
+        '9999-12-31T00:00:00.000Z')`;
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES (${`${personId}-session`}, ${orgId}, ${personId}, 0)`;
+  });
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("environment"),
   requestNamespace: "chief",
@@ -216,8 +227,7 @@ const routes = (phase: Phase) =>
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
           access, time_zone, work_hours_json)
         VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, ${zone}, ${hours})`;
-        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
-          VALUES (${`${id}-session`}, ${orgId}, ${id}, 0)`;
+        yield* signIn(orgId, id);
       }
       const person = (id: string) => ({
         _tag: "person" as const,
@@ -800,6 +810,7 @@ it.effect("a held message follows its reader's changed clock", () =>
           access, time_zone, work_hours_json)
         VALUES ('zoya', ${orgId}, 'zoya', 'Zoya Sheikh', ${at}, 'member', 'Asia/Kolkata',
           '{"days":[1,2,3,4,5],"start":"10:00","end":"18:00"}')`;
+      yield* signIn(orgId, "zoya");
       yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
         VALUES (${chief}, ${orgId}, 'Chief of staff', 'lead', ${owner.personId}, ${at})`;
       yield* identity.registerAgentThread({ orgId, agentId: chief, threadId });
@@ -911,8 +922,7 @@ it.effect(
         yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:30',
             '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')
           ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;
-        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
-        VALUES ('zoya-session', ${orgId}, ${zoyaId}, 0)`;
+        yield* signIn(orgId, zoyaId);
         yield* sql`UPDATE kin_people SET display_name = 'Rhea Kapoor' WHERE person_id = ${owner.personId}`;
         yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
         VALUES (${chief}, ${orgId}, 'Chief of staff', 'lead', ${owner.personId}, ${at})`;
@@ -1212,8 +1222,7 @@ const awayThenBack = (how: "date" | "early" | "restart") =>
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
             access, time_zone)
           VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, 'Asia/Kolkata')`;
-        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
-          VALUES (${`${id}-session`}, ${orgId}, ${id}, 0)`;
+        yield* signIn(orgId, id);
       }
       const arjunId = KinPersonId.make("arjun");
       const arjun = { _tag: "person" as const, orgId, personId: arjunId };

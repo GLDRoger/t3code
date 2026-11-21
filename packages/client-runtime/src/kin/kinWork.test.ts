@@ -12,6 +12,7 @@ import {
   ThreadId,
   type KinWorkAssignInput,
   type KinWorkSummary,
+  KIN_LEFT_FIELD,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -447,6 +448,17 @@ describe("kinWorkItemView", () => {
             kind: "updated",
             fields: [{ field: "owner", from: null, to: `person:${me.personId}` }],
           },
+          {
+            seq: 0.5,
+            at,
+            by: lead,
+            via: "lead",
+            kind: "updated",
+            fields: [
+              { field: "owner", from: `person:${priya.personId}`, to: `person:${me.personId}` },
+              { field: KIN_LEFT_FIELD, from: `person:${priya.personId}`, to: null },
+            ],
+          },
         ],
       }),
       names,
@@ -459,6 +471,7 @@ describe("kinWorkItemView", () => {
       "Priya came back; it's theirs again",
       "You removed Priya's access; it stays with them",
     ]);
+    expect(view.history.at(-1)?.text).toBe("Tech lead gave it to you (Priya left)");
   });
 
   it("says an invoice was issued, paid or voided, not marked waiting, finished or dropped", () => {

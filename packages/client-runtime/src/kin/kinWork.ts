@@ -23,6 +23,7 @@ import {
   type KinWorkListInput,
   type KinWorkPrincipal,
   type KinWorkSummary,
+  KIN_LEFT_FIELD,
   KIN_TAKEN_DEFAULT_FIELD,
   kinWhenFormat,
   kinWhenParts,
@@ -1170,13 +1171,14 @@ export function kinWorkChangeText(
   const owner = field("owner");
   const to = principalFromText(owner?.to ?? null);
   const handedBack = field("handedBack");
+  const left = principalFromText(field(KIN_LEFT_FIELD)?.from ?? null);
   if (to !== null) {
     clauses.push(
       handedBack !== undefined
         ? `handed it back to ${kinWorkName(to, names, "you")}${handedBack.to === null ? "" : `: “${handedBack.to}”`}`
         : change.by._tag !== "system" && kinWorkSamePrincipal(change.by, to)
           ? "took it on"
-          : `gave it to ${kinWorkName(to, names, "you")}`,
+          : `gave it to ${kinWorkName(to, names, "you")}${left === null ? "" : ` (${kinWorkName(left, names)} left)`}`,
     );
   }
   // A held notice: `untold` names the holder not told yet, and clears once they are.
@@ -1583,7 +1585,11 @@ const olderHostCan = (
 });
 
 /** An all-day date as `YYYY-MM-DD` where the owner is; null with no date or a timed one. */
-export function kinWorkAllDay(at: string | null, allDay: boolean, names: KinWorkNames) {
+export function kinWorkAllDay(
+  at: string | null,
+  allDay: boolean,
+  names: Pick<KinWorkNames, "zone">,
+) {
   const date = at === null ? null : new Date(at);
   return date === null || !allDay || Number.isNaN(date.getTime())
     ? null

@@ -1,0 +1,66 @@
+name: Kin
+
+# Kin's branch checks (merge survival, migration numbers, instructions version, shared copy,
+# branding, People-change, T3 footprint) and the TLA+ models a change touches. CI's own jobs
+# don't run them; check:changed does, on the author's machine.
+on:
+  pull_request:
+    branches:
+      - kin
+  push:
+    branches:
+      - kin
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kin-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  kin:
+    name: Kin checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # Full history: the checks read merge bases, merged PRs and the last upstream sync.
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          task-cache-read-token: ${{ secrets.T3_TASK_CACHE_READ_TOKEN }}
+
+      - name: Setup Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # A pull request is checked against the branch it merges into; a push against what kin was.
+      - name: Resolve base
+        id: base
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: echo "ref=${PR_BASE:-$PUSH_BEFORE}" >> "$GITHUB_OUTPUT"
+
+      - name: Kin branch checks
+        run: node scripts/kin-branch-checks.ts "${{ steps.base.outputs.ref }}"
+
+      - name: Kin models
+        env:
+          BASE: ${{ steps.base.outputs.ref }}
+        run: |
+          for model in $(node --input-type=module -e '
+            import * as ChildProcess from "node:child_process";
+            import { modelsFor } from "./scripts/kin-model.ts";
+            const files = ChildProcess.execFileSync("git", ["diff", "--name-only", "--no-renames", process.env.BASE], { encoding: "utf8" });
+            console.log(modelsFor(files.split("\n").filter(Boolean)).join(" "));
+          '); do
+            node scripts/kin-model.ts "$model"
+          done

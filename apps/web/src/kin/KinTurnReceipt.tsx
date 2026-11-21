@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { KIN_AGENT_CHANGES } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
+  kinTurnReceiptOpen,
   KIN_TURN_RECEIPT_LABEL,
   kinTurnReceiptRows,
   kinTurnReceiptTarget,
@@ -40,7 +41,7 @@ export function KinTurnReceipt(props: {
         render={
           <button
             type="button"
-            aria-label={`${props.line}. Show the changes`}
+            aria-label={kinTurnReceiptOpen(props.line)}
             className="max-w-full truncate rounded-md px-1 text-left text-xs text-muted-foreground tabular-nums outline-none ring-ring hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset"
           />
         }

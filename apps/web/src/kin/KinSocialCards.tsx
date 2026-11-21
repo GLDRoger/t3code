@@ -209,7 +209,7 @@ function PostRow(props: {
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                See the post
+                {KIN_SOCIAL_COPY.seePost}
               </a>
             )}
             {actions.map((action) => {
@@ -388,7 +388,7 @@ export function KinSocialPackCard(props: {
         </Button>
         {pack.media === null || href == null ? null : (
           <Button size="xs" variant="outline" render={<a href={href} download={pack.media.name} />}>
-            Save the file
+            {KIN_SOCIAL_COPY.saveFile}
           </Button>
         )}
         {pack.posted ? (

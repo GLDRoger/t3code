@@ -82,7 +82,7 @@ export function KinAgentChanged(props: {
               className={index === 0 ? undefined : "border-t border-border-subtle"}
             >
               <ListRow
-                label={kinAgentChangeLine(change, names)}
+                label={kinAgentChangeLine(change, names, undefined, directory.zone)}
                 description={formatKinWhen(new Date(change.at), "dateTime")}
                 onPress={() => open(change)}
               />

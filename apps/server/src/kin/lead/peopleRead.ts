@@ -8,6 +8,8 @@ import { validZone } from "../triggers/quietHold.ts";
 import { stillAway, storedWorkHours, workingAt } from "../triggers/quietHours.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { playbookThreshold } from "../work/playbooks.ts";
+import { accessSql } from "../people/KinAccess.ts";
+import { signedInPeople } from "../people/signedIn.ts";
 import { effectiveAudience } from "./Audience.ts";
 import { cappedText } from "./LeadPrompt.ts";
 
@@ -39,6 +41,8 @@ export const PeopleReadResult = Schema.Struct({
       workingNow: Schema.NullOr(Schema.Boolean),
       // Back on this day, on their calendar: Kin holds non-urgent messages until then.
       awayUntil: Schema.optional(Schema.String),
+      // Never signed in: what Kin sends them waits in their chat, and nothing alerts them.
+      signedIn: Schema.Boolean,
       load: Schema.optional(Load),
     }),
   ),
@@ -112,9 +116,10 @@ export const loads = Effect.fn("KinPeopleRead.loads")(function* (orgId: KinOrgId
 });
 
 /**
- * Who is in the company and which agents it has: names, role tags, skills and hours, and in the
- * owner's own turns what each holds (`loads`). Skills are each person's own words, so the answer
- * is labelled data and its text fields are capped as quoted data is.
+ * Who is in the company and which agents it has: names, role tags, skills, hours, whether each
+ * person has signed in, and in the owner's own turns what each holds (`loads`). Skills are each
+ * person's own words, so the answer is labelled data and its text fields are capped as quoted
+ * data is.
  */
 export const readPeople = Effect.fn("KinPeopleRead.read")(function* (turn: {
   readonly orgId: KinOrgId;
@@ -136,10 +141,13 @@ export const readPeople = Effect.fn("KinPeopleRead.read")(function* (turn: {
     away: string | null;
   }>`SELECT person_id AS id, display_name AS name, role_tags_json AS "roleTags", skills, time_zone AS "timeZone",
       work_hours_json AS "workHours", away_until AS away
-    FROM kin_people p WHERE p.org_id = ${orgId}
-      AND EXISTS (SELECT 1 FROM kin_session_bindings b WHERE b.org_id = p.org_id
-        AND b.person_id = p.person_id AND b.revoked_at IS NULL)
+    FROM kin_people p WHERE p.org_id = ${orgId} AND p.removed_at IS NULL
     ORDER BY display_name, person_id`;
+  const joined = new Set<string>(yield* signedInPeople(orgId));
+  const [owner] = yield* sql<{ id: string }>`SELECT p.person_id AS id FROM kin_people p
+    WHERE p.org_id = ${orgId} AND ${sql.literal(accessSql("p"))} = 'owner'
+    ORDER BY p.person_id LIMIT 1`;
+  if (owner !== undefined) joined.add(owner.id);
   const agents = yield* sql<{ id: string; name: string; roleTags: string; intro: string }>`
     SELECT l.agent_id AS id, l.name, l.role_tags_json AS "roleTags", l.public_intro AS intro
     FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
@@ -162,7 +170,10 @@ export const readPeople = Effect.fn("KinPeopleRead.read")(function* (turn: {
           : hours === null || row.timeZone === null
             ? null
             : workingAt(hours, row.timeZone, now),
+        // Back on this day, on their calendar: Kin holds non-urgent messages until then.
         ...(away && row.away !== null ? { awayUntil: row.away } : {}),
+        // Never signed in: what Kin sends them waits in their chat, and nothing alerts them.
+        signedIn: joined.has(row.id),
         ...(load === undefined ? {} : { load: load("person", row.id) }),
       };
     }),

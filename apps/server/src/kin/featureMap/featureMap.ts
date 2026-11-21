@@ -1,9 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off - reads the repo's own sources to check the map.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import { KinRpcs } from "@t3tools/contracts";
 import { parse as parseYaml } from "yaml";
 
 import { SHARED_TOOLS } from "../lead/SharedTools.ts";
+import { TASKS_KEY_TOOLS } from "../tasksKey/mcp.ts";
 
 const REPO_ROOT = NodePath.resolve(import.meta.dirname, "..", "..", "..", "..", "..");
 const FEATURE_MAP_PATH = NodePath.join(import.meta.dirname, "feature-map.yaml");
@@ -49,9 +51,51 @@ export interface Inventory {
   /** Phone screens to whether they open as a page or a sheet. */
   readonly phoneScreens: ReadonlyMap<string, "page" | "sheet">;
   readonly tools: ReadonlySet<string>;
+  /** Every Kin RPC, and the ones a web, phone or client-runtime source file names. */
+  readonly rpcs: ReadonlySet<string>;
+  readonly calledRpcs: ReadonlySet<string>;
 }
 
 const read = (root: string, path: string) => NodeFS.readFileSync(NodePath.join(root, path), "utf8");
+
+const CLIENT_DIRS = ["packages/client-runtime/src", "apps/web/src", "apps/mobile/src"];
+
+function clientSources(root: string): string {
+  const texts: Array<string> = [];
+  const walk = (dir: string) => {
+    for (const entry of NodeFS.readdirSync(NodePath.join(root, dir), { withFileTypes: true })) {
+      const path = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (entry.name !== "node_modules") walk(path);
+      } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name))
+        texts.push(read(root, path));
+    }
+  };
+  for (const dir of CLIENT_DIRS) walk(dir);
+  return texts.join("\n");
+}
+
+/** The RPCs a client names, as a string or through a contracts `*_WS_METHODS` constant. */
+function calledRpcsIn(root: string, rpcs: ReadonlySet<string>): Set<string> {
+  const viaConstant = new Map<string, string>();
+  const contracts = "packages/contracts/src";
+  for (const file of NodeFS.readdirSync(NodePath.join(root, contracts)))
+    if (file.endsWith(".ts"))
+      for (const block of read(root, `${contracts}/${file}`).matchAll(
+        /export const (\w+_WS_METHODS) = \{([\s\S]*?)\n\}/g,
+      ))
+        for (const entry of block[2]!.matchAll(/(\w+): "(kin\.[\w.]+)"/g))
+          viaConstant.set(entry[2]!, `${block[1]}.${entry[1]}`);
+  const text = clientSources(root);
+  const escape = (name: string) => name.replace(/\./g, "\\.");
+  return new Set(
+    [...rpcs].filter((rpc) => {
+      if (new RegExp(`["'\`]${escape(rpc)}["'\`]`).test(text)) return true;
+      const constant = viaConstant.get(rpc);
+      return constant !== undefined && new RegExp(`\\b${escape(constant)}\\b`).test(text);
+    }),
+  );
+}
 
 /** What exists in the code: web routes and panes, phone screens, agent tools. */
 export function readInventory(root = REPO_ROOT): Inventory {
@@ -86,7 +130,15 @@ export function readInventory(root = REPO_ROOT): Inventory {
     .slice(0, screens.indexOf("\n};"))
     .matchAll(/\n {2}(\w+): createNativeStackScreen\(\{([\s\S]*?)\n {2}\}\),/g))
     phoneScreens.set(match[1]!, /sheetRoute/.test(match[2]!) ? "sheet" : "page");
-  return { webRoutes, webParams, phoneScreens, tools: new Set(Object.keys(SHARED_TOOLS)) };
+  const rpcs = new Set<string>(KinRpcs.map((rpc) => rpc._tag));
+  return {
+    webRoutes,
+    webParams,
+    phoneScreens,
+    tools: new Set([...Object.keys(SHARED_TOOLS), ...TASKS_KEY_TOOLS]),
+    rpcs,
+    calledRpcs: calledRpcsIn(root, rpcs),
+  };
 }
 
 export function loadFeatureMap(path = FEATURE_MAP_PATH): FeatureMap {
@@ -175,6 +227,10 @@ export function checkFeatureMap(
     if (!feature.name) problems.push(`${where}: no name`);
     if (![...DOCK_TABS, "settings", "join"].includes(feature.tab))
       problems.push(`${where}: tab "${feature.tab}" is not a dock tab, settings or join`);
+    // A lead is a member who leads a project, so a lead reaches everything a member does.
+    for (const surface of ["web", "phone"] as const)
+      if (reaches(feature.roles?.member, surface) && !reaches(feature.roles?.lead, surface))
+        problems.push(`${where}: member reaches it on ${surface}, but lead doesn't`);
     for (const role of ROLES) {
       const reach = feature.roles?.[role];
       if (!(REACH as ReadonlyArray<string>).includes(reach))
@@ -224,9 +280,12 @@ export function checkFeatureMap(
       !inventory.webRoutes.has(key.replace(/^web:/, "")) &&
       !inventory.webParams.has(key.replace(/^web:\?/, "")) &&
       !inventory.phoneScreens.has(key.replace(/^phone:/, "")) &&
-      !inventory.tools.has(key.replace(/^tool:/, ""))
+      !inventory.tools.has(key.replace(/^tool:/, "")) &&
+      !inventory.rpcs.has(key.replace(/^rpc:/, ""))
     )
       problems.push(`unlisted: "${key}" is not in the code; remove it`);
+    else if (key.startsWith("rpc:") && inventory.calledRpcs.has(key.slice(4)))
+      problems.push(`unlisted: a client calls "${key.slice(4)}" now; remove it`);
   for (const route of inventory.webRoutes.keys())
     if (!listed.web.has(route) && !unlistedOk(`web:${route}`))
       problems.push(`web route "${route}" (${inventory.webRoutes.get(route)}) is in no feature`);
@@ -239,5 +298,22 @@ export function checkFeatureMap(
   for (const tool of inventory.tools)
     if (!listed.tools.has(tool) && !unlistedOk(`tool:${tool}`))
       problems.push(`agent tool "${tool}" is in no feature`);
+  for (const rpc of inventory.rpcs)
+    if (!inventory.calledRpcs.has(rpc) && !unlistedOk(`rpc:${rpc}`))
+      problems.push(`RPC "${rpc}" has no client caller; list it under unlisted with why`);
   return problems;
 }
+
+const reaches = (reach: Reach | undefined, surface: "web" | "phone") =>
+  reach === "both" || reach === surface;
+
+/**
+ * Features some role reaches on the phone that name no proof under apps/mobile. A coverage count,
+ * not a check of the role cells: the test pins it so it can only fall.
+ */
+export const phoneProofGap = (map: FeatureMap) =>
+  map.features.filter(
+    (feature) =>
+      ROLES.some((role) => reaches(feature.roles[role], "phone")) &&
+      (feature.proof === "none" || !feature.proof.some((file) => file.startsWith("apps/mobile/"))),
+  );

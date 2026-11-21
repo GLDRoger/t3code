@@ -25,8 +25,10 @@ import {
   kinContactDraftCheck,
   kinContactDraftOf,
   kinContactUpdateInput,
+  kinProjectCreateInput,
   kinProjectDraftCheck,
   kinProjectDraftOf,
+  kinProjectUpdateInput,
   kinProjectTargetHint,
   kinTaskProjectMenu,
   kinWorkFormMoved,
@@ -269,6 +271,23 @@ describe("createKinWorkPageWatch", () => {
     expect(rereads()).toBe(2);
   });
 
+  it("reads a campaign's page for any client, contact or deal, which its counts read", () => {
+    let rereads = 0;
+    const watch = createKinWorkPageWatch({
+      own: "P-3" as KinRecordKey,
+      reread: () => {
+        rereads += 1;
+      },
+      newest: () => Promise.resolve(null),
+    });
+    const page = { seq: 10, held: new Set(["P-3", "C-*", "CT-*", "DL-*"]) };
+    watch.changed({ changed: { "P-9": 11 }, unnamed: 0 }, page);
+    expect(rereads).toBe(0);
+    watch.changed({ changed: { "CT-40": 12 }, unnamed: 0 }, page);
+    watch.changed({ changed: { "CT-40": 12, "DL-2": 13 }, unnamed: 0 }, page);
+    expect(rereads).toBe(2);
+  });
+
   it("asks about a task it doesn't hold, and reads only when it turns out to be this client's", async () => {
     const elsewhere = watching(10);
     elsewhere.watch.changed({ changed: { "W-77": 11 }, unnamed: 0 }, elsewhere.page);
@@ -341,11 +360,10 @@ describe("kinProjectDraftCheck", () => {
     );
   });
 
-  it("names the year only outside this one, and never labels an impossible day", () => {
-    const now = new Date(2026, 10, 12);
-    expect(kinProjectTargetHint("2026-12-03", now)).not.toMatch(/2026/);
-    expect(kinProjectTargetHint("2027-03-02", now).match(/2027/g)).toHaveLength(1);
-    expect(kinProjectTargetHint("2026-02-30", now)).toBe("Enter a real date.");
+  it("says how to leave the target out while it is out, and nothing once a day is picked", () => {
+    expect(kinProjectTargetHint(null)).toBe("Leave it empty for no target date.");
+    expect(kinProjectTargetHint("2026-12-03")).toBeNull();
+    expect(kinProjectTargetHint("2026-02-30")).toBe("Enter a real date.");
   });
 });
 
@@ -448,7 +466,9 @@ describe("kinContactDraftCheck", () => {
   it("lets an old email or phone stay as saved, and checks it once retyped", () => {
     const saved = { ...contact, emails: ["front desk"], phones: ["ask Mira"] };
     expect(kinContactDraftCheck({ ...saved, name: "Ravi Rao" }, saved)).toBeNull();
-    expect(kinContactDraftCheck({ ...saved, emails: ["ravi@example.com", "front desk"] }, saved)).toBeNull();
+    expect(
+      kinContactDraftCheck({ ...saved, emails: ["ravi@example.com", "front desk"] }, saved),
+    ).toBeNull();
     expect(kinContactDraftCheck({ ...saved, emails: ["front desk 2"] }, saved)).toBe(
       "Enter an email like name@example.com.",
     );
@@ -500,7 +520,9 @@ describe("a contact's several emails and phones", () => {
 
   it("sends one of each as before, several beside the main one, and an edit the whole list", () => {
     const draft = kinContactDraftOf(read);
-    expect(kinContactCreateInput({ ...draft, emails: [" ravi@example.com "], phones: [""] })).toEqual({
+    expect(
+      kinContactCreateInput({ ...draft, emails: [" ravi@example.com "], phones: [""] }),
+    ).toEqual({
       name: "Ravi",
       email: "ravi@example.com",
     });
@@ -521,5 +543,33 @@ describe("a contact's several emails and phones", () => {
       emails: ["Ravi@example.com"],
     });
     expect(kinContactUpdateInput({ name: "Ravi Rao" })).toEqual({ name: "Ravi Rao" });
+  });
+
+  it("sends a contact's tags whole on an edit, empty to clear them, and none when it has none", () => {
+    expect(kinContactDraftOf({ ...read, tags: ["harbour"] }).tags).toEqual(["harbour"]);
+    expect(kinContactCreateInput({ ...kinContactDraftOf(read), tags: [] })).not.toHaveProperty(
+      "tags",
+    );
+    expect(kinContactCreateInput({ ...kinContactDraftOf(read), tags: ["harbour"] })).toMatchObject({
+      tags: ["harbour"],
+    });
+    expect(kinContactUpdateInput({ tags: ["harbour", "clinics"] })).toEqual({
+      tags: ["harbour", "clinics"],
+    });
+    expect(kinContactUpdateInput({ tags: [] })).toEqual({ tags: [] });
+  });
+});
+
+describe("a campaign", () => {
+  const draft = kinProjectDraftOf();
+  it("is sent with its audience only when it is one, and turned back into a project", () => {
+    expect(kinProjectCreateInput({ ...draft, name: "Fair", audience: "harbour" })).toEqual({
+      name: "Fair",
+    });
+    expect(
+      kinProjectCreateInput({ ...draft, name: "Fair", campaign: true, audience: " harbour " }),
+    ).toEqual({ name: "Fair", campaign: true, audience: "harbour" });
+    expect(kinProjectUpdateInput({ campaign: false }, "EUR")).toEqual({ campaign: false });
+    expect(kinProjectUpdateInput({ audience: " " }, "EUR")).toEqual({ audience: null });
   });
 });

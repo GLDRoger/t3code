@@ -41,5 +41,7 @@ describe("kinLinkKeeps", () => {
     expect(opened(["Home", "KinDoc"], "KinClient")).toEqual(["Home", "KinClient"]);
     // What search found takes the search sheet's place.
     expect(opened(["Home", "KinSearch"], "KinDoc")).toEqual(["Home", "KinDoc"]);
+    // As does a deal opened from the deals one concern was raised on.
+    expect(opened(["Home", "KinDealsConcern"], "KinDeal")).toEqual(["Home", "KinDeal"]);
   });
 });

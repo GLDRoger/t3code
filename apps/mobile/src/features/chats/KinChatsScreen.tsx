@@ -285,7 +285,7 @@ export function KinChatsView(props: {
               {props.memory == null ? null : <View className="-mx-4">{props.memory}</View>}
               {props.onCreateFirstAgent === undefined ? (
                 <EmptyState
-                  title={props.empty?.title ?? "No chats yet"}
+                  title={props.empty?.title ?? KIN_CHATS_EMPTY.title}
                   detail={props.empty?.detail ?? KIN_CHATS_EMPTY.none}
                 />
               ) : (

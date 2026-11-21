@@ -18,6 +18,7 @@ import {
   kinGroupMemberViews,
   kinGroupNameCheck,
   kinGroupProblem,
+  kinGroupTakesAdds,
   type KinGroupMemberView,
   KIN_GROUP_FORM,
 } from "@t3tools/client-runtime/kin/kinGroups";
@@ -349,7 +350,7 @@ function KinGroupDetails(props: {
             </View>
           );
         })}
-        {canChange ? (
+        {canChange && kinGroupTakesAdds(group.chat) ? (
           <View className="border-t border-border-subtle">
             <ListActionRow
               label={KIN_GROUP_FORM.addMembers}
