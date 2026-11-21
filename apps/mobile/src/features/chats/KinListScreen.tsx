@@ -33,6 +33,7 @@ import {
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
+import { kinListSettingsOnPhone } from "@t3tools/client-runtime/kin/kinMoney";
 import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
@@ -448,7 +449,7 @@ function KinListEntries(
           : null;
   const actions = [
     ...(add === null ? [] : [add]),
-    ...(canEdit && !def.builtIn
+    ...(canEdit && kinListSettingsOnPhone(def)
       ? [
           {
             accessibilityLabel: KIN_LISTS.edit.title,

@@ -996,7 +996,11 @@ features:
     phone: [tab:docs, KinList, KinListSettings]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    proof: [packages/client-runtime/src/kin/kinLists.test.ts]
+    note: >-
+      Kin's own money lists (invoices, expenses, receipts, quotes) are set up on the web only.
+    proof:
+      - packages/client-runtime/src/kin/kinLists.test.ts
+      - packages/client-runtime/src/kin/kinMoney.test.ts
 
   # ── Settings (the gear at the bottom left on web, on Chats on the phone) ──────────────────
   - id: kin-settings
