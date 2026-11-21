@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { describe, expect, it } from "vite-plus/test";
 
 const SCRIPT = NodePath.resolve(import.meta.dirname, "../ops/kin/host/update.sh");
@@ -52,6 +53,8 @@ git() { case "$*" in *"worktree remove"*) return 1 ;; esac; }
 # GNU mv -T on the host; macOS mv has no -T.
 mv() { if [ "$1" = -T ]; then python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$2" "$3"; else command mv "$@"; fi; }
 heads() { sqlite3 "$DB" "SELECT max(migration_id) FROM kin_sql_migrations;"; }
+# The temporary disk's real free space decides nothing here; the space test sets its own.
+SPACE_HEADROOM=0
 `;
 
 function onFakeHost(program: string) {
@@ -196,6 +199,52 @@ echo "last call $(tail -n1 "$HOME/calls")"`);
     );
   });
 
+  // The host is Linux: this path uses bash 4 and GNU df and date, which macOS lacks.
+  it.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
+    "refuses before stopping anything when a disk it writes to lacks room",
+    () => {
+      const { out, said } = onFakeHost(`
+NEW="$(build new 149)"
+KIN_DATA_FREE=$((5 * 1024 * 1024 * 1024))
+df() { echo "Filesystem 1-blocks Used Available Capacity Mounted"; echo "/dev/data 0 0 $KIN_DATA_FREE 0% /home"; }
+SPACE_HEADROOM=$((5 * 1024 * 1024 * 1024))
+${deploy}
+echo "current $(basename "$(readlink "$CURRENT")")"
+echo "stops $(cat "$HOME/calls" 2>/dev/null | grep -c 'stop kin-server')"
+SPACE_HEADROOM=0
+space_short && echo "room once the headroom fits"
+KIN_DATA_FREE=100
+space_short $((1024 * 1024))`);
+      expect(out, said).toEqual([
+        "status 1",
+        "current old",
+        "stops 0",
+        "room once the headroom fits",
+        "/home has 100 free, and the update needs 1.1M there (the database backup, room to migrate and roll back the database, the new build, and 0 to spare)",
+      ]);
+      expect(said).toMatch(
+        /^update\.sh: not enough disk space: \/home has 5\.0G free, and the update needs 5\.1G there \(the database backup, room to migrate and roll back the database, and 5\.0G to spare\)\. Nothing changed; the server still runs \S+\/old\.$/m,
+      );
+    },
+  );
+
+  // The host is Linux: this path uses bash 4 and GNU df and date, which macOS lacks.
+  it.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
+    "keeps 3 update backups while the nightly backup is good and recent, else 10",
+    () => {
+      const { out } = onFakeHost(`
+now=$(date +%s%3N)
+for status in "" '"ok":true,"lastGoodAt":'$((now - 3600000)) '"ok":true,"lastGoodAt":'$((now - 37 * 3600000)) '"ok":false,"lastGoodAt":'$((now - 3600000)); do
+  mkdir -p "$BACKUP_DIR" && rm -f "$BACKUP_DIR"/* "$BACKUP_STATUS"
+  [ -z "$status" ] || echo "{\"ranAt\":$now,$status,\"bytes\":1,\"error\":\"\"}" >"$BACKUP_STATUS"
+  for n in $(seq -w 1 12); do touch "$BACKUP_DIR/statev2-202601\${n}T000000Z-aaaaaaaaaaaa.sqlite"; done
+  prune_backups
+  echo "kept $(ls "$BACKUP_DIR" | wc -l | tr -d ' ')"
+done`);
+      expect(out).toEqual(["kept 10", "kept 3", "kept 10", "kept 10"]);
+    },
+  );
+
   it("rolls back when the server never answers", () => {
     const { out, said } = onFakeHost(`
 NEW="$(build new 149)"
@@ -212,6 +261,8 @@ echo "current $(basename "$(readlink "$CURRENT")")"`);
     const update = (packaged: string) =>
       onFakeHost(`
 SHA="$(printf 'c%.0s' {1..40})"
+# origin/kin moved on after the release check passed $SHA.
+TIP="$(printf 'd%.0s' {1..40})"
 NEW="$BUILDS/$SHA"
 export KIN_UPDATE_HANDED_OVER=1
 mkdir -p "$REPO" && touch "$REPO/.env" "$HOME/calls"
@@ -219,7 +270,8 @@ id() { if [ "$1" = -un ]; then echo kin; else command id "$@"; fi; }
 git() {
   case "$*" in
     *"branch --show-current"*) echo kin ;;
-    *rev-parse*) echo "$SHA" ;;
+    *"rev-parse --verify --quiet $SHA^{commit}"*) echo "$SHA" ;;
+    *rev-parse*) echo "$TIP" ;;
     *"worktree add"*)
       build "$SHA" 149 >/dev/null && rm "$NEW/apps/server/dist/bin.mjs" && touch "$NEW/.env.example"
       echo '{ "engines": { "node": "24.13.1" } }' >"$NEW/package.json"
@@ -246,7 +298,7 @@ package() {
   printf '{ "name": "Kin", "short_name": "%s", "icons": [{ "src": "/icon-192x192.png" }] }' "$SHORT_NAME" >"$client/manifest.webmanifest"
 }
 ${packaged}
-(main); echo "status $?"
+(main "$SHA"); echo "status $?"
 echo "current $(basename "$(readlink "$CURRENT")")"
 echo "stops $(grep -c 'stop kin-server' "$HOME/calls")"`);
 
@@ -257,6 +309,7 @@ echo "stops $(grep -c 'stop kin-server' "$HOME/calls")"`);
       `current ${"c".repeat(40)}`,
       "stops 1",
     ]);
+    expect(good.said).toContain("origin/kin has moved on to dddddddddddd; deploying cccccccccccc");
     for (const [packaged, problem] of [
       ['TITLE="T3 Code (Beta)"', 'index.html: <title> is "T3 Code (Beta)", not "Kin"'],
       ["SHORT_NAME=T3", 'manifest.webmanifest: short_name is "T3", not "Kin"'],
@@ -271,6 +324,30 @@ echo "stops $(grep -c 'stop kin-server' "$HOME/calls")"`);
       expect(said).toContain(problem);
       expect(said).toContain("failed; the server still runs");
     }
+  });
+
+  it("deploys the commit it is given, and the tip only when told to", () => {
+    const { out, said } = onFakeHost(`
+unset -f git
+git init -q -b kin "$HOME/origin" && cd "$HOME/origin"
+git -c user.name=Rhea -c user.email=rhea@ambermill.test commit -q --allow-empty -m checked
+CHECKED="$(git rev-parse HEAD)"
+git -c user.name=Rhea -c user.email=rhea@ambermill.test commit -q --allow-empty -m "merged after the check"
+TIP="$(git rev-parse HEAD)"
+git clone -q -b kin "$HOME/origin" "$REPO" && cd "$HOME"
+(deploy_target) || echo "no commit: refused"
+[ "$(deploy_target --tip)" = "$TIP" ] && echo "--tip: the tip"
+[ "$(deploy_target "\${CHECKED:0:12}")" = "$CHECKED" ] && echo "named: the checked commit"
+(deploy_target 0123456789ab) || echo "unknown: refused"`);
+    expect(out, said).toEqual([
+      "no commit: refused",
+      "--tip: the tip",
+      "named: the checked commit",
+      "unknown: refused",
+    ]);
+    expect(said).toContain("name the commit the release check passed: update.sh <commit>.");
+    expect(said).toContain("origin/kin has moved on to");
+    expect(said).toContain("0123456789ab is not a commit in");
   });
 
   it("hands over to the merged script once, when the merge changed it", () => {

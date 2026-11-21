@@ -16,6 +16,7 @@ import * as SqlError from "effect/sql/SqlError";
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { ownerLevel, ownerLevelSql } from "../people/KinAccess.ts";
 import { CHAT_ANSWER_TAGS } from "./Audience.ts";
+import { restrictedSql } from "./Reach.ts";
 
 // Approvals import this module, so it must not reach the chat service.
 
@@ -74,25 +75,21 @@ const ownerPlacedSql = (sql: SqlClient.SqlClient, chatId: KinChatId | null) => s
 const TEAMMATE_LEVEL: KinLevel = "L1";
 
 /**
- * Whether `chatId` is the direct chat of a person the lead's owner let message it, or of anyone
- * but the owner while it is the team agent, from stored rows only. A revoked row still counts, so
- * a reply under way when access ends can land; nothing new wakes the lead there (`ChatWake`).
+ * Whether `chatId` is the direct chat of someone other than the lead's owner who may message it
+ * (`Reach`): anyone in the company, unless removed or their pair with it is restricted. From
+ * stored rows only.
  */
 const teammateChatSql = (sql: SqlClient.SqlClient, chatId: KinChatId | null) => sql`(EXISTS (
-    SELECT 1 FROM kin_lead_access x
-    JOIN kin_chats t ON t.org_id = x.org_id AND t.kind = 'direct'
-      AND t.direct_key = x.person_id || ':' || x.agent_id
-    WHERE x.org_id = l.org_id AND x.agent_id = l.agent_id AND t.chat_id = ${chatId})
-  OR EXISTS (
-    SELECT 1 FROM kin_team_agents g
-    JOIN kin_chats t ON t.org_id = g.org_id AND t.kind = 'direct'
-      AND t.direct_key LIKE '%:' || g.agent_id
-      AND t.direct_key <> a.owner_person_id || ':' || g.agent_id
-    WHERE g.org_id = l.org_id AND g.agent_id = l.agent_id AND t.chat_id = ${chatId}))`;
+    SELECT 1 FROM kin_chats t
+    JOIN kin_people tp ON tp.org_id = t.org_id AND tp.removed_at IS NULL
+      AND t.direct_key = tp.person_id || ':' || l.agent_id
+    WHERE t.org_id = l.org_id AND t.chat_id = ${chatId} AND t.kind = 'direct'
+      AND tp.person_id IS NOT a.owner_person_id
+      AND NOT ${sql.literal(restrictedSql("t.org_id", "l.agent_id", "tp.person_id"))}))`;
 
 /**
  * A chat's level before its cap: the lead's, raised to `OWNER_PLACED_LEVEL` where its owner put
- * it and to `TEAMMATE_LEVEL` in the direct chat of someone its owner let message it.
+ * it and to `TEAMMATE_LEVEL` in the direct chat of anyone else who may message it.
  */
 const chatBase = (lead: KinLevel, ownerPlaced: boolean, teammateChat = false) => {
   const floor = ownerPlaced ? OWNER_PLACED_LEVEL : teammateChat ? TEAMMATE_LEVEL : lead;
@@ -100,10 +97,9 @@ const chatBase = (lead: KinLevel, ownerPlaced: boolean, teammateChat = false) =>
 };
 
 /**
- * For a chat target, `min(base, chat cap)`, where the base is the lead's level, or at least L2 in
- * a chat its owner placed it in and L1 in an allowed teammate's direct chat. The lead's level
- * otherwise (lead spec, Permissions). Read from `kin_leads`, `kin_chats`, `kin_chat_members`,
- * `kin_chat_levels` and `kin_lead_access` only; no tool input or model text.
+ * For a chat target, `min(base, chat cap)`: the base is the lead's level, at least L2 in a chat
+ * its owner placed it in and L1 in the direct chat of anyone who may message it (`Reach`).
+ * Read from stored rows only; no tool input or model text.
  */
 export const effectiveLevel = Effect.fn("KinLevels.effectiveLevel")(function* (input: {
   readonly orgId: KinOrgId;

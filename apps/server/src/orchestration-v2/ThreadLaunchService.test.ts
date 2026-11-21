@@ -2603,7 +2603,10 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
         attachments: [attachment],
       },
     };
-    const failed = yield* ThreadMessageIntake.launchThread(input, TEST_UPLOAD_OWNER).pipe(
+    const failed = yield* ThreadMessageIntake.launchThread({
+      ...input,
+      uploadOwner: TEST_UPLOAD_OWNER,
+    }).pipe(
       Effect.provideService(ThreadLaunch.ThreadLaunchService, {
         launch: (request) =>
           launches.launch(request).pipe(
@@ -2646,7 +2649,10 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     assert.deepEqual(yield* fs.readFile(storedPath), new Uint8Array([1, 2, 3, 4]));
     assert.deepEqual(yield* fs.readFile(pendingPath), new Uint8Array([1, 2, 3, 4]));
 
-    const replayed = yield* ThreadMessageIntake.launchThread(input, TEST_UPLOAD_OWNER);
+    const replayed = yield* ThreadMessageIntake.launchThread({
+      ...input,
+      uploadOwner: TEST_UPLOAD_OWNER,
+    });
     assert.equal(replayed.projection.messages[0]?.id, stored.id);
     assert.deepEqual(replayed.projection.messages[0]?.attachments, stored.attachments);
     const claimedFiles = Effect.map(fs.readDirectory(config.attachmentsDir), (files) =>
@@ -2654,14 +2660,12 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     );
     assert.equal((yield* claimedFiles).length, 1);
 
-    const duplicate = yield* ThreadMessageIntake.launchThread(
-      {
-        ...input,
-        commandId: CommandId.make("intake-duplicate-create"),
-        initialMessage: { ...input.initialMessage, messageId: MessageId.make("intake-duplicate") },
-      },
-      TEST_UPLOAD_OWNER,
-    ).pipe(Effect.result);
+    const duplicate = yield* ThreadMessageIntake.launchThread({
+      ...input,
+      commandId: CommandId.make("intake-duplicate-create"),
+      initialMessage: { ...input.initialMessage, messageId: MessageId.make("intake-duplicate") },
+      uploadOwner: TEST_UPLOAD_OWNER,
+    }).pipe(Effect.result);
     assert.ok(Result.isFailure(duplicate));
     assert.ok(duplicate.failure._tag === "ThreadLaunchError");
     assert.equal(duplicate.failure.operation, "create-thread");
@@ -2670,14 +2674,12 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     assert.deepEqual(yield* fs.readFile(storedPath), new Uint8Array([1, 2, 3, 4]));
     assert.deepEqual(yield* fs.readFile(pendingPath), new Uint8Array([1, 2, 3, 4]));
 
-    const missingProject = yield* ThreadMessageIntake.launchThread(
-      {
-        ...input,
-        commandId: CommandId.make("intake-no-project"),
-        projectId: ProjectId.make("missing-project"),
-      },
-      TEST_UPLOAD_OWNER,
-    ).pipe(Effect.flip);
+    const missingProject = yield* ThreadMessageIntake.launchThread({
+      ...input,
+      commandId: CommandId.make("intake-no-project"),
+      projectId: ProjectId.make("missing-project"),
+      uploadOwner: TEST_UPLOAD_OWNER,
+    }).pipe(Effect.flip);
     assert.equal(missingProject._tag, "ThreadLaunchError");
     assert.equal((yield* claimedFiles).length, 1);
     const missingThread = yield* ThreadMessageIntake.dispatchCommand(
@@ -2840,13 +2842,11 @@ it.effect("shared intake refuses a Kin chat's file on a launch or a send, by any
     const names = [kinFile.id, kinFile.id.toUpperCase()];
     for (const [index, name] of names.entries()) {
       const attachment = { ...kinFile, id: ChatAttachmentId.make(name) };
-      const launch = yield* ThreadMessageIntake.launchThread(
-        {
-          ...launchInput({ command: `kin-intake-launch-${index}`, thread: `kin-intake-${index}` }),
-          initialMessage: { text: "Look", attachments: [attachment] },
-        },
-        TEST_UPLOAD_OWNER,
-      ).pipe(Effect.flip);
+      const launch = yield* ThreadMessageIntake.launchThread({
+        ...launchInput({ command: `kin-intake-launch-${index}`, thread: `kin-intake-${index}` }),
+        initialMessage: { text: "Look", attachments: [attachment] },
+        uploadOwner: TEST_UPLOAD_OWNER,
+      }).pipe(Effect.flip);
       assert.equal(launch._tag, "AttachmentClaimError");
       const send = yield* ThreadMessageIntake.sendToThread(
         {

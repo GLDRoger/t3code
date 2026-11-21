@@ -24,6 +24,7 @@ import { KinRecords } from "../work/KinRecords.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
+import type { SensedFact } from "./senses/shared.ts";
 
 /** "Needs attention" on people's screens: the same read and handling agents use, as that person. */
 
@@ -88,12 +89,14 @@ export const screenFacts = <F extends KinPulseFact>(
 export const read = Effect.fn("KinPulsePeople.read")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPulseListInput,
+  sensed?: ReadonlyArray<SensedFact>,
 ) {
   const { person, viewer } = yield* viewerIn(people, input.orgId);
   const read = yield* KinPulse.read({
     orgId: input.orgId,
     at: yield* Clock.currentTimeMillis,
     viewer,
+    sensed,
     personId: person.personId,
     includeHandled: input.includeHandled,
     scope: input.scope,
@@ -154,8 +157,20 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinPulse
         diff: kinPulseDiff,
         apply: kinPulseApply,
       });
-      return coalesced(Stream.merge(pulse, work), () =>
-        read(people, listInput).pipe(Effect.map(live.next)),
+      // Moved by the pulse, it shows what the last tick sensed, if no older than what it shows; a
+      // member's Work change is sensed afresh, so it shows at once.
+      let shownAt: number | undefined;
+      return coalesced(Stream.merge(pulse, work), (asked) =>
+        Effect.gen(function* () {
+          const tick = KinPulse.lastTick(input.orgId);
+          const reuse =
+            !asked.includes(-1) &&
+            shownAt !== undefined &&
+            tick !== undefined &&
+            tick.at >= shownAt;
+          shownAt = reuse ? tick.at : yield* Clock.currentTimeMillis;
+          return live.next(yield* read(people, listInput, reuse ? tick.facts : undefined));
+        }),
       );
     }),
   );

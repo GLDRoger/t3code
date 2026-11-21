@@ -21,7 +21,11 @@ import {
   type KinOutboxEntry,
 } from "@t3tools/client-runtime/kin/kinOutbox";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
-import { KIN_REACTION_NAMES, type KinReactionChip } from "@t3tools/client-runtime/kin/kinReactions";
+import {
+  KIN_REACTION_COPY,
+  KIN_REACTION_NAMES,
+  type KinReactionChip,
+} from "@t3tools/client-runtime/kin/kinReactions";
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import {
   kinAgentAvatar,
@@ -341,7 +345,7 @@ export function KinMessageRow(props: {
               aria-label={
                 onReact === null
                   ? chip.label
-                  : `${chip.label}. ${chip.mine ? "Remove your reaction" : "Add yours"}`
+                  : `${chip.label}. ${chip.mine ? KIN_REACTION_COPY.remove : KIN_REACTION_COPY.add}`
               }
               disabled={onReact === null}
               onClick={() => onReact?.(chip.emoji)}

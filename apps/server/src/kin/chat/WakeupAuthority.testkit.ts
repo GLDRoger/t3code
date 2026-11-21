@@ -105,6 +105,8 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
   readonly changedFrom?: KinReactionEmoji;
   /** Wakes on this event instead, built on the wake-up's own base fields. */
   readonly event?: (base: WakeupEventBase) => KinEvent;
+  /** Wakes on what Kin already queued, adding no event. */
+  readonly queued?: true;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -159,7 +161,7 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
             chatId: input.message.chatId,
             messageId: input.message.messageId,
           };
-  yield* queue.enqueue(event);
+  if (input.queued !== true) yield* queue.enqueue(event);
   // The owner's message is claimed after its short burst window; anyone else's waits the full one.
   yield* TestClock.adjust(input.message?.authorRole === "owner" ? 2_000 : 20_000);
   yield* Effect.scoped(

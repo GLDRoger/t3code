@@ -5,6 +5,7 @@ import { View } from "react-native";
 import { Button } from "../../../components/ui/Button";
 import { EmptyState } from "../../../components/ui/EmptyState";
 import {
+  kinIntroSendsTo,
   KIN_INTRO_COUNTRY,
   KIN_INTRO_PROMPTS,
   KIN_INTRO_START_HINT,
@@ -59,7 +60,7 @@ export function KinIntro(props: {
                   tone="secondary"
                   size="compact"
                   label={prompt.label}
-                  accessibilityHint={`Sends this to ${props.agentName}`}
+                  accessibilityHint={kinIntroSendsTo(props.agentName)}
                   onPress={() => props.onSend(prompt.text)}
                 />
               ) : (

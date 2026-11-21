@@ -80,6 +80,12 @@ export const promptSha256 = (prompt: string) =>
     Effect.provide(NodeCrypto.layer),
   );
 
+const Every = Schema.Struct({ at: Schema.String, days: Schema.Array(Schema.Number) });
+/** A check-in set in Settings: the owner's own time, and the host time Kin last wrote for it. */
+const OwnerTime = Schema.fromJsonString(Schema.Struct({ ...Every.fields, host: Every }));
+export const decodeOwnerTime = Schema.decodeUnknownOption(OwnerTime);
+const encodeOwnerTime = Schema.encodeEffect(OwnerTime);
+
 export interface KinSchedule {
   readonly taskId: ScheduledTaskId;
   readonly orgId: KinOrgId;
@@ -99,13 +105,16 @@ export interface KinSchedule {
   readonly looseAt: string | null;
   /** Its runs are pulse check-ins, not its prompt run as a task. */
   readonly checkIn: number;
+  /** Set in Settings: `OwnerTime` as JSON. */
+  readonly ownerTime: string | null;
 }
 
 const COLUMNS = `task_id AS "taskId", org_id AS "orgId", schedule_id AS "scheduleId",
   agent_id AS "agentId", chat_id AS "chatId", source_event AS "sourceEvent", said_by AS "saidBy",
   audience, content_sha256 AS "contentSha256", inbox_thread_id AS "inboxThreadId",
   asked_sha256 AS "askedSha256", pending_enabled AS "pendingEnabled", run_now_at AS "runNowAt",
-  deleted_at AS "deletedAt", loose_at AS "looseAt", check_in AS "checkIn"`;
+  deleted_at AS "deletedAt", loose_at AS "looseAt", check_in AS "checkIn",
+  owner_time_json AS "ownerTime"`;
 
 export const readSchedule = (sql: SqlClient.SqlClient, orgId: KinOrgId, scheduleId: string) =>
   sql<KinSchedule>`SELECT ${sql.literal(COLUMNS)} FROM kin_schedules
@@ -219,6 +228,8 @@ export interface SaveInput {
    * confirm stay as they are, so this save approves no wording.
    */
   readonly keepWording?: true | undefined;
+  /** The owner's own time it was set at, kept so a clock change moves `every` and not that. */
+  readonly ownerTime?: MemoryItemEvery | undefined;
   readonly now: number;
 }
 
@@ -320,13 +331,15 @@ const make = Effect.gen(function* () {
     // After the task: a crash between leaves a task with no row, which the sink refuses.
     yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
         source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at,
-        loose_at, check_in)
+        loose_at, check_in, owner_time_json)
       VALUES (${taskId}, ${input.orgId}, ${input.scheduleId}, ${input.agentId}, ${input.chatId},
         ${input.sourceEvent}, ${input.saidBy}, 'owner_only', ${hash}, ${inbox}, ${input.now},
         ${input.now}, ${input.around === true ? input.every.at : null},
-        ${input.checkIn === true ? 1 : 0})
+        ${input.checkIn === true ? 1 : 0},
+        ${input.ownerTime === undefined ? null : yield* encodeOwnerTime({ ...input.ownerTime, host: input.every })})
       ON CONFLICT (task_id) DO UPDATE SET chat_id = excluded.chat_id,
         loose_at = excluded.loose_at, check_in = excluded.check_in,
+        owner_time_json = excluded.owner_time_json,
         source_event = excluded.source_event, said_by = excluded.said_by,
         audience = excluded.audience,
         content_sha256 = CASE WHEN ${keep} THEN content_sha256 ELSE excluded.content_sha256 END,

@@ -39,14 +39,14 @@ const kinTeamPrivacy = (kinOnly: boolean) =>
 
 /** Under the list of teammates. */
 export const kinTeamFooter = (kinOnly: boolean) =>
-  `Teammates chat with you and with the agents and groups you add them to. ${kinTeamPrivacy(kinOnly)}`;
+  `Teammates chat with you, your agents and the groups you add them to. ${kinTeamPrivacy(kinOnly)}`;
 
 export const KIN_TEAM_ADD_COPY = {
   linkDropped: (name: string) =>
     `The connection dropped before the link could be shown. Make a new link for ${name} from Team once you're back online.`,
   title: "Add a teammate",
   detail: (kinOnly: boolean) =>
-    `Kin makes a link for you to send them. Opening it lets them chat with you and with the agents and groups you add them to. ${kinTeamPrivacy(kinOnly)}`,
+    `Kin makes a link for you to send them. Opening it lets them chat with you, your agents and the groups you add them to. ${kinTeamPrivacy(kinOnly)}`,
   nameLabel: "Their name",
   nameHint: "This is how they appear in chats.",
   submit: "Make link",
@@ -495,7 +495,7 @@ export const KIN_ACCESS_CHOICES = [
   {
     access: "member",
     label: KIN_ACCESS_LABELS.member,
-    detail: "Chats with the agents you let them message, and Tasks shared with them.",
+    detail: "Chats with anyone in the company unless you restrict it, and Tasks shared with them.",
   },
 ] as const satisfies ReadonlyArray<{
   readonly access: KinPeopleSetAccessInput["access"];
@@ -547,11 +547,6 @@ export const kinTeammateAgentsLine = (teammate: KinTeammate): string | null =>
   kinOwnerLevel(teammate.access)
     ? `${teammate.name} can message every agent, each in their own chat.`
     : null;
-
-/** One line per lead on a teammate's details; the lead's own details change it. */
-export function kinTeammateLeadLine(allowed: boolean | null): string {
-  return allowed === null ? "Checking…" : allowed ? "Can message" : "Can't message";
-}
 
 const isChatError = Schema.is(KinChatError);
 
@@ -700,9 +695,11 @@ export type KinTeamActions = ReturnType<typeof createKinTeamActions>;
 
 /** A teammate's page. */
 export const KIN_TEAM_COPY = {
+  loading: "Loading your team",
+  saveFailed: "That didn't save.",
+  inviteLinkFor: (name: string) => `Invite link for ${name}`,
   canDo: "What they can do",
   canDoBack: "What they can do when they're back",
   canSee: "What they can see",
-  openAgentToChange: (name: string) => `Open an agent to change whether ${name} can message it.`,
   sharedAlways: "Tasks shared with the team, always.",
 } as const;

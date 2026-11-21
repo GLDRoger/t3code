@@ -6,6 +6,9 @@ import {
   type KinReactionEmoji,
 } from "@t3tools/contracts";
 
+/** A reaction chip's spoken action, after its label. */
+export const KIN_REACTION_COPY = { remove: "Remove your reaction", add: "Add yours" } as const;
+
 /** Spoken names, so VoiceOver reads "thumbs up" rather than the glyph's codepoint. */
 export const KIN_REACTION_NAMES: Readonly<Record<KinReactionEmoji, string>> = {
   "👍": "thumbs up",

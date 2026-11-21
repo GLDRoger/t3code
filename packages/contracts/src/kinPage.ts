@@ -107,6 +107,19 @@ function kinHasSections(body: string): boolean {
 export const kinIsPage = (body: string) =>
   kinHasSections(body) && kinPageSections(body).some(({ title }) => title !== null);
 
+/** How a message is drawn: a person's words and anything deleted are bubbles. */
+export function kinMessageShape(message: {
+  readonly author: { readonly _tag: string };
+  readonly status: string;
+  readonly body: string;
+  readonly form?: string | null | undefined;
+  readonly embeds?: ReadonlyArray<unknown> | undefined;
+}): KinPageShape {
+  if (message.status === "deleted" || message.author._tag === "human") return "bubble";
+  if ((message.embeds?.length ?? 0) > 0 || kinIsBrief(message.body, message.form)) return "page";
+  return kinPageShape(message.body);
+}
+
 /** A brief reads under a greeting only with sections; a check-in that came back as one line doesn't. */
 export const kinIsBrief = (body: string, form: string | null | undefined) =>
   form === "brief" && kinPageSections(body).some(({ title }) => title !== null);
@@ -149,6 +162,13 @@ export function kinPageGist(body: string): string {
   }
   return firstLine(body) ?? "";
 }
+
+const THREAD_LINK = /(?<!!)\[([^\]]*)\]\(\s*<?t3-thread:[^)]*\)/gi;
+const BARE_THREAD_LINK = /[^\S\n]*<?t3-thread:[^\s<>()]*[^\s<>().,;:!?'"]>?/gi;
+
+/** Kin has no thread screen, so a link to a T3 thread reads as its words and a bare one goes. */
+export const kinThreadLinksAsWords = (body: string) =>
+  body.replace(THREAD_LINK, "$1").replace(BARE_THREAD_LINK, "");
 
 export function kinPlainBody(body: string): string {
   const { lines, found } = scanKinDocFences(body);

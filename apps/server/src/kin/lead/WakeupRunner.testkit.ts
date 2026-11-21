@@ -135,6 +135,8 @@ type HarnessOptions = {
   readonly writer?: Layer.Layer<Writer.MemoryWriter, never, SqlClient.SqlClient>;
   readonly piUsage?: boolean;
   readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
+  /** Reads a memory item; by default no item exists. */
+  readonly readItem?: Memory.Memory["Service"]["readItemQuietly"];
   /** Each turn opens a command approval and ends only once it is answered. */
   readonly approval?: Deferred.Deferred<ProviderApprovalDecision | undefined>;
   readonly runtimeModes?: Array<RuntimeMode>;
@@ -176,10 +178,34 @@ type HarnessOptions = {
    * runs in its project's root, offered here when the turn resolves it.
    */
   readonly realProjects?: Queue.Queue<string | null>;
+  /** Each thread a whole-history projection read was made of, in order. */
+  readonly wholeThreadReads?: Array<ThreadId>;
+  /** Called each time the runner subscribes to T3's domain events. */
+  readonly onDomainSubscribe?: () => void;
 };
 
 export function harness(options: HarnessOptions = {}) {
-  return WakeupRunner.layer.pipe(Layer.provideMerge(orchestrationHarness(options)));
+  // Only the runner's own reads count: T3's launch reads the thread it just created.
+  const counted = Layer.effect(
+    ThreadManagement.ThreadManagementService,
+    Effect.map(ThreadManagement.ThreadManagementService, (service) => ({
+      ...service,
+      getThreadProjection: (threadId: ThreadId) =>
+        Effect.sync(() => options.wholeThreadReads?.push(threadId)).pipe(
+          Effect.andThen(service.getThreadProjection(threadId)),
+        ),
+      streamDomainEvents: Stream.unwrap(
+        Effect.sync(() => {
+          options.onDomainSubscribe?.();
+          return service.streamDomainEvents;
+        }),
+      ),
+    })),
+  );
+  return WakeupRunner.layer.pipe(
+    Layer.provide(counted),
+    Layer.provideMerge(orchestrationHarness(options)),
+  );
 }
 
 /** The fake-provider orchestration stack without the wake-up runner. */
@@ -610,6 +636,8 @@ function parts(options: HarnessOptions) {
       ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
       readPromptSnapshot: () =>
         Effect.succeed({ rules: "rules", index: "index", items: [], bodies: new Map() }),
+      readItemQuietly:
+        options.readItem ?? ((orgId, id) => Effect.fail(new Memory.MemoryNotFound({ orgId, id }))),
     }),
   );
   const stack = Layer.mergeAll(

@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  KIN_INVOICES,
   KIN_RECEIPTS,
   kinReceiptModeLabel,
   kinReceiptModes,
@@ -472,7 +473,7 @@ function KinSetAgainstDialog(
           ) : invoices === null ? (
             <div className="flex flex-col items-start gap-2">
               <Alert variant="error">
-                <AlertDescription>Couldn't load invoices.</AlertDescription>
+                <AlertDescription>{KIN_INVOICES.loadFailed}</AlertDescription>
               </Alert>
               <Button size="sm" variant="outline" onClick={() => setAttempt((n) => n + 1)}>
                 Retry

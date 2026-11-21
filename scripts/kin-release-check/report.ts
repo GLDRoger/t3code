@@ -29,6 +29,12 @@ export const markdown = (report: Findings, diff: Comparison, exit: number) => {
     ...list("NEW", diff.new),
     ...list("FIXED", diff.fixed),
     ...list("STILL PRESENT", diff.still),
+    ...(exit === 0
+      ? [
+          `Deploy this commit: \`sudo -iu kin ~/t3code/ops/kin/host/update.sh ${report.commit}\``,
+          "",
+        ]
+      : []),
   ].join("\n");
 };
 

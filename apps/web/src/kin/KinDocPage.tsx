@@ -693,7 +693,7 @@ function KinDocHistory(
                 aria-busy={state.loadingMore}
                 onClick={() => void list.loadMore()}
               >
-                {state.moreFailed ? KIN_RETRY : "Show earlier versions"}
+                {state.moreFailed ? KIN_RETRY : KIN_DOCS.earlierVersions}
               </Button>
             </div>
           )}

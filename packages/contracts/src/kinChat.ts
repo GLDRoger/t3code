@@ -283,6 +283,8 @@ export const KinTurnChange = Schema.Struct({
   key: KinRefKey,
   // Absent from an older host.
   kind: Schema.optional(KinRecordLinkKind),
+  /** A contact's client, whose page lists it, when this reader sees it; absent from an older host. */
+  party: Schema.optional(KinRefKey),
   title: Schema.String,
   what: Schema.String,
   change: Schema.Struct({ agentId: KinAgentId, seq: PositiveInt }),
@@ -497,6 +499,16 @@ export type KinSendCard = typeof KinSendCard.Type;
 export const KinChoiceCardState = Schema.Struct({
   question: KinTrimmedText.check(Schema.isMaxLength(240)),
   detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),
+  /**
+   * Asked for someone else: who asks, and through which agent, as the card's first line, above
+   * the question. `detail` opens with the same line for older clients.
+   */
+  askedBy: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(500))),
+  /**
+   * What holds only until someone answers, such as "Until someone chooses, …": shown while the
+   * card is open, never once it is settled. `detail` opens with it for older clients.
+   */
+  whileOpen: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(600))),
   // An agent's kin_ask offers at most four; Kin's own cards, such as a statement's currency, up to eight.
   options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
   /** A picture of what is asked about, such as a new logo: a file in this card's chat. */
@@ -670,12 +682,25 @@ export const KinWaitingItem = Schema.Struct({
   ask: Schema.optional(KinWaitingAsk),
 });
 export type KinWaitingItem = typeof KinWaitingItem.Type;
+/** A page's line for a chat row, sent with `acceptPreview` instead of the page's whole body. */
+export const KinChatPreview = Schema.Struct({
+  /** `kinPageGist` of the whole body. */
+  gist: KinText,
+  /** The page is a brief, whose line reads after its greeting. */
+  brief: Schema.Boolean,
+});
+export type KinChatPreview = typeof KinChatPreview.Type;
 export const KinChatSummary = Schema.Struct({
   ...KinChat.fields,
   // A direct chat's two members. A group's row carries only the viewer's own, with `leftAt` set
   // once they are no longer in it; `kin.chat.members` lists the rest.
   members: Schema.Array(KinChatMember),
   lastMessage: Schema.NullOr(KinMessage),
+  /**
+   * With `acceptPreview`, when `lastMessage` is a page: its line, and that message then comes with
+   * its body cut short and without embeds or turn changes. Absent otherwise.
+   */
+  lastPreview: Schema.optional(KinChatPreview),
   // In a group, the person who wrote `lastMessage`, when it wasn't the viewer.
   lastAuthorName: Schema.optional(KinTrimmedText),
   unread: NonNegativeInt,
@@ -776,7 +801,11 @@ export const KinOrgsListResult = Schema.Struct({
   ),
 });
 export type KinOrgsListResult = typeof KinOrgsListResult.Type;
-export const KinChatsSubscribeInput = Schema.Struct({ orgId: Schema.optional(KinOrgId) });
+export const KinChatsSubscribeInput = Schema.Struct({
+  orgId: Schema.optional(KinOrgId),
+  /** The client reads `lastPreview`; older servers ignore it and send whole messages. */
+  acceptPreview: Schema.optional(Schema.Boolean),
+});
 export type KinChatsSubscribeInput = typeof KinChatsSubscribeInput.Type;
 export const KinChatsCreateDirectInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
 export type KinChatsCreateDirectInput = typeof KinChatsCreateDirectInput.Type;

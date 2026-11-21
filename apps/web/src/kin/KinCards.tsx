@@ -575,6 +575,9 @@ function KinChoiceCard(props: {
 
   return (
     <CardFrame label={kinChoiceAccessibilityLabel(choice, answered?.text ?? null, edited)}>
+      {choice.askedBy === null ? null : (
+        <p className="text-xs text-muted-foreground">{choice.askedBy}</p>
+      )}
       <p className="font-medium text-foreground">{choice.question}</p>
       {takes === null ? null : <p className="text-xs text-muted-foreground">{takes}</p>}
       {choice.send !== null && shownEdit !== null ? (
