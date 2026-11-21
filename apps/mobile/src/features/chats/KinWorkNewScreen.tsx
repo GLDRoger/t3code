@@ -40,6 +40,7 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { uuidv4 } from "../../lib/uuid";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
+import { useKinTextGrows } from "./components/kinTextGrows";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinWorkSideRow } from "./components/KinWorkTaskMenus";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
@@ -144,6 +145,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
   const titleCount = kinWorkTitleCount(draft.title);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const grows = useKinTextGrows();
   const assignees = kinWorkAssignees({
     orgs,
     orgId,
@@ -240,6 +242,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                 <View className="flex-row flex-wrap gap-2">
                   {everyone.map((to) => (
                     <Chip
+                      wrap={grows}
                       key={to.key}
                       leading={<KinAvatar avatar={to.avatar} size="mini" />}
                       label={to.invited ? `${to.name}, invited` : to.name}
@@ -261,6 +264,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                 </Text>
                 <View className="flex-row flex-wrap gap-2">
                   <Chip
+                    wrap={grows}
                     label={KIN_WORK_NEW_COPY.noDue}
                     selected={draft.due === null}
                     disabled={saving}
@@ -268,6 +272,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                   />
                   {kinWorkDueChoices(opened, names.zone).map((choice) => (
                     <Chip
+                      wrap={grows}
                       key={choice.day}
                       label={choice.label}
                       accessibilityLabel={dueChoiceLabel(choice, opened, names.zone)}
@@ -285,6 +290,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                   </Text>
                   <View className="flex-row flex-wrap gap-2">
                     <Chip
+                      wrap={grows}
                       label={KIN_WORK_REPEAT.never}
                       selected={draft.repeat === null}
                       disabled={saving}
@@ -292,6 +298,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                     />
                     {KIN_WORK_REPEAT.choices.map((choice) => (
                       <Chip
+                        wrap={grows}
                         key={choice.label}
                         label={choice.label}
                         selected={kinSameRepeat(choice.rule, draft.repeat)}
