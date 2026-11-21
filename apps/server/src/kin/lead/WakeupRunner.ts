@@ -85,15 +85,8 @@ import { KinTeam } from "../team/KinTeam.ts";
 import { KinHandoff } from "./Handoff.ts";
 import * as WorkFor from "./workFor.ts";
 import { noticeRecords, runsFrom, turnRecords } from "./wakeupRuns.ts";
+import { RUN_SILENCE_MS, activityAt, waitWhileActive } from "./runSilence.ts";
 
-/** How long one wake-up may run before it is interrupted. */
-const WAKEUP_DEADLINE_MS = 900_000;
-/** Each message steered into a running wake-up buys it this long, up to the cap; then they queue. */
-const MAX_STEERS = 5;
-const STEER_EXTENSION_MS = 300_000;
-const WAKEUP_HARD_CAP_MS = 1_800_000;
-const deadlineAt = (startedAt: number, steers: number) =>
-  startedAt + Math.min(WAKEUP_HARD_CAP_MS, WAKEUP_DEADLINE_MS + steers * STEER_EXTENSION_MS);
 const isSteerRun = (wakeupId: KinWakeupId, run: { readonly userMessageId: string }) =>
   KinIdentity.isAdoptedRunMessage(wakeupId, run.userMessageId) &&
   run.userMessageId !== KinIdentity.rescueMessageId(wakeupId);
@@ -284,9 +277,15 @@ const make = Effect.gen(function* () {
     (event.type === "provider-turn.updated" && event.payload.completedAt !== null);
   // One subscription to T3's events serves every wait below; each would otherwise open its own.
   const runActivity = yield* PubSub.unbounded<string>();
+  /** When the provider last worked on each waited-on wake-up's thread, by the event's own time. */
+  const lastWork = new Map<string, number>();
   yield* threads.streamDomainEvents.pipe(
-    Stream.filter(isLeadActivity),
-    Stream.runForEach((event) => PubSub.publish(runActivity, event.threadId)),
+    Stream.runForEach((event) => {
+      const at = lastWork.has(event.threadId) ? activityAt(event) : undefined;
+      if (at !== undefined)
+        lastWork.set(event.threadId, Math.max(at, lastWork.get(event.threadId) ?? at));
+      return isLeadActivity(event) ? PubSub.publish(runActivity, event.threadId) : Effect.void;
+    }),
     Effect.catchCause((cause) =>
       Effect.logError("Kin run activity watch failed", { cause }).pipe(
         Effect.andThen(Effect.sleep("1 second")),
@@ -480,19 +479,45 @@ const make = Effect.gen(function* () {
       const threadId = row.threadId;
       const runId = row.runId;
       const { orgId, agentId, wakeupId } = row;
-      // Recovery resumes the count from the thread, so steer ids and the deadline stay stable.
+      // Recovery resumes the count from the thread, so steer ids stay stable. T3's table has no
+      // org; the thread is this wake-up's own.
+      const steerPrefix = KinIdentity.steerMessagePrefix(wakeupId);
+      const [landedSteers] = yield* sql<{ steers: number }>`SELECT COUNT(*) AS steers
+        FROM orchestration_v2_projection_messages WHERE thread_id = ${threadId}
+          AND substr(message_id, 1, ${steerPrefix.length}) = ${steerPrefix}`;
       const steering = {
         open: true,
-        steers: (yield* threads.getThreadRecords(threadId, ["messages"], {
-          messageIds: Array.from({ length: MAX_STEERS }, (_, index) =>
-            MessageId.make(KinIdentity.steerMessageId(wakeupId, index + 1)),
-          ),
-        })).messages.length,
+        steers: landedSteers?.steers ?? 0,
         lock: yield* Semaphore.make(1),
       };
-      const deadline = () => deadlineAt(row.startedAt, steering.steers);
+      const waitingSince = yield* Clock.currentTimeMillis;
+      lastWork.set(threadId, waitingSince);
+      /** When the wake-up is ended if its run shows nothing more. */
+      const quietUntil = () => (lastWork.get(threadId) ?? waitingSince) + RUN_SILENCE_MS;
+      // The grant lasts as long as the wake-up may run, so a slow first reply still lands.
+      const holdFloor = Effect.gen(function* () {
+        const claimed = yield* sql<{ messageId: string }>`
+          SELECT json_extract(json, '$.messageId') AS "messageId" FROM kin_events
+          WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
+            AND tag IN ('chat.message', 'widget.action', 'chat.reaction') ORDER BY event_id`;
+        yield* floor.renew({
+          orgId,
+          agentId,
+          until: quietUntil(),
+          messageIds: claimed.map((event) => KinMessageId.make(event.messageId)),
+        });
+      });
+      const keepFloor = holdFloor.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin could not hold a working wake-up's floor", {
+            orgId,
+            wakeupId,
+            cause,
+          }),
+        ),
+      );
       const steer = Effect.fn("WakeupRunner.steer")(function* () {
-        if (!steering.open || steering.steers >= MAX_STEERS) return;
+        if (!steering.open) return;
         let events = yield* queue.steer({ orgId, agentId, wakeupId });
         for (const group of (yield* admitEvents(orgId, agentId, events)).held) {
           const ids = new Set(group.events.map((event) => event.eventId));
@@ -525,16 +550,7 @@ const make = Effect.gen(function* () {
             text: yield* prompt.steer({ orgId, agentId, wakeupId, events }),
             attachments: yield* prompt.attachments({ orgId, events }),
           });
-          const claimed = yield* sql<{ messageId: string }>`
-            SELECT json_extract(json, '$.messageId') AS "messageId" FROM kin_events
-            WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
-              AND tag IN ('chat.message', 'widget.action', 'chat.reaction') ORDER BY event_id`;
-          yield* floor.renew({
-            orgId,
-            agentId,
-            until: deadline(),
-            messageIds: claimed.map((event) => KinMessageId.make(event.messageId)),
-          });
+          yield* holdFloor;
           if (Option.isSome(bridge))
             yield* bridge.value.steered(orgId, wakeupId, {
               n,
@@ -599,13 +615,12 @@ const make = Effect.gen(function* () {
       let current = runId;
       let result: Effect.Success<ReturnType<typeof threads.waitForThread>>;
       while (true) {
-        result = yield* threads.waitForThread({
-          projectId,
-          threadId,
-          runId: current,
-          timeoutMs: Math.max(0, deadline() - (yield* Clock.currentTimeMillis)),
-        });
-        if (result.timedOut && (yield* Clock.currentTimeMillis) < deadline()) continue;
+        result = yield* waitWhileActive(
+          threads,
+          { projectId, threadId, runId: current },
+          () => lastWork.get(threadId) ?? waitingSince,
+          keepFloor,
+        );
         // Under the steer lock, so no steer lands once the wake-up stops waiting.
         const next = yield* steering.lock.withPermits(1)(
           Effect.gen(function* () {
@@ -688,15 +703,21 @@ const make = Effect.gen(function* () {
               runId: current,
             });
         }
-        // The reply lands before memory commits, while the wake-up still owns its lane.
-        if (Option.isSome(bridge) && !stopped && !abandoned)
+        // The reply lands before memory commits, while the wake-up still owns its lane. Its run
+        // just ended, so a rescue turn and the floor's grant count from now.
+        if (Option.isSome(bridge) && !stopped && !abandoned) {
+          if (status === "completed") {
+            lastWork.set(threadId, yield* Clock.currentTimeMillis);
+            yield* keepFloor;
+          }
           yield* bridge.value.complete({
             orgId: row.orgId,
             wakeupId: row.wakeupId,
             projectId,
             rootRunId: runId,
-            rescueUntil: status === "completed" ? deadline() : null,
+            rescueUntil: status === "completed" ? quietUntil() : null,
           });
+        }
         // Settled unless a join aborted it first; a join after this has nothing to abort.
         if (!abandoned)
           abandoned =
@@ -759,6 +780,11 @@ const make = Effect.gen(function* () {
             : Effect.void,
         ),
         Effect.ensuring(endReply(row)),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (row.threadId !== null) lastWork.delete(row.threadId);
+          }),
+        ),
       ),
   );
   const clearMissingThread = Effect.fn("WakeupRunner.clearMissingThread")(function* (
@@ -1243,7 +1269,7 @@ const make = Effect.gen(function* () {
                 yield* floor.renew({
                   orgId,
                   agentId,
-                  until: row.startedAt + WAKEUP_DEADLINE_MS,
+                  until: (yield* Clock.currentTimeMillis) + RUN_SILENCE_MS,
                   messageIds: events.flatMap((event) =>
                     event._tag === "chat.message" ||
                     event._tag === "widget.action" ||
