@@ -511,9 +511,10 @@ settings on GitHub. The section also lists the last few things done as you.
 
 Kin hears at once about repos its GitHub App is on, and about your other watched repos within a
 minute, from its own checks with your login. When your Kin has a public address, Kin sets up the
-webhook of an App it made; it leaves one that points somewhere else alone. If **Settings →
-Connections → GitHub** lists events to tick, tick them once on GitHub; it links to the page. On your
-repos and your organizations' repos, these start an agent on their own:
+webhook of an App it made; for an App it didn't make, choose **Let Kin set it up** under **How fast
+Kin hears from GitHub**, on the web or desktop. It leaves a webhook that points somewhere else alone.
+If **Settings → Connections → GitHub** lists events to tick, tick them once on GitHub; it links to
+the page. On your repos and your organizations' repos, these start an agent on their own:
 
 - **A teammate opens a pull request**, or marks a draft ready: it is reviewed and the review posted.
   On your own pull requests the review is a comment, since GitHub doesn't let you approve your own.

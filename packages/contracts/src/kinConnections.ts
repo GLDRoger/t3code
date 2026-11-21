@@ -564,6 +564,8 @@ export const KinGitHubInstant = Schema.Struct({
   settingsUrl: Schema.NullOr(Schema.String),
   /** When GitHub last delivered and whether Kin accepted it, from GET /app/hook/deliveries; null when never or unknown. */
   last: Schema.NullOr(Schema.Struct({ at: Schema.String, ok: Schema.Boolean })),
+  /** With `error`: the App's webhook sends its events to an address that isn't Kin's, left as it is. */
+  elsewhere: Schema.optional(Schema.Boolean),
 });
 export type KinGitHubInstant = typeof KinGitHubInstant.Type;
 
@@ -608,6 +610,11 @@ export const KinGitHubAgents = Schema.Struct({
   appSettingsUrl: Schema.optional(Schema.String),
   /** Whether GitHub tells Kin at once; owner-level readers only, absent with no App. */
   instant: Schema.optional(KinGitHubInstant),
+  /**
+   * Owner-level readers only, without `instant`: Kin didn't make the App, has a public address,
+   * and sets the App's webhook once an owner allows it (`kin.github.app.hook.allow`).
+   */
+  instantOffer: Schema.optional(Schema.Boolean),
 });
 export type KinGitHubAgents = typeof KinGitHubAgents.Type;
 
@@ -678,6 +685,12 @@ export const KinGitHubAppDisconnected = Schema.Struct({
   settingsUrl: Schema.NullOr(Schema.String),
 });
 export type KinGitHubAppDisconnected = typeof KinGitHubAppDisconnected.Type;
+
+/** What setting the App's webhook did once an owner allowed it; `elsewhere` left another's address. */
+export const KinGitHubHookAllowed = Schema.Struct({
+  outcome: Schema.Literals(["set", "address", "none", "elsewhere", "error"]),
+});
+export type KinGitHubHookAllowed = typeof KinGitHubHookAllowed.Type;
 
 /** Protects these repos' default branch from Kin's App with a ruleset, or removes Kin's own. */
 export const KinGitHubGuardSetInput = Schema.Struct({
@@ -843,6 +856,11 @@ export const KinConnectionRpcs = [
     success: KinGitHubAppDisconnected,
     error: KinError,
   }),
+  Rpc.make("kin.github.app.hook.allow", {
+    payload: KinGitHubInput,
+    success: KinGitHubHookAllowed,
+    error: KinError,
+  }),
   Rpc.make("kin.github.app.repos.set", {
     payload: KinGitHubAppReposSetInput,
     success: KinGitHubAppReposResult,
@@ -884,4 +902,5 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.github.guard.set": AuthKinChatScope,
   "kin.github.app.create": AuthKinChatScope,
   "kin.github.app.disconnect": AuthKinChatScope,
+  "kin.github.app.hook.allow": AuthKinChatScope,
 } as const;

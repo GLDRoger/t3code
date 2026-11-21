@@ -137,8 +137,8 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
       const hook = Context.getOption(services, KinGitHubHook);
       if (Option.isNone(hook)) return status;
       const people = yield* Context.get(services, KinIdentity).resolve(session);
-      const instant = yield* hook.value.instant(people, status.orgId);
-      return instant === undefined ? status : { ...status, agents: { ...status.agents, instant } };
+      const shown = yield* hook.value.instant(people, status.orgId);
+      return shown === undefined ? status : { ...status, agents: { ...status.agents, ...shown } };
     },
     Effect.orElseSucceed(() => undefined),
   );
@@ -183,6 +183,13 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
         return yield* disabled;
       const people = yield* Context.get(kin.value.services.value, KinIdentity).resolve(session);
       return yield* setup.value.disconnect(people, input.orgId);
+    }),
+    "kin.github.app.hook.allow": Effect.fn("KinGitHubAppSetup.allowHook.rpc")(function* (input) {
+      const setup = setupOf();
+      if (Option.isNone(setup) || Option.isNone(kin) || Option.isNone(kin.value.services))
+        return yield* disabled;
+      const people = yield* Context.get(kin.value.services.value, KinIdentity).resolve(session);
+      return yield* setup.value.allowHook(people, input.orgId);
     }),
     "kin.github.app.repos.set": Effect.fn("KinGitHubApp.setRepos.rpc")(function* (input) {
       const people = yield* github((g, found) =>

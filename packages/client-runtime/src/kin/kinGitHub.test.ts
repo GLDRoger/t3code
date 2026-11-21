@@ -408,8 +408,29 @@ describe("kinGitHubInstantRow", () => {
         null,
       ],
     ],
+    [
+      "error, the App's events going to another address",
+      instant("error", { elsewhere: true }),
+      [
+        "attention",
+        "Every minute",
+        "This App already sends its events to another address, so Kin left it as it is. Kin keeps checking GitHub every minute.",
+        null,
+      ],
+    ],
+    [
+      "offered, for an App Kin didn't make",
+      { ...agents, instantOffer: true },
+      [
+        "muted",
+        "Every minute",
+        "Kin didn't make this GitHub App, so it hasn't touched the App's webhook. Kin can set it, so GitHub tells Kin the moment something happens. If the App already sends its events somewhere else, Kin leaves it as it is.",
+        null,
+      ],
+    ],
   ] as const)("%s", (_name, input, expected) => {
     const row = kinGitHubInstantRow(input, now);
+    expect(row?.offer === true).toBe(input.instantOffer === true);
     expect(
       row === null
         ? null

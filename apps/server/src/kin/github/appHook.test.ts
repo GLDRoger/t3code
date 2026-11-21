@@ -33,7 +33,7 @@ import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
 import { receive } from "./hookHttp.ts";
 import { KinKeychain } from "./Keychain.ts";
 import { KinGitHubApp, KinGitHubAppConfig, make as makeApp } from "./KinGitHubApp.ts";
-import { writeStoredApp } from "./appStore.ts";
+import { readStoredApp, writeStoredApp } from "./appStore.ts";
 import { appKeyJson, fakeHttp, installApp } from "./KinGitHubApp.testkit.ts";
 
 const orgId = KinOrgId.make("org-hook");
@@ -109,11 +109,12 @@ const setup = (options: { readonly app?: boolean; readonly seeded?: boolean } = 
     );
     const app = yield* makeApp.pipe(Effect.provide(services));
     yield* app.refresh();
+    const hook = yield* AppHook.make.pipe(Effect.provideService(KinGitHubApp, app));
     const flow = yield* Setup.make.pipe(
       Effect.provide(services),
       Effect.provideService(KinGitHubApp, app),
+      Effect.provideService(AppHook.KinGitHubHook, hook),
     );
-    const hook = yield* AppHook.make.pipe(Effect.provideService(KinGitHubApp, app));
     const secretText = store
       .get(AppKey.hookSecretName("9001"))
       .pipe(Effect.map(Option.map((bytes) => Hex.encode(bytes))));
@@ -442,6 +443,10 @@ describe("Kin sets the App's webhook up itself", () => {
         assert.strictEqual(patches(), 2);
         yield* addressed(hook.tick());
         assert.isTrue(lines.some((line) => line.includes("points somewhere else")));
+        assert.strictEqual(
+          (yield* addressed(hook.instant([owner], orgId)))?.instant?.elsewhere,
+          true,
+        );
         github.world.app!.hook = { url: "", content_type: "json", insecure_ssl: "0" };
 
         // GitHub failing: told, never thrown; the tick goes on.
@@ -478,27 +483,151 @@ describe("Kin sets the App's webhook up itself", () => {
         assert.strictEqual(yield* addressed(hook.ensure()), "error");
         const secret = Option.getOrThrow(yield* secretText);
         assert.strictEqual(github.world.app?.hook?.secret, secret);
-        assert.strictEqual((yield* addressed(hook.instant([owner], orgId)))?.state, "error");
+        assert.strictEqual(
+          (yield* addressed(hook.instant([owner], orgId)))?.instant?.state,
+          "error",
+        );
         github.world.app!.patchLost = false;
         assert.strictEqual(yield* addressed(hook.ensure()), "set");
         assert.strictEqual(patches(), 2);
         assert.deepStrictEqual(yield* secretText, Option.some(secret));
         assert.strictEqual(github.world.app?.hook?.secret, secret);
-        assert.strictEqual((yield* addressed(hook.instant([owner], orgId)))?.state, "events");
+        assert.strictEqual(
+          (yield* addressed(hook.instant([owner], orgId)))?.instant?.state,
+          "events",
+        );
         assert.strictEqual(yield* addressed(hook.ensure()), "set");
         assert.strictEqual(patches(), 2);
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("an App the host was seeded with keeps its webhook: Kin never reads or writes it", () =>
+  it.effect(
+    "an App adopted from the host's environment keeps its webhook until an owner says yes, and then is set up as Kin's own",
+    () =>
+      Effect.gen(function* () {
+        const { github, hook, flow, secretText } = yield* setup({ seeded: true });
+        const patches = () =>
+          github.world.calls.filter((call) => call === "PATCH app/hook/config").length;
+        const record = () => readStoredApp.pipe(Effect.map(Option.getOrThrow));
+        assert.strictEqual((yield* record()).at, null);
+        github.world.calls.length = 0;
+        assert.strictEqual(yield* addressed(hook.ensure()), "none");
+        yield* addressed(hook.tick());
+        assert.deepStrictEqual(yield* addressed(hook.instant([owner], orgId)), {
+          instantOffer: true,
+        });
+        assert.isUndefined(yield* addressed(hook.instant([member], orgId)));
+        // With no public address there is nothing to allow yet.
+        assert.deepStrictEqual(yield* hook.instant([owner], orgId), {
+          instant: {
+            state: "address",
+            missing: [],
+            settingsUrl: "https://github.com/settings/apps/invented-kin/permissions",
+            last: null,
+          },
+        });
+        assert.isTrue(Option.isNone(yield* hook.secret()));
+        assert.isFalse(github.world.calls.some((call) => call.includes("app/hook")));
+
+        // A member and a signed-out caller are refused, and nothing is recorded or sent.
+        for (const people of [[member], []]) {
+          const refused = yield* addressed(flow.allowHook(people, orgId)).pipe(Effect.flip);
+          assert.strictEqual(refused.reason, "not_allowed");
+        }
+        assert.isUndefined((yield* record()).hookAllowed);
+        assert.strictEqual(patches(), 0);
+
+        // The owner's yes: set up as for an App Kin made, confirmed only once GitHub answers 200.
+        github.world.app!.patchLost = true;
+        assert.deepStrictEqual(yield* addressed(flow.allowHook([owner], orgId)), {
+          outcome: "error",
+        });
+        assert.deepStrictEqual((yield* record()).hookAllowed, { by: "Rhea", at: T0 });
+        const secret = Option.getOrThrow(yield* secretText);
+        const store = yield* ServerSecretStore.ServerSecretStore;
+        assert.isTrue(Option.isNone(yield* store.get(AppKey.hookSetName("9001"))));
+        github.world.app!.patchLost = false;
+        assert.strictEqual(yield* addressed(hook.ensure()), "set");
+        assert.deepStrictEqual(github.world.app?.hook, {
+          url: HOOK_URL,
+          content_type: "json",
+          insecure_ssl: "0",
+          secret,
+        });
+        assert.strictEqual(patches(), 2);
+        assert.strictEqual(yield* addressed(hook.ensure()), "set");
+        assert.deepStrictEqual(yield* addressed(flow.allowHook([owner], orgId)), {
+          outcome: "set",
+        });
+        assert.strictEqual(patches(), 2);
+        assert.deepStrictEqual((yield* record()).hookAllowed, { by: "Rhea", at: T0 });
+        assert.strictEqual(
+          (yield* addressed(hook.instant([owner], orgId)))?.instant?.state,
+          "events",
+        );
+        assert.isTrue(Option.isSome(yield* hook.secret()));
+
+        // Disconnecting forgets the yes with the App; another App adopted later starts without it.
+        yield* flow.disconnect([owner], orgId);
+        assert.isTrue(Option.isNone(yield* readStoredApp));
+        assert.isTrue(Option.isNone(yield* secretText));
+        yield* writeStoredApp({
+          appId: 9002,
+          slug: "invented-other",
+          name: "Invented Other",
+          owner: "rhea-gh",
+          at: null,
+          by: null,
+        });
+        assert.strictEqual(yield* addressed(hook.ensure()), "none");
+        assert.deepStrictEqual(yield* addressed(hook.instant([owner], orgId)), {
+          instantOffer: true,
+        });
+        assert.strictEqual(patches(), 2);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("an App the host only names, not yet adopted, gets nothing and can't be allowed", () =>
     Effect.gen(function* () {
-      const { github, hook } = yield* setup({ seeded: true });
+      const { github, hook, flow } = yield* setup({ seeded: true });
+      const fs = yield* FileSystem.FileSystem;
+      const { stateDir } = yield* ServerConfig;
+      yield* fs.remove(`${stateDir}/kin/gh-app/app.json`);
+      yield* fs.remove(`${stateDir}/kin/gh-app/seed-taken`);
       github.world.calls.length = 0;
-      assert.strictEqual(yield* addressed(hook.ensure()), "none");
-      yield* addressed(hook.tick());
       assert.isUndefined(yield* addressed(hook.instant([owner], orgId)));
-      assert.isTrue(Option.isNone(yield* hook.secret()));
+      const refused = yield* addressed(flow.allowHook([owner], orgId)).pipe(Effect.flip);
+      assert.strictEqual(refused.reason, "invalid_state");
+      assert.isTrue(Option.isNone(yield* readStoredApp));
+      assert.strictEqual(yield* addressed(hook.ensure()), "none");
       assert.isFalse(github.world.calls.some((call) => call.includes("app/hook")));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("with the owner's yes, an App that sends its events elsewhere is left as it is", () =>
+    Effect.gen(function* () {
+      const { github, hook, flow } = yield* setup({ seeded: true });
+      const theirs = {
+        url: "https://elsewhere.example.test/hook",
+        content_type: "form",
+        insecure_ssl: "1",
+      };
+      github.world.app!.hook = { ...theirs };
+      assert.deepStrictEqual(yield* addressed(flow.allowHook([owner], orgId)), {
+        outcome: "elsewhere",
+      });
+      assert.deepStrictEqual(github.world.app?.hook, theirs);
+      assert.isFalse(github.world.calls.includes("PATCH app/hook/config"));
+      assert.deepStrictEqual(yield* addressed(hook.instant([owner], orgId)), {
+        instant: {
+          state: "error",
+          missing: Object.values(AppHook.HOOK_EVENTS),
+          settingsUrl: "https://github.com/settings/apps/invented-kin/permissions",
+          last: null,
+          elsewhere: true,
+        },
+      });
+      assert.isTrue(Option.isNone(yield* hook.secret()));
     }).pipe(Effect.provide(layer)),
   );
 
@@ -571,17 +700,16 @@ describe("what Settings reads of the webhook", () => {
       const settingsUrl = "https://github.com/settings/apps/invented-kin/permissions";
       assert.isUndefined(yield* addressed(hook.instant([member], orgId)));
       assert.deepStrictEqual(yield* hook.instant([owner], orgId), {
-        state: "address",
-        missing: [],
-        settingsUrl,
-        last: null,
+        instant: { state: "address", missing: [], settingsUrl, last: null },
       });
       yield* addressed(hook.ensure());
       assert.deepStrictEqual(yield* addressed(hook.instant([owner], orgId)), {
-        state: "events",
-        missing: Object.values(AppHook.HOOK_EVENTS),
-        settingsUrl,
-        last: null,
+        instant: {
+          state: "events",
+          missing: Object.values(AppHook.HOOK_EVENTS),
+          settingsUrl,
+          last: null,
+        },
       });
       // Read again within minutes: GitHub isn't asked again.
       const asked = github.world.calls.length;
@@ -593,16 +721,18 @@ describe("what Settings reads of the webhook", () => {
       yield* TestClock.adjust("3 minutes");
       const on = yield* addressed(hook.instant([owner], orgId));
       assert.deepStrictEqual(on, {
-        state: "on",
-        missing: [],
-        settingsUrl,
-        last: { at: "2026-11-18T09:00:00Z", ok: true },
+        instant: {
+          state: "on",
+          missing: [],
+          settingsUrl,
+          last: { at: "2026-11-18T09:00:00Z", ok: true },
+        },
       });
       assert.notInclude(JSON.stringify(on), Option.getOrThrow(yield* secretText));
 
       github.world.failing = ["app"];
       yield* TestClock.adjust("3 minutes");
-      assert.strictEqual((yield* addressed(hook.instant([owner], orgId)))?.state, "error");
+      assert.strictEqual((yield* addressed(hook.instant([owner], orgId)))?.instant?.state, "error");
     }).pipe(Effect.provide(layer)),
   );
 

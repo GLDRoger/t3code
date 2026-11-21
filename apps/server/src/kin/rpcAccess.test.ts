@@ -206,6 +206,13 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           assert.isFalse(yield* allowed("ravi", method));
           assert.isFalse(yield* allowed("stranger", method));
         }
+        // Letting Kin set the webhook of an App it didn't make goes as Disconnect does.
+        for (const method of ["kin.github.app.disconnect", "kin.github.app.hook.allow"]) {
+          assert.isTrue(yield* allowed("kin-default-owner", method));
+          assert.isTrue(yield* allowed("meera", method));
+          assert.isFalse(yield* allowed("ravi", method));
+          assert.isFalse(yield* allowed("stranger", method));
+        }
 
         // The country refusal reaches a person with no name in it (an older phone hides names),
         // worded for who may choose the country now; any other refusal is as it was.

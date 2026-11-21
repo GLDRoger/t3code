@@ -16,7 +16,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Setup from "./appSetup.ts";
-import { HOOK_EVENTS, KIN_GITHUB_HOOK_ROUTE } from "./appHook.ts";
+import { HOOK_EVENTS, KIN_GITHUB_HOOK_ROUTE, KinGitHubHook, make as makeHook } from "./appHook.ts";
 import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as AppKey from "./appKey.ts";
@@ -74,9 +74,11 @@ const setup = (options: { readonly hostAppId?: string } = {}) =>
     /** Kin starting, as at boot or after a restart over the same state. */
     const boot = Effect.gen(function* () {
       const app = yield* makeApp.pipe(Effect.provide(services));
+      const hook = yield* makeHook.pipe(Effect.provideService(KinGitHubApp, app));
       const flow = yield* Setup.make.pipe(
         Effect.provide(services),
         Effect.provideService(KinGitHubApp, app),
+        Effect.provideService(KinGitHubHook, hook),
       );
       yield* app.refresh();
       return { app, flow };

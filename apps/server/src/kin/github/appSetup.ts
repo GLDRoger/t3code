@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - random state for GitHub's manifest flow.
 import * as NodeCrypto from "node:crypto";
 
-import { KinChatError, type KinOrgId } from "@t3tools/contracts";
+import { KinChatError, type KinGitHubHookAllowed, type KinOrgId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import { HttpClient, HttpClientRequest } from "effect/http";
 
@@ -20,7 +21,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { readStoredApp, removeStoredApp, writeSeedTaken, writeStoredApp } from "./appStore.ts";
 import { knownRepos } from "./githubWatchStore.ts";
-import { HOOK_EVENTS, KIN_GITHUB_HOOK_ROUTE } from "./appHook.ts";
+import { HOOK_EVENTS, KIN_GITHUB_HOOK_ROUTE, KinGitHubHook } from "./appHook.ts";
 import { publicAddress } from "../publicAddress.ts";
 import { KinGitHubAppKey } from "./appKey.ts";
 import { appSettingsPage, KinGitHubApp, KinGitHubAppConfig } from "./KinGitHubApp.ts";
@@ -101,6 +102,14 @@ export class KinGitHubAppSetup extends Context.Service<
       people: ReadonlyArray<PersonIdentity>,
       orgId: KinOrgId,
     ) => Effect.Effect<{ readonly settingsUrl: string | null }, KinChatError>;
+    /**
+     * An owner's yes to Kin setting the webhook of Settings' App, kept with the App's record, then
+     * set up right away. Disconnecting the App is the way back.
+     */
+    readonly allowHook: (
+      people: ReadonlyArray<PersonIdentity>,
+      orgId: KinOrgId,
+    ) => Effect.Effect<KinGitHubHookAllowed, KinChatError>;
   }
 >()("t3/kin/github/appSetup/KinGitHubAppSetup") {}
 
@@ -121,6 +130,9 @@ export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const app = yield* KinGitHubApp;
   const refreshes = yield* KinRefreshObserver;
+  const hook = yield* KinGitHubHook;
+  /** The App's record is read and written whole: a yes never brings back one being disconnected. */
+  const record = yield* Semaphore.make(1);
   const files = Context.make(FileSystem.FileSystem, yield* FileSystem.FileSystem).pipe(
     Context.add(Path.Path, yield* Path.Path),
     Context.add(ServerConfig, yield* ServerConfig),
@@ -300,14 +312,22 @@ export const make = Effect.gen(function* () {
   ) {
     yield* ownerAt(people, orgId);
     const state = yield* app.state();
-    // Declined before removing the record, so no restart in between adopts the host's App again.
-    if (Option.isSome(config.appId))
-      yield* writeSeedTaken(config.appId.value).pipe(Effect.provideContext(files), Effect.orDie);
-    const stored = yield* readStoredApp.pipe(Effect.provideContext(files));
-    if (Option.isSome(stored)) {
-      yield* appKey.remove(String(stored.value.appId));
-      yield* removeStoredApp.pipe(Effect.provideContext(files), Effect.orDie);
-    }
+    const stored = yield* record.withPermits(1)(
+      Effect.gen(function* () {
+        // Declined before removing the record, so no restart in between adopts the host's App again.
+        if (Option.isSome(config.appId))
+          yield* writeSeedTaken(config.appId.value).pipe(
+            Effect.provideContext(files),
+            Effect.orDie,
+          );
+        const stored = yield* readStoredApp.pipe(Effect.provideContext(files));
+        if (Option.isSome(stored)) {
+          yield* appKey.remove(String(stored.value.appId));
+          yield* removeStoredApp.pipe(Effect.provideContext(files), Effect.orDie);
+        }
+        return stored;
+      }),
+    );
     yield* app.lookAgain();
     yield* refreshes.touch(orgId, "connections");
     return {
@@ -323,7 +343,35 @@ export const make = Effect.gen(function* () {
     };
   });
 
-  return KinGitHubAppSetup.of({ start, page, complete, disconnect });
+  const allowHook = Effect.fn("KinGitHubAppSetup.allowHook")(function* (
+    people: ReadonlyArray<PersonIdentity>,
+    orgId: KinOrgId,
+  ) {
+    const by = yield* ownerAt(people, orgId);
+    const now = yield* Clock.currentTimeMillis;
+    const kept = yield* record.withPermits(1)(
+      Effect.gen(function* () {
+        const stored = yield* readStoredApp.pipe(Effect.provideContext(files));
+        if (Option.isNone(stored)) return false;
+        if (stored.value.hookAllowed === undefined)
+          yield* writeStoredApp({ ...stored.value, hookAllowed: { by, at: now } }).pipe(
+            Effect.provideContext(files),
+            Effect.orDie,
+          );
+        return true;
+      }),
+    );
+    if (!kept)
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message: "Kin has no GitHub App in Settings yet. Look again in a minute.",
+      });
+    const outcome = yield* hook.ensure();
+    yield* refreshes.touch(orgId, "connections");
+    return { outcome } satisfies KinGitHubHookAllowed;
+  });
+
+  return KinGitHubAppSetup.of({ start, page, complete, disconnect, allowHook });
 });
 
 export const layer = Layer.effect(KinGitHubAppSetup, make);

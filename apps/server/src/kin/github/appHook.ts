@@ -1,4 +1,4 @@
-import { type KinGitHubInstant, KinOrgId } from "@t3tools/contracts";
+import { type KinGitHubAgents, type KinGitHubInstant, KinOrgId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -57,6 +57,11 @@ const decodeDeliveries = Schema.decodeUnknownOption(
   Schema.Array(Schema.Struct({ delivered_at: Schema.String, status_code: Schema.Int })),
 );
 
+/** Another address that isn't Kin's own route is someone else's hook: left as it is. */
+const theirs = (url: string) => url !== "" && !url.endsWith(KIN_GITHUB_HOOK_ROUTE);
+
+type Shown = Pick<KinGitHubAgents, "instant" | "instantOffer">;
+
 interface Look {
   readonly key: string;
   /** The App whose delivery asked for it: a look outlives no Disconnect. */
@@ -81,11 +86,11 @@ export class KinGitHubHook extends Context.Service<
     readonly ensure: () => Effect.Effect<"set" | "address" | "none" | "elsewhere" | "error">;
     /** The scheduler's tick: `ensure` for a new App or address, and once a day. */
     readonly tick: () => Effect.Effect<void>;
-    /** For the owner's Settings: whether GitHub tells Kin at once. */
+    /** For the owner's Settings: whether GitHub tells Kin at once, or that Kin may once allowed. */
     readonly instant: (
       people: ReadonlyArray<PersonIdentity>,
       orgId: KinOrgId,
-    ) => Effect.Effect<KinGitHubInstant | undefined>;
+    ) => Effect.Effect<Shown | undefined>;
   }
 >()("t3/kin/github/appHook/KinGitHubHook") {}
 
@@ -104,13 +109,14 @@ export const make = Effect.gen(function* () {
     | undefined;
 
   /**
-   * The App Kin made, for the hook's key and the owner's settings page. One the host was seeded
-   * with, or adopted from it, may serve something else: Kin never touches its webhook.
+   * Settings' App, for the hook's key and the owner's settings page, and whether Kin may set its
+   * webhook: one Kin made, or one adopted from the host's environment once an owner allowed it.
+   * An App the host was only seeded with may serve something else: Kin never touches its webhook.
    */
-  const named = Effect.fn("KinGitHubHook.named")(function* () {
+  const stored = Effect.fn("KinGitHubHook.stored")(function* () {
     if (app.hook === undefined || app.origin === undefined) return undefined;
     const origin = yield* app.origin();
-    if (origin.source !== "kin" || origin.app.at === null) return undefined;
+    if (origin.source !== "kin") return undefined;
     const state = yield* app.state();
     return {
       id: String(origin.app.appId),
@@ -118,7 +124,13 @@ export const make = Effect.gen(function* () {
         state._tag === "ok"
           ? appSettingsPage(state.app.slug, state.app.ownerOrg, state.app.ownerLogin ?? "")
           : appSettingsPage(origin.app.slug, false, origin.app.owner),
+      ours: origin.app.at !== null || origin.app.hookAllowed !== undefined,
     };
+  });
+  /** The App whose webhook Kin may set. */
+  const named = Effect.fn("KinGitHubHook.named")(function* () {
+    const found = yield* stored();
+    return found?.ours === true ? found : undefined;
   });
 
   /** The active App's own secret; a zero-length value is no secret. */
@@ -229,8 +241,7 @@ export const make = Effect.gen(function* () {
     const current = config.status === 200 ? decodeHookConfig(config.body) : Option.none();
     if (Option.isNone(current)) return "error" as const;
     const now = current.value.url ?? "";
-    // Another address that isn't Kin's own route is someone else's hook: left as it is.
-    if (now !== "" && !now.endsWith(KIN_GITHUB_HOOK_ROUTE)) return "elsewhere" as const;
+    if (theirs(now)) return "elsewhere" as const;
     const kept = yield* held(active.id);
     if (Option.isSome(kept) && now === url && (yield* confirmed(active.id)) === url)
       return "set" as const;
@@ -287,16 +298,20 @@ export const make = Effect.gen(function* () {
       ))
     )
       return undefined;
-    const known = yield* named();
+    const known = yield* stored();
     if (known === undefined || app.hook === undefined) return undefined;
     const settingsUrl = `${known.page}/permissions`;
     const address = yield* publicAddress();
     if (address === undefined)
-      return { state: "address", missing: [], settingsUrl, last: null } satisfies KinGitHubInstant;
+      return {
+        instant: { state: "address", missing: [], settingsUrl, last: null },
+      } satisfies Shown;
+    // Until an owner allows it, GitHub isn't asked about an App Kin didn't make.
+    if (!known.ours) return { instantOffer: true } satisfies Shown;
     const key = `${known.id}\u0000${address}`;
     const now = yield* Clock.currentTimeMillis;
     if (status !== undefined && status.key === key && now - status.at < STATUS_KEPT_MS)
-      return status.value;
+      return { instant: status.value } satisfies Shown;
     const [config, about, deliveries] = [
       yield* app.hook.config(),
       yield* app.hook.about(),
@@ -330,9 +345,10 @@ export const make = Effect.gen(function* () {
           ok: one.status_code >= 200 && one.status_code < 300,
         }),
       }),
+      ...(!set && Option.isSome(hook) && theirs(hook.value.url ?? "") ? { elsewhere: true } : {}),
     };
     status = { key, at: now, value };
-    return value;
+    return { instant: value } satisfies Shown;
   });
 
   return KinGitHubHook.of({ secret, deliver, serve, ensure, tick, instant });

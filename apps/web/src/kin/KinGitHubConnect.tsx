@@ -6,12 +6,14 @@ import {
   createKinGitHubAppRepoActions,
   createKinGitHubAppSetupActions,
   createKinGitHubGuardActions,
+  createKinGitHubHookActions,
   KIN_GITHUB_APP_SETUP_COPY as SETUP,
   kinGitHubAppCreatePath,
   KIN_GITHUB_AGENTS_COPY as AGENTS,
   KIN_GITHUB_APP_REPOS_COPY as PICK,
   KIN_GITHUB_COPY as COPY,
   KIN_GITHUB_GUARD_COPY as GUARD,
+  KIN_GITHUB_INSTANT_COPY as INSTANT,
   type KinGitHubGuardOutcome,
   KIN_GITHUB_WATCH_COPY as WATCH,
   kinGitHubAccountRepos,
@@ -263,7 +265,12 @@ function AgentIdentity(props: {
           {hint === null ? null : <p className="text-xs text-muted-foreground">{hint}</p>}
         </div>
       )}
-      <KinGitHubInstantLine agents={props.agents} now={now} />
+      <KinGitHubInstantLine
+        environmentId={props.environmentId}
+        orgId={props.orgId}
+        agents={props.agents}
+        now={now}
+      />
       {view.installUrl === null ? null : (
         <div>
           <Button
@@ -293,6 +300,8 @@ function AgentIdentity(props: {
 }
 
 export function KinGitHubInstantLine(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
   readonly agents: NonNullable<KinGitHubStatus["agents"]>;
   readonly now: number;
 }) {
@@ -319,8 +328,50 @@ export function KinGitHubInstantLine(props: {
             </Button>
           </div>
         )}
+        {row.offer === true ? (
+          <AllowHook environmentId={props.environmentId} orgId={props.orgId} />
+        ) : null}
       </li>
     </ul>
+  );
+}
+
+/** The owner's yes to Kin setting the webhook of an App it didn't make; the row then redraws. */
+function AllowHook(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
+  const { environmentId, orgId } = props;
+  const allowed = useAtomValue(kinClient.githubAppHookAllow.permissionAtom(environmentId));
+  const reload = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const allow = useAtomCommand(kinClient.githubAppHookAllow, { reportFailure: false });
+  const actions = createKinGitHubHookActions({
+    orgId,
+    allow: (input) => allow({ environmentId, input }),
+    refresh: reload,
+  });
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  if (!allowed) return null;
+  return (
+    <div className="flex shrink-0 flex-col gap-2">
+      <Button
+        size="xs"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          setProblem(null);
+          void actions.allow().then((outcome) => {
+            setBusy(false);
+            if (!outcome.ok) setProblem(outcome.problem);
+          });
+        }}
+      >
+        {INSTANT.allow}
+      </Button>
+      {problem === null ? null : (
+        <Alert variant="error">
+          <AlertDescription>{problem}</AlertDescription>
+        </Alert>
+      )}
+    </div>
   );
 }
 

@@ -13,6 +13,7 @@ import {
   KIN_GITHUB_APP_REPOS_COPY as PICK,
   KIN_GITHUB_COPY as COPY,
   KIN_GITHUB_GUARD_COPY as GUARD,
+  KIN_GITHUB_INSTANT_COPY as INSTANT,
   type KinGitHubGuardOutcome,
   KIN_GITHUB_WATCH_COPY as WATCH,
   kinGitHubAccountRepos,
@@ -232,7 +233,7 @@ function AgentIdentity(props: {
         </ListSection>
       )}
       {instant === null ? null : (
-        <ListSection>
+        <ListSection {...(instant.offer === true ? { footer: INSTANT.onComputer } : {})}>
           <ListRowLayout
             label={instant.title}
             detail={instant.label}

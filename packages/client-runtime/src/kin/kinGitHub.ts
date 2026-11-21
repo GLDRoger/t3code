@@ -6,6 +6,7 @@ import {
   type KinGitHubAppAccount,
   type KinGitHubAppCreateStart,
   type KinGitHubAppDisconnected,
+  type KinGitHubHookAllowed,
   type KinGitHubAppReposResult,
   type KinGitHubAppReposSetInput,
   type KinGitHubBranchGuard,
@@ -156,6 +157,33 @@ const settle = async (sent: Sent<KinGitHubStatus>, doing: string): Promise<Outco
       };
 };
 
+const answer = async <A>(sent: Sent<A>, doing: string) => {
+  const result = await sent;
+  return AsyncResult.isSuccess(result)
+    ? ({ ok: true, value: result.value } as const)
+    : ({
+        ok: false,
+        problem: kinFailureText(squashAtomCommandFailure(result), `Couldn't ${doing}.`, {
+          device: `This device isn't allowed to ${doing}.`,
+        }),
+      } as const);
+};
+
+/** The owner's yes to Kin setting the webhook of a GitHub App it didn't make. */
+export function createKinGitHubHookActions(options: {
+  readonly orgId: KinOrgId;
+  readonly allow: (input: KinGitHubInput) => Sent<KinGitHubHookAllowed>;
+  readonly refresh: () => void;
+}) {
+  return {
+    allow: async () => {
+      const outcome = await answer(options.allow({ orgId: options.orgId }), "set up the webhook");
+      options.refresh();
+      return outcome;
+    },
+  };
+}
+
 /** Starting and ending Kin's own GitHub App, each answered in plain words. */
 export function createKinGitHubAppSetupActions(options: {
   readonly orgId: KinOrgId;
@@ -163,17 +191,6 @@ export function createKinGitHubAppSetupActions(options: {
   readonly disconnect: (input: KinGitHubInput) => Sent<KinGitHubAppDisconnected>;
   readonly refresh: () => void;
 }) {
-  const answer = async <A>(sent: Sent<A>, doing: string) => {
-    const result = await sent;
-    return AsyncResult.isSuccess(result)
-      ? ({ ok: true, value: result.value } as const)
-      : ({
-          ok: false,
-          problem: kinFailureText(squashAtomCommandFailure(result), `Couldn't ${doing}.`, {
-            device: `This device isn't allowed to ${doing}.`,
-          }),
-        } as const);
-  };
   return {
     start: () => answer(options.create({ orgId: options.orgId }), "start making the App"),
     disconnect: async () => {
@@ -611,7 +628,14 @@ export interface KinGitHubInstantRow {
   readonly detail: string;
   /** The App's "Permissions & events" page on GitHub, while events are left to tick. */
   readonly action: { readonly label: string; readonly url: string } | null;
+  /** Kin didn't make the App and may set its webhook once an owner allows it, on the web. */
+  readonly offer?: true;
 }
+
+export const KIN_GITHUB_INSTANT_COPY = {
+  allow: "Let Kin set it up",
+  onComputer: "Turn this on from Kin on your computer.",
+} as const;
 
 const quotedList = (names: ReadonlyArray<string>) => {
   const quoted = names.map((name) => `"${name}"`);
@@ -620,14 +644,25 @@ const quotedList = (names: ReadonlyArray<string>) => {
     : `${quoted.slice(0, -1).join(", ")} and ${quoted.at(-1)}`;
 };
 
-/** Null without `instant`, which only an owner or co-owner of a Kin with its own App is sent. */
+/** Null without `instant` or `instantOffer`, which only an owner or co-owner is sent. */
 export function kinGitHubInstantRow(
   agents: KinGitHubAgents,
   now: number,
 ): KinGitHubInstantRow | null {
   const instant = agents.instant;
-  if (instant === undefined) return null;
   const title = "How fast Kin hears from GitHub";
+  if (instant === undefined)
+    return agents.instantOffer === true
+      ? {
+          title,
+          tone: "muted",
+          label: "Every minute",
+          detail:
+            "Kin didn't make this GitHub App, so it hasn't touched the App's webhook. Kin can set it, so GitHub tells Kin the moment something happens. If the App already sends its events somewhere else, Kin leaves it as it is.",
+          action: null,
+          offer: true,
+        }
+      : null;
   const everyMinute = "Until then Kin checks GitHub every minute, so nothing is missed.";
   switch (instant.state) {
     case "on": {
@@ -678,7 +713,9 @@ export function kinGitHubInstantRow(
         tone: "attention",
         label: "Every minute",
         detail:
-          "Kin couldn't set up GitHub to tell it at once. Kin keeps checking GitHub every minute instead.",
+          instant.elsewhere === true
+            ? "This App already sends its events to another address, so Kin left it as it is. Kin keeps checking GitHub every minute."
+            : "Kin couldn't set up GitHub to tell it at once. Kin keeps checking GitHub every minute instead.",
         action: null,
       };
   }
