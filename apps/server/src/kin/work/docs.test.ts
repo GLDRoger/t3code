@@ -1055,6 +1055,54 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "a hand edit changes only its section: an open code block, a new heading or another section's heading is refused, and nothing is written",
+  () =>
+    Effect.gen(function* () {
+      const { edit, appDoc } = yield* handSeed();
+      const { key, recordId } = appDoc;
+      const timeline = section(plan, "timeline").text;
+      for (const [text, message] of [
+        [
+          "Starter costs 10 invented credits.\n\n```\nprice = 10",
+          "That would change other sections of this doc: close the code block you opened with ``` or ~~~.",
+        ],
+        [
+          "Starter costs 10 invented credits.\n\n## Discounts\n\nTen percent off.",
+          "A new heading would split this section in two: take the # off that line, or ask an agent to add the section.",
+        ],
+        [
+          "Starter costs 10 invented credits.\n\n## Timeline\n\nA second timeline.",
+          "A new heading would split this section in two: take the # off that line, or ask an agent to add the section.",
+        ],
+        [
+          "## Timeline\n\nStarter costs 10 invented credits.",
+          "Keep this section's heading as it was: change only the text under it.",
+        ],
+      ] as const) {
+        const refused: KinChatError = yield* Effect.flip(edit(ownerId, key, text));
+        assert.deepInclude(refused, { reason: "invalid_state", message }, text);
+        const latest = (yield* Docs.versionOf(orgId, recordId))!;
+        assert.strictEqual(latest.version, 1, text);
+        assert.strictEqual(section(latest.body, "timeline").text, timeline, text);
+      }
+      // A closed code block, even one holding a heading-like line, is the section's own.
+      const fenced = yield* edit(
+        ownerId,
+        key,
+        "Starter costs 12 invented credits.\n\n```\n## Not a heading\n```",
+      );
+      assert.strictEqual(fenced.version.version, 2);
+      assert.deepStrictEqual(
+        sectionsOf(fenced.body).map((one) => one.id),
+        sectionsOf(plan).map((one) => one.id),
+      );
+      assert.strictEqual(section(fenced.body, "timeline").text, timeline);
+      assert.strictEqual(section(fenced.body, "top").text, section(plan, "top").text);
+      assert.include(section(fenced.body, "pricing").text, "## Not a heading\n```");
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("another org's doc, by key or id, looks like no doc at all", () =>
   Effect.gen(function* () {
     yield* seed;

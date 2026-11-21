@@ -27,6 +27,7 @@ import {
   DOC_BODY_MAX,
   normalize,
   type Operation,
+  replaceSectionByHand,
   rewriteRefusal,
   sectionsOf,
 } from "./docBody.ts";
@@ -641,9 +642,7 @@ export const editSectionByHand = Effect.fn("KinDocs.editSectionByHand")(function
       if (again !== undefined) return again;
       const section = sectionsOf(current.body).find((one) => one.id === input.section);
       if (section === undefined || section.hash !== input.hash) return yield* sectionMoved;
-      const applied = applyOperations(current.body, row.title, [
-        { op: "replace_section", section: section.id, hash: section.hash, text: input.text },
-      ]);
+      const applied = replaceSectionByHand(current.body, section.id, input.text);
       if (applied._tag === "refused") return yield* applied.error;
       if (applied.body === current.body) return { row, version: current, created: false };
       const writer: Writer = {
@@ -657,7 +656,7 @@ export const editSectionByHand = Effect.fn("KinDocs.editSectionByHand")(function
         body: applied.body,
         kind: "edited",
         summary: `Changed ${section.id === "top" ? "the introduction" : `"${section.title}"`} by hand`,
-        operations: applied.ops,
+        operations: [{ op: "replace_section", section: section.id }],
         originKey: input.originKey,
       });
     }),
