@@ -11,7 +11,8 @@ import { KinRecordKey } from "./kinWork.ts";
 /**
  * Bringing clients, contacts and deals in from a spreadsheet saved as CSV: the owner level checks
  * a file with its columns, decides what Kin can't, imports it, and can take a batch away again.
- * The file travels as base64 in the request; the host keeps nothing of it but what it imports.
+ * The file travels as base64 in the first check; the host holds it in memory for a while after
+ * (`upload`) and keeps nothing of it but what it imports.
  */
 
 export const KIN_IMPORT_MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -49,12 +50,28 @@ const Text = Schema.String.check(Schema.isMaxLength(200));
 const Batch = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9_-]{0,39}$/));
 const Source = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$/));
 
+/** A file the host holds for the import under way, from the check that first carried it. */
+export const KinImportUpload = Schema.Struct({
+  id: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{8,64}$/)),
+  /** SHA-256 of the file's bytes, in hex: the host refuses an id whose file isn't this one. */
+  hash: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+});
+export type KinImportUpload = typeof KinImportUpload.Type;
+
 export const KinImportFile = Schema.Struct({
   name: Text,
   /** The file's bytes in base64. */
   data: Schema.String.check(Schema.isMaxLength(Math.ceil(KIN_IMPORT_MAX_FILE_BYTES / 3) * 4 + 4)),
 });
 export type KinImportFile = typeof KinImportFile.Type;
+
+/** The file the host already holds, in place of its bytes. */
+export const KinImportFileHeld = Schema.Struct({ name: Text, upload: KinImportUpload });
+export type KinImportFileHeld = typeof KinImportFileHeld.Type;
+
+/** What a check or an import names: the file itself, or one the host holds. Older hosts take bytes only. */
+export const KinImportFileInput = Schema.Union([KinImportFile, KinImportFileHeld]);
+export type KinImportFileInput = typeof KinImportFileInput.Type;
 
 export const KinImportMapping = Schema.Struct({
   /** One per column of the file, in its order. */
@@ -84,7 +101,7 @@ export type KinImportDecisions = typeof KinImportDecisions.Type;
 
 export const KinImportCheckInput = Schema.Struct({
   orgId: KinOrgId,
-  file: KinImportFile,
+  file: KinImportFileInput,
   /** Absent: Kin proposes one from the header row and checks nothing yet. */
   mapping: Schema.optional(KinImportMapping),
   decisions: Schema.optional(KinImportDecisions),
@@ -168,12 +185,14 @@ export const KinImportCheck = Schema.Struct({
   notImported: Schema.Array(Schema.Struct({ header: Schema.String, reason: Schema.String })),
   /** Every decision is made: Import may run. */
   ready: Schema.Boolean,
+  /** The host holds the file for this import: send this in place of its bytes. Absent from older hosts. */
+  upload: Schema.optional(KinImportUpload),
 });
 export type KinImportCheck = typeof KinImportCheck.Type;
 
 export const KinImportApplyInput = Schema.Struct({
   orgId: KinOrgId,
-  file: KinImportFile,
+  file: KinImportFileInput,
   mapping: KinImportMapping,
   decisions: Schema.optional(KinImportDecisions),
   /** The batch the check named: a different file is refused. */

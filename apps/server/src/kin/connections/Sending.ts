@@ -828,7 +828,9 @@ export const sentToClient = Effect.fn("KinSending.sentToClient")(function* (sent
     FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       AND c.register_id = 'clients'
     WHERE r.org_id = ${sent.orgId} AND r.register_id = 'contacts'
-      AND lower(json_extract(r.fields_json, '$.email')) IN ${sql.in(addresses)}
+      AND (lower(json_extract(r.fields_json, '$.email')) IN ${sql.in(addresses)}
+        OR EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.emails') e
+          WHERE lower(e.value) IN ${sql.in(addresses)}))
     ORDER BY c.record_id`;
   for (const { partyId } of clients)
     yield* logTouch(sent.orgId, {

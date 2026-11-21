@@ -213,6 +213,8 @@ export type KinPulseRead = typeof KinPulseRead.Type;
 export const KinPulseScreenRead = Schema.Struct({
   ...KinPulseRead.fields,
   outline: Schema.optional(KinPulseOutline),
+  /** Tasks' own Needs you count (`kin.work.list` by move), on a stream that asked for it. */
+  tasksNeedsYou: Schema.optional(NonNegativeInt),
 });
 export type KinPulseScreenRead = typeof KinPulseScreenRead.Type;
 
@@ -250,6 +252,8 @@ export const KinPulseSubscribeInput = Schema.Struct({
   ...KinPulseListInput.fields,
   /** The `hash` of the page held from an earlier session; unchanged, the stream starts `current`. */
   held: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+  /** Also `tasksNeedsYou`, kept current as Work moves: the Tasks badge. Ignored by an older host. */
+  tasksNeedsYou: Schema.optional(Schema.Boolean),
 });
 export type KinPulseSubscribeInput = typeof KinPulseSubscribeInput.Type;
 
@@ -273,6 +277,8 @@ export const KinPulseEvent = Schema.Union([
     order: Schema.optional(Schema.Array(KinPulseFactKey)),
     /** Absent: the held list stands. */
     setAside: Schema.optional(Schema.Array(KinPulseAside)),
+    /** Absent: the held count stands. */
+    tasksNeedsYou: Schema.optional(NonNegativeInt),
     hash: Schema.String,
   }),
 ]);

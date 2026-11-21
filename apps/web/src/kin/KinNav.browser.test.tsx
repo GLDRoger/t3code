@@ -18,7 +18,21 @@ vi.mock(import("./useKinPlaces"), () => ({
     known: true,
   })) as never,
 }));
-vi.mock(import("./useKinTasksNeedsYou"), () => ({ useKinTasksNeedsYou: () => 3 }));
+vi.mock(import("./useKinAttention"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useKinTasksNeedsYou: () => 3,
+}));
+vi.mock(import("./useKinHost"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  kinHostTarget: () => target,
+}));
+vi.mock(import("./kinPlacesAtom"), async (importOriginal) => {
+  const places = Atom.make({
+    destinations: ["chats", "tasks", "money", "clients", "docs"] as const,
+    answered: true,
+  });
+  return { ...(await importOriginal()), kinPlacesAtom: () => places };
+});
 vi.mock(import("./kinListSwitch"), async (importOriginal) => ({
   ...(await importOriginal()),
   kinInboxUnreadAtom: Atom.family((_: EnvironmentId) => Atom.make(2)),

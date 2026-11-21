@@ -598,6 +598,15 @@ describe("KinPulse", () => {
       yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-INV-1'`;
       const later = yield* KinPulse.tick(orgId, at + 2 * MINUTE);
       assert.isAtLeast(later.cleared, 1);
+      // Back under the same key: a new wake, once.
+      yield* sql`UPDATE kin_records SET state = 'waiting' WHERE record_id = 'r-INV-1'`;
+      const back = yield* KinPulse.tick(orgId, at + 3 * MINUTE);
+      const overdue = first.woken.filter((key) => key.startsWith("invoice_overdue:"));
+      assert.deepStrictEqual(back.woken, overdue);
+      assert.lengthOf((yield* KinPulse.tick(orgId, at + 4 * MINUTE)).woken, 0);
+      const wakes = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+          AND dedupe_key NOT LIKE 'holders:%'`;
+      assert.lengthOf(wakes, first.woken.length + overdue.length);
     }).pipe(Effect.provide(layer)),
   );
 
