@@ -734,6 +734,15 @@ export function makeKinClient<R, ER>(
       label: "kin:github-app:disconnect",
       tag: "kin.github.app.disconnect",
     }),
+    githubAppHookAllow: createKinRpcCommand(runtime, {
+      label: "kin:github-app-hook:allow",
+      tag: "kin.github.app.hook.allow",
+    }),
+    githubAppLook: createKinRpcCommand(runtime, {
+      label: "kin:github-app:look",
+      tag: "kin.github.app.look",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:github-app-look` },
+    }),
     githubAppReposSet: createKinRpcCommand(runtime, {
       label: "kin:github-app-repos:set",
       tag: "kin.github.app.repos.set",
