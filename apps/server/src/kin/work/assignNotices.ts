@@ -645,6 +645,8 @@ export const taskNewsBanner = Effect.fn("KinAssignNotices.taskNewsBanner")(funct
   return {
     personId: person,
     body: newsText(told),
+    /** Some of it is work now theirs: given to them, or handed back. */
+    gives: told.some((news) => news.kind === "given" || news.kind === "returned"),
     chatId: chatId === undefined ? undefined : KinChatId.make(chatId),
     opens:
       only === undefined || more.length > 0 || !["work", "projects"].includes(only.register)

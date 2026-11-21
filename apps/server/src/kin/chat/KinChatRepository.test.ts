@@ -1455,6 +1455,25 @@ describe("KinChatRepository", () => {
         silent: true,
       });
       assert.strictEqual(yield* repo.unreadCount(scope), 1);
+      // A card with no words counts while it is open; closed (answered, replaced), it is Kin's
+      // status of it and leaves the badge, while an agent's reply still raises it.
+      yield* repo.insertMessage(
+        message("card", { author: agentAuthor, authorRole: "member", body: "" }),
+      );
+      yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+          type, revision, state_json, awaiting_json, updated_at)
+        VALUES ('status-card', ${orgId}, ${chatId}, 'card', 'native', 'choice', 1, '{}',
+          ${JSON.stringify([personId])}, ${timestamp})`;
+      assert.strictEqual(yield* repo.unreadTotal({ orgId, personId }), 2);
+      yield* sql`UPDATE kin_widgets SET closed_at = ${later}, awaiting_json = '[]'
+        WHERE widget_id = 'status-card'`;
+      assert.strictEqual(yield* repo.unreadTotal({ orgId, personId }), 1);
+      assert.strictEqual(yield* repo.unreadCount(scope), 1);
+      yield* repo.insertMessage(
+        message("after-card", { author: agentAuthor, authorRole: "member" }),
+      );
+      assert.strictEqual(yield* repo.unreadTotal({ orgId, personId }), 2);
+      yield* repo.markRead({ ...scope, seq: 999, updatedAt: later });
       assert.deepStrictEqual(
         Option.getOrThrow(yield* repo.getMessage({ orgId, messageId: decodeMessageId("agent") }))
           .author,

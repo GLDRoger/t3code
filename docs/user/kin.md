@@ -64,7 +64,8 @@ about a task. With **Hold non-urgent messages outside my working hours** on, whi
 everyone but the owner, those also wait outside your working hours. They arrive in order when your
 day starts, and whoever sent one is told when you'll get it. A reply to something you wrote in the
 last ten minutes, a teammate writing to you directly, and anything urgent arrive at once. Your
-phone rings by the same rule. Only you can change these two.
+phone rings by the same rule, except that a teammate's direct message in your quiet hours rings
+only when they end, once per teammate. Only you can change these two.
 
 **Settings → Notifications** sets how this device tells you about new messages. On the web and the
 desktop app it alerts you while Kin is open in a window you aren't looking at; on the phone it opens
@@ -578,7 +579,10 @@ moved. By default the Chief of staff sends you a **Morning brief** around 9:30 e
 around 15:30 on weekdays, sends an **Evening summary** of the day around 18:30 on weekdays (what got
 done, what moved, what carries to tomorrow), and writes the **Weekly brief** around 9:00 on Mondays.
 On Monday you get one page: whichever of the morning and weekly briefs comes first carries the week's
-figures, written by Kin from its records, and the other isn't sent.
+figures, written by Kin from its records, and the other isn't sent. On the other mornings, the
+morning brief's **Money** section carries a line from Kin for each overdue invoice and each quote
+with no answer for five days (a playbook can change that number): who, how much and for how long,
+three of each at most, until it is settled.
 
 Check-in times are loose: "around 9:30" means near then, not on the minute. When you give an agent
 a plain time it keeps to it; say "around" or "-ish" for a loose one. The morning brief comes on a
@@ -592,7 +596,8 @@ you after its day is over isn't sent.
 
 A teammate who looks after clients, and has no agent of their own, gets Kin's **Morning page**
 instead: on a working morning with something new about their clients, a "Good morning" page with
-what needs them, their clients and what's coming up. It comes at the start of their working hours,
+what needs them, their clients and what's coming up. Someone who may see Money also gets those
+Money lines on it, for what they may see, every morning until settled. It comes at the start of their working hours,
 or 08:00 on weekdays if they set none, with what is true at that minute; whatever stays open is also
 under **Needs you** in Tasks. They change its time and days, or turn it off, under **Settings
 → Briefs**. A change counts from the next time its time comes, so a page already sent today, or a
