@@ -597,7 +597,7 @@ export interface KinTaskTicked<R extends KinRecord> {
 }
 
 /** `key`'s row as it stands in `items`, to hold there once it is ticked; null when not shown. */
-export function kinTaskTicked<R extends KinRecord>(
+function kinTaskTicked<R extends KinRecord>(
   items: ReadonlyArray<KinTasksItem<R>>,
   key: string,
 ): KinTaskTicked<R> | null {
