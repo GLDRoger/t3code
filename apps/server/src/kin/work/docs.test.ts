@@ -1008,6 +1008,53 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "a playbook or What we sell is the owner level's to change by hand, even filed under a lead's project",
+  () =>
+    Effect.gen(function* () {
+      const { ids, as, edit, appDoc } = yield* handSeed();
+      assert.strictEqual(Docs.OFFERINGS_ORIGIN, OFFERINGS_ORIGIN);
+      const under = { projectId: appDoc.projectId };
+      const playbook = yield* newDoc(plan, {
+        title: "Invented app playbook",
+        kind: "playbook",
+        ...under,
+      });
+      const offerings = yield* newDoc(plan, {
+        title: "What we sell",
+        originKey: OFFERINGS_ORIGIN,
+        ...under,
+      });
+      for (const { row } of [playbook, offerings]) {
+        const { key, recordId } = row;
+        // Dev leads the project and reads the doc, and keeps Suggest a change.
+        assert.isUndefined((yield* OwnerDocs.get(as(ids.dev), { orgId, key })).editable);
+        const refused: KinChatError = yield* Effect.flip(edit(ids.dev, key, "Starter is free."));
+        assert.deepInclude(refused, {
+          reason: "not_allowed",
+          message:
+            "Only the owner, a co-owner or the project's lead can change this doc by hand. Suggest a change instead; nothing was changed.",
+        });
+        assert.strictEqual((yield* Docs.versionOf(orgId, recordId))!.version, 1);
+        // The owner and a co-owner change it.
+        for (const [personId, version] of [
+          [ownerId, 2],
+          [ids.meera, 3],
+        ] as const) {
+          assert.isTrue((yield* OwnerDocs.get(as(personId), { orgId, key })).editable);
+          const body = (yield* Docs.versionOf(orgId, recordId))!.body;
+          const changed = yield* edit(
+            personId,
+            key,
+            `Starter costs ${version} invented credits.`,
+            section(body, "pricing").hash,
+          );
+          assert.strictEqual(changed.version.version, version);
+        }
+      }
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("another org's doc, by key or id, looks like no doc at all", () =>
   Effect.gen(function* () {
     yield* seed;

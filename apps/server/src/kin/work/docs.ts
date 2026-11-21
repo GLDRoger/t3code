@@ -114,6 +114,8 @@ const transaction = <A, E extends { readonly _tag: string }, R>(effect: Effect.E
 
 /** An agent's character is a doc found by this origin (`characters.ts`), changed on its page. */
 export const CHARACTER_ORIGIN = "kin-character:";
+/** The company's What we sell is the doc with this origin; `offerings.ts` keeps the same, as a test pins. */
+export const OFFERINGS_ORIGIN = "kin-offerings";
 
 export const docNotFound = (key: string) =>
   new KinChatError({ reason: "not_found", message: `No doc ${key.slice(0, 40)}.` });
@@ -583,19 +585,21 @@ const sectionMoved = new KinChatError({
 /**
  * Why this person may not change this doc's text by hand, from stored rows (D3); undefined when
  * they may. The owner level may change any text doc they read but an agent's character, which its
- * page changes; anyone else only one filed under a project they lead now.
+ * page changes; anyone else only one filed under a project they lead now, never a playbook or What
+ * we sell: those steer agents past the project, for its client or the whole company.
  */
 export const handRefusal = Effect.fn("KinDocs.handRefusal")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   ownerLevel: boolean,
-  row: Pick<RecordRow, "key" | "originKey" | "projectId">,
+  row: Pick<RecordRow, "key" | "originKey" | "projectId" | "category">,
   latest: Pick<VersionRow, "bodyKind">,
 ) {
   if (row.originKey.startsWith(CHARACTER_ORIGIN)) return characterByHand;
   if (latest.bodyKind === "file") return fileOnly(row.key);
   if (ownerLevel) return undefined;
-  if (row.projectId === null) return notHandEditor;
+  if (row.projectId === null || kindOf(row) === "playbook" || row.originKey === OFFERINGS_ORIGIN)
+    return notHandEditor;
   const sql = yield* SqlClient.SqlClient;
   const leads = yield* sql`SELECT 1 FROM kin_records p WHERE p.org_id = ${orgId}
     AND p.register_id = 'projects' AND p.record_id = ${row.projectId}
