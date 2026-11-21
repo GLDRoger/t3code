@@ -1320,6 +1320,38 @@ it.effect("one search finds entries and docs, and the team view hides what label
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a search for a doc's kind finds every doc of that kind, singular or plural", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    assert.strictEqual(yield* seedPlaybooks(orgId, ownerId), PLAYBOOK_SEEDS.length);
+    yield* newDoc("Invented notes with no kind word.", { title: "Invented notes" });
+    const every = PLAYBOOK_SEEDS.map((one) => one.title).toSorted();
+    const searched = (text: string) =>
+      search(orgId, { text, limit: 10, viewer: "owner", scope: KIN_OWNER_LEVEL }).pipe(
+        Effect.map(({ hits }) => hits.map((hit) => hit.title).toSorted()),
+      );
+    const listed = (text: string) =>
+      OwnerDocs.list([owner], { orgId, text }).pipe(
+        Effect.map(({ docs }) => docs.map((doc) => doc.title).toSorted()),
+      );
+    for (const text of ["playbook", "Playbooks"]) {
+      assert.deepStrictEqual(yield* searched(text), every);
+      assert.deepStrictEqual(yield* listed(text), every);
+    }
+    // The one that says "playbook" in its text ranks above those that are only of the kind.
+    const [first] = (yield* search(orgId, {
+      text: "playbook",
+      limit: 10,
+      viewer: "owner",
+      scope: KIN_OWNER_LEVEL,
+    })).hits;
+    assert.strictEqual(first?.title, "Reviewing and merging code");
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DROP TABLE kin_search`;
+    assert.deepStrictEqual(yield* searched("playbooks"), every);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("the Docs list filters by words in a title or the latest text, on the host", () =>
   Effect.gen(function* () {
     yield* seed;

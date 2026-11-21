@@ -1891,7 +1891,7 @@ describe("Kin migrations", () => {
           VALUES ('org', 'review:ambermill/shop#7', 'ambermill/shop', 7, 'woke', 1)`;
         assert.deepStrictEqual(
           (yield* runKinMigrations()).map(([id]) => id),
-          [196, 197, 198, 199],
+          [196, 197, 198, 199, 901],
         );
         assert.deepStrictEqual(yield* receipts, [
           { trigger_key: "review:ambermill/shop#7", review_url: null },
@@ -1928,15 +1928,58 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* added, []);
       assert.deepStrictEqual(
         (yield* runKinMigrations()).map(([id]) => id),
-        [197, 198, 199],
+        [197, 198, 199, 901],
       );
       const all = ["pinned_at", "sees_by_person_id", "sees_json", "steps_json", "urgent"];
-      assert.deepStrictEqual((yield* added).map(({ name }) => name), all);
+      assert.deepStrictEqual(
+        (yield* added).map(({ name }) => name),
+        all,
+      );
       for (const from of [197, 198, 199]) {
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
-        assert.deepStrictEqual((yield* added).map(({ name }) => name), all);
+        assert.deepStrictEqual(
+          (yield* added).map(({ name }) => name),
+          all,
+        );
       }
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K901 rebuilds an upgraded search index so a doc is found by its kind", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      // Back to K199, as the round leaves it: the index without a kind, holding a playbook that never says "playbook".
+      yield* sql`DROP TABLE kin_search`;
+      yield* sql`CREATE VIRTUAL TABLE kin_search USING fts5(
+        title, body, tokenize = 'unicode61 remove_diacritics 2')`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 901`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+        VALUES ('org', 'docs', 'Docs', 'D', 1)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, category,
+          owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at)
+        VALUES ('org', 'doc', 'docs', 'D-1', 'Chasing money', 'playbook', 'person', 'p',
+          'person', 'owner:1', 1, 1)`;
+      yield* sql`INSERT INTO kin_search_rows (org_id, record_id, part) VALUES ('org', 'doc', 'public')`;
+      yield* sql`INSERT INTO kin_search (rowid, title, body)
+        SELECT id, 'Chasing money', '' FROM kin_search_rows`;
+      const found = sql<{
+        rowid: number;
+      }>`SELECT rowid FROM kin_search WHERE kin_search MATCH 'playbooks'`;
+      assert.lengthOf(yield* found, 0);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(901));
+      assert.lengthOf(yield* found, 1);
+      // Run again: the index is rebuilt from what is stored, so the doc is found once.
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 901`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(901));
+      assert.lengthOf(yield* found, 1);
+      // Without FTS5 there is no index to rebuild, and search scans.
+      yield* sql`DROP TABLE kin_search`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 901`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(901));
+      assert.lengthOf(yield* sql`SELECT 1 FROM sqlite_master WHERE name = 'kin_search'`, 0);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
@@ -1950,7 +1993,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 199");
+      assert.include(String(exit), "below the latest applied migration 901");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

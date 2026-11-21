@@ -6,7 +6,7 @@ import { sectionsOf } from "./docBody.ts";
 import { latestOf } from "./docs.ts";
 import { listOf } from "./lists.ts";
 import { inheritedSensitive, sensitiveNow } from "./recordRows.ts";
-import { searchIndexed } from "./searchIndex.ts";
+import { docKindWords, searchIndexed } from "./searchIndex.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 
 /**
@@ -67,10 +67,9 @@ const ftsQuery = (words: ReadonlyArray<string>, any: boolean) =>
 
 const around = (text: string, words: ReadonlyArray<string>) => {
   const lower = text.toLowerCase();
-  const at = Math.max(
-    0,
-    Math.min(...words.map((word) => lower.indexOf(word)).filter((i) => i >= 0)),
-  );
+  const found = words.map((word) => lower.indexOf(word)).filter((i) => i >= 0);
+  // Only a doc's kind may have matched: then the text from its start.
+  const at = found.length === 0 ? 0 : Math.min(...found);
   const start = Math.max(0, lower.lastIndexOf(" ", Math.max(0, at - 60)) + 1);
   const shown = text
     .slice(start, start + 160)
@@ -126,7 +125,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
         JOIN kin_records r ON r.org_id = m.org_id AND r.record_id = m.record_id
         WHERE kin_search MATCH ${ftsQuery(words, any)} AND m.org_id = ${orgId}
           AND ${sql.and([...where, ...(input.viewer === "team" ? [sql`m.part = 'public'`] : [])])}
-        ORDER BY bm25(kin_search, 4.0, 1.0), r.updated_at DESC, r.record_id
+        ORDER BY bm25(kin_search, 4.0, 1.0, 2.0), r.updated_at DESC, r.record_id
         LIMIT ${input.limit * 2}`
       : scan(sql, words, any, where, columns, input.viewer, input.limit * 2);
   // No index holds a key; a deal's, typed whole, finds that deal first.
@@ -204,10 +203,9 @@ const scan = Effect.fnUntraced(function* (
   const body = sql`COALESCE((SELECT v.body FROM kin_doc_versions v WHERE v.org_id = r.org_id
     AND v.record_id = r.record_id ORDER BY v.version DESC LIMIT 1), '')`;
   // The scan reads fields only for the owner: which are sensitive is the index's job.
-  const text =
-    viewer === "owner"
-      ? sql`lower(r.title || ' ' || r.notes || ' ' || r.fields_json || ' ' || ${body})`
-      : sql`lower(r.title || ' ' || r.notes || ' ' || ${body})`;
+  const fields = viewer === "owner" ? sql`r.fields_json || ' ' ||` : sql``;
+  const text = sql`lower(r.title || ' ' || r.notes || ' ' || ${fields} ${body} || ' '
+    || ${docKindWords(sql)})`;
   const rows = yield* sql<Omit<Row, "part" | "snippet"> & { readonly text: string }>`
     SELECT ${columns}, r.title || ' ' || r.notes || ' ' || ${body} AS text
     FROM kin_records r
