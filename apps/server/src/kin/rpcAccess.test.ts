@@ -49,6 +49,9 @@ const MEMBER = [
   "kin.chats.subscribe",
   "kin.chats.withPerson",
   "kin.docs.diff",
+  // A hand edit: `Docs.editSectionByHand` refuses all but the owner level and the doc's project
+  // lead, and keeps playbooks and What we sell to the owner level.
+  "kin.docs.editSection",
   "kin.docs.get",
   "kin.docs.history",
   "kin.docs.list",
