@@ -24,6 +24,7 @@ import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { kinFailureText } from "./kinAnswers.ts";
+import type { KinLink } from "./kinHost.ts";
 import { isKinChatError, kinWorkFailuresOf, kinWorkRefused, type KinWorkRef } from "./kinWork.ts";
 import { kinMoneyDraft, kinParseMoney } from "./kinLists.ts";
 import { kinContactEmailOk, kinContactPhoneOk, KIN_PROJECTS } from "./kinWorkClients.ts";
@@ -874,6 +875,13 @@ export type KinWorkReadState<A> =
       /** The last read failed, so what is shown may be behind. */
       readonly stale: boolean;
     };
+
+/**
+ * A read with nothing held that the connection can't carry: it says neither loading nor failed,
+ * since the page's one offline line already says why.
+ */
+export const kinWorkReadUnreachable = (state: KinWorkReadState<unknown>, link: KinLink) =>
+  link === "offline" && (state._tag === "loading" || state._tag === "failed");
 
 export function kinWorkReadState<A>(
   result: AsyncResult.AsyncResult<A, unknown>,

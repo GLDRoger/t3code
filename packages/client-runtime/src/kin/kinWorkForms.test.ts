@@ -33,6 +33,7 @@ import {
   kinTaskProjectMenu,
   kinWorkFormMoved,
   kinWorkReadState,
+  kinWorkReadUnreachable,
   kinWorkSend,
   type KinClientDraft,
   type KinWorkFormState,
@@ -338,6 +339,18 @@ describe("kinWorkReadState", () => {
       value: "DL-1 Invented pilot",
       stale: true,
     });
+  });
+
+  // Money's Cash in the bank and Next 30 days offline: no "Loading…" under the page's offline line.
+  it("says nothing of a read it can't reach and holds nothing of, and shows what it holds", () => {
+    const waiting = kinWorkReadState(AsyncResult.initial(true));
+    const failed = kinWorkReadState(AsyncResult.failure(Cause.fail("down")));
+    const held = kinWorkReadState(AsyncResult.success("Cash 1,200"));
+    expect(kinWorkReadUnreachable(waiting, "offline")).toBe(true);
+    expect(kinWorkReadUnreachable(failed, "offline")).toBe(true);
+    expect(kinWorkReadUnreachable(held, "offline")).toBe(false);
+    expect(kinWorkReadUnreachable(waiting, "connecting")).toBe(false);
+    expect(kinWorkReadUnreachable(failed, "connected")).toBe(false);
   });
 });
 
