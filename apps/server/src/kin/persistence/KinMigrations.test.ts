@@ -1778,6 +1778,24 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect("K902 gives every question no draft and no approval, and runs again safely", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const columns = sql<{ name: string; type: string; notnull: number }>`SELECT name, type,
+          "notnull" FROM pragma_table_info('kin_questions')
+        WHERE name IN ('draft_json', 'approved_at') ORDER BY name`;
+      yield* runKinMigrations();
+      const added = [
+        { name: "approved_at", type: "INTEGER", notnull: 0 },
+        { name: "draft_json", type: "TEXT", notnull: 0 },
+      ];
+      assert.deepStrictEqual(yield* columns, added);
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 902`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(902));
+      assert.deepStrictEqual(yield* columns, added);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -1788,7 +1806,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 195");
+      assert.include(String(exit), "below the latest applied migration 902");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

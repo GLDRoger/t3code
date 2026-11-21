@@ -83,6 +83,7 @@ import { weeklyFigures } from "../pulse/weekly.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { flagTextQuestion } from "../questions/openQuestions.ts";
+import { tellDraftMade } from "../questions/sentUpDraft.ts";
 
 export { rescueMessageId };
 /** No turn-item or provider-turn update for this long shows the owner a stall and Stop. */
@@ -1296,6 +1297,11 @@ const make = Effect.gen(function* () {
           yield* flagTextQuestion({ ...wake, chatId: wake.lane.chatId }).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.catchCause((cause) => Effect.logWarning("Kin question check failed", { cause })),
+          );
+          // The owner's turn on an approved draft: the teammate who asked hears it was made.
+          yield* tellDraftMade(wake, chat).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.catchCause((cause) => Effect.logWarning("Kin draft notice failed", { cause })),
           );
           return yield* answered(wake);
         }),
