@@ -19,6 +19,7 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+import { bootstrapKinProject } from "../lead/leadProject.ts";
 import { permissionFlag, threadPrefix } from "./DreamIsolation.ts";
 
 export { threadPrefix } from "./DreamIsolation.ts";
@@ -98,7 +99,7 @@ export const layer = Layer.effect(
           return yield* new DreamRefused({ orgId: turn.orgId, reason: refused });
         const key = `${turn.dreamId}:${turn.turn}`;
         const bootstrap = (suffix: string) =>
-          projects.bootstrap({
+          bootstrapKinProject(projects, {
             commandId: CommandId.make(`kin-dream-project:${turn.orgId}${suffix}`),
             projectId: ProjectId.make(`kin-dream:${turn.orgId}${suffix}`),
             workspaceRoot: turn.workspaceRoot,
