@@ -140,8 +140,6 @@ export const KinRecordCan = Schema.Struct({
   repeat: Schema.optional(Schema.Boolean),
   /** Add or remove its web links (`kin.work.linkAdd`); absent from older hosts. */
   links: Schema.optional(Schema.Boolean),
-  /** Add, tick or remove its steps and mark it urgent: a task only; absent from older hosts. */
-  steps: Schema.optional(Schema.Boolean),
 });
 export type KinRecordCan = typeof KinRecordCan.Type;
 
@@ -462,7 +460,10 @@ export const KinRecordDetail = Schema.Struct({
   toldWhenBack: Schema.optional(KinDay),
   /** An invoice's: how far Kin sees the bank, for whether it was paid; absent from older hosts. */
   bankKnown: Schema.optional(KinBankKnown),
-  /** A task's steps in order; absent with none, and from older hosts. */
+  /**
+   * A task's steps in order, `[]` with none; absent on anything else and from older hosts. Who may
+   * change the task (`can.edit`) ticks, adds and removes them and marks it urgent.
+   */
   checklist: Schema.optional(KinWorkSteps),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;

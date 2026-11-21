@@ -798,7 +798,7 @@ function KinWorkItemBody(props: ItemTarget) {
             onAct={act}
           />
         )}
-        {act === null || view.can.steps !== true || view.closed ? null : (
+        {act === null || view.steps?.editable !== true || view.closed ? null : (
           <ListToggleRow
             icon={KIN_URGENT_SYMBOL}
             label={KIN_WORK_URGENT.label}

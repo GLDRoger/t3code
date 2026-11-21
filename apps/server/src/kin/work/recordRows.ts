@@ -767,7 +767,8 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
       ? {}
       : { assignedByAgent: KinAgentId.make(row.assignedByAgent) }),
     ...(typeof reason === "string" ? { reason } : {}),
-    ...(checklist.length === 0 ? {} : { checklist }),
+    // Even empty, it tells a screen this host keeps a task's steps.
+    ...(row.registerId === "work" ? { checklist } : {}),
     createdBy: actorOf(row.createdByKind, row.createdById),
     links: yield* linksOf(orgId, row.recordId),
     changes: yield* changesOf(orgId, row.recordId, changeLimit),

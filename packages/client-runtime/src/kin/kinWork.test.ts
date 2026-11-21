@@ -515,7 +515,6 @@ describe("kinWorkItemView", () => {
       unmark: true,
       share: false,
       confirm: false,
-      steps: true,
     };
     const checklist = [
       { title: "Fields and states", done: true },
@@ -559,11 +558,17 @@ describe("kinWorkItemView", () => {
     ]);
     expect(view.state).not.toBe("done");
     // One that may not change it reads them and ticks none; with none, it has no Steps.
-    const reader = { ...can, edit: false, steps: false };
+    const reader = { ...can, edit: false };
     expect(
       kinWorkItemView(detail({ can: reader, checklist }), names, now, 50, place).steps,
     ).toMatchObject({ editable: false });
-    expect(kinWorkItemView(detail({ can: reader }), names, now, 50, place).steps).toBeNull();
+    expect(
+      kinWorkItemView(detail({ can: reader, checklist: [] }), names, now, 50, place).steps,
+    ).toBeNull();
+    // One who may change it can add the first step.
+    expect(
+      kinWorkItemView(detail({ can, checklist: [] }), names, now, 50, place).steps,
+    ).toMatchObject({ count: null, items: [], editable: true });
   });
 
   it("opens web links and source chats only, and keeps the latest word on a pull request", () => {

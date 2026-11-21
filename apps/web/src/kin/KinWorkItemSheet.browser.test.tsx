@@ -216,7 +216,6 @@ describe("changing a task from its sheet", () => {
       unmark: true,
       share: false,
       confirm: false,
-      steps: true,
     } as const;
     setup("T-43", null, {
       can: { ...can, states: [...can.states] },

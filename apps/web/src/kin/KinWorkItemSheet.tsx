@@ -1099,7 +1099,7 @@ function KinWorkItem(
                 </dd>
               </>
             )}
-            {change === null || view.can.steps !== true || view.closed ? null : (
+            {change === null || view.steps?.editable !== true || view.closed ? null : (
               <>
                 <dt className="text-muted-foreground">{KIN_WORK_URGENT.label}</dt>
                 <dd className="flex min-w-0 items-center gap-2 text-foreground">

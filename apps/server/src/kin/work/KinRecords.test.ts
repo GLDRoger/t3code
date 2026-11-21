@@ -195,6 +195,9 @@ const steps = [
   { title: "Draft the invented pricing page", due: "2026-11-20" },
   { title: "Chase the invented logo", side: "theirs" as const, owner: "owner" },
 ];
+/** A Work tool's result as it reaches the agent: encoded by the tool's own schema. */
+const encodeQuery = Schema.encodeEffect(LeadWork.QueryResult);
+const encodeGet = Schema.encodeEffect(LeadWork.GetResult);
 const assignedEvents = SqlClient.SqlClient.pipe(
   Effect.flatMap(
     (sql) => sql<{ agentId: string; json: string }>`SELECT agent_id AS "agentId", json
@@ -279,13 +282,12 @@ it.effect("record_create makes many entries in one call and a retry makes none",
     assert.lengthOf(yield* sql`SELECT 1 FROM kin_records`, 4);
     const key = stepped.records[0]!.key;
     const shown = {
-      steps: [{ title: "Wireframe" }, { title: "Review with Zoya", done: true }],
-      urgent: true,
+      steps: [{ title: "Wireframe" }, { title: "Review with Zoya", done: true as const }],
+      urgent: true as const,
     };
     assert.deepInclude(yield* LeadWork.get(scopeOf(lead), { key }), shown);
-    // As the tool's result reaches the agent, encoded by its schema.
     const listed = yield* LeadWork.query(scopeOf(lead), { keys: [key] });
-    assert.deepInclude(Schema.encodeSync(LeadWork.QueryResult)(listed).records[0], shown);
+    assert.deepInclude((yield* encodeQuery(listed)).records[0], shown);
     const changed = yield* LeadWork.update(scopeOf(lead), {
       key,
       sourceEventId: "ask-event",
@@ -2307,7 +2309,7 @@ it.effect(
         "Hand-off",
       ]);
       assert.deepInclude(made, { steps: { done: 0, of: 4 }, urgent: true });
-      assert.isTrue(made.can?.steps);
+      assert.isTrue(made.can?.edit);
       const tick = (index: number, title: string, done = true) =>
         OwnerWork.tickStep([owner], { orgId, key: made.key, index, title, done });
       const ticked = yield* tick(1, "Wireframe");
@@ -2353,7 +2355,7 @@ it.effect(
         rev: edited.rev,
         steps: [],
       });
-      assert.notProperty(cleared, "checklist");
+      assert.deepStrictEqual(cleared.checklist, []);
       assert.notProperty(cleared, "steps");
       // A teammate who may not change it hears of no such task, as for any other change.
       const unknown = { reason: "not_found" as const, message: `No entry ${made.key} in Work.` };
@@ -2414,7 +2416,7 @@ it.effect(
         done: true,
       });
       assert.deepInclude(theirs, { steps: { done: 1, of: 1 } });
-      assert.isTrue(theirs.can?.steps);
+      assert.isTrue(theirs.can?.edit);
       // Only a task has steps.
       const client = yield* OwnerClients.createParty([owner], {
         orgId,
@@ -3760,8 +3762,7 @@ it.effect(
       // The agent reads who handed it back on the record, with no chat line to quote.
       yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'wake'`;
       const handedBack = yield* LeadWork.get(scope, { key: "W-2" });
-      // As the tool's result reaches the agent, encoded by its schema.
-      assert.propertyVal(Schema.encodeSync(LeadWork.GetResult)(handedBack), "handedBackBy", "Mate");
+      assert.propertyVal(yield* encodeGet(handedBack), "handedBackBy", "Mate");
       yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
       // Given on from one teammate to another, each reads who gave it to whom from their side.
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)

@@ -606,18 +606,20 @@ export interface KinWorkStepsView {
     /** What a tap on its box does, read out. */
     readonly label: string;
   }>;
-  /** The reader may tick, add and remove steps (the host's `can.steps`). */
+  /** The reader may tick, add and remove steps: whoever may change the task (`can.edit`). */
   readonly editable: boolean;
   /** Every step ticked while the task is still open: `KIN_WORK_STEPS.allDone`. */
   readonly allDone: string | null;
 }
 
 /** The page's Steps: null where the host keeps none for it, or has none and lets nobody add. */
-export function kinWorkSteps(
+function kinWorkSteps(
   item: Pick<KinRecordDetail, "checklist" | "can" | "state">,
 ): KinWorkStepsView | null {
-  const steps: ReadonlyArray<KinWorkStep> = item.checklist ?? [];
-  const editable = item.can?.steps === true;
+  // An older host sends no checklist: it would drop steps sent to it.
+  if (item.checklist === undefined) return null;
+  const steps: ReadonlyArray<KinWorkStep> = item.checklist;
+  const editable = item.can?.edit === true;
   if (steps.length === 0 && !editable) return null;
   const done = steps.filter((step) => step.done).length;
   return {
