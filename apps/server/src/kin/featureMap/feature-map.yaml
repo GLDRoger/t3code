@@ -333,13 +333,15 @@ features:
     name: An agent's page, who may message it, retire and restore
     tab: chats
     web: [chat, sheet:Agent]
-    phone: [tab:chats, KinChat, KinLead, KinAgentCharacter]
+    phone: [tab:chats, KinChat, KinLead]
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-
       The owner and co-owners see and change everything on it: its one model and effort (Medium or
       High recommended, the rest still selectable), character with its
       history, check-ins, access, pause and resume, retire and restore. Leads and members get a short
-      read-only card. New agents start on the company default model (Settings, Agents); a
+      read-only card. The phone opens on what it is for, what it has in hand and who can message
+      it, folds check-ins, reach, its area's playbooks and its changes, and leaves character, model
+      and effort to the computer. New agents start on the company default model (Settings, Agents); a
       model this server no longer has falls back to it and the page says so. Also opens from an
       agent's name in a message, Settings, Agents, and the command palette.
     tools: [kin_leads, agent_update]

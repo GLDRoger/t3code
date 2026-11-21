@@ -17,12 +17,14 @@ import { View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { ListRow } from "../../components/ui/ListRow";
-import { ListSection } from "../../components/ui/ListSection";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient } from "./state/kinClient";
 import { useKinWorkDirectory } from "./state/useKinWork";
 
-/** The agent's last changes to records, read from `kin_record_changes`, each with its way back. */
+/**
+ * The agent's last changes to records, read from `kin_record_changes`, each with its way back: rows
+ * for the agent page's "Changed lately" fold.
+ */
 export function KinAgentChanged(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
@@ -66,21 +68,18 @@ export function KinAgentChanged(props: {
     props.onChanged();
   };
   return (
-    <ListSection title={KIN_AGENT_CHANGES.title} footer={KIN_AGENT_CHANGES.detail}>
+    <>
       {props.changed.length === 0 ? (
-        <View className="px-4 py-3">
+        <View className="border-t border-border-subtle px-4 py-3">
           <Text textRole="body" className="text-foreground-muted">
             {KIN_AGENT_CHANGES.none}
           </Text>
         </View>
       ) : (
-        props.changed.map((change, index) => {
+        props.changed.map((change) => {
           const offer = kinAgentChangeOffer(change, said?.seq === change.seq && said.ok);
           return (
-            <View
-              key={change.seq}
-              className={index === 0 ? undefined : "border-t border-border-subtle"}
-            >
+            <View key={change.seq} className="border-t border-border-subtle">
               <ListRow
                 label={kinAgentChangeLine(change, names, undefined, directory.zone)}
                 description={formatKinWhen(new Date(change.at), "dateTime")}
@@ -119,6 +118,11 @@ export function KinAgentChanged(props: {
           );
         })
       )}
-    </ListSection>
+      <View className="border-t border-border-subtle px-4 py-3">
+        <Text textRole="footnote" className="text-foreground-muted">
+          {KIN_AGENT_CHANGES.detail}
+        </Text>
+      </View>
+    </>
   );
 }

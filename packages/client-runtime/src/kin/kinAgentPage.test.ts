@@ -13,6 +13,8 @@ import {
   kinAgentChangeLine,
   kinAgentChangeOffer,
   kinAgentPageCan,
+  kinAgentPageFolds,
+  kinAgentReadyCharacterLine,
   kinAgentUsageLine,
   kinEffortOffAdvice,
   kinWithMediumEffort,
@@ -31,6 +33,56 @@ describe("kinAgentPageCan", () => {
     expect(can.card).toBe(card);
     for (const what of ["edit", "model", "character", "access", "pause", "remove"] as const)
       expect(can[what]).toBe(edits);
+  });
+});
+
+describe("kinAgentPageFolds", () => {
+  const playbook = { key: KinRecordKey.make("D-1"), title: "Winning customers" };
+  const account = { label: "Mail", account: "rhea@ambermill.test", paused: false };
+  it("folds check-ins, reach, playbooks and changes in that order, each with its count", () => {
+    const folds = kinAgentPageFolds(
+      { connections: [account, account], playbooks: [playbook], changed: [] },
+      1,
+    );
+    expect(folds.map((fold) => [fold.id, fold.summary])).toEqual([
+      ["checkIns", "1 check-in"],
+      ["reach", "2 accounts"],
+      ["playbooks", "1 playbook"],
+      ["changed", "None"],
+    ]);
+  });
+  it("leaves the check-in count unsaid until read, and drops changes an older host doesn't send", () => {
+    const folds = kinAgentPageFolds({ connections: [], playbooks: [] }, null);
+    expect(folds.map((fold) => [fold.id, fold.summary])).toEqual([
+      ["checkIns", null],
+      ["reach", "None"],
+      ["playbooks", "None"],
+    ]);
+  });
+});
+
+describe("kinAgentReadyCharacterLine", () => {
+  it.each([
+    [
+      { name: "Growth", area: "" },
+      "Kin gives Growth a ready-made sales character; change it on your computer.",
+    ],
+    [
+      { name: "Social", area: "" },
+      "Kin gives Social a ready-made social media character; change it on your computer.",
+    ],
+    [
+      { name: "Mira", area: "Marketing" },
+      "Kin gives Mira a ready-made sales character; change it on your computer.",
+    ],
+    [
+      { name: "Chief of staff", area: "Chief of staff" },
+      "Kin gives Chief of staff a ready-made chief of staff character; change it on your computer.",
+    ],
+    [{ name: "Hiring", area: "" }, null],
+    [{ name: "", area: "" }, null],
+  ])("%o", (draft, line) => {
+    expect(kinAgentReadyCharacterLine(draft)).toBe(line);
   });
 });
 
