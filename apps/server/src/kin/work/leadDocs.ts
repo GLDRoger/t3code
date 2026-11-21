@@ -7,6 +7,8 @@ import {
   KinDocSectionId,
   type KinDocCardDraft,
   type KinDocCardState,
+  KinDraftKind,
+  KinSocialPlatform,
   KinMessageId,
   KinPersonId,
   KinRecordId,
@@ -47,6 +49,7 @@ import {
   writerFor,
 } from "./leadWork.ts";
 import { iso, type RecordRow } from "./recordRows.ts";
+import { DRAFT_TEXT_MAX, draftCardOf } from "./draftCards.ts";
 import { search } from "./search.ts";
 import { KIN_OWNER_LEVEL, viewSees, viewerOfPeople } from "./teamView.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
@@ -108,6 +111,17 @@ export const CreateInput = Schema.Struct({
       "The doc shows in this chat as a card the owner can open. Pass false only for a doc nobody asked for in this chat.",
   }),
   whatWeSell: Schema.optional(Schema.Literal(true)),
+  draft: Schema.optional(
+    Schema.Struct({
+      kind: KinDraftKind,
+      on: Schema.optional(KinSocialPlatform).annotate({
+        description: "For a post: where it goes.",
+      }),
+    }),
+  ).annotate({
+    description:
+      "This doc is one draft (a post, a mail, a proposal…): one doc per draft. Kin shows it as its own card with Copy text, and in a teammate's own chat Send to the owner.",
+  }),
 });
 export const WriteResult = Schema.Struct({
   key: Schema.String,
@@ -548,8 +562,25 @@ const draftUp = Effect.fn("KinDocTools.draftUp")(function* (lead: Lead, refused:
   });
 });
 
+/** What the agent is told of a draft it filed: it is its own card, and what Kin can't do with it. */
+const draftNote = (draft: KinDocCardDraft) =>
+  [
+    `This draft is its own card in the chat, with Copy text${draft.sendTo === undefined ? "" : ` and Send to ${draft.sendTo.name}`}: don't repeat it in your reply.`,
+    ...(draft.noAccount === undefined
+      ? []
+      : [
+          `No ${draft.noAccount.service} account is connected, so Kin can't post it; ${draft.noAccount.by.name} can connect one in Settings on a computer. Say so.`,
+        ]),
+  ].join(" ");
+const draftTooLong = (length: number) =>
+  invalid(
+    `A draft holds at most ${DRAFT_TEXT_MAX} characters so it can go up on a card; this is ${length}. File it without draft, or shorten it. Nothing was written.`,
+  );
+
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   if (input.whatWeSell === true) return yield* runStartOfferings(lead, input);
+  if (input.draft !== undefined && input.body.length > DRAFT_TEXT_MAX)
+    return yield* draftTooLong(input.body.length);
   const context = yield* writeContext(lead, "doc_create", input);
   const owner = yield* resolveWho(lead, input.owner ?? "you");
   const partyId = yield* refOrNull(lead, input.client, "clients");
@@ -592,8 +623,15 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       recordId: written.row.recordId,
       key: written.row.key,
     });
-  yield* shown(lead, written, input.card ?? "answer");
-  return writeResult(written, written.created);
+  const draft =
+    input.draft === undefined
+      ? undefined
+      : yield* draftCardOf(lead, input.draft, written.version.body);
+  yield* shown(lead, written, draft === undefined ? (input.card ?? "answer") : true, draft);
+  return {
+    ...writeResult(written, written.created),
+    ...(draft === undefined ? {} : { note: draftNote(draft) }),
+  };
 });
 export const create = leadTool("KinDocTools.create", runCreate);
 

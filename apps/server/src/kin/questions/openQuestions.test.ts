@@ -66,6 +66,8 @@ import { SessionStore } from "../../auth/SessionStore.ts";
 import { encodeLeadModel } from "../lead/leadModels.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import * as AskPerson from "./askPerson.ts";
+import * as DraftCards from "../work/draftCards.ts";
+import * as LeadDocs from "../work/leadDocs.ts";
 import * as Questions from "./openQuestions.ts";
 import { approvalOf, madeUnderApproval } from "./approval.ts";
 import { APPROVED_TURN_TEXT, approvedTurnText, tellDraftMade } from "./sentUpDraft.ts";
@@ -2052,6 +2054,140 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
         (yield* draftWakes).map((one) => one.key),
         `question-approved:${late.questionId}`,
       );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// A2: each draft is its own doc card; "Send to" on hers is X7's send-up, from her, once.
+it.effect("a teammate's drafts are cards of their own, and Send to raises one Approve card", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const team = yield* askingTeam;
+      const { sql, orgId, person, chatOf, chiefChat, wakeOn, services } = team;
+      const identity = Context.get(services, KinIdentity);
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'clients', 'Clients', 'C', 1, 0) ON CONFLICT DO NOTHING`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at)
+        VALUES (${orgId}, 'rec_harbourline', 'clients', 'C-7', 'Harbourline Hotels', 'person',
+          ${team.owner.personId}, 'person', 'harbourline', 0, 0)`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = 'zoya'`;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-zoya', ${orgId}, 'zoya', 0)`;
+      const zoyaChat = yield* chiefChat("zoya");
+      const turn = yield* wakeOn("chief", "zoya", zoyaChat, "Three launch posts for Harbourline?");
+      const [event] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+        WHERE org_id = ${orgId} AND wakeup_id = ${turn} ORDER BY rowid`;
+      const file = (title: string, body: string) =>
+        LeadDocs.create(scopeOf("chief"), {
+          sourceEventId: event!.eventId,
+          title,
+          body,
+          client: "C-7",
+          draft: { kind: "post", on: "instagram" },
+        }).pipe(Effect.provideService(KinIdentity, identity));
+      const posts = [
+        yield* file("Teaser", "## Teaser\n\n**Soon** at Harbourline."),
+        yield* file("Launch day", "Open today."),
+        yield* file("Carousel", "Five rooms, five views."),
+      ];
+      // Three docs under her client, each told to the agent as its own card that can't post yet.
+      const filed = yield* sql<{ key: string; party: string | null }>`SELECT key,
+          party_id AS party FROM kin_records WHERE org_id = ${orgId} AND register_id = 'docs'
+          AND asked_by_person_id = 'zoya'
+        ORDER BY rowid`;
+      assert.deepStrictEqual(
+        filed,
+        posts.map((post) => ({ key: post.key, party: "rec_harbourline" })),
+      );
+      assert.strictEqual(
+        posts[0]!.note,
+        "This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it in your reply. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.",
+      );
+      const cards = yield* sql<{ widgetId: string; state: string }>`SELECT widget_id AS "widgetId",
+          state_json AS state FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${zoyaChat}
+          AND type = 'doc' ORDER BY rowid`;
+      assert.lengthOf(cards, 3);
+      const first = JSON.parse(cards[0]!.state);
+      assert.strictEqual(first.key, posts[0]!.key);
+      assert.deepStrictEqual(first.draft, {
+        kind: "post",
+        text: "## Teaser\n\n**Soon** at Harbourline.\n",
+        sendTo: { personId: team.owner.personId, name: "Rhea Rao" },
+        noAccount: {
+          service: "Instagram",
+          by: { personId: team.owner.personId, name: "Rhea Rao" },
+        },
+      });
+
+      const press = (who: string, widgetId = cards[0]!.widgetId, chatId = zoyaChat) =>
+        DraftCards.sendUp([person(who)], {
+          orgId,
+          chatId,
+          widgetId: KinWidgetId.make(widgetId),
+        });
+      const ups = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_questions
+        WHERE org_id = ${orgId} AND draft_json IS NOT NULL`.pipe(Effect.map((rows) => rows[0]!.n));
+      // Someone else's card, or the owner's own look at it, sends nothing.
+      for (const who of ["arjun", "rhea"])
+        assert.strictEqual(
+          (yield* Effect.flip(press(who === "rhea" ? team.owner.personId : who))).reason,
+          "not_found",
+        );
+      assert.strictEqual(yield* ups, 0);
+      assert.deepStrictEqual(yield* press("zoya"), { to: "Rhea Rao", held: false });
+      assert.deepStrictEqual(yield* press("zoya"), { to: "Rhea Rao", held: false });
+      assert.strictEqual(yield* ups, 1);
+      // The owner's card is X7's: the draft, who asked, Approve and Changes first.
+      const [question] = yield* sql<{ questionId: string; chatId: string }>`SELECT
+          question_id AS "questionId", chat_id AS "chatId" FROM kin_questions
+        WHERE org_id = ${orgId} AND draft_json IS NOT NULL`;
+      assert.strictEqual(question!.chatId, chatOf("chief"));
+      const owners = yield* team.widgetOf((yield* team.cardOf(question!.questionId)).widgetId!);
+      assert.include(owners.state, {
+        detail:
+          "Zoya Sheikh asks, through Chief of staff.\n\n## Teaser\n\n**Soon** at Harbourline.\n\nPost for Harbourline Hotels",
+      });
+      // Her card now says it went up, and to whom.
+      const sent = yield* team.widgetOf(cards[0]!.widgetId);
+      assert.include((sent.state as { draft: { sent: { name: string } } }).draft.sent, {
+        name: "Rhea Rao",
+      });
+      // The owner's own draft has nothing to send up: Copy text only.
+      const own = yield* wakeOn("chief", "rhea", chatOf("chief"), "A post for our own page?");
+      const [ownEvent] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+        FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${own} ORDER BY rowid`;
+      const mine = yield* LeadDocs.create(scopeOf("chief"), {
+        sourceEventId: ownEvent!.eventId,
+        title: "Our own teaser",
+        body: "Soon.",
+        draft: { kind: "post", on: "linkedin" },
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.strictEqual(
+        mine.note,
+        "This draft is its own card in the chat, with Copy text: don't repeat it in your reply. No LinkedIn account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.",
+      );
+      const [ownCard] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+        WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'`;
+      assert.notProperty(JSON.parse(ownCard!.state).draft, "sendTo");
+      // Once an account there is connected, the card no longer says it can't post.
+      yield* sql`INSERT INTO kin_social_groups (org_id, group_id, party_id, service, profile_id,
+          profile_name, accounts_json, problem, checked_at, created_at)
+        VALUES (${orgId}, 'g-own', NULL, 'fixture', 'p-own', 'Our own',
+          ${JSON.stringify([{ accountId: "a-1", platform: "linkedin", name: "Ambermill", handle: null, problem: null }])},
+          NULL, 0, 0)`;
+      const later = yield* LeadDocs.create(scopeOf("chief"), {
+        sourceEventId: ownEvent!.eventId,
+        title: "Our own launch post",
+        body: "Open today.",
+        draft: { kind: "post", on: "linkedin" },
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.notInclude(later.note ?? "", "connected");
+      const [laterCard] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+        WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'
+        ORDER BY rowid DESC LIMIT 1`;
+      assert.notProperty(JSON.parse(laterCard!.state).draft, "noAccount");
     }).pipe(Effect.provide(layer)),
   ),
 );
