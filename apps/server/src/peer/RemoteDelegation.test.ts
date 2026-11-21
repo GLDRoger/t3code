@@ -568,7 +568,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
     ),
     Layer.provide(
       Layer.mock(ProviderRegistry.ProviderRegistry)({
-        getProviders: Effect.succeed([boxClaude]),
+        getProviders: Effect.succeed([boxClaude, boxCodexOff]),
       }),
     ),
     Layer.provide(
@@ -609,7 +609,7 @@ const mcpClient = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 
-/** The box's only provider: a Claude instance, under its own id. */
+/** The box's only usable provider: a Claude instance, under its own id. */
 const boxClaude: ServerProvider = {
   instanceId: ProviderInstanceId.make("claude-box"),
   driver: ProviderDriverKind.make("claudeAgent"),
@@ -624,6 +624,15 @@ const boxClaude: ServerProvider = {
   ],
   slashCommands: [],
   skills: [],
+};
+
+/** A Codex instance the box has turned off. */
+const boxCodexOff: ServerProvider = {
+  ...boxClaude,
+  instanceId: ProviderInstanceId.make("codex-box-off"),
+  driver: ProviderDriverKind.make("codex"),
+  enabled: false,
+  models: [],
 };
 
 const adapter = {
@@ -1282,6 +1291,38 @@ it.effect("a task naming another driver there never runs its model on the parent
       expect((yield* Ref.get(thread.launchedWith))?.modelSelection.instanceId).toBe(
         boxClaude.instanceId,
       );
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a task naming an instance the box has turned off says so before launching", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+
+      const result = yield* a.call("delegate_task", {
+        task: "Run the suite on the box.",
+        target: {
+          environmentId: box.environmentId,
+          driverKind: "claudeAgent",
+          providerInstanceId: boxCodexOff.instanceId,
+          model: "claude-sonnet-4-6",
+        },
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain(
+        "Provider instance codex-box-off there can't run a child task: ",
+      );
+      expect(JSON.stringify(result.content)).toContain("Provider instance is disabled.");
+      expect(yield* Ref.get(thread.launched)).toBeNull();
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
