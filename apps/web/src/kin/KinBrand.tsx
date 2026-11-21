@@ -16,6 +16,7 @@ import {
 import { KIN_COMPANY } from "@t3tools/client-runtime/kin/kinCompanyProfile";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_SETTINGS_COPY } from "@t3tools/client-runtime/kin/kinSettingsSpread";
+import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
 
 import type { KinCompanyProfile } from "@t3tools/contracts";
 
@@ -221,7 +222,8 @@ function BrandDialog(
 ) {
   const { environmentId, orgId, profile } = props;
   const set = useAtomCommand(kinClient.companyProfileSet, { reportFailure: false });
-  const [draft, setDraft] = useState<KinBrandDraft>(() => kinBrandDraftOf(profile.brand));
+  const [opened] = useState<KinBrandDraft>(() => kinBrandDraftOf(profile.brand));
+  const [draft, setDraft] = useState(opened);
   const [problems, setProblems] = useState<Partial<Record<KinBrandField, string>>>({});
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -265,6 +267,7 @@ function BrandDialog(
             </Button>
           )
         }
+        typed={kinFormTyped(opened, draft)}
         onSubmit={save}
         onClose={props.onClose}
       >

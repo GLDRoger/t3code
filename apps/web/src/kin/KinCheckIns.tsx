@@ -9,6 +9,7 @@ import {
   kinCheckInProblem,
   type KinCheckInDraft,
 } from "@t3tools/client-runtime/kin/kinCheckIns";
+import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinCheckIn, KinCheckInActInput, KinCheckInsResult } from "@t3tools/contracts";
 import { PlusIcon } from "lucide-react";
 import * as Option from "effect/Option";
@@ -186,9 +187,8 @@ export function CheckInDialog(props: {
   readonly onClose: () => void;
 }) {
   const { checkIn, result } = props;
-  const [draft, setDraft] = useState(() =>
-    kinCheckInDraft(checkIn, result.agents[0]?.agentId ?? null),
-  );
+  const [opened] = useState(() => kinCheckInDraft(checkIn, result.agents[0]?.agentId ?? null));
+  const [draft, setDraft] = useState(opened);
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -255,6 +255,7 @@ export function CheckInDialog(props: {
             </Button>
           )
         }
+        typed={kinFormTyped(opened, draft) || pipeline !== shownPipeline}
         onSubmit={() => void submit()}
         onClose={props.onClose}
       >

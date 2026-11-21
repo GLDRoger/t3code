@@ -149,9 +149,10 @@ function StageDialog(
   const { held, stage } = props;
   const save = useKinDealStagesSet(props);
   const [name, setName] = useState(stage?.name ?? "");
-  const [place, setPlace] = useState(
+  const [opened] = useState(() =>
     stage === null ? held.stages.length : held.stages.findIndex((each) => each.id === stage.id),
   );
+  const [place, setPlace] = useState(opened);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -186,6 +187,7 @@ function StageDialog(
         busy={busy}
         notReady={kinDealStagesProblem(after.stages.map((each) => each.name))}
         problem={problem}
+        typed={name.trim() !== (stage?.name ?? "").trim() || place !== opened}
         remove={
           stage === null || held.stages.length === 1 ? undefined : (
             <Button

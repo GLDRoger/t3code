@@ -431,6 +431,7 @@ function KinTeammatePage(props: {
         <KinSettingsSection problem={problem}>
           <KinSettingsRow
             title={KIN_TEAMMATE_PAGE.link}
+            wrap
             detail={offered.link.hint}
             control={
               <Button
@@ -454,6 +455,7 @@ function KinTeammatePage(props: {
           {offered.cancel === null ? null : (
             <KinSettingsRow
               title={KIN_TEAMMATE_PAGE.unopened}
+              wrap
               detail={KIN_TEAMMATE_PAGE.cancelDetail}
               control={
                 <Button
@@ -470,6 +472,7 @@ function KinTeammatePage(props: {
           {removable ? (
             <KinSettingsRow
               title={KIN_TEAMMATE_PAGE.removeTitle}
+              wrap
               detail={KIN_TEAMMATE_PAGE.removeDetail}
               control={
                 <Button
@@ -676,6 +679,7 @@ function KinTeammatePlaces(props: {
         <KinSettingsRow
           key={entry.place}
           title={entry.label}
+          wrap
           detail={entry.detail}
           control={
             <Switch

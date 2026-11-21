@@ -70,6 +70,7 @@ export function KinTalkToSection(props: {
     <KinSettingsSection title={KIN_TEAM_PAGE.talkTo} problem={save.problem}>
       <KinSettingsRow
         title={KIN_TEAM_AGENT_COPY.label}
+        wrap
         detail={restricted ? KIN_TEAM_PAGE.teamAgentRestricted : KIN_TEAM_PAGE.teamAgentDetail}
         control={
           <KinSettingsChoice
@@ -90,6 +91,7 @@ export function KinTalkToSection(props: {
       />
       <KinSettingsRow
         title={KIN_COMPANY_CHAT_COPY.label}
+        wrap
         detail={KIN_TEAM_PAGE.companyChatDetail}
         control={
           <KinSettingsChoice

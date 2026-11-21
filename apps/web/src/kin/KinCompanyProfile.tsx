@@ -15,6 +15,7 @@ import {
 import { KIN_OFFLINE_PAGE, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_SETTINGS_COPY } from "@t3tools/client-runtime/kin/kinSettingsSpread";
+import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { KinCompanyProfile } from "@t3tools/contracts";
@@ -181,9 +182,8 @@ function ProfileDialog(
   const set = useAtomCommand(kinClient.companyProfileSet, { reportFailure: false });
   const waiting = useKinCountryNeeded(props);
   const region = kinDeviceRegion();
-  const [draft, setDraft] = useState<KinCompanyDraft>(() =>
-    kinCompanyDraftOf(profile, region, waiting),
-  );
+  const [opened] = useState<KinCompanyDraft>(() => kinCompanyDraftOf(profile, region, waiting));
+  const [draft, setDraft] = useState(opened);
   const [problems, setProblems] = useState<Readonly<Partial<Record<KinCompanyFieldId, string>>>>(
     {},
   );
@@ -215,6 +215,7 @@ function ProfileDialog(
       submitLabel={KIN_COMPANY_SETTINGS.save}
       busy={saving}
       problem={problem}
+      typed={kinFormTyped(opened, draft)}
       onSubmit={() => void save()}
       onClose={props.onClose}
     >
@@ -327,6 +328,7 @@ export function KinCompanyExportSection(props: KinWorkTarget) {
     <KinSettingsSection title={KIN_COMPANY.export.title}>
       <KinSettingsRow
         title={KIN_COMPANY_SETTINGS.exportRow}
+        wrap
         detail={
           state === "started" ? KIN_COMPANY.export.started : KIN_COMPANY_SETTINGS.exportDetail
         }

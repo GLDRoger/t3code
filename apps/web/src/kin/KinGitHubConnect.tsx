@@ -145,6 +145,7 @@ function GitHubSection(props: {
     ) : (
       <KinSettingsRow
         title={row.title}
+        wrap
         detail={kinGitHubRowDetail(status)}
         status={row.tone === "muted" ? null : <ToneStatus tone={row.tone} label={row.label} />}
         control={
@@ -195,6 +196,7 @@ function GitHubSection(props: {
             <KinSettingsSection title={COPY.disconnect}>
               <KinSettingsRow
                 title={COPY.disconnectRow}
+                wrap
                 detail={COPY.disconnectRowDetail}
                 control={
                   <Button
