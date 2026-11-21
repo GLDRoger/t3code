@@ -290,6 +290,8 @@ const alerts = (sent: ReadonlyArray<KinApnsPush>) =>
     (push) => (push.payload as { aps: { alert?: { title: string; body: string } } }).aps.alert,
   );
 
+const isChoiceCard = Schema.is(KinChoiceCardState);
+
 const categories = (sent: ReadonlyArray<KinApnsPush>) =>
   sent.map((push) => (push.payload as { aps: { category: string } }).aps.category);
 
@@ -487,7 +489,7 @@ describe("KinPushSender", () => {
         },
       ]);
       assert.deepStrictEqual(
-        (apns.sent[0]?.payload as { body: { widgetId: string; choices: unknown } }).body.choices,
+        (apns.sent[0]?.payload as { body: { choices: unknown } } | undefined)?.body.choices,
         ["option-1", "option-2"],
       );
       assert.isUndefined(apns.sent[0]?.collapseId, choice);
@@ -522,7 +524,7 @@ describe("KinPushSender", () => {
           true,
         ],
       ] as const) {
-        assert.isTrue(Schema.is(KinChoiceCardState)(state));
+        assert.isTrue(isChoiceCard(state));
         yield* ask(state, open);
         assert.deepStrictEqual(categories(apns.sent), ["kin.message"], JSON.stringify(state));
         assert.deepStrictEqual(alerts(apns.sent), [

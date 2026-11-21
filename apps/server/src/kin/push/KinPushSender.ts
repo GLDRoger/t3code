@@ -247,7 +247,7 @@ const decodeChoiceCard = Schema.decodeUnknownOption(KinChoiceCardState);
  * in `kin_questions`) with exactly two plain options: Kin's own Confirm cards (money, mail, a
  * company change) are no open question, and an option that runs an action or sends needs the card.
  */
-export const kinNoticeChoices = (state: unknown, asked: boolean) => {
+const kinNoticeChoices = (state: unknown, asked: boolean) => {
   if (!asked) return undefined;
   const card = Option.getOrUndefined(decodeChoiceCard(state));
   if (card === undefined || card.answer !== null || card.replaced === true) return undefined;
