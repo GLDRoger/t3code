@@ -2493,18 +2493,17 @@ it.effect("a co-owner sees what waits on the owner, read-only, and answers none 
       const fromDevCard = (yield* team.cardOf(fromDev.questionId)).widgetId!;
       const draftCard = (yield* team.cardOf(draft.questionId)).widgetId!;
       const meeraSees = yield* read("meera");
-      const byCard = (a: readonly unknown[], b: readonly unknown[]) =>
-        String(a[0]) < String(b[0]) ? -1 : 1;
+      const rowOf = (row: ReadonlyArray<unknown>) => JSON.stringify(row);
       assert.deepStrictEqual(
         meeraSees
-          .map((item) => [item.widgetId, item.reason, item.card, item.waitsFor])
-          .toSorted(byCard),
+          .map((item) => rowOf([item.widgetId, item.reason, item.card ?? null, item.waitsFor]))
+          .toSorted(),
         [
-          [fromDevCard, "question", undefined, rhea],
-          [draftCard, "question", "draft", rhea],
-          [mail.widgetId, "question", "mail", rhea],
-          ["kin-approval:act-1", "approval", undefined, rhea],
-        ].toSorted(byCard),
+          rowOf([fromDevCard, "question", null, rhea]),
+          rowOf([draftCard, "question", "draft", rhea]),
+          rowOf([mail.widgetId, "question", "mail", rhea]),
+          rowOf(["kin-approval:act-1", "approval", null, rhea]),
+        ].toSorted(),
       );
       // A draft's row shows its first lines; a mail's shows none of its words.
       assert.strictEqual(
