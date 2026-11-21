@@ -606,25 +606,42 @@ describe("choice cards", () => {
       false,
     ]);
     expect(kinMailCancels(choice(), "option-2")).toBe(false);
-    // Settled, it says who sent it, or who chose not to, to everyone, the chooser too.
-    const by = (optionId: string) =>
-      mail(
-        {},
-        {
-          optionId,
-          personId: "meera",
-          via: "tap",
-          emoji: null,
-          answeredAt: "2026-11-08T09:05:00.000Z",
-        },
-      );
+    // Settled, it says who confirmed it, sent it once it went, or chose not to, to everyone.
+    const by = (optionId: string, send: Record<string, unknown> = {}) =>
+      mail(send, {
+        optionId,
+        personId: "meera",
+        via: "tap",
+        emoji: null,
+        answeredAt: "2026-11-08T09:05:00.000Z",
+      });
     const withDecider = (view: ReturnType<typeof by>) => ({
       ...view,
       decidedBy: { personId: "meera" as never, name: "Meera Shah" },
     });
-    expect(kinChoiceDecidedLine(withDecider(by("option-1")), "rhea" as never)).toBe(
+    const went = (state: string, action = "email") => ({
+      action,
+      outcome: { state, reason: null, at: "2026-11-08T09:06:00.000Z" },
+    });
+    expect(
+      [
+        by("option-1"),
+        by("option-1", went("sending")),
+        by("option-1", went("sent")),
+        by("option-1", went("failed")),
+        by("option-1", went("sending", "event")),
+        by("option-1", went("sent", "event")),
+        by("option-1", went("failed", "event")),
+      ].map((view) => kinChoiceDecidedLine(withDecider(view), "rhea" as never)),
+    ).toEqual([
+      "Meera Shah confirmed it.",
+      "Meera Shah confirmed it.",
       "Meera Shah sent it.",
-    );
+      "Meera Shah confirmed it.",
+      "Meera Shah confirmed it.",
+      "Meera Shah sent it.",
+      "Meera Shah confirmed it.",
+    ]);
     expect(kinChoiceDecidedLine(withDecider(by("option-2")), "meera" as never)).toBe(
       "You chose not to send it.",
     );

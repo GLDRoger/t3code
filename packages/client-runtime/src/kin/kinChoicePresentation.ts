@@ -548,7 +548,7 @@ export function kinChoiceAnswered(
 /**
  * Who settled the card, under it: "Rhea Rao chose “Same terms”.", "Meera Shah sent it.". Null
  * while it is open, from a host that doesn't say, or for the viewer's own plain answer, which the
- * card already reads as theirs.
+ * card already reads as theirs. A send's yes says "sent it" only once the host stored it sent.
  */
 export function kinChoiceDecidedLine(
   view: Pick<KinChoiceCardView, "answer" | "decidedBy" | "outcome" | "send" | "options">,
@@ -561,10 +561,8 @@ export function kinChoiceDecidedLine(
   const who = mine ? "You" : decidedBy.name;
   if (view.send !== null) {
     const yes = view.options.find((option) => option.id === answer.optionId)?.kind === "yes";
-    const mail = view.send.edit !== null;
-    return yes
-      ? `${who} ${mail ? "sent it" : "confirmed it"}.`
-      : `${who} chose not to ${mail ? "send it" : "go ahead"}.`;
+    if (yes) return `${who} ${view.send.outcome?.tone === "ok" ? "sent it" : "confirmed it"}.`;
+    return `${who} chose not to ${view.send.edit !== null ? "send it" : "go ahead"}.`;
   }
   return `${who} chose “${answer.label}”.`;
 }
