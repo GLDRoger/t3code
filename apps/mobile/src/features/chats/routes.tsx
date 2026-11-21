@@ -41,6 +41,7 @@ import { KinProjectLeadScreen } from "./KinProjectLeadScreen";
 import { KinProjectPeopleScreen } from "./KinProjectPeopleScreen";
 import { KinProjectScreen } from "./KinProjectScreen";
 import { KinSettingsScreen } from "./KinSettings";
+import { KinThisPhoneScreen } from "./KinThisPhoneScreen";
 import { KinBriefFormScreen } from "./KinBriefs";
 import { KinCheckInFormScreen } from "./KinCheckIns";
 import { KinGoalFormScreen } from "./KinGoals";
@@ -79,6 +80,10 @@ export const KIN_SCREENS = {
     screen: KinSettingsScreen,
     linking: "settings/kin",
     options: pageRoute({ title: "Kin", itemStyle: "standard" }),
+  }),
+  KinThisPhone: createNativeStackScreen({
+    screen: KinThisPhoneScreen,
+    options: pageRoute({ title: "This phone" }),
   }),
   KinWaiting: createNativeStackScreen({
     screen: KinWaitingScreen,
