@@ -27,6 +27,7 @@ const host = vi.hoisted(() => ({
   reads: [] as Array<unknown>,
   acts: [] as Array<unknown>,
   nudges: [] as Array<unknown>,
+  changed: [] as Array<{ readonly key: string; readonly action: unknown }>,
   refuse: null as string | null,
   pulse: null as unknown,
 }));
@@ -215,6 +216,7 @@ function setup(options: {
   host.reads = [];
   host.acts = [];
   host.nudges = [];
+  host.changed = [];
   host.refuse = options.refuse ?? null;
   host.pulse = options.pulse ?? null;
 }
@@ -245,7 +247,14 @@ function Tasks(props: {
             } as never
           }
           changes={
-            { state: { pending: {}, answers: {}, edit: null, notice: null }, changes: {} } as never
+            {
+              state: { pending: {}, answers: {}, edit: null, notice: null },
+              changes: {
+                run: async (record: KinRecord, action: unknown) => {
+                  host.changed.push({ key: record.key, action });
+                },
+              },
+            } as never
           }
           openKey={null}
           onOpen={props.onOpen ?? (() => {})}
@@ -286,6 +295,18 @@ describe("Tasks on the web, by whose move", () => {
     expect(host.acts).toEqual([
       expect.objectContaining({ widgetId: "card-1", revision: 2, value: "confirm" }),
     ]);
+  });
+
+  it("marks a task done once from its row's circle, even on a double click", async () => {
+    setup({
+      ownerLevel: true,
+      records: [bakeryForm],
+      moves: [{ key: bakeryForm.key, group: "needsYou" }],
+      counts: { needsYou: 1, waiting: 0, rest: 0, doneRecently: 0 },
+    });
+    await using _screen = await render(<Tasks me={rhea.personId} org="ambermill-9" />);
+    await userEvent.dblClick(page.getByRole("button", { name: `Mark done: ${bakeryForm.title}` }));
+    expect(host.changed).toEqual([{ key: "T-3", action: { type: "state", state: "done" } }]);
   });
 
   it("shows the host's reason on the row when it refuses the draft", async () => {
