@@ -81,6 +81,7 @@ const draft = kinInvoiceView(
     amount: { minor: 1_250_00, currency: "EUR" },
     balance: { minor: 1_250_00, currency: "EUR" },
     received: { minor: 0, currency: "EUR" },
+    party: { recordId: KinRecordId.make("rec-c3"), key: "C-3", title: "Lumen Grove" },
     fields: {},
     links: [],
     payments: [],
@@ -122,13 +123,14 @@ const screen = () => (
 );
 
 describe("issuing an invoice", () => {
-  it("asks first with the number the host will give, then issues that invoice once", async () => {
+  it("asks first with the total, the client and the number the host will give, then issues once", async () => {
     setup(null);
     await using _screen = await render(screen());
 
     await userEvent.click(page.getByRole("button", { name: "Issue" }));
     const ask = page.getByRole("alertdialog");
     await expect.element(ask.getByText(/It will be AM-0042\./)).toBeVisible();
+    await expect.element(ask.getByText("Total €1,250 to Lumen Grove.")).toBeVisible();
     expect(host.sent).toEqual([{ command: "workNextNumber", input: { orgId: target.orgId, key } }]);
 
     await userEvent.dblClick(ask.getByRole("button", { name: "Issue" }));
