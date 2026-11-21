@@ -887,18 +887,7 @@ export const teamSeesKey = Effect.fn("KinTeamView.seesKey")(function* (
   return rows.length > 0;
 });
 
-/** The keys of every task this teammate may see now, for telling them when one is hidden. */
-export const teamKeys = Effect.fn("KinTeamView.keys")(function* (
-  orgId: KinOrgId,
-  personId: KinPersonId,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
-    WHERE r.org_id = ${orgId} AND ${personSees(sql, personId)} ORDER BY r.key`;
-  return new Set(rows.map((row) => row.key));
-});
-
-/** `teamKeys`, with each entry's list. */
+/** The key and list of every entry this teammate may see now, for telling them when one is hidden. */
 export const teamKeyLists = Effect.fn("KinTeamView.keyLists")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,

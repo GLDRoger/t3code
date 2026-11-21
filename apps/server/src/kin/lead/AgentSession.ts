@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
+import * as McpToolPolicy from "../mcp/toolPolicy.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpToolExposure from "../../mcp/McpToolExposure.ts";
 import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
@@ -284,7 +284,7 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
   return !codingT3Tools.has(name) || (yield* threadSeat(threadId))?.seat === "engineering";
 });
 
-export const endpointVisibility = McpHttpServer.toolVisibility((name) =>
+export const endpointVisibility = McpToolPolicy.toolVisibility((name) =>
   Effect.gen(function* () {
     const scope = yield* Effect.serviceOption(McpInvocationContext);
     if (Option.isNone(scope) || scope.value.thread === undefined) return false;

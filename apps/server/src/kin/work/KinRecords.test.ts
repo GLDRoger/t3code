@@ -70,6 +70,7 @@ import * as OwnerClients from "./ownerClients.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import * as WorkStream from "./workStream.ts";
 import { presetDefinition } from "./registers.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
@@ -2832,23 +2833,32 @@ it.effect("a teammate's Tasks and Search find the projects they lead by its own 
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a teammate's live changes name only tasks they see, and one hidden from them once", () =>
+it.effect("old live changes name to a teammate only what they see, to the owner all", () =>
   Effect.gen(function* () {
     yield* seed;
     const records = yield* KinRecords.KinRecords;
     const sql = yield* SqlClient.SqlClient;
     const heard = yield* Queue.unbounded<{
       readonly seq: number;
-      readonly key?: string;
-      readonly list?: string;
+      readonly key?: string | undefined;
+      readonly list?: string | undefined;
     }>();
-    yield* OwnerWork.subscribe([mate], { orgId }).pipe(
+    yield* WorkStream.subscribeChanged([mate], { orgId }).pipe(
       Stream.runForEach((event) => Queue.offer(heard, event)),
+      Effect.forkChild,
+    );
+    const told = yield* Queue.unbounded<{
+      readonly key?: string | undefined;
+      readonly list?: string | undefined;
+    }>();
+    yield* WorkStream.subscribeChanged([owner], { orgId }).pipe(
+      Stream.runForEach((event) => Queue.offer(told, event)),
       Effect.forkChild,
     );
     // Each is taken before the next write: a notice nobody should get would come first instead.
     const next = Queue.take(heard).pipe(Effect.map((event) => [event.key ?? null, event.seq]));
     assert.deepStrictEqual(yield* next, [null, 0]);
+    assert.strictEqual((yield* Queue.take(told)).key, undefined);
     const create = (title: string, owner = ownerId) =>
       records.create(orgId, ownerWrites, {
         originKey: title,
@@ -2857,6 +2867,14 @@ it.effect("a teammate's live changes name only tasks they see, and one hidden fr
       });
     yield* create("owner's");
     yield* create("for mate", mateId);
+    // The owner is told of both, by the company's numbers.
+    assert.deepStrictEqual(
+      [yield* Queue.take(told), yield* Queue.take(told)].map((event) => [event.key, event.list]),
+      [
+        ["W-1", "work"],
+        ["W-2", "work"],
+      ],
+    );
     // Their own numbers: one more for each change to what they could see, so nothing else shows.
     // The list is named, so their screens read again only what Work's own list can change.
     const theirs = yield* Queue.take(heard);
@@ -4553,6 +4571,42 @@ it.effect("an announcement reaches screens only once its transaction commits", (
     assert.deepStrictEqual(
       (yield* pull).map((tick) => tick.seq),
       [opening + 11],
+    );
+  }).pipe(Effect.scoped, Effect.provide(layer)),
+);
+
+it.effect("an entry's announcement reaches screens once, after its transaction commits", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
+    const { row } = yield* records.create(orgId, ownerWrites, {
+      list: "clients",
+      originKey: "Invented Grove",
+      title: "Invented Grove",
+      owner: { _tag: "person", personId: ownerId },
+    });
+    const pull = yield* Stream.toPull(records.changes(orgId));
+    const opening = (yield* pull)[0]!.seq;
+    yield* sql
+      .withTransaction(
+        records.announce(orgId, [row.recordId]).pipe(Effect.andThen(Effect.fail("rolled back"))),
+      )
+      .pipe(Effect.flip);
+    // Told at once, the entry's tick would overtake the whole org's one announced before it.
+    yield* sql.withTransaction(
+      records.announce(orgId).pipe(Effect.andThen(records.announce(orgId, [row.recordId]))),
+    );
+    yield* records.announce(orgId);
+    const heard = [];
+    for (let i = 0; i < 3; i++) heard.push(...(yield* pull));
+    assert.deepStrictEqual(
+      heard.map((tick) => [tick.seq, tick.key]),
+      [
+        [opening + 1, undefined],
+        [opening + 2, row.key],
+        [opening + 3, undefined],
+      ],
     );
   }).pipe(Effect.scoped, Effect.provide(layer)),
 );

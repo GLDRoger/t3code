@@ -45,6 +45,7 @@ import * as OwnerWork from "./ownerWork.ts";
 import * as Docs from "./docs.ts";
 import * as Search from "./search.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import * as Numbers from "../gendocs/numbering.ts";
 import { sectionsOf } from "./docBody.ts";
 import { milestoneRisk } from "./projectSpine.ts";
 import { effectivelySensitive } from "./recordRows.ts";
@@ -72,6 +73,13 @@ type Services =
   | FileSystem.FileSystem
   | ServerConfig;
 
+/** The lead issues them on the owner's ask, as kin_issue does: an agent's invoice is a draft. */
+const issuedByLead = (...keys: ReadonlyArray<string>) =>
+  Effect.forEach(
+    keys,
+    (key) => Numbers.issue(orgId, { actor: { _tag: "agent", agentId: lead }, via: "lead" }, key),
+    { discard: true },
+  );
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("fixture"),
   requestNamespace: "fixture",
@@ -298,6 +306,34 @@ it.effect(
       assert.deepStrictEqual(client.projects, [
         { key: "P-1", title: "Invented site", health: "on_track" },
       ]);
+      // Mail Kin sent to any of a contact's emails, not only the main one, shows on the client.
+      const db = yield* SqlClient.SqlClient;
+      yield* db`UPDATE kin_records SET fields_json = json_set(fields_json, '$.emails',
+          json('["ravi@x.invalid","ravi.home@x.invalid"]'))
+        WHERE org_id = ${orgId} AND title = 'Invented Ravi'`;
+      yield* db`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,
+          reach, state, created_at, updated_at)
+        VALUES (${orgId}, 'mail', 'Mail', 'remote', 'mail.invalid', 'none', 'open', 'active', 1, 1)`;
+      const mail = {
+        _tag: "email",
+        to: ["Ravi.Home@x.invalid"],
+        cc: [],
+        subject: "Invented kickoff",
+        body: "Invented body",
+        threadId: null,
+        inReplyTo: null,
+        references: null,
+        attachments: [],
+      };
+      yield* db`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+          pin_digest, payload_json, agent_id, wakeup_id, chat_id, widget_id, proposed_at, state,
+          done_at)
+        VALUES (${orgId}, 'ask-mail', 'mail', 'mail_send', 'pin', ${JSON.stringify(mail)}, ${lead},
+          'wake', 'chief-chat', 'card', 0, 'sent', 1)`;
+      assert.deepStrictEqual(
+        (yield* LeadWork.get(scope, { key: "C-1" })).mailed?.map((one) => one.subject),
+        ["Invented kickoff"],
+      );
       // Fields a list doesn't have, and a client that isn't there, are refused with nothing written.
       for (const records of [
         [{ title: "Invented", email: "a@x.invalid" }],
@@ -1019,6 +1055,7 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         },
       ],
     });
+    yield* issuedByLead("INV-1");
     // One row per tool the lead has: a tool added without one fails to typecheck and here.
     // A definition shows no entry, so proposing one marks nothing.
     const calls = {
@@ -2214,6 +2251,9 @@ it.effect(
         ],
       });
       const overdue = made.records.find((one) => one.title === "Invented overdue invoice")!.key;
+      yield* issuedByLead(
+        ...made.records.filter((one) => one.key.startsWith("INV-")).map((one) => one.key),
+      );
       yield* LeadMoney.payment(scope, {
         sourceEventId: "ask-event",
         key: overdue,
@@ -2942,9 +2982,12 @@ it.effect(
             client: "C-1",
             amount: "900",
             state: "waiting",
+            // Issued the day before: Issue dates it the end of a day, no contact until then.
+            date: "1970-01-14",
           },
         ],
       });
+      yield* issuedByLead("INV-1");
       yield* LeadMoney.payment(scope, {
         sourceEventId: "ask-event",
         key: "INV-1",

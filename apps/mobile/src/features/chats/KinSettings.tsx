@@ -54,7 +54,6 @@ import { openKinNotificationSettings } from "./notifications/installKinNotificat
 import { useChatOnlyEnvironments, useKinOwnerLevel, useKinSeesClients } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinInbox } from "./state/useKinInbox";
-import { useKinOpenWaiting } from "./state/useKinOpen";
 import { useKinProfiles } from "./state/useKinProfiles";
 import { useKinReconnect } from "./state/useKinReconnect";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -181,9 +180,7 @@ export function KinSettings(props: {
   });
   const you = groups[0]!;
   const companyGroup = groups.find((group) => group.id === "company");
-  const openWaiting = useKinOpenWaiting(host, state._tag === "ready" ? state.inbox.value : null);
-  const waiting =
-    state._tag === "ready" ? selectKinInboxView(state.inbox.value, openWaiting).waiting.length : 0;
+  const waiting = state._tag === "ready" ? selectKinInboxView(state.inbox.value).waiting.length : 0;
 
   // Two computers with one name are told apart by the address their rows show.
   const nameOf = (environment: EnvironmentPresentation) =>

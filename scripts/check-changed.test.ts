@@ -322,6 +322,18 @@ it.each(["upstream", "team/upstream"])(
   },
 );
 
+it("compares a Kin branch against the fork's kin when that is closer than any main", async () => {
+  using project = fixture({ origin: "A", upstream: "A" });
+  NodeChildProcess.execFileSync(
+    "git",
+    ["update-ref", "refs/remotes/origin/kin", project.commits.B!],
+    { cwd: project.root, env },
+  );
+  const result = await compare(project.root, Option.none());
+  assert.strictEqual(result.base, project.commits.B);
+  assert.strictEqual(result.ref, "origin/kin");
+});
+
 it("compares against an explicit ref instead of the closest remote main", async () => {
   using project = fixture({ origin: "A", upstream: "B" });
   const result = await compare(project.root, Option.some("origin/main"));

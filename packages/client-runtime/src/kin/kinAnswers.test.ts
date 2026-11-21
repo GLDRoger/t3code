@@ -41,4 +41,38 @@ describe("kinFailure", () => {
       "Already handled.",
     );
   });
+
+  it("says a host's sentence that names a product as written, and hides words meant for a machine", () => {
+    const shown = [
+      "Only the owner can connect GitHub here.",
+      "Only the owner can connect PostHog here.",
+      "Ask the owner to connect LinkedIn first.",
+      "QuickBooks isn't connected for this company.",
+      "Only the owner can post to YouTube.",
+      "WhatsApp is not set up here yet.",
+      "TestFlight builds are the owner's to send.",
+      "Only Meera can change MedTech's tasks.",
+      "This iPhone isn't allowed to change Work.",
+      "Only the owner filters by that client.",
+    ];
+    const hidden = [
+      "There is no list x. A new list is proposed with list_define first.",
+      "Give dueAt as a date.",
+      "workUpdate failed",
+      "KinChatError: not allowed",
+      "SqlError",
+      "TimeoutException while reading",
+      "ParseFailure at revision 4",
+      "WorkItemNotFound",
+      "NotFound",
+      "Kin::Work refused it.",
+      "Failed in run() here.",
+      "at Object.run (src/kin/work.ts:12:3)",
+      'Refused with {"_tag":"NotAllowed"}',
+      "Only the owner can connect GitHub; orgId was missing.",
+    ];
+    const text = (said: string) => kinFailure(refusal("not_allowed", said), "Couldn't save.").text;
+    for (const said of shown) expect(text(said), said).toBe(said);
+    for (const said of hidden) expect(text(said), said).toBe("You can't do that here.");
+  });
 });
