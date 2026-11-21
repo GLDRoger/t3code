@@ -6,9 +6,9 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 
-import { readStatementFile } from "./statementFiles.ts";
+import { readStatementFile, TOO_LARGE } from "./statementFiles.ts";
 import { pdf, threePageStatement } from "./statementPdf.testkit.ts";
-import { READER_LIMITS, readIsolated, runReader, TOO_LARGE } from "./statementReader.ts";
+import { READER_LIMITS, readIsolated, runReader } from "./statementReader.ts";
 import { checkBalances, currencyIn, parseAmount, parseDay, readTable } from "./statementTable.ts";
 
 // Every statement here is invented: Lakeview Studio, its clients and its accounts are made up.
@@ -355,6 +355,11 @@ describe("hostile statement files", () => {
       });
       if (big._tag !== "unreadable") return assert.fail(big._tag);
       assert.strictEqual(big.reason, TOO_LARGE);
+      const damaged = new Uint8Array(Buffer.from("%PDF-1.7\n1 0 obj\n<< /Type /Catalog"));
+      assert.deepStrictEqual(yield* readIsolated(damaged, "INR"), {
+        _tag: "unreadable",
+        reason: "The PDF couldn't be opened; it may be damaged.",
+      });
     }),
   );
 
@@ -426,9 +431,10 @@ describe("hostile statement files", () => {
           precheck: false,
         });
         assert.deepStrictEqual(run.outcome, { _tag: "unreadable", reason: TOO_LARGE });
-        assert.strictEqual(run.stopped, "memory");
-        // Killed at the first sample past the limit: never the gigabytes the file decodes to.
-        assert.isAbove(run.peakKib, limit);
+        // Killed at the first sample past the limit, or, with no systemd scope on Linux, stopped
+        // sooner by the address-space cap: never the gigabytes the file decodes to.
+        if (run.stopped === undefined) assert.isBelow(run.peakKib, limit);
+        else assert.strictEqual(run.stopped, "memory");
         assert.isBelow(run.peakKib, limit * 2);
       }),
   );

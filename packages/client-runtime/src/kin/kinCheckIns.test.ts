@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import type { KinCheckIn } from "@t3tools/contracts";
+import type { KinBrief, KinCheckIn } from "@t3tools/contracts";
 
 import {
   kinBriefLine,
   kinBriefProblem,
   kinBriefSave,
+  kinBriefTitle,
+  kinBriefTurnsOff,
   kinCheckInDays,
   kinCheckInsBeyondBriefs,
 } from "./kinCheckIns.ts";
@@ -35,6 +37,19 @@ describe("a brief", () => {
     expect(
       kinBriefLine({ ...morning, kind: "evening", at: "18:30", days: [1, 2, 3, 4, 5], on: false }),
     ).toBe("Off · Around 18:30 · Weekdays");
+    const page = { ...morning, at: "08:00", days: [1, 2, 3, 4, 5], around: false, page: true };
+    expect(kinBriefLine({ ...page, on: false })).toBe("Off · 08:00 · Weekdays");
+    expect([kinBriefTitle(morning), kinBriefTitle(page)]).toEqual([
+      "Morning brief",
+      "Morning page",
+    ]);
+    // The owner's morning brief always comes; a teammate's own page can be off.
+    const kinds: ReadonlyArray<Pick<KinBrief, "kind" | "page">> = [
+      morning,
+      { kind: "evening" },
+      page,
+    ];
+    expect(kinds.map((one) => kinBriefTurnsOff(one))).toEqual([false, true, true]);
   });
   it.each([
     [{ at: "07:45", days: [1] }, null],
@@ -64,5 +79,7 @@ describe("kinCheckInsBeyondBriefs", () => {
       ),
     ).toEqual(["checkin-weekly", "sched-1"]);
     expect(kinCheckInsBeyondBriefs(company, [])).toEqual(company);
+    // Kin's own page is not the company's morning check-in.
+    expect(kinCheckInsBeyondBriefs(company, [{ kind: "morning", page: true }])).toEqual(company);
   });
 });

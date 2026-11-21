@@ -37,11 +37,8 @@ function deriveEmptyState(
 
   if (!catalogState.hasConnections) {
     return {
-      // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-      title: "Get started",
-      detail:
-        // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-        "Joining a team? Use the link they sent you. Running your own Kin? Connect the computer it runs on.",
+      title: resolve(msg("No environments connected")),
+      detail: resolve(msg("Add an environment to load projects and start coding sessions.")),
       loading: false,
     };
   }

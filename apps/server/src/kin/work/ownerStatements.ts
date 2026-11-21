@@ -273,7 +273,7 @@ export const standingOf = Effect.fn("KinStatements.standing")(function* (
   const groups = review === undefined ? [] : [...review.matches.values()];
   const count = (name: string) => groups.filter((one) => one.group === name).length;
   return reading !== undefined && isReading(stored)
-    ? `Waiting on its lead to read ${reading.total} pages (${reading.read} given so far).`
+    ? `Waiting on its agent to read ${reading.total} pages (${reading.read} given so far).`
     : stored.status === "needs_password"
       ? "Locked: its password card waits in the chat."
       : review === undefined

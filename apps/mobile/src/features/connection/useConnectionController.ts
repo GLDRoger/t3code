@@ -21,6 +21,7 @@ import {
 import { useWorkspaceEnvironments } from "../../state/workspace";
 import { relayEnvironmentDiscovery } from "../../state/relay";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { forgetKinHost } from "../chats/notifications/installKinNotifications";
 import { relayManagedEnvironmentIds } from "./environmentSections";
 
 export interface RelayEnvironmentView {
@@ -84,8 +85,9 @@ export function useConnectionController() {
         }),
       }),
     );
+  // Kin: the host stops this phone's alerts before the phone forgets it.
   const removeEnvironment = (environmentId: EnvironmentId) =>
-    removeEnvironmentMutation(environmentId);
+    forgetKinHost(environmentId, () => removeEnvironmentMutation(environmentId));
   const setEnvironmentEnabled = (environmentId: EnvironmentId, enabled: boolean) =>
     setEnvironmentEnabledMutation({ environmentId, enabled });
   const updateEnvironment = (

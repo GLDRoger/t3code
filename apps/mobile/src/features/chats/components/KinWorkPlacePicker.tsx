@@ -122,6 +122,7 @@ export function KinWorkPlacePicker(props: {
         icon={props.icon}
         label={props.label}
         detail={held?.title ?? none}
+        detailEllipsizeMode="tail"
         {...(held !== null && side?.value === "theirs"
           ? { description: KIN_WORK_NEW_COPY.sideTheirs }
           : {})}

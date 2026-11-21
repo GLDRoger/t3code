@@ -19,10 +19,15 @@ import * as ServerConfig from "../../../../config.ts";
 import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { hookAllows, kinSecretVariables } from "../../../claudeConfinement.testkit.ts";
 import * as DreamIsolation from "../../../dreaming/DreamIsolation.ts";
-import { builtinTools, claude } from "./claude.ts";
+import { builtinTools, claude, OWNER_SEAT_OFF } from "./claude.ts";
 import { kinInstructions } from "../session.ts";
 import { ownerOnlyWakeup, wakeupRun } from "../../Audience.testkit.ts";
-import { delegatedFromLead, leadNameOf, fullSessionRefusal } from "../../AgentSession.ts";
+import {
+  delegatedFromLead,
+  fullSessionRefusal,
+  leadNameOf,
+  webSearchRefusal,
+} from "../../AgentSession.ts";
 import { SESSION_REFUSAL } from "../../Audience.ts";
 import { KinAgentSessionPolicy } from "../../sessionPolicy.ts";
 import { KinServer, type Services as KinServices } from "../../../KinServer.ts";
@@ -137,10 +142,14 @@ it.effect.each([
         },
         // No settings file: user settings carry hooks, plugins and env a lead must not inherit.
         settingSources: [],
-        disallowedTools: [...(lead.disallowedTools ?? []), ...builtinTools],
+        // Every built-in but the provider's own web search, which the hook asks the turn about.
+        disallowedTools: [
+          ...(lead.disallowedTools ?? []),
+          ...builtinTools.filter((tool) => tool !== "WebSearch"),
+        ],
         strictMcpConfig: true,
         // Kin's tools load upfront; only those marked deferred wait for ToolSearch.
-        tools: ["ToolSearch"],
+        tools: ["ToolSearch", "WebSearch"],
         mcpServers: { kin: { type: "http", url: "http://127.0.0.1/kin", alwaysLoad: true } },
         // Only the owner's model credentials come from their settings.
         settings: {
@@ -201,11 +210,17 @@ it.effect.each([
       assert.isFalse((dreamOpened?.disallowedTools ?? []).includes("Edit"));
       assert.isDefined(leadOpened?.mcpServers?.kin);
       // A turn someone besides the owner reads can't open the memory checkout it runs in.
-      assert.deepStrictEqual(sharedOpened?.tools, ["ToolSearch"]);
+      assert.deepStrictEqual(sharedOpened?.tools, ["ToolSearch", "WebSearch"]);
       assert.isTrue(
         yield* Effect.promise(() => hookAllows(sharedOpened, "ToolSearch", { query: "chart" })),
       );
-      for (const tool of builtinTools) assert.include(sharedOpened?.disallowedTools ?? [], tool);
+      for (const tool of builtinTools.filter((name) => name !== "WebSearch"))
+        assert.include(sharedOpened?.disallowedTools ?? [], tool);
+      // No Kin turn behind the session to mark: its web search is refused too.
+      assert.strictEqual(
+        yield* Effect.promise(() => hookDenial(sharedOpened, "WebSearch", { query: "tiles" })),
+        SESSION_REFUSAL.none,
+      );
       assert.isDefined(sharedOpened?.mcpServers?.kin);
     }).pipe(
       Effect.scoped,
@@ -236,6 +251,8 @@ it.effect(
         KinAgentSessionPolicy.of({
           refusal: (threadId) =>
             fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          webSearch: (threadId) =>
+            webSearchRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           delegated: (threadId) =>
             delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
@@ -287,9 +304,13 @@ it.effect(
           ),
         );
       const full = yield* open("kin:tech");
-      // Claude Code's own tools, no deny rules, the pinned gh first on PATH.
+      // Claude Code's own tools but those that wait on someone at the screen, the pinned gh first.
       assert.strictEqual(full?.tools, lead.tools);
-      assert.deepStrictEqual(full?.disallowedTools ?? [], lead.disallowedTools ?? []);
+      assert.deepStrictEqual(full?.disallowedTools, [
+        ...new Set([...(lead.disallowedTools ?? []), ...OWNER_SEAT_OFF]),
+      ]);
+      for (const kept of ["Bash", "Read", "Edit", "Write", "WebFetch", "Agent", "TaskStop"])
+        assert.notInclude(full?.disallowedTools ?? [], kept);
       // The signing gh first, then the pinned one; Claude Code's own PR footer and trailer off.
       const signing = `${stateDir}/kin/gh-sign`;
       assert.strictEqual(full?.env?.PATH, `${signing}:/kin-home/kin-tools/gh-pinned:/usr/bin`);
@@ -350,7 +371,21 @@ it.effect(
       assert.isFalse(yield* allows("Bash", shell));
       // A turn others read never gets the full session.
       const shared = yield* open("kin-shared:tech");
-      assert.deepStrictEqual(shared?.tools, ["ToolSearch"]);
+      assert.deepStrictEqual(shared?.tools, ["ToolSearch", "WebSearch"]);
+      // Its web search runs at Anthropic; the turn reads as outside-read before results arrive.
+      yield* sql`UPDATE kin_wakeups SET thread_id = 'kin-shared:tech' WHERE wakeup_id = 'wake-full'`;
+      const sharedAllows = (tool: string, input: unknown) =>
+        Effect.promise(() => hookAllows(shared, tool, input));
+      assert.isFalse(yield* sharedAllows("WebFetch", { url: "https://example.com" }));
+      assert.isFalse(yield* sharedAllows("Bash", shell));
+      assert.isTrue(yield* sharedAllows("WebSearch", { query: "tile distributors" }));
+      assert.deepStrictEqual(
+        yield* sql`SELECT source FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-full'`,
+        [{ source: "web search" }],
+      );
+      // A turn stopped because someone joined searches nothing more.
+      yield* sql`UPDATE kin_wakeups SET aborted_at = 1 WHERE wakeup_id = 'wake-full'`;
+      assert.isFalse(yield* sharedAllows("WebSearch", { query: "tile distributors" }));
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -436,6 +471,8 @@ it.effect(
         KinAgentSessionPolicy.of({
           refusal: (threadId) =>
             fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          webSearch: (threadId) =>
+            webSearchRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           delegated: (threadId) =>
             delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           toolDirectories: ["/kin-home/kin-tools/gh-pinned"],

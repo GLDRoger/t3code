@@ -26,6 +26,7 @@ type TurnRow = Omit<Row, "seq"> & {
   readonly agentId: string | null;
   readonly namesJson: string | null;
   readonly filedUnder: string | null;
+  readonly partyKey: string | null;
 };
 
 const decodeNames = Schema.decodeUnknownOption(
@@ -153,7 +154,11 @@ export const turnChanges = Effect.fn("KinAgentChanges.turn")(function* (
           WHERE json_extract(f.value, '$.field') IN ('owner', 'waitingOn')
             AND json_extract(f.value, '$.to') IS NOT NULL) AS "namesJson",
         (SELECT r.key FROM kin_records r WHERE r.org_id = c.org_id AND r.key = ${toOf("project")}
-          AND ${seenBy(sql, viewer)}) AS "filedUnder"
+          AND ${seenBy(sql, viewer)}) AS "filedUnder",
+        (SELECT r.key FROM kin_records r WHERE r.org_id = c.org_id AND r.register_id = 'clients'
+          AND r.record_id = (SELECT x.party_id FROM kin_records x WHERE x.org_id = c.org_id
+            AND x.record_id = c.record_id AND x.register_id = 'contacts')
+          AND ${seenBy(sql, viewer)}) AS "partyKey"
       FROM picked p
       LEFT JOIN kin_record_changes c ON c.org_id = ${orgId} AND c.seq = p.seq
       LEFT JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
@@ -176,6 +181,7 @@ export const turnChanges = Effect.fn("KinAgentChanges.turn")(function* (
       const item: KinTurnChange = {
         key: made.key,
         kind: kindOf(made.registerId),
+        ...(row.partyKey === null ? {} : { party: row.partyKey }),
         title: made.title,
         what: whatOf(
           made,

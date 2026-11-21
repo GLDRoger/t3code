@@ -10,7 +10,9 @@ import {
   kinDealQuoteChoices,
   kinDealStageName,
   kinDealStrip,
+  kinDealWithoutConcern,
   kinDealWhen,
+  kinDealChangeWhen,
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
 import { kinWorkAssignees, kinWorkDueText, kinWorkName } from "@t3tools/client-runtime/kin/kinWork";
@@ -391,6 +393,37 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
         </KinWorkSection>
       )}
 
+      {deal.concerns === undefined ? null : (
+        <KinWorkSection title={KIN_DEALS.concernsRaised}>
+          <ul className="flex flex-col gap-2 text-sm">
+            {deal.concerns.map((concern) => (
+              <li key={concern.label} className="flex items-start gap-2">
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <span className="text-foreground">{concern.label}</span>
+                  {concern.heard === undefined ? null : (
+                    <span className="text-xs text-muted-foreground">
+                      {KIN_DEALS.heard(concern.heard)}
+                    </span>
+                  )}
+                </div>
+                {!deal.can.edit ? null : (
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    disabled={busy}
+                    aria-label={KIN_DEALS.removeConcern(concern.label)}
+                    title={KIN_DEALS.removeConcern(concern.label)}
+                    onClick={() => void change(kinDealWithoutConcern(deal, concern.label))}
+                  >
+                    <XIcon />
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </KinWorkSection>
+      )}
+
       <KinWorkSection title={KIN_DEALS.details}>
         <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
           <dt className="text-muted-foreground">{KIN_DEALS.clientField}</dt>
@@ -436,7 +469,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
           {deal.state === "open" && next !== null ? (
             <>
               <dt className="text-muted-foreground">{KIN_DEALS.nextStep}</dt>
-              <dd>{deal.next?.title ?? KIN_DEALS.noNextStep}</dd>
+              <dd>{deal.next?.title ?? next.text}</dd>
             </>
           ) : null}
           {deal.source === undefined ? null : (
@@ -526,7 +559,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
                   {kinDealChangeText(change, names, now)}
                 </span>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  {kinWorkDueText({ dueAt: change.at, dueAllDay: false }, names, now)}
+                  {kinDealChangeWhen(change, now)}
                 </span>
               </li>
             ))}
