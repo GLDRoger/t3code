@@ -2059,6 +2059,28 @@ it.effect(
         party: "C-1",
         clientRequestId: "filed",
       });
+      // Into a project they are on but don't lead: refused as theirs not to do, never as gone;
+      // one they aren't on stays unknown to them.
+      const onIt = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented retainer they help on",
+        members: [me],
+        clientRequestId: "on-it",
+      });
+      const offIt = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented retainer of someone else's",
+        clientRequestId: "off-it",
+      });
+      const into = (project: string) =>
+        OwnerWork.update([mate], { orgId, key: task.key, rev: task.rev, project }).pipe(
+          Effect.flip,
+        );
+      assert.deepInclude(yield* into(onIt.key), {
+        reason: "not_allowed",
+        message: "Only the owner, a co-owner or that project's lead can put a task in it.",
+      });
+      assert.strictEqual((yield* into(offIt.key)).reason, "not_found");
       const refiled = yield* OwnerWork.update([mate], {
         orgId,
         key: task.key,
