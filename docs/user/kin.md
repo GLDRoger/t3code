@@ -289,6 +289,17 @@ address and ready-to-paste setup for common coding agents once; copy them before
 can hold three keys at a time, and each works for 30 days. If your coding agent's computer reaches
 Kin at a different address than the app you made the key in, use that address with the same ending.
 
+Each setup keeps the key in the coding agent's own settings, so it works in every session:
+
+- **Claude Code:** run the one line Kin shows in a terminal.
+- **Codex:** add the three lines Kin shows to the end of `~/.codex/config.toml`, then start a new
+  Codex session.
+- **Cursor:** add the block Kin shows to `~/.cursor/mcp.json`, beside any servers already there.
+
+To check it worked, ask your coding agent to list your Kin tasks; the key's row then says when it
+was last used. If you set Codex up before with a `bearer_token_env_var` line, remove that line from
+the `[mcp_servers.kin]` section and add the `http_headers` line Kin shows instead.
+
 Choose **Remove** beside a key to stop it; the coding agent loses access on its next call. The owner
 and co-owners can see and remove a teammate's keys on their profile, and removing someone's access
 ends all of their keys. Removing the device a key was made on ends that key too. A key made before

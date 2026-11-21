@@ -408,6 +408,7 @@ function KinTasksKeyGuide(props: {
               rows={Math.min(10, setup.text.split("\n").length + 1)}
             />
           ))}
+          <p className="text-sm text-muted-foreground">{KIN_TASKS_KEYS_COPY.check}</p>
           {props.onMake === null ? null : (
             <Button variant="outline" className="self-start" onClick={props.onMake}>
               {KIN_TASKS_KEYS_COPY.makeTitle}
