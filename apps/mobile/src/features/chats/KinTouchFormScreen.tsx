@@ -3,9 +3,11 @@ import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_CLIENTS,
+  KIN_SHORT_FORMS,
   KIN_TOUCH_KINDS,
   kinLocalDay,
   kinTouchAt,
+  kinShortFormFold,
   kinTouchNext,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
@@ -25,6 +27,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
 import { uuidv4 } from "../../lib/uuid";
+import { KinPageFold } from "./components/KinPageFold";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { KinWorkFrame, KinWorkTextField, useKinAskBeforeDiscard } from "./components/KinWorkPieces";
@@ -40,8 +43,9 @@ const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 const decodeKey = Schema.decodeUnknownOption(KinRecordKey);
 const DAY_MS = 24 * 60 * 60 * 1000;
+const FOLD = kinShortFormFold("touch");
 
-/** Log a call, meeting or email with a client by hand, today or a day before. */
+/** Log a call, meeting or email with a client by hand; when, and a next step, under More. */
 export function KinTouchFormScreen({ route }: StaticScreenProps<KinTouchFormParams>) {
   const navigation = useNavigation();
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
@@ -135,53 +139,55 @@ export function KinTouchFormScreen({ route }: StaticScreenProps<KinTouchFormPara
           onChangeText={setNote}
         />
       </ListSection>
-      <View className="gap-2">
-        <Text className="px-2 text-sm text-foreground-muted">{KIN_CLIENTS.touchWhen}</Text>
-        <View className="flex-row flex-wrap gap-2">
-          {["Today", "Yesterday", "2 days ago"].map((label, index) => (
-            <Chip
-              key={label}
-              label={label}
-              selected={daysAgo === index}
-              disabled={saving}
-              onPress={() => setDaysAgo(index)}
-            />
-          ))}
-        </View>
-      </View>
-      <ListSection>
-        <KinWorkTextField
-          label={KIN_CLIENTS.nextStepTitle}
-          value={nextTitle}
-          disabled={saving}
-          maxLength={280}
-          placeholder={KIN_CLIENTS.nextStepPlaceholder}
-          onChangeText={setNextTitle}
-        />
-      </ListSection>
-      {nextTitle.trim() === "" ? null : (
+      <KinPageFold title={KIN_SHORT_FORMS.more} summary={FOLD.moreLine}>
         <View className="gap-2">
-          <Text className="px-2 text-sm text-foreground-muted">{KIN_CLIENTS.nextStepWhen}</Text>
+          <Text className="px-2 text-sm text-foreground-muted">{KIN_CLIENTS.touchWhen}</Text>
           <View className="flex-row flex-wrap gap-2">
-            <Chip
-              label={KIN_WORK_NEW_COPY.noDue}
-              selected={nextDay === ""}
-              disabled={saving}
-              onPress={() => setNextDay("")}
-            />
-            {kinWorkDueChoices(opened).map((choice) => (
+            {["Today", "Yesterday", "2 days ago"].map((label, index) => (
               <Chip
-                key={choice.day}
-                label={choice.label}
-                accessibilityLabel={`${choice.label}, ${kinWorkDueLabel(choice.day, opened)}`}
-                selected={nextDay === choice.day}
+                key={label}
+                label={label}
+                selected={daysAgo === index}
                 disabled={saving}
-                onPress={() => setNextDay(choice.day)}
+                onPress={() => setDaysAgo(index)}
               />
             ))}
           </View>
         </View>
-      )}
+        <ListSection>
+          <KinWorkTextField
+            label={KIN_CLIENTS.nextStepTitle}
+            value={nextTitle}
+            disabled={saving}
+            maxLength={280}
+            placeholder={KIN_CLIENTS.nextStepPlaceholder}
+            onChangeText={setNextTitle}
+          />
+        </ListSection>
+        {nextTitle.trim() === "" ? null : (
+          <View className="gap-2">
+            <Text className="px-2 text-sm text-foreground-muted">{KIN_CLIENTS.nextStepWhen}</Text>
+            <View className="flex-row flex-wrap gap-2">
+              <Chip
+                label={KIN_WORK_NEW_COPY.noDue}
+                selected={nextDay === ""}
+                disabled={saving}
+                onPress={() => setNextDay("")}
+              />
+              {kinWorkDueChoices(opened).map((choice) => (
+                <Chip
+                  key={choice.day}
+                  label={choice.label}
+                  accessibilityLabel={`${choice.label}, ${kinWorkDueLabel(choice.day, opened)}`}
+                  selected={nextDay === choice.day}
+                  disabled={saving}
+                  onPress={() => setNextDay(choice.day)}
+                />
+              ))}
+            </View>
+          </View>
+        )}
+      </KinPageFold>
     </KinWorkFrame>
   );
 }

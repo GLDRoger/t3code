@@ -17,6 +17,8 @@ import {
 import {
   kinProjectPeopleChoices,
   kinNewTaskChoices,
+  kinShortFormFold,
+  kinWorkDraftAnother,
   kinClientContactLine,
   kinClientPageView,
   kinClientsChosenAtom,
@@ -535,6 +537,58 @@ describe("kinProjectPeopleChoices", () => {
       ],
     });
     expect(choices.map((one) => one.name)).toEqual(["Arjun", "Dev", "Chief of staff"]);
+  });
+});
+
+describe("kinShortFormFold", () => {
+  it("asks the few first and folds the rest, in order, showing what the form opened holding", () => {
+    expect(kinShortFormFold("task")).toEqual({
+      first: ["title", "owner", "due"],
+      more: ["repeat", "client", "project", "notes"],
+      moreLine: "Repeats, client, project and notes",
+    });
+    // Opened from a client's page: the client it holds stays in sight; with no projects, none.
+    expect(kinShortFormFold("task", { held: ["client"], absent: ["project"] })).toEqual({
+      first: ["title", "owner", "due", "client"],
+      more: ["repeat", "notes"],
+      moreLine: "Repeats and notes",
+    });
+    // A teammate's prospect: no kind to pick and no owner's fields.
+    expect(
+      kinShortFormFold("party", {
+        absent: ["kind", "terms", "address", "tax", "private"],
+      }),
+    ).toEqual({
+      first: ["name", "contact", "value"],
+      more: ["source", "tags", "role", "notes"],
+      moreLine: "Where they came from, tags, their role and notes",
+    });
+    // A vendor has no deal, so no amount.
+    expect(kinShortFormFold("party", { absent: ["value"] }).first).toEqual(["name", "contact"]);
+    expect(kinShortFormFold("deal")).toMatchObject({
+      first: ["client", "what", "value", "next"],
+      more: ["expected", "stage", "keeper", "source"],
+    });
+    expect(kinShortFormFold("touch", { held: ["when", "next"] })).toEqual({
+      first: ["kind", "note", "when", "next"],
+      more: [],
+      moreLine: null,
+    });
+  });
+
+  it("starts the next task with nothing typed and the same who, when and where", () => {
+    const party = { key: KinRecordKey.make("C-1"), title: "Invented Tidewater" };
+    const draft = {
+      title: "Invented: call back",
+      owner: { _tag: "person" as const, personId: KinPersonId.make("dev") },
+      due: "2026-11-27",
+      notes: "Invented note",
+      party,
+      project: null,
+      side: "ours" as const,
+      repeat: null,
+    };
+    expect(kinWorkDraftAnother(draft)).toEqual({ ...draft, title: "", notes: "" });
   });
 });
 
