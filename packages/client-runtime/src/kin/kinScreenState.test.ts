@@ -443,6 +443,28 @@ describe("kinWaitingBannerView", () => {
       "Waiting on you, 1 item: 1 decision",
     );
   });
+
+  it("names a mail ready to send and a draft sent up for what they are", () => {
+    const card = (kind: string) => ({ reason: "question", card: kind }) as never;
+    expect(kinWaitingBannerView([card("mail"), item("question"), card("draft")])).toEqual({
+      count: 3,
+      summary: "1 mail to send · 1 question · 1 more",
+      accessibilityLabel: "Waiting on you, 3 items: 1 mail to send, 1 question, and 1 more",
+    });
+  });
+
+  it("shows for a co-owner when only the owner's things wait, counting none as hers", () => {
+    const rhea = { name: "Rhea Rao", items: [item("question"), item("approval")] };
+    expect(kinWaitingBannerView([], [rhea])).toEqual({
+      count: 0,
+      summary: "2 waiting for Rhea Rao",
+      accessibilityLabel: "Waiting on you, nothing on you. 2 waiting for Rhea Rao",
+    });
+    expect(kinWaitingBannerView([item("question")], [rhea])?.summary).toBe(
+      "1 question · 2 waiting for Rhea Rao",
+    );
+    expect(kinWaitingBannerView([], [{ name: "Rhea Rao", items: [] }])).toBeNull();
+  });
 });
 
 describe("formatKinTime", () => {
@@ -540,7 +562,27 @@ describe("kinWaitingRowView", () => {
       label: "Question",
       chatTitle: "Atlas",
       text: "Merge #212 now?",
+      excerpt: null,
+      waitsFor: null,
       createdAt: "2026-11-08T09:30:00.000Z",
+    });
+  });
+
+  it("says whom someone else's row waits for, and shows a draft's first lines", () => {
+    const theirs = {
+      ...(item(null, "chat-rhea") as object),
+      card: "draft",
+      question: "Approve the workshop proposal?",
+      excerpt: "Workshop proposal\nSix hours on site",
+      ask: { agent: "Chief of staff" },
+      waitsFor: { personId: "rhea", name: "Rhea Rao" },
+    } as never;
+    expect(kinWaitingRowView(theirs, chats, agentNames)).toMatchObject({
+      label: "Draft to approve",
+      chatTitle: "Chief of staff",
+      text: "Approve the workshop proposal?",
+      excerpt: "Workshop proposal\nSix hours on site",
+      waitsFor: "Waits for Rhea Rao",
     });
   });
 

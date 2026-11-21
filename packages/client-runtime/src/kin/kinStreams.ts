@@ -270,7 +270,11 @@ export function kinInboxStream(input: KinChatsSubscribeInput) {
       > = Stream.merge(
         resubscribeWhenKinReturns(
           retryWhileKinUnavailable(
-            subscribe(KIN_CHAT_WS_METHODS.chatsSubscribe, { ...input, acceptPreview: true }),
+            subscribe(KIN_CHAT_WS_METHODS.chatsSubscribe, {
+              ...input,
+              acceptPreview: true,
+              acceptWaitsFor: true,
+            }),
           ),
           Stream.empty,
           Stream.empty,

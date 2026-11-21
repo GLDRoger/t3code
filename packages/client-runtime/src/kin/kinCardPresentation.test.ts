@@ -26,7 +26,10 @@ import {
   kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
+  kinChoiceDecidedLine,
   kinChoiceUndoneLine,
+  createKinHeldPress,
+  kinMailCancels,
   kinQuotedInZone,
   kinAddressPieces,
   kinSendEditFailure,
@@ -358,8 +361,13 @@ describe("choice cards", () => {
       },
     });
     expect(acts.options).toEqual([
-      { id: "option-1", label: "Mark W-4 done", action: "Mark W-4 “Ship the API” done" },
-      { id: "option-2", label: "Wait", action: null },
+      {
+        id: "option-1",
+        label: "Mark W-4 done",
+        action: "Mark W-4 “Ship the API” done",
+        kind: null,
+      },
+      { id: "option-2", label: "Wait", action: null, kind: null },
     ]);
     expect(acts.detail).toBe("Dev says it is live.");
     expect(open.askedBy).toBeNull();
@@ -412,6 +420,16 @@ describe("choice cards", () => {
       "expired",
       "Replaced by a newer one.",
     ]);
+    // Once the newer card is answered, the one it replaced says who chose what on it.
+    const told = choice({
+      closedAt: "2026-11-08T10:00:00.000Z",
+      state: {
+        ...choiceState(),
+        replaced: true,
+        replacedBy: { widgetId: "choice:newer", decided: { name: "Meera Shah", label: "Cancel" } },
+      },
+    });
+    expect(told.closedText).toBe("Replaced by a newer one, where Meera Shah chose “Cancel”.");
     // An agent's open question takes taps until the host closes it, then says what became of it.
     const asked = choice({ state: { ...choiceState(), untilAnswered: true } });
     expect(kinChoicePhase(asked, posted + 30 * 24 * 60 * 60 * 1000)).toBe("open");
@@ -497,6 +515,24 @@ describe("choice cards", () => {
     }
     const sent = { ...tapped, send: { outcome: { tone: "ok", text: "Sent" } } } as never;
     expect(kinChoiceAnswered(sent, "owner" as never, null)).toEqual({ text: null });
+    // Who decided, under the card: by name to others, nothing more to the one who chose.
+    const decided = choice({
+      revision: 2,
+      state: {
+        ...choiceState({
+          optionId: "option-2",
+          personId: "rhea",
+          via: "tap",
+          emoji: null,
+          answeredAt: "2026-11-08T09:05:00.000Z",
+        }),
+        decidedBy: { personId: "rhea", name: "Rhea Rao" },
+      },
+    });
+    expect(kinChoiceDecidedLine(decided, "meera" as never)).toBe("Rhea Rao chose “Wait”.");
+    expect(kinChoiceDecidedLine(decided, "rhea" as never)).toBeNull();
+    expect(kinChoiceDecidedLine(tapped, "meera" as never)).toBeNull();
+    expect(kinChoiceDecidedLine({ ...decided, answer: null }, "meera" as never)).toBeNull();
   });
 
   it("says what an answered card of Kin's own did, in a past-tense title, not the button", () => {
@@ -564,6 +600,34 @@ describe("choice cards", () => {
         },
       });
     const open = mail({});
+    // Cancel on a mail asks first and waits for Undo; Confirm, and other cards' answers, don't.
+    expect([kinMailCancels(open, "option-2"), kinMailCancels(open, "option-1")]).toEqual([
+      true,
+      false,
+    ]);
+    expect(kinMailCancels(choice(), "option-2")).toBe(false);
+    // Settled, it says who sent it, or who chose not to, to everyone, the chooser too.
+    const by = (optionId: string) =>
+      mail(
+        {},
+        {
+          optionId,
+          personId: "meera",
+          via: "tap",
+          emoji: null,
+          answeredAt: "2026-11-08T09:05:00.000Z",
+        },
+      );
+    const withDecider = (view: ReturnType<typeof by>) => ({
+      ...view,
+      decidedBy: { personId: "meera" as never, name: "Meera Shah" },
+    });
+    expect(kinChoiceDecidedLine(withDecider(by("option-1")), "rhea" as never)).toBe(
+      "Meera Shah sent it.",
+    );
+    expect(kinChoiceDecidedLine(withDecider(by("option-2")), "meera" as never)).toBe(
+      "You chose not to send it.",
+    );
     expect(open.send?.edit).toEqual({
       to: "anita@orbitdental.example, dev@orbitdental.example",
       cc: "",
@@ -1302,5 +1366,49 @@ describe("memory change card", () => {
         }),
       ),
     ).toBe("This changed again since, so it wasn't undone.");
+  });
+});
+
+describe("a held press", () => {
+  // Timers the test runs by hand: what is set, and what is still waiting.
+  const timers = () => {
+    const set = new Map<number, () => void>();
+    let next = 0;
+    return {
+      set: (run: () => void, _ms: number) => {
+        next += 1;
+        set.set(next, run);
+        return next;
+      },
+      clear: (handle: number) => void set.delete(handle),
+      elapse: () => [...set.values()].forEach((run) => run()),
+      size: () => set.size,
+    };
+  };
+
+  it("sends once when its time runs out, never after Undo, and at once when flushed", () => {
+    const sent: Array<string> = [];
+    const clock = timers();
+    const press = createKinHeldPress({
+      delayMs: 5_000,
+      send: () => sent.push("cancel"),
+      timers: clock,
+    });
+    press.hold();
+    press.hold();
+    expect([press.waiting(), clock.size()]).toEqual([true, 1]);
+    press.undo();
+    clock.elapse();
+    expect([sent, press.waiting()]).toEqual([[], false]);
+    press.hold();
+    clock.elapse();
+    clock.elapse();
+    expect(sent).toEqual(["cancel"]);
+    // Leaving the screen sends a waiting press now, and only once.
+    press.hold();
+    press.flush();
+    press.flush();
+    clock.elapse();
+    expect([sent, clock.size()]).toEqual([["cancel", "cancel"], 0]);
   });
 });
