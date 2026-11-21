@@ -1477,23 +1477,29 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("K196 gives open invites no chosen places, keeps them, and runs again safely", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* runKinMigrations();
-      yield* sql`ALTER TABLE kin_people_invites DROP COLUMN sees_json`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
-      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
-      yield* sql`INSERT INTO kin_people_invites (invite_id, org_id, person_id, display_name, handle,
+  it.effect(
+    "K196 gives open invites no chosen places, keeps a choice and its chooser, and reruns",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        for (const column of ["sees_json", "sees_by_person_id"])
+          yield* sql`ALTER TABLE kin_people_invites DROP COLUMN ${sql.literal(column)}`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+        yield* sql`INSERT INTO kin_people_invites (invite_id, org_id, person_id, display_name, handle,
           secret_hash, created_at, expires_at)
         VALUES ('invite', 'org', NULL, 'Zoya', 'zoya', 'hash', 1, 2)`;
-      const invites = sql`SELECT invite_id AS "inviteId", sees_json AS sees FROM kin_people_invites`;
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
-      assert.deepStrictEqual(yield* invites, [{ inviteId: "invite", sees: null }]);
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
-      assert.deepStrictEqual(yield* invites, [{ inviteId: "invite", sees: null }]);
-    }).pipe(Effect.provide(layer)),
+        const invites = sql`SELECT invite_id AS "inviteId", sees_json AS sees,
+        sees_by_person_id AS by FROM kin_people_invites`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
+        assert.deepStrictEqual(yield* invites, [{ inviteId: "invite", sees: null, by: null }]);
+        const sees = JSON.stringify({ clients: false, docs: true, money: true });
+        yield* sql`UPDATE kin_people_invites SET sees_json = ${sees}, sees_by_person_id = 'meera'`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
+        assert.deepStrictEqual(yield* invites, [{ inviteId: "invite", sees, by: "meera" }]);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("K185 runs after K184 and only once, with K186 behind it", () =>

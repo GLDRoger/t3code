@@ -2534,3 +2534,128 @@ it.effect(
       );
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect(
+  "an invite's places hold only while whoever chose them is owner-level when the person joins",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* People.KinPeople;
+      const identity = yield* KinIdentity;
+      const sessions = yield* SessionStore;
+      const sql = yield* SqlClient.SqlClient;
+      const orgId = identity.owner.orgId;
+      yield* pairSession(ownerSession.sessionId);
+      const chosen = { clients: false, docs: true, money: true };
+      const usual = { clients: true, docs: true, money: false };
+      const joined = Effect.fn("test.joined")(function* (secret: string) {
+        const accepted = yield* service.accept({ secret });
+        const session = yield* sessions.verify(accepted.accessToken);
+        const me = yield* service.accessMe(session, { orgId });
+        return { ...accepted, personId: accepted.person.personId, session, places: me.places };
+      });
+      const coOwner = Effect.fn("test.coOwner")(function* (displayName: string) {
+        const one = yield* joined(
+          (yield* service.createInvite(ownerSession, { orgId, displayName })).secret,
+        );
+        yield* service.setAccess(ownerSession, {
+          orgId,
+          personId: one.personId,
+          access: "co_owner",
+        });
+        return one;
+      });
+      const chooser = (inviteId: string) =>
+        sql<{ by: string | null }>`SELECT sees_by_person_id AS by FROM kin_people_invites
+          WHERE invite_id = ${inviteId}`.pipe(Effect.map((rows) => rows[0]?.by));
+      const meera = yield* coOwner("Meera");
+      const kiran = yield* coOwner("Kiran");
+      const nia = yield* coOwner("Nia");
+
+      // Still a co-owner when they join: the places land, and who chose them is kept.
+      const asha = yield* service.createInvite(meera.session, {
+        orgId,
+        displayName: "Asha",
+        sees: chosen,
+      });
+      assert.strictEqual(yield* chooser(asha.inviteId), meera.personId);
+      assert.deepStrictEqual((yield* joined(asha.secret)).places, chosen);
+
+      // Made a member before the join: the link works, with the usual places.
+      const bo = yield* service.createInvite(meera.session, {
+        orgId,
+        displayName: "Bo",
+        sees: chosen,
+      });
+      const dev = yield* service.createInvite(meera.session, {
+        orgId,
+        displayName: "Dev",
+        newPerson: true,
+        sees: chosen,
+      });
+      yield* service.setAccess(ownerSession, { orgId, personId: meera.personId, access: "member" });
+      assert.deepStrictEqual((yield* joined(bo.secret)).places, usual);
+
+      // The owner makes the demoted co-owner's link again: the owner's say-so, so the places land.
+      const remade = yield* service.createInvite(ownerSession, {
+        orgId,
+        displayName: "Dev",
+        newPerson: true,
+        sees: chosen,
+      });
+      assert.strictEqual(remade.inviteId, dev.inviteId);
+      assert.strictEqual(yield* chooser(dev.inviteId), identity.owner.personId);
+      assert.deepStrictEqual((yield* joined(remade.secret)).places, chosen);
+
+      // Removed before the join: the usual places.
+      const eli = yield* service.createInvite(kiran.session, {
+        orgId,
+        displayName: "Eli",
+        sees: chosen,
+      });
+      yield* service.removeAccess(ownerSession, { orgId, personId: kiran.personId });
+      assert.deepStrictEqual((yield* joined(eli.secret)).places, usual);
+
+      // Signed out of the device that made it, still a co-owner: the link is not tied to it.
+      const fay = yield* service.createInvite(nia.session, {
+        orgId,
+        displayName: "Fay",
+        sees: chosen,
+      });
+      yield* service.revokeDevice(ownerSession, {
+        orgId,
+        personId: nia.personId,
+        sessionId: nia.sessionId,
+      });
+      assert.isTrue(
+        (yield* sessions.verify(nia.accessToken).pipe(Effect.result))._tag === "Failure",
+      );
+      assert.strictEqual(yield* chooser(fay.inviteId), nia.personId);
+      assert.deepStrictEqual((yield* joined(fay.secret)).places, chosen);
+
+      // A stored choice with anything but the three switches, or with nobody behind it: the usual.
+      const gus = yield* service.createInvite(ownerSession, {
+        orgId,
+        displayName: "Gus",
+        sees: chosen,
+      });
+      yield* sql`UPDATE kin_people_invites SET sees_json = ${JSON.stringify({ ...chosen, all: true })}
+        WHERE invite_id = ${gus.inviteId}`;
+      assert.deepStrictEqual((yield* joined(gus.secret)).places, usual);
+      const hal = yield* service.createInvite(ownerSession, {
+        orgId,
+        displayName: "Hal",
+        sees: chosen,
+      });
+      yield* sql`UPDATE kin_people_invites SET sees_by_person_id = NULL
+        WHERE invite_id = ${hal.inviteId}`;
+      assert.deepStrictEqual((yield* joined(hal.secret)).places, usual);
+      // A row from before places, both columns null: the usual, as it always was.
+      const ida = yield* service.createInvite(ownerSession, { orgId, displayName: "Ida" });
+      assert.deepStrictEqual(
+        yield* sql`SELECT sees_json AS sees, sees_by_person_id AS by FROM kin_people_invites
+          WHERE invite_id = ${ida.inviteId}`,
+        [{ sees: null, by: null }],
+      );
+      assert.deepStrictEqual((yield* joined(ida.secret)).places, usual);
+    }).pipe(Effect.provide(layer)),
+);
