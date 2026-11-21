@@ -278,18 +278,18 @@ describe("the clients list's Show and Looked after by", () => {
 });
 
 describe("Mine / Everyone", () => {
-  it("opens on Mine when Mine has something, else on Everyone, whatever was left last", () => {
+  it("opens on the side last chosen; unchosen, on Mine when Mine has something, else Everyone", () => {
     // A brand-new teammate: nothing of theirs, a full company.
     expect(kinMineOpens(null, { n: 0 })).toBe("everyone");
-    expect(kinMineOpens("mine", { n: 0 })).toBe("everyone");
     expect(kinMineOpens(null, { n: 3 })).toBe("mine");
+    // A side the person chose holds, an empty Mine included, without waiting for a count.
+    expect(kinMineOpens("mine", { n: 0 })).toBe("mine");
     expect(kinMineOpens("mine", { n: 3 })).toBe("mine");
-    // Everyone left last stays, without waiting for Mine's count.
+    expect(kinMineOpens("mine", null)).toBe("mine");
     expect(kinMineOpens("everyone", null)).toBe("everyone");
     expect(kinMineOpens("everyone", { n: 3 })).toBe("everyone");
     // Nothing is shown on a guess while Mine's count is unread.
     expect(kinMineOpens(null, null)).toBeNull();
-    expect(kinMineOpens("mine", null)).toBeNull();
   });
 
   it("puts each side's count beside it once read, so nothing reads as gone", () => {

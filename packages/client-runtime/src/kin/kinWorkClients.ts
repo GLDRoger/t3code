@@ -517,14 +517,15 @@ export const kinMineOwner = (me: KinPersonId | null): KinWorkPrincipal | null =>
   me === null ? null : { _tag: "person", personId: me };
 
 /**
- * The side a list opens on: Everyone when that was left last, or when Mine has nothing (so nobody
- * opens on an empty Mine above a full company); else Mine. Null while Mine's count is unread.
+ * The side a list opens on: the side the person last chose, even an empty Mine. Unchosen, Everyone
+ * when Mine has nothing (so nobody lands on an empty Mine above a full company), else Mine; null
+ * while Mine's count is unread.
  */
 export function kinMineOpens(
   remembered: KinMineSide | null,
   mine: KinMineCount | null,
 ): KinMineSide | null {
-  if (remembered === "everyone") return "everyone";
+  if (remembered !== null) return remembered;
   if (mine === null) return null;
   return mine.n > 0 ? "mine" : "everyone";
 }
