@@ -345,27 +345,25 @@ export function KinConnectionPage(props: {
             }
           />
         ) : null}
-        {mail ? null : (
-          <KinSettingsRow
-            title={COPY.reachTitle}
-            detail={COPY.reachShort}
-            control={
-              <Switch
-                aria-label={COPY.reachTitle}
-                checked={connection.reach === "closed"}
-                disabled={save.busy !== null}
-                onCheckedChange={(checked) =>
-                  void run("account", "reach", "change that", () =>
-                    setReach({
-                      environmentId,
-                      input: { ...ref, reach: checked ? "closed" : "open" },
-                    }),
-                  )
-                }
-              />
-            }
-          />
-        )}
+        <KinSettingsRow
+          title={COPY.reachTitle}
+          detail={COPY.reachShort}
+          control={
+            <Switch
+              aria-label={COPY.reachTitle}
+              checked={connection.reach === "closed"}
+              disabled={save.busy !== null}
+              onCheckedChange={(checked) =>
+                void run("account", "reach", "change that", () =>
+                  setReach({
+                    environmentId,
+                    input: { ...ref, reach: checked ? "closed" : "open" },
+                  }),
+                )
+              }
+            />
+          }
+        />
       </KinSettingsSection>
 
       <KinSettingsSection
