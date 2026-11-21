@@ -15,6 +15,7 @@ import {
   kinCompanyGlance,
   kinCompanyInput,
   kinCompanyRead,
+  kinCountryName,
 } from "./kinCompanyProfile.ts";
 import { kinDatesMonth, kinMonthWindow, kinZonedDayStart } from "./kinDates.ts";
 import {
@@ -398,6 +399,8 @@ describe("company details", () => {
     ).toEqual({ ok: true, input: { orgId: "org", rev: 0, address: "1 Invented Road" } });
     const offer = kinCompanyCountrySuggestion(fresh, "IN", true);
     expect(offer?.label).toBe("Use India?");
+    // Settings reads the country by its name, and keeps a code no device can name.
+    expect([kinCountryName("GB"), kinCountryName("QQ")]).toEqual(["United Kingdom", "QQ"]);
     expect(kinCompanyInput("org" as never, waiting, offer!.accept())).toEqual({
       ok: true,
       input: { orgId: "org", rev: 0, country: "IN" },

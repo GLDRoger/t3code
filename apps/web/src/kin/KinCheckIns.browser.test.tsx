@@ -4,7 +4,7 @@ import { page, userEvent } from "vite-plus/test/browser";
 
 import "~/index.css";
 import { render } from "../../test/render";
-import { CheckInSheet } from "./KinCheckIns";
+import { CheckInDialog } from "./KinCheckIns";
 
 const checkIn = (slug: string, over: Partial<KinCheckIn> = {}): KinCheckIn => ({
   scheduleId: KinMemoryItemId.make(`checkin-${slug}`),
@@ -24,11 +24,11 @@ const result = {
   agents: [{ agentId: KinAgentId.make("agent-chief"), name: "Chief of staff" }],
 };
 const sheet = (one: KinCheckIn, onPipeline: (id: string, on: boolean) => Promise<boolean>) => (
-  <CheckInSheet
-    inDialog
+  <CheckInDialog
     checkIn={one}
     result={result}
     onSave={async () => true}
+    onRunNow={async () => true}
     onRemove={async () => true}
     onPipeline={onPipeline}
     onClose={() => {}}
@@ -36,7 +36,7 @@ const sheet = (one: KinCheckIn, onPipeline: (id: string, on: boolean) => Promise
 );
 
 describe("the weekly brief's sheet", () => {
-  it("has the pipeline switch below Days, off until turned on, and off again", async () => {
+  it("has the pipeline switch, saved with the rest on Save", async () => {
     const onPipeline = vi.fn(async () => true);
     // router: false: the sheet is a dialog with no links of its own.
     await using _screen = await render(sheet(checkIn("weekly", { numbers: [] }), onPipeline), {
@@ -53,10 +53,11 @@ describe("the weekly brief's sheet", () => {
       .toBeVisible();
     await userEvent.click(toggle);
     await expect.element(toggle).toBeChecked();
-    expect(onPipeline).toHaveBeenLastCalledWith("checkin-weekly", true);
-    await userEvent.click(toggle);
-    await expect.element(toggle).not.toBeChecked();
-    expect(onPipeline).toHaveBeenLastCalledWith("checkin-weekly", false);
+    expect(onPipeline).not.toHaveBeenCalled();
+    await userEvent.click(page.getByRole("button", { name: "Save check-in" }));
+    await vi.waitFor(() =>
+      expect(onPipeline).toHaveBeenCalledExactlyOnceWith("checkin-weekly", true),
+    );
   });
 
   it("is on no other check-in's sheet", async () => {

@@ -151,7 +151,14 @@ export interface KinTeammate {
   readonly removed: boolean;
   /** Removed, the level a new link brings them back at, as only the owner reads it. */
   readonly backAs: KinPeopleSetAccessInput["access"] | null;
+  /** The Team list's one secondary line: their roles and kind ("design · Co-owner"); "" when none. */
+  readonly line: string;
+  /** Said on the Team list only when they can't be reached as usual; null when all is well. */
+  readonly status: KinTeammateStatus | null;
 }
+
+/** What the Team list says beside someone who isn't simply here: quiet words, never a badge. */
+export type KinTeammateStatus = "Away" | "Invited" | "No access";
 
 /** "3 open, 1 late", "2 open" or "Nothing open". */
 const kinLoadLine = (load: { readonly open: number; readonly late: number }) =>
@@ -228,6 +235,24 @@ const KIN_ACCESS_LABELS: Record<KinPersonAccess, string> = {
   member: "Member",
 };
 
+/** "design · Co-owner", "You", "Leads Atlas": who they are, never whether they joined. */
+const kinTeammateLine = (
+  roles: string,
+  state: KinTeammateState,
+  access: KinPersonAccess,
+  places: KinPersonPlaces | null,
+) => {
+  const kind =
+    state === "you"
+      ? "You"
+      : state === "owner"
+        ? KIN_ACCESS_LABELS.owner
+        : access === "co_owner"
+          ? KIN_ACCESS_LABELS.co_owner
+          : "";
+  return [roles, kind].filter((part) => part !== "").join(" · ") || kinLeadsLine(places);
+};
+
 /** Everyone on the team, joined or not, with the owner first. */
 export function kinTeamView(
   list: KinTeamList,
@@ -239,6 +264,11 @@ export function kinTeamView(
   const rows: Array<KinTeammate> = [];
   const roles = new Map(
     (list.profiles ?? []).map((profile) => [profile.personId, kinRoleLine(profile.roleTags)]),
+  );
+  const away = new Set(
+    (list.profiles ?? []).flatMap((profile) =>
+      profile.awayUntil === undefined ? [] : [profile.personId],
+    ),
   );
   const loads = new Map(
     (list.profiles ?? []).flatMap((profile) =>
@@ -266,6 +296,7 @@ export function kinTeamView(
         ? (list.places?.find((held) => held.personId === person.personId) ?? null)
         : null;
     const namesake = kinNamesakeHandle(list.people, person);
+    const roleLine = roles.get(person.personId) ?? "";
     rows.push({
       key: `person:${person.personId}`,
       name: person.displayName,
@@ -274,11 +305,22 @@ export function kinTeamView(
       inviteId: you || state === "owner" ? null : (invite?.inviteId ?? null),
       state,
       access,
-      roles: roles.get(person.personId) ?? "",
+      roles: roleLine,
       load: loads.get(person.personId) ?? "",
       places,
       removed: gone !== undefined,
       backAs,
+      line: [namesake ?? "", kinTeammateLine(roleLine, state, access, places)]
+        .filter((part) => part !== "")
+        .join(" · "),
+      status:
+        state === "no_access"
+          ? invite === undefined
+            ? "No access"
+            : "Invited"
+          : away.has(person.personId)
+            ? "Away"
+            : null,
       detail: `${namesake === null ? "" : `${namesake} · `}${
         state === "you"
           ? "You"
@@ -311,6 +353,8 @@ export function kinTeamView(
       places: null,
       removed: false,
       backAs: null,
+      line: "",
+      status: "Invited",
       detail: `Hasn't joined yet. The link works until ${formatKinInviteDay(invite.expiresAt)}.`,
     });
   }
@@ -791,5 +835,36 @@ export const KIN_TEAM_COPY = {
   canDoBack: "What they can do when they're back",
   canSee: "What they can see",
   sharedAlways: "Tasks shared with the team, always.",
+  /** Web's section line: the same, as a sentence. */
+  sharedAlwaysLine: "They always see Tasks shared with the team.",
   profileRow: "Their skills, how to talk to them, and their hours",
+} as const;
+
+/** Settings → Team, the page and its list, in the owner's words. */
+export const KIN_TEAM_PAGE = {
+  purpose: "The people in your company, and the agents everyone can talk to.",
+  talkTo: "Talk to",
+  people: "People",
+  teamAgentDetail: "The agent everyone on your team can chat with",
+  teamAgentRestricted: "Everyone can chat with it, except people you've restricted",
+  companyChatDetail: "One chat for the whole team; this agent answers when nobody is named",
+  suggested: (name: string) => `${name} (suggested)`,
+  /** The People section's line while nobody is restricted from messaging anyone. */
+  reachNone: "Everyone can message everyone. To restrict someone, open them.",
+  alone: "Only you so far. Add a teammate and Kin gives you a link to send them.",
+  loadFailed: "Couldn't load your team.",
+  open: (name: string) => `Open ${name}`,
+} as const;
+
+/** A teammate's own page inside Settings → Team. */
+export const KIN_TEAMMATE_PAGE = {
+  profile: "Profile",
+  openProfile: (name: string) => `Open ${name}'s profile`,
+  access: "Access",
+  link: "Invite link",
+  unopened: "Unopened link",
+  cancelDetail: "The link you gave them stops working.",
+  removeTitle: "Remove access",
+  removeDetail: "Signs them out everywhere. A new link brings them back.",
+  remove: "Remove",
 } as const;

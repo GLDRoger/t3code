@@ -35,6 +35,21 @@ export const KIN_BRAND = {
   badColor: "Use a colour like #1F4E79.",
 };
 
+/** Web Settings: the brand as rows, each opening one form. */
+export const KIN_BRAND_SETTINGS = {
+  detail: "How your invoices and receipts look.",
+  logoNone: "Send the image to an agent in a chat",
+  sendNew: "Send a new one",
+  colours: "Colours",
+  /** "#1F4E79 and #0F766E"; the template's own where none is set. */
+  coloursLine: (main: string | null, second: string | null) =>
+    main === null && second === null
+      ? KIN_BRAND.defaultFont
+      : [main, second].map((one) => one ?? "the template's own").join(" and "),
+  none: "None",
+  save: "Save brand",
+};
+
 export const KIN_BRAND_FONTS: ReadonlyArray<KinCompanyBrand["font"] & string> = KIN_RECIPE_FONTS;
 
 /** `#abc`, `abc` or `#AABBCC` as `#AABBCC`; `null` when empty; `undefined` when it isn't a colour. */

@@ -183,6 +183,9 @@ export const KIN_REACH_COPY = {
   allNone:
     "Nobody is restricted: everyone can message everyone. To restrict a pair, open a person above or an agent under Agents.",
   loadFailed: "Couldn't load who can message whom.",
+  agentsTitle: "Agents",
+  peopleTitle: "People",
+  openAgent: (agent: string) => `Open ${agent}'s page`,
 } as const;
 
 /** The Team page's line for the team agent: "everyone" only while nobody is restricted from it. */

@@ -25,9 +25,11 @@ import {
   kinGitHubGuardLine,
   kinGitHubInstantRow,
   kinGitHubRow,
+  kinGitHubRowDetail,
   kinGitHubSheet,
   kinGitHubWatchLine,
 } from "@t3tools/client-runtime/kin/kinGitHub";
+import type { KinConnectionTone } from "@t3tools/client-runtime/kin/kinConnections";
 import type {
   EnvironmentId,
   KinGitHubAppCreateStart,
@@ -38,9 +40,7 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useId, useState } from "react";
 
-import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
 import { Alert, AlertDescription } from "../components/ui/alert";
-import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import {
   Dialog,
@@ -57,27 +57,55 @@ import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { kinClient } from "./kinClient";
+import {
+  KinSettingsLoadFailed,
+  KinSettingsLoading,
+  KinSettingsPage,
+  KinSettingsRow,
+  KinSettingsSection,
+  KinSettingsStatus,
+} from "./settings/KinSettingsLayout";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 
-const TONE_BADGE = {
-  ok: "success",
-  attention: "warning",
-  error: "error",
-  muted: "outline",
-} as const;
+/** A state said only when it isn't fine: problems are badges, quiet states plain text. */
+function ToneStatus(props: { readonly tone: KinConnectionTone; readonly label: string }) {
+  if (props.tone === "ok") return null;
+  return (
+    <KinSettingsStatus tone={props.tone === "muted" ? "quiet" : props.tone}>
+      {props.label}
+    </KinSettingsStatus>
+  );
+}
 
 type Actions = ReturnType<typeof createKinGitHubActions>;
 
-/** Settings → Connections → GitHub, for the owner and co-owners only. */
+/**
+ * Settings → Connections → GitHub, for the owner and co-owners only: one row, which opens
+ * GitHub's own page (`onOpen`) once there is more to see than Connect.
+ */
 export function KinGitHubConnect(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
+  readonly onOpen?: () => void;
 }) {
   return useKinOwnerLevel(props.environmentId) ? <GitHubSection {...props} /> : null;
 }
 
-function GitHubSection(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
+/** GitHub's own page: your account, what Kin watches, who agents work as, and Disconnect last. */
+export function KinGitHubPage(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  return useKinOwnerLevel(props.environmentId) ? <GitHubSection {...props} page /> : null;
+}
+
+function GitHubSection(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly onOpen?: () => void;
+  readonly page?: boolean;
+}) {
   const { environmentId, orgId } = props;
   const statusAtom = kinClient.github({ environmentId, input: { orgId } });
   const result = useAtomValue(statusAtom);
@@ -97,75 +125,95 @@ function GitHubSection(props: { readonly environmentId: EnvironmentId; readonly 
   const [confirming, setConfirming] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const row = status === null ? null : kinGitHubRow(status);
+  const more = status !== null && (status.account !== null || status.agents !== undefined);
+  const connectLabel =
+    row === null || row.action === "disconnect"
+      ? null
+      : row.action === "reconnect"
+        ? COPY.reconnect
+        : row.action === "waiting"
+          ? COPY.enterCode
+          : COPY.connect;
+
+  const accountRow =
+    status === null || row === null ? (
+      AsyncResult.isFailure(result) ? (
+        <KinSettingsLoadFailed onRetry={reload}>{COPY.loadFailed}</KinSettingsLoadFailed>
+      ) : (
+        <KinSettingsLoading rows={1} />
+      )
+    ) : (
+      <KinSettingsRow
+        title={row.title}
+        detail={kinGitHubRowDetail(status)}
+        status={row.tone === "muted" ? null : <ToneStatus tone={row.tone} label={row.label} />}
+        control={
+          connectLabel === null ? null : (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => {
+                setProblem(null);
+                setSheet(true);
+              }}
+            >
+              {connectLabel}
+            </Button>
+          )
+        }
+        {...(props.page !== true && props.onOpen !== undefined && more
+          ? { onOpen: props.onOpen, openLabel: `${COPY.open}: ${COPY.title}` }
+          : {})}
+      />
+    );
 
   return (
     <>
-      <SettingsSection title={COPY.title}>
-        {status === null || row === null ? (
-          AsyncResult.isFailure(result) ? (
-            <div className="flex items-center justify-between gap-3 px-4 py-3">
-              <p className="text-sm text-destructive-foreground">{COPY.loadFailed}</p>
-              <Button size="xs" variant="outline" onClick={reload}>
-                {KIN_RETRY}
-              </Button>
-            </div>
-          ) : (
-            <p className="px-4 py-3 text-sm text-muted-foreground">Loading…</p>
-          )
-        ) : (
-          <SettingsRow
-            title={row.title}
-            description={row.detail}
-            status={<Badge variant={TONE_BADGE[row.tone]}>{row.label}</Badge>}
-            control={
-              <div className="flex gap-2">
-                {row.action === "reconnect" ? (
-                  <Button size="xs" variant="outline" onClick={() => setConfirming(true)}>
+      {props.page === true ? (
+        <KinSettingsPage purpose={COPY.purpose}>
+          <KinSettingsSection title={COPY.accountTitle} problem={problem}>
+            {accountRow}
+          </KinSettingsSection>
+          {status?.account != null &&
+          status.account.problem === null &&
+          status.watch !== undefined ? (
+            <KinSettingsSection title={WATCH.reposTitle}>
+              <WatchedRepos environmentId={environmentId} orgId={orgId} status={status} />
+            </KinSettingsSection>
+          ) : null}
+          {status?.agents === undefined ? null : (
+            <KinSettingsSection title={AGENTS.title}>
+              <AgentIdentity
+                environmentId={environmentId}
+                orgId={orgId}
+                status={status}
+                agents={status.agents}
+              />
+            </KinSettingsSection>
+          )}
+          {status?.account == null ? null : (
+            <KinSettingsSection title={COPY.disconnect}>
+              <KinSettingsRow
+                title={COPY.disconnectRow}
+                detail={COPY.disconnectRowDetail}
+                control={
+                  <Button
+                    size="sm"
+                    variant="destructive-outline"
+                    onClick={() => setConfirming(true)}
+                  >
                     {COPY.disconnect}
                   </Button>
-                ) : null}
-                <Button
-                  size="xs"
-                  variant="outline"
-                  onClick={() => {
-                    setProblem(null);
-                    if (row.action === "disconnect") setConfirming(true);
-                    else setSheet(true);
-                  }}
-                >
-                  {row.action === "disconnect"
-                    ? COPY.disconnect
-                    : row.action === "reconnect"
-                      ? COPY.reconnect
-                      : row.action === "waiting"
-                        ? COPY.enterCode
-                        : COPY.connect}
-                </Button>
-              </div>
-            }
-          />
-        )}
-        {status?.account != null &&
-        status.account.problem === null &&
-        status.watch !== undefined ? (
-          <WatchedRepos environmentId={environmentId} orgId={orgId} status={status} />
-        ) : null}
-        {status?.agents === undefined ? null : (
-          <AgentIdentity
-            environmentId={environmentId}
-            orgId={orgId}
-            status={status}
-            agents={status.agents}
-          />
-        )}
-        {problem === null ? null : (
-          <div className="px-4 pb-3">
-            <Alert variant="error">
-              <AlertDescription>{problem}</AlertDescription>
-            </Alert>
-          </div>
-        )}
-      </SettingsSection>
+                }
+              />
+            </KinSettingsSection>
+          )}
+        </KinSettingsPage>
+      ) : (
+        <KinSettingsSection title={COPY.title} problem={problem}>
+          {accountRow}
+        </KinSettingsSection>
+      )}
       {sheet ? (
         <ConnectDialog status={status} actions={actions} onClose={() => setSheet(false)} />
       ) : null}
@@ -205,10 +253,10 @@ function AgentIdentity(props: {
   const hint = kinGitHubAccountsHint(rows);
   const [picking, setPicking] = useState<string | null>(null);
   return (
-    <div className="flex flex-col gap-3 border-t px-4 py-3">
+    <div className="flex flex-col gap-3 px-4 py-3">
       <div className="flex flex-col gap-1">
-        <p className="text-sm font-medium">{view.headline}</p>
-        <p className="text-sm text-muted-foreground">{view.detail}</p>
+        <p className="text-pretty text-sm font-medium">{view.headline}</p>
+        <p className="text-pretty text-xs text-muted-foreground">{view.detail}</p>
       </div>
       <AppSetUp environmentId={props.environmentId} orgId={props.orgId} view={view} />
       {rows.length === 0 ? null : (
@@ -223,7 +271,7 @@ function AgentIdentity(props: {
                 <div className="flex min-w-0 flex-col gap-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="truncate text-sm font-medium">{row.account}</span>
-                    <Badge variant={TONE_BADGE[row.tone]}>{row.label}</Badge>
+                    <ToneStatus tone={row.tone} label={row.label} />
                   </div>
                   <p className="text-xs text-muted-foreground">{row.detail}</p>
                 </div>
@@ -317,7 +365,7 @@ export function KinGitHubInstantLine(props: {
         <div className="flex min-w-0 flex-col gap-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-sm font-medium">{row.title}</span>
-            <Badge variant={TONE_BADGE[row.tone]}>{row.label}</Badge>
+            <ToneStatus tone={row.tone} label={row.label} />
           </div>
           <p className="text-xs text-muted-foreground">{row.detail}</p>
         </div>
@@ -450,7 +498,8 @@ function AppSetUp(props: {
         <div className="flex flex-wrap gap-2">
           {view.canCreate ? (
             <Button
-              size="xs"
+              size="sm"
+              variant="outline"
               onClick={() => {
                 setCreating({ started: null, problem: null });
                 void actions
@@ -630,7 +679,9 @@ function AccountRepos(props: {
         </Button>
       </div>
     ) : (
-      <p className="text-sm text-muted-foreground sm:basis-full">Loading…</p>
+      <div className="sm:basis-full">
+        <KinSettingsLoading rows={2} />
+      </div>
     );
   const mine = kinGitHubAccountRepos(all, account, "");
   const shown = kinGitHubAccountRepos(all, account, query);
@@ -748,7 +799,7 @@ function WatchedRepos(props: {
   const watch = status.watch;
   if (watch === undefined) return null;
   return (
-    <div className="flex flex-col gap-2 border-t px-4 py-3">
+    <div className="flex flex-col gap-2 px-4 py-3">
       <p className="text-sm text-muted-foreground">{kinGitHubWatchLine(watch, now)}</p>
       {watch.problem === null ? null : (
         <Alert variant="warning">
@@ -893,7 +944,7 @@ function RepoList(props: {
         </Button>
       </div>
     ) : (
-      <p className="text-sm text-muted-foreground">Loading…</p>
+      <KinSettingsLoading rows={3} />
     );
   return (
     <div className="flex flex-col gap-2">
@@ -908,7 +959,9 @@ function RepoList(props: {
             <div className="flex min-w-0 flex-col">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="truncate text-sm">{repo.repo}</span>
-                {repo.fork ? <Badge variant="outline">{WATCH.fork}</Badge> : null}
+                {repo.fork ? (
+                  <KinSettingsStatus tone="quiet">{WATCH.fork}</KinSettingsStatus>
+                ) : null}
               </div>
               {repo.mentions || repo.agentsAs !== undefined || kinGitHubGuardLine(repo) !== null ? (
                 <span className="text-xs text-muted-foreground">
