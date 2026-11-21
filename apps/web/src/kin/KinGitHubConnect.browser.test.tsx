@@ -94,7 +94,7 @@ describe("connecting GitHub", () => {
   });
 
   it("shows the host's refusal and keeps the token as pasted", async () => {
-    setup("Only the owner can connect this account.");
+    setup("Only the owner can connect GitHub here.");
     await using _screen = await render(screen());
 
     await userEvent.click(page.getByRole("button", { name: "Connect" }));
@@ -103,7 +103,7 @@ describe("connecting GitHub", () => {
     await userEvent.type(token, "ghp_invented0000");
     await userEvent.click(page.getByRole("button", { name: "Connect with token" }));
 
-    await expect.element(page.getByText("Only the owner can connect this account.")).toBeVisible();
+    await expect.element(page.getByText("Only the owner can connect GitHub here.")).toBeVisible();
     await expect.element(token).toHaveValue("ghp_invented0000");
     const sent = host.starts[0]?.token;
     expect(Redacted.isRedacted(sent)).toBe(true);
