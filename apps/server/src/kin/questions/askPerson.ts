@@ -38,14 +38,14 @@ import { laneFor } from "../reply/replyLane.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
 import { personSees, unreadableBy } from "../work/teamView.ts";
 import {
-  askedBy,
   DRAFT_KINDS,
-  encodeHeldCard,
+  DRAFT_OPTIONS,
+  DRAFT_WORDS,
+  draftDetail,
   encodeStoredDraft,
-  openFor,
-  personClock,
-  readQuestion,
-} from "./openQuestions.ts";
+  type StoredDraft,
+} from "./approval.ts";
+import { askedBy, encodeHeldCard, openFor, personClock, readQuestion } from "./openQuestions.ts";
 import { defaultDue, namedDue, normaliseAbout, normaliseIntent, raiseAt } from "./rules.ts";
 
 /** What an agent asks someone outside the chat: `kin_ask`'s card, with no default or actions. */
@@ -182,6 +182,7 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
               WHERE org_id = ${orgId} AND person_id = ${asker}`)[0]?.name ?? null);
       // A sent-up draft is a teammate's, to the agent's owner only: his Approve has it made.
       let draft: string | null = null;
+      let sentUp: StoredDraft | undefined;
       if (input.draft !== undefined) {
         if (ownerTurn || asker === null)
           return yield* refuse(
@@ -200,16 +201,36 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
         const [party] =
           key === undefined
             ? []
-            : yield* sql<{ key: string; title: string }>`SELECT r.key, r.title FROM kin_records r
+            : yield* sql<{
+                key: string;
+                title: string;
+                recordId: string;
+                list: "clients" | "deals";
+                partyId: string | null;
+              }>`SELECT r.key, r.title, r.record_id AS "recordId", r.register_id AS list,
+                  CASE WHEN r.register_id = 'clients' THEN r.record_id ELSE r.party_id END
+                    AS "partyId"
+                FROM kin_records r
                 WHERE r.org_id = ${orgId} AND r.key = ${key}
                   AND r.register_id IN ('clients', 'deals') AND ${personSees(sql, asker)}`;
         if (key !== undefined && party === undefined)
           return yield* refuse(`No client or deal ${key} that ${askerName ?? "they"} sees.`);
-        draft = yield* encodeStoredDraft({
+        const [owner] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+          WHERE org_id = ${orgId} AND person_id = ${self.owner}`;
+        const word = DRAFT_WORDS[input.draft.kind];
+        const line = `${word.charAt(0).toUpperCase()}${word.slice(1)}${party === undefined ? "" : ` for ${party.title}`}`;
+        sentUp = {
           kind: input.draft.kind,
           for: party ?? null,
           text: input.detail,
-        });
+          line,
+          names: {
+            owner: owner?.name ?? "the owner",
+            asker: askerName ?? "them",
+            agent: self.name,
+          },
+        };
+        draft = yield* encodeStoredDraft(sentUp);
       }
       // Their own direct chat with this agent: opening it is their own reach check (`Reach`).
       const unreached = new KinChatError({
@@ -322,17 +343,24 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
       if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
       const dueAt = named?.at ?? defaultDue(now, clock.zone, clock.work);
       const by = askedBy(askerName, self.name);
-      const detail = `${by}${
-        input.detail === undefined || input.detail.trim() === "" ? "" : `\n\n${input.detail}`
-      }`;
+      // A sent-up draft's card is Kin's from its stored payload: its line and its two buttons.
+      const detail =
+        sentUp !== undefined
+          ? draftDetail(by, sentUp)
+          : `${by}${
+              input.detail === undefined || input.detail.trim() === "" ? "" : `\n\n${input.detail}`
+            }`;
       const card = {
         question: flat(input.question),
         detail,
         askedBy: by,
-        options: input.options.map((one) => ({
-          label: one.label,
-          ...(one.kind === undefined ? {} : { kind: one.kind }),
-        })),
+        options:
+          sentUp !== undefined
+            ? DRAFT_OPTIONS.map((one) => ({ ...one }))
+            : input.options.map((one) => ({
+                label: one.label,
+                ...(one.kind === undefined ? {} : { kind: one.kind }),
+              })),
       };
       const options = choiceCardState(card).options.map(({ optionId, label }) => ({
         optionId,

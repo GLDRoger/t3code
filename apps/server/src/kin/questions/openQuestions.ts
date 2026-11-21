@@ -57,6 +57,14 @@ import {
   unsafeDefault,
 } from "./rules.ts";
 import { TAKEN_KEY, tellDeclined, tellTaken, tellWithdrawn } from "./defaultTaken.ts";
+import {
+  approvalDedupeKey,
+  approvalEventId,
+  decodeStoredDraft,
+  DRAFT_OPTIONS,
+  draftDetail,
+  type StoredDraft,
+} from "./approval.ts";
 
 export type QuestionState = "open" | "answered" | "default_taken" | "withdrawn";
 export type QuestionRow = {
@@ -87,19 +95,6 @@ export type QuestionRow = {
   /** The teammate's draft it carries up to the owner (`sentUpDraft.ts`); null on any other. */
   readonly draft: StoredDraft | null;
 };
-
-/** A teammate's draft on its question to the owner: what kind of thing, for whom, and its text. */
-export const DRAFT_KINDS = ["proposal", "quote", "invoice", "terms", "mail", "post"] as const;
-const StoredDraftJson = Schema.fromJsonString(
-  Schema.Struct({
-    kind: Schema.Literals(DRAFT_KINDS),
-    for: Schema.NullOr(Schema.Struct({ key: Schema.String, title: Schema.String })),
-    text: Schema.String,
-  }),
-);
-export type StoredDraft = typeof StoredDraftJson.Type;
-export const encodeStoredDraft = Schema.encodeEffect(StoredDraftJson);
-const decodeStoredDraft = Schema.decodeUnknownOption(StoredDraftJson);
 
 /** How a question raised again opens its card, so what answers it can read past it. */
 export const STILL_OPEN = "Still open: ";
@@ -465,14 +460,12 @@ const approveDraft = Effect.fn("KinQuestions.approveDraft")(function* (
   if (marked.length === 0) return false;
   const event = yield* decodeEvent({
     _tag: "deferral.due",
-    eventId: KinEventId.make(
-      `question_${hash(`${orgId}\0${row.questionId}\0approved`).slice(0, 32)}`,
-    ),
+    eventId: approvalEventId(orgId, row.questionId),
     orgId,
     agentId: row.agentId,
     receivedAt: iso(now),
     provenance: { _tag: "system" },
-    dedupeKey: `question-approved:${row.questionId}`,
+    dedupeKey: approvalDedupeKey(row.questionId),
     subject: { type: "question", questionId: row.questionId, answered: true, approved: true },
     lateByMs: 0,
   }).pipe(Effect.orDie);
@@ -1520,10 +1513,22 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
         );
   const asked = {
     question: oneLine(`${STILL_OPEN}${row.question}`, 240),
-    detail: by === undefined ? said : `${by}\n${said}`,
+    // A sent-up draft is raised from its stored payload, Approve still its one of kind yes.
+    detail:
+      row.draft !== null
+        ? draftDetail(by === undefined ? said : `${by}\n${said}`, row.draft)
+        : by === undefined
+          ? said
+          : `${by}\n${said}`,
     ...(by === undefined ? {} : { askedBy: by }),
-    options: offered.map((option) => ({ label: option.label })),
-    actions: offered.map((option) => option.drawn),
+    options:
+      row.draft !== null
+        ? DRAFT_OPTIONS.map((one) => ({ ...one }))
+        : offered.map((option) => ({ label: option.label })),
+    actions:
+      row.draft !== null
+        ? DRAFT_OPTIONS.map(() => undefined)
+        : offered.map((option) => option.drawn),
     untilAnswered: true as const,
   };
   const card = yield* chat.ask(

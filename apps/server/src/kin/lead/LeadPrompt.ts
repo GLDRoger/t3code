@@ -493,7 +493,7 @@ export class KinLeadPrompt extends Context.Service<
             event.subject.approved === true
           ) {
             fromOwner = false;
-            const made = yield* approvedTurnText(orgId, event.subject.questionId).pipe(
+            const made = yield* approvedTurnText({ orgId, agentId, wakeupId: input.wakeupId }).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.catch((cause) =>
                 Effect.logWarning("Kin sent-up draft unreadable", cause).pipe(Effect.as(undefined)),

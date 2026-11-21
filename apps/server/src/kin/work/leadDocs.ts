@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { madeUnderApproval } from "../questions/approval.ts";
 import { effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -581,6 +582,13 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
   );
   if (input.links !== undefined && input.links.length > 0)
     yield* Docs.link(lead.orgId, context.writer, { key: written.row.key }, input.links, "relates");
+  // A proposal or client terms made under the owner's Approve is that approval's one result.
+  if (written.created)
+    yield* madeUnderApproval(lead, {
+      kind: "doc",
+      recordId: written.row.recordId,
+      key: written.row.key,
+    });
   yield* shown(lead, written, input.card ?? "answer");
   return writeResult(written, written.created);
 });

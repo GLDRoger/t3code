@@ -42,6 +42,7 @@ import {
 import * as Goals from "./goals.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadMoney from "./leadMoney.ts";
+import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import * as LeadWork from "./leadWork.ts";
 import { aboutTotal, addUp, financialYearOf, formatMinor, parseAmount } from "./money.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
@@ -2634,6 +2635,14 @@ describe("who keeps a suggestion", () => {
       });
       // A turn of the lead woken by these, in order: people's messages, or a routine or reaction.
       let n = 100;
+      // The party an approved draft names, if any.
+      let approvedParty: {
+        key: string;
+        title: string;
+        recordId: string;
+        list: "clients";
+        partyId: string;
+      } | null = null;
       const woken = (...by: ReadonlyArray<string>) =>
         Effect.gen(function* () {
           n += 1;
@@ -2643,26 +2652,35 @@ describe("who keeps a suggestion", () => {
               started_at, status, event_ids, audience)
             VALUES (${wake}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '[]',
               'owner_only')`;
+          let first = `event-${n}-0`;
           for (const [i, who] of by.entries()) {
             const eventId = `event-${n}-${i}`;
             const message = `msg-${n}-${i}`;
             // The owner's Approve on a sent-up draft (`approveDraft`), or the same unapproved.
             if (who === "approved" || who === "unapproved") {
               const questionId = `q-${n}-${i}`;
+              const approval = approvalEventId(orgId, questionId);
+              if (i === 0) first = approval;
+              const draft = JSON.stringify({
+                kind: "invoice",
+                for: approvedParty,
+                text: "Invoice: ____",
+                line: "Invoice",
+                names: { owner: "Owner", asker: "Mate", agent: "Lead lead" },
+              });
               yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id,
                   chat_id, kind, question, safe, asked_at, due_at, act_at, state, answer,
                   for_chat_id, for_person_id, draft_json, approved_at)
                 VALUES (${questionId}, ${orgId}, ${lead}, ${ownerId}, 'lead-chat', 'card',
                   'Approve the invoice?', 0, 0, 0, 0, 'answered', 'Approve', 'mate-chat', 'mate',
-                  '{"kind":"invoice","for":null,"text":"Invoice: ____"}',
-                  ${who === "approved" ? 1 : null})`;
+                  ${draft}, ${who === "approved" ? 1 : null})`;
               yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
-                  received_at, queued_at, state, wakeup_id)
-                VALUES (${eventId}, ${orgId}, ${lead}, 'deferral.due', 'P0', ${JSON.stringify({
+                  received_at, queued_at, state, wakeup_id, dedupe_key)
+                VALUES (${approval}, ${orgId}, ${lead}, 'deferral.due', 'P0', ${JSON.stringify({
                   _tag: "deferral.due",
                   provenance: { _tag: "system" },
                   subject: { type: "question", questionId, answered: true, approved: true },
-                })}, 0, 0, 'claimed', ${wake})`;
+                })}, 0, 0, 'claimed', ${wake}, ${approvalDedupeKey(questionId)})`;
               continue;
             }
             const said = who !== "routine" && who !== "reaction";
@@ -2686,7 +2704,7 @@ describe("who keeps a suggestion", () => {
                 provenance: { _tag: "human", personId: ownerId },
               })}, 0, 0, 'claimed', ${wake})`;
           }
-          return `event-${n}-0`;
+          return first;
         });
       const kept = (key: string) =>
         records.get(orgId, key).pipe(Effect.map((row) => row?.confirmed));
@@ -2747,8 +2765,8 @@ describe("who keeps a suggestion", () => {
         "teammate asked": ["refused", "refused", "refused", "refused"],
         "nobody asked": [0, 0, 0, 0],
         "owner reacted": [0, 0, 0, 0],
-        // What his Approve's turn makes is real; the same turn unapproved makes suggestions.
-        "owner approved a draft": [1, 1, 1, 1],
+        // His Approve of an invoice makes only an invoice real; unapproved, nothing is.
+        "owner approved a draft": [0, 1, 0, 0],
         "a draft not approved": [0, 0, 0, 0],
         [ownerId]: [1, 1, 1, 1],
         "co-owner": [1, 1, 1, 1],
@@ -2866,6 +2884,46 @@ describe("who keeps a suggestion", () => {
         "co-owner": 1,
         mate: 0,
       });
+
+      // One approval makes one kept entry: its list, for its party, as a Draft whatever state it
+      // was given; a different party, or a second entry, is ordinary; a retry is the same one.
+      const [harbour] = yield* asAgent([ownerId], [{ list: "clients", title: "Invented Harbour" }]);
+      yield* asAgent([ownerId], [{ list: "clients", title: "Invented Tide" }]);
+      const harbourId = (yield* records.get(orgId, harbour!))!.recordId;
+      approvedParty = {
+        key: harbour!,
+        title: "Invented Harbour",
+        recordId: harbourId,
+        list: "clients",
+        partyId: harbourId,
+      };
+      const approval = yield* woken("approved");
+      const rows = [
+        { list: "invoices", title: "Invented wrong party", client: "Invented Tide", amount: "1" },
+        {
+          list: "invoices",
+          title: "Invented approved one",
+          client: "Invented Harbour",
+          amount: "9,750",
+          state: "waiting",
+        },
+        { list: "invoices", title: "Invented second", client: "Invented Harbour", amount: "2" },
+      ];
+      const underApproval = (yield* LeadWork.create(scope, {
+        sourceEventId: approval,
+        records: rows as never,
+      })).records.map((one) => one.key);
+      assert.deepStrictEqual(yield* Effect.forEach(underApproval, startedAs), [
+        [0, "open", null],
+        [1, "open", null],
+        [0, "open", null],
+      ]);
+      const retried = (yield* LeadWork.create(scope, {
+        sourceEventId: approval,
+        records: rows as never,
+      })).records.map((one) => one.key);
+      assert.deepStrictEqual(retried, underApproval);
+      approvedParty = null;
 
       // Nothing else an agent does keeps one, or takes a person's keep back.
       const key = yield* guessed("Invented renewal");

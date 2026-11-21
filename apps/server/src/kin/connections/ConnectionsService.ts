@@ -64,6 +64,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
+import { madeUnderApproval } from "../questions/approval.ts";
 import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
@@ -2600,6 +2601,9 @@ const make = Effect.gen(function* () {
             ${row.accountLabel}, ${row.signInGen}, ${outside ?? null})
           ON CONFLICT (org_id, ask_id) DO NOTHING`;
         const own = yield* persisted(askId);
+        // A mail made under the owner's Approve: its Confirm card is that approval's one result.
+        if (own !== undefined && MAIL_SEND_TOOL_NAMES.has(tool.name) && row.kind === "builtin")
+          yield* madeUnderApproval(turn, { kind: "mail", askId }).pipe(provideSql);
         return done(own === undefined ? undefined : yield* toldFor(own));
       }),
     );

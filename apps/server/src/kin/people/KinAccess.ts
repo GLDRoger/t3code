@@ -70,33 +70,6 @@ export const ownerLevelAsked = Effect.fn("KinAccess.ownerLevelAsked")(function* 
   return rows.length > 0 && rows.every((row) => row.direct === 1);
 });
 
-/**
- * Whether this turn is the one the agent's owner's Approve on a sent-up draft queued
- * (`approveDraft`), and only that, read off its question: what it creates starts kept, as on his
- * ask in person. It keeps nothing that already exists (`KinRecords.mayKeep` stays his ask's).
- */
-export const approvedDraftTurn = Effect.fn("KinAccess.approvedDraftTurn")(function* (
-  orgId: KinOrgId,
-  agentId: string,
-  wakeupId: string,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ approved: number }>`SELECT (e.tag = 'deferral.due'
-      AND json_extract(e.json, '$.subject.approved') = 1
-      AND json_extract(e.json, '$.origin') IS NULL AND json_extract(e.json, '$.chatId') IS NULL
-      AND EXISTS (SELECT 1 FROM kin_questions q
-        JOIN kin_agents a ON a.org_id = q.org_id AND a.agent_id = q.agent_id
-        WHERE q.org_id = e.org_id AND q.agent_id = e.agent_id
-          AND q.question_id = json_extract(e.json, '$.subject.questionId')
-          AND q.draft_json IS NOT NULL AND q.approved_at IS NOT NULL
-          AND q.person_id = a.owner_person_id
-          AND ${sql.literal(ownerLevelSql("q.org_id", "q.person_id"))})) AS approved
-    FROM kin_events e
-    WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
-    ORDER BY e.event_id`;
-  return rows.length > 0 && rows.every((row) => row.approved === 1);
-});
-
 /** The org's owner-level people. */
 export const ownerLevelPeople = Effect.fn("KinAccess.ownerLevelPeople")(function* (
   orgId: KinOrgId,

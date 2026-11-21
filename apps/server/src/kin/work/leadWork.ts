@@ -47,7 +47,7 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import { codingAgentSource, codingAgentTextShown } from "../lead/OutsideContent.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { heldUntil } from "../triggers/quietHold.ts";
-import { approvedDraftTurn, ownerLevelAsked, ownerLevelPeople } from "../people/KinAccess.ts";
+import { ownerLevelAsked, ownerLevelPeople } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
 import { countryFirst, countryRefusal, homeCurrency, isCountryFirst } from "./companyProfile.ts";
 import { campaignsNamed, partyPage, projectDetail, sourceShown } from "./crm.ts";
@@ -2312,9 +2312,7 @@ const createRow = Effect.fnUntraced(function* (
     partyId ?? null,
     "dueAt" in due && typeof due.dueAt === "number" ? due.dueAt : undefined,
   );
-  const keeps =
-    (yield* ownerLevelAsked(lead.orgId, lead.agentId, lead.wakeupId)) ||
-    (yield* approvedDraftTurn(lead.orgId, lead.agentId, lead.wakeupId));
+  const keeps = yield* ownerLevelAsked(lead.orgId, lead.agentId, lead.wakeupId);
   // `memberAdds` decided it; names clash only with what they see in Clients, as on their form.
   const { view: _view, ...unguarded } = writer;
   const { row: stored, created } = yield* records.create(

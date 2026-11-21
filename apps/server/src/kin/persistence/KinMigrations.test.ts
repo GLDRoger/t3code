@@ -1846,7 +1846,7 @@ describe("Kin migrations", () => {
             WHERE name IN ('sees_json', 'sees_by_person_id')
           UNION ALL SELECT name FROM pragma_table_info('kin_chat_members') WHERE name = 'pinned_at'
           UNION ALL SELECT name FROM pragma_table_info('kin_questions')
-            WHERE name IN ('draft_json', 'approved_at')
+            WHERE name IN ('draft_json', 'approved_at', 'draft_made_json')
           ORDER BY name`;
         yield* runKinMigrations();
         // A host on K195: none of 196-199's columns yet, one handled trigger.
@@ -1855,7 +1855,7 @@ describe("Kin migrations", () => {
         for (const column of ["sees_json", "sees_by_person_id"])
           yield* sql`ALTER TABLE kin_people_invites DROP COLUMN ${sql.literal(column)}`;
         yield* undoChatPins;
-        for (const column of ["draft_json", "approved_at"])
+        for (const column of ["draft_json", "approved_at", "draft_made_json"])
           yield* sql`ALTER TABLE kin_questions DROP COLUMN ${sql.literal(column)}`;
         assert.deepStrictEqual(yield* later, []);
         yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, outcome, at)
@@ -1869,7 +1869,14 @@ describe("Kin migrations", () => {
         ]);
         assert.deepStrictEqual(
           (yield* later).map(({ name }) => name),
-          ["approved_at", "draft_json", "pinned_at", "sees_by_person_id", "sees_json"],
+          [
+            "approved_at",
+            "draft_json",
+            "draft_made_json",
+            "pinned_at",
+            "sees_by_person_id",
+            "sees_json",
+          ],
         );
         // Already there: it changes nothing.
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
@@ -1880,22 +1887,25 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("K199 gives every question no draft and no approval, and runs again safely", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const columns = sql<{ name: string; type: string; notnull: number }>`SELECT name, type,
+  it.effect(
+    "K199 gives every question no draft, approval or made thing, and runs again safely",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const columns = sql<{ name: string; type: string; notnull: number }>`SELECT name, type,
           "notnull" FROM pragma_table_info('kin_questions')
-        WHERE name IN ('draft_json', 'approved_at') ORDER BY name`;
-      yield* runKinMigrations();
-      const added = [
-        { name: "approved_at", type: "INTEGER", notnull: 0 },
-        { name: "draft_json", type: "TEXT", notnull: 0 },
-      ];
-      assert.deepStrictEqual(yield* columns, added);
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 199`;
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(199));
-      assert.deepStrictEqual(yield* columns, added);
-    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+        WHERE name IN ('draft_json', 'approved_at', 'draft_made_json') ORDER BY name`;
+        yield* runKinMigrations();
+        const added = [
+          { name: "approved_at", type: "INTEGER", notnull: 0 },
+          { name: "draft_json", type: "TEXT", notnull: 0 },
+          { name: "draft_made_json", type: "TEXT", notnull: 0 },
+        ];
+        assert.deepStrictEqual(yield* columns, added);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 199`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(199));
+        assert.deepStrictEqual(yield* columns, added);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
