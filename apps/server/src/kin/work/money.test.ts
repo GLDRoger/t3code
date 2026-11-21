@@ -911,6 +911,55 @@ describe("lists through the tools", () => {
           ],
         }).pipe(Effect.flip);
         assert.include(missing, { reason: "invalid_state" });
+        // W-26: a vendor is who was paid, never the document's word for itself or its file name.
+        for (const vendor of ["Receipt", "invoice #123", "Bill No. 4", "IMG_1234.jpg", "scan.PDF"])
+          assert.include(
+            (yield* LeadWork.create(scope, {
+              sourceEventId: sent,
+              records: [{ list: "expenses", title: "Invented taxi", fields: { vendor } }],
+            }).pipe(Effect.flip)).message,
+            "is not a vendor",
+            vendor,
+          );
+        // An agent reading a bill for 0, such as a free plan's, records nothing.
+        const free = { list: "expenses", title: "Invented hosting", date: "2026-11-10" };
+        for (const amount of ["0", "$0.00"])
+          assert.include(
+            (yield* LeadWork.create(scope, {
+              sourceEventId: sent,
+              records: [{ ...free, amount }],
+            }).pipe(Effect.flip)).message,
+            "An expense for 0 cost nothing",
+          );
+        assert.include(
+          (yield* LeadWork.update(scope, {
+            sourceEventId: sent,
+            key: taxi!.key,
+            amount: "0",
+          }).pipe(Effect.flip)).message,
+          "An expense for 0 cost nothing",
+        );
+        // The owner may keep one for 0, but a vendor named Receipt is refused for them too.
+        const ownerEdit = (
+          patch: Omit<Parameters<typeof OwnerWork.update>[1], "orgId" | "key" | "rev">,
+        ) =>
+          Effect.gen(function* () {
+            const row = yield* records.get(orgId, taxi!.key);
+            return yield* OwnerWork.update(people, {
+              orgId,
+              key: taxi!.key,
+              rev: row!.rev,
+              ...patch,
+            });
+          });
+        assert.strictEqual(
+          (yield* ownerEdit({ amount: { minor: 0, currency: "INR" } })).amount?.minor,
+          0,
+        );
+        assert.include(
+          (yield* Effect.flip(ownerEdit({ fields: { vendor: "RECEIPT" } }))).message,
+          "is not a vendor",
+        );
         // The suggestion waits for the owner, who confirms it once they've read the receipt.
         const blurry = yield* records.get(orgId, kept.records[1]!.key);
         assert.strictEqual(blurry!.confirmed, 0);

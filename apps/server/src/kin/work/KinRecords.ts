@@ -115,6 +115,7 @@ import {
 } from "./registers.ts";
 import { contactFields } from "./contactDetails.ts";
 import { cleanTags } from "./tags.ts";
+import { notAVendor } from "./vendorName.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
   bumpTeamSeqs,
@@ -552,20 +553,35 @@ const checkInput = (
         ? `${def.name} has no categories.`
         : `${def.name}'s categories are ${def.categories.join(", ")}.`,
     );
+  const vendor = input.fields?.vendor;
+  if (def.id === "expenses" && typeof vendor === "string" && notAVendor(vendor))
+    return invalid(
+      `"${vendor.slice(0, 60)}" is not a vendor: give who was paid, as the receipt or bill names them, or leave vendor off.`,
+    );
   return input.fields === undefined ? undefined : checkFields(def, input.fields);
 };
 
-/** An invoice, or a renewal on Dates, for nothing: it isn't owed, so it isn't kept as owed. */
+/**
+ * An invoice, or a renewal on Dates, for nothing: it isn't owed, so it isn't kept as owed. An
+ * agent's expense for nothing is a free plan's bill or a misread one; only the owner keeps those.
+ */
 const zeroOwed = (
   def: ListDef,
   amount: KinMoney | null | undefined,
   category: string | null | undefined,
+  writer: Writer,
 ) =>
-  amount?.minor === 0 && (def.id === "invoices" || (def.id === "dates" && category === "renewal"))
-    ? invalid(
-        `${def.id === "invoices" ? "An invoice" : "A renewal"} for 0 isn't owed; leave the amount off or drop it.`,
-      )
-    : undefined;
+  amount?.minor !== 0
+    ? undefined
+    : def.id === "invoices" || (def.id === "dates" && category === "renewal")
+      ? invalid(
+          `${def.id === "invoices" ? "An invoice" : "A renewal"} for 0 isn't owed; leave the amount off or drop it.`,
+        )
+      : def.id === "expenses" && writer.actor._tag !== "person"
+        ? invalid(
+            "An expense for 0 cost nothing, so it isn't recorded: skip a receipt or bill for 0, such as a free plan's, and say so. If you couldn't read the amount, leave it off and set suggested true.",
+          )
+        : undefined;
 
 export class KinRecords extends Context.Service<
   KinRecords,
@@ -1368,7 +1384,7 @@ const make = Effect.gen(function* () {
       steps: (input.steps?.length ?? 0) > 0 || input.urgent === true,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
-    const zero = zeroOwed(def, input.amount, input.category);
+    const zero = zeroOwed(def, input.amount, input.category, writer);
     if (zero !== undefined) return yield* zero;
     if (list === "receipts" && RECEIPT_TIES.some((field) => field in fields))
       return yield* invalid(RECEIPT_TIES_ARE_KINS);
@@ -1661,7 +1677,7 @@ const make = Effect.gen(function* () {
         if (invalidFor !== undefined) return yield* invalidFor;
         if (recordsMoney(patch.amount, patch.fields))
           yield* countryFirst(orgId, { saved: true }).pipe(provideSql);
-        const zero = zeroOwed(def, patch.amount, patch.category ?? row.category);
+        const zero = zeroOwed(def, patch.amount, patch.category ?? row.category, writer);
         if (zero !== undefined) return yield* zero;
         if (list === "receipts") {
           if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
