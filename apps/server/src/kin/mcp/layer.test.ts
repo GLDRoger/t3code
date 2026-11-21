@@ -37,6 +37,7 @@ import { APPROVED_REFUSAL, approvedToolAllowed } from "../lead/approvedDraft.ts"
 import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import { kinInstructions } from "../lead/turn/session.ts";
+import { instructions } from "../lead/instructions.ts";
 import * as FileSystem from "effect/FileSystem";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import contextBudget from "./agentContextBudget.json" with { type: "json" };
@@ -46,6 +47,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as TestClock from "effect/testing/TestClock";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -654,6 +656,54 @@ it.effect.each([true, false])(
           contextBudget.kinLeadToolListJsonBytes,
         );
         yield* sql`UPDATE kin_leads SET domain = 'engineering' WHERE agent_id = ${agentId}`;
+        // A provider caches its request from the tool list on: one agent's wake-ups, and agents
+        // of one seat kind beside the same seats, are served the same bytes whatever happened between.
+        const listedFor = Effect.fn(function* (thread: ThreadId, agent: KinAgentId) {
+          yield* identity.registerAgentThread({
+            orgId: person.orgId,
+            agentId: agent,
+            threadId: thread,
+          });
+          yield* startAgentWakeup({ orgId: person.orgId, agentId: agent, threadId: thread }).pipe(
+            Effect.provide(services),
+          );
+          const token = (yield* registry.issue({
+            threadId: thread,
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          })).config.authorizationHeader;
+          const session = (yield* request("/kin/mcp", token, "initialize", initialize)).headers[
+            "mcp-session-id"
+          ];
+          return yield* request("/kin/mcp", token, "tools/list", {}, session).pipe(
+            Effect.flatMap(bodyOf),
+          );
+        });
+        const firstWake = yield* listedFor(ThreadId.make("lead-wake-one"), agentId);
+        assert.sameMembers(
+          decodeToolList(firstWake).result.tools.map((tool) => tool.name),
+          engineering.names,
+        );
+        yield* TestClock.adjust("3 hours");
+        yield* sql`INSERT INTO kin_memory_heads (org_id, branch, head)
+          VALUES (${person.orgId}, 'main', 'invented-head-two')
+          ON CONFLICT (org_id, branch) DO UPDATE SET head = excluded.head`;
+        yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId }).pipe(
+          Effect.provide(services),
+        );
+        assert.strictEqual(yield* listedFor(ThreadId.make("lead-wake-two"), agentId), firstWake);
+        const sameSeat = KinAgentId.make("lead-same-seat");
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES (${sameSeat}, ${person.orgId}, 'Same seat', 'lead', ${person.personId}, '1970-01-01T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id, domain)
+          VALUES (${sameSeat}, ${person.orgId}, 'Same seat', 'L1', 0, '{}', '[]', ${chat.chatId}, 'engineering')`;
+        assert.strictEqual(
+          yield* listedFor(ThreadId.make("same-seat-thread"), sameSeat),
+          firstWake,
+        );
+        yield* sql`UPDATE kin_agents SET retired_at = '1970-01-02T00:00:00.000Z' WHERE agent_id = ${sameSeat}`;
+        // A wake-up ends every other one running in the company; the lead's own runs again.
+        yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId }).pipe(
+          Effect.provide(services),
+        );
         const served = [...new Set([...servedNames, ...kinGitHub, ...LEAD_T3_TOOLS])];
         assert.sameMembers(served, Object.keys(SHARED_TOOLS));
         // And once the turn read a connected service's text; connections stay out of shared turns.
@@ -1196,6 +1246,11 @@ it.effect.each([true, false])(
 it.effect("measures the combined agent tool list separately from ordinary threads", () =>
   Effect.gen(function* () {
     const mcp = yield* McpServer.McpServer;
+    const instructionsHash = Buffer.from(
+      yield* Effect.promise(() =>
+        crypto.subtle.digest("SHA-256", new TextEncoder().encode(instructions)),
+      ),
+    ).toString("hex");
     const tools = mcp.tools.map(({ tool }) => ({
       name: tool.name,
       description: tool.description,
@@ -1212,11 +1267,14 @@ it.effect("measures the combined agent tool list separately from ordinary thread
           owner: Buffer.byteLength(kinInstructions("owner", "claudeAgent"), "utf8"),
           confined: Buffer.byteLength(kinInstructions("confined", "claudeAgent"), "utf8"),
         },
+        // Every agent's cached prefix holds these: any edit is a cache reset a reviewer sees here.
+        kinSharedInstructionsHash: instructionsHash,
       },
       {
         mcpToolListJsonBytes: contextBudget.mcpToolListJsonBytes,
         kinToolListJsonBytes: contextBudget.kinToolListJsonBytes,
         kinInstructionsBytes: contextBudget.kinInstructionsBytes,
+        kinSharedInstructionsHash: contextBudget.kinSharedInstructionsHash,
       },
     );
   }).pipe(
