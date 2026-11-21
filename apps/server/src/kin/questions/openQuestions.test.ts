@@ -2577,7 +2577,9 @@ it.effect("a co-owner sees what waits on the owner, read-only, and answers none 
       yield* tap(owner, fromDev.questionId, "option-2", "rhea-answers");
       const left = yield* Queue.take(events);
       assert.isTrue(
-        left._tag === "waiting" && left.item.widgetId === fromDevCard && left.item.resolvedAt !== null,
+        left._tag === "waiting" &&
+          left.item.widgetId === fromDevCard &&
+          left.item.resolvedAt !== null,
       );
       // Rhea decided it, and the card says so; Dev hears it once in the chat he asked in.
       assert.deepInclude((yield* team.widgetOf(fromDevCard)).state, { decidedBy: rhea });

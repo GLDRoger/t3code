@@ -1327,7 +1327,9 @@ const make = Effect.gen(function* () {
       FROM kin_widgets WHERE org_id = ${newer.orgId} AND type = 'choice'
         AND json_extract(state_json, '$.replacedBy.widgetId') = ${newer.widgetId}
         AND json_extract(state_json, '$.replacedBy.decided') IS NULL
-      ORDER BY widget_id`.pipe(Effect.mapError(toPersistenceSqlError("KinChatService.tellReplaced")));
+      ORDER BY widget_id`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinChatService.tellReplaced")),
+    );
     for (const row of rows) {
       const older = yield* requireRecord(repo.getWidget({ orgId: newer.orgId, ...row }));
       const card = yield* decodeChoiceCard(older.state).pipe(Effect.mapError(() => invalidState));
@@ -2389,30 +2391,33 @@ const make = Effect.gen(function* () {
                   hub.subscribeWaiting(viewer.orgId).pipe(
                     Effect.map(
                       Stream.filterMapEffect(
-                        Effect.fnUntraced(function* (changed) {
-                          if (changed.personId === viewer.personId) return Result.failVoid;
-                          const own = yield* waitingFor(viewer).pipe(
-                            Effect.provideService(Repository.KinChatRepository, repo),
-                          );
-                          const seen = (yield* othersWaitingFor(viewer, own).pipe(
-                            Effect.provideService(Repository.KinChatRepository, repo),
-                          )).find((one) => one.waitingId === changed.waitingId);
-                          if (seen !== undefined) {
-                            shownOthers.set(seen.waitingId, seen);
-                            return Result.succeed({ _tag: "waiting" as const, item: seen });
-                          }
-                          const shown = shownOthers.get(changed.waitingId);
-                          if (shown === undefined) return Result.failVoid;
-                          shownOthers.delete(changed.waitingId);
-                          return Result.succeed({
-                            _tag: "waiting" as const,
-                            item: {
-                              ...shown,
-                              resolvedAt: changed.resolvedAt ?? (yield* now),
-                              resolution: changed.resolution ?? "closed",
-                            },
-                          });
-                        }, Effect.orElseSucceed(() => Result.failVoid)),
+                        Effect.fnUntraced(
+                          function* (changed) {
+                            if (changed.personId === viewer.personId) return Result.failVoid;
+                            const own = yield* waitingFor(viewer).pipe(
+                              Effect.provideService(Repository.KinChatRepository, repo),
+                            );
+                            const seen = (yield* othersWaitingFor(viewer, own).pipe(
+                              Effect.provideService(Repository.KinChatRepository, repo),
+                            )).find((one) => one.waitingId === changed.waitingId);
+                            if (seen !== undefined) {
+                              shownOthers.set(seen.waitingId, seen);
+                              return Result.succeed({ _tag: "waiting" as const, item: seen });
+                            }
+                            const shown = shownOthers.get(changed.waitingId);
+                            if (shown === undefined) return Result.failVoid;
+                            shownOthers.delete(changed.waitingId);
+                            return Result.succeed({
+                              _tag: "waiting" as const,
+                              item: {
+                                ...shown,
+                                resolvedAt: changed.resolvedAt ?? (yield* now),
+                                resolution: changed.resolution ?? "closed",
+                              },
+                            });
+                          },
+                          Effect.orElseSucceed(() => Result.failVoid),
+                        ),
                       ),
                     ),
                   ),

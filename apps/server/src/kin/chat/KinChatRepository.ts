@@ -366,7 +366,11 @@ const WaitingAskRow = Schema.Struct({
 const EXCERPT_LINES = 3;
 const EXCERPT_CHARS = 300;
 /** A card's first lines of what it asks about, past the asker's and while-open lines. */
-const excerptOf = (about: { detail: string | null; askedBy: string | null; whileOpen: string | null }) => {
+const excerptOf = (about: {
+  detail: string | null;
+  askedBy: string | null;
+  whileOpen: string | null;
+}) => {
   let text = about.detail ?? "";
   for (const lead of [about.askedBy, about.whileOpen])
     if (lead !== null && text.startsWith(lead)) text = text.slice(lead.length);
