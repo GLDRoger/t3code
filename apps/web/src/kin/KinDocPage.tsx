@@ -767,7 +767,7 @@ function KinDocSectionEditor(
     const outcome = kinDocEditOutcome(await send({ environmentId, input }));
     setBusy(false);
     if (outcome._tag === "refused") return setProblem(outcome.text);
-    props.onSaved(outcome.doc.latest.version);
+    props.onSaved(outcome.doc.version.version);
   };
   return (
     <Dialog

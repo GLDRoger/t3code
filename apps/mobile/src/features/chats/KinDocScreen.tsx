@@ -290,7 +290,7 @@ function useKinDocEdit(target: KinWorkTarget, onSaved: () => void) {
     setBusy(false);
     if (outcome._tag === "refused") return setProblem(outcome.text);
     setEditing(null);
-    setSaved(outcome.doc.latest.version);
+    setSaved(outcome.doc.version.version);
     onSaved();
   };
   const close = () => {

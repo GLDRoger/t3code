@@ -382,7 +382,7 @@ export const editSection = Effect.fn("KinDocs.editSection")(
       text: input.text,
       clientRequestId: input.clientRequestId,
     });
-    yield* Docs.editSectionByHand(
+    const written = yield* Docs.editSectionByHand(
       input.orgId,
       personId,
       owner,
@@ -394,13 +394,14 @@ export const editSection = Effect.fn("KinDocs.editSection")(
         originKey: `person-edit:${personId}:${NodeCrypto.createHash("sha256").update(asked).digest("hex").slice(0, 32)}`,
       },
     );
-    // Read again after the write: the answer shows only what they read now.
+    // The version this request wrote, a replay's included, in the view they read now.
     const { team } = yield* readerOf(people, input.orgId);
     return yield* detailOf(
       input.orgId,
       { key: input.key },
       team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
       personId,
+      written.version.version,
     );
   },
   Effect.catchTags({ SqlError: () => unavailable }),

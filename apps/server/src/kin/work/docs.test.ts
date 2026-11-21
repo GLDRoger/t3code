@@ -1103,6 +1103,30 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a hand edit's replay answers with the version it wrote, even after someone else's", () =>
+  Effect.gen(function* () {
+    const { ids, edit, appDoc } = yield* handSeed();
+    const { key, recordId } = appDoc;
+    const first = () => edit(ids.dev, key, "Starter costs 12 invented credits.");
+    assert.strictEqual((yield* first()).version.version, 2);
+    const body = (yield* Docs.versionOf(orgId, recordId))!.body;
+    const theirs = yield* edit(
+      ids.meera,
+      key,
+      "Starter costs 14 invented credits.",
+      section(body, "pricing").hash,
+    );
+    assert.strictEqual(theirs.version.version, 3);
+    // Dev's reply was lost and his app sends the same request again.
+    const replay = yield* first();
+    assert.strictEqual(replay.version.version, 2);
+    assert.include(replay.body, "Starter costs 12 invented credits.");
+    assert.strictEqual(replay.latest.version, 3);
+    assert.strictEqual((yield* Docs.versionOf(orgId, recordId))!.version, 3);
+    assert.isUndefined(yield* Docs.versionOf(orgId, recordId, 4));
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("another org's doc, by key or id, looks like no doc at all", () =>
   Effect.gen(function* () {
     yield* seed;
