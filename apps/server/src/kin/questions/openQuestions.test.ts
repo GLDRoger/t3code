@@ -57,6 +57,7 @@ import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import type { KinDecision } from "../memory/MemoryWriter.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
+import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
 import * as Team from "../team/KinTeam.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinRecords } from "../work/KinRecords.ts";
@@ -113,6 +114,7 @@ const kinServices = Layer.unwrap(
 );
 const layer = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers),
+  McpHttpServer.toolkitRegistration(KinPulseToolkit, pulseHandlers),
   KinToolGate.layer,
 ).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
@@ -2580,6 +2582,22 @@ it.effect("a co-owner sees what waits on the owner, read-only, and answers none 
           left.item.widgetId === fromDevCard &&
           left.item.resolvedAt !== null,
       );
+      // Asked what needs a yes, her agent's read says what waits for Rhea and that it is Rhea's.
+      const meeraChat = yield* chiefChat("meera");
+      yield* wakeOn("chief", "meera", meeraChat, "Rhea is away. What needs a yes?");
+      const hers = yield* callAs("chief", "pulse_read", {});
+      assert.isTrue(hers.ok, JSON.stringify(hers.value));
+      const told = hers.value.waitsFor as { person: string; note: string; items: Array<string> };
+      assert.strictEqual(told.person, "Rhea Rao");
+      assert.include(told.note, "These wait for Rhea Rao, not for Meera Shah");
+      assert.include(told.items, "Mail ready to send: Send this reminder to Orbit Dental?");
+      assert.lengthOf(told.items, 4);
+      // Nobody else's read carries it: not Rhea's own, not a teammate's.
+      yield* wakeOn("chief", "rhea", chatOf("chief"), "What needs a yes?");
+      assert.notProperty((yield* callAs("chief", "pulse_read", {})).value, "waitsFor");
+      yield* wakeOn("chief", "dev", devChat, "What needs a yes?");
+      assert.notProperty((yield* callAs("chief", "pulse_read", {})).value, "waitsFor");
+
       // Rhea decided it, and the card says so; Dev hears it once in the chat he asked in.
       assert.deepInclude((yield* team.widgetOf(fromDevCard)).state, { decidedBy: rhea });
       assert.deepStrictEqual(yield* team.kinLines(devChat), [
