@@ -269,8 +269,7 @@ const loginConnected = Effect.gen(function* () {
 /**
  * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
  * Shared threads list only what shared turns may run, an outside review's only `REVIEW_TOOLS`; T3
- * tools show only on an owner-only thread, and its coding ones only on an engineering lead's
- * (`threadSeat`, as `SEAT_HOME`'s).
+ * tools only an owner-only thread, its coding ones only an engineering lead's (`SEAT_HOME`'s).
  * `KinToolGate` checks each call.
  */
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(function* (
