@@ -30,7 +30,12 @@ import {
   kinTaskFilterProjects,
   kinTasksGroupedBy,
   kinTasksMostUrgent,
+  kinTasksTick,
+  kinTasksTickedShown,
+  kinTasksWithTicked,
+  type KinTaskTicked,
 } from "./kinTasksList.ts";
+import type { KinWorkNotice } from "./kinWorkChanges.ts";
 import type { KinWorkNames } from "./kinWork.ts";
 
 // Ambermill, invented: owner Rhea; Meera, Zoya; agents Chief of staff and Finance.
@@ -241,6 +246,96 @@ describe("kinTasksByMove", () => {
         }),
       ),
     ).toEqual(["Needs you 2", "Your projects 1", "K", "foot"]);
+  });
+});
+
+describe("a ticked row stays in its place while its Undo can be reached", () => {
+  const moves = new Map<string, KinWorkRowMove>([
+    ["A", { key: "A", group: "needsYou" }],
+    ["B", { key: "B", group: "needsYou" }],
+    ["C", { key: "C", group: "needsYou" }],
+  ]);
+  const counts = { needsYou: 3, waiting: 0, rest: 0, doneRecently: 0 };
+  const listed = (records: ReadonlyArray<KinRecord>) =>
+    kinTasksByMove({ records, moves, counts, needsYou: 3, ownerLevel: true, names });
+  const shape = (items: ReturnType<typeof listed>) =>
+    items.flatMap((item) =>
+      item.type === "task"
+        ? [
+            `${item.key}:${item.record.state}${item.ticked ? "~" : ""}${item.first ? "^" : ""}${item.last ? "$" : ""}`,
+          ]
+        : [],
+    );
+  const done = (record: KinRecord): KinRecord => ({ ...record, state: "done" });
+  const notice: KinWorkNotice = {
+    key: "A",
+    kind: "saved",
+    text: "Marked done.",
+    undo: { type: "state", state: "open", waitingOn: null },
+  };
+
+  it("holds a ticked row under the line it sat under once the host drops it, then lets it go", () => {
+    const before = listed([row("A"), row("B"), row("C")]);
+    const first = kinTasksTick({
+      held: [],
+      items: before,
+      key: "B",
+      action: { type: "state", state: "done" },
+      notice: null,
+    });
+    expect(first.undo).toBe(false);
+    // The host's next read leaves B out: without the hold, C would slide up under the thumb.
+    const after = listed([row("A"), row("C")]);
+    expect(shape(after)).toEqual(["A:open^", "C:open$"]);
+    const held = kinTasksTickedShown(first.ticked, { pending: {} }, { ...notice, key: "B" });
+    expect(shape(kinTasksWithTicked(after, held, done))).toEqual(["A:open^", "B:done~", "C:open$"]);
+    // A second quick tick holds both, each in its own place.
+    const second = kinTasksTick({
+      held,
+      items: kinTasksWithTicked(after, held, done),
+      key: "C",
+      action: { type: "state", state: "done" },
+      notice: null,
+    });
+    const both = kinTasksTickedShown(second.ticked, { pending: { C: { state: "done" } } }, null);
+    expect(shape(kinTasksWithTicked(listed([row("A")]), both, done))).toEqual([
+      "A:open^",
+      "B:done~",
+      "C:done~$",
+    ]);
+    // The Undo bar went: nothing is held, and the rows leave together.
+    expect(kinTasksTickedShown(second.ticked, { pending: {} }, null)).toEqual([]);
+  });
+
+  it("puts a row the host still lists as it is, and drops one whose line has gone", () => {
+    const before = listed([row("A"), row("B")]);
+    const ticked = kinTasksTick({
+      held: [],
+      items: before,
+      key: "B",
+      action: { type: "state", state: "done" },
+      notice: null,
+    }).ticked;
+    expect(shape(kinTasksWithTicked(listed([row("A"), done(row("B"))]), ticked, done))).toEqual([
+      "A:open^",
+      "B:done~$",
+    ]);
+    const orphan: ReadonlyArray<KinTaskTicked<KinRecord>> = ticked.map((one) => ({
+      ...one,
+      after: "gone",
+    }));
+    expect(shape(kinTasksWithTicked(listed([row("A")]), orphan, done))).toEqual(["A:open^$"]);
+  });
+
+  it("takes the Undo when the held row is ticked again, and nothing else is an undo", () => {
+    const items = listed([row("A")]);
+    const reopen = { type: "state", state: "open" } as const;
+    expect(kinTasksTick({ held: [], items, key: "A", action: reopen, notice }).undo).toBe(true);
+    expect(kinTasksTick({ held: [], items, key: "C", action: reopen, notice }).undo).toBe(false);
+    expect(
+      kinTasksTick({ held: [], items, key: "A", action: reopen, notice: { ...notice, undo: null } })
+        .undo,
+    ).toBe(false);
   });
 });
 

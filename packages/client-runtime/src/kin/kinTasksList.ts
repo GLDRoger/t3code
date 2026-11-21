@@ -17,10 +17,12 @@ import {
 import { KIN_DEAL_SENSES, kinAttention, type KinAttentionRow } from "./kinAttention.ts";
 import { kinMayHaveGoneLine } from "./kinChoicePresentation.ts";
 import { kinLateWords } from "./kinTaskRecord.ts";
+import type { KinWorkAction, KinWorkChangesState, KinWorkNotice } from "./kinWorkChanges.ts";
 import {
   kinWorkClosed,
   kinWorkDueDays,
   kinWorkDueText,
+  kinMidSentence,
   kinWorkName,
   kinWorkPrincipalKey,
   type KinTaskGroupBy,
@@ -260,6 +262,8 @@ export type KinTasksItem<R extends KinRecord> =
       /** Where it sits in its group's card, for the card's rounded ends. */
       readonly first: boolean;
       readonly last: boolean;
+      /** Ticked done just now and held in place, struck through (`kinTasksWithTicked`). */
+      readonly ticked?: true;
     }
   | { readonly type: "done"; readonly key: string; readonly count: number }
   | { readonly type: "foot"; readonly key: string; readonly text: string };
@@ -577,4 +581,95 @@ export function kinTasksGroupedBy<R extends KinRecord>(input: {
     );
   }
   return items;
+}
+
+type KinTaskItem<R extends KinRecord> = Extract<KinTasksItem<R>, { readonly type: "task" }>;
+
+/** A row ticked done, held where it stood (`kinTasksWithTicked`). */
+export interface KinTaskTicked<R extends KinRecord> {
+  readonly item: KinTaskItem<R>;
+  /** The line it sat under when ticked; null at the top. */
+  readonly after: string | null;
+}
+
+/** `key`'s row as it stands in `items`, to hold there once it is ticked; null when not shown. */
+export function kinTaskTicked<R extends KinRecord>(
+  items: ReadonlyArray<KinTasksItem<R>>,
+  key: string,
+): KinTaskTicked<R> | null {
+  const at = items.findIndex((item) => item.type === "task" && item.key === key);
+  const item = items[at];
+  if (item === undefined || item.type !== "task") return null;
+  return { item, after: at === 0 ? null : (items[at - 1]?.key ?? null) };
+}
+
+const inCard = (item: KinTasksItem<KinRecord> | undefined) =>
+  item !== undefined && (item.type === "task" || item.type === "fact");
+
+/**
+ * Rows ticked done stay in their place, struck through, while their Undo can still be reached,
+ * so a second quick tap lands where the first did. Each goes back under the line it sat under;
+ * one whose line has gone leaves. `latest` draws a held row as it is now.
+ */
+export function kinTasksWithTicked<R extends KinRecord>(
+  items: ReadonlyArray<KinTasksItem<R>>,
+  ticked: ReadonlyArray<KinTaskTicked<R>>,
+  latest: (record: R) => R,
+): ReadonlyArray<KinTasksItem<R>> {
+  if (ticked.length === 0) return items;
+  const keys = new Set(ticked.map((held) => held.item.key));
+  const out = [...items];
+  for (const held of ticked) {
+    if (out.some((item) => item.key === held.item.key)) continue;
+    const at = held.after === null ? 0 : out.findIndex((item) => item.key === held.after) + 1;
+    if (at > 0 || held.after === null)
+      out.splice(at, 0, { ...held.item, record: latest(held.item.record) });
+  }
+  return out.map((item, index) =>
+    item.type === "task" || item.type === "fact"
+      ? {
+          ...item,
+          first: !inCard(out[index - 1]),
+          last: !inCard(out[index + 1]),
+          ...(item.type === "task" && keys.has(item.key) && kinWorkClosed(item.record.state)
+            ? { ticked: true as const }
+            : {}),
+        }
+      : item,
+  );
+}
+
+/** The ticked rows still held: while a change to one saves, or the list's notice (its Undo) is up. */
+export const kinTasksTickedShown = <R extends KinRecord>(
+  ticked: ReadonlyArray<KinTaskTicked<R>>,
+  changes: Pick<KinWorkChangesState, "pending">,
+  notice: KinWorkNotice | null,
+): ReadonlyArray<KinTaskTicked<R>> =>
+  notice !== null || ticked.some((held) => changes.pending[held.item.key] !== undefined)
+    ? ticked
+    : [];
+
+/**
+ * A row's tick: marking done holds the row where it stands (`held`, the rows still shown); a
+ * tick back on the row whose Undo is up takes that Undo, so its waiting-on comes back too.
+ */
+export function kinTasksTick<R extends KinRecord>(input: {
+  readonly held: ReadonlyArray<KinTaskTicked<R>>;
+  readonly items: ReadonlyArray<KinTasksItem<R>>;
+  readonly key: string;
+  readonly action: KinWorkAction;
+  readonly notice: KinWorkNotice | null;
+}): { readonly ticked: ReadonlyArray<KinTaskTicked<R>>; readonly undo: boolean } {
+  const { held, key, action, notice } = input;
+  if (action.type !== "state") return { ticked: held, undo: false };
+  if (action.state !== "done")
+    return {
+      ticked: held,
+      undo: !kinWorkClosed(action.state) && notice?.key === key && notice.undo !== null,
+    };
+  const row = kinTaskTicked(input.items, key);
+  return {
+    ticked: row === null ? held : [...held.filter((one) => one.item.key !== key), row],
+    undo: false,
+  };
 }
