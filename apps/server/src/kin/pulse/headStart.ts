@@ -4,6 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { liveConnections } from "../connections/ConnectionRows.ts";
 import { mailProviderOf } from "../connections/mailProviders.ts";
+import { clientRecipients } from "../work/billingContact.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 
@@ -18,6 +19,8 @@ const TO_CLIENT = new Set<KinPulseFact["sense"]>([
   "client_waiting_on_us",
   "theirs_late",
 ]);
+/** Facts about money a client owes: they go to its billing contact when it has one. */
+const BILLED = new Set<KinPulseFact["sense"]>(["invoice_overdue", "retainer_due"]);
 /** Facts about an entry Kin makes a file for: the latest one comes with them, to attach. */
 const WITH_FILE = new Set<KinPulseFact["sense"]>([
   "invoice_overdue",
@@ -33,7 +36,9 @@ const ABOUT_CLIENT = new Set<KinPulseFact["sense"]>([
 const SAID_CAP = 200;
 
 export interface HeadStart {
-  readonly writeTo?: { readonly name: string; readonly email: string } | string;
+  readonly writeTo?:
+    | { readonly name: string; readonly email: string; readonly billing?: true }
+    | string;
   readonly document?:
     | { readonly key: string; readonly file: string; readonly draft: boolean }
     | string;
@@ -78,18 +83,17 @@ export const headStarts = Effect.fn("KinPulse.headStarts")(function* (
       }),
     ),
   ];
-  // The first active contact with an address, by name: the one a draft goes to.
-  const contacts = new Map<string, { name: string; email: string }>();
-  if (partyIds.length > 0)
-    for (const row of yield* sql<{ partyId: string; name: string; email: string }>`
-      SELECT party_id AS "partyId", title AS name, trim(json_extract(fields_json, '$.email')) AS email
-      FROM kin_records
-      WHERE org_id = ${orgId} AND register_id = 'contacts' AND state = 'open'
-        AND party_id IN ${sql.in(partyIds)}
-        AND trim(COALESCE(json_extract(fields_json, '$.email'), '')) <> ''
-      ORDER BY party_id, lower(title), key`)
-      if (!contacts.has(row.partyId))
-        contacts.set(row.partyId, { name: row.name, email: row.email });
+  // The contact a draft goes to: for money owed, the client's billing contact first.
+  const contacts = yield* clientRecipients(orgId, partyIds, false);
+  const billed = yield* clientRecipients(
+    orgId,
+    [
+      ...new Set(
+        facts.flatMap((fact) => (BILLED.has(fact.sense) ? [fact.subject.recordId ?? ""] : [])),
+      ),
+    ].flatMap((id) => clients.get(id)?.partyId ?? []),
+    true,
+  );
   const fileIds = facts.flatMap((fact) =>
     WITH_FILE.has(fact.sense) && fact.subject.recordId !== undefined ? [fact.subject.recordId] : [],
   );
@@ -132,7 +136,18 @@ export const headStarts = Effect.fn("KinPulse.headStarts")(function* (
     const recordId = fact.subject.recordId;
     if (recordId === undefined) continue;
     const client = clients.get(recordId);
-    const contact = client?.partyId == null ? undefined : contacts.get(client.partyId);
+    const picked =
+      client?.partyId == null
+        ? undefined
+        : (BILLED.has(fact.sense) ? billed : contacts).get(client.partyId);
+    const contact =
+      picked === undefined
+        ? undefined
+        : {
+            name: picked.name,
+            email: picked.email,
+            ...(picked.billing ? { billing: true as const } : {}),
+          };
     const writeTo = !TO_CLIENT.has(fact.sense)
       ? undefined
       : contact !== undefined

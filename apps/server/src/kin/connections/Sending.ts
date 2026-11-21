@@ -23,6 +23,7 @@ import { readStoredFile } from "../gendocs/brand.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import type { TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
+import { clientRecipients } from "../work/billingContact.ts";
 import { formatMoney } from "../work/money.ts";
 import { listDef, stateLabel } from "../work/registers.ts";
 import { seenBy } from "../work/teamView.ts";
@@ -323,8 +324,64 @@ export const fromOf = (
   return found === undefined ? undefined : { address: found.address, name: found.name };
 };
 
+/**
+ * Who a new mail carrying invoices or receipts goes to when it names nobody: their client's
+ * billing contact, else its first contact with an email, and the line that says which. `null`
+ * when it carries none.
+ */
+const billedTo = Effect.fn("KinSending.billedTo")(function* (
+  orgId: KinOrgId,
+  keys: ReadonlyArray<string>,
+) {
+  const entries = (yield* attachmentsOf(orgId, keys)).flatMap((one) =>
+    one.entryRecordId === null ? [] : [one.entryRecordId],
+  );
+  if (entries.length === 0) return null;
+  const sql = yield* SqlClient.SqlClient;
+  const parties = yield* sql<{ partyId: string | null; client: string | null }>`
+    SELECT DISTINCT c.record_id AS "partyId", c.title AS client
+    FROM kin_records r
+    LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
+    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.register_id = 'clients'
+      AND c.record_id = COALESCE(r.party_id, p.party_id)
+    WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(entries)}
+      AND r.register_id IN ('invoices', 'receipts')
+    ORDER BY c.record_id`;
+  const [party, ...more] = parties;
+  if (party === undefined) return null;
+  const needsTo = (why: string) => refused(`${MAIL_TOOL.send} needs to: ${why}.`);
+  if (more.length > 0) return yield* needsTo("these are for different clients");
+  if (party.partyId === null) return yield* needsTo("it has no client");
+  const client = party.client ?? "its client";
+  const picked = (yield* clientRecipients(orgId, [party.partyId], true)).get(party.partyId);
+  if (picked === undefined) return yield* needsTo(`${client} has no contact with an email`);
+  return {
+    email: picked.email,
+    note: picked.billing
+      ? `It goes to ${picked.name} (${picked.email}), ${client}'s billing contact.`
+      : `${client} has no billing contact, so it goes to ${picked.name} (${picked.email}), its first contact with an email.`,
+  };
+});
+
+/**
+ * What a mail send tool would send, and `picked`, the line saying who Kin chose when a new mail
+ * with an invoice or receipt named nobody (`billedTo`).
+ */
+export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (
+  input: Parameters<typeof prepareOne>[0],
+) {
+  const billed =
+    input.tool === MAIL_TOOL.send && strings(input.args.to).length === 0
+      ? yield* billedTo(input.orgId, strings(input.args.attachments))
+      : null;
+  const prepared = yield* prepareOne(
+    billed === null ? input : { ...input, args: { ...input.args, to: [billed.email] } },
+  );
+  return { prepared, picked: billed?.note ?? null };
+});
+
 /** What a mail send tool would send, checked and filled in from the thread it answers. */
-export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input: {
+const prepareOne = Effect.fn("KinSending.prepareOne")(function* (input: {
   readonly provider: MailProvider;
   readonly http: HttpClient.HttpClient;
   readonly token: Effect.Effect<string, KinGatewayError | KinChatError>;

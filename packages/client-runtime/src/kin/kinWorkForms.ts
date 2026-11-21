@@ -92,6 +92,9 @@ export const KIN_WORK_FORM_COPY = {
     detailsHint: "Emails and phone numbers are always private.",
     notes: "Notes",
     notesPlaceholder: "Anything worth remembering about them",
+    billing: "Gets the invoices",
+    billingNote:
+      "Invoices and receipts for this client go to them. Turning this on for someone else moves it.",
     remove: "No longer a contact",
     restore: "Make a contact again",
   },
@@ -356,6 +359,8 @@ export interface KinContactDraft {
   readonly notes: string;
   /** Absent on a client's first contact, which takes none. */
   readonly tags?: ReadonlyArray<string>;
+  /** Gets the client's invoices, in place of any other contact; absent on a first contact. */
+  readonly billing?: boolean;
 }
 
 /** Every one a contact has, main first, from a host that sends the list or only the main one. */
@@ -369,6 +374,7 @@ export const kinContactDraftOf = (contact?: KinContact): KinContactDraft => ({
   phones: detailsOf(contact?.phones, contact?.phone),
   notes: contact?.notes ?? "",
   tags: contact?.tags ?? [],
+  billing: contact?.billing === true,
 });
 
 /** One more empty field below the last, up to what a contact takes. */
@@ -458,6 +464,7 @@ export const kinContactCreateInput = (
   ...(draft.role.trim() === "" ? {} : { role: draft.role.trim() }),
   ...newDetails(draft.emails, draft.phones),
   ...(draft.tags === undefined || draft.tags.length === 0 ? {} : { tags: draft.tags }),
+  ...(draft.billing === true ? { billing: true } : {}),
   ...(draft.notes.trim() === "" ? {} : { notes: draft.notes.trim() }),
 });
 
@@ -468,6 +475,7 @@ export const kinContactUpdateInput = (
   ...(changed.role === undefined ? {} : { role: changed.role.trim() || null }),
   ...changedDetails(changed.emails, changed.phones),
   ...(changed.tags === undefined ? {} : { tags: changed.tags }),
+  ...(changed.billing === undefined ? {} : { billing: changed.billing }),
   ...(changed.notes === undefined ? {} : { notes: changed.notes.trim() }),
 });
 

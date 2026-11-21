@@ -178,13 +178,16 @@ const sendTools = (vendor: MailVendor) => {
             description:
               "One of this account's addresses (kin_connection_tools lists them); its main address when left out.",
           },
-          to: addresses(MAX_RECIPIENTS, "Who it goes to; at least one."),
+          to: addresses(
+            MAX_RECIPIENTS,
+            "Who it goes to. Leave it out with an invoice or receipt attached: it goes to its client's billing contact.",
+          ),
           cc: addresses(MAX_RECIPIENTS, "Who gets a copy."),
           subject: { type: "string", maxLength: 300 },
           body: { type: "string", maxLength: 20_000, description: "Plain text, in full." },
           attachments,
         },
-        required: ["to", "subject", "body"],
+        required: ["subject", "body"],
       },
     },
     {

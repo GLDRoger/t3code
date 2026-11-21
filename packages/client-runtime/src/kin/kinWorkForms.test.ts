@@ -543,6 +543,9 @@ describe("a contact's several emails and phones", () => {
       emails: ["Ravi@example.com"],
     });
     expect(kinContactUpdateInput({ name: "Ravi Rao" })).toEqual({ name: "Ravi Rao" });
+    // Turning off who gets the invoices is sent, so the host clears it.
+    expect(kinContactUpdateInput({ billing: false })).toEqual({ billing: false });
+    expect(kinContactCreateInput({ ...draft, billing: true })).toMatchObject({ billing: true });
   });
 
   it("sends a contact's tags whole on an edit, empty to clear them, and none when it has none", () => {

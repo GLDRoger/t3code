@@ -153,6 +153,8 @@ export const KIN_CLIENTS = {
   search: "Search clients",
   /** A client the search found through one of its contacts. */
   foundContact: (name: string) => `Contact: ${name}`,
+  /** Beside the contact who gets a client's invoices. */
+  billingMark: "Gets invoices",
   add: "New client",
   loadFailed: "Couldn't load your clients",
   weOwe: "To do for them",
@@ -695,6 +697,8 @@ export interface KinContactView {
   readonly closed: boolean;
   /** Each opens its list: every contact carrying it. */
   readonly tags: ReadonlyArray<string>;
+  /** Gets the client's invoices. */
+  readonly billing: boolean;
   readonly accessibilityLabel: string;
 }
 
@@ -738,7 +742,13 @@ function kinContactView(contact: KinContact): KinContactView {
     notes: notes === "" ? null : notes,
     closed: !contact.active,
     tags: contact.tags ?? [],
-    accessibilityLabel: [contact.name, contact.role, contact.active ? null : "No longer a contact"]
+    billing: contact.billing === true,
+    accessibilityLabel: [
+      contact.name,
+      contact.role,
+      contact.billing === true ? KIN_CLIENTS.billingMark : null,
+      contact.active ? null : "No longer a contact",
+    ]
       .filter((part) => part !== null)
       .join(". "),
   };

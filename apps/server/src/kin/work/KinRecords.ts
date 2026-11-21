@@ -35,7 +35,7 @@ import * as PubSub from "effect/PubSub";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
-import { isSqlError } from "effect/sql/SqlError";
+import { isSqlError, type SqlError } from "effect/sql/SqlError";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import type { ClosedSubject } from "../open/closeSubject.ts";
@@ -1551,6 +1551,24 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /** A client has one billing contact: the one just made so stops being any other. */
+  const onlyBilling: (
+    orgId: KinOrgId,
+    writer: Writer,
+    row: RecordRow,
+  ) => Effect.Effect<void, KinChatError | SqlError> = Effect.fn("KinRecords.onlyBilling")(
+    function* (orgId: KinOrgId, writer: Writer, row: RecordRow) {
+      if (row.partyId === null) return;
+      const others = yield* sql<{ key: string }>`SELECT key FROM kin_records
+      WHERE org_id = ${orgId} AND register_id = 'contacts' AND party_id = ${row.partyId}
+        AND record_id <> ${row.recordId} AND json_extract(fields_json, '$.billing') IS NOT NULL
+      ORDER BY key`;
+      const { since: _since, ...plain } = writer;
+      for (const other of others)
+        yield* update(orgId, plain, other.key, { fields: { billing: null } });
+    },
+  );
+
   const create = Effect.fn("KinRecords.create")(function* (
     orgId: KinOrgId,
     writer: Writer,
@@ -1561,6 +1579,12 @@ const make = Effect.gen(function* () {
         const result = yield* insert(orgId, writer, input, { wake: true });
         if (!result.created && result.row.state === "dropped" && input.state !== "dropped")
           return yield* undoneRetry("entry");
+        if (
+          result.created &&
+          result.row.registerId === "contacts" &&
+          parseFields(result.row.fieldsJson).billing !== undefined
+        )
+          yield* onlyBilling(orgId, writer, result.row);
         // Made already closed, a repeating entry's next one is owed at once.
         if (result.created && isClosed(result.row.state))
           yield* spawnNext(orgId, writer, result.row);
@@ -1763,6 +1787,23 @@ const make = Effect.gen(function* () {
           delete merged.untold;
           fieldsChanged = true;
         }
+        // A billing contact moved to another client, or removed, stops being one.
+        if (
+          list === "contacts" &&
+          merged.billing !== undefined &&
+          patch.fields?.billing === undefined &&
+          (partyId !== row.partyId || (patch.state === "dropped" && row.state !== "dropped"))
+        ) {
+          changes.push({ field: "billing", from: shownField(merged.billing), to: null });
+          delete merged.billing;
+          fieldsChanged = true;
+        }
+        if (
+          list === "contacts" &&
+          patch.fields?.billing != null &&
+          (patch.state ?? row.state) === "dropped"
+        )
+          return yield* invalid(`${row.key} is removed; restore them first.`);
         if (fieldsChanged) set("fields_json", yield* encodeFieldValues(merged));
         const amount = amountOf(row) ?? null;
         const byOwner = writer.via === "owner";
@@ -2184,6 +2225,12 @@ const make = Effect.gen(function* () {
         if (updated === undefined) return yield* unavailable;
         if (!isClosed(row.state) && isClosed(updated.state))
           yield* spawnNext(orgId, writer, updated);
+        if (
+          list === "contacts" &&
+          merged.billing !== undefined &&
+          (stored.billing === undefined || partyId !== row.partyId)
+        )
+          yield* onlyBilling(orgId, writer, updated);
         return updated;
       }),
     );

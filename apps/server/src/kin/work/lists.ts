@@ -72,7 +72,8 @@ export const LISTS: Record<ListName, List> = {
     states: ["open", "dropped"],
     categories: [],
     // `emails` and `phones` hold every one, main first, only beside a second (`contactDetails.ts`).
-    fields: ["role", "email", "phone", "emails", "phones", "tags"],
+    // `billing` is "true" on the one contact per client its invoices go to (`billingContact.ts`).
+    fields: ["role", "email", "phone", "emails", "phones", "tags", "billing"],
   },
   projects: {
     name: "Projects",
