@@ -55,6 +55,8 @@ type Behavior =
   | "token"
   | "failed-turn"
   | "contradiction"
+  /** The model reads its material, passes the checks and changes no file. */
+  | "unchanged"
   /** The owner presses stop while the extract turn runs; the turn itself completes. */
   | "paused"
   | { readonly hold: Deferred.Deferred<void> };
@@ -222,6 +224,10 @@ const fixture = <A, E>(
           expect(yield* fs.readFileString(at(".kin-dream/material.json"))).toContain(ownerRef);
           for (const planted of [".mcp.json", ".claude", "CLAUDE.md"])
             expect(yield* fs.exists(at(planted))).toBe(false);
+          if (current === "unchanged") {
+            yield* fs.writeFileString(at(".kin-dream/dream.json"), dreamJson());
+            return { threadId, status: "completed" as const };
+          }
           yield* fs.writeFileString(
             at("claims/new.md"),
             newClaim(
@@ -888,28 +894,33 @@ it.live(
     ),
 );
 
-it.live("a night with nothing new since the last good one runs no model and posts nothing", () =>
-  fixture(({ turns, notices, root, remote, git }) =>
-    Effect.gen(function* () {
-      const runner = yield* DreamRunner.DreamRunner;
-      const sql = yield* SqlClient.SqlClient;
-      expect((yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" }))._tag).toBe(
-        "succeeded",
-      );
-      expect(turns).toHaveLength(1);
-      // The item written before labels existed is labelled by that first night, for the owner
-      // alone since the dream left it unlabelled; with nothing left to label, no model runs again.
-      expect(
-        yield* sql`SELECT item_id, classified FROM kin_memory_labels WHERE org_id = ${orgId}`,
-      ).toEqual([{ item_id: "clm-001", classified: 1 }]);
-      const quiet = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-09" });
-      expect(quiet._tag).toBe("succeeded");
-      expect(turns).toHaveLength(1);
-      expect(notices).toEqual([]);
-      expect((yield* runRow()).map((row) => row.status)).toEqual(["succeeded", "succeeded"]);
-      expect(yield* git(root, ["ls-remote", "--heads", remote])).not.toContain("dream/2026-11-09");
-    }),
-  ),
+it.live.each(["good", "unchanged"] as const)(
+  "a night with nothing new since the last good one (%s) runs no model and posts nothing",
+  (first) =>
+    fixture(({ turns, notices, root, remote, git, behave }) =>
+      Effect.gen(function* () {
+        const runner = yield* DreamRunner.DreamRunner;
+        const sql = yield* SqlClient.SqlClient;
+        behave(first);
+        expect((yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" }))._tag).toBe(
+          "succeeded",
+        );
+        expect(turns).toHaveLength(1);
+        // The item written before labels existed is labelled by that first night, for the owner
+        // alone since the dream left it unlabelled; with nothing left to label, no model runs again.
+        expect(
+          yield* sql`SELECT item_id, classified FROM kin_memory_labels WHERE org_id = ${orgId}`,
+        ).toEqual([{ item_id: "clm-001", classified: 1 }]);
+        const quiet = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-09" });
+        expect(quiet._tag).toBe("succeeded");
+        expect(turns).toHaveLength(1);
+        expect(notices).toEqual([]);
+        expect((yield* runRow()).map((row) => row.status)).toEqual(["succeeded", "succeeded"]);
+        expect(yield* git(root, ["ls-remote", "--heads", remote])).not.toContain(
+          "dream/2026-11-09",
+        );
+      }),
+    ),
 );
 
 it.live("the night retires spent notes on the default branch and keeps everything else", () => {

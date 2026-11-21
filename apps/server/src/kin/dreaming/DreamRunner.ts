@@ -94,7 +94,7 @@ const FAILED_NIGHTS_NOTICE = 3;
  * The owner's choice: whether a night that read its material and landed nothing (no model ran,
  * or it changed nothing) counts that material as dreamed. Off, it is offered again next night.
  */
-const EMPTY_DREAM_CONSUMES_MATERIAL = false;
+const EMPTY_DREAM_CONSUMES_MATERIAL = true;
 /** The owner's choice: whether a dream may start once the day's budget is spent. Off, it waits. */
 const DREAM_RUNS_ON_A_SPENT_BUDGET = false;
 const emptyDream: DreamJson = { changes: [], merges: [], supersessions: [], contradictions: [] };
