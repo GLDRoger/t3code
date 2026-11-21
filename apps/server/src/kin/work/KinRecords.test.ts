@@ -70,6 +70,7 @@ import * as OwnerClients from "./ownerClients.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import * as WorkStream from "./workStream.ts";
 import { presetDefinition } from "./registers.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
@@ -2827,23 +2828,32 @@ it.effect("a teammate's Tasks and Search find the projects they lead by its own 
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a teammate's live changes name only tasks they see, and one hidden from them once", () =>
+it.effect("old live changes name to a teammate only what they see, to the owner all", () =>
   Effect.gen(function* () {
     yield* seed;
     const records = yield* KinRecords.KinRecords;
     const sql = yield* SqlClient.SqlClient;
     const heard = yield* Queue.unbounded<{
       readonly seq: number;
-      readonly key?: string;
-      readonly list?: string;
+      readonly key?: string | undefined;
+      readonly list?: string | undefined;
     }>();
-    yield* OwnerWork.subscribe([mate], { orgId }).pipe(
+    yield* WorkStream.subscribeChanged([mate], { orgId }).pipe(
       Stream.runForEach((event) => Queue.offer(heard, event)),
+      Effect.forkChild,
+    );
+    const told = yield* Queue.unbounded<{
+      readonly key?: string | undefined;
+      readonly list?: string | undefined;
+    }>();
+    yield* WorkStream.subscribeChanged([owner], { orgId }).pipe(
+      Stream.runForEach((event) => Queue.offer(told, event)),
       Effect.forkChild,
     );
     // Each is taken before the next write: a notice nobody should get would come first instead.
     const next = Queue.take(heard).pipe(Effect.map((event) => [event.key ?? null, event.seq]));
     assert.deepStrictEqual(yield* next, [null, 0]);
+    assert.strictEqual((yield* Queue.take(told)).key, undefined);
     const create = (title: string, owner = ownerId) =>
       records.create(orgId, ownerWrites, {
         originKey: title,
@@ -2852,6 +2862,14 @@ it.effect("a teammate's live changes name only tasks they see, and one hidden fr
       });
     yield* create("owner's");
     yield* create("for mate", mateId);
+    // The owner is told of both, by the company's numbers.
+    assert.deepStrictEqual(
+      [yield* Queue.take(told), yield* Queue.take(told)].map((event) => [event.key, event.list]),
+      [
+        ["W-1", "work"],
+        ["W-2", "work"],
+      ],
+    );
     // Their own numbers: one more for each change to what they could see, so nothing else shows.
     // The list is named, so their screens read again only what Work's own list can change.
     const theirs = yield* Queue.take(heard);
