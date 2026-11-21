@@ -103,11 +103,14 @@ const apply = (
       : { systemPrompt: { type: "custom" as const, prompt: plan.instructions, snapshot: false } }),
     ...(confined
       ? {
-          tools: [...(loading.search === "true" ? ["ToolSearch"] : []), CONFINED_SEARCH],
+          tools: [
+            ...(loading.search === "true" ? ["ToolSearch"] : []),
+            ...(plan.nativeSearch ? [CONFINED_SEARCH] : []),
+          ],
           disallowedTools: [
             ...new Set([
               ...(options.disallowedTools ?? []),
-              ...builtinTools.filter((name) => name !== CONFINED_SEARCH),
+              ...builtinTools.filter((name) => !plan.nativeSearch || name !== CONFINED_SEARCH),
             ]),
           ],
         }

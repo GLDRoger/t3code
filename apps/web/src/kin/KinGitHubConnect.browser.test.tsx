@@ -1,4 +1,4 @@
-import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
+import { EnvironmentId, type KinGitHubAgents, KinOrgId } from "@t3tools/contracts";
 import * as Redacted from "effect/Redacted";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -58,7 +58,7 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
 import "~/index.css";
 import { render } from "../../test/render";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
-import { KinGitHubConnect } from "./KinGitHubConnect";
+import { KinGitHubConnect, KinGitHubInstantLine } from "./KinGitHubConnect";
 
 const target = { environmentId: EnvironmentId.make("env-1"), orgId: KinOrgId.make("org-1") };
 
@@ -108,5 +108,44 @@ describe("connecting GitHub", () => {
     const sent = host.starts[0]?.token;
     expect(Redacted.isRedacted(sent)).toBe(true);
     expect(Redacted.value(sent as Redacted.Redacted<string>)).toBe("ghp_invented0000");
+  });
+});
+
+const agents: KinGitHubAgents = {
+  as: "app",
+  appName: "Invented Kin",
+  problem: null,
+  watched: 4,
+  installed: 4,
+  without: [],
+  ownerUses: [],
+};
+const settingsUrl = "https://github.com/settings/apps/invented-kin/permissions";
+
+describe("how fast Kin hears from GitHub", () => {
+  it("names the events to tick and opens GitHub's page outside Kin", async () => {
+    await using _screen = await render(
+      <KinGitHubInstantLine
+        agents={{
+          ...agents,
+          instant: { state: "events", missing: ["Pull request"], settingsUrl, last: null },
+        }}
+        now={0}
+      />,
+      { router: false }, // The row has no links inside Kin.
+    );
+    await expect.element(page.getByText("Events to tick")).toBeVisible();
+    await expect.element(page.getByText(/tick "Pull request" under Subscribe/)).toBeVisible();
+    const link = page.getByRole("link", { name: "Open Permissions & events" });
+    await expect.element(link).toHaveAttribute("href", settingsUrl);
+    await expect.element(link).toHaveAttribute("target", "_blank");
+    await expect.element(link).toHaveAttribute("rel", "noreferrer noopener");
+  });
+
+  it("draws nothing when the status carries no instant, as for a teammate", async () => {
+    await using _screen = await render(<KinGitHubInstantLine agents={agents} now={0} />, {
+      router: false, // The row has no links inside Kin.
+    });
+    await expect.element(page.getByText("How fast Kin hears from GitHub")).not.toBeInTheDocument();
   });
 });

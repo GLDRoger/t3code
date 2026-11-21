@@ -1478,26 +1478,26 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
-    "K196 gives open invites no chosen places, keeps a choice and its chooser, and reruns",
+    "K197 gives open invites no chosen places, keeps a choice and its chooser, and reruns",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* runKinMigrations();
         for (const column of ["sees_json", "sees_by_person_id"])
           yield* sql`ALTER TABLE kin_people_invites DROP COLUMN ${sql.literal(column)}`;
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 197`;
         yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
         yield* sql`INSERT INTO kin_people_invites (invite_id, org_id, person_id, display_name, handle,
           secret_hash, created_at, expires_at)
         VALUES ('invite', 'org', NULL, 'Zoya', 'zoya', 'hash', 1, 2)`;
         const invites = sql`SELECT invite_id AS "inviteId", sees_json AS sees,
         sees_by_person_id AS by FROM kin_people_invites`;
-        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(197));
         assert.deepStrictEqual(yield* invites, [{ inviteId: "invite", sees: null, by: null }]);
         const sees = JSON.stringify({ clients: false, docs: true, money: true });
         yield* sql`UPDATE kin_people_invites SET sees_json = ${sees}, sees_by_person_id = 'meera'`;
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
-        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 197`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(197));
         assert.deepStrictEqual(yield* invites, [{ inviteId: "invite", sees, by: "meera" }]);
       }).pipe(Effect.provide(layer)),
   );
@@ -1803,6 +1803,32 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect(
+    "K196 gives a host on K195 the review receipt column, keeps its rows, and runs again",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const receipts = sql<{ trigger_key: string; review_url: string | null }>`
+          SELECT trigger_key, review_url FROM kin_github_handled ORDER BY trigger_key`;
+        yield* runKinMigrations();
+        // A host on K195: no receipt column yet, one handled trigger.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
+        yield* sql`ALTER TABLE kin_github_handled DROP COLUMN review_url`;
+        yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, outcome, at)
+          VALUES ('org', 'review:ambermill/shop#7', 'ambermill/shop', 7, 'woke', 1)`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
+        assert.deepStrictEqual(yield* receipts, [
+          { trigger_key: "review:ambermill/shop#7", review_url: null },
+        ]);
+        // Already there: it changes nothing.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
+        assert.deepStrictEqual(yield* receipts, [
+          { trigger_key: "review:ambermill/shop#7", review_url: null },
+        ]);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -1813,7 +1839,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 196");
+      assert.include(String(exit), "below the latest applied migration 197");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
