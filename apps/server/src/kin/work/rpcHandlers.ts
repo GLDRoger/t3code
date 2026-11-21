@@ -374,6 +374,12 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.invoiceFromQuote": Effect.fn("KinWork.rpc.invoiceFromQuote")(function* (input) {
         return yield* call((people) => MoneyAnswers.invoiceFromQuote(people, input));
       }),
+      "kin.work.newInvoice": Effect.fn("KinWork.rpc.newInvoice")(function* (input) {
+        return yield* call((people) => MoneyAnswers.newInvoice(people, input));
+      }),
+      "kin.work.newExpense": Effect.fn("KinWork.rpc.newExpense")(function* (input) {
+        return yield* call((people) => MoneyAnswers.newExpense(people, input));
+      }),
     }),
     ...moneyLive.of({
       "kin.money.subscribe": (input) => stream((people) => MoneyStream.subscribe(people, input)),

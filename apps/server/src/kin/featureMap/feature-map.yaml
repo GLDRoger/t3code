@@ -587,6 +587,32 @@ features:
     tools: [kin_receipt]
     proof: [apps/server/src/kin/gendocs/compute.test.ts]
 
+  - id: invoice-by-hand
+    name: An invoice typed by hand
+    tab: money
+    web: [money, menu:Add, dialog:New invoice]
+    phone: [tab:money, menu:Add, KinInvoiceNew]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      Also from the Invoices list and a client's More menu. Saved as a Draft, made with its lines,
+      and opened on its page, where Issue numbers it.
+    proof:
+      - apps/server/src/kin/gendocs/documents.test.ts
+      - packages/client-runtime/src/kin/kinMoneyForms.test.ts
+
+  - id: expense-by-hand
+    name: An expense typed by hand
+    tab: money
+    web: [money, menu:Add, dialog:New expense]
+    phone: [tab:money, menu:Add, KinExpenseNew]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: Also from the Expenses list. The first one makes the Expenses list.
+    proof:
+      - apps/server/src/kin/work/money.test.ts
+      - packages/client-runtime/src/kin/kinMoneyForms.test.ts
+
   - id: receipt-apply
     name: Set a receipt against an invoice
     tab: money

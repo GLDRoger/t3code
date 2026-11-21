@@ -22,6 +22,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { KIN_GOALS } from "@t3tools/client-runtime/kin/kinAttention";
 import { KIN_BUDGETS, KIN_QUOTES } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { KIN_RECEIPTS } from "@t3tools/client-runtime/kin/kinInvoices";
+import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions";
 import { ArrowLeftRightIcon, MessageSquareIcon, PlusIcon, BotIcon } from "lucide-react";
 import { KIN_CHIEF_OF_STAFF } from "@t3tools/client-runtime/kin/kinLeadPresentation";
@@ -43,6 +44,7 @@ import {
 } from "./KinMoneyAnswers";
 import { KinMoneySuggested } from "./KinMoneySuggested";
 import { KinSubscriptionsSection } from "./KinSubscriptions";
+import { KinNewExpenseDialog, KinNewInvoiceDialog } from "./KinMoneyForms";
 import { KinNewReceiptDialog, KinReceiptsSection } from "./KinReceipts";
 import { KinAttentionSection } from "./KinAttention";
 import { KinGoalSheet, KinGoals } from "./KinGoals";
@@ -240,7 +242,11 @@ function MoneyScreen(props: MoneyProps) {
   const goals = useKinGoals(props, { enabled: true, money: true });
   const canBudget = useAtomValue(kinClient.workSetBudget.permissionAtom(props.environmentId));
   const canReceipt = useAtomValue(kinClient.makeReceipt.permissionAtom(props.environmentId));
-  const [adding, setAdding] = useState<"goal" | "budget" | "receipt" | null>(null);
+  const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(props.environmentId));
+  const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(props.environmentId));
+  const [adding, setAdding] = useState<
+    "goal" | "budget" | "receipt" | "invoice" | "expense" | null
+  >(null);
   const scope = useKinViewerScope(props.environmentId);
   const scopeNote = kinScopeNote("money", scope);
   const top = (
@@ -262,13 +268,28 @@ function MoneyScreen(props: MoneyProps) {
   /** The page's own ways in; `withAsk` adds Ask, which an empty page already offers above. */
   const actions = (withAsk: boolean) => (
     <div className="flex flex-wrap gap-2">
-      {!goals.canSave && !canBudget && !canReceipt && agent === null ? null : (
+      {!goals.canSave &&
+      !canBudget &&
+      !canReceipt &&
+      !canInvoice &&
+      !canExpense &&
+      agent === null ? null : (
         <Menu>
           <MenuTrigger render={<Button size="sm" variant="ghost" />}>
             <PlusIcon />
             {KIN_MONEY.add}
           </MenuTrigger>
           <MenuPopup align="start" side="top">
+            {canInvoice ? (
+              <MenuItem onClick={() => setAdding("invoice")}>
+                {KIN_MONEY_FORMS.invoice.add}
+              </MenuItem>
+            ) : null}
+            {canExpense ? (
+              <MenuItem onClick={() => setAdding("expense")}>
+                {KIN_MONEY_FORMS.expense.add}
+              </MenuItem>
+            ) : null}
             {goals.canSave ? (
               <MenuItem onClick={() => setAdding("goal")}>{KIN_GOALS.add}</MenuItem>
             ) : null}
@@ -325,6 +346,10 @@ function MoneyScreen(props: MoneyProps) {
         />
       ) : adding === "receipt" ? (
         <KinNewReceiptDialog {...props} onClose={() => setAdding(null)} />
+      ) : adding === "invoice" ? (
+        <KinNewInvoiceDialog {...props} onClose={() => setAdding(null)} />
+      ) : adding === "expense" ? (
+        <KinNewExpenseDialog {...props} onClose={() => setAdding(null)} />
       ) : null}
       {ratesOpen ? <KinRatesDialog {...props} onClose={() => setRatesOpen(false)} /> : null}
     </>

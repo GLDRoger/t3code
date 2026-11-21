@@ -1291,7 +1291,7 @@ export const removeLink = (people: ReadonlyArray<PersonIdentity>, input: KinWork
  * The files an owner's edit adds are ones the owner can read: each on a message, not deleted, in
  * a chat the owner is in. Anything else looks like no file at all.
  */
-const ownFiles = Effect.fn("KinWork.ownFiles")(function* (
+export const ownFiles = Effect.fn("KinWork.ownFiles")(function* (
   person: PersonIdentity,
   storedJson: string,
   fields: Readonly<Record<string, unknown>>,

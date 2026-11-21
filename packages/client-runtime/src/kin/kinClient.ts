@@ -1828,6 +1828,16 @@ export function makeKinClient<R, ER>(
       tag: "kin.work.invoiceFromQuote",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
+    workNewInvoice: createKinRpcCommand(runtime, {
+      label: "kin:work:new-invoice",
+      tag: "kin.work.newInvoice",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    workNewExpense: createKinRpcCommand(runtime, {
+      label: "kin:work:new-expense",
+      tag: "kin.work.newExpense",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
     /** One page of everything dated in a window; the Dates view decides when. */
     workDates: workDatesRead,
     workListUpdate: createKinRpcCommand(runtime, {

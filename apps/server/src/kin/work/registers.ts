@@ -1177,13 +1177,24 @@ export const listOrPreset = Effect.fn("KinRegisters.listOrPreset")(function* (
   id: string,
   now: number,
 ) {
+  return isRecipeList(id)
+    ? yield* presetList(orgId, id as PresetId, now)
+    : yield* listDef(orgId, id);
+});
+
+/** A preset's list, made from the preset when this org has none yet: an owner-level person's own write. */
+export const presetList = Effect.fn("KinRegisters.presetList")(function* (
+  orgId: KinOrgId,
+  id: PresetId,
+  now: number,
+) {
   const sql = yield* SqlClient.SqlClient;
   const existing = yield* listDef(orgId, id);
-  if (existing !== undefined || !isRecipeList(id)) return existing;
+  if (existing !== undefined) return existing;
   // One transaction, so a country saved meanwhile either rewrites this list or comes after it.
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      const proposal = yield* proposalFor(orgId, { template: id as PresetId });
+      const proposal = yield* proposalFor(orgId, { template: id });
       yield* defineList(orgId, proposal, now).pipe(
         // Two first quotes at once: the other made it, which is the same list.
         Effect.catchIf(

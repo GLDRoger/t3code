@@ -10,4 +10,6 @@ export const {
   useKinBudgetSet,
   useKinEntryLines,
   useKinInvoiceFromQuote,
+  useKinNewInvoice,
+  useKinNewExpense,
 } = makeKinMoneyAnswersHooks(kinHookApp, { useKinMoneyLive });

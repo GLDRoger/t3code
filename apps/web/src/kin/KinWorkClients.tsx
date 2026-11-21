@@ -52,6 +52,7 @@ import {
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
+import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import {
   KIN_MARKETING,
   kinCameFromLabel,
@@ -66,6 +67,7 @@ import type {
   KinRecord,
   KinRecordKey,
 } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react";
 import { EllipsisIcon, MailIcon, PencilIcon, PhoneIcon, PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
@@ -84,6 +86,7 @@ import { KinClientContact } from "./KinClientTouches";
 import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinClientDialog, KinContactDialog, KinProjectDialog } from "./KinWorkForms";
+import { KinNewInvoiceDialog } from "./KinMoneyForms";
 import { KinContactListDialog, KinExportListButton, useKinMarketing } from "./KinMarketing";
 import { KinWorkPlaceLists } from "./KinWorkPlaceLists";
 import {
@@ -626,6 +629,7 @@ type ClientDialog =
   | { readonly type: "edit" }
   | { readonly type: "contact"; readonly key: KinRecordKey | null }
   | { readonly type: "project" }
+  | { readonly type: "invoice" }
   | null;
 
 /** One client: what is owed each way, who to reach, its projects, terms, notes and history. */
@@ -683,6 +687,7 @@ function ClientPage(
   const { state: changed, changes } = props.changes;
   const ownerLevel = useKinOwnerLevel(environmentId);
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
+  const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
   const now = new Date(useNowMinuteMs());
   const [dialog, setDialog] = useState<ClientDialog>(null);
   const [tagList, setTagList] = useState<string | null>(null);
@@ -798,7 +803,7 @@ function ClientPage(
                 <span className="truncate text-foreground">{view.lookedAfter.name}</span>
               </p>
             </div>
-            {can.edit || can.owner ? (
+            {can.edit || can.owner || canInvoice ? (
               <div className="flex shrink-0 items-center gap-1">
                 {can.edit ? (
                   <Button
@@ -820,6 +825,11 @@ function ClientPage(
                     <EllipsisIcon />
                   </MenuTrigger>
                   <MenuPopup align="end">
+                    {canInvoice && !view.vendor && !view.closed ? (
+                      <MenuItem onClick={() => setDialog({ type: "invoice" })}>
+                        {KIN_MONEY_FORMS.invoice.title}
+                      </MenuItem>
+                    ) : null}
                     {can.edit && !view.vendor ? (
                       <MenuItem onClick={() => void change({ prospect: !view.prospect })}>
                         {view.prospect ? KIN_CLIENTS.makeClient : KIN_CLIENTS.makeProspect}
@@ -1166,6 +1176,14 @@ function ClientPage(
             setDialog(null);
             props.onRefresh();
           }}
+          onClose={() => setDialog(null)}
+        />
+      ) : dialog?.type === "invoice" ? (
+        <KinNewInvoiceDialog
+          environmentId={environmentId}
+          orgId={orgId}
+          party={view.ref}
+          onOpenKey={props.onOpenTask}
           onClose={() => setDialog(null)}
         />
       ) : dialog?.type === "project" ? (
