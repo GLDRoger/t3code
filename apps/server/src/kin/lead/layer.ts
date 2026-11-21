@@ -53,6 +53,7 @@ import * as Workspace from "../gendocs/workspace.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
+import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import * as KinRecommend from "../recommend/KinRecommend.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
@@ -107,6 +108,7 @@ const routineRuntime = Layer.mergeAll(
   Watchdogs.layer,
   HostBackup.layer,
   KinPulse.layer,
+  ArrivalFeed.liveLayer,
   KinRecommend.layer,
 ).pipe(
   Layer.provideMerge(LeadDelivery.layer),

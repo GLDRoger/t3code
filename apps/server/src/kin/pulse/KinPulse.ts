@@ -25,8 +25,6 @@ import * as NodeCrypto from "node:crypto";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { KinConnections } from "../connections/ConnectionsService.ts";
-import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
@@ -42,7 +40,6 @@ import { projectSenses } from "./senses/projects.ts";
 import { iso, type SenseContext, type SensedFact } from "./senses/shared.ts";
 import { systemSenses } from "./senses/system.ts";
 import { workSenses } from "./senses/work.ts";
-import { fromConnections, noOutside, poll } from "./outside.ts";
 import { DAY_MS } from "./thresholds.ts";
 import { tellHolder } from "./holderNotice.ts";
 import { morningPages, pageMinuteSince } from "./personMorning.ts";
@@ -63,7 +60,6 @@ const FINANCE_DOMAIN = "finance";
 /** How long "I've got it" with no date holds a fact. */
 export const GOT_IT_MS = 3 * DAY_MS;
 const TICK_EVERY_MS = 15 * 60_000;
-const OUTSIDE_EVERY_MS = 3 * 60_000;
 const READ_CAP = 50;
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const encodeScope = Schema.encodeEffect(Schema.fromJsonString(KinPulseFact.fields.scope));
@@ -950,37 +946,11 @@ export const pass = Effect.fnUntraced(
  */
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
     const ticks = yield* Scheduler.Scheduler;
     const queue = yield* KinEventQueue.KinEventQueue;
     const refreshes = yield* KinRefreshObserver;
     const chats = yield* Effect.serviceOption(KinChatService);
     const last: Passes = new Map();
-    const outside = Option.match(yield* Effect.serviceOption(KinConnections), {
-      onNone: () => noOutside,
-      onSome: (connections) => fromConnections(connections, sql),
-    });
-    const polled = new Map<string, number>();
-    // Mail and calendar between check-ins: metadata reads with no model, waking only on a match.
-    yield* ticks.register(
-      "kin-pulse-outside",
-      Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        // Scheduler maintenance: orgs with a live mail connection; each poll is org-scoped.
-        const orgs = yield* sql<{ orgId: string }>`SELECT DISTINCT org_id AS "orgId"
-          FROM kin_connections WHERE preset IN ${sql.in(MAIL_PRESETS)} AND removed_at IS NULL
-            AND paused_at IS NULL AND state = 'active'
-          ORDER BY org_id`.pipe(NodeSqliteClient.readOnly);
-        for (const { orgId } of orgs) {
-          if (now - (polled.get(orgId) ?? -Infinity) < OUTSIDE_EVERY_MS) continue;
-          polled.set(orgId, now);
-          yield* poll(KinOrgId.make(orgId), now, outside).pipe(
-            Effect.provideService(KinEventQueue.KinEventQueue, queue),
-            Effect.catch((cause) => Effect.logWarning("Kin outside poll failed", { orgId, cause })),
-          );
-        }
-      }).pipe(Effect.catch((cause) => Effect.logWarning("Kin outside scan failed", { cause }))),
-    );
     yield* ticks.register(
       "kin-pulse",
       Effect.suspend(() => pass(last)).pipe(

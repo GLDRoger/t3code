@@ -105,7 +105,9 @@ import {
   ACROSS_ACCOUNTS,
   MAIL_SEND_TOOL_NAMES,
   MAIL_TOOL,
+  type MailArrival,
   type Mailbox,
+  type MailChange,
   type MailProvider,
 } from "./MailProvider.ts";
 import { MAIL_PRESETS, mailProviderOf } from "./mailProviders.ts";
@@ -344,6 +346,39 @@ export type KinConnectionActivity =
       }>;
     }
   | { readonly _tag: "unsupported"; readonly connectionId: KinConnectionId };
+/** Where a mailbox's change feed stands: the vendor's position, and when it was last read. */
+const MailCursor = Schema.Struct({ position: Schema.String, at: Schema.Number });
+export type MailCursor = typeof MailCursor.Type;
+const MailCursorJson = Schema.fromJsonString(MailCursor);
+const readMailCursor = Schema.decodeOption(MailCursorJson);
+const mailCursorText = Schema.encodeSync(MailCursorJson);
+/**
+ * Neither vendor bounds a position's life (Gmail: "at least a week, but … only a few hours";
+ * Graph: "the upper limit isn't fixed"), so Kin does: older than this is a gap. Mail received
+ * more than a day before the last read is existing mail, never an arrival (EEVEE's window).
+ */
+export const MAIL_FEED_WINDOW = { positionMaxAgeMs: 7 * 86_400_000, marginMs: 86_400_000 } as const;
+/** The Inbox's changes since a mailbox's feed was last kept, as ids; server use only. */
+export type KinMailChanges =
+  | { readonly _tag: "off" }
+  | {
+      readonly _tag: "read";
+      readonly account: string | null;
+      /** Every address the account receives and sends as. */
+      readonly addresses: ReadonlyArray<string>;
+      /** A message the vendor received before this is existing mail. */
+      readonly floor: number;
+      readonly changes: ReadonlyArray<MailChange>;
+      /** What `changesSeen` keeps once these are handled. */
+      readonly cursor: MailCursor;
+      readonly more: boolean;
+      /** A stretch the feed couldn't see: its position was too old or the vendor forgot it. */
+      readonly gap: { readonly from: number; readonly to: number } | null;
+    };
+export type KinMailArrivalRead =
+  | { readonly _tag: "read"; readonly messageId: string; readonly arrival: MailArrival }
+  | { readonly _tag: "gone"; readonly messageId: string }
+  | { readonly _tag: "unreadable"; readonly messageId: string };
 type AskRow = {
   readonly askId: string;
   readonly connectionId: string;
@@ -580,6 +615,26 @@ export class KinConnections extends Context.Service<
       connectionId: string,
       until: number,
       cursor?: string | null,
+    ) => Effect.Effect<void, KinChatError>;
+    /**
+     * Server use only (the arrival feed, never an agent tool): the Inbox's change record after
+     * the stored position, ids only. `off` when the owner hasn't marked its mail reads Read.
+     */
+    readonly changes: (
+      orgId: KinOrgId,
+      connectionId: string,
+    ) => Effect.Effect<KinMailChanges, KinChatError>;
+    /** Each message's headers, read once by id; a message that fails to read is `unreadable`. */
+    readonly arrivals: (
+      orgId: KinOrgId,
+      connectionId: string,
+      messageIds: ReadonlyArray<string>,
+    ) => Effect.Effect<ReadonlyArray<KinMailArrivalRead>, KinChatError>;
+    /** Keeps a `changes` cursor once what it named is handled; null starts afresh next read. */
+    readonly changesSeen: (
+      orgId: KinOrgId,
+      connectionId: string,
+      cursor: MailCursor | null,
     ) => Effect.Effect<void, KinChatError>;
     readonly tools: Lead<typeof KinConnectionToolsInput.Type, typeof KinConnectionToolsResult.Type>;
     readonly call: Lead<typeof KinConnectionCallInput.Type, typeof KinConnectionCallResult.Type>;
@@ -1817,6 +1872,116 @@ const make = Effect.gen(function* () {
           checked_until = MAX(checked_until, excluded.checked_until), updated_at = excluded.updated_at,
           calendar_cursor = CASE WHEN excluded.checked_until >= checked_until
             THEN COALESCE(excluded.calendar_cursor, calendar_cursor) ELSE calendar_cursor END`;
+  }, settle);
+
+  /** The mail reads the owner marked Read, as `activity` checks them. */
+  const mailReadOn = Effect.fnUntraced(function* (orgId: KinOrgId, row: ConnectionRow) {
+    const read = new Set(
+      (yield* toolsOf(orgId, row.connectionId).pipe(provideSql))
+        .filter((tool) => tool.mode === "read" && tool.removedAt === null)
+        .map((tool) => tool.name),
+    );
+    return read.has(MAIL_TOOL.list) || read.has(MAIL_TOOL.search);
+  });
+  const changes = Effect.fn("KinConnections.changes")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+  ) {
+    const row = yield* live(orgId, connectionId);
+    const provider = mailProviderOf(row);
+    if (provider === undefined || !(yield* mailReadOn(orgId, row))) {
+      // Turned back on later, the feed starts from then: what came while off isn't news.
+      yield* sql`UPDATE kin_connection_cursors SET mail_cursor = NULL
+        WHERE org_id = ${orgId} AND connection_id = ${connectionId} AND mail_cursor IS NOT NULL`;
+      return { _tag: "off" } as const;
+    }
+    const [stored] = yield* sql<{ mailCursor: string | null }>`SELECT mail_cursor AS "mailCursor"
+        FROM kin_connection_cursors WHERE org_id = ${orgId} AND connection_id = ${connectionId}
+        ORDER BY connection_id`;
+    const cursor =
+      stored?.mailCursor == null
+        ? undefined
+        : Option.getOrUndefined(readMailCursor(stored.mailCursor));
+    const now = yield* Clock.currentTimeMillis;
+    const mailbox = mailboxOf(row);
+    const read = {
+      _tag: "read",
+      account: row.accountLabel,
+      addresses: [...(row.accountLabel === null ? [] : [row.accountLabel]), ...mailbox.addresses],
+    } as const;
+    const afresh = (gap: { readonly from: number; readonly to: number } | null) =>
+      withSignIn(orgId, row, (force) =>
+        tokenOf(orgId, row, force).pipe(
+          Effect.flatMap((token) => provider.mailStart(http, token, now)),
+        ),
+      ).pipe(
+        Effect.map((position) => ({
+          ...read,
+          floor: now - MAIL_FEED_WINDOW.marginMs,
+          changes: [],
+          cursor: { position, at: now },
+          more: false,
+          gap,
+        })),
+      );
+    if (cursor === undefined) return yield* afresh(null);
+    const gap = { from: cursor.at, to: now };
+    if (now - cursor.at > MAIL_FEED_WINDOW.positionMaxAgeMs) return yield* afresh(gap);
+    const page = yield* withSignIn(orgId, row, (force) =>
+      tokenOf(orgId, row, force).pipe(
+        Effect.flatMap((token) => provider.changes(http, token, cursor.position)),
+      ),
+    );
+    if (page._tag === "expired") return yield* afresh(gap);
+    return {
+      ...read,
+      floor: cursor.at - MAIL_FEED_WINDOW.marginMs,
+      changes: page.changes,
+      cursor: { position: page.position, at: now },
+      more: page.more,
+      gap: null,
+    };
+  }, settle);
+
+  const arrivals = Effect.fn("KinConnections.arrivals")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+    messageIds: ReadonlyArray<string>,
+  ) {
+    const row = yield* live(orgId, connectionId);
+    const provider = mailProviderOf(row);
+    if (provider === undefined) return [];
+    return yield* Effect.forEach(messageIds, (messageId) =>
+      withSignIn(orgId, row, (force) =>
+        tokenOf(orgId, row, force).pipe(
+          Effect.flatMap((token) => provider.arrival(http, token, messageId)),
+        ),
+      ).pipe(
+        Effect.map((arrival): KinMailArrivalRead =>
+          arrival === null ? { _tag: "gone", messageId } : { _tag: "read", messageId, arrival },
+        ),
+        // A refused sign-in stops the read; anything else is this message's, parked and retried.
+        Effect.catchIf(
+          (error) => isGatewayError(error) && error.reason !== "key_refused",
+          () => Effect.succeed<KinMailArrivalRead>({ _tag: "unreadable", messageId }),
+        ),
+      ),
+    );
+  }, settle);
+
+  const changesSeen = Effect.fn("KinConnections.changesSeen")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+    cursor: MailCursor | null,
+  ) {
+    const row = yield* live(orgId, connectionId);
+    const now = yield* Clock.currentTimeMillis;
+    const text = cursor === null ? null : mailCursorText(cursor);
+    yield* sql`INSERT INTO kin_connection_cursors (org_id, connection_id, checked_until, updated_at,
+          mail_cursor)
+        VALUES (${orgId}, ${connectionId}, ${row.createdAt}, ${now}, ${text})
+        ON CONFLICT (org_id, connection_id) DO UPDATE SET mail_cursor = excluded.mail_cursor,
+          updated_at = excluded.updated_at`;
   }, settle);
 
   type Turn = Effect.Success<ReturnType<typeof resolveLead>>;
@@ -3972,6 +4137,9 @@ const make = Effect.gen(function* () {
     setSendFrom,
     activity,
     activitySeen,
+    changes,
+    arrivals,
+    changesSeen,
     tools,
     call,
     offer,

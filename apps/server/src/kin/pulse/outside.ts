@@ -1,24 +1,11 @@
-import {
-  KinEvent,
-  KinEventId,
-  type KinAgentId,
-  type KinOrgId,
-  type KinPulseOutsideLine,
-} from "@t3tools/contracts";
-import * as DateTime from "effect/DateTime";
+import type { KinOrgId, KinPulseOutsideLine } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
-import * as NodeCrypto from "node:crypto";
 
+import { addressOf, AUTOMATED_SENDER, BULK_DOMAIN, keyIn, numberIn } from "../arrivals/classify.ts";
 import type { KinConnectionActivity, KinConnections } from "../connections/ConnectionsService.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
-import { agentQuietUntil } from "../triggers/quietHold.ts";
-import * as KinEventQueue from "../lead/KinEventQueue.ts";
-import { logTouch } from "../work/touches.ts";
 import { byNumber, recordName } from "../work/recordRows.ts";
-import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 
 /** What is new at an org's connections since its last check-in, and the cursors that marks. */
 export interface OutsideRead {
@@ -44,7 +31,6 @@ export const noOutside: OutsideSource = {
 
 const cut = (text: string | null | undefined, max: number) =>
   text === null || text === undefined ? null : Array.from(text).slice(0, max).join("");
-const isoOf = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 /** One connection's answer as lines: who, what, when, where. */
 const linesOf = (
@@ -140,17 +126,6 @@ export const fromConnections = (
     ),
 });
 
-const ADDRESS = /<([^<>\s]+@[^<>\s]+)>|([^\s<>,;"]+@[^\s<>,;"]+)/;
-const addressOf = (who: string | null) => {
-  const found = who === null ? null : ADDRESS.exec(who);
-  return found === null ? undefined : (found[1] ?? found[2])!.toLowerCase();
-};
-
-const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-const AUTOMATED_SENDER =
-  /^(?:no-?reply|do-?not-?reply|donotreply|notifications?|notify|mailer-daemon|postmaster|bounces?|news(?:letter)?|marketing|digest|alerts?|updates?)(?:[+._-]|@)/i;
-const BULK_DOMAIN = /@(?:em|email|mail|mailer|bounce|news|newsletter|marketing|send|e)\d*\./i;
 /**
  * A person writing to the company, as far as the sender line can tell: not an automated or bulk
  * sender, not the company's own domain, and sent to one of its connected addresses directly.
@@ -161,15 +136,8 @@ const personToUs = (line: KinPulseOutsideLine, from: string | undefined) => {
   const domainOf = (address: string) => address.slice(address.lastIndexOf("@") + 1);
   return domainOf(from) !== domainOf(line.to.toLowerCase());
 };
-/** First mail from someone Kin doesn't know wakes the Chief of staff, a few a poll at most. */
+/** A check-in marks a few first-time senders at most; the arrival feed wakes for each. */
 const NEW_SENDERS_PER_POLL = 3;
-
-/** Letters, digits and the joins numbers are written with: "INV/26-27/004" is not "004". */
-const numberIn = (number: string, subject: string) =>
-  new RegExp(
-    `(?<![\\p{L}\\p{N}/_.-])${escaped(number)}(?![\\p{L}\\p{N}/_-]|\\.[\\p{L}\\p{N}])`,
-    "u",
-  ).test(subject);
 
 /** The open invoice or quote whose issued number the subject shows, as stored, if only one does. */
 const namedByNumber = Effect.fn("KinPulseOutside.namedByNumber")(function* <
@@ -243,9 +211,8 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
     if (line.source === "mail") {
       const contact = byEmail.get(addressOf(line.who) ?? "");
       const named =
-        money.find((row) =>
-          new RegExp(`(^|[^a-z0-9-])${escaped(row.key.toLowerCase())}($|[^a-z0-9])`).test(subject),
-        ) ?? (yield* namedByNumber(orgId, money, line.subject ?? ""));
+        money.find((row) => keyIn(row.key, subject)) ??
+        (yield* namedByNumber(orgId, money, line.subject ?? ""));
       const client = contact?.clientId == null ? {} : { clientId: contact.clientId };
       if (named !== undefined)
         matched.push({
@@ -297,80 +264,3 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
   }
   return matched;
 });
-
-const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
-const shortHash = (text: string) =>
-  NodeCrypto.createHash("sha256").update(text).digest("hex").slice(0, 32);
-
-/**
- * Between check-ins: reads what is new, and wakes an agent once per item a watch matched. The
- * cursors stay where the last check-in left them, so the next check-in still lists everything.
- */
-export const poll = Effect.fn("KinPulseOutside.poll")(function* (
-  orgId: KinOrgId,
-  at: number,
-  source: OutsideSource,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const queue = yield* KinEventQueue.KinEventQueue;
-  const { lines } = yield* source.read(orgId);
-  const matched = yield* matchLines(orgId, lines);
-  if (matched.length === 0) return [];
-  const chief = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
-  const [finance] = yield* sql<{ agentId: KinAgentId }>`SELECT l.agent_id AS "agentId"
-    FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-      AND a.role = 'lead' AND a.retired_at IS NULL
-    WHERE l.org_id = ${orgId} AND l.domain = 'finance' ORDER BY a.created_at, l.agent_id LIMIT 1`;
-  const woke: Array<string> = [];
-  for (const { line, domain, clientId } of matched) {
-    const agentId = domain === "finance" ? (finance?.agentId ?? chief?.agentId) : chief?.agentId;
-    if (agentId === undefined) continue;
-    const key = `outside:${shortHash(`${line.connection}\0${line.source}\0${line.id}`)}`;
-    if (clientId !== undefined) {
-      const sent = line.at === null ? Number.NaN : Date.parse(line.at);
-      yield* logTouch(orgId, {
-        partyId: clientId,
-        kind: "email",
-        at: Number.isFinite(sent) && sent >= 0 ? Math.min(sent, at) : at,
-        note: (line.subject ?? "").slice(0, 300),
-        personId: null,
-        by: { kind: "agent", id: agentId },
-        originKey: `mail-in:${key}`,
-        now: at,
-      }).pipe(
-        Effect.catch((cause) => Effect.logWarning("Kin couldn't note client mail", { cause })),
-      );
-    }
-    const queued = yield* queue
-      .enqueue(
-        yield* decodeEvent({
-          _tag: "pulse",
-          orgId,
-          eventId: KinEventId.make(`pulse-${shortHash(`${orgId}\0${key}`)}`),
-          agentId,
-          receivedAt: isoOf(at),
-          dedupeKey: key,
-          provenance: { _tag: "system" },
-          factKeys: [],
-          outside: [line],
-        }),
-        yield* heldUntil(orgId, agentId, at),
-      )
-      .pipe(
-        Effect.map((result) => !result.duplicate),
-        Effect.catchTags({
-          KinEventQueueUnknownAgent: () => Effect.succeed(false),
-          KinEventQueueRetiredAgent: () => Effect.succeed(false),
-          KinEventQueueConflict: () => Effect.succeed(false),
-        }),
-      );
-    if (queued) woke.push(line.id);
-  }
-  return woke;
-});
-
-/** A watch match nobody asked for waits out the owner's quiet hours. */
-const heldUntil = (orgId: KinOrgId, agentId: KinAgentId, at: number) =>
-  Effect.map(agentQuietUntil(orgId, agentId, at), (notBefore) =>
-    notBefore === undefined ? undefined : { notBefore },
-  );

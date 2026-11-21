@@ -38,6 +38,12 @@ export type FakeMailMessage = {
   readonly files?: ReadonlyArray<FakeMailFile>;
   readonly unread: boolean;
   readonly sent: boolean;
+  /** The fake's revisions at which it entered the Inbox: a change record names each once. */
+  readonly revs?: ReadonlyArray<number>;
+  /** More headers as the vendor shows them, such as `List-Unsubscribe`. */
+  readonly headers?: Readonly<Record<string, string>>;
+  /** More Gmail labels, such as `CATEGORY_PROMOTIONS`. */
+  readonly labels?: ReadonlyArray<string>;
 };
 
 export type FakeMailFile = {
@@ -285,6 +291,10 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     readonly threadId?: string;
     readonly at: number;
     readonly files?: ReadonlyArray<FakeMailFile>;
+    readonly headers?: Readonly<Record<string, string>>;
+    readonly labels?: ReadonlyArray<string>;
+    /** The Message-ID header, as the sender's server wrote it. */
+    readonly messageId?: string;
   }) =>
     edit((state) => {
       const account = state.accounts.find((one) => owns(one, input.to));
@@ -303,7 +313,8 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         cc: input.cc ?? [],
         subject: input.subject,
         at: input.at,
-        messageId: `<${id}@${plain(input.from).split("@")[1] ?? "invented.example"}>`,
+        messageId:
+          input.messageId ?? `<${id}@${plain(input.from).split("@")[1] ?? "invented.example"}>`,
         inReplyTo: last?.messageId ?? null,
         references: last === undefined ? null : [last.references, last.messageId].join(" ").trim(),
         body: input.body,
@@ -311,10 +322,33 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         files: input.files ?? [],
         unread: true,
         sent: false,
+        ...(input.headers === undefined ? {} : { headers: input.headers }),
+        ...(input.labels === undefined ? {} : { labels: input.labels }),
       };
-      state.messages.push(message);
-      return message;
+      const stored = { ...message, revs: [++state.seq] };
+      state.messages.push(stored);
+      return stored;
     });
+
+  /** A message put back into the Inbox (or labelled Inbox again): its record comes again. */
+  const relabel = (messageId: string) =>
+    edit((state) => {
+      const at = state.messages.findIndex((one) => one.id === messageId);
+      if (at < 0) throw new Error(`No fake message ${messageId}.`);
+      const one = state.messages[at]!;
+      state.messages[at] = { ...one, revs: [...(one.revs ?? []), ++state.seq] };
+    });
+  /** The vendor forgets every change position up to now, as an expired history id or delta. */
+  const forgotten = new Map<string, number>();
+  const forgetPositions = (address: string) =>
+    edit((state) => void forgotten.set(lower(address), state.seq++));
+  /** Reads of one message answer this HTTP status, as an unreadable message does. */
+  const unreadable = new Map<string, number>();
+  const failRead = (messageId: string, status: number | null) =>
+    status === null ? void unreadable.delete(messageId) : void unreadable.set(messageId, status);
+  const revsOf = (message: FakeMailMessage) => message.revs ?? [];
+  const headersOf = (message: FakeMailMessage) =>
+    Object.entries(message.headers ?? {}).map(([name, value]) => ({ name, value }));
 
   const sent = () => store.load().messages.filter((one) => one.sent);
 
@@ -504,7 +538,62 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       if (unavailable !== undefined) return unavailable;
       const path = url.pathname;
       const mine = inbox(state, account);
-      if (path === `${GMAIL}/profile`) return json({ emailAddress: account.address });
+      if (path === `${GMAIL}/profile`)
+        return json({ emailAddress: account.address, historyId: String(state.seq) });
+      if (path === `${GMAIL}/history`) {
+        const start = Number(url.searchParams.get("startHistoryId") ?? Number.NaN);
+        if (!Number.isSafeInteger(start) || start <= (forgotten.get(lower(account.address)) ?? -1))
+          return json({ error: { code: 404 } }, 404);
+        const records = mine
+          .filter((one) => !one.sent)
+          .flatMap((one) =>
+            revsOf(one)
+              .map((rev, index) => ({ one, rev, first: index === 0 }))
+              .filter(({ rev }) => rev > start),
+          )
+          .toSorted((a, b) => a.rev - b.rev)
+          .map(({ one, rev, first }) => {
+            const message = { id: one.id, threadId: one.threadId, labelIds: ["INBOX"] };
+            return first
+              ? { id: String(rev), messagesAdded: [{ message }] }
+              : { id: String(rev), labelsAdded: [{ message, labelIds: ["INBOX"] }] };
+          });
+        const page = pageOf(
+          records,
+          url.searchParams.get("maxResults"),
+          url.searchParams.get("pageToken"),
+        );
+        return json({
+          historyId: String(state.seq),
+          ...(page.items.length === 0 ? {} : { history: page.items }),
+          ...(page.next === undefined ? {} : { nextPageToken: page.next }),
+        });
+      }
+      const single = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(path)?.[1];
+      if (single !== undefined && request.method === "GET") {
+        const one = mine.find((message) => message.id === decodeURIComponent(single));
+        if (one === undefined) return json({ error: { code: 404 } }, 404);
+        const failed = unreadable.get(one.id);
+        if (failed !== undefined) return json({ error: { code: failed } }, failed);
+        const full = gmailMessage(one);
+        const asked = new Set(url.searchParams.getAll("metadataHeaders").map(lower));
+        const headers = [
+          ...full.payload.headers,
+          ...headersOf(one),
+          {
+            name: "Content-Type",
+            value: (one.files ?? []).length === 0 ? "text/plain" : "multipart/mixed; boundary=x",
+          },
+        ].filter((header) => asked.size === 0 || asked.has(lower(header.name)));
+        return json({
+          id: one.id,
+          threadId: one.threadId,
+          labelIds: [...full.labelIds, ...(one.labels ?? [])],
+          snippet: full.snippet,
+          internalDate: String(one.at),
+          payload: { mimeType: full.payload.mimeType, headers },
+        });
+      }
       if (path === `${GMAIL}/settings/sendAs`)
         return json({
           sendAs: [
@@ -680,6 +769,42 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
             .map(graphMessage),
         });
       }
+      if (path === `${GRAPH}/mailFolders/inbox/messages/delta`) {
+        const token = url.searchParams.get("$deltatoken");
+        const rounds = token === null ? undefined : Number(token);
+        if (rounds !== undefined && rounds <= (forgotten.get(lower(account.address)) ?? -1))
+          return json({ error: { code: "syncStateNotFound" } }, 410);
+        const after = /receivedDateTime gt (\S+)/.exec(filter)?.[1];
+        const value = mine
+          .filter((one) => !one.sent)
+          .filter((one) =>
+            rounds === undefined
+              ? after === undefined || iso(one.at) > after
+              : revsOf(one).some((rev) => rev > rounds),
+          )
+          .map((one) => ({ id: one.id, conversationId: one.threadId }));
+        return json({
+          value,
+          "@odata.deltaLink": `https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=${state.seq}`,
+        });
+      }
+      const singleMessage = /^\/v1\.0\/me\/messages\/([^/]+)$/.exec(path)?.[1];
+      if (singleMessage !== undefined && request.method === "GET") {
+        const one = mine.find((message) => message.id === decodeURIComponent(singleMessage));
+        if (one === undefined) return json({ error: { code: "ErrorItemNotFound" } }, 404);
+        const failed = unreadable.get(one.id);
+        if (failed !== undefined)
+          return json({ error: { code: "ErrorInternalServerError" } }, failed);
+        const shown = graphMessage(one);
+        return json({
+          ...shown,
+          internetMessageHeaders: [
+            ...shown.internetMessageHeaders,
+            { name: "Message-ID", value: one.messageId },
+            ...headersOf(one),
+          ],
+        });
+      }
       const attachmentsOf = /^\/v1\.0\/me\/messages\/([^/]+)\/attachments$/.exec(path)?.[1];
       if (attachmentsOf !== undefined) {
         const message = mine.find((one) => one.id === decodeURIComponent(attachmentsOf));
@@ -809,6 +934,9 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     setDown,
     failWith,
     deliver,
+    relabel,
+    forgetPositions,
+    failRead,
     putEvent,
     sent,
     handle,
