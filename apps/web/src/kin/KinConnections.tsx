@@ -11,6 +11,8 @@ import {
   kinConnectionDraft,
   kinConnectionProvider,
   kinConnectionStatus,
+  kinMailReadText,
+  kinOffersSignIn,
   kinIsOwnerClientService,
   kinServiceNote,
   kinSuggestedModes,
@@ -649,6 +651,11 @@ function ConnectionRecord(props: {
               ? connection.urlHost
               : `${connection.accountLabel} · ${connection.urlHost}`}
           </p>
+          {connection.mailSync === undefined ? null : (
+            <p className="text-xs text-muted-foreground">
+              {kinMailReadText(connection.mailSync.readAt)}
+            </p>
+          )}
         </div>
         {status.tone === "error" || status.tone === "attention" || connection.paused ? (
           <Alert
@@ -664,9 +671,7 @@ function ConnectionRecord(props: {
             <AlertDescription role="alert">{problem}</AlertDescription>
           </Alert>
         )}
-        {connection.auth === "oauth" &&
-        (connection.state === "needs_sign_in" || connection.needsSignInToSend === true) &&
-        waiting === null ? (
+        {kinOffersSignIn(connection) && waiting === null ? (
           <Button
             size="sm"
             className="self-start"
@@ -865,7 +870,7 @@ function ConnectionRecord(props: {
                 {COPY.replaceKey}
               </Button>
             ) : null}
-            {connection.auth === "oauth" && connection.state !== "needs_sign_in" ? (
+            {connection.auth === "oauth" && !kinOffersSignIn(connection) ? (
               <Button
                 size="sm"
                 variant="outline"

@@ -34,6 +34,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -1744,7 +1745,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 193");
+      assert.include(String(exit), "below the latest applied migration 194");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -3317,6 +3318,46 @@ it.effect("K178 counts a send under way at the upgrade as started, and nothing e
     assert.deepStrictEqual(
       rows.map((row) => decodePrepared(row.payload_json)._tag),
       ["event", "email", "email"],
+    );
+    assert.deepStrictEqual(yield* runKinMigrations(), []);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("K194 counts each mail account Kin already read as read at the upgrade, and reruns", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runKinMigrations();
+    for (const column of ["read_ok_at", "read_failed_at", "read_error"])
+      yield* sql.unsafe(`ALTER TABLE kin_connections DROP COLUMN ${column}`);
+    yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 194`;
+    yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Invented Co', '2026-11-15T00:00:00.000Z')`;
+    for (const [id, kind, preset, state, paused, removed] of [
+      ["mail", "builtin", "google", "active", null, null],
+      ["outlook", "builtin", "microsoft", "needs_sign_in", null, null],
+      ["paused", "builtin", "google", "active", 3, null],
+      ["gone", "builtin", "microsoft", "active", null, 4],
+      ["github", "builtin", "github", "active", null, null],
+      ["docs", "remote", null, "active", null, null],
+    ] as const)
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, label, kind, preset, url_host,
+          auth, reach, state, created_at, updated_at, paused_at, removed_at)
+        VALUES ('org', ${id}, ${id}, ${kind}, ${preset}, 'example.com', 'none', 'open', ${state},
+          1, 1, ${paused}, ${removed})`;
+    const upgraded = Date.UTC(2026, 10, 21, 9);
+    yield* TestClock.setTime(upgraded);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(194));
+    // From the upgrade, not from when it was connected: a healthy account isn't a day quiet yet.
+    assert.deepStrictEqual(
+      yield* sql<{ id: string; at: number | null }>`SELECT connection_id AS id,
+          read_ok_at AS at FROM kin_connections ORDER BY connection_id`,
+      [
+        { id: "docs", at: null },
+        { id: "github", at: null },
+        { id: "gone", at: null },
+        { id: "mail", at: upgraded },
+        { id: "outlook", at: upgraded },
+        { id: "paused", at: upgraded },
+      ],
     );
     assert.deepStrictEqual(yield* runKinMigrations(), []);
   }).pipe(Effect.provide(layer)),

@@ -136,6 +136,13 @@ export const KIN_CONNECTIONS_COPY = {
   removeDetail:
     "Agents stop using it at once and its key is deleted from your Kin's computer. To use it again, add it again.",
   removeConfirm: "Remove",
+  notSyncing: "Not syncing",
+  mailReadAt: "Mail last read",
+  mailNotRead: "No mail read yet",
+  notSyncingQuiet:
+    "Kin hasn't read new mail for over a day. It keeps trying; if this stays, sign in again.",
+  notSyncingFailed: "Kin can't read new mail.",
+  notSyncingFix: "Sign in again to fix it.",
 } as const;
 
 const isChatError = Schema.is(KinChatError);
@@ -213,6 +220,20 @@ const PROVIDER_NAMES: Record<NonNullable<KinConnection["preset"]>, string> = {
 export const kinConnectionProvider = (connection: Pick<KinConnection, "preset" | "urlHost">) =>
   connection.preset === null ? connection.urlHost : PROVIDER_NAMES[connection.preset];
 
+/** When Kin last read a mail account's new mail, from the device's clock. */
+export const kinMailReadText = (readAt: number | null, now?: Date) =>
+  readAt === null
+    ? KIN_CONNECTIONS_COPY.mailNotRead
+    : // @effect-diagnostics-next-line globalDate:off - the shared clock-and-day label takes a Date.
+      `${KIN_CONNECTIONS_COPY.mailReadAt} ${formatKinTime(new Date(readAt), now)}`;
+
+/** A mail account whose reads stopped: signing in again is the owner's first fix. */
+export const kinOffersSignIn = (connection: KinConnection) =>
+  connection.auth === "oauth" &&
+  (connection.state === "needs_sign_in" ||
+    connection.needsSignInToSend === true ||
+    connection.mailSync?.stopped === true);
+
 /** One line on how a connection stands: paused, broken, waiting on the owner, or working. */
 export function kinConnectionStatus(connection: KinConnection): KinConnectionStatus {
   if (connection.paused)
@@ -225,6 +246,16 @@ export function kinConnectionStatus(connection: KinConnection): KinConnectionSta
       tone: "error",
       label: "Can't connect",
       detail: kinConnectionErrorText(connection.lastError ?? "Kin couldn't reach it."),
+    };
+  const sync = connection.mailSync;
+  if (sync?.stopped === true && connection.state === "active")
+    return {
+      tone: "error",
+      label: KIN_CONNECTIONS_COPY.notSyncing,
+      detail:
+        sync.error === null
+          ? KIN_CONNECTIONS_COPY.notSyncingQuiet
+          : `${KIN_CONNECTIONS_COPY.notSyncingFailed} ${kinConnectionErrorText(sync.error)} ${KIN_CONNECTIONS_COPY.notSyncingFix}`,
     };
   const changed = connection.changedTools;
   const instructions =

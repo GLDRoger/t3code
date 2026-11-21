@@ -12,6 +12,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinAttention";
 import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinDay, KinPulseRead, KinRecordKey } from "@t3tools/contracts";
+import { useRouter } from "@tanstack/react-router";
 import { CircleAlertIcon, ClockIcon, EllipsisIcon } from "lucide-react";
 import { useState } from "react";
 
@@ -27,6 +28,7 @@ import {
 import { Input } from "../components/ui/input";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
+import { openKinSettings } from "./kinSettingsAddress";
 import { KinWorkSection } from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinAskAbout, useKinAttention, useKinAttentionHandle } from "./useKinAttention";
@@ -91,6 +93,7 @@ export function KinAttentionItem(
   },
 ) {
   const { row, handler } = props;
+  const router = useRouter();
   const now = new Date(useNowMinuteMs());
   const asker = useKinAskAbout(props)(row.agentId);
   const busy = handler.busy === row.factKey;
@@ -126,7 +129,12 @@ export function KinAttentionItem(
         <button
           type="button"
           aria-label={`${row.title}, ${line}`}
-          onClick={() => props.onOpen(row.open)}
+          onClick={() =>
+            // A connection opens on Connections, at itself, whichever screen the row is on.
+            row.open.type === "connection"
+              ? openKinSettings(router.history, "connections", row.open.connectionId)
+              : props.onOpen(row.open)
+          }
           className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring focus-visible:ring-2 focus-visible:ring-inset"
         >
           {body}

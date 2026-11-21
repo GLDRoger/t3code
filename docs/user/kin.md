@@ -427,6 +427,12 @@ GitHub, and others. Each mail account reads, and sends only on your Confirm. Tel
 account is for ("accounts@ is for invoices") and it sends from the right one. A reply always goes
 from the account and thread the email is in.
 
+Kin reads an account's new mail only while it is active and its mail tools are set to Read; its
+page says when mail was last read. If reads fail or nothing has been read for a day, it shows
+**Not syncing**; if its sign-in ran out, **Needs sign-in**. Until a read works again it is also a
+line under **Needs attention** on Kin's start page on a computer (with no chat open), which opens the
+account. **Sign in again** usually fixes it. A paused account is your choice and shows no warning.
+
 The card shows exactly what will be sent, from which account, to whom. One **Confirm** sends it
 once. Only the owner or a co-owner can confirm. To fix a mail's words yourself, tap **Edit**:
 change To, Cc, Subject or the message, then **Send edited mail** sends it as you left it, with

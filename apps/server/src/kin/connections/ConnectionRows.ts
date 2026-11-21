@@ -14,6 +14,9 @@ import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { MAIL_TOOL } from "./MailProvider.ts";
+import { mailProviderOf } from "./mailProviders.ts";
+
 export type ConnectionRow = {
   readonly connectionId: KinConnectionId;
   readonly preset: KinConnectionPreset | null;
@@ -40,6 +43,10 @@ export type ConnectionRow = {
   readonly listedAt: number | null;
   readonly lastOkAt: number | null;
   readonly lastError: string | null;
+  /** Kin's reads of a mail account: the last that worked, and since when and why they fail. */
+  readonly readOkAt: number | null;
+  readonly readFailedAt: number | null;
+  readonly readError: string | null;
   readonly pausedAt: number | null;
   readonly removedAt: number | null;
 };
@@ -78,7 +85,8 @@ const connectionColumns = (sql: SqlClient.SqlClient) => sql`connection_id AS "co
   instructions_accepted_text AS "instructionsAcceptedText",
   instructions_accepted_digest AS "instructionsAcceptedDigest", created_at AS "createdAt",
   updated_at AS "updatedAt", listed_at AS "listedAt", last_ok_at AS "lastOkAt",
-  last_error AS "lastError", paused_at AS "pausedAt", removed_at AS "removedAt"`;
+  last_error AS "lastError", read_ok_at AS "readOkAt", read_failed_at AS "readFailedAt",
+  read_error AS "readError", paused_at AS "pausedAt", removed_at AS "removedAt"`;
 
 const toolColumns = (sql: SqlClient.SqlClient) => sql`connection_id AS "connectionId",
   tool_name AS name, definition_json AS "definitionJson", accepted_json AS "acceptedJson",
@@ -198,10 +206,55 @@ export const toolView = (row: ToolRow): KinConnectionTool => ({
   removedAt: row.removedAt,
 });
 
+/** How long a mail account Kin reads may go with no read that worked before it counts as stopped. */
+export const MAIL_QUIET_MS = 24 * 60 * 60 * 1000;
+const MAIL_READS: ReadonlySet<string> = new Set([
+  MAIL_TOOL.list,
+  MAIL_TOOL.search,
+  MAIL_TOOL.events,
+]);
+
+/**
+ * Why Kin isn't getting a mail account's new mail, or null while it is. A paused or removed
+ * account is the owner's choice, and one with no read tool marked Read isn't read at all.
+ */
+export type MailStop = "signed_out" | "unreachable" | "review" | "failing" | "quiet";
+export const mailStopOf = (
+  row: ConnectionRow,
+  tools: ReadonlyArray<ToolRow>,
+  now: number,
+): MailStop | null | undefined => {
+  if (mailProviderOf(row) === undefined) return undefined;
+  if (
+    !tools.some(
+      (tool) => tool.removedAt === null && tool.mode === "read" && MAIL_READS.has(tool.name),
+    )
+  )
+    return undefined;
+  if (row.pausedAt !== null || row.removedAt !== null) return null;
+  // The reader takes only active connections, so any other state stops it.
+  if (row.state === "needs_sign_in") return "signed_out";
+  if (row.state === "error") return "unreachable";
+  if (row.state === "needs_review") return "review";
+  if (row.readError !== null) return "failing";
+  return now - (row.readOkAt ?? row.createdAt) > MAIL_QUIET_MS ? "quiet" : null;
+};
+
 export const connectionView = (
   row: ConnectionRow,
   tools: ReadonlyArray<ToolRow>,
-): KinConnection => ({
+  now: number,
+): KinConnection => {
+  const stop = mailStopOf(row, tools, now);
+  return {
+    ...baseView(row, tools),
+    ...(stop === undefined
+      ? {}
+      : { mailSync: { readAt: row.readOkAt, error: row.readError, stopped: stop !== null } }),
+  };
+};
+
+const baseView = (row: ConnectionRow, tools: ReadonlyArray<ToolRow>): KinConnection => ({
   connectionId: row.connectionId,
   preset: row.preset,
   label: row.label,

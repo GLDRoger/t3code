@@ -108,6 +108,17 @@ export const KinConnection = Schema.Struct({
   note: Schema.optional(Schema.NullOr(Schema.String)),
   /** A mail account's From addresses: its own and its aliases. */
   sendAs: Schema.optional(Schema.Array(KinMailAddress)),
+  /** How Kin's reads of a mail account stand; absent when Kin doesn't read its mail. */
+  mailSync: Schema.optional(
+    Schema.Struct({
+      /** The last read that worked; null before the first. */
+      readAt: Schema.NullOr(NonNegativeInt),
+      /** Why reading has failed since then. */
+      error: Schema.NullOr(Schema.String),
+      /** Kin isn't getting this account's new mail: reads fail, or none worked for a day. */
+      stopped: Schema.Boolean,
+    }),
+  ),
 });
 export type KinConnection = typeof KinConnection.Type;
 
