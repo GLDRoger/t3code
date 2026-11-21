@@ -2873,6 +2873,7 @@ it.effect(
       const turn = Effect.fn("test.turn")(function* (
         events: ReadonlyArray<KinEvent>,
         mode: "reply" | "notice",
+        team = false,
       ) {
         const wakeupId = KinWakeupId.make(`turn-${++wakeups}`);
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
@@ -2883,7 +2884,7 @@ it.effect(
           VALUES (${`${wakeupId}:${item.eventId}`}, ${orgId}, ${agentId}, ${item._tag}, 'P0', ${JSON.stringify(item)}, 0, 0, 'done', ${wakeupId})`;
         return {
           wakeupId,
-          text: yield* prompt.build({ ...input, wakeupId, events, lane: { chatId, mode } }),
+          text: yield* prompt.build({ ...input, wakeupId, events, lane: { chatId, mode, team } }),
         };
       });
       const system = (event: Record<string, unknown>) =>
@@ -2993,7 +2994,7 @@ it.effect(
       );
       yield* sql`UPDATE kin_chats SET team_id = ${KIN_TEAM_ROOM_TEAM_ID} WHERE chat_id = ${chatId}`;
       yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE member_id = ${teammateMember}`;
-      const room = (yield* turn([event("room")], "notice")).text;
+      const room = (yield* turn([event("room")], "notice", true)).text;
       expect(repeatedGuidance(owners, [room])).toEqual([]);
       // The Team rules say how to speak there; the turn says only that it is there.
       expect(room).toContain(`This turn is in the Team room, chat "${chatId}".\n`);
