@@ -81,8 +81,7 @@ export const KIN_CONNECTIONS_COPY = {
   orgPlaceholder: "Optional, for example my-company",
   secretUrlLabel: "Server address",
   secretUrlPlaceholder: "https://…zohomcp.com/mcp/…",
-  secretUrlHint:
-    "This address works like a password. Kin keeps it and never shows it again.",
+  secretUrlHint: "This address works like a password. Kin keeps it and never shows it again.",
   redirectLabel: "Return address",
   copy: "Copy",
   copied: "Copied",
@@ -773,7 +772,7 @@ const MAIL_TOOL_GROUP: Readonly<Record<string, KinMailPermission>> = {
 };
 
 /** Each mail and calendar tool in a person's words, keyed by its stable name. */
-export const KIN_MAIL_TOOL_COPY: Readonly<
+const KIN_MAIL_TOOL_COPY: Readonly<
   Record<string, { readonly title: string; readonly line: string }>
 > = {
   mail_list_threads: { title: "See recent mail", line: "The latest conversations in this inbox." },
@@ -789,7 +788,7 @@ export const KIN_MAIL_TOOL_COPY: Readonly<
   },
 };
 
-export const kinMailToolGroup = (toolName: string): KinMailPermission | null =>
+const kinMailToolGroup = (toolName: string): KinMailPermission | null =>
   MAIL_TOOL_GROUP[toolName] ?? null;
 
 /** A mail account: Google or Microsoft, signed in through Kin. */
@@ -839,7 +838,7 @@ export const KIN_MAIL_COPY = {
   before: "Before",
   now: "Now",
   noDescription: "No description.",
-  allFailed: "Couldn't change every account. Try again.",
+  allFailed: "Couldn't change every account. Some may already have the new choice.",
   pauseTitle: "Pause",
   pauseDetail: "Agents stop using it until you resume. Nothing else changes.",
   resumeTitle: "Paused",
@@ -954,7 +953,7 @@ const MAIL_ORDER = Object.keys(KIN_MAIL_TOOL_COPY);
 
 /** A mail account's tools in the order of the three rows: reads, sending, then the calendar. */
 export const kinMailToolOrder = (rows: ReadonlyArray<KinToolRow>): ReadonlyArray<KinToolRow> =>
-  rows.toSorted(
+  [...rows].sort(
     (a, b) =>
       Number(b.state === "changed") - Number(a.state === "changed") ||
       (MAIL_ORDER.indexOf(a.name) + 1 || 99) - (MAIL_ORDER.indexOf(b.name) + 1 || 99),
