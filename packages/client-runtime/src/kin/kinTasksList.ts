@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Pure view helpers compare due times with the reader's local day, outside an Effect runtime.
 import {
-  KIN_WORK_MOVE_GROUPS,
+  KIN_WORK_MOVE_PLACES,
+  kinWorkHandedBackOpen,
   kinWorkMove,
   kinWorkMoveOrder,
   type KinChoiceOption,
@@ -10,6 +11,7 @@ import {
   type KinWorkMoveCard,
   type KinWorkMoveCounts,
   type KinWorkMoveGroup,
+  type KinWorkMovePlace,
   type KinWorkRowMove,
   type KinWorkSummary,
 } from "@t3tools/contracts";
@@ -25,9 +27,14 @@ import {
   kinMidSentence,
   kinWorkName,
   kinWorkPrincipalKey,
+  kinWorkStatusText,
+  kinWorkWaitsOnMe,
   type KinTaskGroupBy,
+  type KinWorkFilter,
   type KinWorkNames,
+  type KinWorkOverview,
   type KinWorkRef,
+  type KinWorkViewId,
 } from "./kinWork.ts";
 
 /** What the phone's Tasks says, in the drawing's words. */
@@ -37,6 +44,9 @@ export const KIN_TASKS = {
     waiting: "Waiting on others",
     rest: "Rest of the team",
   } satisfies Record<KinWorkMoveGroup, string>,
+  /** Your own tasks nothing asks of yet, outside Needs you's count. */
+  noDateGroup: "No date",
+  comingUp: "Coming up",
   yourProjects: "Your projects",
   done: "Done in the last 14 days",
   clearTitle: "Nothing needs you right now",
@@ -77,6 +87,80 @@ export const KIN_TASK_GROUP_BY: ReadonlyArray<{
   { id: "status", label: "Status" },
 ];
 
+/** Tasks' Filter at a glance; client, project, who has it and grouping are under More filters. */
+export const KIN_TASK_FILTER = {
+  all: "All open",
+  mine: "Mine",
+  week: "This week",
+  waiting: "Waiting",
+  late: "Late",
+  more: "More filters",
+} as const;
+
+/** The views More filters still offers, besides those at a glance. */
+export const KIN_TASK_MORE_VIEWS: ReadonlyArray<KinWorkViewId> = ["doing", "closed"];
+
+export interface KinTaskQuickFilter {
+  readonly id: "all" | "mine" | "week" | "waiting" | "late";
+  readonly label: string;
+  readonly count: number | null;
+  readonly selected: boolean;
+  /** What a tap reads; a tap on a chosen one takes it off again. */
+  readonly next: KinWorkFilter;
+}
+
+/**
+ * The Filter's first five: everything open, your own (kept with a view), and Due this week,
+ * Waiting and Late. Mine is left out until the reader is known.
+ */
+export function kinTaskQuickFilters(
+  filter: KinWorkFilter,
+  overview: KinWorkOverview,
+  me: KinWorkNames["me"],
+): ReadonlyArray<KinTaskQuickFilter> {
+  const chip = (view: KinWorkViewId) => overview.chips.find((one) => one.id === view);
+  const isMine = filter.owner?._tag === "person" && filter.owner.personId === me;
+  const view = (id: "week" | "waiting" | "late"): KinTaskQuickFilter => ({
+    id,
+    label: KIN_TASK_FILTER[id],
+    count: chip(id)?.count ?? null,
+    selected: filter.view === id,
+    next: { ...filter, view: filter.view === id ? "open" : id },
+  });
+  const known = chip("open")?.count ?? null;
+  return [
+    {
+      id: "all",
+      label: KIN_TASK_FILTER.all,
+      count: filter.owner === null ? known : null,
+      selected: filter.view === "open" && filter.owner === null,
+      next: { ...filter, view: "open", owner: null },
+    },
+    ...(me === null
+      ? []
+      : [
+          {
+            id: "mine" as const,
+            label: KIN_TASK_FILTER.mine,
+            count:
+              known === null
+                ? null
+                : (overview.owners.find(
+                    (one) => one.owner._tag === "person" && one.owner.personId === me,
+                  )?.open ?? 0),
+            selected: isMine,
+            next: {
+              ...filter,
+              owner: isMine ? null : { _tag: "person" as const, personId: me },
+            },
+          },
+        ]),
+    view("week"),
+    view("waiting"),
+    view("late"),
+  ];
+}
+
 /** The chip that says the list is grouped some other way, and clears it; null for Me first. */
 export const kinTaskGroupedChip = (groupBy: KinTaskGroupBy | undefined): string | null => {
   if (groupBy === undefined || groupBy === "me") return null;
@@ -99,7 +183,8 @@ export const kinNeedsYouCount = (input: {
  * today in amber, an agent working in blue), then when it is due and its client or project.
  */
 export interface KinTaskLine {
-  readonly holder: string;
+  /** Null on the reader's own Tasks for a task they hold: the list is theirs. */
+  readonly holder: string | null;
   readonly lead: { readonly text: string; readonly tone: "late" | "soon" | "working" } | null;
   readonly rest: string;
 }
@@ -109,7 +194,14 @@ export function kinTaskLine(
   names: KinWorkNames,
   now: Date,
   /** The heading already names its project, or a step stands in for "No date". */
-  options: { readonly inProject?: boolean; readonly quietNoDate?: boolean } = {},
+  options: {
+    readonly inProject?: boolean;
+    readonly quietNoDate?: boolean;
+    /** The reader's own Tasks, where their own name needn't be said. */
+    readonly ownList?: boolean;
+    /** The client or project every row shares (`kinTasksSharedAbout`), said by none of them. */
+    readonly sharedAbout?: string | null;
+  } = {},
 ): KinTaskLine {
   const closed = kinWorkClosed(record.state);
   const working = record.working || (record.owner._tag === "agent" && record.state === "doing");
@@ -131,16 +223,31 @@ export function kinTaskLine(
         : closed || options.quietNoDate === true || lead !== null
           ? null
           : KIN_TASKS.noDate;
-  const about = options.inProject ? null : (record.party?.title ?? record.project?.title ?? null);
+  const named = record.party?.title ?? record.project?.title ?? null;
+  const about = options.inProject || named === (options.sharedAbout ?? null) ? null : named;
+  // The clock (`kinWorkRow`'s state) always has these words beside it; one waiting on the
+  // reader is drawn as a to-do and says nothing of waiting.
   const waiting =
-    record.state === "waiting" && record.waitingOn !== null
-      ? `Waiting on ${kinMidSentence(kinWorkName(record.waitingOn, names, "you"))}`
-      : null;
+    record.state !== "waiting" || kinWorkWaitsOnMe(record, names)
+      ? null
+      : record.waitingOn === null
+        ? kinWorkStatusText(record, names)
+        : `Waiting on ${kinMidSentence(kinWorkName(record.waitingOn, names, "you"))}`;
+  const mine = record.owner._tag === "person" && record.owner.personId === names.me;
   return {
-    holder: kinWorkName(record.owner, names),
+    holder: options.ownList === true && mine ? null : kinWorkName(record.owner, names),
     lead,
     rest: [waiting, due, about].filter((part) => part !== null).join(" · "),
   };
+}
+
+/** The client (else project) every one of several tasks names, which their rows needn't repeat. */
+export function kinTasksSharedAbout(records: ReadonlyArray<KinRecord>): string | null {
+  const named = new Set(
+    records.map((record) => record.party?.title ?? record.project?.title ?? null),
+  );
+  const [only] = named;
+  return records.length > 1 && named.size === 1 ? (only ?? null) : null;
 }
 
 /** The one step a row carries for this reader, drawn under its line. */
@@ -223,7 +330,11 @@ export function kinTaskStep(
   const holder = record.owner;
   if (holder._tag === "person" && holder.personId === names.me) {
     const first = (by: KinRecord["owner"]) => kinWorkName(by, names).split(/\s+/)[0] ?? "";
-    if (record.handedBack !== undefined)
+    // Shown while it keeps the task in Needs you (`kinWorkMoveUnder`), so the two agree.
+    if (
+      record.handedBack !== undefined &&
+      kinWorkHandedBackOpen(Date.parse(record.handedBack.at), Date.parse(record.updatedAt))
+    )
       return {
         kind: "told",
         line: KIN_TASKS.handedBack(first(record.handedBack.by), move.handedBackNote ?? null),
@@ -415,9 +526,10 @@ export function kinTasksDealFacts(input: {
 }
 
 /**
- * Tasks grouped by whose move: Needs you, Waiting on others, then the rest of the team (a
- * teammate's projects), each in the host's order, headed by the host's counts; then the Done row,
- * and a teammate's note on what they see. Needs you always shows, with the all-clear when empty.
+ * Tasks grouped by whose move: Needs you, then your own with no date, Waiting on others, your own
+ * due past the coming week, then the rest of the team (a teammate's projects), each in the host's
+ * order, headed by the host's counts; then the Done row, and a teammate's note on what they see.
+ * Needs you always shows, with the all-clear when empty.
  */
 export function kinTasksByMove<R extends KinRecord>(input: {
   readonly records: ReadonlyArray<R>;
@@ -437,31 +549,39 @@ export function kinTasksByMove<R extends KinRecord>(input: {
   if (!input.read) return [];
   const facts = input.facts ?? [];
   const fromHost = moves.size > 0 || counts !== null;
-  const placed = new Map<KinWorkMoveGroup, Array<{ record: R; move: KinWorkRowMove | null }>>(
-    KIN_WORK_MOVE_GROUPS.map((group) => [group, []]),
+  const placed = new Map<KinWorkMovePlace, Array<{ record: R; move: KinWorkRowMove | null }>>(
+    KIN_WORK_MOVE_PLACES.map((place) => [place, []]),
   );
   for (const record of records) {
     const move = moves.get(record.key) ?? null;
-    const group = fromHost ? move?.group : moveOfRow(record, names, ownerLevel);
-    if (group === undefined || group === null) continue;
-    placed.get(group)!.push({ record, move });
+    const place = fromHost ? (move?.under ?? move?.group) : moveOfRow(record, names, ownerLevel);
+    if (place === undefined || place === null) continue;
+    placed.get(place)!.push({ record, move });
   }
   if (!fromHost)
     for (const rows of placed.values()) rows.sort((a, b) => byOrder(a.record, b.record));
+  const title = (place: KinWorkMovePlace) =>
+    place === "noDate"
+      ? KIN_TASKS.noDateGroup
+      : place === "comingUp"
+        ? KIN_TASKS.comingUp
+        : place === "rest" && !ownerLevel
+          ? KIN_TASKS.yourProjects
+          : KIN_TASKS.groups[place];
   const items: Array<KinTasksItem<R>> = [];
-  for (const group of KIN_WORK_MOVE_GROUPS) {
-    const rows = placed.get(group)!;
-    const count = group === "needsYou" ? input.needsYou : (counts?.[group] ?? null);
-    if (group !== "needsYou" && rows.length === 0 && (count ?? 0) === 0) continue;
+  for (const place of KIN_WORK_MOVE_PLACES) {
+    const rows = placed.get(place)!;
+    const count = place === "needsYou" ? input.needsYou : (counts?.[place] ?? null);
+    if (place !== "needsYou" && rows.length === 0 && (count ?? 0) === 0) continue;
     items.push({
       type: "heading",
-      key: `group:${group}`,
-      title: group === "rest" && !ownerLevel ? KIN_TASKS.yourProjects : KIN_TASKS.groups[group],
-      count: fromHost || group === "needsYou" ? count : null,
+      key: `group:${place}`,
+      title: title(place),
+      count: fromHost || place === "needsYou" ? count : null,
       aside: null,
       project: null,
     });
-    if (group === "needsYou") {
+    if (place === "needsYou") {
       facts.forEach((row, index) =>
         items.push({
           type: "fact",

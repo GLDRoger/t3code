@@ -7,6 +7,8 @@ import {
   KinPersonId,
   KinRecordId,
   KinWidgetId,
+  kinWorkHandedBackOpen,
+  kinWorkMoveUnder,
   type KinPulseFact,
   type KinRecord,
   type KinRecordDetail,
@@ -22,6 +24,8 @@ import { kinRecordMove } from "./kinTaskRecord.ts";
 import {
   kinNeedsYouCount,
   kinTaskLine,
+  kinTaskQuickFilters,
+  kinTasksSharedAbout,
   kinTaskStep,
   kinTaskStepStatusShown,
   kinTasksByMove,
@@ -36,7 +40,12 @@ import {
   type KinTaskTicked,
 } from "./kinTasksList.ts";
 import type { KinWorkNotice } from "./kinWorkChanges.ts";
-import type { KinWorkNames } from "./kinWork.ts";
+import {
+  KIN_WORK_DEFAULT_FILTER,
+  kinWorkOverview,
+  kinWorkRow,
+  type KinWorkNames,
+} from "./kinWork.ts";
 
 // Ambermill, invented: owner Rhea; Meera, Zoya; agents Chief of staff and Finance.
 const rhea = { _tag: "person", personId: KinPersonId.make("ambermill-rhea") } as const;
@@ -168,6 +177,71 @@ describe("whose move a task is (kinRecordMove, the rule Tasks and the record sha
   });
 });
 
+describe("kinWorkMoveUnder: Needs you holds only the coming week, what is late and what asks you", () => {
+  const at = now.getTime();
+  const inDays = (days: number) => new Date(at + days * 24 * 60 * 60 * 1000).toISOString();
+  const under = (
+    record: KinRecord,
+    extra: { card?: boolean; ownerLevel?: boolean; askedToday?: boolean } = {},
+  ) =>
+    kinWorkMoveUnder(
+      {
+        state: record.state,
+        owner: record.owner,
+        waitingOn: record.waitingOn,
+        late: record.late,
+        confirmed: record.confirmed,
+        askedBy: null,
+        givenBy: record.givenBy ?? null,
+        card: extra.card ?? false,
+        handedBackOpen: kinWorkHandedBackOpen(
+          record.handedBack === undefined ? null : Date.parse(record.handedBack.at),
+          Date.parse(record.updatedAt),
+        ),
+        askedToday: extra.askedToday ?? false,
+        dueMs: record.dueAt === null ? null : Date.parse(record.dueAt),
+      },
+      { personId: rhea.personId, ownerLevel: extra.ownerLevel ?? true },
+      at,
+    );
+  it.each([
+    ["due in 6 days stays", row("A", { dueAt: inDays(6) }), {}, null],
+    ["due in 32 days is coming up", row("B", { dueAt: inDays(32) }), {}, "comingUp"],
+    ["no date is its own group", row("C"), {}, "noDate"],
+    ["a card waiting on you stays", row("D", { dueAt: inDays(32) }), { card: true }, null],
+    ["late never leaves", row("E", late(inDays(-2))), {}, null],
+    ["a suggestion to keep stays", row("F", { dueAt: inDays(32), confirmed: false }), {}, null],
+    [
+      "waiting on you stays",
+      row("G", { owner: meera, state: "waiting", waitingOn: rhea, dueAt: inDays(32) }),
+      {},
+      null,
+    ],
+    ["someone else's is not moved", row("H", { owner: meera, givenBy: rhea }), {}, null],
+    // A hand-back and a nudge ask the holder something: they stay until acted on, or today.
+    [
+      "undated and handed back to you stays",
+      row("I", { handedBack: { by: meera, at: inDays(-1) }, updatedAt: inDays(-1) }),
+      {},
+      null,
+    ],
+    [
+      "handed back, then changed since, follows the plain rule",
+      row("J", { handedBack: { by: meera, at: inDays(-1) }, updatedAt: inDays(-0.5) }),
+      {},
+      "noDate",
+    ],
+    [
+      "due in 32 days, asked today where it stands, stays",
+      row("K", { dueAt: inDays(32) }),
+      { askedToday: true },
+      null,
+    ],
+  ] as const)("%s", (_name, record, extra, expected) => {
+    expect(under(record, extra)).toBe(expected);
+  });
+});
+
 describe("kinTasksByMove", () => {
   const groups = (items: ReturnType<typeof kinTasksByMove>) =>
     items.map((item) =>
@@ -252,6 +326,48 @@ describe("kinTasksByMove", () => {
         read: false,
       }),
     ).toEqual([]);
+  });
+
+  it("draws your own undated tasks under Needs you and far-off ones after Waiting, uncounted", () => {
+    const records = [
+      row("L", late("2026-11-15T00:00:00.000Z")),
+      row("N"),
+      row("D", { owner: meera }),
+      row("F", { dueAt: "2026-12-20T00:00:00.000Z" }),
+      row("E", { owner: zoya }),
+    ];
+    const moves = new Map<string, KinWorkRowMove>([
+      ["L", { key: "L", group: "needsYou" }],
+      ["N", { key: "N", group: "needsYou", under: "noDate" }],
+      ["D", { key: "D", group: "waiting" }],
+      ["F", { key: "F", group: "needsYou", under: "comingUp" }],
+      ["E", { key: "E", group: "rest" }],
+    ]);
+    const counts = { needsYou: 1, waiting: 1, rest: 1, doneRecently: 0, noDate: 4, comingUp: 2 };
+    expect(
+      groups(
+        kinTasksByMove({
+          records,
+          moves,
+          counts,
+          needsYou: 1,
+          ownerLevel: true,
+          names,
+          read: true,
+        }),
+      ),
+    ).toEqual([
+      "Needs you 1",
+      "L",
+      "No date 4",
+      "N",
+      "Waiting on others 1",
+      "D",
+      "Coming up 2",
+      "F",
+      "Rest of the team 1",
+      "E",
+    ]);
   });
 
   it("gives a teammate their projects and the line on what they see", () => {
@@ -554,6 +670,15 @@ describe("kinTaskStep", () => {
       { kind: "told", line: "Zoya handed this back" },
     ],
     [
+      "handed back, then changed since: no longer said, as it no longer counts",
+      row("H", {
+        handedBack: { by: zoya, at: "2026-11-18T08:30:00.000Z" },
+        updatedAt: "2026-11-18T08:45:00.000Z",
+      }),
+      { key: "H", group: "needsYou" },
+      null,
+    ],
+    [
       "yours, and someone asked today where it stands",
       row("D", { ...late("2026-11-15T00:00:00.000Z") }),
       { key: "D", group: "needsYou", askedBy: meera.personId },
@@ -605,7 +730,120 @@ describe("kinTaskStepStatusShown", () => {
   });
 });
 
+describe("kinTaskQuickFilters", () => {
+  const counts = { open: 9, doing: 1, waiting: 2, late: 3, dueThisWeek: 4 };
+  const summary = {
+    ...counts,
+    closed: 5,
+    owners: [{ owner: rhea, open: 6, doing: 0, waiting: 1, late: 2, dueThisWeek: 3 }],
+    seq: 1,
+    asOf: now.toISOString(),
+  } as unknown as KinWorkSummary;
+  const shown = (filter = KIN_WORK_DEFAULT_FILTER, me = names.me) =>
+    kinTaskQuickFilters(filter, kinWorkOverview(summary, filter, names), me);
+
+  it("offers five at a glance, each with its count, and a second tap takes one off", () => {
+    const quick = shown();
+    expect(quick.map((one) => [one.label, one.count, one.selected])).toEqual([
+      ["All open", 9, true],
+      ["Mine", 6, false],
+      ["This week", 4, false],
+      ["Waiting", 2, false],
+      ["Late", 3, false],
+    ]);
+    const mine = quick[1]!.next;
+    expect(mine.owner).toEqual(rhea);
+    // Mine keeps a view chosen with it; its counts are then the reader's own.
+    const mineLate = shown({ ...mine, view: "late" });
+    expect(mineLate.filter((one) => one.selected).map((one) => one.label)).toEqual([
+      "Mine",
+      "Late",
+    ]);
+    expect(mineLate[4]!.count).toBe(2);
+    expect(mineLate[4]!.next).toMatchObject({ view: "open", owner: rhea });
+    expect(mineLate[1]!.next).toMatchObject({ view: "late", owner: null });
+    expect(mineLate[0]!.next).toMatchObject({ view: "open", owner: null });
+    // Before the reader is known there is no Mine.
+    expect(shown(KIN_WORK_DEFAULT_FILTER, null).map((one) => one.id)).toEqual([
+      "all",
+      "week",
+      "waiting",
+      "late",
+    ]);
+  });
+});
+
+describe("a waiting task's mark and words, from the reader's seat", () => {
+  const asMeera: KinWorkNames = { ...names, me: meera.personId };
+  const onRhea = row("A", { state: "waiting", waitingOn: rhea });
+  it.each([
+    ["waits on the reader: an ordinary to-do", onRhea, names, "open", "done", "No date"],
+    [
+      "the same task, seen by someone else",
+      onRhea,
+      asMeera,
+      "waiting",
+      "done",
+      "Waiting on Rhea · No date",
+    ],
+    [
+      "waits on someone else",
+      row("B", { state: "waiting", waitingOn: zoya }),
+      names,
+      "waiting",
+      "done",
+      "Waiting on Zoya · No date",
+    ],
+    [
+      "waits on nobody named",
+      row("C", { state: "waiting" }),
+      names,
+      "waiting",
+      "done",
+      "Waiting · No date",
+    ],
+    [
+      "late and waiting: the clock still has its words, late stays red text",
+      row("D", { state: "waiting", waitingOn: zoya, ...late("2026-11-15T09:00:00.000Z") }),
+      names,
+      "waiting",
+      "done",
+      "Waiting on Zoya",
+    ],
+    ["open", row("E"), names, "open", "done", "No date"],
+  ] as const)("%s", (_name, record, who, mark, tick, rest) => {
+    const shown = kinWorkRow(record, who, now);
+    const line = kinTaskLine(record, who, now);
+    expect([shown.state, shown.tick, line.rest]).toEqual([mark, tick, rest]);
+    // The clock never stands without "Waiting…" beside it, and never says "Waiting on you".
+    expect(line.rest.startsWith("Waiting")).toBe(shown.state === "waiting");
+    expect(`${line.rest} ${shown.status} ${shown.detail}`).not.toContain("Waiting on you");
+  });
+});
+
 describe("kinTaskLine", () => {
+  it("drops You on your own list, and the client every row shares", () => {
+    const lumen = { recordId: KinRecordId.make("rec-C-1"), key: "C-1", title: "Lumen Clinics" };
+    const mine = row("A", { party: lumen, dueAt: "2026-11-24T23:59:59.000Z", dueAllDay: true });
+    const hers = row("B", { owner: zoya, party: lumen });
+    const shared = kinTasksSharedAbout([mine, hers]);
+    expect(shared).toBe("Lumen Clinics");
+    expect(kinTaskLine(mine, names, now, { ownList: true, sharedAbout: shared })).toMatchObject({
+      holder: null,
+      rest: "Due Tue, Nov 24",
+    });
+    expect(kinTaskLine(hers, names, now, { ownList: true, sharedAbout: shared }).holder).toBe(
+      "Zoya",
+    );
+    // Elsewhere, and once one row names another client or none, each row says its own.
+    expect(kinTaskLine(mine, names, now)).toMatchObject({
+      holder: "You",
+      rest: "Due Tue, Nov 24 · Lumen Clinics",
+    });
+    expect(kinTasksSharedAbout([mine, hers, row("C")])).toBeNull();
+    expect(kinTasksSharedAbout([mine])).toBeNull();
+  });
+
   it.each([
     ["late is one red word", row("A", late("2026-11-15T09:00:00.000Z")), "late", "3 days late", ""],
     [

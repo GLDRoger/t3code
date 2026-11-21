@@ -6,8 +6,11 @@ import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_SEARCH } from "@t3tools/client-runtime/kin/kinDocs";
 import {
+  KIN_TASK_FILTER,
   KIN_TASK_GROUP_BY,
+  KIN_TASK_MORE_VIEWS,
   kinTaskFilterProjects,
+  kinTaskQuickFilters,
   KIN_TASKS,
   kinNeedsYouCount,
   kinTaskGroupedChip,
@@ -17,6 +20,7 @@ import {
   kinTasksByMove,
   kinTasksDealFacts,
   kinTasksGroupedBy,
+  kinTasksSharedAbout,
   kinTasksTick,
   kinTasksTickedShown,
   kinTasksWithTicked,
@@ -37,6 +41,7 @@ import {
   kinWorkRow,
   kinWorkShown,
   type KinWorkFilter,
+  type KinWorkNames,
   type KinWorkOverview,
   type KinWorkRef,
 } from "@t3tools/client-runtime/kin/kinWork";
@@ -263,6 +268,9 @@ export function KinTasksList(
     setTicked(tick.ticked);
     void changes.run(shown.record, action, names);
   };
+  const sharedAbout = kinTasksSharedAbout(
+    items.flatMap((item) => (item.type === "task" ? [item.record] : [])),
+  );
   const grouped = kinTaskGroupedChip(within === undefined ? filter.groupBy : undefined);
   const nothing = kinWorkNothing(filter, names, scope);
   const footer = kinWorkListFooter(
@@ -303,6 +311,7 @@ export function KinTasksList(
   const filterMenu = kinWorkFilterMenu({
     overview,
     filter,
+    me: names.me,
     everyone: within === undefined,
     groups: within === undefined,
     choices: within === undefined ? props.choices : null,
@@ -556,7 +565,10 @@ export function KinTasksList(
                     )}
                     line={kinTaskLine(record, names, now, {
                       inProject: item.inProject,
-                      quietNoDate: step !== null && step.kind !== "told",
+                      quietNoDate:
+                        (step !== null && step.kind !== "told") || item.move?.under === "noDate",
+                      ownList: within === undefined,
+                      sharedAbout,
                     })}
                     avatar={kinWorkAvatar(record.owner)}
                     step={shown}
@@ -745,10 +757,14 @@ function KinTasksUndoToast(props: {
 
 const UNDO_MS = 8_000;
 
-/** Tasks' one filter and grouping: how it groups, then what state, whose and who has it. */
+/**
+ * Tasks' one filter: five at a glance (`kinTaskQuickFilters`), then More filters with the other
+ * views, client, project, who has it and how it groups.
+ */
 function kinWorkFilterMenu(props: {
   readonly overview: KinWorkOverview;
   readonly filter: KinWorkFilter;
+  readonly me: KinWorkNames["me"];
   /** Whether who has what is offered, which a project's own list leaves out. */
   readonly everyone: boolean;
   /** Whether Group by is offered, which a project's own list leaves out. */
@@ -794,85 +810,103 @@ function kinWorkFilterMenu(props: {
     title: KIN_WORK_HOME.filter,
     icon: "line.3.horizontal.decrease.circle" as const,
     items: [
-      ...(!props.groups
-        ? []
-        : [
-            {
-              id: "group",
-              title: KIN_TASKS.groupBy,
-              inline: true,
-              items: [
-                ...KIN_TASK_GROUP_BY.map((one) => ({
-                  id: `group:${one.id}`,
-                  title: one.label,
-                  selected: one.id === groupBy,
-                  onPress: () => onChange({ ...filter, groupBy: one.id }),
-                })),
-                // Said once, here: the order never changes.
-                {
-                  id: "group:order",
-                  title: KIN_TASKS.order,
-                  disabled: true,
-                  onPress: () => {},
-                },
-              ],
-            },
-          ]),
       {
-        id: "view",
-        title: props.groups ? KIN_TASKS.showOnly : KIN_WORK_HOME.show,
+        id: "quick",
         inline: true,
-        items: overview.chips.map((chip) => ({
-          id: `view:${chip.id}`,
-          title: chip.label,
-          ...(chip.count === null ? {} : { subtitle: String(chip.count) }),
-          selected: chip.selected,
-          onPress: () => onChange({ ...filter, view: chip.id }),
+        items: kinTaskQuickFilters(filter, overview, props.me).map((one) => ({
+          id: `quick:${one.id}`,
+          title: one.label,
+          ...(one.count === null ? {} : { subtitle: String(one.count) }),
+          selected: one.selected,
+          onPress: () => onChange(one.next),
         })),
       },
-      ...(choices === null
-        ? []
-        : [
-            ...pickMenu(
-              "client",
-              KIN_WORK_HOME.byClient,
-              KIN_WORK_HOME.allClients,
-              filter.party,
-              choices.clients,
-              (party) => ({ ...filter, party }),
-            ),
-            ...pickMenu(
-              "project",
-              KIN_WORK_HOME.byProject,
-              KIN_WORK_HOME.allProjects,
-              filter.project,
-              kinTaskFilterProjects(choices.projects, props.records),
-              (project) => ({ ...filter, project }),
-            ),
-          ]),
-      ...(!props.everyone || overview.owners.length === 0
-        ? []
-        : [
-            {
-              id: "owner",
-              title: KIN_WORK_HOME.owner,
-              items: [
+      {
+        id: "more",
+        title: KIN_TASK_FILTER.more,
+        items: [
+          {
+            id: "view",
+            title: KIN_WORK_HOME.show,
+            inline: true,
+            items: overview.chips
+              .filter((chip) => KIN_TASK_MORE_VIEWS.includes(chip.id))
+              .map((chip) => ({
+                id: `view:${chip.id}`,
+                title: chip.label,
+                ...(chip.count === null ? {} : { subtitle: String(chip.count) }),
+                selected: chip.selected,
+                onPress: () => onChange({ ...filter, view: chip.selected ? "open" : chip.id }),
+              })),
+          },
+          ...(choices === null
+            ? []
+            : [
+                ...pickMenu(
+                  "client",
+                  KIN_WORK_HOME.byClient,
+                  KIN_WORK_HOME.allClients,
+                  filter.party,
+                  choices.clients,
+                  (party) => ({ ...filter, party }),
+                ),
+                ...pickMenu(
+                  "project",
+                  KIN_WORK_HOME.byProject,
+                  KIN_WORK_HOME.allProjects,
+                  filter.project,
+                  kinTaskFilterProjects(choices.projects, props.records),
+                  (project) => ({ ...filter, project }),
+                ),
+              ]),
+          ...(!props.everyone || overview.owners.length === 0
+            ? []
+            : [
                 {
-                  id: "owner:all",
-                  title: KIN_WORK_HOME.everyone,
-                  selected: filter.owner === null,
-                  onPress: () => onChange({ ...filter, owner: null }),
+                  id: "owner",
+                  title: KIN_WORK_HOME.owner,
+                  items: [
+                    {
+                      id: "owner:all",
+                      title: KIN_WORK_HOME.everyone,
+                      selected: filter.owner === null,
+                      onPress: () => onChange({ ...filter, owner: null }),
+                    },
+                    ...overview.owners.map((owner) => ({
+                      id: `owner:${owner.key}`,
+                      title: owner.name,
+                      subtitle: owner.line,
+                      selected: kinWorkOwnerSelected(filter, owner.owner),
+                      onPress: () => onChange({ ...filter, owner: owner.owner }),
+                    })),
+                  ],
                 },
-                ...overview.owners.map((owner) => ({
-                  id: `owner:${owner.key}`,
-                  title: owner.name,
-                  subtitle: owner.line,
-                  selected: kinWorkOwnerSelected(filter, owner.owner),
-                  onPress: () => onChange({ ...filter, owner: owner.owner }),
-                })),
-              ],
-            },
-          ]),
+              ]),
+          ...(!props.groups
+            ? []
+            : [
+                {
+                  id: "group",
+                  title: KIN_TASKS.groupBy,
+                  items: [
+                    ...KIN_TASK_GROUP_BY.map((one) => ({
+                      id: `group:${one.id}`,
+                      title: one.label,
+                      selected: one.id === groupBy,
+                      onPress: () => onChange({ ...filter, groupBy: one.id }),
+                    })),
+                    // Said once, here: the order never changes.
+                    {
+                      id: "group:order",
+                      title: KIN_TASKS.order,
+                      disabled: true,
+                      onPress: () => {},
+                    },
+                  ],
+                },
+              ]),
+        ],
+      },
     ],
   };
 }

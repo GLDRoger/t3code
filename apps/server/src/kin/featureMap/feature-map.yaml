@@ -389,8 +389,9 @@ features:
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-
       A member sees what they hold, made, gave or kept to themselves, their projects' tasks and
-      what is shared with the whole team. Every role reads the same groups: On me, On others by
-      person, On agents, then the rest by project; each row leads with who has it, agents by name.
+      what is shared with the whole team. Every role reads the same groups: Needs you (due within
+      the week, late, or asking them), No date, Waiting on others, Coming up, then the rest; a row
+      leads with who has it, agents by name, except on the reader's own Tasks for their own.
     tools: [records_query, record_get]
     proof:
       - packages/client-runtime/src/kin/kinWorkList.test.ts

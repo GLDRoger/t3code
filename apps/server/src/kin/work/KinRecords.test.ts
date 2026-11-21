@@ -3492,6 +3492,8 @@ it.effect(
         by: { _tag: "person", personId: mateId },
         at: "2026-11-16T00:00:00.000Z",
       });
+      // One instant for both: Tasks reads the hand-back as open until the task changes again.
+      assert.strictEqual(returned.updatedAt, returned.handedBack?.at);
       // Only whoever holds it hands it back.
       assert.include(
         yield* Effect.flip(

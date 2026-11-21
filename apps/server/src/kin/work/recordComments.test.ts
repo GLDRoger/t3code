@@ -447,7 +447,10 @@ it.effect("a mail waiting to be confirmed about an entry shows on the sheet of w
       options: [],
     } as never);
     const hers = yield* OwnerWork.list([zoya], { orgId, byMove: true });
-    assert.deepStrictEqual(hers.moves, [{ key: made.key, group: "needsYou" }] as never);
+    // Hers has no date and no card: drawn under No date, outside Needs you's count.
+    assert.deepStrictEqual(hers.moves, [
+      { key: made.key, group: "needsYou", under: "noDate" },
+    ] as never);
     // Words a person saved on the card are what its Confirm sends, so the row names those.
     const edited = {
       question: "Send this email?",
@@ -491,7 +494,11 @@ it.effect(
       yield* seed;
       yield* TestClock.setTime(Date.parse("2026-11-11T12:00:00.000Z"));
       const toZoya = { owner: { _tag: "person" as const, personId: zoyaId } };
+      // Due past the coming week, or with no date: drawn outside Needs you and its count.
       const later = yield* task("order the banners", { dueAt: "2026-11-20T00:00:00.000Z" });
+      const farOff = yield* task("book the stall", { dueAt: "2026-12-13T12:00:00.000Z" });
+      const undated = yield* task("sort the receipts");
+      const soon = yield* task("pay the printer", { dueAt: "2026-11-17T12:00:00.000Z" });
       const late = yield* task("sign the lease", { dueAt: "2026-11-10T00:00:00.000Z" });
       const waits = yield* task("draft the brochure", {
         ...toZoya,
@@ -513,36 +520,125 @@ it.effect(
         OwnerWork.list([who], {
           orgId,
           byMove: true,
-          limit: 2,
+          limit: 3,
           ...(cursor === undefined ? {} : { cursor }),
         });
       const first = yield* page(rhea);
-      assert.deepStrictEqual(first.counts, { needsYou: 3, waiting: 1, rest: 1, doneRecently: 1 });
-      assert.strictEqual(first.total, 5);
+      assert.deepStrictEqual(first.counts, {
+        needsYou: 3,
+        waiting: 1,
+        rest: 1,
+        doneRecently: 1,
+        noDate: 1,
+        comingUp: 2,
+      });
+      assert.strictEqual(first.total, 8);
       const second = yield* page(rhea, first.nextCursor!);
       const third = yield* page(rhea, second.nextCursor!);
       assert.isNull(third.nextCursor);
       assert.deepStrictEqual(
-        [...first.moves!, ...second.moves!, ...third.moves!].map((one) => [one.key, one.group]),
+        [...first.moves!, ...second.moves!, ...third.moves!].map((one) => [
+          one.key,
+          one.group,
+          one.under ?? null,
+        ]),
         [
-          [lateHers.key, "needsYou"],
-          [late.key, "needsYou"],
-          [later.key, "needsYou"],
-          [waits.key, "waiting"],
-          [hersAlone.key, "rest"],
+          [lateHers.key, "needsYou", null],
+          [late.key, "needsYou", null],
+          [soon.key, "needsYou", null],
+          [undated.key, "needsYou", "noDate"],
+          [waits.key, "waiting", null],
+          [later.key, "needsYou", "comingUp"],
+          [farOff.key, "needsYou", "comingUp"],
+          [hersAlone.key, "rest", null],
         ],
       );
       assert.deepStrictEqual(
         first.records.map((one) => one.key),
-        [lateHers.key, late.key],
+        [lateHers.key, late.key, soon.key],
       );
       // Zoya counts only what she sees; Arjun sees none of it and is given no step for any of it.
       const zoyas = yield* page(zoya);
-      assert.deepStrictEqual(zoyas.counts, { needsYou: 3, waiting: 0, rest: 0, doneRecently: 0 });
+      assert.deepStrictEqual(zoyas.counts, {
+        needsYou: 1,
+        waiting: 0,
+        rest: 0,
+        doneRecently: 0,
+        noDate: 1,
+        comingUp: 1,
+      });
       const arjuns = yield* page(arjun);
-      assert.deepStrictEqual(arjuns.counts, { needsYou: 0, waiting: 0, rest: 0, doneRecently: 0 });
+      assert.deepStrictEqual(arjuns.counts, {
+        needsYou: 0,
+        waiting: 0,
+        rest: 0,
+        doneRecently: 0,
+        noDate: 0,
+        comingUp: 0,
+      });
       assert.deepStrictEqual(arjuns.moves, []);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a hand-back not yet acted on, and a nudge today, keep a task in Needs you", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+      VALUES (${orgId}, ${chief}, ${rheaId}, 0)`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES ('zoya-chat', ${orgId}, 'direct', ${`${zoyaId}:${chief}`}, 0, ${at})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES ('zoya-chat-zoya', ${orgId}, 'zoya-chat', 'person', ${zoyaId}, 'member', ${at})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+      VALUES ('zoya-chat-lead', ${orgId}, 'zoya-chat', 'agent', ${chief}, 'member', ${at})`;
+    yield* TestClock.setTime(Date.parse("2026-11-11T12:00:00.000Z"));
+    const toZoya = { owner: { _tag: "person" as const, personId: zoyaId } };
+    const undated = yield* task("label the samples", toZoya);
+    const farOff = yield* task("plan the open day", {
+      ...toZoya,
+      dueAt: "2026-12-13T12:00:00.000Z",
+    });
+    const placeOf = (who: typeof rhea, key: string) =>
+      OwnerWork.list([who], { orgId, byMove: true }).pipe(
+        Effect.map((page) => {
+          const move = page.moves?.find((one) => one.key === key);
+          return { under: move?.under ?? null, counts: page.counts };
+        }),
+      );
+    // Zoya handed the undated one back (as `handBack` writes it, both times one instant): it
+    // asks Rhea something, so it counts, badge and all.
+    const now = Date.parse("2026-11-11T12:00:00.000Z");
+    yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${rheaId},
+        handed_back_kind = 'person', handed_back_id = ${zoyaId}, handed_back_at = ${now},
+        updated_at = ${now}
+      WHERE org_id = ${orgId} AND key = ${undated.key}`;
+    const back = yield* placeOf(rhea, undated.key);
+    assert.isNull(back.under);
+    assert.include(back.counts, { needsYou: 1, noDate: 0 });
+    // Once Rhea changes it, it follows the plain rule.
+    yield* TestClock.adjust("1 hour");
+    const held = yield* OwnerWork.get([rhea], { orgId, key: undated.key });
+    yield* OwnerWork.update([rhea], {
+      orgId,
+      key: undated.key,
+      rev: held.rev,
+      title: "Invented: label the samples by batch",
+    });
+    const changed = yield* placeOf(rhea, undated.key);
+    assert.strictEqual(changed.under, "noDate");
+    assert.include(changed.counts, { needsYou: 0, noDate: 1 });
+    // Rhea asks Zoya where the far-off one stands: it counts on Zoya's Tasks today only.
+    assert.strictEqual((yield* placeOf(zoya, farOff.key)).under, "comingUp");
+    yield* OwnerWork.nudge([rhea], { orgId, key: farOff.key });
+    const asked = yield* placeOf(zoya, farOff.key);
+    assert.isNull(asked.under);
+    assert.include(asked.counts, { needsYou: 1, comingUp: 0 });
+    yield* TestClock.adjust("1 day");
+    const nextDay = yield* placeOf(zoya, farOff.key);
+    assert.strictEqual(nextDay.under, "comingUp");
+    assert.include(nextDay.counts, { needsYou: 0, comingUp: 1 });
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("asking a late task's holder where it stands tells them once a day, on their Tasks", () =>

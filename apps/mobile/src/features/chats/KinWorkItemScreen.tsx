@@ -24,6 +24,7 @@ import {
   kinRecordWho,
   kinTaskControls,
   kinTaskActivity,
+  kinTaskPeopleFolded,
   type KinActivityLine,
   type KinNextStepAct,
   type KinRecordChipTone,
@@ -281,6 +282,8 @@ function KinWorkItemBody(props: ItemTarget) {
   const work = useKinWork(props);
   // Make invoice and Make its PDF are a step of this page, never a sheet over it.
   const [making, setMaking] = useState<KinMakeStep | null>(null);
+  // Asked by and Held by, folded under one row when the card on top already names them.
+  const [peopleOpen, setPeopleOpen] = useState(false);
   // An older server has no clients or projects: the task shows as it always did.
   const opensClients = useKinOpensClients(environmentId);
   const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
@@ -478,6 +481,7 @@ function KinWorkItemBody(props: ItemTarget) {
   const heldBy = kinRecordWho(item.owner, names);
   const briefBy = kinBriefBy(shown, names, now);
   const chip = kinRecordChip(shown, view, names, now);
+  const folded = kinTaskPeopleFolded(shown, step);
   const controls = kinTaskControls({
     view,
     change: act !== null,
@@ -729,24 +733,26 @@ function KinWorkItemBody(props: ItemTarget) {
         />
       )}
       <ListSection title={KIN_TASK_RECORD.details}>
-        {askedBy === null ? null : (
+        {askedBy === null || (folded?.asked === true && !peopleOpen) ? null : (
           <KinDetailPerson
             icon="person.crop.circle"
             label={KIN_TASK_RECORD.askedBy}
             who={kinRecordWho(askedBy, names)}
           />
         )}
-        <KinDetailPerson
-          icon="person.fill.checkmark"
-          label={KIN_TASK_RECORD.heldBy}
-          who={view.owner.retired ? { ...heldBy, name: `${heldBy.name} (retired)` } : heldBy}
-          description={[
-            view.given,
-            step.words === null && view.reason !== null ? `“${view.reason}”` : null,
-          ]
-            .filter((line) => line !== null)
-            .join("\n")}
-        />
+        {folded?.held === true && !peopleOpen ? null : (
+          <KinDetailPerson
+            icon="person.fill.checkmark"
+            label={KIN_TASK_RECORD.heldBy}
+            who={view.owner.retired ? { ...heldBy, name: `${heldBy.name} (retired)` } : heldBy}
+            description={[
+              view.given,
+              step.words === null && view.reason !== null ? `“${view.reason}”` : null,
+            ]
+              .filter((line) => line !== null)
+              .join("\n")}
+          />
+        )}
         {view.owner.principal._tag === "agent" ? (
           <KinWorkLeadChat
             {...props}
@@ -869,6 +875,13 @@ function KinWorkItemBody(props: ItemTarget) {
             icon="arrow.clockwise"
             label={KIN_WORK_REPEAT.label}
             detail={view.repeat.text}
+          />
+        )}
+        {folded === null || peopleOpen ? null : (
+          <ListRow
+            icon="person.crop.circle"
+            label={folded.label}
+            onPress={() => setPeopleOpen(true)}
           />
         )}
         {!hostClients ? null : (
