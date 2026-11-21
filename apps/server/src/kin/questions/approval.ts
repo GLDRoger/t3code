@@ -87,6 +87,9 @@ const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).dige
 export const approvalEventId = (orgId: string, questionId: string) =>
   KinEventId.make(`question_${hash(`${orgId}\0${questionId}\0approved`).slice(0, 32)}`);
 export const approvalDedupeKey = (questionId: string) => `question-approved:${questionId}`;
+/** The id of the turn an answer to a question asked for a chat queues there (`sendBack`). */
+export const answeredEventId = (orgId: string, questionId: string) =>
+  KinEventId.make(`question_${hash(`${orgId}\0${questionId}\0answered`).slice(0, 32)}`);
 
 export type Approval = {
   readonly questionId: string;

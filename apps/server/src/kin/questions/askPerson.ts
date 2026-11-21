@@ -39,6 +39,7 @@ import { choiceCardState } from "../widgets/choiceCard.ts";
 import { personSees, unreadableBy } from "../work/teamView.ts";
 import {
   DRAFT_KINDS,
+  answeredEventId,
   DRAFT_OPTIONS,
   DRAFT_WORDS,
   draftDetail,
@@ -52,9 +53,11 @@ import { defaultDue, namedDue, normaliseAbout, normaliseIntent, raiseAt } from "
 export const AskPersonInput = Schema.Struct({
   to: KinTrimmedText.check(Schema.isMaxLength(120)),
   question: KinTrimmedText.check(Schema.isMaxLength(240)),
-  options: Schema.Array(
-    Schema.Struct({ label: KinChoiceOption.fields.label, kind: KinChoiceOption.fields.kind }),
-  ).check(Schema.isMinLength(2), Schema.isMaxLength(4)),
+  options: Schema.optional(
+    Schema.Array(
+      Schema.Struct({ label: KinChoiceOption.fields.label, kind: KinChoiceOption.fields.kind }),
+    ).check(Schema.isMinLength(2), Schema.isMaxLength(4)),
+  ),
   detail: Schema.optional(KinText.check(Schema.isMaxLength(1800))),
   by: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(10))),
   about: Schema.optional(
@@ -71,7 +74,7 @@ export const AskPersonInput = Schema.Struct({
       ),
     }).annotate({
       description:
-        "Only from a teammate's own chat, to the owner: detail is a draft of what only the owner may finish for them. Mark the one option that approves it kind yes; that tap has you make it at the owner's level.",
+        "Only from a teammate's own chat, to the owner: detail is a draft of what only the owner may finish for them. Leave out options: Kin adds Approve and Changes first, and his Approve has you make that one thing at the owner's level.",
     }),
   ),
 });
@@ -193,8 +196,14 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
             WHERE org_id = ${orgId} AND person_id = ${self.owner}`;
           return yield* refuse(`A draft goes up only to ${owner?.name ?? "the owner"}.`);
         }
-        if (input.options.filter((one) => one.kind === "yes").length !== 1)
-          return yield* refuse("Mark exactly one option, the one that approves it, kind yes.");
+        if (input.options !== undefined)
+          return yield* refuse(
+            "Kin writes this card's buttons, Approve and Changes first: leave out options when you send a draft up.",
+          );
+        if (!(yield* draftSource(turn, here.chatId, asker)))
+          return yield* refuse(
+            `A draft goes up only from ${askerName ?? "the teammate"}'s own message here, or after the owner's Changes first on one of theirs.`,
+          );
         if (input.detail === undefined || input.detail.trim() === "")
           return yield* refuse("Put the draft itself in detail.");
         const key = input.draft.for;
@@ -232,6 +241,8 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
         };
         draft = yield* encodeStoredDraft(sentUp);
       }
+      if (sentUp === undefined && input.options === undefined)
+        return yield* refuse("Give it 2 to 4 options.");
       // Their own direct chat with this agent: opening it is their own reach check (`Reach`).
       const unreached = new KinChatError({
         reason: "not_allowed",
@@ -317,7 +328,11 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
           `You already asked ${target.name} something nobody asked you for; wait for that answer first.`,
         );
       const words = flat(
-        [input.question, input.detail ?? "", ...input.options.map((one) => one.label)].join("\n"),
+        [
+          input.question,
+          input.detail ?? "",
+          ...(sentUp !== undefined ? DRAFT_OPTIONS : (input.options ?? [])).map((one) => one.label),
+        ].join("\n"),
       );
       // What they will read, and what comes back to the asker, each held to its reader.
       if (!targetOwnerSide) {
@@ -357,7 +372,7 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
         options:
           sentUp !== undefined
             ? DRAFT_OPTIONS.map((one) => ({ ...one }))
-            : input.options.map((one) => ({
+            : (input.options ?? []).map((one) => ({
                 label: one.label,
                 ...(one.kind === undefined ? {} : { kind: one.kind }),
               })),
@@ -445,4 +460,44 @@ const passedOn = Effect.fn("KinQuestions.passedOn")(function* (turn: {
           AND m.client_message_id = ${storedClientId("send", "")} || h.message_id))
     LIMIT 1`;
   return rows.length > 0;
+});
+
+/**
+ * Where a sent-up draft may start: the teammate's own message in her direct chat with this agent,
+ * or the turn carrying the owner's answer to a draft she sent up through this agent before (his
+ * Changes first, from `sendBack`). No other turn that merely carries her as its origin.
+ */
+const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
+  turn: { readonly orgId: string; readonly agentId: string; readonly wakeupId: string },
+  chatId: string,
+  asker: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const own = yield* sql`SELECT 1 FROM kin_events e
+    JOIN kin_messages m ON m.org_id = e.org_id
+      AND m.message_id = json_extract(e.json, '$.messageId')
+    WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId}
+      AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message'
+      AND json_extract(e.json, '$.origin') IS NULL AND m.chat_id = ${chatId}
+      AND m.author_kind = 'human' AND m.author_person_id = ${asker} AND m.origin_json IS NULL
+    LIMIT 1`;
+  if (own.length > 0) return true;
+  const answered = yield* sql<{ eventId: string; questionId: string }>`SELECT
+      e.event_id AS "eventId", q.question_id AS "questionId" FROM kin_events e
+    JOIN kin_questions q ON q.org_id = e.org_id
+      AND q.question_id = json_extract(e.json, '$.subject.questionId')
+    WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId}
+      AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'deferral.due'
+      AND e.dedupe_key = 'question-answered:' || q.question_id
+      AND json_extract(e.json, '$.provenance._tag') = 'system'
+      AND json_extract(e.json, '$.subject.answered') = 1
+      AND json_extract(e.json, '$.subject.approved') IS NULL
+      AND json_extract(e.json, '$.origin.personId') = ${asker}
+      AND json_extract(e.json, '$.origin.agentId') = ${turn.agentId}
+      AND json_extract(e.json, '$.chatId') = ${chatId}
+      AND q.agent_id = ${turn.agentId} AND q.for_person_id = ${asker}
+      AND q.for_chat_id = ${chatId} AND q.draft_json IS NOT NULL
+      AND q.state = 'answered' AND q.approved_at IS NULL
+    ORDER BY e.event_id`;
+  return answered.some((one) => one.eventId === answeredEventId(turn.orgId, one.questionId));
 });

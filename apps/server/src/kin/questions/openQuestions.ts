@@ -58,6 +58,7 @@ import {
 } from "./rules.ts";
 import { TAKEN_KEY, tellDeclined, tellTaken, tellWithdrawn } from "./defaultTaken.ts";
 import {
+  answeredEventId,
   approvalDedupeKey,
   approvalEventId,
   decodeStoredDraft,
@@ -563,9 +564,7 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
   }
   const event = yield* decodeEvent({
     _tag: "deferral.due",
-    eventId: KinEventId.make(
-      `question_${hash(`${orgId}\0${row.questionId}\0answered`).slice(0, 32)}`,
-    ),
+    eventId: answeredEventId(orgId, row.questionId),
     orgId,
     agentId: row.agentId,
     receivedAt: iso(now),

@@ -68,7 +68,7 @@ import { laneFor } from "../reply/replyLane.ts";
 import * as AskPerson from "./askPerson.ts";
 import * as Questions from "./openQuestions.ts";
 import { approvalOf, madeUnderApproval } from "./approval.ts";
-import { approvedTurnText, tellDraftMade } from "./sentUpDraft.ts";
+import { APPROVED_TURN_TEXT, approvedTurnText, tellDraftMade } from "./sentUpDraft.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
 import { holdLine } from "../triggers/quietHold.ts";
 import { defaultDue } from "./rules.ts";
@@ -1543,13 +1543,11 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
         sql<{ at: number | null }>`SELECT approved_at AS at FROM kin_questions
           WHERE question_id = ${questionId}`.pipe(Effect.map((rows) => rows[0]!.at));
       const proposal: { readonly kind: "proposal"; readonly for?: string } = { kind: "proposal" };
+      // Kin writes a sent-up card's buttons: the agent gives none.
       const upInput = (who: string, text: string) => ({
         to: "Rhea",
         question: "Approve the Harbourline proposal?",
-        options: [
-          { label: "Approve", kind: "yes" as const },
-          { label: "Changes first", kind: "no" as const },
-        ],
+        options: undefined,
         detail: text,
         intent: `harbourline proposal for ${who}`,
         draft: proposal,
@@ -1590,9 +1588,15 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       );
       for (const to of ["Dev", "Meera"])
         yield* refused(fromZoya({ to }), "A draft goes up only to Rhea Rao.");
+      // Buttons are Kin's: an agent's own, even ones that look right, are refused.
       yield* refused(
-        fromZoya({ options: [{ label: "Approve" }, { label: "Changes first" }] }),
-        "Mark exactly one option, the one that approves it, kind yes.",
+        fromZoya({
+          options: [
+            { label: "Approve", kind: "no" },
+            { label: "Changes first", kind: "yes" },
+          ],
+        }),
+        "Kin writes this card's buttons, Approve and Changes first: leave out options when you send a draft up.",
       );
       yield* refused(fromZoya({ detail: " " }), "Put the draft itself in detail.");
       yield* refused(
@@ -1715,10 +1719,11 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       assert.isFalse(yield* ownerLevelAsked(org, chief, wakeupId));
       // His turn is told what to make and for whom, with the names the card showed; the draft
       // is data, as his card showed it.
+      // Its words are constant, whoever renamed themselves since; names live in the data only.
       const told = (yield* approvedTurnText(turn))!;
-      assert.notInclude(told.text, "INV-3");
-      assert.notInclude(told.text, "Ignore the draft");
+      assert.strictEqual(told.text, APPROVED_TURN_TEXT);
       assert.deepStrictEqual(told.data, {
+        owner: "Rhea Rao",
         from: "Zoya Sheikh",
         kind: "proposal",
         for: { key: "C-7", title: "Harbourline Hotels" },
@@ -1796,6 +1801,23 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       const arjun = yield* sendUp("arjun", "Monsoon shoot quote: price: ____");
       yield* tap(owner, arjun.questionId, "option-2", "rhea-changes");
       assert.isNull(yield* approvedAt(arjun.questionId));
+      // The turn carrying Rhea's Changes first, in Arjun's chat, may send the revised draft up.
+      const drainedBut = (keep: string) => sql`UPDATE kin_events SET state = 'done'
+        WHERE org_id = ${orgId} AND state = 'queued' AND dedupe_key IS NOT ${keep}`;
+      const drained = drainedBut("");
+      yield* drainedBut(`question-answered:${arjun.questionId}`);
+      const revising = yield* startAgentWakeup({
+        orgId,
+        agentId: chief,
+        threadId: ThreadId.make("chief-thread"),
+        queued: true,
+      });
+      const revised = yield* askFor("chief", revising, {
+        ...upInput("arjun", "Monsoon shoot quote, revised: price: ____"),
+        intent: "revised shoot quote",
+      });
+      assert.strictEqual(revised.state, "posted");
+      yield* sql`UPDATE kin_questions SET state = 'withdrawn' WHERE question_id = ${revised.questionId}`;
       assert.deepStrictEqual((yield* draftWakes).slice(1), [
         {
           key: `question-answered:${arjun.questionId}`,
@@ -1830,9 +1852,29 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       );
 
       // What earlier turns left queued is not this story's: each ask below is woken alone.
-      const drained = sql`UPDATE kin_events SET state = 'done'
-        WHERE org_id = ${orgId} AND state = 'queued'`;
       yield* drained;
+      // The answer to a question that was no draft, carried to Dev's chat, sends nothing up.
+      const devChat = yield* chiefChat("dev");
+      const plain = yield* askFor(
+        "chief",
+        yield* wakeOn("chief", "dev", devChat, "Can Rhea decide the shoot date?"),
+        { to: "Rhea", intent: "shoot date for dev" },
+      );
+      yield* tap(owner, plain.questionId, "option-1", "rhea-plain");
+      yield* drainedBut(`question-answered:${plain.questionId}`);
+      const carried = yield* startAgentWakeup({
+        orgId,
+        agentId: chief,
+        threadId: ThreadId.make("chief-thread"),
+        queued: true,
+      });
+      yield* refused(
+        askFor("chief", carried, {
+          ...upInput("dev", "Shoot terms: ____"),
+          intent: "dev terms after answer",
+        }),
+        "A draft goes up only from Dev Malhotra's own message here, or after the owner's Changes first on one of theirs.",
+      );
       // Two approvals while the lane is busy, and a routine owner-lane turn beside them: three
       // wakes, each approval alone, each teammate told of her own result.
       const queue = Context.get(team.services, KinEventQueue.KinEventQueue);

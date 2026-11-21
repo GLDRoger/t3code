@@ -519,7 +519,7 @@ const runStartOfferings = Effect.fnUntraced(function* (lead: Lead, input: typeof
 
 /** What a refused doc for a teammate's own ask tells the agent to do instead: draft it for the owner. */
 const draftUpLine = (owner: string, asker: string) =>
-  `Nothing was written. Draft it for ${owner} instead: put the draft in kin_ask_person to ${owner} as its detail, with draft naming its kind and the client or deal key, leaving blank what only ${owner} decides, such as a price, with the options Approve (kind yes) and Changes first. Then tell ${asker} in one line that it is with ${owner} to approve, with the draft under that line.`;
+  `Nothing was written. Draft it for ${owner} instead: put the draft in kin_ask_person to ${owner} as its detail, with draft naming its kind and the client or deal key, leaving blank what only ${owner} decides, such as a price; Kin adds the buttons Approve and Changes first. Then tell ${asker} in one line that it is with ${owner} to approve, with the draft under that line.`;
 
 /**
  * A doc refused for the one teammate behind the turn, asked in their own direct chat with this
