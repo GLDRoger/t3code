@@ -34,6 +34,8 @@ export const KIN_COMPANY = {
   timeZoneFromHost:
     "None set yet, so Kin uses the computer's. Open Kin on your phone to set yours.",
   empty: "Nothing here yet. Add what goes on your invoices.",
+  /** The phone reads these; they are changed on the computer. */
+  onComputer: "Change these, the brand and the templates in Kin on your computer.",
   /** A new company's suggested country, the device's, which it takes only with a tap. */
   useCountry: (name: string) => `Use ${name}?`,
   changed:
@@ -459,4 +461,25 @@ export function kinCompanyRead(profile: KinCompanyProfile): ReadonlyArray<{
       return [{ id: field.id, label: field.label, value: shown, missing }];
     }),
   }));
+}
+
+/**
+ * The phone's one screen to read: the country in words and the tax as one line ("VAT at 20%");
+ * the year's first month stays on the computer's page.
+ */
+export function kinCompanyGlance(profile: KinCompanyProfile): ReturnType<typeof kinCompanyRead> {
+  const rate = profile.tax?.rate ?? null;
+  return kinCompanyRead(profile)
+    .map((section) => ({
+      ...section,
+      rows: section.rows.flatMap((row) => {
+        if (row.id === "financialYearStartMonth" || row.id === "taxRate") return [];
+        if (row.missing) return [row];
+        if (row.id === "country") return [{ ...row, value: countryName(row.value) }];
+        if (row.id === "taxName" && rate !== null)
+          return [{ ...row, value: `${row.value} at ${rate}%` }];
+        return [row];
+      }),
+    }))
+    .filter((section) => section.rows.length > 0);
 }
