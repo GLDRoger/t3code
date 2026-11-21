@@ -26,10 +26,10 @@ import {
   type KinHoldRule,
   storedWorkHours,
 } from "./quietHours.ts";
+import { MINUTE_MS } from "../durations.ts";
 
-const MINUTE = 60_000;
 /** A message they sent this recently is one a line to them answers, whatever the hour. */
-const ANSWERS_WITHIN_MS = 10 * MINUTE;
+const ANSWERS_WITHIN_MS = 10 * MINUTE_MS;
 const decodeJsonQuiet = Schema.decodeUnknownOption(Schema.fromJsonString(KinPersonQuietHours));
 const encodeRelay = Schema.encodeEffect(Schema.fromJsonString(KinMessageRelay));
 

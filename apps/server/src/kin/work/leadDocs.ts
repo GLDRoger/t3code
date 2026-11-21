@@ -696,6 +696,8 @@ const runSearch = Effect.fnUntraced(function* (lead: Lead, input: typeof SearchI
     viewer: team === undefined ? "owner" : "team",
     scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
     widen: true,
+    // A deal reads as a Work entry; any seat may name one, as record_get reads it.
+    deals: input.kinds === undefined || input.kinds.length === 0 || input.kinds.includes("work"),
   });
   return {
     ...(widened ? { widened: WIDENED } : {}),

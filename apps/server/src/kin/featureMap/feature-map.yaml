@@ -1005,13 +1005,26 @@ features:
     tab: settings
     roles: { owner: none, co_owner: none, lead: none, member: none }
     note: >-
-      Server only so far: kin.org.pause and kin.org.resume (owner or co-owner, KinStop.pause and
-      KinStop.resume) stop and restart every agent turn, worker and delegated task; kin.org.get
-      tells anyone in the company whether it is stopped. No client reaches it yet; its row belongs
-      in Settings, Company on web and phone.
+      kin.org.pause and kin.org.resume (owner or co-owner, KinStop.pause and KinStop.resume) stop
+      and restart every agent turn, worker and delegated task; kin.org.get tells anyone in the
+      company whether it is stopped. The switch is reached from Settings, Company details on web
+      and phone (the stop-switch row).
     proof:
       - apps/server/src/kin/lead/KinStop.test.ts
       - apps/server/src/kin/chat/rpcHandlers.test.ts
+
+  - id: stop-switch
+    name: Stop all agents, and resume them
+    tab: settings
+    web: [settings, section:Company details, section:All agents]
+    phone: [SettingsKin, KinCompany, section:All agents]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      While agents are stopped, every chat with an agent says so above the box, for every member
+      (a member cannot stop or resume them), and it follows the switch without a reload.
+    proof:
+      - packages/client-runtime/src/kin/kinStop.test.ts
+      - apps/server/src/kin/lead/KinStop.test.ts
 
   - id: recommendations
     name: Recommendations, a setting Kin suggests changing
@@ -1399,13 +1412,10 @@ unlisted:
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.
-  "rpc:kin.org.get": Served; no client calls it yet (the company's paused state).
-  "rpc:kin.org.pause": Served; no client offers the company stop switch yet.
-  "rpc:kin.org.resume": Served; no client offers the company stop switch yet.
   "rpc:kin.lead.access.list": Served; no client shows an agent's access grants yet.
   "rpc:kin.lead.access.grant": Served; no client grants an agent access yet.
   "rpc:kin.lead.access.revoke": Served; no client revokes an agent's access yet.
-  "rpc:kin.approvals.list": Served; clients read approvals one at a time (kin.approvals.get), none lists them.
+  "rpc:kin.approvals.list": Deprecated; always answers unavailable, and no client ever called it (clients read approvals one at a time, kin.approvals.get). Kept until no supported build predates its deprecation.
   "rpc:kin.audit.list": Served; no client shows the audit log yet.
   "rpc:kin.audit.verify": Served; no client checks the audit log yet.
   "rpc:kin.levels.get": Served; no client shows levels yet.
@@ -1416,4 +1426,5 @@ unlisted:
   "rpc:kin.work.statementForgetAccount": Served; no client forgets a statement account yet.
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
-  "rpc:kin.open.read": Served; clients follow the open list through kin.open.subscribe instead.
+  "rpc:kin.open.read": Served; no client reads the open list (Needs you and Tasks use their own reads).
+  "rpc:kin.open.subscribe": Served; no host lists "open" in its streams, so no client follows it.

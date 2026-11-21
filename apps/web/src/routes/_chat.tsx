@@ -1,6 +1,6 @@
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router";
+import { lazy, Suspense } from "react";
 
-import { ThreadRouteView } from "../components/ThreadRouteView";
 import { GlobalVoiceInputIndicator } from "../components/chat/GlobalVoiceInputIndicator";
 import { isAppModalPage } from "../components/sidebar/mainAppLocation";
 import { SidebarInset } from "../components/ui/sidebar";
@@ -8,6 +8,11 @@ import { resolveThreadRouteTarget } from "../threadRoutes";
 import { retainThreadFindForRoute } from "../components/chat/threadFindStore";
 import { ThreadLinkPrompt } from "../components/promptLinks/ThreadLinkPrompt";
 import { useShownThreadRouteTarget } from "../hooks/useShownThreadRouteTarget";
+
+// Lazy so routes that never show a thread do not load the chat view's chunks.
+const ThreadRouteView = lazy(() =>
+  import("../components/ThreadRouteView").then((m) => ({ default: m.ThreadRouteView })),
+);
 
 function ChatRouteLayout() {
   // Render both routes here so draft promotion keeps the same ChatView mounted.
@@ -18,7 +23,9 @@ function ChatRouteLayout() {
         <ThreadLinkPrompt threadRef={shownTarget.threadRef} />
       ) : null}
       {shownTarget ? (
-        <ThreadRouteView target={shownTarget} background={modalOpen} />
+        <Suspense fallback={<SidebarInset className="h-dvh" />}>
+          <ThreadRouteView target={shownTarget} background={modalOpen} />
+        </Suspense>
       ) : modalOpen ? (
         <SidebarInset className="h-dvh" />
       ) : (

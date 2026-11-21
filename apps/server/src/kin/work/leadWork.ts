@@ -76,7 +76,7 @@ import {
   spineShown,
   taskSpecChanged,
 } from "./leadSpine.ts";
-import { contactFields, contactSensitive } from "./contactDetails.ts";
+import { contactAll, contactFields, contactSensitive } from "./contactDetails.ts";
 import {
   fieldList,
   fieldText,
@@ -114,6 +114,7 @@ import {
   sensitiveNow,
   suggestedStateLabel,
   toRecord,
+  UNISSUED_INVOICE,
   workFailure,
 } from "./recordRows.ts";
 import {
@@ -149,6 +150,7 @@ import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
+import { DAY_MS } from "../durations.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -543,7 +545,7 @@ export const CreateResult = Schema.Struct({
       created: Schema.Boolean,
       /** A meeting whose start has passed: recorded as held, not booked. */
       past: Schema.optional(Schema.Literal(true)),
-      /** On a suggestion only: the state it was stored in, whatever the row asked for. */
+      /** On a suggestion or an invoice draft only: the state it was stored in, whatever was asked. */
       state: Schema.optional(KinRecordState),
       stateLabel: Schema.optional(Schema.String),
       suggested: Schema.optional(Schema.Literal(true)),
@@ -610,6 +612,8 @@ const Updated = Schema.Struct({
   key: Schema.String,
   rev: Schema.Number,
   state: KinRecordState,
+  /** On an invoice an agent asked to issue or settle by its state: still a draft. */
+  stateLabel: Schema.optional(Schema.String),
   changed: Schema.Array(Schema.String),
   ...Marks.fields,
   /** Other contacts with the same email. */
@@ -626,6 +630,7 @@ export const UpdateResult = Schema.Struct({
   key: Schema.optional(Updated.fields.key),
   rev: Schema.optional(Updated.fields.rev),
   state: Schema.optional(Updated.fields.state),
+  stateLabel: Updated.fields.stateLabel,
   changed: Schema.optional(Updated.fields.changed),
   ...Marks.fields,
   sameEmail: Updated.fields.sameEmail,
@@ -1772,7 +1777,6 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
 });
 export const query = leadTool("KinWorkTools.query", runQuery);
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const TOTALS_BY: Record<NonNullable<typeof QueryInput.Type.groupBy>, TotalsBy> = {
   client: "party",
   project: "project",
@@ -1919,15 +1923,15 @@ const mailedFor = Effect.fnUntraced(function* (
   if (!MAILED_LISTS.has(row.registerId)) return [];
   if (row.registerId !== "clients") return yield* sentMail({ orgId, recordIds: [row.recordId] });
   const sql = yield* SqlClient.SqlClient;
-  const related = yield* sql<{ recordId: string; email: string | null }>`SELECT record_id AS
-      "recordId", json_extract(fields_json, '$.email') AS email
+  const related = yield* sql<{ recordId: string; fieldsJson: string }>`SELECT record_id AS
+      "recordId", fields_json AS "fieldsJson"
     FROM kin_records WHERE org_id = ${orgId} AND party_id = ${row.recordId}
       AND register_id IN ('invoices', 'quotes', 'receipts', 'contacts')
     ORDER BY record_id`;
   return yield* sentMail({
     orgId,
     recordIds: related.map((one) => one.recordId),
-    addresses: related.flatMap((one) => (typeof one.email === "string" ? [one.email] : [])),
+    addresses: related.flatMap((one) => contactAll(parseFields(one.fieldsJson), "email")),
   });
 });
 const COMMENTS_SHOWN = 10;
@@ -2411,7 +2415,9 @@ const createRow = Effect.fnUntraced(function* (
           ),
           suggested: true as const,
         }
-      : {}),
+      : isInvoiceDraft(stored.registerId, stored.state)
+        ? { state: stored.state, stateLabel: UNISSUED_INVOICE }
+        : {}),
     ...marksOf(lists, stored),
     ...(created && alsoOpen.length > 0 ? { alsoOpen } : {}),
     ...(alsoNamed === undefined ? {} : { alsoNamed }),
@@ -2701,7 +2707,6 @@ const PARTY_KIND: Partial<Record<string, KinPartyKind>> = {
   receipts: "client",
 };
 
-const DAY = 86_400_000;
 const NEAR_DAYS = 3;
 const REPEAT_CANDIDATES = 2000;
 const REPEATS_SHOWN = 5;
@@ -2737,7 +2742,7 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
     paid === undefined
       ? sql`r.state NOT IN ('done', 'dropped')`
       : sql`r.state != 'dropped' AND r.amount_minor = ${paid.minor} AND r.currency = ${paid.currency}
-          AND abs(r.date_at - ${row.dateAt}) <= ${(NEAR_DAYS + 1) * DAY}`;
+          AND abs(r.date_at - ${row.dateAt}) <= ${(NEAR_DAYS + 1) * DAY_MS}`;
   const rows = yield* sql<{
     key: string;
     title: string;
@@ -2771,7 +2776,7 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
     if (
       paid !== undefined &&
       !sameDay &&
-      Math.abs(Date.parse(day(one.dateAt)!) - Date.parse(day(row.dateAt)!)) > NEAR_DAYS * DAY
+      Math.abs(Date.parse(day(one.dateAt)!) - Date.parse(day(row.dateAt)!)) > NEAR_DAYS * DAY_MS
     )
       return [];
     const differs = [
@@ -3256,6 +3261,12 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
       key: after.key,
       rev: after.rev,
       state: after.state,
+      ...(input.state !== undefined &&
+      input.state !== after.state &&
+      !isSuggestion(after) &&
+      isInvoiceDraft(after.registerId, after.state)
+        ? { stateLabel: UNISSUED_INVOICE }
+        : {}),
       changed,
       ...marksOf(lists, after),
       ...(hiddenFrom.length === 0 ? {} : { noLongerSeenBy: hiddenFrom }),
