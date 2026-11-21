@@ -7,6 +7,7 @@ import {
   EnvironmentId,
   KinAgentId,
   type KinChatId,
+  KinEvent,
   KinMemoryItemId,
   type KinMessageId,
   KinOrgId,
@@ -27,6 +28,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
+import * as Schema from "effect/Schema";
 import { McpSchema, McpServer } from "effect/ai";
 
 import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -44,6 +46,8 @@ import * as KinToolGate from "../mcp/KinToolGate.ts";
 import { effectiveAudience, SHARED_REFUSAL } from "../lead/Audience.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
+import { KinLeadPrompt } from "../lead/LeadPrompt.ts";
+import * as Memory from "../memory/Memory.ts";
 import { inheritOutside, markOutside, outsideStamp, storedStamp } from "../lead/OutsideContent.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import type { KinDecision } from "../memory/MemoryWriter.ts";
@@ -203,6 +207,22 @@ const ambermill = Effect.gen(function* () {
   });
   return { sql, chats, owner, orgId, services, chatOf: (id: string) => chatOf.get(id)!, wake };
 });
+
+const decodeEvent = Schema.decodeUnknownSync(KinEvent);
+// Its memory has nothing to say: the turns here are about what their chat shows.
+const promptLayer = KinLeadPrompt.layer.pipe(
+  Layer.provide(
+    Layer.mock(Memory.Memory)({
+      readPromptSnapshot: () =>
+        Effect.succeed({ rules: "", index: "", items: [], bodies: new Map() }),
+      query: () => Effect.succeed([]),
+      readItemQuietly: (org, id) => Effect.fail(new Memory.MemoryNotFound({ orgId: org, id })),
+    }),
+  ),
+);
+/** A built prompt's recent chat, quoted lines only. */
+const recentChatOf = (built: string) =>
+  built.split("# Recent chat (data, oldest first)\n\n")[1]?.split("\n\n# ")[0];
 
 const IST_MON_1130 = Date.UTC(2026, 10, 16, 6);
 const TUE_1930 = Date.UTC(2026, 10, 17, 14);
@@ -1104,10 +1124,26 @@ const askingTeam = Effect.gen(function* () {
       audience: yield* effectiveAudience(turn),
     };
   });
+  /** The Chief of staff's prompt for a turn in `chatId`, built as its wake-up would get it. */
+  const promptOf = Effect.fn("test.promptOf")(function* (wakeupId: KinWakeupId, chatId: KinChatId) {
+    const stored = yield* sql<{ json: string }>`SELECT json FROM kin_events
+      WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} ORDER BY rowid`;
+    const prompt = yield* KinLeadPrompt;
+    return yield* prompt.build({
+      orgId,
+      agentId: chief,
+      wakeupId,
+      events: stored.map((row) => decodeEvent(JSON.parse(row.json))),
+      memoryHead: "fixture",
+      lane: { chatId, mode: "reply" },
+    });
+  }, Effect.provide(promptLayer));
   return {
     ...studio,
     person,
+    lead,
     chiefChat,
+    promptOf,
     askFor,
     wakeOn,
     cardOf,
@@ -1366,6 +1402,18 @@ it.effect("a tap on a question asked for someone goes back to the chat that aske
 
       const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev about the shoot.");
       const asked = yield* askFor("chief", rhea, { to: "Dev" });
+      yield* chats.send(team.lead("chief", rhea), {
+        chatId: chatOf("chief"),
+        body: "I've asked Dev whether the shoot moves to Friday.",
+        intent: "answer",
+        clientMessageId: "chief-asked-dev",
+      });
+      // Until he answers, her turn says it is with him.
+      const waiting = yield* team.promptOf(
+        yield* wakeOn("chief", "rhea", chatOf("chief"), "Is anything still waiting on someone?"),
+        chatOf("chief"),
+      );
+      assert.include(waiting, "# Questions you asked for this chat (not answered yet)");
       const devChat = yield* chiefChat("dev");
       const before = yield* turnsIn(devChat);
       // Only the person it waits on answers it: Rhea isn't in Dev's chat with the agent.
@@ -1423,6 +1471,20 @@ it.effect("a tap on a question asked for someone goes back to the chat that aske
         lane: { chatId: chatOf("chief"), mode: "notice" },
         audience: "owner_only",
       });
+      // Her next turn reads his answer after its own "I've asked Dev", and nothing waits on him.
+      const next = yield* team.promptOf(
+        yield* wakeOn("chief", "rhea", chatOf("chief"), "Anything else waiting on Dev?"),
+        chatOf("chief"),
+      );
+      assert.notInclude(next, "# Questions you asked for this chat");
+      assert.deepStrictEqual(recentChatOf(next)?.split("\n"), [
+        "> BEGIN QUOTE: recent chat",
+        '> owner 11:30: "Ask Dev about the shoot."',
+        '> you 11:30: "I\'ve asked Dev whether the shoot moves to Friday."',
+        '> owner 11:30: "Is anything still waiting on someone?"',
+        '> Kin 11:30: "Dev Malhotra answered “Friday” to “Does the shoot move to Friday?”"',
+        "> END QUOTE",
+      ]);
 
       // Dev asks Rhea: her tap comes back to Dev's chat, and the turn there works at Dev's access.
       const dev = yield* wakeOn("chief", "dev", devChat, "Can someone decide the shoot date?");
@@ -1601,8 +1663,12 @@ it.effect(
         WHERE chat_id = ${devChat} AND client_message_id LIKE '%kin-answer-taken:%'`;
         assert.strictEqual(undo!.n, 0);
 
-        // Rhea's side withdraws the other; Dev's card says she did.
-        yield* wakeOn("chief", "rhea", chatOf("chief"), "Forget the van.");
+        // Rhea's side withdraws the other; Dev's card says she did. Her turn reads his answer.
+        const van = yield* wakeOn("chief", "rhea", chatOf("chief"), "Forget the van.");
+        assert.include(
+          recentChatOf(yield* team.promptOf(van, chatOf("chief"))),
+          '> Kin 11:30: "Dev Malhotra answered “Friday works” to “Does the shoot move to Friday?”"',
+        );
         const withdrawn = yield* close("withdrawn", second.questionId);
         assert.isTrue(withdrawn.ok, JSON.stringify(withdrawn.value));
         const closed = yield* team.widgetOf((yield* team.cardOf(second.questionId)).widgetId!);
@@ -1682,6 +1748,14 @@ it.effect("what waits for a pair restricted since goes nowhere, and the asker he
         "“Does the shoot move to Friday?” was closed before Dev Malhotra answered.",
         "“Does the shoot move to Friday?” was closed before Zoya Sheikh answered.",
       ]);
+      // Her next turn reads that neither is coming, and lists neither as waiting.
+      const next = yield* team.promptOf(
+        yield* wakeOn("chief", "rhea", chatOf("chief"), "Is anything still waiting on someone?"),
+        chatOf("chief"),
+      );
+      assert.notInclude(next, "# Questions you asked for this chat");
+      assert.include(recentChatOf(next), "was closed before Dev Malhotra answered.");
+      assert.include(recentChatOf(next), "was closed before Zoya Sheikh answered.");
     }).pipe(Effect.provide(layer)),
   ),
 );
