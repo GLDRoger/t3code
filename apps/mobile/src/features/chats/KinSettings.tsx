@@ -267,6 +267,7 @@ export function KinSettings(props: {
                   return host._tag !== "host" || orgId === null || mine === null ? null : (
                     <Fragment key={page}>
                       <SettingsRow
+                        labelWholeWords
                         icon="person.crop.circle"
                         label={mine.displayName}
                         value={kinRoleLine(mine.roleTags) || KIN_PROFILE_COPY.mine}
@@ -281,6 +282,7 @@ export function KinSettings(props: {
                       {/* The owner links devices from T3 Code's Sharing & access settings. */}
                       {teammateIds.includes(host.environmentId) ? (
                         <SettingsRow
+                          labelWholeWords
                           icon="iphone"
                           label={KIN_DEVICES_COPY.title}
                           value={KIN_DEVICES_COPY.rowDetail}
@@ -298,6 +300,7 @@ export function KinSettings(props: {
                 case "notifications":
                   return (
                     <SettingsRow
+                      labelWholeWords
                       key={page}
                       icon="bell.badge"
                       label={KIN_SETTINGS_PAGE_TITLES.notifications}
@@ -307,6 +310,7 @@ export function KinSettings(props: {
                 case "appearance":
                   return inCodingApp ? null : (
                     <SettingsRow
+                      labelWholeWords
                       key={page}
                       icon="paintbrush"
                       label={KIN_SETTINGS_PAGE_TITLES.appearance}
@@ -319,6 +323,7 @@ export function KinSettings(props: {
             })}
             {inCodingApp ? null : (
               <SettingsRow
+                labelWholeWords
                 icon="info.circle"
                 label="About"
                 onPress={() => navigation.navigate("SettingsAbout")}
@@ -351,6 +356,7 @@ export function KinSettings(props: {
                 if ((page === "team" || page === "memory") && !pages.includes(page)) return null;
                 return (
                   <SettingsRow
+                    labelWholeWords
                     key={page}
                     icon={row.icon}
                     label={KIN_SETTINGS_PAGE_TITLES[page]}
@@ -372,6 +378,7 @@ export function KinSettings(props: {
                 footer="Your agents ask before anything that needs your say. You approve on this phone with Face ID."
               >
                 <SettingsRow
+                  labelWholeWords
                   icon="exclamationmark.circle"
                   label={KIN_WAITING_TITLE}
                   value={waiting === 0 ? "Nothing" : `${waiting}`}
@@ -379,6 +386,7 @@ export function KinSettings(props: {
                   onPress={() => navigation.navigate("KinWaiting")}
                 />
                 <SettingsRow
+                  labelWholeWords
                   icon="person.fill.checkmark"
                   label="Approve from this phone"
                   onPress={() => navigation.navigate("KinApprovals", company)}
@@ -518,6 +526,7 @@ function KinDailyLimitSection(props: {
           }}
         >
           <SettingsRow
+            labelWholeWords
             icon="chart.bar.xaxis"
             label={KIN_DAILY_LIMIT.title}
             value={label}
@@ -530,6 +539,7 @@ function KinDailyLimitSection(props: {
         <SettingsSection title={KIN_DAILY_LIMIT.waiting}>
           {waiting.map((agent) => (
             <SettingsRow
+              labelWholeWords
               key={agent.agentId}
               icon="moon"
               label={agent.name}
@@ -590,6 +600,7 @@ function KinTeamAgentRow(props: {
         }}
       >
         <SettingsRow
+          labelWholeWords
           icon="bubble.left.and.bubble.right"
           label={KIN_TEAM_AGENT_COPY.label}
           value={list === null ? "…" : kinTeamAgentLabel(leads, current)}
@@ -643,6 +654,7 @@ function KinCompanyChatRow(props: {
       }}
     >
       <SettingsRow
+        labelWholeWords
         icon="person.2"
         label={KIN_COMPANY_CHAT_COPY.label}
         value={list === null ? "…" : shown === undefined ? "Off" : shown.label}

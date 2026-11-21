@@ -72,6 +72,7 @@ import { useKinAskAgent, useKinLists } from "./state/useKinMoney";
 import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
 /** A doc as a row that opens it: its name, its kind and last change, and where it is filed. */
 function KinDocRowButton(props: {
@@ -85,6 +86,7 @@ function KinDocRowButton(props: {
   readonly onFile?: () => void;
 }) {
   const { row, onFile } = props;
+  const grows = useKinTextGrows();
   return (
     <>
       <View className={cn("min-h-16 flex-row items-center gap-3", props.inset ? "px-4" : "px-5")}>
@@ -95,7 +97,11 @@ function KinDocRowButton(props: {
           className="min-w-0 flex-1 gap-0.5 py-3 active:opacity-60"
         >
           <View className="flex-row items-center gap-2">
-            <Text textRole="body" numberOfLines={1} className="min-w-0 shrink text-foreground">
+            <Text
+              textRole="body"
+              numberOfLines={kinLines(1, grows)}
+              className="min-w-0 shrink text-foreground"
+            >
               {row.title}
             </Text>
             {row.pinned ? (
@@ -109,7 +115,11 @@ function KinDocRowButton(props: {
             {row.line}
           </Text>
           {props.bare || row.under === null ? null : (
-            <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+            <Text
+              textRole="footnote"
+              numberOfLines={kinLines(1, grows)}
+              className="text-foreground-muted"
+            >
               {row.under}
             </Text>
           )}
@@ -194,6 +204,7 @@ function KinPlaybooksRow(props: {
   readonly onPress: () => void;
 }) {
   const line = KIN_DOC_HOMES.playbooksLine(props.count);
+  const grows = useKinTextGrows();
   return (
     <>
       <Pressable
@@ -210,10 +221,14 @@ function KinPlaybooksRow(props: {
           type="monochrome"
         />
         <View className="min-w-0 flex-1 gap-0.5">
-          <Text textRole="body" numberOfLines={1} className="text-foreground">
+          <Text textRole="body" numberOfLines={kinLines(1, grows)} className="text-foreground">
             {KIN_DOC_HOMES.playbooks}
           </Text>
-          <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+          <Text
+            textRole="footnote"
+            numberOfLines={kinLines(1, grows)}
+            className="text-foreground-muted"
+          >
             {line}
           </Text>
         </View>
@@ -231,6 +246,7 @@ function KinPlaybooksRow(props: {
 
 function KinListRowButton(props: { readonly row: KinListIndexRow; readonly onPress: () => void }) {
   const { row } = props;
+  const grows = useKinTextGrows();
   return (
     <>
       <Pressable
@@ -246,10 +262,14 @@ function KinListRowButton(props: { readonly row: KinListIndexRow; readonly onPre
           type="monochrome"
         />
         <View className="min-w-0 flex-1 gap-0.5">
-          <Text textRole="body" numberOfLines={1} className="text-foreground">
+          <Text textRole="body" numberOfLines={kinLines(1, grows)} className="text-foreground">
             {row.name}
           </Text>
-          <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+          <Text
+            textRole="footnote"
+            numberOfLines={kinLines(1, grows)}
+            className="text-foreground-muted"
+          >
             {row.line}
           </Text>
         </View>
@@ -269,6 +289,7 @@ export function KinSearchHits(props: {
   readonly scope?: KinViewerScope;
 }) {
   const { state } = props;
+  const grows = useKinTextGrows();
   if (state.hits === null) {
     return state.failed ? (
       <KinLoadFailed title={KIN_SEARCH.failed} cause={state.failed.cause} onRetry={props.onRetry} />
@@ -298,7 +319,11 @@ export function KinSearchHits(props: {
           >
             <View className="min-w-0 flex-1 gap-0.5">
               <View className="flex-row items-center gap-2">
-                <Text textRole="body" numberOfLines={1} className="min-w-0 shrink text-foreground">
+                <Text
+                  textRole="body"
+                  numberOfLines={kinLines(1, grows)}
+                  className="min-w-0 shrink text-foreground"
+                >
                   {hit.section === null ? hit.title : `${hit.title} › ${hit.section.title}`}
                 </Text>
                 {hit.private ? <KinWorkPrivateMark label="" /> : null}
@@ -344,6 +369,7 @@ function KinRecentStrip(props: {
   readonly now: Date;
   readonly onOpen: (key: KinRecordKey) => void;
 }) {
+  const grows = useKinTextGrows();
   return (
     <View className="gap-1 pt-2">
       <View className="px-5 pb-1">
@@ -364,12 +390,23 @@ function KinRecentStrip(props: {
               accessibilityRole="button"
               accessibilityLabel={row.accessibilityLabel}
               onPress={() => props.onOpen(doc.key)}
-              className="min-w-0 grow basis-[45%] gap-1 rounded-2xl bg-grouped-card px-3.5 py-3 active:opacity-60"
+              className={cn(
+                "min-w-0 grow gap-1 rounded-2xl bg-grouped-card px-3.5 py-3 active:opacity-60",
+                grows ? "basis-full" : "basis-[45%]",
+              )}
             >
-              <Text textRole="body" numberOfLines={2} className="font-t3-medium text-foreground">
+              <Text
+                textRole="body"
+                numberOfLines={kinLines(2, grows)}
+                className="font-t3-medium text-foreground"
+              >
                 {row.title}
               </Text>
-              <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+              <Text
+                textRole="footnote"
+                numberOfLines={kinLines(1, grows)}
+                className="text-foreground-muted"
+              >
                 {row.under ?? KIN_DOC_HOMES.unfiled}
               </Text>
             </Pressable>

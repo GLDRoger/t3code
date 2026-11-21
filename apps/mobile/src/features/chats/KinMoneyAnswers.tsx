@@ -75,6 +75,7 @@ import {
 } from "./state/useKinMoneyAnswers";
 import { useKinWorkChoices, type KinWorkTarget } from "./state/useKinWork";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
 const PEEK = 5;
 type Section = KinWorkTarget & { readonly seq: number | null; readonly rates: KinRates | null };
@@ -90,6 +91,7 @@ function Row(props: {
   readonly onPress?: () => void;
   readonly children?: React.ReactNode;
 }) {
+  const grows = useKinTextGrows();
   return (
     <Pressable
       accessibilityRole={props.onPress === undefined ? "text" : "button"}
@@ -101,13 +103,13 @@ function Row(props: {
       className="min-h-11 flex-row items-start gap-3 bg-grouped-card px-4 py-2.5 active:opacity-60"
     >
       <View className="min-w-0 flex-1 gap-0.5">
-        <Text textRole="body" numberOfLines={1} className="text-foreground">
+        <Text textRole="body" numberOfLines={kinLines(1, grows)} className="text-foreground">
           {props.label}
         </Text>
         {props.note == null || props.note === "" ? null : (
           <Text
             textRole="footnote"
-            numberOfLines={1}
+            numberOfLines={kinLines(1, grows)}
             className={props.late ? "text-danger-foreground" : "text-foreground-muted"}
           >
             {props.note}
@@ -445,6 +447,7 @@ function QuotesPeek(props: Section) {
 }
 
 function BudgetRow(props: { readonly view: KinBudgetView; readonly onPress?: () => void }) {
+  const grows = useKinTextGrows();
   const { view } = props;
   return (
     <Pressable
@@ -458,7 +461,11 @@ function BudgetRow(props: { readonly view: KinBudgetView; readonly onPress?: () 
       className="min-h-11 gap-1.5 bg-grouped-card px-4 py-2.5 active:opacity-60"
     >
       <View className="flex-row justify-between gap-3">
-        <Text textRole="body" numberOfLines={1} className="min-w-0 flex-1 text-foreground">
+        <Text
+          textRole="body"
+          numberOfLines={kinLines(1, grows)}
+          className="min-w-0 flex-1 text-foreground"
+        >
           {view.label}
         </Text>
         <Text textRole="body" className="tabular-nums text-foreground">

@@ -77,6 +77,7 @@ import { KinVisualInView } from "../widgets/KinVisual";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 import { KinCardGroup } from "../widgets/KinCardGroup";
 import { KinAvatar } from "./KinAvatar";
+import { kinLines, useKinTextGrows } from "./kinTextGrows";
 import { KinDocRefs } from "./KinDocRefs";
 import { KinLinkedText, KinMessagePage, useKinOpenTarget } from "./KinMessagePage";
 
@@ -237,6 +238,7 @@ export function KinMessageBubble(props: {
     (!hasCard && attachments.length === 0) || hasBody || suggested || message.editedAt !== null;
   const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
   const receipt = deleted ? null : kinTurnReceiptLine(message.turnChanges);
+  const grows = useKinTextGrows();
   // The sheet's actions, reachable without the long press.
   const sheetActions = [
     ...(onReact === null || deleted
@@ -461,7 +463,11 @@ export function KinMessageBubble(props: {
           onPress={props.onOpenReceipt}
           className="max-w-full px-1 active:opacity-60"
         >
-          <Text textRole="caption" numberOfLines={1} className="text-foreground-muted">
+          <Text
+            textRole="caption"
+            numberOfLines={kinLines(1, grows)}
+            className="text-foreground-muted"
+          >
             {receipt}
           </Text>
         </Pressable>

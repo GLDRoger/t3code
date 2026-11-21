@@ -55,6 +55,7 @@ import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinDeals, useKinDealsStart } from "./state/useKinDeals";
 import { useKinRates } from "./state/useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./state/useKinWork";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
 const TONE: Record<KinDealNextView["tone"], string> = {
   plain: "text-foreground-muted",
@@ -64,9 +65,10 @@ const TONE: Record<KinDealNextView["tone"], string> = {
 
 /** A deal's next step, or that it has none (amber), or that it is late (red). */
 export function KinDealNextLine(props: { readonly next: KinDealNextView | null }) {
+  const grows = useKinTextGrows();
   if (props.next === null) return null;
   return (
-    <Text textRole="footnote" numberOfLines={1} className={TONE[props.next.tone]}>
+    <Text textRole="footnote" numberOfLines={kinLines(1, grows)} className={TONE[props.next.tone]}>
       {props.next.text}
     </Text>
   );
@@ -82,6 +84,7 @@ export function KinDealRowButton(props: {
   readonly note?: string | null;
   readonly onPress: () => void;
 }) {
+  const grows = useKinTextGrows();
   const { row } = props;
   return (
     <>
@@ -96,13 +99,21 @@ export function KinDealRowButton(props: {
       >
         <View className="min-w-0 flex-1 gap-0.5">
           <View className="flex-row items-center gap-2">
-            <Text textRole="body" numberOfLines={2} className="min-w-0 shrink text-foreground">
+            <Text
+              textRole="body"
+              numberOfLines={kinLines(2, grows)}
+              className="min-w-0 shrink text-foreground"
+            >
               {row.title}
             </Text>
             {row.private ? <KinWorkPrivateMark label="" /> : null}
           </View>
           {row.line === "" ? null : (
-            <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+            <Text
+              textRole="footnote"
+              numberOfLines={kinLines(1, grows)}
+              className="text-foreground-muted"
+            >
               {row.line}
             </Text>
           )}

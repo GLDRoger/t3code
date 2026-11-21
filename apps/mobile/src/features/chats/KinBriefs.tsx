@@ -95,11 +95,18 @@ function Briefs(props: Target & { readonly checkIns: KinCheckInsResult | null | 
       footer={zone === null ? detail : `${detail} ${KIN_CHECK_INS.zone(zone)}`}
     >
       {loading ? (
-        <SettingsRow icon="clock" label={KIN_BRIEFS.title} value="…" valuePosition="trailing" />
+        <SettingsRow
+          labelWholeWords
+          icon="clock"
+          label={KIN_BRIEFS.title}
+          value="…"
+          valuePosition="trailing"
+        />
       ) : (
         <>
           {briefs.map((brief) => (
             <SettingsRow
+              labelWholeWords
               key={brief.kind}
               icon={brief.on ? "clock" : "moon"}
               label={kinBriefTitle(brief)}

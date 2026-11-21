@@ -123,6 +123,7 @@ import {
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate, useKinHostAt } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
 export type KinWorkItemParams = {
   readonly environmentId: string;
@@ -968,6 +969,7 @@ function KinDetailPerson(props: {
   readonly who: KinRecordWho;
   readonly description?: string;
 }) {
+  const grows = useKinTextGrows();
   return (
     <View
       accessible
@@ -982,7 +984,11 @@ function KinDetailPerson(props: {
         accessory={
           <View className="max-w-[55%] shrink flex-row items-center gap-1.5">
             <KinAvatar avatar={props.who.avatar} size="mini" />
-            <Text textRole="footnote" numberOfLines={1} className="shrink text-foreground-muted">
+            <Text
+              textRole="footnote"
+              numberOfLines={kinLines(1, grows)}
+              className="shrink text-foreground-muted"
+            >
               {props.who.name}
             </Text>
           </View>
@@ -1266,6 +1272,7 @@ export function KinLinkedSection(props: {
   readonly onOpen: (to: KinNotificationDestination) => void;
   readonly children?: ReactNode;
 }) {
+  const grows = useKinTextGrows();
   const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
   const linked = kinLinked(props.item, undefined, { expanded, parentsShown: props.parentsShown });
   const children = props.children ?? null;
@@ -1290,7 +1297,11 @@ export function KinLinkedSection(props: {
                     {item.name}
                   </Text>
                 )}
-                <Text textRole="body" numberOfLines={1} className="min-w-0 flex-1 text-foreground">
+                <Text
+                  textRole="body"
+                  numberOfLines={kinLines(1, grows)}
+                  className="min-w-0 flex-1 text-foreground"
+                >
                   {title}
                 </Text>
               </View>

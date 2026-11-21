@@ -45,6 +45,7 @@ import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
+import { cn } from "../../lib/cn";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
@@ -60,6 +61,7 @@ import {
 import { KinClientDeals } from "./KinDealsList";
 import { KinWorkNamedRow } from "./KinWorkLists";
 import { KinAvatar } from "./components/KinAvatar";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
@@ -178,6 +180,7 @@ function KinClientBody(
   const history = useKinWorkHistory(target, props.clientKey, page.seq);
   const removeTouch = useAtomCommand(kinClient.workTouchRemove, { reportFailure: false });
   const [refused, setRefused] = useState<string | null>(null);
+  const grows = useKinTextGrows();
   // A logged contact taken back, after a plain confirm; what Kin read from its records stays.
   const askRemoveTouch = (touch: KinTouchView) =>
     Alert.alert(KIN_CLIENTS.touchRemoveTitle, `${touch.title}, ${touch.when}`, [
@@ -373,12 +376,16 @@ function KinClientBody(
         >
           {view.line}
         </Text>
-        <View className="flex-row items-center gap-1.5">
+        <View className={cn("flex-row items-center gap-1.5", grows && "flex-wrap")}>
           <Text textRole="footnote" className="text-foreground-muted">
             {KIN_CLIENTS.lookedAfterBy}
           </Text>
           <KinAvatar avatar={view.lookedAfter.avatar} size="mini" />
-          <Text textRole="footnote" numberOfLines={1} className="shrink text-foreground">
+          <Text
+            textRole="footnote"
+            numberOfLines={kinLines(1, grows)}
+            className="shrink text-foreground"
+          >
             {view.lookedAfter.name}
           </Text>
         </View>
