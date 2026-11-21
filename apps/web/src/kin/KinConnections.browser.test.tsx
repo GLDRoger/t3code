@@ -42,7 +42,7 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
       services,
       signInAddress: "",
     }),
-  ).pipe(Atom.keepAlive);
+  );
   const quiet = Atom.make(AsyncResult.initial());
   return {
     ...real,
