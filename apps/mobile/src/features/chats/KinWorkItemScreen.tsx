@@ -8,6 +8,8 @@ import {
 } from "@t3tools/client-runtime/kin/kinLinked";
 import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import { useAtomValue } from "@effect/atom-react";
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinTaskProjectsAllowed } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_TASK_LINK,
@@ -102,7 +104,9 @@ import { KinAvatar } from "./components/KinAvatar";
 import { KinAttachments } from "./components/KinMessageBubble";
 import { KinTaskNoteComposer } from "./components/KinTaskNoteComposer";
 import { KinNextStep } from "./components/KinNextStep";
-import { KinWorkDueRow, KinWorkStatusRow } from "./components/KinWorkTaskMenus";
+import { connectionAtomRuntime } from "../../connection/runtime";
+import { KinDayField } from "./components/KinDayField";
+import { KinWorkStatusRow } from "./components/KinWorkTaskMenus";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinListEntryBody } from "./KinListEntry";
 import { KinMakeDocumentStep, type KinMakeStep } from "./KinInvoice";
@@ -279,6 +283,10 @@ function KinWorkItemBody(props: ItemTarget) {
   const opensClients = useKinOpensClients(environmentId);
   const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
   const choices = useKinWorkChoices(props, hostClients && canChange);
+  // A teammate moves a task only into a project they lead, as the host takes it.
+  const projectsAllowed = kinTaskProjectsAllowed(
+    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)),
+  );
   const now = new Date(useNowMinuteMs());
   const back = () => navigation.goBack();
   const task = state._tag === "ready" && state.item.list === undefined ? state.item : null;
@@ -756,19 +764,23 @@ function KinWorkItemBody(props: ItemTarget) {
           />
         )}
         {reword !== null && !view.closed ? (
-          <KinWorkDueRow
-            view={view}
-            now={now}
+          <KinDayField
+            icon="clock"
+            label={KIN_TASK_RECORD.due}
+            day={view.dueDay}
+            // A timed date has no one day to mark, so the row says it as it is.
+            {...(view.due !== null && view.dueDay === null ? { detail: capital(view.due) } : {})}
+            none={KIN_WORK_COPY.noDate}
             zone={names.zone}
+            now={now}
             disabled={saving}
-            onAct={reword}
-            late={view.late}
+            onPick={(day) => reword({ type: "due", day })}
           />
         ) : view.due === null ? null : (
           <ListRowLayout
             icon="clock"
             label={KIN_TASK_RECORD.due}
-            detail={view.due.charAt(0).toUpperCase() + view.due.slice(1)}
+            detail={capital(view.due)}
             {...(view.late ? { tone: "danger" as const } : {})}
           />
         )}
@@ -791,6 +803,7 @@ function KinWorkItemBody(props: ItemTarget) {
             held={view.project}
             choices={choices.projects}
             done={choices.doneProjects}
+            only={projectsAllowed}
             clearable={view.can.clearProject}
             disabled={saving}
             onPick={(project) => act({ type: "place", project })}
@@ -950,6 +963,8 @@ function KinWorkItemBody(props: ItemTarget) {
     </KinWorkFrame>
   );
 }
+
+const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 /** Where the task stands for this viewer, in one word or two, above its title. */
 function KinRecordChip(props: { readonly tone: KinRecordChipTone; readonly label: string }) {

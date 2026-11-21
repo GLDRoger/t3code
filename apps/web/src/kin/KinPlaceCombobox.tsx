@@ -33,6 +33,8 @@ export function KinPlaceCombobox(props: {
   readonly placeholder?: string;
   readonly value: KinWorkRef | null;
   readonly choices: ReadonlyArray<KinWorkRef>;
+  /** The only keys this viewer may pick (`kinTaskProjectsAllowed`); null or absent for any. */
+  readonly only?: ReadonlySet<string> | null;
   /** One more choice that is not a client or project, such as "No client", offered untyped. */
   readonly extra?: KinWorkRef;
   readonly onChange: (value: KinWorkRef | null) => void;
@@ -50,6 +52,7 @@ export function KinPlaceCombobox(props: {
     search: search.state,
     loaded: { open: props.choices, done: [] },
     held,
+    only: props.only ?? null,
   });
   const typed = search.state.text.trim() !== "";
   const nothing =

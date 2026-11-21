@@ -1,6 +1,4 @@
 import {
-  kinWorkDueChoices,
-  kinWorkDueLabel,
   KIN_WORK_ASSIGN,
   KIN_WORK_NEW_COPY,
   type KinWorkAssignee,
@@ -20,8 +18,6 @@ import { Menu } from "../../../components/ui/Menu";
 const WAITING = "waiting:";
 const NOBODY = "waiting";
 const REOPEN = "reopen";
-const DUE = "due:";
-const NO_DATE = "due";
 
 /** Where the task stands: done, reopened, started, or waiting on someone. Drop is in •••. */
 export function KinWorkStatusRow(props: {
@@ -96,56 +92,6 @@ export function KinWorkStatusRow(props: {
     </Menu>
   );
 }
-
-/** The due date: the days people pick on a phone, or none. */
-export function KinWorkDueRow(props: {
-  readonly view: KinWorkItemView;
-  readonly now: Date;
-  readonly zone: string | null;
-  readonly disabled: boolean;
-  readonly onAct: (action: KinWorkAction) => void;
-  /** Past due and still open: drawn in the danger colour. */
-  readonly late?: boolean;
-}) {
-  const { view, now } = props;
-  const due = view.due === null ? KIN_WORK_COPY.noDate : capital(view.due);
-  return (
-    <Menu
-      title="Due"
-      accessibilityRole="button"
-      accessibilityLabel={`Due: ${due}. Change`}
-      actions={[
-        ...kinWorkDueChoices(now, props.zone).map((choice) => {
-          const date = kinWorkDueLabel(choice.day, now, props.zone);
-          return {
-            id: `${DUE}${choice.day}`,
-            title: choice.label,
-            ...(date.toLowerCase() === choice.label.toLowerCase() ? {} : { subtitle: date }),
-            state: choice.day === view.dueDay ? ("on" as const) : ("off" as const),
-          };
-        }),
-        ...(view.due === null ? [] : [{ id: NO_DATE, title: KIN_WORK_COPY.noDate }]),
-      ]}
-      onPressAction={({ nativeEvent: { event } }) => {
-        if (props.disabled) return;
-        if (event === NO_DATE) return props.onAct({ type: "due", day: null });
-        if (event.startsWith(DUE)) props.onAct({ type: "due", day: event.slice(DUE.length) });
-      }}
-    >
-      <View pointerEvents="none">
-        <ListRowLayout
-          icon="clock"
-          label="Due"
-          detail={due}
-          disabled={props.disabled}
-          {...(props.late ? { tone: "danger" as const } : {})}
-        />
-      </View>
-    </Menu>
-  );
-}
-
-const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 const SIDES = [
   { id: "none", title: KIN_WORK_NEW_COPY.sideNone },

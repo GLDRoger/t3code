@@ -1,6 +1,8 @@
 import { useKinOpensClients } from "./useKinOwnerLevel";
 import { KIN_RETIRED_LABEL } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { useAtomValue } from "@effect/atom-react";
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinTaskProjectsAllowed } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KIN_WORK_ASSIGN,
   KIN_WORK_GONE,
@@ -89,6 +91,7 @@ import {
 } from "lucide-react";
 import { useId, useState, type ComponentProps } from "react";
 
+import { connectionAtomRuntime } from "../connection/runtime";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
@@ -506,6 +509,10 @@ function KinWorkItem(
   const canAddLink = useAtomValue(kinClient.workLinkAdd.permissionAtom(environmentId));
   const { orgs, people, joined, invited, names } = props.directory;
   const opensClients = useKinOpensClients(environmentId);
+  // A teammate moves a task only into a project they lead, as the host takes it.
+  const projectsAllowed = kinTaskProjectsAllowed(
+    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)),
+  );
   const [handingBack, setHandingBack] = useState(false);
   // Each control shows only where the host said it takes it (`view.can`).
   const change = props.canChange ? props.onAct : null;
@@ -900,6 +907,7 @@ function KinWorkItem(
                     value={view.project}
                     choices={choices.projects}
                     done={choices.doneProjects}
+                    only={projectsAllowed}
                     saving={saving}
                     clearable={view.can.clearProject}
                     onPick={
@@ -1241,6 +1249,8 @@ export function KinTaskPlaceMenu(props: {
   readonly choices: ReadonlyArray<KinWorkRef>;
   /** Done projects, under their own heading after the open ones. */
   readonly done?: ReadonlyArray<KinWorkRef>;
+  /** The only keys this viewer may pick (`kinTaskProjectsAllowed`); null or absent for any. */
+  readonly only?: ReadonlySet<string> | null;
   readonly saving: boolean;
   /** Null where the task can't be changed, which leaves only opening it. */
   readonly onPick: ((value: KinWorkRef | null) => void) | null;
@@ -1266,6 +1276,7 @@ export function KinTaskPlaceMenu(props: {
     search: search.state,
     loaded: { open: props.choices, done: props.done ?? [] },
     held: value,
+    only: props.only ?? null,
   });
   const groups = kinTaskProjectMenu({ projects: view.open, doneProjects: view.done });
   const first = groups

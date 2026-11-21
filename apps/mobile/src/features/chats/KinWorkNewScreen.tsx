@@ -16,12 +16,14 @@ import {
   kinWorkTitleCount,
   kinWorkTitleTooLong,
   kinWorkHostClients,
-  kinWorkDueChoices,
-  kinWorkDueLabel,
   kinWorkPrincipalKey,
   type KinWorkDraft,
 } from "@t3tools/client-runtime/kin/kinWork";
-import { KIN_CLIENTS, kinNewTaskChoices } from "@t3tools/client-runtime/kin/kinWorkClients";
+import {
+  KIN_CLIENTS,
+  kinNewTaskChoices,
+  kinTaskProjectsAllowed,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -40,6 +42,7 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { uuidv4 } from "../../lib/uuid";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
+import { KinDayField } from "./components/KinDayField";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinWorkSideRow } from "./components/KinWorkTaskMenus";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
@@ -55,16 +58,6 @@ import { useKinGate } from "./state/useKinHost";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
-
-/** "Friday, Fri, Nov 13"; "Today" needs no date said after it. */
-function dueChoiceLabel(
-  choice: { readonly label: string; readonly day: string },
-  now: Date,
-  zone: string | null,
-) {
-  const day = kinWorkDueLabel(choice.day, now, zone);
-  return day === choice.label ? day : `${choice.label}, ${day}`;
-}
 
 /** A short form: what, who and when. Anything longer is better said to a lead in chat. */
 export function KinWorkNewScreen({ route }: StaticScreenProps<KinWorkParams>) {
@@ -134,10 +127,8 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
   const work = useKinWork(target);
   // An older server has no clients or projects to put a task under.
   const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
-  const choices = kinNewTaskChoices(
-    useKinWorkChoices(target, allowed && hostClients),
-    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)),
-  );
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+  const choices = kinNewTaskChoices(useKinWorkChoices(target, allowed && hostClients), me);
   const offersClient = choices.clients.length > 0 || draft.party !== null;
   const offersProject = choices.projects.length > 0 || draft.project !== null;
   const words = kinWorkDraftWords(draft);
@@ -214,7 +205,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                     autoFocus
                     autoCapitalize="sentences"
                     returnKeyType="done"
-                    onChangeText={(title) => setDraft({ ...draft, title })}
+                    onChangeText={(title) => setDraft((held) => ({ ...held, title }))}
                     textAlignVertical="center"
                     placeholderTextColorClassName="accent-placeholder"
                     className="min-h-8 font-sans text-base text-foreground"
@@ -245,7 +236,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                       label={to.invited ? `${to.name}, invited` : to.name}
                       selected={to.key === ownerKey}
                       disabled={saving || to.invited === true}
-                      onPress={() => setDraft({ ...draft, owner: to.principal })}
+                      onPress={() => setDraft((held) => ({ ...held, owner: to.principal }))}
                     />
                   ))}
                 </View>
@@ -255,29 +246,22 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                   </Text>
                 )}
               </View>
-              <View className="gap-2">
-                <Text className="px-2 text-sm text-foreground-muted">
-                  {KIN_WORK_NEW_COPY.dueLabel}
-                </Text>
-                <View className="flex-row flex-wrap gap-2">
-                  <Chip
-                    label={KIN_WORK_NEW_COPY.noDue}
-                    selected={draft.due === null}
-                    disabled={saving}
-                    onPress={() => setDraft({ ...draft, due: null, repeat: null })}
-                  />
-                  {kinWorkDueChoices(opened, names.zone).map((choice) => (
-                    <Chip
-                      key={choice.day}
-                      label={choice.label}
-                      accessibilityLabel={dueChoiceLabel(choice, opened, names.zone)}
-                      selected={draft.due === choice.day}
-                      disabled={saving}
-                      onPress={() => setDraft({ ...draft, due: choice.day })}
-                    />
-                  ))}
-                </View>
-              </View>
+              <ListSection>
+                <KinDayField
+                  label={KIN_WORK_NEW_COPY.dueLabel}
+                  day={draft.due}
+                  zone={names.zone}
+                  now={opened}
+                  disabled={saving}
+                  onPick={(due) =>
+                    setDraft((held) => ({
+                      ...held,
+                      due,
+                      ...(due === null ? { repeat: null } : {}),
+                    }))
+                  }
+                />
+              </ListSection>
               {draft.due === null ? null : (
                 <View className="gap-2">
                   <Text className="px-2 text-sm text-foreground-muted">
@@ -288,7 +272,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                       label={KIN_WORK_REPEAT.never}
                       selected={draft.repeat === null}
                       disabled={saving}
-                      onPress={() => setDraft({ ...draft, repeat: null })}
+                      onPress={() => setDraft((held) => ({ ...held, repeat: null }))}
                     />
                     {KIN_WORK_REPEAT.choices.map((choice) => (
                       <Chip
@@ -296,7 +280,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                         label={choice.label}
                         selected={kinSameRepeat(choice.rule, draft.repeat)}
                         disabled={saving}
-                        onPress={() => setDraft({ ...draft, repeat: choice.rule })}
+                        onPress={() => setDraft((held) => ({ ...held, repeat: choice.rule }))}
                       />
                     ))}
                   </View>
@@ -319,14 +303,14 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                         held={draft.party}
                         choices={choices.clients}
                         disabled={saving}
-                        onPick={(party) => setDraft({ ...draft, party })}
+                        onPick={(party) => setDraft((held) => ({ ...held, party }))}
                       />
                     )}
                     {draft.party === null ? null : (
                       <KinWorkSideRow
                         side={draft.side}
                         disabled={saving}
-                        onPick={(side) => setDraft({ ...draft, side })}
+                        onPick={(side) => setDraft((held) => ({ ...held, side }))}
                       />
                     )}
                     {!offersProject ? null : (
@@ -337,8 +321,9 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                         label={KIN_WORK_NEW_COPY.projectLabel}
                         held={draft.project}
                         choices={choices.projects}
+                        only={kinTaskProjectsAllowed(me)}
                         disabled={saving}
-                        onPick={(project) => setDraft({ ...draft, project })}
+                        onPick={(project) => setDraft((held) => ({ ...held, project }))}
                       />
                     )}
                   </ListSection>
@@ -355,7 +340,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                     editable={!saving}
                     multiline
                     maxLength={KIN_WORK_NOTES_MAX}
-                    onChangeText={(notes) => setDraft({ ...draft, notes })}
+                    onChangeText={(notes) => setDraft((held) => ({ ...held, notes }))}
                     textAlignVertical="top"
                     placeholder={KIN_WORK_NEW_COPY.notesPlaceholder}
                     placeholderTextColorClassName="accent-placeholder"

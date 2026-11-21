@@ -7,6 +7,7 @@ import {
 import { useState } from "react";
 import { View } from "react-native";
 
+import type { AppSymbolName } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Chip } from "../../../components/ui/Chip";
 import { ListRow } from "../../../components/ui/ListRow";
@@ -20,6 +21,9 @@ const NO_NAMES = new Map<string, string>();
  */
 export function KinDayField(props: {
   readonly label: string;
+  readonly icon?: AppSymbolName;
+  /** What the row says in place of the day, such as a due time a day can't show. */
+  readonly detail?: string;
   readonly day: string | null;
   readonly zone: string | null;
   readonly now: Date;
@@ -48,7 +52,10 @@ export function KinDayField(props: {
     <>
       <ListRow
         label={props.label}
-        detail={day === null ? (none ?? undefined) : kinWorkDueLabel(day, now, zone)}
+        {...(props.icon === undefined ? {} : { icon: props.icon })}
+        detail={
+          props.detail ?? (day === null ? (none ?? undefined) : kinWorkDueLabel(day, now, zone))
+        }
         disabled={props.disabled}
         onPress={() => setOpen(!open)}
       />

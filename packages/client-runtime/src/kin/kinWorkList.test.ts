@@ -473,6 +473,23 @@ describe("createKinPickerSearch", () => {
     expect(KIN_PICKER_COPY.nothing("client", "Nobody")).toBe("No client named “Nobody”");
   });
 
+  it("lists only what this viewer may pick, from the page held and the host's answer alike", async () => {
+    const h = harness(() => named(["Invented Kestrel Freight", "Invented Kestrel Dental"]));
+    const only = new Set(["C-102"]);
+    const pick = () =>
+      kinPickerSearchView({
+        noun: "client",
+        search: h.search.getState(),
+        loaded,
+        held: null,
+        only,
+      });
+    expect(pick().open).toEqual([]);
+    h.search.type("kestrel");
+    await h.pause();
+    expect(pick().open.map((ref) => ref.key)).toEqual(["C-102"]);
+  });
+
   it("asks for more letters at the cap, and tries again after a failure", async () => {
     let fail = true;
     const h = harness(() =>
