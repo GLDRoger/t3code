@@ -5,7 +5,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
+import * as McpToolPolicy from "./toolPolicy.ts";
 import { McpInvocationContext, type McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { KinServer, type Services } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -90,7 +90,7 @@ const gate = (name: string, check: Check) =>
  * message or tap, else its first event; a message id becomes its event. Anything else stays, and
  * the tool refuses it as before, except where the event only names the turn (`TURN_ONLY_EVENT_TOOLS`). The call's arguments are filled in before they are decoded.
  */
-const turnEvents = McpHttpServer.toolCallPrepare(
+const turnEvents = McpToolPolicy.toolCallPrepare(
   Effect.fn("KinToolGate.turnEvents")(
     function* (name: string, args: Record<string, unknown>) {
       if (!TURN_EVENT_TOOLS.has(name)) return;
@@ -188,13 +188,13 @@ export const layer = ReadTools.layer.pipe(
   Layer.provideMerge(
     Layer.mergeAll(
       turnEvents,
-      McpHttpServer.toolCallGate(
+      McpToolPolicy.toolCallGate(
         (_tool, args) => Effect.map(namesOtherMachine(args), (other) => !other),
         REMOTE_REFUSAL,
       ),
-      McpHttpServer.toolCallGate(gate("KinToolGate.admitted", toolAdmitted), SHARED_REFUSAL),
-      McpHttpServer.toolCallGate(gate("KinToolGate.outside", outsideToolAllowed), OUTSIDE_REFUSAL),
-      McpHttpServer.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", toolAdmitted), SHARED_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outsideToolAllowed), OUTSIDE_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
     ),
   ),
 );

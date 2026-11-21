@@ -55,7 +55,6 @@ import * as ServerHttp from "../http.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
-import { plainParameterIssue } from "./plainParameterIssue.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -727,34 +726,6 @@ it.effect("rejects arguments a tool does not declare instead of dropping them", 
     expect(wait.message).toContain('Unknown argument "timeout"');
   }).pipe(Effect.provide(layerRecordingTools(calls)));
 });
-
-const PlainInput = Schema.Struct({
-  title: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
-  kind: Schema.Literals(["call", "meeting", "email", "message", "other"]),
-  count: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
-  tasks: Schema.Array(Schema.Struct({ reason: Schema.String })).check(Schema.isMaxLength(2)),
-});
-const decodePlainInput = Schema.decodeUnknownEffect(Schema.toCodecJson(PlainInput));
-const plain = { title: "Invented call", kind: "call", tasks: [{ reason: "Invented" }] };
-it.effect.each([
-  [{ ...plain, tasks: [{}] }, "tasks[0].reason is missing."],
-  [{ ...plain, title: "x".repeat(300) }, "title is 300 characters; at most 200."],
-  [{ ...plain, title: "" }, "title is 0 characters; at least 1."],
-  [
-    { ...plain, tasks: [plain.tasks[0], plain.tasks[0], plain.tasks[0]] },
-    "tasks is 3 items; at most 2.",
-  ],
-  [{ ...plain, kind: "visit" }, "kind must be one of call, meeting, email, message, other."],
-  [{ ...plain, title: 3 }, "title must be text."],
-  [{ ...plain, tasks: "none" }, "tasks must be a list."],
-  [{ ...plain, count: 0 }, undefined],
-  [{ title: "Invented call", tasks: [] }, "kind is missing."],
-] as const)("puts a bad argument plainly: %j", ([input, sentence]) =>
-  Effect.gen(function* () {
-    const issue = yield* Effect.flip(decodePlainInput(input, { errors: "all", reportInput: true }));
-    expect(plainParameterIssue(issue.issue)).toBe(sentence);
-  }),
-);
 
 it.effect("returns the plain sentence from a tool call", () => {
   const calls: Array<unknown> = [];

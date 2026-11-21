@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { parseBearerToken } from "../../auth/EnvironmentAuth.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
+import { McpToolPolicy } from "./toolPolicy.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
@@ -99,12 +100,7 @@ export const transport = (base: typeof McpHttpServer.layer) =>
       // never scheduling or thread-launch tools, which would start work outside Kin's chats.
       return Layer.merge(
         base.pipe(
-          Layer.provide(
-            Layer.succeed(
-              McpHttpServer.McpToolPolicy,
-              KinToolGate.workerPolicy(kin.services.value),
-            ),
-          ),
+          Layer.provide(Layer.succeed(McpToolPolicy, KinToolGate.workerPolicy(kin.services.value))),
         ),
         endpoint(
           Layer.mergeAll(
