@@ -10,6 +10,7 @@ import {
   type KinJoinStanding,
   type KinJoinTarget,
 } from "@t3tools/client-runtime/kin/kinJoin";
+import { kinJoinSwitchCopy } from "@t3tools/client-runtime/kin/kinDevice";
 import { useCameraPermissions } from "expo-camera";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState } from "react";
@@ -28,6 +29,7 @@ import { rootNavigationRef } from "../../lib/rootNavigation";
 import { PairingScanCard } from "../connection/ConnectionsNewRouteScreen";
 import { readKinIsHome } from "./state/kinHome";
 import { joinKin, readKinJoinStanding } from "./state/kinJoin";
+import { readKinSignedInAs } from "./state/useKinReconnect";
 
 export type KinJoinParams = { readonly link?: string };
 
@@ -76,6 +78,15 @@ function KinJoinForm(props: { readonly openedLink: string }) {
     );
     if (result.ok) openChats();
     else setProblem(result.problem);
+  };
+
+  // Spending a link for someone else signs out whoever is in, so it asks by name first.
+  const askSwitch = (joinTarget: KinJoinTarget, environmentId: Standing["environmentId"]) => {
+    const copy = kinJoinSwitchCopy(readKinSignedInAs(environmentId));
+    Dialog.alert(copy.title, copy.detail, [
+      { text: "Cancel", style: "cancel" },
+      { text: copy.action, style: "destructive", onPress: () => void redeem(joinTarget) },
+    ]);
   };
 
   const join = (joinTarget: KinJoinTarget | null) => {
@@ -152,7 +163,7 @@ function KinJoinForm(props: { readonly openedLink: string }) {
               }
               detail={
                 standing._tag === "member"
-                  ? "This phone is signed in to your team's Kin. If this link is for someone else, you can sign in with it instead."
+                  ? kinJoinSwitchCopy(readKinSignedInAs(standing.environmentId)).already
                   : "It's already connected to this Kin, so it doesn't need a join link."
               }
               action={
@@ -162,7 +173,7 @@ function KinJoinForm(props: { readonly openedLink: string }) {
                     <Button
                       tone="text"
                       label="Sign in with this link instead"
-                      onPress={() => void redeem(target)}
+                      onPress={() => askSwitch(target, standing.environmentId)}
                     />
                   ) : null}
                 </View>
