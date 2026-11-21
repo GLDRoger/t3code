@@ -231,7 +231,7 @@ features:
     name: The phones that approve with Face ID
     tab: settings
     web: [settings, section:Approvals]
-    phone: [SettingsKin, KinApprovals]
+    phone: [SettingsKin, KinThisPhone, KinApprovals]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof: [packages/client-runtime/src/kin/kinApprovalPresentation.test.ts]
 
@@ -1341,7 +1341,7 @@ features:
     name: Link and remove your own devices
     tab: settings
     web: [home, sheet:Profile, section:Your devices]
-    phone: [SettingsKin, KinDevices]
+    phone: [SettingsKin, KinThisPhone, KinDevices]
     roles: { owner: none, co_owner: both, lead: both, member: both }
     note: >-
       The owner pairs devices through T3 Code's Sharing & access, so a link is a teammate's.
@@ -1350,6 +1350,18 @@ features:
     proof:
       - apps/server/src/kin/people/KinPeople.test.ts
       - packages/client-runtime/src/kin/kinDevices.test.ts
+
+  - id: this-phone
+    name: The computers and teams this phone holds, and signing out of each
+    tab: settings
+    phone: [SettingsKin, KinThisPhone]
+    roles: { owner: phone, co_owner: phone, lead: phone, member: phone }
+    note: >-
+      One Sign out of each team, naming the team and its computer. A computer a newer pairing of
+      the same Kin replaced (same computer name, company and person, the other one answering) is
+      forgotten by itself; any other row without its own Sign out offers Forget. A browser signs
+      out of its one Kin from Settings.
+    proof: [packages/client-runtime/src/kin/kinDevice.test.ts]
 
   - id: teammate-profile
     name: Change a teammate's profile
