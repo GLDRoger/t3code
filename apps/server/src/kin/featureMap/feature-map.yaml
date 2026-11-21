@@ -692,9 +692,13 @@ features:
     web: [clients]
     phone: [tab:clients]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: A member reaches Clients only with the Clients place on.
+    note: >-
+      A member reaches Clients only with the Clients place on. On the phone a Mine / Everyone
+      switch sits on the tab with each side's count, opening on Mine when it holds something.
     tools: [client_read]
-    proof: [apps/server/src/kin/work/crm.test.ts]
+    proof:
+      - apps/server/src/kin/work/crm.test.ts
+      - packages/client-runtime/src/kin/kinWorkClients.test.ts
 
   - id: client
     name: A client
@@ -765,7 +769,8 @@ features:
     note: >-
       A member reaches Deals only with the Clients place on, and sees every deal but those marked
       private and those under a private client. The web shows a board with Won and Lost at its
-      end; at phone width and on the phone, a list by stage. Totals stay per currency.
+      end; at phone width and on the phone, a list by stage. Totals stay per currency. The
+      phone's Mine / Everyone switch is on the tab, as on Clients.
     tools: [deal_stages, pipeline_read]
     proof:
       - apps/server/src/kin/work/deals.test.ts
@@ -938,7 +943,9 @@ features:
     web: [docs]
     phone: [tab:docs]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: A member reaches Docs with the Docs place on, or through a project they're on.
+    note: >-
+      A member reaches Docs with the Docs place on, or through a project they're on. On the phone
+      Mine is what they keep, or what sits on a client they look after or a project they're on.
     tools: [docs_search, list_define]
     proof:
       - apps/server/src/kin/work/docs.test.ts

@@ -14,6 +14,8 @@ import {
   KIN_WHAT_WE_SELL,
   kinDocLibrary,
   kinDocRow,
+  kinDocsMine,
+  kinDocsMineHeld,
   kinDocsOnPhone,
   kinDocsPinned,
   kinDocUnfiled,
@@ -44,8 +46,18 @@ import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
 import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import type { KinDocListRow, KinRecordKey } from "@t3tools/contracts";
+import {
+  kinClientsChosenKey,
+  kinIsMine,
+  kinMineChosenAtom,
+  kinMineOpens,
+  type KinMineHeld,
+  type KinMineSide,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
+import type { KinDocListRow, KinPersonId, KinRecordKey } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 
@@ -61,6 +73,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { kinTabBar, useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
@@ -73,7 +86,13 @@ import {
   useKinWhatWeSellStart,
 } from "./state/useKinDocs";
 import { useKinAskAgent, useKinLists } from "./state/useKinMoney";
-import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import {
+  kinWorkChoicesAtom,
+  refreshKinWorkLive,
+  type KinWorkDirectory,
+  type KinWorkTarget,
+} from "./state/useKinWork";
+import { KinListPinned, KinMineSwitch } from "./KinDealsList";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinHostAt } from "./state/useKinHost";
 import { KinLoadFailed } from "./components/KinLoadFailed";
@@ -426,6 +445,29 @@ function KinRecentStrip(props: {
   );
 }
 
+const noHeld = Atom.make(AsyncResult.initial<never, never>());
+
+/**
+ * The clients the viewer looks after and the projects they lead or are on, for Docs' Mine; null
+ * until both are read. A read the host refuses counts as none.
+ */
+function useKinDocsMineHeld(target: KinWorkTarget, me: KinPersonId | null): KinMineHeld | null {
+  const { environmentId, orgId } = target;
+  const choices = useAtomValue(me === null ? noHeld : kinWorkChoicesAtom(target));
+  const projects = useAtomValue(
+    me === null
+      ? noHeld
+      : kinClient.teammateProjects({ environmentId, input: { orgId, person: me } }),
+  );
+  if (me === null) return kinDocsMineHeld(null, [], []);
+  if (AsyncResult.isInitial(choices) || AsyncResult.isInitial(projects)) return null;
+  return kinDocsMineHeld(
+    me,
+    Option.getOrNull(AsyncResult.value(choices))?.clients ?? [],
+    Option.getOrNull(AsyncResult.value(projects))?.theirs ?? [],
+  );
+}
+
 /**
  * Docs as a library: the last few changed on top, the lists people keep, then every doc under
  * its home (each client with its projects, then the company's own, then the unfiled). One
@@ -477,16 +519,33 @@ export function KinDocsList(
   const pinShown = kinWhatWeSellShown(filter);
   const pinned = useKinWhatWeSell(props, pinShown);
   const starter = useKinWhatWeSellStart(props);
-  const pin = pinShown ? (pinned ?? null) : null;
-  const records = kinDocsOnPhone(state.records);
+  const held = useKinDocsMineHeld(props, names.me);
+  const all = kinDocsOnPhone(state.records);
+  const mine = held === null || shown !== "rows" ? null : kinDocsMine(all, held, !state.more);
+  const remembered = kinMineChosenAtom(kinClientsChosenKey(environmentId, names.me));
+  const [asked, setAsked] = useState<KinMineSide | null>(null);
+  const side =
+    asked ?? kinMineOpens(appAtomRegistry.get(remembered).docs ?? null, mine?.counts.mine ?? null);
+  const choose = (next: KinMineSide) => {
+    appAtomRegistry.set(remembered, { ...appAtomRegistry.get(remembered), docs: next });
+    setAsked(next);
+  };
+  const onMine = side !== "everyone";
+  const records = !onMine ? all : (mine?.mine ?? []);
+  const pinnedRow = pinShown ? (pinned ?? null) : null;
+  const pin =
+    pinnedRow === null || !onMine || (held !== null && kinIsMine(pinnedRow, held))
+      ? pinnedRow
+      : null;
   const library = kinDocLibrary(records, pin);
   const whatWeSell: ReadonlyArray<Item> =
-    !refused && shown === "rows" && pinShown && pinned === null && starter !== null
+    !refused && !onMine && shown === "rows" && pinShown && pinned === null && starter !== null
       ? [{ type: "whatWeSell", id: "what-we-sell" }]
       : [];
   const shownLists = allLists ? listRows : listRows.slice(0, LISTS_FOLDED);
+  // The lists people keep are the company's, so they show under Everyone.
   const listItems: ReadonlyArray<Item> =
-    !everything || listRows.length === 0
+    !everything || onMine || listRows.length === 0
       ? []
       : [
           { type: "group", id: "group:lists", title: `${KIN_LISTS.title} · ${listRows.length}` },
@@ -648,6 +707,15 @@ export function KinDocsList(
         })}
       />
       <ScreenContent surface="screen">
+        {refused || side === null ? null : (
+          <KinListPinned>
+            <KinMineSwitch
+              side={side}
+              counts={{ mine: mine?.counts.mine ?? null, everyone: mine?.counts.everyone ?? null }}
+              onSelect={choose}
+            />
+          </KinListPinned>
+        )}
         <LegendList<Item>
           renderScrollComponent={NativeScrollView}
           className="flex-1"
@@ -720,7 +788,7 @@ export function KinDocsList(
                 <EmptyState variant="plain" {...KIN_DOCS.unavailable} />
               ) : shown === "offline" ? (
                 <EmptyState variant="plain" {...kinWorkOffline("docs")} />
-              ) : shown === "loading" ? (
+              ) : shown === "loading" || (shown === "rows" && side === null) ? (
                 <KinWorkLoading label={KIN_DOCS.loading} />
               ) : shown === "failed" ? (
                 <KinLoadFailed
@@ -730,6 +798,8 @@ export function KinDocsList(
                 />
               ) : passages ? null : searching || !everything ? (
                 <EmptyState variant="plain" {...KIN_DOCS.noMatch} />
+              ) : onMine && !filter.archived && all.length > 0 ? (
+                <EmptyState variant="plain" {...KIN_DOCS.noneMine} />
               ) : (
                 <EmptyState
                   variant="plain"

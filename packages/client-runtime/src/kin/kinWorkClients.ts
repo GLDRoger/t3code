@@ -231,7 +231,7 @@ export const KIN_CLIENTS = {
 };
 
 export const KIN_CLIENTS_SHOW = [
-  { id: "open", label: "Everyone open" },
+  { id: "open", label: "All open" },
   { id: "prospects", label: "Prospects" },
   { id: "clients", label: "Clients" },
   { id: "vendors", label: "Vendors" },
