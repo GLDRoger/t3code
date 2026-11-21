@@ -482,6 +482,7 @@ function KinWaiting(props: {
                     orgId: item.orgId,
                     chatId: item.chatId,
                   }}
+                  search={item.messageId === null ? {} : { message: item.messageId }}
                   className="flex flex-col gap-0.5 rounded-md px-2 py-1.5 outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                 >
                   <span className="text-xs font-medium text-foreground">
