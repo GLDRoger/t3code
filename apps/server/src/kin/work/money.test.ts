@@ -1836,6 +1836,7 @@ describe("invoices", () => {
           ],
         });
         const [quote, deposit, monthly] = made.records.map((one) => one.key);
+        yield* issueAll(deposit!);
         // From the project's quote, from the agent that named it, and the retainer's next one.
         const { entry: invoiced } = yield* Quotes.invoiceFromQuote(orgId, owner, quote!);
         yield* records.update(orgId, owner, monthly!, { state: "done" });
