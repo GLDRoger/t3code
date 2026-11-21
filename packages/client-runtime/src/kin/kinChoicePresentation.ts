@@ -3,8 +3,13 @@ import { kinNow } from "./kinNow.ts";
 import {
   KIN_CHOICE_CARD_ACTION,
   KinChatError,
+  type EnvironmentId,
+  type KinConnectionSaveEdited,
   type KinConnectionSaveEditedInput,
+  type KinConnectionSendEdited,
   type KinConnectionSendEditedInput,
+  type KinConnectionSetSendFrom,
+  type KinConnectionSetSendFromInput,
   KIN_CHOICE_CARD_TTL_MS,
   KinChoiceCardState,
   type KinPersonId,
@@ -17,9 +22,17 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { AsyncResult } from "effect/reactivity";
 
+import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { kinPersonWords } from "./kinAnswers.ts";
-import { type KinCardNotice, kinActionFailureNotice } from "./kinDeferralPresentation.ts";
+import { kinConnectionChange } from "./kinConnections.ts";
+import {
+  type KinCardNotice,
+  type KinCardStatus,
+  createKinCardActions,
+  kinActionFailureNotice,
+} from "./kinDeferralPresentation.ts";
 import { formatKinTime, kinSentences } from "./kinScreenState.ts";
 
 const KIN_CHOICE_EXPIRED_TEXT = "This question expired. Answer in the chat instead.";
@@ -907,4 +920,170 @@ export function kinSendEditRefused(
   return isKinChatError(cause) && cause.reason === "widget_changed"
     ? { ...next, revision: kinSendEditBound(editing, view).revision, stale: true }
     : next;
+}
+
+type KinChoiceSend<I, A> = (value: {
+  readonly environmentId: EnvironmentId;
+  readonly input: I;
+}) => Promise<AtomCommandResult<A, unknown>>;
+
+export type KinChoiceCardStatus = (KinCardStatus & { readonly optionId: string }) | null;
+
+/** What a card keeps between renders outside React: its tap queue and the tick a press reads. */
+export interface KinChoiceCardTaps {
+  queue: ReturnType<typeof createKinCardActions<KinChoiceCardView, string>> | null;
+  ticked: KinSendTry | null;
+}
+export const kinChoiceCardTaps = (): KinChoiceCardTaps => ({ queue: null, ticked: null });
+
+/**
+ * What a choice card's taps do, the same on every client: each app holds the state and draws it.
+ */
+export function kinChoiceCardActions(options: {
+  readonly choice: KinChoiceCardView;
+  readonly environmentId: EnvironmentId;
+  readonly newId: () => string;
+  /** Made once per card (`kinChoiceCardTaps`): a press reads the tick when it posts. */
+  readonly taps: KinChoiceCardTaps;
+  readonly heldKey: string;
+  readonly state: {
+    readonly pending: string | null;
+    readonly switching: boolean;
+    /** The editor as shown (`kinSendEditShown`), else null. */
+    readonly editing: KinSendEditing | null;
+    readonly editBusy: KinSendEditBusy;
+    readonly editable: boolean;
+    readonly ticked: KinSendTry | null;
+    readonly nowMs: number;
+  };
+  readonly commands: {
+    readonly post: KinChoiceSend<KinWidgetsActInput, unknown>;
+    readonly setSendFrom: KinChoiceSend<KinConnectionSetSendFromInput, KinConnectionSetSendFrom>;
+    readonly sendEdited: KinChoiceSend<KinConnectionSendEditedInput, KinConnectionSendEdited>;
+    readonly saveEdited: KinChoiceSend<KinConnectionSaveEditedInput, KinConnectionSaveEdited>;
+  };
+  readonly set: {
+    readonly pending: (pending: string | null) => void;
+    readonly lastStatus: (status: KinChoiceCardStatus) => void;
+    readonly switching: (switching: boolean) => void;
+    readonly switchProblem: (problem: string | null) => void;
+    readonly editBusy: (busy: KinSendEditBusy) => void;
+    readonly editing: (editing: KinSendEditing | null) => void;
+    readonly ack: (ack: KinSendEditAck) => void;
+    readonly ticked: (ticked: KinSendTry | null) => void;
+  };
+}) {
+  const { choice, environmentId, taps, state, commands, set } = options;
+  const shownEdit = state.editing;
+  const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
+  const warnedView = kinSendEditWarned(choice, shownEdit, new Date(state.nowMs));
+
+  /** The person ticked they checked the sent mail, for the try the warning beside it names. */
+  const tick = (next: boolean) => {
+    taps.ticked = next ? kinSendTry(warnedView) : null;
+    set.ticked(taps.ticked);
+  };
+  const press = async (optionId: string) => {
+    if (state.pending !== null) return;
+    if (taps.queue === null)
+      taps.queue = createKinCardActions<KinChoiceCardView, string>({
+        newId: options.newId,
+        toInput: (view, optionId, id) =>
+          kinChoiceActInput(view, optionId, id, kinSendTicked(view, taps.ticked)),
+        failureNotice: kinChoiceFailureNotice,
+        post: async (input) => {
+          const result = await commands.post({ environmentId, input });
+          return AsyncResult.isFailure(result)
+            ? { ok: false, cause: squashAtomCommandFailure(result) }
+            : { ok: true };
+        },
+      });
+    const revision = choice.revision;
+    const outcome = await taps.queue(choice, optionId, () => {
+      set.pending(optionId);
+      set.lastStatus(null);
+    });
+    if (outcome.status === "ignored") return;
+    set.pending(null);
+    set.lastStatus(
+      outcome.status === "failed"
+        ? { revision, optionId, notice: outcome.notice, holding: false }
+        : { revision, optionId, notice: null, holding: true },
+    );
+  };
+
+  const pickFrom = async (choiceId: string) => {
+    if (state.switching || state.pending !== null) return;
+    set.switching(true);
+    set.switchProblem(null);
+    const failed = await kinConnectionChange(
+      commands.setSendFrom({
+        environmentId,
+        input: {
+          orgId: choice.orgId,
+          widgetId: choice.widgetId,
+          revision: choice.revision,
+          choice: choiceId,
+        },
+      }),
+      "change who it's from",
+    );
+    set.switching(false);
+    set.switchProblem(failed);
+  };
+
+  /** The editor after the host answered: words it refused stay on this device until let go. */
+  const settle = (next: KinSendEditing | null, kept: KinSendEditing | null = next) => {
+    kinSendEditHold(options.heldKey, kept);
+    set.editing(next);
+  };
+  const sendEdit = async () => {
+    if (shownEdit === null || state.editBusy !== null || editBound?.ready !== true) return;
+    set.editBusy("sending");
+    const result = await commands.sendEdited({
+      environmentId,
+      input: kinSendEditInput(
+        choice,
+        shownEdit,
+        options.newId(),
+        kinSendTicked(warnedView, state.ticked),
+      ),
+    });
+    set.editBusy(null);
+    settle(
+      AsyncResult.isFailure(result)
+        ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
+        : null,
+    );
+  };
+  /** Save closes the editor; a save on leaving keeps it open over the saved card. */
+  const saveEdit = async (stay = false) => {
+    if (shownEdit === null || state.editBusy !== null || editBound?.ready !== true) return;
+    if (!kinSendEditUnsaved(shownEdit)) return settle(null);
+    set.editBusy("saving");
+    const result = await commands.saveEdited({
+      environmentId,
+      input: kinSendEditSaveInput(choice, shownEdit),
+    });
+    set.editBusy(null);
+    if (AsyncResult.isFailure(result))
+      return settle(kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result)));
+    set.ack({ revision: result.value.revision, saved: shownEdit.draft });
+    settle(stay ? kinSendEditKept(shownEdit, result.value.revision) : null, null);
+  };
+  const discardEdit = async () => {
+    if (shownEdit === null || state.editBusy !== null) return;
+    const input = kinSendEditDiscardInput(choice, shownEdit, state.editable);
+    if (input === null) return settle(null);
+    set.editBusy("discarding");
+    const result = await commands.saveEdited({ environmentId, input });
+    set.editBusy(null);
+    if (AsyncResult.isSuccess(result)) set.ack({ revision: result.value.revision, saved: null });
+    settle(
+      AsyncResult.isFailure(result)
+        ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
+        : null,
+    );
+  };
+  return { tick, press, pickFrom, sendEdit, saveEdit, discardEdit };
 }

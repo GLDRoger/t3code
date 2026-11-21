@@ -471,22 +471,24 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
     );
     let cursor = yield* Queue.take(events);
     assert.strictEqual(cursor._tag, "backlog");
-    for (let i = 0; i < 201; i++)
-      yield* chat.send(person, {
+    const held = new Set<string>();
+    let afterSeq = 201;
+    // A screen that keeps up: each message read as it arrives, with every hundredth's checkpoint.
+    for (let i = 0; i < 201; i++) {
+      const sent = yield* chat.send(person, {
         chatId: direct.chatId,
         body: `Live ${i}`,
         clientMessageId: `live-${i}`,
       });
-    const held = new Set<string>();
-    let afterSeq = 201;
-    for (let i = 0; i < 201; i++) {
-      const event = yield* Queue.take(events);
-      if (event._tag === "message") {
-        held.add(event.message.messageId);
-        afterSeq = Math.max(afterSeq, event.message.seq);
-      } else if (event._tag === "backlog") {
-        assert.isFalse(event.messages.some((m) => held.has(m.messageId)));
-        cursor = event;
+      while (!held.has(sent.messageId)) {
+        const event = yield* Queue.take(events);
+        if (event._tag === "message") {
+          held.add(event.message.messageId);
+          afterSeq = Math.max(afterSeq, event.message.seq);
+        } else if (event._tag === "backlog") {
+          assert.isFalse(event.messages.some((m) => held.has(m.messageId)));
+          cursor = event;
+        }
       }
     }
     assert.strictEqual(cursor._tag, "backlog");

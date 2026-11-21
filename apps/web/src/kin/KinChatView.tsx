@@ -167,6 +167,8 @@ import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinHostAt } from "./useKinHost";
 import { useKinCountryNeeded } from "./useKinMoney";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
+import { kinStopNotice } from "@t3tools/client-runtime/kin/kinStop";
+import { useKinStopLine } from "./useKinStop";
 import { openKinSettings } from "./kinSettingsAddress";
 import { useKinProfiles } from "./kinPictures";
 import { kinDraftAtom, kinDraftKey, restoreDraft } from "./kinDraft";
@@ -292,6 +294,12 @@ export function KinChatView(props: {
           (profile) => profile.personId === pairWith,
         );
   const away = pairProfile === undefined ? null : kinAwayLine(pairProfile, { mine: false });
+  // A chat between people goes on while agents are stopped.
+  const stopLine = useKinStopLine(
+    environmentId === null || summary === undefined || pairWith !== null
+      ? null
+      : { environmentId, orgId: summary.orgId },
+  );
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -400,11 +408,12 @@ export function KinChatView(props: {
                 )
           }
           retired={screen.retired === null ? null : { name: screen.retired.name, restorable }}
-          groupNotice={
+          groupNotice={kinStopNotice(
+            stopLine,
             screen.silentAnswerer === null
               ? null
-              : kinRetiredGroupLine(screen.silentAnswerer, canRestore)
-          }
+              : kinRetiredGroupLine(screen.silentAnswerer, canRestore),
+          )}
         />
       ) : (
         <KinChatStateView state={state} onRetry={retry} />

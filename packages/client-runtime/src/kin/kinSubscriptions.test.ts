@@ -1,21 +1,30 @@
 // @effect-diagnostics globalDate:off - Fixtures build days relative to a fixed clock.
 import {
+  EnvironmentId,
   KinAgentId,
+  KinChatError,
   KinOrgId,
   KinPersonId,
   KinRecordId,
   type KinListDefinition,
   type KinRecord,
+  type KinWorkUpdateInput,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
+
+import { KIN_OFFLINE_NOT_SENT } from "./kinAnswers.ts";
 
 import type { KinListContext } from "./kinLists.ts";
 import {
   kinCycleStep,
   kinFinancialYearStart,
   kinRenewalsBetween,
+  kinSubscriptionActions,
   kinSubscriptionsList,
   kinSubscriptionsView,
+  type KinSubscriptionUndo,
 } from "./kinSubscriptions.ts";
 
 const def: KinListDefinition = {
@@ -187,5 +196,89 @@ describe("kinSubscriptions", () => {
     expect(view.thisMonth.map((line) => line.text)).toEqual(["₹2,000", "$10"]);
     expect(view.uncounted).toBe(1);
     expect(view.summary).toBe("3 active · about ₹2,840 a month");
+  });
+
+  it("cancels without its cycle, puts it back with Undo, and says a refusal in plain words", async () => {
+    const rows = (state: "open" | "dropped") =>
+      kinSubscriptionsView(
+        def,
+        [
+          entry("SUB-2", {
+            amount: { minor: 125_00, currency: "USD" },
+            dateAt: day("2027-03-01"),
+            repeat: { every: "year" },
+            state,
+          }),
+        ],
+        context,
+        rates,
+        "2026-04-01",
+      );
+    const row = rows("open").active[0]!;
+    const sent: Array<KinWorkUpdateInput> = [];
+    const seen = {
+      busy: [] as Array<string | null>,
+      problem: [] as Array<string | null>,
+      undo: [] as Array<KinSubscriptionUndo | null>,
+      refreshed: 0,
+    };
+    let idle = () => {};
+    const actions = (online: boolean, refuse: boolean) =>
+      kinSubscriptionActions({
+        environmentId: EnvironmentId.make("env"),
+        orgId: KinOrgId.make("org"),
+        def,
+        online: () => online,
+        update: async ({ input }) => {
+          sent.push(input);
+          return refuse
+            ? AsyncResult.failure<null, unknown>(
+                Cause.fail(new KinChatError({ reason: "conflict", message: "Changed." })),
+              )
+            : AsyncResult.success<null, unknown>(null);
+        },
+        refresh: () => seen.refreshed++,
+        set: {
+          busy: (key) => {
+            seen.busy.push(key);
+            if (key === null) idle();
+          },
+          problem: (problem) => seen.problem.push(problem),
+          undo: (undo) => seen.undo.push(undo),
+        },
+      });
+
+    expect(actions(true, false).cancellable).toBe(true);
+    await actions(true, false).cancel(row);
+    expect(sent).toEqual([{ orgId: "org", key: "SUB-2", rev: 1, state: "dropped", repeat: null }]);
+    expect(seen).toMatchObject({ busy: ["SUB-2", null], problem: [null], refreshed: 1 });
+    const undo = seen.undo.at(-1)!;
+    expect(undo).toEqual({ key: "SUB-2", title: row.title, repeat: { every: "year" } });
+
+    // Undo puts the one still cancelled back as it was, its cycle included.
+    const restored = new Promise<void>((resolve) => (idle = resolve));
+    actions(true, false).undo(undo, rows("dropped").cancelled);
+    expect(seen.undo.at(-1)).toBeNull();
+    await restored;
+    expect(sent.at(-1)).toEqual({
+      orgId: "org",
+      key: "SUB-2",
+      rev: 1,
+      state: "open",
+      repeat: { every: "year" },
+    });
+    // Put back elsewhere already: the notice goes and nothing is sent.
+    actions(true, false).undo(undo, []);
+    expect(sent).toHaveLength(2);
+
+    // Offline nothing goes; a refusal is said, and neither offers an Undo.
+    seen.undo.length = 0;
+    await actions(false, false).cancel(row);
+    expect(sent).toHaveLength(2);
+    expect(seen.problem.at(-1)).toBe(KIN_OFFLINE_NOT_SENT);
+    await actions(true, true).cancel(row);
+    expect(seen.problem.at(-1)).not.toBeNull();
+    expect(seen.undo).toEqual([]);
+    expect(seen.refreshed).toBe(4);
   });
 });
