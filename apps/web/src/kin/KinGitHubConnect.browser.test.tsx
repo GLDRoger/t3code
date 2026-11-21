@@ -1,4 +1,4 @@
-import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
+import { EnvironmentId, type KinGitHubAgents, KinOrgId } from "@t3tools/contracts";
 import * as Redacted from "effect/Redacted";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -8,6 +8,9 @@ const host = vi.hoisted(() => ({
   signIn: null as { readonly code: string; readonly url: string } | null,
   starts: [] as Array<Record<string, unknown>>,
   refuse: null as string | null,
+  // Whether the viewer may let Kin set the App's webhook, and the yeses sent.
+  canAllow: true,
+  allows: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock(import("./useKinOwnerLevel"), async (importOriginal) => ({
@@ -20,6 +23,7 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
   const Cause = await import("effect/Cause");
   const { KinChatError: Refused } = await import("@t3tools/contracts");
   const allowed = Atom.make(true);
+  const refused = Atom.make(false);
   const status = () => ({
     orgId: "org-1",
     account: null,
@@ -51,6 +55,13 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
         host.signIn = null;
         return AsyncResult.success(status());
       }),
+      githubAppHookAllow: {
+        ...command((input) => {
+          host.allows.push(input);
+          return AsyncResult.success({ outcome: "set" });
+        }),
+        permissionAtom: () => (host.canAllow ? allowed : refused),
+      },
     } as never,
   };
 });
@@ -58,14 +69,16 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
 import "~/index.css";
 import { render } from "../../test/render";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
-import { KinGitHubConnect } from "./KinGitHubConnect";
+import { KinGitHubConnect, KinGitHubInstantLine } from "./KinGitHubConnect";
 
 const target = { environmentId: EnvironmentId.make("env-1"), orgId: KinOrgId.make("org-1") };
 
-function setup(refuse: string | null) {
+function setup(refuse: string | null, canAllow = true) {
   host.signIn = null;
   host.starts = [];
   host.refuse = refuse;
+  host.canAllow = canAllow;
+  host.allows = [];
 }
 
 const screen = () => (
@@ -108,5 +121,71 @@ describe("connecting GitHub", () => {
     const sent = host.starts[0]?.token;
     expect(Redacted.isRedacted(sent)).toBe(true);
     expect(Redacted.value(sent as Redacted.Redacted<string>)).toBe("ghp_invented0000");
+  });
+});
+
+const agents: KinGitHubAgents = {
+  as: "app",
+  appName: "Invented Kin",
+  problem: null,
+  watched: 4,
+  installed: 4,
+  without: [],
+  ownerUses: [],
+};
+const settingsUrl = "https://github.com/settings/apps/invented-kin/permissions";
+
+const offered = () => (
+  <AppAtomRegistryProvider>
+    <KinGitHubInstantLine {...target} agents={{ ...agents, instantOffer: true }} now={0} />
+  </AppAtomRegistryProvider>
+);
+
+describe("how fast Kin hears from GitHub", () => {
+  it("names the events to tick and opens GitHub's page outside Kin", async () => {
+    await using _screen = await render(
+      <KinGitHubInstantLine
+        {...target}
+        agents={{
+          ...agents,
+          instant: { state: "events", missing: ["Pull request"], settingsUrl, last: null },
+        }}
+        now={0}
+      />,
+      { router: false }, // The row has no links inside Kin.
+    );
+    await expect.element(page.getByText("Events to tick")).toBeVisible();
+    await expect.element(page.getByText(/tick "Pull request" under Subscribe/)).toBeVisible();
+    const link = page.getByRole("link", { name: "Open Permissions & events" });
+    await expect.element(link).toHaveAttribute("href", settingsUrl);
+    await expect.element(link).toHaveAttribute("target", "_blank");
+    await expect.element(link).toHaveAttribute("rel", "noreferrer noopener");
+  });
+
+  it("draws nothing when the status carries no instant, as for a teammate", async () => {
+    await using _screen = await render(
+      <KinGitHubInstantLine {...target} agents={agents} now={0} />,
+      {
+        router: false, // The row has no links inside Kin.
+      },
+    );
+    await expect.element(page.getByText("How fast Kin hears from GitHub")).not.toBeInTheDocument();
+  });
+
+  it("lets an owner tell Kin to set the webhook of an App it didn't make", async () => {
+    setup(null);
+    await using _screen = await render(offered(), { router: false }); // No links inside Kin.
+    await expect.element(page.getByText(/Kin didn't make this GitHub App/)).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Let Kin set it up" }));
+    await vi.waitFor(() => expect(host.allows).toEqual([{ orgId: target.orgId }]));
+  });
+
+  it("shows the offer without its button to someone the host doesn't let", async () => {
+    setup(null, false);
+    await using _screen = await render(offered(), { router: false }); // No links inside Kin.
+    await expect.element(page.getByText(/Kin didn't make this GitHub App/)).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Let Kin set it up" }))
+      .not.toBeInTheDocument();
   });
 });

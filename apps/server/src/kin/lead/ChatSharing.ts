@@ -93,6 +93,7 @@ export const onPersonRemoved = Effect.fn("KinChatSharing.onPersonRemoved")(funct
     (json_extract(e.json, '$.provenance._tag') = 'human'
       AND json_extract(e.json, '$.provenance.personId') = ${input.personId})
     OR json_extract(e.json, '$.origin.personId') = ${input.personId}
+    OR (e.tag = 'github' AND json_extract(e.json, '$.askedBy') = ${input.personId})
     OR EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = e.org_id
       AND e.tag IN ('chat.message', 'widget.action')
       AND m.message_id = json_extract(e.json, '$.messageId') AND m.author_kind = 'human'

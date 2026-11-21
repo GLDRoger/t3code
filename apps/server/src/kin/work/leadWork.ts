@@ -2316,6 +2316,7 @@ const createRow = Effect.fnUntraced(function* (
           besides: row.besides ?? [],
           fields: given,
           fileKeys,
+          vendor: typeof money.fields?.vendor === "string" ? money.fields.vendor : null,
         })
       : { pair: undefined, alsoOpen: [] };
   const inProject = projectId !== undefined ? projectId : spine.projectId;
@@ -2732,6 +2733,8 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
     /** The row's own fields, and which of them hold files. */
     readonly fields: FieldValues;
     readonly fileKeys: ReadonlyArray<string>;
+    /** The vendor field, which stands in for the party on a paid row with none. */
+    readonly vendor: string | null;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -2749,10 +2752,11 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
     dueAt: number | null;
     dateAt: number | null;
     originKey: string | null;
-    fieldsJson: string;
+    vendor: unknown;
     sensitive: number;
   }>`SELECT r.key, r.title, r.due_at AS "dueAt", r.date_at AS "dateAt",
-      r.origin_key AS "originKey", r.fields_json AS "fieldsJson", ${sensitiveNow(sql)} AS sensitive
+      r.origin_key AS "originKey", json_extract(r.fields_json, '$.vendor') AS vendor,
+      ${sensitiveNow(sql)} AS sensitive
     FROM kin_records r
     WHERE r.org_id = ${lead.orgId} AND r.register_id = ${row.list} AND r.party_id IS ${row.partyId}
       AND ${which} AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
@@ -2763,12 +2767,15 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
   if (pair !== undefined) return { pair, alsoOpen: [] };
   const day = (at: number | null) => (at === null ? null : dayIn(at, zone));
   const title = row.title.trim();
+  const vendor = row.partyId === null && row.vendor !== null ? fold(row.vendor) : "";
+  const sameVendor = (one: { readonly vendor: unknown }) =>
+    vendor !== "" && typeof one.vendor === "string" && fold(one.vendor) === vendor;
   const matches = rows.flatMap((one) => {
     const sameTitle = one.title.trim() === title;
     if (
       !sameTitle &&
       fold(one.title) !== fold(title) &&
-      (paid === undefined || row.partyId === null)
+      (paid === undefined || (row.partyId === null && !sameVendor(one)))
     )
       return [];
     const sameDay =
@@ -2793,6 +2800,7 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
         title: one.title,
         exact: paid === undefined ? sameTitle && sameDay : sameDay,
         differs: differs.join(", "),
+        vendor: one.vendor,
         sensitive: one.sensitive === 1,
       },
     ];
@@ -2803,7 +2811,7 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
     const keys = repeats.slice(0, REPEATS_SHOWN).map((one) => one.key);
     const same =
       paid !== undefined
-        ? `records the same amount ${row.partyId === null ? "and title" : "for the same party"} on the same day`
+        ? `records the same amount ${row.partyId !== null ? "for the same party" : sameVendor(first) ? "for the same vendor" : "and title"} on the same day`
         : `is open with the same title${row.partyId === null ? "" : ", client"} and due day`;
     const Refused = repeats.some((one) => one.sensitive) ? SensitiveRefusal : KinChatError;
     return yield* new Refused({

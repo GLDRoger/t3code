@@ -551,6 +551,24 @@ export const KinGitHubAppAccount = Schema.Struct({
 });
 export type KinGitHubAppAccount = typeof KinGitHubAppAccount.Type;
 
+/**
+ * Whether GitHub tells Kin at once, through the App's webhook: `on` (set, every event Kin needs
+ * ticked), `events` (set, some unticked), `address` (Kin has no public address), or `error`
+ * (GitHub refused or couldn't be reached). Kin's poll goes on in every state.
+ */
+export const KinGitHubInstant = Schema.Struct({
+  state: Schema.Literals(["on", "events", "address", "error"]),
+  /** Event names still to tick on GitHub, as GitHub's page words them ("Pull request", "Issue comment", ...). */
+  missing: Schema.Array(Schema.String),
+  /** The App's "Permissions & events" page on GitHub, for the owner. */
+  settingsUrl: Schema.NullOr(Schema.String),
+  /** When GitHub last delivered and whether Kin accepted it, from GET /app/hook/deliveries; null when never or unknown. */
+  last: Schema.NullOr(Schema.Struct({ at: Schema.String, ok: Schema.Boolean })),
+  /** With `error`: the App's webhook sends its events to an address that isn't Kin's, left as it is. */
+  elsewhere: Schema.optional(Schema.Boolean),
+});
+export type KinGitHubInstant = typeof KinGitHubInstant.Type;
+
 /** Who agents act as on GitHub: Kin's GitHub App where it is installed, else the owner. */
 export const KinGitHubAgents = Schema.Struct({
   as: Schema.Literals(["app", "owner"]),
@@ -590,6 +608,13 @@ export const KinGitHubAgents = Schema.Struct({
   /** The account that owns the App, and its settings page when the login can open it. */
   appOwner: Schema.optional(Schema.String),
   appSettingsUrl: Schema.optional(Schema.String),
+  /** Whether GitHub tells Kin at once; owner-level readers only, absent with no App. */
+  instant: Schema.optional(KinGitHubInstant),
+  /**
+   * Owner-level readers only, without `instant`: Kin didn't make the App, has a public address,
+   * and sets the App's webhook once an owner allows it (`kin.github.app.hook.allow`).
+   */
+  instantOffer: Schema.optional(Schema.Boolean),
 });
 export type KinGitHubAgents = typeof KinGitHubAgents.Type;
 
@@ -660,6 +685,19 @@ export const KinGitHubAppDisconnected = Schema.Struct({
   settingsUrl: Schema.NullOr(Schema.String),
 });
 export type KinGitHubAppDisconnected = typeof KinGitHubAppDisconnected.Type;
+
+/**
+ * Whether Kin asked GitHub about its App again, nothing more: false within two minutes of the last
+ * ask, or with no App or key to ask with.
+ */
+export const KinGitHubAppLooked = Schema.Struct({ looked: Schema.Boolean });
+export type KinGitHubAppLooked = typeof KinGitHubAppLooked.Type;
+
+/** What setting the App's webhook did once an owner allowed it; `elsewhere` left another's address. */
+export const KinGitHubHookAllowed = Schema.Struct({
+  outcome: Schema.Literals(["set", "address", "none", "elsewhere", "error"]),
+});
+export type KinGitHubHookAllowed = typeof KinGitHubHookAllowed.Type;
 
 /** Protects these repos' default branch from Kin's App with a ruleset, or removes Kin's own. */
 export const KinGitHubGuardSetInput = Schema.Struct({
@@ -825,6 +863,16 @@ export const KinConnectionRpcs = [
     success: KinGitHubAppDisconnected,
     error: KinError,
   }),
+  Rpc.make("kin.github.app.look", {
+    payload: KinGitHubInput,
+    success: KinGitHubAppLooked,
+    error: KinError,
+  }),
+  Rpc.make("kin.github.app.hook.allow", {
+    payload: KinGitHubInput,
+    success: KinGitHubHookAllowed,
+    error: KinError,
+  }),
   Rpc.make("kin.github.app.repos.set", {
     payload: KinGitHubAppReposSetInput,
     success: KinGitHubAppReposResult,
@@ -866,4 +914,6 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.github.guard.set": AuthKinChatScope,
   "kin.github.app.create": AuthKinChatScope,
   "kin.github.app.disconnect": AuthKinChatScope,
+  "kin.github.app.hook.allow": AuthKinChatScope,
+  "kin.github.app.look": AuthKinChatScope,
 } as const;
