@@ -1114,6 +1114,7 @@ function ClientPage(
           orgId={orgId}
           party={view.ref}
           editing={editingContact}
+          owner={can.owner}
           onSaved={() => {
             setDialog(null);
             props.onRefresh();
@@ -1219,6 +1220,9 @@ function ContactRow(props: {
           {contact.role === null ? null : (
             <span className="text-muted-foreground"> · {contact.role}</span>
           )}
+          {contact.billing ? (
+            <span className="text-muted-foreground"> · {KIN_CLIENTS.billingMark}</span>
+          ) : null}
           {contact.closed ? (
             <span className="text-muted-foreground"> · No longer a contact</span>
           ) : null}

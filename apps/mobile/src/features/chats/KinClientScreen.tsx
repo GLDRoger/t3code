@@ -741,10 +741,14 @@ function KinContactRows(props: {
   const who = {
     icon: "person.crop.circle" as const,
     label: contact.name,
-    ...(contact.role === null && !contact.closed
+    ...(contact.role === null && !contact.billing && !contact.closed
       ? {}
       : {
-          description: [contact.role, contact.closed ? "No longer a contact" : null]
+          description: [
+            contact.role,
+            contact.billing ? KIN_CLIENTS.billingMark : null,
+            contact.closed ? "No longer a contact" : null,
+          ]
             .filter((part) => part !== null)
             .join(" · "),
         }),
