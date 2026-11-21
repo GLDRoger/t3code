@@ -981,6 +981,16 @@ describe("recipe documents", () => {
       assert.deepStrictEqual(yield* figures("INV-5"), [590_000, "INR", 90_000]);
       yield* make("INV-5", { lines: line("₹6,000") });
       assert.deepStrictEqual(yield* figures("INV-5"), [708_000, "INR", 108_000]);
+      // A tax a person types stays theirs, as a typed amount does: their own PDF, coming to the
+      // same total, doesn't put its tax back over it.
+      const person = { actor: { _tag: "person", personId: ownerId }, via: "owner" } as const;
+      yield* records.update(orgId, person, "INV-5", {
+        fields: { tax: { minor: 100_000, currency: "INR" } },
+      });
+      const held = (yield* records.get(orgId, "INV-5"))!;
+      assert.isFalse(yield* Amounts.pricedByDocuments(orgId, held));
+      yield* Amounts.priceDraft(orgId, person, "INV-5", false);
+      assert.deepStrictEqual(yield* figures("INV-5"), [708_000, "INR", 100_000]);
 
       // A suggestion takes its document's amount too, and counts in nothing until a person keeps it.
       const suggested = yield* records.create(

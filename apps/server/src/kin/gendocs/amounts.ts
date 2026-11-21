@@ -144,7 +144,7 @@ export const pricedByDocuments = Effect.fn("KinDocAmounts.pricedByDocuments")(fu
 /**
  * Writes what the draft `key`'s documents come to from their lines onto it as its amount and tax,
  * as issuing would, in the transaction that made one. Unless they `priced` it before, an amount
- * it holds that they don't come to stays; an issued entry is never touched here.
+ * or a tax it holds that they don't come to stays; an issued entry is never touched here.
  */
 export const priceDraft = Effect.fn("KinDocAmounts.priceDraft")(function* (
   orgId: KinOrgId,
@@ -170,7 +170,9 @@ export const priceDraft = Effect.fn("KinDocAmounts.priceDraft")(function* (
   const taxField = def.fields.some((field) => field.key === "tax" && field.type === "money");
   const patch = {
     ...(same ? {} : { amount: total }),
-    ...(taxField && (stored?.minor !== tax.minor || stored.currency !== tax.currency)
+    ...(taxField &&
+    (priced || stored === undefined) &&
+    (stored?.minor !== tax.minor || stored.currency !== tax.currency)
       ? { fields: { tax } }
       : {}),
   };
