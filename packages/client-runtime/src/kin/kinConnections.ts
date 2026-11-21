@@ -425,7 +425,7 @@ export type KinSetupStep = { readonly text: string; readonly address: boolean };
 
 /**
  * The one-time setup at Google or Microsoft: the steps, the exact return address, and what to
- * paste back. Microsoft's needs no secret: Kin signs in as an app that keeps none.
+ * paste back. A Microsoft app made as these steps say keeps no secret; one with a Web redirect does.
  */
 export const KIN_OWNER_CLIENT_SETUP: Readonly<
   Record<
@@ -447,7 +447,7 @@ export const KIN_OWNER_CLIENT_SETUP: Readonly<
   google: {
     title: "Set up Google once",
     detail:
-      "Google needs a sign-in client from your company's Google Cloud. It takes about ten minutes, on a computer, and you do it once.",
+      "Google needs a sign-in client from your company's Google Cloud. It takes about ten minutes, on a computer, and you do it once. If your company already has a Google sign-in client for a mail app, you can use it instead: add the address below to its Authorized redirect URIs and paste its client ID and secret.",
     steps: [
       "In Google Cloud console (console.cloud.google.com), signed in to the company account, create a project named Kin.",
       "In APIs & Services → Library, turn on the Gmail API and the Google Calendar API.",
@@ -465,7 +465,7 @@ export const KIN_OWNER_CLIENT_SETUP: Readonly<
   microsoft: {
     title: "Set up Microsoft once",
     detail:
-      "Microsoft needs Kin registered as an app. It takes about ten minutes, on a computer, and you do it once; every work, school or outlook.com account then signs in with it. If your organization asks an admin to approve new apps, the admin approves Kin the first time.",
+      "Microsoft needs Kin registered as an app. It takes about ten minutes, on a computer, and you do it once; every work, school or outlook.com account then signs in with it. If your organization asks an admin to approve new apps, the admin approves Kin the first time. An app your company already has with a Web redirect and a client secret works too: add the address below to its Web redirect URIs and paste its application ID and secret.",
     steps: [
       "On a computer, open entra.microsoft.com, sign in with your work account, and go to App registrations → New registration.",
       "Name it Kin. Under Supported account types, choose Accounts in any organizational directory and personal Microsoft accounts.",

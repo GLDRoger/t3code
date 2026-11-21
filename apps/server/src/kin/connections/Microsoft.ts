@@ -23,7 +23,7 @@ import { DAY_MS } from "../durations.ts";
 
 /**
  * Microsoft's sign-in for work or school accounts in any organization and personal accounts.
- * The owner's app registration is a public client, so the code is redeemed with PKCE alone.
+ * A public-client app redeems the code with PKCE alone; a Web app sends its secret with it too.
  */
 const MICROSOFT_SERVER: AuthServer = {
   issuer: "https://login.microsoftonline.com/common/v2.0",
