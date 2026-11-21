@@ -2,12 +2,17 @@ import {
   KinApprovalError,
   type EnvironmentId,
   type KinApprovalView,
+  type KinGrantUnsignedPayload,
   type KinPendingAction,
   type KinWidget,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinApprovalCardView, kinApprovalFailure } from "./kinApprovalPresentation.ts";
+import {
+  kinApprovalCardView,
+  kinApprovalFailure,
+  kinChallengeMatchesCard,
+} from "./kinApprovalPresentation.ts";
 import { kinCardView } from "./kinCardPresentation.ts";
 
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
@@ -308,5 +313,68 @@ describe("kinApprovalFailure", () => {
     expect(kinApprovalFailure(new Error("socket closed"))).toMatchObject({
       text: "Kin didn't answer. Try again.",
     });
+  });
+});
+
+describe("kinChallengeMatchesCard", () => {
+  const card = merge();
+  // What the host's challenge says the owner is about to sign, for the card above.
+  const challenge = (overrides: Record<string, unknown> = {}) =>
+    ({
+      v: 1,
+      orgId: "kin-default",
+      actionId: "act_1",
+      revision: 0,
+      nonce: "n".repeat(43),
+      kind: "merge_pull_request",
+      targetDigest: "f".repeat(64),
+      target: card.target,
+      headSha: SHA,
+      base: "main",
+      mergeMethod: "squash",
+      approver: { humanId: "rhea", kid: "k".repeat(43) },
+      decision: "approve",
+      ...overrides,
+    }) as unknown as KinGrantUnsignedPayload;
+  const branch = merge({
+    kind: "delete_branch",
+    target: { _tag: "branch", host: "github.com", repo: "ambermill/site", ref: "old" },
+    resolved: { _tag: "branch", headSha: SHA },
+  } as unknown as Partial<KinPendingAction>);
+
+  it.each([
+    ["the card exactly", challenge(), card, true],
+    // Signed facts are compared as the server records them, so key order never matters.
+    [
+      "the same target written in another order",
+      challenge({ target: Object.fromEntries(Object.entries(card.target).reverse()) }),
+      card,
+      true,
+    ],
+    [
+      "a branch the card showed",
+      challenge({
+        kind: "delete_branch",
+        target: branch.target,
+        base: undefined,
+        mergeMethod: undefined,
+      }),
+      branch,
+      true,
+    ],
+    ["another action", challenge({ actionId: "act_2" }), card, false],
+    ["a newer revision of the card", challenge({ revision: 1 }), card, false],
+    [
+      "a head that moved since the card was drawn",
+      challenge({ headSha: "b".repeat(40) }),
+      card,
+      false,
+    ],
+    ["another base branch", challenge({ base: "release" }), card, false],
+    ["another merge method", challenge({ mergeMethod: "rebase" }), card, false],
+    ["another pull request", challenge({ target: { ...card.target, number: 213 } }), card, false],
+    ["another kind", challenge({ kind: "delete_branch" }), card, false],
+  ])("signs only %s", (_name, payload, action, matches) => {
+    expect(kinChallengeMatchesCard(payload, action)).toBe(matches);
   });
 });

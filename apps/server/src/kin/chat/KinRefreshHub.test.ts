@@ -16,6 +16,7 @@ import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as Tracer from "effect/Tracer";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
@@ -103,7 +104,7 @@ describe("KinRefreshHub", () => {
   );
 
   it.effect(
-    "tells a teammate only about their own lead list, people, the time zone, the lists she sees and what needs attention, never the owner's reads",
+    "tells a teammate only about their own lead list, people, the time zone, the lists she sees, the stop switch and what needs attention, never the owner's reads",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -113,6 +114,13 @@ describe("KinRefreshHub", () => {
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
           VALUES ('priya', ${me.orgId}, 'priya', 'Priya', '2026-11-09T00:00:00.000Z')`;
         const priya = { ...me, personId: KinPersonId.make("priya") };
+        // She already has her chat with Finance, as anyone may.
+        yield* Provision.allow({
+          editor: owner,
+          orgId: me.orgId,
+          agentId: finance.agentId,
+          personId: priya.personId,
+        });
         // A company created now, its country not chosen yet.
         yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
             updated_by_kind, updated_by_id)
@@ -131,12 +139,13 @@ describe("KinRefreshHub", () => {
           leads: 0,
           pulse: 0,
           workLists: 0,
+          stop: 0,
           company: 0,
           boot,
           streams: KIN_STREAMS,
         });
 
-        // Things only the owner reads: the company, and a lead Priya can't message.
+        // Things only the owner reads: the company, and a lead's charter.
         yield* setProfile(
           me.orgId,
           { _tag: "person", personId: me.personId },
@@ -165,8 +174,9 @@ describe("KinRefreshHub", () => {
           workLists: (start.workLists ?? 0) + 1,
         });
 
-        // Priya may now message Finance: her list changed, so hers is the next thing she hears.
-        yield* Provision.allow({
+        // The owner restricts Priya from Finance: her chat with it closes and her list changed, so
+        // hers is the next thing she hears.
+        yield* Provision.disallow({
           editor: owner,
           orgId: me.orgId,
           agentId: finance.agentId,
@@ -179,6 +189,7 @@ describe("KinRefreshHub", () => {
           leads: 1,
           pulse: 0,
           workLists: 0,
+          stop: 0,
           company: 0,
           boot,
           streams: KIN_STREAMS,
@@ -199,7 +210,84 @@ describe("KinRefreshHub", () => {
         );
         yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
         assert.deepStrictEqual(yield* Queue.take(priyaSees), { ...moved, company: 1 });
+        // The owner stops every agent: she hears it, so her chat says why nobody answers.
+        yield* sql.withTransaction((yield* RefreshHub.KinRefreshObserver).touch(me.orgId, "stop"));
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.deepStrictEqual(yield* Queue.take(priyaSees), { ...moved, company: 1, stop: 1 });
       }).pipe(Effect.scoped, Effect.provide(paired)),
+  );
+
+  let statements = 0;
+  const tracer = Tracer.make({
+    span(options) {
+      const span = new Tracer.NativeSpan(options);
+      const end = span.end.bind(span);
+      span.end = (endTime, exit) => {
+        end(endTime, exit);
+        if (typeof span.attributes.get("db.query.text") === "string") statements += 1;
+      };
+      return span;
+    },
+  });
+  it.effect(
+    "reads a person's view once a burst for all their screens, and a demoted co-owner's next as a member's",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const { touch } = yield* RefreshHub.KinRefreshObserver;
+        const { owner: me } = yield* KinIdentity;
+        yield* Provision.create(lead("Finance", "finance"));
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+            access)
+          VALUES ('meera', ${me.orgId}, 'meera', 'Meera', '2026-11-09T00:00:00.000Z', 'member'),
+            ('zoya', ${me.orgId}, 'zoya', 'Zoya', '2026-11-09T00:00:00.000Z', 'co_owner')`;
+        const screens = (personId: string, count: number) =>
+          Effect.forEach(Array.from({ length: count }), () =>
+            Effect.gen(function* () {
+              const queue = yield* Stream.toQueue(
+                subscribeRefreshes([{ ...me, personId: KinPersonId.make(personId) }], {
+                  orgId: me.orgId,
+                }),
+                { capacity: "unbounded" },
+              );
+              yield* Queue.take(queue);
+              return queue;
+            }),
+          );
+        const burst = Effect.fn("test.burst")(function* (
+          queues: Effect.Success<ReturnType<typeof screens>>,
+        ) {
+          statements = 0;
+          yield* sql.withTransaction(
+            Effect.all([touch(me.orgId, "people"), touch(me.orgId, "leads")]),
+          );
+          yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+          const seen = yield* Effect.forEach(queues, Queue.take);
+          return { statements, seen };
+        });
+        const one = yield* Effect.scoped(
+          Effect.gen(function* () {
+            return (yield* burst(yield* screens("meera", 1))).statements;
+          }),
+        );
+        const three = yield* Effect.scoped(
+          Effect.gen(function* () {
+            return (yield* burst(yield* screens("meera", 3))).statements;
+          }),
+        );
+        assert.isAbove(one, 0);
+        assert.strictEqual(three, one, "her three screens share one read of her view");
+
+        const hers = yield* screens("zoya", 2);
+        const before = yield* burst(hers);
+        for (const seen of before.seen) assert.property(seen, "memory", "a co-owner's topics");
+        yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'zoya'`;
+        const after = yield* burst(hers);
+        for (const seen of after.seen) {
+          assert.notProperty(seen, "memory", "a demoted co-owner hears only a member's topics");
+          assert.property(seen, "leads");
+        }
+      }).pipe(Effect.withTracer(tracer), Effect.scoped, Effect.provide(paired)),
   );
 
   it.effect("moves the lists a new company made while waiting when its country is saved", () =>
@@ -326,6 +414,8 @@ describe("KinRefreshHub", () => {
         "chat/KinChatRepository.ts",
         "lead/peopleUpdate.ts",
         "lead/awaySet.ts",
+        // A person's own morning page setting, pinned below: no people screen reads it.
+        "pulse/checkIns.ts",
       ],
       // A sign-out's cascade (auth/linkedDevices.ts) runs in the session store, below Kin's hub,
       // and returns the companies it changed: the session store tells the hub after commit.
@@ -338,6 +428,47 @@ describe("KinRefreshHub", () => {
       kin_trigger_settings: ["triggers/routines.ts"],
       kin_visual_hosts: ["chat/KinVisualHosts.ts"],
       kin_money_budgets: ["work/budgets.ts"],
+      kin_github_watch: ["github/GitHubWatch.ts"],
+      kin_github_branch_guards: ["github/branchGuard.ts"],
+      kin_github_owner_uses: [
+        "github/KinGitHubApp.ts",
+        "github/branchGuard.ts",
+        "github/appRepos.ts",
+      ],
+      kin_budget_limits: ["lead/KinBudget.ts"],
+      // Pause and resume touch `stop` (KinStop.test.ts counts them).
+      kin_org_state: ["lead/KinStop.ts"],
+      // A zone change renames due-keyed facts; KinRoutines.configure touches pulse (pinned below).
+      kin_pulse_facts: ["pulse/KinPulse.ts", "work/allDayZone.ts"],
+      // Lists read only rows a company defined (`built_in = 0`). The deals files write the built-in
+      // deals row's stages and pipeline flag, and KinRecords a built-in row and the next number,
+      // which no list read selects.
+      kin_registers: [
+        "work/registers.ts",
+        "work/ownerMoney.ts",
+        "work/companyProfile.ts",
+        "work/importUndo.ts",
+        "work/deals.ts",
+        "work/dealStages.ts",
+        "work/KinRecords.ts",
+      ],
+      // Cash and the outlook read statements once `read`. The other writers set them unreadable,
+      // scanned, a draft or its proof rounds, none of which those reads show.
+      kin_bank_statements: [
+        "work/statements/statementReview.ts",
+        "work/statements/statementApply.ts",
+        "work/ownerStatements.ts",
+        "work/leadStatements.ts",
+        "work/statements/statementReading.ts",
+      ],
+      kin_bank_statement_entries: [
+        "work/statements/statementReview.ts",
+        "work/statements/statementApply.ts",
+        // A zone change moves undo days; KinRoutines.configure touches moneyStatements (below).
+        "work/allDayZone.ts",
+      ],
+      // An import's and an undo's own row: each chunk moves `imports`, as does each run's end.
+      kin_import_runs: ["work/KinImport.ts", "work/importUndo.ts"],
       // A key's last use, written as the key is admitted, shows at the next read.
       kin_tasks_keys: ["tasksKey/TasksKeys.ts", "people/KinPeople.ts", "auth/linkedDevices.ts"],
       // A clear stamps open suggestions in the repository; `KinChatService.clear` tells the hub.
@@ -358,5 +489,24 @@ describe("KinRefreshHub", () => {
         if (!writers[match[1]!]!.includes(file)) found.push(`${file}: ${match[1]}`);
     }
     assert.deepStrictEqual(found, []);
+    const routines = NodeFS.readFileSync(NodePath.join(root, "triggers/routines.ts"), "utf8");
+    assert.include(routines, "keepAllDayDays(settings.orgId, before, settings.timeZone)");
+    for (const topic of ["pulse", "moneyStatements"])
+      assert.include(routines, `refresh.touch(settings.orgId, "${topic}")`);
+    const briefs = NodeFS.readFileSync(NodePath.join(root, "pulse/checkIns.ts"), "utf8");
+    const sets = [...briefs.matchAll(/(?:INSERT INTO|UPDATE|DELETE FROM)\s+kin_people\b([^`]*)`/g)];
+    assert.deepStrictEqual(
+      sets.map((one) =>
+        /^ SET morning_json = \$\{morningJson\(\{[^}]*\}\)\}\s+WHERE /.test(one[1]!),
+      ),
+      [true],
+    );
+    const readers = NodeFS.readdirSync(root, { recursive: true, encoding: "utf8" }).filter(
+      (file) =>
+        file.endsWith(".ts") &&
+        !/\.test\.ts$|migrations\//.test(file) &&
+        NodeFS.readFileSync(NodePath.join(root, file), "utf8").includes("morning_json"),
+    );
+    assert.deepStrictEqual(readers.toSorted(), ["pulse/checkIns.ts", "pulse/personMorning.ts"]);
   });
 });

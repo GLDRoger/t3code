@@ -43,8 +43,9 @@ import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { teammatesLimited } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
-import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
+import { codingAgentSource, outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
 import { commentsPage } from "./recordComments.ts";
 import { indexRecord } from "./searchIndex.ts";
@@ -110,6 +111,7 @@ import {
   verifyRefs,
 } from "./registers.ts";
 import { contactFields } from "./contactDetails.ts";
+import { cleanTags } from "./tags.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
   bumpTeamSeqs,
@@ -675,8 +677,14 @@ export class KinRecords extends Context.Service<
      * list, and the people besides the owner who may see it after that change (`teamView.ts`).
      */
     readonly changes: (orgId: KinOrgId) => Stream.Stream<Tick, KinChatError>;
-    /** Tells `changes` an org's entries moved with no change logged here: an undo, another process. */
-    readonly announce: (orgId: KinOrgId) => Effect.Effect<void, KinChatError>;
+    /**
+     * Tells `changes` an org's entries moved with no change logged here: an undo, another process.
+     * Given the entries that moved, as a contact logged on a client, only those are read again.
+     */
+    readonly announce: (
+      orgId: KinOrgId,
+      recordIds?: ReadonlyArray<string>,
+    ) => Effect.Effect<void, KinChatError>;
     /** Kin's layer attaches `closeSubject`, which sits above chat, for as long as its scope. */
     readonly attachClosing: (closing: Closing) => Effect.Effect<void, never, Scope.Scope>;
     /**
@@ -722,15 +730,18 @@ const make = Effect.gen(function* () {
     def: ListDef,
     now: number,
   ) {
-    // A defined list's register is written when it is defined; a built-in one on first use.
-    if (def.builtIn !== null)
-      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
-        VALUES (${orgId}, ${def.id}, ${def.name}, ${def.prefix}, 1, ${now})
-        ON CONFLICT DO NOTHING`;
-    const [register] = yield* sql<{ next: number; prefix: string }>`
+    const take = sql<{ next: number; prefix: string }>`
       UPDATE kin_registers SET next_number = next_number + 1
       WHERE org_id = ${orgId} AND register_id = ${def.id}
       RETURNING next_number - 1 AS next, key_prefix AS prefix`;
+    let [register] = yield* take;
+    // A defined list's register is written when it is defined; a built-in one on first use.
+    if (register === undefined && def.builtIn !== null) {
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, ${def.id}, ${def.name}, ${def.prefix}, 1, ${now})
+        ON CONFLICT DO NOTHING`;
+      [register] = yield* take;
+    }
     if (register === undefined) return yield* unavailable;
     return `${register.prefix}-${register.next}`;
   });
@@ -832,8 +843,8 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Where a teammate's assignment wakes a lead: their direct chat with it, while its owner lets
-   * them message it and they have turns left today, as `ChatWake` admits their messages. Asked
+   * Where a teammate's assignment wakes a lead: their direct chat with it, while they may message
+   * it (`Reach`) and they have turns left today, as `ChatWake` admits their messages. Asked
    * from their own app, a refusal fails the write, so nothing is given away that won't be done.
    */
   const teammateWake = Effect.fn("KinRecords.teammateWake")(function* (
@@ -845,9 +856,11 @@ const make = Effect.gen(function* () {
   ) {
     const own = writer.actor._tag === "person" && writer.actor.personId === personId;
     const refuse = (error: KinChatError) => (own ? Effect.fail(error) : Effect.void);
-    // A co-owner messages every lead and has no daily cap, as the owner does.
+    // A co-owner has no daily cap, as the owner does.
     const level = yield* ownerLevel(orgId, personId).pipe(provideSql);
-    if (!level && !(yield* LeadAccess.allowed({ orgId, agentId, personId }).pipe(provideSql)))
+    if (
+      !(yield* Reach.reaches(orgId, Reach.person(personId), Reach.agent(agentId)).pipe(provideSql))
+    )
       return yield* refuse(
         new KinChatError({
           reason: "not_found",
@@ -955,14 +968,22 @@ const make = Effect.gen(function* () {
             }),
       })
       .pipe(
-        // Given out after an outside read: the receiving lead's turn starts outside-read too.
+        // Given out after an outside read, or by a coding agent: the receiving turn starts marked.
         Effect.tap(({ event }) =>
-          writer.wakeupId === undefined
-            ? Effect.void
-            : outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
-                Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
+          writer.codingAgentKey !== undefined
+            ? sql<{ label: string }>`SELECT label FROM kin_tasks_keys
+                WHERE org_id = ${orgId} AND session_id = ${writer.codingAgentKey}`.pipe(
+                Effect.flatMap(([key]) =>
+                  stampEvent(orgId, event.eventId, codingAgentSource(key?.label ?? "Coding agent")),
+                ),
                 Effect.provideService(SqlClient.SqlClient, sql),
-              ),
+              )
+            : writer.wakeupId === undefined
+              ? Effect.void
+              : outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
+                  Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                ),
         ),
         Effect.as(true),
         Effect.catchTags({
@@ -1180,14 +1201,17 @@ const make = Effect.gen(function* () {
     seenBy: KinPersonId | undefined,
   ) {
     if (list === "work" || list === "docs" || list === "milestones" || !isBuiltIn(list)) return;
+    // `+key` keeps SQLite off the key index, which walks every key in the company for each name;
+    // it reads the title index instead.
     const [row] = yield* sql<{ key: string; sensitive: number }>`SELECT r.key,
         ${sensitiveNow(sql)} AS sensitive FROM kin_records r
-      WHERE r.org_id = ${orgId} AND r.register_id = ${list} AND r.state NOT IN ${sql.in(CLOSED)}
+      WHERE r.org_id = ${orgId} AND r.register_id = ${list}
+        AND ${list === "contacts" ? sql`r.party_id IS ${partyId}` : sql`1 = 1`}
+        AND r.state NOT IN ${sql.in(CLOSED)}
         AND lower(r.title) = lower(${title}) AND r.record_id IS NOT ${except}
-        AND (${list} != 'contacts' OR r.party_id IS ${partyId})
         AND (${list} != 'clients' OR ${clientFamily(sql, sql`r.category`)} = ${clientFamily(sql, sql`${category ?? "client"}`)})
         AND ${seenBy === undefined ? sql`1 = 1` : crmSees(sql, seenBy)}
-      ORDER BY r.key LIMIT 1`;
+      ORDER BY +r.key LIMIT 1`;
     if (row !== undefined) {
       const error = {
         reason: "conflict" as const,
@@ -1306,8 +1330,9 @@ const make = Effect.gen(function* () {
     if (list === "deals" && writer.deal !== true) return yield* dealsOnly;
     const contact = list === "contacts" ? contactFields({}, input.fields ?? {}) : input.fields;
     if (isChatError(contact)) return yield* contact;
+    const tagged = yield* cleanTags(orgId, list, contact).pipe(provideSql);
     const fields = Object.fromEntries(
-      Object.entries(contact ?? {}).filter(
+      Object.entries(tagged ?? {}).filter(
         (entry): entry is [string, FieldValue] => entry[1] !== null,
       ),
     );
@@ -1346,8 +1371,9 @@ const make = Effect.gen(function* () {
     const key = yield* ensureRegister(orgId, def, now);
     const kept = options.kept ?? (yield* startsKept(orgId, writer, list, input));
     // Nobody issued, sent or was paid for what nobody kept: it waits as a draft on its own day.
+    // Only Issue makes an invoice owed, with its number; an agent sets none, so it starts a draft.
     const state =
-      !kept && ISSUED_LISTS.has(list)
+      (!kept && ISSUED_LISTS.has(list)) || (writer.actor._tag === "agent" && list === "invoices")
         ? "open"
         : (input.state ??
           startState(def, {
@@ -1561,7 +1587,14 @@ const make = Effect.gen(function* () {
             ? contactFields(parseFields(row.fieldsJson), asked.fields)
             : undefined;
         if (isChatError(contact)) return yield* contact;
-        const patch = contact === undefined ? asked : { ...asked, fields: contact };
+        const given = contact === undefined ? asked : { ...asked, fields: contact };
+        const patch =
+          given.fields === undefined
+            ? given
+            : {
+                ...given,
+                fields: yield* cleanTags(orgId, row.registerId, given.fields).pipe(provideSql),
+              };
         if (writer.codingAgentKey !== undefined && !heldBy(row, writer))
           return yield* notFound(key);
         if (writer.teammate === true && writer.actor._tag === "person")
@@ -1776,7 +1809,17 @@ const make = Effect.gen(function* () {
                 ? (owing ?? row.state)
                 : row.state
             : undefined;
-        const state = patch.state ?? settled ?? row.state;
+        const wanted = patch.state ?? settled ?? row.state;
+        // An agent never issues or settles an invoice by its state: Issue gives it its number.
+        const unissued =
+          writer.actor._tag === "agent" &&
+          list === "invoices" &&
+          !isSuggestion(row) &&
+          (wanted === "waiting" || wanted === "done") &&
+          wanted !== row.state &&
+          (yield* sql`SELECT 1 FROM kin_issued_numbers
+            WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`).length === 0;
+        const state = unissued ? row.state : wanted;
         // Only who may keep one keeps a suggestion, and only an owner-level person takes it back;
         // anyone else's `confirmed` changes nothing, so an agent's slip ack stays only that.
         const keeping =
@@ -2825,7 +2868,21 @@ const make = Effect.gen(function* () {
           }),
       );
     }),
-    announce: Effect.fn("KinRecords.announce")(function* (orgId) {
+    // Nested in the caller's transaction when there is one, so every tick waits for the outermost
+    // commit (screens read on readers) and a rollback tells no one.
+    announce: Effect.fn("KinRecords.announce")(function* (orgId, recordIds) {
+      const moved =
+        recordIds === undefined
+          ? undefined
+          : recordIds.length === 0
+            ? []
+            : yield* failed(
+                sql<{ recordId: string; key: string; registerId: string }>`SELECT
+                    record_id AS "recordId", key, register_id AS "registerId" FROM kin_records
+                  WHERE org_id = ${orgId} AND record_id IN ${sql.in([...new Set(recordIds)])}
+                  ORDER BY key`,
+              );
+      if (moved?.length === 0) return;
       // A number no change will take, past every one a client heard: an undo's entries took their
       // changes with them, and clients read again only past what they already hold.
       const [taken] = yield* failed(
@@ -2833,6 +2890,30 @@ const make = Effect.gen(function* () {
           WHERE name = 'kin_record_changes' RETURNING seq`,
       );
       const seq = taken?.seq ?? (yield* failed(latestSeq(orgId).pipe(provideSql)));
+      if (moved !== undefined) {
+        // Only who sees these entries hears of them, each at their own next number.
+        const pairs = yield* failed(
+          teamPairs(
+            orgId,
+            moved.map((one) => one.recordId),
+          ).pipe(provideSql),
+        );
+        const numbers = yield* failed(
+          bumpTeamSeqs(orgId, [...new Set(pairs.map((pair) => pair.personId))]).pipe(provideSql),
+        );
+        for (const one of moved) {
+          const team = new Map<string, number>();
+          for (const pair of pairs) {
+            const number = numbers.get(pair.personId);
+            if (pair.recordId === one.recordId && number !== undefined)
+              team.set(pair.personId, number);
+          }
+          yield* sql.afterCommit(
+            PubSub.publish(ticks, { orgId, seq, key: one.key, registerId: one.registerId, team }),
+          );
+        }
+        return;
+      }
       // Anyone's view may have moved, so every teammate's own number moves too: one who resumes
       // later is behind, not told nothing changed.
       const everyone = yield* failed(
@@ -2845,8 +2926,8 @@ const make = Effect.gen(function* () {
           everyone.map((one) => one.personId),
         ).pipe(provideSql),
       );
-      yield* PubSub.publish(ticks, { orgId, seq, team });
-    }),
+      yield* sql.afterCommit(PubSub.publish(ticks, { orgId, seq, team }));
+    }, transaction),
     peopleMoved: Effect.fn("KinRecords.peopleMoved")(function* (orgId, personIds) {
       if (personIds.length === 0) return;
       const team = yield* failed(bumpTeamSeqs(orgId, personIds).pipe(provideSql));

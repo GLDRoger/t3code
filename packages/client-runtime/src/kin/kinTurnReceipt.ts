@@ -14,6 +14,7 @@ const NAMED = 2;
  * older host, which has no receipt.
  */
 export const KIN_TURN_RECEIPT_LABEL = "What this reply changed";
+export const kinTurnReceiptOpen = (line: string) => `${line}. Show the changes`;
 
 export function kinTurnReceiptLine(turn: KinTurnChanges | undefined): string | null {
   if (turn === undefined || turn.count === 0) return null;
@@ -29,6 +30,8 @@ export interface KinTurnReceiptRow {
   readonly id: string;
   readonly key: string;
   readonly kind: KinTurnChange["kind"];
+  /** A contact's client, whose page it opens on. */
+  readonly party?: string;
   readonly title: string;
   readonly what: string;
   /** `undo` offers Undo (`kin.lead.undoChange` with `change`); `undone` says it was put back. */
@@ -47,6 +50,7 @@ export function kinTurnReceiptRows(turn: KinTurnChanges | undefined): {
       id: `${item.change.agentId}:${item.change.seq}`,
       key: item.key,
       kind: item.kind,
+      ...(item.party === undefined ? {} : { party: item.party }),
       title: item.title,
       what: item.what,
       undo: item.undone ? "undone" : item.undoable ? "undo" : "none",
@@ -57,13 +61,15 @@ export function kinTurnReceiptRows(turn: KinTurnChanges | undefined): {
 }
 
 /**
- * Where a row opens: the kind the change carries, else the reply's own link to that key; an entry
- * neither names (an older host) opens in the task sheet, as attention rows do.
+ * Where a row opens: a contact on its client's page, else the kind the change carries, else the
+ * reply's own link to that key; an entry neither names (an older host) opens in the task sheet, as
+ * attention rows do.
  */
 export function kinTurnReceiptTarget(
-  row: Pick<KinTurnChange, "key" | "kind">,
+  row: Pick<KinTurnChange, "key" | "kind" | "party">,
   links: ReadonlyArray<KinMessageLink> | undefined,
 ): Extract<KinMessageLinkTarget, { readonly _tag: "record" }> {
+  if (row.party !== undefined) return { _tag: "record", key: row.party, kind: "client" };
   if (row.kind !== undefined) return { _tag: "record", key: row.key, kind: row.kind };
   for (const link of links ?? [])
     if (link.to._tag === "record" && link.to.key === row.key) return link.to;

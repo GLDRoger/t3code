@@ -27,11 +27,14 @@ import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { speakerOrder } from "../floor/KinFloor.ts";
 import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
+import { KinTeam } from "../team/KinTeam.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { RETIRED_NOTICE_PREFIX, retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
 import { teammatesLimited } from "./KinBudget.ts";
 import * as LeadAccess from "./LeadAccess.ts";
+import * as Reach from "./Reach.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
+import { HOUR_MS } from "../durations.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
@@ -70,6 +73,8 @@ export const wakeEvent = (
 // Matches the resume expiry: older unanswered messages are not worth a wake-up after downtime.
 const CATCH_UP_WINDOW = { hours: 24 } as const;
 const CATCH_UP_LIMIT_PER_ORG = 200;
+/** Kin's line once a teammate's day of turns is used up, and how often it is said again. */
+const LIMIT_ID = "kin-dm-limit-";
 
 /**
  * Turns committed human chat posts and widget taps into `chat.message` and `widget.action`
@@ -83,6 +88,7 @@ const make = Effect.gen(function* () {
   const repo = yield* KinChatRepository;
   const queue = yield* KinEventQueue;
   const presence = yield* Effect.serviceOption(KinPresence);
+  const team = yield* Effect.serviceOption(KinTeam);
   const dailyTurns = yield* LeadAccess.dailyTurns;
   // The working line shows the moment a message is accepted, before any wake-up claims it.
   const showQueued = Effect.fn("KinChatWake.showQueued")(
@@ -97,9 +103,9 @@ const make = Effect.gen(function* () {
   );
 
   /**
-   * A teammate wakes a lead (in a direct chat, only while its owner allows them) for at most
-   * `dailyTurns` turns in any 24 hours across every chat: the owner pays for each. Past that the
-   * chat says so once. Run in the transaction that enqueues, so the count and the turn are one step.
+   * A teammate wakes a lead (never across a restricted pair, `Reach`) for at most `dailyTurns`
+   * turns in any 24 hours across every chat: the owner pays for each. Past that the chat says so
+   * once. Run in the transaction that enqueues, so the count and the turn are one step.
    */
   const admitted = Effect.fn("KinChatWake.admitted")(function* (
     message: KinMessage,
@@ -112,26 +118,43 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${message.orgId} AND dedupe_key = ${dedupeKey} LIMIT 1`;
     if (known.length > 0) return true;
     const access = Effect.provideService(SqlClient.SqlClient, sql);
-    if (target.direct && !(yield* LeadAccess.allowed(pair).pipe(access))) return false;
+    if (
+      !(yield* Reach.reaches(
+        message.orgId,
+        Reach.person(personId),
+        Reach.agent(target.agentId),
+      ).pipe(access))
+    )
+      return false;
     const used = yield* LeadAccess.recentTurns({
       ...pair,
       now: yield* Clock.currentTimeMillis,
     }).pipe(access);
     if (used.turns < dailyTurns || !(yield* teammatesLimited(message.orgId).pipe(access)))
       return true;
-    // One line per full day of turns: it is said again only once the oldest of them has aged out.
-    const messageId = KinMessageId.make(
-      `kin-dm-limit-${NodeCrypto.createHash("sha256")
-        .update(`${personId}:${message.chatId}:${used.oldestAt}`)
-        .digest("hex")
-        .slice(0, 32)}`,
-    );
-    if (Option.isSome(yield* repo.getMessage({ orgId: message.orgId, messageId }))) return false;
     // Everyone in a group reads the line, so there it names who it is about.
     const [person] = target.direct
       ? []
       : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
           WHERE org_id = ${message.orgId} AND person_id = ${personId}`;
+    const body =
+      person === undefined
+        ? `${target.name} has answered as much as it can for you today and didn't see your last message. Send it again later.`
+        : `${target.name} has answered as much as it can for ${person.name} today and didn't see their last message. ${person.name} can send it again later.`;
+    // Said again at most once an hour while the day's turns stay used up: never silence.
+    const now = yield* Clock.currentTimeMillis;
+    const [said] = yield* sql<{ at: string }>`SELECT created_at AS at FROM kin_messages
+      WHERE org_id = ${message.orgId} AND chat_id = ${message.chatId} AND author_kind = 'system'
+        AND substr(message_id, 1, ${LIMIT_ID.length}) = ${LIMIT_ID} AND body = ${body}
+      ORDER BY seq DESC LIMIT 1`;
+    if (said !== undefined && now - Date.parse(said.at) < HOUR_MS) return false;
+    const messageId = KinMessageId.make(
+      `${LIMIT_ID}${NodeCrypto.createHash("sha256")
+        .update(`${personId}:${message.chatId}:${used.oldestAt}:${now}`)
+        .digest("hex")
+        .slice(0, 32)}`,
+    );
+    if (Option.isSome(yield* repo.getMessage({ orgId: message.orgId, messageId }))) return false;
     const notice = yield* repo.insertMessage({
       orgId: message.orgId,
       chatId: message.chatId,
@@ -140,10 +163,7 @@ const make = Effect.gen(function* () {
       messageId,
       author: { _tag: "system" },
       kind: "system",
-      body:
-        person === undefined
-          ? `${target.name} has answered as much as it can for you today and didn't see your last message. Send it again later.`
-          : `${target.name} has answered as much as it can for ${person.name} today and didn't see their last message. ${person.name} can send it again later.`,
+      body,
       intent: null,
       mentions: [],
       replyTo: null,
@@ -221,6 +241,12 @@ const make = Effect.gen(function* () {
       if (message.kind !== "text" && message.kind !== "widget_action") return;
       // Kin's copy of a person's words (`kin_hand_off`) is woken once by the hand-off itself.
       if (message.origin !== undefined) return;
+      // Agents it names in the Team room talk it over: the discussion's turns answer it.
+      if (
+        Option.isSome(team) &&
+        (yield* team.value.personAsked(message).pipe(Effect.orElseSucceed(() => false)))
+      )
+        return;
       const leads = yield* sql<{
         agentId: string;
         memberId: string;

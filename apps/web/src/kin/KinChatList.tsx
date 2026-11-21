@@ -1,3 +1,4 @@
+import { KIN_HOST_OFFLINE } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_CHAT_COPY } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_MONEY } from "@t3tools/client-runtime/kin/kinMoney";
@@ -9,7 +10,7 @@ import {
   kinRoomLine,
   KIN_CHATS_EMPTY,
 } from "@t3tools/client-runtime/kin/kinChatListRows";
-import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import { KIN_WAITING_TITLE, selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   formatKinTime,
   kinDirectory,
@@ -46,10 +47,10 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/
 import { useSidebar } from "../components/ui/sidebar";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
+import { ApproveOnPhone } from "./ApproveOnPhone";
 import { KinRestoreButton, useKinRestore } from "./KinAgentRetire";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
-import { ApproveOnPhone } from "./KinCards";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import type { KinLeadFormTarget } from "./kinLeadForm";
 import { useNowMinuteMs } from "./useKinClock";
@@ -58,14 +59,13 @@ import { kinWaitingAskView } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { KinStandInLine } from "./KinStandInLine";
 import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinInbox } from "./useKinHost";
-import { useKinOpenWaiting } from "./useKinOpen";
 
 const STATE_COPY: Record<
   Exclude<KinInboxScreenState["_tag"], "ready" | "loading" | "error">,
   { readonly title: string; readonly detail: string }
 > = {
   offline: {
-    title: "Kin is offline",
+    title: KIN_HOST_OFFLINE,
     detail: "Your chats come back when the connection does.",
   },
   noHost: {
@@ -87,14 +87,6 @@ export function KinChatList() {
   const params = useParams({ strict: false });
   const openChatId = "chatId" in params ? (params.chatId ?? null) : null;
   const { host, state, retry } = useKinInbox();
-  // Not `kinNewLeadTarget`: offline, the open list's last waiting rows still stand.
-  const org =
-    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs.me[0] : undefined;
-  const openWaiting = useKinOpenWaiting(
-    host._tag === "host" && org !== undefined
-      ? { environmentId: host.environmentId, orgId: org.orgId }
-      : null,
-  );
   const nowMs = useNowMinuteMs();
   const { isMobile, setOpenMobile } = useSidebar();
   if (state._tag === "loading") {
@@ -137,12 +129,7 @@ export function KinChatList() {
   }
   const directory = kinDirectory(host);
   const inbox = state.inbox.value;
-  const view = selectKinInboxView(
-    inbox,
-    openWaiting === null || org === undefined
-      ? undefined
-      : [...inbox.waiting.filter((item) => item.orgId !== org.orgId), ...openWaiting],
-  );
+  const view = selectKinInboxView(inbox);
   const rows = kinChatListRows(view, directory);
   const liveRows = rows.filter((row) => !row.retired);
   const retiredRows = rows.filter((row) => row.retired);
@@ -171,7 +158,7 @@ export function KinChatList() {
         mine === null ? (
           <Empty size="compact">
             <EmptyHeader>
-              <EmptyTitle>No chats yet</EmptyTitle>
+              <EmptyTitle>{KIN_CHATS_EMPTY.title}</EmptyTitle>
               <EmptyDescription>{KIN_CHATS_EMPTY.none}</EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -474,7 +461,7 @@ function KinWaiting(props: {
       >
         {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
         <span className="flex min-w-0 flex-1 flex-col items-start text-start">
-          <span className="font-medium">Waiting on you</span>
+          <span className="font-medium">{KIN_WAITING_TITLE}</span>
           <span className="line-clamp-2 text-xs font-normal text-muted-foreground">
             {banner.summary}
           </span>

@@ -1,7 +1,7 @@
 import type { KinViewerScope } from "@t3tools/client-runtime/kin/kinViewerScope";
 import { kinNothingShown } from "@t3tools/client-runtime/kin/kinViewerScope";
 import { useKinViewerScope } from "./useKinOwnerLevel";
-import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_DOCS,
@@ -544,7 +544,7 @@ export function KinDocsList(
             {footer === null ? null : (
               <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6 py-3">
                 <p className="text-xs text-muted-foreground" role="status">
-                  {state.moreFailed ? "Couldn't load more." : footer}
+                  {state.moreFailed ? KIN_MORE_FAILED : footer}
                 </p>
                 <Button
                   size="xs"

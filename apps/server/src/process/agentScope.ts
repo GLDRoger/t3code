@@ -433,27 +433,6 @@ export const make = Effect.gen(function* () {
     return killed._tag === "Some" && killed.value.code === 0;
   });
 
-  const reap: AgentScopeShape["reap"] = Effect.fn("AgentScope.reap")(function* (threadId) {
-    const tracked = scopeByThread.get(threadId);
-    if (tracked === undefined || tracked.shared) return false;
-    const scope = yield* systemd;
-    if (scope === undefined) return false;
-    yield* kill(threadId);
-    for (let attempt = 0; attempt < STOPPING_POLL_ATTEMPTS; attempt++) {
-      const state = yield* readScope(scope.systemctl, tracked.unit);
-      if (state === undefined) return false;
-      if (
-        state.populated === false ||
-        state.loadState !== "loaded" ||
-        state.activeState === "inactive" ||
-        state.activeState === "failed"
-      )
-        return true;
-      yield* Effect.sleep(STOPPING_POLL_INTERVAL);
-    }
-    return false;
-  });
-
   const clear: AgentScopeShape["clear"] = Effect.fn("agentScope.clear")(function* (threadId) {
     if (!scopeByThread.has(threadId)) return;
     const scope = yield* systemd;
@@ -480,7 +459,6 @@ export const make = Effect.gen(function* () {
       const accepted = yield* Effect.filter(asked, (property) =>
         accepts(scope.systemdRun, property),
       );
-      const refusedProperties = asked.filter((property) => !accepted.includes(property));
       const unit = `t3code-${name}-${NodeCrypto.randomUUID().slice(0, 8)}.scope`;
       // A continuing shared scope cannot attribute a tool's OOM to one thread.
       // Clear the launch thread's previous scope instead.
@@ -504,16 +482,11 @@ export const make = Effect.gen(function* () {
           ...accepted.map((property) => `--property=${property}`),
         ],
       };
-      return {
-        ...agentScopeCommand({ command: resolved, args, scope: systemdScope }),
-        unit,
-        ...(refusedProperties.length === 0 ? {} : { refusedProperties }),
-      };
+      return { ...agentScopeCommand({ command: resolved, args, scope: systemdScope }), unit };
     }),
     oomKilled,
     stop,
     kill,
-    reap,
     clear,
   } satisfies AgentScopeShape;
 });

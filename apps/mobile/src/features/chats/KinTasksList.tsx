@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
 import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_SEARCH } from "@t3tools/client-runtime/kin/kinDocs";
 import {
   KIN_TASK_GROUP_BY,
@@ -14,6 +14,7 @@ import {
   kinTaskStep,
   kinTaskStepStatusShown,
   kinTasksByMove,
+  kinTasksDealFacts,
   kinTasksGroupedBy,
   type KinTasksItem,
 } from "@t3tools/client-runtime/kin/kinTasksList";
@@ -78,16 +79,22 @@ import { connectionAtomRuntime } from "../../connection/runtime";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { KinAttentionItem } from "./KinAttention";
 import { KinSearchHits } from "./KinDocsList";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { kinTabBar, useKinTab, kinTabFoot } from "./components/KinTab";
-import { KinTaskRow, KinTasksAllClear, KinWorkStaleNotice } from "./components/KinWorkPieces";
+import {
+  KinTaskRow,
+  KinTasksAllClear,
+  KinWorkStaleNotice,
+  kinCardCorners,
+} from "./components/KinWorkPieces";
 import { useKinViewerScope } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinOpenHit, useKinWorkLink } from "./state/kinWorkLink";
 import { useKinSearch } from "./state/useKinDocs";
 import { useKinAskAgent } from "./state/useKinMoney";
-import { useKinOpen } from "./state/useKinOpen";
+import { useKinAttention, useKinAttentionHandle } from "./state/useKinAttention";
 import { useKinTaskSteps } from "./state/useKinTaskSteps";
 import {
   kinWorkLiveAtom,
@@ -101,7 +108,7 @@ import {
 /** Task lists kept while their screen is away, so coming back reads nothing the stream brought. */
 const kinTaskLists = createKinListKeeper<KinWorkList, KinWorkListState>(Date.now);
 
-/** What the Tasks search finds besides tasks, which the list itself already narrows to. */
+/** What the Tasks search finds besides tasks, which the list itself already narrows to; deals are asked beside them. */
 const ELSEWHERE = ["clients", "contacts", "projects", "docs"] as const;
 
 /** Tasks, a screenful at a time: grouped by whose move, by one of its fields, or one project's. */
@@ -204,10 +211,12 @@ export function KinTasksList(
   );
   const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
   const { within } = props;
-  const open = useKinOpen({ environmentId, orgId }, within === undefined);
+  const pulse = useKinAttention({ environmentId, orgId }, within === undefined);
+  const facts = kinTasksDealFacts({ ownerLevel, names, now, pulse });
+  const answers = useKinAttentionHandle({ environmentId, orgId });
   const counts = list.counts();
-  // The same number the dock's Tasks badge shows (`useKinTasksBadge`).
-  const needsYou = kinNeedsYouCount({ open: open.on ? open.read : null, counts });
+  // The same number the dock's Tasks badge shows (`useKinTasksNeedsYou`).
+  const needsYou = kinNeedsYouCount({ counts, dealFacts: facts.length });
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";
   const items: ReadonlyArray<KinTasksItem<KinRecord>> =
@@ -219,6 +228,7 @@ export function KinTasksList(
           needsYou,
           ownerLevel,
           names,
+          facts,
         })
       : within === undefined && groupBy !== "me" && !searching
         ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
@@ -255,7 +265,7 @@ export function KinTasksList(
     : null;
   // The whole company's tasks also find clients, projects and docs, and say what needs you.
   const everywhere = within === undefined;
-  const { state: found, search } = useKinSearch(props, ELSEWHERE);
+  const { state: found, search } = useKinSearch(props, ELSEWHERE, true);
   const steps = useKinTaskSteps({ environmentId, orgId });
   const base = { environmentId: String(environmentId), orgId: String(orgId) };
   const filterMenu = kinWorkFilterMenu({
@@ -318,7 +328,7 @@ export function KinTasksList(
           }}
           data={items}
           keyExtractor={(item) => item.key}
-          extraData={[listState, changed, found, steps.status, needsYou]}
+          extraData={[listState, changed, found, steps.status, needsYou, answers.busy]}
           estimatedItemSize={76}
           recycleItems
           onEndReached={() => void list.loadMore()}
@@ -390,7 +400,7 @@ export function KinTasksList(
                     cause={listState.failed}
                     onRetry={list.refresh}
                   />
-                ) : (
+                ) : searching && (found.hits?.length ?? 0) > 0 ? null : (
                   <EmptyState
                     variant="plain"
                     title={nothing.title}
@@ -408,7 +418,7 @@ export function KinTasksList(
               {footer === null ? null : (
                 <View className="items-start gap-2 px-5 py-4">
                   <Text textRole="footnote" className="text-foreground-muted">
-                    {listState.moreFailed ? "Couldn't load more." : footer}
+                    {listState.moreFailed ? KIN_MORE_FAILED : footer}
                   </Text>
                   <Button
                     tone="secondary"
@@ -466,6 +476,32 @@ export function KinTasksList(
                   <Text textRole="footnote" className="px-5 pt-2.5 text-foreground-muted">
                     {item.text}
                   </Text>
+                );
+              case "fact":
+                return (
+                  <View
+                    className="mx-4 overflow-hidden border-continuous bg-grouped-card"
+                    style={kinCardCorners(item.first, item.last)}
+                  >
+                    {item.first ? null : <View className="ml-12 h-px bg-border-subtle" />}
+                    <KinAttentionItem
+                      environmentId={environmentId}
+                      orgId={orgId}
+                      row={item.row}
+                      names={names}
+                      handler={answers}
+                      onOpen={(to) =>
+                        to.type === "record"
+                          ? openRecord("KinWorkItem", { ...base, task: to.key })
+                          : undefined
+                      }
+                    />
+                    {answers.problem === null || !item.first ? null : (
+                      <Text className="px-4 py-2 text-sm text-danger-foreground">
+                        {answers.problem}
+                      </Text>
+                    )}
+                  </View>
                 );
               case "task": {
                 const { record } = item;

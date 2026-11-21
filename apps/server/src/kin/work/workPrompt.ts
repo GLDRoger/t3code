@@ -4,9 +4,11 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { codingAgentSource, codingAgentTextShown } from "../lead/OutsideContent.ts";
 import { SILENT_REPLY } from "../reply/classify.ts";
-import { dayIn, timeIn } from "./money.ts";
+import { dayIn, dayWords, timeIn } from "./money.ts";
 import { ownerZone } from "./recordRows.ts";
+import { WEEK_MS } from "../durations.ts";
 
 /**
  * The Work section of a lead's prompt, built by SQL at turn time. Status has one home: counts of
@@ -20,7 +22,6 @@ const decodeFields = Schema.decodeUnknownOption(
     Schema.Array(Schema.Struct({ field: Schema.String, to: Schema.NullOr(Schema.String) })),
   ),
 );
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const CHANGED_CAP = 15;
 
 export type WorkSection = {
@@ -35,6 +36,7 @@ export type WorkSection = {
     readonly title: string;
     readonly state: string;
     readonly due: string | null;
+    readonly dueDay?: string;
     readonly changes: ReadonlyArray<string>;
   }>;
   readonly moreChanged: number;
@@ -73,6 +75,8 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
   readonly agentId: KinAgentId;
   readonly chatId: KinChatId;
   readonly now: number;
+  /** The turn it is shown to: a change a coding agent made marks it before the section is read. */
+  readonly wakeupId?: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, agentId, chatId, now } = input;
@@ -98,8 +102,12 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
     kind: string;
     actorKind: string;
     fieldsJson: string;
+    codingAgent: string | null;
   }>`SELECT c.seq, r.key, r.title, r.state, r.due_at AS "dueAt", r.due_all_day AS "dueAllDay",
-      c.kind, c.actor_kind AS "actorKind", c.fields_json AS "fieldsJson"
+      c.kind, c.actor_kind AS "actorKind", c.fields_json AS "fieldsJson",
+      CASE WHEN c.coding_agent_key IS NULL THEN NULL ELSE COALESCE((SELECT k.label
+        FROM kin_tasks_keys k WHERE k.org_id = c.org_id AND k.session_id = c.coding_agent_key),
+        'Coding agent') END AS "codingAgent"
     FROM kin_record_changes c JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
     WHERE c.org_id = ${orgId} AND c.seq > ${since} AND r.register_id = 'work'
       AND r.owner_kind = 'agent' AND r.owner_id = ${agentId}
@@ -115,6 +123,9 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
       VALUES (${orgId}, ${agentId}, ${chatId}, ${since}, ${latest?.seq ?? 0}, ${chat.lastSeq})
       ON CONFLICT (org_id, agent_id, chat_id) DO UPDATE SET pending_seq = excluded.pending_seq,
         pending_msg_seq = excluded.pending_msg_seq`;
+  const keyed = changes.find((change) => change.codingAgent !== null)?.codingAgent;
+  if (keyed != null && input.wakeupId !== undefined)
+    yield* codingAgentTextShown({ orgId, wakeupId: input.wakeupId }, codingAgentSource(keyed));
   const byKey = new Map<string, { row: (typeof changes)[number]; lines: Array<string> }>();
   for (const change of changes) {
     const entry = byKey.get(change.key) ?? { row: change, lines: [] };
@@ -123,7 +134,9 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
       change.actorKind === "system"
         ? "Kin"
         : change.actorKind === "person"
-          ? "a person"
+          ? change.codingAgent === null
+            ? "a person"
+            : "a person, via their coding agent"
           : "another agent";
     const fields = Option.getOrElse(decodeFields(change.fieldsJson), () => []);
     entry.lines.push(
@@ -158,6 +171,7 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
           : row.dueAllDay === 1
             ? dayIn(row.dueAt, zone)
             : timeIn(row.dueAt, zone),
+      ...(row.dueAt === null ? {} : { dueDay: dayWords(row.dueAt, zone) }),
       changes: lines.slice(-4),
     })),
     moreChanged: Math.max(0, all.length - CHANGED_CAP),

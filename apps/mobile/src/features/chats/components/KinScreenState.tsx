@@ -1,5 +1,5 @@
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_HOST_OFFLINE, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_ONLY } from "../../../lib/kinOnly";
 import { KIN_ONLY_NO_HOST, KIN_ONLY_UNAUTHORIZED } from "../kinOnlyCopy";
 import { useAtomValue } from "@effect/atom-react";
@@ -188,7 +188,7 @@ export function KinOfflineState(props: {
   return (
     <EmptyState
       variant="plain"
-      title={status === "failed" ? "Couldn't reconnect to Kin" : "Kin is offline"}
+      title={status === "failed" ? "Couldn't reconnect to Kin" : KIN_HOST_OFFLINE}
       detail={
         teammate
           ? `${props.resource} when you're back online.`

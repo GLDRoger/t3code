@@ -282,8 +282,53 @@ describe("KinLeadProvision", () => {
           "not_found",
         );
 
+        const at0 = "1970-01-01T00:00:00.000Z";
+        // The owner wrote to it and it hadn't answered yet: retiring tells him so, once.
+        const chats = yield* ChatService.KinChatService;
+        const me = { ...identity.owner, personId: ada.ownerPersonId };
+        const asked = yield* chats.send(me, {
+          chatId: growth.ownerChatId,
+          body: "Draft the launch post?",
+          clientMessageId: "before-retire",
+        });
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, dedupe_key, received_at, queued_at)
+          VALUES ('unanswered', ${growth.orgId}, ${growth.agentId}, 'chat.message', 'P0',
+            ${JSON.stringify({ chatId: growth.ownerChatId, messageId: asked.messageId })},
+            'unanswered', 0, 0)`;
         const retired = yield* Provision.retire({ ...by, agentId: growth.agentId });
         assert.strictEqual(retired._tag, "retired");
+        assert.deepStrictEqual(
+          yield* sql`SELECT body FROM kin_messages WHERE chat_id = ${growth.ownerChatId}
+            AND author_kind = 'system'`,
+          [{ body: "Growth has been retired, so it won't see this or reply." }],
+        );
+        // Writing to it now is refused when sent, saying why, rather than met with silence.
+        assert.deepInclude(
+          yield* chats
+            .send(me, {
+              chatId: growth.ownerChatId,
+              body: "Still there?",
+              clientMessageId: "after-retire",
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed", message: "Growth has been retired, so this wasn't sent." },
+        );
+        // So is writing to a live agent no turn answers.
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+          VALUES ('helper', ${growth.orgId}, 'Helper', 'specialist', ${ada.ownerPersonId}, ${at0})`;
+        const helper = yield* chats.createDirect(me, {
+          orgId: growth.orgId,
+          agentId: KinAgentId.make("helper"),
+        });
+        assert.deepInclude(
+          yield* chats
+            .send(me, { chatId: helper.chatId, body: "Hello?", clientMessageId: "to-helper" })
+            .pipe(Effect.flip),
+          {
+            reason: "not_allowed",
+            message: "Helper doesn't answer messages here, so this wasn't sent.",
+          },
+        );
         const at = "1970-01-01T00:01:00.000Z";
         assert.deepStrictEqual(retired.profile.retired, { at, byPersonId: ada.ownerPersonId });
         assert.deepStrictEqual(retired.lead, {
@@ -930,7 +975,7 @@ describe("KinLeadProvision", () => {
     ),
   );
   it.effect(
-    "lets only the owner choose who may message a lead, in a chat that is that person's own",
+    "lets anyone message a lead unless the owner restricts them, in a chat that is that person's own",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -961,25 +1006,59 @@ describe("KinLeadProvision", () => {
               ),
             );
 
-        // Nobody but the owner, until the owner says so.
-        assert.deepStrictEqual(yield* Provision.access(on), { everyone: false, people: [] });
-        // The team agent is everyone's, and its list says so whoever has a row.
+        // Everyone of the company but its owner may message it, with no grant.
+        const sam = KinPersonId.make("sam");
+        const listed = Effect.map(Provision.access(on), (result) => ({
+          everyone: result.everyone,
+          people: result.people.map((row) => [row.personId, row.ownerLevel]),
+        }));
+        // The owner is listed as never restricted, so no phone offers to add him.
+        const open = [
+          [finance.ownerPersonId, true],
+          [priyaId, false],
+          [sam, false],
+        ];
+        assert.deepStrictEqual(yield* listed, { everyone: false, people: open });
+        // The team agent is everyone's, and its list says so.
         yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
           VALUES (${finance.orgId}, ${finance.agentId}, ${finance.ownerPersonId}, 0)`;
-        assert.deepStrictEqual(yield* Provision.access(on), { everyone: true, people: [] });
+        assert.deepStrictEqual(yield* listed, { everyone: true, people: open });
+        // With someone restricted from it, older phones get the list: who can, and who to add back.
+        yield* Provision.disallow({ ...on, personId: sam });
+        assert.deepStrictEqual(yield* listed, { everyone: false, people: open.slice(0, 2) });
+        yield* Provision.allow({ ...on, personId: sam });
         yield* sql`DELETE FROM kin_team_agents`;
-        assert.deepStrictEqual(yield* Provision.contacts(priya), []);
-        assert.include(yield* chats.createDirect(priya, finance).pipe(Effect.flip), {
+        // Every live agent she may message is hers to start, with no chat yet.
+        const startable = (personId: KinPersonId) =>
+          Effect.map(
+            Provision.messageable({ _tag: "person", orgId: finance.orgId, personId }),
+            (rows) => rows.map((row) => row.agentId),
+          );
+        assert.sameDeepMembers(
+          [...(yield* Provision.messageable(priya))],
+          [
+            { ...finance, name: "Finance" },
+            { ...tech, name: tech.name },
+          ].map(({ orgId, agentId, name }) => ({
+            orgId,
+            agentId,
+            name,
+            intro: "",
+            ownerName: "Owner",
+          })),
+        );
+        yield* Provision.disallow({ ...on, personId: sam });
+        assert.deepStrictEqual(yield* startable(sam), [tech.agentId]);
+        yield* Provision.allow({ ...on, personId: sam });
+        yield* sql`UPDATE kin_agents SET retired_at = '2026-11-10T00:00:00.000Z' WHERE agent_id = ${tech.agentId}`;
+        assert.deepStrictEqual(yield* startable(priyaId), [finance.agentId]);
+        assert.include(yield* chats.createDirect(priya, tech).pipe(Effect.flip), {
           reason: "not_allowed",
         });
-
-        assert.deepStrictEqual(
-          (yield* Provision.allow(her)).people.map(({ personId, displayName }) => ({
-            personId,
-            displayName,
-          })),
-          [{ personId: priyaId, displayName: "Priya" }],
-        );
+        yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = ${tech.agentId}`;
+        // Her chat with it is there once she starts it.
+        assert.deepStrictEqual(yield* Provision.contacts(priya), []);
+        yield* chats.createDirect(priya, finance);
         const [contact] = yield* Provision.contacts(priya);
         assert.isDefined(contact);
         // What a teammate is told about the lead: never its charter, domain, model or work.
@@ -1012,18 +1091,20 @@ describe("KinLeadProvision", () => {
           yield* KinLevels.effectiveLevel({ ...finance, chatId: contact.chatId }),
           "L1",
         );
-        // Allowing her twice, or her asking to start the chat, gives the same chat.
+        // Letting her when nothing restricts her, or her asking again, gives the same chat.
         const before = yield* counts;
         yield* Provision.allow(her);
         assert.strictEqual((yield* chats.createDirect(priya, finance)).chatId, contact.chatId);
         assert.deepStrictEqual(yield* counts, before);
-        // Access to one lead is access to that lead only.
-        assert.include(yield* chats.createDirect(priya, tech).pipe(Effect.flip), {
-          reason: "not_allowed",
-        });
+        // Any other lead is hers to message too.
+        yield* chats.createDirect(priya, tech);
 
         yield* Provision.update({ ...on, fields: { intro: " Handles invoices. " } });
-        assert.strictEqual((yield* Provision.contacts(priya))[0]?.intro, "Handles invoices.");
+        assert.strictEqual(
+          (yield* Provision.contacts(priya)).find((lead) => lead.agentId === finance.agentId)
+            ?.intro,
+          "Handles invoices.",
+        );
         assert.strictEqual(
           (yield* Provision.profiles((yield* KinIdentity).owner)).find(
             (lead) => lead.agentId === finance.agentId,
@@ -1033,7 +1114,6 @@ describe("KinLeadProvision", () => {
 
         // Only the owner, and only for a live lead of theirs and a person of the org.
         const teammate = { _tag: "person", personId: priyaId } as const;
-        const sam = KinPersonId.make("sam");
         assert.strictEqual(
           yield* refusal(Provision.access({ ...on, editor: teammate })),
           "not_owner",
@@ -1063,16 +1143,29 @@ describe("KinLeadProvision", () => {
           "not_found",
         );
 
-        // Taken away before she wrote anything: the chat leaves her list.
-        assert.deepStrictEqual(yield* Provision.disallow(her), { everyone: false, people: [] });
-        assert.deepStrictEqual(yield* Provision.contacts(priya), []);
+        // Restricted before she wrote anything: the chat leaves her list, both ways. Sam owns
+        // an agent now, so he is owner-level and listed as never restricted.
+        assert.deepStrictEqual(yield* listed, {
+          everyone: false,
+          people: [open[0], [priyaId, false], [sam, true]],
+        });
+        assert.deepStrictEqual(
+          (yield* Provision.disallow(her)).people.map((row) => row.personId),
+          [finance.ownerPersonId, sam],
+        );
+        assert.isTrue(
+          (yield* Provision.contacts(priya)).every((one) => one.agentId !== finance.agentId),
+        );
         assert.isNotNull((yield* member(contact.chatId))?.leftAt);
         assert.include(yield* chats.createDirect(priya, finance).pipe(Effect.flip), {
           reason: "not_allowed",
         });
-        // Allowed again: the same chat, hers to write in.
+        // Lifted: the same chat, hers to write in.
         yield* Provision.allow(her);
-        assert.strictEqual((yield* Provision.contacts(priya))[0]?.chatId, contact.chatId);
+        assert.strictEqual(
+          (yield* Provision.contacts(priya)).find((one) => one.agentId === finance.agentId)?.chatId,
+          contact.chatId,
+        );
         assert.include(yield* member(contact.chatId), { role: "member", leftAt: null });
 
         const say = (id: string) =>
@@ -1085,7 +1178,7 @@ describe("KinLeadProvision", () => {
         yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, dedupe_key, received_at, queued_at)
           VALUES ('waiting', ${finance.orgId}, ${finance.agentId}, 'chat.message', 'P1',
             ${JSON.stringify({ chatId: contact.chatId })}, 'waiting', 0, 0)`;
-        // Taken away after she wrote: what waited is dropped, and the chat is hers to read only.
+        // Restricted after she wrote: what waited is dropped, and the chat is hers to read only.
         yield* Provision.disallow(her);
         assert.deepStrictEqual(
           yield* sql`SELECT state FROM kin_events WHERE event_id = 'waiting'`,
@@ -1098,42 +1191,58 @@ describe("KinLeadProvision", () => {
             .messages,
           1,
         );
-        assert.deepStrictEqual(yield* Provision.contacts(priya), []);
+        assert.isTrue(
+          (yield* Provision.contacts(priya)).every((one) => one.agentId !== finance.agentId),
+        );
         yield* Provision.allow(her);
         assert.include(yield* member(contact.chatId), { role: "member", leftAt: null });
         yield* say("three");
 
-        // Her role or the team agent still lets her message it: only the row goes.
         const queue = (id: string) =>
           sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, dedupe_key, received_at, queued_at)
             VALUES (${id}, ${finance.orgId}, ${finance.agentId}, 'chat.message', 'P1',
               ${JSON.stringify({ chatId: contact.chatId })}, ${id}, 0, 0)`;
-        for (const [coOwner, covered] of [
-          [true, sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${priyaId}`],
+        // A co-owner is never restricted: refused, and nothing is dropped or closed.
+        yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${priyaId}`;
+        assert.deepStrictEqual(
+          (yield* Provision.access(on)).people.map((row) => [row.personId, row.ownerLevel]),
+          [open[0], [priyaId, true], [sam, true]],
+        );
+        yield* queue("co-owner-waits");
+        assert.strictEqual(yield* refusal(Provision.disallow(her)), "conflict");
+        assert.include(yield* member(contact.chatId), { role: "member", leftAt: null });
+        assert.deepStrictEqual(
+          yield* sql`SELECT state FROM kin_events WHERE event_id = 'co-owner-waits'`,
+          [{ state: "queued" }],
+        );
+        yield* say("as-co-owner");
+        // The team agent is restricted like any other: the restriction is the owner's word.
+        yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${priyaId}`;
+        yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+          VALUES (${finance.orgId}, ${finance.agentId}, ${finance.ownerPersonId}, 0)`;
+        yield* Provision.disallow(her);
+        assert.include(yield* member(contact.chatId), { role: "guest", leftAt: null });
+        assert.include(yield* say("restricted").pipe(Effect.flip), { reason: "not_allowed" });
+        // Settings' list: the pair that binds, and only she may still be restricted.
+        const reach = yield* Provision.reachList({ editor: owner, orgId: finance.orgId });
+        assert.deepStrictEqual(reach.restrictable, [priyaId]);
+        assert.deepStrictEqual(
+          reach.limits.map(({ one, other }) => [one, other]),
           [
-            false,
-            sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
-              VALUES (${finance.orgId}, ${finance.agentId}, ${finance.ownerPersonId}, 0)`,
+            [
+              { kind: "agent", agentId: finance.agentId },
+              { kind: "person", personId: priyaId },
+            ],
           ],
-        ] as const) {
-          yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${priyaId}`;
-          yield* Provision.allow(her);
-          yield* covered;
-          // Each row says whether its person messages every agent anyway.
-          assert.deepStrictEqual(
-            (yield* Provision.access(on)).people.map((row) => row.ownerLevel),
-            [coOwner],
-          );
-          const waiting = `still-${(yield* sql`SELECT 1 FROM kin_events`).length}`;
-          yield* queue(waiting);
-          assert.deepStrictEqual((yield* Provision.disallow(her)).people, []);
-          assert.include(yield* member(contact.chatId), { role: "member", leftAt: null });
-          assert.deepStrictEqual(
-            yield* sql`SELECT state FROM kin_events WHERE event_id = ${waiting}`,
-            [{ state: "queued" }],
-          );
-          yield* say(`after-${waiting}`);
-        }
+        );
+        yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${priyaId}`;
+        assert.deepStrictEqual(
+          yield* Provision.reachList({ editor: owner, orgId: finance.orgId }),
+          {
+            limits: [],
+            restrictable: [],
+          },
+        );
       }).pipe(Effect.provide(paired)),
   );
 
@@ -1219,7 +1328,24 @@ describe("KinLeadProvision", () => {
 
   it.effect("retiring the team agent without naming the next is refused", () =>
     Effect.gen(function* () {
-      const { chief, ada, orgId, contacts } = yield* teamOf;
+      const { sql, chief, ada, orgId, contacts } = yield* teamOf;
+      // Switching to an agent restricted from Dev goes on: no chat is opened for him.
+      yield* Provision.reachSet({
+        editor: owner,
+        orgId,
+        a: { kind: "person", personId: KinPersonId.make("dev") },
+        b: { kind: "agent", agentId: ada.agentId },
+        restricted: true,
+      });
+      const chatsOfDev = sql`SELECT c.chat_id FROM kin_chats c
+        JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+          AND m.person_id = 'dev' AND m.left_at IS NULL
+        ORDER BY c.chat_id`;
+      const before = yield* chatsOfDev;
+      yield* Provision.setTeamAgent({ editor: owner, orgId, agentId: ada.agentId });
+      assert.strictEqual(yield* Provision.teamAgent(orgId), ada.agentId);
+      assert.deepStrictEqual(yield* chatsOfDev, before);
+      yield* Provision.setTeamAgent({ editor: owner, orgId, agentId: chief.agentId });
       assert.strictEqual(yield* refusal(Provision.retireOnHost(chief.agentId)), "conflict");
       assert.strictEqual(
         yield* refusal(
@@ -1251,13 +1377,13 @@ describe("KinLeadProvision", () => {
       assert.strictEqual(retired._tag, "retired");
       assert.strictEqual(yield* Provision.teamAgent(orgId), ada.agentId);
       assert.deepStrictEqual(yield* contacts, ["Ada"]);
-      // Dev never wrote to the old one, so its chat leaves the list.
+      // Switching closes no one's chat: the retired agent only leaves the list.
       assert.deepStrictEqual(
         yield* sql`SELECT m.left_at IS NOT NULL AS gone FROM kin_chats c
           JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
             AND m.person_id = 'dev'
           WHERE c.direct_key = ${`dev:${chief.agentId}`}`,
-        [{ gone: 1 }],
+        [{ gone: 0 }],
       );
     }).pipe(Effect.provide(paired)),
   );

@@ -45,11 +45,9 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
-import {
-  CLAUDE_PROVIDER,
-  claudeThinkingItemId,
-} from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { CLAUDE_PROVIDER } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import type { ProjectionRecordFilter } from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinGroups } from "../chat/KinGroups.ts";
@@ -72,6 +70,7 @@ import {
   SILENCE_MARKERS,
   stripTrailingSilenceMarker,
 } from "./classify.ts";
+import { claudeThinkingItemId } from "./claudeThinkingItem.ts";
 import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
 import { WEEK_FIGURES_TITLE } from "../pulse/weekly.ts";
@@ -115,9 +114,30 @@ const fakeThreads = (fake: Fake, wakeupId: KinWakeupId) =>
           turnItems: [...fake.items, ...(fake.rescues === 0 ? [] : fake.rescueItems)],
         };
       });
+      // The filters the bridge's reads use, as the projection store applies them.
+      const records = (filter: ProjectionRecordFilter = {}) =>
+        Effect.map(projection, (current) => {
+          const newest = current.runs
+            .toSorted((a, b) => b.ordinal - a.ordinal)
+            .slice(0, filter.latestRunLimit);
+          return {
+            ...current,
+            runs: newest.filter((run) => filter.runIds?.includes(run.id) ?? true),
+            turnItems: current.turnItems.filter(
+              (item) =>
+                (filter.turnItemRunIds?.includes(item.runId) ?? true) &&
+                (filter.turnItemTypes?.includes(item.type) ?? true) &&
+                (filter.turnItemStatuses?.includes(item.status) ?? true),
+            ),
+            messages: current.messages.filter(
+              (message) => filter.messageIds?.includes(message.id) ?? true,
+            ),
+          };
+        });
       return Layer.mock(ThreadManagement.ThreadManagementService)({
         streamDomainEvents: Stream.fromQueue(fake.live),
         getThreadProjection: () => projection,
+        getThreadRecords: (_threadId, _fields, filter) => records(filter),
         sendToThread: (input) =>
           Effect.gen(function* () {
             fake.rescues++;
@@ -221,13 +241,13 @@ const turnEvent = (id: string): OrchestrationV2DomainEvent => ({
 
 /** A lead at `level` with its direct chat; `ask` is an owner message that wakes it. */
 const setup = Effect.fn("test.setup")(function* (input: {
-  readonly level?: "L0" | "L1";
+  readonly level?: "L0" | "L1" | "L2";
   readonly ask?: string;
   /**
    * `own-group`: a group the owner owns, with no one else in it yet; `shared-group`: the same,
    * shared with `mate` before the ask, and the wake-up a shared turn begun after.
    */
-  readonly lane?: "direct" | "group" | "own-group" | "shared-group";
+  readonly lane?: "direct" | "group" | "own-group" | "shared-group" | "teammate";
   readonly reaction?: "👍";
   readonly changedFrom?: "👎";
   /** Wakes on this event instead, given the org and the lead's direct chat. */
@@ -277,6 +297,12 @@ const setup = Effect.fn("test.setup")(function* (input: {
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES ('group-owner', ${owner.orgId}, 'group', 'person', ${owner.personId}, 'owner', '1970-01-01T00:00:00.000Z')`;
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES ('group-lead', ${owner.orgId}, 'group', 'agent', ${agentId}, 'member', '1970-01-01T00:00:00.000Z')`;
   }
+  // A teammate's own direct chat with the lead: no access row, no group with it.
+  const mate = { _tag: "person" as const, orgId: owner.orgId, personId: KinPersonId.make("mate") };
+  if (input.lane === "teammate") {
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('mate', ${owner.orgId}, 'mate', 'Mate', '1970-01-01T00:00:00.000Z')`;
+    chatId = (yield* chats.createDirect(mate, { orgId: owner.orgId, agentId })).chatId;
+  }
   if (input.lane === "shared-group") {
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at, joined_seq) VALUES ('group-mate', ${owner.orgId}, 'group', 'person', 'mate', 'member', '1970-01-01T00:00:00.000Z', 1)`;
     yield* sql`UPDATE kin_chats SET shared_at = -1, shared_from_seq = 1 WHERE chat_id = 'group'`;
@@ -284,7 +310,11 @@ const setup = Effect.fn("test.setup")(function* (input: {
   const message =
     input.ask === undefined
       ? undefined
-      : yield* chats.send(owner, { chatId, body: input.ask, clientMessageId: "ask" });
+      : yield* chats.send(input.lane === "teammate" ? mate : owner, {
+          chatId,
+          body: input.ask,
+          clientMessageId: "ask",
+        });
   const event =
     input.event === undefined
       ? undefined
@@ -1453,24 +1483,18 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
       (yield* posted).at(-1)?.body,
       "Ada couldn't start: the server couldn't run its model program. Check the provider's binary path in Settings.",
     );
-    // A retry says so once; the next retry before anyone writes adds nothing.
+    // A retry says so once; the next retry before anyone writes adds nothing. Before the long
+    // wait it says when, from the wait the queue sets.
     yield* chats.send(owner, { chatId, body: "Again?", clientMessageId: "retry" });
     const before = (yield* posted).length;
-    yield* bridge.failed({
-      orgId: owner.orgId,
-      wakeupId: yield* retry(),
-      lane,
-      outcome: "retrying",
-    });
-    yield* bridge.failed({
-      orgId: owner.orgId,
-      wakeupId: yield* retry(),
-      lane,
-      outcome: "retrying",
-    });
+    for (const outcome of ["retrying", "retrying", "retrying_later"] as const)
+      yield* bridge.failed({ orgId: owner.orgId, wakeupId: yield* retry(), lane, outcome });
     assert.deepStrictEqual(
       (yield* posted).slice(before).map((row) => row.body),
-      ["Ada couldn't start. Trying again in a moment."],
+      [
+        "Ada couldn't start. Trying again in a moment.",
+        "Ada couldn't start. Trying once more in about 15 minutes.",
+      ],
     );
   }).pipe(Effect.provide(layer)),
 );
@@ -1531,6 +1555,45 @@ it.effect("posts nothing for an L0 lead's reply in a chat its owner didn't place
     );
     assert.strictEqual(fake.rescues, 0);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  {
+    restricted: false,
+    level: "L0" as const,
+    expected: ["agent:Both reviews are with Rhea's go; I've asked her."],
+  },
+  {
+    restricted: true,
+    level: "L0" as const,
+    expected: ["system:Ada's reply couldn't be posted: you and Ada can't message each other here."],
+  },
+  // A level the owner set higher carries no reply across a restricted pair either.
+  {
+    restricted: true,
+    level: "L2" as const,
+    expected: ["system:Ada's reply couldn't be posted: you and Ada can't message each other here."],
+  },
+])(
+  "a teammate's direct chat: the reply posts there, or one Kin line says why it couldn't (restricted $restricted, $level)",
+  ({ restricted, level, expected }) =>
+    Effect.gen(function* () {
+      const { fake, runId, complete, posted, sql, owner } = yield* setup({
+        level,
+        lane: "teammate",
+        ask: "Can you review the two open pull requests?",
+      });
+      if (restricted)
+        yield* sql`INSERT INTO kin_reach_limits (limit_id, org_id, one_kind, one_id, other_kind,
+            other_id, set_by_person_id, set_at)
+          VALUES ('limit', ${owner.orgId}, 'agent', ${agentId}, 'person', 'mate', ${owner.personId}, 0)`;
+      fake.items = [text("a", 1, "Both reviews are with Rhea's go; I've asked her.", runId)];
+      yield* complete;
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
+        expected,
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("posts nothing in a chat where the lead is muted", () =>

@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
-import { KIN_INVOICES } from "@t3tools/client-runtime/kin/kinInvoices";
+import { KIN_INVOICES, kinConfirmTotal } from "@t3tools/client-runtime/kin/kinInvoices";
 import { KIN_BANK, KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_BUDGETS,
@@ -387,7 +387,7 @@ export function KinOutlookSection(props: Section) {
 }
 
 // As Money counts them: no suggestion is an open quote until it is kept.
-const OPEN_QUOTES = { ...KIN_LIST_DEFAULT_FILTER, show: "open" as const, kept: true };
+const OPEN_QUOTES = { ...KIN_LIST_DEFAULT_FILTER, show: "notClosed" as const, kept: true };
 
 /** Open quotes first, each opening the quote; See all opens the whole list. */
 export function KinQuotesSection(
@@ -749,7 +749,9 @@ export function KinQuoteActions(
           onPress={() =>
             Dialog.confirm({
               title: KIN_QUOTES.sendTitle,
-              message: KIN_QUOTES.sendDetail,
+              message: [kinConfirmTotal(item.amount, item.party?.title), KIN_QUOTES.sendDetail]
+                .filter((line) => line !== null)
+                .join("\n"),
               confirmText: KIN_QUOTES.send,
               onConfirm: () => void actions.issue(item.key),
             })

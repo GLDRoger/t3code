@@ -4,7 +4,7 @@ The look book captures every main Kin screen on the invented company (Ambermill)
 
 ## When
 
-Before every deploy and every phone build. It makes no model turns and costs nothing; a capture takes about nine minutes, most of it waiting for each staged message to start on a fresh minute.
+Before every deploy and every phone build. A `--full` release check runs capture and compare as its `lookbook` stage ([Releasing Kin](kin-release.md)); before a phone build, run them yourself. It makes no model turns and costs nothing; a capture takes about nine minutes, most of it waiting for each staged message to start on a fresh minute.
 
 ## Commands
 

@@ -24,6 +24,10 @@ export type KinFailure =
 
 /** A Retry button's label. Show it only where `failure.retry` is true. */
 export const KIN_RETRY = "Try again";
+/** A list's next page didn't come. */
+export const KIN_MORE_FAILED = "Couldn't load more.";
+/** The heading while the Kin host can't be reached. */
+export const KIN_HOST_OFFLINE = "Kin is offline";
 /** Under a heading that already says what failed, for a request that got no answer. */
 export const KIN_CHECK_CONNECTION = "Check your connection to the server and try again.";
 export const KIN_BUSY = "Kin isn't answering right now. Try again in a moment.";
@@ -68,9 +72,13 @@ export interface KinFailureWords {
   readonly device?: string;
 }
 
-/** Whether a host's message is for a person: words for an agent's tools (`list_define`, `dueAt`) aren't. */
-export const kinPersonWords = (said: string) =>
-  said !== "" && !/[a-z]+_[a-z]+|[a-z][A-Z]/.test(said);
+/**
+ * Whether a host's message is for a person. Machine text (`list_define`, `dueAt`, `KinChatError`,
+ * `run()`, `a.ts:1:2`, a lone `NotFound`) isn't; a name such as GitHub or iPhone in a sentence is.
+ */
+const MACHINE_WORDS =
+  /_|::|\(\)|\.\w+:\d+:\d+|\b[a-z]{2,}[A-Z][a-z]|\b[A-Z][a-z]+(?:[A-Z][a-z]*){2,}|[A-Za-z](?:Error|Exception|Failure)\b|^\S*[a-z][A-Z]\S*$/;
+export const kinPersonWords = (said: string) => said !== "" && !MACHINE_WORDS.test(said);
 
 export function kinFailure(cause: unknown, what: string, words: KinFailureWords = {}): KinFailure {
   const error = errorOf(cause);

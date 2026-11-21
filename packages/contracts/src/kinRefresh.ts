@@ -29,6 +29,8 @@ export const KIN_REFRESH_TOPICS = [
   "budget",
   "workLists",
   "recommendations",
+  "imports",
+  "stop",
 ] as const;
 export const KinRefreshTopic = Schema.Literals(KIN_REFRESH_TOPICS);
 export type KinRefreshTopic = typeof KinRefreshTopic.Type;
@@ -55,6 +57,10 @@ export const KinRefreshes = Schema.Struct({
   workLists: Schema.optional(NonNegativeInt),
   /** What Kin suggested to the owner and what came of each. Absent from older hosts. */
   recommendations: Schema.optional(NonNegativeInt),
+  /** Imports and undos of a file going on and done (`kin.import.runs`). Absent from older hosts. */
+  imports: Schema.optional(NonNegativeInt),
+  /** The company stop switch (`kin.org.get`), for every member. Absent from older hosts. */
+  stop: Schema.optional(NonNegativeInt),
   /**
    * The host run these revisions count in. Unchanged across a reconnect, an unchanged revision
    * means nothing moved; a new one means anything may have. Absent from older hosts.

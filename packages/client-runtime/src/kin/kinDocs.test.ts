@@ -140,6 +140,11 @@ describe("kinSearchHit", () => {
     ).toBeNull();
     // A deal comes back among entries, under its own name, so an older app opens it as one.
     expect(kinSearchHit({ ...hitInput, key: "DL-4", kind: "work" }).kindLabel).toBe("Deal");
+    // A contact carries its client, whose page opens for it; an older host sends none.
+    expect(hit.clientKey).toBeNull();
+    expect(
+      kinSearchHit({ ...hitInput, key: "CT-2", kind: "contacts", client: "C-1" }).clientKey,
+    ).toBe("C-1");
   });
 });
 
@@ -236,6 +241,14 @@ describe("kinDocLibrary", () => {
     expect(
       kinWhatWeSellAgent([lead("c", "growth", true), lead("b", "chief-of-staff")])?.agentId,
     ).toBe("b");
+    // Any agent the sales rules reach keeps it before the Chief of staff; a named seat stays first.
+    expect(kinWhatWeSellAgent([lead("b", "chief-of-staff"), lead("d", "marketing")])?.agentId).toBe(
+      "d",
+    );
+    expect(kinWhatWeSellAgent([lead("b", "chief-of-staff"), lead("e", "sales-ops")])?.agentId).toBe(
+      "e",
+    );
+    expect(kinWhatWeSellAgent([lead("a", "marketing"), lead("c", "growth")])?.agentId).toBe("c");
     expect(kinWhatWeSellAgent([lead("z", "finance"), lead("y", "social")])?.agentId).toBe("y");
     expect(kinWhatWeSellAgent([])).toBeNull();
   });

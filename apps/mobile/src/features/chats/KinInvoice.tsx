@@ -143,8 +143,12 @@ export function KinInvoiceActions(
     setReading(false);
     Dialog.confirm({
       title: KIN_INVOICES.issueTitle,
-      message:
+      message: [
+        invoice.issueTotal,
         next === null ? KIN_INVOICES.issueDetail(invoice.prefix) : KIN_INVOICES.issueNumber(next),
+      ]
+        .filter((line) => line !== null)
+        .join("\n"),
       confirmText: KIN_INVOICES.issue,
       onConfirm: () => void actions.issue(itemKey),
     });
@@ -1010,7 +1014,7 @@ function ApplyReceipt(
         <KinWorkLoading label="Loading invoices" />
       ) : invoices === null ? (
         <KinLoadFailed
-          title="Couldn't load invoices"
+          title={KIN_INVOICES.loadFailed}
           cause={held?.cause}
           onRetry={() => setAttempt((count) => count + 1)}
         />

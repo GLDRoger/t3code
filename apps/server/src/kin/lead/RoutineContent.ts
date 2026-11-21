@@ -43,6 +43,7 @@ import {
   type RoutineHeader,
   type RoutineRow,
 } from "./routines.ts";
+import { DAY_MS } from "../durations.ts";
 
 type RoutineEvent = Extract<KinEvent, { readonly _tag: "routine" }>;
 
@@ -120,7 +121,6 @@ export class KinRoutineContent extends Context.Service<
   }
 >()("t3/kin/lead/RoutineContent/KinRoutineContent") {}
 
-const DAY_MS = 86_400_000;
 const GITHUB_BUDGET = "10 seconds";
 const STUCK: ReadonlySet<string> = new Set(["needs_decision", "blocked", "failed"]);
 /** Tasks agents delegated, by their cards updated since `since`: Kin's own copy of T3's state. */

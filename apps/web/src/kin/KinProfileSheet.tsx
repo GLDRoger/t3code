@@ -17,7 +17,7 @@ import {
   type KinProfileHolding,
 } from "@t3tools/client-runtime/kin/kinProfiles";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
-import { kinZoneLabel } from "@t3tools/client-runtime/kin/kinTimeZone";
+import { KIN_TIME_ZONE_PLACEHOLDER, kinZoneLabel } from "@t3tools/client-runtime/kin/kinTimeZone";
 import type {
   EnvironmentId,
   KinAttachment,
@@ -52,6 +52,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinAwayField } from "./KinAway";
+import { KinGithubLoginField } from "./KinGithubLogin";
 import { useOpenKinPeopleChat } from "./KinPeopleChat";
 import { kinSettingsSectionIn } from "./kinSettingsAddress";
 import type { KIN_PROFILE_SETTINGS_SEARCH_ITEMS } from "./kinSettingsSearch";
@@ -225,7 +226,7 @@ function KinProfileSheet(props: {
               : (profile.profile?.displayName ?? KIN_PROFILE_COPY.title)}
           </Parts.Title>
           {profile.runsWorkspace ? (
-            <Parts.Description>Runs this workspace</Parts.Description>
+            <Parts.Description>{KIN_PROFILE_COPY.runsWorkspace}</Parts.Description>
           ) : null}
           {profile.mine || profile.profile === null ? null : (
             <KinMessageButton target={props.target} />
@@ -458,6 +459,13 @@ function KinProfileRead(props: {
       <Field label={KIN_PROFILE_COPY.quietLabel} target={mineTarget("kin-quiet-hours")}>
         <p className="text-sm text-foreground">{kinQuietLine(profile, props.holding)}</p>
       </Field>
+      <KinGithubLoginField
+        environmentId={props.environmentId}
+        orgId={props.orgId}
+        profile={profile}
+        mine={props.mine}
+        target={mineTarget("kin-github-username")}
+      />
       {props.mayEdit ? (
         <Button variant="outline" className="self-start" onClick={props.onEdit}>
           {KIN_PROFILE_COPY.edit}
@@ -681,7 +689,7 @@ function KinProfileForm(props: {
           id="kin-profile-zone"
           list="kin-profile-zones"
           value={draft.timeZone}
-          placeholder="City or region"
+          placeholder={KIN_TIME_ZONE_PLACEHOLDER}
           onChange={(event) => set({ timeZone: event.target.value })}
         />
         <datalist id="kin-profile-zones">

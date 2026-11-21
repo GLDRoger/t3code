@@ -10,11 +10,19 @@ export const NUDGE_PREFIX = "pulse-nudge:";
 
 const PROMISE =
   /\bI(?:'ll|’ll| will|'m going to|’m going to| am going to)\s+(?:now\s+|also\s+)?(?:put|pass|tell|ask|let|check with|flag|raise|forward|relay|mention|bring|nudge|ping|message|follow up with)\b[^.!?\n]{0,80}/gi;
+/** "From now on I'll message Zoya": a standing permission or habit, not a promise for this turn. */
+const STANDING =
+  /\b(?:from now on|from here on|going forward|in (?:the )?future|whenever|any ?time|every time|each time|(?:when|as|if) (?:needed|necessary)|without (?:asking|checking with|involving) you|no need to (?:ask|check with|involve) you)\b/i;
 const PRONOUN = /\b(?:him|her|the owner)\b/i;
 /** "Finance will send the reminder": what another agent is said to do next. */
 const AGENT_ACTS =
   "\\s+(?:will|'ll|’ll|is going to|can then)\\s+(?:now\\s+|then\\s+)?(?:send|draft|chase|remind|follow up|handle|take|reply|prepare|pick up|look into|check|do|sort|deal)\\b";
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const sentenceAt = (text: string, start: number, length: number) => {
+  const from = Math.max(...[".", "!", "?", "\n"].map((end) => text.lastIndexOf(end, start - 1)));
+  const to = text.slice(start + length).search(/[.!?\n]/);
+  return text.slice(from + 1, to < 0 ? undefined : start + length + to);
+};
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 /**
@@ -37,7 +45,11 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
       AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
       AND created_at >= ${since}
     ORDER BY seq`;
-  const spans = said.flatMap((row) => [...row.body.matchAll(PROMISE)].map((hit) => hit[0]));
+  const spans = said.flatMap((row) =>
+    [...row.body.matchAll(PROMISE)]
+      .filter((hit) => !STANDING.test(sentenceAt(row.body, hit.index, hit[0].length)))
+      .map((hit) => hit[0]),
+  );
   const people = yield* sql<{ personId: string; name: string; here: number; owner: number }>`SELECT
       p.person_id AS "personId", p.display_name AS name,
       EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = p.org_id

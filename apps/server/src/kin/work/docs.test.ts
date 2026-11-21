@@ -1378,6 +1378,42 @@ it.effect(
 );
 
 it.effect(
+  "a doc's chat of origin opens for those in it; owner, co-owner or member outside it reads only its agent",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const coOwnerId = KinPersonId.make("co-owner");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+        VALUES (${coOwnerId}, ${orgId}, 'co', 'Co', 'co_owner', ${at})`;
+      yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${mateId}`;
+      const chatId = KinChatId.make("lead-chat");
+      const { row } = yield* newDoc(plan, {
+        source: { chatId, messageId: KinMessageId.make("ask") },
+      });
+      // Shared with the team, as the play-test's brief was.
+      yield* sql`UPDATE kin_records SET team_shared = 1 WHERE record_id = ${row.recordId}`;
+      const origin = (personId: KinPersonId) =>
+        OwnerDocs.get([{ _tag: "person", orgId, personId }], { orgId, key: row.key }).pipe(
+          Effect.map(({ links }) => links.filter((link) => link.kind === "message")),
+        );
+      const opens = { chatId, label: null, target: "ask" };
+      const closed = { chatId: null, label: null, closedChat: { agent: "Lead lead" } };
+      assert.deepInclude((yield* origin(ownerId))[0]!, opens);
+      assert.notProperty((yield* origin(ownerId))[0]!, "closedChat");
+      assert.deepInclude((yield* origin(coOwnerId))[0]!, closed);
+      assert.deepInclude((yield* origin(mateId))[0]!, closed);
+      // Once in the chat, the member follows the link as the owner does.
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('lead-chat-mate', ${orgId}, ${chatId}, 'person', ${mateId}, 'member', ${at})`;
+      assert.deepInclude((yield* origin(mateId))[0]!, opens);
+      // The owner who left it reads it closed too.
+      yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'lead-chat-owner'`;
+      assert.deepInclude((yield* origin(ownerId))[0]!, closed);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "playbooks are the team's to read, until the owner marks one private: then it is hidden from them",
   () =>
     Effect.gen(function* () {

@@ -82,10 +82,48 @@ describe("kinLinked", () => {
       "chats",
       { _tag: "chat", chatId, messageId: KinMessageId.make("msg_1") },
     ],
+    [
+      "a message in a chat this reader isn't in is told, and opens nothing",
+      {
+        links: [
+          {
+            kind: "message",
+            relation: "source",
+            target: "msg_1",
+            chatId: null,
+            label: null,
+            createdAt: at,
+            closedChat: { agent: "Chief of staff" },
+          },
+        ],
+      },
+      "chats",
+      null,
+    ],
   ] as const)("%s", (_name, detail, group, open) => {
     const { groups } = kinLinked({ key: "W-1", links: [], ...detail });
     expect(groups.map((one) => one.group)).toEqual([group]);
     expect(groups[0]!.items[0]!.open).toEqual(open);
+  });
+
+  it("words a chat this reader isn't in with its agent, or as a chat when it had none", () => {
+    const closed = (agent: string | null): KinRecordLink => ({
+      kind: "message",
+      relation: "source",
+      target: `msg_${agent ?? "none"}`,
+      chatId: null,
+      label: null,
+      createdAt: at,
+      closedChat: { agent },
+    });
+    const { groups } = kinLinked({ key: "D-1", links: [closed("Chief of staff"), closed(null)] });
+    expect(groups[0]!.items.map((item) => item.title)).toEqual([
+      "Where this came from: a chat with Chief of staff",
+      "Where this came from: a chat",
+    ]);
+    // A link with no chat and no word of one stays out, as before.
+    const { closedChat: _told, ...bare } = closed(null);
+    expect(kinLinked({ key: "D-1", links: [bare] }).groups).toEqual([]);
   });
 
   it("names an issued entry by its number and one without a number by its key", () => {

@@ -3,6 +3,7 @@ import type {
   KinIssueResult,
   KinListDefinition,
   KinMakeReceiptInput,
+  KinMoney,
   KinMakeReceiptResult,
   KinOrgId,
   KinPayment,
@@ -14,6 +15,7 @@ import type {
 
 import { kinWorkDayOfTime, kinWorkDueLabel, type KinWorkNames } from "./kinWork.ts";
 import {
+  kinDraftShowsNoBalance,
   kinInvoiceBankText,
   kinMoneyText,
   kinParseMoney,
@@ -26,7 +28,22 @@ import {
  * in against it and the receipt for each payment, the documents made for it, and Money's receipts.
  */
 
+/**
+ * The line a confirmation before issuing or sending money shows: "Total ₹1,18,000 to Lumen Grove."
+ * A draft with no amount yet says only who it is to, never "0".
+ */
+export function kinConfirmTotal(
+  amount: KinMoney | null | undefined,
+  client: string | null | undefined,
+): string | null {
+  const total = amount == null || amount.minor === 0 ? null : kinMoneyText(amount);
+  const to = client == null || client.trim() === "" ? null : client.trim();
+  if (total === null) return to === null ? null : `To ${to}.`;
+  return to === null ? `Total ${total}.` : `Total ${total} to ${to}.`;
+}
+
 export const KIN_INVOICES = {
+  loadFailed: "Couldn't load invoices",
   number: "Invoice number",
   sentTo: (to: string, day: string) =>
     `Sent to ${to} ${/^(today|yesterday)$/.test(day) ? day : `on ${day}`}`,
@@ -200,7 +217,7 @@ export interface KinInvoiceView {
   readonly received: string | null;
   /** TDS the client deducted, when there is any: not part of what was received. */
   readonly tdsDeducted: string | null;
-  /** Null on a void invoice: nothing is due on it. */
+  /** Null on a void invoice, and on a draft nothing came in on: nothing is due on it. */
   readonly balance: string | null;
   readonly settled: boolean;
   /** "Not recorded as paid. Bank known to 31 Oct." while some of it is owed; else null. */
@@ -210,6 +227,8 @@ export interface KinInvoiceView {
   readonly documents: ReadonlyArray<{ readonly key: KinRecordKey; readonly title: string }>;
   /** The series prefix the next number comes from, for Issue's confirmation. */
   readonly prefix: string | null;
+  /** Issue's confirmation line with the total and the client, from `kinConfirmTotal`. */
+  readonly issueTotal: string | null;
   /** "Sent to ana@client.com on 15 Nov", newest first. */
   readonly sent: ReadonlyArray<string>;
 }
@@ -235,6 +254,7 @@ export function kinInvoiceView(
 ): KinInvoiceView {
   const { number, description } = kinInvoiceTitle(item.title, numberFieldOf(item));
   const isVoid = item.state === "dropped";
+  const owesNothing = isVoid || kinDraftShowsNoBalance(item);
   // Older servers send no `received`: then everything that settled it came in.
   const received =
     item.received ??
@@ -258,9 +278,9 @@ export function kinInvoiceView(
     number,
     void: isVoid,
     total: item.amount === undefined ? null : kinMoneyText(item.amount, true),
-    received: received === null ? null : kinMoneyText(received, true),
+    received: received === null || owesNothing ? null : kinMoneyText(received, true),
     tdsDeducted: tds === null ? null : kinMoneyText(tds, true),
-    balance: isVoid || item.balance === undefined ? null : kinMoneyText(item.balance, true),
+    balance: owesNothing || item.balance === undefined ? null : kinMoneyText(item.balance, true),
     settled: item.balance?.minor === 0,
     bank: isVoid ? null : kinInvoiceBankText(item, now),
     payments: (item.payments ?? []).map((payment) => {
@@ -281,6 +301,7 @@ export function kinInvoiceView(
     }),
     documents: documents.reverse(),
     prefix: def?.numbering?.prefix ?? null,
+    issueTotal: kinConfirmTotal(item.amount, item.party?.title),
     sent: (item.sent ?? []).map((mail) =>
       KIN_INVOICES.sentTo(
         mail.to.join(", "),

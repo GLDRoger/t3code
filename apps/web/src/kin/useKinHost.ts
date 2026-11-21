@@ -5,8 +5,7 @@ import {
   kinHostCandidate,
   kinHostLink,
   kinHostIdToSave,
-  resolveKinHost,
-  resolveKinHostAt,
+  makeKinHostAtoms,
   type KinHost,
   type KinHostCandidate,
   type KinRouteHost,
@@ -24,7 +23,7 @@ import { Atom, type AsyncResult } from "effect/reactivity";
 import { environmentCatalog } from "../connection/catalog";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "../state/presentation";
-import { kinClient } from "./kinClient";
+import { kinClient, markKinHostKnown } from "./kinClient";
 
 const KIN_HOST_STORAGE_KEY = "t3code:kin:host";
 
@@ -59,14 +58,18 @@ const kinProbe = (get: Atom.AtomContext) => (environmentId: EnvironmentId) => {
 };
 const cachedOrgs = (environmentId: EnvironmentId) => lastOrgs.get(environmentId) ?? null;
 
+const kinHostAtoms = makeKinHostAtoms({
+  ready: (get) => get(environmentCatalog.catalogValueAtom).isReady,
+  candidates: kinHostCandidates,
+  probe: kinProbe,
+  cachedOrgs: () => cachedOrgs,
+  savedHostId: () => savedHost.id,
+  markKnown: markKinHostKnown,
+});
+const kinHostAtAtom = kinHostAtoms.hostAtAtom;
+
 export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
-  if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
-  const host = resolveKinHost({
-    candidates: kinHostCandidates(get),
-    savedHostId: savedHost.id,
-    probe: kinProbe(get),
-    cachedOrgs,
-  });
+  const host = get(kinHostAtoms.hostAtom);
   const toSave = kinHostIdToSave(host);
   if (toSave !== null && toSave !== savedHost.id) {
     savedHost.id = toSave;
@@ -77,19 +80,7 @@ export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
     }
   }
   return host;
-}).pipe(Atom.withLabel("kin:host"));
-
-const kinHostAtAtom = Atom.family((environmentId: EnvironmentId) =>
-  Atom.make((get): KinRouteHost => {
-    if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
-    return resolveKinHostAt({
-      candidates: kinHostCandidates(get),
-      environmentId,
-      probe: kinProbe(get),
-      cachedOrgs,
-    });
-  }).pipe(Atom.withLabel(`kin:host:${environmentId}`)),
-);
+}).pipe(Atom.withLabel("kin:host:saved"));
 
 /** Whether the host a route names is reachable right now, asked at the moment of a change. */
 export function kinHostConnected(environmentId: EnvironmentId): boolean {
@@ -108,7 +99,14 @@ export function chooseKinHost(environmentId: EnvironmentId) {
   } catch {
     // Storage can be full or blocked; this page still uses it until reload.
   }
-  appAtomRegistry.refresh(kinHostAtom);
+  appAtomRegistry.refresh(kinHostAtoms.hostAtom);
+}
+
+/** The company this browser's Kin host names first; null until a connected host has answered. */
+export function kinHostTarget(host: KinHost) {
+  if (host._tag !== "host" || !host.connected || host.probe._tag !== "ready") return null;
+  const me = host.probe.orgs.me[0];
+  return me === undefined ? null : { environmentId: host.environmentId, orgId: me.orgId };
 }
 
 /** The connected environment that hosts Kin. `none` on plain T3 servers and with Kin off. */

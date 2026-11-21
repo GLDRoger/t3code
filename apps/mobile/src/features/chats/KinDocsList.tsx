@@ -1,7 +1,7 @@
 import type { KinViewerScope } from "@t3tools/client-runtime/kin/kinViewerScope";
 import { kinNothingShown } from "@t3tools/client-runtime/kin/kinViewerScope";
 import { useKinViewerScope } from "./state/kinChatOnly";
-import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
 import {
@@ -706,7 +706,7 @@ export function KinDocsList(
               {footer === null ? null : (
                 <View className="items-start gap-2 px-5 py-4">
                   <Text textRole="footnote" className="text-foreground-muted">
-                    {state.moreFailed ? "Couldn't load more." : footer}
+                    {state.moreFailed ? KIN_MORE_FAILED : footer}
                   </Text>
                   <Button
                     tone="secondary"

@@ -1,11 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type {
-  EnvironmentId,
-  KinApproverKey,
-  KinApproverKeyActivity,
-  KinKeyThumbprint,
-  KinOrgId,
+import {
+  formatKinWhen,
+  type EnvironmentId,
+  type KinApproverKey,
+  type KinApproverKeyActivity,
+  type KinKeyThumbprint,
+  type KinOrgId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { AsyncResult } from "effect/reactivity";
@@ -31,18 +32,11 @@ import { PLATFORM, approvalsProblem } from "./ApprovalsSettings.logic";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
 
-const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-const dayFormat = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-});
 const when = (at: DateTime.Utc, now: number) => {
   const ms = DateTime.toEpochMillis(at);
   return now - ms < 12 * 60 * 60 * 1000
-    ? `at ${timeFormat.format(ms)}`
-    : `on ${dayFormat.format(ms)}`;
+    ? `at ${formatKinWhen(ms, "time")}`
+    : `on ${formatKinWhen(ms, "dateTime")}`;
 };
 
 type Target = { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId };

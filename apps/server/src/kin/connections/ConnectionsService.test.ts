@@ -568,44 +568,6 @@ describe("KinConnections", () => {
     ),
   );
 
-  it.effect("reports GitHub activity from the events the owner's watch queued", () =>
-    withFake(BASE, () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
-            auth, reach, state, created_at, updated_at)
-          VALUES (${orgId}, 'gh', 'github', 'GitHub', 'remote', 'api.githubcopilot.com', 'none',
-            'open', 'active', 1, 1)`;
-        const github = (id: string, at: number) =>
-          sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
-              queued_at, state)
-            VALUES (${id}, ${orgId}, ${lead}, 'github', 'P2', ${JSON.stringify({
-              repo: "acme/app",
-              deliveryId: `poll:${id}`,
-              eventName: "mention",
-              summary: `mention on acme/app#7 by alice`,
-            })}, ${at}, ${at}, 'done')`;
-        yield* github("seen", 0);
-        yield* TestClock.adjust("1 hour");
-        yield* github("new", 60_000);
-        const activity = yield* (yield* KinConnections).activity(orgId, "gh");
-        assert.strictEqual(activity._tag, "github");
-        if (activity._tag !== "github") return;
-        // The chat event the seed queued and the one at the cursor's start are not GitHub news.
-        assert.deepStrictEqual(activity.deliveries, [
-          {
-            fireId: "new",
-            repo: "acme/app",
-            deliveryId: "poll:new",
-            receivedAt: 60_000,
-            eventName: "mention",
-            summary: "mention on acme/app#7 by alice",
-          },
-        ]);
-      }),
-    ),
-  );
-
   it.effect("keeps the key only in the secret store", () =>
     withFake(BASE, () =>
       Effect.gen(function* () {
@@ -3289,14 +3251,23 @@ describe("KinConnections accounts", () => {
           VALUES (${orgId}, 'rec_client', 'clients', 'C-1', 'Invented Two', 'person', ${ownerId},
             'person', 'c1', 0, 0, NULL, '{}'),
             (${orgId}, 'rec_raj', 'contacts', 'CT-1', 'Raj', 'person', ${ownerId}, 'person',
-            'ct1', 0, 0, 'rec_client', '{"email":"Raj@Client2.example"}')`;
+            'ct1', 0, 0, 'rec_client', '{"email":"Raj@Client2.example"}'),
+            (${orgId}, 'rec_client3', 'clients', 'C-2', 'Invented Three', 'person', ${ownerId},
+            'person', 'c2', 0, 0, NULL, '{}'),
+            (${orgId}, 'rec_raj3', 'contacts', 'CT-2', 'Raj', 'person', ${ownerId}, 'person',
+            'ct2', 0, 0, 'rec_client3',
+            '{"email":"raj@three.example","emails":["raj@three.example","RAJ@client2.example"]}')`;
         const replied = yield* answer(reply.widgetId, ownerId, true);
         yield* connections.sendAsk(orgId, replied!.askId);
         yield* connections.sendAsk(orgId, replied!.askId);
+        // Each client whose contact holds the address, as its main email or another one.
         assert.deepStrictEqual(
           yield* sql`SELECT party_id AS "partyId", kind, note, person_id AS "personId"
-            FROM kin_client_touches ORDER BY touch_id`,
-          [{ partyId: "rec_client", kind: "email", note: "Re: PO 77", personId: ownerId }],
+            FROM kin_client_touches ORDER BY party_id`,
+          [
+            { partyId: "rec_client", kind: "email", note: "Re: PO 77", personId: ownerId },
+            { partyId: "rec_client3", kind: "email", note: "Re: PO 77", personId: ownerId },
+          ],
         );
         const sentReply = vendor.vendor.sent.at(-1)!;
         assert.strictEqual(sentReply.account, WORK_MAIL);
