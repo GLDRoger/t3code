@@ -772,6 +772,16 @@ const make = Effect.gen(function* () {
     if (yield* aborted(ctx).pipe(access)) return yield* refuse(SHARED_REFUSAL);
     return yield* sql.withTransaction(
       Effect.gen(function* () {
+        // Kin opened one for a person's ask and this agent holds its turn: a second would split it.
+        const [mine] = yield* sql<{ discussionId: string }>`SELECT discussion_id AS "discussionId"
+          FROM kin_discussions WHERE org_id = ${ctx.orgId} AND final = 0
+            AND open_key LIKE 'message:%'
+            AND json_extract(turn_json, '$.agentId') = ${ctx.agentId}
+          ORDER BY created_at LIMIT 1`;
+        if (mine !== undefined)
+          return yield* refuse(
+            `Kin already opened ${mine.discussionId} for what was asked, and it is your turn in it. Answer there with team_say.`,
+          );
         const room = yield* ensureRoom(ctx.orgId);
         const all = yield* agents(ctx.orgId);
         const self = all.find((agent) => agent.agentId === ctx.agentId);

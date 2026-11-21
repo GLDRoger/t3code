@@ -545,6 +545,17 @@ it.effect("a person naming two agents in the Team room gets their discussion, op
       );
       assert.match((yield* facts("chief"))!, /^Rhea Rao asked you and Finance: Finance and/);
 
+      // Finance opening one of her own for the same ask is turned back to the open one.
+      const second = yield* callAs("finance", "team_open", {
+        topic: "What to chase this week",
+        question: "What do we chase this week?",
+        decider: "Chief of staff",
+        text: "Orbit Dental first.",
+      });
+      assert.isFalse(second.ok);
+      assert.match(String(second.value.message ?? JSON.stringify(second.value)), /TD-1.*team_say/);
+      assert.lengthOf(yield* discussions, 1);
+
       const spoke = yield* callAs("finance", "team_say", {
         text: "Orbit Dental first: ₹47,200, 11 days late.",
         intent: "answer",
