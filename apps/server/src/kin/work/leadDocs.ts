@@ -405,26 +405,26 @@ export const shown = Effect.fn("KinDocTools.shown")(function* (
   card: boolean | "answer" | undefined,
   draft?: KinDocCardDraft,
 ) {
-  if (card !== true && card !== "answer") return;
+  if (card !== true && card !== "answer") return false;
   const turn = {
     orgId: lead.orgId,
     agentId: lead.agentId,
     wakeupId: KinWakeupId.make(lead.wakeupId),
   };
   const lane = yield* laneFor(turn);
-  if (Option.isNone(lane)) return;
+  if (Option.isNone(lane)) return false;
   if (card === "answer") {
-    if (lane.value.team === true) return;
+    if (lane.value.team === true) return false;
     if (lane.value.mode !== "reply") {
       const sql = yield* SqlClient.SqlClient;
       const checkIn = yield* sql`SELECT 1 FROM kin_events
         WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId} AND wakeup_id = ${turn.wakeupId}
           AND tag = 'pulse' AND json_type(json, '$.checkIn') = 'object' LIMIT 1`;
-      if (checkIn.length === 0) return;
+      if (checkIn.length === 0) return false;
     }
   }
   const version = Docs.toVersion(written.version);
-  yield* (yield* KinLevelGate).showCard(
+  const posted = (yield* KinLevelGate).showCard(
     { ...lead, wakeupId: turn.wakeupId },
     {
       chatId: lane.value.chatId,
@@ -445,6 +445,15 @@ export const shown = Effect.fn("KinDocTools.shown")(function* (
         ...(draft === undefined ? {} : { draft }),
       } satisfies KinDocCardState,
     },
+  );
+  if (draft === undefined) {
+    yield* posted;
+    return true;
+  }
+  // A draft is filed whatever its card meets: the agent is told so instead.
+  return yield* posted.pipe(
+    Effect.as(true),
+    Effect.catchTags({ KinChatError: () => Effect.succeed(false) }),
   );
 });
 
@@ -589,7 +598,8 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     (input.project === undefined && input.company !== true
       ? yield* projectFor(lead, input, partyId ?? undefined)
       : undefined);
-  const written = yield* Docs.create(lead.orgId, context.writer, context.provenance, {
+  const sql = yield* SqlClient.SqlClient;
+  const filed = Docs.create(lead.orgId, context.writer, context.provenance, {
     title: input.title,
     body: input.body,
     owner,
@@ -614,6 +624,17 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       (error) => Effect.flatMap(draftUp(lead, error), Effect.fail),
     ),
   );
+  const { written, draft } = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const written = yield* filed;
+      if (input.draft === undefined) return { written, draft: undefined };
+      const drawn = yield* draftCardOf(lead, input.draft, {
+        text: written.version.body,
+        partyId: written.row.partyId,
+      });
+      return { written, draft: drawn.card };
+    }),
+  );
   if (input.links !== undefined && input.links.length > 0)
     yield* Docs.link(lead.orgId, context.writer, { key: written.row.key }, input.links, "relates");
   // A proposal or client terms made under the owner's Approve is that approval's one result.
@@ -623,10 +644,6 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       recordId: written.row.recordId,
       key: written.row.key,
     });
-  const draft =
-    input.draft === undefined
-      ? undefined
-      : yield* draftCardOf(lead, input.draft, written.version.body);
   yield* shown(lead, written, draft === undefined ? (input.card ?? "answer") : true, draft);
   return {
     ...writeResult(written, written.created),

@@ -5,6 +5,7 @@ import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinEmbed } from "./kinEmbed.ts";
 import { KinMemoryItemId, KinWorkerId } from "./kinLead.ts";
+import { KinSocialPlatform } from "./kinSocial.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -583,10 +584,20 @@ export const KinDocCardDraft = Schema.Struct({
   kind: KinDraftKind,
   /** The draft as filed, in markdown; Copy text takes it without the marks. */
   text: KinText,
+  /** For a post: where it goes. */
+  on: Schema.optional(KinSocialPlatform),
+  /** The client it was filed for; Send to sends it for this client only. */
+  client: Schema.optional(KinRecordRef),
   /** Who "Send to" sends it up to: set only in a teammate's own chat with the agent. */
   sendTo: Schema.optional(KinNamedPerson),
-  /** Sent up: to whom, and when. */
-  sent: Schema.optional(Schema.Struct({ name: KinTrimmedText, at: IsoDateTime })),
+  /** Sent up: to whom, and when; `held` while it waits for them to be back. */
+  sent: Schema.optional(
+    Schema.Struct({
+      name: KinTrimmedText,
+      at: IsoDateTime,
+      held: Schema.optional(Schema.Literal(true)),
+    }),
+  ),
   /** Kin can't post it: no account on this service is connected, and who can connect one. */
   noAccount: Schema.optional(Schema.Struct({ service: KinTrimmedText, by: KinNamedPerson })),
 });

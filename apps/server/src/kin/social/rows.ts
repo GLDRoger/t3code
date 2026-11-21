@@ -348,16 +348,19 @@ export const whenLabel = (ms: number, clock: TextClock) =>
   `${formatKinWhen(ms, "day", clock)} · ${formatKinWhen(ms, "time", clock)}`;
 
 /**
- * Whether Kin can post on this platform (any, without one): some connected group of the company,
- * with no problem of its own, holds a working account there. Social's "no account" fact.
+ * Whether Kin can post on this platform (any, without one) for this client (our own, without
+ * one): its connected group, with no problem of its own, holds a working account there. Social's
+ * "no account" fact.
  */
 export const postsTo = Effect.fn("KinSocialRows.postsTo")(function* (
   orgId: KinOrgId,
   platform: KinSocialPlatform | undefined,
+  partyId: string | null,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const groups = yield* sql<Pick<GroupRow, "accountsJson">>`SELECT accounts_json AS "accountsJson"
     FROM kin_social_groups WHERE org_id = ${orgId} AND removed_at IS NULL AND problem IS NULL
+      AND party_id IS ${partyId}
     ORDER BY group_id`;
   return groups.some((group) =>
     accountsOf(group).some(

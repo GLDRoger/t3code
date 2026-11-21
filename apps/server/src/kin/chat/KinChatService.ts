@@ -343,6 +343,20 @@ export class KinChatService extends Context.Service<
       readonly sent: NonNullable<NonNullable<KinDocCardState["draft"]>["sent"]>;
     }) => Effect.Effect<KinWidget, ServiceError>;
     /**
+     * Server-only, in the doc write's transaction: its draft cards take the doc's new text, and
+     * open chats read each card again, as its viewer may see it now (`docsForViewer`).
+     */
+    readonly refreshDocCards: (input: {
+      readonly orgId: KinOrgId;
+      readonly recordId: string;
+      readonly text?: string;
+    }) => Effect.Effect<void, ServiceError>;
+    /** Server-only: refused unless this person may post a message in this chat now (`send`'s check). */
+    readonly mayPost: (
+      person: PersonIdentity,
+      chatId: KinChatId,
+    ) => Effect.Effect<void, ServiceError>;
+    /**
      * Server-only: the owner switched an unanswered send card's From. Bound to the revision he
      * saw, and keeps the card's posted time, so its expiry doesn't move.
      */
@@ -2847,6 +2861,34 @@ const make = Effect.gen(function* () {
       });
       yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
       return widget;
+    }, transaction),
+    refreshDocCards: Effect.fn("KinChatService.refreshDocCards")(function* (input) {
+      const rows = yield* sql<{ widgetId: KinWidgetId }>`SELECT widget_id AS "widgetId"
+        FROM kin_widgets WHERE org_id = ${input.orgId} AND type = ${KIN_DOC_CARD}
+          AND json_extract(state_json, '$.recordId') = ${input.recordId}
+          AND json_extract(state_json, '$.draft') IS NOT NULL
+        ORDER BY widget_id`.pipe(Effect.mapError(toPersistenceSqlError("KinChatService.docCards")));
+      for (const { widgetId } of rows) {
+        const existing = yield* requireRecord(repo.getWidget({ orgId: input.orgId, widgetId }));
+        const card = yield* decodeDocCard(existing.state).pipe(Effect.mapError(() => invalidState));
+        if (card.draft === undefined) continue;
+        const widget = yield* repo.updateWidget({
+          ...existing,
+          audience: "chat",
+          state:
+            input.text === undefined
+              ? card
+              : { ...card, draft: { ...card.draft, text: input.text } },
+          expectedRevision: existing.revision,
+          updatedAt: yield* now,
+        });
+        yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      }
+    }, transaction),
+    mayPost: Effect.fn("KinChatService.mayPost")(function* (person, chatId) {
+      const member = yield* memberFor(person, chatId);
+      yield* canWrite(person, member);
+      yield* answerable(person, chatId);
     }, transaction),
     setSendCard: Effect.fn("KinChatService.setSendCard")(function* (input) {
       const existing = yield* requireRecord(

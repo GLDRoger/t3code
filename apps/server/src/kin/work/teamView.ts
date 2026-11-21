@@ -1,5 +1,6 @@
 import {
   kinCurrenciesWithDecimals,
+  type KinAgentId,
   KinChatError,
   type KinOrgId,
   type KinRecordId,
@@ -18,6 +19,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
+import { directKey } from "../lead/LeadAccess.ts";
 import { LISTS } from "./lists.ts";
 import {
   inheritedSensitive,
@@ -99,8 +101,8 @@ const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fra
 /**
  * What a non-owner-level person sees everywhere: a task they hold, attend or marked private; unlabelled,
  * what they made, gave or share, their projects with those projects' entries and docs (never a
- * private task), docs filed at their ask, company docs with Docs on, and with Clients on the deals
- * of clients they see.
+ * private task), docs filed as their own drafts (`draftDoc`'s mark), company docs with Docs on, and
+ * with Clients on the deals of clients they see.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
@@ -115,7 +117,7 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
     (r.register_id = 'projects' AND ${onProject(sql, personId, sql`r.record_id`)})
     OR (r.register_id IN ('clients', 'contacts') AND ${placeOn(sql, personId, "sees_clients")})
     OR (r.register_id = 'docs' AND r.project_id IS NOT NULL AND ${projectPerson(sql, personId)})
-    OR (r.register_id = 'docs' AND r.asked_by_person_id = ${personId})
+    OR (r.register_id = 'docs' AND json_extract(r.fields_json, '$.draftFor') = ${personId})
     OR (r.register_id = 'docs' AND (r.team_shared = 1
       OR json_extract(r.fields_json, '$.home') = 'company')
       AND ${placeOn(sql, personId, "sees_docs")})))
@@ -334,10 +336,13 @@ export const viewGuard = Effect.fn("KinTeamView.viewGuard")(function* (
     readonly askers: ReadonlyArray<KinPersonId>;
   },
   write: Parameters<typeof teamGuard>[2],
+  /** The agent's turn making the write, which `draftDoc` reads its ask from. */
+  turn?: { readonly agentId: KinAgentId; readonly wakeupId: string },
 ) {
   if (view.people.length === 0) return yield* noLongerTeam;
   if (yield* roomWork(orgId, view.people, write)) return;
-  if (yield* draftDoc(orgId, view, write)) return;
+  const draft = yield* draftDoc(orgId, view, write, turn);
+  if (draft === "filed") return { draftFor: view.people[0]! };
   for (const person of view.people)
     yield* teamGuard(orgId, person, {
       ...write,
@@ -365,8 +370,9 @@ const DRAFT_DOC_FIELDS: ReadonlySet<string> = new Set(["list", "source", "partyI
 const COMPANY_DOC_KINDS: ReadonlyArray<unknown> = ["playbook", "policy"];
 
 /**
- * A doc filed at the one teammate's ask behind the turn, which they then see (`personSees`): no
- * label, sharing, money or company home, under a client they see and a project they are in.
+ * A doc filed at the one teammate's ask behind the turn, marked theirs (`draftFor`), so they see
+ * it (`personSees`) and their turns may revise its text (`teamRule`): no label, sharing, money or
+ * company home, under a client they see and a project they are in.
  */
 const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
   orgId: KinOrgId,
@@ -375,6 +381,7 @@ const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
     readonly askers: ReadonlyArray<KinPersonId>;
   },
   write: Parameters<typeof teamGuard>[2],
+  turn: { readonly agentId: KinAgentId; readonly wakeupId: string } | undefined,
 ) {
   const { row, input } = write;
   const [person] = view.people;
@@ -388,7 +395,9 @@ const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
     write.changes ||
     OWNERS_FIELDS.some((field) => input[field] !== undefined && !DRAFT_DOC_FIELDS.has(field))
   )
-    return false;
+    return undefined;
+  if (row === undefined && (turn === undefined || !(yield* ownDirectAsk(orgId, person, turn))))
+    return "elsewhere" as const;
   const facts = yield* teamFactsOf(
     orgId,
     person,
@@ -397,10 +406,37 @@ const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
   );
   const own = facts(row?.recordId);
   if (!own.member) return yield* noLongerTeam;
-  if (row !== undefined) return own.seen !== null && own.seen !== undefined;
+  if (row !== undefined)
+    return own.seen !== null && own.seen !== undefined ? ("filed" as const) : undefined;
   if (typeof input.partyId === "string" && !(own.clients.on && own.clients.seen.has(input.partyId)))
-    return false;
-  return typeof input.projectId !== "string" || (yield* inProject(orgId, person, input.projectId));
+    return undefined;
+  return typeof input.projectId !== "string" || (yield* inProject(orgId, person, input.projectId))
+    ? ("filed" as const)
+    : undefined;
+});
+
+/**
+ * The turn answers this person's own message in their own direct chat with the agent, and
+ * nothing in it was carried from another chat or agent.
+ */
+const ownDirectAsk = Effect.fn("KinTeamView.ownDirectAsk")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  turn: { readonly agentId: KinAgentId; readonly wakeupId: string },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const asks = yield* sql<{ own: number }>`SELECT (m.author_kind = 'human'
+      AND m.author_person_id = ${personId} AND m.origin_json IS NULL
+      AND json_extract(e.json, '$.origin') IS NULL AND c.kind = 'direct'
+      AND c.archived_at IS NULL AND c.direct_key = ${directKey(personId, turn.agentId)}) AS own
+    FROM kin_events e
+    LEFT JOIN kin_messages m ON m.org_id = e.org_id
+      AND m.message_id = json_extract(e.json, '$.messageId')
+    LEFT JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+    WHERE e.org_id = ${orgId} AND e.agent_id = ${turn.agentId} AND e.wakeup_id = ${turn.wakeupId}
+      AND e.tag = 'chat.message'
+    ORDER BY e.event_id`;
+  return asks.length > 0 && asks.every((ask) => ask.own === 1);
 });
 
 /** Whether the write is team-visible work everyone behind the turn sees, before and after. */
@@ -453,7 +489,8 @@ const roomWork = Effect.fn("KinTeamView.roomWork")(function* (
  */
 const teamWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
   sql`(${personSees(sql, personId)} AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
-    OR r.assigned_by_person_id = ${personId} OR r.marked_by_person_id = ${personId}
+    OR (r.assigned_by_person_id = ${personId} AND r.register_id <> 'docs')
+    OR r.marked_by_person_id = ${personId}
     OR ${leadWrites(sql, personId)}))`;
 
 const leadWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
@@ -618,6 +655,7 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
           leads: number;
           marked: number;
           gave: number;
+          draft: number;
           registerId: string;
           partyId: string | null;
           projectId: string | null;
@@ -628,6 +666,8 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
           (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id
             AND p.record_id = r.project_id) AS "projectPartyId",
           COALESCE(r.assigned_by_person_id = ${personId}, 0) AS gave,
+          COALESCE(r.register_id = 'docs'
+            AND json_extract(r.fields_json, '$.draftFor') = ${personId}, 0) AS draft,
           ${leadWrites(sql, personId)} AS leads,
           COALESCE(r.marked_by_person_id = ${personId}, 0) AS marked, r.register_id AS "registerId"
         FROM kin_records r WHERE r.org_id = ${orgId}
@@ -697,6 +737,11 @@ const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined 
   if (row !== undefined) {
     const seen = facts.seen;
     if (seen === undefined || seen === null) return notFound(row.key);
+    // Their own draft (`draftDoc`): a new version of its text, and nothing else about it.
+    if (write.changes && seen.writes !== 1 && seen.draft === 1)
+      return Object.values(write.input).some((value) => value !== undefined)
+        ? TEAM_REFUSED
+        : undefined;
     if (write.changes && seen.writes !== 1)
       return new KinChatError({
         reason: "not_allowed",

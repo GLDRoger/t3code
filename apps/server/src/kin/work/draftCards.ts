@@ -3,11 +3,14 @@ import {
   KIN_SOCIAL_PLATFORM_LABELS,
   KinAgentId,
   KinChatError,
+  KinChoiceCardState,
   type KinDocCardDraft,
   KinDocCardState,
   type KinDocSendUpInput,
   type KinDraftKind,
   KinPersonId,
+  KinRecordId,
+  KinRecordKey,
   type KinSocialPlatform,
   ThreadId,
 } from "@t3tools/contracts";
@@ -22,7 +25,8 @@ import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { turnChat, turnPeople } from "../lead/Audience.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
-import { DRAFT_WORDS } from "../questions/approval.ts";
+import { DRAFT_WORDS, draftDetail, draftLine } from "../questions/approval.ts";
+import { askedBy } from "../questions/openQuestions.ts";
 import { sendUpFromCard } from "../questions/askPerson.ts";
 import { postsTo } from "../social/rows.ts";
 import type { Lead } from "./leadWork.ts";
@@ -31,15 +35,19 @@ import { personSees } from "./teamView.ts";
 
 /** A draft travels up on its card's text, which holds at most this (`kin_ask_person`'s detail). */
 export const DRAFT_TEXT_MAX = 1800;
+/** What the owner's Approve card carries as its text (`KinChoiceCardState.detail`). */
+const cardHolds = Schema.is(KinChoiceCardState.fields.detail);
 
 /**
- * A draft's card, from stored rows: "Send to" the agent's owner only in the one teammate's own
- * chat with it, and, for a post, that Kin can't post it when no account there is connected.
+ * A draft's card, from stored rows: its text, client and service as filed; "Send to" the agent's
+ * owner only in the one teammate's own chat with it, and only when the Approve card it raises can
+ * carry it whole (`fits`); for a post, that Kin can't post it when that client's group (ours,
+ * with none) has no account there.
  */
 export const draftCardOf = Effect.fn("KinDraftCards.of")(function* (
   lead: Lead,
   draft: { readonly kind: KinDraftKind; readonly on?: KinSocialPlatform | undefined },
-  text: string,
+  doc: { readonly text: string; readonly partyId: string | null },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const [owner] = yield* sql<{ personId: string; name: string }>`SELECT
@@ -60,20 +68,60 @@ export const draftCardOf = Effect.fn("KinDraftCards.of")(function* (
     (yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${lead.orgId} AND chat_id = ${chat.chatId}
       AND kind = 'direct' AND archived_at IS NULL
       AND direct_key = ${directKey(asker, lead.agentId)}`).length > 0;
-  const posts = draft.kind !== "post" || (yield* postsTo(lead.orgId, draft.on));
-  return {
+  const [client] =
+    doc.partyId === null
+      ? []
+      : yield* sql<{ recordId: string; key: string; title: string }>`SELECT
+          record_id AS "recordId", key, title FROM kin_records
+        WHERE org_id = ${lead.orgId} AND record_id = ${doc.partyId} AND register_id = 'clients'`;
+  const on = draft.kind === "post" ? draft.on : undefined;
+  const posts = draft.kind !== "post" || (yield* postsTo(lead.orgId, on, client?.recordId ?? null));
+  const sendTo = own && by !== undefined ? by : undefined;
+  const [names] =
+    sendTo === undefined || asker === undefined
+      ? []
+      : yield* sql<{ asker: string; agent: string }>`SELECT p.display_name AS asker,
+          l.name AS agent FROM kin_people p JOIN kin_leads l ON l.org_id = p.org_id
+            AND l.agent_id = ${lead.agentId}
+        WHERE p.org_id = ${lead.orgId} AND p.person_id = ${asker}`;
+  const card = {
     kind: draft.kind,
-    text,
-    ...(own && by !== undefined ? { sendTo: by } : {}),
+    text: doc.text,
+    ...(on === undefined ? {} : { on }),
+    ...(client === undefined
+      ? {}
+      : {
+          client: {
+            recordId: KinRecordId.make(client.recordId),
+            key: KinRecordKey.make(client.key),
+            title: client.title,
+          },
+        }),
+    ...(sendTo === undefined ? {} : { sendTo }),
     ...(!posts && by !== undefined
       ? {
           noAccount: {
-            service: draft.on === undefined ? "social media" : KIN_SOCIAL_PLATFORM_LABELS[draft.on],
+            service: on === undefined ? "social media" : KIN_SOCIAL_PLATFORM_LABELS[on],
             by,
           },
         }
       : {}),
   } satisfies KinDocCardDraft;
+  return {
+    card,
+    fits:
+      names === undefined ||
+      cardHolds(
+        draftDetail(askedBy(names.asker, names.agent), {
+          text: doc.text.trim(),
+          line: draftLine(
+            draft.kind,
+            on === undefined ? undefined : KIN_SOCIAL_PLATFORM_LABELS[on],
+            client?.title,
+          ),
+        }),
+      ),
+  };
 });
 
 const decodeCard = Schema.decodeUnknownOption(Schema.fromJsonString(KinDocCardState));
@@ -122,12 +170,17 @@ export const sendUp = Effect.fn("KinDraftCards.sendUp")(
         reason: "not_allowed",
         message: "Only a teammate's own draft goes up from its card.",
       });
-    const [doc] = yield* sql<{ key: string; title: string; client: string | null }>`SELECT r.key,
-      r.title, (SELECT p.key FROM kin_records p WHERE p.org_id = r.org_id
-        AND p.record_id = r.party_id AND p.register_id = 'clients') AS client
+    const [doc] = yield* sql<{ key: string; title: string; partyId: string | null }>`SELECT r.key,
+      r.title, r.party_id AS "partyId"
     FROM kin_records r WHERE r.org_id = ${input.orgId} AND r.record_id = ${card.recordId}
       AND r.register_id = 'docs' AND ${personSees(sql, person.personId)}`;
     if (doc === undefined) return yield* gone;
+    // What goes up is what the card holds: once its title or client moved, it is another draft.
+    if (doc.title !== card.title || doc.partyId !== (draft.client?.recordId ?? null))
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message: "This draft has changed since it was written. Ask for a fresh one here.",
+      });
     const chat = yield* KinChatService;
     const asked = yield* sendUpFromCard(
       {
@@ -142,12 +195,16 @@ export const sendUp = Effect.fn("KinDraftCards.sendUp")(
         personId: person.personId,
         chatId: input.chatId,
         widgetId: input.widgetId,
+        ...(draft.on === undefined ? {} : { on: KIN_SOCIAL_PLATFORM_LABELS[draft.on] }),
       },
       {
         to: row.owner,
-        question: `Approve this ${DRAFT_WORDS[draft.kind]}: ${doc.title}`.slice(0, 239) + "?",
-        detail: draft.text.trim().slice(0, DRAFT_TEXT_MAX),
-        draft: { kind: draft.kind, ...(doc.client === null ? {} : { for: doc.client }) },
+        question: `Approve this ${DRAFT_WORDS[draft.kind]}: ${card.title}`.slice(0, 239) + "?",
+        detail: draft.text.trim(),
+        draft: {
+          kind: draft.kind,
+          ...(draft.client === undefined ? {} : { for: draft.client.key }),
+        },
         about: [doc.key],
       },
       { chat, gate: yield* KinLevelGate },
@@ -162,13 +219,20 @@ export const sendUp = Effect.fn("KinDraftCards.sendUp")(
           ),
       }),
     );
+    const held = asked.state === "held";
     yield* chat.setDocCardSent({
       orgId: input.orgId,
       widgetId: input.widgetId,
-      sent: { name: asked.to, at: iso(yield* Clock.currentTimeMillis) },
+      sent: {
+        name: asked.to,
+        at: iso(yield* Clock.currentTimeMillis),
+        ...(held ? { held: true as const } : {}),
+      },
     });
-    return { to: asked.to, held: asked.state === "held" };
+    return { to: asked.to, held };
   },
+  // The card, the doc and the ask are read and written in one transaction.
+  (effect) => Effect.flatMap(SqlClient.SqlClient, (sql) => sql.withTransaction(effect)),
   Effect.catchTags({
     SqlError: () => Effect.fail(unavailable),
     PersistenceSqlError: () => Effect.fail(unavailable),

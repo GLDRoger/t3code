@@ -42,8 +42,8 @@ import {
   DRAFT_KINDS,
   answeredEventId,
   DRAFT_OPTIONS,
-  DRAFT_WORDS,
   draftDetail,
+  draftLine,
   encodeStoredDraft,
   type StoredDraft,
 } from "./approval.ts";
@@ -126,7 +126,7 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
   input: typeof AskPersonInput.Type,
   deps: AskDeps,
 ) {
-  return yield* ask({ _tag: "turn", lead }, input, deps);
+  return yield* ask({ _tag: "turn", lead }, input, deps.chat, deps.gate.askTo);
 });
 
 /**
@@ -134,36 +134,44 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
  * from them, as their message there would have the agent make it. A second press finds the first.
  */
 export const sendUpFromCard = Effect.fn("KinQuestions.sendUpFromCard")(function* (
-  press: {
-    readonly agent: AgentIdentity;
-    readonly personId: KinPersonId;
-    readonly chatId: KinChatId;
-    readonly widgetId: string;
-  },
+  press: Omit<Press, "_tag" | "mayPost">,
   input: typeof AskPersonInput.Type,
-  deps: AskDeps,
+  deps: {
+    readonly chat: AskDeps["chat"] & Pick<KinChatService["Service"], "mayPost">;
+    readonly gate: Pick<KinLevelGate["Service"], "askToOnPress">;
+  },
 ) {
-  return yield* ask({ _tag: "press", ...press }, input, deps);
+  const mayPost = deps.chat.mayPost(
+    { _tag: "person", orgId: press.agent.orgId, personId: press.personId },
+    press.chatId,
+  );
+  return yield* ask({ _tag: "press", ...press, mayPost }, input, deps.chat, deps.gate.askToOnPress);
 });
 
 type AskDeps = {
   readonly chat: Pick<KinChatService["Service"], "createDirect" | "notice">;
   readonly gate: Pick<KinLevelGate["Service"], "askTo">;
 };
+type Press = {
+  readonly _tag: "press";
+  readonly agent: AgentIdentity;
+  readonly personId: KinPersonId;
+  readonly chatId: KinChatId;
+  readonly widgetId: string;
+  /** A post's service, by name, as the draft's card holds it. */
+  readonly on?: string;
+  /** Checks the press as a message of theirs in that chat would be checked (`send`). */
+  readonly mayPost: ReturnType<KinChatService["Service"]["mayPost"]>;
+};
 type AskFrom =
   | { readonly _tag: "turn"; readonly lead: AgentIdentity & { readonly wakeupId: KinWakeupId } }
-  | {
-      readonly _tag: "press";
-      readonly agent: AgentIdentity;
-      readonly personId: KinPersonId;
-      readonly chatId: KinChatId;
-      readonly widgetId: string;
-    };
+  | Press;
 
 const ask = Effect.fn("KinQuestions.ask")(function* (
   from: AskFrom,
   input: typeof AskPersonInput.Type,
-  deps: AskDeps,
+  chat: AskDeps["chat"],
+  askTo: KinLevelGate["Service"]["askTo"],
 ) {
   const sql = yield* SqlClient.SqlClient;
   const lead = from._tag === "turn" ? from.lead : from.agent;
@@ -172,6 +180,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
       const { orgId, agentId } = lead;
       const turn = from._tag === "turn" ? { orgId, agentId, wakeupId: from.lead.wakeupId } : null;
       const press = from._tag === "press" ? from : null;
+      if (press !== null) yield* press.mayPost;
       if (turn !== null && (yield* aborted(turn)))
         return yield* refuse("Someone else joined this chat while you were working.");
       if (turn !== null && (yield* passedOn(turn)))
@@ -272,13 +281,12 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           return yield* refuse(`No client or deal ${key} that ${askerName ?? "they"} sees.`);
         const [owner] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
           WHERE org_id = ${orgId} AND person_id = ${self.owner}`;
-        const word = DRAFT_WORDS[input.draft.kind];
-        const line = `${word.charAt(0).toUpperCase()}${word.slice(1)}${party === undefined ? "" : ` for ${party.title}`}`;
         sentUp = {
           kind: input.draft.kind,
           for: party ?? null,
           text: input.detail,
-          line,
+          line: draftLine(input.draft.kind, press?.on, party?.title),
+          ...(press?.on === undefined ? {} : { on: press.on }),
           names: {
             owner: owner?.name ?? "the owner",
             asker: askerName ?? "them",
@@ -310,7 +318,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           reason: "not_allowed",
           message: Reach.restrictedLine(target.name, askerName ?? "they", askerName),
         });
-      const direct = yield* deps.chat
+      const direct = yield* chat
         .createDirect({ _tag: "person", orgId, personId: target.id }, { orgId, agentId })
         .pipe(Effect.mapError(() => unreached));
       const about = normaliseAbout(input.about);
@@ -443,7 +451,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
             ${here.chatId}, ${asker},
             ${widgetId === null ? heldCard : null}, ${draft})
           ON CONFLICT (question_id) DO NOTHING`.pipe(Effect.asVoid);
-      const posted = yield* deps.gate.askTo(
+      const posted = yield* askTo(
         lead,
         target.id,
         {
@@ -460,7 +468,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
       if ("_tag" in posted) {
         if (turn !== null)
           yield* arrivesNote(
-            deps.chat,
+            chat,
             turn,
             target.name,
             posted,
