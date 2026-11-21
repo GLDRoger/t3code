@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
@@ -15,9 +16,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as ProjectService from "../../project/ProjectService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
 import { orchestrationHarness, orgId } from "../lead/WakeupRunner.testkit.ts";
@@ -73,6 +76,10 @@ it.effect("each night's dream runs in its own folder after the last one's is rem
       });
       yield* fs.remove(yield* night("dream_20261110_first"), { recursive: true });
       yield* night("dream_20261111_second");
+      // The org's dream project is Kin's own, so it stays out of people's pickers.
+      const projects = yield* ProjectService.ProjectService;
+      const project = yield* projects.getById(ProjectId.make(`kin-dream:${orgId}`));
+      assert.isNotNull(Option.getOrThrow(project).archivedAt);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(

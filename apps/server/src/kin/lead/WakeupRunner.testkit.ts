@@ -521,6 +521,7 @@ function parts(options: HarnessOptions) {
         )
       : Layer.mock(ProjectService.ProjectService)({
           bootstrap: () => Effect.sync(() => ({ project: current(), created: true })),
+          update: () => Effect.sync(current),
           getById: () => Effect.sync(() => Option.some(current())),
           getByWorkspaceRoot: () => Effect.sync(() => Option.some(current())),
         });
