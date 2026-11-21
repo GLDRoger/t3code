@@ -29,6 +29,7 @@ import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Deals from "../work/deals.ts";
 import * as KinRecords from "../work/KinRecords.ts";
+import * as LeadClients from "../work/leadClients.ts";
 import * as LeadDocs from "../work/leadDocs.ts";
 import * as LeadWork from "../work/leadWork.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
@@ -752,6 +753,128 @@ it.effect(
           }),
         ),
         "invalid_state",
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a meeting told to the agent leaves what the form leaves, a retry makes nothing twice, and a deal is the agent's exactly when it is the screen's",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* zoyasTurn;
+      yield* sql`UPDATE kin_messages SET author_person_id = ${zoyaId}, author_member_id = 'lead-chat-zoya'
+        WHERE message_id = 'ask'`;
+      // "Met Ira at Tidewater: a rebrand, about 4,000, call her Monday" as one call.
+      const meeting = {
+        sourceEventId: "ask-event",
+        records: [
+          { list: "clients", title: "Invented Tidewater", kind: "prospect" as const },
+          { list: "contacts", title: "Invented Ira", client: "Invented Tidewater" },
+          {
+            list: "deals",
+            title: "Invented rebrand",
+            client: "Invented Tidewater",
+            amount: "€4,000",
+            next: { title: "Invented: call Ira", due: "2026-11-16" },
+          },
+        ],
+      };
+      const made = yield* LeadWork.create(scope, meeting);
+      const again = yield* LeadWork.create(scope, meeting);
+      assert.deepStrictEqual(
+        again.records.map((one) => [one.key, one.created]),
+        made.records.map((one) => [one.key, false]),
+      );
+      const [tidewater, , deal] = made.records.map((one) => one.key);
+      const steps = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'work' AND title = 'Invented: call Ira'`;
+      assert.strictEqual(steps[0]!.n, 1);
+      // What the meeting left is what logging it reads back: the deal, its value, step and contact.
+      const logged = yield* LeadClients.logTouch(scope, {
+        client: tidewater!,
+        kind: "meeting",
+        note: "Invented: wants a rebrand, about 4,000",
+        sourceEventId: "ask-event",
+      });
+      assert.deepStrictEqual(
+        logged.onRecord.openDeals.map((one) => [one.key, one.value, one.next?.title]),
+        [[deal, "€4,000.00", "Invented: call Ira"]],
+      );
+      assert.deepStrictEqual(logged.onRecord.contacts, ["Invented Ira"]);
+      // A client with nothing yet says so.
+      const bare = (yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Harbourline",
+        clientRequestId: "harbourline",
+      })).key;
+      const told = yield* LeadClients.logTouch(scope, {
+        client: bare,
+        kind: "meeting",
+        note: "Invented: wants a proposal by Friday",
+        sourceEventId: "ask-event",
+      });
+      assert.deepStrictEqual(told.onRecord, { openDeals: [], contacts: [] });
+      // A word finds only clients that carry it; the answer says how many there are without it.
+      const all = yield* LeadWork.query(scope, { list: "clients" });
+      const worded = yield* LeadWork.query(scope, { list: "clients", text: "Tidewater" });
+      assert.deepStrictEqual([worded.total, worded.withoutText], [1, all.total]);
+      assert.isAbove(all.total, 1);
+      assert.notProperty(all, "withoutText");
+      // "Sent the quote, next step call her Monday": the step still open is in the answer.
+      const stepped = yield* LeadWork.update(scope, {
+        key: KinRecordKey.make(deal!),
+        sourceEventId: "ask-event",
+        next: { title: "Invented: chase the quote", due: "2026-11-20" },
+      });
+      assert.deepStrictEqual(
+        stepped.openSteps?.map((one: { readonly title: string }) => one.title),
+        ["Invented: call Ira", "Invented: chase the quote"],
+      );
+      // Rhea's client with no deal: Zoya's screen and her agent may both open one, and neither
+      // may with her Clients switch off.
+      const outcome = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.as("ok"),
+          Effect.catch((error) => Effect.succeed(isChatError(error) ? error.reason : error._tag)),
+        );
+      const opens = (via: "screen" | "agent", title: string) =>
+        via === "screen"
+          ? outcome(Deals.create([zoya], { orgId, party: bare, title, clientRequestId: title }))
+          : outcome(
+              LeadWork.create(scope, {
+                sourceEventId: "ask-event",
+                records: [{ list: "deals", title, client: bare, besides: [] }],
+              }),
+            );
+      const firstDeal = yield* opens("agent", "Invented logistics proposal");
+      const firstKey = (yield* Deals.deals([zoya], { orgId, party: bare })).deals[0]?.key;
+      assert.deepStrictEqual(
+        [
+          firstDeal,
+          yield* opens("screen", "Invented second proposal"),
+          yield* LeadWork.create(scope, {
+            sourceEventId: "ask-event",
+            records: [
+              {
+                list: "deals",
+                title: "Invented third proposal",
+                client: bare,
+                besides: (yield* Deals.deals([zoya], { orgId, party: bare })).deals.map((one) =>
+                  KinRecordKey.make(one.key),
+                ),
+              },
+            ],
+          }).pipe(Effect.as("ok")),
+        ],
+        ["ok", "ok", "ok"],
+      );
+      assert.isDefined(firstKey);
+      yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = ${zoyaId}`;
+      assert.deepStrictEqual(
+        [yield* opens("screen", "Invented fourth"), yield* opens("agent", "Invented fifth")],
+        ["not_allowed", "not_allowed"],
       );
     }).pipe(Effect.provide(layer)),
 );

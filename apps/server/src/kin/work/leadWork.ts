@@ -354,6 +354,10 @@ export const QueryResult = Schema.Struct({
     ),
   ),
   sensitive: Schema.optional(Schema.Literal(true)),
+  withoutText: Schema.optional(Schema.Number).annotate({
+    description:
+      "Clients or contacts: how many the same query finds without text, which matches only their own words, never what kind of business they are.",
+  }),
 });
 /** An invoice's or quote's issued number, in whatever shape its company's series gives. */
 const IssuedNumber = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(40)).annotate({
@@ -627,6 +631,16 @@ const Updated = Schema.Struct({
   sameEmail: Schema.optional(Schema.Array(Named)),
   /** A new client took the task off its project, which is another client's. */
   projectLeft: Schema.optional(Schema.String),
+  openSteps: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        key: Schema.String,
+        title: Schema.String,
+        due: Schema.optional(Schema.String),
+        dueDay: Schema.optional(Schema.String),
+      }),
+    ),
+  ).annotate({ description: "A deal's next steps still open after the change, soonest first." }),
 });
 /** One entry's change at the top level; with keys, each entry's in entries. */
 export const UpdateResult = Schema.Struct({
@@ -642,6 +656,7 @@ export const UpdateResult = Schema.Struct({
   ...Marks.fields,
   sameEmail: Updated.fields.sameEmail,
   projectLeft: Updated.fields.projectLeft,
+  openSteps: Updated.fields.openSteps,
   entries: Schema.optional(Schema.Array(Updated)),
 });
 
@@ -1190,6 +1205,40 @@ const withDeal = <R extends { readonly key: string }>(
   deals: ReadonlyMap<string, typeof DealShown.Type>,
   row: R,
 ) => ((deal) => (deal === undefined ? row : { ...row, deal }))(deals.get(row.key));
+
+/** A client's record after contact with it: its open deals and its contacts, as the turn sees them. */
+export const ClientOnRecord = Schema.Struct({
+  openDeals: Schema.Array(
+    Schema.Struct({ key: Schema.String, title: Schema.String, ...DealShown.fields }),
+  ),
+  contacts: Schema.Array(Schema.String),
+});
+export const clientOnRecord = Effect.fn("KinWorkTools.clientOnRecord")(function* (
+  lead: Lead,
+  partyId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords;
+  const team = yield* viewOf(lead);
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const of = (list: string) => sql<{ key: string }>`SELECT r.key FROM kin_records r
+    WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list} AND r.party_id = ${partyId}
+      AND r.state NOT IN ('done', 'dropped') AND ${crmSeenBy(sql, viewer)}
+    ORDER BY r.created_at, r.key LIMIT ${REPEATS_SHOWN}`;
+  const rows = (yield* Effect.forEach(yield* of("deals"), (one) =>
+    records.get(lead.orgId, one.key),
+  )).filter((row) => row !== undefined);
+  const deals = yield* dealsShown(lead, team, yield* viewFor(lead, rows), rows);
+  return {
+    openDeals: rows.flatMap((row) => {
+      const deal = deals.get(row.key);
+      return deal === undefined ? [] : [{ key: row.key, title: row.title, ...deal }];
+    }),
+    contacts: (yield* Effect.forEach(yield* of("contacts"), (one) =>
+      records.get(lead.orgId, one.key),
+    )).flatMap((row) => (row === undefined ? [] : [row.title])),
+  } satisfies typeof ClientOnRecord.Type;
+});
 
 /**
  * A client or project the lead named by key, or by name as typed, among the active ones. In a turn
@@ -1762,6 +1811,17 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
     limit: input.limit ?? 20,
     ...(input.offset === undefined ? {} : { offset: input.offset }),
   });
+  const { text: _text, ...wide } = filter;
+  const unfiltered =
+    input.text === undefined || (list?.id !== "clients" && list?.id !== "contacts")
+      ? undefined
+      : (yield* records.query(lead.orgId, {
+          ...wide,
+          ...(team === undefined ? {} : { view: team.people }),
+          limit: 1,
+        })).total;
+  const withoutText =
+    unfiltered === undefined || unfiltered <= page.total ? {} : { withoutText: unfiltered };
   const shownTo = (input.offset ?? 0) + page.rows.length;
   const next = page.total > shownTo && page.rows.length > 0 ? { next: shownTo } : {};
   const now = yield* Clock.currentTimeMillis;
@@ -1778,6 +1838,7 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
       total: page.total,
       records,
       ...next,
+      ...withoutText,
     };
     return shown;
   }
@@ -1801,6 +1862,7 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
     total: page.total,
     records: page.rows.map((row) => withDeal(deals, rowFor(view, row, now))),
     ...next,
+    ...withoutText,
     ...(totals === undefined || totals.total.length === 0
       ? {}
       : { totals: totals.total.map(formatMoney), sensitive: true as const }),
@@ -2477,6 +2539,9 @@ const dealRow = Effect.fnUntraced(function* (
 ) {
   if (row.client === undefined)
     return yield* invalid("A deal needs its client or prospect: give client.");
+  const actor = yield* Deals.agentActor(lead.orgId, writer);
+  // The screen's first answer: with Clients off there are no deals, whatever the client.
+  yield* Deals.switchedOn(actor.orgId, actor.members);
   const party = yield* refRecord(lead, row.client, "clients");
   const fields = yield* dealFields(row.fields);
   if (fields.lostReason !== undefined && fields.lostReason !== null)
@@ -2485,7 +2550,6 @@ const dealRow = Effect.fnUntraced(function* (
     row.owner === undefined ? undefined : yield* resolveWho(lead, row.owner).pipe(asField("owner"));
   const due = row.due === undefined ? {} : yield* dueOf(lead.orgId, row.due);
   const value = yield* dealValue(def, row.amount, row.currency, undefined);
-  const actor = yield* Deals.agentActor(lead.orgId, writer);
   const originKey = `lead:${lead.agentId}:${sourceEventId}:${retryKey(`deals|${party.recordId}|${titleKey(row.title)}`)}`;
   yield* dealsOpenOn(actor, party.recordId, party.name, originKey, row.besides ?? []);
   const made = yield* Deals.createAs(actor, {
@@ -2652,12 +2716,36 @@ const dealUpdate = Effect.fnUntraced(function* (
               .filter((field) => field !== KIN_DEAL_STEP_FIELD),
           ),
         ];
+  const team = yield* viewOf(lead);
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const zone = yield* ownerZone(lead.orgId);
+  const steps = yield* sql<{ key: string; title: string; dueAt: number | null; dueAllDay: number }>`
+    SELECT r.key, r.title, r.due_at AS "dueAt", r.due_all_day AS "dueAllDay"
+    FROM kin_record_links l JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
+    WHERE l.org_id = ${lead.orgId} AND l.kind = 'record' AND l.target = ${after.recordId}
+      AND r.register_id = 'work' AND r.state NOT IN ('done', 'dropped') AND r.side = 'ours'
+      AND ${crmSeenBy(sql, viewer)}
+    GROUP BY r.record_id ORDER BY r.due_at IS NULL, r.due_at, r.created_at, r.key LIMIT ${REPEATS_SHOWN}`;
   const out: typeof Updated.Type & { readonly noLongerSeenBy?: ReadonlyArray<string> } = {
     key: after.key,
     rev: after.rev,
     state: after.state,
     changed: input.next === undefined ? changed : [...changed, "next"],
     ...marksOf(yield* allLists(lead.orgId), after),
+    ...(after.state === "open"
+      ? {
+          openSteps: steps.map((step) => ({
+            key: step.key,
+            title: step.title,
+            ...(step.dueAt === null
+              ? {}
+              : {
+                  due: dayOrTime(iso(step.dueAt), step.dueAllDay === 1, zone),
+                  dueDay: dayWords(step.dueAt, zone),
+                }),
+          })),
+        }
+      : {}),
   };
   return { out, notices };
 });
