@@ -21,6 +21,7 @@ import {
   kinGitHubAgentsView,
   kinGitHubGuardAction,
   kinGitHubGuardLine,
+  kinGitHubInstantRow,
   kinGitHubRow,
   kinGitHubSheet,
   kinGitHubWatchLine,
@@ -174,9 +175,12 @@ function AgentIdentity(props: {
   readonly login: string | null;
   readonly target: KinConnectionsTarget;
 }) {
-  const view = kinGitHubAgentsView(props.agents, props.login, useNowMinuteMs());
+  const now = useNowMinuteMs();
+  const view = kinGitHubAgentsView(props.agents, props.login, now);
   const installUrl = view.installUrl;
   const rows = kinGitHubAccountRows(props.agents);
+  const instant = kinGitHubInstantRow(props.agents, now);
+  const instantAction = instant?.action ?? null;
   const hint = kinGitHubAccountsHint(rows);
   const [picking, setPicking] = useState<string | null>(null);
   return (
@@ -225,6 +229,21 @@ function AgentIdentity(props: {
               </View>
             );
           })}
+        </ListSection>
+      )}
+      {instant === null ? null : (
+        <ListSection>
+          <ListRowLayout
+            label={instant.title}
+            detail={instant.label}
+            description={instant.detail}
+          />
+          {instantAction === null ? null : (
+            <ListActionRow
+              label={instantAction.label}
+              onPress={() => void Linking.openURL(instantAction.url)}
+            />
+          )}
         </ListSection>
       )}
       {view.uses.length === 0 ? null : (

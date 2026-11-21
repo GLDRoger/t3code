@@ -59,6 +59,7 @@ import {
   recordedAudience,
   turnChat,
 } from "./Audience.ts";
+import { REVIEW_THREAD_PREFIX, outsideReview } from "./outsideReview.ts";
 import { KinLeadPrompt, STEER_CLOSING } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import {
@@ -1216,11 +1217,15 @@ const make = Effect.gen(function* () {
             // registered again.
             const alone = !shared && (yield* ownerAlone(row).pipe(provideSql));
             const chatId = alone ? null : ((yield* turnChat(row).pipe(provideSql))?.chatId ?? null);
-            const prefix = shared ? SHARED_THREAD_PREFIX : "kin:";
+            // A stranger's pull request is reviewed on a thread that lists only its review tools.
+            const review = shared && (yield* outsideReview(row).pipe(provideSql)) !== undefined;
+            const prefix = review ? REVIEW_THREAD_PREFIX : shared ? SHARED_THREAD_PREFIX : "kin:";
             const [live] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
               FROM kin_agent_threads WHERE org_id = ${orgId} AND agent_id = ${agentId}
                 AND ended_at IS NULL AND chat_id IS ${chatId}
                 AND substr(thread_id, 1, ${prefix.length}) = ${prefix}
+                AND (${review ? 1 : 0} = 1
+                  OR substr(thread_id, 1, ${REVIEW_THREAD_PREFIX.length}) <> ${REVIEW_THREAD_PREFIX})
               ORDER BY started_at DESC, thread_id DESC LIMIT 1`;
             let existingThreadId = !alone && chatId === null ? null : (live?.threadId ?? null);
             if (existingThreadId !== null) {
@@ -1238,9 +1243,7 @@ const make = Effect.gen(function* () {
               yield* queue.finish({ orgId, wakeupId, status: "failed" });
               return;
             }
-            const threadId =
-              existingThreadId ??
-              ThreadId.make(`${shared ? SHARED_THREAD_PREFIX : "kin:"}${yield* ulid}`);
+            const threadId = existingThreadId ?? ThreadId.make(`${prefix}${yield* ulid}`);
             row = { ...row, threadId };
             yield* sql.withTransaction(
               Effect.gen(function* () {
