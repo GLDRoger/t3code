@@ -267,6 +267,8 @@ export function KinSearchHits(props: {
   /** Hits are all docs, so none needs to say what it is. */
   readonly docsOnly?: boolean;
   readonly scope?: KinViewerScope;
+  /** Finding nothing says nothing: the list above already answers for the search. */
+  readonly quietWhenNone?: boolean;
 }) {
   const { state } = props;
   if (state.hits === null) {
@@ -277,7 +279,9 @@ export function KinSearchHits(props: {
     );
   }
   if (state.hits.length === 0)
-    return <EmptyState variant="plain" {...kinSearchNothing(state.answered, props.scope)} />;
+    return props.quietWhenNone ? null : (
+      <EmptyState variant="plain" {...kinSearchNothing(state.answered, props.scope)} />
+    );
   return (
     <View className={cn(state.loading && "opacity-60")}>
       {state.failed ? (

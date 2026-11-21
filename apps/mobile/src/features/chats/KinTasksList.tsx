@@ -277,6 +277,16 @@ export function KinTasksList(
   // The whole company's tasks also find clients, projects and docs, and say what needs you.
   const everywhere = within === undefined;
   const { state: found, search } = useKinSearch(props, ELSEWHERE, true);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the native search box comes back empty once the page was left (a result opened, another tab), so the words it narrowed by go with it
+  useEffect(() => {
+    const clear = () => {
+      const held = list.getState().filter;
+      if (held.text !== "") list.setFilter({ ...held, text: "" });
+      search.setText("");
+    };
+    if (resumed) clear();
+    return navigation.addListener("focus", clear);
+  }, [list, navigation, resumed, search]);
   const steps = useKinTaskSteps({ environmentId, orgId });
   const base = { environmentId: String(environmentId), orgId: String(orgId) };
   const filterMenu = kinWorkFilterMenu({
@@ -453,6 +463,8 @@ export function KinTasksList(
                     </ListSection>
                   </View>
                   <KinSearchHits
+                    // A task found, or the list's own "Nothing matches", answers already.
+                    quietWhenNone
                     state={found}
                     scope={scope}
                     onRetry={search.retry}
