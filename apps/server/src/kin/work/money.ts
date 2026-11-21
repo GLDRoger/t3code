@@ -15,6 +15,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { homeCurrency } from "./companyProfile.ts";
 import { countedEntry } from "./recordRows.ts";
 
 /**
@@ -178,7 +179,7 @@ export const largestIn = Effect.fn("KinMoney.largestIn")(function* (
 /**
  * Why an amount an agent or an import is about to save reads like a slip: over a thousand times
  * the largest counted entry of its list in its currency, or with none there, over 10 million in
- * the home currency. A person typing in a form sees the number they typed and is not asked.
+ * the home currency. A person's form asks the same once (`askSlip`).
  */
 export const farAbove = (
   listName: string,
@@ -194,6 +195,49 @@ export const farAbove = (
   return money.currency === home && size > EMPTY_LIST_MAJOR * 10n ** BigInt(currencyDigits(home))
     ? `${formatMoney(money)} is far above what ${listName} holds so far. ${CHECK_IT}`
     : undefined;
+};
+
+/**
+ * A person's form's amount `farAbove` flags, refused with the list's name and its largest entry
+ * (null when it holds none) for the form to ask; saved again with `amountConfirmed`, it stands.
+ */
+export const askSlip = Effect.fn("KinMoney.askSlip")(function* (
+  orgId: KinOrgId,
+  def: { readonly id: string; readonly name: string },
+  money: KinMoney,
+  except?: string,
+) {
+  const largest = yield* largestIn(orgId, def.id, money.currency, except);
+  if (farAbove(def.name, money, largest, yield* homeCurrency(orgId)) === undefined) return;
+  return yield* new KinChatError({
+    reason: "invalid_state",
+    message:
+      largest > 0n
+        ? `${formatMoneyPlain(money)} is far above anything in ${def.name} so far (the largest is ${formatKinMoney(largest, money.currency)}). Check the amount.`
+        : `${formatMoneyPlain(money)} is far above what ${def.name} holds so far. Check the amount.`,
+    farAbove: {
+      list: def.name,
+      largest: largest > 0n ? { minor: Number(largest), currency: money.currency } : null,
+    },
+  });
+});
+
+/** What typed lines come to before tax, each quantity times rate rounded half up; none if unread. */
+export const linesBeforeTax = (
+  lines: ReadonlyArray<{ readonly quantity: string; readonly rate: string }>,
+  currency: string,
+): KinMoney | undefined => {
+  let total = 0n;
+  for (const line of lines) {
+    const rate = parseAmount(line.rate, currency);
+    const quantity = /^(\d{1,9})(?:\.(\d{1,3}))?$/u.exec(line.quantity);
+    if ("error" in rate || rate.money.currency !== currency || quantity === null) return undefined;
+    const places = quantity[2] ?? "";
+    const den = 10n ** BigInt(places.length);
+    const product = BigInt(rate.money.minor) * BigInt(`${quantity[1]}${places}`);
+    total += product / den + (2n * (product % den) >= den ? 1n : 0n);
+  }
+  return total > BigInt(Number.MAX_SAFE_INTEGER) ? undefined : { minor: Number(total), currency };
 };
 
 /** An invoice dated after its own due day, as days in the owner's zone. */

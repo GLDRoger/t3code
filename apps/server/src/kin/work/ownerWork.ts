@@ -1150,6 +1150,7 @@ export const update = Effect.fn("KinWork.update")(function* (
       ...(input.repo === undefined ? {} : { repo: input.repo }),
       ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
       ...(input.amount === undefined ? {} : { amount: input.amount }),
+      ...(input.amountConfirmed === false ? { askSlip: true } : {}),
       ...(input.repeat === undefined ? {} : { repeat: input.repeat }),
       ...(input.steps === undefined ? {} : { steps: input.steps }),
       ...(input.urgent === undefined ? {} : { urgent: input.urgent }),

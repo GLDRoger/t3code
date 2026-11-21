@@ -1530,7 +1530,43 @@ export type KinListOutcome<A> =
       readonly problem: string;
       /** It moved on since it was read: the latest is on screen now. */
       readonly changed: boolean;
+      /** The amount reads like a slip: the one line the form asks, `problem` too. */
+      readonly slip?: string;
     };
+
+export const KIN_AMOUNT_SLIP = {
+  far: (list: string, largest: string) =>
+    `That is far above anything in ${list} so far (the largest is ${largest}). Save it anyway?`,
+  empty: (list: string) => `That is far above what ${list} holds so far. Save it anyway?`,
+  save: "Save anyway",
+};
+
+/** The line a form asks when the host found its amount far above its list; null for other errors. */
+export function kinAmountSlipLine(error: unknown): string | null {
+  if (!isKinChatError(error) || error.farAbove === undefined) return null;
+  const { list, largest } = error.farAbove;
+  return largest === null
+    ? KIN_AMOUNT_SLIP.empty(list)
+    : KIN_AMOUNT_SLIP.far(list, kinMoneyText(largest));
+}
+
+/** A form's question about one amount, `about` being that amount as the form holds it. */
+export interface KinAmountAsk {
+  readonly line: string;
+  readonly about: string;
+}
+
+/** The question while the amount is still the one asked about; changing it clears the question. */
+export const kinAmountAsking = (ask: KinAmountAsk | null, about: string) =>
+  ask !== null && ask.about === about ? ask : null;
+
+/**
+ * What a form that asks sends with its amount: false asks the host to check it, true, once the
+ * person was asked about this very amount and saves again, keeps it.
+ */
+export const kinAmountConfirmed = (ask: KinAmountAsk | null, about: string) => ({
+  amountConfirmed: kinAmountAsking(ask, about) !== null,
+});
 
 /** One change to an entry or a list, answered with the new value or a reason in words. */
 export async function kinListSend<A>(input: {
@@ -1541,6 +1577,8 @@ export async function kinListSend<A>(input: {
   const result = await input.send();
   if (AsyncResult.isSuccess(result)) return { ok: true, value: result.value };
   const error = squashAtomCommandFailure(result);
+  const slip = kinAmountSlipLine(error);
+  if (slip !== null) return { ok: false, problem: slip, changed: false, slip };
   // A retry key reused for something else: the form's id is stale, not the person's rights.
   if (isKinChatError(error) && error.reason === "not_allowed" && /retry key/i.test(error.message))
     return {

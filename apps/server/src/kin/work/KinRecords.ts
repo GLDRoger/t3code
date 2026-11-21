@@ -62,7 +62,15 @@ import {
   parseFields,
   shownField,
 } from "./lists.ts";
-import { addUp, dayIn, financialYearOf, formatMoney, isCurrency, monthOf } from "./money.ts";
+import {
+  addUp,
+  askSlip,
+  dayIn,
+  financialYearOf,
+  formatMoney,
+  isCurrency,
+  monthOf,
+} from "./money.ts";
 import {
   amountOf,
   byId,
@@ -233,6 +241,8 @@ export type Fields = {
   readonly fields?: Readonly<Record<string, FieldValue | null>>;
   /** Integer minor units in an ISO currency; only lists with an amount, and Work. */
   readonly amount?: KinMoney | null;
+  /** A person's form that asks: a new amount far above its list is refused (`askSlip`). */
+  readonly askSlip?: boolean;
   /** When it happened, was issued or starts; only defined lists. */
   readonly dateAt?: number | null;
   readonly dateAllDay?: boolean;
@@ -1419,6 +1429,8 @@ const make = Effect.gen(function* () {
     if (invalidFor !== undefined) return yield* invalidFor;
     const zero = zeroOwed(def, input.amount, input.category, writer);
     if (zero !== undefined) return yield* zero;
+    if (input.askSlip === true && input.amount != null)
+      yield* askSlip(orgId, def, input.amount).pipe(provideSql);
     if (list === "receipts" && RECEIPT_TIES.some((field) => field in fields))
       return yield* invalid(RECEIPT_TIES_ARE_KINS);
     if (writer.actor._tag !== "person" && numberingOf(def) !== undefined && "number" in fields)
@@ -1723,6 +1735,12 @@ const make = Effect.gen(function* () {
           yield* countryFirst(orgId, { saved: true }).pipe(provideSql);
         const zero = zeroOwed(def, patch.amount, patch.category ?? row.category, writer);
         if (zero !== undefined) return yield* zero;
+        if (
+          patch.askSlip === true &&
+          patch.amount != null &&
+          (patch.amount.minor !== row.amountMinor || patch.amount.currency !== row.currency)
+        )
+          yield* askSlip(orgId, def, patch.amount, row.recordId).pipe(provideSql);
         if (list === "receipts") {
           if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
             return yield* invalid(RECEIPT_TIES_ARE_KINS);

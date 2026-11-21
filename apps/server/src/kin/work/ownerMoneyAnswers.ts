@@ -23,8 +23,8 @@ import { invoiceFromQuote as draftFromQuote, quotedInputs } from "../gendocs/quo
 import { defaultRecipes } from "../gendocs/recipeDefaults.ts";
 import { KinWorkspace, type StoredRecipe } from "../gendocs/workspace.ts";
 import { budgetsView, setBudget as setBudgetFor } from "./budgets.ts";
-import { countryFirst } from "./companyProfile.ts";
-import { dayIn } from "./money.ts";
+import { countryFirst, homeCurrency } from "./companyProfile.ts";
+import { askSlip, dayIn, linesBeforeTax } from "./money.ts";
 import { cashEstimate, cashPosition, outlook as outlookOf } from "./moneyAnswers.ts";
 import { KinRecords, requestHashOf } from "./KinRecords.ts";
 import { dueMillis, ownFiles, ownerWriter, theOwner } from "./ownerWork.ts";
@@ -350,13 +350,17 @@ export const newInvoice = Effect.fn("KinMoneyAnswers.rpc.newInvoice")(function* 
     input.project === undefined
       ? undefined
       : yield* recordOf(input.orgId, input.project, "projects");
-  yield* listOrPreset(input.orgId, "invoices", yield* Clock.currentTimeMillis);
+  const def = yield* listOrPreset(input.orgId, "invoices", yield* Clock.currentTimeMillis);
+  const { amountConfirmed, ...request } = input;
+  const total = linesBeforeTax(input.lines, yield* homeCurrency(input.orgId));
+  if (amountConfirmed === false && def !== undefined && total !== undefined)
+    yield* askSlip(input.orgId, def, total);
   const dueAt = input.dueOn === undefined ? null : yield* dueMillis(input.orgId, input.dueOn, true);
   const notes = input.notes?.trim() ?? "";
   const { row } = yield* (yield* KinRecords).create(input.orgId, ownerWriter(person), {
     list: "invoices",
     originKey: `owner:${input.clientRequestId}`,
-    requestHash: requestHashOf(input),
+    requestHash: requestHashOf(request),
     title: input.title,
     owner: { _tag: "person", personId: person.personId },
     state: "open",
@@ -389,6 +393,7 @@ export const newExpense = Effect.fn("KinMoneyAnswers.rpc.newExpense")(function* 
   input: KinNewExpenseInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
+  const { amountConfirmed, ...request } = input;
   yield* countryFirst(input.orgId);
   const sql = yield* SqlClient.SqlClient;
   const def = yield* presetList(input.orgId, "expenses", yield* Clock.currentTimeMillis);
@@ -406,10 +411,11 @@ export const newExpense = Effect.fn("KinMoneyAnswers.rpc.newExpense")(function* 
   const create = (yield* KinRecords).create(input.orgId, ownerWriter(person), {
     list: "expenses",
     originKey: `owner:${input.clientRequestId}`,
-    requestHash: requestHashOf(input),
+    requestHash: requestHashOf(request),
     title: input.title,
     owner: { _tag: "person", personId: person.personId },
     amount: input.amount,
+    ...(amountConfirmed === false ? { askSlip: true } : {}),
     dateAt,
     dateAllDay: true,
     ...(category === undefined ? {} : { category }),

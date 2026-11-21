@@ -1,9 +1,11 @@
 import {
   KIN_MONEY_FORMS,
+  kinExpenseAmountAbout,
   kinExpenseChoices,
   kinExpenseDraft,
   kinExpenseInput,
   kinExpenseTyped,
+  kinInvoiceAmountAbout,
   kinInvoiceBeforeTax,
   kinInvoiceDraft,
   kinInvoiceInput,
@@ -13,6 +15,7 @@ import {
   type KinExpenseDraft,
   type KinInvoiceDraft,
 } from "@t3tools/client-runtime/kin/kinMoneyForms";
+import { KIN_AMOUNT_SLIP } from "@t3tools/client-runtime/kin/kinLists";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkDayOf } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
@@ -148,6 +151,15 @@ function Problem(props: { readonly text: string | null }) {
   );
 }
 
+/** The one line a form asks under its amount when it reads like a slip. */
+function Slip(props: { readonly line: string | null }) {
+  return props.line === null ? null : (
+    <p role="status" className="text-sm text-foreground">
+      {props.line}
+    </p>
+  );
+}
+
 /**
  * A new invoice typed by hand: a Draft for its client, made with its lines, which opens on its
  * page, where Issue takes over.
@@ -193,7 +205,7 @@ export function KinNewInvoiceDialog(
     });
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);
-    const result = await saving.save(checked.input);
+    const result = await saving.save(checked.input, about);
     if (result === null) return;
     if (result.problems.length > 0)
       return setMade({ key: result.invoice, problems: result.problems });
@@ -201,6 +213,8 @@ export function KinNewInvoiceDialog(
     props.onClose();
   };
   const locked = saving.busy || made !== null;
+  const about = kinInvoiceAmountAbout(draft.lines);
+  const slip = saving.slip(about);
   return (
     <FormDialog
       title={KIN_MONEY_FORMS.invoice.title}
@@ -208,7 +222,13 @@ export function KinNewInvoiceDialog(
       typed={made === null && kinInvoiceTyped(draft, opened)}
       busy={saving.busy}
       discardTitle={KIN_MONEY_FORMS.discard.invoice}
-      saveLabel={made === null ? KIN_MONEY_FORMS.invoice.save : KIN_MONEY_FORMS.invoice.tryAgain}
+      saveLabel={
+        made !== null
+          ? KIN_MONEY_FORMS.invoice.tryAgain
+          : slip !== null
+            ? KIN_AMOUNT_SLIP.save
+            : KIN_MONEY_FORMS.invoice.save
+      }
       onSave={() => void save()}
       onClose={props.onClose}
     >
@@ -248,6 +268,7 @@ export function KinNewInvoiceDialog(
           {kinInvoiceBeforeTax(draft.lines, currency)}
         </p>
       )}
+      <Slip line={slip} />
       {gst && tax.registered ? (
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={ids.rate}>{KIN_MONEY_FORMS.invoice.gstRate}</Label>
@@ -374,6 +395,7 @@ export function KinNewExpenseDialog(
     paidWith: useId(),
     receipt: useId(),
   };
+  const slip = saving.slip(kinExpenseAmountAbout(draft));
   const set = (patch: Partial<KinExpenseDraft>) => {
     setDraft((current) => ({ ...current, ...patch }));
     setProblem(null);
@@ -382,7 +404,7 @@ export function KinNewExpenseDialog(
     const checked = kinExpenseInput(props.orgId, draft, { currency, clientRequestId: requestId });
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);
-    const key = await saving.save(checked.input);
+    const key = await saving.save(checked.input, kinExpenseAmountAbout(draft));
     if (key === null) return;
     props.onOpenKey(key);
     props.onClose();
@@ -422,7 +444,7 @@ export function KinNewExpenseDialog(
       typed={kinExpenseTyped(draft, opened)}
       busy={saving.busy}
       discardTitle={KIN_MONEY_FORMS.discard.expense}
-      saveLabel={KIN_MONEY_FORMS.expense.save}
+      saveLabel={slip === null ? KIN_MONEY_FORMS.expense.save : KIN_AMOUNT_SLIP.save}
       onSave={() => void save()}
       onClose={props.onClose}
     >
@@ -460,6 +482,7 @@ export function KinNewExpenseDialog(
           />
         </div>
       </div>
+      <Slip line={slip} />
       {draft.paidOn > today ? (
         <p className="text-xs text-muted-foreground">{KIN_MONEY_FORMS.expense.paidOnHint}</p>
       ) : null}
