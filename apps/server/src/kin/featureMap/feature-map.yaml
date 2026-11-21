@@ -1005,10 +1005,10 @@ features:
     tab: settings
     roles: { owner: none, co_owner: none, lead: none, member: none }
     note: >-
-      Server only so far: kin.org.pause and kin.org.resume (owner or co-owner, KinStop.pause and
-      KinStop.resume) stop and restart every agent turn, worker and delegated task; kin.org.get
-      tells anyone in the company whether it is stopped. No client reaches it yet; its row belongs
-      in Settings, Company on web and phone.
+      kin.org.pause and kin.org.resume (owner or co-owner, KinStop.pause and KinStop.resume) stop
+      and restart every agent turn, worker and delegated task; kin.org.get tells anyone in the
+      company whether it is stopped. The switch is reached from Settings, Company details on web
+      and phone (the stop-switch row).
     proof:
       - apps/server/src/kin/lead/KinStop.test.ts
       - apps/server/src/kin/chat/rpcHandlers.test.ts
