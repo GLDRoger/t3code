@@ -521,6 +521,8 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
         })
       : yield* records.query(input.orgId, {
           ...filter,
+          // "Due this week" and the like read by when, so tomorrow's comes before Tuesday's.
+          ...(input.dueBy === undefined ? {} : { order: "dueFirst" as const }),
           ...internal,
           offset: cursor.offset,
           limit,

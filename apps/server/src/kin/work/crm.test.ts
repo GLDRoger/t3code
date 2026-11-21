@@ -505,6 +505,32 @@ it.effect("the client page shows both directions, its contacts, projects and one
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a due window lists soonest due first, whatever is under way or waiting", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const task = (title: string, dueAt: string, id: string) =>
+      OwnerWork.create([owner], { orgId, title, dueAt, clientRequestId: id });
+    const tuesday = yield* task("Invented appointment screen", "1970-01-06T00:00:00.000Z", "tue");
+    const tomorrow = yield* task("Invented picker fix", "1970-01-02T00:00:00.000Z", "tom");
+    yield* OwnerWork.update([owner], {
+      orgId,
+      key: tuesday.key,
+      rev: tuesday.rev,
+      state: "waiting",
+      waitingOn: { _tag: "person", personId: ownerId },
+    });
+    const keys = (dueBy?: string) =>
+      OwnerWork.list([owner], {
+        orgId,
+        open: true,
+        ...(dueBy === undefined ? {} : { dueBy }),
+      }).pipe(Effect.map((page) => page.records.map((record) => record.key)));
+    assert.deepStrictEqual(yield* keys("1970-01-08T00:00:00.000Z"), [tomorrow.key, tuesday.key]);
+    // Without a due window, what is under way or waiting still leads.
+    assert.deepStrictEqual(yield* keys(), [tuesday.key, tomorrow.key]);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("project health moves on read as entries go late or wait, with no turn", () =>
   Effect.gen(function* () {
     yield* seed;

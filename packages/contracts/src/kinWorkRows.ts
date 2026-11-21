@@ -240,10 +240,13 @@ export const kinWorkHeldPage = (
 const STATE_RANK: Record<string, number> = { doing: 0, waiting: 1, open: 2 };
 const time = (iso: string | null) => (iso === null ? null : Date.parse(iso));
 
-/** `KinRecords.query`'s order for Work: under way first, then soonest due, then oldest, then key. */
-function kinWorkOrder(a: KinRecord, b: KinRecord): number {
+/**
+ * `KinRecords.query`'s order for Work: under way first, then soonest due, then oldest, then key.
+ * A read with a due window (`dueBy`) is soonest due first whatever the state (`dueFirst`).
+ */
+function kinWorkOrder(a: KinRecord, b: KinRecord, dueFirst: boolean): number {
   const rank = (record: KinRecord) => STATE_RANK[record.state] ?? 3;
-  if (rank(a) !== rank(b)) return rank(a) - rank(b);
+  if (!dueFirst && rank(a) !== rank(b)) return rank(a) - rank(b);
   const dueA = time(a.dueAt);
   const dueB = time(b.dueAt);
   if ((dueA === null) !== (dueB === null)) return dueA === null ? 1 : -1;
@@ -328,6 +331,7 @@ export function kinPatchWorkPage(
       moved: false,
     };
   const list = input.list ?? "work";
+  const dueFirst = input.dueBy !== undefined;
   const records = [...page.records];
   let { total } = page;
   const known = new Map(page.known);
@@ -367,8 +371,8 @@ export function kinPatchWorkPage(
       const last = records.at(-1);
       // With nothing held and more beyond, where it falls among them is unknown.
       if (page.more && last === undefined) return null;
-      if (!page.more || (last !== undefined && kinWorkOrder(record, last) < 0)) {
-        const index = records.findIndex((held) => kinWorkOrder(record, held) < 0);
+      if (!page.more || (last !== undefined && kinWorkOrder(record, last, dueFirst) < 0)) {
+        const index = records.findIndex((held) => kinWorkOrder(record, held, dueFirst) < 0);
         records.splice(index < 0 ? records.length : index, 0, record);
         known.delete(entry.key);
       }
