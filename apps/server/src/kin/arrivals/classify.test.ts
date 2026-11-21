@@ -102,7 +102,7 @@ describe("classify", () => {
         "h: automated mail with a file",
         mail("no-reply@printshop.example", { hasFile: true }),
         "automated_file",
-        "finance",
+        undefined,
       ],
       [
         "h: automated mail without one",

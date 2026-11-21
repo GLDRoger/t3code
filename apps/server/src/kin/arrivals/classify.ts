@@ -172,11 +172,8 @@ export const classify = (mail: ArrivalHeaders, rows: ArrivalRows): Classified =>
     };
   if (automated(mail, from))
     return mail.hasFile
-      ? {
-          class: "automated_file",
-          reason: "automated mail with a file: maybe a bill or receipt",
-          look: { by: "finance", matched: "automated mail with a file: maybe a bill or receipt" },
-        }
+      ? // Recorded, not woken for: an unknown sender's receipt costs a whole turn to say nothing.
+        { class: "automated_file", reason: "automated mail with a file: maybe a bill or receipt" }
       : { class: "automated", reason: "newsletter or automated mail" };
   const ours = to.find((address) => rows.own.has(address));
   if (ours === undefined && cc.some((address) => rows.own.has(address)))
