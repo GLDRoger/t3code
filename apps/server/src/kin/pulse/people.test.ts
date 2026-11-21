@@ -14,6 +14,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -30,6 +31,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinImport from "../work/KinImport.ts";
 import { readOnlyStream } from "../readRpcs.ts";
 import * as KinRecords from "../work/KinRecords.ts";
+import * as Work from "../work/ownerWork.ts";
 import * as KinPulse from "./KinPulse.ts";
 import * as Pulse from "./people.ts";
 
@@ -174,6 +176,39 @@ it.effect("a screen the pulse moves shows its tick's facts, never an older tick'
       const ticked = yield* screen.next;
       assert.deepStrictEqual<unknown>(ticked.folded, ticked.fresh);
       assert.strictEqual(ticked.folded.facts.length, 3);
+    }),
+  ).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("Tasks' Needs you count rides the stream that asks for it and moves with Work", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* seed;
+      yield* KinPulse.tick(orgId, NOW);
+      const events = yield* Queue.unbounded<KinPulseEvent>();
+      yield* Pulse.subscribe(as(ownerId), { ...page, tasksNeedsYou: true }).pipe(
+        Stream.runForEach((event) => Queue.offer(events, event)),
+        Effect.forkScoped,
+      );
+      // The Tasks screen's own count, as its Needs you heading reads it.
+      const tasksScreen = Work.list(as(ownerId), { orgId, open: true, byMove: true }).pipe(
+        Effect.map((one) => one.counts?.needsYou),
+      );
+      const first = yield* Queue.take(events);
+      if (first._tag !== "snapshot") return yield* Effect.die(new Error("No first page."));
+      assert.strictEqual(first.read.tasksNeedsYou, yield* tasksScreen);
+
+      // A task late for the owner moves the count with no pulse tick, and only the count.
+      yield* importTasks("pulse-people-count", [lateTask("t2", "Invented: book the caterer")]);
+      const change = yield* Queue.take(events);
+      if (change._tag !== "changed") return yield* Effect.die(new Error("No change."));
+      assert.deepStrictEqual([change.updated, change.removed], [[], []]);
+      const folded = kinPulseApply(first.read, change).tasksNeedsYou;
+      assert.strictEqual(folded, yield* tasksScreen);
+      assert.strictEqual(folded, (first.read.tasksNeedsYou ?? 0) + 1);
+      // A stream that didn't ask is sent no count.
+      const plain = Option.getOrThrow(yield* Stream.runHead(Pulse.subscribe(as(ownerId), page)));
+      assert.notProperty(plain._tag === "snapshot" ? plain.read : plain, "tasksNeedsYou");
     }),
   ).pipe(Effect.provide(testLayer)),
 );

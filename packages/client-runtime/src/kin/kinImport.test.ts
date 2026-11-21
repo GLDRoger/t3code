@@ -1,8 +1,16 @@
-import type { KinImportCheck } from "@t3tools/contracts";
+import {
+  KinChatError,
+  type KinImportCheck,
+  type KinImportFileInput,
+  type KinImportUpload,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   KIN_IMPORT_NO_CHOICES,
+  createKinImportFiles,
   kinImportBase64,
   kinImportChooseClient,
   kinImportChooseStage,
@@ -72,5 +80,47 @@ describe("kinImport", () => {
       stages: { negotiation: "deciding" },
     });
     expect(kinImportReady({ ...check, asks: { ...check.asks, currency: true } }, both)).toBe(false);
+  });
+
+  it("sends a file once, names it after, and sends it again by itself when the host lost it", async () => {
+    const upload: KinImportUpload = { id: "held-0001", hash: "a".repeat(64) };
+    const file = { name: "old-crm.csv", data: kinImportBase64(new Uint8Array(2048)) };
+    const sent: Array<"bytes" | "held"> = [];
+    // A host that holds what it read, until it restarts; an older one never says it holds it.
+    const host = { holds: true, has: false };
+    const ask = async (input: KinImportFileInput) => {
+      sent.push("data" in input ? "bytes" : "held");
+      if ("data" in input) host.has = host.holds;
+      else if (!host.has)
+        return AsyncResult.failure<KinImportUpload | undefined, unknown>(
+          Cause.fail(new KinChatError({ reason: "not_found", message: "Gone." })),
+        );
+      return AsyncResult.success<KinImportUpload | undefined, unknown>(
+        host.holds ? upload : undefined,
+      );
+    };
+    const send = createKinImportFiles();
+    const check = () => send(file, ask, (held) => held);
+    // First read, three mapping changes and the import: the bytes go once.
+    for (let index = 0; index < 4; index += 1) await check();
+    await send(file, ask, () => null);
+    expect(sent).toEqual(["bytes", "held", "held", "held", "held"]);
+
+    // The import let it go; a restart loses it too: either way it goes whole again, unseen.
+    sent.length = 0;
+    await check();
+    await check();
+    host.has = false;
+    const again = await check();
+    expect(AsyncResult.isSuccess(again)).toBe(true);
+    expect(sent).toEqual(["bytes", "held", "held", "bytes"]);
+
+    // Another file is sent whole; an older host gets the file every time.
+    sent.length = 0;
+    await send({ ...file, data: kinImportBase64(new Uint8Array(16)) }, ask, (held) => held);
+    host.holds = false;
+    await check();
+    await check();
+    expect(sent).toEqual(["bytes", "bytes", "bytes"]);
   });
 });

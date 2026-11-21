@@ -24,7 +24,8 @@ import { primaryServerKeybindingsAtom } from "../state/server";
 import { kinClient } from "./kinClient";
 import { KIN_PLACE_PATH } from "./kinPlaces";
 import type { KinWorkTarget } from "./useKinWork";
-import { hasSavedKinHost, kinHostAtom } from "./useKinHost";
+import { hasSavedKinHost, kinHostAtom, kinHostTarget } from "./useKinHost";
+import { kinPlacesAtom } from "./kinPlacesAtom";
 
 export function kinListAt(pathname: string): KinList {
   return pathname === "/kin" || pathname.startsWith("/kin/") ? "kin" : "threads";
@@ -206,14 +207,15 @@ export function registerKinListCommands(
         );
         const index = Number(event.code.slice(5)) - 1;
         const link = shown[index];
-        // A narrow window's sidebar sheet hides its links while closed, so go by what it published.
-        const published = link === undefined ? registry.get(kinShownDestinationsAtom) : null;
-        const destination = published?.destinations[index];
+        // A narrow window's sidebar sheet hides its links while closed, so go by the nav's places.
+        const target = link === undefined ? kinHostTarget(registry.get(kinHostAtom)) : null;
+        const destination =
+          target === null ? undefined : registry.get(kinPlacesAtom(target)).destinations[index];
         const go =
           link !== undefined
             ? () => link.click()
-            : published !== null && destination !== undefined
-              ? () => void router.navigate(kinDestinationLink(destination, published.target, true))
+            : target !== null && destination !== undefined
+              ? () => void router.navigate(kinDestinationLink(destination, target, true))
               : null;
         if (go === null) return false;
         event.preventDefault();
@@ -292,9 +294,3 @@ export function kinDestinationLink(
     ? ({ to: "/kin" } as const)
     : ({ to: "/kin/$environmentId/$orgId/$chatId", params: { ...target, chatId } } as const);
 }
-
-/** The destinations the nav last showed, and for which company; null before it has shown any. */
-export const kinShownDestinationsAtom = Atom.make<{
-  readonly target: KinWorkTarget;
-  readonly destinations: ReadonlyArray<KinDestination>;
-} | null>(null).pipe(Atom.keepAlive, Atom.withLabel("kin:shown-destinations"));

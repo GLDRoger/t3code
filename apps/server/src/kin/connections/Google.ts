@@ -5,6 +5,8 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
 import {
+  ACTIVITY_EVENTS,
+  ACTIVITY_MAIL,
   addressesIn,
   isPlainAddress,
   type MailCalendarEvent,
@@ -137,8 +139,15 @@ const threadsOf = Effect.fn("KinGoogle.threads")(function* (
     maxResults: String(params.max),
     pageToken: params.pageToken,
   });
-  const ids = list(field(page, "threads")).flatMap((thread) => text(field(thread, "id")) ?? []);
-  const threads = yield* Effect.forEach(
+  const threads = yield* threadsById(
+    context,
+    list(field(page, "threads")).flatMap((thread) => text(field(thread, "id")) ?? []),
+  );
+  return { threads, nextPage: text(field(page, "nextPageToken")) ?? null };
+});
+
+const threadsById = (context: MailContext, ids: ReadonlyArray<string>) =>
+  Effect.forEach(
     ids,
     (id) =>
       api(context, `${GMAIL}/threads/${encodeURIComponent(id)}`, {
@@ -147,8 +156,6 @@ const threadsOf = Effect.fn("KinGoogle.threads")(function* (
       }).pipe(Effect.map((thread) => list(field(thread, "messages")).map(messageOf(false)))),
     { concurrency: 5 },
   );
-  return { threads, nextPage: text(field(page, "nextPageToken")) ?? null };
-});
 
 const eventOf = (event: unknown): MailCalendarEvent => ({
   eventId: text(field(event, "id")) ?? "",
@@ -171,6 +178,59 @@ const eventOf = (event: unknown): MailCalendarEvent => ({
 const calendarOf = (calendarId: string | undefined) =>
   `${CALENDAR}/${encodeURIComponent(calendarId ?? "primary")}/events`;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+
+/**
+ * Inbox threads since `since`, at most `ACTIVITY_MAIL`. Gmail doesn't say which end of a long
+ * list it cuts, so a window holding more is halved until it fits; `until` is where it ended.
+ */
+const inboxSince = Effect.fn("KinGoogle.inboxSince")(function* (
+  context: MailContext,
+  since: number,
+  now: number,
+) {
+  const after = Math.floor(since / 1000);
+  let before = Math.ceil(now / 1000);
+  while (true) {
+    const page = yield* api(context, `${GMAIL}/threads`, {
+      q: `in:inbox after:${after}${before * 1000 < now ? ` before:${before}` : ""}`,
+      maxResults: String(ACTIVITY_MAIL),
+    });
+    const ids = list(field(page, "threads")).flatMap((thread) => text(field(thread, "id")) ?? []);
+    const full = text(field(page, "nextPageToken")) !== undefined;
+    if (full && before - after > 1) {
+      before = after + Math.ceil((before - after) / 2);
+      continue;
+    }
+    if (full) yield* Effect.logInfo("Kin read a full second of Gmail; the rest comes next read");
+    return {
+      threads: yield* threadsById(context, ids),
+      until: before * 1000 < now ? before * 1000 : undefined,
+    };
+  }
+});
+
+/** Events changed since `since`, oldest change first, at most `ACTIVITY_EVENTS`. */
+const eventsSince = Effect.fn("KinGoogle.eventsSince")(function* (
+  context: MailContext,
+  since: number,
+) {
+  const events: Array<MailCalendarEvent> = [];
+  let pageToken: string | undefined;
+  do {
+    const page = yield* api(context, calendarOf(undefined), {
+      updatedMin: iso(since),
+      showDeleted: "true",
+      singleEvents: "true",
+      orderBy: "updated",
+      maxResults: "50",
+      pageToken,
+    });
+    events.push(...list(field(page, "items")).map(eventOf));
+    pageToken = text(field(page, "nextPageToken"));
+  } while (pageToken !== undefined && events.length < ACTIVITY_EVENTS);
+  const last = Date.parse(events.at(-1)?.updated ?? "");
+  return { events, until: pageToken === undefined || Number.isNaN(last) ? undefined : last };
+});
 
 /**
  * The account's From addresses: its own and each "Send mail as" alias Gmail accepted, the
@@ -294,22 +354,20 @@ const google: MailVendor = {
       Effect.map(eventOf),
     ),
   // Deleted and cancelled events come back as `cancelled`; a series, one occurrence at a time.
-  activity: (context, since) =>
+  activity: (context, since, _cursor, now) =>
     Effect.all({
-      mail: threadsOf(context, { q: `in:inbox after:${Math.floor(since / 1000)}`, max: 25 }),
-      events: api(context, calendarOf(undefined), {
-        updatedMin: iso(since),
-        showDeleted: "true",
-        singleEvents: "true",
-        orderBy: "updated",
-        maxResults: "50",
-      }),
+      mail: inboxSince(context, since, now),
+      events: eventsSince(context, since),
     }).pipe(
-      Effect.map(({ mail, events }) => ({
-        threads: mail.threads,
-        events: list(field(events, "items")).map(eventOf),
-        cursor: null,
-      })),
+      Effect.map(({ mail, events }) => {
+        const until = Math.min(mail.until ?? Infinity, events.until ?? Infinity);
+        return {
+          threads: mail.threads,
+          events: events.events,
+          cursor: null,
+          ...(until === Infinity ? {} : { until }),
+        };
+      }),
     ),
   account: (http, token) =>
     api({ http, token }, `${GMAIL}/profile`).pipe(

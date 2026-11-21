@@ -12,7 +12,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
 
 import { squashAtomCommandFailure } from "../../state/runtime.ts";
-import { kinOwnerLevelAtom } from "../kinAccess.ts";
+import { kinAccessMeAtom, kinOwnerLevelAtom } from "../kinAccess.ts";
 import { kinFailureText } from "../kinAnswers.ts";
 import {
   kinAttentionProblem,
@@ -21,6 +21,7 @@ import {
   KIN_GOALS,
 } from "../kinAttention.ts";
 import { kinAskAboutAgent, type KinScreenTarget } from "../kinScreenReads.ts";
+import { kinNeedsYouCount, kinTasksDealFactsOf } from "../kinTasksList.ts";
 import { kinWorkReadState } from "../kinWorkForms.ts";
 import {
   type KinHookApp,
@@ -47,6 +48,9 @@ const noLiveAtom: Atom.Atom<AsyncResult.AsyncResult<{ readonly seq: number }, un
 const noGoalsAtom: Atom.Atom<AsyncResult.AsyncResult<KinGoalsResult, unknown>> = Atom.make(
   AsyncResult.initial(),
 );
+const noCountsAtom: Atom.Atom<
+  AsyncResult.AsyncResult<{ readonly needsYou: number } | null, unknown>
+> = Atom.make(AsyncResult.initial());
 
 /** Needs you, its taps, Ask about and the company's goals, on one app's client. */
 export function makeKinAttentionHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinAttentionUses) {
@@ -82,6 +86,28 @@ export function makeKinAttentionHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinAt
     useRereadOnChange(seq, () => registry.refresh(atom));
     const answered = useAtomValue(kinReads.answered(target));
     return state._tag === "ready" ? kinAttentionShown(state.value, new Set(answered)) : null;
+  }
+
+  /**
+   * The Tasks badge: the same number as Tasks' Needs you heading (`kinNeedsYouCount`): Tasks' own
+   * count, which the host's Needs attention carries as it moves, and the deal facts. An older host's
+   * count is read again as Work's tasks change. Null until known.
+   */
+  function useKinTasksNeedsYou(target: KinScreenTarget): number | null {
+    const { environmentId, orgId } = target;
+    const pulse = useKinAttention(target, true);
+    const ownerLevel = useAtomValue(kinOwnerLevelAtom(runtime, environmentId));
+    const me = useAtomValue(kinAccessMeAtom(runtime, environmentId));
+    const streamed = useAtomValue(streamedAtom(target));
+    const carried = streamed === true ? (pulse?.tasksNeedsYou ?? null) : null;
+    const older = streamed === false || (pulse !== null && carried === null);
+    const read = useAtomValue(
+      older ? kinClient.workMoveCounts({ environmentId, input: { orgId } }) : noCountsAtom,
+    );
+    const counts =
+      carried !== null ? { needsYou: carried } : Option.getOrNull(AsyncResult.value(read));
+    const dealFacts = kinTasksDealFactsOf(pulse, { ownerLevel, me: me?.personId ?? null });
+    return kinNeedsYouCount({ counts, dealFacts: dealFacts.length });
   }
 
   /**
@@ -201,5 +227,11 @@ export function makeKinAttentionHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinAt
     };
   }
 
-  return { useKinAttention, useKinAttentionHandle, useKinAskAbout, useKinGoals };
+  return {
+    useKinAttention,
+    useKinTasksNeedsYou,
+    useKinAttentionHandle,
+    useKinAskAbout,
+    useKinGoals,
+  };
 }

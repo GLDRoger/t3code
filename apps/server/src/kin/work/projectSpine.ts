@@ -21,13 +21,13 @@ import { iso, principal, type RecordRow, selectRecords, toRecord } from "./recor
 import { playbookThreshold } from "./playbooks.ts";
 import { listDef } from "./registers.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * The project spine on read: milestones and their progress, the people on it, its meetings, the
  * tasks whose spec section changed, and its money. Computed from entries every time; nothing stored.
  */
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const OPEN = ["open", "doing", "waiting"] as const;
 const titled = (title: string) => title as KinRecordRef["title"];
 const ref = (recordId: string, key: string, title: string): KinRecordRef => ({

@@ -1,4 +1,6 @@
 import type { KinDestination } from "@t3tools/client-runtime/kin/kinNavigation";
+import type { KinPlaces } from "@t3tools/client-runtime/kin/kinPlaces";
+import type { Atom } from "effect/reactivity";
 import { EnvironmentId, KinAgentId, KinChatId, KinOrgId } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -10,6 +12,13 @@ const target = {
 const chief = KinAgentId.make("agent-chief");
 
 const groupsSeen = vi.hoisted(() => ({ values: [] as Array<ReadonlyArray<string>> }));
+const placesSeen = vi.hoisted(() => ({ atom: null as unknown }));
+vi.mock(import("./kinPlacesAtom"), async (importOriginal) => {
+  const { Atom } = await import("effect/reactivity");
+  const places = Atom.make<KinPlaces>({ destinations: [], answered: true }).pipe(Atom.keepAlive);
+  placesSeen.atom = places;
+  return { ...(await importOriginal()), kinPlacesAtom: () => places };
+});
 
 vi.mock(import("./KinNewLeadButton"), async (importOriginal) => ({
   ...(await importOriginal()),
@@ -95,7 +104,6 @@ import { openCommandPalette } from "../commandPaletteBus";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { CommandPalette } from "../components/CommandPalette";
 import { AppAtomRegistryProvider, appAtomRegistry } from "../rpc/atomRegistry";
-import { kinShownDestinationsAtom } from "./kinListSwitch";
 
 const chatsPath = `/kin/${target.environmentId}/${target.orgId}/chat-chief`;
 const KIN_ROWS =
@@ -104,7 +112,10 @@ const KIN_ROWS =
 function setup(destinations: ReadonlyArray<KinDestination>) {
   useCommandPaletteStore.setState(useCommandPaletteStore.getInitialState(), true);
   groupsSeen.values = [];
-  appAtomRegistry.set(kinShownDestinationsAtom, { target, destinations });
+  appAtomRegistry.set(placesSeen.atom as Atom.Writable<KinPlaces>, {
+    destinations,
+    answered: true,
+  });
 }
 
 async function renderPalette() {
