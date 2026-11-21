@@ -115,7 +115,10 @@ const KIN_NEW_TEAMMATE_SEES = { clients: true, docs: true, money: false };
 /** One spelling, so a retry with the same places matches what the first invite stored. */
 const seesJson = (sees: KinPersonPlaceSwitches) =>
   JSON.stringify({ clients: sees.clients, docs: sees.docs, money: sees.money });
-const decodeSees = Schema.decodeUnknownOption(Schema.fromJsonString(KinPersonPlaceSwitches));
+// Strict: anything but the three switches is not a choice anyone made.
+const decodeSees = Schema.decodeUnknownOption(Schema.fromJsonString(KinPersonPlaceSwitches), {
+  onExcessProperty: "error",
+});
 const hash = (secret: string) => NodeCrypto.createHash("sha256").update(secret).digest();
 const SESSION_TTL = Duration.days(30);
 const deviceLimit = new KinChatError({
@@ -425,8 +428,10 @@ export const make = Effect.gen(function* () {
               if (earlier.sees !== sees) return yield* otherPlaces;
               inviteId = earlier.inviteId;
               handle = earlier.handle;
+              // A fresh secret is this caller's say-so for the places too.
               yield* sql`UPDATE kin_people_invites SET secret_hash = ${hash(secret).toString("hex")},
-                expires_at = ${expiresAt} WHERE org_id = ${input.orgId} AND invite_id = ${inviteId}`.pipe(
+                expires_at = ${expiresAt}, sees_by_person_id = ${sees === null ? null : caller.personId}
+                WHERE org_id = ${input.orgId} AND invite_id = ${inviteId}`.pipe(
                 Effect.mapError(toPersistenceSqlError("KinPeople.createInvite")),
               );
               yield* refresh.touch(input.orgId, "people");
@@ -437,9 +442,9 @@ export const make = Effect.gen(function* () {
             yield* notRemoved(input.orgId, input.displayName, handle);
             handle = yield* uniqueHandle(input.orgId, handle, now);
           }
-          yield* sql`INSERT INTO kin_people_invites (invite_id, org_id, person_id, display_name, handle, secret_hash, created_at, expires_at, sees_json)
+          yield* sql`INSERT INTO kin_people_invites (invite_id, org_id, person_id, display_name, handle, secret_hash, created_at, expires_at, sees_json, sees_by_person_id)
         VALUES (${inviteId}, ${input.orgId}, ${input.personId ?? null}, ${input.displayName}, ${handle},
-          ${hash(secret).toString("hex")}, ${now}, ${expiresAt}, ${sees})`.pipe(
+          ${hash(secret).toString("hex")}, ${now}, ${expiresAt}, ${sees}, ${sees === null ? null : caller.personId})`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.createInvite")),
           );
           yield* refresh.touch(input.orgId, "people");
@@ -569,8 +574,9 @@ export const make = Effect.gen(function* () {
             made_by_person_id: string | null;
             made_by_session_id: string | null;
             sees_json: string | null;
+            sees_by_person_id: string | null;
           }>`SELECT invite_id, person_id, display_name, handle, secret_hash, made_by_person_id,
-          made_by_session_id, sees_json FROM kin_people_invites
+          made_by_session_id, sees_json, sees_by_person_id FROM kin_people_invites
           WHERE org_id = ${orgId} AND invite_id = ${inviteId}
           AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ${now} ORDER BY invite_id`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.accept")),
@@ -610,11 +616,15 @@ export const make = Effect.gen(function* () {
           if (!row.person_id) {
             const handle = yield* uniqueHandle(identity.owner.orgId, row.handle, now);
             // A new teammate starts with client names and shared docs, money off, unless the
-            // invite chose otherwise.
-            const sees = Option.getOrElse(
-              decodeSees(row.sees_json ?? ""),
-              () => KIN_NEW_TEAMMATE_SEES,
-            );
+            // invite chose otherwise and whoever chose is owner-level now, read in this transaction.
+            const chosen = row.sees_json === null ? Option.none() : decodeSees(row.sees_json);
+            const chooser = row.sees_by_person_id;
+            const granted =
+              Option.isSome(chosen) &&
+              chooser !== null &&
+              (isOwnerHimself(identity.owner, chooser) ||
+                (yield* level(identity.owner.orgId, KinPersonId.make(chooser))));
+            const sees = granted ? chosen.value : KIN_NEW_TEAMMATE_SEES;
             yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access,
             sees_clients, sees_docs, sees_money)
           VALUES (${personId}, ${orgId}, ${handle}, ${row.display_name}, ${DateTime.formatIso(DateTime.makeUnsafe(now))}, 'member',
