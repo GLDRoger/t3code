@@ -1,6 +1,6 @@
 import type { KinMessage, KinMessageLinkTarget } from "@t3tools/contracts";
 
-export const KIN_REPLY_BUTTONS_MAX = 3;
+const KIN_REPLY_BUTTONS_MAX = 3;
 
 export const KIN_REPLY_BUTTONS = {
   label: "Open what this reply names",
