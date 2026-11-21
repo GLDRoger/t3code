@@ -17,6 +17,10 @@ import {
   kinTasksByMove,
   kinTasksDealFacts,
   kinTasksGroupedBy,
+  kinTasksTick,
+  kinTasksTickedShown,
+  kinTasksWithTicked,
+  type KinTaskTicked,
   type KinTasksItem,
 } from "@t3tools/client-runtime/kin/kinTasksList";
 import {
@@ -206,11 +210,9 @@ export function KinTasksList(
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
     kinWorkApplied(record, changed),
   );
-  const act = (key: KinRecordKey, action: KinWorkAction) => {
-    const record = records.find((held) => held.key === key);
-    if (record !== undefined) void changes.run(record, action, names);
-  };
   const notice = kinWorkListNotice(changed, null);
+  const [ticked, setTicked] = useState<ReadonlyArray<KinTaskTicked<KinRecord>>>([]);
+  const held = kinTasksTickedShown(ticked, changed, notice);
   // A project's own list is always its project's, so only the rest of the filter is a chip.
   const narrowed = kinWorkFilterLabel(
     props.within === undefined ? filter : { ...filter, party: null, project: null },
@@ -226,31 +228,41 @@ export function KinTasksList(
   const needsYou = kinNeedsYouCount({ counts, dealFacts: facts.length });
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";
-  const items: ReadonlyArray<KinTasksItem<KinRecord>> =
+  const listed: ReadonlyArray<KinTasksItem<KinRecord>> =
+    within === undefined && kinWorkByMove(filter)
+      ? kinTasksByMove({
+          records,
+          moves: list.moves(),
+          counts,
+          needsYou,
+          ownerLevel,
+          names,
+          facts,
+          read: listState.seq !== null,
+        })
+      : within === undefined && groupBy !== "me" && !searching
+        ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
+        : records.map((record, index) => ({
+            type: "task" as const,
+            key: record.key,
+            record,
+            move: null,
+            inProject: within !== undefined,
+            first: index === 0,
+            last: index === records.length - 1,
+          }));
+  const items =
     shown !== "rows"
       ? []
-      : within === undefined && kinWorkByMove(filter)
-        ? kinTasksByMove({
-            records,
-            moves: list.moves(),
-            counts,
-            needsYou,
-            ownerLevel,
-            names,
-            facts,
-            read: listState.seq !== null,
-          })
-        : within === undefined && groupBy !== "me" && !searching
-          ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
-          : records.map((record, index) => ({
-              type: "task" as const,
-              key: record.key,
-              record,
-              move: null,
-              inProject: within !== undefined,
-              first: index === 0,
-              last: index === records.length - 1,
-            }));
+      : kinTasksWithTicked(listed, held, (record) => kinWorkApplied(record, changed));
+  const act = (key: KinRecordKey, action: KinWorkAction) => {
+    const shown = items.find((item) => item.type === "task" && item.key === key);
+    if (shown?.type !== "task") return;
+    const tick = kinTasksTick({ held, items, key, action, notice });
+    if (tick.undo) return void changes.undo(names, shown.record);
+    setTicked(tick.ticked);
+    void changes.run(shown.record, action, names);
+  };
   const grouped = kinTaskGroupedChip(within === undefined ? filter.groupBy : undefined);
   const nothing = kinWorkNothing(filter, names, scope);
   const footer = kinWorkListFooter(
@@ -276,6 +288,16 @@ export function KinTasksList(
   // The whole company's tasks also find clients, projects and docs, and say what needs you.
   const everywhere = within === undefined;
   const { state: found, search } = useKinSearch(props, ELSEWHERE, true);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the native search box comes back empty once the page was left (a result opened, another tab), so the words it narrowed by go with it
+  useEffect(() => {
+    const clear = () => {
+      const held = list.getState().filter;
+      if (held.text !== "") list.setFilter({ ...held, text: "" });
+      search.setText("");
+    };
+    if (resumed) clear();
+    return navigation.addListener("focus", clear);
+  }, [list, navigation, resumed, search]);
   const steps = useKinTaskSteps({ environmentId, orgId });
   const base = { environmentId: String(environmentId), orgId: String(orgId) };
   const filterMenu = kinWorkFilterMenu({
@@ -454,6 +476,8 @@ export function KinTasksList(
                     </ListSection>
                   </View>
                   <KinSearchHits
+                    // A task found, or the list's own "Nothing matches", answers already.
+                    quietWhenNone
                     state={found}
                     scope={scope}
                     onRetry={search.retry}
@@ -539,6 +563,7 @@ export function KinTasksList(
                     status={kinTaskStepStatusShown(steps.status[record.key], shown)}
                     first={item.first}
                     last={item.last}
+                    ticked={item.ticked === true}
                     saving={changed.pending[item.key] !== undefined}
                     onPress={() => openRecord("KinWorkItem", { ...base, task: item.key })}
                     onAct={canChange ? (action) => act(item.key, action) : null}

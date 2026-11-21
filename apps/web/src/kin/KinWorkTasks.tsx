@@ -15,6 +15,10 @@ import {
   kinTasksByMove,
   kinTasksDealFacts,
   kinTasksGroupedBy,
+  kinTasksTick,
+  kinTasksTickedShown,
+  kinTasksWithTicked,
+  type KinTaskTicked,
   type KinTaskLine,
   type KinTaskStep,
   type KinTasksItem,
@@ -241,36 +245,45 @@ export function KinWorkTaskList(
   const needsYou = kinNeedsYouCount({ counts, dealFacts: facts.length });
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";
-  const items: ReadonlyArray<KinTasksItem<KinRecord>> =
+  const notice = kinWorkListNotice(changed, props.openKey);
+  const [ticked, setTicked] = useState<ReadonlyArray<KinTaskTicked<KinRecord>>>([]);
+  const held = kinTasksTickedShown(ticked, changed, notice);
+  const listed: ReadonlyArray<KinTasksItem<KinRecord>> =
+    within === undefined && kinWorkByMove(filter)
+      ? kinTasksByMove({
+          records,
+          moves: list.moves(),
+          counts,
+          needsYou,
+          ownerLevel,
+          names,
+          facts,
+          read: listState.seq !== null,
+        })
+      : within === undefined && groupBy !== "me" && !searching
+        ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
+        : records.map((record, index) => ({
+            type: "task" as const,
+            key: record.key,
+            record,
+            move: null,
+            inProject: within !== undefined,
+            first: index === 0,
+            last: index === records.length - 1,
+          }));
+  const items =
     shown !== "rows"
       ? []
-      : within === undefined && kinWorkByMove(filter)
-        ? kinTasksByMove({
-            records,
-            moves: list.moves(),
-            counts,
-            needsYou,
-            ownerLevel,
-            names,
-            facts,
-            read: listState.seq !== null,
-          })
-        : within === undefined && groupBy !== "me" && !searching
-          ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
-          : records.map((record, index) => ({
-              type: "task" as const,
-              key: record.key,
-              record,
-              move: null,
-              inProject: within !== undefined,
-              first: index === 0,
-              last: index === records.length - 1,
-            }));
+      : kinTasksWithTicked(listed, held, (record) => kinWorkApplied(record, changed));
   const steps = useKinTaskSteps({ environmentId, orgId });
   const answers = useKinAttentionHandle({ environmentId, orgId });
   const act = (key: KinRecordKey, action: KinWorkAction) => {
-    const record = records.find((held) => held.key === key);
-    if (record !== undefined) void changes.run(record, action, names);
+    const shown = items.find((item) => item.type === "task" && item.key === key);
+    if (shown?.type !== "task") return;
+    const tick = kinTasksTick({ held, items, key, action, notice });
+    if (tick.undo) return void changes.undo(names, shown.record);
+    setTicked(tick.ticked);
+    void changes.run(shown.record, action, names);
   };
   const openCard = (step: KinTaskStep) => {
     if (step.kind === "nudge") return;
@@ -280,7 +293,6 @@ export function KinWorkTaskList(
       search: { message: step.card.messageId },
     });
   };
-  const notice = kinWorkListNotice(changed, props.openKey);
   const nothing = kinWorkNothing(filter, names, scope);
   const footer = kinWorkListFooter(
     filter,
@@ -485,6 +497,7 @@ export function KinWorkTaskList(
                     })}
                     step={shown}
                     status={kinTaskStepStatusShown(steps.status[record.key], shown)}
+                    ticked={item.ticked === true}
                     saving={changed.pending[item.key] !== undefined}
                     selected={item.key === props.openKey}
                     onOpen={() => props.onOpen(record.key)}
@@ -577,6 +590,8 @@ function KinTaskRow(props: {
   readonly line: KinTaskLine;
   readonly step: KinTaskStep | null;
   readonly status: KinTaskStepStatus | null;
+  /** Ticked done just now and held in its place until its Undo goes. */
+  readonly ticked: boolean;
   readonly saving: boolean;
   readonly selected: boolean;
   readonly onOpen: () => void;
@@ -627,7 +642,14 @@ function KinTaskRow(props: {
           onClick={props.onOpen}
           className="flex min-w-0 flex-col gap-0.5 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-[current=true]:bg-accent"
         >
-          <span className="line-clamp-2 text-sm text-foreground">{row.title}</span>
+          <span
+            className={cn(
+              "line-clamp-2 text-sm",
+              props.ticked ? "text-muted-foreground line-through" : "text-foreground",
+            )}
+          >
+            {row.title}
+          </span>
           {/* Who has it never gives way: the rest of the line cuts off before it does. */}
           <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
             <KinAvatar avatar={row.ownerAvatar} size="xs" />

@@ -795,16 +795,26 @@ export function kinPickerSearchView(input: {
     readonly done: ReadonlyArray<KinWorkRef>;
   };
   readonly held: KinWorkRef | null;
+  /** The only keys this viewer may pick, such as a teammate's led projects; null for any. */
+  readonly only?: ReadonlySet<string> | null;
 }) {
   const { search, held } = input;
   const words = search.text.trim();
-  const shown =
+  const found =
     words === ""
       ? input.loaded
       : (search.found ?? {
           open: kinWorkRefsMatching(input.loaded.open, words),
           done: kinWorkRefsMatching(input.loaded.done, words),
         });
+  const only = input.only ?? null;
+  const shown =
+    only === null
+      ? found
+      : {
+          open: found.open.filter((ref) => only.has(ref.key)),
+          done: found.done.filter((ref) => only.has(ref.key)),
+        };
   const listed = (ref: KinWorkRef) =>
     shown.open.some((one) => one.key === ref.key) || shown.done.some((one) => one.key === ref.key);
   const keep =

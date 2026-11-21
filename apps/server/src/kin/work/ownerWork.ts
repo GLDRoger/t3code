@@ -102,6 +102,11 @@ export const ownerOnly = new KinChatError({
   message: "Only the owner or a co-owner can do that in Work.",
 });
 
+const notTheirProject = new KinChatError({
+  reason: "not_allowed",
+  message: "Only the owner, a co-owner or that project's lead can put a task in it.",
+});
+
 export const theOwner = Effect.fn("KinWork.owner")(function* (
   people: ReadonlyArray<PersonIdentity>,
   orgId: KinOrgId,
@@ -328,8 +333,10 @@ const refId = Effect.fn("KinWork.refId")(function* (
       return reached ? row.recordId : yield* missing(key, list);
     }
     if (row === undefined || row.registerId !== "projects") return yield* missing(key, list);
-    if (!(yield* ledIds(viewer)).has(row.recordId)) return yield* missing(key, list);
-    return row.recordId;
+    if ((yield* ledIds(viewer)).has(row.recordId)) return row.recordId;
+    // One they are on is no secret to them: say who files tasks there, not that it is gone.
+    const on = yield* inProject(orgId, viewer.person.personId, row.recordId).pipe(workFailure);
+    return yield* on ? notTheirProject : missing(key, list);
   }
   if (key === null) return null;
   return (yield* inList(orgId, key, list)).recordId;
@@ -514,6 +521,8 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
         })
       : yield* records.query(input.orgId, {
           ...filter,
+          // "Due this week" and the like read by when, so tomorrow's comes before Tuesday's.
+          ...(input.dueBy === undefined ? {} : { order: "dueFirst" as const }),
           ...internal,
           offset: cursor.offset,
           limit,

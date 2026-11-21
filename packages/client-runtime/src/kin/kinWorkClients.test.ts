@@ -9,6 +9,7 @@ import {
   KinRecordKey,
   type KinPartyPage,
   type KinPartyRow,
+  type KinProjectPage,
   type KinProjectRow,
 } from "@t3tools/contracts";
 
@@ -26,7 +27,9 @@ import {
   kinClientsTabs,
   KIN_CLIENTS_DEFAULT_FILTER,
   kinLastContactLine,
+  kinProjectPageView,
   kinProjectsByClient,
+  kinTaskProjectsAllowed,
   kinTouchAt,
   kinTouchNext,
   kinWorkTimeline,
@@ -524,5 +527,80 @@ describe("kinNewTaskChoices", () => {
     expect(
       kinNewTaskChoices(choices, { access: "member", leads, places: { clients: true } as never }),
     ).toEqual({ clients: ["C-1"], projects: [p1] });
+    // A task's page moves it only into a project its picker may offer, found by search too.
+    expect(kinTaskProjectsAllowed({ access: "member", leads })).toEqual(new Set(["P-1"]));
+    expect(kinTaskProjectsAllowed({ access: "co_owner", leads })).toBeNull();
+    expect(kinTaskProjectsAllowed(null)).toBeNull();
+  });
+});
+
+describe("kinProjectPageView", () => {
+  const now = new Date("2026-11-18T09:00:00.000Z");
+  const rhea = KinPersonId.make("ambermill-rhea");
+  const names = { people: new Map([[rhea, "Rhea"]]), agents: new Map(), me: rhea, zone: "UTC" };
+  const waiting = {
+    recordId: KinRecordId.make("rec-W-8"),
+    orgId: KinOrgId.make("ambermill"),
+    key: "W-8",
+    title: "Invented appointment screen",
+    state: "waiting",
+    waitingOn: { _tag: "person", personId: rhea },
+    owner: { _tag: "person", personId: rhea },
+    category: null,
+    side: "ours",
+    dueAt: null,
+    dueAllDay: false,
+    late: false,
+    confirmed: true,
+    sensitive: false,
+    working: false,
+    pullRequest: null,
+    rev: 1,
+    createdAt: "2026-11-10T09:00:00.000Z",
+    updatedAt: "2026-11-17T09:00:00.000Z",
+    closedAt: null,
+  } as const;
+  const page = (blocked: KinProjectPage["blocked"]): KinProjectPage => ({
+    project: {
+      recordId: KinRecordId.make("rec-P-1"),
+      key: KinRecordKey.make("P-1"),
+      name: "Invented booking app",
+      party: null,
+      owner: { _tag: "person", personId: rhea },
+      state: "open",
+      targetAt: null,
+      targetAllDay: true,
+      open: 3,
+      late: 0,
+      health: "on_track",
+      sensitive: false,
+      sensitiveInherited: false,
+      rev: 1,
+      notes: "",
+      repos: [],
+      healthBecause: { targetPassed: false, late: 0, waitingOverAWeek: 0 },
+      createdAt: "2026-11-01T09:00:00.000Z",
+      updatedAt: "2026-11-17T09:00:00.000Z",
+      closedAt: null,
+      seq: 4,
+    },
+    counts: { open: 3, doing: 0, waiting: blocked.length, done: 0, dropped: 0, late: 0 },
+    blocked,
+    nextDue: null,
+    pullRequests: [],
+    changedThisWeek: { items: [], total: 0 },
+    seq: 4,
+    asOf: "2026-11-18T09:00:00.000Z",
+  });
+
+  it("never says nothing is stuck above its own Blocked section", () => {
+    expect(kinProjectPageView(page([]), names, now).why).toEqual(["Nothing is late or stuck."]);
+    expect(
+      kinProjectPageView(
+        page([{ record: waiting, on: null, since: "2026-11-17T09:00:00.000Z" }]),
+        names,
+        now,
+      ).why,
+    ).toEqual(["Nothing is late."]);
   });
 });

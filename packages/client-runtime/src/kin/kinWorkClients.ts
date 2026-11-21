@@ -1304,7 +1304,11 @@ export function kinProjectPageView(
     state: project.state,
     closed: PROJECT_CLOSED[project.state],
     health: project.health === null ? null : HEALTH[project.health],
-    why: why.length === 0 && project.health !== null ? ["Nothing is late or stuck."] : why,
+    why:
+      why.length === 0 && project.health !== null
+        ? // Its Blocked section lists what waits on someone, so "stuck" would contradict it.
+          [page.blocked.length === 0 ? "Nothing is late or stuck." : "Nothing is late."]
+        : why,
     target: target === null ? KIN_PROJECTS.noTarget : `Target ${target}`,
     targetDay: kinWorkAllDay(project.targetAt, project.targetAllDay, names),
     ledBy: ledBy === "You" ? null : `Led by ${ledBy}`,
@@ -1429,13 +1433,24 @@ export function kinNewTaskChoices<C, P extends { readonly key: KinRecordKey }>(
   choices: { readonly clients: ReadonlyArray<C>; readonly projects: ReadonlyArray<P> },
   me: Pick<KinAccessMeResult, "access" | "leads" | "places"> | null,
 ): { readonly clients: ReadonlyArray<C>; readonly projects: ReadonlyArray<P> } {
-  if (me === null || kinOwnerLevel(me.access) || me.leads === undefined) return choices;
-  const led = new Set(me.leads.map((project) => project.key));
+  const led = kinTaskProjectsAllowed(me);
+  if (me === null || led === null) return choices;
   return {
     // With Clients on, a teammate sets any client they see on their own task.
     clients: me.places?.clients === true ? choices.clients : [],
     projects: choices.projects.filter((project) => led.has(project.key)),
   };
+}
+
+/**
+ * The projects this viewer may put a task in, by key: a teammate's are the ones they lead. Null
+ * where there is no such limit, or the host hasn't said (`kinNewTaskChoices`).
+ */
+export function kinTaskProjectsAllowed(
+  me: Pick<KinAccessMeResult, "access" | "leads"> | null,
+): ReadonlySet<string> | null {
+  if (me === null || kinOwnerLevel(me.access) || me.leads === undefined) return null;
+  return new Set(me.leads.map((project) => project.key));
 }
 
 /** A client or project as a filter, a form or a picker holds it. */

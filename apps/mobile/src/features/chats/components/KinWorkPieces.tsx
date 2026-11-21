@@ -301,6 +301,8 @@ export function KinTaskRow(props: {
   readonly status: KinTaskStepStatus | null;
   readonly first: boolean;
   readonly last: boolean;
+  /** Ticked done just now and held in its place until its Undo goes. */
+  readonly ticked?: boolean;
   readonly saving: boolean;
   readonly onPress: () => void;
   /** Null where this phone or this host can't change a task. */
@@ -343,7 +345,11 @@ export function KinTaskRow(props: {
             onPress={props.onPress}
             className="gap-0.5 active:opacity-60"
           >
-            <Text textRole="body" numberOfLines={kinLines(2, grows)} className="text-foreground">
+            <Text
+              textRole="body"
+              numberOfLines={kinLines(2, grows)}
+              className={props.ticked ? "text-foreground-muted line-through" : "text-foreground"}
+            >
               {row.title}
             </Text>
             {/* Who has it never gives way: the rest of the line cuts off before it does. */}
