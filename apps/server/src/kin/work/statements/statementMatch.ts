@@ -319,9 +319,10 @@ const expenseCandidate = (
 const REPAYS_AT_MOST = 50;
 
 /**
- * Debits that pay a partner back: the partner's oldest owed expenses whose amounts add up to the
- * row, exactly. Rows are taken in date order, each after what earlier clear ones repaid, so
- * successive lump sums settle successive expenses.
+ * Lines that settle with a partner: a debit that pays back their oldest owed expenses, or a credit
+ * from them when refunds leave them owing, adding up to the line exactly (refunds take their part
+ * off). Rows go in date order, each after what earlier clear ones settled, so successive lump sums
+ * settle successive expenses; any other amount stays unmatched.
  */
 const repayments = (
   rows: ReadonlyArray<StatementRow>,
@@ -330,21 +331,20 @@ const repayments = (
 ): ReadonlyMap<number, ReadonlyArray<Candidate>> => {
   const settled = partners.map(() => 0);
   const found = new Map<number, Array<Candidate>>();
-  const debits = rows
+  const dated = rows
     .map((row, index) => ({ row, index }))
-    .filter(({ row }) => row.direction === "debit")
     .toSorted((a, b) =>
       a.row.date === b.row.date ? a.index - b.index : a.row.date < b.row.date ? -1 : 1,
     );
-  for (const { row, index } of debits)
+  for (const { row, index } of dated)
     for (const [at, partner] of partners.entries()) {
       if (partner.currency !== currency) continue;
+      const signed = row.direction === "debit" ? row.amountMinor : -row.amountMinor;
       const from = settled[at]!;
       let sum = 0;
       for (let end = from; end < Math.min(partner.owed.length, from + REPAYS_AT_MOST); end += 1) {
         sum += partner.owed[end]!.amountMinor;
-        if (sum > row.amountMinor) break;
-        if (sum !== row.amountMinor) continue;
+        if (sum !== signed) continue;
         const repays = partner.owed.slice(from, end + 1);
         const why = [`adds up to ${partner.name}'s oldest owed expenses`];
         let score = 40;
@@ -363,7 +363,7 @@ const repayments = (
             kind: "expense",
             recordId: repays[0]!.recordId,
             key: repays[0]!.key,
-            title: `Repays ${partner.name}: ${repays.length} expense${repays.length === 1 ? "" : "s"}`,
+            title: `${row.direction === "debit" ? "Repays" : "Settles with"} ${partner.name}: ${repays.length} expense${repays.length === 1 ? "" : "s"}`,
             fit: "exact",
             score,
             why,

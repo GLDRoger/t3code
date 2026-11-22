@@ -2446,10 +2446,11 @@ describe("bank statement safety", () => {
           JSON.stringify(card.choose.filter((one) => one.text.startsWith("UPI"))),
           first.key,
         );
-        const applied = yield* OwnerStatements.apply(people, yield* confirmAll(card));
-        assert.include(applied.card.result!.join(" "), "Marked 2 partner-paid expenses repaid.");
         const fieldsOf = (key: string) =>
           records.get(orgId, key).pipe(Effect.map((row) => JSON.parse(row!.fieldsJson)));
+        const before = [yield* fieldsOf(first.key), yield* fieldsOf(second.key)];
+        const applied = yield* OwnerStatements.apply(people, yield* confirmAll(card));
+        assert.include(applied.card.result!.join(" "), "Marked 2 partner-paid expenses repaid.");
         for (const key of [first.key, second.key])
           assert.include(yield* fieldsOf(key), { reimbursement: "repaid", repaidOn: "2026-10-15" });
         assert.notProperty(yield* fieldsOf(later.key), "reimbursement");
@@ -2459,11 +2460,69 @@ describe("bank statement safety", () => {
         assert.strictEqual(link!.n, 2);
 
         yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
-        for (const key of [first.key, second.key])
-          assert.notProperty(yield* fieldsOf(key), "reimbursement");
+        // Undo puts back every field Confirm changed, the repaid day included.
+        assert.deepStrictEqual([yield* fieldsOf(first.key), yield* fieldsOf(second.key)], before);
         const [left] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_record_links
           WHERE record_id IN (${first.recordId}, ${second.recordId}) AND kind = 'record'`;
         assert.strictEqual(left!.n, 0);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "settles a partner's refund-netted run, and refuses a repayment whose expenses changed since the card",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera Rao', ${at})`;
+        const paidBy = (title: string, minor: number, day: string) =>
+          expense(title, minor, day, "Invented Domains").pipe(
+            Effect.flatMap((row) =>
+              records.update(orgId, owner, row.key, {
+                state: "done",
+                fields: { fundedBy: "person:meera" },
+              }),
+            ),
+          );
+        const domain = yield* paidBy("Domain", 420_000, "2026-09-05");
+        // The registrar refunded part of it to her own card: she is owed the net.
+        const refund = yield* paidBy("Domain refund", -100_000, "2026-09-08");
+        const fieldsOf = (key: string) =>
+          records.get(orgId, key).pipe(Effect.map((row) => JSON.parse(row!.fieldsJson)));
+        const statementOf = (n: number, name: string, minor: number) =>
+          Effect.gen(function* () {
+            const result = opened(
+              yield* read(
+                n,
+                name,
+                csvOf([["2026-10-15", "NEFT DR-UTIB0000001-MEERA RAO-REIMB", minor, null]]),
+              ),
+            );
+            return { result, card: (yield* reviewCardOf(result.statement)).card };
+          });
+
+        // More than she is owed: no match, the line stays to be explained, and she stays owed.
+        const over = yield* statementOf(1, "over.csv", 400_000);
+        assert.deepStrictEqual(over.card.matched, []);
+        assert.notInclude(JSON.stringify(over.card.choose), domain.key);
+
+        const net = yield* statementOf(3, "net.csv", 320_000);
+        assert.deepStrictEqual(
+          net.card.matched.map((one) => [one.target.key, one.target.note]),
+          [[domain.key, `Marks ${domain.key}, ${refund.key} repaid`]],
+        );
+        // The refund's amount is corrected before Confirm: the run no longer adds up to the line.
+        yield* records.update(orgId, owner, refund.key, {
+          amount: { minor: -50_000, currency: "INR" },
+        });
+        const refused = yield* Effect.flip(
+          OwnerStatements.apply(people, yield* confirmAll(net.card)),
+        );
+        assert.strictEqual(refused.reason, "conflict");
+        assert.notProperty(yield* fieldsOf(domain.key), "reimbursement");
+        assert.notProperty(yield* fieldsOf(refund.key), "reimbursement");
       }).pipe(Effect.provide(layer)),
   );
 

@@ -372,6 +372,56 @@ describe("statement matching", () => {
       bank: null,
     });
     assert.deepStrictEqual(skips[0]!.candidates, []);
+
+    // Two partners, two currencies: each line settles only its own currency's run, by name.
+    const both = [
+      ...partners,
+      { name: "Dev Malhotra", currency: "INR", owed: [owed("EXP-5", 50_000)] },
+      { name: "Meera Rao", currency: "USD", owed: [owed("EXP-6", 3_000)] },
+      // A refund to her card after the company paid her back: she owes the company the net.
+      { name: "Zoya Sheikh", currency: "INR", owed: [owed("EXP-8", -20_000)] },
+    ];
+    const lines = matchRows(
+      [
+        debit(0, "2026-10-08", "NEFT DR-DEV MALHOTRA", 50_000),
+        debit(1, "2026-10-08", "NEFT DR-MEERA RAO", 30_000),
+        row({
+          index: 2,
+          date: "2026-10-09",
+          description: "NEFT CR-ZOYA SHEIKH-REFUND",
+          amountMinor: 20_000,
+          direction: "credit",
+        }),
+        // Less than her oldest, and more than all she is owed: no run adds up, nothing is used.
+        debit(3, "2026-10-10", "NEFT DR-MEERA RAO", 100_000),
+        debit(4, "2026-10-11", "NEFT DR-MEERA RAO", 900_000),
+      ],
+      {
+        currency: "INR",
+        withholdsAtSource: true,
+        invoices: [],
+        expenses: [],
+        partners: both,
+        ownAccounts: [],
+        known: [],
+        bank: null,
+      },
+    );
+    assert.deepStrictEqual(
+      lines.map((one) => [
+        one.group,
+        one.candidates.map((c) => [c.title, c.repays?.map((r) => r.key)]),
+      ]),
+      [
+        // It equals her newest too, but only his oldest run adds up to it.
+        ["matched", [["Repays Dev Malhotra: 1 expense", ["EXP-5"]]]],
+        // Her USD 30.00 is not an INR line's to settle.
+        ["unmatched", []],
+        ["matched", [["Settles with Zoya Sheikh: 1 expense", ["EXP-8"]]]],
+        ["unmatched", []],
+        ["unmatched", []],
+      ],
+    );
   });
 
   it("reads vendors the way banks write them", () => {

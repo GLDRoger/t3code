@@ -31,6 +31,7 @@ import * as KinPulse from "../pulse/KinPulse.ts";
 import { setAsideOverdue } from "../pulse/invoiceAsides.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { runKinMigrations } from "../persistence/KinMigrations.ts";
 import {
   answerChange,
   changeLines,
@@ -49,6 +50,7 @@ import { typedFields } from "./leadFields.ts";
 import { aboutTotal, addUp, financialYearOf, formatMinor, parseAmount } from "./money.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
+import { partnersOwed } from "./partnersOwed.ts";
 import {
   dates as datesView,
   moneySection,
@@ -5143,8 +5145,9 @@ describe("money answers", () => {
       Effect.gen(function* () {
         yield* seed;
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-          VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at})`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at}, 'co_owner'),
+            ('arjun', ${orgId}, 'arjun', 'Arjun', ${at}, 'member')`;
         yield* defined(3, { template: "expenses" });
         const records = yield* KinRecords.KinRecords;
         const spend = (key: string, day: string, rupees: number, fields = {}) =>
@@ -5170,63 +5173,229 @@ describe("money answers", () => {
           fundedBy: "person:meera",
           reimbursement: "not reimbursable",
         });
-        const { row: imported } = yield* spend("imported", "2026-09-01", 3_000, {
-          reimbursement: "owed",
+        // As an import left them before K207: an address that paid, and nothing said yet.
+        const imported = (key: string, day: string, rupees: number, address: string) =>
+          Effect.gen(function* () {
+            const { row } = yield* spend(key, day, rupees);
+            yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json,
+                '$.paidPersonallyBy', ${address}) WHERE record_id = ${row.recordId}`;
+            return row.key;
+          });
+        const first = yield* imported("domain", "2026-09-01", 3_000, "meera@invented.example");
+        const second = yield* imported(
+          "laptop",
+          "2026-10-05",
+          60_000,
+          "Meera.Home@invented.example",
+        );
+        const figures = Effect.gen(function* () {
+          const { paidPersonallyNotYetSaid: _unsaid, ...view } = outlookAnswer(
+            yield* outlook(orgId, NOW),
+          );
+          return { view, cash: cashAnswer(yield* cashPosition(orgId, NOW)) };
         });
-        // As K207 left an import's row: its partner's address, and no Kin person for it.
-        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.paidPersonallyBy',
-            'partner@invented.example') WHERE key = ${imported.key}`;
+
+        // K207 again on a list it hadn't reached: no figure moves, nothing is marked owed.
+        const fields = yield* sql<{ json: string }>`SELECT definition_json AS json
+          FROM kin_registers WHERE org_id = ${orgId} AND register_id = 'expenses'`;
+        const definition = JSON.parse(fields[0]!.json) as {
+          fields: ReadonlyArray<{ key: string }>;
+        };
+        const before = JSON.stringify({
+          ...definition,
+          fields: definition.fields.filter(
+            (one) => !["fundedBy", "reimbursement", "repaidOn"].includes(one.key),
+          ),
+        });
+        yield* sql`UPDATE kin_registers SET definition_json = ${before}, built_in = 0
+          WHERE org_id = ${orgId} AND register_id = 'expenses'`;
+        const unmigrated = yield* figures;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
+        yield* runKinMigrations();
+        assert.deepStrictEqual(yield* figures, unmigrated);
 
         const view = outlookAnswer(yield* outlook(orgId, NOW));
         assert.deepStrictEqual(
           view.windows.map((one) => one.expectedOut),
-          ["₹8,000.00", "₹8,000.00", "₹8,000.00"],
+          ["₹5,000.00", "₹5,000.00", "₹5,000.00"],
         );
         assert.deepStrictEqual(view.owedToPartnersCountedAsGoingOut, [
           { partner: "Meera", owed: "₹5,000.00", expenses: 1 },
-          { partner: "partner@invented.example (unmatched)", owed: "₹3,000.00", expenses: 1 },
         ]);
-        // Repaid in October, so not September's; owed and given never left the company.
+        assert.deepStrictEqual(view.paidPersonallyNotYetSaid, [
+          { address: "meera.home@invented.example", total: "₹60,000.00", expenses: 1 },
+          { address: "meera@invented.example", total: "₹3,000.00", expenses: 1 },
+        ]);
+        // Repaid in October, so not September's; owed and given never left the company; an
+        // import not yet said counts on its own day, as it did before.
         assert.deepStrictEqual(
           view.runway[0]?.lastThreeMonths.map((one) => [one.month, one.out]),
           [
             ["2026-08", "₹1,00,000.00"],
-            ["2026-09", "₹1,00,000.00"],
-            ["2026-10", "₹1,20,000.00"],
+            ["2026-09", "₹1,03,000.00"],
+            ["2026-10", "₹1,80,000.00"],
           ],
         );
 
-        const teammate = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("meera") }];
-        const match = {
+        const as = (personId: string) => [
+          { _tag: "person" as const, orgId, personId: KinPersonId.make(personId) },
+        ];
+        const match = (address: string, settled: "owed" | "repaid") => ({
           orgId,
-          address: " Partner@Invented.example",
+          address,
           personId: KinPersonId.make("meera"),
-        };
+          settled,
+        });
         assert.strictEqual(
-          (yield* Effect.flip(OwnerMoneyAnswers.matchPartner(teammate, match)))._tag,
+          (yield* Effect.flip(
+            OwnerMoneyAnswers.matchPartner(as("arjun"), match("meera@invented.example", "owed")),
+          ))._tag,
           "KinChatError",
         );
-        assert.deepStrictEqual(yield* OwnerMoneyAnswers.matchPartner(people, match), {
-          matched: [imported.key],
-        });
-        const owed = (yield* OwnerMoneyAnswers.outlook(people, { orgId })).owedToPartners;
-        assert.deepStrictEqual(owed, [
+        // A co-owner says the first was paid back long ago: every figure stays where it was.
+        assert.deepStrictEqual(
+          yield* OwnerMoneyAnswers.matchPartner(
+            as("meera"),
+            match(" Meera@Invented.example", "repaid"),
+          ),
+          { matched: [first] },
+        );
+        const { paidPersonallyNotYetSaid: _left, ...settledView } = outlookAnswer(
+          yield* outlook(orgId, NOW),
+        );
+        assert.deepStrictEqual(settledView, unmigrated.view);
+        // The owner says the second is still owed: it goes out now and leaves October's spend.
+        assert.deepStrictEqual(
+          yield* OwnerMoneyAnswers.matchPartner(
+            people,
+            match("meera.home@invented.example", "owed"),
+          ),
+          { matched: [second] },
+        );
+        const owed = yield* OwnerMoneyAnswers.outlook(people, { orgId });
+        assert.strictEqual(owed.partnersUnsaid, undefined);
+        assert.deepStrictEqual(owed.owedToPartners, [
           {
             personId: KinPersonId.make("meera"),
             name: "Meera",
             address: null,
-            owed: [inr(8_000)],
+            owed: [inr(65_000)],
             expenses: 2,
-            oldest: "2026-09-01",
+            oldest: "2026-10-02",
           },
         ]);
+        const after = outlookAnswer(yield* outlook(orgId, NOW));
+        assert.deepStrictEqual(
+          after.runway[0]?.lastThreeMonths.map((one) => [one.month, one.out]),
+          [
+            ["2026-08", "₹1,00,000.00"],
+            ["2026-09", "₹1,03,000.00"],
+            ["2026-10", "₹1,20,000.00"],
+          ],
+        );
         const asked = yield* LeadMoney.moneyQuery(scope, { view: "partners" });
         assert.deepStrictEqual(
           (
             asked.answer as { partners: ReadonlyArray<{ oldest: ReadonlyArray<{ key: string }> }> }
           ).partners[0]?.oldest.map((one) => one.key),
-          [imported.key, "EXP-5"],
+          ["EXP-5", second],
         );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "owe each partner the net of their list per currency, and count each expense once, when repaid",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at}, 'co_owner'),
+            ('dev', ${orgId}, 'dev', 'Dev Malhotra', ${at}, 'member')`;
+        yield* defined(3, { template: "expenses" });
+        const records = yield* KinRecords.KinRecords;
+        const spend = (
+          key: string,
+          day: string,
+          money: { minor: number; currency: string },
+          fields: Record<string, string>,
+          state: "done" | "dropped" = "done",
+        ) =>
+          records.create(orgId, system, {
+            owner,
+            originKey: key,
+            list: "expenses",
+            title: `Invented ${key}`,
+            state,
+            amount: money,
+            dateAt: on(day),
+            fields,
+          });
+        const meera = { fundedBy: "person:meera" };
+        yield* spend("domain", "2026-09-01", inr(4_200), meera);
+        yield* spend("domain refund", "2026-09-03", inr(-1_000), meera);
+        yield* spend("font licence", "2026-09-04", { minor: 3_000, currency: "USD" }, meera);
+        const { row: suggested } = yield* spend("suggested", "2026-09-05", inr(900), meera);
+        yield* sql`UPDATE kin_records SET confirmed = 0 WHERE record_id = ${suggested.recordId}`;
+        yield* spend("dropped", "2026-09-06", inr(800), meera, "dropped");
+        yield* spend("train", "2026-10-01", inr(500), { fundedBy: "person:dev" });
+
+        const partners = yield* partnersOwed(orgId, "INR");
+        // Each figure is the sum of its own list, per currency, refunds taking their part off.
+        for (const partner of partners)
+          assert.deepStrictEqual(
+            partner.owed,
+            addUp(
+              partner.entries.map((one) => one.money),
+              "INR",
+            ),
+          );
+        assert.deepStrictEqual(
+          partners.map((one) => [one.name, one.owed, one.entries.map((entry) => entry.key)]),
+          [
+            ["Meera", [inr(3_200), { minor: 3_000, currency: "USD" }], ["EXP-1", "EXP-2", "EXP-3"]],
+            ["Dev Malhotra", [inr(500)], ["EXP-6"]],
+          ],
+        );
+        const outOf = Effect.gen(function* () {
+          const view = yield* outlook(orgId, NOW);
+          return {
+            out: view.windows[0]!.expectedOut,
+            spent: Object.fromEntries(
+              view.runway.map((one) => [
+                one.currency,
+                one.months.map((month) => [month.month, Number(month.spent)]),
+              ]),
+            ),
+          };
+        });
+        // Owed: going out now, in no month's spending; the suggestion and the dropped one nowhere.
+        assert.deepStrictEqual(yield* outOf, {
+          out: [inr(3_700), { minor: 3_000, currency: "USD" }],
+          spent: {},
+        });
+
+        // Paid back on 2026-10-20: out of what is owed, into October's spending, once.
+        for (const key of ["EXP-1", "EXP-2", "EXP-3", "EXP-6"])
+          yield* records.update(orgId, system, key, {
+            fields: { reimbursement: "repaid", repaidOn: "2026-10-20" },
+          });
+        assert.deepStrictEqual(yield* partnersOwed(orgId, "INR"), []);
+        assert.deepStrictEqual(yield* outOf, {
+          out: [],
+          spent: {
+            INR: [
+              ["2026-08", 0],
+              ["2026-09", 0],
+              ["2026-10", 370_000],
+            ],
+            USD: [
+              ["2026-08", 0],
+              ["2026-09", 0],
+              ["2026-10", 3_000],
+            ],
+          },
+        });
       }).pipe(Effect.provide(layer)),
   );
 

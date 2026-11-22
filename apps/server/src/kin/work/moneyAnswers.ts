@@ -19,7 +19,7 @@ import {
 } from "./recordRows.ts";
 import { nextDates, repeatsBetween } from "./repeat.ts";
 import { companyCashOut, partnerFunded, repaidDay } from "./reimbursement.ts";
-import { partnersOwed } from "./partnersOwed.ts";
+import { partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
 import { alertsBeside, type AlertBalance } from "./statements/bankAlerts.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
 import {
@@ -608,6 +608,7 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
     dueOut,
     overdueOut,
     partners,
+    unsaid: yield* partnersUnsaid(orgId, home),
     datesWithoutAmount: undated.rows,
     incomplete,
     runway: yield* runway(orgId, now, zone, today),
@@ -754,6 +755,15 @@ export const outlookAnswer = (view: Outlook) => ({
           expenses: one.entries.length,
         })),
       }),
+  ...(view.unsaid.length === 0
+    ? {}
+    : {
+        paidPersonallyNotYetSaid: view.unsaid.map((one) => ({
+          address: one.address,
+          total: shown(one.total),
+          expenses: one.expenses,
+        })),
+      }),
   ...(view.incomplete.length === 0
     ? {}
     : {
@@ -801,5 +811,5 @@ export const outlookAnswer = (view: Outlook) => ({
         }),
   })),
   basis:
-    "Expected in is issued invoices' unpaid balances by due date; overdue ones are listed, never counted. Expected out is open amounts we owe by due date, past-due ones counted, what partners are owed back for expenses they paid, and the next dates of entries set to repeat. Runway is cash divided by the average monthly net of the last three complete months, from payments and paid expenses recorded in Kin; a partner's expense counts on the day it was paid back, never before; TDS is never cash.",
+    "Expected in is issued invoices' unpaid balances by due date; overdue ones are listed, never counted. Expected out is open amounts we owe by due date, past-due ones counted, what partners are owed back for expenses they paid, and the next dates of entries set to repeat. Paid personally, not yet said: imported expenses an address paid that nobody has said are owed, counted as the company's own until an owner says. Runway is cash divided by the average monthly net of the last three complete months, from payments and paid expenses recorded in Kin; a partner's expense counts on the day it was paid back, never before; TDS is never cash.",
 });

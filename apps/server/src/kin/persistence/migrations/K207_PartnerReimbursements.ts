@@ -4,9 +4,9 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 /**
- * Expenses gain Funded by, Reimbursement and Repaid on, all or none within 20 fields; an import's
- * `paidFrom` (where an entry came from) reads Source. Kin keeps no person's address, so a Paid
- * entry an import left `paidPersonallyBy` on is marked owed and matched to nobody.
+ * Expenses gain Funded by, Reimbursement and Repaid on, all or none within 20 fields. No entry is
+ * changed: an imported one that says a partner paid stays counted as before until the owner says
+ * who it was and whether it is still owed (Money, `kin.work.matchPartner`).
  */
 
 const ADDED = [
@@ -46,31 +46,15 @@ export default Effect.gen(function* () {
     const decoded = decodeDefinition(list.json);
     if (Option.isNone(decoded)) continue;
     const definition = decoded.value;
-    const fields = definition.fields;
-    const missing = ADDED.filter((one) => fields.every((field) => field.key !== one.key));
-    const fits = fields.length + missing.length <= MAX_FIELDS;
-    const renames = fields.some((field) => field.key === "paidFrom" && field.label === "Paid from");
-    const next = [
-      ...fields.map((field) =>
-        field.key === "paidFrom" && field.label === "Paid from"
-          ? { ...field, label: "Source" }
-          : field,
-      ),
-      ...(fits ? missing : []),
-    ];
-    if (renames || (fits && missing.length > 0)) {
-      const json = yield* encodeDefinition({ ...definition, fields: next }).pipe(Effect.orDie);
-      yield* sql`UPDATE kin_registers SET definition_json = ${json}, rev = rev + 1
-        WHERE org_id = ${list.orgId} AND register_id = 'expenses' AND built_in = 0`;
-    }
-    const marks = next.some((field) => field.key === "reimbursement");
-    if (!marks) continue;
-    yield* sql`UPDATE kin_records
-      SET fields_json = json_set(fields_json, '$.reimbursement', 'owed'), rev = rev + 1
-      WHERE org_id = ${list.orgId} AND register_id = 'expenses' AND state = 'done'
-        AND json_valid(fields_json)
-        AND trim(COALESCE(json_extract(fields_json, '$.paidPersonallyBy'), '')) <> ''
-        AND json_extract(fields_json, '$.reimbursement') IS NULL
-        AND json_extract(fields_json, '$.fundedBy') IS NULL`;
+    const missing = ADDED.filter((one) =>
+      definition.fields.every((field) => field.key !== one.key),
+    );
+    if (missing.length === 0 || definition.fields.length + missing.length > MAX_FIELDS) continue;
+    const json = yield* encodeDefinition({
+      ...definition,
+      fields: [...definition.fields, ...missing],
+    }).pipe(Effect.orDie);
+    yield* sql`UPDATE kin_registers SET definition_json = ${json}, rev = rev + 1
+      WHERE org_id = ${list.orgId} AND register_id = 'expenses' AND built_in = 0`;
   }
 });

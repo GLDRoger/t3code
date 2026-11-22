@@ -458,7 +458,8 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           // A suggestion's line applies nothing: not its payment, not its bill, until it is kept.
           if (isSuggestion(targetRow)) return yield* invalid(stillSuggestion(targetRow.key));
           if (candidate.repays !== undefined) {
-            // Each must still be owed: repaid since the read, it would be paid back twice.
+            // Each must still be owed and still add up to the line: repaid or edited since the
+            // read, the line would pay back twice or leave a remainder nobody sees.
             const owed: Array<RecordRow> = [];
             for (const one of candidate.repays) {
               const expense = yield* records.getById(input.orgId, one.recordId);
@@ -467,6 +468,18 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
               if (funding?.by !== "partner" || funding.state !== "owed") return yield* changed;
               owed.push(expense!);
             }
+            const signed = row.direction === "debit" ? row.amountMinor : -row.amountMinor;
+            if (
+              owed.some(
+                (one) =>
+                  one.state !== "done" ||
+                  isSuggestion(one) ||
+                  one.currency !== currency ||
+                  one.amountMinor === null,
+              ) ||
+              owed.reduce((sum, one) => sum + (one.amountMinor ?? 0), 0) !== signed
+            )
+              return yield* changed;
             const prior = yield* settleBank(row, states.explained, "expense");
             for (const expense of owed) {
               const fields = parseFields(expense.fieldsJson);

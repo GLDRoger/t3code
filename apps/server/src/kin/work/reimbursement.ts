@@ -5,14 +5,15 @@ import { fieldText, type FieldValues } from "./lists.ts";
 
 /**
  * The company funds an expense unless `fundedBy` names a partner who paid it themselves, or an
- * import's unmatched one marks it owed or repaid. A partner's is owed back until `repaid` (on
- * `repaidOn`), unless `not reimbursable`.
+ * unmatched one is marked owed or repaid. A partner's is owed back until `repaid` (on `repaidOn`),
+ * unless `not reimbursable`. An import's address with neither is not yet said: counted as the
+ * company's until the owner says who it was (`unsaidImport`).
  */
 
 export const FUNDED_BY = "fundedBy";
-const REIMBURSEMENT = "reimbursement";
+export const REIMBURSEMENT = "reimbursement";
 const REPAID_ON = "repaidOn";
-/** The address an import gave for who paid; read only to show who an unmatched row is owed to. */
+/** The address an import gave for who paid personally; read to show and match who it was. */
 export const IMPORTED_PARTNER = "paidPersonallyBy";
 
 const REIMBURSEMENT_STATES = ["owed", "repaid", "not reimbursable"] as const;
@@ -75,6 +76,11 @@ export const partnerFunded = (sql: SqlClient.SqlClient) =>
 /** An expense `r` the company still owes the partner who funded it. */
 export const owedToPartner = (sql: SqlClient.SqlClient) =>
   sql`(${partnerFunded(sql)} AND COALESCE(${valueOf(sql, REIMBURSEMENT)}, 'owed') = 'owed')`;
+
+/** An expense `r` an import says a partner paid, with no funder or reimbursement said yet. */
+export const unsaidImport = (sql: SqlClient.SqlClient) =>
+  sql`(${valueOf(sql, FUNDED_BY)} IS NULL AND ${valueOf(sql, REIMBURSEMENT)} IS NULL
+    AND trim(COALESCE(${valueOf(sql, IMPORTED_PARTNER)}, '')) <> '')`;
 
 /** A repaid expense `r`'s repaid day, `YYYY-MM-DD`, or null. */
 export const repaidDay = (sql: SqlClient.SqlClient) =>

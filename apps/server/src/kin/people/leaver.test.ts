@@ -35,6 +35,8 @@ import type { Services } from "../KinServer.ts";
 import * as Deals from "../work/deals.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import * as Clients from "../work/ownerClients.ts";
+import { partnersOwed } from "../work/partnersOwed.ts";
+import { presetList } from "../work/registers.ts";
 import * as People from "./KinPeople.ts";
 
 // Invented: Rhea's Ambermill. Zoya sells and leaves; Arjun sells too; Meera is a co-owner; Dev
@@ -437,6 +439,35 @@ it.effect(
         });
       }),
     ),
+);
+
+it.effect("what the company owes a partner who leaves stays owed to them, by name", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      yield* presetList(ctx.orgId, "expenses", 0);
+      yield* ctx.records.create(
+        ctx.orgId,
+        { actor: { _tag: "person", personId: ctx.owner.personId }, via: "owner" },
+        {
+          list: "expenses",
+          originKey: "invented-domain",
+          title: "Invented domain renewal",
+          owner: { _tag: "person", personId: ctx.owner.personId },
+          state: "done",
+          amount: { minor: 420_000, currency: "INR" },
+          dateAt: 0,
+          fields: { fundedBy: `person:${arjunId}` },
+        },
+      );
+      const owed = Effect.map(partnersOwed(ctx.orgId, "INR"), (partners) =>
+        partners.map((one) => [one.personId, one.name, one.owed]),
+      );
+      const before = yield* owed;
+      yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: arjunId });
+      assert.deepStrictEqual(before, [[arjunId, "Arjun", [{ minor: 420_000, currency: "INR" }]]]);
+      assert.deepStrictEqual(yield* owed, before);
+    }),
+  ),
 );
 
 // Every column that holds a person or an agent, as last reviewed. A new one fails here until

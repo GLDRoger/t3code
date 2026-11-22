@@ -2213,90 +2213,88 @@ describe("Kin migrations", () => {
         const sql = yield* SqlClient.SqlClient;
         yield* runKinMigrations();
         yield* sql`DROP TABLE kin_company_shell`;
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 206`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 206`;
         yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Ambermill', '2026-11-22')`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[206, "CompanyShell"]]);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(206));
         const shells = sql`SELECT org_id, shell_json, rev, set_by, set_at
         FROM kin_company_shell ORDER BY org_id`;
         assert.deepStrictEqual(yield* shells, []);
         const sections = '[{"id":"deals","on":false}]';
         yield* sql`INSERT INTO kin_company_shell VALUES ('org', ${sections}, 1, 'rhea', 1)`;
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 206`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[206, "CompanyShell"]]);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 206`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(206));
         assert.deepStrictEqual(yield* shells, [
           { org_id: "org", shell_json: sections, rev: 1, set_by: "rhea", set_at: 1 },
         ]);
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect(
-    "K207 gives Expenses who funded it, marks imported partner-paid entries owed, and reruns",
-    () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* runKinMigrations();
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
-        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
-        const fields = [
-          { key: "vendor", label: "Vendor", type: "text", sensitive: false },
-          { key: "paidFrom", label: "Paid from", type: "text", sensitive: false },
-          { key: "paidPersonallyBy", label: "Paid personally by", type: "text", sensitive: false },
-        ];
-        const definition = JSON.stringify({ noun: "expense", fields });
-        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+  it.effect("K207 gives Expenses who funded it, changes no entry or label, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+      const fields = [
+        { key: "vendor", label: "Vendor", type: "text", sensitive: false },
+        { key: "paidFrom", label: "Paid from", type: "text", sensitive: false },
+        { key: "paidPersonallyBy", label: "Paid personally by", type: "text", sensitive: false },
+      ];
+      const definition = JSON.stringify({ noun: "expense", fields });
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
             definition_json, created_at) VALUES ('org', 'expenses', 'Expenses', 'EXP', 0,
             ${definition}, 1)`;
-        const entry = (key: string, state: string, more: Record<string, string>) =>
-          sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+      const entry = (key: string, state: string, more: Record<string, string>) =>
+        sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
               owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at,
               fields_json)
             VALUES ('org', ${key}, 'expenses', ${key}, 'Train tickets', ${state}, 'person', 'dev',
               'person', ${key}, 1, 1, ${JSON.stringify({ vendor: "Rail", ...more })})`;
-        yield* entry("EXP-1", "done", { paidPersonallyBy: "partner@ambermill.example" });
-        yield* entry("EXP-2", "done", { paidFrom: "mail intake" });
-        yield* entry("EXP-3", "open", { paidPersonallyBy: "partner@ambermill.example" });
-        yield* entry("EXP-4", "done", {
-          paidPersonallyBy: "partner@ambermill.example",
-          reimbursement: "repaid",
-        });
-        const read = Effect.gen(function* () {
-          const [list] = yield* sql<{ json: string; rev: number }>`SELECT
+      yield* entry("EXP-1", "done", { paidPersonallyBy: "partner@ambermill.example" });
+      yield* entry("EXP-2", "done", { paidFrom: "mail intake" });
+      yield* entry("EXP-3", "open", { paidPersonallyBy: "partner@ambermill.example" });
+      yield* entry("EXP-4", "done", {
+        paidPersonallyBy: "partner@ambermill.example",
+        reimbursement: "repaid",
+      });
+      const read = Effect.gen(function* () {
+        const [list] = yield* sql<{ json: string; rev: number }>`SELECT
               definition_json AS json, rev FROM kin_registers WHERE register_id = 'expenses'`;
-          const entries = yield* sql<{ key: string; owed: string | null }>`SELECT key,
+        const entries = yield* sql<{ key: string; owed: string | null }>`SELECT key,
               json_extract(fields_json, '$.reimbursement') AS owed FROM kin_records ORDER BY key`;
-          const shape = JSON.parse(list!.json) as {
-            fields: ReadonlyArray<{ key: string; label: string }>;
-          };
-          return {
-            rev: list!.rev,
-            fields: shape.fields.map((one) => `${one.key}:${one.label}`),
-            entries,
-          };
-        });
-        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(207));
-        const once = yield* read;
-        assert.deepStrictEqual(once.fields, [
-          "vendor:Vendor",
-          "paidFrom:Source",
-          "paidPersonallyBy:Paid personally by",
-          "fundedBy:Funded by",
-          "reimbursement:Reimbursement",
-          "repaidOn:Repaid on",
-        ]);
-        // Only a Paid entry with an address and no mark yet is owed; no person is guessed.
-        assert.deepStrictEqual(once.entries, [
-          { key: "EXP-1", owed: "owed" },
-          { key: "EXP-2", owed: null },
-          { key: "EXP-3", owed: null },
-          { key: "EXP-4", owed: "repaid" },
-        ]);
-        const [funded] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_records
+        const shape = JSON.parse(list!.json) as {
+          fields: ReadonlyArray<{ key: string; label: string }>;
+        };
+        return {
+          rev: list!.rev,
+          fields: shape.fields.map((one) => `${one.key}:${one.label}`),
+          entries,
+        };
+      });
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(207));
+      const once = yield* read;
+      assert.deepStrictEqual(once.fields, [
+        "vendor:Vendor",
+        "paidFrom:Paid from",
+        "paidPersonallyBy:Paid personally by",
+        "fundedBy:Funded by",
+        "reimbursement:Reimbursement",
+        "repaidOn:Repaid on",
+      ]);
+      // An imported partner's entry waits for the owner's word; no person or state is guessed.
+      assert.deepStrictEqual(once.entries, [
+        { key: "EXP-1", owed: null },
+        { key: "EXP-2", owed: null },
+        { key: "EXP-3", owed: null },
+        { key: "EXP-4", owed: "repaid" },
+      ]);
+      const [funded] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_records
           WHERE json_extract(fields_json, '$.fundedBy') IS NOT NULL`;
-        assert.strictEqual(funded!.n, 0);
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
-        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(207));
-        assert.deepStrictEqual(yield* read, once);
-      }).pipe(Effect.provide(layer)),
+      assert.strictEqual(funded!.n, 0);
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(207));
+      assert.deepStrictEqual(yield* read, once);
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("K207 adds nothing to an Expenses list with no room for all three fields", () =>

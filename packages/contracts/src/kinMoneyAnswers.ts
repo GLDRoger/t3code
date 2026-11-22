@@ -146,6 +146,15 @@ export const KinPartnerOwed = Schema.Struct({
 });
 export type KinPartnerOwed = typeof KinPartnerOwed.Type;
 
+/** Paid expenses an import says an address paid personally, not counted as owed until said. */
+export const KinPartnerUnsaid = Schema.Struct({
+  address: Schema.String,
+  expenses: NonNegativeInt,
+  total: KinMoneyTotals,
+  oldest: KinDay,
+});
+export type KinPartnerUnsaid = typeof KinPartnerUnsaid.Type;
+
 /** The next `days`: invoices due in, amounts owed and repeating bills out, and runway. */
 export const KinOutlook = Schema.Struct({
   today: KinDay,
@@ -165,6 +174,8 @@ export const KinOutlook = Schema.Struct({
   overdueIn: Schema.Array(KinOutlookItem),
   /** What partners are owed back, counted as going out now; absent from older hosts. */
   owedToPartners: Schema.optional(Schema.Array(KinPartnerOwed)),
+  /** Imported partner addresses waiting for the owner's word; counted as before until then. */
+  partnersUnsaid: Schema.optional(Schema.Array(KinPartnerUnsaid)),
   /** Keys of repeating entries that repeat more often than the host projects. */
   incomplete: Schema.Array(Schema.String),
   runway: Schema.Array(KinRunway),
@@ -303,11 +314,15 @@ export type KinNewExpenseInput = typeof KinNewExpenseInput.Type;
 export const KinNewExpenseResult = Schema.Struct({ expense: KinRecordKey });
 export type KinNewExpenseResult = typeof KinNewExpenseResult.Type;
 
-/** The owner says which person an import's partner address is; their expenses take that funder. */
+/**
+ * An owner-level person says which person an import's partner address is, and whether what it
+ * paid is still owed or was already paid back; its expenses take that funder.
+ */
 export const KinMatchPartnerInput = Schema.Struct({
   orgId: KinOrgId,
   address: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
   personId: KinPersonId,
+  settled: Schema.Literals(["owed", "repaid"]),
 });
 export type KinMatchPartnerInput = typeof KinMatchPartnerInput.Type;
 export const KinMatchPartnerResult = Schema.Struct({ matched: Schema.Array(KinRecordKey) });

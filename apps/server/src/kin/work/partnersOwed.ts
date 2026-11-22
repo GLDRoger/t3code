@@ -6,7 +6,14 @@ import { KinRecords, type Writer } from "./KinRecords.ts";
 import { parseFields } from "./lists.ts";
 import { addUp, dayIn } from "./money.ts";
 import { countedEntry, moneyDay } from "./recordRows.ts";
-import { FUNDED_BY, fundingOf, IMPORTED_PARTNER, owedToPartner } from "./reimbursement.ts";
+import {
+  FUNDED_BY,
+  fundingOf,
+  IMPORTED_PARTNER,
+  owedToPartner,
+  REIMBURSEMENT,
+  unsaidImport,
+} from "./reimbursement.ts";
 
 /** One Paid expense a partner funded and the company hasn't paid back yet. */
 export type OwedEntry = {
@@ -90,8 +97,39 @@ export const partnersOwed = Effect.fn("KinPartnersOwed.read")(function* (
 });
 export type PartnersOwed = Effect.Success<ReturnType<typeof partnersOwed>>;
 
+/** Paid expenses an import says a partner paid, by address, until the owner says who and whether owed. */
+export const partnersUnsaid = Effect.fn("KinPartnersOwed.unsaid")(function* (
+  orgId: KinOrgId,
+  home: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ address: string; minor: number; currency: string; at: number }>`
+    SELECT lower(trim(json_extract(r.fields_json, ${`$.${IMPORTED_PARTNER}`}))) AS address,
+      r.amount_minor AS minor, r.currency, ${moneyDay(sql)} AS at
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
+      AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${unsaidImport(sql)}
+    ORDER BY address, at, r.key`;
+  const groups = new Map<string, Array<(typeof rows)[number]>>();
+  for (const row of rows) groups.set(row.address, [...(groups.get(row.address) ?? []), row]);
+  return [...groups].map(([address, entries]) => ({
+    address,
+    expenses: entries.length,
+    total: addUp(
+      entries.map((one) => ({ minor: one.minor, currency: one.currency })),
+      home,
+    ),
+    at: entries[0]!.at,
+  }));
+});
+
 /** The partners owed as an agent quotes them: who, how much, and the oldest entries. */
-export const partnersAnswer = (partners: PartnersOwed, zone: string, shown = 20) => ({
+export const partnersAnswer = (
+  partners: PartnersOwed,
+  unsaid: Effect.Success<ReturnType<typeof partnersUnsaid>>,
+  zone: string,
+  shown = 20,
+) => ({
   partners: partners.map((one) => ({
     partner:
       one.personId === null
@@ -106,19 +144,31 @@ export const partnersAnswer = (partners: PartnersOwed, zone: string, shown = 20)
       money: entry.money,
     })),
   })),
+  ...(unsaid.length === 0
+    ? {}
+    : {
+        paidPersonallyNotYetSaid: unsaid.map((one) => ({
+          address: one.address,
+          expenses: one.expenses,
+          total: one.total,
+          since: dayIn(one.at, zone),
+        })),
+      }),
   basis:
-    "Paid expenses a partner funded from their own money that the company hasn't paid back yet, oldest first. An unmatched partner is an address an import gave that no Kin person has yet: the owner matches it in Money.",
+    "Paid expenses a partner funded from their own money that the company hasn't paid back yet, oldest first, per currency. Paid personally, not yet said: imported expenses an address paid that nobody has said are owed or paid back; they count as the company's own spending until an owner says who it was in Money.",
 });
 
 /**
- * The owner names who an import's address is: every partner-funded expense that names no person
- * and carries that address takes `personId` as its funder, each as its own logged change.
+ * An owner-level person says who an import's address is, and whether what it paid is still owed:
+ * each of its expenses with no funder takes `personId`, and one with no reimbursement yet takes
+ * `settled`, each as its own logged change. Already paid back keeps it counted as it was.
  */
 export const matchPartner = Effect.fn("KinPartnersOwed.match")(function* (
   orgId: KinOrgId,
   writer: Writer,
   address: string,
   personId: string,
+  settled: "owed" | "repaid",
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
@@ -129,15 +179,23 @@ export const matchPartner = Effect.fn("KinPartnersOwed.match")(function* (
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses'
       AND json_extract(r.fields_json, ${`$.${FUNDED_BY}`}) IS NULL
       AND lower(trim(json_extract(r.fields_json, ${`$.${IMPORTED_PARTNER}`}))) = ${given}
+      AND COALESCE(json_extract(r.fields_json, ${`$.${REIMBURSEMENT}`}), 'owed')
+        IN ('owed', 'repaid')
     ORDER BY r.key`;
-  const matching = rows.filter((row) => fundingOf(parseFields(row.fieldsJson)).by === "partner");
-  for (const row of matching)
+  for (const row of rows) {
+    const said = fundingOf(parseFields(row.fieldsJson)).by === "partner";
     yield* records.update(
       orgId,
       writer,
       row.key,
-      { fields: { [FUNDED_BY]: `person:${personId}` } },
+      {
+        fields: {
+          [FUNDED_BY]: `person:${personId}`,
+          ...(said ? {} : { [REIMBURSEMENT]: settled }),
+        },
+      },
       row.rev,
     );
-  return matching.map((row) => row.key);
+  }
+  return rows.map((row) => row.key);
 });

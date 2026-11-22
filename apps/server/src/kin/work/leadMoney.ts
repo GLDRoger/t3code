@@ -56,7 +56,7 @@ import {
   writerFor,
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
-import { partnersAnswer, partnersOwed } from "./partnersOwed.ts";
+import { partnersAnswer, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { homeCurrency, notRegisteredFact } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
@@ -567,6 +567,7 @@ const runMoneyQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof Mon
         : input.view === "partners"
           ? partnersAnswer(
               yield* partnersOwed(lead.orgId, yield* homeCurrency(lead.orgId)),
+              yield* partnersUnsaid(lead.orgId, yield* homeCurrency(lead.orgId)),
               yield* ownerZone(lead.orgId),
             )
           : budgetsAnswer(yield* budgetsView(lead.orgId, now, input.month));
