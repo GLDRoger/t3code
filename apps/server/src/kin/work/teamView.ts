@@ -101,10 +101,9 @@ export const PICTURE_DOC_ORIGIN = "picture:";
 
 /**
  * Version `pv` of a picture was made in a turn others read and posted on a reply this person reads
- * now: in its chat, from their join on (`personReads`). The one rule for a picture's doc, its
- * versions, its file and its image in the chat; a doc's labels add to it (`pictureSees`).
+ * now: in its chat, from their join on (`personReads`).
  */
-export const pictureVersionReader = (
+const pictureVersionReader = (
   sql: SqlClient.SqlClient,
   personId: KinPersonId | Statement.Fragment,
 ) =>
@@ -114,19 +113,31 @@ export const pictureVersionReader = (
     WHERE pi.org_id = pv.org_id AND pi.record_id = pv.record_id AND pi.version = pv.version
       AND kin_messages.status <> 'deleted' AND ${personReads(sql, personId)}))`;
 
+/**
+ * Version `pv` of picture doc `r`, for someone below the owner level: unlabelled, and its reply
+ * read or the doc shared with the team (`sees_docs`). The one rule its doc, history, file, image
+ * and `doc_read` follow, with `pictureReader` for the doc itself.
+ */
+export const pictureVersionSeen = (
+  sql: SqlClient.SqlClient,
+  personId: KinPersonId | Statement.Fragment,
+) =>
+  sql`(NOT ${sensitiveNow(sql)} AND (${pictureVersionReader(sql, personId)}
+    OR (r.team_shared = 1 AND ${placeOn(sql, personId, "sees_docs")})))`;
+
 /** `r` is a picture whose latest version this person reads; a later owner-only one takes it back. */
 const pictureReader = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`(r.origin_key LIKE ${`${PICTURE_DOC_ORIGIN}%`} AND EXISTS (SELECT 1 FROM kin_doc_versions pv
     WHERE pv.org_id = r.org_id AND pv.record_id = r.record_id
       AND pv.version = (SELECT MAX(lv.version) FROM kin_doc_versions lv
         WHERE lv.org_id = r.org_id AND lv.record_id = r.record_id)
-      AND ${pictureVersionReader(sql, personId)}))`;
+      AND ${pictureVersionSeen(sql, personId)}))`;
 
-/** Version `pv` of picture doc `r`, its file and its chat image: unlabelled, and its reply read. */
+/** Version `pv` of picture doc `r`, its file and its chat image: its doc and that version seen. */
 export const pictureFileReader = (
   sql: SqlClient.SqlClient,
   personId: KinPersonId | Statement.Fragment,
-) => sql`(NOT ${sensitiveNow(sql)} AND ${pictureVersionReader(sql, personId)})`;
+) => sql`(${pictureReader(sql, personId)} AND ${pictureVersionSeen(sql, personId)})`;
 
 const isPicture = (sql: SqlClient.SqlClient) =>
   sql`(r.register_id = 'docs' AND r.origin_key LIKE ${`${PICTURE_DOC_ORIGIN}%`})`;
@@ -147,7 +158,7 @@ export const alsoOnIt = (sql: SqlClient.SqlClient, personId: KinPersonId | State
  * their drafts; company docs with Docs on; with Clients on, the deals of clients they see.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
-  sql`(CASE WHEN ${isPicture(sql)} THEN (NOT ${sensitiveNow(sql)} AND ${pictureReader(sql, personId)})
+  sql`(CASE WHEN ${isPicture(sql)} THEN ${pictureReader(sql, personId)}
   ELSE ((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
       OR ${attends(sql, personId)} OR ${alsoOnIt(sql, personId)} OR r.marked_by_person_id = ${personId}
       OR (r.sensitive = 0 AND ((r.created_by_kind = 'person' AND r.created_by_id = ${personId})

@@ -50,7 +50,7 @@ import * as Docs from "../work/docs.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as LeadDocs from "../work/leadDocs.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
-import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { makeFakeImageVendor } from "./FakeImageVendor.ts";
 import { GENERATE_SENTENCES, KinPictures, makeLayer as picturesLayer } from "./KinPictures.ts";
 import {
@@ -608,6 +608,164 @@ describe("kin_picture", () => {
         // Taken out of the chat, Meera reads none of it, a URL she kept included.
         yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'team-chat-meera'`;
         assert.deepStrictEqual(yield* reads(meera), [false, false, false]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a picture's doc, history, file, image and a turn's read follow one rule, for each version and each person",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* group;
+        const sql = yield* SqlClient.SqlClient;
+        const chats = yield* ChatService.KinChatService;
+        const zoya = KinPersonId.make("zoya");
+        const arjun = KinPersonId.make("arjun");
+        const kabir = KinPersonId.make("kabir");
+        // Zoya is a co-owner in no chat; Arjun a member in none; Kabir was in the team's chat.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES (${zoya}, ${orgId}, 'zoya', 'Zoya', ${at}, 'co_owner'),
+            (${arjun}, ${orgId}, 'arjun', 'Arjun', ${at}, 'member'),
+            (${kabir}, ${orgId}, 'kabir', 'Kabir', ${at}, 'member')`;
+        yield* sql`UPDATE kin_people SET access = 'owner' WHERE person_id = ${ownerId}`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES ('team-chat-kabir', ${orgId}, 'team-chat', 'person', ${kabir}, 'member', ${at})`;
+        yield* turn(1, "meera", "shared", "team-chat");
+        const first = yield* makePicture(scope, post("48px"));
+        yield* turn(2, "meera", "shared", "team-chat");
+        drawing.next = { _tag: "drawn", png: Uint8Array.of(...PNG, 0), width: 1080, height: 1080 };
+        const second = yield* makePicture(scope, post("72px", { doc: first.doc }));
+        drawing.next = undefined;
+        assert.deepInclude(second, { doc: first.doc, version: 2 });
+        // Dev joined between the two replies, so he reads only the second.
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at, joined_seq)
+          VALUES ('team-chat-dev', ${orgId}, 'team-chat', 'person', ${dev}, 'member', ${at}, 102)`;
+        // Kabir is removed from the company: out of the chat, at no level.
+        yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'team-chat-kabir'`;
+        yield* sql`UPDATE kin_people SET removed_at = 1, sees_docs = 1 WHERE person_id = ${kabir}`;
+
+        const key = first.doc;
+        const images = [first.files[0]!, second.files[0]!];
+        const ownerLevelPeople = new Set<KinPersonId>([ownerId, zoya]);
+        /** Docs, its history, the file, the chat image and a turn's `doc_read` view, per version. */
+        const row = (who: KinPersonId, version: number) =>
+          Effect.gen(function* () {
+            const as = [person(who)];
+            const all = yield* versions(key);
+            const file = all.find((one) => one.version === version)!.file!.attachmentId;
+            const viewer = ownerLevelPeople.has(who) ? KIN_OWNER_LEVEL : viewerOfPeople([who]);
+            const turnReads = yield* Docs.docRow(orgId, { key }, viewer).pipe(
+              Effect.flatMap((doc) => Docs.versionsSeen(orgId, viewer, doc)),
+              Effect.map((seen) => seen(version)),
+              Effect.orElseSucceed(() => false),
+            );
+            return [
+              yield* OwnerDocs.get(as, { orgId, key, version }).pipe(
+                Effect.as(true),
+                Effect.orElseSucceed(() => false),
+              ),
+              yield* OwnerDocs.history(as, { orgId, key }).pipe(
+                Effect.map((history) => history.versions.some((one) => one.version === version)),
+                Effect.orElseSucceed(() => false),
+              ),
+              yield* chats.attachmentReadable(as, file),
+              yield* chats.attachmentReadable(as, images[version - 1]!),
+              turnReads,
+            ];
+          });
+        const table = (versionsOf: number) =>
+          Effect.forEach([ownerId, zoya, meera, arjun, dev, kabir], (who) =>
+            Effect.map(
+              Effect.forEach(
+                Array.from({ length: versionsOf }, (_, index) => index + 1),
+                (version) => row(who, version),
+              ),
+              // One rule: every way in agrees, so each version is one answer.
+              (rows) => [
+                who,
+                ...rows.map((one) => (one.every(Boolean) ? true : one.some(Boolean) ? one : false)),
+              ],
+            ),
+          );
+        assert.deepStrictEqual(yield* table(2), [
+          [ownerId, true, true],
+          [zoya, true, true],
+          [meera, true, true],
+          [arjun, false, false],
+          [dev, false, true],
+          [kabir, false, false],
+        ]);
+        // The latest version's reply deleted, no member reads the doc any more, nor so its earlier
+        // versions' files and images.
+        yield* turn(3, "meera", "shared", "team-chat");
+        drawing.next = { _tag: "drawn", png: Uint8Array.of(...PNG, 1), width: 1080, height: 1080 };
+        const third = yield* makePicture(scope, post("96px", { doc: key }));
+        drawing.next = undefined;
+        images.push(third.files[0]!);
+        yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id IN (SELECT message_id
+          FROM kin_message_attachments WHERE attachment_id = ${third.files[0]!})`;
+        assert.deepStrictEqual(yield* table(3), [
+          [ownerId, true, true, true],
+          [zoya, true, true, true],
+          [meera, false, false, false],
+          [arjun, false, false, false],
+          [dev, false, false, false],
+          [kabir, false, false, false],
+        ]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "Share with team shares a picture like any doc, its history and file included, until unshared or labelled",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* group;
+        const sql = yield* SqlClient.SqlClient;
+        const chats = yield* ChatService.KinChatService;
+        yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${dev}`;
+        yield* turn(1);
+        const own = yield* makePicture(scope, post("48px"));
+        const file = (yield* versions(own.doc))[0]!.file!.attachmentId;
+        const reads = (who: KinPersonId) =>
+          Effect.gen(function* () {
+            const as = [person(who)];
+            return [
+              yield* OwnerDocs.get(as, { orgId, key: own.doc }).pipe(
+                Effect.as(true),
+                Effect.orElseSucceed(() => false),
+              ),
+              yield* OwnerDocs.history(as, { orgId, key: own.doc }).pipe(
+                Effect.map((history) => history.versions.length === 1),
+                Effect.orElseSucceed(() => false),
+              ),
+              yield* chats.attachmentReadable(as, file),
+            ];
+          });
+        // Rhea's own picture: Dev, with Docs on, reads none of it; Meera, without Docs, neither.
+        assert.deepStrictEqual(
+          [yield* reads(dev), yield* reads(meera)],
+          [
+            [false, false, false],
+            [false, false, false],
+          ],
+        );
+        const share = (on: 0 | 1) =>
+          sql`UPDATE kin_records SET team_shared = ${on} WHERE org_id = ${orgId} AND key = ${own.doc}`;
+        yield* share(1);
+        assert.deepStrictEqual(
+          [yield* reads(dev), yield* reads(meera)],
+          [
+            [true, true, true],
+            [false, false, false],
+          ],
+        );
+        // A label still hides it.
+        yield* sql`UPDATE kin_records SET sensitive = 1 WHERE org_id = ${orgId} AND key = ${own.doc}`;
+        assert.deepStrictEqual(yield* reads(dev), [false, false, false]);
+        yield* sql`UPDATE kin_records SET sensitive = 0 WHERE org_id = ${orgId} AND key = ${own.doc}`;
+        yield* share(0);
+        assert.deepStrictEqual(yield* reads(dev), [false, false, false]);
       }).pipe(Effect.provide(layer)),
   );
 

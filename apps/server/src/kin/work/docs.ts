@@ -41,7 +41,7 @@ import { indexRecord } from "./searchIndex.ts";
 import {
   KIN_OWNER_LEVEL,
   PICTURE_DOC_ORIGIN,
-  pictureVersionReader,
+  pictureVersionSeen,
   viewerOfPeople,
   viewVisible,
   type KinViewer,
@@ -233,8 +233,8 @@ export const docRow = Effect.fn("KinDocs.row")(function* (
 });
 
 /**
- * Which of a doc's versions the viewer reads: every one, but a picture's are each read by who
- * reads the reply it was posted on (`pictureVersionReader`), so an earlier one may be theirs or not.
+ * Which of a doc's versions the viewer reads: every one, but a picture's each by its own rule
+ * (`pictureVersionSeen`), so an earlier one may be theirs or not.
  */
 export const versionsSeen = Effect.fn("KinDocs.versionsSeen")(function* (
   orgId: KinOrgId,
@@ -248,8 +248,9 @@ export const versionsSeen = Effect.fn("KinDocs.versionsSeen")(function* (
     viewer.people.length === 0
       ? []
       : yield* sql<{ version: number }>`SELECT pv.version FROM kin_doc_versions pv
+          JOIN kin_records r ON r.org_id = pv.org_id AND r.record_id = pv.record_id
           WHERE pv.org_id = ${orgId} AND pv.record_id = ${row.recordId}
-            AND ${sql.and(viewer.people.map((person) => pictureVersionReader(sql, person)))}
+            AND ${sql.and(viewer.people.map((person) => pictureVersionSeen(sql, person)))}
           ORDER BY pv.version`;
   const seen = new Set(rows.map((one) => one.version));
   return (version: number) => seen.has(version);
