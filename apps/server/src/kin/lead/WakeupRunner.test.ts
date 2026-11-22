@@ -1550,6 +1550,16 @@ describe("WakeupRunner", () => {
           const identity = yield* resolveAgent(ThreadId.make(lead!.thread_id));
           // The renewed grant lasts as long as the wake-up, so a reply 10 minutes in still lands.
           yield* TestClock.adjust("10 minutes");
+          if (kind === "team_group") {
+            yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+              VALUES ('other-group', ${orgId}, 'team_group', 0, ${at})`;
+            const other = Option.getOrThrow(
+              yield* repo.getChat({ orgId, chatId: KinChatId.make("other-group") }),
+            );
+            assert.include(yield* floor.authorize(identity, other, "answer").pipe(Effect.flip), {
+              reason: "floor_not_granted",
+            });
+          }
           const { runId } = yield* floor.authorize(identity, chat, "answer");
           assert.isNotNull(runId);
           // The wake-up keeps the grant for its run: its next post is the same agent turn.

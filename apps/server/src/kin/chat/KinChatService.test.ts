@@ -44,6 +44,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
@@ -1886,7 +1887,25 @@ describe("KinChatService", () => {
         yield* service.act(person, { ...actionInput, revision: 99 }).pipe(Effect.flip),
         { reason: "widget_changed" },
       );
+      const baseClock = yield* Clock.Clock;
+      const host = { ...baseClock, currentTimeMillis: Effect.succeed(0) };
+      yield* TestClock.adjust("3 days");
       const action = yield* service.act(person, actionInput);
+      const followup = yield* service
+        .send(person, {
+          chatId: chat.chatId,
+          body: "Is this done?",
+          clientMessageId: "after-tap",
+        })
+        .pipe(Effect.provideService(Clock.Clock, host));
+      assert.strictEqual(followup.createdAt, action.createdAt);
+      const reply = yield* service.send(agent, {
+        chatId: chat.chatId,
+        body: "Yes, it is done.",
+        clientMessageId: "after-tap-reply",
+        intent: "answer",
+      });
+      assert.strictEqual(reply.createdAt, followup.createdAt);
       assert.strictEqual(action.kind, "widget_action");
       assert.deepStrictEqual(yield* service.act(person, actionInput), action);
       assert.include(

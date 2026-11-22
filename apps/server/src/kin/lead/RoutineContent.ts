@@ -53,6 +53,7 @@ export interface KinRoutineGithubState {
     readonly number: number;
     readonly title: string;
     readonly url: string;
+    readonly teams?: ReadonlyArray<string>;
   }>;
   readonly ciRed: ReadonlyArray<{ readonly repo: string; readonly branch: string }>;
   readonly failedRepos: number;
@@ -326,6 +327,9 @@ const make = Effect.gen(function* () {
             state.reviews.map((pull) => ({
               title: `${pull.repo}#${pull.number} ${pull.title}`,
               link: pull.url,
+              ...(pull.teams === undefined
+                ? {}
+                : { note: `Review requested from the team: ${pull.teams.join(", ")}` }),
             })),
         }),
         ciRed: Option.match(github, {
