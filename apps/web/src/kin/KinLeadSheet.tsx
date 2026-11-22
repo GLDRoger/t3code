@@ -87,7 +87,10 @@ export function KinLeadSheet(props: {
   const nowMs = useNowMinuteMs();
   const retired = about.kind === "own" ? about.lead.retired : undefined;
   const canMute = useAtomValue(kinClient.mute.permissionAtom(environmentId));
-  const working = useKinWorkingAgents(environmentId);
+  const working = useKinWorkingAgents(
+    environmentId,
+    about.kind === "own" ? about.lead.orgId : about.contact.orgId,
+  );
   const mute = useAtomCommand(kinClient.mute, { reportFailure: false });
   const [muteState, setMuteState] = useState<"idle" | "saving" | "failed">("idle");
   const [muteProblem, setMuteProblem] = useState<string | null>(null);

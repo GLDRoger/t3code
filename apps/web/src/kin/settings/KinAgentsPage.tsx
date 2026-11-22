@@ -35,7 +35,7 @@ export function KinAgentsPage(props: KinSettingsTarget) {
   const { environmentId, orgId } = props;
   const atom = kinClient.leads({ environmentId, input: { orgId } });
   const result = useAtomValue(atom);
-  const working = useKinWorkingAgents(environmentId);
+  const working = useKinWorkingAgents(environmentId, orgId);
   const canAdd = useAtomValue(kinClient.leadCreate.permissionAtom(environmentId));
   const navigate = useNavigate();
   const all = Option.getOrNull(AsyncResult.value(result))?.leads ?? null;
