@@ -660,7 +660,7 @@ const make = Effect.gen(function* () {
         yield* repo.insertWidget({ ...widget, audience: "owner" });
         yield* sql`UPDATE kin_troubles SET told_at = COALESCE(told_at, ${now})
           WHERE org_id = ${orgId} AND trouble_id = ${troubleId}`;
-        const linked = yield* repo.getMessage({ orgId, chatId, messageId });
+        const linked = yield* repo.getMessage({ orgId, messageId });
         if (Option.isSome(linked))
           yield* publish({
             type: bare === undefined ? "message.posted" : "message.changed",

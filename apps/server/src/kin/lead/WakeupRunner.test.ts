@@ -1194,6 +1194,7 @@ describe("WakeupRunner", () => {
       const finishClean = yield* Deferred.make<void>();
       const startProvider = yield* Deferred.make<void>();
       const care = Layer.mock(KinHostCare)({
+        host: true,
         troubleOpen: () => Effect.succeed(false),
         clean: () =>
           Deferred.succeed(cleaning, undefined).pipe(

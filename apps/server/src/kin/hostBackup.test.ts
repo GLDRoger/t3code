@@ -489,7 +489,8 @@ it.effect("commits a trouble notice with its card, and repairs a legacy bare not
     assert.lengthOf(yield* notices, 1);
     assert.lengthOf(yield* cards, 1);
 
-    const [{ widgetId }] = (yield* care.status(orgId)).agents.troubles;
+    const [shown] = (yield* care.status(orgId)).agents.troubles;
+    const { widgetId } = shown!;
     yield* sql`UPDATE kin_messages SET widget_id = NULL WHERE org_id = ${orgId}
       AND message_id = ${widgetId}`;
     yield* sql`DELETE FROM kin_widgets WHERE org_id = ${orgId} AND widget_id = ${widgetId}`;
