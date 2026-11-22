@@ -300,9 +300,18 @@ text:
     to: "'.kin', 'device'"
 
   # Desktop: product name, app id, URL schemes, data folders.
+  # Named Kin, never "Kin (Beta)": the bundle name comes from productName (see the guard on
+  # DesktopEnvironment.ts in scripts/lib/kinBrandGuards.ts for the window and menu name).
   - files: [apps/desktop/package.json]
-    from: T3 Code
+    from: T3 Code (Beta)
     to: Kin
+    exact: true
+  # Kin's desktop app is a window on the team's own Kin host, joined with a link: no bundled
+  # server, projects or provider set-up. See apps/desktop/src/kin/KinDesktopOnly.ts.
+  - files: [apps/desktop/src/kin/KinDesktopOnly.ts, scripts/lib/kinDesktopBuild.ts]
+    from: "kin-desktop:off"
+    to: "kin-desktop:on"
+    exact: true
   - files: [apps/desktop/src/app/DesktopEnvironment.ts]
     from: T3 Code
     to: Kin

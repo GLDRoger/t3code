@@ -23,6 +23,8 @@ import * as DesktopUserData from "./DesktopUserData.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { openClerkTokenStorage } from "./ClerkTokenStore.ts";
 import * as DesktopWebLinks from "./DesktopWebLinks.ts";
+import { KIN_DESKTOP_ONLY } from "../kin/KinDesktopOnly.ts";
+import { readKinDesktopLink } from "../kin/kinDesktopLink.ts";
 
 declare const __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: string | undefined;
 
@@ -216,7 +218,9 @@ export const make = Effect.gen(function* () {
         return true;
       };
       const openAppLink = (value: string | undefined) => {
-        if (!value || (promptLinkAppPath(value) === null && readPairingAppLink(value) === null))
+        if (!value) return false;
+        const kinLink = KIN_DESKTOP_ONLY && readKinDesktopLink(value)._tag !== "NotALink";
+        if (!kinLink && promptLinkAppPath(value) === null && readPairingAppLink(value) === null)
           return false;
         void runPromise(webLinks.receive(value));
         return true;

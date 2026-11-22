@@ -89,6 +89,25 @@ export const GUARDS: ReadonlyArray<Guard> = [
     replace: "triage: false",
   },
   {
+    file: "apps/desktop/src/app/DesktopConfig.ts",
+    reason:
+      "Kin's desktop app reads its own home override, so a T3CODE_HOME in someone's environment " +
+      "never points Kin at T3 Code's data. (The ignore list keeps T3CODE_ names for rules.)",
+    pattern: { context: '({ t3Home: trimmedString("T3CODE_HOME") })', selector: "pair" },
+    replace: 't3Home: trimmedString("KIN_HOME")',
+  },
+  {
+    file: "apps/desktop/src/app/DesktopEnvironment.ts",
+    reason:
+      "Kin's desktop app has no release stage, so its window, menu and About panel say Kin, " +
+      'never "Kin (Beta)".',
+    pattern: {
+      context: "({ displayName: `${APP_BASE_NAME} (${stageLabel})` })",
+      selector: "pair",
+    },
+    replace: "displayName: APP_BASE_NAME",
+  },
+  {
     file: "apps/web/src/components/chat/TriageDraftHero.tsx",
     reason: "The triage draft's hero suggests `npx t3 triage`; Kin opens no triage drafts.",
     function: "TriageDraftHero",
