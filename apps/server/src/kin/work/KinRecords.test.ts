@@ -1926,8 +1926,10 @@ it.effect(
         });
       const own = yield* yield* commentTurn(1, null);
       assert.notProperty(own.records[0], "suggested");
+      assert.include(yield* leadInOf("wake-1"), IN_PERSON);
       const viaKey = yield* yield* commentTurn(2, "invented-key");
       assert.include(viaKey.records[0], { suggested: true });
+      assert.notInclude(yield* leadInOf("wake-2"), IN_PERSON);
       // Only the kept one starts the other lead, once.
       assert.deepStrictEqual(
         (yield* wakes).filter((wake) => wake[0] === other),
@@ -2020,6 +2022,9 @@ it.effect(
           const [event] = yield* sql<{ id: string }>`SELECT event_id AS id FROM kin_events
             WHERE wakeup_id = ${wakeupId} ORDER BY event_id`;
           assert.isDefined(event, personId);
+          // The lead-in says what the server grants this turn, from the same check.
+          const said = yield* leadInOf(wakeupId);
+          assert.strictEqual(said?.includes(IN_PERSON), words === "hers" || words === "given later");
           return yield* LeadWork.create(scopeOf(lead), {
             sourceEventId: event!.id,
             records: [{ title: `Invented: design the brochure ${words}`, owner: other }],
@@ -3270,6 +3275,16 @@ it.effect("a task a teammate holds and gives an agent wakes it in their chat, at
 );
 
 const decodeEvent = Schema.decodeUnknownSync(KinEvent);
+/** The lead-in a wake-up's first task event gets in a turn the owner side alone reads. */
+const leadInOf = Effect.fn("KinRecordsTest.leadInOf")(function* (wakeupId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ json: string }>`SELECT json FROM kin_events
+    WHERE wakeup_id = ${wakeupId} ORDER BY event_id LIMIT 1`;
+  const event = decodeEvent(JSON.parse(row!.json));
+  if (event._tag !== "record.changed") return undefined;
+  return yield* workEventText({ orgId, event, ownerOnly: true, wakeupId });
+});
+const IN_PERSON = "as if they had asked you in their direct chat";
 /** The latest wake-up that gave a lead an entry, as stored. */
 const lastGiven = assignedEvents.pipe(
   Effect.map((rows) =>
