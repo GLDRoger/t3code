@@ -19,7 +19,7 @@ import {
   kinListSend,
   type KinAmountAsk,
 } from "../kinLists.ts";
-import { KIN_OUTLOOK, KIN_QUOTES } from "../kinMoneyAnswers.ts";
+import { KIN_OUTLOOK, KIN_QUOTES, type KinPartnerSeen } from "../kinMoneyAnswers.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import { kinWorkReadState } from "../kinWorkForms.ts";
 import type { AtomCommandResult } from "../../state/runtime.ts";
@@ -196,7 +196,12 @@ export function makeKinMoneyAnswersHooks<R, ER>(
     return {
       busy,
       problem,
-      match: async (address: string | null, personId: KinPersonId, settled?: "owed" | "repaid") => {
+      match: async (
+        address: string | null,
+        seen: KinPartnerSeen,
+        personId: KinPersonId,
+        settled?: "owed" | "repaid",
+      ) => {
         setBusy(true);
         setProblem(null);
         const outcome = await kinListSend({
@@ -209,6 +214,7 @@ export function makeKinMoneyAnswersHooks<R, ER>(
                 personId,
                 ...(address === null ? {} : { address }),
                 ...(settled === undefined ? {} : { settled }),
+                seen,
               },
             }),
         });

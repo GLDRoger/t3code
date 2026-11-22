@@ -50,7 +50,7 @@ import { typedFields } from "./leadFields.ts";
 import { aboutTotal, addUp, dayIn, financialYearOf, formatMinor, parseAmount } from "./money.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
-import { partnersOwed } from "./partnersOwed.ts";
+import { MATCH_MOVED, partnersOwed } from "./partnersOwed.ts";
 import {
   dates as datesView,
   moneySection,
@@ -340,6 +340,22 @@ const tap = (n: number, widgetId: string, kind: "yes" | "no", personId: string =
         0, 0, 'claimed', ${`wake-${n}`})`;
     return `event-${n}`;
   });
+/** What Money showed for a partner row: an address's not-yet-said group, or (Who is this) its owed one. */
+const seenOf = (address: string | null, saying: boolean) =>
+  OwnerMoneyAnswers.outlook(people, { orgId }).pipe(
+    Effect.map((view) => {
+      const unsaid = saying
+        ? view.partnersUnsaid?.find((one) => one.address === address)
+        : undefined;
+      const owed = view.owedToPartners?.find(
+        (one) => one.personId === null && one.address === address,
+      );
+      return unsaid !== undefined
+        ? { entries: unsaid.entries ?? [], totals: unsaid.total }
+        : { entries: owed?.entries ?? [], totals: owed?.owed ?? [] };
+    }),
+  );
+
 const cardOf = (clientMessageId: string) => `choice:card-${clientMessageId}`;
 /** The owner issues them: an invoice an agent made is a draft until then. */
 const issueAll = (...keys: ReadonlyArray<string>) =>
@@ -5282,11 +5298,16 @@ describe("money answers", () => {
         const as = (personId: string) => [
           { _tag: "person" as const, orgId, personId: KinPersonId.make(personId) },
         ];
-        const match = (address: string, settled: "owed" | "repaid") => ({
+        const match = (
+          address: string,
+          settled: "owed" | "repaid",
+          seen?: Effect.Success<ReturnType<typeof seenOf>>,
+        ) => ({
           orgId,
           address,
           personId: KinPersonId.make("meera"),
           settled,
+          ...(seen === undefined ? {} : { seen }),
         });
         assert.strictEqual(
           (yield* Effect.flip(
@@ -5298,7 +5319,11 @@ describe("money answers", () => {
         assert.deepStrictEqual(
           yield* OwnerMoneyAnswers.matchPartner(
             as("meera"),
-            match(" Meera@Invented.example", "repaid"),
+            match(
+              " Meera@Invented.example",
+              "repaid",
+              yield* seenOf("meera@invented.example", true),
+            ),
           ),
           { matched: [first] },
         );
@@ -5310,7 +5335,11 @@ describe("money answers", () => {
         assert.deepStrictEqual(
           yield* OwnerMoneyAnswers.matchPartner(
             people,
-            match("meera.home@invented.example", "owed"),
+            match(
+              "meera.home@invented.example",
+              "owed",
+              yield* seenOf("meera.home@invented.example", true),
+            ),
           ),
           { matched: [second] },
         );
@@ -5649,6 +5678,7 @@ describe("money answers", () => {
           orgId,
           address: "partnér@invented.example",
           personId: KinPersonId.make("meera"),
+          seen: yield* seenOf("partnér@invented.example", true),
         };
         const refused = (who: typeof people, input: typeof match) =>
           Effect.map(Effect.flip(OwnerMoneyAnswers.matchPartner(who, input)), (e) => e.message);
@@ -5658,11 +5688,29 @@ describe("money answers", () => {
           /No expense owed to a partner carries that address/,
         );
         assert.match(yield* refused(people, match), /still owes them for these/);
-        // Owner level: a co-owner may say who it was, and that it is still owed.
-        assert.deepStrictEqual(
-          yield* OwnerMoneyAnswers.matchPartner(as("co-owner"), { ...match, settled: "owed" }),
-          { matched: [imported.key] },
+        // A second expense from that address lands while the picker is open: nothing changes.
+        const { row: late } = yield* spend("late");
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.paidPersonallyBy',
+            'partnér@invented.example') WHERE record_id = ${late.recordId}`;
+        const owedNow = { ...match, settled: "owed" as const };
+        assert.strictEqual(
+          (yield* Effect.flip(OwnerMoneyAnswers.matchPartner(people, owedNow))).message,
+          MATCH_MOVED,
         );
+        const untouched = JSON.parse((yield* records.get(orgId, imported.key))!.fieldsJson);
+        assert.notProperty(untouched, "fundedBy");
+        // Meera leaves before the owner answers: checked in the same transaction as the write.
+        const fresh = { ...owedNow, seen: yield* seenOf("partnér@invented.example", true) };
+        yield* sql`UPDATE kin_people SET removed_at = ${at} WHERE person_id = 'meera'`;
+        assert.strictEqual(
+          (yield* Effect.flip(OwnerMoneyAnswers.matchPartner(people, fresh))).message,
+          "That person isn't on the team.",
+        );
+        yield* sql`UPDATE kin_people SET removed_at = NULL WHERE person_id = 'meera'`;
+        // Owner level: a co-owner may say who it was, and that it is still owed.
+        assert.deepStrictEqual(yield* OwnerMoneyAnswers.matchPartner(as("co-owner"), fresh), {
+          matched: [imported.key, late.key],
+        });
         assert.match(yield* refused(people, match), /already say who funded them/);
 
         // Marked owed by hand with no partner and no address: a person can still be named for it.
@@ -5675,6 +5723,7 @@ describe("money answers", () => {
           yield* OwnerMoneyAnswers.matchPartner(people, {
             orgId,
             personId: KinPersonId.make("meera"),
+            seen: yield* seenOf(null, false),
           }),
           { matched: [nameless.key] },
         );

@@ -162,6 +162,9 @@ export const outlook = Effect.fn("KinMoneyAnswers.rpc.outlook")(function* (
             owed: one.owed,
             expenses: one.entries.length,
             oldest: dayIn(one.entries[0]!.at, view.timeZone),
+            ...(one.personId === null
+              ? { entries: one.entries.map((entry) => ({ key: entry.key, rev: entry.rev })) }
+              : {}),
           })),
         }),
     ...(view.unsaid.length === 0
@@ -172,6 +175,7 @@ export const outlook = Effect.fn("KinMoneyAnswers.rpc.outlook")(function* (
             expenses: one.expenses,
             total: one.total,
             oldest: dayIn(one.at, view.timeZone),
+            entries: one.seen,
           })),
         }),
     incomplete: view.incomplete,
@@ -482,9 +486,7 @@ export const matchPartner = Effect.fn("KinMoneyAnswers.rpc.matchPartner")(functi
 ) {
   const person = yield* theOwner(people, input.orgId);
   const sql = yield* SqlClient.SqlClient;
-  const [member] = yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${input.orgId}
-    AND person_id = ${input.personId} AND removed_at IS NULL`;
-  if (member === undefined) return yield* invalid("That person isn't on the team.");
+  // The teammate, the rows and their totals are read and written in one transaction.
   const matched = yield* sql.withTransaction(
     matchPartnerOf(
       input.orgId,
@@ -492,6 +494,7 @@ export const matchPartner = Effect.fn("KinMoneyAnswers.rpc.matchPartner")(functi
       input.address ?? null,
       input.personId,
       input.settled,
+      input.seen,
     ),
   );
   return { matched };

@@ -352,7 +352,11 @@ function PartnersOwed(
                       disabled={matching.busy}
                       onValueChange={(personId) => {
                         if (typeof personId === "string")
-                          void matching.match(row.match!.address, KinPersonId.make(personId));
+                          void matching.match(
+                            row.match!.address,
+                            row.match!.seen,
+                            KinPersonId.make(personId),
+                          );
                       }}
                     >
                       <SelectTrigger size="sm" aria-label={`${KIN_OUTLOOK.whoIsThis} ${row.name}`}>
@@ -417,7 +421,8 @@ function PartnersOwed(
           busy={matching.busy}
           problem={matching.problem}
           onSay={async (personId, settled) => {
-            if (await matching.match(saying.address, personId, settled)) setSaying(null);
+            if (await matching.match(saying.address, saying.seen, personId, settled))
+              setSaying(null);
           }}
           onClose={() => setSaying(null)}
         />

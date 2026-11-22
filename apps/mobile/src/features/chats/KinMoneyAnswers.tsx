@@ -345,7 +345,8 @@ function PartnersOwed(
         { text: KIN_OUTLOOK.cancel, style: "cancel" },
         {
           text: KIN_OUTLOOK.confirm,
-          onPress: () => void matching.match(row.address, KinPersonId.make(personId!), settled),
+          onPress: () =>
+            void matching.match(row.address, row.seen, KinPersonId.make(personId!), settled),
         },
       ],
     );
@@ -368,7 +369,8 @@ function PartnersOwed(
             accessibilityLabel={`${row.name}, ${row.amount}. ${KIN_OUTLOOK.whoIsThis}`}
             actions={pickable}
             onPressAction={({ nativeEvent: { event } }) => {
-              if (!matching.busy) void matching.match(row.match!.address, KinPersonId.make(event));
+              if (!matching.busy)
+                void matching.match(row.match!.address, row.match!.seen, KinPersonId.make(event));
             }}
           >
             <View pointerEvents="none">

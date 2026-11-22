@@ -132,6 +132,10 @@ export const KinRunway = Schema.Struct({
 });
 export type KinRunway = typeof KinRunway.Type;
 
+/** One expense as the person saw it, so a match changes exactly what was shown. */
+export const KinPartnerSeenEntry = Schema.Struct({ key: KinRecordKey, rev: NonNegativeInt });
+export type KinPartnerSeenEntry = typeof KinPartnerSeenEntry.Type;
+
 /**
  * What the company owes one partner back for Paid expenses they funded: a Kin person, or an
  * import's address that no person matches yet (`personId` null).
@@ -143,6 +147,8 @@ export const KinPartnerOwed = Schema.Struct({
   owed: KinMoneyTotals,
   expenses: NonNegativeInt,
   oldest: KinDay,
+  /** With no person yet: the expenses a match would name them on. Absent from older hosts. */
+  entries: Schema.optional(Schema.Array(KinPartnerSeenEntry)),
 });
 export type KinPartnerOwed = typeof KinPartnerOwed.Type;
 
@@ -152,6 +158,8 @@ export const KinPartnerUnsaid = Schema.Struct({
   expenses: NonNegativeInt,
   total: KinMoneyTotals,
   oldest: KinDay,
+  /** The expenses a match would settle. Absent from older hosts. */
+  entries: Schema.optional(Schema.Array(KinPartnerSeenEntry)),
 });
 export type KinPartnerUnsaid = typeof KinPartnerUnsaid.Type;
 
@@ -327,6 +335,13 @@ export const KinMatchPartnerInput = Schema.Struct({
   address: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
   personId: KinPersonId,
   settled: Schema.optional(Schema.Literals(["owed", "repaid"])),
+  /**
+   * The expenses and per-currency totals the person saw (`entries` and the total of the row):
+   * a host changes exactly those, or nothing when any moved. Older clients send none.
+   */
+  seen: Schema.optional(
+    Schema.Struct({ entries: Schema.Array(KinPartnerSeenEntry), totals: KinMoneyTotals }),
+  ),
 });
 export type KinMatchPartnerInput = typeof KinMatchPartnerInput.Type;
 export const KinMatchPartnerResult = Schema.Struct({ matched: Schema.Array(KinRecordKey) });

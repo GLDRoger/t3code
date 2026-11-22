@@ -506,12 +506,13 @@ describe("KinImport", () => {
       yield* imports.apply(orgId, ownerId, file());
       // Not yet said: no one is owed until the owner says who it was and whether it is owed.
       assert.deepStrictEqual(yield* partnersOwed(orgId, "INR"), []);
-      assert.deepStrictEqual(
-        (yield* partnersUnsaid(orgId, "INR")).map((one) => one.address),
-        ["meera@invented.example"],
-      );
+      const [unsaid] = yield* partnersUnsaid(orgId, "INR");
+      assert.strictEqual(unsaid?.address, "meera@invented.example");
       yield* sql.withTransaction(
-        matchPartner(orgId, owner, "meera@invented.example", "meera", "owed"),
+        matchPartner(orgId, owner, "meera@invented.example", "meera", "owed", {
+          entries: unsaid!.seen,
+          totals: unsaid!.total,
+        }),
       );
       const owed = yield* partnersOwed(orgId, "INR");
       const again = yield* imports.apply(orgId, ownerId, file());

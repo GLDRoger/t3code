@@ -8,6 +8,7 @@ import {
   type KinMoneyBudgetSetInput,
   type KinMoneyBudgets,
   type KinOrgId,
+  type KinMatchPartnerInput,
   type KinOutlook,
   type KinOutlookItem,
   type KinRecord,
@@ -389,7 +390,7 @@ export interface KinOutlookView {
     readonly name: string;
     readonly amount: string;
     readonly note: string;
-    readonly match: { readonly address: string | null } | null;
+    readonly match: { readonly address: string | null; readonly seen: KinPartnerSeen } | null;
   }>;
   /** Imported addresses that paid personally, waiting for an owner to say who and whether owed. */
   readonly unsaid: ReadonlyArray<{
@@ -397,8 +398,12 @@ export interface KinOutlookView {
     readonly amount: string;
     readonly expenses: number;
     readonly note: string;
+    readonly seen: KinPartnerSeen;
   }>;
 }
+
+/** The expenses and totals a partner row showed; the host changes exactly those or nothing. */
+export type KinPartnerSeen = NonNullable<KinMatchPartnerInput["seen"]>;
 
 /** Runway in a line: the host's months when it has them, else plainly why not. */
 export function kinRunwayText(one: KinRunway): string {
@@ -496,13 +501,17 @@ export function kinOutlookView(
             : one.address === null
               ? KIN_OUTLOOK.nameless
               : KIN_OUTLOOK.unmatched,
-        match: one.personId === null ? { address: one.address } : null,
+        match:
+          one.personId === null
+            ? { address: one.address, seen: { entries: one.entries ?? [], totals: one.owed } }
+            : null,
       })),
     unsaid: (outlook.partnersUnsaid ?? []).map((one) => ({
       address: one.address,
       amount: kinTotalsLines(one.total).join(" + "),
       expenses: one.expenses,
       note: KIN_OUTLOOK.unsaidNote(one.expenses, afterLabel(onLabel(one.oldest, now))),
+      seen: { entries: one.entries ?? [], totals: one.total },
     })),
   };
 }

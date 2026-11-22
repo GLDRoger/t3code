@@ -170,8 +170,15 @@ export const partnersUnsaid = Effect.fn("KinPartnersOwed.unsaid")(function* (
   home: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ raw: string; minor: number; currency: string; at: number }>`
-    SELECT json_extract(r.fields_json, ${`$.${IMPORTED_PARTNER}`}) AS raw,
+  const rows = yield* sql<{
+    key: string;
+    rev: number;
+    raw: string;
+    minor: number;
+    currency: string;
+    at: number;
+  }>`
+    SELECT r.key, r.rev, json_extract(r.fields_json, ${`$.${IMPORTED_PARTNER}`}) AS raw,
       r.amount_minor AS minor, r.currency, ${moneyDay(sql)} AS at
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
@@ -191,6 +198,7 @@ export const partnersUnsaid = Effect.fn("KinPartnersOwed.unsaid")(function* (
         home,
       ),
       at: entries[0]!.at,
+      seen: entries.map((one) => ({ key: one.key, rev: one.rev })),
     }))
     .toSorted((a, b) => (a.address < b.address ? -1 : 1));
 });
@@ -230,11 +238,14 @@ export const partnersAnswer = (
     "Paid expenses a partner funded from their own money that the company hasn't paid back yet, oldest first, per currency. Paid personally, not yet said: imported expenses an address paid that nobody has said are owed or paid back; they count as the company's own spending until an owner says who it was in Money.",
 });
 
+/** Said when what a person saw for a partner match moved before they answered. */
+export const MATCH_MOVED =
+  "New expenses arrived since you opened this. Nothing was changed; look again.";
+
 /**
- * The owner or a co-owner says who an import's address is (or, with `address` null, who the owed
- * expenses naming no partner and no address are): each such expense with no funder takes
- * `personId`, and one not yet said takes `settled`, each as its own logged change. Addresses
- * compare as Money groups them (`partnerAddress`). Fails when nothing is left to match.
+ * The owner or a co-owner names who an import's address (null: owed expenses naming no one) is.
+ * With `settled`, the address's not-yet-said expenses take it too. Exactly the rows and totals
+ * `seen` showed change, with the person still on the team, in the caller's transaction.
  */
 export const matchPartner = Effect.fn("KinPartnersOwed.match")(function* (
   orgId: KinOrgId,
@@ -242,16 +253,35 @@ export const matchPartner = Effect.fn("KinPartnersOwed.match")(function* (
   address: string | null,
   personId: string,
   settled: "owed" | "repaid" | undefined,
+  seen:
+    | {
+        readonly entries: ReadonlyArray<{ readonly key: string; readonly rev: number }>;
+        readonly totals: ReadonlyArray<KinMoney>;
+      }
+    | undefined,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
   if (!(yield* fundable(orgId)))
     return yield* new KinChatError({ reason: "invalid_state", message: NO_ROOM_FOR_FUNDING });
+  const [member] = yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId}
+    AND person_id = ${personId} AND removed_at IS NULL`;
+  if (member === undefined)
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: "That person isn't on the team.",
+    });
   const given = address === null ? null : partnerAddress(address);
-  const rows = yield* sql<{ key: string; rev: number; fieldsJson: string }>`SELECT r.key, r.rev,
-      r.fields_json AS "fieldsJson"
+  const rows = yield* sql<{
+    key: string;
+    rev: number;
+    fieldsJson: string;
+    minor: number;
+    currency: string;
+  }>`SELECT r.key, r.rev, r.fields_json AS "fieldsJson", r.amount_minor AS minor, r.currency
     FROM kin_records r
-    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses'
+    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
+      AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
       AND (json_extract(r.fields_json, ${`$.${IMPORTED_PARTNER}`}) IS NOT NULL
         OR ${partnerFunded(sql)})
     ORDER BY r.key`;
@@ -266,9 +296,18 @@ export const matchPartner = Effect.fn("KinPartnersOwed.match")(function* (
         : partnerAddress(fieldText(fields, IMPORTED_PARTNER)) === given;
     return same ? [{ ...row, funding, unsaid }] : [];
   });
-  const matching = named.filter(
-    (row) => row.unsaid || (row.funding.by === "partner" && row.funding.personId === null),
+  const matching = named.filter((row) =>
+    settled === undefined
+      ? row.funding.by === "partner" &&
+        row.funding.personId === null &&
+        row.funding.state === "owed"
+      : row.unsaid,
   );
+  if (settled === undefined && matching.length === 0 && named.some((row) => row.unsaid))
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: "Say whether the company still owes them for these, or already paid them back.",
+    });
   if (matching.length === 0)
     return yield* new KinChatError({
       reason: "invalid_state",
@@ -279,11 +318,21 @@ export const matchPartner = Effect.fn("KinPartnersOwed.match")(function* (
             : "No expense owed to a partner carries that address."
           : "Those expenses already say who funded them.",
     });
-  if (settled === undefined && matching.some((row) => row.unsaid))
-    return yield* new KinChatError({
-      reason: "invalid_state",
-      message: "Say whether the company still owes them for these, or already paid them back.",
-    });
+  const shown = new Map((seen?.entries ?? []).map((one) => [one.key, one.rev]));
+  const sorted = (money: ReadonlyArray<KinMoney>) =>
+    JSON.stringify(money.toSorted((a, b) => (a.currency < b.currency ? -1 : 1)));
+  if (
+    seen === undefined ||
+    shown.size !== matching.length ||
+    matching.some((row) => shown.get(row.key) !== row.rev) ||
+    sorted(
+      addUp(
+        matching.map((row) => ({ minor: row.minor, currency: row.currency })),
+        "",
+      ),
+    ) !== sorted(seen.totals)
+  )
+    return yield* new KinChatError({ reason: "conflict", message: MATCH_MOVED });
   for (const row of matching)
     yield* records.update(
       orgId,
