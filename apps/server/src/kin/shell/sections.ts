@@ -217,6 +217,6 @@ export const sectionOfKey = (recordKey: string) =>
     recordKey
       .trim()
       .toUpperCase()
-      .match(/^([A-Z]+)-\d+$/)?.[1] ?? "",
+      .match(/^([A-Z][A-Z0-9]{0,7})-[1-9]\d{0,8}$/)?.[1] ?? "",
   );
 export const sectionOfSense = (senseId: string) => section(SECTIONS.senses, senseId);

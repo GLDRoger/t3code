@@ -79,6 +79,16 @@ export const get = Effect.fn("KinShell.get")(function* (orgId: KinOrgId) {
   return shell;
 });
 
+export const getForDisplay = Effect.fn("KinShell.getForDisplay")((orgId: KinOrgId) =>
+  get(orgId).pipe(
+    Effect.catch(() =>
+      Effect.logWarning("Kin couldn't read the company shell; using defaults.", { orgId }).pipe(
+        Effect.as(defaultShell()),
+      ),
+    ),
+  ),
+);
+
 export const sectionOn = Effect.fn("KinShell.sectionOn")(function* (
   orgId: KinOrgId,
   id: SectionId,

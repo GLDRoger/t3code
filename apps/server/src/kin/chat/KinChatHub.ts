@@ -66,6 +66,7 @@ type ChatEvent =
       // reaction, `woke` withdraws a go-ahead; `changedFrom` is the emoji of the wake it reverses.
       readonly woke: boolean;
       readonly changedFrom?: KinReactionEmoji;
+      readonly sameAnswerReplacement?: Pick<KinReaction, "emoji" | "createdAt">;
       readonly by: KinAuthor;
     }
   // Live only: never persisted, never in a checkpoint.

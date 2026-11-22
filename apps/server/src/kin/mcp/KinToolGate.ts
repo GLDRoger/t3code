@@ -153,28 +153,35 @@ const besideReview =
       Effect.flatMap((confined) => (confined ? Effect.succeed(true) : check(turn, tool, args))),
     );
 const sectionOfArguments = (args: unknown) => {
-  const get = (key: string) => (Predicate.hasProperty(args, key) ? args[key] : undefined);
-  const list = get("list");
-  if (typeof list === "string" && sectionOfList(list) === "deals") return "deals";
-  const keys = get("keys");
-  if (
-    [get("key"), get("client"), get("project"), ...(Array.isArray(keys) ? keys : [])].some(
-      (key) => typeof key === "string" && sectionOfKey(key) === "deals",
-    )
-  )
-    return "deals";
-  const records = get("records");
-  if (
-    Array.isArray(records) &&
-    records.some(
-      (row: unknown) =>
-        Predicate.hasProperty(row, "list") &&
-        typeof row.list === "string" &&
-        sectionOfList(row.list) === "deals",
-    )
-  )
-    return "deals";
+  const pending = [{ value: args, list: false }];
+  while (pending.length > 0) {
+    const { value, list } = pending.pop()!;
+    if (typeof value === "string") {
+      const section = sectionOfKey(value) ?? (list ? sectionOfList(value) : null);
+      if (section !== null) return section;
+    } else if (Array.isArray(value)) {
+      for (const item of value) pending.push({ value: item, list });
+    } else if (Predicate.isReadonlyObject(value)) {
+      for (const [key, child] of Object.entries(value))
+        pending.push({ value: child, list: key === "list" || key === "lists" });
+    }
+  }
   return null;
+};
+
+const DEALS_OFF =
+  "Deals is turned off for this company. An owner can turn it on in Settings › Deals.";
+
+const dealRefusal = (args: unknown) => {
+  if (!Predicate.hasProperty(args, "records") || !Array.isArray(args.records)) return DEALS_OFF;
+  const index = args.records.findIndex((row: unknown) => sectionOfArguments(row) === "deals");
+  if (index < 0) return DEALS_OFF;
+  const row: unknown = args.records[index];
+  const named =
+    Predicate.hasProperty(row, "title") && typeof row.title === "string"
+      ? ` (${JSON.stringify(row.title.slice(0, 60))})`
+      : "";
+  return `Row ${index + 1}${named}: ${DEALS_OFF} Nothing was saved.`;
 };
 
 const sectionAdmitted = McpToolPolicy.toolCallGate((name, args) => {
@@ -184,7 +191,7 @@ const sectionAdmitted = McpToolPolicy.toolCallGate((name, args) => {
     : gate("KinToolGate.section", (turn) =>
         KinShell.sectionOn(turn.orgId, section).pipe(Effect.orElseSucceed(() => false)),
       )(name, args);
-}, "Deals is turned off for this company; the owner can turn it on in Settings › Deals.");
+}, dealRefusal);
 const admitted = besideReview(toolAdmitted);
 const outside = besideReview(outsideToolAllowed);
 

@@ -70,8 +70,27 @@ it.effect("defaults on; only owner level can set Deals on or off at the current 
     assert.deepStrictEqual(yield* shell.get(orgId), first);
     assert.equal((yield* shell.set(orgId, zoya, 1, [{ id: "deals", on: true }])).rev, 2);
     assert.isTrue(yield* shell.sectionOn(orgId, "deals"));
+    const saves = yield* Effect.all(
+      [
+        Effect.result(shell.set(orgId, rhea, 2, off)),
+        Effect.result(shell.set(orgId, zoya, 2, [{ id: "deals", on: true }])),
+      ],
+      { concurrency: 2 },
+    );
+    const winner = saves.find((result) => result._tag === "Success");
+    const loser = saves.find((result) => result._tag === "Failure");
+    assert.equal(winner?.success.rev, 3);
+    assert.equal(loser?.failure.reason, "conflict");
+    assert.equal(
+      loser?.failure.message,
+      "Someone changed this since you opened it. Nothing was saved; open it again.",
+    );
+    assert.deepStrictEqual(yield* shell.get(orgId), winner?.success);
     yield* sql`UPDATE kin_people SET removed_at = 1 WHERE org_id = ${orgId} AND person_id = ${zoya}`;
-    assert.equal((yield* refusal(zoya, 2, off)).reason, "not_allowed");
-    assert.equal(Option.getOrUndefined(yield* Stream.runHead(refresh.changes(orgId)))?.shell, 2);
+    assert.equal((yield* refusal(zoya, 3, off)).reason, "not_allowed");
+    assert.equal(Option.getOrUndefined(yield* Stream.runHead(refresh.changes(orgId)))?.shell, 3);
+    yield* sql`DROP TABLE kin_company_shell`;
+    assert.equal((yield* refusal(rhea, 3, off)).reason, "unavailable");
+    assert.equal(Option.getOrUndefined(yield* Stream.runHead(refresh.changes(orgId)))?.shell, 3);
   }).pipe(Effect.provide(layer)),
 );

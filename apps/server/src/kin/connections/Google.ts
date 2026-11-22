@@ -9,6 +9,7 @@ import {
   ACTIVITY_MAIL,
   addressesIn,
   isPlainAddress,
+  type MailArrival,
   type MailCalendarEvent,
   type MailContext,
   type MailEvent,
@@ -16,7 +17,7 @@ import {
   type MailVendor,
 } from "./MailProvider.ts";
 import { htmlToText, messageBody } from "./MailText.ts";
-import { mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
+import { answeredWith, failure, mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
 
 /** Google's sign-in, fixed: Kin uses the owner's own Web client, never discovery. */
@@ -239,6 +240,117 @@ const eventsSince = Effect.fn("KinGoogle.eventsSince")(function* (
   return { events, until: pageToken === undefined || Number.isNaN(last) ? undefined : last };
 });
 
+const FEED_HEADERS = [
+  "From",
+  "Subject",
+  "Date",
+  ...RECIPIENT_HEADERS,
+  "Message-ID",
+  "Authentication-Results",
+  "List-Unsubscribe",
+  "Precedence",
+  "Auto-Submitted",
+  "Content-Type",
+];
+const BULK_LABELS = ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"];
+const HISTORY_PAGE = 100;
+
+/**
+ * The Inbox's history after `position`: a message added to it, or the Inbox label added to one.
+ * The record decides, never the labels now. Gmail answers an id it forgot with 404.
+ */
+const inboxChanges = Effect.fn("KinGoogle.inboxChanges")(function* (
+  context: MailContext,
+  position: string,
+) {
+  const page = yield* api(context, `${GMAIL}/history`, {
+    startHistoryId: position,
+    labelId: "INBOX",
+    historyTypes: ["messageAdded", "labelAdded"],
+    maxResults: String(HISTORY_PAGE),
+  }).pipe(
+    Effect.map((answer) => ({ answer, expired: false })),
+    Effect.catchIf(
+      (error) => answeredWith(error, 404),
+      () => Effect.succeed({ answer: undefined, expired: true }),
+    ),
+  );
+  if (page.expired) return { _tag: "expired" } as const;
+  const records = list(field(page.answer, "history"));
+  const changes = records.flatMap((record) => [
+    ...list(field(record, "messagesAdded")).flatMap((added) => {
+      const labels = field(added, "message", "labelIds");
+      return Array.isArray(labels) && !labels.includes("INBOX") ? [] : [field(added, "message")];
+    }),
+    ...list(field(record, "labelsAdded")).flatMap((added) =>
+      list(field(added, "labelIds")).includes("INBOX") ? [field(added, "message")] : [],
+    ),
+  ]);
+  const more = text(field(page.answer, "nextPageToken")) !== undefined;
+  // History ids rise, so a cut page goes on after its last record.
+  const last = text(field(records.at(-1), "id"));
+  const end = text(field(page.answer, "historyId"));
+  return {
+    _tag: "read",
+    changes: changes.flatMap((message) => {
+      const messageId = text(field(message, "id"));
+      return messageId === undefined
+        ? []
+        : [{ messageId, threadId: text(field(message, "threadId")) ?? null }];
+    }),
+    position: (more ? last : end) ?? end ?? position,
+    more: more && last !== undefined,
+  } as const;
+});
+
+const arrivalOf = Effect.fn("KinGoogle.arrival")(function* (
+  context: MailContext,
+  messageId: string,
+) {
+  const found = yield* api(context, `${GMAIL}/messages/${encodeURIComponent(messageId)}`, {
+    format: "metadata",
+    metadataHeaders: FEED_HEADERS,
+  }).pipe(
+    Effect.map((message) => ({ message, gone: false })),
+    Effect.catchIf(
+      (error) => answeredWith(error, 404),
+      () => Effect.succeed({ message: null, gone: true }),
+    ),
+  );
+  if (found.gone) return null;
+  const { message } = found;
+  const receivedAt = Number(text(field(message, "internalDate")) ?? Number.NaN);
+  const threadId = text(field(message, "threadId"));
+  if (
+    text(field(message, "id")) !== messageId ||
+    threadId === undefined ||
+    !Number.isSafeInteger(receivedAt)
+  )
+    return yield* failure("protocol", `${GOOGLE.name} sent an answer Kin couldn't read.`);
+  const labels = list(field(message, "labelIds"));
+  return {
+    messageId,
+    threadId,
+    receivedAt,
+    from: header(message, "From"),
+    fromAddress: addressesIn(header(message, "From"))[0] ?? null,
+    to: addressesIn(header(message, "To")),
+    cc: addressesIn(header(message, "Cc")),
+    deliveredTo: RECIPIENT_HEADERS.flatMap((name) =>
+      headerValues(message, name).flatMap(addressesIn),
+    ),
+    subject: header(message, "Subject") ?? "",
+    date: header(message, "Date"),
+    internetId: header(message, "Message-ID"),
+    authResults: headerValues(message, "Authentication-Results"),
+    listUnsubscribe: header(message, "List-Unsubscribe") !== null,
+    precedence: header(message, "Precedence"),
+    autoSubmitted: header(message, "Auto-Submitted"),
+    bulk: BULK_LABELS.some((label) => labels.includes(label)),
+    hasFile: /^\s*multipart\/mixed\b/i.test(header(message, "Content-Type") ?? ""),
+  } satisfies MailArrival;
+});
+
 /**
  * The account's From addresses: its own and each "Send mail as" alias Gmail accepted, the
  * default first. Read with the mail read scope.
@@ -376,6 +488,17 @@ const google: MailVendor = {
         };
       }),
     ),
+  mailStart: (context) =>
+    api(context, `${GMAIL}/profile`).pipe(
+      Effect.flatMap((profile) => {
+        const position = text(field(profile, "historyId"));
+        return position === undefined
+          ? Effect.fail(failure("protocol", `${GOOGLE.name} sent an answer Kin couldn't read.`))
+          : Effect.succeed(position);
+      }),
+    ),
+  changes: inboxChanges,
+  arrival: arrivalOf,
   account: (http, token) =>
     api({ http, token }, `${GMAIL}/profile`).pipe(
       Effect.map((profile) => text(field(profile, "emailAddress")) ?? null),
