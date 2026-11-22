@@ -32,6 +32,7 @@ const TaskSummary = Schema.Struct({
   due: Schema.NullOr(Schema.String),
   dueDay: Schema.optional(Schema.String),
   project: Schema.NullOr(Schema.String),
+  holder: Schema.optional(Schema.String),
 });
 const TaskDetail = Schema.Struct({
   ...TaskSummary.fields,
@@ -49,7 +50,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("list_my_tasks", {
     ...shared,
     description:
-      "List the open Kin tasks held by the person this key belongs to, soonest due first: key, title, state, due date and project.",
+      "List the open Kin tasks the person this key belongs to holds or is on, soonest due first: key, title, state, due date, project, and holder when someone else holds it.",
     success: Schema.Struct({ tasks: Schema.Array(TaskSummary), more: Schema.Boolean }),
   })
     .annotate(Tool.Readonly, true)
@@ -59,7 +60,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("get_task", {
     ...shared,
     description:
-      "Read one of that person's tasks: title, brief, state, due date, project and the newest comments. A task they don't hold is not found.",
+      "Read one of that person's tasks: title, brief, state, due date, project and the newest comments. A task they neither hold nor are on is not found.",
     parameters: Schema.Struct({ key: TaskKey }),
     success: TaskDetail,
   })
@@ -86,7 +87,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("set_task_state", {
     ...shared,
     description:
-      "Set one of that person's tasks to doing (started), done, or open (not started). The change is theirs, marked as from their coding agent.",
+      "Set a task that person holds to doing (started), done, or open (not started). The change is theirs, marked as from their coding agent. A task they are only on is theirs to read and comment on, not to change.",
     parameters: Schema.Struct({
       key: TaskKey,
       state: Schema.Literals(["open", "doing", "done"]),

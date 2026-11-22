@@ -55,6 +55,11 @@ export interface KinSessionPlan {
   readonly webSearch: Effect.Effect<string | undefined>;
   /** False where the provider's own web search isn't offered at all: an outside review. */
   readonly nativeSearch: boolean;
+  /**
+   * An owner or delegated seat's own web search or page fetch, once `refusal` admitted it: marks
+   * the turn outside-read first, naming the page's host when known; why not, or none when marked.
+   */
+  readonly webRead: (host: string | undefined) => Effect.Effect<string | undefined>;
 }
 
 /** GPT agents rarely asked with a card or made the Confirm card (evals, Nov 2026); true for all. */
@@ -213,6 +218,7 @@ export class KinSessions extends Context.Service<
             shell: yield* shellOf(policy.value, thread, input.path),
             refusal: policy.value.refusal(thread),
             webSearch: policy.value.refusal(thread),
+            webRead: (host) => policy.value.webSearch(thread, host),
           } satisfies KinSessionPlan;
         if (isDream)
           return {
@@ -222,6 +228,7 @@ export class KinSessions extends Context.Service<
             shell: undefined,
             refusal: Effect.succeed(SESSION_REFUSAL.none),
             webSearch: Effect.succeed(SESSION_REFUSAL.none),
+            webRead: () => Effect.succeed(SESSION_REFUSAL.none),
           } satisfies KinSessionPlan;
         if (!thread.startsWith(SHARED_THREAD_PREFIX) && Option.isSome(policy))
           return {
@@ -231,6 +238,7 @@ export class KinSessions extends Context.Service<
             shell: yield* shellOf(policy.value, thread, input.path),
             refusal: policy.value.refusal(thread),
             webSearch: policy.value.refusal(thread),
+            webRead: (host) => policy.value.webSearch(thread, host),
           } satisfies KinSessionPlan;
         if (thread.startsWith(REVIEW_THREAD_PREFIX))
           return {
@@ -241,6 +249,7 @@ export class KinSessions extends Context.Service<
             nativeSearch: false,
             refusal: Effect.succeed(SESSION_REFUSAL.shared),
             webSearch: Effect.succeed(REVIEW_SEARCH_REFUSAL),
+            webRead: () => Effect.succeed(REVIEW_SEARCH_REFUSAL),
           } satisfies KinSessionPlan;
         return {
           ...base,
@@ -253,6 +262,7 @@ export class KinSessions extends Context.Service<
           webSearch: Option.isSome(policy)
             ? policy.value.webSearch(thread)
             : Effect.succeed(SESSION_REFUSAL.none),
+          webRead: () => Effect.succeed(SESSION_REFUSAL.shared),
         } satisfies KinSessionPlan;
       });
       return KinSessions.of({ enabled, plan });

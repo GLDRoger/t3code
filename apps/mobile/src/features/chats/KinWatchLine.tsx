@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useNavigation } from "@react-navigation/native";
+import { useIsFocused, useNavigation } from "@react-navigation/native";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   KIN_WATCH_COPY,
@@ -50,6 +50,9 @@ export function KinWatchLine(props: KinWorkTarget & { readonly recordKey: KinRec
   const [busy, setBusy] = useState<KinWatchAction | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  // The sheet belongs to this page: it goes when the page does.
+  const focused = useIsFocused();
+  if (open && !focused) setOpen(false);
   const view = watch === undefined ? null : kinWatchLine(watch, now);
   if (watch === undefined || view === null) return null;
 
@@ -64,6 +67,8 @@ export function KinWatchLine(props: KinWorkTarget & { readonly recordKey: KinRec
     setBusy(null);
     if (!AsyncResult.isSuccess(result))
       setProblem(kinFailureText(squashAtomCommandFailure(result), KIN_WATCH_COPY.failed[action]));
+    // Done, the line on the page says what changed; a refusal stays in the sheet to be read.
+    else setOpen(false);
     appAtomRegistry.refresh(watchesAtom);
   };
 

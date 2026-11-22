@@ -40,6 +40,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
+import { outsideStamp, renderSource } from "../lead/OutsideContent.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { fromConnections } from "../pulse/outside.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -1051,7 +1052,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const connections = yield* KinConnections;
           yield* connect(fake, "google", ACCOUNTS);
           yield* connect(fake, "microsoft", HELLO);
-          fake.deliver({
+          const billing = fake.deliver({
             to: ACCOUNTS,
             from: CLIENT,
             subject: "Billing contact",
@@ -1075,6 +1076,18 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           });
           assert.include(found.quoted ?? "", String.raw`\"account\":\"${ACCOUNTS}\"`);
           assert.include(found.quoted ?? "", "Billing contact");
+          // Each read is named for a person once: the mailboxes listed, then the mail's sender.
+          yield* callTool(ACCOUNTS, "mail_read_thread", { threadId: billing.threadId });
+          yield* callTool(ACCOUNTS, "mail_read_thread", { threadId: billing.threadId });
+          const read = renderSource(
+            (yield* outsideStamp({ orgId, wakeupId: `wake-${wakes}` })) ?? "",
+            true,
+          ).split("; ");
+          assert.sameMembers(read, [
+            `mail in ${ACCOUNTS}`,
+            `mail in ${HELLO}`,
+            `mail from ${CLIENT}: Billing contact`,
+          ]);
 
           // An open Tasks list reads again once a mail for an entry is drawn (`KinRecords.announce`).
           const taken = sql<{ seq: number }>`SELECT seq FROM sqlite_sequence
@@ -1706,14 +1719,20 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           attachments: ["DOC-1"],
         };
         yield* callTool(ARJUN_OWN, "mail_send", mail);
-        assert.strictEqual((yield* tap(cards.at(-1)!.widgetId, owner))?.state, "sent");
+        assert.deepStrictEqual(yield* tap(cards.at(-1)!.widgetId, owner), {
+          state: "sent",
+          reason: null,
+        });
         const sentOn = Effect.gen(function* () {
           const row = yield* records.get(orgId, "INV-1");
           return (yield* records.detail(row!)).sent ?? [];
         });
         assert.lengthOf(yield* sentOn, 0);
         yield* callTool(ACCOUNTS, "mail_send", { ...mail, subject: "November, again" });
-        assert.strictEqual((yield* tap(cards.at(-1)!.widgetId, owner))?.state, "sent");
+        assert.deepStrictEqual(yield* tap(cards.at(-1)!.widgetId, owner), {
+          state: "sent",
+          reason: null,
+        });
         assert.deepStrictEqual(
           (yield* sentOn).map((one) => one.subject),
           ["November, again"],
@@ -1734,6 +1753,10 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.isUndefined(yield* privateRefusal(turn, "record_comment", {}));
         yield* callTool(MEERA, "mail_search", { query: "kickoff" });
         assert.strictEqual(yield* privateTo(turn), member);
+        // Where it read is hers to see in detail: anyone else, the owner level too, reads "a mail".
+        const stamp = (yield* outsideStamp(turn))!;
+        assert.strictEqual(renderSource(stamp, true), "a mail");
+        assert.notStrictEqual(renderSource(stamp, false, member), "a mail");
         assert.isUndefined(yield* privateRefusal(turn, "record_comment", {}));
         assert.strictEqual(
           yield* privateRefusal(turn, "memory_write", {}),

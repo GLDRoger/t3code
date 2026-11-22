@@ -41,6 +41,7 @@ import {
   connectionEnded,
   connectionLive,
   connectionReaches,
+  onlyOnIt,
 } from "./codingAgent.ts";
 import { summaryGroups } from "./crm.ts";
 import {
@@ -59,6 +60,7 @@ import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import { type AssignNotice, movedNotices, tellOnTasks, toldWhenBack } from "./assignNotices.ts";
 import { teamAgent as theTeamAgent } from "../lead/LeadAccess.ts";
 import {
+  afterReadingFor,
   chatLinksFor,
   endOfDay,
   isClosed,
@@ -408,8 +410,8 @@ const teamAgent = Effect.fn("KinWork.teamAgent")(function* (
 });
 
 /**
- * With a coding agent's connection, only what its key reaches: open tasks the person holds and
- * nothing labelled sensitive, soonest due first, filtered before the page is cut.
+ * With a coding agent's connection, only what its key reaches: open tasks the person holds or is
+ * on and nothing labelled sensitive, soonest due first, filtered before the page is cut.
  */
 export const list = Effect.fn("KinWork.list")(function* (
   people: ReadonlyArray<PersonIdentity>,
@@ -425,7 +427,7 @@ export const list = Effect.fn("KinWork.list")(function* (
     ...(input.limit === undefined ? {} : { limit: input.limit }),
   };
   return yield* throughConnection(people, connection, input.orgId, (viewer) =>
-    listAs(viewer, held, { order: "dueFirst", withoutSensitive: true }),
+    listAs(viewer, held, { order: "dueFirst", withoutSensitive: true, orAlsoOn: true }),
   );
 });
 
@@ -739,7 +741,10 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   /** Their own write just made it private: they saw it until then, so the answer still reads. */
   justHidden = false,
 ) {
-  const detail = yield* chatLinksFor(read.orgId, viewer.person.personId, read).pipe(workFailure);
+  const detail = yield* chatLinksFor(read.orgId, viewer.person.personId, read).pipe(
+    Effect.flatMap((linked) => afterReadingFor(read.orgId, !viewer.teammate, linked)),
+    workFailure,
+  );
   const can = (yield* cansOf(viewer, detail.orgId, [{ ...detail, registerId: row.registerId }]))(
     detail.recordId,
   );
@@ -1418,11 +1423,11 @@ const change = Effect.fn("KinWork.change")(function* (
     Effect.gen(function* () {
       if (connection !== undefined) {
         const held = yield* records.get(orgId, key);
-        if (
-          held === undefined ||
-          !(yield* connectionReaches(connection, held.recordId).pipe(workFailure))
-        )
-          return yield* notFound(key);
+        if (held === undefined) return yield* notFound(key);
+        if (!(yield* connectionReaches(connection, held.recordId, true).pipe(workFailure)))
+          return yield* (yield* connectionReaches(connection, held.recordId).pipe(workFailure))
+            ? new KinChatError({ reason: "not_allowed", message: onlyOnIt(key) })
+            : notFound(key);
       }
       const writer = writerOf(viewer);
       const row = yield* records.update(

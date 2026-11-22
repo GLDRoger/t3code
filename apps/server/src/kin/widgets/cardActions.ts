@@ -40,7 +40,7 @@ import {
   deferralWidgetId,
   makeDeferralStarter,
 } from "../triggers/deferrals.ts";
-import type { KinRecords } from "../work/KinRecords.ts";
+import { isHelperRefusal, type KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
 import { repeatOf } from "../work/recordRows.ts";
 import { defineProposed, listPlace, proposalToCreate, proposedList } from "../work/registers.ts";
@@ -696,7 +696,7 @@ export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
     .pipe(
       Effect.as(true),
       Effect.catchIf(
-        (error) => error.reason === "conflict",
+        (error) => error.reason === "conflict" || isHelperRefusal(error),
         () => Effect.succeed(false),
       ),
     );

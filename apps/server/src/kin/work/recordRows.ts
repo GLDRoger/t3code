@@ -42,6 +42,7 @@ import { fieldList, listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
 import { DAY_MS } from "../durations.ts";
+import { entryAfterReading } from "../lead/OutsideContent.ts";
 
 /** The plain rows behind `KinRecords`: reads and the shapes they decode into. No writes here. */
 
@@ -823,6 +824,18 @@ export const chatLinksFor = Effect.fn("KinRecords.chatLinksFor")(function* <
   };
 });
 
+/**
+ * An entry's "after reading" line for its reader: anyone reads what kind of text it was; an
+ * owner-level reader also reads where it came from (`renderSource`).
+ */
+export const afterReadingFor = Effect.fn("KinRecords.afterReadingFor")(function* <
+  A extends { readonly recordId: string; readonly afterReading?: KinRecordDetail["afterReading"] },
+>(orgId: KinOrgId, ownerLevelReader: boolean, detail: A) {
+  if (detail.afterReading === undefined || !ownerLevelReader) return detail;
+  const afterReading = yield* entryAfterReading(orgId, detail.recordId, true);
+  return afterReading === undefined ? detail : { ...detail, afterReading };
+});
+
 export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
   row: RecordRow,
   now: number,
@@ -851,6 +864,9 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
     changes: yield* changesOf(orgId, row.recordId, changeLimit),
     seq: yield* recordSeq(orgId, row.recordId),
     ...(isBuiltIn(row.registerId) ? {} : yield* definedDetail(row)),
+    ...(yield* entryAfterReading(orgId, row.recordId).pipe(
+      Effect.map((afterReading) => (afterReading === undefined ? {} : { afterReading })),
+    )),
   } satisfies KinRecordDetail;
 });
 
@@ -1032,7 +1048,8 @@ const paymentSourceColumns = (sql: SqlClient.SqlClient) => sql`p.created_by_kind
       WHERE ev.event_id = substr(p.origin_key, length(p.created_by_id) + 7,
           instr(substr(p.origin_key, length(p.created_by_id) + 7), ':') - 1)
         AND ev.org_id = p.org_id AND ev.agent_id = p.created_by_id
-        AND json_extract(ev.json, '$.provenance._tag') = 'human')
+        AND json_extract(ev.json, '$.provenance._tag') = 'human'
+        AND COALESCE(json_extract(ev.json, '$.reason'), '') <> 'joined')
   END AS "wordOf"`;
 const paymentSourceOf = (row: PaymentSourceRow): KinPaymentSource =>
   row.fromBank === 1

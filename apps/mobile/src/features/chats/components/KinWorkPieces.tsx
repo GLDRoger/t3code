@@ -387,7 +387,11 @@ export function KinTaskRow(props: {
         <View className="min-w-0 flex-1 gap-2 py-3 pr-4">
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={row.accessibilityLabel}
+            accessibilityLabel={
+              line.with === null
+                ? row.accessibilityLabel
+                : `${row.accessibilityLabel}, ${line.with}`
+            }
             onPress={props.onPress}
             className="gap-0.5 active:opacity-60"
           >
@@ -401,6 +405,7 @@ export function KinTaskRow(props: {
             {/* Who has it never gives way: the rest of the line cuts off before it does. */}
             {!line.urgent &&
             line.holder === null &&
+            line.with === null &&
             line.lead === null &&
             line.rest === "" ? null : (
               <View className={cn("min-w-0 flex-row items-center gap-1.5", grows && "flex-wrap")}>
@@ -424,20 +429,28 @@ export function KinTaskRow(props: {
                     </Text>
                   </>
                 )}
-                <Text
-                  textRole="footnote"
-                  numberOfLines={kinLines(1, grows)}
-                  className="min-w-0 shrink text-foreground-muted"
-                >
-                  {line.holder === null ? null : "· "}
-                  {line.lead === null ? null : (
-                    <Text className={cn("font-t3-medium", LEAD_TONE[line.lead.tone])}>
-                      {line.lead.text}
-                    </Text>
-                  )}
-                  {line.lead !== null && line.rest !== "" ? " · " : null}
-                  {line.rest}
-                </Text>
+                {line.with === null ? null : (
+                  <Text textRole="footnote" className="shrink-0 text-foreground-muted">
+                    {line.holder === null ? null : "· "}
+                    {line.with}
+                  </Text>
+                )}
+                {line.lead === null && line.rest === "" ? null : (
+                  <Text
+                    textRole="footnote"
+                    numberOfLines={kinLines(1, grows)}
+                    className="min-w-0 shrink text-foreground-muted"
+                  >
+                    {line.holder === null && line.with === null ? null : "· "}
+                    {line.lead === null ? null : (
+                      <Text className={cn("font-t3-medium", LEAD_TONE[line.lead.tone])}>
+                        {line.lead.text}
+                      </Text>
+                    )}
+                    {line.lead !== null && line.rest !== "" ? " · " : null}
+                    {line.rest}
+                  </Text>
+                )}
               </View>
             )}
           </Pressable>

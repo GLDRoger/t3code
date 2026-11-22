@@ -598,7 +598,7 @@ export function KinRelayRow(props: {
       <div className={cn(ROW, "pt-3", "items-start")}>
         <div
           role="article"
-          aria-label={`Sent by ${row.personLabel}, via ${row.agentLabel}, ${time}: ${kinPlainText(words)}`}
+          aria-label={`Sent by ${row.personLabel}, via ${row.agentLabel}, ${time}: ${kinPlainText(words)}${row.afterReading === undefined ? "" : `. ${row.afterReading}`}`}
           className="min-w-0 max-w-[85%] rounded-2xl bg-accent text-sm text-foreground dark:bg-card"
         >
           <p
@@ -614,6 +614,11 @@ export function KinRelayRow(props: {
           <div className="px-3.5 pb-2 pt-1">
             <KinBody markdown={words} environmentId={props.environmentId} />
           </div>
+          {row.afterReading === undefined ? null : (
+            <p aria-hidden className="px-3.5 pb-2 text-xs text-muted-foreground">
+              {row.afterReading}
+            </p>
+          )}
         </div>
       </div>
     );
@@ -654,7 +659,7 @@ export function KinRelayRow(props: {
       <div className={cn(ROW, "pt-3", sent ? "items-end" : "items-start")}>
         <div
           role="article"
-          aria-label={`${label}, ${time}: ${kinPlainText(body)}`}
+          aria-label={`${label}, ${time}: ${kinPlainText(body)}${row.afterReading === undefined ? "" : `. ${row.afterReading}`}`}
           className={cn(
             "flex min-w-0 max-w-[85%] flex-col rounded-2xl text-sm",
             sent ? "bg-message text-message-foreground" : "border border-border",
@@ -668,6 +673,11 @@ export function KinRelayRow(props: {
             expanded={expanded}
             onToggle={() => setExpanded((value) => !value)}
           />
+          {row.afterReading === undefined ? null : (
+            <p aria-hidden className="-mt-1 px-3 pb-2 text-xs text-muted-foreground">
+              {row.afterReading}
+            </p>
+          )}
           {expanded ? (
             <div className="flex max-h-96 flex-col gap-1 overflow-auto px-3 pb-3">{words}</div>
           ) : null}

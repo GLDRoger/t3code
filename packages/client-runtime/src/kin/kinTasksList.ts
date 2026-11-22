@@ -4,6 +4,7 @@ import {
   kinWorkMove,
   kinWorkMoveOrder,
   type KinChoiceOption,
+  type KinPersonId,
   type KinPulseFact,
   type KinPulseScreenRead,
   type KinRecord,
@@ -473,15 +474,38 @@ export const kinTasksMostUrgent = <R extends KinRecord>(
     .sort(byOrder)
     .slice(0, limit);
 
-/** A person's page: how many open tasks they hold that the reader sees, and the top few. */
+/** A person's page: the open tasks they hold or are on that the reader sees, and the top few. */
 export const KIN_PERSON_TASKS = {
   title: "Tasks",
   shown: 5,
   count: (count: number) => (count === 1 ? "1 open task" : `${count} open tasks`),
+  onMore: (count: number) => `on ${count} more`,
+  onOnly: (count: number) => `On ${count === 1 ? "1 open task" : `${count} open tasks`}`,
   none: "No open tasks you can see.",
   seeAll: "See all in Tasks",
   failed: "Couldn't load their tasks.",
 } as const;
+
+/**
+ * A person's page's count: the tasks they hold, then the ones they are only on. Split only when
+ * the page holds every task the host counted; otherwise the host's total stands.
+ */
+export function kinPersonTasksCount(
+  page: { readonly total: number; readonly records: ReadonlyArray<KinRecord> },
+  person: KinPersonId,
+): string {
+  const { total, records } = page;
+  if (records.length < total) return KIN_PERSON_TASKS.count(total);
+  const held = records.filter(
+    (record) => record.owner?._tag === "person" && record.owner.personId === person,
+  ).length;
+  const on = total - held;
+  return on === 0
+    ? KIN_PERSON_TASKS.count(held)
+    : held === 0
+      ? KIN_PERSON_TASKS.onOnly(on)
+      : `${KIN_PERSON_TASKS.count(held)} · ${KIN_PERSON_TASKS.onMore(on)}`;
+}
 
 /**
  * The projects the Filter narrows to: the reader's own choices, then any other project a task in
