@@ -33,7 +33,8 @@ export const closeSubject = Effect.fn("KinOpen.closeSubject")(function* (
   const { orgId, recordId, key, state, now } = input;
   const def = yield* listDef(orgId, input.registerId);
   const word = (def === undefined ? state : stateLabel(def, state)).toLowerCase();
-  const text = `Closed: ${key} is ${word} now.`;
+  const title = input.registerId === "work" ? "Closed with its task" : "Closed";
+  const text = `${title}: ${key} is ${word} now.`;
   const asks =
     state === "dropped"
       ? yield* staleAsksAbout(orgId, recordId, `${key} is ${word} now, so nothing was sent.`, now)
@@ -69,10 +70,10 @@ export const closeSubject = Effect.fn("KinOpen.closeSubject")(function* (
     ]),
   ].filter((widgetId) => !input.sparing.includes(widgetId));
   yield* closeQuestionsAbout(
-    { orgId, key, cards, sparing: input.sparing, text, closedAt: now },
+    { orgId, key, cards, sparing: input.sparing, text, closedAt: now, title },
     chat,
   );
-  const outcome = { title: "Closed", text };
+  const outcome = { title, text };
   for (const widgetId of new Set([...asks, ...cards]))
     yield* chat.closeReplaced({ orgId, widgetId: KinWidgetId.make(widgetId), outcome });
 });
