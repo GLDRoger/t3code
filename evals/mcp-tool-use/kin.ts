@@ -670,7 +670,7 @@ export const fillKinMock = (
       const filled = rendered[2]!.replace(/"\{\{ARG:([\w.]+)\}\}"/g, (_, path: string) =>
         JSON.stringify(argAt(args, path) ?? null),
       );
-      return render(JSON.parse(filled));
+      return render(JSON.parse(filled) as never);
     }
     return fillKinRules(
       value.replace(/\{\{ARG:([\w.]+)\}\}/g, (_, key: string) => {
@@ -950,6 +950,13 @@ export const kinTurnBlocks = (files: KinTurnFiles | undefined, prompt: string, c
 /** Kin's tools, by bare name. */
 const KIN_TOOLS = names(...KIN_TOOLKITS);
 export const isKinTool = (tool: string) => KIN_TOOLS.has(tool);
+/** A mock's answer to a call as the agent reads it: a Kin tool's is filled in by Kin's code. */
+export const kinAnswer = (
+  name: string,
+  mock: unknown,
+  input: unknown,
+  world?: McpToolUseCase["setup"]["world"],
+) => (isKinTool(name) ? fillKinMock(mock, input, world) : mock);
 const unmocked = (testCase: McpToolUseCase, tool: string) => {
   const mock = testCase.setup.mocks?.[tool];
   return KIN_TOOLS.has(tool) && (mock === undefined || mock === "default");

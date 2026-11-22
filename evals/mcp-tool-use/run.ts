@@ -65,15 +65,14 @@ import {
 } from "./margin.ts";
 import { needsTopUp, refusals, RunManifest, tallies, tally } from "./gate.ts";
 import { casePattern } from "./pattern.ts";
-import { kinCaseText, kinMockProblems, kinPromptProblems } from "./kin-checks.ts";
+import { kinCaseProblems } from "./kin-checks.ts";
 import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import { type AppServer, openAppServer } from "./appServer.ts";
 import {
-  fillKinMock,
   fillKinRules,
   filledEvent,
   isKinCase,
-  isKinTool,
+  kinAnswer,
   KinCaseAttachment,
   KIN_TOOLKITS,
   kinDated,
@@ -2169,8 +2168,12 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   if (isPageTool(name) && typeof input.path === "string" && !input.path.startsWith("/")) {
     return failed(`${input.path} is not a readable HTML document. Pass an absolute path.`);
   }
-  const picked = nextMock(sample, name, testCase.setup.mocks?.[name], input);
-  const mock = isKinTool(name) ? fillKinMock(picked, input, testCase.setup.world) : picked;
+  const mock = kinAnswer(
+    name,
+    nextMock(sample, name, testCase.setup.mocks?.[name], input),
+    input,
+    testCase.setup.world,
+  );
   if (isRecord(mock) && mock.$error !== undefined) return failed(valueText(mock.$error));
   if (isT3Name(call.name) && PREVIEW_TOOLS.has(name)) {
     if (testCase.setup.world?.browserAgentAccess === false)
@@ -3125,7 +3128,7 @@ const decodeBaselineRow = Schema.decodeUnknownEffect(
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(RunManifest));
 /** Files beside the runner that neither run samples nor grade them. */
-const NOT_GRADER = new Set([
+export const NOT_GRADER: ReadonlySet<string> = new Set([
   "gate.ts",
   "compare.ts",
   "regrade.ts",
@@ -3396,12 +3399,7 @@ const main = Effect.gen(function* () {
       const found = [
         ...(sample.base.codex ? [] : caseProblems(testCase, tools)),
         ...unfilled,
-        ...(isKinCase(testCase)
-          ? [
-              ...kinMockProblems(testCase.setup.mocks, tools, testCase.setup.world),
-              ...kinPromptProblems(kinCaseText(testCase)),
-            ]
-          : []),
+        ...kinCaseProblems(testCase, tools),
       ];
       problems.push(...found.map((problem) => `${testCase.id}: ${problem}`));
       sizes.push({

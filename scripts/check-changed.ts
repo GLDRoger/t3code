@@ -389,6 +389,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     )
   )
     tests.add("evals/mcp-tool-use/kin-checks.test.ts");
+  // It checks REVIEWED_RUNNER against the runner's files, so any of them moves it.
+  if (files.some((file) => /^evals\/mcp-tool-use\/[^/]+\.(ts|txt)$/.test(file) && !TEST.test(file)))
+    tests.add("evals/mcp-tool-use/changed/surface.test.ts");
   // `modelsFor`, which says which Kin model a change checks, is tested there.
   if (files.includes("scripts/kin-model.ts")) tests.add("scripts/check-changed.test.ts");
   const { vitestTests, nodeTests } = splitTests(tests);

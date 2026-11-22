@@ -17,7 +17,8 @@ import {
   OPEN_QUESTION_HEADINGS,
   openQuestionsHeading,
 } from "../../apps/server/src/kin/questions/openQuestions.ts";
-import { fillKinMock, KIN_TOOLKITS } from "./kin.ts";
+import { fillKinMock, isKinCase, isKinTool, KIN_TOOLKITS } from "./kin.ts";
+import type { McpToolUseCase } from "./run.ts";
 
 type KinTool = {
   readonly successSchema: Schema.Top;
@@ -31,14 +32,33 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Sets "arg" at a call-input path, making the arrays and objects on the way. */
-const echo = (into: Record<string, unknown>, [step, ...rest]: ReadonlyArray<string>): void => {
+const echo = (
+  into: Record<string, unknown>,
+  [step, ...rest]: ReadonlyArray<string>,
+  value: string,
+): void => {
   if (step === undefined) return;
   if (rest.length === 0) {
-    into[step] = "arg";
+    into[step] = value;
     return;
   }
   const next = (into[step] ??= /^\d+$/.test(rest[0]!) ? [] : {}) as Record<string, unknown>;
-  echo(next, rest);
+  echo(next, rest, value);
+};
+
+/**
+ * A Kin mock's answer as Kin's code fills it in, with each field it echoes from the call standing
+ * for any string the agent could send: `sent`, a time by default, so time builders run too.
+ */
+export const filledKinMock = (
+  raw: unknown,
+  world?: Parameters<typeof fillKinMock>[2],
+  sent = "2026-11-18T19:00:00+05:30",
+) => {
+  const echoed: Record<string, unknown> = {};
+  for (const [, path] of JSON.stringify(raw ?? null).matchAll(/\{\{ARG:([\w.]+)\}\}/g))
+    echo(echoed, path!.split("."), sent);
+  return fillKinMock(raw, echoed, world);
 };
 
 /** Each answer a mock can give, with where it sits in the mock. */
@@ -90,11 +110,7 @@ export const kinMockProblems = (
     return answers(mock, name).flatMap(({ at, answer: raw }) => {
       if (raw === "default")
         return [`${at} is "default", answered {"ok":true}, which ${name} never returns`];
-      // A field it echoes from the call stands for any string the agent could send.
-      const echoed: Record<string, unknown> = {};
-      for (const [, path] of JSON.stringify(raw ?? null).matchAll(/\{\{ARG:([\w.]+)\}\}/g))
-        echo(echoed, path!.split("."));
-      const answer = fillKinMock(raw, echoed, world);
+      const answer = filledKinMock(raw, world, "arg");
       const unfilled = JSON.stringify(answer ?? null).match(/\{\{[^}]*\}\}/);
       if (unfilled !== null)
         return [`${at} has a placeholder Kin's code doesn't fill: ${unfilled[0]}`];
@@ -144,7 +160,9 @@ export const kinPromptProblems = (text: string): ReadonlyArray<string> => {
 export const kinCaseText = (testCase: {
   readonly prompt: string;
   readonly setup: {
-    readonly priorTurns?: ReadonlyArray<{ readonly role: string; readonly text?: string }>;
+    readonly priorTurns?:
+      | ReadonlyArray<{ readonly role: string; readonly text?: string | undefined }>
+      | undefined;
   };
 }) =>
   [
@@ -153,3 +171,22 @@ export const kinCaseText = (testCase: {
       .filter((turn) => turn.role === "user")
       .map((turn) => turn.text ?? ""),
   ].join("\n\n");
+
+/** What `kin:dry` refuses in a Kin case beyond the case schema: its mocks, headings and labels. */
+export const kinCaseProblems = (testCase: McpToolUseCase, tools: ReadonlySet<string>) =>
+  isKinCase(testCase)
+    ? [
+        ...kinMockProblems(testCase.setup.mocks, tools, testCase.setup.world),
+        ...kinPromptProblems(kinCaseText(testCase)),
+      ]
+    : [];
+
+/** Every answer of each Kin mock a case has, filled in by Kin's own builders, by tool name. */
+export const filledKinMocks = (setup: McpToolUseCase["setup"]) =>
+  Object.keys(setup.mocks ?? {})
+    .filter(isKinTool)
+    .toSorted()
+    .map((name) => [
+      name,
+      answers(setup.mocks?.[name], name).map(({ answer }) => filledKinMock(answer, setup.world)),
+    ]);
