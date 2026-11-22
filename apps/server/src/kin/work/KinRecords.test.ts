@@ -75,6 +75,7 @@ import * as OwnerClients from "./ownerClients.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import { comment } from "./workComments.ts";
 import * as WorkStream from "./workStream.ts";
 import { presetDefinition } from "./registers.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
@@ -2052,21 +2053,217 @@ it.effect(
       assert.strictEqual(yield* moveOf(), "waiting");
       yield* TestClock.setTime(Date.parse("2026-11-13T09:00:00Z"));
       assert.strictEqual(yield* moveOf(), "needsYou");
-      // Someone on it changes it as its holder would, and may take themselves off it.
+      // Someone on it may take themselves off, without changing anything else.
       const current = yield* OwnerWork.get([mate], { orgId, key: alongside.key });
       const left = yield* OwnerWork.update([mate], {
         orgId,
         key: alongside.key,
         rev: current.rev,
-        title: "Invented: price list v2",
         alsoOn: [person(devId)],
       });
-      assert.deepInclude(left, { title: "Invented: price list v2", alsoOn: [person(devId)] });
+      assert.deepInclude(left, { title: "Invented: price list", alsoOn: [person(devId)] });
       // Off it, it is no longer theirs to see.
       assert.include(yield* Effect.flip(OwnerWork.get([mate], { orgId, key: alongside.key })), {
         reason: "not_found",
       });
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a non-holder on a private project task can only read, comment or leave", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* places(1, 1, 0);
+    const sql = yield* SqlClient.SqlClient;
+    const devId = KinPersonId.make("dev");
+    const zoyaId = KinPersonId.make("zoya");
+    const person = (personId: KinPersonId) => ({ _tag: "person" as const, personId });
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${devId}, ${orgId}, 'dev', 'Dev', ${at}), (${zoyaId}, ${orgId}, 'zoya', 'Zoya', ${at})`;
+    const client = yield* ownerTask("client", { list: "clients" });
+    const project = yield* ownerTask("project", { list: "projects" });
+    const { row: doc } = yield* Docs.create(
+      orgId,
+      ownerWrites,
+      {},
+      {
+        title: "Invented: company launch notes",
+        body: "Invented: protect project documents.",
+        owner: person(ownerId),
+        projectId: project.recordId,
+        summary: "Created",
+        originKey: "project-doc",
+      },
+    );
+    const alsoOn = [person(devId), person(mateId), person(zoyaId)];
+    const make = (title: string) =>
+      OwnerWork.create([owner], {
+        orgId,
+        title,
+        clientRequestId: title,
+        project: project.key,
+        alsoOn,
+      });
+    const task = yield* make("Invented: confidential launch");
+    const input = { orgId, key: task.key, rev: task.rev };
+    const docInput = { orgId, key: doc.key };
+    assert.include(yield* Effect.flip(OwnerDocs.get([mate], docInput)), { reason: "not_found" });
+    const take = yield* Effect.result(OwnerWork.assign([mate], { ...input, to: null }));
+    const afterTake = yield* Effect.result(OwnerDocs.get([mate], docInput));
+    assert.deepStrictEqual(
+      [
+        take._tag === "Failure" ? take.failure.reason : "took it",
+        afterTake._tag === "Failure" ? afterTake.failure.reason : "read the doc",
+      ],
+      ["not_allowed", "not_found"],
+    );
+    assert.include(yield* Effect.flip(OwnerWork.assign([mate], { ...input, to: person(devId) })), {
+      reason: "not_allowed",
+    });
+
+    const cases = {
+      state: { state: "doing" },
+      due: { dueAt: "2026-11-12", dueAllDay: true },
+      title: { title: "Invented: rewritten title" },
+      notes: { notes: "Invented: rewritten notes" },
+      client: { party: client.key },
+      visibility: { sensitive: true },
+      add: { alsoOn: [...alsoOn, toLead] },
+      remove: { alsoOn: [person(mateId), person(zoyaId)] },
+      removeBoth: { alsoOn: [person(zoyaId)] },
+      reorder: { alsoOn: [person(zoyaId), person(devId)] },
+      unchanged: { alsoOn },
+      leaveAndEdit: { alsoOn: [person(devId), person(zoyaId)], title: task.title },
+      leaveWithExtra: { alsoOn: [person(devId), person(zoyaId)], urgent: true },
+    } satisfies Record<string, Partial<Parameters<typeof OwnerWork.update>[1]>>;
+    for (const [name, patch] of Object.entries(cases)) {
+      const one = yield* make(`Invented: launch ${name}`);
+      assert.include(
+        yield* Effect.flip(
+          OwnerWork.update([mate], { orgId, key: one.key, rev: one.rev, ...patch }),
+        ),
+        {
+          reason: "not_allowed",
+          message:
+            "You're on this task, not holding it: you can comment or leave. Owner can change it.",
+        },
+        name,
+      );
+    }
+    assert.include(yield* Effect.flip(OwnerWork.update([mate], { ...input, project: null })), {
+      reason: "not_allowed",
+    });
+    const records = yield* KinRecords.KinRecords;
+    assert.include(
+      yield* Effect.flip(
+        records.update(orgId, OwnerWork.writerOf({ person: mate, teammate: true }), task.key, {
+          projectId: null,
+        }),
+      ),
+      { reason: "not_allowed" },
+    );
+    assert.deepStrictEqual((yield* OwnerWork.get([mate], input)).can, {
+      states: [],
+      edit: false,
+      party: false,
+      project: false,
+      clearProject: false,
+      give: false,
+      takeBack: false,
+      mark: false,
+      unmark: false,
+      share: false,
+      confirm: false,
+      repeat: false,
+      links: false,
+    });
+    assert.isTrue(
+      (yield* comment([mate], {
+        ...input,
+        body: "Invented: ready for review.",
+        clientRequestId: "with-comment",
+      })).created,
+    );
+    const left = yield* OwnerWork.update([mate], {
+      ...input,
+      alsoOn: [person(devId), person(zoyaId)],
+    });
+    assert.deepStrictEqual(left.alsoOn, [person(devId), person(zoyaId)]);
+    assert.deepStrictEqual(
+      left.changes[0]?.fields.map((field) => field.field),
+      ["alsoOn"],
+    );
+    assert.include(yield* Effect.flip(OwnerWork.get([mate], input)), { reason: "not_found" });
+
+    yield* OwnerWork.assign([owner], { orgId, key: task.key, to: person(mateId) });
+    assert.strictEqual((yield* OwnerDocs.get([mate], docInput)).key, doc.key);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("owner level, the holder and the giver can still add and remove With", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const co = { ...mate, personId: KinPersonId.make("meera") };
+    const holder = { ...mate, personId: KinPersonId.make("dev") };
+    const zoya = { _tag: "person" as const, personId: KinPersonId.make("zoya") };
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES (${co.personId}, ${orgId}, 'meera', 'Meera', ${at}, 'co_owner'),
+        (${holder.personId}, ${orgId}, 'dev', 'Dev', ${at}, 'member'),
+        (${zoya.personId}, ${orgId}, 'zoya', 'Zoya', ${at}, 'member')`;
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('meera-session', ${orgId}, ${co.personId}, 0),
+        ('dev-session', ${orgId}, ${holder.personId}, 0)`;
+    const task = yield* OwnerWork.create([mate], {
+      orgId,
+      title: "Invented: prepare a demo",
+      clientRequestId: "demo",
+    });
+    const { key } = task;
+    let current = yield* OwnerWork.assign([mate], { orgId, key, to: holder });
+    for (const who of [owner, co, holder, mate]) {
+      current = yield* OwnerWork.update([who], { orgId, key, rev: current.rev, alsoOn: [zoya] });
+      assert.deepStrictEqual(current.alsoOn, [zoya]);
+      current = yield* OwnerWork.update([who], { orgId, key, rev: current.rev, alsoOn: [] });
+      assert.isUndefined(current.alsoOn);
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a departed person cannot be newly added With, but a stored entry is retained", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const invited = { _tag: "person" as const, personId: KinPersonId.make("zoya") };
+    const matePrincipal = { _tag: "person" as const, personId: mateId };
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${invited.personId}, ${orgId}, 'zoya', 'Zoya', ${at})`;
+    const create = (name: string, alsoOn: ReadonlyArray<KinWorkPrincipal>) =>
+      OwnerWork.create([owner], { orgId, title: name, clientRequestId: name, alsoOn });
+    const existing = yield* create("Invented: already on", [matePrincipal]);
+    const otherTask = yield* create("Invented: not on", []);
+    yield* sql`UPDATE kin_people SET removed_at = 1 WHERE org_id = ${orgId} AND person_id = ${mateId}`;
+    yield* sql`UPDATE kin_agents SET paused_at = ${at} WHERE org_id = ${orgId} AND agent_id = ${lead}`;
+    for (const action of [
+      create("Invented: cannot be added", [matePrincipal]),
+      OwnerWork.update([owner], {
+        orgId,
+        key: otherTask.key,
+        rev: otherTask.rev,
+        alsoOn: [matePrincipal],
+      }),
+    ])
+      assert.include(yield* Effect.flip(action), {
+        reason: "not_allowed",
+        message: "Mate has left the company and can't be added to the task.",
+      });
+    const changed = yield* OwnerWork.update([owner], {
+      orgId,
+      key: existing.key,
+      rev: existing.rev,
+      alsoOn: [matePrincipal, invited, toLead],
+    });
+    assert.deepStrictEqual(changed.alsoOn, [matePrincipal, invited, toLead]);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("assigning refuses closed entries and records the session's owner as the assigner", () =>
@@ -2790,6 +2987,59 @@ it.effect(
         [shared.key, filed!.key, made!.key, meeting!.key].toSorted(),
       );
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a shared room cannot use a participant's ask to change a task except to leave", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* turn("mate", "shared");
+    const sql = yield* SqlClient.SqlClient;
+    const dev = { _tag: "person" as const, personId: KinPersonId.make("dev") };
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${dev.personId}, ${orgId}, 'dev', 'Dev', ${at})`;
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('dev-session', ${orgId}, ${dev.personId}, 0)`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES ('lead-chat-dev', ${orgId}, 'lead-chat', 'person', ${dev.personId}, 'member', ${at})`;
+    const task = yield* ownerTask("shared launch", {
+      team: true,
+      owner: dev,
+      fields: { alsoOn: [`person:${mateId}`] },
+    });
+    const records = yield* KinRecords.KinRecords;
+    const writer = LeadWork.viewWriter(
+      { actor: toLead, via: "lead" },
+      {
+        people: [dev.personId, mateId],
+        askers: [mateId],
+        owner: ownerId,
+      },
+    );
+    const change = (patch: KinRecords.Patch) => records.update(orgId, writer, task.key, patch);
+    for (const patch of [
+      { fields: { alsoOn: [`person:${mateId}`, `agent:${other}`] } },
+      { state: "doing" },
+      { fields: { alsoOn: [] }, notes: "Invented: changed" },
+    ] satisfies ReadonlyArray<KinRecords.Patch>)
+      assert.include(yield* Effect.flip(change(patch)), { reason: "not_allowed" });
+    yield* change({ fields: { alsoOn: [] } });
+    assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: task.key })).alsoOn);
+
+    const roomHolder = LeadWork.viewWriter(
+      { actor: toLead, via: "lead" },
+      {
+        people: [dev.personId, mateId],
+        askers: [dev.personId],
+        owner: ownerId,
+      },
+    );
+    yield* records.update(orgId, roomHolder, task.key, {
+      fields: { alsoOn: [`person:${mateId}`] },
+    });
+    assert.deepStrictEqual((yield* OwnerWork.get([owner], { orgId, key: task.key })).alsoOn, [
+      { _tag: "person", personId: mateId },
+    ]);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect(

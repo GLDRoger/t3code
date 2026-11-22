@@ -482,6 +482,22 @@ const make = Effect.gen(function* () {
         last_at = ${changes.lastAt ?? row.lastAt}, ended_at = ${d.final ? now : null}
       WHERE org_id = ${orgId} AND discussion_id = ${row.discussionId}`;
     const next = { ...row, d, turn, question: changes.question ?? row.question };
+    // Its latest message is read again, so an open room stops saying it is still going.
+    if (d.final && !row.d.final) {
+      const touched = yield* sql<{ messageId: KinMessageId }>`UPDATE kin_messages
+        SET edited_at = edited_at WHERE org_id = ${orgId} AND message_id = (
+          SELECT message_id FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${row.chatId}
+            AND discussion_id = ${row.discussionId} AND status = 'posted'
+          ORDER BY seq DESC LIMIT 1)
+        RETURNING message_id AS "messageId"`;
+      for (const { messageId } of touched) {
+        const message = yield* repo.getMessage({ orgId, messageId });
+        if (Option.isSome(message))
+          yield* sql.afterCommit(
+            hub.publish({ type: "message.changed", orgId, message: message.value }),
+          );
+      }
+    }
     if (turn !== null && turn.eventId === null) {
       const eventId = yield* wakeTurn(orgId, next, turn, changes.outside);
       if (eventId !== null)
@@ -859,6 +875,19 @@ const make = Effect.gen(function* () {
             messageId: KinMessageId.make(`kin-team-sent:${hash(`${ctx.orgId}:${discussionId}`)}`),
             body: `${oneLine(input.question)}\n${message.body}`,
             relay: { kind: "sent_by", agentId: ctx.agentId },
+            discussionId,
+            silent: true,
+          });
+        // Where he asked, one quiet line that it started, linking to it.
+        if (byOwner)
+          yield* chat.notice({
+            orgId: ctx.orgId,
+            chatId: self.ownerChatId,
+            audience: "owner",
+            messageId: KinMessageId.make(
+              `kin-team-started:${hash(`${ctx.orgId}:${discussionId}`)}`,
+            ),
+            body: `Started a Team room discussion: ${oneLine(input.topic)}`,
             discussionId,
             silent: true,
           });

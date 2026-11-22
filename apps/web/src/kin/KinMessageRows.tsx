@@ -516,8 +516,16 @@ export function KinSystemRow(props: {
     readonly environmentId: EnvironmentId;
     readonly orgId: string;
   } | null;
+  /** The Team-room discussion the notice names, opened there; null for none. */
+  readonly discussion?: {
+    readonly discussionId: string;
+    readonly teamRoomId: string;
+    readonly environmentId: EnvironmentId;
+    readonly orgId: string;
+  } | null;
 }) {
   const open = props.open ?? null;
+  const discussion = props.discussion ?? null;
   return (
     <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-center gap-2 px-8 py-1">
       <p className="text-center text-xs text-muted-foreground">{props.body}</p>
@@ -538,6 +546,25 @@ export function KinSystemRow(props: {
           }
         >
           {open.target.label}
+        </Button>
+      )}
+      {discussion === null ? null : (
+        <Button
+          size="xs"
+          variant="outline"
+          render={
+            <Link
+              to="/kin/$environmentId/$orgId/$chatId"
+              params={{
+                environmentId: discussion.environmentId,
+                orgId: discussion.orgId,
+                chatId: discussion.teamRoomId,
+              }}
+              search={{ message: discussion.discussionId }}
+            />
+          }
+        >
+          {KIN_CARD_COPY.openDiscussion}
         </Button>
       )}
       {props.onRetry === null ? null : (
@@ -606,6 +633,7 @@ export function KinRelayRow(props: {
           orgId: props.orgId,
           chatId: props.teamRoomId,
         }}
+        search={{ message: row.discussionId }}
         className="self-start rounded-sm text-xs text-foreground underline underline-offset-2 outline-none ring-ring hover:text-primary focus-visible:ring-2 focus-visible:ring-inset"
       >
         {KIN_CARD_COPY.seeHow}
@@ -718,7 +746,8 @@ const firstLine = (markdown: string) =>
 export function KinFoldRow(props: { readonly row: FoldRow; readonly onToggle: () => void }) {
   const { row } = props;
   const decision = row.decision === null ? null : firstLine(row.decision);
-  const label = [`${joinNames(row.authors)} talked it over`, decision, `${row.count} messages`]
+  const talk = row.open ? "are still talking it over" : "talked it over";
+  const label = [`${joinNames(row.authors)} ${talk}`, decision, `${row.count} messages`]
     .filter(Boolean)
     .join(" · ");
   return (

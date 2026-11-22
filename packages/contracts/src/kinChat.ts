@@ -341,6 +341,9 @@ export const KinMessage = Schema.Struct({
   editedAt: Schema.NullOr(IsoDateTime),
   // The Team room discussion it is part of, or an outcome or row that links to. Absent elsewhere.
   discussionId: Schema.optional(KinDiscussionId),
+  // With `discussionId`: whether that discussion is still going, as of reading. Absent from
+  // older hosts.
+  discussionOpen: Schema.optional(Schema.Boolean),
   // Absent on a message no agent sent across.
   relay: Schema.optional(KinMessageRelay),
   // Absent on everything but a person's words Kin passed on for them.

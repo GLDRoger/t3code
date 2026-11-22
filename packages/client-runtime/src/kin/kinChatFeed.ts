@@ -251,6 +251,8 @@ export type KinFeedRow =
       readonly retry: string | null;
       /** The task or project a hand-off notice is about, to open from the line; null for none. */
       readonly open: KinNoticeOpen | null;
+      /** The Team-room discussion the line names, to open from it; null for none. */
+      readonly discussionId: string | null;
     }
   /**
    * Words carried into this chat (`relay`): `sent_by` what one agent asked another, `reply_from`
@@ -284,6 +286,10 @@ export type KinFeedRow =
       readonly authors: ReadonlyArray<string>;
       /** The run's last `decision` message body, if it reached one. */
       readonly decision: string | null;
+      /** The Team-room discussion the run is, or null for any other run. */
+      readonly discussionId: string | null;
+      /** The discussion is still going, as its host last said; false for any other run. */
+      readonly open: boolean;
       readonly expanded: boolean;
       /** The run's latest seq, seen once the fold is on screen. */
       readonly lastSeq: number;
@@ -561,6 +567,7 @@ export function buildKinFeedRows(
         text: notice ? message.body.replace(RETRY_HINT, "") : message.body,
         retry,
         open: kinNoticeOpen(message),
+        discussionId: message.discussionId ?? null,
       });
       previousAuthor = null;
       return;
@@ -606,6 +613,7 @@ export function buildKinFeedRows(
     const decision =
       run.findLast((message) => message.intent === "decision" && message.status !== "deleted")
         ?.body ?? null;
+    const last = run[run.length - 1]!;
     const expanded = expandedRuns.has(runId) !== openRuns;
     // Keyed by run so a page prepended into the run keeps the row; a run split by another
     // author falls back to its first message.
@@ -620,8 +628,10 @@ export function buildKinFeedRows(
       count: run.length,
       authors,
       decision,
+      discussionId: last.discussionId ?? null,
+      open: last.discussionId !== undefined && last.discussionOpen === true,
       expanded,
-      lastSeq: run[run.length - 1]!.seq,
+      lastSeq: last.seq,
     });
     previousAuthor = null;
     if (expanded) run.forEach(pushMessage);

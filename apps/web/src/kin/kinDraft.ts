@@ -6,20 +6,33 @@ import {
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
+import { DraftId, useComposerDraftStore } from "../composerDraftStore";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 
 const draftKeys = new Set<string>();
 
 /** Every Kin host uses the same org id, so the environment keeps two hosts' drafts apart. */
+/** A Kin chat's files wait in the thread composer's draft store, under a key no thread has. */
+const KIN_ATTACHMENT_PREFIX = "kin:";
+export const kinAttachmentTarget = (draftKey: string) =>
+  DraftId.make(`${KIN_ATTACHMENT_PREFIX}${draftKey}`);
+
 export const kinDraftAtom = Atom.family((key: string) => {
   draftKeys.add(key);
   return Atom.make("").pipe(Atom.keepAlive, Atom.withLabel("kin:draft"));
 });
 
-/** Drafts live only in memory, so a reload would lose any chat's unsent text. */
+/**
+ * Drafts' text lives only in memory, so a reload would lose it; a chat's pictures and files
+ * persist, but one still being written to storage, or a file, would not come back whole.
+ */
 export function hasUnsentKinDraft(): boolean {
   for (const key of draftKeys) {
     if (appAtomRegistry.get(kinDraftAtom(key)).trim().length > 0) return true;
+  }
+  for (const [key, draft] of Object.entries(useComposerDraftStore.getState().draftsByThreadKey)) {
+    if (key.startsWith(KIN_ATTACHMENT_PREFIX) && draft.images.length + draft.files.length > 0)
+      return true;
   }
   return false;
 }

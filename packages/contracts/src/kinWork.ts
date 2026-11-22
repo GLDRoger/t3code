@@ -1333,6 +1333,11 @@ export const KinPartyPage = Schema.Struct({
   /** Newest first, a few; absent from hosts before contact logs. */
   touches: Schema.optional(Schema.Array(KinClientTouch)),
   can: Schema.optional(KinPartyCan),
+  /**
+   * To the owner level while it isn't private: who sees it now and wouldn't once kept private,
+   * by name. Absent otherwise and from older hosts.
+   */
+  privateHides: Schema.optional(Schema.Array(Schema.String)),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
 });

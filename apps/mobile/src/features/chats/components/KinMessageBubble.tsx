@@ -593,8 +593,11 @@ export function KinSystemLine(props: {
   readonly onRetry: (() => void) | null;
   /** Opens the task or project the line names, when it names one. */
   readonly onOpen: (open: KinNoticeOpen) => void;
+  /** Opens the Team-room discussion the line names; null when there is no room to open. */
+  readonly onOpenDiscussion: ((discussionId: string) => void) | null;
 }) {
-  const { open } = props.row;
+  const { open, discussionId } = props.row;
+  const onOpenDiscussion = props.onOpenDiscussion;
   return (
     <View className="items-center gap-2 px-8 py-2">
       <Text textRole="caption" className="text-center text-foreground-muted">
@@ -606,6 +609,14 @@ export function KinSystemLine(props: {
           size="small"
           icon={open.kind === "project" ? "folder.fill" : "checkmark.circle"}
           onPress={() => props.onOpen(open)}
+        />
+      )}
+      {discussionId === null || onOpenDiscussion === null ? null : (
+        <Chip
+          label={KIN_CARD_COPY.openDiscussion}
+          size="small"
+          icon="bubble.left.and.bubble.right"
+          onPress={() => onOpenDiscussion(discussionId)}
         />
       )}
       {props.onRetry === null ? null : (

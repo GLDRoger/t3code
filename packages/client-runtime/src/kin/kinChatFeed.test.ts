@@ -194,11 +194,34 @@ describe("rows", () => {
       count: 3,
       decision: "Settled on a fixed timeout.",
       expanded: false,
+      discussionId: null,
+      open: false,
     });
     expect(fold.type === "fold" && fold.authors).toEqual(["Tech lead", "Agent"]);
     expect(fold.key).toBe("fold:run-0");
     // On screen, a folded run counts as seen through its last message.
     expect(kinRowSeq(fold)).toBe(24);
+  });
+
+  it.each([
+    [true, true],
+    [false, false],
+    [undefined, false],
+  ])("a Team-room discussion's fold is still going while its host says so (%s)", (said, open) => {
+    const messages = all.slice(19, 26).map((m) =>
+      m.floorRunId === "run-0"
+        ? {
+            ...m,
+            discussionId: "TD-1" as KinMessage["discussionId"],
+            ...(said === undefined ? {} : { discussionOpen: m.seq === 24 ? said : true }),
+          }
+        : m,
+    );
+    expect(messageRows(messages, viewer, new Set())[2]).toMatchObject({
+      type: "fold",
+      discussionId: "TD-1",
+      open,
+    });
   });
 
   it("keeps a deleted agent message inside its run's fold", () => {
