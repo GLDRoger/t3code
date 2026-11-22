@@ -629,10 +629,14 @@ export function KinTasksList(
           key={`left:${left.record.key}`}
           text={left.text}
           bottom={(tab?.bottomClearance ?? 0) + 12}
-          onUndo={() => {
-            forgetLeft();
-            void changes.run(left.record, left.undo, names);
-          }}
+          onUndo={
+            left.undo === null
+              ? null
+              : () => {
+                  forgetLeft();
+                  if (left.undo !== null) void changes.run(left.record, left.undo, names);
+                }
+          }
           onDismiss={forgetLeft}
         />
       )}
@@ -759,10 +763,10 @@ function KinTasksDoneRow(props: { readonly count: number; readonly onPress: () =
 function KinTasksUndoToast(props: {
   readonly text: string;
   readonly bottom: number;
-  readonly onUndo: () => void;
+  readonly onUndo: (() => void) | null;
   readonly onDismiss: () => void;
 }) {
-  const { onDismiss } = props;
+  const { onDismiss, onUndo } = props;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the Undo stays eight seconds, then the change only lives in the task's Activity
   useEffect(() => {
     const timer = setTimeout(onDismiss, UNDO_MS);
@@ -779,7 +783,7 @@ function KinTasksUndoToast(props: {
         singleLine
         opaque
         message={props.text}
-        action={{ label: KIN_WORK_COPY.undo, onPress: props.onUndo }}
+        {...(onUndo === null ? {} : { action: { label: KIN_WORK_COPY.undo, onPress: onUndo } })}
         dismissMode="swipe"
         onDismiss={onDismiss}
       />

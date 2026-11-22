@@ -518,7 +518,7 @@ function KinWorkItemBody(props: ItemTarget) {
     if (!(await changes.run(item, action, names))) return;
     const { notice, answers } = changes.getState();
     const answer = answers[item.key];
-    if (notice?.undo != null && answer !== undefined)
+    if (notice !== null && answer !== undefined)
       appAtomRegistry.set(kinTaskLeftAtom, {
         environmentId,
         orgId,
