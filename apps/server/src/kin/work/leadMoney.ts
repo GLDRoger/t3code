@@ -66,7 +66,7 @@ import {
   invoiceDays,
   isInvoice,
   moneySection,
-  moneySummary,
+  moneySummaryForAgent,
   ownerLevelStillToInvoice,
 } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
@@ -510,7 +510,7 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
   // In a turn others read: figures of only the money lines they all see, such as their project's.
   const team = yield* viewOf(lead);
   const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
-  const summary = yield* moneySummary(lead.orgId, now, viewer);
+  const summary = yield* moneySummaryForAgent(lead.orgId, now, viewer);
   const section = moneySection(
     summary,
     summary.timeZone,

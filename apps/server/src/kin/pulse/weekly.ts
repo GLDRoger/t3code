@@ -7,6 +7,7 @@ import { sentMail } from "../connections/Sending.ts";
 import { goalLine, goalsNow } from "../work/goals.ts";
 import { homeCurrency, readProfile } from "../work/companyProfile.ts";
 import { projectHealths } from "../work/crm.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import { weeklyPipelineOf } from "../work/dealStages.ts";
 import { mondayCounts } from "../work/deals.ts";
 import { aboutTotal, addUp, dayIn, formatMoney, formatMoneyPlain } from "../work/money.ts";
@@ -460,7 +461,7 @@ export const weeklyFigures = Effect.fn("KinWeekly.figures")(function* (input: {
     block("Invoices not yet due", notYetDue),
     block("Open quotes", week.money.openQuotes, "none"),
     block("Renewals this month", week.money.renewalsThisMonth, "none"),
-    (yield* weeklyPipelineOf(input.orgId))
+    (yield* KinShell.sectionOn(input.orgId, "deals")) && (yield* weeklyPipelineOf(input.orgId))
       ? yield* pipelineLines(input.orgId, input.now - WEEK_MS, input.now)
       : [],
     block("Cold clients", week.clients.cold),

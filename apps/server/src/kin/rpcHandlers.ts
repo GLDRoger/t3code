@@ -33,6 +33,7 @@ import { makeKinRecommendHandlers } from "./recommend/rpcHandlers.ts";
 import { makeKinHostHandlers } from "./host/rpcHandlers.ts";
 import { makeKinWorkHandlers } from "./work/rpcHandlers.ts";
 import { makeKinTasksKeyHandlers } from "./tasksKey/rpcHandlers.ts";
+import { makeKinShellHandlers } from "./shell/rpcHandlers.ts";
 import { makeKinWatchHandlers } from "./watches/rpcHandlers.ts";
 import { countryFirstForPerson, isCountryFirst } from "./work/companyProfile.ts";
 
@@ -96,6 +97,7 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
   const services = Option.flatMap(kin, (kin) => kin.services);
   const handlers = group.of({
     ...(yield* makeKinPeopleHandlers(session)),
+    ...(yield* makeKinShellHandlers(session)),
     ...(yield* makeKinTasksKeyHandlers(session)),
     ...(yield* makeKinChatHandlers(session)),
     ...(yield* makeKinApprovalHandlers(session, services)),

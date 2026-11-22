@@ -72,6 +72,8 @@ import {
   isMoneyMeasure,
 } from "./goals.ts";
 import { FieldInputs, turnFiles, typedFields } from "./leadFields.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfKey } from "../shell/sections.ts";
 import * as Deals from "./deals.ts";
 import { stagesOf } from "./dealStages.ts";
 import {
@@ -196,7 +198,7 @@ const Category = KinToolText(
 );
 const Amount = KinToolText(
   60,
-  'The amount as said or written: "4200", "4,200.50", "€30", "12k". Kin turns it into exact minor units and refuses a form it can\'t read one way.',
+  'The amount as said or written: "4200", "4,200.50", "€30", "12k". Kin turns it into exact minor units and refuses a form it can\'t read one way. For an expense refund or credit, give a negative amount.',
 );
 const Currency = Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/)).annotate({
   description:
@@ -1334,8 +1336,9 @@ export const clientOnRecord = Effect.fn("KinWorkTools.clientOnRecord")(function*
     WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list} AND r.party_id = ${partyId}
       AND r.state NOT IN ('done', 'dropped') AND ${crmSeenBy(sql, viewer)}
     ORDER BY r.created_at, r.key LIMIT ${REPEATS_SHOWN}`;
-  const rows = (yield* Effect.forEach(yield* of("deals"), (one) =>
-    records.get(lead.orgId, one.key),
+  const rows = (yield* Effect.forEach(
+    (yield* dealsOn(lead.orgId)) ? yield* of("deals") : [],
+    (one) => records.get(lead.orgId, one.key),
   )).filter((row) => row !== undefined);
   const deals = yield* dealsShown(lead, team, yield* viewFor(lead, rows), rows);
   return {
@@ -1522,7 +1525,7 @@ const amountFrom = (
   currency: string | undefined,
   stored: string | null | undefined,
 ) => {
-  const parsed = parseAmount(amount, currency ?? stored ?? def.currency);
+  const parsed = parseAmount(amount, currency ?? stored ?? def.currency, def.id === "expenses");
   if ("error" in parsed) return Effect.fail(parsed.error);
   if (currency !== undefined && parsed.money.currency !== currency)
     return Effect.fail(
@@ -2191,6 +2194,10 @@ const linkShown = (link: KinRecordDetail["links"][number]) =>
             ? recordName(link.record.key, link.number)
             : (link.label ?? link.target),
       };
+const dealsOn = Effect.fn("KinWorkTools.dealsOn")((orgId: KinOrgId) =>
+  KinShell.sectionOn(orgId, "deals").pipe(Effect.orElseSucceed(() => false)),
+);
+
 const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.Type) {
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
@@ -2200,7 +2207,30 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, row.recordId)))
     return yield* notFound(input.key);
   if (listOf(row.registerId) === "docs") return yield* isDoc(input.key);
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
   const detail = yield* records.detail(row, 10);
+  const dealLinks = new Set<string>();
+  if (!(yield* dealsOn(lead.orgId))) {
+    const sql = yield* SqlClient.SqlClient;
+    const targets = detail.changes.flatMap((change) =>
+      change.kind === "linked"
+        ? change.fields.flatMap((field) =>
+            field.field === "record" && field.to !== null ? [field.to] : [],
+          )
+        : [],
+    );
+    for (const link of detail.links)
+      if (link.kind === "record" && sectionOfKey(link.record?.key ?? link.label ?? "") === "deals")
+        dealLinks.add(link.target);
+    if (targets.length > 0) {
+      const linked = yield* sql<{ id: string }>`SELECT r.record_id AS id FROM kin_records r
+        WHERE r.org_id = ${lead.orgId} AND r.register_id = 'deals'
+          AND r.record_id IN ${sql.in(targets)} AND ${crmSeenBy(sql, viewer)}
+        ORDER BY r.record_id`;
+      for (const { id } of linked) dealLinks.add(id);
+      for (const target of targets) if (sectionOfKey(target) === "deals") dealLinks.add(target);
+    }
+  }
   const now = yield* Clock.currentTimeMillis;
   const view = yield* viewFor(lead, [row]);
   const { name } = view;
@@ -2278,7 +2308,6 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   }
   const list = row.registerId;
   const sensitive = new Set(marksOf(view.lists, row).sensitiveFields ?? []);
-  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
   const hiddenLinks = yield* unseenOf(
     lead,
     detail.links.flatMap((link) => (link.kind === "record" ? [link.target] : [])),
@@ -2371,9 +2400,17 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             link.kind === "url" ||
             (link.kind === "record" && !hiddenLinks.has(link.target)),
         )
-    ).map(linkShown),
+    )
+      .filter((link) => link.kind !== "record" || !dealLinks.has(link.target))
+      .map(linkShown),
     history: (team === undefined
-      ? detail.changes
+      ? detail.changes.filter(
+          (change) =>
+            change.kind !== "linked" ||
+            !change.fields.some(
+              (field) => field.field === "record" && field.to !== null && dealLinks.has(field.to),
+            ),
+        )
       : detail.changes.filter((change) => change.kind !== "linked")
     ).map((change) => ({
       at: change.at,

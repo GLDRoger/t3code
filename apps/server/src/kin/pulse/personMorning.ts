@@ -206,6 +206,7 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
   /** Open facts as sensed, not handled. */
   readonly open: ReadonlyArray<SensedFact>;
   readonly holds: ReadonlyArray<Hold>;
+  readonly dealsOn: boolean;
   /** The facts this person may see (`visibleTo`). */
   readonly sees: (
     personId: KinPersonId,
@@ -307,12 +308,14 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
         AND r.due_at > ${to} AND r.due_at <= ${day7}
       ORDER BY r.due_at, r.key LIMIT ${SHOWN}`;
-    const expected = yield* sql<{
-      title: string;
-      client: string;
-      dueAt: number;
-      allDay: number;
-    }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
+    const expected = !input.dealsOn
+      ? []
+      : yield* sql<{
+          title: string;
+          client: string;
+          dueAt: number;
+          allDay: number;
+        }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
       FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       WHERE r.org_id = ${orgId} AND r.register_id = 'deals' AND r.state = 'open'
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}

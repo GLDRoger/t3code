@@ -200,7 +200,10 @@ type KinChatFeedInput = {
   readonly teamRoomId: KinChatId | null;
   readonly direct: boolean;
   readonly formatTime: (iso: string) => string;
-  /** A message the chat was opened on: a notification's, a waiting row's, a task's card. */
+  /**
+   * A message the chat was opened on (a notification's, a waiting row's, a task's card), or a
+   * Team-room discussion's id, which opens on its first row.
+   */
   readonly landOn: string | null;
   readonly ownsLead: boolean;
   readonly agentName: string | null;
@@ -264,9 +267,11 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
       ? -1
       : rows.findIndex((row) =>
           row.type === "message"
-            ? row.message.messageId === landOn
-            : row.type === "cards" &&
-              [row.question, ...row.tasks].some((card) => card?.message.messageId === landOn),
+            ? row.message.messageId === landOn || row.message.discussionId === landOn
+            : row.type === "fold"
+              ? row.discussionId === landOn
+              : row.type === "cards" &&
+                [row.question, ...row.tasks].some((card) => card?.message.messageId === landOn),
         );
   const earlierPage = kinEarlierPage(input.chatId, messages, input.exhausted, live.clearedSeq);
   // Older than what has loaded: page back to it rather than open at the end.

@@ -459,7 +459,10 @@ export function kinBudgetsView(
         spent: KIN_BUDGETS.of(kinMoneyText(budget.spent), kinMoneyText(budget.limit)),
         standing: left < 0 ? KIN_BUDGETS.over(text(-left)) : KIN_BUDGETS.left(text(left)),
         status: budget.status,
-        share: budget.limit.minor <= 0 ? 1 : Math.min(budget.spent.minor / budget.limit.minor, 1),
+        share:
+          budget.limit.minor <= 0
+            ? 1
+            : Math.max(0, Math.min(budget.spent.minor / budget.limit.minor, 1)),
         estimate: kinEstimate(budget.limit, rates)?.text ?? null,
         notCounted:
           budget.notCounted === undefined || budget.notCounted.length === 0

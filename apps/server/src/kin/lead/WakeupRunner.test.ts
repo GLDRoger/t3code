@@ -1349,9 +1349,13 @@ describe("WakeupRunner", () => {
         ]);
       }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
-  it.effect(
-    "re-arms a lapsed direct-chat grant when the wake-up starts, for that wake-up only",
-    () =>
+  it.effect.each([
+    { kind: "direct", closed: false },
+    { kind: "team_group", closed: false },
+    { kind: "team_group", closed: true },
+  ] as const)(
+    "re-arms a lapsed $kind grant only for an open run (closed=$closed)",
+    ({ kind, closed }) =>
       Effect.gen(function* () {
         const entered = yield* Deferred.make<void>();
         const hold = yield* Deferred.make<void>();
@@ -1362,7 +1366,7 @@ describe("WakeupRunner", () => {
           const floor = yield* Floor.KinFloor;
           const at = "2026-11-08T00:00:00.000Z";
           yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
-            VALUES ('direct', 'org', 'direct', 'owner:lead', 1, ${at})`;
+            VALUES ('direct', 'org', ${kind}, ${kind === "direct" ? "owner:lead" : null}, 1, ${at})`;
           yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
             VALUES ('owner-member', 'org', 'direct', 'person', 'owner', 'owner', ${at})`;
           yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
@@ -1379,6 +1383,13 @@ describe("WakeupRunner", () => {
           yield* floor.open(message, chat);
           // The post-time grant lapses while the server is down, before catch-up enqueues it.
           yield* TestClock.adjust(FLOOR_GRANT_TTL_MS + 60_000);
+          if (closed)
+            yield* sql`UPDATE kin_floor_runs SET state = 'closed'
+              WHERE org_id = ${orgId} AND chat_id = ${scope.chatId}`;
+          const grantExpiry = sql<{ expires_at: number }>`SELECT expires_at FROM kin_floor_grants
+          WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY expires_at`;
+          const expired = yield* grantExpiry;
+          assert.lengthOf(expired, 1);
           yield* (yield* KinEventQueue.KinEventQueue).enqueue(
             decodeEvent({
               _tag: "chat.message",
@@ -1394,6 +1405,12 @@ describe("WakeupRunner", () => {
           );
           const fiber = yield* run();
           yield* Deferred.await(entered);
+          if (closed) {
+            assert.deepStrictEqual(yield* grantExpiry, expired);
+            yield* Deferred.succeed(hold, undefined);
+            yield* Fiber.join(fiber);
+            return;
+          }
           const [lead] = yield* sql<{ thread_id: string }>`SELECT thread_id FROM kin_leads`;
           const identity = yield* resolveAgent(ThreadId.make(lead!.thread_id));
           // The renewed grant lasts as long as the wake-up, so a reply 10 minutes in still lands.
@@ -1403,8 +1420,6 @@ describe("WakeupRunner", () => {
           // The wake-up keeps the grant for its run: its next post is the same agent turn.
           assert.strictEqual((yield* floor.authorize(identity, chat, "evidence")).runId, runId);
           // A used grant is never re-armed, whatever deadline is asked for.
-          const grantExpiry = sql<{ expires_at: number }>`SELECT expires_at FROM kin_floor_grants
-          WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY expires_at`;
           const before = yield* grantExpiry;
           yield* floor.renew({
             orgId,

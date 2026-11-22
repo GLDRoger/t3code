@@ -2592,7 +2592,7 @@ it.effect(
             title: "Invented booking invoice",
             client: "C-1",
             project: projectB.key,
-            amount: "2381",
+            amount: "USD 2381",
             state: "waiting",
             due: "1970-01-06",
           },
@@ -2686,6 +2686,47 @@ it.effect(
         JSON.stringify(yield* OwnerWork.list([who("offLead")], { orgId, list: "quotes" })),
         "Invented accepted quote",
       );
+      const excluded = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { list: "invoices", title: "Invented draft", client: "C-1", amount: "USD 93" },
+          { list: "invoices", title: "Invented dropped bill", client: "C-1", amount: "USD 86" },
+        ],
+      });
+      const dropped = excluded.records.find((row) => row.title === "Invented dropped bill")!;
+      yield* sql`UPDATE kin_records SET state = 'dropped'
+        WHERE org_id = ${orgId} AND key = ${dropped.key}`;
+      const summary = yield* OwnerMoney.money([owner], {
+        orgId,
+        party: "C-1",
+        upcomingRows: false,
+      });
+      const [header] = summary.owed.byClient;
+      const invoices = yield* OwnerWork.list([owner], {
+        orgId,
+        list: "invoices",
+        party: "C-1",
+        totalsBy: "none",
+      });
+      assert.sameMembers(
+        invoices.records.map((row) => row.state),
+        ["waiting", "waiting", "open", "dropped"],
+      );
+      const owing = invoices.records.filter(
+        (row) => row.state === "waiting" && (row.balance?.minor ?? 0) > 0,
+      );
+      const sum = (rows: typeof owing) => {
+        const totals = new Map<string, number>();
+        for (const { balance } of rows) {
+          if (balance === undefined) continue;
+          totals.set(balance.currency, (totals.get(balance.currency) ?? 0) + balance.minor);
+        }
+        return [...totals].map(([currency, minor]) => ({ currency, minor }));
+      };
+      assert.strictEqual(header?.invoices, owing.length);
+      assert.lengthOf(header?.owed ?? [], 2);
+      assert.sameDeepMembers([...header!.owed], sum(owing));
+      assert.sameDeepMembers([...header!.overdue], sum(owing.filter((row) => row.late)));
     }).pipe(Effect.provide(layer)),
 );
 
@@ -2745,6 +2786,28 @@ it.effect(
         clientRequestId: "plain",
       });
       assert.deepStrictEqual(yield* contactsOf(owner, plain.key), []);
+      // Kept private, it would leave the sight of Mate alone: the co-owner keeps it, "off" never
+      // had it. A teammate isn't told; once private, there is nobody left to name.
+      const plainPage = yield* Clients.party([owner], { orgId, key: plain.key });
+      assert.deepPropertyVal(plainPage, "privateHides", ["Mate"]);
+      assert.notProperty(
+        yield* Clients.party([who("mate")], { orgId, key: plain.key }),
+        "privateHides",
+      );
+      yield* Clients.updateParty([owner], {
+        orgId,
+        key: plain.key,
+        rev: plainPage.party.rev,
+        sensitive: true,
+      });
+      assert.notProperty(yield* Clients.party([owner], { orgId, key: plain.key }), "privateHides");
+      const reopened = yield* Clients.party([owner], { orgId, key: plain.key });
+      yield* Clients.updateParty([owner], {
+        orgId,
+        key: plain.key,
+        rev: reopened.party.rev,
+        sensitive: false,
+      });
 
       // The owner, a co-owner and a teammate with Clients on each add one with the person there.
       const byOwner = yield* Clients.createParty([owner], {
@@ -3136,6 +3199,20 @@ it.effect("logging contact with a next step makes the follow-up in the same tran
     const sql = yield* SqlClient.SqlClient;
     yield* seed;
     yield* setup("ask-event");
+    yield* TestClock.adjust(70 * DAY);
+    for (const at of ["1970-02-31T12:00:00.000Z", "not a time"]) {
+      assert.include(
+        yield* Clients.logTouch([owner], {
+          orgId,
+          party: "C-1",
+          kind: "call",
+          at,
+          clientRequestId: "bad-time",
+        }).pipe(Effect.flip),
+        { reason: "invalid_state" },
+      );
+    }
+    yield* TestClock.setTime(0);
     const log = (clientRequestId: string, dueAt: string) =>
       Clients.logTouch([owner], {
         orgId,

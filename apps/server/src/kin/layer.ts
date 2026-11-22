@@ -71,6 +71,8 @@ import * as DevClock from "./DevClock.ts";
 import * as McpGateway from "./connections/McpGateway.ts";
 import * as DevFakeSocial from "./social/DevFakeSocial.ts";
 
+import * as KinShell from "./shell/KinShell.ts";
+
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   Layer.effect(
     KinServer,
@@ -217,6 +219,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
         ),
       ).pipe(
+        Layer.merge(KinShell.layer),
         Layer.provideMerge(KinChat.layer),
         // Social's posting service sits on top: it reads cards, chats and the document renderer.
         (core) =>

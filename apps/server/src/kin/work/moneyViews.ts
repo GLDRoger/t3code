@@ -1,3 +1,4 @@
+import * as KinShell from "../shell/KinShell.ts";
 import type {
   KinDateRow,
   KinMoney,
@@ -276,7 +277,7 @@ export const isInvoice = (entry: ReadonlyArray<KinDateRow>) =>
   entry[0]!.record.list === "invoices" && entry[0]!.field === undefined;
 
 /**
- * What the bank took in `home` for each foreign expense a confirmed statement matched to one debit
+ * The signed amount in `home` for each foreign expense a confirmed statement matched to one bank
  * line, while the line's foreign amount still equals the expense's and the expense still links it as
  * evidence: an edited expense, a removed link or an undone statement falls back to the rates. One
  * line to one expense, both ways. `seen` filters lines as `r`.
@@ -303,7 +304,7 @@ const chargedAtBank = Effect.fn("KinMoneyViews.chargedAtBank")(function* (
           SELECT o.bank_record_id FROM kin_bank_statement_entries o
           WHERE o.org_id = ${orgId} AND o.target_record_id IN ${sql.in(expenseIds)}))
     )
-    SELECT m.id, MAX(r.amount_minor) AS minor
+    SELECT m.id, MAX(CASE WHEN x.amount_minor < 0 THEN -ABS(r.amount_minor) ELSE ABS(r.amount_minor) END) AS minor
     FROM m
     JOIN kin_records x ON x.org_id = ${orgId} AND x.record_id = m.id
     JOIN kin_records r ON r.org_id = ${orgId} AND r.record_id = m.bank
@@ -315,13 +316,13 @@ const chargedAtBank = Effect.fn("KinMoneyViews.chargedAtBank")(function* (
         AND l.target = m.bank)
       AND EXISTS (SELECT 1 FROM json_each(m.json, '$.statement.rows') w
         WHERE json_extract(w.value, '$.index') = m.row
-          AND json_extract(w.value, '$.direction') = 'debit'
+          AND json_extract(w.value, '$.direction') = CASE WHEN x.amount_minor < 0 THEN 'credit' ELSE 'debit' END
           AND json_extract(w.value, '$.foreign.currency') = x.currency
-          AND json_extract(w.value, '$.foreign.amountMinor') = x.amount_minor)
+          AND json_extract(w.value, '$.foreign.amountMinor') = ABS(x.amount_minor))
       AND r.register_id = ${bank.id} AND ${countedEntry(sql)}
       AND r.currency = ${home} AND r.amount_minor IS NOT NULL AND ${seen}
     GROUP BY m.id`;
-  return new Map(rows.map((one) => [one.id, Math.abs(one.minor)]));
+  return new Map(rows.map((one) => [one.id, one.minor]));
 });
 
 /** The first instant of a month (`2026-11`) in `zone`. */
@@ -348,7 +349,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   /** For people, figures of only what all of them see, never the company's. */
   viewer: KinViewer,
   /** People's Money lists money's dates alone ahead; an agent's read keeps every date. */
-  options: { readonly moneyDates?: boolean } = {},
+  options: { readonly moneyDates?: boolean; readonly omitDeals?: boolean } = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
   const seen = seenBy(sql, viewer);
@@ -500,7 +501,8 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   );
   // Suggestions in money lists, and any other with an amount: what Money's figures leave out.
   const suggestion = sql`r.org_id = ${orgId} AND r.confirmed = 0 AND r.state <> 'dropped'
-    AND (r.register_id IN ${sql.in(MONEY_LISTS)} OR r.amount_minor IS NOT NULL) AND ${seen}`;
+    AND (r.register_id IN ${sql.in(MONEY_LISTS)} OR r.amount_minor IS NOT NULL) AND ${seen}
+    AND ${options.omitDeals === true ? sql`r.register_id <> 'deals'` : sql`1 = 1`}`;
   const suggested =
     viewer._tag === "ownerLevel"
       ? yield* sql<RecordRow & { listName: string | null }>`SELECT s.*, g.name AS "listName"
@@ -637,6 +639,15 @@ type SectionDate = {
 /** What the section says of its suggestions: only what the server guarantees about them. */
 const SUGGESTED_NOTE =
   "Entries an agent suggested that the owner or a co-owner hasn't kept. No figure here counts them or any payment recorded on them: none is owed, due, received or spent until it is kept.";
+
+export const moneySummaryForAgent = Effect.fn("KinMoneyViews.agentSummary")(function* (
+  orgId: KinOrgId,
+  now: number,
+  viewer: KinViewer,
+) {
+  const on = yield* KinShell.sectionOn(orgId, "deals").pipe(Effect.orElseSucceed(() => false));
+  return yield* moneySummary(orgId, now, viewer, { omitDeals: !on });
+});
 
 /**
  * The Money summary as a short block for an owner-only prompt, built by code: figures already

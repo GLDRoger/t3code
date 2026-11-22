@@ -54,6 +54,7 @@ import { GUEST_PAGE_PATH } from "../guestPage";
 import { KIN_INVITE_LINK_PATH } from "@t3tools/shared/remote";
 import { KinChatOnlyRoot, redirectChatOnlyToKin } from "../kin/KinChatOnlyRoot";
 import { rememberKinTeammate } from "../kin/kinTeammateMark";
+import { redirectCodingToKin } from "../kin/kinNoCode";
 import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
 import { useHostedPromptLinkLanding } from "../components/promptLinks/HostedPromptLinkLanding";
 import { isLocalEnvironmentDisabled } from "../localEnvironment";
@@ -77,6 +78,7 @@ export const Route = createRootRoute({
         } as const,
       };
     }
+    redirectCodingToKin(location.pathname);
 
     if (location.pathname === "/pair" && hasHostedPairingRequest(new URL(window.location.href))) {
       return {
