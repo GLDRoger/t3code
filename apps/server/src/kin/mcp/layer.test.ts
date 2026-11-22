@@ -696,7 +696,37 @@ it.effect.each([true, false])(
           }),
           "Donors is turned off for this company.",
         );
-        yield* store(6, []);
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at, definition_json)
+          VALUES (${person.orgId}, 'invoices', 'Invoices', 'BL', 0, ${JSON.stringify(presetDefinition("invoices", "GBP"))}),
+          (${person.orgId}, 'board', 'Board', 'INV', 0, ${JSON.stringify({ ...presetDefinition("dates", "GBP"), noun: "note" })})`;
+        for (const [list, key, number] of [
+          ["invoices", "BL-4", "INV/26-27/003"],
+          ["receipts", "RCT-4", "RCT/26-27/001"],
+          ["board", "INV-3", ""],
+        ] as const)
+          yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
+            VALUES (${person.orgId}, ${key}, ${list}, ${key}, 'Invented billing fixture',
+              'person', ${person.personId}, 'person', ${key}, 0, 0, ${JSON.stringify({ number })})`;
+        const invoicesOff = [{ id: "invoices", on: false }];
+        const invoiceRefusal = "Invoices and quotes is turned off for this company.";
+        const moneyRefusal = "Money is turned off for this company.";
+        yield* store(6, invoicesOff);
+        const lookup = (key: string) => leadCall("record_get", { key });
+        const resolved = [
+          (yield* lookup("INV/26-27/003")).includes(invoiceRefusal),
+          (yield* lookup("BL-4")).includes(invoiceRefusal),
+          (yield* lookup("INV-3")).includes('"isError":false'),
+          (yield* leadCall("kin_issue", { entry: "INV/26-27/003" })).includes(invoiceRefusal),
+          (yield* leadCall("kin_receipt", { against: "INV/26-27/003" })).includes(invoiceRefusal),
+        ];
+        yield* store(7, moneyOff);
+        resolved.push(
+          (yield* lookup("RCT/26-27/001")).includes(moneyRefusal),
+          (yield* leadCall("kin_receipt", { entry: "RCT/26-27/001" })).includes(moneyRefusal),
+        );
+        assert.deepStrictEqual(resolved, [true, true, true, true, true, true, true]);
+        yield* store(8, []);
         yield* setProfile(
           person.orgId,
           { _tag: "person", personId: person.personId },

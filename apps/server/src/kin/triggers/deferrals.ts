@@ -1,3 +1,4 @@
+import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import {
   type KinAuthor,
   KinChatId,
@@ -16,7 +17,7 @@ import {
   kinWhenParts,
 } from "@t3tools/contracts";
 import * as KinShell from "../shell/KinShell.ts";
-import { sectionOfKey, sectionOfList } from "../shell/sections.ts";
+import { looksLikeRecordReference, resolveSections } from "../shell/sections.ts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -324,21 +325,22 @@ export const deferredSectionOff = Effect.fn("Deferrals.sectionOff")(function* (
   title: string,
   links: ReadonlyArray<string> = [],
 ) {
-  const keys = [
-    ...new Set(
-      [...links, ...(title.match(/(?<![\w-])[A-Z][A-Z0-9]{0,7}-[1-9]\d{0,8}(?![\w-])/gi) ?? [])]
-        .map((key) => key.trim().toUpperCase())
-        .filter((key) => sectionOfKey(key) !== null),
-    ),
-  ];
-  if (keys.length === 0) return false;
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ list: string }>`SELECT DISTINCT register_id AS list
-    FROM kin_records WHERE org_id = ${orgId} AND key IN ${sql.in(keys)} ORDER BY list`;
-  if (rows.length === 0) return false;
+  const references = new Set(
+    [
+      ...links,
+      ...(title.match(
+        /(?<![\w/-])(?:[A-Z][A-Z0-9]{0,7}-[1-9]\d{0,8}|[A-Z0-9-]+(?:\/[A-Z0-9-]+)+)(?![\w/-])/gi,
+      ) ?? []),
+    ]
+      .map((value) => value.trim())
+      .filter(looksLikeRecordReference),
+  );
+  if (references.size === 0) return false;
   const shell = yield* KinShell.get(orgId);
-  return rows.some(({ list }) => {
-    const section = sectionOfList(list);
+  if (shell.sections.every(({ on }) => on)) return false;
+  const sectionOfReference = yield* resolveSections(orgId, references, KIN_OWNER_LEVEL);
+  return [...references].some((reference) => {
+    const section = sectionOfReference(reference);
     return section !== null && !KinShell.sectionOn(shell, section);
   });
 });

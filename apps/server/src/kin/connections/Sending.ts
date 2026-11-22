@@ -22,7 +22,7 @@ import { chatReaders, keysIn } from "../chat/messageLinks.ts";
 import { readStoredFile } from "../gendocs/brand.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import * as KinShell from "../shell/KinShell.ts";
-import { sectionOfList } from "../shell/sections.ts";
+import { registerSectionColumns, sectionOfRegister } from "../shell/sections.ts";
 import { readProfile, type TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { formatMoney } from "../work/money.ts";
@@ -300,11 +300,13 @@ export const subjectOff = Effect.fn("KinSending.subjectOff")(function* (
   ];
   if (ids.length === 0) return null;
   const sql = yield* SqlClient.SqlClient;
-  const entries = yield* sql<{ registerId: string }>`SELECT DISTINCT register_id AS "registerId"
-    FROM kin_records WHERE org_id = ${orgId} AND record_id IN ${sql.in(ids)} ORDER BY register_id`;
+  const entries = yield* sql<Parameters<typeof sectionOfRegister>[0]>`SELECT DISTINCT
+    ${registerSectionColumns(sql)} FROM kin_records r
+    LEFT JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
+    WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(ids)} ORDER BY id`;
   const shell = yield* KinShell.get(orgId);
-  for (const { registerId } of entries) {
-    const section = sectionOfList(registerId);
+  for (const entry of entries) {
+    const section = sectionOfRegister(entry);
     if (section !== null && !KinShell.sectionOn(shell, section))
       return `${KinShell.sectionName(shell, section)} is turned off for this company, so this wasn't sent. Turn it on in Settings › Sections and confirm again.`;
   }

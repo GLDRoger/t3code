@@ -1,3 +1,8 @@
+import type { KinOrgId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+import { seenBy, type KinViewer } from "../work/teamView.ts";
+
 import type { KinPulseSense } from "@t3tools/contracts";
 
 import type { SHARED_TOOLS } from "../lead/SharedTools.ts";
@@ -241,3 +246,62 @@ export const sectionOfKey = (recordKey: string) =>
       .match(/^([A-Z][A-Z0-9]{0,7})-[1-9]\d{0,8}$/)?.[1] ?? "",
   );
 export const sectionOfSense = (senseId: string) => section(SECTIONS.senses, senseId);
+
+type SectionRegister = {
+  readonly id: string;
+  readonly name: string | null;
+  readonly payments: number | null;
+};
+
+export const sectionOfRegister = ({ id, name, payments }: SectionRegister): SectionId | null => {
+  if (id === "invoices" || id === "quotes") return "invoices";
+  if (id === "payments" || payments === 1 || name?.trim().toLowerCase() === "bank transactions")
+    return "money";
+  if (id === "dates" || id === "subscriptions") return null;
+  return sectionOfList(id);
+};
+
+export const registerSectionColumns = (sql: SqlClient.SqlClient) =>
+  sql`r.register_id AS id, g.name, json_extract(g.definition_json, '$.payments') AS payments`;
+
+export const looksLikeRecordReference = (value: string) =>
+  value.length <= 40 && /\d/.test(value) && !/[\r\n]/.test(value);
+
+// An unresolved reference only gets a prefix classification for Kin's reserved built-ins.
+export const sectionOfBuiltInKey = (key: string) =>
+  /^(?:C|CT|P|M|DL)-/.test(key.trim().toUpperCase()) ? sectionOfKey(key) : null;
+
+// Exactly the key or the unambiguous displayed number; a row outside the viewer looks absent.
+export const resolveSections = Effect.fn("KinShell.resolveSections")(function* (
+  orgId: KinOrgId,
+  references: ReadonlySet<string>,
+  viewer: KinViewer,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  type Row = SectionRegister & {
+    readonly key: string;
+    readonly number: string | null;
+    readonly visible: number;
+  };
+  const rows =
+    references.size === 0
+      ? []
+      : yield* sql<Row>`
+    WITH wanted AS (SELECT value FROM json_each(${JSON.stringify([...references])}))
+    SELECT r.key, json_extract(r.fields_json, '$.number') AS number, ${registerSectionColumns(sql)},
+      ${seenBy(sql, viewer)} AS visible
+    FROM kin_records r
+    LEFT JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
+    WHERE r.org_id = ${orgId}
+      AND (r.key IN (SELECT upper(value) FROM wanted)
+        OR json_extract(r.fields_json, '$.number') IN (SELECT value FROM wanted))
+    ORDER BY r.key`;
+  const keys = new Map(rows.map((row) => [row.key, row]));
+  const numbers = new Map<string, Row | null>();
+  for (const row of rows)
+    if (row.number !== null) numbers.set(row.number, numbers.has(row.number) ? null : row);
+  return (reference: string) => {
+    const row = keys.get(reference.toUpperCase()) ?? numbers.get(reference);
+    return row?.visible === 1 ? sectionOfRegister(row) : sectionOfBuiltInKey(reference);
+  };
+});
