@@ -3616,6 +3616,9 @@ const make = Effect.gen(function* () {
           chatId: message.chatId,
           reaction: withdrawn,
           woke: false,
+          ...(answer !== null && Reactions.reactionAnswer(withdrawn.emoji) === answer
+            ? { sameAnswerReplacement: reaction }
+            : {}),
           by,
         });
       if (changed)
