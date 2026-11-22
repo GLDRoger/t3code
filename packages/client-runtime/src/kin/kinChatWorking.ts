@@ -74,6 +74,8 @@ export function kinChatWorkingItems(input: {
   readonly widgets: ReadonlyArray<KinWidget>;
   readonly messages: ReadonlyArray<KinMessage>;
   readonly handoffs: KinChatWorkingResult["handoffs"];
+  /** Chats the live chat list says are working. */
+  readonly workingChats: ReadonlyArray<string>;
   readonly agentNames: ReadonlyMap<string, string>;
   readonly now: number;
 }): ReadonlyArray<KinWorkingItem> {
@@ -100,18 +102,29 @@ export function kinChatWorkingItems(input: {
       },
     ];
   });
-  const handoffs = input.handoffs.map((handoff): KinWorkingItem => ({
-    key: `handoff:${handoff.agentId}:${handoff.wakeupId ?? handoff.since}`,
-    kind: "handoff",
-    agentId: handoff.agentId,
-    name: name(handoff.agentId),
-    doing: handoff.asked.trim() || null,
-    state: handoff.state === "running" ? "Working" : KIN_WORKING_COPY.waitingToStart,
-    held: handoff.state === "queued",
-    since: handoff.since,
-    wakeupId: handoff.wakeupId,
-    open: handoff.chatId === null ? null : { kind: "chat", chatId: handoff.chatId },
-  }));
+  // A turn's line ends before its wake-up is marked done, so a read made then still says running.
+  const ended = (handoff: KinChatWorkingResult["handoffs"][number]) =>
+    handoff.state === "running" &&
+    handoff.chatId !== null &&
+    !input.workingChats.includes(handoff.chatId);
+  const handoffs = input.handoffs.flatMap((handoff): ReadonlyArray<KinWorkingItem> =>
+    ended(handoff)
+      ? []
+      : [
+          {
+            key: `handoff:${handoff.agentId}:${handoff.wakeupId ?? handoff.since}`,
+            kind: "handoff",
+            agentId: handoff.agentId,
+            name: name(handoff.agentId),
+            doing: handoff.asked.trim() || null,
+            state: handoff.state === "running" ? "Working" : KIN_WORKING_COPY.waitingToStart,
+            held: handoff.state === "queued",
+            since: handoff.since,
+            wakeupId: handoff.wakeupId,
+            open: handoff.chatId === null ? null : { kind: "chat", chatId: handoff.chatId },
+          },
+        ],
+  );
   const created = new Map(input.messages.map((message) => [message.messageId, message.createdAt]));
   const workers = input.widgets.flatMap((widget): ReadonlyArray<KinWorkingItem> => {
     if (widget.type !== "task" || widget.closedAt !== null) return [];

@@ -77,7 +77,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { kinTabBar, useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
-import { useKinDocDelete } from "./state/useKinDocDelete";
+import { kinDocLeftDeletedAtom, useKinDocDelete } from "./state/useKinDocDelete";
 import {
   useKinDocsList,
   useKinDocsLive,
@@ -517,6 +517,14 @@ export function KinDocsList(
   const [playbooksOpen, setPlaybooksOpen] = useState(false);
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
   const deleting = useKinDocDelete(props);
+  const leftDeleted = useAtomValue(kinDocLeftDeletedAtom);
+  const justLeft =
+    leftDeleted !== null &&
+    leftDeleted.environmentId === environmentId &&
+    leftDeleted.orgId === orgId
+      ? leftDeleted
+      : null;
+  const forgetLeft = () => appAtomRegistry.set(kinDocLeftDeletedAtom, null);
   const scope = useKinViewerScope(environmentId);
   const { filter } = state;
   const shown = kinListShown(state, kinHostLink(useKinHostAt(environmentId)));
@@ -762,6 +770,7 @@ export function KinDocsList(
             canFile,
             deleting.busy,
             deleting.problem,
+            justLeft,
             starter?.agent,
             pinned,
           ]}
@@ -784,6 +793,24 @@ export function KinDocsList(
                 {deleting.problem === null ? null : (
                   <View className="px-4">
                     <Notice tone="danger" message={deleting.problem} onDismiss={deleting.dismiss} />
+                  </View>
+                )}
+                {justLeft === null ? null : (
+                  <View className="px-4">
+                    <Notice
+                      message={KIN_DOCS.deletedNotice(justLeft.title)}
+                      onDismiss={forgetLeft}
+                      action={{
+                        label: KIN_DOCS.undo,
+                        pending: deleting.busy !== null,
+                        onPress: () =>
+                          void deleting.restore(justLeft.key).then((why) => {
+                            if (why !== null) return;
+                            forgetLeft();
+                            refresh();
+                          }),
+                      }}
+                    />
                   </View>
                 )}
                 <View className="flex-row flex-wrap gap-2 px-4">

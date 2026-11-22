@@ -302,7 +302,7 @@ describe("createKinWorkList", () => {
     let clock = 0;
     const keeper = createKinListKeeper<KinWorkList, KinWorkListState>(() => clock);
     const h = harness(() => rows);
-    const first = keeper.take("tasks", () => h.list);
+    const first = keeper.take("tasks", () => h.list, "rhea");
     expect(keeper.wasKept(first)).toBe(false);
     keeper.show(first, () => {});
     h.list.start();
@@ -315,7 +315,7 @@ describe("createKinWorkList", () => {
       { _tag: "upsert", seq: 8, list: "work", record: kinCompactRecord(record(4)), fresh: true },
       orgId,
     );
-    const again = keeper.take("tasks", () => harness().list);
+    const again = keeper.take("tasks", () => harness().list, "rhea");
     expect(again).toBe(first);
     expect(keeper.wasKept(again)).toBe(true);
     keeper.show(again, () => {});
@@ -325,12 +325,16 @@ describe("createKinWorkList", () => {
     expect(h.state().records.map((held) => held.key)).toEqual(["W-1", "W-2", "W-3", "W-4"]);
 
     // Shown elsewhere, it isn't handed out again.
-    expect(keeper.take("tasks", () => harness().list)).not.toBe(first);
+    expect(keeper.take("tasks", () => harness().list, "rhea")).not.toBe(first);
     keeper.hide(again);
+
+    // Someone else signed in on this phone, or not yet known: never another person's list.
+    expect(keeper.take("tasks", () => harness().list, "arjun")).not.toBe(first);
+    expect(keeper.take("tasks", () => harness().list, null)).not.toBe(first);
 
     // Left too long, it is read again; what it held stays up, and through a read that fails.
     clock += 10 * 60_000;
-    const later = keeper.take("tasks", () => harness().list);
+    const later = keeper.take("tasks", () => harness().list, "rhea");
     expect(later).toBe(first);
     keeper.show(later, () => {});
     keeper.resume(later);

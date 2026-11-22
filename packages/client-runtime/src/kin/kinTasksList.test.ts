@@ -22,7 +22,9 @@ import { describe, expect, it } from "vite-plus/test";
 import { kinMayHaveGoneLine } from "./kinChoicePresentation.ts";
 import { kinRecordMove } from "./kinTaskRecord.ts";
 import {
+  KIN_PERSON_TASKS,
   kinNeedsYouCount,
+  kinPersonTasksCount,
   kinTaskLine,
   kinTaskQuickFilters,
   kinTasksSharedAbout,
@@ -974,6 +976,21 @@ describe("a person's page and the project filter", () => {
       "W-2",
       "W-7",
     ]);
+  });
+
+  it("counts the tasks a person is only on apart from the ones they hold", () => {
+    const page = (records: ReadonlyArray<KinRecord>, total = records.length) => ({
+      total,
+      records,
+    });
+    const held = row("W-1", { owner: meera });
+    const on = row("W-2", { owner: zoya, alsoOn: [meera] });
+    const who = meera.personId;
+    expect(kinPersonTasksCount(page([held, held]), who)).toBe("2 open tasks");
+    expect(kinPersonTasksCount(page([held, on, on]), who)).toBe("1 open task · on 2 more");
+    expect(kinPersonTasksCount(page([on]), who)).toBe("On 1 open task");
+    // A page that doesn't hold them all can't split them: the host's total stands.
+    expect(kinPersonTasksCount(page([held, on], 30), who)).toBe(KIN_PERSON_TASKS.count(30));
   });
 
   it("offers a teammate every project of a task they see, not only the ones they are on", () => {

@@ -462,6 +462,8 @@ export function createKinListKeeper<
 >(now: () => number) {
   type Kept = {
     readonly key: string;
+    /** Who it was read for; null when not yet known, and then never handed back. */
+    readonly viewer: string | null;
     readonly list: List;
     /** Where the list's changes go: the screen showing it now. */
     readonly sink: { current: (state: State) => void };
@@ -470,12 +472,24 @@ export function createKinListKeeper<
   };
   const kept = new Map<string, Kept>();
   return {
-    /** The list kept under `key` when no screen shows it, else a new one. */
-    take: (key: string, make: (onChange: (state: State) => void) => List): Kept => {
+    /** The list kept under `key` for this viewer when no screen shows it, else a new one. */
+    take: (
+      key: string,
+      make: (onChange: (state: State) => void) => List,
+      viewer: string | null,
+    ): Kept => {
       const held = kept.get(key);
-      if (held !== undefined && !held.shown) return held;
+      if (held !== undefined && !held.shown && viewer !== null && held.viewer === viewer)
+        return held;
       const sink = { current: (_state: State) => {} };
-      return { key, list: make((state) => sink.current(state)), sink, shown: false, at: now() };
+      return {
+        key,
+        viewer,
+        list: make((state) => sink.current(state)),
+        sink,
+        shown: false,
+        at: now(),
+      };
     },
     /** A screen shows it; its changes go to `onChange`. */
     show: (entry: Kept, onChange: (state: State) => void) => {

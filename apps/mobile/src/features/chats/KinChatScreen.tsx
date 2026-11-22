@@ -1288,6 +1288,7 @@ function KinChatFeed(props: {
           widgets: live.widgets,
           messages,
           handoffs: Option.getOrNull(AsyncResult.value(workingRead))?.handoffs ?? [],
+          workingChats: props.workingChats,
           agentNames: props.viewer.agentNames,
           now: presenceNow,
         })
