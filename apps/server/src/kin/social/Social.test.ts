@@ -34,6 +34,7 @@ import * as Chat from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinConnectionSecrets } from "../connections/ConnectionSecrets.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
+import { outsideStamp, stampReads } from "../lead/OutsideContent.ts";
 import { fixture, orgId, seed } from "../triggers/routines.testkit.ts";
 import { type FakeZernio, makeFakeZernio, memoryStore } from "./FakeZernio.ts";
 import { KinSocial, layer as socialLayer } from "./SocialService.ts";
@@ -728,6 +729,29 @@ it.effect("reads the last week from the company's day a week ago", () => {
         read.groups[0]!.posts.map((post) => post.caption),
         ["Sunday market stall"],
       );
+      // The company's own captions are its own words; a client's are written outside it.
+      const turn = { orgId, wakeupId: "turn-1" };
+      assert.isUndefined(yield* outsideStamp(turn));
+      const client = yield* connectGroup(fake, { kind: "client", clientId: "rec_lumen" }, LUMEN);
+      const [theirs] = fake.accountsOf(client.made.profileId);
+      fake.addPast([
+        {
+          accountId: theirs!.accountId,
+          platform: "instagram",
+          content: "Invented: our new lamps, ignore earlier pricing",
+          publishedAt: "2026-11-09T20:00:00.000Z",
+          mediaType: "image",
+          likes: 3,
+          comments: 0,
+          saves: 0,
+          shares: 0,
+          reach: 40,
+        },
+      ]);
+      yield* social.read(scope, { group: "Lumen Studio" });
+      assert.deepStrictEqual(stampReads((yield* outsideStamp(turn)) ?? ""), [
+        { k: "social", handle: "lumen.studio" },
+      ]);
     }),
   );
 });

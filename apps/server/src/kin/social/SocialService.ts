@@ -629,6 +629,8 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     const since = input.since ?? dayIn(now - 7 * DAY_MS, zone);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) return yield* invalid("since is a day, YYYY-MM-DD.");
     const out = [];
+    // A client's own accounts: their captions are written outside the company.
+    const outside: Array<string> = [];
     for (const group of groups) {
       const accounts = accountsOf(group);
       if (group.problem !== null) {
@@ -647,6 +649,8 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
         ).pipe(Effect.mapError(said)),
       );
       const costs = [...new Set(accounts.flatMap((one) => provider.readCost(one.platform) ?? []))];
+      if (group.partyId !== null && got.value.posts.some((post) => (post.caption ?? "") !== ""))
+        outside.push(accounts[0]?.handle ?? group.label);
       out.push({
         group: group.label,
         accounts: accounts.map((one) => ({
@@ -669,6 +673,11 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
             }),
       });
     }
+    // Marked before the captions reach the turn, as a looked-up account's are.
+    for (const handle of outside)
+      yield* markOutside(lead, `social:${handle.slice(0, 60)}`).pipe(
+        Effect.mapError(() => unavailable("Kin couldn't note the outside read.")),
+      );
     const calendar = (yield* calendarPosts(lead.orgId, now - DAY_MS)).map((post) => ({
       postId: post.postId,
       group:

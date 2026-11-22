@@ -134,15 +134,16 @@ export const fullSessionRefusal = Effect.fn("KinAgentSession.fullSessionRefusal"
 );
 
 /**
- * A confined session's web search: its results are outside text, so the turn it follows is marked
- * before they reach the model. No such turn, or a failed mark, refuses the search.
+ * A session's own web search or page fetch: its results are outside text, so the turn it follows
+ * is marked before they reach the model, by the page's host when it has one. No such turn, or a
+ * failed mark, refuses it.
  */
 export const webSearchRefusal = Effect.fn("KinAgentSession.webSearchRefusal")(
-  function* (threadId: ThreadId) {
+  function* (threadId: ThreadId, host?: string) {
     const { turn } = yield* governingTurn(threadId);
     if (turn === undefined) return SESSION_REFUSAL.none;
     if (yield* aborted(turn)) return SESSION_REFUSAL.aborted;
-    yield* markOutside(turn, "web search");
+    yield* markOutside(turn, host === undefined ? "web search" : `web:${host.slice(0, 120)}`);
     return undefined;
   },
   Effect.catchCause((cause) =>
@@ -315,8 +316,8 @@ export const sessionPolicyLayer = Layer.effect(
       refusal: Effect.fn("KinAgentSessionPolicy.refusal")((threadId: ThreadId) =>
         fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       ),
-      webSearch: Effect.fn("KinAgentSessionPolicy.webSearch")((threadId: ThreadId) =>
-        webSearchRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      webSearch: Effect.fn("KinAgentSessionPolicy.webSearch")((threadId: ThreadId, host?: string) =>
+        webSearchRefusal(threadId, host).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       ),
       delegated: Effect.fn("KinAgentSessionPolicy.delegated")((threadId: ThreadId) =>
         delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
