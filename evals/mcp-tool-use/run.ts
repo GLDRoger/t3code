@@ -398,7 +398,8 @@ export const McpToolUseCase = Schema.Struct({
     /**
      * Canned tool results by bare name. `"default"` uses the runner's result. A device `DeviceError`
      * or preview `PreviewAutomationError` fails inside T3; `{"$error": value}` fails with value, as a
-     * declared tool failure does; `{"$sequence": [...]}` answers call n with entry n, then the last.
+     * declared tool failure does; `{"$sequence": [...]}` answers call n with entry n, then the last;
+     * `{"$when": [{"args", "result"}], "$else"}` answers with the first rule whose args match.
      */
     mocks: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
     /** Regexes on one part of a shell command. A match wins over the shell simulator. */
@@ -1085,8 +1086,17 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
   };
 };
 
-/** A `{"$sequence": [...]}` mock answers its nth call with the nth result, then repeats the last. */
-const nextMock = (sample: Sample, name: string, mock: unknown) => {
+/**
+ * A `{"$when": [{"args", "result"}], "$else"}` mock answers with the first rule whose args match the
+ * call's, as `calls` matches them, else `$else`. A `{"$sequence": [...]}` mock answers its nth call
+ * with the nth result, then repeats the last.
+ */
+const nextMock = (sample: Sample, name: string, given: unknown, input: unknown) => {
+  const mock =
+    isRecord(given) && Array.isArray(given.$when)
+      ? (given.$when.find((rule) => isRecord(rule) && matches(rule.args ?? {}, input))?.result ??
+        given.$else)
+      : given;
   if (!isRecord(mock) || !Array.isArray(mock.$sequence) || mock.$sequence.length === 0) return mock;
   const n = sample.mockCalls.get(name) ?? 0;
   sample.mockCalls.set(name, n + 1);
@@ -2155,7 +2165,7 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   if (isPageTool(name) && typeof input.path === "string" && !input.path.startsWith("/")) {
     return failed(`${input.path} is not a readable HTML document. Pass an absolute path.`);
   }
-  const mock = nextMock(sample, name, testCase.setup.mocks?.[name]);
+  const mock = nextMock(sample, name, testCase.setup.mocks?.[name], input);
   if (isRecord(mock) && mock.$error !== undefined) return failed(valueText(mock.$error));
   if (isT3Name(call.name) && PREVIEW_TOOLS.has(name)) {
     if (testCase.setup.world?.browserAgentAccess === false)

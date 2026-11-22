@@ -297,7 +297,7 @@ Runner support:
 - A preview mock that decodes as a `PreviewAutomationError`, such as `PreviewAutomationUnsupportedClientError`, fails the call with that error's message.
 - `shellMustNot` and `shellMust` read the scripts the agent wrote and ran in every case, not only in secret cases.
 - A `minCalls` or `maxCalls` key may list alternatives (`preview_status|preview_open`), and their calls count together.
-- A `{"$sequence": [...]}` mock answers its nth call with the nth result, then repeats the last.
+- A `{"$sequence": [...]}` mock answers its nth call with the nth result, then repeats the last. A `{"$when": [{"args": {...}, "result": ...}], "$else": ...}` mock answers with the first rule whose `args` match the call's, as `calls` matches them, so a read answers the record that was asked for; with no match and no `$else` the tool answers as unmocked.
 
 From `evals/`:
 

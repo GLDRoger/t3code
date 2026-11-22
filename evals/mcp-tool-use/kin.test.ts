@@ -594,14 +594,14 @@ it.effect(
         maxSteps: 0,
         shellModel: "claude-haiku-5-5",
       } as const;
-      const answer = (testCase: McpToolUseCase, tool: string) => {
+      const answer = (testCase: McpToolUseCase, tool: string, input: object = {}) => {
         const base = kinBase();
         const sample = { ...makeSample(testCase, base), tools: [...base.nativeTools, ...base.t3] };
         return answerToolCall(sample, config, {
           type: "tool_use",
           id: "t1",
           name: `mcp__t3-code__${tool}`,
-          input: {},
+          input,
         });
       };
       // An unmocked Kin tool answers as it always did, so a run compares with earlier ones.
@@ -609,6 +609,22 @@ it.effect(
       assert.deepEqual([read.is_error, read.content], [undefined, '{"ok":true}']);
       const mocked = kinCase({ mocks: { record_get: { key: "EXP-1" } } });
       assert.deepEqual((yield* answer(mocked, "record_get")).content, '{"key":"EXP-1"}');
+      // A $when mock answers the record that was asked for; one no rule names, its $else.
+      const byKey = kinCase({
+        mocks: {
+          record_get: {
+            $when: [
+              { args: { key: "P-6" }, result: { key: "P-6" } },
+              { args: { key: "INV-14" }, result: { key: "INV-14" } },
+            ],
+            $else: { $error: "No entry W-9." },
+          },
+        },
+      });
+      for (const key of ["P-6", "INV-14"])
+        assert.deepEqual((yield* answer(byKey, "record_get", { key })).content, `{"key":"${key}"}`);
+      const other = yield* answer(byKey, "record_get", { key: "W-9" });
+      assert.deepEqual([other.is_error, other.content], [true, "No entry W-9."]);
       // A T3 tool with no mock answers as before.
       const t3Base = buildBase(template, {
         model: "claude-sonnet-5-5",
