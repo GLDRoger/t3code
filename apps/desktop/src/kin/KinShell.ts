@@ -109,6 +109,7 @@ const make = Effect.gen(function* () {
     decodeSettings,
   );
   let view: KinShellView = { view: "join", host: null, problem: null, canGoBack: false };
+  /** What Try again opens: the host page that failed, else the last one the shell opened. */
   let lastTarget: string | null = null;
   let retried = false;
   /** A link the host's page is redeeming, and what was remembered before it. */
@@ -378,6 +379,7 @@ const make = Effect.gen(function* () {
         const host = currentHostOrigin();
         if (!isMainFrame || errorCode === ERR_ABORTED || host === null) return;
         if (!URL.canParse(validatedURL) || new URL(validatedURL).origin !== host) return;
+        lastTarget = validatedURL;
         void runPromise(
           logWarning("team's Kin did not load", { errorCode, errorDescription }).pipe(
             Effect.andThen(showUnreachable(host)),
@@ -388,8 +390,12 @@ const make = Effect.gen(function* () {
     contents.on("did-navigate", (_event, url, httpResponseCode) => {
       const host = currentHostOrigin();
       if (host === null || !URL.canParse(url) || new URL(url).origin !== host) return;
-      if (HOST_DOWN_STATUSES.has(httpResponseCode)) void runPromise(showUnreachable(host));
-      else retried = false;
+      if (!HOST_DOWN_STATUSES.has(httpResponseCode)) {
+        retried = false;
+        return;
+      }
+      lastTarget = url;
+      void runPromise(showUnreachable(host));
     });
     contents.on("render-process-gone", (_event, details) => {
       if (details.reason !== "clean-exit" && !window.isDestroyed()) contents.reload();
