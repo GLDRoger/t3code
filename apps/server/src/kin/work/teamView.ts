@@ -426,8 +426,8 @@ export const DRAFT_OWN_CHAT_ONLY = new KinChatError({
 });
 
 /**
- * The turn answers this person's own message in their own direct chat with the agent, and
- * nothing in it was carried from another chat or agent.
+ * The turn answers this person's own message in their own direct chat with the agent, or a task
+ * they gave it there by their own hand, and nothing in it was carried from another chat or agent.
  */
 const ownDirectAsk = Effect.fn("KinTeamView.ownDirectAsk")(function* (
   orgId: KinOrgId,
@@ -435,16 +435,25 @@ const ownDirectAsk = Effect.fn("KinTeamView.ownDirectAsk")(function* (
   turn: { readonly agentId: KinAgentId; readonly wakeupId: string },
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const asks = yield* sql<{ own: number }>`SELECT (m.author_kind = 'human'
-      AND m.author_person_id = ${personId} AND m.origin_json IS NULL
-      AND json_extract(e.json, '$.origin') IS NULL AND c.kind = 'direct'
-      AND c.archived_at IS NULL AND c.direct_key = ${directKey(personId, turn.agentId)}) AS own
+  const key = directKey(personId, turn.agentId);
+  const asks = yield* sql<{ own: number }>`SELECT CASE e.tag WHEN 'chat.message' THEN
+        (m.author_kind = 'human' AND m.author_person_id = ${personId} AND m.origin_json IS NULL
+          AND json_extract(e.json, '$.origin') IS NULL AND c.kind = 'direct'
+          AND c.archived_at IS NULL AND c.direct_key = ${key})
+      ELSE (json_extract(e.json, '$.reason') = 'assigned' AND t.kind = 'direct'
+        AND t.archived_at IS NULL AND t.direct_key = ${key}
+        AND EXISTS (SELECT 1 FROM kin_record_changes rc WHERE rc.org_id = e.org_id
+          AND rc.record_id = json_extract(e.json, '$.recordId')
+          AND rc.seq = json_extract(e.json, '$.seq') AND rc.actor_kind = 'person'
+          AND rc.actor_id = ${personId} AND rc.coding_agent_key IS NULL)) END AS own
     FROM kin_events e
     LEFT JOIN kin_messages m ON m.org_id = e.org_id
       AND m.message_id = json_extract(e.json, '$.messageId')
     LEFT JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+    LEFT JOIN kin_chats t ON t.org_id = e.org_id AND t.chat_id = json_extract(e.json, '$.origin.chatId')
     WHERE e.org_id = ${orgId} AND e.agent_id = ${turn.agentId} AND e.wakeup_id = ${turn.wakeupId}
-      AND e.tag = 'chat.message'
+      AND (e.tag = 'chat.message' OR (e.tag = 'record.changed'
+        AND json_extract(e.json, '$.origin.personId') = ${personId}))
     ORDER BY e.event_id`;
   return asks.length > 0 && asks.every((ask) => ask.own === 1);
 });
