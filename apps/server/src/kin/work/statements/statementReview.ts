@@ -37,7 +37,7 @@ import { companyMoney, homeCurrency } from "../companyProfile.ts";
 import { regionOf } from "../region.ts";
 import { dayIn } from "../money.ts";
 import { keptEntry, ownerZone } from "../recordRows.ts";
-import { partnersOwed } from "../partnersOwed.ts";
+import { partnerPayees, partnersOwed } from "../partnersOwed.ts";
 import { listDef } from "../registers.ts";
 import { fundingOf } from "../reimbursement.ts";
 import { type AlertCheck, alertCheck } from "./bankAlerts.ts";
@@ -303,6 +303,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
           .map((one) => ({ recordId: one.recordId, key: one.key, amountMinor: one.money.minor })),
       })),
     );
+  const payees = yield* partnerPayees(orgId);
   const accounts = yield* sql<{ account: string }>`SELECT DISTINCT account FROM kin_bank_statements
     WHERE org_id = ${orgId} AND account IS NOT NULL ORDER BY account`;
   return {
@@ -331,6 +332,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     }),
     payments,
     partners,
+    payees,
     // A partner's expense left their own account, never this one; it is repaid instead.
     expenses: expenseRows
       .filter((row) => row.linked === 0 && fundingOf(parseFields(row.fieldsJson)).by === "company")

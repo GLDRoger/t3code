@@ -2,6 +2,7 @@ import { currencyDigits, formatMinor } from "../money.ts";
 import { RAILS } from "./statementRegion.ts";
 import type { StatementRow } from "./statementTable.ts";
 import { DAY_MS } from "../../durations.ts";
+import { fold } from "../nameMatch.ts";
 import { notAVendor } from "../vendorName.ts";
 
 /**
@@ -61,6 +62,20 @@ export type PartnerCandidate = {
   readonly owed: ReadonlyArray<{
     readonly recordId: string;
     readonly key: string;
+    readonly amountMinor: number;
+  }>;
+};
+/**
+ * Anyone who has funded an expense, in any currency, owed or not, with the repayments marked by
+ * hand (no bank row) as one total per currency and day: a line naming them is never a new expense.
+ */
+export type PayeeCandidate = {
+  readonly name: string;
+  readonly id?: string;
+  readonly ids?: ReadonlyArray<string>;
+  readonly repaid: ReadonlyArray<{
+    readonly currency: string;
+    readonly day: string;
     readonly amountMinor: number;
   }>;
 };
@@ -147,6 +162,24 @@ const nameIn = (name: string, narration: string) => {
   const flat = squashed(narration);
   const found = wanted.filter(
     (word) => said.has(word) || (word.length >= 5 && flat.includes(word)),
+  );
+  return found.length / wanted.length;
+};
+
+/**
+ * How much of a person's name the narration carries, from 0 to 1, in any script: a word of two
+ * letters must stand alone; a long or non-Latin one may run into the words beside it.
+ */
+const personIn = (name: string, narration: string) => {
+  const wanted = fold(name)
+    .split(" ")
+    .filter((word) => word.length >= 2 || /[^a-z0-9]/.test(word));
+  if (wanted.length === 0) return 0;
+  const said = fold(narration);
+  const words = new Set(said.split(" "));
+  const flat = said.replaceAll(" ", "");
+  const found = wanted.filter(
+    (word) => words.has(word) || ((word.length >= 5 || /[^a-z0-9]/.test(word)) && flat.includes(word)),
   );
   return found.length / wanted.length;
 };
@@ -324,8 +357,8 @@ const expenseCandidate = (
 };
 
 /** The narration carries a partner's whole name, or something stored that only they are. */
-const identifies = (partner: PartnerCandidate, narration: string) =>
-  nameIn(partner.name, narration) === 1 ||
+const identifies = (partner: Pick<PartnerCandidate, "name" | "ids">, narration: string) =>
+  personIn(partner.name, narration) === 1 ||
   (partner.ids ?? []).some(
     (id) => squashed(id).length >= 6 && squashed(narration).includes(squashed(id)),
   );
@@ -340,7 +373,7 @@ const REPAYS_AT_MOST = 50;
  * be anyone's.
  */
 const repayment = (row: StatementRow, partner: PartnerCandidate, from: number, sure: boolean) => {
-  const named = identifies(partner, row.description) ? 1 : nameIn(partner.name, row.description);
+  const named = identifies(partner, row.description) ? 1 : personIn(partner.name, row.description);
   if (named < 0.5) return undefined;
   // Minor units past 2^53 add up wrong as numbers; exact sums decide what a line settles.
   const signed = BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor);
@@ -386,12 +419,12 @@ const repayments = (
   partners: ReadonlyArray<PartnerCandidate>,
   currency: string,
   others: (index: number) => ReadonlyArray<Candidate>,
-  transfer: (index: number) => boolean,
+  skip: (index: number) => boolean,
 ): ReadonlyMap<number, ReadonlyArray<Candidate>> => {
   const settled = partners.map(() => 0);
   const offers = (index: number) =>
     partners.flatMap((partner, at) => {
-      if (partner.currency !== currency || transfer(index)) return [];
+      if (partner.currency !== currency || skip(index)) return [];
       const offer = repayment(rows[index]!, partner, settled[at]!, sureOf(rows[index]!, partner));
       return offer === undefined ? [] : [{ at, ...offer }];
     });
@@ -649,6 +682,8 @@ export const matchRows = (
     readonly expenses: ReadonlyArray<ExpenseCandidate>;
     /** Partners owed back; a debit to one repays their oldest expenses. */
     readonly partners?: ReadonlyArray<PartnerCandidate>;
+    /** Everyone who has funded an expense: a line naming one is theirs to place, not a new expense. */
+    readonly payees?: ReadonlyArray<PayeeCandidate>;
     readonly ownAccounts: ReadonlyArray<string>;
     readonly known: ReadonlyArray<KnownVendor>;
     readonly bank: string | null;
@@ -669,14 +704,33 @@ export const matchRows = (
       : input.expenses.map((expense) => expenseCandidate(row, expense, input.currency))
     ).filter((one): one is Candidate => one !== undefined && one.score >= PROPOSED),
   );
-  // A move between the company's own accounts that names a partner repays nobody.
-  const transfers = rows.map((row) => suggest(row, input).action === "transfer");
+  const named = (row: StatementRow) => (one: Pick<PartnerCandidate, "name" | "ids">) =>
+    identifies(one, row.description) || personIn(one.name, row.description) >= 0.5;
+  /** A repayment to someone this line names, marked by hand with no bank row: likely this one. */
+  const markedFor = (row: StatementRow) => {
+    const signed = BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor);
+    for (const payee of (input.payees ?? []).filter(named(row))) {
+      const marked = payee.repaid.find(
+        (one) =>
+          one.currency === input.currency &&
+          BigInt(one.amountMinor) === signed &&
+          Math.abs(daysBetween(one.day, row.date)) <= 10,
+      );
+      if (marked !== undefined) return { name: payee.name, day: marked.day };
+    }
+    return undefined;
+  };
+  // A move between the company's own accounts that names a partner repays nobody, and a
+  // repayment already marked by hand isn't offered again.
+  const skipped = rows.map(
+    (row) => suggest(row, input).action === "transfer" || markedFor(row) !== undefined,
+  );
   const repaying = repayments(
     rows,
     input.partners ?? [],
     input.currency,
     (index) => others[index]!,
-    (index) => transfers[index]!,
+    (index) => skipped[index]!,
   );
   const results = rows.map((row, index) => {
     const candidates = [...(repaying.get(index) ?? []), ...others[index]!]
@@ -697,18 +751,28 @@ export const matchRows = (
   const suggestFor = (row: StatementRow): Suggestion => {
     const plain = suggest(row, input);
     if (plain.action === "transfer") return plain;
+    const marked = markedFor(row);
+    if (marked !== undefined)
+      return {
+        action: "later",
+        why: `Looks like ${marked.name}'s repayment already marked on ${marked.day}, so it isn't recorded again`,
+      };
     const partner = (input.partners ?? []).find(
-      (one) =>
-        one.currency === input.currency &&
-        one.owed.length > 0 &&
-        nameIn(one.name, row.description) >= 0.5,
+      (one) => one.currency === input.currency && one.owed.length > 0 && named(row)(one),
     );
-    if (partner === undefined) return plain;
-    const owed = partner.owed.reduce((sum, one) => sum + BigInt(one.amountMinor), 0n);
-    const count = partner.owed.length;
+    if (partner !== undefined) {
+      const owed = partner.owed.reduce((sum, one) => sum + BigInt(one.amountMinor), 0n);
+      const count = partner.owed.length;
+      return {
+        action: "later",
+        why: `${partner.name} is owed ${formatMinor(owed, partner.currency)} for ${count} expense${count === 1 ? "" : "s"}; no run of the oldest adds up to this line, so mark what it pays back on those expenses`,
+      };
+    }
+    const payee = [...(input.partners ?? []), ...(input.payees ?? [])].find(named(row));
+    if (payee === undefined) return plain;
     return {
       action: "later",
-      why: `${partner.name} is owed ${formatMinor(owed, partner.currency)} for ${count} expense${count === 1 ? "" : "s"}; no run of the oldest adds up to this line, so mark what it pays back on those expenses`,
+      why: `It names ${payee.name}, who is owed nothing in ${input.currency}, so it isn't offered as a new expense`,
     };
   };
   const settled = new Map<number, RowMatch>();

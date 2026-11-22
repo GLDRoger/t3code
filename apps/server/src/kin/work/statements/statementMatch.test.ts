@@ -510,6 +510,86 @@ describe("statement matching", () => {
         [["matched", [["EXP-21"]]]],
       ],
     );
+    // A line naming a partner is never a new expense: owed nothing here, or already repaid by hand.
+    const placed = (
+      line: ReturnType<typeof debit>,
+      owing: ReadonlyArray<(typeof partners)[number] & { readonly id?: string }>,
+      payees: ReadonlyArray<{
+        name: string;
+        repaid: ReadonlyArray<{ currency: string; day: string; amountMinor: number }>;
+      }> = [],
+    ) => {
+      const [one] = matchRows([line], {
+        currency: "INR",
+        withholdsAtSource: true,
+        invoices: [],
+        expenses: [],
+        partners: owing,
+        payees,
+        ownAccounts: [],
+        known: [],
+        bank: null,
+      });
+      return [one!.group, one!.candidates.map((c) => c.repays?.map((r) => r.key)), one!.suggestion];
+    };
+    assert.deepStrictEqual(
+      [
+        placed(debit(0, "2026-10-08", "NEFT DR-MEERA RAO", 30_000), [
+          { name: "Meera Rao", currency: "USD", owed: [owed("EXP-6", 3_000)] },
+        ]),
+        placed(debit(0, "2026-10-08", "IMPS-DEV MALHOTRA", 30_000), [], [
+          { name: "Dev Malhotra", repaid: [] },
+        ]),
+        placed(debit(0, "2026-10-08", "NEFT DR-MEERA RAO", 120_000), partners, [
+          { name: "Meera Rao", repaid: [{ currency: "INR", day: "2026-10-06", amountMinor: 120_000 }] },
+        ]),
+      ],
+      [
+        [
+          "unmatched",
+          [],
+          {
+            action: "later",
+            why: "It names Meera Rao, who is owed nothing in INR, so it isn't offered as a new expense",
+          },
+        ],
+        [
+          "unmatched",
+          [],
+          {
+            action: "later",
+            why: "It names Dev Malhotra, who is owed nothing in INR, so it isn't offered as a new expense",
+          },
+        ],
+        [
+          "unmatched",
+          [],
+          {
+            action: "later",
+            why: "Looks like Meera Rao's repayment already marked on 2026-10-06, so it isn't recorded again",
+          },
+        ],
+      ],
+    );
+    // Names in any script, accents or none.
+    assert.deepStrictEqual(
+      [
+        placed(debit(0, "2026-10-08", "TRANSFER 李娜", 10_000), [
+          { name: "李娜", currency: "INR", owed: [owed("EXP-31", 10_000)] },
+        ]).slice(0, 2),
+        placed(debit(0, "2026-10-08", "NEFT-मीरा राव", 10_000), [
+          { name: "मीरा राव", currency: "INR", owed: [owed("EXP-32", 10_000)] },
+        ]).slice(0, 2),
+        placed(debit(0, "2026-10-08", "IMPS ZOE SHEIKH", 10_000), [
+          { name: "Zoë Sheikh", currency: "INR", owed: [owed("EXP-33", 10_000)] },
+        ]).slice(0, 2),
+      ],
+      [
+        ["matched", [["EXP-31"]]],
+        ["matched", [["EXP-32"]]],
+        ["matched", [["EXP-33"]]],
+      ],
+    );
     assert.deepStrictEqual(only([debit(0, "2026-10-08", "MEERA RAO", 2)], huge), [
       ["matched", [["EXP-11", "EXP-12", "EXP-13"]]],
     ]);

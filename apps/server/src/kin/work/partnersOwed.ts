@@ -99,6 +99,60 @@ export const partnersOwed = Effect.fn("KinPartnersOwed.read")(function* (
 });
 export type PartnersOwed = Effect.Success<ReturnType<typeof partnersOwed>>;
 
+/**
+ * Everyone who has funded a Paid expense, owed or not, with what was marked repaid by hand (no bank
+ * row) as one total per currency and day: a statement line naming one is never a new expense.
+ */
+export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ minor: number; currency: string; fieldsJson: string; linked: number }>`
+    SELECT r.amount_minor AS minor, r.currency, r.fields_json AS "fieldsJson",
+      EXISTS (SELECT 1 FROM kin_bank_statement_entries e WHERE e.org_id = r.org_id
+        AND e.target_record_id = r.record_id) AS linked
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
+      AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${partnerFunded(sql)}
+    ORDER BY r.key`;
+  const names = new Map(
+    (yield* sql<{ id: string; name: string }>`SELECT person_id AS id, display_name AS name
+      FROM kin_people WHERE org_id = ${orgId} ORDER BY person_id`).map((one) => [one.id, one.name]),
+  );
+  const payees = new Map<
+    string,
+    { name: string; id: string; ids: Array<string>; repaid: Map<string, bigint> }
+  >();
+  for (const row of rows) {
+    const funding = fundingOf(parseFields(row.fieldsJson));
+    if (funding.by !== "partner") continue;
+    if (funding.personId === null && funding.unmatched === null) continue;
+    const id = funding.personId ?? `address:${funding.unmatched}`;
+    const payee = payees.get(id) ?? {
+      name:
+        funding.personId === null
+          ? funding.unmatched!
+          : (names.get(funding.personId) ?? "a former teammate"),
+      id,
+      ids: funding.personId === null ? [funding.unmatched!] : [],
+      repaid: new Map(),
+    };
+    if (funding.state === "repaid" && funding.repaidOn !== null && row.linked === 0) {
+      const at = `${row.currency} ${funding.repaidOn}`;
+      payee.repaid.set(at, (payee.repaid.get(at) ?? 0n) + BigInt(row.minor));
+    }
+    payees.set(id, payee);
+  }
+  return [...payees.values()].map((payee) => ({
+    name: payee.name,
+    id: payee.id,
+    ids: payee.ids,
+    repaid: [...payee.repaid].map(([at, minor]) => ({
+      currency: at.slice(0, at.indexOf(" ")),
+      day: at.slice(at.indexOf(" ") + 1),
+      amountMinor: Number(minor),
+    })),
+  }));
+});
+
 /** Paid expenses an import says a partner paid, by address, until the owner says who and whether owed. */
 export const partnersUnsaid = Effect.fn("KinPartnersOwed.unsaid")(function* (
   orgId: KinOrgId,

@@ -2562,6 +2562,25 @@ describe("bank statement safety", () => {
         assert.strictEqual(refused.reason, "conflict");
         assert.notProperty(yield* fieldsOf(domain.key), "reimbursement");
         assert.notProperty(yield* fieldsOf(refund.key), "reimbursement");
+
+        // Repaid by hand the day before: the line is that repayment, not a new expense.
+        for (const key of [domain.key, refund.key])
+          yield* records.update(orgId, owner, key, {
+            fields: { reimbursement: "repaid", repaidOn: "2026-10-14" },
+          });
+        const marked = yield* statementOf(4, "marked.csv", 370_000);
+        assert.deepStrictEqual(
+          [marked.card.matched, marked.card.unmatched.map((one) => [one.suggestion, one.why])],
+          [
+            [],
+            [
+              [
+                "later",
+                "Looks like Meera Rao's repayment already marked on 2026-10-14, so it isn't recorded again",
+              ],
+            ],
+          ],
+        );
       }).pipe(Effect.provide(layer)),
   );
 
