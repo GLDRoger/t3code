@@ -50,6 +50,8 @@ import * as KinWatches from "../watches/KinWatches.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { type AssignNotice, movedNotices } from "./assignNotices.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
+import { sectionOn } from "../shell/KinShell.ts";
+import { DEALS_OFF } from "../shell/sections.ts";
 import { campaignsNamed, dealsFromCampaign, sourceShown } from "./crm.ts";
 import { DEFAULT_STAGES, stageLine, stageMove, stagesOf } from "./dealStages.ts";
 import * as Docs from "./docs.ts";
@@ -1522,7 +1524,14 @@ const written = Effect.fn("KinDeals.written")(function* <A, E extends { readonly
   moved?: (result: A) => RecordRow,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const result = yield* sql.withTransaction(write).pipe(workFailure);
+  const result = yield* sql
+    .withTransaction(
+      Effect.gen(function* () {
+        if (!(yield* sectionOn(orgId, "deals"))) return yield* refused(DEALS_OFF);
+        return yield* write;
+      }),
+    )
+    .pipe(workFailure);
   yield* (yield* KinRecords).announce(
     orgId,
     moved === undefined ? undefined : [moved(result).recordId],

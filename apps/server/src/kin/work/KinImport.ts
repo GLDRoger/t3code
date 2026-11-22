@@ -21,6 +21,8 @@ import * as Stream from "effect/Stream";
 
 import { IMPORTED_SERIES, ruleProblem, seriesOf } from "../gendocs/numbering.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { sectionOn } from "../shell/KinShell.ts";
+import { DEALS_OFF } from "../shell/sections.ts";
 import { contactAll, contactFields } from "./contactDetails.ts";
 import { createAs } from "./deals.ts";
 import {
@@ -1179,7 +1181,7 @@ const make = Effect.gen(function* () {
       if (made !== undefined) counts.deals.create += 1;
     });
 
-    const rowStep = Effect.fn("KinImport.row")(function* (decoded: Decoded) {
+    const rowStep = Effect.fn("KinImport.row")(function* (decoded: Decoded, dealsOn: boolean) {
       const { line } = decoded;
       if (decoded.row === undefined)
         return problem(
@@ -1207,7 +1209,10 @@ const make = Effect.gen(function* () {
         return yield* project(line, one.project.source, true);
       }
       if ("contact" in one) return yield* contact(line, one.contact);
-      if ("deal" in one) return yield* deal(line, one.deal);
+      if ("deal" in one)
+        return dealsOn
+          ? yield* deal(line, one.deal)
+          : problem(line, "deal", one.deal.source, DEALS_OFF);
       return yield* entry(line, one.entry);
     });
 
@@ -1336,7 +1341,10 @@ const make = Effect.gen(function* () {
           const work = Effect.gen(function* () {
             if (!keep) yield* defineLists(false);
             yield* prefetch(decoded);
-            for (const one of decoded) yield* rowStep(one);
+            const dealsOn =
+              !decoded.some(({ row }) => row !== undefined && "deal" in row) ||
+              (yield* sectionOn(orgId, "deals"));
+            for (const one of decoded) yield* rowStep(one, dealsOn);
             // What it filled and how far it got commit with the chunk, so an undo after a crash
             // still empties what it filled, and anyone reading the run sees where it stands.
             if (runSeq !== undefined) {
