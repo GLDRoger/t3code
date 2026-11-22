@@ -7,6 +7,16 @@ import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
+import {
+  humanMessageLabel,
+  PROMPT_HEADINGS,
+  QUOTE_LABELS,
+  TEAMMATE_WORDS,
+} from "../../apps/server/src/kin/lead/LeadPrompt.ts";
+import {
+  OPEN_QUESTION_HEADINGS,
+  openQuestionsHeading,
+} from "../../apps/server/src/kin/questions/openQuestions.ts";
 import { fillKinMock, KIN_TOOLKITS } from "./kin.ts";
 
 type KinTool = {
@@ -97,3 +107,49 @@ export const kinMockProblems = (
         : [`${at}${failed ? ".$error" : ""} is not an answer ${name} gives: ${problem}`];
     });
   });
+
+/** Whether `text` is `shape` of some non-empty value, as Kin fills a heading or label in. */
+const fits = (text: string, shape: (value: string) => string) => {
+  const [head = "", tail = ""] = shape("\u0000").split("\u0000");
+  return text.length > head.length + tail.length && text.startsWith(head) && text.endsWith(tail);
+};
+const HEADINGS: ReadonlySet<string> = new Set([
+  ...Object.values(PROMPT_HEADINGS),
+  ...Object.values(OPEN_QUESTION_HEADINGS),
+]);
+const LABELS: ReadonlySet<string> = new Set([...Object.values(QUOTE_LABELS), TEAMMATE_WORDS]);
+const isHeading = (line: string) => HEADINGS.has(line) || fits(line, openQuestionsHeading);
+
+/**
+ * Headings and quote labels in a Kin case's own text that Kin's prompt never writes. The owner's
+ * rules file is theirs, so headings under Standing rules, up to Kin's next heading, are not checked;
+ * text a `{{…}}` placeholder fills in is Kin's own by construction.
+ */
+export const kinPromptProblems = (text: string): ReadonlyArray<string> => {
+  const problems: Array<string> = [];
+  let inRules = false;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("# ")) {
+      if (isHeading(line)) inRules = line === PROMPT_HEADINGS.standingRules;
+      else if (!inRules) problems.push(`heading Kin's prompt never writes: ${line}`);
+    }
+    const label = /^> BEGIN QUOTE: (.*)$/.exec(line)?.[1];
+    if (label !== undefined && !LABELS.has(label) && !fits(label, humanMessageLabel))
+      problems.push(`quote label Kin's prompt never writes: ${label}`);
+  }
+  return problems;
+};
+
+/** The text of a Kin case Kin's prompt writes: its prompt and the user turns before it. */
+export const kinCaseText = (testCase: {
+  readonly prompt: string;
+  readonly setup: {
+    readonly priorTurns?: ReadonlyArray<{ readonly role: string; readonly text?: string }>;
+  };
+}) =>
+  [
+    testCase.prompt,
+    ...(testCase.setup.priorTurns ?? [])
+      .filter((turn) => turn.role === "user")
+      .map((turn) => turn.text ?? ""),
+  ].join("\n\n");

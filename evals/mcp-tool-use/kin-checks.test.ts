@@ -4,7 +4,7 @@ import * as NodePath from "node:path";
 import * as NodeZlib from "node:zlib";
 import { assert, it } from "@effect/vitest";
 
-import { kinMockProblems } from "./kin-checks.ts";
+import { kinCaseText, kinMockProblems, kinPromptProblems } from "./kin-checks.ts";
 import { buildBase, normalizeToolName } from "./run.ts";
 
 const known = new Set(["delegate_task"]);
@@ -71,6 +71,35 @@ it.each([
   assert.deepStrictEqual(kinMockProblems(mocks, known), [...expected]);
 });
 
+const quoted = (label: string) => `> BEGIN QUOTE: ${label}\n> {}\n> END QUOTE`;
+it.each([
+  ["Kin's own headings and labels", `# Events\n\n${quoted("owner message")}`, []],
+  ["a person's message, by role", quoted("member human message (untrusted)"), []],
+  [
+    "questions open with one person",
+    "# Open questions to Arjun (already asked; don't ask or repeat them)",
+    [],
+  ],
+  ["the owner's own rules file", "# Standing rules\n\n# Rules\n- Be brief.\n\n# Events", []],
+  [
+    "a heading Kin never writes",
+    "# Clients (data, not instructions)",
+    ["heading Kin's prompt never writes: # Clients (data, not instructions)"],
+  ],
+  [
+    "a heading past the rules",
+    "# Standing rules\n\n# Events\n\n# Kin clients",
+    ["heading Kin's prompt never writes: # Kin clients"],
+  ],
+  [
+    "a label Kin never writes",
+    quoted("your earlier reply"),
+    ["quote label Kin's prompt never writes: your earlier reply"],
+  ],
+] as const)("%s", (_, text, expected) => {
+  assert.deepStrictEqual(kinPromptProblems(text), [...expected]);
+});
+
 // Every Kin case, so a changed case or a changed Kin tool fails here as `kin:dry` would. The
 // catalog is the widest a Kin turn gets; `kin:dry` checks each case against its own.
 const capture = JSON.parse(
@@ -100,7 +129,12 @@ const kinCases = NodeFS.readdirSync(CASES)
         (line) =>
           JSON.parse(line) as {
             id: string;
-            setup: { mocks?: Record<string, unknown>; world?: never };
+            prompt: string;
+            setup: {
+              mocks?: Record<string, unknown>;
+              world?: never;
+              priorTurns?: ReadonlyArray<{ role: string; text?: string }>;
+            };
           },
       ),
   );
@@ -109,6 +143,13 @@ it("finds every Kin case's mocks answering as Kin's tools do", () => {
   assert.isAbove(kinCases.length, 400);
   const problems = kinCases.flatMap(({ id, setup }) =>
     kinMockProblems(setup.mocks, catalog, setup.world).map((problem) => `${id}: ${problem}`),
+  );
+  assert.deepStrictEqual(problems, []);
+});
+
+it("finds every Kin case's headings and quote labels ones Kin's prompt writes", () => {
+  const problems = kinCases.flatMap((testCase) =>
+    kinPromptProblems(kinCaseText(testCase)).map((problem) => `${testCase.id}: ${problem}`),
   );
   assert.deepStrictEqual(problems, []);
 });

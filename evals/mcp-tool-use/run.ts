@@ -65,7 +65,7 @@ import {
 } from "./margin.ts";
 import { needsTopUp, refusals, RunManifest, tallies, tally } from "./gate.ts";
 import { casePattern } from "./pattern.ts";
-import { kinMockProblems } from "./kin-checks.ts";
+import { kinCaseText, kinMockProblems, kinPromptProblems } from "./kin-checks.ts";
 import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import { type AppServer, openAppServer } from "./appServer.ts";
 import {
@@ -3397,7 +3397,10 @@ const main = Effect.gen(function* () {
         ...(sample.base.codex ? [] : caseProblems(testCase, tools)),
         ...unfilled,
         ...(isKinCase(testCase)
-          ? kinMockProblems(testCase.setup.mocks, tools, testCase.setup.world)
+          ? [
+              ...kinMockProblems(testCase.setup.mocks, tools, testCase.setup.world),
+              ...kinPromptProblems(kinCaseText(testCase)),
+            ]
           : []),
       ];
       problems.push(...found.map((problem) => `${testCase.id}: ${problem}`));
