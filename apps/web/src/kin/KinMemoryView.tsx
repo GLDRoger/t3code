@@ -390,7 +390,7 @@ function KinMemoryOrigin(props: KinMemoryTarget & { readonly origin: KinMemoryOr
               chatId: origin.opens.chatId,
             }}
             search={{ message: origin.opens.messageId }}
-            className="rounded-sm underline underline-offset-2 outline-none ring-ring hover:text-foreground focus-visible:ring-2"
+            className="rounded-sm underline underline-offset-2 outline-none ring-ring hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset"
           >
             {origin.line}
           </Link>

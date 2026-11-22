@@ -4,7 +4,7 @@ const CHUNK_RELOAD_GUARD_KEY = "t3code:chunk-load-reloaded";
 
 // The hashed entry script names the build; deploys of one version share APP_VERSION.
 const pageEntryBuild = () =>
-  globalThis.document?.querySelector<HTMLScriptElement>('script[type="module"][src]')?.src ??
+  globalThis.document?.querySelector?.<HTMLScriptElement>('script[type="module"][src]')?.src ??
   import.meta.env.APP_VERSION;
 
 export function reloadOnceForChunkLoadError(
