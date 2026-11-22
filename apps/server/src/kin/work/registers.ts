@@ -500,7 +500,7 @@ export const checkFields = (
         if (typeof value !== "string" || !/^(?:person|agent):.{1,120}$/.test(value)) return wrong;
         break;
       case "link":
-        if (typeof value !== "string" || value.length > 120) return wrong;
+        if (spec.link === "list" || typeof value !== "string" || value.length > 120) return wrong;
         break;
       case "money":
         if (!isMoney(value) || !isCurrency(value.currency)) return wrong;
@@ -508,6 +508,8 @@ export const checkFields = (
       case "file":
         if (!Array.isArray(value) || value.length === 0 || value.length > 10) return wrong;
         break;
+      default:
+        return wrong;
     }
   }
   return undefined;

@@ -45,6 +45,7 @@ import * as KinRecords from "./KinRecords.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import * as LeadWork from "./leadWork.ts";
+import { typedFields } from "./leadFields.ts";
 import { aboutTotal, addUp, financialYearOf, formatMinor, parseAmount } from "./money.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
@@ -56,7 +57,7 @@ import {
 } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
-import { listDef, proposalFor } from "./registers.ts";
+import { checkFields, listDef, proposalFor } from "./registers.ts";
 import { ensureBankList } from "./statements/bankList.ts";
 import { waitLine } from "./statements/passwordBudget.ts";
 import * as OwnerMoneyAnswers from "./ownerMoneyAnswers.ts";
@@ -2575,6 +2576,22 @@ describe("the owner's taps", () => {
       );
       assert.strictEqual(current?.remindOn, "reviewOn");
       assert.deepStrictEqual(current?.check, { field: "count", below: 2 });
+      const def = (yield* listDef(orgId, "expenses"))!;
+      const unexpected = () => Effect.die("A read-only field must not reach a resolver");
+      const readOnly: ReadonlyArray<Readonly<Record<string, string>>> = [
+        { count: "42" },
+        { checked: "No" },
+        { shelf: "SH-1" },
+      ];
+      for (const fields of readOnly) {
+        assert.include(checkFields(def, fields), { reason: "invalid_state" });
+        assert.include(
+          yield* Effect.flip(
+            typedFields(def, fields, { who: unexpected, ref: unexpected, files: unexpected }),
+          ),
+          { reason: "invalid_state" },
+        );
+      }
     }).pipe(Effect.provide(layer)),
   );
 
