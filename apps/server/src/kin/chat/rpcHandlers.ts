@@ -371,10 +371,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               intro: input.intro,
               model: input.model,
               workerProjects: input.workerProjects ?? [],
-            }).pipe(
-              Effect.provideContext(kin.value.services.value),
-              Effect.provideService(ServerSettingsService, settings.value),
-            );
+            }).pipe(Effect.provideContext(kin.value.services.value), withHostModels);
             // No agent goes without a character; a failure leaves the next start to write it.
             yield* seedCharacters(lead.orgId).pipe(
               Effect.provideContext(kin.value.services.value),

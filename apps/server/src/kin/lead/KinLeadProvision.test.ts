@@ -16,7 +16,7 @@ import {
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Path from "effect/Path";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -895,7 +895,7 @@ describe("KinLeadProvision", () => {
         const tech = (yield* Provision.create(input(owner, []))).lead;
         // A custom instance that settings name as Claude.
         const sonnet = { instanceId: ProviderInstanceId.make("work"), model: "claude-sonnet-4-6" };
-        const provider = Schema.decodeUnknownSync(ServerProvider)({
+        const provider = yield* Schema.decodeEffect(ServerProvider)({
           instanceId: sonnet.instanceId,
           driver: "claudeAgent",
           enabled: true,
@@ -915,24 +915,31 @@ describe("KinLeadProvision", () => {
         });
         const listed = Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([provider]) });
         const unknown = { ...sonnet, model: "invented-unlisted" };
-        const cached = Layer.mergeAll(
-          Layer.mock(ServerConfig)({ providerStatusCacheDir: "/invented-catalog" }),
-          Layer.mock(FileSystem.FileSystem)({
-            exists: (file) => Effect.succeed(file === "/invented-catalog/work.json"),
-            readFileString: () => Effect.succeed(JSON.stringify(provider)),
-          }),
-          Path.layer,
+        const create = Provision.create({
+          ...input(owner, []),
+          name: "Invented analyst",
+          model: unknown,
+        });
+        assert.match(
+          (yield* create.pipe(Effect.provide(listed), Effect.flip)).message,
+          /invented-unlisted.*work.*Settings/,
         );
-        for (const catalog of [listed, cached]) {
-          assert.match(
-            (yield* Provision.create({
-              ...input(owner, []),
-              name: "Invented analyst",
-              model: unknown,
-            }).pipe(Effect.provide(catalog), Effect.flip)).message,
-            /invented-unlisted.*work.*Settings/,
+        const fromCache = yield* Effect.gen(function* () {
+          const config = yield* ServerConfig;
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.writeFileString(
+            `${config.providerStatusCacheDir}/work.json`,
+            JSON.stringify(provider),
           );
-        }
+          return yield* Effect.flip(create);
+        }).pipe(
+          Effect.provide(
+            ServerConfig.layerTest(process.cwd(), { prefix: "kin-model-catalog-" }).pipe(
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ),
+        );
+        assert.match(fromCache.message, /invented-unlisted.*work.*Settings/);
         const edit = (
           fields: Parameters<typeof Provision.update>[0]["fields"],
           editor: Provision.LeadCreator = owner,

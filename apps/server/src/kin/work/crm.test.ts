@@ -2725,8 +2725,8 @@ it.effect(
       };
       assert.strictEqual(header?.invoices, owing.length);
       assert.lengthOf(header?.owed ?? [], 2);
-      assert.sameDeepMembers(header!.owed, sum(owing));
-      assert.sameDeepMembers(header!.overdue, sum(owing.filter((row) => row.late)));
+      assert.sameDeepMembers([...header!.owed], sum(owing));
+      assert.sameDeepMembers([...header!.overdue], sum(owing.filter((row) => row.late)));
     }).pipe(Effect.provide(layer)),
 );
 

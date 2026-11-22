@@ -75,7 +75,7 @@ const logToolList = Effect.fnUntraced(function* (
   });
 });
 class KinBearerScope extends Context.Service<KinBearerScope, McpThreadInvocationScope>()(
-  "t3/kin/mcp/KinBearerScope",
+  "t3/kin/mcp/layer/KinBearerScope",
 ) {}
 
 type Auth = (
@@ -134,8 +134,9 @@ export const endpoint = <A, E, R>(registrations: Layer.Layer<A, E, R>) =>
           return {
             ...registry,
             // Kin auth already checked the bearer and agent before the transport runs.
-            resolve: () =>
+            resolve: Effect.fn("KinMcp.resolveAdmittedBearer")(() =>
               Effect.serviceOption(KinBearerScope).pipe(Effect.map(Option.getOrUndefined)),
+            ),
           };
         }),
       ),
