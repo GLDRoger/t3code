@@ -296,12 +296,9 @@ export const redo = Effect.fn("KinQuestions.redo")(function* (
 });
 
 /**
- * In the owner's own turn on her words in her chat with the agent, the one teammate's draft she
- * answered Changes first on there and that no later round replaced, which this redraft is: the
- * same kind for the same client (any, with none given), or an edit of a doc it was about.
- * Undefined unless exactly one.
- * With none, her redraft of the one whose card still waits on her is her Changes first in words.
- * `seen`: records its teammate must still see.
+ * In the owner's turn on her words, the one teammate's draft waiting on her redraft that this is
+ * (same kind and client, any client if none given, or an edit of its doc); else the one whose card
+ * still waits on her, closed as her Changes first in words. `seen`: records the teammate must see.
  */
 export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
   turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: KinWakeupId },
