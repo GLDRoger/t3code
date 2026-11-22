@@ -27,6 +27,8 @@ export type AppServerTurn = {
   /** Earlier turns, as raw Responses items. */
   readonly history: ReadonlyArray<Json>;
   readonly prompt: string;
+  /** Pictures the turn carries after its text, as data URLs, as T3's Codex adapter sends them. */
+  readonly images?: ReadonlyArray<string> | undefined;
   /** Answers one tool call with the text Codex hands back to the model. */
   readonly onToolCall: (tool: string, args: Json) => Promise<{ text: string; failed: boolean }>;
   /** Interrupts the turn after this many tool calls; `Infinity` never does. */
@@ -209,7 +211,10 @@ export const openAppServer = () => {
         await request("thread/inject_items", { threadId, items: turn.history });
       const startedTurn = await request("turn/start", {
         threadId,
-        input: [{ type: "text", text: turn.prompt, text_elements: [] }],
+        input: [
+          { type: "text", text: turn.prompt, text_elements: [] },
+          ...(turn.images ?? []).map((url) => ({ type: "image", url })),
+        ],
         effort: turn.effort,
         environments: [],
         approvalPolicy: "never",

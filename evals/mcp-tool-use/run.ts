@@ -69,17 +69,25 @@ import { type AppServer, openAppServer } from "./appServer.ts";
 import {
   fillKinRules,
   filledEvent,
+  isKinCase,
+  KinCaseAttachment,
   KIN_TOOLKITS,
+  kinJudgedCall,
   kinLeadBase,
   kinLeadInstructions,
   kinLoadedBefore,
   type KinSeatOptions,
   kinSessionOf,
   kinToolVisible,
+  kinTurnBlocks,
+  type KinTurnFiles,
+  kinTurnFiles,
+  kinUnmocked,
   longTurnNote,
   modelCallLines,
   rescuePrompt,
   shownText,
+  unmockedLines,
   unredact,
 } from "./kin.ts";
 import { runAppServerSample } from "./kinAppServer.ts";
@@ -396,6 +404,8 @@ export const McpToolUseCase = Schema.Struct({
     shellMocks: Schema.optional(
       Schema.Array(Schema.Struct({ match: Schema.String, output: Schema.String })),
     ),
+    /** Kin: files on the turn's message, handed to the turn as Kin does (`kinTurnFiles`). */
+    attachments: Schema.optional(Schema.Array(KinCaseAttachment)),
     /** The thread is a side chat's first turn: T3 puts the parent's digest ahead of `prompt`. */
     sideChat: Schema.optional(
       Schema.Struct({ parentThreadId: Schema.String, digest: Schema.Array(Schema.String) }),
@@ -1011,6 +1021,8 @@ type Sample = {
   backgroundWait?: BackgroundWait;
   /** Calls so far per mocked tool, for mocks that answer in sequence. */
   readonly mockCalls: Map<string, number>;
+  /** The case's `attachments` as Kin hands them to the turn, once `kinTurnFiles` built them. */
+  kinFiles?: KinTurnFiles | undefined;
 };
 
 const SHELL_TOOLS = new Set(["Bash", "Read", "Edit", "Write", "WebFetch"]);
@@ -1256,7 +1268,14 @@ export const buildMessages = (sample: Sample) => {
       : inline;
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   if (testCase.prompt !== "")
-    push("user", text(role === "delegated-child" ? childPrompt() : prompt));
+    push(
+      "user",
+      ...kinTurnBlocks(
+        sample.kinFiles,
+        role === "delegated-child" ? childPrompt() : prompt,
+        base.codex !== undefined,
+      ),
+    );
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));
@@ -2668,7 +2687,7 @@ const callModel = (apiKey: string, body: unknown, proxy?: Config["proxy"]) =>
   );
 
 /** The rubric's checks, answered by the shell model about the turn's visible reply and calls. */
-const judged = Effect.fn("evaluateMcpToolUse.rubric")(function* (
+export const judged = Effect.fn("evaluateMcpToolUse.rubric")(function* (
   testCase: McpToolUseCase,
   sample: SampleRun,
   config: Config,
@@ -2680,7 +2699,11 @@ const judged = Effect.fn("evaluateMcpToolUse.rubric")(function* (
     return yield* Effect.die(new Error("A rubric needs a Claude shell model."));
   const turn = {
     text: sample.text,
-    calls: sample.calls.map((call) => `${call.tool} ${valueText(call.input).slice(0, 600)}`),
+    calls: sample.calls.map((call) =>
+      isKinCase(testCase)
+        ? kinJudgedCall(call)
+        : `${call.tool} ${valueText(call.input).slice(0, 600)}`,
+    ),
   };
   const response = yield* callModel(
     config.apiKey,
@@ -2742,6 +2765,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   const sample = { ...makeSample(testCase, base), shellUsage: spent.shellUsage };
   yield* withDevices(sample);
   yield* withBackgroundWait(sample);
+  sample.kinFiles = yield* kinTurnFiles(testCase);
   const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
   const messages = buildMessages(sample);
   const input = base.codex ? codexMessages(messages) : undefined;
@@ -2896,6 +2920,8 @@ type ResultRow = Pick<McpToolUseCase, "id" | "kind" | "pattern"> & {
   readonly usage: Usage;
   readonly shellUsage: Usage;
   readonly latencyMs?: number;
+  /** Kin tools the sample called that its case has no mock for. */
+  readonly unmocked?: ReadonlyArray<string>;
 };
 
 /** The share of samples that passed. Samples that errored are left out: NaN if all did. */
@@ -3032,6 +3058,7 @@ export const summarize = (
     ...table("Cases", caseKey, before !== undefined),
     ...table("By kind", (row) => row.kind),
     ...table("By pattern", (row) => row.pattern),
+    ...unmockedLines(rows),
   ].join("\n");
 };
 
@@ -3327,6 +3354,7 @@ const main = Effect.gen(function* () {
   const firstRequest = Effect.fnUntraced(function* (testCase: McpToolUseCase) {
     const sample = makeSample(testCase, baseFor(testCase));
     yield* Effect.scoped(Effect.andThen(withDevices(sample), withBackgroundWait(sample)));
+    sample.kinFiles = yield* kinTurnFiles(testCase);
     const messages = buildMessages(sample);
     const body = sample.base.codex
       ? codexRequest(sample.base, codexMessages(messages))
@@ -3520,8 +3548,10 @@ const main = Effect.gen(function* () {
           ];
           const { secret } = testCase.expect;
           const state = sampleState(checks);
+          const unmocked = kinUnmocked(testCase, sample.calls);
           return {
             ...identity,
+            ...(unmocked.length > 0 ? { unmocked } : {}),
             pass: state !== "fail",
             ...(state === "margin" ? { withinMargin: true } : {}),
             checks,
