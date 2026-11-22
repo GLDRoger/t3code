@@ -1283,6 +1283,52 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "record_update redirects watched numbers without writing but can set a targeted goal",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* TestClock.setTime(Date.UTC(2026, 10, 12, 4, 45));
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+      VALUES (${orgId}, 'goals', 'Goals', 'G', 1, 0) ON CONFLICT DO NOTHING`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+      owner_id, created_by_kind, origin_key, fields_json, created_at, updated_at)
+      VALUES (${orgId}, 'watch', 'goals', 'G-1', 'DAU', 'agent', ${lead}, 'system', 'watch',
+        '{"measure":"manual","unit":"users","source":"PostHog"}', 0, 0),
+        (${orgId}, 'target', 'goals', 'G-2', 'Hiring target', 'agent', ${lead}, 'system', 'target',
+        '{"measure":"manual","target":"3","current":"1"}', 0, 0)`;
+      const records = yield* KinRecords.KinRecords;
+      const before = yield* records.get(orgId, "G-1");
+      const refusal = yield* Effect.flip(
+        LeadWork.update(scope, {
+          key: "G-1",
+          sourceEventId: "ask-event",
+          current: 4210,
+          title: "Invented changed title",
+        }),
+      );
+      assert.deepInclude(refusal, {
+        _tag: "KinChatError",
+        reason: "invalid_state",
+        message:
+          "DAU is a watched number: record its value with number_record (the value, the day it is as of, and where it came from).",
+      });
+      assert.deepStrictEqual(yield* records.get(orgId, "G-1"), before);
+      assert.deepStrictEqual(
+        yield* sql`SELECT value FROM kin_number_values
+      WHERE org_id = ${orgId} ORDER BY record_id, as_of, seq`,
+        [],
+      );
+      yield* LeadWork.update(scope, { key: "G-2", sourceEventId: "ask-event", current: 2 });
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(fields_json, '$.current') AS current
+      FROM kin_records WHERE org_id = ${orgId} AND key = 'G-2'`,
+        [{ current: "2" }],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("every Work tool whose result shows the lead a sensitive entry marks its wake-up", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -1371,7 +1417,7 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
       numbers_read: [readWatched(scope, {}), true],
       number_record: [
         recordWatched(scope, {
-          values: [{ number: "G-1", value: "4210", asOf: "2026-11-20", source: "Invented report" }],
+          values: [{ number: "G-1", value: "4210", asOf: "1970-01-01", source: "Invented report" }],
         }),
         false,
       ],
