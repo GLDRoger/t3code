@@ -34,6 +34,7 @@ import {
   kinTaskFilterProjects,
   kinTasksGroupedBy,
   kinTasksMostUrgent,
+  kinTasksOnCount,
   kinTasksTick,
   kinTasksTickedShown,
   kinTasksWithTicked,
@@ -159,6 +160,18 @@ describe("whose move a task is (kinRecordMove, the rule Tasks and the record sha
       "needsYou",
     ],
     ["someone else's own", detail({ owner: meera, createdBy: meera }), true, "rest"],
+    ["you are on it", detail({ owner: meera, createdBy: meera, alsoOn: [rhea] }), true, "waiting"],
+    [
+      "you are on it and it is late",
+      detail({
+        owner: meera,
+        createdBy: meera,
+        alsoOn: [rhea],
+        ...late("2026-11-10T00:00:00.000Z"),
+      }),
+      true,
+      "needsYou",
+    ],
     [
       "an agent's suggestion, for the owner level",
       detail({ owner: chief, createdBy: chief, confirmed: false }),
@@ -790,6 +803,20 @@ describe("kinTaskQuickFilters", () => {
     expect(mineLate[4]!.next).toMatchObject({ view: "open", owner: rhea });
     expect(mineLate[1]!.next).toMatchObject({ view: "late", owner: null });
     expect(mineLate[0]!.next).toMatchObject({ view: "open", owner: null });
+    // Mine counts tasks the reader is on, which the host counts under their holders.
+    const onIt = [
+      row("M1", { owner: zoya, alsoOn: [rhea] }),
+      row("M2", { owner: zoya, alsoOn: [rhea], state: "done" }),
+      row("M3", { owner: rhea }),
+    ];
+    const onMine = kinTasksOnCount(onIt, names.me);
+    expect(onMine).toBe(1);
+    const counted = kinTaskQuickFilters(
+      KIN_WORK_DEFAULT_FILTER,
+      kinWorkOverview(summary, KIN_WORK_DEFAULT_FILTER, names, onMine),
+      names.me,
+    );
+    expect(counted[1]!.count).toBe(7);
     // Before the reader is known there is no Mine.
     expect(shown(KIN_WORK_DEFAULT_FILTER, null).map((one) => one.id)).toEqual([
       "all",
@@ -910,6 +937,22 @@ describe("kinTaskLine", () => {
     expect(line.lead?.tone ?? null).toBe(tone);
     expect(line.lead?.text ?? null).toBe(text);
     expect(line.rest).toBe(rest);
+  });
+
+  it.each([
+    ["nobody else", row("A", { owner: zoya }), names, null],
+    ["one person, by first name", row("B", { owner: zoya, alsoOn: [meera] }), names, "with Meera"],
+    [
+      "an agent, by its name",
+      row("C", { owner: zoya, alsoOn: [chief] }),
+      names,
+      "with Chief of staff",
+    ],
+    ["two or more, counted", row("D", { owner: zoya, alsoOn: [meera, chief] }), names, "with 2"],
+    ["the reader on it", row("E", { owner: zoya, alsoOn: [meera, rhea] }), names, "with you"],
+  ] as const)("says who else is on it after the holder: %s", (_name, record, who, said) => {
+    const line = kinTaskLine(record, who, now);
+    expect([line.holder, line.with]).toEqual(["Zoya", said]);
   });
 });
 

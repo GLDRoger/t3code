@@ -107,6 +107,7 @@ export const typedFields = Effect.fn("KinWorkTools.typedFields")(function* (
         break;
       }
       case "link":
+        if (spec.link === "list") return yield* wrong;
         out[key] = yield* resolve.ref(text, spec.link ?? "clients");
         break;
       case "money": {
@@ -132,6 +133,8 @@ export const typedFields = Effect.fn("KinWorkTools.typedFields")(function* (
         out[key] = [...new Set(ids)];
         break;
       }
+      default:
+        return yield* wrong;
     }
   }
   return out;

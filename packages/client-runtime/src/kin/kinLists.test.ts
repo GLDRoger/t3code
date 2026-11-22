@@ -275,6 +275,16 @@ describe("a list by its definition", () => {
         { key: "warranty", label: "Warranty until" as never, type: "date", sensitive: false },
         { key: "value", label: "Value" as never, type: "money", sensitive: true },
         { key: "photo", label: "Photo" as never, type: "file", sensitive: false },
+        { key: "count", label: "Count" as never, type: "number", sensitive: false },
+        { key: "checked", label: "Checked" as never, type: "yesno", sensitive: false },
+        {
+          key: "shelf",
+          label: "Shelf" as never,
+          type: "link",
+          link: "list",
+          linkList: "shelves",
+          sensitive: false,
+        },
         {
           key: "old",
           label: "Old tag" as never,
@@ -291,6 +301,9 @@ describe("a list by its definition", () => {
       warranty: "2027-03-31",
       value: { minor: 4_500_000, currency: "INR" },
       photo: ["att-1"],
+      count: "42",
+      checked: "No",
+      shelf: "rec-acme",
     };
     const row = kinListRow(record({ fields }), def, context);
     expect(kinListColumns(def, [record({})]).map((column) => column.label)).toEqual([
@@ -302,6 +315,9 @@ describe("a list by its definition", () => {
       "Warranty until",
       "Value",
       "Photo",
+      "Count",
+      "Checked",
+      "Shelf",
     ]);
     expect(row.cells).toMatchObject({
       state: "In use",
@@ -310,6 +326,9 @@ describe("a list by its definition", () => {
       "field:boughtFrom": "Acme Foods",
       "field:value": "₹45,000.00",
       "field:photo": "1 file",
+      "field:count": "42",
+      "field:checked": "No",
+      "field:shelf": "rec-acme",
     });
     expect(row.cells["field:warranty"]).toContain("2027");
     expect(row.amount).toBeNull();
@@ -340,6 +359,11 @@ describe("a list by its definition", () => {
       list: "clients",
       key: "C-1",
     });
+    expect(entry.fields.slice(-3)).toMatchObject([
+      { key: "count", type: "text", text: "42", link: null, opens: null },
+      { key: "checked", type: "text", text: "No", link: null, opens: null },
+      { key: "shelf", type: "text", text: "rec-acme", link: null, opens: null },
+    ]);
     expect([entry.finish?.label, entry.finish?.pays, entry.balance]).toEqual([
       "Mark returned",
       null,

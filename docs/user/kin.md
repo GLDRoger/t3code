@@ -278,6 +278,8 @@ handling one. When nothing needs attention, the section isn't there.
   writes the task for you.
 - **Give to someone else** moves a task to a teammate or an agent. They get it in their Tasks and a
   message in their chat.
+- **With** puts other people or agents on a task beside whoever has it (up to 10): they see it
+  under Mine and can change it, and **Leave** takes you off one you're on.
 - **Hand back** returns a task you were given to the person who gave it, with a reason if you like.
   When someone asked an agent to give it to you, that person gave it ("Zoya gave this to you, via
   Chief of staff"), and it goes back to them.

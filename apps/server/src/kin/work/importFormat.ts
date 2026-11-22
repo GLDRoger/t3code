@@ -2,7 +2,7 @@ import {
   KinCurrency,
   KinDay,
   KinLabelText,
-  KinListFieldType,
+  KinWritableListFieldType,
   KinListId,
   KinNumberingRule,
   KinRecordState,
@@ -43,7 +43,7 @@ export const ImportList = Schema.Struct({
     Schema.Array(
       Schema.Struct({
         label: Label,
-        type: KinListFieldType,
+        type: KinWritableListFieldType,
         choices: Schema.optional(Schema.Array(Label).check(Schema.isMaxLength(30))),
         link: Schema.optional(Schema.Literals(["clients", "projects"])),
         sensitive: Schema.optional(Schema.Boolean),

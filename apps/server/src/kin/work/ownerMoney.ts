@@ -84,7 +84,7 @@ export const lists = Effect.fn("KinMoney.lists")(function* (
       )
       // Anyone else gets the lists they see an entry of, never Work's own.
       .filter((def) => team === undefined || (def.builtIn === null && open.has(def.id)))
-      .map((def) => toDefinition(def, open.get(def.id) ?? 0)),
+      .map((def) => toDefinition(def, open.get(def.id) ?? 0, input.accept)),
   };
 }, workFailure);
 
