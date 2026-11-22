@@ -45,6 +45,9 @@ import * as ProjectService from "../../project/ProjectService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { noticeState } from "./TaskWake.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import * as HostBackup from "../hostBackup.ts";
+import { ServerConfig } from "../../config.ts";
 import * as Floor from "../floor/KinFloor.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -271,6 +274,31 @@ const make = Effect.gen(function* () {
   const memory = yield* Memory.Memory;
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
+  const chat = yield* Effect.serviceOption(KinChatService);
+  const spaceFolders = Option.map(yield* Effect.serviceOption(ServerConfig), (config) =>
+    HostBackup.spaceFolders(config.baseDir),
+  );
+  const toOwners = (
+    orgId: KinOrgId,
+    notice: Effect.Effect<void, unknown, KinChatService | SqlClient.SqlClient>,
+  ) =>
+    Option.isNone(chat)
+      ? Effect.void
+      : notice.pipe(
+          Effect.provideService(KinChatService, chat.value),
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin host space notice failed", { orgId, cause }),
+          ),
+        );
+  // A full disk or quota fails every wake-up after it, so the owner hears of it, not only the journal.
+  const tellIfOutOfSpace = (orgId: KinOrgId, failure: unknown) =>
+    toOwners(orgId, HostBackup.tellIfOutOfSpace(orgId, failure));
+  // Before it is full: agents' commands fail one by one for a while before a wake-up does.
+  const warnIfLowOnSpace = (orgId: KinOrgId) =>
+    Option.isNone(spaceFolders)
+      ? Effect.void
+      : toOwners(orgId, HostBackup.warnIfLowOnSpace(orgId, spaceFolders.value));
   const prompt = yield* KinLeadPrompt;
   const turnContent = yield* KinTurnContent;
   const identity = yield* KinIdentity.KinIdentity;
@@ -990,6 +1018,7 @@ const make = Effect.gen(function* () {
       }
       const wakeupId = KinWakeupId.make(yield* ulid);
       const startedAt = yield* Clock.currentTimeMillis;
+      yield* warnIfLowOnSpace(orgId);
       let row: typeof RunningRow.Type = {
         orgId,
         agentId,
@@ -1755,7 +1784,10 @@ const make = Effect.gen(function* () {
                   orgId,
                   agentId: candidate.agentId,
                   cause,
-                }).pipe(Effect.andThen(Effect.sleep("1 second"))),
+                }).pipe(
+                  Effect.andThen(tellIfOutOfSpace(orgId, cause)),
+                  Effect.andThen(Effect.sleep("1 second")),
+                ),
               ),
               Effect.ensuring(
                 Effect.sync(() => {
@@ -1786,6 +1818,7 @@ const make = Effect.gen(function* () {
           return yield* pass.pipe(
             Effect.catchCause((cause) =>
               Effect.logError("Kin runner iteration failed", { orgId, cause }).pipe(
+                Effect.andThen(tellIfOutOfSpace(orgId, cause)),
                 Effect.andThen(Effect.sleep("1 second")),
               ),
             ),

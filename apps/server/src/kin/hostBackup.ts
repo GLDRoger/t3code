@@ -1,5 +1,9 @@
 import { KinMessageId, KinOrgId } from "@t3tools/contracts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect has no free-space query.
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
@@ -53,13 +57,133 @@ export const backupProblem = (statusFile: string | undefined, now: number) => {
   }`;
 };
 
+/** Posts `body` to the owner level of a company's lead chat; a `messageId` already posted is a no-op. */
+const tellOwners = Effect.fn("KinHostBackup.tellOwners")(function* (
+  org: KinOrgId,
+  messageId: string,
+  body: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const chat = yield* Chat.KinChatService;
+  const lead = yield* liveLead(sql, org, { prefer: CHIEF_OF_STAFF_DOMAIN }).pipe(
+    NodeSqliteClient.readOnly,
+  );
+  if (lead === undefined) return;
+  yield* chat.notice({
+    orgId: org,
+    chatId: lead.ownerChatId,
+    messageId: KinMessageId.make(messageId),
+    audience: "owner",
+    body,
+  });
+});
+
+export const OUT_OF_SPACE =
+  "Kin's computer has run out of temporary space, so agents can't run until some is freed. Kin clears out old temporary files every hour, so this usually sorts itself out within the hour. If agents are still stuck after that, ask whoever looks after Kin's computer to free up space: the Storage section of Kin's setup guide says how.";
+
+// ENOSPC and EDQUOT as Node reports them on Linux; an errno Node has no name for keeps only the number.
+const SPACE_ERRNOS: ReadonlySet<unknown> = new Set([-28, -122]);
+const SPACE_CODES: ReadonlySet<unknown> = new Set(["ENOSPC", "EDQUOT"]);
+
+/** True when a full disk or quota is anywhere in a failure's cause chain. */
+const outOfSpace = (failure: unknown): boolean => {
+  const seen = new Set<object>();
+  const visit = (value: unknown): boolean => {
+    if (typeof value !== "object" || value === null || seen.has(value)) return false;
+    seen.add(value);
+    if (Cause.isCause(value))
+      return value.reasons.some((reason) =>
+        Cause.isFailReason(reason)
+          ? visit(reason.error)
+          : Cause.isDieReason(reason) && visit(reason.defect),
+      );
+    if ("errno" in value && SPACE_ERRNOS.has(value.errno)) return true;
+    if ("code" in value && SPACE_CODES.has(value.code)) return true;
+    return (
+      ("cause" in value && visit(value.cause)) ||
+      ("reason" in value && visit(value.reason)) ||
+      ("error" in value && visit(value.error))
+    );
+  };
+  return visit(failure);
+};
+
+/**
+ * Tells a company's owners, at most once a UTC day, that a wake-up failed because this host's
+ * disk or quota is full. Only on a Kin host, which clears its temporary files hourly.
+ */
+export const tellIfOutOfSpace = Effect.fn("KinHostBackup.tellIfOutOfSpace")(function* (
+  org: KinOrgId,
+  failure: unknown,
+) {
+  if (!outOfSpace(failure)) return;
+  if (Option.isNone(yield* Config.option(Config.String("KIN_CHECKOUT")))) return;
+  const day = Math.floor((yield* Clock.currentTimeMillis) / DAY_MS);
+  yield* tellOwners(org, `kin-host:space:${org}:${day}`, OUT_OF_SPACE);
+});
+
+export const LOW_ON_SPACE =
+  "Kin's computer is running low on space, and agents will stop working if it runs out. Kin clears out old temporary files every hour, which may be enough. If this message comes back tomorrow, ask whoever looks after Kin's computer to free up space: the Storage section of Kin's setup guide says how.";
+
+const LOW_SPACE_PERCENT = 20;
+
+export interface SpaceReading {
+  readonly folder: string;
+  readonly freeBytes: number;
+  readonly totalBytes: number;
+}
+
+/** One statfs; none when the folder can't be read. */
+export const readSpace = (folder: string) =>
+  Effect.tryPromise(() => NodeFSP.statfs(folder)).pipe(
+    Effect.map((stats): SpaceReading => ({
+      folder,
+      freeBytes: stats.bavail * stats.bsize,
+      totalBytes: stats.blocks * stats.bsize,
+    })),
+    Effect.option,
+  );
+
+/** Kin's temp folder, the system one agents also write to, and the T3 home. */
+export const spaceFolders = (baseDir: string) => [
+  ...new Set([NodeOS.tmpdir(), ...(process.platform === "win32" ? [] : ["/tmp"]), baseDir]),
+];
+
+/**
+ * Warns in the log, and tells a company's owners at most once a UTC day, when a folder's disk has
+ * less than 20% left. A folder it can't read is skipped. The notice is only on a Kin host.
+ */
+export const warnIfLowOnSpace = Effect.fn("KinHostBackup.warnIfLowOnSpace")(function* (
+  org: KinOrgId,
+  folders: ReadonlyArray<string>,
+  read: (folder: string) => Effect.Effect<Option.Option<SpaceReading>> = readSpace,
+) {
+  const readings = yield* Effect.forEach(folders, read);
+  const low = readings
+    .flatMap((reading) => Option.toArray(reading))
+    .filter(
+      (reading) =>
+        reading.totalBytes > 0 && reading.freeBytes * 100 < reading.totalBytes * LOW_SPACE_PERCENT,
+    );
+  if (low.length === 0) return;
+  yield* Effect.logWarning("Kin host is low on space", {
+    orgId: org,
+    low: low.map((reading) => ({
+      ...reading,
+      percentLeft: Math.floor((reading.freeBytes * 100) / reading.totalBytes),
+    })),
+  });
+  if (Option.isNone(yield* Config.option(Config.String("KIN_CHECKOUT")))) return;
+  const day = Math.floor((yield* Clock.currentTimeMillis) / DAY_MS);
+  yield* tellOwners(org, `kin-host:low-space:${org}:${day}`, LOW_ON_SPACE);
+});
+
 /**
  * Tells each company's owner when this host's backup is old or failing, at most once a UTC day,
  * and when none ever worked, at most once a week.
  */
 export const check = Effect.fn("KinHostBackup.check")(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const chat = yield* Chat.KinChatService;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const { stateDir } = yield* ServerConfig;
@@ -76,21 +200,8 @@ export const check = Effect.fn("KinHostBackup.check")(function* () {
   const orgs = yield* sql<{
     orgId: string;
   }>`SELECT org_id AS "orgId" FROM kin_orgs ORDER BY org_id`;
-  for (const { orgId } of orgs) {
-    const org = KinOrgId.make(orgId);
-    const lead = yield* liveLead(sql, org, { prefer: CHIEF_OF_STAFF_DOMAIN }).pipe(
-      NodeSqliteClient.readOnly,
-    );
-    if (lead === undefined) continue;
-    // A notice with this id already posted makes the call a no-op: one a period at most.
-    yield* chat.notice({
-      orgId: org,
-      chatId: lead.ownerChatId,
-      messageId: KinMessageId.make(`kin-host:backup:${orgId}:${period}`),
-      audience: "owner",
-      body: problem,
-    });
-  }
+  for (const { orgId } of orgs)
+    yield* tellOwners(KinOrgId.make(orgId), `kin-host:backup:${orgId}:${period}`, problem);
 });
 
 /** Only on a Kin host (its unit sets `KIN_CHECKOUT`): a dev or desktop server has no nightly backup. */
