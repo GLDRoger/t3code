@@ -920,8 +920,11 @@ it.effect.each([true, false])(
           "social_draft",
         ])
           assert.isFalse(yield* visibleOnKinEndpoint(name, sharedThread), name);
-        for (const name of ["kin_connection_tools", "kin_connection_call", "kin_connection_offer"])
-          assert.strictEqual(SHARED_TOOLS[name as keyof typeof SHARED_TOOLS], "refused");
+        // Offering a service stays the owner's; listing and calling reach a teammate's own
+        // mailbox in a turn that is theirs alone (`turnMailbox.ts`), so a shared thread lists them.
+        assert.strictEqual(SHARED_TOOLS.kin_connection_offer, "refused");
+        for (const name of ["kin_connection_tools", "kin_connection_call"])
+          assert.isTrue(yield* visibleOnKinEndpoint(name, sharedThread), name);
         // A page goes where a chart does; the gate checks its figures against every reader.
         assert.strictEqual(SHARED_TOOLS.kin_visual, "allowed");
         assert.isFalse(

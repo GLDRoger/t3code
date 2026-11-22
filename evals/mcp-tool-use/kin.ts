@@ -36,7 +36,12 @@ import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import { UNISSUED_INVOICE } from "../../apps/server/src/kin/work/recordRows.ts";
 import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
-import { ASKED } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
+import {
+  ASKED,
+  ASKED_OWN,
+  NO_OWN_MAILBOX,
+} from "../../apps/server/src/kin/connections/ConnectionsService.ts";
+import { DRAFT_CALL_NOTES, DRAFT_FROM_MAILBOX } from "../../apps/server/src/kin/pulse/draftWake.ts";
 import { microsoftMail } from "../../apps/server/src/kin/connections/Microsoft.ts";
 import { resultText } from "../../apps/server/src/kin/connections/ResultText.ts";
 import { outlineOf, sectionsOf, WHOLE_DOC } from "../../apps/server/src/kin/work/docBody.ts";
@@ -415,6 +420,13 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{UNISSUED_INVOICE}}", UNISSUED_INVOICE)
     .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
+    .replaceAll("{{CONNECTION_ASKED_OWN}}", ASKED_OWN)
+    .replaceAll("{{NO_OWN_MAILBOX}}", NO_OWN_MAILBOX)
+    // A follow-up wake's line as Kin writes it: `{{DRAFT_FROM_MAILBOX:<name>|<address>}}`.
+    .replace(/\{\{DRAFT_FROM_MAILBOX:([^|}]+)\|([^}]+)\}\}/g, (_, name: string, address: string) =>
+      DRAFT_FROM_MAILBOX(name, address),
+    )
+    .replace(/\{\{DRAFT_CALL_NOTES:([^}]+)\}\}/g, (_, name: string) => DRAFT_CALL_NOTES(name))
     .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names));
 
 const decodeMoneySummary = Schema.decodeUnknownSync(KinMoneySummary);
