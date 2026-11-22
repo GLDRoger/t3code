@@ -30,6 +30,7 @@ const When = Schema.String.check(
 );
 /** A plain decimal in major units, `1234.50`: never a float, never with grouping. */
 const Amount = Schema.String.check(Schema.isPattern(/^\d{1,15}(?:\.\d{1,6})?$/));
+const EntryAmount = Schema.String.check(Schema.isPattern(/^-?\d{1,15}(?:\.\d{1,6})?$/));
 /** Text, a choice or a day; `owner` for a person field; a client's or project's source id for a link. */
 const FieldValue = Schema.Union([Line, Schema.Struct({ amount: Amount, currency: KinCurrency })]);
 
@@ -143,7 +144,7 @@ export const ImportEntry = Schema.Struct({
   project: Schema.optional(SourceId),
   due: Schema.optional(When),
   date: Schema.optional(When),
-  amount: Schema.optional(Amount),
+  amount: Schema.optional(EntryAmount),
   currency: Schema.optional(KinCurrency),
   notes: Schema.optional(Notes),
   fields: Schema.optional(

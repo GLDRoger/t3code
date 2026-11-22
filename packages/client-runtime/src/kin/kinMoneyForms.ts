@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Pure form helpers count due days for React render, outside an Effect runtime.
 import {
   KIN_DEFAULT_HOME_CURRENCY,
+  parseKinMoney,
   type KinCompanyProfile,
   type KinListDefinition,
   type KinMoney,
@@ -326,8 +327,10 @@ export function kinExpenseInput(
 ): KinMoneyFormCheck<KinNewExpenseInput> {
   const title = oneLine(draft.title).slice(0, 280);
   if (title === "") return { ok: false, problem: KIN_MONEY_FORMS.problem.expenseWhat };
-  const amount = kinParseMoney(draft.amount, options.currency);
-  if (amount === null) return { ok: false, problem: KIN_MONEY_FORMS.problem.amount };
+  const read = parseKinMoney(draft.amount, options.currency);
+  if (!("money" in read) || read.money.minor === 0)
+    return { ok: false, problem: KIN_MONEY_FORMS.problem.amount };
+  const amount = read.money;
   if (!DAY.test(draft.paidOn)) return { ok: false, problem: KIN_MONEY_FORMS.problem.day };
   const vendor = oneLine(draft.vendor).slice(0, 200);
   return {

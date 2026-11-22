@@ -1,4 +1,5 @@
 import {
+  formatKinMoney,
   KIN_EXPORT_HOLDS,
   KIN_EXPORT_LEAVES,
   KIN_EXPORT_ROUTE,
@@ -34,7 +35,7 @@ import type {
   ImportProject,
 } from "./importFormat.ts";
 import { LISTS, parseFields, type FieldValues } from "./lists.ts";
-import { currencyDigits, dayIn } from "./money.ts";
+import { dayIn } from "./money.ts";
 import { iso, ownerZone, workFailure } from "./recordRows.ts";
 import { allLists, keyFor, PRESETS, type ListDef, type PresetId } from "./registers.ts";
 import { zipStream, type ZipEntry } from "./zipStream.ts";
@@ -149,11 +150,8 @@ export const readExportToken = Effect.fn("KinExport.readToken")(function* (
   return Option.filter(claims, (one) => one.expiresAt > now);
 });
 
-const decimal = (minor: number, currency: string) => {
-  const digits = currencyDigits(currency);
-  const text = String(minor).padStart(digits + 1, "0");
-  return digits === 0 ? text : `${text.slice(0, -digits)}.${text.slice(-digits)}`;
-};
+const decimal = (minor: number, currency: string) =>
+  formatKinMoney(minor, currency, { bare: true, cents: "always" });
 const line = (row: unknown) => `${JSON.stringify(row)}\n`;
 const some = <A>(key: string, value: A | null | undefined | "") =>
   value === null || value === undefined || value === "" ? {} : { [key]: value };

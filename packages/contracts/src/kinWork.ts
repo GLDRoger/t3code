@@ -859,7 +859,7 @@ export const KinWorkUpdateInput = Schema.Struct({
   /** The entry's own label; only the owner lowers one. */
   sensitive: Schema.optional(Schema.Boolean),
   /** Lists with money and dates. `null` clears; the currency is the amount's own. */
-  amount: Schema.optional(Schema.NullOr(KinMoney)),
+  amount: Schema.optional(Schema.NullOr(KinSignedMoney)),
   /**
    * A form that can ask sends false: an amount far above its list is refused with the error's
    * `farAbove` for the person to confirm, and true saves it. Left out, nothing is asked.
