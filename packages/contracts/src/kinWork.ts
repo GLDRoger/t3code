@@ -1357,6 +1357,11 @@ export const KinPartyPage = Schema.Struct({
       soon: Schema.optional(Schema.Literal(true)),
     }),
   ),
+  /**
+   * To the owner level while it isn't private: who sees it now and wouldn't once kept private,
+   * by name. Absent otherwise and from older hosts.
+   */
+  privateHides: Schema.optional(Schema.Array(Schema.String)),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
 });

@@ -8,6 +8,7 @@ import {
   type KinEvent,
   type KinMessage,
   type KinPersonId,
+  type KinReaction,
 } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
@@ -316,12 +317,27 @@ const make = Effect.gen(function* () {
   // took up wakes it with `withdrawn`. Other reactions are feedback only.
   const react = Effect.fn("KinChatWake.react")(
     function* (event: Extract<KinChatHubEvent, { type: "reaction.updated" }>) {
-      const { reaction } = event;
-      const dedupeKey = `chat-reaction:${reaction.messageId}:${reaction.memberId}:${reaction.emoji}:${reaction.createdAt}`;
+      const { reaction, sameAnswerReplacement } = event;
+      const keyFor = ({ emoji, createdAt }: Pick<KinReaction, "emoji" | "createdAt">) =>
+        `chat-reaction:${reaction.messageId}:${reaction.memberId}:${emoji}:${createdAt}`;
+      const dedupeKey = keyFor(reaction);
       if (reaction.removedAt !== null) {
+        const queuedReaction = sql`org_id = ${reaction.orgId} AND tag = 'chat.reaction'
+          AND state = 'queued' AND agent_id = (SELECT author_agent_id FROM kin_messages
+            WHERE org_id = ${reaction.orgId} AND chat_id = ${reaction.chatId}
+              AND message_id = ${reaction.messageId})
+          AND COALESCE(json_extract(json, '$._reactionKey'), dedupe_key) = ${dedupeKey}`;
+        if (sameAnswerReplacement !== undefined) {
+          // Move only the cancellation key; the queued answer and its event identity stay put.
+          yield* sql`UPDATE kin_events
+            SET json = json_set(json, '$._reactionKey', ${keyFor(sameAnswerReplacement)})
+            WHERE ${queuedReaction}`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinChatWake.replaceReaction")),
+          );
+          return;
+        }
         const expired = yield* sql<{ agentId: string }>`UPDATE kin_events SET state = 'expired'
-          WHERE org_id = ${reaction.orgId} AND tag = 'chat.reaction' AND dedupe_key = ${dedupeKey}
-            AND state = 'queued' RETURNING agent_id AS "agentId"`.pipe(
+          WHERE ${queuedReaction} RETURNING agent_id AS "agentId"`.pipe(
           Effect.mapError(toPersistenceSqlError("KinChatWake.unreact")),
         );
         if (Option.isSome(presence))

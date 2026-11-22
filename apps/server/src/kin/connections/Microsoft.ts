@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import {
   ACTIVITY_MAIL,
   isPlainAddress,
+  type MailArrival,
   type MailCalendarEvent,
   type MailContext,
   type MailEvent,
@@ -358,6 +359,115 @@ const inboxSince = Effect.fn("KinMicrosoft.inboxSince")(function* (
   };
 });
 
+const INBOX_DELTA = `${GRAPH}/mailFolders/inbox/messages/delta`;
+const DELTA_PAGE = "odata.maxpagesize=50";
+const ARRIVAL_FIELDS =
+  "id,conversationId,receivedDateTime,from,toRecipients,ccRecipients,subject,hasAttachments,internetMessageId,internetMessageHeaders";
+
+/**
+ * A new round of the Inbox's delta that starts now: Graph documents `$deltatoken=latest` only for
+ * directory resources, so the first round asks for mail received after now, which is none.
+ */
+const inboxStart = Effect.fn("KinMicrosoft.inboxStart")(function* (
+  context: MailContext,
+  now: number,
+) {
+  let url = INBOX_DELTA;
+  let params: Request["params"] = {
+    changeType: "created",
+    $select: "id",
+    $filter: `receivedDateTime gt ${iso(now)}`,
+  };
+  for (let page = 0; page < DELTA_PAGES; page++) {
+    const answer = yield* api(context, url, { params, prefer: DELTA_PAGE });
+    const delta = text(field(answer, "@odata.deltaLink"));
+    if (delta !== undefined) return delta;
+    const next = text(field(answer, "@odata.nextLink"));
+    if (next === undefined) break;
+    url = next;
+    params = {};
+  }
+  return yield* failure("protocol", "Microsoft didn't say where its mail changes start.");
+});
+
+/** One page of the Inbox's delta at a link Graph gave; 410 is Graph's own reset. */
+const inboxChanges = Effect.fn("KinMicrosoft.inboxChanges")(function* (
+  context: MailContext,
+  position: string,
+) {
+  const page = yield* api(context, position, { prefer: DELTA_PAGE }).pipe(
+    Effect.map((answer) => ({ answer, expired: false })),
+    Effect.catchIf(
+      (error) => answeredWith(error, 410),
+      () => Effect.succeed({ answer: undefined, expired: true }),
+    ),
+  );
+  if (page.expired) return { _tag: "expired" } as const;
+  const next = text(field(page.answer, "@odata.nextLink"));
+  const delta = text(field(page.answer, "@odata.deltaLink"));
+  const at = next ?? delta;
+  if (at === undefined)
+    return yield* failure("protocol", "Microsoft sent an answer Kin couldn't read.");
+  return {
+    _tag: "read",
+    // A removed entry left the Inbox; a moved-in one comes back as created and is judged by date.
+    changes: list(field(page.answer, "value")).flatMap((entry) => {
+      const messageId = text(field(entry, "id"));
+      return messageId === undefined || field(entry, "@removed") !== undefined
+        ? []
+        : [{ messageId, threadId: text(field(entry, "conversationId")) ?? null }];
+    }),
+    position: at,
+    more: next !== undefined,
+  } as const;
+});
+
+/** Graph's delta doesn't carry `internetMessageHeaders`, so each new message is read once. */
+const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
+  context: MailContext,
+  messageId: string,
+) {
+  const found = yield* api(context, `${GRAPH}/messages/${encodeURIComponent(messageId)}`, {
+    params: { $select: ARRIVAL_FIELDS },
+  }).pipe(
+    Effect.map((message) => ({ message, gone: false })),
+    Effect.catchIf(
+      (error) => answeredWith(error, 404),
+      () => Effect.succeed({ message: null, gone: true }),
+    ),
+  );
+  if (found.gone) return null;
+  const { message } = found;
+  const receivedAt = Date.parse(text(field(message, "receivedDateTime")) ?? "");
+  const threadId = text(field(message, "conversationId"));
+  if (
+    text(field(message, "id")) !== messageId ||
+    threadId === undefined ||
+    Number.isNaN(receivedAt)
+  )
+    return yield* failure("protocol", "Microsoft sent an answer Kin couldn't read.");
+  const one = (name: string) => internetHeader(message, name)[0] ?? null;
+  return {
+    messageId,
+    threadId,
+    receivedAt,
+    from: nameOf(field(message, "from")),
+    fromAddress: addressOf(field(message, "from")),
+    to: recipients(message, "toRecipients"),
+    cc: recipients(message, "ccRecipients"),
+    deliveredTo: [...recipients(message, "toRecipients"), ...recipients(message, "ccRecipients")],
+    subject: text(field(message, "subject")) ?? "",
+    date: text(field(message, "receivedDateTime")) ?? null,
+    internetId: text(field(message, "internetMessageId")) ?? null,
+    authResults: internetHeader(message, "Authentication-Results"),
+    listUnsubscribe: one("List-Unsubscribe") !== null,
+    precedence: one("Precedence"),
+    autoSubmitted: one("Auto-Submitted"),
+    bulk: false,
+    hasFile: field(message, "hasAttachments") === true,
+  } satisfies MailArrival;
+});
+
 const profile = (http: HttpClient.HttpClient, token: string) =>
   api({ http, token }, GRAPH, {
     params: { $select: "displayName,mail,userPrincipalName,proxyAddresses" },
@@ -569,6 +679,10 @@ const microsoft: MailVendor = {
     api(context, `${calendarBase(calendarId)}/events/${encodeURIComponent(eventId)}`, {
       prefer: `${UTC}, outlook.body-content-type="html"`,
     }).pipe(Effect.map(eventOf)),
+  calendarName: (context, calendarId) =>
+    api(context, `${GRAPH}/calendars/${encodeURIComponent(calendarId)}`).pipe(
+      Effect.map((calendar) => text(field(calendar, "name")) ?? null),
+    ),
   activity: (context, since, cursor) =>
     Effect.all({
       mail: inboxSince(context, since),
@@ -581,6 +695,9 @@ const microsoft: MailVendor = {
         ...(mail.until === undefined ? {} : { until: mail.until }),
       })),
     ),
+  mailStart: inboxStart,
+  changes: inboxChanges,
+  arrival: arrivalOf,
   account: (http, token) => profile(http, token).pipe(Effect.map(accountOf)),
   sendAs: microsoftSendAs,
   sendMessage,

@@ -51,6 +51,7 @@ import {
   crmSeenBy,
   crmSeesAs,
   KIN_OWNER_LEVEL,
+  personSees,
   personSeesAs,
   seenBy,
   type KinViewer,
@@ -82,6 +83,7 @@ import {
   touchesOf,
 } from "./touches.ts";
 import { WEEK_MS } from "../durations.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 
 /**
  * The light CRM's read model: the client page, the project page and their history, computed on
@@ -844,6 +846,24 @@ export const history = Effect.fn("KinCrm.history")(function* (
   return { items, total };
 });
 
+/**
+ * Who sees this client now (`personSees`) and wouldn't once kept private: a labelled client
+ * shows only to the owner level, so everyone else who sees it now, by name.
+ */
+const privateHides = Effect.fn("KinCrm.privateHides")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ name: string }>`SELECT p.display_name AS name
+    FROM kin_people p JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = ${recordId}
+    WHERE p.org_id = ${orgId} AND p.removed_at IS NULL
+      AND NOT ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}
+      AND ${personSees(sql, sql`p.person_id`)}
+    ORDER BY lower(p.display_name), p.person_id`;
+  return rows.map((row) => row.name);
+});
+
 export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
   row: RecordRow,
   now: number,
@@ -910,6 +930,9 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
     theyOwe: withFrom(theyOwe),
     touches: yield* touchesOf(orgId, row.recordId, now, TOUCHES_SHOWN, viewer),
     ...(contract === undefined ? {} : { contract }),
+    ...(viewer._tag === "ownerLevel" && row.sensitive === 0
+      ? { privateHides: yield* privateHides(orgId, row.recordId) }
+      : {}),
     seq,
     asOf: iso(now),
   } satisfies KinPartyPage;

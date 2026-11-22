@@ -21,6 +21,7 @@ import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
@@ -31,13 +32,17 @@ import * as TestClock from "effect/testing/TestClock";
 import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { Scheduler } from "../../scheduling/Scheduler.ts";
+import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
+import { fromConnections } from "../pulse/outside.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { fromConnections, poll } from "../pulse/outside.ts";
 import * as KinRecords from "../work/KinRecords.ts";
+import { round } from "../watches/KinWatchRounds.ts";
 import { alertsOnMail } from "../work/statements/alertMail.ts";
 import { presetDefinition } from "../work/registers.ts";
 import { waitingCards } from "../work/recordComments.ts";
@@ -136,7 +141,8 @@ const gateFor = (cards: Array<Card>) =>
 
 // Records beside connections, as on a running server (`kin/layer.ts`), not under them.
 const layerFor = (fake: FakeMail, cards: Array<Card>) =>
-  Layer.merge(Connections.layer, KinRecords.layer).pipe(
+  ArrivalFeed.layer.pipe(
+    Layer.provideMerge(Layer.merge(Connections.layer, KinRecords.layer)),
     Layer.provide(gateFor(cards)),
     Layer.provide(ConnectionSecrets.layer),
     Layer.provide(McpGateway.layer),
@@ -375,6 +381,7 @@ const setUp = <E>(body: (fake: FakeMail, cards: Array<Card>) => Effect.Effect<vo
     }).pipe(Effect.provide(layerFor(fake, cards)));
   });
 type Env =
+  | ArrivalFeed.KinArrivalFeed
   | KinConnections
   | KinRecords.KinRecords
   | KinEventQueue.KinEventQueue
@@ -601,8 +608,42 @@ const saveEdited = (
       yield* saveCards,
     );
   });
-const outside = Effect.gen(function* () {
-  return fromConnections(yield* KinConnections, yield* SqlClient.SqlClient);
+/** One read of a mailbox's new mail, as the scheduler makes each minute. */
+const readMail = (connectionId: string) =>
+  Effect.gen(function* () {
+    return yield* (yield* ArrivalFeed.KinArrivalFeed).read(orgId, connectionId);
+  });
+const watchMail = Effect.fn("test.watchMail")(function* () {
+  const sources = new Map<string, Effect.Effect<void>>();
+  yield* Layer.build(KinPulse.layer).pipe(
+    Effect.provideService(Scheduler, {
+      register: <E, R>(name: string, run: Effect.Effect<void, E, R>) =>
+        Effect.context<R>().pipe(
+          Effect.map((context) => {
+            sources.set(name, run.pipe(Effect.provideContext(context), Effect.orDie));
+          }),
+        ),
+    }),
+    Effect.provideService(KinRefreshObserver, { touch: () => Effect.void }),
+  );
+  yield* sources.get("kin-pulse-outside") ?? Effect.void;
+}, Effect.scoped);
+const arrivalRows = Effect.gen(function* () {
+  return yield* (yield* SqlClient.SqlClient)<{
+    messageId: string;
+    connectionId: string;
+    state: string;
+    class: string | null;
+    reason: string | null;
+    agentId: string | null;
+  }>`SELECT message_id AS "messageId", connection_id AS "connectionId", state, class, reason,
+      agent_id AS "agentId" FROM kin_arrivals WHERE org_id = ${orgId}
+    ORDER BY noticed_at, message_id`;
+});
+const pulseEvents = Effect.gen(function* () {
+  return yield* (yield* SqlClient.SqlClient)<{ agentId: string; arrivalId: string | null }>`SELECT
+      agent_id AS "agentId", json_extract(json, '$.arrivalId') AS "arrivalId" FROM kin_events
+    WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY queued_at, event_id`;
 });
 
 describe("Kin mail end to end, on a fake mailbox", () => {
@@ -610,9 +651,11 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     setUp((fake, cards) =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* connect(fake, "google", ACCOUNTS);
-        yield* connect(fake, "microsoft", HELLO);
-        // Mail that arrives after the accounts were connected is what the poller looks at.
+        const accounts = yield* connect(fake, "google", ACCOUNTS);
+        const hello = yield* connect(fake, "microsoft", HELLO);
+        // The feed starts where each Inbox stands; mail after that is what it looks at.
+        yield* readMail(accounts);
+        yield* readMail(hello);
         yield* TestClock.adjust("2 minutes");
         const inbound = fake.deliver({
           to: HELLO,
@@ -629,10 +672,18 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           at: NOW + 90_000,
         });
 
-        const source = yield* outside;
-        assert.lengthOf(yield* poll(orgId, NOW + 120_000, source), 1);
-        yield* TestClock.adjust("3 minutes");
-        assert.lengthOf(yield* poll(orgId, NOW + 300_000, source), 0);
+        yield* readMail(hello);
+        yield* readMail(accounts);
+        const beforeWatch = yield* arrivalRows;
+        assert.lengthOf(beforeWatch, 2);
+        yield* watchMail();
+        yield* round(orgId, yield* Clock.currentTimeMillis, { find: true }).pipe(
+          Effect.provideService(KinRefreshObserver, { touch: () => Effect.void }),
+        );
+        yield* TestClock.adjust("1 minute");
+        yield* watchMail();
+        yield* readMail(hello);
+        assert.deepStrictEqual(yield* arrivalRows, beforeWatch);
         const events = yield* sql<{ eventId: string; agentId: string; json: string }>`SELECT
             event_id AS "eventId", agent_id AS "agentId", json FROM kin_events
           WHERE org_id = ${orgId} AND tag = 'pulse'`;
@@ -708,6 +759,228 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           to: ["ravi@lumen.example"],
         });
         assert.include(sent[0]!.body, "11:00");
+        // What Kin sent is in Sent, not the Inbox: not an arrival.
+        assert.lengthOf((yield* readMail(hello)).recorded, 0);
+        assert.deepStrictEqual(
+          (yield* arrivalRows).map((row) => [row.class, row.state]),
+          [
+            ["client", "new"],
+            ["automated", "settled"],
+          ],
+        );
+      }),
+    ),
+  );
+
+  it.effect("four new senders are recorded, while the watch keeps its three-wake limit", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const hello = yield* connect(fake, "microsoft", HELLO);
+        yield* readMail(hello);
+        yield* TestClock.adjust("2 minutes");
+        for (const [index, name] of ["Meera", "Dev", "Zoya", "Arjun"].entries())
+          fake.deliver({
+            to: HELLO,
+            from: `${name} <${name.toLowerCase()}@ambermill-leads.example>`,
+            subject: `A question from ${name}`,
+            body: "Do you take on small studios?",
+            at: NOW + 60_000 + index * 1_000,
+          });
+        assert.lengthOf((yield* readMail(hello)).recorded, 4);
+        yield* watchMail();
+        yield* TestClock.adjust("1 minute");
+        assert.lengthOf((yield* readMail(hello)).recorded, 0);
+        yield* watchMail();
+        const woken = yield* sql<{ who: string }>`SELECT
+            json_extract(json, '$.outside[0].who') AS who FROM kin_events
+          WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY who`;
+        assert.deepStrictEqual(
+          woken.map((one) => one.who),
+          [
+            "Arjun <arjun@ambermill-leads.example>",
+            "Dev <dev@ambermill-leads.example>",
+            "Zoya <zoya@ambermill-leads.example>",
+          ],
+        );
+      }),
+    ),
+  );
+
+  it.effect(
+    "the feed notices each mail once, across a crash, a replay and a forgotten position",
+    () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const accounts = yield* connect(fake, "google", ACCOUNTS);
+          // Mail from before the feed started, put back into the Inbox later, is not new.
+          const old = fake.deliver({
+            to: ACCOUNTS,
+            from: CLIENT,
+            subject: "Old thread",
+            body: "From last week.",
+            at: NOW - 3 * 86_400_000,
+          });
+          assert.deepInclude(yield* readMail(accounts), { off: false, recorded: [] });
+          yield* TestClock.adjust("1 minute");
+          fake.relabel(old.id);
+          const first = fake.deliver({
+            to: ACCOUNTS,
+            from: CLIENT,
+            subject: "Launch date",
+            body: "Can we move it?",
+            at: NOW + 30_000,
+          });
+          // Named twice in one page: added, then labelled Inbox again.
+          fake.relabel(first.id);
+
+          // A crash after the reads, before the commit: nothing is kept, and the next read has it.
+          yield* sql`CREATE TEMP TRIGGER crash BEFORE UPDATE ON kin_connection_cursors
+          BEGIN SELECT RAISE(ABORT, 'crash'); END`;
+          assert.isTrue(Exit.isFailure(yield* Effect.exit(readMail(accounts))));
+          yield* sql`DROP TRIGGER crash`;
+          assert.lengthOf(yield* arrivalRows, 0);
+          assert.lengthOf(yield* pulseEvents, 0);
+          const [before] = yield* sql<{ cursor: string }>`SELECT mail_cursor AS cursor
+          FROM kin_connection_cursors WHERE connection_id = ${accounts}`;
+          assert.lengthOf((yield* readMail(accounts)).recorded, 1);
+          // The vendor replays the same page (a position kept before the commit): no second record.
+          yield* sql`UPDATE kin_connection_cursors SET mail_cursor = ${before!.cursor}
+          WHERE connection_id = ${accounts}`;
+          assert.lengthOf((yield* readMail(accounts)).recorded, 0);
+          // Put back into the Inbox after it was noticed: still the one arrival.
+          fake.relabel(first.id);
+          assert.lengthOf((yield* readMail(accounts)).recorded, 0);
+          assert.deepStrictEqual(
+            (yield* arrivalRows).map((row) => [row.messageId, row.state, row.class, row.agentId]),
+            [[first.id, "new", "client", null]],
+          );
+          assert.lengthOf(yield* pulseEvents, 0);
+
+          // A message that won't read is parked, not dropped, and arrives once it reads.
+          yield* TestClock.adjust("1 minute");
+          const stuck = fake.deliver({
+            to: ACCOUNTS,
+            from: "Accounts <accounts@other.example>",
+            subject: "INV-1 remittance",
+            body: "Paid today.",
+            at: NOW + 150_000,
+          });
+          fake.failRead(stuck.id, 500);
+          assert.lengthOf((yield* readMail(accounts)).recorded, 0);
+          assert.strictEqual((yield* arrivalRows).at(-1)?.state, "parked");
+          fake.failRead(stuck.id, null);
+          yield* TestClock.adjust("1 minute");
+          assert.lengthOf((yield* readMail(accounts)).recorded, 1);
+          assert.deepInclude((yield* arrivalRows).at(-1), {
+            messageId: stuck.id,
+            state: "new",
+            class: "names_money",
+            agentId: null,
+          });
+
+          // A vendor that says "too often" moves nothing; the next read loses nothing.
+          const throttled = fake.deliver({
+            to: ACCOUNTS,
+            from: "Zoya <zoya@studio-nine.example>",
+            subject: "Hello",
+            body: "Are you taking new work?",
+            at: NOW + 200_000,
+          });
+          fake.failWith(ACCOUNTS, 429);
+          assert.isTrue(Exit.isFailure(yield* Effect.exit(readMail(accounts))));
+          fake.failWith(ACCOUNTS, null);
+          assert.lengthOf((yield* readMail(accounts)).recorded, 1);
+          assert.strictEqual((yield* arrivalRows).at(-1)?.messageId, throttled.id);
+
+          // Gmail forgot the position: one gap row says so, and mail after it still arrives.
+          yield* TestClock.adjust("10 minutes");
+          fake.forgetPositions(ACCOUNTS);
+          assert.lengthOf((yield* readMail(accounts)).recorded, 0);
+          assert.lengthOf((yield* readMail(accounts)).recorded, 0);
+          const gaps = (yield* arrivalRows).filter((row) => row.class === "gap");
+          assert.lengthOf(gaps, 1);
+          assert.match(gaps[0]!.reason ?? "", /^Kin couldn't see mail between /);
+          fake.deliver({
+            to: ACCOUNTS,
+            from: CLIENT,
+            subject: "After the gap",
+            body: "Still there?",
+            at: NOW + 20 * 60_000,
+          });
+          assert.lengthOf((yield* readMail(accounts)).recorded, 1);
+          assert.lengthOf(yield* arrivalRows, 5);
+          assert.lengthOf(yield* pulseEvents, 0);
+
+          // With its mail reads off, the mailbox isn't read at all.
+          const detail = yield* (yield* KinConnections).get(people(owner), {
+            orgId,
+            connectionId: accounts,
+          });
+          yield* (yield* KinConnections).setToolModes(people(owner), {
+            orgId,
+            connectionId: accounts,
+            modes: detail.tools
+              .filter((tool) => tool.name === "mail_list_threads" || tool.name === "mail_search")
+              .map((tool) => ({ tool: tool.name, mode: "off" as const, digest: tool.pinDigest })),
+          });
+          fake.deliver({
+            to: ACCOUNTS,
+            from: CLIENT,
+            subject: "Off",
+            body: "x",
+            at: NOW + 21 * 60_000,
+          });
+          assert.deepInclude(yield* readMail(accounts), { off: true });
+          assert.lengthOf(yield* arrivalRows, 5);
+        }),
+      ),
+  );
+
+  it.effect("one message in two connected mailboxes keeps one line per mailbox", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const accounts = yield* connect(fake, "google", ACCOUNTS);
+        const hello = yield* connect(fake, "microsoft", HELLO);
+        yield* readMail(accounts);
+        yield* readMail(hello);
+        yield* TestClock.adjust("1 minute");
+        for (const to of [HELLO, ACCOUNTS])
+          fake.deliver({
+            to,
+            from: "Meera Iyer <meera@lumengrove.example>",
+            subject: "A booking app for our clinics",
+            body: "Could we talk?",
+            at: NOW + 30_000,
+            messageId: "<enquiry-1@lumengrove.example>",
+          });
+        // Our own mail in our Inbox is not an arrival.
+        fake.deliver({
+          to: HELLO,
+          from: ACCOUNTS,
+          subject: "Note to self",
+          body: "x",
+          at: NOW + 40_000,
+        });
+        assert.lengthOf((yield* readMail(hello)).recorded, 1);
+        assert.lengthOf((yield* readMail(accounts)).recorded, 1);
+        assert.deepStrictEqual(
+          (yield* arrivalRows).map((row) => [row.connectionId, row.class, row.agentId, row.reason]),
+          [
+            [hello, "unknown_person", null, "someone Kin doesn't know yet"],
+            [accounts, "unknown_person", null, "also recorded in another connected mailbox"],
+          ],
+        );
+        assert.lengthOf(yield* pulseEvents, 0);
+        // Graph forgot its delta (410): one gap row, and the feed goes on from now.
+        fake.forgetPositions(HELLO);
+        yield* readMail(hello);
+        yield* readMail(hello);
+        assert.lengthOf(
+          (yield* arrivalRows).filter((row) => row.class === "gap"),
+          1,
+        );
       }),
     ),
   );
@@ -1724,7 +1997,8 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         const first = yield* reply("Yes, it is.");
         fake.setExpired(HELLO, true);
         yield* TestClock.adjust("2 hours");
-        yield* poll(orgId, NOW, yield* outside);
+        // The minute's read finds the sign-in gone and says so.
+        yield* readMail(hello).pipe(Effect.ignore);
         const held = yield* tap(first.widgetId, owner).pipe(Effect.flip);
         assert.include(held.message, `${HELLO} needs signing in again`);
         assert.include(held.message, "Nothing was sent");
@@ -2287,8 +2561,10 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           const connections = yield* KinConnections;
-          yield* connect(fake, "google", ACCOUNTS);
-          yield* connect(fake, "microsoft", HELLO);
+          const accounts = yield* connect(fake, "google", ACCOUNTS);
+          const hello = yield* connect(fake, "microsoft", HELLO);
+          yield* readMail(accounts);
+          yield* readMail(hello);
           yield* TestClock.adjust("2 minutes");
           const at = yield* Clock.currentTimeMillis;
           // Invented alerts in HDFC's shape, more of them than any one pass used to read.
@@ -2303,23 +2579,46 @@ describe("Kin mail end to end, on a fake mailbox", () => {
                 authResults: [
                   "mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net",
                 ],
+                files: [{ name: "receipt.pdf", mimeType: "application/pdf", data: "YQ==" }],
               });
           const outcomes = sql<{ outcome: string; count: number }>`SELECT outcome,
             COUNT(*) AS count FROM kin_bank_alerts WHERE org_id = ${orgId}
             GROUP BY outcome ORDER BY outcome`;
+          const transactions = sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records
+            WHERE org_id = ${orgId} AND record_id IN (
+              SELECT record_id FROM kin_bank_alerts WHERE org_id = ${orgId}
+            )`;
 
           // A pass whose alert reading failed moves neither mailbox on: the next reads it all.
           const failing = fromConnections(connections, sql, () => Effect.succeed(false));
           assert.deepStrictEqual((yield* failing.read(orgId)).seen, []);
 
+          // Either reader can get there first, and neither reader consumes the other's cursor.
+          yield* readMail(accounts);
+          assert.lengthOf(yield* arrivalRows, 25);
+          assert.deepStrictEqual(yield* outcomes, []);
+          yield* watchMail();
+          const once = [
+            { outcome: "duplicate", count: 25 },
+            { outcome: "recorded", count: 25 },
+          ];
+          assert.deepStrictEqual(yield* outcomes, once);
+          yield* readMail(hello);
+          const beforeReplay = yield* arrivalRows;
+          assert.lengthOf(beforeReplay, 50);
+          assert.isTrue(beforeReplay.every((row) => row.class === "automated_file"));
+          assert.deepStrictEqual(yield* pulseEvents, []);
+          yield* watchMail();
+          yield* readMail(accounts);
+          yield* readMail(hello);
+          assert.deepStrictEqual(yield* arrivalRows, beforeReplay);
+
           const source = fromConnections(connections, sql, yield* alertsOnMail(connections));
           const read = yield* source.read(orgId);
           assert.lengthOf(read.seen, 2);
           yield* source.seen(orgId, read.seen);
-          assert.deepStrictEqual(yield* outcomes, [
-            { outcome: "duplicate", count: 25 },
-            { outcome: "recorded", count: 25 },
-          ]);
+          assert.deepStrictEqual(yield* outcomes, once);
+          assert.deepStrictEqual(yield* transactions, [{ count: 25 }]);
         }),
       ),
   );

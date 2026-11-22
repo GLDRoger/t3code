@@ -1462,6 +1462,7 @@ function KinChatFeed(props: {
         return renderMessage(item.first, item);
       case "system": {
         const { retry } = item;
+        const room = props.teamRoomId;
         // An unsent message is already a retry in flight.
         return (
           <KinSystemLine
@@ -1475,6 +1476,17 @@ function KinChatFeed(props: {
                 navigation.navigate("KinDeal", { ...target, deal: open.key });
               else navigation.navigate("KinWorkItem", { ...target, task: open.key });
             }}
+            onOpenDiscussion={
+              room === null
+                ? null
+                : (discussionId) =>
+                    navigation.navigate("KinChat", {
+                      environmentId: props.environmentId,
+                      orgId: props.orgId,
+                      chatId: room,
+                      message: discussionId,
+                    })
+            }
           />
         );
       }
@@ -1496,6 +1508,7 @@ function KinChatFeed(props: {
                       environmentId: props.environmentId,
                       orgId: props.orgId,
                       chatId: room,
+                      ...(item.discussionId === null ? {} : { message: item.discussionId }),
                     })
             }
           />
