@@ -427,6 +427,9 @@ export function kinScheduledTaskCardView(
           ? [`Next run ${formatKinDeferralTime(nextMs, timeZone)}.`]
           : []),
         ...(card.lastRun === null ? [] : [lastRunLine(card.lastRun, timeZone)]),
+        ...((card.overlapSkipped ?? 0) > 1
+          ? [`Skipped ${card.overlapSkipped} runs in a row.`]
+          : []),
         ...[kinAskedByLine(card.askedBy)].filter((line) => line !== null),
       ];
   const running = card.lastRun?.status === "running";

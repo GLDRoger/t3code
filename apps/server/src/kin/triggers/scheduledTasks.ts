@@ -579,6 +579,24 @@ const make = Effect.gen(function* () {
           );
           return yield* consume;
         }
+        // One run at a time per routine: a slot while the last is still owed or going is skipped.
+        const [going] = yield* sql`SELECT 1 FROM kin_lead_deliveries WHERE org_id = ${orgId}
+          AND kind = 'scheduled_task' AND widget_id = ${scheduledTaskWidgetId(orgId, itemId)}
+          AND status = 'pending' LIMIT 1`;
+        if (going !== undefined) {
+          const skipped = (card?.overlapSkipped ?? 0) + 1;
+          if (Option.isSome(widget))
+            yield* cards.update(
+              widget.value,
+              {
+                ...base,
+                lastRun: { at, status: "skipped", note: "the last run was still going" },
+                overlapSkipped: skipped,
+              },
+              now,
+            );
+          return yield* consume;
+        }
         if (!confirmed) {
           if (row.askedSha256 === hash) {
             yield* settleCard({
@@ -703,6 +721,7 @@ const make = Effect.gen(function* () {
         around: KinSchedules.isAround(task, row.looseAt),
         lastRun: card?.lastRun ?? null,
         ...(askedBy === undefined ? {} : { askedBy }),
+        ...(card?.overlapSkipped === undefined ? {} : { overlapSkipped: card.overlapSkipped }),
       };
       // Most passes change nothing: an open card that already reads so is left without a write.
       if (

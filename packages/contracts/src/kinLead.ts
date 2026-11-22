@@ -624,6 +624,8 @@ export const KinScheduledTaskCard = Schema.Struct({
     }),
   ),
   askedBy: Schema.optional(KinCardAsker),
+  /** Slots skipped in a row because the run before was still going; absent after a run. */
+  overlapSkipped: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
 });
 export type KinScheduledTaskCard = typeof KinScheduledTaskCard.Type;
 export const KIN_SCHEDULED_TASK_CARD_ACTIONS = [

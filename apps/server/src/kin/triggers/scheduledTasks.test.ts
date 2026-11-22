@@ -453,8 +453,14 @@ const nativeCard = Effect.fn("test.nativeCard")(function* () {
   return { widget, state: decodeCard(widget.state) };
 });
 
-/** Run now from T3's Scheduled tasks screen, then Kin's next tick. */
-const runNow = Effect.fn("test.nativeRunNow")(function* () {
+/**
+ * Run now from T3's Scheduled tasks screen, then Kin's next tick. The run before has ended,
+ * unless `overlapping`.
+ */
+const runNow = Effect.fn("test.nativeRunNow")(function* (overlapping = false) {
+  if (!overlapping)
+    yield* (yield* SqlClient.SqlClient)`UPDATE kin_lead_deliveries SET status = 'delivered'
+      WHERE status = 'pending'`;
   yield* TestClock.adjust("1 second");
   yield* (yield* ScheduledTaskService.ScheduledTaskService).runNow({ id: taskId });
   yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
@@ -626,6 +632,25 @@ const nativeSetupInGroup = Effect.fn("test.nativeSetupInGroup")(function* (
       'done', 'set-wake')`;
   yield* save({ chatId: "group-a", forChat });
   yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
+});
+
+it.effect("a slot while the routine's last run is still going is skipped and counted", () => {
+  const { layer } = harness();
+  return Effect.gen(function* () {
+    yield* nativeSetup();
+    yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
+    yield* runNow();
+    assert.lengthOf(yield* nativeRuns(), 1);
+    // Its turn hasn't ended: the next two are skipped, one run at a time.
+    yield* runNow(true);
+    yield* runNow(true);
+    assert.lengthOf(yield* nativeRuns(), 1);
+    assert.deepInclude((yield* nativeCard()).state, { overlapSkipped: 2 });
+    assert.include((yield* nativeCard()).state.lastRun, {
+      status: "skipped",
+      note: "the last run was still going",
+    });
+  }).pipe(Effect.provide(layer));
 });
 
 it.effect("a routine set for a room of owner-level people runs in that room", () => {

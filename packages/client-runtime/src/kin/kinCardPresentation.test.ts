@@ -1292,6 +1292,19 @@ describe("reminder and scheduled task cards", () => {
       zone,
     )!;
     expect(routine.lines.at(-1)).toBe("Asked by someone who has left.");
+    // Slots skipped while the run before was still going are counted on it.
+    const busy = kinScheduledTaskCardView(
+      scheduled({
+        lastRun: {
+          at: "2026-11-09T02:30:00.000Z",
+          status: "skipped",
+          note: "the last run was still going",
+        },
+        overlapSkipped: 3,
+      }),
+      zone,
+    )!;
+    expect(busy.lines).toContain("Skipped 3 runs in a row.");
     expect(routine.actions.map((action) => action.id)).toContain("pause");
   });
 
