@@ -649,16 +649,16 @@ const make = Effect.gen(function* () {
   let onChoice: ChoiceAnswerHandler | undefined;
   let onRefused: ChoiceRefusedHandler | undefined;
   let onDismiss: ChoiceDismissHandler | undefined;
+  const instanceClock = yield* Clock.Clock;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    sql
-      .withTransaction(effect)
-      .pipe(
-        Effect.mapError((cause) =>
-          SqlError.isSqlError(cause)
-            ? toPersistenceSqlError("KinChatService.transaction")(cause)
-            : cause,
-        ),
-      );
+    sql.withTransaction(effect).pipe(
+      Effect.provideService(Clock.Clock, instanceClock),
+      Effect.mapError((cause) =>
+        SqlError.isSqlError(cause)
+          ? toPersistenceSqlError("KinChatService.transaction")(cause)
+          : cause,
+      ),
+    );
   const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const identityFor = Effect.fn("KinChatService.identityFor")(function* (
     caller: Caller,
