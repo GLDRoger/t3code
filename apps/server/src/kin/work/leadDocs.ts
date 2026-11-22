@@ -54,7 +54,13 @@ import {
 import { iso, type RecordRow } from "./recordRows.ts";
 import { DRAFT_TEXT_MAX, docCardId, draftCardOf } from "./draftCards.ts";
 import { search } from "./search.ts";
-import { DRAFT_OWN_CHAT_ONLY, KIN_OWNER_LEVEL, viewSees, viewerOfPeople } from "./teamView.ts";
+import {
+  DRAFT_OWN_CHAT_ONLY,
+  KIN_OWNER_LEVEL,
+  viewSees,
+  viewVisible,
+  viewerOfPeople,
+} from "./teamView.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
@@ -608,6 +614,7 @@ const putBack = Effect.fn("KinDocTools.putBack")(function* (
   redraft: Parameters<typeof redoOf>[1],
   text: string,
   on?: KinSocialPlatform,
+  edited?: Pick<RecordRow, "recordId" | "partyId">,
 ) {
   const turn = {
     orgId: lead.orgId,
@@ -618,6 +625,11 @@ const putBack = Effect.fn("KinDocTools.putBack")(function* (
   if (Option.isNone(chat)) return undefined;
   const found = yield* redoOf(turn, redraft);
   if (found === undefined) return undefined;
+  // An edited doc goes to her chat only while she sees it and its client now.
+  if (edited !== undefined)
+    for (const id of [edited.recordId, edited.partyId])
+      if (id !== null && !(yield* viewVisible(lead.orgId, [found.forPersonId], id)))
+        return undefined;
   const of =
     on === undefined
       ? found
@@ -655,9 +667,10 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     (input.project === undefined && input.company !== true
       ? yield* projectFor(lead, input, partyId ?? undefined)
       : undefined);
-  // Kin makes the redraft once the owner approves it, so it is filed only if it can't go up.
+  // Kin makes the redraft once the owner approves it, so it is filed only if it can't go up. A
+  // private one is no redraft: it goes nowhere.
   const back =
-    input.draft === undefined
+    input.draft === undefined || input.sensitive === true
       ? undefined
       : yield* putBack(
           lead,
@@ -811,9 +824,16 @@ const putBackOrShow = Effect.fnUntraced(function* (
   written: Docs.Written,
   card: boolean | undefined,
 ) {
-  const back = written.created
-    ? yield* putBack(lead, { docKey: written.row.key }, written.version.body)
-    : undefined;
+  const back =
+    written.created && !sensitiveOf(written.row)
+      ? yield* putBack(
+          lead,
+          { docKey: written.row.key },
+          written.version.body,
+          undefined,
+          written.row,
+        )
+      : undefined;
   if (back?._tag !== "raised") yield* shown(lead, written, card);
   return {
     ...writeResult(written, written.created),

@@ -2569,6 +2569,12 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       });
       assert.notInclude(other.note ?? "", "Changes first");
       assert.lengthOf(yield* drafts, 1);
+      // A redraft filed as sensitive is private: filed as today, nothing posted in Zoya's chat.
+      const secret = yield* proposal(words, { title: "Private proposal", sensitive: true });
+      assert.notStrictEqual(secret.key, "");
+      assert.notInclude(secret.note ?? "", "Changes first");
+      assert.lengthOf(yield* drafts, 1);
+      assert.lengthOf(yield* shownUp(zoyaChat), 1);
       // A figure Rhea didn't write that Zoya may not read can't go to her chat: filed as today,
       // and the agent hears why. So with the sum of an invoice Zoya doesn't see.
       const priced = yield* proposal(words, {
@@ -2761,6 +2767,25 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
           },
         },
       );
+      // While Zoya can't see the mail, Rhea's edit of it is today's edit: nothing goes to her chat.
+      const herMessages = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = ${zoyaChat}`;
+      const herBefore = yield* herMessages;
+      const roundsBefore = (yield* drafts).length;
+      yield* sql`UPDATE kin_records SET fields_json = json_remove(fields_json, '$.draftFor')
+        WHERE org_id = ${orgId} AND key = ${mail.key}`;
+      const unseen = yield* LeadDocs.edit(scopeOf("chief"), {
+        key: mail.key,
+        sourceEventId: edit.eventId,
+        summary: "Reworded",
+        operations: [{ op: "replace_phrase", find: "We launch", replace: "We start" }],
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.notInclude(unseen.note ?? "", "Changes first");
+      assert.lengthOf(yield* drafts, roundsBefore);
+      assert.notProperty(yield* draftOf(), "sent");
+      assert.deepStrictEqual(yield* herMessages, herBefore);
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.draftFor', 'zoya')
+        WHERE org_id = ${orgId} AND key = ${mail.key}`;
       // Her new fee, written her way in the edit ("₹3,00,000" for her 300000), goes up as hers.
       const cardsBefore = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
         WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'`;
@@ -2780,7 +2805,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.deepInclude((yield* drafts).at(-1), {
         state: "open",
         forChatId: zoyaChat,
-        text: "We launch on 3 December, for ₹3,00,000.\n",
+        text: "We start on 3 December, for ₹3,00,000.\n",
       });
       // Her card reads sent again with the redraft's text: Kin posts it nowhere else.
       assert.deepInclude((yield* draftOf()).sent, { name: "Rhea Rao" });
