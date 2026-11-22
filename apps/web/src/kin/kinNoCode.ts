@@ -27,6 +27,30 @@ const KIN_KEEPS = [
   KIN_INVITE_LINK_PATH,
 ];
 
+/** T3 Code's Settings pages that only serve coding threads; the Kin web app shows none of them. */
+export const KIN_CODING_SETTINGS: ReadonlySet<string> = new Set([
+  "/settings/chat",
+  "/settings/diffs",
+  "/settings/voice",
+  "/settings/snap-shot",
+  "/settings/threads",
+  "/settings/browser",
+  "/settings/devices",
+  "/settings/scheduled-tasks",
+  "/settings/projects",
+  "/settings/source-control",
+  "/settings/worktrees",
+  "/settings/archived",
+]);
+
+/** The settings pages and search rows the app offers, less the coding ones in the Kin web app. */
+export function kinSettingsShown<Item extends { readonly to: string }>(
+  items: ReadonlyArray<Item>,
+  kinOnly = KIN_WEB_ONLY,
+): ReadonlyArray<Item> {
+  return kinOnly ? items.filter((item) => !KIN_CODING_SETTINGS.has(item.to)) : items;
+}
+
 // T3 Code's two-part addresses that aren't a thread's `/<environmentId>/<threadId>`.
 const NOT_A_THREAD = new Set(["draft", "projects", "settings", "kin"]);
 
@@ -45,7 +69,8 @@ const decoded = (part: string | undefined) => {
  */
 export function kinCodingLanding(
   pathname: string,
-): { readonly stray: ScopedThreadRef | null } | null {
+): { readonly stray: ScopedThreadRef | null; readonly settings?: true } | null {
+  if (KIN_CODING_SETTINGS.has(pathname.replace(/\/$/, ""))) return { stray: null, settings: true };
   if (KIN_KEEPS.some((kept) => pathname === kept || pathname.startsWith(`${kept}/`))) return null;
   const parts = pathname.replace(/\/$/, "").split("/").slice(1);
   const [environmentId, threadId] =
@@ -62,7 +87,10 @@ export function kinCodingLanding(
   };
 }
 
-/** Kin has no code mode: in the Kin web app any T3 Code coding address opens Kin's home instead. */
+/**
+ * Kin has no code mode: in the Kin web app any T3 Code coding address opens Kin's home instead,
+ * and a coding settings page opens Kin's Settings.
+ */
 export function redirectCodingToKin(pathname: string, kinOnly = KIN_WEB_ONLY) {
   if (!kinOnly) return;
   const landing = kinCodingLanding(pathname);
@@ -71,6 +99,7 @@ export function redirectCodingToKin(pathname: string, kinOnly = KIN_WEB_ONLY) {
   throw redirect({
     to: "/kin",
     replace: true,
+    ...(landing.settings ? { search: { settings: "" } } : {}),
     ...(stray === null
       ? {}
       : {

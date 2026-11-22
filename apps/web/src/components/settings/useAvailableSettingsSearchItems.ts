@@ -10,6 +10,7 @@ import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { usePeerLinkHosts } from "~/state/peerLinks";
 import { useEnvironmentQuery } from "~/state/query";
 import { useEnvironmentScope } from "~/state/session";
+import { kinSettingsShown } from "~/kin/kinNoCode";
 import { useKinHost } from "~/kin/useKinHost";
 import { isWslSettingsRowVisible } from "./ConnectionsSettings.logic";
 import { isProviderSettingsEnvironmentAvailable } from "./ProviderSettingsPanel.logic";
@@ -64,19 +65,21 @@ export function useAvailableSettingsSearchItems() {
   const wslSettingsRowVisible =
     isWslSettingsRowVisible({ state: desktopWsl.data, error: desktopWsl.error }) === true;
 
-  return filterAvailableSettingsSearchItems({
-    localEnvironmentDisabled,
-    hasCloudPublicConfig: cloudPublicConfig,
-    hasEnvironment,
-    hasProviderSettingsEnvironment,
-    canManageLocalBackend,
-    isWslSettingsRowVisible: wslSettingsRowVisible,
-    hasThreadAutoSettlement,
-    managedTunnelActive,
-    hasPeerLinkHost,
-    hasKinHost,
-    hasFastWorktreeCheckoutEnvironment,
-    hasTextGeneratorsEnvironment,
-    hasPrimaryEnvironment: primaryEnvironmentId !== null,
-  });
+  return kinSettingsShown(
+    filterAvailableSettingsSearchItems({
+      localEnvironmentDisabled,
+      hasCloudPublicConfig: cloudPublicConfig,
+      hasEnvironment,
+      hasProviderSettingsEnvironment,
+      canManageLocalBackend,
+      isWslSettingsRowVisible: wslSettingsRowVisible,
+      hasThreadAutoSettlement,
+      managedTunnelActive,
+      hasPeerLinkHost,
+      hasKinHost,
+      hasFastWorktreeCheckoutEnvironment,
+      hasTextGeneratorsEnvironment,
+      hasPrimaryEnvironment: primaryEnvironmentId !== null,
+    }),
+  );
 }
