@@ -4460,6 +4460,43 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+// The person given a task an agent made after an outside read hears so, as its sheet says it.
+it.effect("a task given after an outside read tells its holder so, as much as they may see", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* mateMayMessage;
+    yield* turn();
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'America/Los_Angeles', '08:30',
+        '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')
+      ON CONFLICT (org_id) DO UPDATE SET time_zone = 'America/Los_Angeles'`;
+    const scope = scopeOf("lead");
+    yield* markOutside({ orgId, wakeupId: "wake" }, "conn-1", [
+      {
+        k: "mail",
+        id: "conn-1",
+        account: "Invented mail",
+        from: "Lena Ortiz <lena@brightwell.example>",
+        subject: "New bank details",
+      },
+    ]);
+    yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [{ title: "Invented: update the vendor's bank details" }],
+    });
+    const plan = yield* LeadWork.assign(scope, {
+      sourceEventId: "ask-event",
+      tasks: [{ key: "W-1", to: "Mate", reason: "finance" }],
+    });
+    assert.deepStrictEqual(plan.told, ["Mate"]);
+    const [told] = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE chat_id = 'mate-chat' ORDER BY seq DESC LIMIT 1`;
+    assert.include(told?.body ?? "", "W-1 Invented: update the vendor's bank details");
+    assert.include(told?.body ?? "", "Made after reading: a mail");
+    assert.notInclude(told?.body ?? "", "Lena");
+  }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
+);
+
 it.effect(
   "an agent gives out a plan from a turn shown money: assigning shares it, one message each, and a hand back goes to who asked",
   () =>

@@ -1428,6 +1428,40 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       })).chatId;
       const inCrew = yield* wakeOn("chief", "dev", crew, "Ask Rhea about the shoot.");
       yield* refused(askFor("chief", inCrew, { to: "Rhea", intent: "crew" }), /never a group/);
+
+      // Asked after the turn read a vendor's mail: the card says so, as much as each may see.
+      const reading = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask about the account.");
+      yield* markOutside({ orgId, wakeupId: reading }, "conn-1", [
+        {
+          k: "mail",
+          id: "conn-1",
+          account: "Invented mail",
+          from: "Lena Ortiz <lena@brightwell.example>",
+          subject: "New bank details",
+        },
+      ]);
+      const detailOf = (questionId: string) =>
+        cardOf(questionId).pipe(
+          Effect.flatMap((row) => widgetOf(row.widgetId!)),
+          Effect.map((widget) => (widget.state as { detail?: string }).detail ?? ""),
+        );
+      const afterDev = yield* askFor("chief", reading, {
+        to: "Arjun",
+        question: "Is the vendor's new account right?",
+        intent: "vendor account",
+      });
+      const devDetail = yield* detailOf(afterDev.questionId);
+      assert.include(devDetail, "Asked after reading: a mail");
+      assert.notInclude(devDetail, "Lena");
+      const afterMeera = yield* askFor("chief", reading, {
+        to: "Meera",
+        question: "Is the vendor's new account right?",
+        intent: "vendor account",
+      });
+      assert.include(
+        yield* detailOf(afterMeera.questionId),
+        "Asked after reading: mail from Lena Ortiz <lena@brightwell.example>: New bank details",
+      );
     }).pipe(Effect.provide(layer)),
   ),
 );
@@ -3452,11 +3486,13 @@ it.effect("a question asked for someone away waits for them, then is raised once
       const back = Date.UTC(2026, 10, 18, 7);
       yield* settle(orgId, back);
       const cards = yield* cardsFor(devChat);
+      // Asked after that read, the card says so, by kind alone for a teammate.
       assert.deepStrictEqual(cards, [
         {
           askedBy: "Rhea Rao asks, through Chief of staff.",
           question: "Does the shoot move to Friday?",
-          detail: "Rhea Rao asks, through Chief of staff.",
+          detail:
+            "Rhea Rao asks, through Chief of staff.\n\nAsked after reading: a connected service",
         },
       ]);
       const [row] = yield* sql<{ dueAt: number; widgetId: string | null }>`SELECT due_at AS "dueAt",
