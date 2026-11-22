@@ -830,6 +830,7 @@ it.effect.each([
   {
     name: "the weekly brief",
     scheduleId: "checkin-weekly",
+    measured: true,
     written: ["## Needs you\nOne quote waits on your answer.", "The rest can wait."],
     words: "## Needs you\nOne quote waits on your answer.\n\nThe rest can wait.",
   },
@@ -853,12 +854,21 @@ it.effect.each([
   },
 ])("the week's figures are Kin's own section of that page, whatever it wrote ($name)", (row) =>
   Effect.gen(function* () {
-    const { fake, runId, complete, sql, chatId } = yield* setup({
+    const { fake, runId, complete, sql, chatId, owner } = yield* setup({
       event: checkInEvent(
         row.scheduleId,
         row.scheduleId === "checkin-morning" ? { figures: true } : {},
       ),
     });
+    if (row.measured === true) {
+      const due = Date.UTC(1969, 11, 24);
+      yield* sql`INSERT INTO kin_watches (org_id, watch_id, kind, source, source_key, about,
+          closes_when, audience, why, set_by_kind, latest_by, next_look_at, interval_ms,
+          state, closed_at, created_at, updated_at)
+        VALUES (${owner.orgId}, 'follow-up', 'work', 'promise', 'follow-up', 'Follow up',
+          'When finished', 'owner', 'Promised', 'agent', ${due}, ${due}, 3600000,
+          'closed', ${due}, ${due - 1}, ${due})`;
+    }
     fake.items = row.written.map((body, index) => text(`t${index}`, index + 1, body, runId));
     yield* complete;
     const rows = yield* sql<{ body: string; form: string | null }>`SELECT body, form
@@ -872,6 +882,12 @@ it.effect.each([
         : [bodies[0]!, bodies[1]!.slice(figures.length)];
     assert.strictEqual(page, row.words);
     assert.include(after, "Goals: none set");
+    if (row.measured === true)
+      assert.include(
+        after,
+        "How Kin did:\n- Things Kin said it would do: 1 came due, 1 on time, 0 late, 0 missed.",
+      );
+    else assert.notInclude(after, "How Kin did:");
     assert.lengthOf(bodies.join("\n").split(WEEK_FIGURES_TITLE), 2);
     assert.lengthOf(bodies, row.words.length > 15_000 ? 2 : 1);
     // One page: figures that follow it are ordinary messages, with no greeting of their own.
