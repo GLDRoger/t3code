@@ -313,7 +313,7 @@ export const endpointVisibility = McpToolPolicy.toolVisibility((name, method) =>
       if (Option.isNone(services)) return false;
       const { owner } = Context.get(services.value, KinIdentity);
       if (
-        !(yield* KinShell.sectionOn(owner.orgId, section).pipe(
+        !(yield* KinShell.sectionOnFor(owner.orgId, section).pipe(
           Effect.provideContext(services.value),
           Effect.orElseSucceed(() => false),
         ))

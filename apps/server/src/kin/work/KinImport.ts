@@ -21,7 +21,7 @@ import * as Stream from "effect/Stream";
 
 import { IMPORTED_SERIES, ruleProblem, seriesOf } from "../gendocs/numbering.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { sectionOn } from "../shell/KinShell.ts";
+import { sectionOnFor as sectionOn } from "../shell/KinShell.ts";
 import { DEALS_OFF } from "../shell/sections.ts";
 import { contactAll, contactFields } from "./contactDetails.ts";
 import { createAs } from "./deals.ts";

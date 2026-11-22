@@ -1,4 +1,6 @@
 import * as KinShell from "../shell/KinShell.ts";
+import { SECTIONS, sectionOfList, type SectionId } from "../shell/sections.ts";
+import type { KinShell as Shell } from "@t3tools/contracts";
 import type {
   KinDateRow,
   KinMoney,
@@ -156,6 +158,7 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
     readonly kept?: boolean | undefined;
     /** Only money's dates, for people's Money: lists that keep amounts, and no draft invoice. */
     readonly money?: boolean | undefined;
+    readonly shell?: Shell | undefined;
     readonly offset?: number | undefined;
     readonly limit?: number | undefined;
     readonly viewer: KinViewer;
@@ -166,6 +169,14 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   const lists = yield* allLists(orgId);
   const asked = input.money === true ? moneyLists(lists, input.lists) : input.lists;
   if (input.money === true && asked?.length === 0) return { total: 0, rows: [] };
+  const shell = input.shell;
+  const hidden =
+    shell === undefined
+      ? []
+      : Object.keys(SECTIONS.lists).filter((id) => {
+          const section = sectionOfList(id);
+          return section !== null && !KinShell.sectionOn(shell, section);
+        });
   const where = (column: "due_at" | "date_at") =>
     sql.and([
       sql`r.org_id = ${orgId}`,
@@ -176,6 +187,7 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
       ...(asked === undefined || asked.length === 0
         ? []
         : [sql`r.register_id IN ${sql.in(asked)}`]),
+      ...(hidden.length === 0 ? [] : [sql`r.register_id NOT IN ${sql.in(hidden)}`]),
       ...(input.open === true ? [sql`r.state NOT IN ('done', 'dropped')`] : []),
       ...(input.kept === true ? [keptEntry(sql)] : []),
       ...(input.money === true ? [sql`NOT ${draftInvoice(sql)}`] : []),
@@ -189,7 +201,11 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM (${hits})`;
   const limit = Math.min(Math.max(input.limit ?? 100, 1), DATES_CAP);
   const offset = Math.max(input.offset ?? 0, 0);
-  const fielded = yield* fieldHits(orgId, lists, { ...input, lists: asked });
+  const fielded = yield* fieldHits(
+    orgId,
+    hidden.length === 0 ? lists : new Map([...lists].filter(([id]) => !hidden.includes(id))),
+    { ...input, lists: asked },
+  );
   const page = [
     ...(yield* sql<DateHit>`SELECT id, key, kind, at FROM (${hits})
       ORDER BY at, key, kind LIMIT ${offset + limit}`),
@@ -349,7 +365,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   /** For people, figures of only what all of them see, never the company's. */
   viewer: KinViewer,
   /** People's Money lists money's dates alone ahead; an agent's read keeps every date. */
-  options: { readonly moneyDates?: boolean; readonly omitDeals?: boolean } = {},
+  options: { readonly moneyDates?: boolean; readonly shell?: Shell } = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
   const seen = seenBy(sql, viewer);
@@ -370,12 +386,18 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const since = `${firstMonth}-01` < fyStart ? `${firstMonth}-01` : fyStart;
 
   // Owed: issued invoices' balances. Payments are in the invoice's own currency.
-  const owing = yield* owedInvoices({
-    orgId,
-    now,
-    // A key's owner-level read is scoped too (`keyedViewer`): it leaves out what a key never carries.
-    ...(viewer._tag === "ownerLevel" && viewer.keyed !== true ? {} : { seen }),
-  });
+  const shell = options.shell;
+  const omitted = (id: SectionId) => shell !== undefined && !KinShell.sectionOn(shell, id);
+  const invoicesOn = !omitted("invoices");
+  const paidLists = invoicesOn ? ["invoices", "receipts"] : ["receipts"];
+  const owing = !invoicesOn
+    ? []
+    : yield* owedInvoices({
+        orgId,
+        now,
+        // A key's owner-level read is scoped too (`keyedViewer`): it leaves out what a key never carries.
+        ...(viewer._tag === "ownerLevel" && viewer.keyed !== true ? {} : { seen }),
+      });
   const clients = new Map<string | null, typeof owing>();
   for (const invoice of owing)
     clients.set(invoice.partyId, [...(clients.get(invoice.partyId) ?? []), invoice]);
@@ -421,7 +443,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND ${countedPayment(sql)}
-      AND r.register_id IN ('invoices', 'receipts') AND p.paid_on >= ${since} AND ${seen}
+      AND r.register_id IN ${sql.in(paidLists)} AND p.paid_on >= ${since} AND ${seen}
     ORDER BY p.paid_on, p.payment_id`;
   // TDS a client deducted settles the invoice, but no money came in: it is shown on its own.
   const payments = paid.filter((one) => one.withheld === 0);
@@ -495,15 +517,20 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
       open: true,
       kept: true,
       money: options.moneyDates,
+      shell,
       limit: 50,
       viewer,
     },
     now,
   );
   // Suggestions in money lists, and any other with an amount: what Money's figures leave out.
+  const excluded = Object.keys(SECTIONS.lists).filter((list) => {
+    const section = sectionOfList(list);
+    return section !== null && omitted(section);
+  });
   const suggestion = sql`r.org_id = ${orgId} AND r.confirmed = 0 AND r.state <> 'dropped'
     AND (r.register_id IN ${sql.in(MONEY_LISTS)} OR r.amount_minor IS NOT NULL) AND ${seen}
-    AND ${options.omitDeals === true ? sql`r.register_id <> 'deals'` : sql`1 = 1`}`;
+    AND ${excluded.length > 0 ? sql`r.register_id NOT IN ${sql.in(excluded)}` : sql`1 = 1`}`;
   const suggested =
     viewer._tag === "ownerLevel"
       ? yield* sql<RecordRow & { listName: string | null }>`SELECT s.*, g.name AS "listName"
@@ -646,8 +673,8 @@ export const moneySummaryForAgent = Effect.fn("KinMoneyViews.agentSummary")(func
   now: number,
   viewer: KinViewer,
 ) {
-  const on = yield* KinShell.sectionOn(orgId, "deals").pipe(Effect.orElseSucceed(() => false));
-  return yield* moneySummary(orgId, now, viewer, { omitDeals: !on });
+  const shell = yield* KinShell.get(orgId);
+  return yield* moneySummary(orgId, now, viewer, { shell });
 });
 
 /**

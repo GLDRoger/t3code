@@ -708,6 +708,30 @@ it.effect(
   },
 );
 
+it.effect("a due kin_defer reminder on an invoice stays queued until its section is on", () => {
+  const remind = makeDeferral("def-r", { title: "Follow up on INV-1", on_due: "remind" });
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0)`;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+      owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
+      VALUES (${orgId}, 'invoice', 'invoices', 'INV-1', 'Invented invoice', 'person',
+        'owner', 'person', 'invoice', 0, 0, '{}')`;
+    yield* (yield* TriggerService.KinTriggerService).syncItem(remind);
+    yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+      VALUES (${orgId}, '[{"id":"money","on":false}]', 1, 'owner', 0)`;
+    yield* tick(dueAt);
+    assert.lengthOf(yield* handedReminders(), 0);
+    assert.lengthOf(yield* pendingFires(), 1);
+    yield* sql`UPDATE kin_company_shell SET shell_json = '[]', rev = 2 WHERE org_id = ${orgId}`;
+    yield* tick(dueAt + 60_000);
+    assert.lengthOf(yield* handedReminders(), 1);
+    assert.lengthOf(yield* pendingFires(), 0);
+  }).pipe(Effect.provide(layerFor([remind])));
+});
+
 it.effect("remind, ask and chase act at due, noting lateness", () => {
   const remind = makeDeferral("def-r", { on_due: "remind" });
   const ask = makeDeferral("def-a", { on_due: "ask" });

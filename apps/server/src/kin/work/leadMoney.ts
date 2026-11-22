@@ -1,3 +1,4 @@
+import * as KinShell from "../shell/KinShell.ts";
 import {
   KinChatError,
   KinCompanyBank,
@@ -510,13 +511,16 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
   // In a turn others read: figures of only the money lines they all see, such as their project's.
   const team = yield* viewOf(lead);
   const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const shell = yield* KinShell.get(lead.orgId);
+  const invoices = KinShell.sectionOn(shell, "invoices");
   const summary = yield* moneySummaryForAgent(lead.orgId, now, viewer);
   const section = moneySection(
     summary,
     summary.timeZone,
-    yield* setAsideOverdue({ orgId: lead.orgId, now, viewer }),
+    invoices ? yield* setAsideOverdue({ orgId: lead.orgId, now, viewer }) : [],
   );
-  const toInvoice = team === undefined ? yield* ownerLevelStillToInvoice(lead.orgId) : [];
+  const toInvoice =
+    team === undefined && invoices ? yield* ownerLevelStillToInvoice(lead.orgId) : [];
   const taxNote =
     team === undefined ? notRegisteredFact(yield* readProfile(lead.orgId)) : undefined;
   return {
@@ -695,6 +699,7 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
       from,
       to,
       lists: input.lists,
+      shell: yield* KinShell.get(lead.orgId),
       open: input.open ?? true,
       limit: input.limit ?? 30,
       viewer: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),

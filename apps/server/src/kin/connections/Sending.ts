@@ -21,6 +21,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { chatReaders, keysIn } from "../chat/messageLinks.ts";
 import { readStoredFile } from "../gendocs/brand.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfList } from "../shell/sections.ts";
 import { readProfile, type TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { formatMoney } from "../work/money.ts";
@@ -282,6 +284,31 @@ export const attachmentsCurrent = Effect.fn("KinSending.current")(function* (
       return false;
   }
   return true;
+});
+
+export const subjectOff = Effect.fn("KinSending.subjectOff")(function* (
+  orgId: KinOrgId,
+  prepared: Prepared | undefined,
+) {
+  if (prepared?._tag !== "email") return null;
+  const ids = [
+    ...new Set(
+      prepared.attachments.flatMap((file) =>
+        file.entryRecordId === null ? [file.recordId] : [file.recordId, file.entryRecordId],
+      ),
+    ),
+  ];
+  if (ids.length === 0) return null;
+  const sql = yield* SqlClient.SqlClient;
+  const entries = yield* sql<{ registerId: string }>`SELECT DISTINCT register_id AS "registerId"
+    FROM kin_records WHERE org_id = ${orgId} AND record_id IN ${sql.in(ids)} ORDER BY register_id`;
+  const shell = yield* KinShell.get(orgId);
+  for (const { registerId } of entries) {
+    const section = sectionOfList(registerId);
+    if (section !== null && !KinShell.sectionOn(shell, section))
+      return `${KinShell.sectionName(shell, section)} is turned off for this company, so this wasn't sent. Turn it on in Settings › Sections and confirm again.`;
+  }
+  return null;
 });
 
 /**

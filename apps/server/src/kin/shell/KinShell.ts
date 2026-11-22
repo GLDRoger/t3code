@@ -35,8 +35,35 @@ const encode = Schema.encodeEffect(SectionsJson);
 const ordered = (sections: readonly KinShellSection[]) =>
   BUILT_INS.map((id) => sections.find((section) => section.id === id) ?? { id, on: true });
 
-export const onIn = (shell: Shell, id: SectionId) =>
+const storedOn = (shell: Shell, id: SectionId) =>
   shell.sections.find((section) => section.id === id)?.on !== false;
+
+export const sectionOn = (shell: Shell, id: SectionId) =>
+  storedOn(shell, id) &&
+  (id !== "deals" || storedOn(shell, "clients")) &&
+  (id !== "invoices" || (storedOn(shell, "clients") && storedOn(shell, "money")));
+
+export const sectionName = (shell: Shell, id: SectionId) =>
+  (id === "clients" ? shell.sections.find((section) => section.id === id)?.name : undefined) ??
+  {
+    clients: "Clients",
+    deals: "Deals",
+    money: "Money",
+    invoices: "Invoices and quotes",
+    docs: "Docs",
+  }[id];
+
+const labelsOf = ({ id, on, name, noun, dock }: KinShellSection): KinShellSection => {
+  const plural = name?.trim();
+  const singular = noun?.trim();
+  return {
+    id,
+    on,
+    ...(id === "clients" && plural ? { name: plural } : {}),
+    ...(id === "clients" && singular ? { noun: singular } : {}),
+    ...(dock === undefined ? {} : { dock }),
+  };
+};
 
 // Share each database's latest revision across readers, never across database instances.
 const caches = new WeakMap<SqlClient.SqlClient, Map<KinOrgId, { shell?: Shell }>>();
@@ -62,7 +89,7 @@ const read = Effect.fn("KinShell.read")(function* (orgId: KinOrgId) {
         }),
     ),
   );
-  return { rev: row.rev, sections: ordered(sections) };
+  return { rev: row.rev, sections: ordered(sections).map(labelsOf) };
 });
 
 export const get = Effect.fn("KinShell.get")(function* (orgId: KinOrgId) {
@@ -89,11 +116,11 @@ export const getForDisplay = Effect.fn("KinShell.getForDisplay")((orgId: KinOrgI
   ),
 );
 
-export const sectionOn = Effect.fn("KinShell.sectionOn")(function* (
+export const sectionOnFor = Effect.fn("KinShell.sectionOn")(function* (
   orgId: KinOrgId,
   id: SectionId,
 ) {
-  return onIn(yield* get(orgId), id);
+  return sectionOn(yield* get(orgId), id);
 });
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
@@ -122,15 +149,25 @@ const set = Effect.fn("KinShell.set")(function* (
           });
         const [stored] = yield* sql<{
           rev: number;
-        }>`SELECT rev FROM kin_company_shell WHERE org_id = ${orgId}`;
+          shellJson: string;
+        }>`SELECT rev, shell_json AS "shellJson" FROM kin_company_shell WHERE org_id = ${orgId}`;
         if (rev !== (stored?.rev ?? 0)) return yield* conflict;
-        const sections = ordered(input);
+        const sections = ordered(input).map(labelsOf);
         for (const { id, on } of sections) {
           if (input.filter((section) => section.id === id).length > 1)
             return yield* invalid("A section can only be set once.");
-          if (on || id === "deals") continue;
+          if (id === "docs" && !on) return yield* invalid("Docs can't be turned off.");
+        }
+        const proposed = { rev, sections };
+        if (!storedOn(proposed, "clients") && storedOn(proposed, "invoices")) {
+          const previous =
+            stored === undefined
+              ? undefined
+              : Option.getOrUndefined(yield* Effect.option(decode(stored.shellJson)));
           return yield* invalid(
-            id === "docs" ? "Docs can't be turned off." : "That switch isn't available yet.",
+            previous?.some(({ id, on }) => id === "clients" && !on) === true
+              ? "Turn on Clients first: an invoice needs a client."
+              : "Turn off Invoices and quotes first: an invoice needs a client.",
           );
         }
         const next = rev + 1;
@@ -196,7 +233,7 @@ const make = Effect.gen(function* () {
       );
     }),
     sectionOn: Effect.fnUntraced(function* (orgId, id) {
-      return yield* sectionOn(orgId, id).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      return yield* sectionOnFor(orgId, id).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     }),
   });
 });

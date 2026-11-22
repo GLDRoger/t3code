@@ -1,8 +1,9 @@
 import { assert, it } from "@effect/vitest";
-import { KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { KinOrgId, KinPersonId, KinShellRpcs } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -17,6 +18,7 @@ const layer = KinShell.layer.pipe(
   Layer.provideMerge(Sqlite.layerMemory),
 );
 const orgId = KinOrgId.make("ambermill");
+const decodeSet = Schema.decodeEffect(KinShellRpcs[0].payloadSchema);
 const rhea = KinPersonId.make("rhea");
 const meera = KinPersonId.make("meera");
 const zoya = KinPersonId.make("zoya");
@@ -41,11 +43,20 @@ it.effect("defaults on; only owner level can set Deals on or off at the current 
     assert.equal((yield* refusal(meera, 0, off)).reason, "not_allowed");
     const strangers = KinOrgId.make("strangers");
     assert.equal((yield* Effect.flip(shell.set(strangers, rhea, 0, off))).reason, "not_allowed");
-    for (const id of ["clients", "money", "invoices"])
-      assert.equal(
-        (yield* refusal(rhea, 0, [{ id, on: false }])).message,
-        "That switch isn't available yet.",
-      );
+    assert.deepInclude(yield* refusal(rhea, 0, [{ id: "clients", on: false }]), {
+      reason: "invalid_state",
+      message: "Turn off Invoices and quotes first: an invoice needs a client.",
+    });
+    assert.deepInclude(
+      yield* refusal(rhea, 0, [
+        { id: "clients", on: false },
+        { id: "money", on: false },
+      ]),
+      {
+        reason: "invalid_state",
+        message: "Turn off Invoices and quotes first: an invoice needs a client.",
+      },
+    );
     assert.equal((yield* refusal(rhea, 0, [{ id: "docs", on: false }])).reason, "invalid_state");
     const first = yield* shell.set(orgId, rhea, 0, [...off, { id: "unknown", on: false }]);
     assert.equal(first.rev, 1);
@@ -89,8 +100,40 @@ it.effect("defaults on; only owner level can set Deals on or off at the current 
     yield* sql`UPDATE kin_people SET removed_at = 1 WHERE org_id = ${orgId} AND person_id = ${zoya}`;
     assert.equal((yield* refusal(zoya, 3, off)).reason, "not_allowed");
     assert.equal(Option.getOrUndefined(yield* Stream.runHead(refresh.changes(orgId)))?.shell, 3);
+    const moneyOff = yield* shell.set(orgId, rhea, 3, [{ id: "money", on: false }]);
+    assert.deepStrictEqual(
+      moneyOff.sections.find(({ id }) => id === "invoices"),
+      {
+        id: "invoices",
+        on: true,
+      },
+    );
+    assert.isFalse(KinShell.sectionOn(moneyOff, "invoices"));
+    assert.isTrue(KinShell.sectionOn(moneyOff, "deals"));
+    const clientsOff = yield* shell.set(orgId, rhea, 4, [
+      { id: "clients", on: false },
+      { id: "invoices", on: false },
+    ]);
+    assert.isFalse(KinShell.sectionOn(clientsOff, "deals"));
+    assert.deepInclude(
+      yield* refusal(rhea, 5, [
+        { id: "invoices", on: true },
+        { id: "clients", on: false },
+      ]),
+      {
+        reason: "invalid_state",
+        message: "Turn on Clients first: an invoice needs a client.",
+      },
+    );
+    const resetInput = yield* decodeSet({
+      orgId,
+      rev: 5,
+      shell: { sections: [{ id: "clients", on: true, name: "  ", noun: "" }] },
+    });
+    const reset = yield* shell.set(orgId, rhea, 5, resetInput.shell.sections);
+    assert.deepStrictEqual(reset.sections[0], { id: "clients", on: true });
     yield* sql`DROP TABLE kin_company_shell`;
-    assert.equal((yield* refusal(rhea, 3, off)).reason, "unavailable");
-    assert.equal(Option.getOrUndefined(yield* Stream.runHead(refresh.changes(orgId)))?.shell, 3);
+    assert.equal((yield* refusal(rhea, 6, off)).reason, "unavailable");
+    assert.equal(Option.getOrUndefined(yield* Stream.runHead(refresh.changes(orgId)))?.shell, 6);
   }).pipe(Effect.provide(layer)),
 );

@@ -2227,7 +2227,7 @@ const linkShown = (link: KinRecordDetail["links"][number]) =>
             : (link.label ?? link.target),
       };
 const dealsOn = Effect.fn("KinWorkTools.dealsOn")((orgId: KinOrgId) =>
-  KinShell.sectionOn(orgId, "deals").pipe(Effect.orElseSucceed(() => false)),
+  KinShell.sectionOnFor(orgId, "deals").pipe(Effect.orElseSucceed(() => false)),
 );
 
 const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.Type) {

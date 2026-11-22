@@ -35,6 +35,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { Scheduler } from "../../scheduling/Scheduler.ts";
 import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -1244,6 +1245,21 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           // Her Confirm sends it and keeps it, as hers; an open invoice stays open, unnumbered.
           yield* guess;
           const card = yield* drafted;
+          const toggle = (rev: number, id: "money" | "invoices", on: boolean) =>
+            KinShell.KinShell.use((shell) => shell.set(orgId, owner, rev, [{ id, on }])).pipe(
+              Effect.provide(KinShell.layer),
+              Effect.provideService(KinRefreshObserver, { touch: () => Effect.void }),
+            );
+          const reason =
+            "Invoices and quotes is turned off for this company, so this wasn't sent. Turn it on in Settings › Sections and confirm again.";
+          const beforeOff = fake.sent().length;
+          yield* toggle(0, "money", false);
+          assert.deepInclude(yield* Effect.flip(tap(card.widgetId, coOwner)), { message: reason });
+          yield* toggle(1, "invoices", false);
+          assert.deepInclude(yield* Effect.flip(tap(card.widgetId, coOwner)), { message: reason });
+          assert.strictEqual(fake.sent().length, beforeOff);
+          assert.strictEqual((yield* flag("rec_inv")).confirmed, 0);
+          yield* toggle(2, "invoices", true);
           assert.deepStrictEqual(yield* tap(card.widgetId, coOwner), sent);
           assert.deepStrictEqual(yield* flag("rec_inv"), { confirmed: 1, state: "open" });
           assert.strictEqual(yield* keptBy, coOwner);
@@ -2580,6 +2596,8 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           yield* readMail(hello);
           yield* TestClock.adjust("2 minutes");
           const at = yield* Clock.currentTimeMillis;
+          yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+            VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${owner}, ${at})`;
           // Invented alerts in HDFC's shape, more of them than any one pass used to read.
           for (const n of Array.from({ length: 25 }, (_, index) => index + 10))
             for (const to of [ACCOUNTS, HELLO])
@@ -2629,6 +2647,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const source = fromConnections(connections, sql, yield* alertsOnMail(connections));
           const read = yield* source.read(orgId);
           assert.lengthOf(read.seen, 2);
+          assert.deepStrictEqual(read.lines, []);
           yield* source.seen(orgId, read.seen);
           assert.deepStrictEqual(yield* outcomes, once);
           assert.deepStrictEqual(yield* transactions, [{ count: 25 }]);

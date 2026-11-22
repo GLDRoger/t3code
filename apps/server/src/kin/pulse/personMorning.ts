@@ -25,6 +25,8 @@ import { DEAL_SENSES } from "./senses/deals.ts";
 import { type SenseContext, type SensedFact } from "./senses/shared.ts";
 import { DAY_MS, HOUR_MS } from "./thresholds.ts";
 import { forHolder, markTold, untold } from "./told.ts";
+import type { KinShell as Shell } from "@t3tools/contracts";
+import { sectionOn } from "../shell/KinShell.ts";
 import { morningMoneyLines } from "./morningMoney.ts";
 
 /**
@@ -206,7 +208,7 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
   /** Open facts as sensed, not handled. */
   readonly open: ReadonlyArray<SensedFact>;
   readonly holds: ReadonlyArray<Hold>;
-  readonly dealsOn: boolean;
+  readonly shell: Shell;
   /** The facts this person may see (`visibleTo`). */
   readonly sees: (
     personId: KinPersonId,
@@ -260,7 +262,7 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
         AND r.state IN ('open', 'doing', 'waiting') AND r.party_id IS NOT NULL
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
         AND r.due_at >= ${from} AND r.due_at <= ${to}`;
-    const followUps = today?.count ?? 0;
+    const followUps = sectionOn(input.shell, "clients") ? (today?.count ?? 0) : 0;
     const clients = [
       ...(followUps === 0 ? [] : [`Follow-ups today: ${followUps}.`]),
       ...deals.map((fact) => fact.consequence),
@@ -296,19 +298,21 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
     const clock = { zone, locale: KIN_TEXT_LOCALE };
     const when = (row: { readonly dueAt: number; readonly allDay: number }) =>
       dueWhenText(row.dueAt, row.allDay === 1, ctx.zone, clock, "day");
-    const steps = yield* sql<{
-      title: string;
-      client: string;
-      dueAt: number;
-      allDay: number;
-    }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
+    const steps = !sectionOn(input.shell, "clients")
+      ? []
+      : yield* sql<{
+          title: string;
+          client: string;
+          dueAt: number;
+          allDay: number;
+        }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
       FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'ours'
         AND r.state IN ('open', 'doing', 'waiting')
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
         AND r.due_at > ${to} AND r.due_at <= ${day7}
       ORDER BY r.due_at, r.key LIMIT ${SHOWN}`;
-    const expected = !input.dealsOn
+    const expected = !sectionOn(input.shell, "deals")
       ? []
       : yield* sql<{
           title: string;

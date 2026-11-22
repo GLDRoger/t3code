@@ -245,9 +245,16 @@ const matches = (text: string | undefined, key: string | undefined, wanted: stri
   key?.toLowerCase() === wanted.toLowerCase() ||
   (text !== undefined && matchName(wanted, [{ name: text }])._tag === "found");
 
-export const quiet = (fact: { readonly sense: string }, shell: Shell) => {
+export const quiet = (
+  fact: { readonly sense: string; readonly subject?: { readonly key?: string | undefined } },
+  shell: Shell,
+) => {
   const section = sectionOfSense(fact.sense);
-  return section !== null && !KinShell.onIn(shell, section);
+  if (section === null) return false;
+  const subject = fact.subject?.key === undefined ? null : sectionOfKey(fact.subject.key);
+  return (
+    !KinShell.sectionOn(shell, section) || (subject !== null && !KinShell.sectionOn(shell, subject))
+  );
 };
 
 /** Only what this viewer may see; for people, Work facts on tasks every one of them sees. */
@@ -415,8 +422,9 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
   const shownHolds = holdsFor(holds, input.viewer).filter(
     (hold) =>
       (input.withAside !== true ||
-        KinShell.onIn(shell, "deals") ||
-        sectionOfKey(hold.recordKey) !== "deals") &&
+        ((section) => section === null || KinShell.sectionOn(shell, section))(
+          sectionOfKey(hold.recordKey),
+        )) &&
       (input.viewer._tag === "owner" ||
         hold.forPersonId !== null ||
         visible.some((fact) => asides.get(fact.key)?.holdId === hold.holdId)) &&
@@ -731,7 +739,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         open: facts.filter((fact) => handledOf(stored.get(fact.key), at, fact) === null),
         holds,
         sees: (personId) => visibleTo(orgId, { _tag: "people", people: [personId] }, facts, shell),
-        dealsOn: KinShell.onIn(shell, "deals"),
+        shell,
       });
       const told = yield* tellHolders(ctx, facts, stored, holds, shell);
       if (moved > 0 || sensedNow !== lastSensed.get(orgId)) yield* refreshes.touch(orgId, "pulse");

@@ -8,7 +8,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { context } from "../pulse/KinPulse.ts";
-import { ALL_KINDS, kindOf } from "./kinds/all.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { ALL_KINDS } from "./kinds/all.ts";
 import * as KinWatches from "./KinWatches.ts";
 
 /** Each org's sources are found again this often, and at once when its records change. */
@@ -31,8 +32,12 @@ export const round = Effect.fn("KinWatchRounds.round")(function* (
   options: { readonly find: boolean },
 ) {
   const ctx = yield* context(orgId, at).pipe(NodeSqliteClient.readOnly);
+  const shell = yield* KinShell.get(orgId);
+  const kinds = ALL_KINDS.filter(
+    ({ section }) => section === null || KinShell.sectionOn(shell, section),
+  );
   if (options.find)
-    for (const kind of ALL_KINDS) {
+    for (const kind of kinds) {
       const found = yield* kind.find(ctx).pipe(
         NodeSqliteClient.readOnly,
         Effect.catch((cause) =>
@@ -46,7 +51,7 @@ export const round = Effect.fn("KinWatchRounds.round")(function* (
   const before = yield* KinWatches.openWatches(orgId);
   const moved = new Set<string>();
   const asleep = new Map<string, number | null>();
-  for (const kind of ALL_KINDS) {
+  for (const kind of kinds) {
     const theirs = before.filter((watch) => watch.kind === kind.kind);
     if (theirs.length === 0) continue;
     const read = Effect.all([
@@ -66,13 +71,19 @@ export const round = Effect.fn("KinWatchRounds.round")(function* (
     for (const id of kindMoved) moved.add(id);
     for (const [id, until] of kindAsleep) asleep.set(id, until);
   }
-  yield* KinWatches.settleClock({ orgId, at, moved, asleep, watches: before });
+  yield* KinWatches.settleClock({
+    orgId,
+    at,
+    moved,
+    asleep,
+    watches: before.filter((watch) => kinds.some(({ kind }) => kind === watch.kind)),
+  });
   const due = (yield* KinWatches.openWatches(orgId)).filter(
     (watch) => watch.askedLookAt !== null || (watch.nextLookAt <= at && watch.aside === 0),
   );
   const looks: Array<KinWatches.Look> = [];
   for (const watch of due) {
-    const kind = kindOf(watch.kind);
+    const kind = kinds.find(({ kind }) => kind === watch.kind);
     // A kind this host doesn't run yet keeps its row for the host that does.
     if (kind === undefined) continue;
     const checked = yield* kind.check(ctx, watch).pipe(

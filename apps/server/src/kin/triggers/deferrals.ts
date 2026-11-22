@@ -15,6 +15,8 @@ import {
   formatKinWhen,
   kinWhenParts,
 } from "@t3tools/contracts";
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfKey, sectionOfList } from "../shell/sections.ts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -317,6 +319,30 @@ export const hex = (value: string) =>
     "",
   );
 
+export const deferredSectionOff = Effect.fn("Deferrals.sectionOff")(function* (
+  orgId: KinOrgId,
+  title: string,
+  links: ReadonlyArray<string> = [],
+) {
+  const keys = [
+    ...new Set(
+      [...links, ...(title.match(/(?<![\w-])[A-Z][A-Z0-9]{0,7}-[1-9]\d{0,8}(?![\w-])/gi) ?? [])]
+        .map((key) => key.trim().toUpperCase())
+        .filter((key) => sectionOfKey(key) !== null),
+    ),
+  ];
+  if (keys.length === 0) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ list: string }>`SELECT DISTINCT register_id AS list
+    FROM kin_records WHERE org_id = ${orgId} AND key IN ${sql.in(keys)} ORDER BY list`;
+  if (rows.length === 0) return false;
+  const shell = yield* KinShell.get(orgId);
+  return rows.some(({ list }) => {
+    const section = sectionOfList(list);
+    return section !== null && !KinShell.sectionOn(shell, section);
+  });
+});
+
 export const makeDeferralStarter = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -338,9 +364,15 @@ export const makeDeferralStarter = Effect.gen(function* () {
     /** The run state the caller read in this transaction. */
     readonly from: string;
     /** The item: its chat's lead gets the work, capped by where it was asked from. */
-    readonly item: DeferralSource | undefined;
+    readonly item: (DeferralSource & { readonly links?: ReadonlyArray<string> }) | undefined;
   }) {
     const { orgId, itemId, dueAt, at, now } = input;
+    if (
+      yield* deferredSectionOff(orgId, input.card.title, input.item?.links).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      )
+    )
+      return false;
     const lead = yield* liveLead(sql, orgId, {
       chatId: input.item?.chat,
       prefer: CHIEF_OF_STAFF_DOMAIN,

@@ -19,7 +19,7 @@ import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
 import * as KinShell from "../shell/KinShell.ts";
-import { DEALS_OFF, sectionOfKey, sectionOfList, sectionOfTool } from "../shell/sections.ts";
+import { sectionOfKey, sectionOfList, sectionOfTool, type SectionId } from "../shell/sections.ts";
 import * as ReadTools from "./readTools.ts";
 
 type Check = (
@@ -66,29 +66,35 @@ export const taskAdmitted: Check = Effect.fn("KinToolGate.taskAdmitted")(
  * Runs `check` on the calling lead's running turn: no running lead turn admits nothing. The
  * endpoint's auth middleware provides the caller; without it nothing passes.
  */
-const gate = (name: string, check: Check) =>
+const inRunningTurn = <A, B>(
+  name: string,
+  check: (...input: Parameters<Check>) => Effect.Effect<A, never, Services>,
+  otherwise: B,
+) =>
   Effect.fn(name)(
     function* (tool: string, args: unknown) {
       const kin = yield* Effect.serviceOption(KinServer);
-      if (Option.isNone(kin) || Option.isNone(kin.value.services)) return false;
+      if (Option.isNone(kin) || Option.isNone(kin.value.services)) return otherwise;
       const identity = Context.get(kin.value.services.value, KinIdentity);
       const sql = Context.get(kin.value.services.value, SqlClient.SqlClient);
       const agent = yield* identity.resolveAgent(yield* McpInvocationContext).pipe(Effect.option);
-      if (Option.isNone(agent)) return false;
+      if (Option.isNone(agent)) return otherwise;
       const { orgId, agentId, threadId } = agent.value;
       const [row] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
       WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${threadId}
         AND status = 'running'
       ORDER BY started_at, wakeup_id LIMIT 1`;
-      if (row === undefined) return false;
+      if (row === undefined) return otherwise;
       return yield* check({ orgId, agentId, wakeupId: row.wakeupId }, tool, args).pipe(
         Effect.provideContext(kin.value.services.value),
       );
     },
     Effect.catchCause((cause) =>
-      Effect.logWarning("Kin tool gate failed; refusing", { cause }).pipe(Effect.as(false)),
+      Effect.logWarning("Kin tool gate failed; refusing", { cause }).pipe(Effect.as(otherwise)),
     ),
   );
+
+const gate = (name: string, check: Check) => inRunningTurn(name, check, false);
 
 /**
  * The event a call acts on, from the lead's running turn: a left-out one is the turn's latest
@@ -152,43 +158,73 @@ const besideReview =
     confinedDecides(turn, tool, args).pipe(
       Effect.flatMap((confined) => (confined ? Effect.succeed(true) : check(turn, tool, args))),
     );
-const sectionOfArguments = (args: unknown) => {
-  const pending = [{ value: args, list: false }];
+const sectionsOfArguments = (args: unknown) => {
+  const sections = new Set<SectionId>();
+  const pending = [{ value: args, field: "" }];
   while (pending.length > 0) {
-    const { value, list } = pending.pop()!;
+    const { value, field } = pending.pop()!;
     if (typeof value === "string") {
-      const section = sectionOfKey(value) ?? (list ? sectionOfList(value) : null);
-      if (section !== null) return section;
+      const section =
+        sectionOfKey(value) ??
+        (field === "list" || field === "lists" ? sectionOfList(value) : null) ??
+        ((field === "client" || field === "project") && value.trim() !== "" ? "clients" : null);
+      if (section !== null) sections.add(section);
     } else if (Array.isArray(value)) {
-      for (const item of value) pending.push({ value: item, list });
+      for (const item of value) pending.push({ value: item, field });
     } else if (Predicate.isReadonlyObject(value)) {
-      for (const [key, child] of Object.entries(value))
-        pending.push({ value: child, list: key === "list" || key === "lists" });
+      for (const [key, child] of Object.entries(value)) pending.push({ value: child, field: key });
     }
   }
-  return null;
+  return sections;
 };
 
-const dealRefusal = (args: unknown) => {
-  if (!Predicate.hasProperty(args, "records") || !Array.isArray(args.records)) return DEALS_OFF;
-  const index = args.records.findIndex((row: unknown) => sectionOfArguments(row) === "deals");
-  if (index < 0) return DEALS_OFF;
+const sectionRefusal = (message: string, args: unknown, section: SectionId) => {
+  if (!Predicate.hasProperty(args, "records") || !Array.isArray(args.records)) return message;
+  const index = args.records.findIndex((row: unknown) => sectionsOfArguments(row).has(section));
+  if (index < 0) return message;
   const row: unknown = args.records[index];
   const named =
     Predicate.hasProperty(row, "title") && typeof row.title === "string"
       ? ` (${JSON.stringify(row.title.slice(0, 60))})`
       : "";
-  return `Row ${index + 1}${named}: ${DEALS_OFF} Nothing was saved.`;
+  return `Row ${index + 1}${named}: ${message} Nothing was saved.`;
 };
 
-const sectionAdmitted = McpToolPolicy.toolCallGate((name, args) => {
-  const section = sectionOfTool(name) ?? sectionOfArguments(args);
-  return section === null
-    ? Effect.succeed(true)
-    : gate("KinToolGate.section", (turn) =>
-        KinShell.sectionOn(turn.orgId, section).pipe(Effect.orElseSucceed(() => false)),
-      )(name, args);
-}, dealRefusal);
+const sectionAdmitted = McpToolPolicy.toolCallRefusal((name, args) => {
+  const sections = sectionsOfArguments(args);
+  const tool = sectionOfTool(name);
+  const template =
+    name === "list_define" &&
+    Predicate.hasProperty(args, "template") &&
+    typeof args.template === "string"
+      ? sectionOfList(args.template)
+      : null;
+  if (tool !== null) sections.add(tool);
+  if (template !== null) sections.add(template);
+  if (sections.size === 0) return Effect.undefined;
+  const unavailable = "Kin couldn't check this company's sections. Nothing was done.";
+  return inRunningTurn(
+    "KinToolGate.section",
+    (turn) =>
+      Effect.match(KinShell.get(turn.orgId), {
+        onFailure: () => unavailable,
+        onSuccess: (shell) => {
+          const off =
+            tool !== null && !KinShell.sectionOn(shell, tool)
+              ? tool
+              : [...sections].find((id) => !KinShell.sectionOn(shell, id));
+          return off === undefined
+            ? undefined
+            : sectionRefusal(
+                `${KinShell.sectionName(shell, off)} is turned off for this company.`,
+                args,
+                off,
+              );
+        },
+      }),
+    unavailable,
+  )(name, args);
+});
 const admitted = besideReview(toolAdmitted);
 const outside = besideReview(outsideToolAllowed);
 

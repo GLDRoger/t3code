@@ -1,3 +1,4 @@
+import { presetDefinition } from "../work/registers.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { EnvironmentThemeService } from "../../environmentTheme.ts";
 import { IssueService } from "../../issue/IssueService.ts";
@@ -72,7 +73,7 @@ import * as Kin from "../layer.ts";
 import { ServerActivation } from "../../serverActivation.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as OwnerClients from "../work/ownerClients.ts";
-import { companyMoney } from "../work/companyProfile.ts";
+import { companyMoney, setProfile } from "../work/companyProfile.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { AssetSigner } from "../../assets/AssetSigner.ts";
 import { ServerSecretStore } from "../../auth/ServerSecretStore.ts";
@@ -647,6 +648,64 @@ it.effect.each([true, false])(
         assert.include(money, '"isError":false');
         assert.notInclude(money, key);
         yield* toggle(3, true);
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at, definition_json)
+          VALUES (${person.orgId}, 'receipts', 'Receipts', 'RCT', 0, ${JSON.stringify(presetDefinition("receipts", "GBP"))})`;
+        const receipt = {
+          records: [{ list: "receipts", title: "Invented receipt", amount: "GBP 10" }],
+        };
+        const readClient = { key: client.key };
+        const moneyOff = [{ id: "money", on: false }];
+        const clientsOff = [
+          { id: "clients", on: false, name: "Donors" },
+          { id: "invoices", on: false },
+        ];
+        const store = (
+          rev: number,
+          sections: ReadonlyArray<{ id: string; on: boolean; name?: string }>,
+        ) => shell.set(person.orgId, person.personId, rev, sections);
+        yield* store(4, moneyOff);
+        assert.notInclude(yield* leadMcp.list, "money_summary");
+        assert.notInclude(yield* leadMcp.list, "payment_record");
+        assert.include(
+          yield* leadCall("record_create", { list: "receipts" }),
+          "Money is turned off for this company.",
+        );
+        assert.include(
+          yield* leadCall("record_create", receipt),
+          "Money is turned off for this company.",
+        );
+        assert.include(
+          yield* leadCall("payment_record", {}),
+          "Invoices and quotes is turned off for this company.",
+        );
+        assert.include(yield* leadCall("record_get", readClient), '"isError":false');
+        yield* store(5, clientsOff);
+        assert.notInclude(yield* leadMcp.list, "client_read");
+        assert.notInclude(yield* leadMcp.list, "pipeline_read");
+        for (const args of [readClient, { key: project.key }])
+          assert.include(
+            yield* leadCall("record_get", args),
+            "Donors is turned off for this company.",
+          );
+        assert.include(
+          yield* leadCall("record_create", {
+            records: [
+              { list: "work", title: "Invented hidden link", client: client.key },
+              { list: "receipts", title: "Invented row with no link", amount: "GBP 10" },
+            ],
+          }),
+          "Donors is turned off for this company.",
+        );
+        yield* store(6, []);
+        yield* setProfile(
+          person.orgId,
+          { _tag: "person", personId: person.personId },
+          { country: "GB" },
+          undefined,
+        ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        const madeReceipt = yield* leadCall("record_create", receipt);
+        assert.include(madeReceipt, '"isError":false', madeReceipt);
+        assert.include(yield* leadCall("record_get", readClient), '"isError":false');
         yield* sql`UPDATE kin_leads SET thread_id = NULL
           WHERE org_id = ${person.orgId} AND agent_id = ${agentId}`;
         const elsewhere = [
