@@ -44,7 +44,7 @@ import { heldUntil } from "../triggers/quietHold.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
-import { personSees, unreadableBy, withoutOwnFigures } from "../work/teamView.ts";
+import { personSees, unreadableBy } from "../work/teamView.ts";
 import {
   DRAFT_KINDS,
   answeredEventId,
@@ -602,11 +602,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
       }
       if (!ownerTurn && asker !== null) {
         // A figure she wrote herself is no secret from her: only the company's others are held.
-        const why = yield* unreadableBy(
-          orgId,
-          asker,
-          hers === undefined ? words : withoutOwnFigures(words, hers.join("\n")),
-        );
+        const why = yield* unreadableBy(orgId, asker, words, undefined, hers?.join("\n"));
         if (why !== undefined) return yield* refuse(`Not for ${askerName ?? "the asker"}: ${why}.`);
       }
       const now = yield* Clock.currentTimeMillis;

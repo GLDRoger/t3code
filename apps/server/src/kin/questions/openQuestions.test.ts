@@ -2575,6 +2575,30 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.notInclude(secret.note ?? "", "Changes first");
       assert.lengthOf(yield* drafts, 1);
       assert.lengthOf(yield* shownUp(zoyaChat), 1);
+      // Rhea's own 300000 never hides what holds it: a private entry's title or a client's terms
+      // with that number in it is refused; the number alone goes up (below).
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at, sensitive)
+        VALUES (${orgId}, 'rec_exit', 'invoices', 'INV-9', 'Pinecrest exit 300000', 'person',
+          ${owner.personId}, 'person', 'rec_exit', 0, 0, 1)`;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(COALESCE(fields_json, '{}'),
+          '$.terms', 'Retainer 300000, net 30 days')
+        WHERE org_id = ${orgId} AND key = 'C-8'`;
+      for (const [title, tail] of [
+        ["Exit note", "Pinecrest exit 300000"],
+        ["Terms note", "Retainer 300000, net 30 days"],
+      ] as const) {
+        const held = yield* proposal(words, {
+          title,
+          body: `Harbourline proposal: four shoots, ₹300000 a month. ${tail}`,
+        });
+        assert.notStrictEqual(held.key, "");
+        assert.include(
+          held.note,
+          "Kin couldn't put it to Rhea Rao again: Not for Zoya Sheikh: it repeats a private entry or a client's terms they can't see.",
+        );
+      }
+      assert.lengthOf(yield* drafts, 1);
       // A figure Rhea didn't write that Zoya may not read can't go to her chat: filed as today,
       // and the agent hears why. So with the sum of an invoice Zoya doesn't see.
       const priced = yield* proposal(words, {
