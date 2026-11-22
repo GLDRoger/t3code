@@ -197,6 +197,13 @@ const KinPulseScreenRead = Schema.Struct({
   tasksNeedsYou: Schema.optional(NonNegativeInt),
 });
 
+const decodeCurrentLists = Schema.decodeUnknownSync(CurrentLists);
+const decodePreviousLists = Schema.decodeUnknownSync(KinListsResult);
+const decodeCurrentGoals = Schema.decodeUnknownSync(CurrentGoals);
+const decodePreviousGoals = Schema.decodeUnknownSync(KinGoalsResult);
+const decodeCurrentPulse = Schema.decodeUnknownSync(CurrentPulse);
+const decodePreviousPulse = Schema.decodeUnknownSync(KinPulseScreenRead);
+
 const asOf = "2026-11-22T00:00:00.000Z";
 
 it("reads downgraded list definitions but rejects a raw number field on old clients", () => {
@@ -219,9 +226,9 @@ it("reads downgraded list definitions but rejects a raw number field on old clie
   const field = { key: "count", label: "Count", sensitive: false };
   const raw = { lists: [{ ...list, fields: [{ ...field, type: "number" }] }] };
   const legacy = { lists: [{ ...list, fields: [{ ...field, type: "text" }] }] };
-  expect(Schema.decodeUnknownSync(CurrentLists)(raw)).toEqual(raw);
-  expect(() => Schema.decodeUnknownSync(KinListsResult)(raw)).toThrow();
-  expect(Schema.decodeUnknownSync(KinListsResult)(legacy)).toEqual(legacy);
+  expect(decodeCurrentLists(raw)).toEqual(raw);
+  expect(() => decodePreviousLists(raw)).toThrow();
+  expect(decodePreviousLists(legacy)).toEqual(legacy);
 });
 
 it("keeps number goals readable as manual goals", () => {
@@ -245,9 +252,7 @@ it("keeps number goals readable as manual goals", () => {
       },
     ],
   };
-  expect(Schema.decodeUnknownSync(KinGoalsResult)(wire)).toEqual(
-    Schema.decodeUnknownSync(CurrentGoals)(wire),
-  );
+  expect(decodePreviousGoals(wire)).toEqual(decodeCurrentGoals(wire));
 });
 
 it("keeps new pulse facts out of an unannounced screen answer", () => {
@@ -271,10 +276,6 @@ it("keeps new pulse facts out of an unannounced screen answer", () => {
   const later = new Set<string>(KIN_PULSE_LATER_SENSES);
   const legacyFacts = facts.filter(({ sense }) => !later.has(sense));
   const wire = { asOf, total: legacyFacts.length, facts: legacyFacts };
-  expect(
-    Schema.decodeUnknownSync(KinPulseScreenRead)(wire).facts.map(({ sense }) => sense),
-  ).toEqual(["task_late"]);
-  expect(
-    Schema.decodeUnknownSync(CurrentPulse)({ asOf, total: facts.length, facts }).facts,
-  ).toHaveLength(5);
+  expect(decodePreviousPulse(wire).facts.map(({ sense }) => sense)).toEqual(["task_late"]);
+  expect(decodeCurrentPulse({ asOf, total: facts.length, facts }).facts).toHaveLength(5);
 });
