@@ -1,3 +1,4 @@
+import * as KinShell from "../shell/KinShell.ts";
 import type {
   KinDateRow,
   KinMoney,
@@ -359,7 +360,11 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
    * People's Money lists money's dates alone ahead; an agent's read keeps every date. `keyed`:
    * for a coding agent's key, every figure and row leaves out what `keySensitive` covers.
    */
-  options: { readonly moneyDates?: boolean; readonly keyed?: boolean } = {},
+  options: {
+    readonly moneyDates?: boolean;
+    readonly omitDeals?: boolean;
+    readonly keyed?: boolean;
+  } = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
   const seen = seenFor(sql, viewer, options.keyed);
@@ -512,7 +517,8 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   );
   // Suggestions in money lists, and any other with an amount: what Money's figures leave out.
   const suggestion = sql`r.org_id = ${orgId} AND r.confirmed = 0 AND r.state <> 'dropped'
-    AND (r.register_id IN ${sql.in(MONEY_LISTS)} OR r.amount_minor IS NOT NULL) AND ${seen}`;
+    AND (r.register_id IN ${sql.in(MONEY_LISTS)} OR r.amount_minor IS NOT NULL) AND ${seen}
+    AND ${options.omitDeals === true ? sql`r.register_id <> 'deals'` : sql`1 = 1`}`;
   const suggested =
     viewer._tag === "ownerLevel"
       ? yield* sql<RecordRow & { listName: string | null }>`SELECT s.*, g.name AS "listName"
@@ -649,6 +655,15 @@ type SectionDate = {
 /** What the section says of its suggestions: only what the server guarantees about them. */
 const SUGGESTED_NOTE =
   "Entries an agent suggested that the owner or a co-owner hasn't kept. No figure here counts them or any payment recorded on them: none is owed, due, received or spent until it is kept.";
+
+export const moneySummaryForAgent = Effect.fn("KinMoneyViews.agentSummary")(function* (
+  orgId: KinOrgId,
+  now: number,
+  viewer: KinViewer,
+) {
+  const on = yield* KinShell.sectionOn(orgId, "deals").pipe(Effect.orElseSucceed(() => false));
+  return yield* moneySummary(orgId, now, viewer, { omitDeals: !on });
+});
 
 /**
  * The Money summary as a short block for an owner-only prompt, built by code: figures already
