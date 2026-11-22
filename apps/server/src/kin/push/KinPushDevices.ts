@@ -38,6 +38,8 @@ export type KinPushDevice = {
   readonly platform: KinPushPlatform;
   readonly apsEnvironment: KinApsEnvironment;
   readonly sessionId: AuthSessionId;
+  /** An Android build that made the quiet channel (`KinPushRegisterDeviceInput.quietChannel`). */
+  readonly quietChannel: boolean;
 };
 
 /** What logs and clients see instead of a token: 12 hex characters of its SHA-256. */
@@ -136,6 +138,7 @@ const make = Effect.gen(function* () {
             platform: input.platform,
             aps_environment: input.apsEnvironment,
             device_label: input.deviceLabel ?? null,
+            quiet_channel: input.quietChannel === true ? 1 : 0,
             session_id: caller.session.sessionId,
             proof_key_thumbprint: caller.session.proofKeyThumbprint ?? null,
             created_at: now,
@@ -146,6 +149,7 @@ const make = Effect.gen(function* () {
           platform = excluded.platform,
           aps_environment = excluded.aps_environment,
           device_label = excluded.device_label,
+          quiet_channel = excluded.quiet_channel,
           session_id = excluded.session_id,
           proof_key_thumbprint = excluded.proof_key_thumbprint,
           updated_at = excluded.updated_at
@@ -195,7 +199,9 @@ const make = Effect.gen(function* () {
         platform: KinPushPlatform;
         aps_environment: KinApsEnvironment;
         session_id: AuthSessionId;
-      }>`SELECT token, person_id, platform, aps_environment, session_id FROM kin_push_devices
+        quiet_channel: number;
+      }>`SELECT token, person_id, platform, aps_environment, session_id, quiet_channel
+        FROM kin_push_devices
         WHERE org_id = ${orgId} AND person_id IN ${sql.in(people)}
         ORDER BY person_id, token`;
       return rows.map((row): KinPushDevice => ({
@@ -205,6 +211,7 @@ const make = Effect.gen(function* () {
         platform: row.platform,
         apsEnvironment: row.aps_environment,
         sessionId: row.session_id,
+        quietChannel: row.quiet_channel === 1,
       }));
     },
     Effect.catch(internal("KinPushDevices.forPeople")),

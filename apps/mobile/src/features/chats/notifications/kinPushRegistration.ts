@@ -156,7 +156,10 @@ export const kinPushOs = (os: string): KinPushOs | null =>
 export const kinPushToken = (os: KinPushOs, raw: unknown) =>
   os === "ios" ? String(raw).toLowerCase() : String(raw);
 
-/** The one registration both phones send; FCM has no sandbox, so Android says `production`. */
+/**
+ * The one registration both phones send; FCM has no sandbox, so Android says `production`. This
+ * build makes the `kin.quiet` channel on Android (`installKinNotifications`), so it says so.
+ */
 export function kinPushRegisterInput(input: {
   readonly os: KinPushOs;
   readonly orgId: KinOrgId;
@@ -168,5 +171,6 @@ export function kinPushRegisterInput(input: {
     token: input.token,
     platform: input.os,
     apsEnvironment: input.os === "ios" && input.sandbox ? "development" : "production",
+    ...(input.os === "android" ? { quietChannel: true } : {}),
   };
 }

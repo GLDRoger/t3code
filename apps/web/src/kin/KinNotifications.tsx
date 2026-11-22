@@ -37,15 +37,18 @@ import {
 import { KIN_PLACE_PATH, kinRecordPlace } from "./kinPlaces";
 import { KinSettingsChoice } from "./settings/KinSettingsControls";
 import { KinSettingsPage, KinSettingsRow, KinSettingsSection } from "./settings/KinSettingsLayout";
+import { KinQuietHoursSetting } from "./settings/KinQuietHoursSetting";
+import type { KinSettingsTarget } from "./settings/kinSettingsTarget";
 import { useKinInbox } from "./useKinHost";
 
-/** Settings → You → Notifications: this computer's alerts for Kin messages. */
-export function KinSettingsNotifications() {
+/** Settings → You → Notifications: this computer's alerts for Kin messages, and your quiet hours. */
+export function KinSettingsNotifications(props: KinSettingsTarget) {
   return (
     // This device's own setting: the app-wide scope, which the Kin modal doesn't otherwise hold.
     <SettingsScopeProvider search={{}} onChange={() => {}}>
       <KinSettingsPage purpose={KIN_MESSAGE_ALERTS.purpose}>
         <MessageAlerts />
+        <KinQuietHoursSetting {...props} />
       </KinSettingsPage>
     </SettingsScopeProvider>
   );

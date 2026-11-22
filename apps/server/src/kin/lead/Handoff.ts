@@ -1627,6 +1627,13 @@ const make = Effect.gen(function* () {
               silent: true,
             });
             if (handoff.wantsAnswer === 0) return;
+            // The asking lead's turn that handed the message on: this answer is its result.
+            const asked = yield* sql<{ wakeupId: KinWakeupId }>`SELECT DISTINCT
+                wakeup_id AS "wakeupId" FROM kin_events
+              WHERE org_id = ${input.orgId} AND agent_id = ${handoff.fromAgentId}
+                AND wakeup_id IS NOT NULL AND tag = 'chat.message'
+                AND json_extract(json, '$.messageId') = ${handoff.messageId}
+              ORDER BY wakeup_id`;
             yield* queue
               .enqueue({
                 _tag: "chat.message",
@@ -1639,6 +1646,7 @@ const make = Effect.gen(function* () {
                 chatId: asker.ownerChatId,
                 messageId: back.messageId,
                 origin: { agentId: handoff.fromAgentId, chatId: asker.ownerChatId },
+                ...(asked.length === 0 ? {} : { askedIn: asked.map((row) => row.wakeupId) }),
               })
               .pipe(
                 Effect.tap(() =>
