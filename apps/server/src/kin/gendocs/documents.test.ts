@@ -1777,6 +1777,7 @@ describe("the accountant's pack", () => {
         ["earlier", 40_00, day("2026-10-01"), { reimbursement: "repaid", repaidOn: "2026-10-15" }],
         ["later", 5_00, day("2026-10-02"), { reimbursement: "repaid", repaidOn: "2026-12-01" }],
         ["given", 60_00, day("2026-10-03"), { reimbursement: "not reimbursable" }],
+        ["undated", 7_00, day("2026-11-05"), { reimbursement: "repaid" }],
       ] as const)
         yield* records.create(orgId, system, {
           list: "expenses",
@@ -1828,8 +1829,12 @@ describe("the accountant's pack", () => {
         Date.parse("2026-11-12T06:00:00.000Z"),
         KIN_OWNER_LEVEL,
       );
-      assert.deepStrictEqual(money.spent.thisMonth.total, [{ minor: 146_75, currency: "INR" }]);
+      // Money counts partners' expenses when the company repaid them: 30.00 bought in October, and
+      // 7.00 repaid with no day recorded, so on the day it was bought; the 5.00 refund comes off.
+      // The sheet lists by purchase.
+      assert.deepStrictEqual(money.spent.thisMonth.total, [{ minor: 183_75, currency: "INR" }]);
       assert.deepStrictEqual(totals("Expenses"), [
+        ["Total", "7.00"],
         ["Total software", "51.75"],
         ["Total travel", "95.00"],
       ]);
@@ -1856,8 +1861,22 @@ describe("the accountant's pack", () => {
       assert.deepStrictEqual(totals("Sales register"), [["Total", "0.00"]]);
       assert.deepStrictEqual(totals("Owed to partners"), [
         ["Total owed", "25.00"],
-        ["Total repaid", "30.00"],
+        ["Total repaid", "37.00"],
       ]);
+      // A repaid day no one recorded stays blank for the accountant.
+      const partnerRows = assembled.inputs.partners as ReadonlyArray<{
+        title: string;
+        repaidOn: string | null;
+      }>;
+      assert.deepStrictEqual(
+        partnerRows
+          .filter((one) => one.title.endsWith("repaid") || one.title.endsWith("undated"))
+          .map((one) => [one.title, one.repaidOn]),
+        [
+          ["Invented partner repaid", "2026-11-10"],
+          ["Invented partner undated", null],
+        ],
+      );
     }).pipe(Effect.provide(layer)),
   );
 });

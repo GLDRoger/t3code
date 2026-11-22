@@ -108,7 +108,9 @@ export const KIN_OUTLOOK = {
   partnerNote: (count: number, oldest: string) =>
     `${count} expense${count === 1 ? "" : "s"} they paid, since ${oldest}`,
   unmatched: "An imported address no teammate is matched to yet",
+  nameless: "Marked owed with no partner named",
   whoIsThis: "Who is this?",
+  nothingMatched: "Nothing was left to match: Money is up to date.",
 };
 
 export const KIN_BUDGETS = {
@@ -357,13 +359,16 @@ export interface KinOutlookView {
   readonly more: { readonly incoming: number; readonly outgoing: number };
   readonly notes: ReadonlyArray<string>;
   readonly runway: ReadonlyArray<{ readonly currency: string; readonly text: string }>;
-  /** Who the company owes back; an unmatched one carries the import's address to match. */
+  /**
+   * Who the company owes back. One no teammate is matched to yet has `match`: the import's address
+   * to name a person for, or null for expenses marked owed with no partner at all.
+   */
   readonly partners: ReadonlyArray<{
     readonly id: string;
     readonly name: string;
     readonly amount: string;
     readonly note: string;
-    readonly address: string | null;
+    readonly match: { readonly address: string | null } | null;
   }>;
 }
 
@@ -427,10 +432,12 @@ export function kinOutlookView(
       name: one.name,
       amount: kinTotalsLines(one.owed).join(" + "),
       note:
-        one.personId === null
-          ? KIN_OUTLOOK.unmatched
-          : KIN_OUTLOOK.partnerNote(one.expenses, onLabel(one.oldest, now)),
-      address: one.personId === null ? one.address : null,
+        one.personId !== null
+          ? KIN_OUTLOOK.partnerNote(one.expenses, onLabel(one.oldest, now))
+          : one.address === null
+            ? KIN_OUTLOOK.nameless
+            : KIN_OUTLOOK.unmatched,
+      match: one.personId === null ? { address: one.address } : null,
     })),
   };
 }

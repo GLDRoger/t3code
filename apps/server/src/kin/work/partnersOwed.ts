@@ -12,6 +12,7 @@ import {
   IMPORTED_PARTNER,
   owedToPartner,
   partnerAddress,
+  partnerFunded,
 } from "./reimbursement.ts";
 
 /** One Paid expense a partner funded and the company hasn't paid back yet. */
@@ -118,30 +119,34 @@ export const partnersAnswer = (partners: PartnersOwed, zone: string, shown = 20)
 
 /**
  * The owner or a co-owner names who an import's address is: every partner-funded expense that
- * names no person and carries that address takes `personId` as its funder, each as its own logged
- * change. Addresses compare as `fundingOf` groups them (`partnerAddress`), in TS, not SQLite's
+ * names no person and carries that address (or, with `address` null, carries none) takes
+ * `personId` as its funder, each as its own logged change. Addresses compare as `fundingOf` groups them (`partnerAddress`), in TS, not SQLite's
  * ASCII-only `lower`/space-only `trim`. Fails when nothing is left to match.
  */
 export const matchPartner = Effect.fn("KinPartnersOwed.match")(function* (
   orgId: KinOrgId,
   writer: Writer,
-  address: string,
+  address: string | null,
   personId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
-  const given = partnerAddress(address);
+  const given = address === null ? null : partnerAddress(address);
   const rows = yield* sql<{ key: string; rev: number; fieldsJson: string }>`SELECT r.key, r.rev,
       r.fields_json AS "fieldsJson"
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses'
-      AND json_extract(r.fields_json, ${`$.${IMPORTED_PARTNER}`}) IS NOT NULL
+      AND (json_extract(r.fields_json, ${`$.${IMPORTED_PARTNER}`}) IS NOT NULL
+        OR ${partnerFunded(sql)})
     ORDER BY r.key`;
   const named = rows.flatMap((row) => {
     const fields = parseFields(row.fieldsJson);
-    return partnerAddress(fieldText(fields, IMPORTED_PARTNER)) === given
-      ? [{ ...row, funding: fundingOf(fields) }]
-      : [];
+    const funding = fundingOf(fields);
+    const same =
+      given === null
+        ? funding.by === "partner" && funding.personId === null && funding.unmatched === null
+        : partnerAddress(fieldText(fields, IMPORTED_PARTNER)) === given;
+    return same ? [{ ...row, funding }] : [];
   });
   const matching = named.filter(
     (row) => row.funding.by === "partner" && row.funding.personId === null,
@@ -151,7 +156,9 @@ export const matchPartner = Effect.fn("KinPartnersOwed.match")(function* (
       reason: "invalid_state",
       message:
         named.length === 0
-          ? "No expense owed to a partner carries that address."
+          ? given === null
+            ? "Every expense owed to a partner already says who."
+            : "No expense owed to a partner carries that address."
           : "Those expenses already say who funded them.",
     });
   for (const row of matching)

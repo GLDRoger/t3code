@@ -474,7 +474,7 @@ export const matchPartner = Effect.fn("KinMoneyAnswers.rpc.matchPartner")(functi
     AND person_id = ${input.personId} AND removed_at IS NULL`;
   if (member === undefined) return yield* invalid("That person isn't on the team.");
   const matched = yield* sql.withTransaction(
-    matchPartnerOf(input.orgId, ownerWriter(person), input.address, input.personId),
+    matchPartnerOf(input.orgId, ownerWriter(person), input.address ?? null, input.personId),
   );
   return { matched };
 }, workFailure);

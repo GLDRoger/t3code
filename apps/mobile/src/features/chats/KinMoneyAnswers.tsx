@@ -314,12 +314,11 @@ function OutlookRows(props: {
   );
 }
 
-/** What is expected in and out over the next 30 days, by currency, and runway. */
-/** Who the company owes back; an imported address no one is matched to gets a person picked. */
+/** Who the company owes back; one no teammate is matched to yet gets a person picked. */
 function PartnersOwed(props: Section & { readonly rows: KinOutlookView["partners"] }) {
   const directory = useKinWorkDirectory(
     props,
-    props.rows.some((one) => one.address !== null),
+    props.rows.some((one) => one.match !== null),
   );
   const matching = useKinMatchPartner(props);
   const people = [...directory.names.people].sort((a, b) => a[1].localeCompare(b[1]));
@@ -330,7 +329,7 @@ function PartnersOwed(props: Section & { readonly rows: KinOutlookView["partners
         {KIN_OUTLOOK.partners}
       </Text>
       {props.rows.map((row) =>
-        row.address === null ? (
+        row.match === null ? (
           <ListRowLayout key={row.id} label={row.name} description={row.note} detail={row.amount} />
         ) : (
           <Menu
@@ -340,7 +339,7 @@ function PartnersOwed(props: Section & { readonly rows: KinOutlookView["partners
             accessibilityLabel={`${row.name}, ${row.amount}. ${KIN_OUTLOOK.whoIsThis}`}
             actions={people.map(([id, name]) => ({ id, title: name }))}
             onPressAction={({ nativeEvent: { event } }) => {
-              if (!matching.busy) void matching.match(row.address!, KinPersonId.make(event));
+              if (!matching.busy) void matching.match(row.match!.address, KinPersonId.make(event));
             }}
           >
             <View pointerEvents="none">
@@ -362,6 +361,7 @@ function PartnersOwed(props: Section & { readonly rows: KinOutlookView["partners
   );
 }
 
+/** What is expected in and out over the next 30 days, by currency, and runway. */
 export function KinOutlookSection(props: Section) {
   const now = new Date(useNowMinuteMs());
   const open = useOpenEntry(props);

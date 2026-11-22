@@ -3611,9 +3611,11 @@ describe("an expense typed by hand", () => {
           vendor: "Invented Couriers",
           category: "Office",
           paidWith: "UPI",
+          fundedBy: ownerId,
           receipt: ["att-1-0"],
           clientRequestId: "form-1",
         };
+        // No Expenses list yet: the first expense makes it, Funded by and all.
         assert.isUndefined(yield* listDef(orgId, "expenses"));
         const made = yield* OwnerMoneyAnswers.newExpense(people, asked);
         const row = (yield* records.get(orgId, made.expense))!;
@@ -3624,7 +3626,12 @@ describe("an expense typed by hand", () => {
             "done",
             235_000,
             "office",
-            { vendor: "Invented Couriers", paidWith: "upi", receipt: ["att-1-0"] },
+            {
+              vendor: "Invented Couriers",
+              paidWith: "upi",
+              fundedBy: `person:${ownerId}`,
+              receipt: ["att-1-0"],
+            },
           ],
         );
         assert.strictEqual(row.dateAt, endOfDay("2026-11-12", "Asia/Kolkata"));
@@ -5247,6 +5254,22 @@ describe("money answers", () => {
             asked.answer as { partners: ReadonlyArray<{ oldest: ReadonlyArray<{ key: string }> }> }
           ).partners[0]?.oldest.map((one) => one.key),
           [imported.key, "EXP-5"],
+        );
+
+        // Marked owed by hand with no partner and no address: a person can still be named for it.
+        const { row: nameless } = yield* spend("nameless", "2026-10-05", 1_000, {
+          reimbursement: "owed",
+        });
+        const unnamed = (yield* OwnerMoneyAnswers.outlook(people, { orgId })).owedToPartners?.find(
+          (one) => one.personId === null,
+        );
+        assert.deepInclude(unnamed, { address: null, expenses: 1 });
+        assert.deepStrictEqual(
+          yield* OwnerMoneyAnswers.matchPartner(people, {
+            orgId,
+            personId: KinPersonId.make("meera"),
+          }),
+          { matched: [nameless.key] },
         );
       }).pipe(Effect.provide(layer)),
   );
