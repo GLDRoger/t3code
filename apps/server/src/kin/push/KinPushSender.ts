@@ -742,11 +742,10 @@ const make = Effect.gen(function* () {
           }),
       )
       .map((person) => ({ personId: person.personId, muted: person.muted }));
-    // On their own clock: what someone timed rings whatever the hour. In quiet hours only an
-    // answer to what they asked lately rings, once a turn; the rest arrives quietly (a teammate's
-    // word rings at their end, \`later\`). Off hours, only a person or an answer rings. Kin's word
-    // on their own work or a default it took for them rings past the half hour cap that holds
-    // anything else from Kin or an agent. A chat they muted sets only the badge.
+    // On their own clock: what someone timed rings at any hour. In quiet hours only an answer to
+    // what they asked lately rings, once a turn; the rest arrives quietly (a teammate's word rings
+    // at their end, `later`). Off hours, only a person or an answer rings. Their own work's word
+    // passes the half-hour cap on Kin and agents; a muted chat sets only the badge.
     const recipients: Array<Recipient> = [];
     const later: Array<KinPersonId> = [];
     let answersAnyone = false;

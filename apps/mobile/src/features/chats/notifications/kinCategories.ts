@@ -64,7 +64,4 @@ export const KIN_ANDROID_CHANNELS = {
     description: "What arrives in your quiet hours, waiting without a sound",
     quiet: true,
   },
-} as const satisfies Record<
-  KinPushChannel,
-  { name: string; description: string; quiet?: true }
->;
+} as const satisfies Record<KinPushChannel, { name: string; description: string; quiet?: true }>;
