@@ -19,7 +19,7 @@ import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
 import * as KinShell from "../shell/KinShell.ts";
-import { sectionOfKey, sectionOfList, sectionOfTool } from "../shell/sections.ts";
+import { DEALS_OFF, sectionOfKey, sectionOfList, sectionOfTool } from "../shell/sections.ts";
 import * as ReadTools from "./readTools.ts";
 
 type Check = (
@@ -168,9 +168,6 @@ const sectionOfArguments = (args: unknown) => {
   }
   return null;
 };
-
-const DEALS_OFF =
-  "Deals is turned off for this company. An owner can turn it on in Settings › Deals.";
 
 const dealRefusal = (args: unknown) => {
   if (!Predicate.hasProperty(args, "records") || !Array.isArray(args.records)) return DEALS_OFF;

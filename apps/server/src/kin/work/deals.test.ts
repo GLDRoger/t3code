@@ -929,6 +929,8 @@ it.effect(
       const made = yield* Clients.createPartyWithDeal([zoya], input);
       const again = yield* Clients.createPartyWithDeal([zoya], input);
       assert.strictEqual(again.party.key, made.party.key);
+      if (again.deal === undefined || made.deal === undefined)
+        return assert.fail("Deals was on, so both results must include the deal.");
       assert.strictEqual(again.deal.key, made.deal.key);
       assert.isTrue(made.party.prospect);
       assert.strictEqual(made.deal.party.key, made.party.key);
@@ -955,6 +957,25 @@ it.effect(
       assert.strictEqual(yield* count("clients"), clients + 1);
       assert.strictEqual(yield* count("contacts"), 1);
       assert.strictEqual(yield* count("deals"), 1);
+
+      yield* setShellFixture(false).pipe(Effect.provide(KinShell.layer));
+      const omitted = {
+        ...input,
+        name: "Invented Reedwater",
+        deal: { ...input.deal, title: "Invented Reedwater work" },
+        clientRequestId: "reedwater",
+      };
+      const clientOnly = yield* Clients.createPartyWithDeal([zoya], omitted);
+      assert.notProperty(clientOnly, "deal");
+      assert.include(clientOnly, { dealLeftOut: "Deals is turned off for this company." });
+      assert.deepStrictEqual(yield* Clients.createPartyWithDeal([zoya], omitted), clientOnly);
+      assert.strictEqual(yield* count("clients"), clients + 2);
+      assert.strictEqual(yield* count("contacts"), 2);
+      assert.strictEqual(yield* count("deals"), 1);
+      assert.deepInclude(
+        yield* Effect.flip(Deals.create([owner], newDeal(made.party.key, "Invented direct deal"))),
+        { reason: "not_allowed", message: "Deals is turned off for this company." },
+      );
     }).pipe(Effect.provide(layer)),
 );
 

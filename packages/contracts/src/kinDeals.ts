@@ -321,13 +321,17 @@ export const KinPartyFirstDeal = Schema.Struct({
   next: Schema.optional(KinDealStepInput),
 });
 export type KinPartyFirstDeal = typeof KinPartyFirstDeal.Type;
-/** A new client and its deal in one step: neither is ever kept without the other. */
+/** A new client and its deal in one step when Deals is on. */
 export const KinPartyWithDealCreateInput = Schema.Struct({
   ...KinPartyCreateInput.fields,
   deal: KinPartyFirstDeal,
+  acceptDealLeftOut: Schema.optional(Schema.Literal(true)),
 });
 export type KinPartyWithDealCreateInput = typeof KinPartyWithDealCreateInput.Type;
-export const KinPartyWithDealResult = Schema.Struct({ party: KinPartyDetail, deal: KinDealRow });
+export const KinPartyWithDealResult = Schema.Union([
+  Schema.Struct({ party: KinPartyDetail, deal: KinDealRow }),
+  Schema.Struct({ party: KinPartyDetail, dealLeftOut: KinTrimmedText }),
+]);
 export type KinPartyWithDealResult = typeof KinPartyWithDealResult.Type;
 
 export const KinDealAddStepInput = Schema.Struct({

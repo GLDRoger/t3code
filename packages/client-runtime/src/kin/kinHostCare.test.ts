@@ -99,7 +99,7 @@ describe("kinHostTroubleCardView", () => {
     [
       "unreachable",
       { count: 0, stopped: 2 },
-      "Kin keeps trying by itself. Kin stopped retrying 2 turns by itself after too many tries. Try again runs them.",
+      "Kin stopped retrying 2 turns by itself after too many tries. Try again runs them.",
     ],
     [
       "program",

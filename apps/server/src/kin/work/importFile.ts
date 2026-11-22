@@ -38,6 +38,8 @@ import * as Stream from "effect/Stream";
 
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
+import { sectionOn } from "../shell/KinShell.ts";
+import { DEALS_OFF } from "../shell/sections.ts";
 import { companyMoneyState } from "./companyProfile.ts";
 import { contactAll } from "./contactDetails.ts";
 import { stagesOf } from "./dealStages.ts";
@@ -661,6 +663,7 @@ const resolve = (
   stored: Stored,
   header: { readonly batch: string; readonly file: string },
   today: string,
+  dealsOn: boolean,
 ): Resolved => {
   const leftOut: Array<KinImportLeftOut> = [];
   let more = 0;
@@ -734,7 +737,7 @@ const resolve = (
   }
 
   // What Kin asks once for the whole file: a currency, and how days are written.
-  const hasDeals = columns("deal.title").length > 0;
+  const hasDeals = dealsOn && columns("deal.title").length > 0;
   const valued = hasDeals ? rows.filter((row) => row.deal !== "" && row.value !== "") : [];
   const needsCurrency =
     mapping.currency === undefined &&
@@ -1063,6 +1066,11 @@ const resolve = (
     for (const deal of deals) {
       const first = deal[0]!;
       const dealSource = `d${first.line}`;
+      if (!dealsOn) {
+        if (!stored.dealOrigins.has(`import:${header.batch}:deal:${dealSource}`))
+          leave(first.line, DEALS_OFF);
+        continue;
+      }
       const known = stageFor(first.stage);
       const decided = decisions.stages?.[fold(first.stage)];
       const stage =
@@ -1235,7 +1243,9 @@ const resolvedFor = Effect.fn("KinImportFile.resolved")(function* (
   const today = dayIn(yield* Clock.currentTimeMillis, yield* ownerZone(orgId).pipe(workFailure));
   // Matching a large file is one long pass over memory: give the event loop back first.
   yield* Effect.yieldNow;
-  return resolve(csv, mapping, decisions ?? {}, stored, { batch, file: file.name }, today);
+  const dealsOn =
+    !mapping.columns.includes("deal.title") || (yield* sectionOn(orgId, "deals").pipe(workFailure));
+  return resolve(csv, mapping, decisions ?? {}, stored, { batch, file: file.name }, today, dealsOn);
 });
 
 export const check = Effect.fn("KinImportFile.check")(function* (

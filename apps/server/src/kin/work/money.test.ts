@@ -973,6 +973,24 @@ describe("lists through the tools", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("keeps an undated refund separate from the original charge", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "expenses" });
+      const entry = { list: "expenses", title: "Invented hosting", state: "open" as const };
+      const add = (sourceEventId: Effect.Success<ReturnType<typeof turn>>, amount: string) =>
+        LeadWork.create(scope, { sourceEventId, records: [{ ...entry, amount }] });
+      const charge = yield* add(yield* turn(3, "Log a charge"), "500");
+      const refund = yield* add(yield* turn(4, "Log a refund"), "-500");
+      assert.deepInclude(charge.records[0], { key: "EXP-1", created: true });
+      assert.deepInclude(refund.records[0], { key: "EXP-2", created: true });
+      const duplicate = yield* add(yield* turn(5, "Log the refund again"), "-500").pipe(
+        Effect.flip,
+      );
+      assert.include(duplicate.message, 'EXP-2 "Invented hosting" is open');
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("record one charge mailed as an invoice and a receipt once, keeping both files", () =>
     Effect.gen(function* () {
       yield* seed;

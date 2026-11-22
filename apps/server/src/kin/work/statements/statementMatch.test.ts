@@ -82,6 +82,27 @@ describe("statement matching", () => {
       group: "matched",
       fit: "exact",
     },
+    ...(
+      [
+        ["IMPS-SELF-XXXXXXXX7710-OWN ACCOUNT", "choose"],
+        ["NEFT-XXXXXXXX7710-AMBERMILL HOSTING", "choose"],
+        ["NEFT-INVENTED PAYMENT", "choose"],
+        ["NEFT-EXP-1", "matched"],
+      ] as const
+    ).map(([description, group]) => ({
+      name: `a same-day refund candidate on ${description}`,
+      rows: [row({ description, amountMinor: 500 })],
+      invoices: [],
+      expenses: [
+        expense({
+          amountMinor: -500,
+          vendor: "Ambermill Hosting",
+          ...(description === "NEFT-EXP-1" ? { day: null } : {}),
+        }),
+      ],
+      group,
+      fit: "exact",
+    })),
     {
       name: "a credit of the exact balance from the named client",
       rows: [

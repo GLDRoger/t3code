@@ -3,6 +3,8 @@ import type { KinPulseSense } from "@t3tools/contracts";
 import type { SHARED_TOOLS } from "../lead/SharedTools.ts";
 import type { ListName } from "../work/lists.ts";
 
+export const DEALS_OFF = "Deals is turned off for this company.";
+
 export type SectionId = "clients" | "deals" | "money" | "invoices" | "docs";
 
 export const SECTIONS = {
