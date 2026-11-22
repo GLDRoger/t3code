@@ -1,3 +1,4 @@
+import { KinShellRpcs, KIN_SHELL_RPC_SCOPES } from "./kinShell.ts";
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 import {
@@ -209,6 +210,7 @@ export const KinRpcs = [
   ...KinStatementRpcs,
   ...KinPushRpcs,
   ...KinPeopleRpcs,
+  ...KinShellRpcs,
   ...KinTasksKeyRpcs,
   ...KinConnectionRpcs,
   ...KinSocialRpcs,
@@ -233,6 +235,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_STATEMENT_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
   ...KIN_PEOPLE_RPC_SCOPES,
+  ...KIN_SHELL_RPC_SCOPES,
   ...KIN_TASKS_KEY_RPC_SCOPES,
   ...KIN_VISUAL_RPC_SCOPES,
   ...KIN_CONNECTION_RPC_SCOPES,
@@ -456,6 +459,7 @@ const KIN_RPC_ACCESS = {
   "kin.work.companyProfile": "owner_level",
   "kin.work.exportLink": "org_owner",
   "kin.work.setCompanyProfile": "owner_level",
+  "kin.shell.set": "owner_level",
   "kin.work.issue": "owner_level",
   "kin.work.nextNumber": "owner_level",
   "kin.work.void": "owner_level",
@@ -756,6 +760,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.companyProfile": "kin-work",
   "kin.work.exportLink": "kin-work",
   "kin.work.setCompanyProfile": "kin-work",
+  "kin.shell.set": "kin-work",
   "kin.work.issue": "kin-work",
   "kin.work.void": "kin-work",
   "kin.work.unvoid": "kin-work",

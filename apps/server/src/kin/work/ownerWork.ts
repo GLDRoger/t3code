@@ -193,7 +193,7 @@ const throughConnection = Effect.fn("KinWork.throughConnection")(function* <A, R
   );
 });
 
-const millis = (value: string, field: string) => {
+export const millis = (value: string, field: string) => {
   const ms = calendarTimeMillis(value);
   return Number.isFinite(ms)
     ? Effect.succeed(ms)

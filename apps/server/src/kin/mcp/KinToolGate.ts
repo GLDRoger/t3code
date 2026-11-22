@@ -18,6 +18,8 @@ import { APPROVED_REFUSAL, approvedToolAllowed } from "../lead/approvedDraft.ts"
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfKey, sectionOfList, sectionOfTool } from "../shell/sections.ts";
 import * as ReadTools from "./readTools.ts";
 
 type Check = (
@@ -150,6 +152,46 @@ const besideReview =
     confinedDecides(turn, tool, args).pipe(
       Effect.flatMap((confined) => (confined ? Effect.succeed(true) : check(turn, tool, args))),
     );
+const sectionOfArguments = (args: unknown) => {
+  const pending = [{ value: args, list: false }];
+  while (pending.length > 0) {
+    const { value, list } = pending.pop()!;
+    if (typeof value === "string") {
+      const section = sectionOfKey(value) ?? (list ? sectionOfList(value) : null);
+      if (section !== null) return section;
+    } else if (Array.isArray(value)) {
+      for (const item of value) pending.push({ value: item, list });
+    } else if (Predicate.isReadonlyObject(value)) {
+      for (const [key, child] of Object.entries(value))
+        pending.push({ value: child, list: key === "list" || key === "lists" });
+    }
+  }
+  return null;
+};
+
+const DEALS_OFF =
+  "Deals is turned off for this company. An owner can turn it on in Settings › Deals.";
+
+const dealRefusal = (args: unknown) => {
+  if (!Predicate.hasProperty(args, "records") || !Array.isArray(args.records)) return DEALS_OFF;
+  const index = args.records.findIndex((row: unknown) => sectionOfArguments(row) === "deals");
+  if (index < 0) return DEALS_OFF;
+  const row: unknown = args.records[index];
+  const named =
+    Predicate.hasProperty(row, "title") && typeof row.title === "string"
+      ? ` (${JSON.stringify(row.title.slice(0, 60))})`
+      : "";
+  return `Row ${index + 1}${named}: ${DEALS_OFF} Nothing was saved.`;
+};
+
+const sectionAdmitted = McpToolPolicy.toolCallGate((name, args) => {
+  const section = sectionOfTool(name) ?? sectionOfArguments(args);
+  return section === null
+    ? Effect.succeed(true)
+    : gate("KinToolGate.section", (turn) =>
+        KinShell.sectionOn(turn.orgId, section).pipe(Effect.orElseSucceed(() => false)),
+      )(name, args);
+}, dealRefusal);
 const admitted = besideReview(toolAdmitted);
 const outside = besideReview(outsideToolAllowed);
 
@@ -252,6 +294,7 @@ export const layer = ReadTools.layer.pipe(
       McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", admitted), SHARED_REFUSAL),
       McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outside), OUTSIDE_REFUSAL),
       McpToolPolicy.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
+      sectionAdmitted,
     ),
   ),
 );

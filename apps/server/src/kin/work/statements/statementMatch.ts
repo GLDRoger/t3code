@@ -260,11 +260,12 @@ const expenseCandidate = (
   expense: ExpenseCandidate,
   currency: string,
 ): Candidate | undefined => {
+  const sign = row.direction === "credit" ? -1 : 1;
   const foreign =
     row.foreign !== null &&
     expense.currency === row.foreign.currency &&
-    expense.amountMinor === row.foreign.amountMinor;
-  const exact = expense.currency === currency && expense.amountMinor === row.amountMinor;
+    expense.amountMinor === sign * row.foreign.amountMinor;
+  const exact = expense.currency === currency && expense.amountMinor === sign * row.amountMinor;
   if (!foreign && !exact) return undefined;
   const day = expense.day ?? expense.due;
   if (day !== null) {
@@ -519,6 +520,7 @@ export const matchRows = (
             ...(input.payments ?? []).map((payment) =>
               paymentCandidate(row, payment, input.currency),
             ),
+            ...input.expenses.map((expense) => expenseCandidate(row, expense, input.currency)),
           ]
         : input.expenses.map((expense) => expenseCandidate(row, expense, input.currency))
     )

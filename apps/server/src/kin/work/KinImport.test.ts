@@ -213,9 +213,10 @@ const recordOf = (source: string) =>
       state: string;
       createdAt: number;
       closedAt: number | null;
+      amountMinor: number | null;
       notes: string;
     }>`SELECT record_id AS "recordId", key, state, created_at AS "createdAt",
-        closed_at AS "closedAt", notes
+        closed_at AS "closedAt", amount_minor AS "amountMinor", notes
       FROM kin_records WHERE org_id = ${orgId} AND origin_key LIKE ${`import:oldbooks:%:${source}`}`;
     return row;
   });
@@ -441,6 +442,7 @@ describe("KinImport", () => {
           { source: "x8", amount: "100", date: "2026-06-02", due: "2026-06-01", confirmed: true },
         ].map((one) => ({ entry: { list: "invoices", title: `Slip ${one.source}`, ...one } })),
         { entry: { source: "x9", list: "expenses", title: "A refund", amount: "-1500" } },
+        { entry: { source: "x10", list: "invoices", title: "An invoice", amount: "-1500" } },
       ];
       const report = yield* imports.apply(
         orgId,
@@ -458,17 +460,42 @@ describe("KinImport", () => {
           [14, "payment", "pay1"],
           [15, "entry", "x6"],
           [16, "entry", "x7"],
-          [18, "file", null],
-          [19, "file", null],
+          [19, "entry", "x10"],
+          [20, "file", null],
         ],
       );
-      assert.include(
-        report.problems[8]!.reason,
-        'Expected a string matching the RegExp ^\\d{1,15}(?:\\.\\d{1,6})?$\n  at ["entry"]["amount"]',
-      );
+      assert.include(report.problems[8]!.reason, "only an expense can be, as a refund");
+      assert.strictEqual((yield* recordOf("x9"))?.amountMinor, -150_000);
       assert.include(report.problems[6]!.reason, "is far above anything in Invoices");
       assert.include(report.problems[7]!.reason, "can't fall due 2026-06-01, before it");
-      assert.deepStrictEqual([report.entries.create, report.entries.problems], [7, 7]);
+      assert.deepStrictEqual([report.entries.create, report.entries.problems], [8, 8]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("refuses impossible entry days like malformed dates", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const dates = ["2026-02-31", "2026-02-31T12:00Z", "not a date", "2028-02-29"];
+      const report = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf(
+          header,
+          dates.map((due, i) => ({
+            entry: { source: `date-${i}`, list: "work", title: `Invented date ${i}`, due },
+          })),
+        ),
+      );
+      assert.deepStrictEqual(
+        report.problems.map(({ line, kind }) => [line, kind]),
+        [
+          [2, "file"],
+          [3, "file"],
+          [4, "file"],
+        ],
+      );
+      assert.strictEqual(report.entries.create, 1);
     }).pipe(Effect.provide(layer)),
   );
 

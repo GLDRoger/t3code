@@ -21,7 +21,7 @@ import { dueWhenText, endOfDay, ownerZone, startOfDay } from "../work/recordRows
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { asideOf, type Hold } from "./holds.ts";
 import { holderLine, noticeHolder } from "./holderNotice.ts";
-import { DEAL_SENSES } from "./senses/deals.ts";
+import { LOOKED_AFTER_SENSES } from "./senses/deals.ts";
 import { type SenseContext, type SensedFact } from "./senses/shared.ts";
 import { DAY_MS, HOUR_MS } from "./thresholds.ts";
 import { forHolder, markTold, untold } from "./told.ts";
@@ -154,7 +154,7 @@ export const importedSince = Effect.fn("KinPulse.importedSince")(function* (
   from: number,
 ) {
   const ids = facts.flatMap((fact) =>
-    DEAL_SENSES.has(fact.sense) && fact.subject.recordId !== undefined
+    LOOKED_AFTER_SENSES.has(fact.sense) && fact.subject.recordId !== undefined
       ? [fact.subject.recordId]
       : [],
   );
@@ -206,6 +206,7 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
   /** Open facts as sensed, not handled. */
   readonly open: ReadonlyArray<SensedFact>;
   readonly holds: ReadonlyArray<Hold>;
+  readonly dealsOn: boolean;
   /** The facts this person may see (`visibleTo`). */
   readonly sees: (
     personId: KinPersonId,
@@ -249,7 +250,7 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
     const late = yield* importedSince(orgId, facts, from + minutes(morning.at) * 60_000);
     const deals = facts.filter(
       (fact) =>
-        DEAL_SENSES.has(fact.sense) &&
+        LOOKED_AFTER_SENSES.has(fact.sense) &&
         (fact.subject.recordId === undefined || !late.has(fact.subject.recordId)),
     );
     const work = facts.filter((fact) => forHolder(fact, at, ctx.zone));
@@ -362,12 +363,14 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
         AND r.due_at >= ${at} AND r.due_at <= ${day7}
       ORDER BY r.due_at, r.key LIMIT ${SHOWN}`;
-    const expected = yield* sql<{
-      title: string;
-      client: string;
-      dueAt: number;
-      allDay: number;
-    }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
+    const expected = !input.dealsOn
+      ? []
+      : yield* sql<{
+          title: string;
+          client: string;
+          dueAt: number;
+          allDay: number;
+        }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
       FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       WHERE r.org_id = ${orgId} AND r.register_id = 'deals' AND r.state = 'open'
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}

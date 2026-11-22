@@ -20,6 +20,7 @@ import {
   type KinPartyPage,
   type KinPartyRow,
   type KinPersonId,
+  calendarTimeMillis,
   KinChatError,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -1086,7 +1087,7 @@ export const logTouch = Effect.fn("KinWork.logTouch")(function* (
   const records = yield* KinRecords;
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
-  const at = input.at === undefined ? now : Date.parse(input.at);
+  const at = input.at === undefined ? now : calendarTimeMillis(input.at);
   // A member's requests have their own keys, so a retry never finds someone else's.
   const origin = viewer.teammate ? `member:${person.personId}:touch` : "owner:touch";
   const { touch, partyId } = yield* sql

@@ -16,9 +16,10 @@ import { leadNamer } from "../work/toolNames.ts";
 import { clientHistory } from "./clientHistory.ts";
 import { headStarts } from "./headStart.ts";
 import { covers, endedHolds } from "./holds.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { teamHoursNow } from "./nudge.ts";
-import { DEAL_SENSES } from "./senses/deals.ts";
+import { LOOKED_AFTER_SENSES } from "./senses/deals.ts";
 
 export const PULSE_RULE =
   "What needs attention, as Kin computed it from its own records just now. Nobody asked for these facts, so each one you raise arrives one tap from done: do what you may do alone and say it in a line; draft what leaves the company (mail to its writeTo, its document attached, from an account in mailFrom) so its card waits on him; or put one kin_ask with the real options and a default. When the head start can't be made, say once what is missing, such as no contact with an email; never ask whether to start. Leave a fact that needs nothing or is already in hand. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
@@ -50,7 +51,9 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
 }) {
   const tell = input.checkIn;
   const checkIn = tell !== undefined;
+  const shell = yield* KinShell.getForDisplay(input.orgId);
   const read = yield* KinPulse.read({
+    shell,
     orgId: input.orgId,
     at: input.now,
     viewer: { _tag: "owner" },
@@ -58,9 +61,12 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   });
   const all =
     tell === undefined ? read : { ...read, facts: read.facts.filter((fact) => tell.has(fact.key)) };
-  const woke = new Set(input.wokeFor);
+  const wokeFor = input.wokeFor.filter(
+    (key) => !KinPulse.quiet({ sense: key.split(":")[0] ?? "" }, shell),
+  );
+  const woke = new Set(wokeFor);
   const open = new Set(all.facts.map((fact) => fact.key));
-  const gone = input.wokeFor.filter((key) => !open.has(key));
+  const gone = wokeFor.filter((key) => !open.has(key));
   if ((checkIn ? all.facts.length : all.total) === 0 && gone.length === 0) return undefined;
   const shown = all.facts
     .toSorted((a, b) => Number(woke.has(b.key)) - Number(woke.has(a.key)))
@@ -106,7 +112,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     consequence: fact.consequence,
     // A renewal's heads-up only mentions it; who drafts it acts from the draft day.
     ...(fact.stage === "heads_up" ? {} : { acts: who(fact.actor) }),
-    ...(DEAL_SENSES.has(fact.sense) ? { heading: "Clients" } : {}),
+    ...(LOOKED_AFTER_SENSES.has(fact.sense) ? { heading: "Clients" } : {}),
     ...(fact.measure?.from._tag === "playbook"
       ? { playbook: `${fact.measure.from.title} (${fact.measure.from.key})` }
       : {}),

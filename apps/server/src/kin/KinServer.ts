@@ -36,7 +36,10 @@ import type { KinAgentSessionPolicy } from "./lead/sessionPolicy.ts";
 import type { KinSocial } from "./social/SocialService.ts";
 import type { KinDevClock } from "./DevClock.ts";
 
+import type { KinShell } from "./shell/KinShell.ts";
+
 export type Services =
+  | KinShell
   | KinIdentity
   | KinDevClock
   | KinChatService

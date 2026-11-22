@@ -202,13 +202,18 @@ export const dealSenses = Effect.fn("KinPulse.dealSenses")(function* (ctx: Sense
   return facts;
 });
 
-/**
- * Facts a person hears as the one who looks after the deal or client: this file's, and a
- * contract's notice day (`money.ts`).
- */
+/** The senses this file raises, a deal's own (`shell/sections.ts` puts them in Deals). */
 export const DEAL_SENSES: ReadonlySet<string> = new Set([
   "deal_no_next_step",
   "deal_quiet",
   "deal_date_passed",
+]);
+
+/**
+ * Facts a person hears as the one who looks after the deal or client: a deal's, and a contract's
+ * notice day (`money.ts`), which is about the project, not a deal.
+ */
+export const LOOKED_AFTER_SENSES: ReadonlySet<string> = new Set([
+  ...DEAL_SENSES,
   ...KIN_PROMISE_SENSES,
 ]);
