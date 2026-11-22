@@ -48,7 +48,7 @@ import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
 import { approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
 import { codingAgentSource, outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
-import { commentsPage } from "./recordComments.ts";
+import { commentsPage, insertComment, requestHashOf as commentHashOf } from "./recordComments.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
 import {
@@ -1701,6 +1701,20 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /** Whether an entry's notes were last written by a person (a coding agent's write is not). */
+  const notesByPerson = Effect.fn("KinRecords.notesByPerson")(function* (
+    orgId: KinOrgId,
+    recordId: string,
+  ) {
+    const [row] = yield* sql<{ byPerson: number | null }>`SELECT COALESCE((SELECT
+          c.actor_kind = 'person' AND c.coding_agent_key IS NULL FROM kin_record_changes c
+        WHERE c.org_id = r.org_id AND c.record_id = r.record_id AND EXISTS (SELECT 1
+          FROM json_each(c.fields_json) f WHERE json_extract(f.value, '$.field') = 'notes')
+        ORDER BY c.seq DESC LIMIT 1), r.created_by_kind = 'person') AS "byPerson"
+      FROM kin_records r WHERE r.org_id = ${orgId} AND r.record_id = ${recordId}`;
+    return row?.byPerson === 1;
+  });
+
   const update = Effect.fn("KinRecords.update")(function* (
     orgId: KinOrgId,
     writer: Writer,
@@ -2190,9 +2204,36 @@ const make = Effect.gen(function* () {
           set("urgent", patch.urgent ? 1 : null);
         }
         if (patch.notes !== undefined && patch.notes !== row.notes) {
-          changes.push({ field: "notes", from: row.notes, to: patch.notes });
-          set("notes", patch.notes);
-          set("notes_by", patch.notes === "" ? null : (author ?? row.notesBy));
+          // A person's notes on a task stay theirs: an agent's text goes on its activity instead.
+          if (
+            writer.actor._tag === "agent" &&
+            list === "work" &&
+            row.notes !== "" &&
+            (yield* notesByPerson(orgId, row.recordId))
+          ) {
+            if (patch.notes.trim() !== "") {
+              const requestHash = commentHashOf(patch.notes, []);
+              yield* insertComment({
+                orgId,
+                key: row.key,
+                author: {
+                  _tag: "agent",
+                  agentId: writer.actor.agentId,
+                  askedBy: writer.askedBy ?? null,
+                },
+                requestId: `notes:${writer.wakeupId ?? "turn"}:${requestHash}`,
+                requestHash,
+                body: patch.notes,
+                files: [],
+                now,
+                sees: () => Effect.succeed(true),
+              }).pipe(provideSql);
+            }
+          } else {
+            changes.push({ field: "notes", from: row.notes, to: patch.notes });
+            set("notes", patch.notes);
+            set("notes_by", patch.notes === "" ? null : (author ?? row.notesBy));
+          }
         }
         if (patch.category !== undefined && patch.category !== row.category) {
           changes.push({ field: "category", from: row.category, to: patch.category });

@@ -75,6 +75,7 @@ import * as AskPerson from "./askPerson.ts";
 import * as DraftCards from "../work/draftCards.ts";
 import * as LeadDocs from "../work/leadDocs.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
+import * as OwnerWork from "../work/ownerWork.ts";
 import * as Questions from "./openQuestions.ts";
 import { approvalOf, madeUnderApproval } from "./approval.ts";
 import { APPROVED_TURN_TEXT, approvedTurnText, tellDraftMade } from "./sentUpDraft.ts";
@@ -2253,6 +2254,49 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       const hers = yield* mail("Retainer", "Our retainer is ₹2,50,000 a month.");
       const others = yield* mail("Setup", "Setup is ₹2,50,000 once, plus ₹40,000 travel.");
 
+      // A task she gives the agent herself is her own ask in her chat too: its turn files her
+      // mail as her card there, with her Send to; given by anyone else's hand, it files nothing.
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'`;
+      yield* OwnerWork.create([person("zoya")], {
+        orgId,
+        title: "Send them what we built for Tidewater",
+        notes: "Mail them now",
+        owner: { _tag: "agent", agentId: KinAgentId.make("chief") },
+        party: "C-7",
+        clientRequestId: "zoya-next-step",
+      });
+      const taskTurn = yield* startAgentWakeup({
+        orgId,
+        agentId: KinAgentId.make("chief"),
+        threadId: ThreadId.make("chief-thread"),
+        queued: true,
+      });
+      const [given] = yield* sql<{ eventId: string; seq: number }>`SELECT event_id AS "eventId",
+          json_extract(json, '$.seq') AS seq FROM kin_events
+        WHERE org_id = ${orgId} AND wakeup_id = ${taskTurn} AND tag = 'record.changed'`;
+      const fromTask = (title: string) =>
+        LeadDocs.create(scopeOf("chief"), {
+          sourceEventId: given!.eventId,
+          title,
+          body: "Here is what we built for Tidewater.",
+          client: "C-7",
+          draft: { kind: "mail" },
+        }).pipe(Effect.provideService(KinIdentity, identity));
+      const taskMail = yield* fromTask("What we built");
+      assert.include(taskMail.note ?? "", "Send to Rhea Rao");
+      const [taskCard] = yield* sql<{ state: string }>`SELECT state_json AS state
+        FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${zoyaChat} AND type = 'doc'
+          AND json_extract(state_json, '$.key') = ${taskMail.key}`;
+      assert.deepInclude(JSON.parse(taskCard!.state).draft, {
+        sendTo: { personId: team.owner.personId, name: "Rhea Rao" },
+      });
+      yield* sql`UPDATE kin_record_changes SET actor_kind = 'agent', actor_id = 'finance'
+        WHERE org_id = ${orgId} AND seq = ${given!.seq}`;
+      assert.strictEqual(
+        (yield* Effect.flip(fromTask("What we built, again"))).message,
+        "A teammate's doc is filed only at their own word in their own chat with you. Nothing was written.",
+      );
+
       // The owner's own drafts, in her own turn, have nothing to send up: Copy text only.
       const own = yield* wakeOn("chief", "rhea", chatOf("chief"), "A post for our own page?");
       const [ownEvent] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
@@ -2711,13 +2755,21 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.strictEqual(of._tag === "approved" ? of.approval.draft.text : undefined, latest!.text);
       const [approvedEvent] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
         FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${approved}`;
-      yield* LeadDocs.create(scopeOf("chief"), {
+      // What his Approve makes shows as its card in his chat, which no message of his woke.
+      const made = yield* LeadDocs.create(scopeOf("chief"), {
         sourceEventId: approvedEvent!.eventId,
         title: "Harbourline proposal",
         body: latest!.text,
         kind: "proposal",
         client: "C-7",
+        draft: { kind: "proposal" },
       }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.notInclude(made.note ?? "", "couldn't be shown");
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")}
+          AND type = 'doc' AND json_extract(state_json, '$.key') = ${made.key}`,
+        1,
+      );
       const [started] = yield* sql<{ at: number }>`SELECT started_at AS at FROM kin_wakeups
         WHERE wakeup_id = ${approved}`;
       yield* tellDraftMade({ ...turn, startedAt: started!.at }, chats);

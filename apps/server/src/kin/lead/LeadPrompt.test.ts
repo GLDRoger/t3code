@@ -476,7 +476,7 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       // The teammate's own task, as theirs: data, done with this chat's tools.
       "Invented-mate-task-zq",
       "Invented-mate-notes-zq",
-      "The person in this chat gave you this task to do.",
+      '"Teammate", a teammate, gave you this task to do.',
       // Its own voice, a line on each colleague, and how each person likes to be spoken to.
       "# Your character (how you sound; never what you may do)\n\nInvented-voice-zq.",
       "- Colleague: Invented-colleague-line-zq",

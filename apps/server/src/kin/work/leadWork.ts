@@ -660,6 +660,8 @@ const Updated = Schema.Struct({
   sameEmail: Schema.optional(Schema.Array(Named)),
   /** A new client took the task off its project, which is another client's. */
   projectLeft: Schema.optional(Schema.String),
+  /** Its notes are a person's: the agent's text went on its activity (`KinRecords.update`). */
+  notesKept: Schema.optional(Schema.String),
   openSteps: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -685,6 +687,7 @@ export const UpdateResult = Schema.Struct({
   ...Marks.fields,
   sameEmail: Updated.fields.sameEmail,
   projectLeft: Updated.fields.projectLeft,
+  notesKept: Updated.fields.notesKept,
   openSteps: Updated.fields.openSteps,
   entries: Schema.optional(Schema.Array(Updated)),
 });
@@ -3299,6 +3302,9 @@ const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
   });
 });
 
+/** `record_update`'s answer when the notes it gave would have replaced a person's. */
+export const NOTES_KEPT =
+  "Its notes are a person's, so they stay as they are; your text went on its activity as a note.";
 type Change = Omit<typeof UpdateInput.Type, "key" | "keys">;
 const runUpdate = Effect.fnUntraced(function* (
   lead: Lead,
@@ -3478,6 +3484,9 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
       ...marksOf(lists, after),
       ...(hiddenFrom.length === 0 ? {} : { noLongerSeenBy: hiddenFrom }),
       ...(sameEmail === undefined ? {} : { sameEmail }),
+      ...(input.notes !== undefined && input.notes !== before.notes && after.notes === before.notes
+        ? { notesKept: NOTES_KEPT }
+        : {}),
       ...(written.projectId === undefined && before.projectKey !== null && after.projectId === null
         ? {
             projectLeft: `${before.projectKey} is another client's project, so ${after.key} is on no project now. Give it a project of its client with project if it needs one.`,
