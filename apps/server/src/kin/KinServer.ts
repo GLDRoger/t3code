@@ -34,6 +34,7 @@ import type { KinGitHubLogin } from "./connections/GitHubLogin.ts";
 import type { KinGitHubApp } from "./github/KinGitHubApp.ts";
 import type { KinAgentSessionPolicy } from "./lead/sessionPolicy.ts";
 import type { KinSocial } from "./social/SocialService.ts";
+import type { KinPictures } from "./pictures/KinPictures.ts";
 import type { KinDevClock } from "./DevClock.ts";
 import type { KinHostCare } from "./host/KinHostCare.ts";
 import type { KinRefusedModels } from "./lead/refusedModels.ts";
@@ -75,6 +76,7 @@ export type Services =
   | KinGitHubApp
   | KinAgentSessionPolicy
   | KinSocial
+  | KinPictures
   | KinHostCare
   | KinRefusedModels;
 

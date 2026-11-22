@@ -75,6 +75,7 @@ export const SECTIONS = {
     statement_read: null,
     statement_rows: null,
     kin_document: null,
+    kin_picture: null,
     kin_recipes: null,
     kin_issue: null,
     kin_recipe_undo: null,
