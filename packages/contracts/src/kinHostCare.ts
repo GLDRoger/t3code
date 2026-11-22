@@ -23,6 +23,7 @@ export const KinTroubleCause = Schema.Literals([
   "restart",
   "backup",
   "unknown",
+  "memory",
 ]);
 export type KinTroubleCause = typeof KinTroubleCause.Type;
 
@@ -109,6 +110,7 @@ export const KIN_TROUBLE_WHY: Readonly<Record<KinTroubleCause, string>> = {
   restart: "Kin restarted",
   backup: "Kin's computer has no recent backup",
   unknown: "something went wrong that Kin doesn't recognise",
+  memory: "Kin couldn't load its saved memory",
 };
 
 /**
@@ -232,6 +234,12 @@ function wordsByCause(card: TroubleFacts, at: (iso: string) => string): TroubleW
             ? "Kin closes this by itself once a backup runs."
             : "Nightly backups aren't set up on this computer yet. Whoever set up Kin's computer can turn them on.",
         actions: card.backupConfigured === true ? ["back_up"] : [],
+      };
+    case "memory":
+      return {
+        what: `Kin couldn't load saved memory, so ${who} couldn't work.`,
+        doing: `Kin keeps ${turns(card.count)} and tries again by itself. If this keeps happening, whoever set up Kin's computer can check why its memory won't load.`,
+        actions: ["retry", "copy_details"],
       };
     case "unknown":
       return {
