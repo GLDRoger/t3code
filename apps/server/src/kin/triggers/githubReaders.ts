@@ -62,6 +62,12 @@ const Logins = Schema.Struct({
   nodes: Schema.Array(Schema.NullOr(Schema.Struct({ login: Schema.String }))),
 });
 const Reviewer = Schema.NullOr(Schema.Struct({ login: Schema.optional(Schema.String) }));
+const RoutineReviewer = Schema.NullOr(
+  Schema.Struct({
+    login: Schema.optional(Schema.String),
+    slug: Schema.optional(Schema.String),
+  }),
+);
 const Issue = Schema.Struct({
   __typename: Schema.Literal("Issue"),
   number: Schema.Int,
@@ -118,7 +124,7 @@ export const ROUTINE_QUERY = `query($owner: String!, $name: String!) { repositor
   defaultBranchRef { name target { ... on Commit { statusCheckRollup { state } } } }
   pullRequests(states: [OPEN], first: 50, orderBy: { field: UPDATED_AT, direction: DESC }) {
     pageInfo { hasNextPage }
-    nodes { number title url isDraft reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } } }
+    nodes { number title url isDraft reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } ... on Team { slug } } } } }
   }
 } }`;
 const RoutineAnswer = Schema.Struct({
@@ -150,7 +156,7 @@ const RoutineAnswer = Schema.Struct({
                     isDraft: Schema.Boolean,
                     reviewRequests: Schema.Struct({
                       nodes: Schema.Array(
-                        Schema.NullOr(Schema.Struct({ requestedReviewer: Reviewer })),
+                        Schema.NullOr(Schema.Struct({ requestedReviewer: RoutineReviewer })),
                       ),
                     }),
                   }),
@@ -305,10 +311,10 @@ const make = Effect.gen(function* () {
     ),
   };
 
-  /** Of the 50 latest-updated open PRs, those awaiting `login` directly (not via a team); plus CI. */
   const readRoutineRepo = Effect.fn("KinGithubReaders.routineRepo")(function* (
     repo: string,
     login: string | null,
+    includeTeams: boolean,
   ) {
     if (!isRepoSlug(repo)) return yield* new KinGithubReadFailed({ repo, reason: "unavailable" });
     const answer = yield* graphql(repo, ROUTINE_QUERY);
@@ -323,17 +329,27 @@ const make = Effect.gen(function* () {
     const branch = repository.defaultBranchRef?.name;
     return {
       truncated: repository.pullRequests.pageInfo.hasNextPage,
-      reviews: repository.pullRequests.nodes.flatMap((pull) =>
-        pull === null ||
-        pull.isDraft ||
-        login === null ||
-        !pull.reviewRequests.nodes.some(
-          (request) =>
-            (request?.requestedReviewer?.login ?? "").toLowerCase() === login.toLowerCase(),
-        )
-          ? []
-          : [{ repo, number: pull.number, title: pull.title, url: pull.url }],
-      ),
+      reviews: repository.pullRequests.nodes.flatMap((pull) => {
+        if (pull === null || pull.isDraft) return [];
+        const reviewers = pull.reviewRequests.nodes.map((request) => request?.requestedReviewer);
+        const direct =
+          login !== null &&
+          reviewers.some((reviewer) => reviewer?.login?.toLowerCase() === login.toLowerCase());
+        const teams = includeTeams
+          ? [...new Set(reviewers.flatMap((reviewer) => (reviewer?.slug ? [reviewer.slug] : [])))]
+          : [];
+        return direct || teams.length > 0
+          ? [
+              {
+                repo,
+                number: pull.number,
+                title: pull.title,
+                url: pull.url,
+                ...(teams.length === 0 ? {} : { teams }),
+              },
+            ]
+          : [];
+      }),
       ciRed:
         branch !== undefined && (state === "FAILURE" || state === "ERROR")
           ? [{ repo, branch }]
@@ -350,8 +366,11 @@ const make = Effect.gen(function* () {
       const repos = yield* watchedRepos(orgId).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
       );
+      const [watch] = yield* sql<{ login: string | null }>`SELECT login
+        FROM kin_github_watch WHERE org_id = ${orgId}`;
+      const includeTeams = login !== null && watch?.login?.toLowerCase() === login.toLowerCase();
       for (const repo of repos) {
-        const result = yield* readRoutineRepo(repo, login).pipe(Effect.result);
+        const result = yield* readRoutineRepo(repo, login, includeTeams).pipe(Effect.result);
         if (result._tag === "Failure") {
           failed++;
           yield* Effect.logWarning("Kin routine GitHub read failed", {
