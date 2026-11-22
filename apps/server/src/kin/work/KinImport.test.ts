@@ -53,6 +53,22 @@ const layer = KinImport.layer.pipe(
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
 );
 
+const countStatements = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  observe?: (statement: Statement.Statement<unknown>) => void,
+) =>
+  Effect.suspend(() => {
+    let statements = 0;
+    return effect.pipe(
+      Effect.provideService(Statement.CurrentTransformer, (statement) => {
+        statements++;
+        observe?.(statement);
+        return Effect.succeed(statement);
+      }),
+      Effect.map((result) => ({ result, statements })),
+    );
+  });
+
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* TestClock.setTime(NOW);
@@ -949,23 +965,33 @@ describe("KinImport", () => {
           ),
         );
       const seen: Array<number> = [];
-      const plan = yield* imports.plan(orgId, ownerId, many(), {
-        progress: (done) =>
-          Effect.sync(() => {
-            seen.push(done);
-          }),
-      });
+      const { result: plan, statements: planning } = yield* countStatements(
+        imports.plan(orgId, ownerId, many(), {
+          progress: (done) =>
+            Effect.sync(() => {
+              seen.push(done);
+            }),
+        }),
+      );
       assert.deepStrictEqual(
         [plan.rows, plan.entries.create, plan.problems.length],
         [count, count, 0],
       );
       assert.deepStrictEqual([seen.length, seen.at(-1)], [Math.ceil((count + 1) / 100), count]);
       assert.strictEqual(yield* countOf("kin_records"), 0);
-      const applied = yield* imports.apply(orgId, ownerId, many());
+      const chunks = Math.ceil((count + 1) / 100);
+      assert.isAtMost(planning, 15 * chunks + 8);
+      const { result: applied, statements: applying } = yield* countStatements(
+        imports.apply(orgId, ownerId, many()),
+      );
       assert.strictEqual(applied.entries.create, count);
       assert.strictEqual(yield* countOf("kin_records"), count);
-      const again = yield* imports.apply(orgId, ownerId, many());
+      assert.isAtMost(applying, 13 * chunks + 10);
+      const { result: again, statements: retrying } = yield* countStatements(
+        imports.apply(orgId, ownerId, many()),
+      );
       assert.deepStrictEqual([again.entries.create, again.entries.unchanged], [0, count]);
+      assert.isAtMost(retrying, 3 * chunks + 8);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -993,14 +1019,15 @@ describe("KinImport", () => {
         ),
       );
       let reads = 0;
-      const applied = yield* imports.apply(orgId, ownerId, money).pipe(
-        Effect.provideService(Statement.CurrentTransformer, (statement) => {
+      const { result: applied, statements } = yield* countStatements(
+        imports.apply(orgId, ownerId, money),
+        (statement) => {
           if (statement.compile()[0].includes("kin_company_profile")) reads += 1;
-          return Effect.succeed(statement);
-        }),
+        },
       );
       assert.deepStrictEqual([applied.entries.create, applied.problems.length], [count, 0]);
       assert.isAtMost(reads, 2);
+      assert.isAtMost(statements, 13 * Math.ceil((count + 1) / 100) + 15);
     }).pipe(Effect.provide(layer)),
   );
 
