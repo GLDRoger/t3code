@@ -761,11 +761,11 @@ export const matchRows = (
       (one) => one.currency === input.currency && one.owed.length > 0 && named(row)(one),
     );
     if (partner !== undefined) {
+      // Part repayments aren't tracked: marking them repaid would settle more than was paid.
       const owed = partner.owed.reduce((sum, one) => sum + BigInt(one.amountMinor), 0n);
-      const count = partner.owed.length;
       return {
         action: "later",
-        why: `${partner.name} is owed ${formatMinor(owed, partner.currency)} for ${count} expense${count === 1 ? "" : "s"}; no run of the oldest adds up to this line, so mark what it pays back on those expenses`,
+        why: `This doesn't match what ${partner.name} is owed (${formatMinor(owed, partner.currency)}). Kin settles a repayment only when it matches.`,
       };
     }
     const payee = [...(input.partners ?? []), ...(input.payees ?? [])].find(named(row));

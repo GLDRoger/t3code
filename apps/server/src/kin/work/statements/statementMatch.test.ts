@@ -451,7 +451,7 @@ describe("statement matching", () => {
     // What she is owed stays in view on those lines, and neither is offered as a new expense.
     assert.deepStrictEqual(lines[3]!.suggestion, {
       action: "later",
-      why: "Meera Rao is owed ₹2,500.00 for 3 expenses; no run of the oldest adds up to this line, so mark what it pays back on those expenses",
+      why: "This doesn't match what Meera Rao is owed (₹2,500.00). Kin settles a repayment only when it matches.",
     });
     assert.strictEqual(lines[4]!.suggestion.action, "later");
 
