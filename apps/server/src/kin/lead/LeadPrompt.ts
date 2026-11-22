@@ -260,6 +260,8 @@ export class KinLeadPrompt extends Context.Service<
           const task = yield* KinSchedules.readNativeTask(sql, schedule.taskId);
           return {
             task,
+            chatId: schedule.chatId,
+            forChat: schedule.audience === "shared",
             sourceEvent: schedule.sourceEvent,
             every: task === undefined ? undefined : KinSchedules.everyOf(task, schedule.looseAt),
             confirmed:
@@ -526,6 +528,11 @@ export class KinLeadPrompt extends Context.Service<
             const native = yield* nativeRun(orgId, event.subject.itemId);
             if (native !== undefined) {
               const eventData = quote(QUOTE_LABELS.eventData, { event: event.eventId });
+              // A run goes only where its routine was set to report: else it is dropped.
+              if (event.chatId !== undefined ? event.chatId !== native.chatId : native.forChat) {
+                events.push(`${eventData}\n\n${MISDIRECTED_RUN}`);
+                continue;
+              }
               // A routine fired into the chat it was set up in (`chatId`) is that chat's own.
               const inChat = !ownerOnly && event.chatId !== undefined && native.confirmed;
               if (
@@ -2515,6 +2522,7 @@ const sharedReminderFacts = (item: MemoryCache.MemoryItem) => {
   };
 };
 
+const MISDIRECTED_RUN = `This scheduled run no longer matches where its task reports. Write exactly ${SILENT_REPLY} and nothing else.`;
 const ROUTINE_WITHHELD = `A routine set up in this chat is due, but someone here now could not read where it was set, so its instruction is withheld. In one line, say that part of what it was asked needs people who are no longer the only readers here, and nothing else.`;
 const WITHHELD_DUE = `Something the owner set up is due, but other people can read this turn and only the owner can read what it says. Write exactly ${SILENT_REPLY} and nothing else.`;
 

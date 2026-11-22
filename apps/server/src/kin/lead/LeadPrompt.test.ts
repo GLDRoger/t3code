@@ -1482,6 +1482,22 @@ it.effect("a scheduled run quotes the owner's instruction, and refuses a task wi
     const native = yield* prompt.build({ ...input, events: [run("sch-native")] });
     expect(native).toContain("Do the work now");
     expect(native.split("> BEGIN QUOTE: owner request (scheduled task)")[1]).toContain(approved);
+    // A run queued for a chat its task no longer reports to is dropped, never redirected.
+    const elsewhere = decodeEvent({
+      _tag: "deferral.due",
+      orgId,
+      agentId,
+      eventId: "run-elsewhere",
+      receivedAt: timestamp,
+      provenance: { _tag: "system" },
+      dedupeKey: null,
+      subject: { type: "scheduled_task", itemId: "sch-native", runId: "run-elsewhere" },
+      lateByMs: 0,
+      chatId: "invented-old-room",
+    });
+    const moved = yield* prompt.build({ ...input, events: [elsewhere] });
+    expect(moved).not.toContain(approved);
+    expect(moved).toContain("no longer matches where its task reports");
     // Set up in a turn shown something sensitive, its run is a sensitive turn too.
     const marked = sql`SELECT wakeup_id FROM kin_wakeup_sensitive_reads WHERE wakeup_id = ${input.wakeupId}`;
     expect(yield* marked).toEqual([]);

@@ -291,6 +291,35 @@ it.effect(
         const [saved] = yield* sql<{ chatId: string }>`SELECT chat_id AS "chatId"
           FROM kin_schedules WHERE org_id = ${orgId}`;
         assert.strictEqual(saved?.chatId, group);
+        // Made the owner's alone: a new routine in his chat; the group's ends, its card closing there.
+        const [first] = yield* sql<{ id: string }>`SELECT schedule_id AS id FROM kin_schedules
+          WHERE org_id = ${orgId}`;
+        const mine = yield* call("kin_schedule", {
+          what: "Post what is open",
+          at: "09:00",
+          days: [1],
+          chatId: group,
+          alone: true,
+          replaces: first!.id,
+          sourceEventId: yield* says(owner, "make that one just for me"),
+        });
+        assert.isTrue(mine.ok, mine.text);
+        const rows = yield* sql<{ id: string; chatId: string; deleted: number | null }>`SELECT
+            schedule_id AS id, chat_id AS "chatId", deleted_at AS deleted FROM kin_schedules
+          WHERE org_id = ${orgId} ORDER BY created_at, schedule_id`;
+        assert.lengthOf(rows, 2);
+        assert.deepInclude(
+          rows.find((row) => row.id === first!.id),
+          { chatId: group },
+        );
+        assert.isNotNull(rows.find((row) => row.id === first!.id)?.deleted);
+        assert.deepInclude(
+          rows.find((row) => row.id !== first!.id),
+          {
+            chatId: ownerChat,
+            deleted: null,
+          },
+        );
         const members = yield* routine(
           yield* says(person("dev"), "every Monday at 9 post what's open here"),
         );

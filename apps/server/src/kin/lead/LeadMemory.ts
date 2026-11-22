@@ -1600,6 +1600,23 @@ const make = Effect.gen(function* () {
             input.replaces === undefined
               ? undefined
               : yield* KinSchedules.readSchedule(sql, ctx.orgId, input.replaces);
+          // Another place to report is another routine: the old one ends, its card closing there.
+          if (
+            replaced !== undefined &&
+            (replaced.chatId !== chatId || (replaced.audience === "shared") !== forChat)
+          ) {
+            yield* ownSchedule(ctx, replaced, input.sourceEventId);
+            yield* receipt(
+              ctx,
+              `schedule:${id}`,
+              { ...input, itemId: id },
+              save(id, false, replaced).pipe(
+                Effect.andThen(schedules.cancel(ctx.orgId, replaced.scheduleId)),
+              ),
+            );
+            yield* snapshotSource(ctx, id).pipe(provideSql);
+            return { itemId: id };
+          }
           if (replaced !== undefined) {
             // Changed in place, so the Scheduled tasks screen and the card keep one row.
             yield* ownSchedule(ctx, replaced, input.sourceEventId);
