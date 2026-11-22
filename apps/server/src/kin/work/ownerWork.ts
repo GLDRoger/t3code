@@ -59,6 +59,7 @@ import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import { type AssignNotice, movedNotices, tellOnTasks, toldWhenBack } from "./assignNotices.ts";
 import { teamAgent as theTeamAgent } from "../lead/LeadAccess.ts";
 import {
+  afterReadingFor,
   chatLinksFor,
   endOfDay,
   isClosed,
@@ -739,7 +740,10 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   /** Their own write just made it private: they saw it until then, so the answer still reads. */
   justHidden = false,
 ) {
-  const detail = yield* chatLinksFor(read.orgId, viewer.person.personId, read).pipe(workFailure);
+  const detail = yield* chatLinksFor(read.orgId, viewer.person.personId, read).pipe(
+    Effect.flatMap((linked) => afterReadingFor(read.orgId, !viewer.teammate, linked)),
+    workFailure,
+  );
   const can = (yield* cansOf(viewer, detail.orgId, [{ ...detail, registerId: row.registerId }]))(
     detail.recordId,
   );
