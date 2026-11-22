@@ -35,7 +35,6 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import * as TestClock from "effect/testing/TestClock";
 
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";

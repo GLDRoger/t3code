@@ -684,7 +684,9 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     } as never),
   // money_query view partners, as partnersAnswer writes it from what partnersOwed read.
   partners: (input: {
-    partners: ReadonlyArray<Record<string, unknown> & { entries: ReadonlyArray<{ on: string }> }>;
+    partners: ReadonlyArray<
+      Record<string, unknown> & { entries: ReadonlyArray<{ key: string; on: string }> }
+    >;
     zone: string;
   }) =>
     partnersAnswer(
@@ -693,7 +695,7 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
         address: null,
         ...one,
         entries: one.entries.map(({ on, ...entry }) => ({
-          recordId: `rec_${String(entry["key"])}`,
+          recordId: `rec_${entry.key}`,
           at: Date.parse(`${on}T06:30:00.000Z`),
           ...entry,
         })),

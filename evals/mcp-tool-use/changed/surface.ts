@@ -61,7 +61,7 @@ export const runnerHash = () =>
   );
 
 /** The runner this file's part list was checked against. */
-export const REVIEWED_RUNNER = "88bee4929382971a";
+export const REVIEWED_RUNNER = "2d8426d378da54dd";
 
 export const CaseSurface = Schema.Struct({
   /** The case as run.json hashes it, and its first request as run.json hashes it. */

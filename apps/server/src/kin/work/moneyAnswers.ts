@@ -651,12 +651,14 @@ const runway = Effect.fn("KinMoneyAnswers.runway")(function* (
   const sinceOf = (currency: string) =>
     [
       ...paidFirst.filter((one) => one.currency === currency).map((one) => one.day),
-      ...spentFirst
-        .filter((one) => one.currency === currency)
-        .flatMap((one) => [
-          ...(one.at === null ? [] : [dayIn(one.at, zone)]),
-          ...(one.repaid === null ? [] : [one.repaid]),
-        ]),
+      ...spentFirst.flatMap((one) =>
+        one.currency !== currency
+          ? []
+          : [
+              ...(one.at === null ? [] : [dayIn(one.at, zone)]),
+              ...(one.repaid === null ? [] : [one.repaid]),
+            ],
+      ),
     ].toSorted()[0];
   const cash = yield* cashPosition(orgId, now);
   const currencies = [
