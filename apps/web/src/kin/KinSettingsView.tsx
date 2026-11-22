@@ -19,6 +19,7 @@ import {
   ChevronRightIcon,
   CircleUserIcon,
   FingerprintIcon,
+  HardDriveIcon,
   SlidersHorizontalIcon,
   PaletteIcon,
   PlugIcon,
@@ -68,6 +69,7 @@ import { KinAppearancePage } from "./settings/KinAppearancePage";
 import { KinCompanyPage } from "./settings/KinCompanyPage";
 import { KinConnectionsPage } from "./settings/KinConnectionsPage";
 import { KinDealsPage } from "./settings/KinDealsPage";
+import { KinHostPage } from "./settings/KinHostPage";
 import { KinMemoryPage } from "./settings/KinMemoryPage";
 import { KinProfilePage } from "./settings/KinProfilePage";
 import { KinWatchLogPage } from "./settings/KinWatchLogPage";
@@ -89,6 +91,7 @@ const PAGE_ICON: Record<KinSettingsPage, LucideIcon> = {
   memory: BrainIcon,
   company: Building2Icon,
   approvals: FingerprintIcon,
+  host: HardDriveIcon,
   recommendations: SlidersHorizontalIcon,
 };
 
@@ -361,6 +364,8 @@ function KinSettingsPageBody(props: {
       return <KinCompanyPage />;
     case "approvals":
       return <ApprovalsSettings />;
+    case "host":
+      return <KinHostPage {...target} />;
     case "recommendations":
       return <KinRecommendationsSettings key={target.orgId} {...target} />;
   }

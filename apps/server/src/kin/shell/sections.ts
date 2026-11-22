@@ -18,6 +18,7 @@ export const SECTIONS = {
     kin_chat_read: null,
     kin_leads: null,
     agent_update: null,
+    kin_computer: null,
     people_read: null,
     people_update: null,
     away_set: null,

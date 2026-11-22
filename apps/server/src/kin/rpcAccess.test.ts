@@ -237,6 +237,19 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           assert.isFalse(yield* allowed("stranger", method));
         }
 
+        // Kin's computer: its facts and its four fixed actions are for owners and co-owners alone.
+        for (const method of [
+          "kin.host.status",
+          "kin.host.freeSpace",
+          "kin.host.backUpNow",
+          "kin.host.retry",
+        ]) {
+          assert.isTrue(yield* allowed("kin-default-owner", method));
+          assert.isTrue(yield* allowed("meera", method));
+          assert.isFalse(yield* allowed("ravi", method));
+          assert.isFalse(yield* allowed("stranger", method));
+        }
+
         // The country refusal reaches a person with no name in it (an older phone hides names),
         // worded for who may choose the country now; any other refusal is as it was.
         const said = (person: string, message: string) =>
