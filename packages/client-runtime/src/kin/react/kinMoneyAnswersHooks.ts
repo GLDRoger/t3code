@@ -196,7 +196,7 @@ export function makeKinMoneyAnswersHooks<R, ER>(
     return {
       busy,
       problem,
-      match: async (address: string | null, personId: KinPersonId) => {
+      match: async (address: string | null, personId: KinPersonId, settled?: "owed" | "repaid") => {
         setBusy(true);
         setProblem(null);
         const outcome = await kinListSend({
@@ -204,7 +204,12 @@ export function makeKinMoneyAnswersHooks<R, ER>(
           send: () =>
             send({
               environmentId: target.environmentId,
-              input: { orgId: target.orgId, personId, ...(address === null ? {} : { address }) },
+              input: {
+                orgId: target.orgId,
+                personId,
+                ...(address === null ? {} : { address }),
+                ...(settled === undefined ? {} : { settled }),
+              },
             }),
         });
         setBusy(false);

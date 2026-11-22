@@ -57,6 +57,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
+import { Radio, RadioGroup } from "../components/ui/radio-group";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn, randomUUID } from "../lib/utils";
 import { kinClient } from "./kinClient";
@@ -318,55 +319,223 @@ function OutlookRows(props: {
 }
 
 /** Who the company owes back; one no teammate is matched to yet gets a person picked. */
-function PartnersOwed(props: Section & { readonly rows: KinOutlookView["partners"] }) {
+function PartnersOwed(
+  props: Section & {
+    readonly rows: KinOutlookView["partners"];
+    readonly unsaid: KinOutlookView["unsaid"];
+  },
+) {
   const directory = useKinWorkDirectory(
     props,
-    props.rows.some((one) => one.match !== null),
+    props.rows.some((one) => one.match !== null) || props.unsaid.length > 0,
   );
   const matching = useKinMatchPartner(props);
+  const [saying, setSaying] = useState<KinOutlookView["unsaid"][number] | null>(null);
   const people = [...directory.names.people].toSorted((a, b) => a[1].localeCompare(b[1]));
-  if (props.rows.length === 0) return null;
+  if (props.rows.length + props.unsaid.length === 0) return null;
   return (
-    <div className="flex flex-col gap-1">
-      <span className="px-2 text-xs text-muted-foreground">{KIN_OUTLOOK.partners}</span>
-      <ul className="flex flex-col">
-        {props.rows.map((row) => (
-          <li key={row.id} className="flex items-center justify-between gap-3 px-2 py-1">
-            <span className="flex min-w-0 flex-col">
-              <span className="truncate text-sm text-foreground">{row.name}</span>
-              <span className="truncate text-xs text-muted-foreground">{row.note}</span>
-            </span>
-            <span className="flex shrink-0 items-center gap-2">
-              {row.match === null ? null : (
+    <div className="flex flex-col gap-3">
+      {props.rows.length === 0 ? null : (
+        <div className="flex flex-col gap-1">
+          <span className="px-2 text-xs text-muted-foreground">{KIN_OUTLOOK.partners}</span>
+          <ul className="flex flex-col">
+            {props.rows.map((row) => (
+              <li key={row.id} className="flex items-center justify-between gap-3 px-2 py-1">
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate text-sm text-foreground">{row.name}</span>
+                  <span className="truncate text-xs text-muted-foreground">{row.note}</span>
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  {row.match === null ? null : (
+                    <Select
+                      value={null}
+                      disabled={matching.busy}
+                      onValueChange={(personId) => {
+                        if (typeof personId === "string")
+                          void matching.match(row.match!.address, KinPersonId.make(personId));
+                      }}
+                    >
+                      <SelectTrigger size="sm" aria-label={`${KIN_OUTLOOK.whoIsThis} ${row.name}`}>
+                        <SelectValue>{KIN_OUTLOOK.whoIsThis}</SelectValue>
+                      </SelectTrigger>
+                      <SelectPopup>
+                        {people.map(([id, name]) => (
+                          <SelectItem key={id} value={id}>
+                            {name}
+                          </SelectItem>
+                        ))}
+                      </SelectPopup>
+                    </Select>
+                  )}
+                  <span className="text-sm font-medium text-foreground tabular-nums">
+                    {row.amount}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {props.unsaid.length === 0 ? null : (
+        <div className="flex flex-col gap-1">
+          <span className="px-2 text-xs text-muted-foreground">{KIN_OUTLOOK.unsaid}</span>
+          <ul className="flex flex-col">
+            {props.unsaid.map((row) => (
+              <li
+                key={row.address}
+                className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-2 py-1"
+              >
+                <span className="flex min-w-0 flex-1 basis-56 flex-col">
+                  <span className="truncate text-sm text-foreground">{row.address}</span>
+                  <span className="text-xs text-muted-foreground">{row.note}</span>
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={matching.busy}
+                    onClick={() => setSaying(row)}
+                  >
+                    {KIN_OUTLOOK.sayWho}
+                  </Button>
+                  <span className="text-sm font-medium text-foreground tabular-nums">
+                    {row.amount}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {matching.problem === null || saying !== null ? null : (
+        <p className="px-2 text-xs text-destructive">{matching.problem}</p>
+      )}
+      {saying === null ? null : (
+        <SayWhoPaid
+          row={saying}
+          people={people}
+          busy={matching.busy}
+          problem={matching.problem}
+          onSay={async (personId, settled) => {
+            if (await matching.match(saying.address, personId, settled)) setSaying(null);
+          }}
+          onClose={() => setSaying(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** The owner's word on an imported address: who it was, and whether the company still owes them. */
+function SayWhoPaid(props: {
+  readonly row: KinOutlookView["unsaid"][number];
+  readonly people: ReadonlyArray<readonly [string, string]>;
+  readonly busy: boolean;
+  readonly problem: string | null;
+  readonly onSay: (personId: KinPersonId, settled: "owed" | "repaid") => Promise<void>;
+  readonly onClose: () => void;
+}) {
+  const [personId, setPersonId] = useState<string | null>(null);
+  const [settled, setSettled] = useState<"owed" | "repaid" | null>(null);
+  const ids = { person: useId(), settled: useId() };
+  const ready = personId !== null && settled !== null;
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !props.busy) props.onClose();
+      }}
+    >
+      <DialogPopup className="max-w-lg">
+        <form
+          className="contents"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (ready) void props.onSay(KinPersonId.make(personId), settled);
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle className="break-all">
+              {KIN_OUTLOOK.sayTitle(props.row.address)}
+            </DialogTitle>
+            <DialogDescription>
+              {KIN_OUTLOOK.sayDetail(props.row.expenses, props.row.amount)}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={ids.person}>{KIN_OUTLOOK.paidBy}</Label>
                 <Select
-                  value={null}
-                  disabled={matching.busy}
-                  onValueChange={(personId) => {
-                    if (typeof personId === "string")
-                      void matching.match(row.match!.address, KinPersonId.make(personId));
-                  }}
+                  value={personId}
+                  disabled={props.busy}
+                  onValueChange={(value) => setPersonId(typeof value === "string" ? value : null)}
                 >
-                  <SelectTrigger size="sm" aria-label={`${KIN_OUTLOOK.whoIsThis} ${row.name}`}>
-                    <SelectValue>{KIN_OUTLOOK.whoIsThis}</SelectValue>
+                  <SelectTrigger id={ids.person}>
+                    <SelectValue>
+                      {(value: string | null) =>
+                        props.people.find(([id]) => id === value)?.[1] ?? KIN_OUTLOOK.pickPerson
+                      }
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectPopup>
-                    {people.map(([id, name]) => (
+                    {props.people.map(([id, name]) => (
                       <SelectItem key={id} value={id}>
                         {name}
                       </SelectItem>
                     ))}
                   </SelectPopup>
                 </Select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span id={ids.settled} className="text-sm font-medium text-foreground">
+                  {KIN_OUTLOOK.settledQuestion}
+                </span>
+                <RadioGroup
+                  aria-labelledby={ids.settled}
+                  value={settled ?? ""}
+                  disabled={props.busy}
+                  onValueChange={(value) => setSettled(value === "owed" ? "owed" : "repaid")}
+                >
+                  {(
+                    [
+                      ["owed", KIN_OUTLOOK.stillOwed, KIN_OUTLOOK.stillOwedHint],
+                      ["repaid", KIN_OUTLOOK.paidBack, KIN_OUTLOOK.paidBackHint],
+                    ] as const
+                  ).map(([value, label, hint]) => (
+                    <label
+                      key={value}
+                      className="flex min-h-11 cursor-pointer items-start gap-3 rounded-md px-2 py-2 hover:bg-accent"
+                    >
+                      <span className="mt-0.5 flex">
+                        <Radio value={value} />
+                      </span>
+                      <span className="flex flex-col gap-0.5">
+                        <span className="text-sm text-foreground">{label}</span>
+                        <span className="text-xs text-muted-foreground">{hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </RadioGroup>
+              </div>
+              {props.problem === null ? null : (
+                <Alert variant="error">
+                  <AlertDescription>{props.problem}</AlertDescription>
+                </Alert>
               )}
-              <span className="text-sm font-medium text-foreground tabular-nums">{row.amount}</span>
-            </span>
-          </li>
-        ))}
-      </ul>
-      {matching.problem === null ? null : (
-        <p className="px-2 text-xs text-destructive">{matching.problem}</p>
-      )}
-    </div>
+            </div>
+          </DialogPanel>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={props.busy} onClick={props.onClose}>
+              {KIN_WORK_COPY.cancel}
+            </Button>
+            <Button type="submit" disabled={!ready || props.busy} aria-busy={props.busy}>
+              {props.busy ? KIN_OUTLOOK.saving : KIN_OUTLOOK.confirm}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogPopup>
+    </Dialog>
   );
 }
 
@@ -446,7 +615,7 @@ export function KinOutlookSection(
             more={view.more.outgoing}
             onOpenKey={props.onOpenKey}
           />
-          <PartnersOwed {...props} rows={view.partners} />
+          <PartnersOwed {...props} rows={view.partners} unsaid={view.unsaid} />
           {view.notes.length + view.runway.length === 0 ? null : (
             <p className="px-2 text-xs text-muted-foreground">
               {[...view.notes, ...view.runway.map((one) => one.text)].join(" ")}

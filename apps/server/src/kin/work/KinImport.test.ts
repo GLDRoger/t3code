@@ -426,7 +426,10 @@ describe("KinImport", () => {
         VALUES ('meera', ${orgId}, 'meera', 'Meera', 0)`;
       const lists = header.lists.map((one) =>
         one.list === "expenses"
-          ? { ...one, fields: [...one.fields, { label: "Paid personally by", type: "text" }] }
+          ? {
+              ...one,
+              fields: [...(one.fields ?? []), { label: "Paid personally by", type: "text" }],
+            }
           : one,
       );
       const paidByMeera = {

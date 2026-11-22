@@ -2436,6 +2436,11 @@ describe("bank statement safety", () => {
             ]),
           ),
         );
+        // The agent reads which expenses the line repays, and that Confirm marks them.
+        assert.deepStrictEqual(
+          result.matched.map((one) => one.to),
+          [`${first.key}, ${second.key} (Repays Meera Rao: 2 expenses, marked repaid on Confirm)`],
+        );
         const card = (yield* reviewCardOf(result.statement)).card;
         // Her expenses left her account, so the vendor line is no match for them.
         assert.deepStrictEqual(

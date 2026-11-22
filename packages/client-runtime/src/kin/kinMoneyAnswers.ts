@@ -111,6 +111,23 @@ export const KIN_OUTLOOK = {
   nameless: "Marked owed with no partner named",
   whoIsThis: "Who is this?",
   nothingMatched: "Nothing was left to match: Money is up to date.",
+  unsaid: "Paid personally, not counted as owed yet",
+  unsaidNote: (count: number, since: string) =>
+    `${count} imported expense${count === 1 ? "" : "s"} since ${since}, counted as the company's own until you say`,
+  sayWho: "Say who paid",
+  sayTitle: (address: string) => `Who is ${address}?`,
+  sayDetail: (count: number, amount: string) =>
+    `An import says this address paid ${amount} across ${count} expense${count === 1 ? "" : "s"} from their own money. Until you say, Money counts them as the company's own spending.`,
+  paidBy: "Paid by",
+  pickPerson: "Pick a teammate",
+  settledQuestion: "Has the company paid them back?",
+  stillOwed: "Still owed",
+  stillOwedHint: "Counted as going out now, and as spending on the day you pay them back.",
+  paidBack: "Already paid back",
+  paidBackHint: "Nothing in Money changes; each expense says who paid it.",
+  confirm: "Confirm",
+  cancel: "Cancel",
+  saving: "Saving…",
 };
 
 export const KIN_BUDGETS = {
@@ -370,6 +387,13 @@ export interface KinOutlookView {
     readonly note: string;
     readonly match: { readonly address: string | null } | null;
   }>;
+  /** Imported addresses that paid personally, waiting for an owner to say who and whether owed. */
+  readonly unsaid: ReadonlyArray<{
+    readonly address: string;
+    readonly amount: string;
+    readonly expenses: number;
+    readonly note: string;
+  }>;
 }
 
 /** Runway in a line: the host's months when it has them, else plainly why not. */
@@ -438,6 +462,12 @@ export function kinOutlookView(
             ? KIN_OUTLOOK.nameless
             : KIN_OUTLOOK.unmatched,
       match: one.personId === null ? { address: one.address } : null,
+    })),
+    unsaid: (outlook.partnersUnsaid ?? []).map((one) => ({
+      address: one.address,
+      amount: kinTotalsLines(one.total).join(" + "),
+      expenses: one.expenses,
+      note: KIN_OUTLOOK.unsaidNote(one.expenses, onLabel(one.oldest, now)),
     })),
   };
 }
