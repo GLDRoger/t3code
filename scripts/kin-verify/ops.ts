@@ -203,7 +203,14 @@ export function query(instance: Instance, sql: string): string {
   }
 }
 
-interface CapturedPush {
+interface CapturedFcmPush {
+  readonly at: number;
+  readonly platform: "android";
+  readonly token: string;
+  readonly data: Readonly<Record<string, string>>;
+}
+
+interface CapturedApnsPush {
   readonly at: number;
   readonly token: string;
   readonly collapseId?: string;
@@ -225,7 +232,7 @@ export function pushSentLines(instance: Instance): string {
     ? NodeFS.readFileSync(file, "utf8")
         .split("\n")
         .filter(Boolean)
-        .map((line) => JSON.parse(line) as CapturedPush)
+        .map((line) => JSON.parse(line) as CapturedApnsPush | CapturedFcmPush)
     : [];
   const db = database(instance);
   const owners = new Map(
@@ -242,9 +249,23 @@ export function pushSentLines(instance: Instance): string {
   return [
     `${sent.length} sent`,
     ...sent.map((push) => {
+      const who = `${owners.get(push.token) ?? "?"}/${push.token.slice(0, 6)}`;
+      if ("data" in push) {
+        const { data } = push;
+        return [
+          `${who} (android)`,
+          `badge ${data.badge ?? "-"}`,
+          data.title === undefined ? "silent" : JSON.stringify(`${data.title}: ${data.message}`),
+          data.channelId === undefined ? "" : `channel ${data.channelId}`,
+          data.tag === undefined ? "" : `collapse ${data.tag}`,
+          data.body?.includes('"cleared":true') === true ? "chat cleared" : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+      }
       const { aps } = push.payload;
       return [
-        `${owners.get(push.token) ?? "?"}/${push.token.slice(0, 6)}`,
+        who,
         `badge ${aps.badge ?? "-"}`,
         aps.alert === undefined
           ? "silent"

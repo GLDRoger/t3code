@@ -1,4 +1,4 @@
-import type { KinDeferralCardAction, KinPushCategory } from "@t3tools/contracts";
+import type { KinDeferralCardAction, KinPushCategory, KinPushChannel } from "@t3tools/contracts";
 
 export interface KinNotificationAction {
   /**
@@ -46,3 +46,14 @@ export const KIN_NOTIFICATION_CATEGORIES = {
   ],
   "kin.message": [],
 } as const satisfies Record<KinPushCategory, ReadonlyArray<KinNotificationAction>>;
+
+/** Android's channels, named as the phone's settings list them, so each kind can be silenced. */
+export const KIN_ANDROID_CHANNELS = {
+  "kin.messages": { name: "Messages", description: "Messages and updates in your chats" },
+  "kin.questions": {
+    name: "Questions and approvals",
+    description: "Questions, approvals and decisions waiting on you",
+  },
+  "kin.briefs": { name: "Briefs", description: "Morning briefs, check-ins and summaries" },
+  "kin.account": { name: "Devices and security", description: "A new device or approval key" },
+} as const satisfies Record<KinPushChannel, { name: string; description: string }>;

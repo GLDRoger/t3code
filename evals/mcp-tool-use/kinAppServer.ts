@@ -16,6 +16,7 @@ import {
   filledEvent,
   kinInstructions,
   kinSessionOf,
+  kinTurnFiles,
   rescuePrompt,
   shownText,
 } from "./kin.ts";
@@ -95,6 +96,7 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
     tools: t3,
     shellUsage: spent.shellUsage,
   };
+  sample.kinFiles = yield* kinTurnFiles(testCase);
   const messages = buildMessages(sample).map((message) => ({
     ...message,
     // Claude Code's reminders (its ToolSearch list) are its harness, not the case.
@@ -134,6 +136,9 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
         })),
         history: responsesHistory(messages.slice(0, -1), APP_SERVER_NAMESPACE),
         prompt,
+        images: sample.kinFiles?.images.map(
+          (image) => `data:${image.mimeType};base64,${image.data}`,
+        ),
         maxToolCalls:
           config.maxSteps === 0 ? Infinity : Math.max(config.maxSteps, testCase.maxSteps ?? 0) * 3,
         onToolCall: (tool, args) => {

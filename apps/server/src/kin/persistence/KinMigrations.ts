@@ -122,6 +122,7 @@ import ChatPins from "./migrations/K198_ChatPins.ts";
 import TaskStepsAndUrgent from "./migrations/K199_TaskStepsAndUrgent.ts";
 import SentUpDrafts from "./migrations/K200_SentUpDrafts.ts";
 import SearchDocKinds from "./migrations/K201_SearchDocKinds.ts";
+import AndroidPushDevices from "./migrations/K202_AndroidPushDevices.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -324,6 +325,7 @@ const migrations = {
   "199_TaskStepsAndUrgent": TaskStepsAndUrgent,
   "200_SentUpDrafts": SentUpDrafts,
   "201_SearchDocKinds": SearchDocKinds,
+  "202_AndroidPushDevices": AndroidPushDevices,
 };
 const loader = Migrator.fromRecord(migrations);
 
