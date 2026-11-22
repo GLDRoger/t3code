@@ -79,7 +79,7 @@ function SampleHeader(props: {
               {name}
             </p>
             <p className="text-xs" style={{ color: sample.secondary }}>
-              Tax invoice
+              {props.profile.gstin === null ? "Invoice" : "Tax invoice"}
             </p>
           </div>
           <p className="text-right text-xs tabular-nums" style={{ color: sample.secondary }}>
