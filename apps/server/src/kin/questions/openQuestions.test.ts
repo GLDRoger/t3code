@@ -2415,7 +2415,7 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
         const [last] = yield* sql<{ seq: number }>`SELECT MAX(seq) AS seq FROM kin_record_changes
           WHERE org_id = ${orgId}`;
         yield* Context.get(services, KinEventQueue.KinEventQueue).enqueue(
-          yield* Schema.decodeUnknownEffect(KinEvent)({
+          decodeEvent({
             _tag: "record.changed",
             orgId,
             agentId: "chief",
