@@ -63,18 +63,25 @@ export const untold = Effect.fn("KinPulse.untold")(function* (input: {
   readonly at: number;
   readonly zone: string;
   readonly anyState?: boolean | undefined;
+  /** A pending or failed event does not stand in for a quiet delivery marker. */
+  readonly deliveredOnly?: true;
 }) {
   if (input.facts.length === 0) return [];
   const sql = yield* SqlClient.SqlClient;
   const told = new Map<string, Set<string>>();
+  const counted = input.deliveredOnly
+    ? sql`(e.event_id IS NULL OR e.state = 'done')`
+    : input.anyState
+      ? sql`1 = 1`
+      : sql`(t.event_id LIKE ${`${SHELL_QUIET_EVENT_PREFIX}%`}
+          OR e.state IN ('queued', 'claimed', 'done'))`;
   const keys = input.facts.map((fact) => fact.key);
   for (let start = 0; start < keys.length; start += 500)
     for (const row of yield* sql<{ key: string; sig: string }>`SELECT t.fact_key AS key, t.sig
       FROM kin_pulse_told t LEFT JOIN kin_events e ON e.org_id = t.org_id AND e.event_id = t.event_id
       WHERE t.org_id = ${input.orgId} AND t.person_id = ${input.personId}
         AND t.fact_key IN ${sql.in(keys.slice(start, start + 500))}
-        AND (${input.anyState === true ? 1 : 0} = 1 OR t.event_id LIKE ${`${SHELL_QUIET_EVENT_PREFIX}%`}
-          OR e.state IN ('queued', 'claimed', 'done'))
+        AND ${counted}
       ORDER BY t.fact_key, t.told_at`)
       told.set(row.key, (told.get(row.key) ?? new Set()).add(row.sig));
   return input.facts.filter(

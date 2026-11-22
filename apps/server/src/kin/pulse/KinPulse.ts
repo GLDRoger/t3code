@@ -529,7 +529,7 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
     // Anyone else's own late work has one right message: Kin writes it, no agent turn.
     const personId = KinPersonId.make(to);
     const sees = new Set(
-      (yield* visibleTo(orgId, { _tag: "people", people: [personId] }, tell)).map(
+      (yield* visibleTo(orgId, { _tag: "people", people: [personId] }, tell, shell)).map(
         (fact) => fact.key,
       ),
     );
@@ -610,7 +610,7 @@ const markQuiet = Effect.fn("KinPulse.markQuiet")(function* (
   }
   for (const [personId, facts] of parties) {
     const stamp = { orgId, personId, at, zone };
-    const silent = yield* untold({ ...stamp, facts, anyState: true });
+    const silent = yield* untold({ ...stamp, facts, deliveredOnly: true });
     yield* markTold({ ...stamp, eventId: `${SHELL_QUIET_EVENT_PREFIX}${at}`, facts: silent });
   }
 });

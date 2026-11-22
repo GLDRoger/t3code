@@ -445,8 +445,23 @@ it.effect("Deals off keeps three already-told facts and their holds without reno
     );
     assert.deepStrictEqual(after.setAside, before.setAside);
 
-    yield* toggle(2, false);
     yield* insert({ id: "DL-4", list: "deals", title: "Invented new deal", partyId: "C-1" });
+    const previous = (yield* read(at + 2 * MINUTE)).facts.filter(
+      (fact) => fact.subject.key === "DL-4",
+    );
+    assert.lengthOf(previous, 1);
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+        received_at, queued_at, state)
+      VALUES ('failed-check-in', ${orgId}, ${chief}, 'pulse', 'P2', '{}', 0, 0, 'failed')`;
+    yield* markTold({
+      orgId,
+      personId: rhea,
+      facts: previous,
+      eventId: "failed-check-in",
+      at,
+      zone: "UTC",
+    });
+    yield* toggle(2, false);
     const whileOff = at + 3 * MINUTE;
     assert.deepStrictEqual((yield* tickAt(whileOff)).woken, []);
     const persisted = yield* sql<{ wokeAt: number }>`SELECT woke_at AS "wokeAt"
