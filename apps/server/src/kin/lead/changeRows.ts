@@ -117,6 +117,9 @@ export const reversal = (change: {
       case "repo":
         patch.repo = from;
         break;
+      case "alsoOn":
+        patch.fields = { alsoOn: from === null ? null : from.split(", ") };
+        break;
       default:
         return undefined;
     }

@@ -23,6 +23,8 @@ export interface KinWorkMoveFacts {
   readonly handedBackOpen?: boolean;
   /** Someone asked its holder where it stands today. */
   readonly askedToday?: boolean;
+  /** People and agents on it besides its holder. */
+  readonly alsoOn?: ReadonlyArray<KinWorkPrincipal>;
 }
 
 /**
@@ -38,7 +40,8 @@ const isPerson = (who: KinWorkPrincipal | null, personId: KinPersonId) =>
 /**
  * Whose move an open task is for this reader; null once it is closed. Needs you: a card waits on
  * them, a suggestion waits for their keep (owner level), it waits on them, they hold it, or it is
- * late with someone they asked. Waiting: they asked someone, or what they hold waits on someone.
+ * late with someone they asked or are on it with. Waiting: they asked someone or are on it with its
+ * holder, or what they hold waits on someone.
  */
 export function kinWorkMove(
   task: KinWorkMoveFacts,
@@ -51,6 +54,7 @@ export function kinWorkMove(
   const waitingOn = task.state === "waiting" ? task.waitingOn : null;
   if (isPerson(waitingOn, me)) return "needsYou";
   if (isPerson(task.owner, me)) return waitingOn !== null && !task.late ? "waiting" : "needsYou";
+  if (task.alsoOn?.some((who) => isPerson(who, me))) return task.late ? "needsYou" : "waiting";
   if (task.askedBy === me || isPerson(task.givenBy, me)) return task.late ? "needsYou" : "waiting";
   return "rest";
 }

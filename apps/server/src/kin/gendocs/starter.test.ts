@@ -18,6 +18,7 @@ const recipe = (name: string): Recipe => {
   return parsed;
 };
 const invoice = recipe("invoice");
+const notRegistered = taxRegimeOf({ country: "IN", tax: null, taxRegistered: false });
 const inr = (minor: number) => ({ minor, currency: "INR" });
 const base: Readonly<Record<string, Value>> = {
   invoiceKey: "INV-9",
@@ -43,6 +44,8 @@ const computeInvoice = (given: Readonly<Record<string, Value>>, tax?: TaxRegime)
   return result.data as {
     readonly tax: {
       readonly registered: boolean;
+      readonly notCharged?: string;
+      readonly placeOfSupply: string | null;
       readonly exportUnderLut: boolean;
       readonly country: string | null;
       readonly taxable: { readonly text: string };
@@ -110,6 +113,18 @@ describe("invoice", () => {
         taxes: [],
         total: "£999.99",
       },
+      {
+        name: "said it isn't registered for its tax",
+        input: plain,
+        tax: taxRegimeOf({
+          country: "GB",
+          tax: { name: "VAT", rate: "20", pricesInclude: null },
+          taxRegistered: false,
+        }),
+        taxes: [],
+        total: "£999.99",
+        notCharged: "VAT not charged: the supplier is not registered for VAT.",
+      },
     ];
     for (const one of cases) {
       const { tax } = computeInvoice(one.input, one.tax);
@@ -120,6 +135,11 @@ describe("invoice", () => {
       );
       assert.strictEqual(tax.total.text, one.total, one.name);
       assert.isFalse(tax.registered, one.name);
+      assert.strictEqual(
+        tax.notCharged,
+        "notCharged" in one ? one.notCharged : undefined,
+        one.name,
+      );
     }
     // India keeps its GST from the states, whatever the profile's tax says.
     assert.deepStrictEqual(taxRegimeOf({ country: "IN", tax: null }), { _tag: "gst" });
@@ -168,10 +188,29 @@ describe("invoice", () => {
         taxes: [],
         total: "₹999.99",
         registered: false,
+        placeOfSupply: "Maharashtra (27)",
+      },
+      {
+        name: "a company that said it isn't registered for GST",
+        input: { ...base, supplierGstin: null, clientPlace: "Maharashtra" },
+        tax: notRegistered,
+        taxes: [],
+        total: "₹999.99",
+        registered: false,
+        notCharged: "GST not charged: the supplier is not registered under GST.",
+      },
+      {
+        name: "a GSTIN left over on a company that said it isn't registered",
+        input: { ...base, clientGstin: "29BBBBB2222B1Z5" },
+        tax: notRegistered,
+        taxes: [],
+        total: "₹999.99",
+        registered: false,
+        notCharged: "GST not charged: the supplier is not registered under GST.",
       },
     ];
     for (const one of cases) {
-      const { tax } = computeInvoice(one.input);
+      const { tax } = computeInvoice(one.input, "tax" in one ? one.tax : undefined);
       assert.deepStrictEqual(
         tax.taxes.map((line) => [line.name, `${line.rate}%`, line.amount.text]),
         one.taxes,
@@ -179,6 +218,16 @@ describe("invoice", () => {
       );
       assert.strictEqual(tax.total.text, one.total, one.name);
       assert.strictEqual(tax.registered, one.registered, one.name);
+      // Only a company that said it isn't registered gets the line, and no place of supply.
+      if ("notCharged" in one)
+        assert.deepStrictEqual(
+          [tax.notCharged, tax.placeOfSupply],
+          [one.notCharged, null],
+          one.name,
+        );
+      else assert.notProperty(tax, "notCharged", one.name);
+      if ("placeOfSupply" in one)
+        assert.strictEqual(tax.placeOfSupply, one.placeOfSupply, one.name);
     }
     const exported = computeInvoice({ ...base, clientPlace: "United States" }).tax;
     assert.deepStrictEqual([exported.exportUnderLut, exported.country], [true, "United States"]);
@@ -239,6 +288,16 @@ describe("invoice", () => {
       "the lines come to ₹1,179.99 with tax, but the entry is recorded at ₹1,180.00",
     );
     assert.throws(() => computeInvoice(base), /no place of supply/);
+    // Tax recorded on an entry of a company that isn't registered is never printed as charged.
+    for (const lines of [null, base.lines!])
+      assert.throws(
+        () =>
+          computeInvoice(
+            { ...base, lines, total: inr(99999), taxRecorded: inr(15254), supplierGstin: null },
+            notRegistered,
+          ),
+        "the entry records tax, but the company isn't registered for GST, so its invoices charge none",
+      );
     const spelled = computeData({ a: inr(1234567890), b: { minor: 100, currency: "USD" } }, [
       ["x", { words: "a" }],
       ["y", { words: "b" }],

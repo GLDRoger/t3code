@@ -981,6 +981,22 @@ features:
       - apps/server/src/kin/work/docBody.test.ts
       - apps/server/src/kin/chat/privateDocs.test.ts
 
+  - id: doc-delete
+    name: Delete a doc, Undo, Deleted and Restore
+    tab: docs
+    web: [docs, "?doc"]
+    phone: [tab:docs, KinDoc]
+    roles: { owner: both, co_owner: both, lead: both, member: none }
+    note: >-
+      Whoever may change a doc by hand deletes it from its actions (kin.docs.delete) and gets an
+      Undo; Docs' Filter › Deleted lists who deleted each and when, with Restore. Not for an
+      agent's character or What we sell. An open send card for the doc closes as "Deleted with
+      its draft". Agents delete with doc_move archived, into the same place.
+    tools: [doc_move]
+    proof:
+      - apps/server/src/kin/work/docs.test.ts
+      - apps/server/src/kin/connections/ConnectionsService.test.ts
+
   - id: doc-history
     name: A doc's versions, restore one
     tab: docs

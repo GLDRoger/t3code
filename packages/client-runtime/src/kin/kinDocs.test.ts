@@ -319,7 +319,7 @@ describe("kinDocLibrary", () => {
     expect(kinDocsChip(KIN_DOCS_DEFAULT_FILTER)).toBeNull();
     expect(
       kinDocsChip({ ...KIN_DOCS_DEFAULT_FILTER, archived: true, show: { _tag: "company" } }),
-    ).toBe("Company · Archived");
+    ).toBe("Company · Deleted");
   });
 
   it("files a doc under a client, the company, or nowhere", () => {
