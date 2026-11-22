@@ -21,6 +21,7 @@ import * as KeySeal from "./approvals/KeySeal.ts";
 import * as ApprovalCards from "./chat/approvalCards.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
+import * as KinHostCare from "./host/KinHostCare.ts";
 import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
 import * as KinImport from "./work/KinImport.ts";
@@ -153,6 +154,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Layer.provideMerge(
             Layer.mergeAll(
               KinPush.layer,
+              KinHostCare.layer,
               LevelControl.layer,
               MemoryChanges.layer,
               KinImport.layer.pipe(Layer.provideMerge(KinRecords.layer)),
