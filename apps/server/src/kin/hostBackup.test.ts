@@ -220,6 +220,29 @@ const provider = (fields: {
   resetAt?: string;
 }) => ({ code: null, retryable: null, ...fields });
 
+describe("usingText", () => {
+  const GB = 1024 ** 3;
+  const usage = (temporary: number, builds: number | null, backups: number | null) => ({
+    temporary: temporary * GB,
+    builds: builds === null ? null : builds * GB,
+    backups: backups === null ? null : backups * GB,
+    data: 3 * GB,
+    measuredAt: "2026-11-22T09:00:00.000Z",
+  });
+
+  it("splits the space as Settings does, and says plainly when Kin can't make room alone", () => {
+    assert.strictEqual(
+      KinHostCare.usingText(usage(40, 10, 20), { freeBytes: 0, totalBytes: 100 * GB }),
+      "What's using the space: temporary files 40 GB, Kin's data 33 GB, everything else on this computer 27 GB.",
+    );
+    assert.strictEqual(
+      KinHostCare.usingText(usage(1, null, 2), { freeBytes: 0, totalBytes: 200 * GB }),
+      "What's using the space: everything else on this computer 194 GB, Kin's data 5.0 GB, temporary files 1.0 GB. Kin can't free this by itself: it can clear about 3.0 GB of the 200 GB in use. Whoever set up Kin's computer can make room.",
+    );
+    assert.strictEqual(KinHostCare.usingText(null, undefined), undefined);
+  });
+});
+
 describe("troubleCause", () => {
   it("reads each cause from the failure's own chain, and an unknown one stays unknown", () => {
     const cases: ReadonlyArray<readonly [unknown, KinTroubleCause]> = [

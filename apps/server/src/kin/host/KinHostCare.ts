@@ -85,17 +85,37 @@ const encodeDevRecord = Schema.encodeSync(
 const MB = 1024 ** 2;
 
 /** What fills the disk, biggest first, in a person's words; undefined when nothing was measured. */
-const usingText = (usage: KinHostUsage | null) => {
+/**
+ * What uses the space, as Settings splits it, and plainly when Kin can't make room alone: what it
+ * may clear (temporary files, old builds and backups) is under a tenth of what is used.
+ */
+export const usingText = (
+  usage: KinHostUsage | null,
+  space: { readonly freeBytes: number; readonly totalBytes: number } | undefined,
+) => {
   if (usage === null) return undefined;
-  const parts = KIN_HOST_USAGE_PARTS.map((part) => ({
-    name: part.name.toLowerCase().replace(/^kin's/, "Kin's"),
-    bytes: usage[part.key],
-  }))
-    .flatMap(({ name, bytes }) => (bytes === null || bytes < MB ? [] : [{ name, bytes }]))
+  const sum = (keys: ReadonlyArray<(typeof KIN_HOST_USAGE_PARTS)[number]["key"]>) =>
+    keys.reduce((total, key) => total + (usage[key] ?? 0), 0);
+  const kin = sum(
+    KIN_HOST_USAGE_PARTS.map((part) => part.key).filter((key) => key !== "temporary"),
+  );
+  const temporary = usage.temporary ?? 0;
+  const used = space === undefined ? undefined : space.totalBytes - space.freeBytes;
+  const parts = [
+    { name: "Kin's data", bytes: kin },
+    { name: "temporary files", bytes: temporary },
+    ...(used === undefined
+      ? []
+      : [{ name: "everything else on this computer", bytes: Math.max(0, used - kin - temporary) }]),
+  ]
+    .filter((part) => part.bytes >= MB)
     .toSorted((a, b) => b.bytes - a.bytes);
-  return parts.length === 0
-    ? undefined
-    : `What's using the space: ${parts.map((part) => `${part.name} ${kinBytesText(part.bytes)}`).join(", ")}.`;
+  if (parts.length === 0) return undefined;
+  const line = `What's using the space: ${parts.map((part) => `${part.name} ${kinBytesText(part.bytes)}`).join(", ")}.`;
+  const clearable = sum(["temporary", "builds", "backups"]);
+  return used === undefined || clearable * 10 >= used
+    ? line
+    : `${line} Kin can't free this by itself: it can clear about ${kinBytesText(clearable)} of the ${kinBytesText(used)} in use. Whoever set up Kin's computer can make room.`;
 };
 
 /** The clean script's summary line under `--now` (`ops/kin/host/clean-temp.sh`). */
@@ -401,7 +421,10 @@ const make = Effect.gen(function* () {
           WHERE d.org_id = e.org_id AND d.event_id = e.event_id AND d.status = 'pending')
           THEN 1 ELSE 0 END) AS expiring
       FROM kin_events e WHERE e.org_id = ${orgId} AND e.held_by = ${trouble.troubleId}`;
-    const using = trouble.cause === "space" ? usingText(usage) : undefined;
+    const using =
+      trouble.cause === "space"
+        ? usingText(usage, Option.getOrUndefined(yield* readSpace()))
+        : undefined;
     return {
       cause: trouble.cause,
       agents: agents.slice(0, 50).map((agent) => ({

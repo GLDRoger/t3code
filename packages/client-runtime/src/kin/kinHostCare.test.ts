@@ -77,6 +77,54 @@ describe("kinHostTroubleCardView", () => {
     expect(kinHostTroubleCardView(trouble({ cause: "space" }), at)).toBeNull();
   });
 
+  // The words table: what the card's live line says for each count it can have.
+  it.each([
+    ["space", { count: 1 }, "Kin keeps the held turn and runs it as soon as there is space."],
+    ["space", { count: 3 }, "Kin keeps the 3 held turns and runs them as soon as there is space."],
+    [
+      "space",
+      { count: 1, expiring: 1 },
+      "Kin keeps the held turn and runs it as soon as there is space. It has a set time and won't run if this lasts past it.",
+    ],
+    [
+      "signin",
+      { count: 4, expiring: 2 },
+      "Kin keeps the 4 held turns and runs them once the account is signed in again. If Kin's settings can't sign it in, whoever set up Kin's computer can. 2 of them have a set time and won't run if this lasts past it.",
+    ],
+    [
+      "unreachable",
+      { count: 0, stopped: 2 },
+      "Kin keeps trying by itself. Kin stopped retrying 2 turns by itself after too many tries. Try again runs them.",
+    ],
+    [
+      "program",
+      { count: 1 },
+      "Kin keeps the held turn and runs it when the program starts again. Whoever set up Kin's computer can check why it won't start.",
+    ],
+  ] as const)("%s %o reads its line", (cause, counts, line) => {
+    const view = kinHostTroubleCardView(
+      trouble({
+        cause,
+        agents: [chief],
+        openedAt: "2026-11-22T09:00:00.000Z",
+        closed: null,
+        ...counts,
+      }),
+      at,
+    );
+    expect(view?.line).toBe(line);
+  });
+
+  it("offers Try again once Kin stops retrying, even where the cause has no tap of its own", () => {
+    const base = { agents: [chief], openedAt: "2026-11-22T09:00:00.000Z", closed: null };
+    expect(
+      kinHostTroubleCardView(
+        trouble({ ...base, cause: "connection", count: 0, stopped: 1 }),
+        at,
+      )?.actions.map((one) => one.action),
+    ).toEqual(["open_connection", "retry"]);
+  });
+
   it("says where a signed-out account is signed in again, and names that account", () => {
     const signin = {
       cause: "signin",

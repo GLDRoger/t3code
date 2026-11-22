@@ -117,16 +117,42 @@ export const KIN_TROUBLE_WHY: Readonly<Record<KinTroubleCause, string>> = {
  * `at` formats a time on the reader's clock; the server passes its own.
  */
 export function kinTroubleWords(
-  card: Pick<
-    KinHostTroubleCard,
-    "cause" | "count" | "resetAt" | "using" | "connection" | "backupConfigured" | "lastGoodAt"
-  > & { readonly agents: ReadonlyArray<{ readonly name: string }> },
+  card: TroubleFacts & Pick<KinHostTroubleCard, "expiring" | "stopped">,
   at: (iso: string) => string,
-): {
+): TroubleWords {
+  const words = wordsByCause(card, at);
+  const expiring = card.expiring ?? 0;
+  const stopped = card.stopped ?? 0;
+  const more = [
+    expiring === 0
+      ? null
+      : expiring === card.count
+        ? `${card.count === 1 ? "It has a set time" : "They have set times"} and won't run if this lasts past ${card.count === 1 ? "it" : "them"}.`
+        : `${expiring} of them have a set time and won't run if this lasts past it.`,
+    stopped === 0
+      ? null
+      : `Kin stopped retrying ${stopped === 1 ? "one turn" : `${stopped} turns`} by itself after too many tries. Try again runs ${them(stopped)}.`,
+  ].filter((line) => line !== null);
+  if (more.length === 0) return words;
+  return {
+    what: words.what,
+    doing: [words.doing, ...more].filter((line) => line !== null).join(" "),
+    actions:
+      stopped > 0 && !words.actions.includes("retry") ? [...words.actions, "retry"] : words.actions,
+  };
+}
+
+type TroubleFacts = Pick<
+  KinHostTroubleCard,
+  "cause" | "count" | "resetAt" | "using" | "connection" | "backupConfigured" | "lastGoodAt"
+> & { readonly agents: ReadonlyArray<{ readonly name: string }> };
+interface TroubleWords {
   readonly what: string;
   readonly doing: string | null;
   readonly actions: ReadonlyArray<KinTroubleAction>;
-} {
+}
+
+function wordsByCause(card: TroubleFacts, at: (iso: string) => string): TroubleWords {
   const who = names(card.agents);
   switch (card.cause) {
     case "space":
@@ -141,7 +167,7 @@ export function kinTroubleWords(
     case "signin":
       return {
         what: `The AI account behind ${who} is signed out, so ${card.agents.length > 1 ? "they" : "it"} couldn't work.`,
-        doing: `Kin keeps ${turns(card.count)} and runs ${them(card.count)} once the account is signed in again.`,
+        doing: `Kin keeps ${turns(card.count)} and runs ${them(card.count)} once the account is signed in again. If Kin's settings can't sign it in, whoever set up Kin's computer can.`,
         actions: ["sign_in", "retry"],
       };
     case "access":
@@ -159,7 +185,7 @@ export function kinTroubleWords(
     case "program":
       return {
         what: `Kin couldn't run the AI program behind ${who}.`,
-        doing: `Kin keeps ${turns(card.count)} and runs ${them(card.count)} when the program starts again.`,
+        doing: `Kin keeps ${turns(card.count)} and runs ${them(card.count)} when the program starts again. Whoever set up Kin's computer can check why it won't start.`,
         actions: ["retry", "copy_details"],
       };
     case "usage_limit":
