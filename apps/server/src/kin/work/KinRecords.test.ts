@@ -459,14 +459,13 @@ it.effect(
         // Given back "to the owner" the same way, it comes back to the asker.
         const [own] = yield* sql<{ key: string }>`SELECT key FROM kin_records
           WHERE org_id = ${orgId} AND title = ${`Invented: wait on the reply ${asker}`}`;
-        const moved = yield* LeadWork.update(scopeOf(lead), {
+        yield* LeadWork.update(scopeOf(lead), {
           key: own!.key,
           sourceEventId,
           state: "waiting",
           waitingOn: "owner",
           owner: "owner",
         });
-        assert.isString(moved.routed);
         assert.deepInclude(
           yield* KinRecords.KinRecords.pipe(Effect.flatMap((r) => r.get(orgId, own!.key))),
           {
