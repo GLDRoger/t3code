@@ -1544,8 +1544,8 @@ features:
       A person makes a key for their own coding agent (Claude Code, Codex, Cursor) to read the
       tasks they hold, comment and set state through `/kin/you/mcp`. It also reads, never writes,
       the projects, clients, docs, Money and team memory that person's own screens show them,
-      through the same reads, minus clients, projects, tasks, deals and docs marked private and
-      everything under a private client or project, which stay in Kin for every key.
+      through the same reads, minus anything a person marked private and everything under a
+      private client or project, which stay in Kin for every key.
       Money and memory are listed only for those whose screens open them. The key shows once; the
       address and the setup lines, with the key left to fill, stay on their own section. At most
       three live keys, 30 days each. Settings → Profile on the web shows the same section.
