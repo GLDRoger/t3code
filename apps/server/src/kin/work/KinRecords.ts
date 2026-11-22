@@ -52,6 +52,7 @@ import {
   changeStampKey,
   codingAgentSource,
   followsOutsideRead,
+  outsideRead,
   outsideStamp,
   stampEvent,
 } from "../lead/OutsideContent.ts";
@@ -604,6 +605,7 @@ const FIELD_NAMES: Readonly<Record<string, string>> = {
 /** What a refusal may quote of an entry that isn't sensitive; money, notes and a list's own fields it doesn't. */
 const QUOTED = new Set(["title", "state", "owner", "waitingOn", "due", "date", "category", "side"]);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const notAllowed = (message: string) => new KinChatError({ reason: "not_allowed", message });
 /** A person named as an expense's funder, on a list that keeps a reimbursement for it. */
 const funds = (def: ListDef, funder: unknown) =>
   def.id === "expenses" &&
@@ -617,7 +619,33 @@ const repaidAhead = (fields: Readonly<Record<string, unknown>>, today: string) =
     ? invalid(`Repaid on can't be after today, ${today}.`)
     : undefined;
 };
-/** Whether an entry's amount or fields put money on it. */
+/** Who funded an expense and whether it was paid back: a person's word, or one they gave in person. */
+const FUNDING = [FUNDED_BY, REIMBURSEMENT, REPAID_ON] as const;
+export const FUNDING_IS_THE_OWNERS =
+  "Only the owner or a co-owner says who funded an expense or that it was paid back, in their own message or tap before anything outside is read. Nothing changed. Put it to them as a card or a question.";
+export const FUNDING_A_PERSON_SET =
+  "A person said who funded this expense or whether it was paid back, and an agent doesn't change that. Nothing changed. Put it to the owner as a card or a question.";
+
+/**
+ * Whether an agent may say who funded an expense or that it was paid back: an owner-level person
+ * started the turn with their own message or tap, and it has read nothing from outside.
+ */
+export const agentMayFund = Effect.fn("KinRecords.agentMayFund")(function* (
+  orgId: KinOrgId,
+  writer: Writer,
+) {
+  if (writer.actor._tag !== "agent") return true;
+  const wakeupId = writer.wakeupId;
+  if (wakeupId === undefined) return false;
+  return (
+    (yield* personSpokeInTurn(orgId, writer.actor.agentId, wakeupId)) &&
+    (yield* ownerLevelAsked(orgId, writer.actor.agentId, wakeupId)) &&
+    !(yield* outsideRead({ orgId, wakeupId })) &&
+    !(yield* followsOutsideRead(orgId, wakeupId))
+  );
+});
+
+/** Whether an amount or fields put money on an entry. */
 const recordsMoney = (
   amount: KinMoney | null | undefined,
   fields: Readonly<Record<string, FieldValue | null>> | undefined,
@@ -1742,6 +1770,12 @@ const make = Effect.gen(function* () {
       steps: (input.steps?.length ?? 0) > 0 || input.urgent === true,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
+    // An agent's funder the owner didn't give in person waits with the new entry for Keep.
+    const unaskedFunding =
+      list === "expenses" &&
+      writer.actor._tag === "agent" &&
+      FUNDING.some((field) => field in fields) &&
+      !(yield* agentMayFund(orgId, writer).pipe(provideSql));
     // Money counts a partner's expense as owed: the entry says so too, not "None".
     if (funds(def, fields[FUNDED_BY]) && fields[REIMBURSEMENT] === undefined)
       fields[REIMBURSEMENT] = "owed";
@@ -1797,7 +1831,8 @@ const make = Effect.gen(function* () {
       options.kept === undefined ? yield* approvalKeeps(orgId, writer, list, partyId) : undefined;
     const kept =
       options.kept ??
-      ((approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps) &&
+      (!unaskedFunding &&
+        (approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps) &&
         !(yield* followsUnasked(orgId, writer)));
     // Nobody issued, sent or was paid for what nobody kept: it waits as a draft on its own day.
     // Only Issue makes an invoice owed, with its number; an agent sets none, so it starts a draft.
@@ -2455,6 +2490,25 @@ const make = Effect.gen(function* () {
           );
           const ahead = repaidAhead(merged, today);
           if (ahead !== undefined) return yield* ahead;
+        }
+        const fundingMoved =
+          list === "expenses"
+            ? FUNDING.filter((field) => shownField(stored[field]) !== shownField(merged[field]))
+            : [];
+        if (writer.actor._tag === "agent" && fundingMoved.length > 0) {
+          if (!(yield* agentMayFund(orgId, writer).pipe(provideSql)))
+            return yield* notAllowed(FUNDING_IS_THE_OWNERS);
+          const set = fundingMoved.filter((field) => shownField(stored[field]) !== null);
+          if (set.length > 0) {
+            const [byPerson] = yield* sql`SELECT 1 FROM kin_record_changes c
+              WHERE c.org_id = ${orgId} AND c.record_id = ${row.recordId}
+                AND c.actor_kind <> 'agent'
+                AND c.seq = (SELECT MAX(l.seq) FROM kin_record_changes l, json_each(l.fields_json) f
+                  WHERE l.org_id = c.org_id AND l.record_id = c.record_id
+                    AND json_extract(f.value, '$.field') IN ${sql.in(set)})
+              LIMIT 1`;
+            if (byPerson !== undefined) return yield* notAllowed(FUNDING_A_PERSON_SET);
+          }
         }
         // A repayment Confirm linked to a bank row binds the expenses it settled: what they cost,
         // who is paid back and when stay as the bank saw them until that repayment is undone.

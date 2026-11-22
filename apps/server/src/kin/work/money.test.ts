@@ -50,6 +50,7 @@ import { typedFields } from "./leadFields.ts";
 import { aboutTotal, addUp, dayIn, financialYearOf, formatMinor, parseAmount } from "./money.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
+import { markOutside } from "../lead/OutsideContent.ts";
 import { MATCH_MOVED, partnersOwed } from "./partnersOwed.ts";
 import {
   dates as datesView,
@@ -5634,6 +5635,83 @@ describe("money answers", () => {
         });
         yield* records.update(orgId, system, company.row.key, { fields: { fundedBy: null } });
         assert.notProperty(yield* fieldsOf(company.row.key), "reimbursement");
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "let an agent say who funded an expense only as the owner asked in person, before reading anything outside, and never over a person's word",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at})`;
+        yield* defined(1, { template: "expenses" });
+        const records = yield* KinRecords.KinRecords;
+        const agentIn = (wakeupId: string): KinRecords.Writer => ({
+          actor: { _tag: "agent", agentId: lead },
+          via: "lead",
+          wakeupId,
+        });
+        const spend = (writer: KinRecords.Writer, key: string, fields = {}) =>
+          records.create(orgId, writer, {
+            owner,
+            originKey: key,
+            list: "expenses",
+            title: `Invented ${key}`,
+            state: "done",
+            amount: inr(4_200),
+            dateAt: on("2026-11-10"),
+            fields,
+          });
+        const meera = { fundedBy: "person:meera" };
+        const refusal = (writer: KinRecords.Writer, key: string, fields: Record<string, string>) =>
+          Effect.map(
+            Effect.flip(records.update(orgId, writer, key, { fields })),
+            (error) => error.message,
+          );
+        const fieldsOf = (key: string) =>
+          Effect.map(records.get(orgId, key), (row) => JSON.parse(row!.fieldsJson));
+
+        // The owner's own message: the agent records it kept, funder and all, and may correct it.
+        yield* turn(3, "I paid 4,200 for the domain from my own card");
+        const asked = agentIn("wake-3");
+        const { row: domain } = yield* spend(asked, "domain", { fundedBy: `person:${ownerId}` });
+        assert.strictEqual(domain.confirmed, 1);
+        yield* records.update(orgId, asked, domain.key, { fields: meera });
+        assert.include(yield* fieldsOf(domain.key), { ...meera, reimbursement: "owed" });
+        // What a person said stands, even in an owner's turn.
+        const { row: byHand } = yield* spend(system, "by hand");
+        yield* records.update(
+          orgId,
+          { actor: { _tag: "person", personId: ownerId }, via: "owner" },
+          byHand.key,
+          { fields: meera },
+        );
+        assert.strictEqual(
+          yield* refusal(asked, byHand.key, { reimbursement: "repaid" }),
+          KinRecords.FUNDING_A_PERSON_SET,
+        );
+
+        // After the turn reads a statement: nothing changes, and a new one waits to be kept.
+        yield* markOutside({ orgId, wakeupId: "wake-3" }, "statement:invented");
+        assert.strictEqual(
+          yield* refusal(asked, domain.key, { reimbursement: "repaid" }),
+          KinRecords.FUNDING_IS_THE_OWNERS,
+        );
+        const { row: cab } = yield* spend(asked, "cab", meera);
+        assert.strictEqual(cab.confirmed, 0);
+        // A turn no owner-level person started in person, such as a routine: the same.
+        const routine = agentIn("wake-routine");
+        const { row: plain } = yield* spend(routine, "plain");
+        assert.strictEqual(
+          yield* refusal(routine, plain.key, meera),
+          KinRecords.FUNDING_IS_THE_OWNERS,
+        );
+        assert.deepStrictEqual(
+          [yield* fieldsOf(domain.key), yield* fieldsOf(plain.key)].map((one) => one.reimbursement),
+          ["owed", undefined],
+        );
       }).pipe(Effect.provide(layer)),
   );
 
