@@ -127,6 +127,7 @@ import Watches from "./migrations/K203_Watches.ts";
 import BankAlerts from "./migrations/K204_BankAlerts.ts";
 import Arrivals from "./migrations/K205_Arrivals.ts";
 import CompanyShell from "./migrations/K206_CompanyShell.ts";
+import QuietDelivery from "./migrations/K207_QuietDelivery.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -334,6 +335,7 @@ const migrations = {
   "204_BankAlerts": BankAlerts,
   "205_Arrivals": Arrivals,
   "206_CompanyShell": CompanyShell,
+  "207_QuietDelivery": QuietDelivery,
 };
 const loader = Migrator.fromRecord(migrations);
 

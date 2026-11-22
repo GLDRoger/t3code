@@ -1911,7 +1911,7 @@ describe("Kin migrations", () => {
         // Later branches' migrations run after these too; only these three are this test's.
         assert.deepStrictEqual(
           (yield* runKinMigrations()).map(([id]) => id),
-          [196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206],
+          [196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207],
         );
         assert.deepStrictEqual(yield* receipts, [
           { trigger_key: "review:ambermill/shop#7", review_url: null },
@@ -1960,7 +1960,7 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* added, []);
       assert.deepStrictEqual(
         (yield* runKinMigrations()).map(([id]) => id),
-        [197, 198, 199, 200, 201, 202, 203, 204, 205, 206],
+        [197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207],
       );
       const all = [
         "approved_at",
@@ -2067,11 +2067,14 @@ describe("Kin migrations", () => {
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
+        // K207's column comes after this one's work, so the table is compared without it.
         const shape = sql`SELECT cid, name, type, "notnull", dflt_value, pk
-          FROM pragma_table_info('kin_push_devices') ORDER BY cid`;
+          FROM pragma_table_info('kin_push_devices') WHERE name != 'quiet_channel' ORDER BY cid`;
         const indexes = sql`SELECT name, sql FROM sqlite_master
           WHERE type = 'index' AND tbl_name = 'kin_push_devices' ORDER BY name`;
-        const rows = sql`SELECT * FROM kin_push_devices ORDER BY org_id, token`;
+        const rows = sql`SELECT org_id, token, person_id, platform, aps_environment, device_label,
+            session_id, proof_key_thumbprint, created_at, updated_at
+          FROM kin_push_devices ORDER BY org_id, token`;
         yield* runKinMigrations();
         // A host on K201: the table as K021 made it, holding iPhones with every column filled.
         yield* sql`DROP TABLE kin_push_devices`;
@@ -2213,20 +2216,40 @@ describe("Kin migrations", () => {
         const sql = yield* SqlClient.SqlClient;
         yield* runKinMigrations();
         yield* sql`DROP TABLE kin_company_shell`;
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 206`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 206`;
         yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Ambermill', '2026-11-22')`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[206, "CompanyShell"]]);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(206));
         const shells = sql`SELECT org_id, shell_json, rev, set_by, set_at
         FROM kin_company_shell ORDER BY org_id`;
         assert.deepStrictEqual(yield* shells, []);
         const sections = '[{"id":"deals","on":false}]';
         yield* sql`INSERT INTO kin_company_shell VALUES ('org', ${sections}, 1, 'rhea', 1)`;
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 206`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[206, "CompanyShell"]]);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 206`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(206));
         assert.deepStrictEqual(yield* shells, [
           { org_id: "org", shell_json: sections, rev: 1, set_by: "rhea", set_at: 1 },
         ]);
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K207 adds the answers switch and the quiet channel flag, keeping rows on rerun", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Ambermill', '2026-11-22')`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('rhea', 'org', 'rhea', 'Rhea', '2026-11-22')`;
+      yield* sql`INSERT INTO kin_push_devices (org_id, token, person_id, platform,
+          aps_environment, session_id, created_at, updated_at)
+        VALUES ('org', 'phone', 'rhea', 'android', 'production', 'sess', 1, 1)`;
+      const rows = sql`SELECT p.answers_ring AS ring, d.quiet_channel AS quiet FROM kin_people p
+        JOIN kin_push_devices d ON d.person_id = p.person_id ORDER BY p.person_id`;
+      assert.deepStrictEqual(yield* rows, [{ ring: null, quiet: 0 }]);
+      yield* sql`UPDATE kin_people SET answers_ring = 0`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(207));
+      assert.deepStrictEqual(yield* rows, [{ ring: 0, quiet: 0 }]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
@@ -2239,7 +2262,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 206");
+      assert.include(String(exit), "below the latest applied migration 207");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

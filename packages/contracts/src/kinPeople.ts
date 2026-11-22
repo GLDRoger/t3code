@@ -282,6 +282,11 @@ export const KinPersonProfile = Schema.Struct({
    */
   holdOutsideHours: Schema.optional(Schema.Boolean),
   /**
+   * In their quiet hours a reply to what they asked still rings (`ANSWER_RINGS_WITHIN_MS`);
+   * absent, on. Only on their own profile.
+   */
+  answersRing: Schema.optional(Schema.Boolean),
+  /**
    * Away until this day, on their own calendar: Kin holds non-urgent lines until it starts.
    * Absent once the day has come, and from older hosts.
    */
@@ -318,6 +323,8 @@ export const KinPeopleUpdateProfileInput = Schema.Struct({
   /** Null goes back to the company's. */
   quietHours: Schema.optional(Schema.NullOr(KinPersonQuietHours)),
   holdOutsideHours: Schema.optional(Schema.Boolean),
+  /** Only their own. */
+  answersRing: Schema.optional(Schema.Boolean),
   /** Away until this day on their calendar; null is "I'm back". The owner level sets a teammate's. */
   awayUntil: Schema.optional(Schema.NullOr(KinDay)),
   picture: Schema.optional(Schema.NullOr(KinAttachment)),

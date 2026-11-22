@@ -1521,19 +1521,24 @@ export const make = Effect.gen(function* () {
             (yield* mayActOn(reader, orgId, row.personId).pipe(Effect.isSuccess))))
       )
         editable.add(row.personId);
-    const logins = yield* sql<{ personId: string; login: string | null }>`SELECT
-        person_id AS "personId", github_login AS login FROM kin_people
+    const logins = yield* sql<{ personId: string; login: string | null; ring: number | null }>`
+      SELECT person_id AS "personId", github_login AS login, answers_ring AS ring FROM kin_people
       WHERE org_id = ${orgId} ORDER BY person_id`.pipe(
       Effect.mapError(toPersistenceSqlError("KinPeople.githubLogins")),
     );
-    const login = new Map(logins.map((row) => [row.personId, row.login]));
-    const withEdit = <A extends { readonly personId: string }>(profile: A) => ({
-      ...profile,
-      canEdit: editable.has(profile.personId),
-      ...(editable.has(profile.personId)
-        ? { githubLogin: login.get(profile.personId) ?? null }
-        : {}),
-    });
+    const login = new Map(logins.map((row) => [row.personId, row]));
+    const withEdit = <A extends { readonly personId: string }>(profile: A) => {
+      const own = login.get(profile.personId);
+      return {
+        ...profile,
+        canEdit: editable.has(profile.personId),
+        ...(editable.has(profile.personId) ? { githubLogin: own?.login ?? null } : {}),
+        // Only they set it, so only they read it.
+        ...(reader?.personId === profile.personId && own?.ring != null
+          ? { answersRing: own.ring === 1 }
+          : {}),
+      };
+    };
     if (!ownerLevelReader)
       return {
         profiles: rows.map(withEdit),
@@ -1585,7 +1590,9 @@ export const make = Effect.gen(function* () {
       });
     if (
       caller.personId !== input.personId &&
-      (input.quietHours !== undefined || input.holdOutsideHours !== undefined)
+      (input.quietHours !== undefined ||
+        input.holdOutsideHours !== undefined ||
+        input.answersRing !== undefined)
     )
       return yield* new KinChatError({
         reason: "not_allowed",
@@ -1636,8 +1643,16 @@ export const make = Effect.gen(function* () {
             Effect.mapError(toPersistenceSqlError("KinPeople.updateProfile")),
           );
           yield* refresh.touch(input.orgId, "people");
-          const [profile] = yield* profileRows(input.orgId, input.personId);
-          if (profile === undefined) return yield* missing;
+          const [row] = yield* profileRows(input.orgId, input.personId);
+          if (row === undefined) return yield* missing;
+          const [ring] =
+            caller.personId === input.personId
+              ? yield* sql<{ ring: number | null }>`SELECT answers_ring AS ring FROM kin_people
+                  WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
+                  Effect.mapError(toPersistenceSqlError("KinPeople.updateProfile")),
+                )
+              : [];
+          const profile = ring?.ring == null ? row : { ...row, answersRing: ring.ring === 1 };
           return { profile, replaced: pictureId === undefined ? null : before.pictureId };
         }),
       )
