@@ -65,7 +65,9 @@ const strayLandingAtom = Atom.family((key: string) => {
     return {
       _tag: "settled",
       text:
-        root === thread ? KIN_STRAY_THREAD_COPY.workOf(lead.name) : KIN_STRAY_THREAD_COPY.helperOf(lead.name),
+        root === thread
+          ? KIN_STRAY_THREAD_COPY.workOf(lead.name)
+          : KIN_STRAY_THREAD_COPY.helperOf(lead.name),
       chat: { ...target, chatId: lead.ownerChatId },
     };
   }).pipe(Atom.withLabel(`kin:stray-thread:${key}`));

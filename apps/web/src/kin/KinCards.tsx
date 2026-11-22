@@ -219,9 +219,7 @@ export const KinCard = memo(function KinCard(props: {
   );
   switch (view.kind) {
     case "task":
-      return (
-        <KinTaskCard task={KIN_WEB_ONLY ? kinTaskCardWithoutThread(view.task) : view.task} />
-      );
+      return <KinTaskCard task={KIN_WEB_ONLY ? kinTaskCardWithoutThread(view.task) : view.task} />;
     case "deferral":
       return <KinDeferralCard deferral={view.deferral} environmentId={props.environmentId} />;
     case "choice":
