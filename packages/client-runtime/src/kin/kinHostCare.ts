@@ -60,7 +60,7 @@ export const KIN_HOST_COPY = {
 } as const;
 
 /** A short name for each cause: a card's eyebrow and a failing row's title. */
-export const KIN_TROUBLE_TITLES: Readonly<Record<KinTroubleCause, string>> = {
+const KIN_TROUBLE_TITLES: Readonly<Record<KinTroubleCause, string>> = {
   space: "Out of space",
   signin: "AI account signed out",
   access: "Model not allowed",
