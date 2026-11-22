@@ -215,7 +215,7 @@ function wordsByCause(card: TroubleFacts, at: (iso: string) => string): TroubleW
     case "unreachable":
       return {
         what: `Kin couldn't reach the AI provider, so ${who} couldn't work.`,
-        doing: "Kin keeps trying by itself.",
+        doing: card.count === 0 ? null : "Kin keeps trying by itself.",
         actions: ["retry"],
       };
     case "connection":
@@ -245,7 +245,8 @@ function wordsByCause(card: TroubleFacts, at: (iso: string) => string): TroubleW
     case "unknown":
       return {
         what: "Something went wrong that Kin doesn't recognise.",
-        doing: `Kin keeps ${turns(card.count)} and tries again by itself.`,
+        doing:
+          card.count === 0 ? null : `Kin keeps ${turns(card.count)} and tries again by itself.`,
         actions: ["retry", "copy_details"],
       };
   }
