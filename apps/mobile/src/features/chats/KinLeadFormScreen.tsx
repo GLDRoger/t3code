@@ -30,7 +30,7 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useRef, useState, type ComponentProps, type ComponentRef, type ReactNode } from "react";
 import { TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -44,6 +44,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient, refreshKinAgents } from "./state/kinClient";
+import { KinWorkFieldBox } from "./components/KinWorkPieces";
 import {
   KinAgentEffortAdvice,
   KinAgentEffortRow,
@@ -470,14 +471,15 @@ function Field(props: {
   readonly borderTop?: boolean;
   readonly onChange: (value: string) => void;
 }) {
+  const input = useRef<ComponentRef<typeof TextInput>>(null);
   return (
-    <View
-      className={
-        props.borderTop ? "gap-2 border-t border-border-subtle px-4 py-3" : "gap-2 px-4 py-3"
-      }
+    <KinWorkFieldBox
+      label={props.label}
+      input={input}
+      className={props.borderTop ? "border-t border-border-subtle" : undefined}
     >
-      <Text className="text-sm text-foreground-muted">{props.label}</Text>
       <TextInput
+        ref={input}
         accessibilityLabel={props.label}
         value={props.value}
         editable={props.editable}
@@ -490,6 +492,6 @@ function Field(props: {
         placeholderTextColorClassName="accent-placeholder"
         className="min-h-8 font-sans text-base text-foreground"
       />
-    </View>
+    </KinWorkFieldBox>
   );
 }

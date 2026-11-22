@@ -145,6 +145,29 @@ describe("money", () => {
       expect(kinParseMoney(wrong, wrong === "1.5" ? "JPY" : "INR")).toBeNull();
   });
 
+  // A rough figure as a person says it in talks reads in the home currency, or the one named.
+  it.each([
+    ["90k", "INR", 9_000_000, "INR"],
+    ["90K", "USD", 9_000_000, "USD"],
+    ["1.2m", "USD", 120_000_000, "USD"],
+    ["9 lakh", "USD", 90_000_000, "USD"],
+    ["9L", "INR", 90_000_000, "INR"],
+    ["1.5 cr", "INR", 1_500_000_000, "INR"],
+    ["1.5 crore", "INR", 1_500_000_000, "INR"],
+    ["~90k", "INR", 9_000_000, "INR"],
+    ["about 90k", "INR", 9_000_000, "INR"],
+    ["90,000", "INR", 9_000_000, "INR"],
+    ["₹90k", "USD", 9_000_000, "INR"],
+    ["~ $1.2M", "INR", 120_000_000, "USD"],
+    ["around EUR 90k", "INR", 9_000_000, "EUR"],
+    ["about Rs 9 lakh", "USD", 90_000_000, "INR"],
+  ] as const)("reads %s as an amount", (text, home, minor, currency) => {
+    expect(kinParseMoney(text, home)).toEqual({ minor, currency });
+  });
+  it.each(["k", "90kk", "nine", "-90k", "0", "about", "~", "0k"])("refuses %s", (text) => {
+    expect(kinParseMoney(text, "INR")).toBeNull();
+  });
+
   it("refuses a payment over what is owed", () => {
     const left = { minor: 6_000_000, currency: "INR" };
     expect(kinPaymentCheck({ amount: "60,000", paidOn: "2026-11-12", note: "" }, left)).toEqual({

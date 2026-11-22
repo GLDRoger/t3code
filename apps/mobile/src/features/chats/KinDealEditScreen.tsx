@@ -4,6 +4,7 @@ import {
   kinDealEditDraft,
   kinDealEditRequest,
   kinDealQuoteChoices,
+  kinDealValueRead,
   type KinDealEditDraft,
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
@@ -77,13 +78,13 @@ function KinDealEditForm(
   const now = new Date(useNowMinuteMs());
   const send = useKinDealSend(props);
   const home = useKinHomeCurrency(props) ?? null;
-  const [opened] = useState(() => kinDealEditDraft(deal, names));
+  const [opened] = useState(() => kinDealEditDraft({ ...deal, notes: page.notes }, names));
   const [draft, setDraft] = useState(opened);
   const quotes = kinDealQuoteChoices(page, draft.quote);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const request = kinDealEditRequest(deal, draft, names, home);
-  const moneyBad = !request.ok && request.problem !== null;
+  const request = kinDealEditRequest({ ...deal, notes: page.notes }, draft, names, home);
+  const read = kinDealValueRead(draft.value, deal.value?.currency ?? home ?? "USD");
   const set = (change: Partial<KinDealEditDraft>) => setDraft((held) => ({ ...held, ...change }));
   const leave = useKinAskBeforeDiscard(kinFormTyped(opened, draft));
 
@@ -114,6 +115,8 @@ function KinDealEditForm(
         <KinWorkTextField
           label={KIN_DEALS.what}
           value={draft.title}
+          placeholder={KIN_DEALS.whatPlaceholder}
+          wraps
           maxLength={280}
           disabled={saving}
           onChangeText={(title) => set({ title })}
@@ -121,10 +124,21 @@ function KinDealEditForm(
         <KinWorkTextField
           label={KIN_DEALS.value}
           value={draft.value}
+          placeholder={KIN_DEALS.valuePlaceholder}
           keyboard="numbers"
           disabled={saving}
-          hint={moneyBad ? KIN_DEALS.notAmount : KIN_DEALS.valueHint}
+          hint={read.hint}
           onChangeText={(value) => set({ value })}
+        />
+        <KinWorkTextField
+          label={KIN_DEALS.notes}
+          value={draft.notes}
+          placeholder={KIN_DEALS.notesPlaceholder}
+          multiline
+          maxLength={4_000}
+          disabled={saving}
+          hint={KIN_DEALS.notesHint}
+          onChangeText={(notes) => set({ notes })}
         />
         <KinDayField
           label={KIN_DEALS.expected}
@@ -139,6 +153,7 @@ function KinDealEditForm(
         <KinWorkTextField
           label={KIN_DEALS.cameFrom}
           value={draft.source}
+          placeholder={KIN_DEALS.cameFromPlaceholder}
           maxLength={120}
           disabled={saving}
           onChangeText={(source) => set({ source })}

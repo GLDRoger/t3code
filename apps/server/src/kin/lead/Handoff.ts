@@ -120,15 +120,15 @@ export const TakePrivateResult = Schema.Struct({
   continued: Schema.Literal(true),
 });
 
-/** A message to someone else is a short one; the turn their reply wakes writes the rest. */
-const RELAY_MAX = 300;
+/** Room for a message with the pointers it was asked for; the description still asks for brief. */
+const RELAY_MAX = 2_000;
 export const RelayInput = Schema.Struct({
   to: TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
     description: "The person, by name as people_read gives it.",
   }),
   text: TrimmedNonEmptyString.check(Schema.isMaxLength(RELAY_MAX)).annotate({
     description:
-      "The message, written for them, in at most 300 characters: a request in the asker's words with the task key, or the answer back.",
+      "The message, written for them, in at most 2,000 characters: a request in the asker's words with the task key, or the answer back.",
   }),
   sourceEventId: TurnEvent,
   urgent: Schema.optional(
@@ -147,6 +147,11 @@ export const RelayResult = Schema.Struct({
 type PostTo = KinLevelGate["Service"]["postTo"];
 
 const NOTHING = "Nothing was passed on.";
+/** An urgent message's word on what it withdrew (`urgentNow`), so anything unrelated is sent again. */
+const replacedLine = (name: string, replaced: number | undefined) =>
+  replaced === undefined || replaced === 0
+    ? ""
+    : ` This replaced your held ${replaced === 1 ? "message" : `${replaced} messages`} to ${name}.`;
 const refuse = (message: string) =>
   new KinChatError({ reason: "not_allowed", message: `${message} ${NOTHING}` });
 const missing = () => new KinChatError({ reason: "not_found", message: "Kin record not found." });
@@ -969,11 +974,12 @@ const make = Effect.gen(function* () {
       return {
         to: to.name,
         sent: true as const,
-        note:
+        note: `${
           unseen ??
           (isHeld(posted)
             ? `${heldUntil(to.name, posted)}; Kin delivers it in their chat with you then. Tell the asker they'll have it then; their answer arrives there.`
-            : `Sent in ${to.name}'s chat with you; their answer arrives there.`),
+            : `Sent in ${to.name}'s chat with you; their answer arrives there.`)
+        }${isHeld(posted) ? "" : replacedLine(to.name, posted.replaced)}`,
       };
     }
     // A teammate's turn: their request or their words, to anyone in the company.
@@ -1041,13 +1047,16 @@ const make = Effect.gen(function* () {
             RETURNING message_id`;
           if (claimed.length === 0) return yield* refuse(askedAlready);
         }
-        const held =
+        const replaced =
           input.urgent === undefined
-            ? yield* holdFor(where).pipe(access)
-            : yield* urgentNow({ ...where, agentId: ctx.agentId, reason: input.urgent }).pipe(
-                access,
-                Effect.as(undefined),
-              );
+            ? 0
+            : yield* urgentNow({
+                ...where,
+                agentId: ctx.agentId,
+                wakeupId: ctx.wakeupId,
+                reason: input.urgent,
+              }).pipe(access);
+        const held = input.urgent === undefined ? yield* holdFor(where).pipe(access) : undefined;
         if (held !== undefined) {
           const at = yield* holdLine({
             ...where,
@@ -1081,9 +1090,10 @@ const make = Effect.gen(function* () {
         return {
           to: to.name,
           sent: true as const,
-          note:
+          note: `${
             unseen ??
-            `It waits on ${to.name} in their chat with you, quoted as ${who?.name ?? "the asker"}'s words. Tell them it is with ${to.name}; the answer comes back through you.`,
+            `It waits on ${to.name} in their chat with you, quoted as ${who?.name ?? "the asker"}'s words. Tell them it is with ${to.name}; the answer comes back through you.`
+          }${replacedLine(to.name, replaced)}`,
         };
       }),
     );
@@ -1391,6 +1401,32 @@ const make = Effect.gen(function* () {
     );
   }, guarded("KinHandoff.handOff"));
 
+  /** A copied answer's last line when its turn left a card open in its own chat: where it is. */
+  const cardElsewhere = Effect.fn("KinHandoff.cardElsewhere")(function* (
+    input: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
+    handoff: { readonly toChatId: KinChatId; readonly noticeSeq: number },
+  ) {
+    const cards = yield* sql<{ type: string; state: string; updatedAt: string }>`SELECT w.type,
+        w.state_json AS state, w.updated_at AS "updatedAt"
+      FROM kin_widgets w JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+        JOIN kin_wakeups k ON k.org_id = m.org_id AND k.wakeup_id = ${input.wakeupId}
+          AND k.thread_id = m.author_thread_id
+      WHERE w.org_id = ${input.orgId} AND w.chat_id = ${handoff.toChatId}
+        AND w.type IN ('choice', 'approval') AND w.closed_at IS NULL
+        AND m.author_agent_id = ${input.agentId} AND m.seq > ${handoff.noticeSeq}
+      ORDER BY m.seq`;
+    const now = yield* Clock.currentTimeMillis;
+    const open = cards.some(
+      (card) =>
+        card.type !== "choice" ||
+        !choiceExpired({ updatedAt: card.updatedAt, state: JSON.parse(card.state) }, now),
+    );
+    if (!open) return "";
+    const [named] = yield* sql<{ name: string }>`SELECT name FROM kin_leads
+      WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} ORDER BY agent_id`;
+    return named === undefined ? "" : `\n\nAnswer on the card in your chat with ${named.name}.`;
+  });
+
   const reportBack = Effect.fn("KinHandoff.reportBack")(
     function* (input: {
       readonly orgId: KinOrgId;
@@ -1438,6 +1474,7 @@ const make = Effect.gen(function* () {
                 AND a.retired_at IS NULL
               WHERE l.org_id = ${input.orgId} AND l.agent_id = ${handoff.fromAgentId}`;
             if (asker === undefined) return;
+            const where = yield* cardElsewhere(input, handoff);
             // Keyed by the answer, not the hand-off: one reply to several hand-offs is one relay.
             const key = `handoff-back:${reply.messageId}:${asker.ownerChatId}`;
             const id = NodeCrypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
@@ -1446,7 +1483,7 @@ const make = Effect.gen(function* () {
               chatId: asker.ownerChatId,
               audience: "owner",
               messageId: KinMessageId.make(`kin-handoff-back:${id}`),
-              body: message.value.body.slice(0, messageBodyLimit),
+              body: `${message.value.body.slice(0, messageBodyLimit - where.length)}${where}`,
               relay: { kind: "reply_from", agentId: input.agentId },
               silent: true,
             });

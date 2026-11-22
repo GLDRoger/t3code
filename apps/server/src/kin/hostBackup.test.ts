@@ -1,12 +1,15 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { KinOrgId } from "@t3tools/contracts";
+import { KinAgentId, KinOrgId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -17,6 +20,8 @@ import * as Repository from "./chat/KinChatRepository.ts";
 import * as Chat from "./chat/KinChatService.ts";
 import * as HostBackup from "./hostBackup.ts";
 import * as KinPersistence from "./persistence/KinPersistence.ts";
+import { KinWakeupError } from "./lead/WakeupRunner.ts";
+import { MemoryError } from "./memory/Memory.ts";
 
 const HOUR = 60 * 60 * 1000;
 const NOW = 1794009600000;
@@ -67,7 +72,11 @@ const services = Chat.layer.pipe(
   Layer.provideMerge(
     KinPersistence.layer.pipe(
       Layer.provideMerge(Sqlite.layerMemory),
-      Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+      Layer.provideMerge(
+        ConfigProvider.layer(
+          ConfigProvider.fromUnknown({ KIN_ENABLED: true, KIN_CHECKOUT: "/srv/kin-current" }),
+        ),
+      ),
     ),
   ),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-host-backup-" })),
@@ -134,4 +143,73 @@ it.effect("tells the owner once a day while the backup is old, and nothing once 
       HostBackup.backupProblem(old, NOW + 8 * 24 * HOUR),
     ]);
   }).pipe(Effect.provide(services)),
+);
+
+// The shape a wake-up failed with on a host whose /tmp quota was full.
+const wakeupFailure = (errno: number, code: string) =>
+  Cause.fail(
+    new KinWakeupError({
+      orgId,
+      agentId: KinAgentId.make("chief"),
+      cause: new MemoryError({
+        orgId,
+        operation: "prepareWakeup",
+        cause: PlatformError.systemError({
+          _tag: "Unknown",
+          module: "FileSystem",
+          method: "writeFile",
+          pathOrDescriptor: "/tmp/kin-x/config",
+          cause: Object.assign(new Error(code), { errno, code, syscall: "open" }),
+        }),
+      }),
+    }),
+  );
+
+it.effect.each([
+  { errno: -122, code: "Unknown system error -122" },
+  { errno: -28, code: "ENOSPC" },
+])("tells the owner once a day when a wake-up fails for want of space ($code)", ({ errno, code }) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    yield* seed;
+    yield* HostBackup.tellIfOutOfSpace(orgId, wakeupFailure(errno, code));
+    yield* HostBackup.tellIfOutOfSpace(orgId, wakeupFailure(errno, code));
+    assert.deepStrictEqual(yield* notices, [HostBackup.OUT_OF_SPACE]);
+    yield* TestClock.adjust(24 * HOUR);
+    yield* HostBackup.tellIfOutOfSpace(orgId, wakeupFailure(errno, code));
+    assert.lengthOf(yield* notices, 2);
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("tells nobody when a wake-up fails for another reason", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    yield* seed;
+    yield* HostBackup.tellIfOutOfSpace(orgId, wakeupFailure(-13, "EACCES"));
+    yield* HostBackup.tellIfOutOfSpace(orgId, Cause.die(new Error("provider exited")));
+    assert.lengthOf(yield* notices, 0);
+  }).pipe(Effect.provide(services)),
+);
+
+const space =
+  (left: Record<string, number>) =>
+  (folder: string): Effect.Effect<Option.Option<HostBackup.SpaceReading>> =>
+    Effect.succeedSome({ folder, freeBytes: left[folder] ?? 100, totalBytes: 100 });
+
+it.effect(
+  "tells the owner once a day when a disk is under 20% free, and nothing it can't read",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      yield* seed;
+      yield* HostBackup.warnIfLowOnSpace(orgId, ["/kin-tmp", "/home"], space({ "/kin-tmp": 20 }));
+      assert.lengthOf(yield* notices, 0);
+      yield* HostBackup.warnIfLowOnSpace(orgId, ["/kin-tmp", "/home"], space({ "/home": 19 }));
+      yield* HostBackup.warnIfLowOnSpace(orgId, ["/kin-tmp", "/home"], space({ "/home": 5 }));
+      assert.deepStrictEqual(yield* notices, [HostBackup.LOW_ON_SPACE]);
+      yield* TestClock.adjust(24 * HOUR);
+      const missing = (yield* Path.Path).join((yield* ServerConfig.ServerConfig).stateDir, "gone");
+      yield* HostBackup.warnIfLowOnSpace(orgId, [missing]);
+      assert.lengthOf(yield* notices, 1);
+    }).pipe(Effect.provide(services)),
 );

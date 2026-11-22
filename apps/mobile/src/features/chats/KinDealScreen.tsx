@@ -499,7 +499,7 @@ function KinDealBody(
       </ListSection>
 
       {page.notes === "" ? null : (
-        <ListSection>
+        <ListSection title={KIN_DEALS.notes}>
           <View className="bg-grouped-card px-4 py-3">
             <Text textRole="body" selectable className="text-foreground">
               {page.notes}

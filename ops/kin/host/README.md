@@ -2,14 +2,15 @@
 
 Runs the Kin server from a source build on the always-on Linux machine, as the dedicated `kin` user. Design and reasons: [triggers spec, "Running on the Kin host"](../../../docs/kin/specs/triggers.md#running-on-the-kin-host).
 
-| File                                      | What it does                                                                                                                                                                      |
-| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `setup.sh`                                | As root, from `/root/kin-ops`: creates `kin`, turns on linger, masks sleep, installs and enables the units, installs T3's policy (`/etc/t3code/policy.json`), prints a checklist. |
-| `kin-server.service`                      | The server, as a systemd user unit for `kin`.                                                                                                                                     |
-| `backup.sh`, `kin-backup.{service,timer}` | Nightly backup of `~/.t3/userdata` and `service.env` to an encrypted volume, keeping 14 days.                                                                                     |
-| `update.sh`                               | As `kin`: builds `kin` in its own worktree, runs the contract tests, then switches `~/kin-current` to it and restarts. Also does the first build.                                 |
-| `restore.md`                              | The restore drill.                                                                                                                                                                |
-| `retire-workers.sh`                       | As root, once: removes what the retired workers installed and lists what they left in kin's files; keeps the GitHub App.                                                          |
+| File                                              | What it does                                                                                                                                                                      |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `setup.sh`                                        | As root, from `/root/kin-ops`: creates `kin`, turns on linger, masks sleep, installs and enables the units, installs T3's policy (`/etc/t3code/policy.json`), prints a checklist. |
+| `kin-server.service`                              | The server, as a systemd user unit for `kin`.                                                                                                                                     |
+| `backup.sh`, `kin-backup.{service,timer}`         | Nightly backup of `~/.t3/userdata` and `service.env` to an encrypted volume, keeping 14 days.                                                                                     |
+| `update.sh`                                       | As `kin`: builds `kin` in its own worktree, runs the contract tests, then switches `~/kin-current` to it and restarts. Also does the first build.                                 |
+| `restore.md`                                      | The restore drill.                                                                                                                                                                |
+| `retire-workers.sh`                               | As root, once: removes what the retired workers installed and lists what they left in kin's files; keeps the GitHub App.                                                          |
+| `clean-temp.sh`, `kin-temp-clean.{service,timer}` | Hourly: removes kin's old temporary files (see Storage).                                                                                                                          |
 
 ## A kin shell
 
@@ -39,7 +40,7 @@ Root runs only scripts from a **root-owned clone**, `/root/kin-ops`. A clone `ki
 
 ### How the unit finds Node
 
-`ExecStart` runs `/usr/bin/env mise exec node@${KIN_NODE_VERSION} -- node …`. systemd doesn't expand variables in the executable path, so `env` finds `mise` on the unit's `PATH` (`~/.local/bin` first, then mise's shims, then the system directories). `setup.sh` and `update.sh` write `PATH`, `KIN_ENABLED=true`, `KIN_CHECKOUT=~/kin-current` and `KIN_NODE_VERSION` (the build's `engines.node`) into `~/.config/kin/kin-server.env`, so a Node bump in the repo moves the server with it.
+`ExecStart` runs `/usr/bin/env mise exec node@${KIN_NODE_VERSION} -- node …`. systemd doesn't expand variables in the executable path, so `env` finds `mise` on the unit's `PATH` (`~/.local/bin` first, then mise's shims, then the system directories). `setup.sh` and `update.sh` write `PATH`, `KIN_ENABLED=true`, `KIN_CHECKOUT=~/kin-current`, `KIN_NODE_VERSION` (the build's `engines.node`) and `TMPDIR` (see Storage) into `~/.config/kin/kin-server.env`, so a Node bump in the repo moves the server with it.
 
 Owner overrides such as `T3CODE_LAN=true` go in `~/.t3/service.env`, which the unit reads and the backup copies. The unit reads it before `kin-server.env`, so it can't change `PATH`, the build or the Node version.
 
@@ -226,6 +227,14 @@ KIN_BACKUP_DEST=/mnt/backup/kin
 The destination must be a mounted volume of its own: `backup.sh` refuses one on the same filesystem as `~/.t3`, or on `/`, which is what an unmounted mountpoint looks like. The encryption override doesn't skip that check.
 
 The timer does nothing until that file exists. Each run records its outcome in `~/.t3/userdata/kin-backup-status.json`; when the last good backup is over 36 hours old, or there is none, Kin tells the owner in their Chief of staff chat, once a day. Run one by hand with `systemctl --user start kin-backup` and read the details with `journalctl --user -u kin-backup`.
+
+## Storage
+
+Kin's temporary files live on the main disk in `~/.cache/kin-tmp`, not in `/tmp`, which on many hosts is a small part of memory with a per-user limit. `setup.sh` and `update.sh` create the folder and set `TMPDIR` to it in `~/.config/kin/kin-server.env`, so the server, its agents and `update.sh`'s own build all use it. For another folder, set `TMPDIR=<absolute path>` in `~/.t3/service.env`: the next `update.sh` or `setup.sh` copies it into `kin-server.env`, which the unit reads last, and the restart applies it.
+
+Every hour `kin-temp-clean.timer` runs `clean-temp.sh`. It removes kin's own top-level files and folders in `/tmp` and in Kin's temp folder that nothing inside has changed for 24 hours, or for 2 hours while that disk, or kin's quota on it, has less than 20% left (a git checkout always gets the full 24 hours, since an agent may have unpushed work in it). It never removes what a running kin process is working in, has open or listens on, anything another user owns, or anything outside those two folders. Run it by hand with `systemctl --user start kin-temp-clean`; `journalctl --user -u kin-temp-clean` shows one line a run saying how many items it removed and how much space came back.
+
+Each wake-up also checks the free space on the disks holding Kin's temp folder, `/tmp` and `~/.t3`. When one has less than 20% free, the log gets a `Kin host is low on space` warning with the figures, and Kin tells the owner in their Chief of staff chat, once a day, that Kin's computer is running low on space. If a wake-up fails because the disk or quota is full, Kin tells the owner, once a day, that Kin's computer has run out of temporary space and agents can't run until some is freed. The free-space check sees the whole disk, not kin's quota on it; only the hourly clean reads the quota. To free space at once, run the clean by hand, then see what is left with `du -sh /tmp/* ~/.cache/kin-tmp/* 2>/dev/null | sort -h | tail` and remove what you know is no longer needed. `update.sh` prunes old builds and update backups itself.
 
 ## Operating
 

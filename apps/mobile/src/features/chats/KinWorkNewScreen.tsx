@@ -64,6 +64,7 @@ import {
 import {
   KinGateView,
   KinWorkAboveKeyboard,
+  KinWorkFieldBox,
   useKinAskBeforeDiscard,
 } from "./components/KinWorkPieces";
 import { useKinGate } from "./state/useKinHost";
@@ -141,6 +142,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
   const [base, setBase] = useState<KinWorkDraft>(props.start);
   const [added, setAdded] = useState<string | null>(null);
   const titleField = useRef<ComponentRef<typeof TextInput>>(null);
+  const notesField = useRef<ComponentRef<typeof TextInput>>(null);
   const leave = useKinAskBeforeDiscard(kinFormTyped(base, draft));
   const work = useKinWork(target);
   // An older server has no clients or projects to put a task under.
@@ -207,8 +209,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
         return (
           <View key={name} className="gap-2">
             <ListSection>
-              <View className="gap-2 px-4 py-3">
-                <Text className="text-sm text-foreground-muted">{words.titleLabel}</Text>
+              <KinWorkFieldBox label={words.titleLabel} input={titleField}>
                 <TextInput
                   ref={titleField}
                   accessibilityLabel={words.titleLabel}
@@ -238,7 +239,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                     {titleCount}
                   </Text>
                 )}
-              </View>
+              </KinWorkFieldBox>
             </ListSection>
             <View className="flex-row flex-wrap items-center gap-3 px-2">
               <Button
@@ -381,9 +382,9 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
       case "notes":
         return (
           <ListSection key={name}>
-            <View className="gap-2 px-4 py-3">
-              <Text className="text-sm text-foreground-muted">{KIN_WORK_NEW_COPY.notesLabel}</Text>
+            <KinWorkFieldBox label={KIN_WORK_NEW_COPY.notesLabel} input={notesField}>
               <TextInput
+                ref={notesField}
                 accessibilityLabel={KIN_WORK_NEW_COPY.notesLabel}
                 value={draft.notes}
                 editable={!saving}
@@ -395,7 +396,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                 placeholderTextColorClassName="accent-placeholder"
                 className="min-h-24 font-sans text-base text-foreground"
               />
-            </View>
+            </KinWorkFieldBox>
           </ListSection>
         );
     }

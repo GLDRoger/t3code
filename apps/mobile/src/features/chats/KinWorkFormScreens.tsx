@@ -79,18 +79,18 @@ import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   KinGateView,
-  useKinAskBeforeDiscard,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkProblemNotice,
   KinWorkTextField,
+  KinWorkToggleRow,
+  useKinAskBeforeDiscard,
 } from "./components/KinWorkPieces";
 import { KinCountryFirstField } from "./components/KinCountryFirst";
 import { KinDayField } from "./components/KinDayField";
@@ -564,7 +564,7 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
       case "private":
         return member ? null : (
           <ListSection key={which}>
-            <ListToggleRow
+            <KinWorkToggleRow
               icon="lock"
               label={KIN_CLIENTS.privateLabel}
               description={draft.private ? KIN_CLIENTS.privateOn : KIN_CLIENTS.privateOff}
@@ -1237,7 +1237,7 @@ function ProjectForm(
         ) : null}
       </ListSection>
       <ListSection footer={draft.campaign ? KIN_MARKETING.audienceHint : undefined}>
-        <ListToggleRow
+        <KinWorkToggleRow
           icon="tag"
           label={KIN_MARKETING.campaign}
           description={KIN_MARKETING.campaignHint}
@@ -1297,7 +1297,7 @@ function ProjectForm(
         />
       </ListSection>
       <ListSection>
-        <ListToggleRow
+        <KinWorkToggleRow
           icon="lock"
           label={KIN_PROJECTS.privateLabel}
           description={draft.private ? KIN_PROJECTS.privateOn : KIN_PROJECTS.privateOff}
