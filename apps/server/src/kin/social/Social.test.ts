@@ -667,6 +667,38 @@ it.effect("makes a ready-to-post pack with nothing connected", () => {
       const [after] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
       WHERE org_id = ${orgId} AND type = ${KIN_SOCIAL_PACK_CARD}`;
       assert.isNotNull(decodePack(after!.state).posted);
+
+      // A picture Kin drew rides on its own reply (`kin_picture`); its id is media like any other.
+      const drawn = "kin-chat-00000000-0000-4000-8000-0000000000bb";
+      const { attachmentsDir } = yield* ServerConfig;
+      yield* (yield* FileSystem.FileSystem).writeFile(
+        `${attachmentsDir}/${drawn}.png`,
+        new Uint8Array(1024).fill(9),
+      );
+      const image = { type: "image", id: drawn, name: "diwali-hours.png", mimeType: "image/png" };
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_agent_id, author_owner_person_id, author_thread_id, author_member_id, author_role,
+          kind, body, mentions_json, status, created_at, attachments_json)
+        VALUES ('drawn-msg', ${orgId}, ${`chat-${orgId}`}, 900, 'agent', ${lead}, ${owner},
+          'social-thread', ${`lead-member-${orgId}`}, 'member', 'text', 'Here it is.', '[]', 'posted',
+          '2026-11-16T08:05:00.000Z', ${JSON.stringify([{ ...image, sizeBytes: 1024 }])})`;
+      yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+        VALUES (${drawn}, ${orgId}, ${`chat-${orgId}`}, 'drawn-msg')`;
+      yield* social.pack(scope, {
+        where: "WhatsApp channel",
+        why: "Kin can't post to WhatsApp channels",
+        caption: "Diwali hours, drawn 🪔",
+        media: drawn,
+        at: iso(NOW + DAY),
+        reminderId: "rem-2",
+      });
+      const packs = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+        WHERE org_id = ${orgId} AND type = ${KIN_SOCIAL_PACK_CARD} ORDER BY rowid`;
+      assert.deepInclude(decodePack(packs.at(-1)!.state).media, {
+        attachmentId: drawn,
+        mimeType: "image/png",
+        name: "diwali-hours.png",
+      });
     }),
   );
 });

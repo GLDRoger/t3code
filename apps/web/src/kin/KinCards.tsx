@@ -302,6 +302,9 @@ function KinTaskCard(props: { readonly task: KinTaskCardView }) {
       {task.detail === null ? null : (
         <p className="line-clamp-4 text-xs text-muted-foreground">{task.detail}</p>
       )}
+      {task.detailNote === null ? null : (
+        <p className="line-clamp-4 text-2xs text-muted-foreground">{task.detailNote}</p>
+      )}
       {task.unknownEnvironment ? (
         <p className="text-xs text-muted-foreground">
           {KIN_DEVICE_COPY.unknownEnvironment("browser")}

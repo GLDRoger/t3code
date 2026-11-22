@@ -413,12 +413,12 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
                   : Effect.succeed({ title: read.summary, start: read.start, end: read.end });
               }),
             );
-    const calendarName =
-      calendarId === "primary"
-        ? null
-        : yield* input.provider
-            .calendarName(input.http, yield* input.token, mailbox, calendarId)
-            .pipe(Effect.orElseSucceed(() => null));
+    const calendarName = yield* input.token.pipe(
+      Effect.flatMap((token) =>
+        input.provider.calendarName(input.http, token, mailbox, calendarId),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
     return {
       _tag: "event",
       calendarId,
@@ -615,17 +615,14 @@ const whenOf = (
   return `${day(start)}, ${time(start)} to ${ending}${shownZone === null ? "" : ` (${shownZone})`}`;
 };
 const plainWhen = (...args: Parameters<typeof whenOf>) => `When: ${whenOf(...args)}`;
-/** Which calendar, when not the main one, and the event a change replaces as it stands now. */
 const eventTarget = (prepared: Extract<Prepared, { _tag: "event" }>, clock: TextClock) => {
   const current = prepared.current ?? null;
   return [
-    ...(prepared.calendarId === "primary"
-      ? []
-      : [
-          (prepared.calendarName ?? null) === null
-            ? "In your calendar"
-            : `In calendar: ${prepared.calendarName}`,
-        ]),
+    prepared.calendarName?.trim()
+      ? `In calendar: ${prepared.calendarName.trim()}`
+      : prepared.calendarId === "primary"
+        ? "In your calendar"
+        : `In calendar: ${prepared.calendarId}`,
     ...(prepared.eventId === null || current === null
       ? []
       : [

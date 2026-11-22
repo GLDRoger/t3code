@@ -787,7 +787,7 @@ export function KinDocFileCard(props: {
     },
   ]);
   const href = url ?? null;
-  return (
+  const row = (
     <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3">
       <FileTextIcon aria-hidden className="size-5 shrink-0 text-muted-foreground" />
       <span className="flex min-w-0 flex-1 flex-col">
@@ -815,5 +815,17 @@ export function KinDocFileCard(props: {
         </Button>
       </span>
     </div>
+  );
+  // A picture is shown as itself, above the row that opens and downloads it.
+  if (href === null || !file.mimeType.startsWith("image/")) return row;
+  return (
+    <>
+      <img
+        src={href}
+        alt={file.name}
+        className="block h-auto max-h-[70vh] w-auto max-w-full rounded-lg border border-border"
+      />
+      {row}
+    </>
   );
 }

@@ -18,7 +18,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Statement from "effect/sql/Statement";
 import * as TestClock from "effect/testing/TestClock";
@@ -393,7 +395,17 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
     const finance = KinAgentId.make("finance");
     const first = yield* queued("e1", "chief");
     const second = yield* queued("e2", "finance");
+    const hub = yield* Hub.KinChatHub;
+    const chatEvents = yield* Stream.toQueue(yield* hub.subscribeAll, { capacity: "unbounded" });
     yield* care.failed({ orgId, agentId: chief, cause: "space", eventIds: [first] });
+    const posted = yield* Queue.take(chatEvents);
+    const changed = yield* Queue.take(chatEvents);
+    if (posted.type !== "message.posted" || changed.type !== "widget.updated")
+      return assert.fail("The held-turn card did not publish its message and widget");
+    assert.strictEqual(posted.message.chatId, "rhea-chief");
+    assert.strictEqual(changed.widget.chatId, posted.message.chatId);
+    assert.strictEqual(changed.widget.widgetId, posted.message.widgetId);
+
     // The same turn failing again holds nothing new.
     yield* care.failed({ orgId, agentId: chief, cause: "space", eventIds: [first] });
     yield* care.failed({ orgId, agentId: finance, cause: "space", eventIds: [second] });

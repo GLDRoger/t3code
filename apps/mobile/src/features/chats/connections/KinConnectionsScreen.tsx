@@ -29,6 +29,7 @@ import {
 import { KinVisualHosts } from "../KinVisualHosts";
 import { KinGitHubSection } from "./KinGitHubConnect";
 import { KinSocialSection } from "./KinSocialConnect";
+import { KinPicturesSection } from "./KinPicturesConnect";
 
 /** Settings → Connections: the owner's connections; one opens as its record. */
 export function KinConnectionsScreen({ route }: StaticScreenProps<KinConnectionsParams>) {
@@ -67,6 +68,7 @@ function ConnectionsList(props: {
         >
           <KinGitHubSection params={props.params} target={target} />
           <KinSocialSection params={props.params} target={target} />
+          <KinPicturesSection target={target} />
           {view === null ? (
             AsyncResult.isFailure(result) ? (
               <Notice

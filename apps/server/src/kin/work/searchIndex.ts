@@ -26,6 +26,9 @@ const fieldText = (sql: SqlClient.SqlClient, sensitive: boolean) =>
   sql`COALESCE((SELECT group_concat(j.value, ' ') FROM json_each(r.fields_json) j
     WHERE j.key NOT IN ${sql.in(ID_FIELDS)}
       AND ${sensitive ? sensitiveField(sql) : sql`NOT ${sensitiveField(sql)}`}), '')`;
+export const stepText = (sql: SqlClient.SqlClient) => sql`CASE WHEN r.register_id = 'work'
+  THEN COALESCE((SELECT group_concat(json_extract(step.value, '$.title'), ' ')
+    FROM json_each(r.steps_json) step), '') ELSE '' END`;
 const latestBody = (sql: SqlClient.SqlClient) => sql`COALESCE((SELECT v.body FROM kin_doc_versions v
     WHERE v.org_id = r.org_id AND v.record_id = r.record_id ORDER BY v.version DESC LIMIT 1), '')`;
 
@@ -55,6 +58,21 @@ export const searchIndexed = Effect.fn("KinSearch.indexed")(function* () {
   return rows.length > 0;
 });
 
+export const indexStoredSteps = Effect.fn("KinSearch.indexStoredSteps")(function* (orgId: string) {
+  if (!(yield* searchIndexed())) return;
+  const sql = yield* SqlClient.SqlClient;
+  // Only the legacy public rows lacking their current checklist suffix need a rewrite.
+  yield* sql`UPDATE kin_search SET body = body || ' ' || steps.text
+    FROM (
+      SELECT m.id, ${stepText(sql)} AS text
+      FROM kin_records r JOIN kin_search_rows m ON m.org_id = r.org_id
+        AND m.record_id = r.record_id AND m.part = 'public'
+      WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.steps_json IS NOT NULL
+    ) steps
+    WHERE kin_search.rowid = steps.id AND steps.text != ''
+      AND substr(kin_search.body, -(length(steps.text) + 1)) != ' ' || steps.text`;
+});
+
 /** Rewrites one entry's rows from what is stored now: call it inside the write's transaction. */
 export const indexRecord = (orgId: string, recordId: string) => indexRecords(orgId, [recordId]);
 
@@ -68,20 +86,21 @@ export const indexRecords = Effect.fn("KinSearch.indexRecord")(function* (
   const ids = sql.in(recordIds);
   yield* sql`DELETE FROM kin_search WHERE rowid IN (SELECT id FROM kin_search_rows
     WHERE org_id = ${orgId} AND record_id IN ${ids})`;
-  yield* indexWhere(sql, sql`r.org_id = ${orgId} AND r.record_id IN ${ids}`);
+  yield* indexWhere(sql, sql`r.org_id = ${orgId} AND r.record_id IN ${ids}`, stepText(sql));
 });
 
 /** Indexes every entry `where` selects (alias `r`); the migration backfills with it. */
 export const indexWhere = Effect.fnUntraced(function* (
   sql: SqlClient.SqlClient,
   where: ReturnType<SqlClient.SqlClient["and"]>,
+  steps = sql`''`,
 ) {
   yield* sql`INSERT INTO kin_search_rows (org_id, record_id, part)
     SELECT r.org_id, r.record_id, p.part FROM kin_records r
     CROSS JOIN (SELECT 'public' AS part UNION ALL SELECT 'sensitive') p WHERE ${where}
     ON CONFLICT DO NOTHING`;
   yield* sql`INSERT INTO kin_search (rowid, title, body, kind)
-    SELECT m.id, r.title, r.notes || ' ' || ${fieldText(sql, false)} || ' ' || ${latestBody(sql)},
+    SELECT m.id, r.title, r.notes || ' ' || ${fieldText(sql, false)} || ' ' || ${latestBody(sql)} || ' ' || ${steps},
       ${docKindWords(sql)}
     FROM kin_records r JOIN kin_search_rows m ON m.org_id = r.org_id
       AND m.record_id = r.record_id AND m.part = 'public'

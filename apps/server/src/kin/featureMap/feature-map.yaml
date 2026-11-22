@@ -95,6 +95,23 @@ features:
       - packages/client-runtime/src/kin/kinCardPresentation.test.ts
       - .agents/skills/verify-kin/scripts/card-gallery.sh
 
+  - id: chat-pictures
+    name: Pictures an agent designs or generates, sent as image files and kept in Docs
+    tab: chats
+    web: [chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      A picture is drawn on the host from one page of HTML at a named size, or generated from a
+      prompt by the picture service and counted toward its monthly limit, and arrives under the
+      reply as an image; it is also a doc whose versions are each picture. A teammate's picture is
+      theirs, the owner's and the chat's readers', and no one else's.
+    tools: [kin_picture]
+    proof:
+      - apps/server/src/kin/pictures/picture.test.ts
+      - apps/server/src/kin/pictures/renderer.test.ts
+      - apps/server/src/kin/pictures/confine.test.ts
+
   - id: chat-pages
     name: Long replies as pages, briefs, and names that open what they name
     tab: chats
@@ -1258,6 +1275,18 @@ features:
       - apps/server/src/kin/social/Social.test.ts
       - packages/client-runtime/src/kin/kinSocial.test.ts
       - .agents/skills/verify-kin/scripts/social-week.sh
+
+  - id: pictures-service
+    name: A picture service and its monthly limit
+    tab: settings
+    web: [settings, section:Connections, section:Pictures]
+    phone: [SettingsKin, KinConnections]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: One key, kept on the host and never shown again; the count is kept with No limit too.
+    proof:
+      - apps/server/src/kin/pictures/KinPictures.test.ts
+      - apps/server/src/kin/pictures/OpenAiImages.test.ts
+      - packages/client-runtime/src/kin/kinPictures.test.ts
 
   - id: social-connect
     name: Connect social accounts with a profile key

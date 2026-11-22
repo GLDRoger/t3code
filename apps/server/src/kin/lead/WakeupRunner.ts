@@ -79,7 +79,9 @@ import {
   leadModelProblem,
   driverOf,
   leadProviderProblem,
+  modelNotOffered,
 } from "./leadModels.ts";
+import { KinRefusedModels } from "./refusedModels.ts";
 import { leadThreadInstructions } from "./turn/session.ts";
 import { isEngineeringDomain } from "./t3Tools.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
@@ -186,6 +188,7 @@ const ulid = Effect.gen(function* () {
 const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
   const care = yield* Effect.serviceOption(KinHostCare);
+  const refusals = yield* Effect.serviceOption(KinRefusedModels);
   const claimedEvents = Effect.fn("WakeupRunner.claimedEvents")(function* (
     row: typeof RunningRow.Type,
   ) {
@@ -882,6 +885,15 @@ const make = Effect.gen(function* () {
           : ended;
       const setup = status === "failed" ? setupFailureIn(final, runId) : null;
       const failure = status === "failed" ? providerFailureIn(final, runId) : null;
+      const ranOn = final.runs.find((run) => run.id === runId)?.modelSelection;
+      if (
+        setup === "model" &&
+        failure !== null &&
+        ranOn !== undefined &&
+        Option.isSome(refusals) &&
+        modelNotOffered(failure, ranOn.model)
+      )
+        yield* refusals.value.refused({ orgId: row.orgId, selection: ranOn });
       // Someone besides the owner joined while it worked: it says nothing more, and a fresh
       // wake-up answers its events (`KinEventQueue.finish`).
       let abandoned = yield* isAborted(row);
