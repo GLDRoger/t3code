@@ -293,6 +293,22 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
       yield* reason(setStateMine(zoyaKey, { key: hers.key, state: "done" })),
       "not_found",
     );
+    // Put on it beside Arjun, her key lists it, naming who holds it, and moves it as she may.
+    yield* records.update(orgId, writer(rhea.personId), hers.key, {
+      fields: { alsoOn: [`person:${zoya.personId}`] },
+    });
+    assert.deepInclude(
+      (yield* listMine(zoyaKey)).tasks.find((one) => one.key === hers.key),
+      { holder: "Arjun" },
+    );
+    assert.strictEqual(
+      (yield* setStateMine(zoyaKey, { key: hers.key, state: "doing" })).state,
+      "doing",
+    );
+    assert.deepStrictEqual(
+      yield* commentMine(zoyaKey, { key: hers.key, text: "Invented: chairs ordered" }),
+      { key: hers.key, posted: true },
+    );
   }).pipe(Effect.provide(layer)),
 );
 

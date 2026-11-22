@@ -1916,7 +1916,8 @@ export class KinLeadPrompt extends Context.Service<
             ? []
             : [ownerPart(PROMPT_HEADINGS.checkIns), ownerPart(checkIns.join("\n"))]),
           // Nothing owned and nothing new: the section would be noise.
-          ...(work === undefined || (work.open === 0 && work.changed.length === 0)
+          ...(work === undefined ||
+          (work.open === 0 && work.changed.length === 0 && work.helpingOn === undefined)
             ? []
             : [
                 ownerPart(PROMPT_HEADINGS.work),

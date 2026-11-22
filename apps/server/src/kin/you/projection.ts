@@ -17,8 +17,9 @@ const COMMENTS_SHOWN = 10;
 
 type Task = Pick<
   KinRecord,
-  "recordId" | "key" | "title" | "state" | "dueAt" | "dueAllDay" | "project"
+  "recordId" | "key" | "title" | "state" | "dueAt" | "dueAllDay" | "project" | "owner"
 >;
+type Names = Effect.Success<ReturnType<typeof toolNamesOf>>;
 
 /** The project's title, if the person reaches that project now and it isn't sensitive. */
 const projectNamed = Effect.fn("KinYouProjection.projectNamed")(function* (
@@ -35,7 +36,12 @@ const row = Effect.fn("KinYouProjection.row")(function* (
   connection: CodingAgentConnection,
   task: Task,
   zone: string,
+  names: Names,
 ) {
+  const held =
+    task.owner._tag === "person" && task.owner.personId === connection.personId
+      ? {}
+      : { holder: toolName(task.owner, names, { _tag: "person", personId: connection.personId }) };
   return {
     key: task.key,
     title: task.title,
@@ -48,6 +54,7 @@ const row = Effect.fn("KinYouProjection.row")(function* (
           : task.dueAt,
     ...(task.dueAt === null ? {} : { dueDay: dayWords(Date.parse(task.dueAt), zone) }),
     project: yield* projectNamed(connection, task),
+    ...held,
   };
 });
 
@@ -58,8 +65,9 @@ export const taskRows = Effect.fn("KinYouProjection.taskRows")(function* (
   more: boolean,
 ) {
   const zone = yield* ownerZone(connection.orgId);
+  const names = yield* toolNamesOf(connection.orgId, yield* orgOwner(connection.orgId));
   return {
-    tasks: yield* Effect.forEach(tasks, (task) => row(connection, task, zone)),
+    tasks: yield* Effect.forEach(tasks, (task) => row(connection, task, zone, names)),
     more,
   };
 });
@@ -74,7 +82,7 @@ export const taskSheet = Effect.fn("KinYouProjection.taskSheet")(function* (
   const names = yield* toolNamesOf(orgId, yield* orgOwner(orgId));
   const reader = { _tag: "person", personId } as const;
   return {
-    ...(yield* row(connection, task, yield* ownerZone(orgId))),
+    ...(yield* row(connection, task, yield* ownerZone(orgId), names)),
     brief: task.notes,
     comments: shown.map((one) => ({
       by: toolName(one.by, names, reader),

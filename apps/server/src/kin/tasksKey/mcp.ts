@@ -32,6 +32,7 @@ const TaskSummary = Schema.Struct({
   due: Schema.NullOr(Schema.String),
   dueDay: Schema.optional(Schema.String),
   project: Schema.NullOr(Schema.String),
+  holder: Schema.optional(Schema.String),
 });
 const TaskDetail = Schema.Struct({
   ...TaskSummary.fields,

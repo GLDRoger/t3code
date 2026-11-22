@@ -53,6 +53,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import { TEAMMATE_WORDS, workEventText } from "../lead/LeadPrompt.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import { readPeople } from "../lead/peopleRead.ts";
+import { ownerLevelAsked } from "../people/KinAccess.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { taskNewsBanner } from "./assignNotices.ts";
 import { keepAllDayDays } from "./allDayZone.ts";
@@ -71,6 +72,7 @@ import * as OwnerClients from "./ownerClients.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import * as WorkComments from "./workComments.ts";
 import * as WorkStream from "./workStream.ts";
 import { presetDefinition } from "./registers.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
@@ -1749,8 +1751,8 @@ it.effect(
         [lead, "assigned", "W-1", ownerId],
         [lead, "withdrawn", "W-1", ownerId],
         [lead, "assigned", "W-2", ownerId],
-        [lead, "withdrawn", "W-2", ownerId],
         [other, "assigned", "W-2", ownerId],
+        [lead, "withdrawn", "W-2", ownerId],
       ]);
       // A withdrawn turn is the owner's alone and answers in the lead's chat with the owner.
       yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
@@ -1843,8 +1845,10 @@ it.effect(
         from: `person:${mateId}, agent:${lead}`,
         to: `agent:${lead}`,
       });
-      // An agent's change to it, asked by a person, is in its history and Undo puts it back.
-      const asked = { actor: toLead, via: "lead", askedBy: ownerId } as const;
+      // An agent's change to it, asked by a person in its turn, is in its history and Undo puts
+      // it back.
+      yield* turn();
+      const asked = { actor: toLead, via: "lead", askedBy: ownerId, wakeupId: "wake" } as const;
       yield* records.update(orgId, asked, made.key, {
         fields: { alsoOn: [`agent:${lead}`, `person:${devId}`] },
       });
@@ -1889,6 +1893,181 @@ it.effect(
       assert.include(yield* Effect.flip(OwnerWork.get([mate], { orgId, key: alongside.key })), {
         reason: "not_found",
       });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an agent put on a task is woken once, helps its holder without its say, and never asks in person",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const devId = KinPersonId.make("dev");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${devId}, ${orgId}, 'dev', 'Dev', ${at})`;
+      const dev = { _tag: "person" as const, personId: devId };
+      const toOther = { _tag: "agent" as const, agentId: other };
+      const byOwner = { actor: owner, via: "owner", askedBy: ownerId } as const;
+      const task = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: vendor quote",
+        clientRequestId: "join-1",
+        owner: dev,
+        alsoOn: [toLead],
+        dueAt: "2026-11-20T10:00:00.000Z",
+      });
+      // The owner's own typed task given to a lead is his ask in person; putting one on is not.
+      const typed = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: pay the rent",
+        clientRequestId: "join-2",
+        owner: toOther,
+      });
+      assert.deepStrictEqual(yield* wakes, [
+        [lead, "joined", task.key, ownerId],
+        [other, "assigned", typed.key, ownerId],
+      ]);
+      const claim = Effect.fn(function* (agentId: KinAgentId, wakeupId: string) {
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+            started_at, status, event_ids, audience)
+          VALUES (${wakeupId}, ${orgId}, ${agentId}, ${`${agentId}-thread`}, 'test', 0, 'running',
+            '[]', 'owner_only')`;
+        yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = ${wakeupId}
+          WHERE tag = 'record.changed' AND agent_id = ${agentId}`;
+        return (yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+          WHERE wakeup_id = ${wakeupId} ORDER BY event_id LIMIT 1`)[0]!.eventId;
+      });
+      const joinedEvent = yield* claim(lead, "joined-turn");
+      yield* claim(other, "given-turn");
+      assert.isFalse(yield* ownerLevelAsked(orgId, lead, "joined-turn"));
+      assert.isTrue(yield* ownerLevelAsked(orgId, other, "given-turn"));
+      // Its Work section lists what it helps on apart from what it holds.
+      const section = yield* buildWorkSection({
+        orgId,
+        agentId: lead,
+        chatId: KinChatId.make("lead-chat"),
+        now: Date.parse(at),
+      });
+      assert.include(section, { open: 0 });
+      assert.deepInclude(section.helpingOn?.[0], { key: task.key, holder: "Dev", state: "open" });
+
+      // Woken only by being put on it, the lead may not do what Dev answers for.
+      yield* records.update(orgId, byOwner, task.key, {
+        steps: [{ title: "Invented: ask two vendors", done: false }],
+      });
+      const helper = {
+        actor: toLead,
+        via: "lead",
+        askedBy: ownerId,
+        wakeupId: "joined-turn",
+      } as const;
+      for (const patch of [
+        { state: "done" },
+        { state: "dropped" },
+        { owner: toLead },
+        { dueAt: Date.parse("2026-11-25T10:00:00.000Z") },
+        { fields: { alsoOn: [`agent:${lead}`, `agent:${other}`] } },
+        { fields: { alsoOn: null } },
+        { tick: { index: 0, title: "Invented: ask two vendors", done: true } },
+        { steps: [{ title: "Invented: ask two vendors", done: true }] },
+      ] as const)
+        assert.deepInclude(
+          yield* Effect.flip(records.update(orgId, helper, task.key, patch)),
+          { reason: "not_allowed", message: KinRecords.helperRefusal("Dev", task.key) },
+          JSON.stringify(patch),
+        );
+      assert.include(
+        yield* Effect.flip(
+          LeadWork.update(scopeOf(lead), {
+            key: task.key,
+            sourceEventId: joinedEvent,
+            state: "done",
+          }),
+        ),
+        { reason: "not_allowed", message: KinRecords.helperRefusal("Dev", task.key) },
+      );
+      // Its head start goes on the task: its progress, a comment and its own draft lines.
+      yield* records.update(orgId, helper, task.key, { state: "doing" });
+      assert.include(
+        yield* WorkComments.leadComment(scopeOf(lead), {
+          key: task.key,
+          body: "Invented: two quotes drafted",
+        }),
+        { key: task.key },
+      );
+      // A person's own word in the turn lets it, and the tools take who is on it by name.
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+        VALUES ('close-it', ${orgId}, 'lead-chat', 2, 'human', ${ownerId}, 'lead-chat-owner', 'owner',
+          'text', 'Put Mate on it too', '[]', 'posted', ${at})`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+          queued_at, state, wakeup_id)
+        VALUES ('close-event', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify({
+          _tag: "chat.message",
+          orgId,
+          agentId: lead,
+          eventId: "close-event",
+          receivedAt: at,
+          dedupeKey: null,
+          provenance: { _tag: "human", personId: ownerId, memberId: "lead-chat-owner" },
+          chatId: "lead-chat",
+          messageId: "close-it",
+        })}, 0, 0, 'claimed', 'joined-turn')`;
+      yield* LeadWork.update(scopeOf(lead), {
+        key: task.key,
+        sourceEventId: "close-event",
+        alsoOn: ["you", "Mate"],
+      });
+      assert.include(yield* LeadWork.get(scopeOf(lead), { key: task.key }), {
+        owner: "Dev",
+        alsoOn: "Lead lead (you), Mate",
+      });
+      assert.include(yield* records.update(orgId, helper, task.key, { state: "done" }), {
+        state: "done",
+        ownerId: devId,
+      });
+
+      // An agent's change with no person behind it puts nobody on and wakes nobody.
+      const before = (yield* wakes).length;
+      const hall = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: book the hall",
+        clientRequestId: "join-3",
+        owner: dev,
+      });
+      yield* records.update(orgId, { actor: toLead, via: "lead" }, hall.key, {
+        fields: { alsoOn: [`agent:${other}`] },
+      });
+      assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: hall.key })).alsoOn);
+      assert.lengthOf(yield* wakes, before);
+      // A suggestion wakes nobody on it until kept; kept, each once, and a retry none again.
+      const suggested = (yield* records.create(
+        orgId,
+        { actor: toLead, via: "lead", askedBy: ownerId },
+        {
+          originKey: "join-4",
+          title: "Invented: compare insurers",
+          owner: dev,
+          confirmed: false,
+          fields: { alsoOn: [`agent:${lead}`, `agent:${other}`] },
+        },
+      )).row;
+      assert.lengthOf(yield* wakes, before);
+      yield* OwnerWork.confirm([owner], { orgId, key: suggested.key, rev: suggested.rev });
+      yield* OwnerWork.confirm([owner], { orgId, key: suggested.key, rev: suggested.rev });
+      const joined = [
+        [lead, "joined", suggested.key, ownerId],
+        [other, "joined", suggested.key, ownerId],
+      ];
+      assert.deepStrictEqual((yield* wakes).slice(before).toSorted(), joined);
+      // Taken off by its owner, it is told; the one left on is not woken again.
+      yield* records.update(orgId, byOwner, suggested.key, {
+        fields: { alsoOn: [`agent:${lead}`] },
+      });
+      assert.deepStrictEqual((yield* wakes).slice(before + 2), [
+        [other, "withdrawn", suggested.key, ownerId],
+      ]);
     }).pipe(Effect.provide(layer)),
 );
 

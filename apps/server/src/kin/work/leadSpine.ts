@@ -1,5 +1,6 @@
 import {
   KinChatError,
+  KIN_WORK_ALSO_ON_MAX,
   KinDay,
   KinProjectBilling,
   KinRecordKey,
@@ -76,6 +77,7 @@ export const SpineInputs = {
     description:
       "A project's people and agents besides its owner (its lead), each as owner is named; replaces the list.",
   }),
+  alsoOn: Schema.optional(Schema.Array(Who).check(Schema.isMaxLength(KIN_WORK_ALSO_ON_MAX))),
 };
 type SpineRow = {
   readonly [K in keyof typeof SpineInputs]?: Schema.Schema.Type<(typeof SpineInputs)[K]>;
@@ -185,6 +187,7 @@ export const spineFields = Effect.fn("KinLeadSpine.fields")(function* <E, R>(
     Effect.forEach(list, (text) => resolve.who(text).pipe(Effect.map(principalText)));
   if (row.attendees !== undefined) fields.attendees = yield* people(row.attendees);
   if (row.members !== undefined) fields.members = yield* people(row.members);
+  if (row.alsoOn !== undefined) fields.alsoOn = yield* people(row.alsoOn);
   for (const key of ["size", "reason", "where", "billing", "startsOn", "renewsOn"] as const)
     if (row[key] !== undefined) fields[key] = row[key] ?? null;
   if (row.value !== undefined) {
@@ -226,6 +229,7 @@ export const spineShown = (row: RecordRow, name: ToolNamer) => {
     startsOn: text("startsOn"),
     renewsOn: text("renewsOn"),
     members: names("members"),
+    alsoOn: names("alsoOn"),
   };
   return Object.fromEntries(Object.entries(shown).filter((entry) => entry[1] !== undefined)) as {
     readonly [K in keyof typeof shown]?: string;
@@ -245,6 +249,7 @@ export const SpineShown = {
   startsOn: Schema.optional(Schema.String),
   renewsOn: Schema.optional(Schema.String),
   members: Schema.optional(Schema.String),
+  alsoOn: Schema.optional(Schema.String),
 };
 
 const Line = Schema.Struct({

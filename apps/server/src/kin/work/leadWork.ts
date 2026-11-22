@@ -722,7 +722,13 @@ const Why = KinToolText(
 export const AssignInput = Schema.Struct({
   sourceEventId: TurnEvent,
   tasks: Schema.Array(
-    Schema.Struct({ key: KinRecordKey, to: Who, reason: Why, due: Schema.optional(Due) }),
+    Schema.Struct({
+      key: KinRecordKey,
+      to: Who,
+      reason: Why,
+      due: Schema.optional(Due),
+      alsoOn: SpineInputs.alsoOn,
+    }),
   ).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
   tell: Tell,
 });
@@ -3654,6 +3660,7 @@ const runAssign = Effect.fnUntraced(function* (lead: Lead, input: typeof AssignI
           owner: task.to,
           reason: task.reason,
           ...(task.due === undefined ? {} : { due: task.due }),
+          ...(task.alsoOn === undefined ? {} : { alsoOn: task.alsoOn }),
           ...(input.tell === undefined ? {} : { tell: input.tell }),
         });
         const after = yield* records.get(lead.orgId, task.key);

@@ -408,8 +408,8 @@ const teamAgent = Effect.fn("KinWork.teamAgent")(function* (
 });
 
 /**
- * With a coding agent's connection, only what its key reaches: open tasks the person holds and
- * nothing labelled sensitive, soonest due first, filtered before the page is cut.
+ * With a coding agent's connection, only what its key reaches: open tasks the person holds or is
+ * on and nothing labelled sensitive, soonest due first, filtered before the page is cut.
  */
 export const list = Effect.fn("KinWork.list")(function* (
   people: ReadonlyArray<PersonIdentity>,
@@ -425,7 +425,7 @@ export const list = Effect.fn("KinWork.list")(function* (
     ...(input.limit === undefined ? {} : { limit: input.limit }),
   };
   return yield* throughConnection(people, connection, input.orgId, (viewer) =>
-    listAs(viewer, held, { order: "dueFirst", withoutSensitive: true }),
+    listAs(viewer, held, { order: "dueFirst", withoutSensitive: true, orAlsoOn: true }),
   );
 });
 

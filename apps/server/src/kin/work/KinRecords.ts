@@ -222,6 +222,9 @@ const heldBy = (
   ((row.ownerKind === "person" && row.ownerId === writer.actor.personId) ||
     fieldList(parseFields(row.fieldsJson), "alsoOn").includes(`person:${writer.actor.personId}`));
 
+/** What an agent on a task hears when it tries what only its holder, or a person's word, may do. */
+export const helperRefusal = (holder: string, key: string) => `${holder} holds ${key}.`;
+
 /** What closes the open things about an entry that closed, in its move's transaction. */
 export type Closing = (subject: ClosedSubject) => Effect.Effect<void, { readonly _tag: string }>;
 /** Whose words a write's text is: the person writing, else the human a lead wrote it for. */
@@ -982,8 +985,9 @@ const make = Effect.gen(function* () {
   /**
    * Wakes a lead about an entry someone else changed, with that human as the turn's provenance:
    * given to it (`assigned`, by the stored assigner), or closed or taken back while it held it
-   * open (`withdrawn`, by the person who did; only its owner is told). A teammate's assignment
-   * wakes it in their own direct chat with it, as a message from them would (`teammateWake`).
+   * open (`withdrawn`, by the person who did; only its owner is told), or put on one someone else
+   * holds (`joined`, by whoever asked). A teammate's assignment wakes it in their own direct chat
+   * with it, as a message from them would (`teammateWake`).
    */
   const wakeLead = Effect.fn("KinRecords.wakeLead")(function* (
     orgId: KinOrgId,
@@ -993,7 +997,7 @@ const make = Effect.gen(function* () {
     assignedBy: KinPersonId | null,
     seq: number,
     now: number,
-    reason: "assigned" | "withdrawn" | "handed_back" | "commented" = "assigned",
+    reason: "assigned" | "withdrawn" | "handed_back" | "commented" | "joined" = "assigned",
     note?: string | null,
   ) {
     // Looking after a client or leading a project is not an instruction to do anything.
@@ -1021,7 +1025,8 @@ const make = Effect.gen(function* () {
         ? yield* teammateWake(orgId, writer, to.agentId, assignedBy, now)
         : undefined;
     if (!ownsAgent(lead, assignedBy) && teammate === undefined) return false;
-    const key = `record-${reason}:${row.recordId}:${seq}`;
+    // One change may put several agents on a task, or take several off it.
+    const key = `record-${reason}:${row.recordId}:${seq}${reason === "joined" || reason === "withdrawn" ? `:${to.agentId}` : ""}`;
     return yield* queue
       .enqueue({
         _tag: "record.changed",
@@ -1093,6 +1098,76 @@ const make = Effect.gen(function* () {
         AND actor_id = ${agentId} AND kind <> 'created'
       LIMIT 1`;
     return worked !== undefined;
+  });
+
+  /** Whether this agent was put on this entry before, or has worked on it: keeping it wakes it no more. */
+  const alreadyJoined = Effect.fn("KinRecords.alreadyJoined")(function* (
+    orgId: KinOrgId,
+    recordId: string,
+    agentId: KinAgentId,
+  ) {
+    const [woken] = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_events
+      WHERE org_id = ${orgId} AND agent_id = ${agentId} AND tag = 'record.changed'
+        AND json_extract(json, '$.recordId') = ${recordId}
+        AND json_extract(json, '$.reason') = 'joined'
+      LIMIT 1`;
+    if (woken !== undefined) return true;
+    const [worked] = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_record_changes
+      WHERE org_id = ${orgId} AND record_id = ${recordId} AND actor_kind = 'agent'
+        AND actor_id = ${agentId} AND kind <> 'created'
+      LIMIT 1`;
+    return worked !== undefined;
+  });
+
+  /**
+   * An agent on a Work task it doesn't hold helps its holder: it may not close the task, give it,
+   * move its due, change who is on it or tick its steps unless a person's own word woke the turn.
+   */
+  const helperGuard = Effect.fn("KinRecords.helperGuard")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    row: RecordRow,
+    holder: KinWorkPrincipal,
+    asked: Pick<Patch, "state" | "owner" | "dueAt" | "dueAllDay" | "tick" | "steps">,
+    alsoOn: ReadonlyArray<string>,
+  ) {
+    if (writer.actor._tag !== "agent" || row.registerId !== "work") return;
+    const { agentId } = writer.actor;
+    if (samePrincipal(writer.actor, holder)) return;
+    const stored = fieldList(parseFields(row.fieldsJson), "alsoOn");
+    if (!stored.includes(`agent:${agentId}`)) return;
+    const ticked = (steps: ReadonlyArray<{ readonly title: string; readonly done?: boolean }>) =>
+      steps
+        .filter((step) => step.done === true)
+        .map((step) => step.title)
+        .toSorted()
+        .join("\n");
+    const storedSteps = stepsOf(row);
+    const reserved =
+      (asked.state !== undefined && isClosed(asked.state) && asked.state !== row.state) ||
+      (asked.owner !== undefined && !samePrincipal(asked.owner, holder)) ||
+      (asked.dueAt !== undefined && asked.dueAt !== row.dueAt) ||
+      (asked.dueAllDay !== undefined && (asked.dueAllDay ? 1 : 0) !== row.dueAllDay) ||
+      alsoOn.join(",") !== stored.join(",") ||
+      (asked.tick !== undefined &&
+        asked.tick.done !== (storedSteps[asked.tick.index]?.done ?? false)) ||
+      (asked.steps !== undefined && ticked(asked.steps) !== ticked(storedSteps));
+    if (!reserved) return;
+    if (
+      writer.wakeupId !== undefined &&
+      (yield* personInTurn(orgId, agentId, writer.wakeupId).pipe(provideSql))
+    )
+      return;
+    const [named] =
+      holder._tag === "agent"
+        ? yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_agents
+            WHERE org_id = ${orgId} AND agent_id = ${holder.agentId}`
+        : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+            WHERE org_id = ${orgId} AND person_id = ${holder.personId}`;
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: helperRefusal(named?.name ?? "Someone else", row.key),
+    });
   });
 
   /**
@@ -1679,6 +1754,21 @@ const make = Effect.gen(function* () {
         seq,
         now,
       );
+    if (options.wake && kept && !isClosed(state))
+      for (const text of fieldList(fields, "alsoOn")) {
+        const on = storedPrincipal(text);
+        if (on?._tag === "agent")
+          yield* wakeLead(
+            orgId,
+            writer,
+            { recordId, key, registerId: list },
+            on,
+            textBy(writer),
+            seq,
+            now,
+            "joined",
+          );
+      }
     const row = yield* byId(orgId, recordId).pipe(provideSql);
     if (row === undefined) return yield* unavailable;
     return { row, created: true };
@@ -1977,6 +2067,8 @@ const make = Effect.gen(function* () {
                 patch.owner ?? before.owner,
               )
             : undefined;
+        if (alsoOn !== undefined)
+          yield* helperGuard(orgId, writer, row, before.owner, patch, alsoOn);
         const merged: Record<string, FieldValue> = { ...stored };
         let fieldsChanged = false;
         for (const [field, value] of Object.entries({
@@ -2561,6 +2653,34 @@ const make = Effect.gen(function* () {
             now,
             "withdrawn",
           );
+        if (alsoOn !== undefined && !isClosed(state) && (!isSuggestion(row) || keeping)) {
+          const was = fieldList(stored, "alsoOn");
+          for (const text of alsoOn) {
+            const on = storedPrincipal(text);
+            if (on?._tag !== "agent") continue;
+            if (keeping) {
+              if (!(yield* alreadyJoined(orgId, row.recordId, on.agentId)))
+                yield* wakeLead(orgId, writer, row, on, textBy(writer), seq, now, "joined");
+            } else if (!was.includes(text))
+              yield* wakeLead(orgId, writer, row, on, textBy(writer), seq, now, "joined");
+          }
+          if (!isSuggestion(row) && writer.actor._tag === "person")
+            for (const text of was) {
+              const off = storedPrincipal(text);
+              if (off?._tag !== "agent" || alsoOn.includes(text)) continue;
+              if (reassigned !== undefined && samePrincipal(off, reassigned)) continue;
+              yield* wakeLead(
+                orgId,
+                writer,
+                row,
+                off,
+                writer.actor.personId,
+                seq,
+                now,
+                "withdrawn",
+              );
+            }
+        }
         const updated = yield* byId(orgId, row.recordId).pipe(provideSql);
         if (updated === undefined) return yield* unavailable;
         if (!isClosed(row.state) && isClosed(updated.state))

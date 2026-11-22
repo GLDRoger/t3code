@@ -27,19 +27,23 @@ export const dismissedHold = Effect.fn("KinDismissedHold.of")(function* (
   return held?.name;
 });
 
-/** Whether `personId`'s own chat message or card tap is among the events that woke this turn. */
+/**
+ * Whether a person's own chat message or card tap is among the events that woke this turn:
+ * `personId`'s, or with none given, anyone's.
+ */
 export const personInTurn = Effect.fn("KinDismissedHold.personInTurn")(function* (
   orgId: string,
   agentId: string,
   wakeupId: string,
-  personId: string,
+  personId?: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql`SELECT 1 FROM kin_events e
     JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
     WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
       AND e.tag IN ('chat.message', 'widget.action')
-      AND m.author_kind = 'human' AND m.author_person_id = ${personId}
+      AND m.author_kind = 'human' AND m.author_person_id IS NOT NULL
+      ${personId === undefined ? sql`` : sql`AND m.author_person_id = ${personId}`}
     LIMIT 1`;
   return rows.length > 0;
 });
