@@ -2,7 +2,7 @@
 import "../../chat/KinChatService.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { KinChatError, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { KinChatError, KinConnectionId, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -23,7 +23,15 @@ import { KinLevelGate } from "../../lead/LevelGate.ts";
 import * as KinPersistence from "../../persistence/KinPersistence.ts";
 import { parseFields } from "../lists.ts";
 import * as KinRecords from "../KinRecords.ts";
-import { alertBalances, rejectedAlerts, takeAlerts, threadSeen } from "./bankAlerts.ts";
+import type { MailMessage } from "../../connections/MailProvider.ts";
+import { takeAlertMail } from "./alertMail.ts";
+import {
+  alertBalances,
+  alertsBeside,
+  rejectedAlerts,
+  takeAlerts,
+  threadSeen,
+} from "./bankAlerts.ts";
 import { ensureBankList } from "./bankList.ts";
 
 // Invented: Lakeview Studio's owner Rhea gets HDFC alerts in two connected mailboxes.
@@ -217,6 +225,86 @@ it.layer(layer)((it) => {
           sentAt: Date.parse("2026-11-18T06:00:00Z"),
         },
       ]);
+      // Beside the one statement account it is, when no older than that statement's balance.
+      const account = (on: string, bank: string | null = "HDFC Bank") => ({
+        kind: "account" as const,
+        bank,
+        digits: "4821",
+        currency: "INR",
+        on,
+      });
+      const mine = account("2026-10-31");
+      const beside = yield* alertsBeside(orgId, [mine, { ...mine, digits: "9999" }]);
+      assert.strictEqual(beside.beside.get(mine)?.balanceMinor, 39_000_000);
+      assert.lengthOf(beside.alone, 0);
+      const newer = yield* alertsBeside(orgId, [account("2026-11-30")]);
+      assert.deepStrictEqual([newer.beside.size, newer.alone.length], [0, 0]);
+      const twins = yield* alertsBeside(orgId, [mine, account("2026-10-31", null)]);
+      assert.deepStrictEqual([twins.beside.size, twins.alone.length], [0, 1]);
+      assert.lengthOf((yield* alertsBeside(orgId, [])).alone, 1);
+    }),
+  );
+
+  it.effect("a pass reads only HDFC's threads, and each only until Kin has its newest mail", () =>
+    Effect.gen(function* () {
+      const reads: Array<string> = [];
+      const message = (text: string): MailMessage => ({
+        threadId: "t-hdfc",
+        from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+        fromAddress: "alerts@hdfcbank.net",
+        to: [],
+        replyTo: [],
+        toLine: null,
+        ccLine: null,
+        deliveredTo: [],
+        date: "Wed, 18 Nov 2026 10:00:00 +0530",
+        subject: "You have done a UPI txn. Check details!",
+        preview: "",
+        unread: true,
+        messageId: "<m8@hdfc>",
+        references: null,
+        authResults: AUTH,
+        body: { text, attachments: [] },
+      });
+      const connections = {
+        readThread: (_orgId: KinOrgId, _connectionId: string, threadId: string) =>
+          Effect.sync(() => {
+            reads.push(threadId);
+            return [message(debit("632211110008").replace("**4821", "**7001"))];
+          }),
+      };
+      const activity = {
+        _tag: "mail" as const,
+        connectionId: KinConnectionId.make("work-mail"),
+        since: 0,
+        until: NOW,
+        account: "rhea@lakeview.example",
+        cursor: null,
+        calendar: [],
+        mail: [
+          {
+            threadId: "t-hdfc",
+            receivedBy: null,
+            subject: "You have done a UPI txn. Check details!",
+            from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+            date: "Wed, 18 Nov 2026 10:00:00 +0530",
+            unread: true,
+          },
+          {
+            threadId: "t-client",
+            receivedBy: null,
+            subject: "Invoice 004",
+            from: "Raj <raj@client.example>",
+            date: "Wed, 18 Nov 2026 10:00:00 +0530",
+            unread: true,
+          },
+        ],
+      };
+      const first = yield* takeAlertMail(connections, orgId, activity);
+      assert.deepStrictEqual(first, { threads: 1, recorded: 1, duplicate: 0, rejected: 0 });
+      const again = yield* takeAlertMail(connections, orgId, activity);
+      assert.deepStrictEqual(again, { threads: 0, recorded: 0, duplicate: 0, rejected: 0 });
+      assert.deepStrictEqual(reads, ["t-hdfc"]);
     }),
   );
 });

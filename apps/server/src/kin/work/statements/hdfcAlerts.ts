@@ -13,7 +13,7 @@ const HDFC_ALERT_SENDERS: ReadonlySet<string> = new Set([
   "alerts@hdfcbank.bank.in",
 ]);
 
-const isHdfcAlertSender = (address: string | null | undefined) =>
+export const isHdfcAlertSender = (address: string | null | undefined) =>
   address !== null && address !== undefined && HDFC_ALERT_SENDERS.has(address.toLowerCase());
 
 /** The parts of one message the parser reads. */

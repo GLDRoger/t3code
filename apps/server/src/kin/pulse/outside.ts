@@ -85,10 +85,17 @@ const linesOf = (
   }
 };
 
+/** What else a pass does with one mailbox's new mail: bank alerts are read from it. */
+export type OnMail = (
+  orgId: KinOrgId,
+  activity: Extract<KinConnectionActivity, { readonly _tag: "mail" }>,
+) => Effect.Effect<void>;
+
 /** Every live connection that is signed in and not paused, through the connections service. */
 export const fromConnections = (
   connections: KinConnections["Service"],
   sql: SqlClient.SqlClient,
+  onMail?: OnMail,
 ): OutsideSource => ({
   read: Effect.fn("KinPulseOutside.read")(
     function* (orgId: KinOrgId) {
@@ -110,6 +117,7 @@ export const fromConnections = (
           ),
         );
         if (activity === undefined || activity._tag === "unsupported") continue;
+        if (onMail !== undefined) yield* onMail(orgId, activity);
         lines.push(...linesOf(row.label, activity));
         seen.push({
           connectionId: row.connectionId,

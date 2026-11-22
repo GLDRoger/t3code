@@ -28,6 +28,7 @@ import {
   kinSuggestionText,
   kinTotalsLines,
 } from "./kinLists.ts";
+import { formatKinTime } from "./kinScreenState.ts";
 import { kinWorkDueLabel, type KinWorkRef } from "./kinWork.ts";
 
 /**
@@ -46,6 +47,12 @@ export const KIN_CASH = {
   newerOff: (on: string) =>
     `A newer statement (${on}) doesn't add up, so it isn't counted. Ask an agent to read it again.`,
   newerUndone: (on: string) => `A newer statement (${on}) was confirmed, then undone.`,
+  /** The balance shown is an HDFC alert's "Avl bal": the bank's own figure when it mailed. */
+  fromAlert: (at: string) => `From a bank alert · ${at}`,
+  alertNote: (on: string, amount: string) =>
+    `This is the available balance in the newest bank alert mail, not a confirmed statement. The last confirmed statement closed at ${amount} on ${on}.`,
+  alertOnly:
+    "This is the available balance in the newest bank alert mail. No confirmed statement covers this account yet.",
   apart: (label: string) =>
     `Kin can't tell this apart from another ${label}. Upload the missing month's statement so the two link up.`,
   withheld: "No total: two accounts look the same.",
@@ -62,6 +69,7 @@ export const KIN_CASH = {
   details: "Details",
   /** One short line beside the account; the whole sentence sits behind Why. */
   flag: {
+    alert: "From a bank alert",
     apart: "Looks like another account",
     newer: "Newer statement to confirm",
     newerOff: "Newer statement doesn't add up",
@@ -235,6 +243,8 @@ export interface KinCashView {
 }
 
 const onLabel = (day: string, now: Date) => kinWorkDueLabel(day, now);
+// @effect-diagnostics-next-line globalDate:off - the shared clock-and-day label takes a Date.
+const alertAt = (at: string, now: Date) => KIN_CASH.fromAlert(formatKinTime(new Date(at), now));
 
 export function kinCashView(cash: KinCash, rates: KinRates | null, now: Date): KinCashView {
   const accounts = cash.accounts.map((one, index): KinCashAccountView => {
@@ -251,10 +261,15 @@ export function kinCashView(cash: KinCash, rates: KinRates | null, now: Date): K
                 : KIN_CASH.newerUndone(onLabel(newer.on, now)),
           ]),
     ];
+    const alert = one.alert;
+    if (alert !== undefined)
+      notes.push(KIN_CASH.alertNote(onLabel(one.on, now), kinSignedText(one.balance)));
     const flag = one.cannotTellApart
       ? KIN_CASH.flag.apart
       : newer === null
-        ? null
+        ? alert === undefined
+          ? null
+          : KIN_CASH.flag.alert
         : newer.standing === "not yet confirmed"
           ? KIN_CASH.flag.newer
           : newer.standing === "its totals don't check out"
@@ -266,23 +281,37 @@ export function kinCashView(cash: KinCash, rates: KinRates | null, now: Date): K
       label:
         one.kind === "card" ? `${one.label} · ${KIN_CASH.owedOnCard.toLowerCase()}` : one.label,
       card: one.kind === "card",
-      amount: kinSignedText(one.balance),
-      estimate: estimateOf(one.balance, rates),
-      when: [onLabel(one.on, now), one.stale ? KIN_CASH.stale(one.ageDays) : null]
-        .filter((part) => part !== null)
-        .join(" · "),
-      stale: one.stale,
+      amount: kinSignedText(alert?.balance ?? one.balance),
+      estimate: estimateOf(alert?.balance ?? one.balance, rates),
+      when:
+        alert !== undefined
+          ? alertAt(alert.at, now)
+          : [onLabel(one.on, now), one.stale ? KIN_CASH.stale(one.ageDays) : null]
+              .filter((part) => part !== null)
+              .join(" · "),
+      stale: alert === undefined && one.stale,
       notes,
     };
   });
+  const alertOnly = (cash.alertAccounts ?? []).map((one, index): KinCashAccountView => ({
+    id: `alert:${one.label}:${index}`,
+    flag: KIN_CASH.flag.alert,
+    label: one.label,
+    card: false,
+    amount: kinSignedText(one.alert.balance),
+    estimate: estimateOf(one.alert.balance, rates),
+    when: alertAt(one.alert.at, now),
+    stale: false,
+    notes: [KIN_CASH.alertOnly],
+  }));
   return {
-    known: cash.known,
+    known: cash.known || alertOnly.length > 0,
     // With no balance at all, Money's own line already says no statement is confirmed.
     bank:
       !cash.known && cash.bankKnown?.through === null
         ? null
         : kinBankKnownText(cash.bankKnown, now),
-    accounts,
+    accounts: [...accounts, ...alertOnly],
     currencies: cash.byCurrency.map((one) => ({
       currency: one.currency,
       totalLabel: KIN_CASH.total(one.accounts),

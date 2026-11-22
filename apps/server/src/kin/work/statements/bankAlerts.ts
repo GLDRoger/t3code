@@ -272,3 +272,39 @@ export const rejectedAlerts = Effect.fn("KinBankAlerts.rejected")(function* (
     unparsed: rows.find((one) => one.outcome === "unparsed")?.count ?? 0,
   };
 });
+
+/** An account Money shows, as far as an alert can be matched to it. */
+interface CashAccount {
+  readonly kind: "account" | "card";
+  readonly bank: string | null;
+  readonly digits: string | null;
+  readonly currency: string;
+  /** The day of the statement balance it shows. */
+  readonly on: string;
+}
+
+/**
+ * Each alert balance beside the one statement account it is (same digits and currency, a bank
+ * named HDFC or not named), when it is from that balance's day or later; else on its own. One
+ * that could be two accounts' is on its own, so it is never shown as either's.
+ */
+export const alertsBeside = Effect.fn("KinBankAlerts.beside")(function* <A extends CashAccount>(
+  orgId: KinOrgId,
+  accounts: ReadonlyArray<A>,
+) {
+  const zone = yield* ownerZone(orgId);
+  const beside = new Map<A, AlertBalance>();
+  const alone: Array<AlertBalance> = [];
+  for (const balance of yield* alertBalances(orgId)) {
+    const fits = accounts.filter(
+      (one) =>
+        one.kind === "account" &&
+        one.currency === balance.currency &&
+        one.digits === balance.account &&
+        (one.bank === null || /\bhdfc\b/i.test(one.bank)),
+    );
+    if (fits.length !== 1) alone.push(balance);
+    else if (dayIn(balance.sentAt, zone) >= fits[0]!.on) beside.set(fits[0]!, balance);
+  }
+  return { beside, alone };
+});
