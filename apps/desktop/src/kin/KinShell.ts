@@ -543,6 +543,11 @@ const make = Effect.gen(function* () {
       const attempt = owner.attempt();
       if (attempt !== null && new URL(url).pathname === attempt.page) {
         owner.committed(attempt.generation);
+        // The host has no such page, so nothing will redeem the link.
+        if (httpResponseCode >= 400 && !HOST_DOWN_STATUSES.has(httpResponseCode)) {
+          void runPromise(locked(joinFailed(attempt.generation, KIN_SHELL_COPY.notALink)));
+          return;
+        }
       }
       if (!HOST_DOWN_STATUSES.has(httpResponseCode)) {
         retried = false;

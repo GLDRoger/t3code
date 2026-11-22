@@ -128,8 +128,8 @@ export function kinShellNavigation(input: {
   return url.protocol === "https:" || url.protocol === "http:" ? "outside" : "refuse";
 }
 
-/** How long a click or Enter counts as the person's, as Chromium's own user activation does. */
-export const KIN_PERSON_ACTION_MS = 5_000;
+/** How long after a click or Enter a navigation counts as the person's; a link opens in ms. */
+export const KIN_PERSON_ACTION_MS = 1_000;
 
 /**
  * Whether an address outside the team's host opens in the system browser. A click or Enter in the
