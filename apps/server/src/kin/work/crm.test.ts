@@ -2592,7 +2592,7 @@ it.effect(
             title: "Invented booking invoice",
             client: "C-1",
             project: projectB.key,
-            amount: "2381",
+            amount: "USD 2381",
             state: "waiting",
             due: "1970-01-06",
           },
@@ -2686,6 +2686,47 @@ it.effect(
         JSON.stringify(yield* OwnerWork.list([who("offLead")], { orgId, list: "quotes" })),
         "Invented accepted quote",
       );
+      const excluded = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { list: "invoices", title: "Invented draft", client: "C-1", amount: "USD 93" },
+          { list: "invoices", title: "Invented dropped bill", client: "C-1", amount: "USD 86" },
+        ],
+      });
+      const dropped = excluded.records.find((row) => row.title === "Invented dropped bill")!;
+      yield* sql`UPDATE kin_records SET state = 'dropped'
+        WHERE org_id = ${orgId} AND key = ${dropped.key}`;
+      const summary = yield* OwnerMoney.money([owner], {
+        orgId,
+        party: "C-1",
+        upcomingRows: false,
+      });
+      const [header] = summary.owed.byClient;
+      const invoices = yield* OwnerWork.list([owner], {
+        orgId,
+        list: "invoices",
+        party: "C-1",
+        totalsBy: "none",
+      });
+      assert.sameMembers(
+        invoices.records.map((row) => row.state),
+        ["waiting", "waiting", "open", "dropped"],
+      );
+      const owing = invoices.records.filter(
+        (row) => row.state === "waiting" && (row.balance?.minor ?? 0) > 0,
+      );
+      const sum = (rows: typeof owing) => {
+        const totals = new Map<string, number>();
+        for (const { balance } of rows) {
+          if (balance === undefined) continue;
+          totals.set(balance.currency, (totals.get(balance.currency) ?? 0) + balance.minor);
+        }
+        return [...totals].map(([currency, minor]) => ({ currency, minor }));
+      };
+      assert.strictEqual(header?.invoices, owing.length);
+      assert.lengthOf(header?.owed ?? [], 2);
+      assert.sameDeepMembers(header!.owed, sum(owing));
+      assert.sameDeepMembers(header!.overdue, sum(owing.filter((row) => row.late)));
     }).pipe(Effect.provide(layer)),
 );
 
