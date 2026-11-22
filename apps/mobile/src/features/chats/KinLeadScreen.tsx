@@ -124,7 +124,7 @@ function KinLeadBody(props: {
   // The owner's list keeps their retired agents, so one still has details and a way back.
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
   const canRetire = useAtomValue(kinClient.leadRetire.permissionAtom(environmentId));
-  const working = useKinWorkingAgents(environmentId);
+  const working = useKinWorkingAgents(environmentId, orgId);
   const names = useKinWorkDirectory({ environmentId, orgId }, true).names;
   const atom = canRestore
     ? kinClient.agents({ environmentId, orgId })
