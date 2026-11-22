@@ -329,13 +329,15 @@ export function KinContactListDialog(
 export function KinCampaignResultsSection(props: {
   readonly results: KinCampaignResults;
   readonly audience: string | null;
+  /** Whether the company runs deals (`kinSectionOn`): its deal counts go with them. */
+  readonly deals: boolean;
   readonly onOpen: (id: KinCampaignResultId) => void;
 }) {
-  const rows = kinCampaignResultRows(props.results, props.audience);
+  const rows = kinCampaignResultRows(props.results, props.audience, props.deals);
   return (
     <KinWorkSection
       title={KIN_MARKETING.results}
-      fold={{ summary: kinCampaignResultsSummary(props.results, props.audience) }}
+      fold={{ summary: kinCampaignResultsSummary(props.results, props.audience, props.deals) }}
     >
       <ul className="-mx-2 flex flex-col">
         {rows.map((row) => (

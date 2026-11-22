@@ -2,6 +2,7 @@ import { KIN_MARKETING, kinContactListOfClients } from "@t3tools/client-runtime/
 import type { KinMarketing } from "@t3tools/contracts";
 import { KIN_IMPORT } from "@t3tools/client-runtime/kin/kinImport";
 import { useKinClientsStart, useKinSeesClients, useKinViewerScope } from "./state/kinChatOnly";
+import { useKinSectionOn } from "./state/useKinShell";
 import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
@@ -480,8 +481,11 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
   );
   const start = useKinClientsStart(props.environmentId);
   const seesClients = useKinSeesClients(props.environmentId) === true;
-  // Deals are for someone with Clients on; the segment they last chose may no longer be theirs.
-  const tab = kinClientsTabShown(asked, seesClients);
+  // Deals are for someone with Clients on, while the company runs deals; the segment they last
+  // chose may no longer be theirs.
+  const dealsOn = useKinSectionOn(props.environmentId, "deals");
+  const seesDeals = seesClients && dealsOn;
+  const tab = kinClientsTabShown(asked, seesDeals);
   const chosen = kinClientsChosenAtom(kinClientsChosenKey(props.environmentId, me));
   const [held] = useState(() => appAtomRegistry.get(chosen));
   const [showing, setShown] = useState<Showing>(() => ({
@@ -527,7 +531,7 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
   };
   const header = (
     <SegmentedControl
-      options={kinClientsTabs(seesClients).map((one) => ({ value: one.id, label: one.label }))}
+      options={kinClientsTabs(seesDeals).map((one) => ({ value: one.id, label: one.label }))}
       selected={tab}
       onSelect={(next) => {
         appAtomRegistry.set(remembered, next);
