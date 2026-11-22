@@ -513,6 +513,41 @@ describe("amounts", () => {
 });
 
 describe("lists through the tools", () => {
+  it.effect("the owner's later yes cannot carry an off-section list proposal out", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      for (const [n, template, id, label] of [
+        [10, "expenses", "money", "Money"],
+        [20, "invoices", "invoices", "Invoices and quotes"],
+      ] as const) {
+        const asked = yield* turn(n, `Track ${template}`);
+        const proposed = yield* LeadMoney.define(scope, {
+          sourceEventId: asked,
+          template,
+          fields: [{ label: "Batch", type: "text" }],
+        });
+        assert.equal(proposed.status, "proposed");
+        yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+          VALUES (${orgId}, ${JSON.stringify([{ id, on: false }])}, 1, ${ownerId}, 0)`;
+        const yes = yield* turn(n + 1, "Yes");
+        const input = { sourceEventId: yes, proposal: proposed.proposal! };
+        const off = yield* LeadMoney.define(scope, input).pipe(Effect.result);
+        assert.equal(
+          off._tag === "Failure" ? off.failure.message : off.success.status,
+          `${label} is turned off for this company.`,
+        );
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_registers WHERE org_id = ${orgId}
+          AND register_id = ${template}`,
+          0,
+        );
+        yield* sql`DELETE FROM kin_company_shell WHERE org_id = ${orgId}`;
+        assert.equal((yield* LeadMoney.define(scope, input)).status, "defined");
+      }
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("are created only from the owner's later yes, then take entries totalled exactly", () =>
     Effect.gen(function* () {
       yield* seed;
