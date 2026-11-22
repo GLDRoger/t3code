@@ -612,20 +612,43 @@ const keptForPerson = [
       yield* scene.later;
       yield* scene.records.update(orgId, scene.ownerWrites, "W-1", {
         owner: { _tag: "agent", agentId: lead },
+        notes: "Invented: the owner's brief",
       });
       yield* scene.wake();
       const [given] = yield* scene.sql<{ eventId: string }>`SELECT event_id AS "eventId"
         FROM kin_events WHERE org_id = ${orgId} AND tag = 'record.changed'`;
-      yield* scene.write(given!.eventId, {
+      // The person's notes stay theirs: the agent's status goes on its activity, once, instead.
+      const status = {
         state: "doing",
         title: "Invented pricing tiers",
         due: "2026-11-20",
+        notes: "Invented: drafted, waiting on prices",
+      };
+      const written = yield* scene.write(given!.eventId, {
+        ...status,
         expectedRev: yield* scene.rev,
       });
+      assert.include(written, { notesKept: LeadWork.NOTES_KEPT });
+      yield* scene.write(given!.eventId, status);
       assert.include(yield* scene.records.get(orgId, "W-1"), {
         state: "doing",
         title: "Invented pricing tiers",
         ownerKind: "agent",
+        notes: "Invented: the owner's brief",
+      });
+      const noted = yield* scene.sql<{ authorKind: string; authorId: string; body: string }>`
+        SELECT author_kind AS "authorKind", author_id AS "authorId", body
+        FROM kin_record_comments WHERE org_id = ${orgId} ORDER BY seq`;
+      assert.deepStrictEqual(noted, [
+        { authorKind: "agent", authorId: lead, body: "Invented: drafted, waiting on prices" },
+      ]);
+      // Notes the agent wrote itself it may write over, as before.
+      yield* scene.sql`UPDATE kin_records SET notes = '' WHERE org_id = ${orgId} AND key = 'W-1'`;
+      yield* scene.write(given!.eventId, { notes: "Invented: its own status" });
+      const again = yield* scene.write(given!.eventId, { notes: "Invented: its newer status" });
+      assert.notProperty(again, "notesKept");
+      assert.include(yield* scene.records.get(orgId, "W-1"), {
+        notes: "Invented: its newer status",
       });
     }),
   ),
