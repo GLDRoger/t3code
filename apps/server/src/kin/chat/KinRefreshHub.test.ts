@@ -26,6 +26,7 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as RetiredActions from "../approvals/retiredActions.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as Provision from "../lead/KinLeadProvision.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as WorkStream from "../work/workStream.ts";
 import { newCompanyProfileJson, setProfile } from "../work/companyProfile.ts";
@@ -141,6 +142,7 @@ describe("KinRefreshHub", () => {
           workLists: 0,
           stop: 0,
           watches: 0,
+          shell: 0,
           company: 0,
           boot,
           streams: KIN_STREAMS,
@@ -192,6 +194,7 @@ describe("KinRefreshHub", () => {
           workLists: 0,
           stop: 0,
           watches: 0,
+          shell: 0,
           company: 0,
           boot,
           streams: KIN_STREAMS,
@@ -216,6 +219,17 @@ describe("KinRefreshHub", () => {
         yield* sql.withTransaction((yield* RefreshHub.KinRefreshObserver).touch(me.orgId, "stop"));
         yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
         assert.deepStrictEqual(yield* Queue.take(priyaSees), { ...moved, company: 1, stop: 1 });
+        yield* KinShell.KinShell.use((shell) =>
+          shell.set(me.orgId, me.personId, 0, [{ id: "deals", on: false }]),
+        ).pipe(Effect.provide(KinShell.layer));
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.deepStrictEqual(yield* Queue.take(priyaSees), {
+          ...moved,
+          company: 1,
+          stop: 1,
+          shell: 1,
+          pulse: 1,
+        });
       }).pipe(Effect.scoped, Effect.provide(paired)),
   );
 
@@ -478,8 +492,9 @@ describe("KinRefreshHub", () => {
         "chat/KinChatRepository.ts",
         "recommend/KinRecommend.ts",
         "recommend/card.ts",
-      ], // The watch list and its log: written only by the watch service, every write moving `watches`.
-      // The round, the watch RPCs and retention reach it (pinned below), nothing else.
+      ],
+      kin_company_shell: ["shell/KinShell.ts"],
+      // The round, watch RPCs and retention alone write these; the topic moves on visible writes.
       kin_watches: ["watches/KinWatches.ts"],
       kin_watch_looks: ["watches/KinWatches.ts"],
     };
