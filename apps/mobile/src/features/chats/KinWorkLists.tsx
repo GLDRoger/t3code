@@ -1,17 +1,27 @@
+import { KIN_MARKETING, kinContactListOfClients } from "@t3tools/client-runtime/kin/kinMarketing";
+import type { KinMarketing } from "@t3tools/contracts";
+import { KIN_IMPORT } from "@t3tools/client-runtime/kin/kinImport";
 import { useKinClientsStart, useKinSeesClients, useKinViewerScope } from "./state/kinChatOnly";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import {
   KIN_CLIENTS,
+  KIN_MINE,
+  kinClientsSide,
+  kinMineOpens,
+  kinMineOwner,
+  type KinMineSide,
   kinClientsShowChoices,
   kinClientsTabs,
   kinClientsTabShown,
   KIN_PROJECTS,
   KIN_PROJECT_VIEWS,
   kinClientRow,
-  kinClientsLookedAfterChoices,
+  kinClientsChosenAtom,
+  kinClientsChosenKey,
+  kinClientsQuery,
   kinClientsNothing,
   type KinClientsFilter,
   kinProjectsByClient,
@@ -21,13 +31,11 @@ import {
   type KinProjectsFilter,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinWorkHome";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import {
-  kinWorkPrincipalKey,
-  kinWorkSamePrincipal,
-  type KinWorkNames,
-} from "@t3tools/client-runtime/kin/kinWork";
-import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
+import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
+import type { EnvironmentId, KinPersonId, KinRecordKey } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
@@ -56,7 +64,10 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { KinLoadFailed } from "./components/KinLoadFailed";
-import { KinDealsView } from "./KinDealsList";
+import { useKinHostAt } from "./state/useKinHost";
+import { KinDealsView, KinListPinned, KinMineSwitch } from "./KinDealsList";
+import { useKinExportList, useKinMarketing } from "./KinMarketing";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
 const HEALTH_TONE: Record<KinHealthView["tone"], string> = {
   good: "text-foreground-muted",
@@ -95,6 +106,7 @@ export function KinWorkNamedRow(props: {
   /** Inside a rounded section the divider keeps to the section's edges. */
   readonly inset?: boolean;
 }) {
+  const grows = useKinTextGrows();
   const { row } = props;
   return (
     <>
@@ -109,13 +121,21 @@ export function KinWorkNamedRow(props: {
       >
         <View className="min-w-0 flex-1 gap-0.5">
           <View className="flex-row items-center gap-2">
-            <Text textRole="body" numberOfLines={2} className="min-w-0 shrink text-foreground">
+            <Text
+              textRole="body"
+              numberOfLines={kinLines(2, grows)}
+              className="min-w-0 shrink text-foreground"
+            >
               {row.name}
             </Text>
             {row.private ? <KinWorkPrivateMark label="" /> : null}
           </View>
           {row.mark == null && row.line === "" ? null : (
-            <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+            <Text
+              textRole="footnote"
+              numberOfLines={kinLines(1, grows)}
+              className="text-foreground-muted"
+            >
               {row.mark == null ? null : (
                 <Text textRole="footnote" className="font-t3-medium text-primary-text">
                   {row.mark}
@@ -128,7 +148,7 @@ export function KinWorkNamedRow(props: {
           {row.next == null ? null : (
             <Text
               textRole="footnote"
-              numberOfLines={1}
+              numberOfLines={kinLines(1, grows)}
               className={row.noNext ? "text-warning-foreground" : "text-foreground-muted"}
             >
               {row.next}
@@ -172,23 +192,27 @@ function NamedList(props: {
   readonly menu: AppBarMenu;
   readonly ask: AppBarAction | null;
   readonly stale: boolean;
-  /** Above the rows: which of Clients and Projects shows. */
+  /** Pinned above the rows: which of Clients, Deals and Projects shows, and whose. */
   readonly header: React.ReactNode;
   readonly items: ReadonlyArray<ListItem>;
   readonly shown: number;
   readonly state: {
+    readonly seq: number | null;
     readonly loading: boolean;
     readonly failed: unknown;
     readonly more: boolean;
     readonly moreFailed: boolean;
     readonly loadingMore: boolean;
     readonly total: number | null;
+    readonly readAt: number | null;
   };
   readonly list: { readonly refresh: () => void; readonly loadMore: () => Promise<void> | void };
   readonly search: { readonly text: string; readonly placeholder: string };
   readonly onSearch: (text: string) => void;
   readonly nothing: React.ReactNode;
   readonly add: { readonly label: string; readonly onPress: () => void } | null;
+  /** Beside Add: Clients' Import a file, for the owner level. */
+  readonly bring?: AppBarAction | null;
   readonly loading: string;
   readonly loadFailed: string;
   readonly extra: unknown;
@@ -198,6 +222,7 @@ function NamedList(props: {
   const navigation = useNavigation();
   const tab = useKinTab();
   const { state, list, add, items } = props;
+  const shown = kinListShown(state, kinHostLink(useKinHostAt(props.environmentId)));
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
@@ -205,6 +230,7 @@ function NamedList(props: {
         refresh={{ accessibilityLabel: "Refresh", onPress: list.refresh }}
         actions={[
           ...(props.ask === null ? [] : [props.ask]),
+          ...(props.bring === undefined || props.bring === null ? [] : [props.bring]),
           ...(add === null
             ? []
             : [{ accessibilityLabel: add.label, icon: "plus" as const, onPress: add.onPress }]),
@@ -222,6 +248,7 @@ function NamedList(props: {
         })}
       />
       <ScreenContent surface="screen">
+        <KinListPinned>{props.header}</KinListPinned>
         <LegendList<ListItem>
           renderScrollComponent={NativeScrollView}
           className="flex-1"
@@ -241,18 +268,23 @@ function NamedList(props: {
           onEndReached={() => void list.loadMore()}
           onEndReachedThreshold={0.5}
           ListHeaderComponent={
-            <View className="gap-2 px-4 pt-2">
-              {props.header}
-              {props.stale ? (
-                <KinWorkStaleNotice environmentId={props.environmentId} onRetry={list.refresh} />
-              ) : null}
-            </View>
+            shown === "rows" && props.stale ? (
+              <View className="px-4 pt-2">
+                <KinWorkStaleNotice
+                  environmentId={props.environmentId}
+                  onRetry={list.refresh}
+                  readAt={state.readAt}
+                />
+              </View>
+            ) : null
           }
           ListEmptyComponent={
             <View className="px-4 pt-4">
-              {state.loading ? (
+              {shown === "offline" ? (
+                <EmptyState variant="plain" {...kinWorkOffline("clients")} />
+              ) : shown === "loading" ? (
                 <KinWorkLoading label={props.loading} />
-              ) : state.failed !== null ? (
+              ) : shown === "failed" ? (
                 <KinLoadFailed
                   title={props.loadFailed}
                   cause={state.failed}
@@ -268,7 +300,7 @@ function NamedList(props: {
               <View className="items-start gap-2 px-5 py-4">
                 <Text textRole="footnote" className="text-foreground-muted">
                   {state.moreFailed
-                    ? "Couldn't load more."
+                    ? KIN_MORE_FAILED
                     : `Showing ${props.shown} of ${state.total ?? props.shown}`}
                 </Text>
                 <Button
@@ -332,30 +364,28 @@ function KinProjectsGroupHeading(props: {
   );
 }
 
-/** Kept while the app stays open, so Clients opens on the side last chosen. */
-const kinClientsTabAtom = Atom.make<KinClientsTab>("clients").pipe(Atom.keepAlive);
+/**
+ * Kept while the app stays open, so Clients opens on the side last chosen: by each person on each
+ * Kin, so someone signing in after another on this phone starts on their own.
+ */
+const kinClientsTabAtom = Atom.family((_viewer: string) =>
+  Atom.make<KinClientsTab>("clients").pipe(Atom.keepAlive),
+);
 
 type Showing = {
   readonly clients: Omit<KinClientsFilter, "text">;
   readonly view: KinProjectsFilter["view"];
 };
 
-/** Which clients, and for someone who sees them all, who looks after them. */
+/** Which clients, and for someone who sees them all, where they came from; whose is the switch. */
 function clientsMenu(
   showing: Showing,
   onShow: (showing: Showing) => void,
-  names: KinWorkNames,
   seesClients: boolean,
+  marketing: KinMarketing,
+  onExport: () => void,
 ): AppBarMenu["items"] {
   const { clients } = showing;
-  const pick = (lookedAfter: KinClientsFilter["lookedAfter"]) =>
-    onShow({ ...showing, clients: { ...clients, lookedAfter } });
-  const picked = (who: KinClientsFilter["lookedAfter"]) =>
-    who === "anyone" || clients.lookedAfter === "anyone"
-      ? who === clients.lookedAfter
-      : kinWorkSamePrincipal(who, clients.lookedAfter);
-  const me = names.me === null ? null : ({ _tag: "person", personId: names.me } as const);
-  const someone = kinClientsLookedAfterChoices(names);
   return [
     {
       id: "show",
@@ -376,43 +406,44 @@ function clientsMenu(
       ? []
       : [
           {
-            id: "lookedAfter",
-            title: KIN_CLIENTS.lookedAfterBy,
-            inline: true,
+            id: "cameFrom",
+            title: KIN_MARKETING.cameFrom,
             items: [
               {
-                id: "lookedAfter:anyone",
-                title: KIN_CLIENTS.anyone,
-                selected: picked("anyone"),
-                onPress: () => pick("anyone"),
+                id: "cameFrom:anywhere",
+                title: KIN_MARKETING.cameFromAnywhere,
+                selected: clients.cameFrom == null,
+                onPress: () => onShow({ ...showing, clients: { ...clients, cameFrom: null } }),
               },
-              ...(me === null
-                ? []
-                : [
-                    {
-                      id: "lookedAfter:me",
-                      title: KIN_CLIENTS.me,
-                      selected: picked(me),
-                      onPress: () => pick(me),
-                    },
-                  ]),
-              ...(someone.length === 0
-                ? []
-                : [
-                    {
-                      id: "lookedAfter:someone",
-                      title: KIN_CLIENTS.someone,
-                      items: someone.map((one) => ({
-                        id: `lookedAfter:${one.key}`,
-                        title: one.name,
-                        selected: picked(one.who),
-                        onPress: () => pick(one.who),
-                      })),
-                    },
-                  ]),
+              ...marketing.cameFrom.map((one) => ({
+                id: `cameFrom:${one.source}`,
+                title: one.campaign ? `${one.label} (${KIN_MARKETING.campaign})` : one.label,
+                selected: clients.cameFrom === one.source,
+                onPress: () =>
+                  onShow({ ...showing, clients: { ...clients, cameFrom: one.source } }),
+              })),
+            ],
+          },
+          {
+            id: "tag",
+            title: KIN_MARKETING.tag,
+            items: [
+              {
+                id: "tag:any",
+                title: KIN_MARKETING.anyTag,
+                selected: clients.tag == null,
+                onPress: () => onShow({ ...showing, clients: { ...clients, tag: null } }),
+              },
+              ...marketing.tags.map((tag) => ({
+                id: `tag:${tag}`,
+                title: tag,
+                selected: clients.tag === tag,
+                onPress: () => onShow({ ...showing, clients: { ...clients, tag } }),
+              })),
             ],
           },
         ]),
+    { id: "export", title: KIN_MARKETING.exportList, onPress: onExport },
   ];
 }
 
@@ -421,15 +452,16 @@ function showMenu(
   tab: KinClientsTab,
   showing: Showing,
   onShow: (showing: Showing) => void,
-  names: KinWorkNames,
   seesClients: boolean,
+  marketing: KinMarketing,
+  onExport: () => void,
 ): AppBarMenu {
   return {
     title: KIN_WORK_HOME.show,
     icon: "line.3.horizontal.decrease.circle",
     items:
       tab === "clients"
-        ? clientsMenu(showing, onShow, names, seesClients)
+        ? clientsMenu(showing, onShow, seesClients, marketing, onExport)
         : KIN_PROJECT_VIEWS.map((view) => ({
             id: view.id,
             title: view.label,
@@ -441,17 +473,31 @@ function showMenu(
 
 /** Clients, or their projects grouped under them, one segment at a time. */
 export function KinClientsList(props: ListProps & { readonly projects: boolean }) {
+  const { me } = props.directory.names;
+  const remembered = kinClientsTabAtom(`${props.environmentId}:${me ?? ""}`);
   const [asked, setTab] = useState<KinClientsTab>(() =>
-    props.projects ? "projects" : appAtomRegistry.get(kinClientsTabAtom),
+    props.projects ? "projects" : appAtomRegistry.get(remembered),
   );
   const start = useKinClientsStart(props.environmentId);
   const seesClients = useKinSeesClients(props.environmentId) === true;
   // Deals are for someone with Clients on; the segment they last chose may no longer be theirs.
   const tab = kinClientsTabShown(asked, seesClients);
-  const [showing, setShowing] = useState<Showing>(() => ({
-    clients: { show: start.show, lookedAfter: start.lookedAfter },
+  const chosen = kinClientsChosenAtom(kinClientsChosenKey(props.environmentId, me));
+  const [held] = useState(() => appAtomRegistry.get(chosen));
+  const [showing, setShown] = useState<Showing>(() => ({
+    clients: held ?? { show: start.show, lookedAfter: "anyone" },
     view: "open",
   }));
+  // The side picked here; until then the list opens as `kinMineOpens` says.
+  const [side, setSide] = useState<KinMineSide | null>(null);
+  const lookedAfterOf = (shown: KinMineSide): KinClientsFilter["lookedAfter"] =>
+    shown === "mine" ? (kinMineOwner(me) ?? "anyone") : "anyone";
+  const setShowing = (next: Showing) => {
+    if (next.clients !== showing.clients) appAtomRegistry.set(chosen, next.clients);
+    setShown(next);
+  };
+  const marketing = useKinMarketing(props);
+  const exporter = useKinExportList(props);
   const agent = useKinAskAgent(props, "clients");
   const ask =
     agent === null
@@ -461,21 +507,35 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
           icon: "bubble.left" as const,
           onPress: () => agent.ask(kinWorkAskDraft("clients")),
         };
-  const view = {
-    menu: showMenu(tab, showing, setShowing, props.directory.names, seesClients),
-    ask,
-    header: (
-      <SegmentedControl
-        options={kinClientsTabs(seesClients).map((held) => ({ value: held.id, label: held.label }))}
-        selected={tab}
-        onSelect={(next) => {
-          appAtomRegistry.set(kinClientsTabAtom, next);
-          setTab(next);
-        }}
-        role="tab"
-      />
-    ),
+  // Whatever changes, the side shown is kept with it.
+  const menuFor = (shown: KinMineSide) => {
+    const clients =
+      tab === "clients"
+        ? { ...showing.clients, lookedAfter: lookedAfterOf(shown) }
+        : showing.clients;
+    return showMenu(
+      tab,
+      { ...showing, clients },
+      setShowing,
+      seesClients,
+      marketing,
+      () =>
+        void exporter.run(
+          kinContactListOfClients(kinClientsQuery(props.orgId, { ...clients, text: "" })),
+        ),
+    );
   };
+  const header = (
+    <SegmentedControl
+      options={kinClientsTabs(seesClients).map((one) => ({ value: one.id, label: one.label }))}
+      selected={tab}
+      onSelect={(next) => {
+        appAtomRegistry.set(remembered, next);
+        setTab(next);
+      }}
+      role="tab"
+    />
+  );
   if (tab === "deals")
     return (
       <KinDealsView
@@ -483,24 +543,46 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
         orgId={props.orgId}
         directory={props.directory}
         stale={props.stale}
-        header={view.header}
+        header={header}
         ask={ask}
       />
     );
-  return tab === "clients" ? (
-    <ClientsView
-      key={`clients:${showing.clients.show}:${
-        showing.clients.lookedAfter === "anyone"
-          ? "anyone"
-          : kinWorkPrincipalKey(showing.clients.lookedAfter)
-      }`}
-      {...props}
-      {...view}
-      showing={showing.clients}
-      canAdd={seesClients}
-    />
+  if (tab === "projects")
+    return (
+      <ProjectsView
+        key={`projects:${showing.view}`}
+        {...props}
+        menu={menuFor("mine")}
+        ask={ask}
+        header={header}
+        view={showing.view}
+      />
+    );
+  const key = `clients:${showing.clients.show}:${showing.clients.cameFrom ?? ""}:${showing.clients.tag ?? ""}`;
+  const clients = {
+    ...props,
+    ask,
+    header,
+    menuFor,
+    showing: {
+      show: showing.clients.show,
+      lookedAfter: "anyone",
+      ...(showing.clients.cameFrom == null ? {} : { cameFrom: showing.clients.cameFrom }),
+      ...(showing.clients.tag == null ? {} : { tag: showing.clients.tag }),
+      text: "",
+    } satisfies KinClientsFilter,
+    side,
+    remembered: held === null ? null : kinClientsSide(held.lookedAfter, me),
+    onSide: (next: KinMineSide) => {
+      setSide(next);
+      setShowing({ ...showing, clients: { ...showing.clients, lookedAfter: lookedAfterOf(next) } });
+    },
+    canAdd: seesClients,
+  };
+  return me === null ? (
+    <ClientsEveryone key={key} {...clients} />
   ) : (
-    <ProjectsView key={`projects:${showing.view}`} {...props} {...view} view={showing.view} />
+    <ClientsBoth key={key} {...clients} me={me} />
   );
 }
 
@@ -510,21 +592,60 @@ type ViewProps = ListProps & {
   readonly header: React.ReactNode;
 };
 
+type ClientsProps = Omit<ViewProps, "menu"> & {
+  readonly menuFor: (shown: KinMineSide) => AppBarMenu;
+  /** Which clients, whoever looks after them. */
+  readonly showing: KinClientsFilter;
+  readonly side: KinMineSide | null;
+  readonly remembered: KinMineSide | null;
+  readonly onSide: (side: KinMineSide) => void;
+  /** The owner level adds clients; a teammate with Clients on adds prospects. */
+  readonly canAdd: boolean;
+};
+
+type ClientsList = ReturnType<typeof useKinClientsList>;
+
+/** Both sides read at once, so each shows its count and the switch moves without a wait. */
+function ClientsBoth(props: ClientsProps & { readonly me: KinPersonId }) {
+  const seq = props.stale ? null : props.live.seq;
+  const mine = useKinClientsList(props, seq, {
+    ...props.showing,
+    lookedAfter: { _tag: "person", personId: props.me },
+  });
+  const everyone = useKinClientsList(props, seq, props.showing);
+  return <ClientsView {...props} mine={mine} everyone={everyone} />;
+}
+
+/** Until the host says who the viewer is, there is no Mine to show. */
+function ClientsEveryone(props: ClientsProps) {
+  const everyone = useKinClientsList(props, props.stale ? null : props.live.seq, props.showing);
+  return <ClientsView {...props} mine={null} everyone={everyone} />;
+}
+
+const clientsCount = (list: ClientsList | null) =>
+  list === null || list.state.total === null ? null : { n: list.state.total };
+
 function ClientsView(
-  props: ViewProps & {
-    readonly showing: Omit<KinClientsFilter, "text">;
-    /** The owner level adds clients; a teammate with Clients on adds prospects. */
-    readonly canAdd: boolean;
-  },
+  props: ClientsProps & { readonly mine: ClientsList | null; readonly everyone: ClientsList },
 ) {
   const navigation = useNavigation();
   const { environmentId, orgId } = props;
   const scope = useKinViewerScope(environmentId);
   const now = new Date(useNowMinuteMs());
-  const seq = props.stale ? null : props.live.seq;
-  const { state, list } = useKinClientsList(props, seq, { ...props.showing, text: "" });
+  const counts = { mine: clientsCount(props.mine), everyone: clientsCount(props.everyone) };
+  // A Mine that can't be read opens nothing of its own: the list opens on Everyone.
+  const opens =
+    props.side ??
+    kinMineOpens(
+      props.remembered,
+      props.mine === null
+        ? { n: 0 }
+        : (counts.mine ?? (props.mine.state.loading ? null : { n: 0 })),
+    );
+  // While Mine's count decides the side, its own read shows as loading.
+  const { state, list } = opens === "everyone" || props.mine === null ? props.everyone : props.mine;
   const { filter } = state;
-  const nothing = kinClientsNothing(filter, scope, props.directory.names.me);
+  const nothing = kinClientsNothing(filter, scope, props.directory.names.me, KIN_MINE.everyone);
   const add = props.canAdd
     ? {
         label: scope.all ? KIN_CLIENTS.add : KIN_CLIENTS.addProspect,
@@ -541,13 +662,22 @@ function ClientsView(
         };
   const openClient = (to: KinRecordKey) =>
     navigation.navigate("KinClient", { environmentId, orgId, party: to });
+  // The owner level's, as the host has it: the host applies the same gate to the call.
+  const canImport = useAtomValue(kinClient.importApply.permissionAtom(environmentId));
   return (
     <NamedList
       environmentId={environmentId}
       title={KIN_CLIENTS.title}
-      menu={props.menu}
+      menu={props.menuFor(opens ?? "mine")}
       ask={props.ask}
-      header={props.header}
+      header={
+        <>
+          {props.header}
+          {props.mine === null || opens === null ? null : (
+            <KinMineSwitch side={opens} counts={counts} onSelect={props.onSide} />
+          )}
+        </>
+      }
       stale={props.stale || state.stale}
       items={state.records.map((row) => ({
         type: "row" as const,
@@ -561,12 +691,17 @@ function ClientsView(
         // The counts are read again too: they may be what failed.
         refresh: () => {
           refreshKinWorkLive(props);
-          list.refresh();
+          props.mine?.list.refresh();
+          props.everyone.list.refresh();
         },
       }}
       extra={state}
       search={{ text: filter.text, placeholder: KIN_CLIENTS.search }}
-      onSearch={(text) => list.setFilter({ ...filter, text })}
+      // Both sides search alike, so each count says where the matches are.
+      onSearch={(text) => {
+        props.mine?.list.setFilter({ ...props.mine.state.filter, text });
+        props.everyone.list.setFilter({ ...props.everyone.state.filter, text });
+      }}
       nothing={
         <EmptyState
           variant="plain"
@@ -582,6 +717,15 @@ function ClientsView(
         />
       }
       add={add}
+      bring={
+        canImport
+          ? {
+              accessibilityLabel: KIN_IMPORT.entry,
+              icon: "tray.and.arrow.down" as const,
+              onPress: () => navigation.navigate("KinImport", { environmentId, orgId }),
+            }
+          : null
+      }
       loading="Loading clients"
       loadFailed={KIN_CLIENTS.loadFailed}
       onOpen={openClient}

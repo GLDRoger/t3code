@@ -74,7 +74,7 @@ function parseMailtoAddress(rawUrl: string): Option.Option<string> {
   }
 }
 
-function syncMacosWindowButtons(window: Electron.BrowserWindow): void {
+export function syncMacosWindowButtons(window: Electron.BrowserWindow): void {
   if (window.isDestroyed() || window.isFullScreen()) return;
   window.setWindowButtonPosition({
     x: 16,
@@ -330,7 +330,7 @@ function concealPendingQuitWindow(
   window.setOpacity(0);
 }
 
-function getWindowTitleBarOptions(
+export function getWindowTitleBarOptions(
   shouldUseDarkColors: boolean,
   platform: NodeJS.Platform,
 ): WindowTitleBarOptions {
@@ -354,7 +354,7 @@ function getWindowTitleBarOptions(
   };
 }
 
-function syncWindowAppearance(
+export function syncWindowAppearance(
   window: Electron.BrowserWindow,
   hasTitleBarOverlay: boolean,
   shouldUseDarkColors: boolean,

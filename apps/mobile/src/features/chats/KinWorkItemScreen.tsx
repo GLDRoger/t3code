@@ -1,3 +1,4 @@
+import { KIN_DOCS } from "@t3tools/client-runtime/kin/kinDocs";
 import { useKinOpensClients } from "./state/kinChatOnly";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
@@ -8,6 +9,8 @@ import {
 } from "@t3tools/client-runtime/kin/kinLinked";
 import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import { useAtomValue } from "@effect/atom-react";
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinTaskProjectsAllowed } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_TASK_LINK,
@@ -22,6 +25,7 @@ import {
   kinRecordWho,
   kinTaskControls,
   kinTaskActivity,
+  kinTaskPeopleFolded,
   type KinActivityLine,
   type KinNextStepAct,
   type KinRecordChipTone,
@@ -36,7 +40,10 @@ import {
   KIN_WORK_NOTES_MAX,
   kinWorkOnlyOwner,
   KIN_WORK_REPEAT,
+  KIN_WORK_STEPS,
+  KIN_WORK_URGENT,
   kinSameRepeat,
+  kinWorkStepProblem,
   kinWorkAssignees,
   kinWorkClientStays,
   kinWorkHostClients,
@@ -46,6 +53,7 @@ import {
   kinWorkTitleTooLong,
   type KinWorkItemView,
   type KinWorkLinkView,
+  type KinWorkStepsView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_WORK_COPY,
@@ -53,6 +61,7 @@ import {
   kinWorkEditMoved,
   kinWorkStatusOffer,
   kinWorkItemNotice,
+  kinWorkTakeLabel,
   type KinWorkAction,
   type KinWorkNotice,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
@@ -72,7 +81,7 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { Pressable, TextInput, View } from "react-native";
 
-import { useState, type ReactNode } from "react";
+import { useState, type ReactNode, useRef, type ComponentRef } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { AppBarMenu, AppBarMenuItem } from "../../components/ui/AppBar";
@@ -101,11 +110,21 @@ import { KinAvatar } from "./components/KinAvatar";
 import { KinAttachments } from "./components/KinMessageBubble";
 import { KinTaskNoteComposer } from "./components/KinTaskNoteComposer";
 import { KinNextStep } from "./components/KinNextStep";
-import { KinWorkDueRow, KinWorkStatusRow } from "./components/KinWorkTaskMenus";
+import { connectionAtomRuntime } from "../../connection/runtime";
+import { KinDayField } from "./components/KinDayField";
+import { KinWorkStatusRow } from "./components/KinWorkTaskMenus";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinListEntryBody } from "./KinListEntry";
-import { KinMakeDocumentStep, type KinMakeStep } from "./KinInvoice";
-import { KinWorkFrame, KinWorkLoading, KinWorkTaskRow } from "./components/KinWorkPieces";
+import { KinMakeDocumentStep } from "./KinInvoice";
+import type { KinMakeStep } from "./kinMakeStep";
+import {
+  KIN_URGENT_SYMBOL,
+  KinWorkFieldBox,
+  KinWorkFrame,
+  KinWorkLoading,
+  KinWorkTaskRow,
+  KinWorkToggleRow,
+} from "./components/KinWorkPieces";
 import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
 import { useKinAskRecord } from "./state/useKinAskRecord";
@@ -122,6 +141,8 @@ import {
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate, useKinHostAt } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import { KinWatchLine } from "./KinWatchLine";
 
 export type KinWorkItemParams = {
   readonly environmentId: string;
@@ -239,6 +260,8 @@ function KinWorkItemGate(props: ItemTarget) {
 }
 
 function KinWorkItemBody(props: ItemTarget) {
+  const titleField = useRef<ComponentRef<typeof TextInput>>(null);
+  const briefField = useRef<ComponentRef<typeof TextInput>>(null);
   const navigation = useNavigation();
   const openRecord = useKinWorkLink();
   const openDetail = useOpenWorkspaceDetail();
@@ -274,10 +297,16 @@ function KinWorkItemBody(props: ItemTarget) {
   const work = useKinWork(props);
   // Make invoice and Make its PDF are a step of this page, never a sheet over it.
   const [making, setMaking] = useState<KinMakeStep | null>(null);
+  // Asked by and Held by, folded under one row when the card on top already names them.
+  const [peopleOpen, setPeopleOpen] = useState(false);
   // An older server has no clients or projects: the task shows as it always did.
   const opensClients = useKinOpensClients(environmentId);
   const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
   const choices = useKinWorkChoices(props, hostClients && canChange);
+  // A teammate moves a task only into a project they lead, as the host takes it.
+  const projectsAllowed = kinTaskProjectsAllowed(
+    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)),
+  );
   const now = new Date(useNowMinuteMs());
   const back = () => navigation.goBack();
   const task = state._tag === "ready" && state.item.list === undefined ? state.item : null;
@@ -467,13 +496,13 @@ function KinWorkItemBody(props: ItemTarget) {
   const heldBy = kinRecordWho(item.owner, names);
   const briefBy = kinBriefBy(shown, names, now);
   const chip = kinRecordChip(shown, view, names, now);
+  const folded = kinTaskPeopleFolded(shown, step);
   const controls = kinTaskControls({
     view,
     change: act !== null,
     give: canGive,
     step: step.acts,
   });
-  const repeatShown = view.repeat?.text ?? KIN_WORK_REPEAT.never;
   const dated = view.due !== null;
   const repeats = act !== null && view.can.repeat === true && !view.closed;
   const repeatMenu: ReadonlyArray<AppBarMenuItem> = !repeats
@@ -481,7 +510,7 @@ function KinWorkItemBody(props: ItemTarget) {
     : [
         {
           id: "repeat",
-          title: `${KIN_WORK_REPEAT.label}: ${repeatShown}`,
+          title: KIN_WORK_REPEAT.menu(view.repeat?.text ?? null),
           items: [
             ...(dated
               ? []
@@ -525,7 +554,7 @@ function KinWorkItemBody(props: ItemTarget) {
       ? [
           {
             id: "take-back",
-            title: KIN_WORK_COPY.takeBack,
+            title: kinWorkTakeLabel(item, names),
             onPress: () => void changes.run(item, { type: "takeBack" }, names),
           },
         ]
@@ -599,11 +628,14 @@ function KinWorkItemBody(props: ItemTarget) {
       actions={asker.actions}
       menus={[...asker.menus, ...menus]}
       form={edit !== null}
+      // The form opens at the top, wherever the page was scrolled to.
+      showTop={edit === null ? null : edit.key}
       {...(footer === undefined ? {} : { footer })}
     >
       <View className="gap-2.5 px-1">
         <View className="flex-row flex-wrap items-center gap-2">
           <KinRecordChip tone={chip.tone} label={chip.label} />
+          {view.urgent && !view.closed ? <KinUrgentFlag /> : null}
           <Text textRole="footnote" className="text-foreground-muted">
             {view.heading === "Task" ? item.key : `${item.key} · ${view.heading}`}
           </Text>
@@ -624,21 +656,20 @@ function KinWorkItemBody(props: ItemTarget) {
           </Text>
         ))}
       </View>
+      <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={itemKey} />
       {edit === null ? null : (
         <View className="gap-3">
           <ListSection>
-            <View className="gap-2 px-4 py-3">
-              <Text className="text-sm text-foreground-muted">Title</Text>
+            <KinWorkFieldBox label={"Title"} input={titleField}>
               <TextInput
+                ref={titleField}
                 accessibilityLabel="Title"
                 value={edit.title}
                 editable={!saving}
-                autoFocus
                 autoCapitalize="sentences"
                 returnKeyType="done"
                 onChangeText={(title) => changes.setEdit({ title })}
                 textAlignVertical="center"
-                placeholder={KIN_WORK_NEW_COPY.titlePlaceholder}
                 placeholderTextColorClassName="accent-placeholder"
                 className="min-h-8 font-sans text-base text-foreground"
               />
@@ -654,13 +685,15 @@ function KinWorkItemBody(props: ItemTarget) {
                   {kinWorkTitleCount(edit.title)}
                 </Text>
               )}
-            </View>
-            <View className="gap-2 px-4 py-3">
-              <Text className="text-sm text-foreground-muted">{KIN_TASK_RECORD.brief}</Text>
+            </KinWorkFieldBox>
+            <KinWorkFieldBox label={KIN_TASK_RECORD.brief} input={briefField}>
               <TextInput
+                ref={briefField}
                 accessibilityLabel={KIN_TASK_RECORD.brief}
                 value={edit.notes}
                 editable={!saving}
+                // Opened from the brief's own Edit: the words go there, not into the title.
+                autoFocus
                 multiline
                 maxLength={KIN_WORK_NOTES_MAX}
                 onChangeText={(notes) => changes.setEdit({ notes })}
@@ -669,10 +702,10 @@ function KinWorkItemBody(props: ItemTarget) {
                 placeholderTextColorClassName="accent-placeholder"
                 className="min-h-24 font-sans text-base text-foreground"
               />
-            </View>
+            </KinWorkFieldBox>
           </ListSection>
           {[
-            moved?.title == null ? null : `It now says: ${moved.title}`,
+            moved?.title == null ? null : KIN_WORK_COPY.nowSays(moved.title),
             moved?.notes == null ? null : `The brief now says: ${moved.notes}`,
           ].map((line) =>
             line === null ? null : (
@@ -716,25 +749,43 @@ function KinWorkItemBody(props: ItemTarget) {
           onDismiss={changes.dismiss}
         />
       )}
+      {view.steps === null ? null : (
+        <KinTaskSteps
+          steps={view.steps}
+          disabled={saving}
+          onTick={
+            act === null || !view.steps.editable
+              ? null
+              : (index, title, done) => act({ type: "tick", index, title, done })
+          }
+          onChange={
+            act === null || !view.steps.editable
+              ? null
+              : (steps, said) => act({ type: "steps", steps, said })
+          }
+        />
+      )}
       <ListSection title={KIN_TASK_RECORD.details}>
-        {askedBy === null ? null : (
+        {askedBy === null || (folded?.asked === true && !peopleOpen) ? null : (
           <KinDetailPerson
             icon="person.crop.circle"
             label={KIN_TASK_RECORD.askedBy}
             who={kinRecordWho(askedBy, names)}
           />
         )}
-        <KinDetailPerson
-          icon="person.fill.checkmark"
-          label={KIN_TASK_RECORD.heldBy}
-          who={view.owner.retired ? { ...heldBy, name: `${heldBy.name} (retired)` } : heldBy}
-          description={[
-            view.given,
-            step.words === null && view.reason !== null ? `“${view.reason}”` : null,
-          ]
-            .filter((line) => line !== null)
-            .join("\n")}
-        />
+        {folded?.held === true && !peopleOpen ? null : (
+          <KinDetailPerson
+            icon="person.fill.checkmark"
+            label={KIN_TASK_RECORD.heldBy}
+            who={view.owner.retired ? { ...heldBy, name: `${heldBy.name} (retired)` } : heldBy}
+            description={[
+              view.given,
+              step.words === null && view.reason !== null ? `“${view.reason}”` : null,
+            ]
+              .filter((line) => line !== null)
+              .join("\n")}
+          />
+        )}
         {view.owner.principal._tag === "agent" ? (
           <KinWorkLeadChat
             {...props}
@@ -753,20 +804,33 @@ function KinWorkItemBody(props: ItemTarget) {
             onAct={act}
           />
         )}
-        {reword !== null && !view.closed ? (
-          <KinWorkDueRow
-            view={view}
-            now={now}
-            zone={names.zone}
+        {act === null || view.steps?.editable !== true || view.closed ? null : (
+          <KinWorkToggleRow
+            icon={KIN_URGENT_SYMBOL}
+            label={KIN_WORK_URGENT.label}
+            value={view.urgent}
             disabled={saving}
-            onAct={reword}
-            late={view.late}
+            onValueChange={(urgent) => act({ type: "urgent", urgent })}
+          />
+        )}
+        {reword !== null && !view.closed ? (
+          <KinDayField
+            icon="clock"
+            label={KIN_TASK_RECORD.due}
+            day={view.dueDay}
+            // A timed date has no one day to mark, so the row says it as it is.
+            {...(view.due !== null && view.dueDay === null ? { detail: capital(view.due) } : {})}
+            none={KIN_WORK_COPY.noDate}
+            zone={names.zone}
+            now={now}
+            disabled={saving}
+            onPick={(day) => reword({ type: "due", day })}
           />
         ) : view.due === null ? null : (
           <ListRowLayout
             icon="clock"
             label={KIN_TASK_RECORD.due}
-            detail={view.due.charAt(0).toUpperCase() + view.due.slice(1)}
+            detail={capital(view.due)}
             {...(view.late ? { tone: "danger" as const } : {})}
           />
         )}
@@ -776,6 +840,7 @@ function KinWorkItemBody(props: ItemTarget) {
               icon="folder"
               label={KIN_WORK_NEW_COPY.projectLabel}
               detail={view.project.title}
+              detailEllipsizeMode="tail"
               onPress={openProject}
             />
           )
@@ -788,6 +853,7 @@ function KinWorkItemBody(props: ItemTarget) {
             held={view.project}
             choices={choices.projects}
             done={choices.doneProjects}
+            only={projectsAllowed}
             clearable={view.can.clearProject}
             disabled={saving}
             onPick={(project) => act({ type: "place", project })}
@@ -800,6 +866,7 @@ function KinWorkItemBody(props: ItemTarget) {
               icon="person.2"
               label={KIN_WORK_NEW_COPY.clientLabel}
               detail={view.party.title}
+              detailEllipsizeMode="tail"
               {...(view.side === "theirs" ? { description: KIN_WORK_NEW_COPY.sideTheirs } : {})}
               onPress={openParty}
             />
@@ -808,6 +875,7 @@ function KinWorkItemBody(props: ItemTarget) {
               icon="person.2"
               label={KIN_WORK_NEW_COPY.clientLabel}
               detail={view.party.title}
+              detailEllipsizeMode="tail"
               {...(view.side === "theirs" ? { description: KIN_WORK_NEW_COPY.sideTheirs } : {})}
             />
           )
@@ -849,6 +917,13 @@ function KinWorkItemBody(props: ItemTarget) {
             icon="arrow.clockwise"
             label={KIN_WORK_REPEAT.label}
             detail={view.repeat.text}
+          />
+        )}
+        {folded === null || peopleOpen ? null : (
+          <ListRow
+            icon="person.crop.circle"
+            label={folded.label}
+            onPress={() => setPeopleOpen(true)}
           />
         )}
         {!hostClients ? null : (
@@ -893,7 +968,7 @@ function KinWorkItemBody(props: ItemTarget) {
                       tone="text"
                       size="compact"
                       label={KIN_TASK_RECORD.edit}
-                      accessibilityLabel="Edit the brief"
+                      accessibilityLabel={KIN_TASK_RECORD.editBrief}
                       onPress={() => changes.startEdit(item)}
                     />
                   ),
@@ -946,6 +1021,147 @@ function KinWorkItemBody(props: ItemTarget) {
   );
 }
 
+const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** A task someone marked urgent, beside where it stands. */
+function KinUrgentFlag() {
+  return (
+    <View className="flex-row items-center gap-1">
+      <SymbolView
+        name={KIN_URGENT_SYMBOL}
+        size={12}
+        tintColorClassName="accent-warning-foreground"
+        type="monochrome"
+      />
+      <Text textRole="footnote" className="font-t3-medium text-warning-foreground">
+        {KIN_WORK_URGENT.label}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * A task's checklist: a tap on a box ticks it; a step is added at the foot and removed with its
+ * cross. Ticking every step leaves the task open: done is still the top card's to say.
+ */
+function KinTaskSteps(props: {
+  readonly steps: KinWorkStepsView;
+  readonly disabled: boolean;
+  readonly onTick: ((index: number, title: string, done: boolean) => void) | null;
+  readonly onChange:
+    | ((
+        steps: ReadonlyArray<{ readonly title: string; readonly done: boolean }>,
+        said: "added" | "removed",
+      ) => void)
+    | null;
+}) {
+  const { steps, onTick, onChange } = props;
+  const [draft, setDraft] = useState("");
+  const held = steps.items.map((item) => ({ title: item.title, done: item.done }));
+  const problem = draft.trim() === "" ? null : kinWorkStepProblem(draft, held.length);
+  const add = () => {
+    const title = draft.trim();
+    if (onChange === null || title === "" || problem !== null) return;
+    onChange([...held, { title, done: false }], "added");
+    setDraft("");
+  };
+  return (
+    <View className="gap-2">
+      <ListSection
+        title={
+          steps.count === null ? KIN_WORK_STEPS.title : `${KIN_WORK_STEPS.title} · ${steps.count}`
+        }
+      >
+        {steps.items.map((item) => (
+          <View key={`${item.index}:${item.title}`} className="min-h-12 flex-row items-center">
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: item.done, disabled: onTick === null }}
+              accessibilityLabel={onTick === null ? item.title : item.label}
+              disabled={onTick === null || props.disabled}
+              onPress={() => onTick?.(item.index, item.title, !item.done)}
+              className="min-w-0 flex-1 flex-row items-center gap-3 py-3 pl-4 active:opacity-60"
+            >
+              <SymbolView
+                name={item.done ? "checkmark.circle.fill" : "circle"}
+                size={20}
+                tintColorClassName={item.done ? "accent-icon" : "accent-icon-muted"}
+                type="monochrome"
+              />
+              <Text
+                textRole="body"
+                className={cn(
+                  "min-w-0 flex-1",
+                  item.done ? "text-foreground-muted line-through" : "text-foreground",
+                )}
+              >
+                {item.title}
+              </Text>
+            </Pressable>
+            {onChange === null ? (
+              <View className="w-4" />
+            ) : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${KIN_WORK_STEPS.remove}: ${item.title}`}
+                disabled={props.disabled}
+                hitSlop={8}
+                onPress={() =>
+                  onChange(
+                    held.filter((_, index) => index !== item.index),
+                    "removed",
+                  )
+                }
+                className="px-4 py-3 active:opacity-60"
+              >
+                <SymbolView
+                  name="xmark"
+                  size={12}
+                  tintColorClassName="accent-icon-muted"
+                  type="monochrome"
+                />
+              </Pressable>
+            )}
+          </View>
+        ))}
+        {onChange === null ? null : (
+          <View className="min-h-12 flex-row items-center gap-3 px-4 py-2">
+            <SymbolView
+              name="plus"
+              size={16}
+              tintColorClassName="accent-icon-muted"
+              type="monochrome"
+            />
+            <TextInput
+              accessibilityLabel={KIN_WORK_STEPS.add}
+              value={draft}
+              editable={!props.disabled}
+              autoCapitalize="sentences"
+              returnKeyType="done"
+              submitBehavior="submit"
+              onChangeText={setDraft}
+              onSubmitEditing={add}
+              placeholder={KIN_WORK_STEPS.placeholder}
+              placeholderTextColorClassName="accent-placeholder"
+              className="min-h-8 min-w-0 flex-1 font-sans text-base text-foreground"
+            />
+          </View>
+        )}
+      </ListSection>
+      {problem === null ? null : (
+        <Text accessibilityRole="alert" textRole="footnote" className="px-2 text-danger-foreground">
+          {problem}
+        </Text>
+      )}
+      {steps.allDone === null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {steps.allDone}
+        </Text>
+      )}
+    </View>
+  );
+}
+
 /** Where the task stands for this viewer, in one word or two, above its title. */
 function KinRecordChip(props: { readonly tone: KinRecordChipTone; readonly label: string }) {
   const look = CHIP[props.tone];
@@ -966,6 +1182,7 @@ function KinDetailPerson(props: {
   readonly who: KinRecordWho;
   readonly description?: string;
 }) {
+  const grows = useKinTextGrows();
   return (
     <View
       accessible
@@ -980,7 +1197,11 @@ function KinDetailPerson(props: {
         accessory={
           <View className="max-w-[55%] shrink flex-row items-center gap-1.5">
             <KinAvatar avatar={props.who.avatar} size="mini" />
-            <Text textRole="footnote" numberOfLines={1} className="shrink text-foreground-muted">
+            <Text
+              textRole="footnote"
+              numberOfLines={kinLines(1, grows)}
+              className="shrink text-foreground-muted"
+            >
               {props.who.name}
             </Text>
           </View>
@@ -1131,7 +1352,7 @@ function KinCommentBody(props: {
             tone="text"
             size="compact"
             label={KIN_TASK_NOTE_COPY.remove}
-            accessibilityLabel="Remove this note"
+            accessibilityLabel={KIN_TASK_NOTE_COPY.removeLabel}
             onPress={props.onRemove}
           />
         </View>
@@ -1264,6 +1485,7 @@ export function KinLinkedSection(props: {
   readonly onOpen: (to: KinNotificationDestination) => void;
   readonly children?: ReactNode;
 }) {
+  const grows = useKinTextGrows();
   const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
   const linked = kinLinked(props.item, undefined, { expanded, parentsShown: props.parentsShown });
   const children = props.children ?? null;
@@ -1280,28 +1502,45 @@ export function KinLinkedSection(props: {
           </Text>
           {group.items.map((item) => {
             const title = item.title ?? KIN_LINKED.message;
-            return (
+            const { open } = item;
+            const row = (
+              <View className="min-w-0 flex-row gap-2 px-4 py-3">
+                {item.kind === "message" ? null : (
+                  <Text textRole="body" className="text-foreground-muted">
+                    {item.name}
+                  </Text>
+                )}
+                <Text
+                  textRole="body"
+                  numberOfLines={kinLines(1, grows)}
+                  className="min-w-0 flex-1 text-foreground"
+                >
+                  {title}
+                </Text>
+                {item.deleted === true ? (
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    {KIN_DOCS.archived}
+                  </Text>
+                ) : null}
+              </View>
+            );
+            return open === null ? (
+              <View key={item.key} accessibilityLabel={title} className="bg-grouped-card">
+                {row}
+              </View>
+            ) : (
               <RowPressable
                 key={item.key}
                 accessibilityRole="button"
-                accessibilityLabel={item.kind === "message" ? title : `${item.key}, ${title}`}
-                onPress={() => props.onOpen(item.open)}
+                accessibilityLabel={
+                  item.kind === "message"
+                    ? title
+                    : `${item.name}, ${title}${item.deleted === true ? `, ${KIN_DOCS.archived}` : ""}`
+                }
+                onPress={() => props.onOpen(open)}
                 className="bg-grouped-card"
               >
-                <View className="min-w-0 flex-row gap-2 px-4 py-3">
-                  {item.kind === "message" ? null : (
-                    <Text textRole="body" className="text-foreground-muted">
-                      {item.key}
-                    </Text>
-                  )}
-                  <Text
-                    textRole="body"
-                    numberOfLines={1}
-                    className="min-w-0 flex-1 text-foreground"
-                  >
-                    {title}
-                  </Text>
-                </View>
+                {row}
               </RowPressable>
             );
           })}

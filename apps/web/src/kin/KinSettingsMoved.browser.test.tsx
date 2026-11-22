@@ -8,11 +8,8 @@ vi.mock(import("./KinNewLeadButton"), async (importOriginal) => ({
 }));
 
 import { render } from "../../test/render";
-import {
-  KIN_MOVED_SETTINGS_PATHS,
-  SETTINGS_SEARCH_ITEMS,
-  type SettingsPath,
-} from "../components/settings/settingsSearch";
+import type { SettingsPath } from "../components/settings/settingsSearch";
+import { KIN_SETTINGS_SEARCH_ITEMS, KIN_SETTINGS_SECTION_LABELS } from "./kinSettingsSearch";
 import { useKinSettingLanding } from "./kinSettingsAddress";
 import { KinSettingsMoved } from "./KinSettingsView";
 
@@ -34,21 +31,23 @@ const HOLDS: Readonly<Record<string, KinSettingsPage>> = {
   "company-details": "company",
   "kin-time-zone": "company",
   "kin-daily-limit": "company",
+  "kin-stop": "company",
   "kin-agents": "agents",
+  "kin-who-can-message": "team",
   "kin-connections": "connections",
   "kin-quiet-hours": "profile",
   "kin-working-hours": "profile",
   "kin-away": "profile",
+  "kin-github-username": "profile",
 };
 
-const kinEntries = () =>
-  SETTINGS_SEARCH_ITEMS.filter(
-    (item) => KIN_MOVED_SETTINGS_PATHS.has(item.to) || ("kinOnly" in item && item.kinOnly),
-  );
+const kinEntries = () => KIN_SETTINGS_SEARCH_ITEMS;
 
 describe("an app settings address that moved into Kin's Settings", () => {
   it("opens every Kin setting the app's search offers on the page that holds it", async () => {
-    expect(Object.keys(ROUTE_PAGE).toSorted()).toEqual([...KIN_MOVED_SETTINGS_PATHS].toSorted());
+    expect(Object.keys(ROUTE_PAGE).toSorted()).toEqual(
+      Object.keys(KIN_SETTINGS_SECTION_LABELS).toSorted(),
+    );
     // A new Kin entry fails here until the page that draws it is named above.
     expect(
       kinEntries()

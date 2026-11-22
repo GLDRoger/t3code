@@ -50,9 +50,8 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { KinListBanner } from "./components/KinListBanner";
-import { KinFoldSection } from "./components/KinWorkPieces";
+import { KinFoldSection, KinWorkToggleRow } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { useKinGate } from "./state/useKinHost";
@@ -213,7 +212,7 @@ function KinMemoryBody({
   const teamSwitch =
     list === null || team === null ? null : (
       <ListSection>
-        <ListToggleRow
+        <KinWorkToggleRow
           label={team.label}
           description={team.detail}
           value={team.on}

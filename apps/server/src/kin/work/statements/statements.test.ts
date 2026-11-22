@@ -66,7 +66,7 @@ import { type RowRead, threePageStatement } from "./statementPdf.testkit.ts";
 import { gatherFacts } from "../../gendocs/facts.ts";
 import { parseRecipe, sourceOf } from "../../gendocs/recipe.ts";
 import { STARTER_FILES } from "../../gendocs/starter.ts";
-import { dayIn } from "../money.ts";
+import { dayIn, formatMoney } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { KIN_OWNER_LEVEL } from "../teamView.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
@@ -510,6 +510,11 @@ describe("bank statements", () => {
       assert.isTrue(
         detail.links.some((link) => link.kind === "record" && link.relation === "evidence"),
       );
+      // Recorded from the statement's line, which reads as where it came from.
+      assert.deepStrictEqual(
+        detail.payments?.map((one) => one.source),
+        [{ _tag: "statement" }],
+      );
       assert.isTrue(
         detail.changes.some((change) => change.fields.some((field) => field.field === "payment")),
       );
@@ -600,13 +605,25 @@ describe("bank statements", () => {
       const { card } = yield* reviewCardOf(result.statement);
       const row = card.matched.find((one) => one.target.key === keys.exact);
       assert.include(row?.target.note, "already recorded");
+      const seen = () =>
+        Effect.gen(function* () {
+          const detail = yield* records.detail((yield* records.get(orgId, keys.exact))!);
+          return [detail.payments?.map((one) => one.source?._tag), detail.bankKnown?.through];
+        });
+      // Before the statement it is the owner's word, and Kin can't see the bank.
+      assert.deepStrictEqual(yield* seen(), [["person"], null]);
       yield* OwnerStatements.apply(people, yield* confirmAll(card));
       const payments = () =>
         sql<{ voided: number | null }>`SELECT voided_at AS voided FROM kin_record_payments p
           JOIN kin_records r ON r.record_id = p.record_id WHERE r.key = ${keys.exact}`;
       assert.deepStrictEqual(yield* payments(), [{ voided: null }]);
+      const through = (yield* seen())[1];
+      assert.isString(through);
+      assert.deepStrictEqual(yield* seen(), [["statement"], through]);
       yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
       assert.deepStrictEqual(yield* payments(), [{ voided: null }]);
+      // Undone, the line no longer backs it: it is the owner's word again.
+      assert.deepStrictEqual(yield* seen(), [["person"], null]);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -963,6 +980,95 @@ describe("bank statements", () => {
       );
       assert.include(lists[0]!.json, '"balance"');
       assert.lengthOf(yield* bankRows, 20);
+      // Money in and out add up apart, in the list's own words for them, then their net; the
+      // total stays the plain sum older phone builds show.
+      const kept = yield* sql<{ minor: number; fields: string }>`SELECT amount_minor AS minor,
+          fields_json AS fields FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'bank_txns' AND state != 'dropped'`;
+      const sum = (direction: string) =>
+        kept.reduce(
+          (total, row) =>
+            total + (JSON.parse(row.fields).direction.toLowerCase() === direction ? row.minor : 0),
+          0,
+        );
+      assert.isAbove(sum("credit") * sum("debit"), 0);
+      const totals = yield* records.totals(orgId, { list: "bank_txns" });
+      assert.deepStrictEqual(
+        [totals.moneyIn, totals.moneyOut, totals.net, totals.total],
+        [
+          [{ minor: sum("credit"), currency: "INR" }],
+          [{ minor: sum("debit"), currency: "INR" }],
+          [{ minor: sum("credit") - sum("debit"), currency: "INR" }],
+          [{ minor: sum("credit") + sum("debit"), currency: "INR" }],
+        ],
+      );
+      // Agents get in, out and net for the bank list, and never the plain sum to quote.
+      const asked = yield* LeadWork.query(scope, { list: "bank_txns", groupBy: "state" });
+      const flows = (one: { moneyIn?: unknown; moneyOut?: unknown; net?: unknown }) => [
+        one.moneyIn,
+        one.moneyOut,
+        one.net,
+      ];
+      assert.notProperty(asked, "totals");
+      assert.deepStrictEqual(flows(asked), [
+        [formatMoney({ minor: sum("credit"), currency: "INR" })],
+        [formatMoney({ minor: sum("debit"), currency: "INR" })],
+        [formatMoney({ minor: sum("credit") - sum("debit"), currency: "INR" })],
+      ]);
+      assert.isNotEmpty(asked.groups);
+      for (const group of asked.groups ?? []) {
+        assert.notProperty(group, "totals");
+        assert.isTrue(flows(group).every(Array.isArray));
+      }
+      // An owner's own list with a Direction field is no bank list: its total is the plain sum.
+      yield* defineList(
+        orgId,
+        {
+          _tag: "new",
+          id: "calls",
+          name: "Calls",
+          prefix: "CL",
+          definition: {
+            noun: "call",
+            states: ["open", "done"],
+            stateLabels: {},
+            defaultState: "done",
+            categories: [],
+            fields: [
+              {
+                key: "direction",
+                label: "Direction",
+                type: "choice",
+                choices: ["Inbound", "Outbound", "Internal"],
+                sensitive: false,
+              },
+            ],
+            sensitive: false,
+            amount: true,
+            currency: "INR",
+          },
+        },
+        NOW,
+      );
+      for (const [index, direction] of ["Inbound", "Outbound", "Internal"].entries())
+        yield* records.create(
+          orgId,
+          { actor: { _tag: "system" }, via: "import" },
+          {
+            list: "calls",
+            originKey: `import:calls:${index}`,
+            title: `${direction} call`,
+            owner: { _tag: "person", personId: ownerId },
+            state: "done",
+            amount: { minor: 100 * (index + 1), currency: "INR" },
+            fields: { direction },
+          },
+        );
+      const calls = yield* records.totals(orgId, { list: "calls" });
+      assert.deepStrictEqual(
+        [calls.total, calls.moneyIn, calls.moneyOut, calls.net],
+        [[{ minor: 600, currency: "INR" }], undefined, undefined, undefined],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -2488,7 +2594,7 @@ describe("statement card taps over the server's RPCs", () => {
       const services = Option.getOrThrow((yield* Kin.KinServer).services);
       const queue = Context.get(services, KinEventQueue.KinEventQueue);
       const woken = yield* Queue.unbounded<KinEvent>();
-      // The lead's wake-ups, on the server's own hub and queue, as `KinLead.layerMcp` runs them.
+      // The lead's wake-ups, on the server's own hub and queue, as `KinLead.layerRuntime` runs them.
       yield* Layer.build(
         ChatWake.layer.pipe(
           Layer.provide(
@@ -2548,7 +2654,7 @@ describe("statement card taps over the server's RPCs", () => {
           }),
         ),
       );
-      const waiting = "Waiting on its lead to read 3 pages (0 given so far).";
+      const waiting = "Waiting on its agent to read 3 pages (0 given so far).";
       for (const _ of [1, 2]) {
         yield* TestClock.adjust("1 second");
         assert.deepStrictEqual(

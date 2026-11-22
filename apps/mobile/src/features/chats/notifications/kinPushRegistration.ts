@@ -1,5 +1,12 @@
+import { KIN_THIS_PHONE_COPY, type KinPhoneLeaver } from "@t3tools/client-runtime/kin/kinDevice";
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
-import { KinPushError, type EnvironmentId } from "@t3tools/contracts";
+import {
+  KinPushError,
+  type EnvironmentId,
+  type KinOrgId,
+  type KinOrgsListResult,
+  type KinPushRegisterDeviceInput,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 const isKinPushError = Schema.is(KinPushError);
@@ -55,4 +62,111 @@ export function kinPushHost(host: KinHost) {
   return host.probe._tag === "ready"
     ? { environmentId: host.environmentId, orgs: host.probe.orgs }
     : null;
+}
+
+/**
+ * The orgs to take this phone's token back from before it forgets `environmentId`: those its
+ * live answer names, else those its last saved answer did.
+ */
+export function kinPushLeaveOrgs(
+  host: KinHost,
+  environmentId: EnvironmentId,
+  cached: KinOrgsListResult | null,
+): ReadonlyArray<KinOrgId> {
+  const live =
+    host._tag === "host" && host.environmentId === environmentId && host.probe._tag === "ready"
+      ? host.probe.orgs.me
+      : [];
+  return [...new Set([...live, ...(cached?.me ?? [])].map(({ orgId }) => orgId))];
+}
+
+/**
+ * Holds back push registration for a host this phone is forgetting. `fence` waits for any
+ * registration already sent there, so the host sees it before the unregister that follows.
+ */
+export function createKinPushFence() {
+  const fenced = new Set<EnvironmentId>();
+  const inFlight = new Map<EnvironmentId, Set<Promise<unknown>>>();
+  return {
+    allows: (environmentId: EnvironmentId) => !fenced.has(environmentId),
+    /** Call in the same tick as `allows` said yes, with the registration just sent. */
+    track: (environmentId: EnvironmentId, sent: Promise<unknown>) => {
+      const held = inFlight.get(environmentId) ?? new Set();
+      inFlight.set(environmentId, held);
+      held.add(sent);
+      const done = () => held.delete(sent);
+      sent.then(done, done);
+    },
+    fence: async (environmentId: EnvironmentId) => {
+      fenced.add(environmentId);
+      await Promise.allSettled(inFlight.get(environmentId) ?? []);
+    },
+    release: (environmentId: EnvironmentId) => {
+      fenced.delete(environmentId);
+    },
+  };
+}
+
+/**
+ * Whether leaving took this phone's alerts back: `nothing` when the host names no org of
+ * this person's, `confirmed` when every org answered, else `unconfirmed`.
+ */
+export function kinPushLeaveOutcome(input: {
+  readonly orgs: number;
+  /** One per org; null when it timed out or couldn't be sent. */
+  readonly answers: ReadonlyArray<boolean | null> | null;
+}): KinPushLeave {
+  if (input.orgs === 0) return "nothing";
+  return input.answers !== null &&
+    input.answers.length === input.orgs &&
+    input.answers.every((ok) => ok === true)
+    ? "confirmed"
+    : "unconfirmed";
+}
+
+export type KinPushLeave = "nothing" | "confirmed" | "unconfirmed";
+
+/**
+ * The one notice after leaving a team's computers: none unless one that names this person's org
+ * didn't take the phone's notices back. One that never named an org can't notify, so says nothing.
+ */
+export function kinPushLeaveNotice(input: {
+  readonly team: string;
+  readonly leaver: KinPhoneLeaver;
+  readonly left: ReadonlyArray<{ readonly computer: string; readonly outcome: KinPushLeave }>;
+}): { readonly title: string; readonly detail: string } | null {
+  const computers = input.left
+    .filter((one) => one.outcome === "unconfirmed")
+    .map((one) => one.computer);
+  return computers.length === 0
+    ? null
+    : {
+        title: KIN_THIS_PHONE_COPY.stillNotifiesTitle(input.team),
+        detail: KIN_THIS_PHONE_COPY.stillNotifiesDetail({ computers, leaver: input.leaver }),
+      };
+}
+
+/** Phones Kin can notify: an iPhone through APNs, an Android phone through FCM. */
+export type KinPushOs = "ios" | "android";
+
+export const kinPushOs = (os: string): KinPushOs | null =>
+  os === "ios" || os === "android" ? os : null;
+
+/** The OS's token as Kin stores it: APNs' hex in lowercase; FCM's is case-sensitive, kept as is. */
+export const kinPushToken = (os: KinPushOs, raw: unknown) =>
+  os === "ios" ? String(raw).toLowerCase() : String(raw);
+
+/** The one registration both phones send; FCM has no sandbox, so Android says `production`. */
+export function kinPushRegisterInput(input: {
+  readonly os: KinPushOs;
+  readonly orgId: KinOrgId;
+  readonly token: string;
+  readonly sandbox: boolean;
+}): KinPushRegisterDeviceInput {
+  return {
+    orgId: input.orgId,
+    token: input.token,
+    platform: input.os,
+    apsEnvironment: input.os === "ios" && input.sandbox ? "development" : "production",
+  };
 }

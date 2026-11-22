@@ -15,19 +15,28 @@ import {
 import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { settlePromise } from "@t3tools/client-runtime/state/runtime";
+import { useMessages } from "gt-react";
+import { useEffect, useRef, useState } from "react";
 
-import { NotificationSettings } from "../components/settings/NotificationSettings";
-import { SettingsSection } from "../components/settings/settingsLayout";
 import { SettingsScopeProvider } from "../components/settings/SettingsScopeContext";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
+import {
+  useScopedSettings,
+  useUpdateScopedSettings,
+} from "../components/settings/useScopedSettings";
 import { toastManager } from "../components/ui/toast";
 import { useClientSettings } from "../hooks/useSettings";
 import {
   hasDesktopNotifications,
   hasNotificationSound,
+  NOTIFICATION_MODE_LABELS,
   playNotificationSound,
+  unlockNotificationAudio,
 } from "../threadNotifications";
-import { KIN_PLACE_PATH } from "./kinPlaces";
+import { KIN_PLACE_PATH, kinRecordPlace } from "./kinPlaces";
+import { KinSettingsChoice } from "./settings/KinSettingsControls";
+import { KinSettingsPage, KinSettingsRow, KinSettingsSection } from "./settings/KinSettingsLayout";
 import { useKinInbox } from "./useKinHost";
 
 /** Settings → You → Notifications: this computer's alerts for Kin messages. */
@@ -35,16 +44,57 @@ export function KinSettingsNotifications() {
   return (
     // This device's own setting: the app-wide scope, which the Kin modal doesn't otherwise hold.
     <SettingsScopeProvider search={{}} onChange={() => {}}>
-      <div className="mx-auto flex w-full max-w-xl flex-col gap-2 p-4 sm:p-6">
-        <SettingsSection title={KIN_MESSAGE_ALERTS.title} hideTitle>
-          <NotificationSettings
-            title={KIN_MESSAGE_ALERTS.label}
-            description={KIN_MESSAGE_ALERTS.detail}
-            label={KIN_MESSAGE_ALERTS.label}
-          />
-        </SettingsSection>
-      </div>
+      <KinSettingsPage purpose={KIN_MESSAGE_ALERTS.purpose}>
+        <MessageAlerts />
+      </KinSettingsPage>
     </SettingsScopeProvider>
+  );
+}
+
+const NOTIFICATION_MODES = ["off", "notifications", "sound", "notifications-and-sound"] as const;
+
+/** Alerts and sound need the browser's leave first; until it gives it, the choice stays put. */
+function MessageAlerts() {
+  const searchableSetting = useSearchableSetting();
+  const m = useMessages();
+  const mode = useScopedSettings((settings) => settings.notificationMode);
+  const updateSettings = useUpdateScopedSettings();
+  const [problem, setProblem] = useState<string | null>(null);
+  const [asking, setAsking] = useState(false);
+  const choose = async (next: (typeof NOTIFICATION_MODES)[number]) => {
+    setProblem(null);
+    if (hasNotificationSound(next)) unlockNotificationAudio();
+    if (hasDesktopNotifications(next)) {
+      if (typeof Notification === "undefined" || !window.isSecureContext)
+        return setProblem(KIN_MESSAGE_ALERTS.needsSecure);
+      setAsking(true);
+      const permission = await settlePromise(() => Notification.requestPermission());
+      setAsking(false);
+      if (permission._tag === "Failure") return setProblem(KIN_MESSAGE_ALERTS.unavailable);
+      if (permission.value !== "granted") return setProblem(KIN_MESSAGE_ALERTS.blocked);
+    }
+    updateSettings({ notificationMode: next });
+  };
+  return (
+    <KinSettingsSection searchId={searchableSetting("thread-notifications").id} problem={problem}>
+      <KinSettingsRow
+        title={KIN_MESSAGE_ALERTS.label}
+        detail={KIN_MESSAGE_ALERTS.detail}
+        wrap
+        control={
+          <KinSettingsChoice
+            label={KIN_MESSAGE_ALERTS.label}
+            value={mode}
+            disabled={asking}
+            options={NOTIFICATION_MODES.map((value) => ({
+              value,
+              label: m(NOTIFICATION_MODE_LABELS[value]),
+            }))}
+            onChange={(next) => void choose(next)}
+          />
+        }
+      />
+    </KinSettingsSection>
   );
 }
 
@@ -64,17 +114,7 @@ export function openDestination(
     });
   if (destination._tag === "tasks") return navigate({ to: KIN_PLACE_PATH.tasks, params: where });
   const { key, kind } = destination;
-  return kind === "client"
-    ? navigate({ to: KIN_PLACE_PATH.clients, params: where, search: { client: key } })
-    : kind === "project"
-      ? navigate({ to: KIN_PLACE_PATH.clients, params: where, search: { project: key } })
-      : kind === "doc"
-        ? navigate({ to: KIN_PLACE_PATH.docs, params: where, search: { doc: key } })
-        : navigate({
-            to: kind === "entry" ? KIN_PLACE_PATH.money : KIN_PLACE_PATH.tasks,
-            params: where,
-            search: { task: key },
-          });
+  return navigate({ ...kinRecordPlace({ key, kind }), params: where });
 }
 
 /**
@@ -110,7 +150,8 @@ export function KinMessageAlerts() {
       const notice = toastManager.add({
         type: "info",
         title,
-        description: body,
+        // Four lines, as a phone's banner shows the same message.
+        description: <span className="line-clamp-4">{body}</span>,
         actionProps: {
           children: KIN_MESSAGE_ALERTS.open,
           onClick: () => {

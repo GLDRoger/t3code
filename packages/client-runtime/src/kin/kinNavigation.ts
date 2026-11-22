@@ -3,6 +3,8 @@
  * gear on Chats) holds for each person.
  */
 
+import { KIN_WATCH_LOG_TITLE } from "./kinWatches.ts";
+
 export type KinDestination = "chats" | "tasks" | "money" | "clients" | "docs";
 
 export const KIN_DESTINATION_NAMES: Readonly<Record<KinDestination, string>> = {
@@ -90,6 +92,7 @@ export type KinSettingsPage =
   | "team"
   | "agents"
   | "check-ins"
+  | "watches"
   | "connections"
   | "deals"
   | "memory"
@@ -104,6 +107,7 @@ const KIN_SETTINGS_PAGES: ReadonlyArray<KinSettingsPage> = [
   "team",
   "agents",
   "check-ins",
+  "watches",
   "connections",
   "deals",
   "memory",
@@ -119,6 +123,7 @@ export const KIN_SETTINGS_PAGE_TITLES: Readonly<Record<KinSettingsPage, string>>
   team: "Team",
   agents: "Agents",
   "check-ins": "Check-ins",
+  watches: KIN_WATCH_LOG_TITLE,
   connections: "Connections",
   deals: "Deals",
   memory: "Memory",
@@ -161,10 +166,16 @@ export function kinSettingsGroups(input: {
     title: KIN_SETTINGS_GROUP_TITLES.you,
     pages: ["profile", ...(input.notifications ? (["notifications"] as const) : []), "appearance"],
   };
+  // A teammate's What Kin checked holds the watches on their own things, or says there are none.
   if (!input.ownerLevel)
-    return input.deals === true
-      ? [you, { id: "company", title: KIN_SETTINGS_GROUP_TITLES.company, pages: ["deals"] }]
-      : [you];
+    return [
+      you,
+      {
+        id: "company",
+        title: KIN_SETTINGS_GROUP_TITLES.company,
+        pages: [...(input.deals === true ? (["deals"] as const) : []), "watches"],
+      },
+    ];
   return [
     you,
     {
@@ -174,6 +185,7 @@ export function kinSettingsGroups(input: {
         "team",
         "agents",
         "check-ins",
+        "watches",
         "connections",
         "deals",
         "memory",
@@ -187,6 +199,52 @@ export function kinSettingsGroups(input: {
       : []),
   ];
 }
+
+/** A row on the phone's Settings, which keeps what is used in the day; web keeps every page. */
+export type KinPhoneSettingsRow =
+  | "profile"
+  | "notifications"
+  | "appearance"
+  | "team"
+  | "agents"
+  | "company"
+  | "watches"
+  | "stop";
+
+/**
+ * The phone's Settings rows above its briefs (You) and below them (Company): the same for an owner
+ * and a co-owner; a teammate has You and What Kin checked. Set-up pages live on the computer.
+ */
+export function kinPhoneSettingsRows(input: { readonly ownerLevel: boolean }): {
+  readonly you: ReadonlyArray<KinPhoneSettingsRow>;
+  readonly company: ReadonlyArray<KinPhoneSettingsRow>;
+} {
+  return {
+    you: ["profile", "notifications", "appearance"],
+    company: input.ownerLevel ? ["team", "agents", "company", "watches", "stop"] : ["watches"],
+  };
+}
+
+/** Where the phone says what moved off it, written once so web and phone can both show it. */
+export const KIN_SET_UP_ON_COMPUTER = {
+  line: "Connections, memory, deal stages, the daily limit, brand and templates, and an agent's character and model are set up in Kin on your computer.",
+  agents:
+    "The model new agents start on, and agents on other providers, are set up in Kin on your computer.",
+  checkInAdd:
+    "New check-ins, what one is for, and removing one are set up in Kin on your computer.",
+} as const;
+
+/** The phone's Notifications row opens the system's page for Kin; the row says so first. */
+export const KIN_NOTIFICATIONS_OPENS = "Opens Kin's page in your phone's Settings.";
+
+/** Who is in the Team room, said plainly on its details page; the company chat holds everyone. */
+export const KIN_TEAM_ROOM_TEAMMATES = {
+  title: "Teammates",
+  notIn:
+    "Teammates aren't in the Team room. It's where you and your agents talk things over. To talk with everyone, open the company chat to teammates.",
+  companyOn: (agent: string) =>
+    `Teammates aren't in the Team room. They talk with you and your agents in the company chat, where ${agent} answers.`,
+} as const;
 
 /** A Settings address this person may open; anything else lands on their profile. */
 export function kinSettingsPageOf(

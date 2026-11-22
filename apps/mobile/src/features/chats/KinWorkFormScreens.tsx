@@ -1,8 +1,11 @@
 import { KIN_PROMISES } from "@t3tools/client-runtime/kin/kinPromises";
+import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinWorkOnlyOwner, type KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
+import { kinParseMoney } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_DEALS } from "@t3tools/client-runtime/kin/kinDeals";
 import {
   KIN_CLIENTS,
   KIN_CLIENT_FAILED,
@@ -11,7 +14,11 @@ import {
   KIN_PROJECT_FAILED,
   KIN_PROJECT_GONE,
   KIN_PROJECT_PEOPLE,
+  KIN_SHORT_FORMS,
+  kinPartyFirstDeal,
   kinProjectPageView,
+  kinShortFormFold,
+  type KinShortFormField,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KIN_WORK_FORM_COPY,
@@ -38,9 +45,11 @@ import {
   kinProjectDraftOf,
   kinProjectTargetHint,
   kinProjectUpdateInput,
+  kinFormTyped,
   kinWorkFormMoved,
   kinWorkReadState,
   kinWorkSend,
+  type KinClientDraft,
   type KinClientDraftKind,
   type KinWorkFormProblem,
   type KinWorkReadState,
@@ -52,12 +61,13 @@ import {
   type KinContact,
   type KinPartyDetail,
   type KinPartyPage,
+  type KinPartyWithDealResult,
   type KinProjectDetail,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -70,7 +80,6 @@ import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
 import { appAtomRegistry } from "../../state/atom-registry";
@@ -81,12 +90,17 @@ import {
   KinWorkLoading,
   KinWorkProblemNotice,
   KinWorkTextField,
+  KinWorkToggleRow,
+  useKinAskBeforeDiscard,
 } from "./components/KinWorkPieces";
 import { KinCountryFirstField } from "./components/KinCountryFirst";
+import { KinDayField } from "./components/KinDayField";
+import { KinPageFold } from "./components/KinPageFold";
 import { useKinCompanyCountry, useKinHomeCurrency } from "./state/useKinMoney.ts";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
-import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
+import { KinCameFromFields, KinTagFields, useKinMarketing } from "./KinMarketing";
+import { kinWorkRefParam, type KinWorkParams } from "./state/kinWorkParams";
 import { useKinIsOwnerLevel, useKinSeesClients } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected, useKinGate } from "./state/useKinHost";
@@ -94,6 +108,7 @@ import {
   kinWorkChoicesAtom,
   useKinWorkChoices,
   useKinWorkDirectory,
+  useKinWorkZone,
   useKinWorkForm,
   type KinWorkTarget,
 } from "./state/useKinWork";
@@ -232,6 +247,7 @@ function ClientFormRead(props: KinWorkTarget & { readonly clientKey: KinRecordKe
       {...props}
       editing={state.value.party}
       can={state.value.can ?? null}
+      contacts={state.value.contacts}
       start="client"
     />
   );
@@ -241,6 +257,8 @@ type ClientFormProps = KinWorkTarget & {
   readonly editing: KinPartyDetail | null;
   /** What the host says this reader may change; null for a new one or from an older host. */
   readonly can: KinPartyPage["can"] | null;
+  /** An existing one's contacts, whose emails and phones are edited in their own form. */
+  readonly contacts?: ReadonlyArray<KinContact>;
   readonly start: KinClientDraftKind;
 };
 
@@ -276,43 +294,64 @@ const ABROAD = "abroad";
 function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
   const navigation = useNavigation();
   const { environmentId, orgId, editing, member } = props;
+  const marketing = useKinMarketing(props);
   const create = useAtomCommand(kinClient.workClientCreate, { reportFailure: false });
+  const createWithDeal = useAtomCommand(kinClient.workPartyWithDealCreate, {
+    reportFailure: false,
+  });
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
   // One id for the form's life: trying again after a dropped answer never adds a second client.
   const [requestId] = useState(uuidv4);
   const [key] = useState(() => editing?.key ?? null);
-  const { state, form } = useKinWorkForm(environmentId, {
-    noun: "client",
-    start: kinClientDraftOf(editing ?? undefined, member ? "prospect" : props.start),
-    editing: editing === null ? null : { key: editing.key, rev: editing.rev },
-    nameOf: (draft) => draft.name,
-    check: kinClientDraftCheck,
-    send: (change) =>
-      change.type === "create"
-        ? create({
-            environmentId,
-            input: { orgId, ...kinClientCreateInput(change.draft), clientRequestId: requestId },
-          })
-        : update({
-            environmentId,
-            input: {
-              orgId,
-              key: change.key,
-              rev: change.rev,
-              ...kinClientUpdateInput(change.changed),
-            },
-          }),
-    reread: () => {
-      if (key !== null)
-        appAtomRegistry.refresh(kinClient.workClient({ environmentId, input: { orgId, key } }));
+  // "About how much?": an amount makes the client's deal in the same step.
+  const home = useKinHomeCurrency(props) ?? "USD";
+  const [amount, setAmount] = useState("");
+  const money = amount.trim() === "" ? null : kinParseMoney(amount, home);
+  // The form keeps the `send` it was made with; the amount reaches it at the tap on save.
+  const dealt = useRef<typeof money>(null);
+  const { state, form } = useKinWorkForm<KinClientDraft, KinPartyDetail | KinPartyWithDealResult>(
+    environmentId,
+    {
+      noun: "client",
+      start: kinClientDraftOf(editing ?? undefined, member ? "prospect" : props.start),
+      editing: editing === null ? null : { key: editing.key, rev: editing.rev },
+      latest: editing === null ? null : kinClientDraftOf(editing),
+      nameOf: (draft) => draft.name,
+      check: kinClientDraftCheck,
+      send: (change) =>
+        change.type === "create"
+          ? dealt.current !== null
+            ? createWithDeal({
+                environmentId,
+                input: {
+                  orgId,
+                  ...kinClientCreateInput(change.draft),
+                  deal: kinPartyFirstDeal(change.draft.name, dealt.current),
+                  clientRequestId: requestId,
+                },
+              })
+            : create({
+                environmentId,
+                input: { orgId, ...kinClientCreateInput(change.draft), clientRequestId: requestId },
+              })
+          : update({
+              environmentId,
+              input: {
+                orgId,
+                key: change.key,
+                rev: change.rev,
+                ...kinClientUpdateInput(change.changed),
+              },
+            }),
+      reread: () => {
+        if (key !== null)
+          appAtomRegistry.refresh(kinClient.workClient({ environmentId, input: { orgId, key } }));
+      },
     },
-  });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the form a newer read of the client being edited, so saving again goes against it
-  useEffect(() => {
-    if (editing !== null) form.latest(kinClientDraftOf(editing), editing.rev);
-  }, [form, editing]);
+  );
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
+  const leave = useKinAskBeforeDiscard(kinFormTyped(state.from, draft) || amount.trim() !== "");
   const kinds: ReadonlyArray<KinClientDraftKind> = !member
     ? ["prospect", "client", "vendor"]
     : editing !== null && draft.kind !== "vendor"
@@ -324,129 +363,107 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
     vendor: COPY.party.kindVendor,
   };
   const newProspect = editing === null && draft.kind === "prospect";
+  const keepsContacts = props.can?.contacts ?? props.can?.edit ?? !member;
   const india = kinIndiaFields(useKinCompanyCountry(props));
   const gstinNote = kinClientGstinNote(draft);
   const placeId = draft.abroad ? ABROAD : draft.placeOfSupply || NO_PLACE;
   const placeLabel = draft.abroad
     ? COPY.party.placeAbroad
     : draft.placeOfSupply || COPY.party.placeNone;
+  const takesDeal = editing === null && draft.kind !== "vendor";
+  const amountBad = takesDeal && amount.trim() !== "" && money === null;
   const openClient = (to: KinRecordKey) => {
+    leave();
     navigation.goBack();
     navigation.navigate("KinClient", { environmentId, orgId, party: to });
   };
   const save = async () => {
+    dealt.current = takesDeal ? money : null;
     const outcome = await form.save();
     if (!outcome.saved) return;
+    leave();
     appAtomRegistry.refresh(kinWorkChoicesAtom(props));
     if (key !== null) {
       appAtomRegistry.refresh(kinClient.workClient({ environmentId, input: { orgId, key } }));
       return navigation.goBack();
     }
-    const added = outcome.value?.key;
+    const made = outcome.value;
+    const added = made === null ? undefined : "deal" in made ? made.party.key : made.key;
     if (added === undefined) navigation.goBack();
     else openClient(added);
   };
-  return (
-    <FormShell
-      title={
-        editing !== null
-          ? COPY.party.editTitle
-          : newProspect
-            ? COPY.party.prospectTitle
-            : COPY.party.newTitle
-      }
-      submit={editing !== null ? COPY.save : newProspect ? KIN_CLIENTS.addProspect : COPY.party.add}
-      saving={state.saving}
-      canSave={draft.name.trim() !== ""}
-      problem={state.problem}
-      onOpenExisting={openClient}
-      onSave={() => void save()}
-    >
-      <ListSection>
-        <KinWorkTextField
-          label={COPY.party.name}
-          value={draft.name}
-          autoFocus={editing === null}
-          disabled={state.saving}
-          maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder={COPY.party.namePlaceholder}
-          moved={moved.name}
-          onChangeText={(name) => form.edit({ name })}
-        />
-      </ListSection>
-      {kinds.length === 0 ? null : (
-        <View className="gap-2">
-          <Text className="px-2 text-sm text-foreground-muted">{COPY.party.kind}</Text>
-          <View className="flex-row flex-wrap gap-2">
-            {kinds.map((kind) => (
-              <Chip
-                key={kind}
-                label={kindLabel[kind]}
-                selected={draft.kind === kind}
-                disabled={state.saving}
-                onPress={() => form.edit({ kind })}
-              />
-            ))}
+  const sourceField = (
+    <KinCameFromFields
+      label={COPY.party.source}
+      value={draft.source}
+      choices={marketing.cameFrom}
+      disabled={state.saving}
+      placeholder={COPY.party.sourcePlaceholder}
+      moved={moved.source}
+      onChange={(source) => form.edit({ source })}
+    />
+  );
+  const tagsField = (
+    <KinWorkTextField
+      label={COPY.party.tags}
+      value={draft.tags}
+      disabled={state.saving}
+      placeholder={COPY.party.tagsPlaceholder}
+      moved={moved.tags}
+      onChangeText={(tags) => form.edit({ tags })}
+    />
+  );
+  const fold = kinShortFormFold("party", {
+    absent: [
+      ...(kinds.length === 0 ? (["kind"] as const) : []),
+      ...(takesDeal ? [] : (["value"] as const)),
+      ...(member ? (["terms", "address", "private"] as const) : []),
+      ...(member || !india ? (["tax"] as const) : []),
+    ],
+  });
+  /** One part of the form: in its place on an edit, under More on a new one. */
+  const piece = (which: KinShortFormField<"party">) => {
+    switch (which) {
+      case "name":
+      case "contact":
+      case "value":
+        return null;
+      case "kind":
+        return kinds.length === 0 ? null : (
+          <View key={which} className="gap-2">
+            <Text className="px-2 text-sm text-foreground-muted">{COPY.party.kind}</Text>
+            <View className="flex-row flex-wrap gap-2">
+              {kinds.map((kind) => (
+                <Chip
+                  key={kind}
+                  label={kindLabel[kind]}
+                  selected={draft.kind === kind}
+                  disabled={state.saving}
+                  onPress={() => form.edit({ kind })}
+                />
+              ))}
+            </View>
           </View>
-        </View>
-      )}
-      <ListSection>
-        <KinWorkTextField
-          label={COPY.party.source}
-          value={draft.source}
-          disabled={state.saving}
-          maxLength={120}
-          placeholder={COPY.party.sourcePlaceholder}
-          moved={moved.source}
-          onChangeText={(source) => form.edit({ source })}
-        />
-        <KinWorkTextField
-          label={COPY.party.tags}
-          value={draft.tags}
-          disabled={state.saving}
-          placeholder={COPY.party.tagsPlaceholder}
-          moved={moved.tags}
-          onChangeText={(tags) => form.edit({ tags })}
-        />
-      </ListSection>
-      {editing !== null ? null : (
-        <ListSection
-          title={COPY.party.contact}
-          footer={`${COPY.party.contactHint} ${COPY.contact.detailsHint}`}
-        >
-          <KinWorkTextField
-            label={COPY.party.contactName}
-            value={draft.contactName}
-            disabled={state.saving}
-            maxLength={KIN_WORK_FORM_LIMITS.name}
-            placeholder={COPY.contact.namePlaceholder}
-            onChangeText={(contactName) => form.edit({ contactName })}
-          />
-          <KinWorkTextField
-            label={COPY.contact.role}
-            value={draft.contactRole}
-            disabled={state.saving}
-            maxLength={KIN_WORK_FORM_LIMITS.short}
-            placeholder={COPY.contact.rolePlaceholder}
-            onChangeText={(contactRole) => form.edit({ contactRole })}
-          />
-          <ContactDetailFields
-            kind="email"
-            values={draft.contactEmails}
-            disabled={state.saving}
-            onChange={(contactEmails) => form.edit({ contactEmails })}
-          />
-          <ContactDetailFields
-            kind="phone"
-            values={draft.contactPhones}
-            disabled={state.saving}
-            onChange={(contactPhones) => form.edit({ contactPhones })}
-          />
-        </ListSection>
-      )}
-      {member ? null : (
-        <>
-          <ListSection>
+        );
+      case "source":
+        return <ListSection key={which}>{sourceField}</ListSection>;
+      case "tags":
+        return <ListSection key={which}>{tagsField}</ListSection>;
+      case "role":
+        return (
+          <ListSection key={which}>
+            <KinWorkTextField
+              label={COPY.contact.role}
+              value={draft.contactRole}
+              disabled={state.saving}
+              maxLength={KIN_WORK_FORM_LIMITS.short}
+              onChangeText={(contactRole) => form.edit({ contactRole })}
+            />
+          </ListSection>
+        );
+      case "terms":
+        return member ? null : (
+          <ListSection key={which}>
             <KinWorkTextField
               label={COPY.party.terms}
               value={draft.terms}
@@ -460,7 +477,10 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
               onChangeText={(terms) => form.edit({ terms })}
             />
           </ListSection>
-          <ListSection>
+        );
+      case "address":
+        return member ? null : (
+          <ListSection key={which}>
             <KinWorkTextField
               label={COPY.party.address}
               value={draft.address}
@@ -473,88 +493,214 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
               onChangeText={(address) => form.edit({ address })}
             />
           </ListSection>
-          {india ? (
-            <>
-              <ListSection footer={gstinNote === null ? COPY.party.placeHint : undefined}>
+        );
+      case "tax":
+        return member || !india ? null : (
+          <View key={which} className="gap-5">
+            <ListSection footer={gstinNote === null ? COPY.party.placeHint : undefined}>
+              <KinWorkTextField
+                label={COPY.party.gstin}
+                value={draft.gstin}
+                disabled={state.saving}
+                maxLength={20}
+                hint={COPY.party.gstinHint}
+                moved={moved.gstin}
+                onChangeText={(gstin) => {
+                  const next = kinClientDraftWithGstin(draft, gstin);
+                  form.edit({ gstin: next.gstin, placeOfSupply: next.placeOfSupply });
+                }}
+              />
+              <Menu
+                title={COPY.party.place}
+                accessibilityRole="button"
+                accessibilityLabel={`${COPY.party.place}: ${placeLabel}. Change`}
+                actions={[
+                  { id: NO_PLACE, title: COPY.party.placeNone },
+                  ...KIN_GST_STATE_NAMES.map((name) => ({ id: name, title: name })),
+                  { id: ABROAD, title: COPY.party.placeAbroad },
+                ].map((one) => ({
+                  ...one,
+                  state: one.id === placeId ? ("on" as const) : ("off" as const),
+                }))}
+                onPressAction={({ nativeEvent: { event } }) =>
+                  form.edit(
+                    event === ABROAD
+                      ? { abroad: true, placeOfSupply: "" }
+                      : { abroad: false, placeOfSupply: event === NO_PLACE ? "" : event },
+                  )
+                }
+              >
+                <View pointerEvents="none">
+                  <ListRowLayout label={placeLabel} detail={COPY.party.place} />
+                </View>
+              </Menu>
+              {draft.abroad ? (
                 <KinWorkTextField
-                  label={COPY.party.gstin}
-                  value={draft.gstin}
+                  label={COPY.party.country}
+                  value={draft.placeOfSupply}
                   disabled={state.saving}
-                  maxLength={20}
-                  placeholder={COPY.party.gstinPlaceholder}
-                  hint={COPY.party.gstinHint}
-                  moved={moved.gstin}
-                  onChangeText={(gstin) => {
-                    const next = kinClientDraftWithGstin(draft, gstin);
-                    form.edit({ gstin: next.gstin, placeOfSupply: next.placeOfSupply });
-                  }}
+                  maxLength={60}
+                  onChangeText={(placeOfSupply) => form.edit({ placeOfSupply })}
                 />
-                <Menu
-                  title={COPY.party.place}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${COPY.party.place}: ${placeLabel}. Change`}
-                  actions={[
-                    { id: NO_PLACE, title: COPY.party.placeNone },
-                    ...KIN_GST_STATE_NAMES.map((name) => ({ id: name, title: name })),
-                    { id: ABROAD, title: COPY.party.placeAbroad },
-                  ].map((one) => ({
-                    ...one,
-                    state: one.id === placeId ? ("on" as const) : ("off" as const),
-                  }))}
-                  onPressAction={({ nativeEvent: { event } }) =>
-                    form.edit(
-                      event === ABROAD
-                        ? { abroad: true, placeOfSupply: "" }
-                        : { abroad: false, placeOfSupply: event === NO_PLACE ? "" : event },
-                    )
-                  }
-                >
-                  <View pointerEvents="none">
-                    <ListRowLayout label={placeLabel} detail={COPY.party.place} />
-                  </View>
-                </Menu>
-                {draft.abroad ? (
-                  <KinWorkTextField
-                    label={COPY.party.country}
-                    value={draft.placeOfSupply}
-                    disabled={state.saving}
-                    maxLength={60}
-                    placeholder={COPY.party.countryPlaceholder}
-                    onChangeText={(placeOfSupply) => form.edit({ placeOfSupply })}
-                  />
-                ) : null}
-              </ListSection>
-              {gstinNote === null ? null : <Notice message={gstinNote} />}
-            </>
-          ) : null}
-        </>
-      )}
+              ) : null}
+            </ListSection>
+            {gstinNote === null ? null : <Notice message={gstinNote} />}
+          </View>
+        );
+      case "notes":
+        return (
+          <ListSection key={which}>
+            <KinWorkTextField
+              label={COPY.party.notes}
+              value={draft.notes}
+              multiline
+              disabled={state.saving}
+              maxLength={KIN_WORK_FORM_LIMITS.notes}
+              placeholder={COPY.party.notesPlaceholder}
+              moved={moved.notes}
+              onChangeText={(notes) => form.edit({ notes })}
+            />
+          </ListSection>
+        );
+      case "private":
+        return member ? null : (
+          <ListSection key={which}>
+            <KinWorkToggleRow
+              icon="lock"
+              label={KIN_CLIENTS.privateLabel}
+              description={draft.private ? KIN_CLIENTS.privateOn : KIN_CLIENTS.privateOff}
+              value={draft.private}
+              disabled={state.saving}
+              onValueChange={(on) => form.edit({ private: on })}
+            />
+          </ListSection>
+        );
+    }
+  };
+  return (
+    <FormShell
+      title={
+        editing !== null
+          ? COPY.party.editTitle
+          : newProspect
+            ? COPY.party.prospectTitle
+            : COPY.party.newTitle
+      }
+      submit={editing !== null ? COPY.save : newProspect ? KIN_CLIENTS.addProspect : COPY.party.add}
+      saving={state.saving}
+      canSave={draft.name.trim() !== "" && !amountBad}
+      problem={state.problem}
+      onOpenExisting={openClient}
+      onSave={() => void save()}
+    >
       <ListSection>
         <KinWorkTextField
-          label={COPY.party.notes}
-          value={draft.notes}
-          multiline
+          label={COPY.party.name}
+          value={draft.name}
+          autoFocus={editing === null}
           disabled={state.saving}
-          maxLength={KIN_WORK_FORM_LIMITS.notes}
-          placeholder={COPY.party.notesPlaceholder}
-          moved={moved.notes}
-          onChangeText={(notes) => form.edit({ notes })}
+          maxLength={KIN_WORK_FORM_LIMITS.name}
+          moved={moved.name}
+          onChangeText={(name) => form.edit({ name })}
         />
       </ListSection>
+      {editing === null ? (
+        <>
+          <ListSection
+            title={COPY.party.contact}
+            footer={`${COPY.party.contactHint} ${COPY.contact.detailsHint}`}
+          >
+            <KinWorkTextField
+              label={COPY.party.contactName}
+              value={draft.contactName}
+              disabled={state.saving}
+              maxLength={KIN_WORK_FORM_LIMITS.name}
+              onChangeText={(contactName) => form.edit({ contactName })}
+            />
+            <ContactDetailFields
+              kind="email"
+              values={draft.contactEmails}
+              disabled={state.saving}
+              onChange={(contactEmails) => form.edit({ contactEmails })}
+            />
+            <ContactDetailFields
+              kind="phone"
+              values={draft.contactPhones}
+              disabled={state.saving}
+              onChange={(contactPhones) => form.edit({ contactPhones })}
+            />
+          </ListSection>
+          {!takesDeal ? null : (
+            <ListSection>
+              <KinWorkTextField
+                label={KIN_SHORT_FORMS.aboutHowMuch}
+                value={amount}
+                keyboard="numbers"
+                disabled={state.saving}
+                hint={amountBad ? KIN_DEALS.notAmount : KIN_SHORT_FORMS.aboutHowMuchHint}
+                onChangeText={setAmount}
+              />
+            </ListSection>
+          )}
+          {fold.moreLine === null ? null : (
+            <KinPageFold title={KIN_SHORT_FORMS.more} summary={fold.moreLine}>
+              {fold.more.map(piece)}
+            </KinPageFold>
+          )}
+        </>
+      ) : (
+        <>
+          {piece("kind")}
+          <ListSection>
+            {sourceField}
+            {tagsField}
+          </ListSection>
+          {!keepsContacts && (props.contacts ?? []).length === 0 ? null : (
+            <ListSection title={KIN_CLIENTS.contacts} footer={COPY.contact.detailsHint}>
+              {(props.contacts ?? []).map((contact) => (
+                <ListActionRow
+                  key={contact.key}
+                  icon="person.crop.circle"
+                  label={contact.name}
+                  description={[contact.role, ...contact.phones, ...contact.emails]
+                    .filter((part) => part !== null && part !== "")
+                    .join(" · ")}
+                  disabled={!keepsContacts}
+                  onPress={() =>
+                    navigation.navigate("KinContactForm", {
+                      environmentId,
+                      orgId,
+                      party: editing.key,
+                      contact: contact.key,
+                    })
+                  }
+                />
+              ))}
+              {keepsContacts ? (
+                <ListActionRow
+                  icon="plus"
+                  label={KIN_CLIENTS.addContact}
+                  onPress={() =>
+                    navigation.navigate("KinContactForm", {
+                      environmentId,
+                      orgId,
+                      party: editing.key,
+                    })
+                  }
+                />
+              ) : null}
+            </ListSection>
+          )}
+          {piece("terms")}
+          {piece("address")}
+          {piece("tax")}
+          {piece("notes")}
+          {piece("private")}
+        </>
+      )}
       {member ? (
         <Text className="px-2 text-xs text-foreground-muted">{COPY.party.memberHint}</Text>
-      ) : (
-        <ListSection>
-          <ListToggleRow
-            icon="lock"
-            label={KIN_CLIENTS.privateLabel}
-            description={draft.private ? KIN_CLIENTS.privateOn : KIN_CLIENTS.privateOff}
-            value={draft.private}
-            disabled={state.saving}
-            onValueChange={(on) => form.edit({ private: on })}
-          />
-        </ListSection>
-      )}
+      ) : null}
     </FormShell>
   );
 }
@@ -656,6 +802,7 @@ function ContactForm(
     noun: "contact",
     start: kinContactDraftOf(editing ?? undefined),
     editing: editing === null ? null : { key: editing.key, rev: editing.rev },
+    latest: editing === null ? null : kinContactDraftOf(editing),
     nameOf: (draft) => draft.name,
     check: kinContactDraftCheck,
     send: (change) =>
@@ -680,14 +827,13 @@ function ContactForm(
           }),
     reread,
   });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the form a newer read of the contact being edited, so saving again goes against it
-  useEffect(() => {
-    if (editing !== null) form.latest(kinContactDraftOf(editing), editing.rev);
-  }, [form, editing]);
+  const marketing = useKinMarketing(props);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
   const busy = state.saving || aside.busy;
+  const leave = useKinAskBeforeDiscard(kinFormTyped(state.from, draft));
   const done = () => {
+    leave();
     reread();
     navigation.goBack();
   };
@@ -717,7 +863,10 @@ function ContactForm(
       canSave={draft.name.trim() !== ""}
       problem={state.problem ?? aside.problem}
       // Two people at one client can't share a name; the one there is on the page behind.
-      onOpenExisting={() => navigation.goBack()}
+      onOpenExisting={() => {
+        leave();
+        navigation.goBack();
+      }}
       onSave={() => void save()}
     >
       <ListSection>
@@ -727,7 +876,6 @@ function ContactForm(
           autoFocus={editing === null}
           disabled={busy}
           maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder={COPY.contact.namePlaceholder}
           moved={moved.name}
           onChangeText={(name) => form.edit({ name })}
         />
@@ -736,7 +884,6 @@ function ContactForm(
           value={draft.role}
           disabled={busy}
           maxLength={KIN_WORK_FORM_LIMITS.short}
-          placeholder={COPY.contact.rolePlaceholder}
           moved={moved.role}
           onChangeText={(role) => form.edit({ role })}
         />
@@ -757,6 +904,12 @@ function ContactForm(
           onChange={(phones) => form.edit({ phones })}
         />
       </ListSection>
+      <KinTagFields
+        tags={draft.tags ?? []}
+        company={marketing.tags}
+        disabled={busy}
+        onChange={(tags) => form.edit({ tags })}
+      />
       <ListSection>
         <KinWorkTextField
           label={COPY.contact.notes}
@@ -918,6 +1071,7 @@ function ProjectForm(
   const { environmentId, orgId, editing } = props;
   const choices = useKinWorkChoices(props, true);
   const directory = useKinWorkDirectory(props, editing === null);
+  const { zone } = useKinWorkZone(props);
   const [members, setMembers] = useState<ReadonlyArray<KinWorkPrincipal>>([]);
   // The form keeps its first `send`, so it reads who was picked from here at save time.
   const picked = useRef(members);
@@ -926,11 +1080,14 @@ function ProjectForm(
   const [requestId] = useState(uuidv4);
   const [key] = useState(() => editing?.project.key ?? null);
   const [opened] = useState(() => new Date());
+  const marketing = useKinMarketing(props);
   const home = useKinHomeCurrency(props);
   const { state, form } = useKinWorkForm(environmentId, {
     noun: "project",
     start: kinProjectDraftOf(editing?.project, editing?.targetDay, props.party, home),
     editing: editing === null ? null : { key: editing.project.key, rev: editing.project.rev },
+    latest:
+      editing === null ? null : kinProjectDraftOf(editing.project, editing.targetDay, null, home),
     nameOf: (draft) => draft.name,
     check: kinProjectDraftCheck,
     send: (change) =>
@@ -958,24 +1115,18 @@ function ProjectForm(
         appAtomRegistry.refresh(kinClient.workProject({ environmentId, input: { orgId, key } }));
     },
   });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the form a newer read of the project being edited, so saving again goes against it
-  useEffect(() => {
-    if (editing !== null)
-      form.latest(
-        kinProjectDraftOf(editing.project, editing.targetDay, null, home),
-        editing.project.rev,
-      );
-  }, [form, editing, home]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
-  const target = draft.target ?? "";
+  const leave = useKinAskBeforeDiscard(kinFormTyped(state.from, draft) || members.length > 0);
   const openProject = (project: KinRecordKey) => {
+    leave();
     navigation.goBack();
     navigation.navigate("KinProject", { environmentId, orgId, project });
   };
   const save = async () => {
     const outcome = await form.save();
     if (!outcome.saved) return;
+    leave();
     appAtomRegistry.refresh(kinWorkChoicesAtom(props));
     if (key !== null) {
       appAtomRegistry.refresh(kinClient.workProject({ environmentId, input: { orgId, key } }));
@@ -1002,7 +1153,6 @@ function ProjectForm(
           autoFocus={editing === null}
           disabled={state.saving}
           maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder={COPY.project.namePlaceholder}
           moved={moved.name}
           onChangeText={(name) => form.edit({ name })}
         />
@@ -1019,15 +1169,15 @@ function ProjectForm(
           disabled={state.saving}
           onPick={(party) => form.edit({ party })}
         />
-        <KinWorkTextField
+        <KinDayField
           label={COPY.project.target}
-          value={target}
-          keyboard="numbers"
+          day={draft.target}
+          zone={zone}
+          now={opened}
+          none={KIN_PROJECTS.noTarget}
+          hint={kinProjectTargetHint(draft.target)}
           disabled={state.saving}
-          maxLength={10}
-          placeholder="2026-12-31"
-          hint={kinProjectTargetHint(target, opened)}
-          onChangeText={(text) => form.edit({ target: text.trim() === "" ? null : text.trim() })}
+          onPick={(target) => form.edit({ target })}
         />
       </ListSection>
       {editing === null ? (
@@ -1041,7 +1191,7 @@ function ProjectForm(
             picked.current = next;
             setMembers(next);
           }}
-          footer={KIN_PROJECT_PEOPLE.detail}
+          footer={draft.private ? KIN_PROJECT_PEOPLE.privateDetail : KIN_PROJECT_PEOPLE.detail}
         />
       ) : null}
       <ListSection title={COPY.project.billing}>
@@ -1068,26 +1218,22 @@ function ProjectForm(
             onChangeText={(value) => form.edit({ value })}
           />
         </KinCountryFirstField>
-        <KinWorkTextField
+        <KinDayField
           label={COPY.project.startsOn}
-          value={draft.startsOn ?? ""}
-          keyboard="numbers"
+          day={draft.startsOn}
+          zone={zone}
+          now={opened}
           disabled={state.saving}
-          maxLength={10}
-          placeholder="2026-11-20"
-          onChangeText={(text) => form.edit({ startsOn: text.trim() === "" ? null : text.trim() })}
+          onPick={(startsOn) => form.edit({ startsOn })}
         />
         {draft.billing === "retainer" || draft.renewsOn !== null ? (
-          <KinWorkTextField
+          <KinDayField
             label={COPY.project.renewsOn}
-            value={draft.renewsOn ?? ""}
-            keyboard="numbers"
+            day={draft.renewsOn}
+            zone={zone}
+            now={opened}
             disabled={state.saving}
-            maxLength={10}
-            placeholder="2026-12-01"
-            onChangeText={(text) =>
-              form.edit({ renewsOn: text.trim() === "" ? null : text.trim() })
-            }
+            onPick={(renewsOn) => form.edit({ renewsOn })}
           />
         ) : null}
         {draft.renewsOn === null ? null : (
@@ -1101,6 +1247,43 @@ function ProjectForm(
             onChangeText={(noticeDays) => form.edit({ noticeDays })}
           />
         )}
+      </ListSection>
+      <ListSection footer={draft.campaign ? KIN_MARKETING.audienceHint : undefined}>
+        <KinWorkToggleRow
+          icon="tag"
+          label={KIN_MARKETING.campaign}
+          description={KIN_MARKETING.campaignHint}
+          value={draft.campaign}
+          disabled={state.saving}
+          onValueChange={(campaign) => form.edit({ campaign })}
+        />
+        {draft.campaign ? (
+          <>
+            <KinWorkTextField
+              label={KIN_MARKETING.audience}
+              value={draft.audience}
+              disabled={state.saving}
+              maxLength={60}
+              placeholder={KIN_MARKETING.audiencePlaceholder}
+              moved={moved.audience}
+              onChangeText={(audience) => form.edit({ audience })}
+            />
+            {marketing.tags.length === 0 ? null : (
+              <View className="flex-row flex-wrap gap-2 px-4 pb-3">
+                {marketing.tags.slice(0, 12).map((tag) => (
+                  <Chip
+                    key={tag}
+                    label={tag}
+                    size="small"
+                    selected={draft.audience === tag}
+                    disabled={state.saving}
+                    onPress={() => form.edit({ audience: tag })}
+                  />
+                ))}
+              </View>
+            )}
+          </>
+        ) : null}
       </ListSection>
       <ListSection>
         <KinWorkTextField
@@ -1126,7 +1309,7 @@ function ProjectForm(
         />
       </ListSection>
       <ListSection>
-        <ListToggleRow
+        <KinWorkToggleRow
           icon="lock"
           label={KIN_PROJECTS.privateLabel}
           description={draft.private ? KIN_PROJECTS.privateOn : KIN_PROJECTS.privateOff}
@@ -1159,11 +1342,14 @@ function MilestoneForm(props: KinWorkTarget & { readonly project: KinRecordKey }
   const { environmentId, orgId } = props;
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
   const [requestId] = useState(uuidv4);
+  const { zone } = useKinWorkZone(props);
+  const [opened] = useState(() => new Date());
   const [name, setName] = useState("");
-  const [due, setDue] = useState("");
+  const [due, setDue] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
-  const canSave = name.trim() !== "" && (due === "" || /^\d{4}-\d{2}-\d{2}$/.test(due));
+  const canSave = name.trim() !== "";
+  const leave = useKinAskBeforeDiscard(canSave || due !== null);
   const save = async () => {
     if (saving || !canSave) return;
     setSaving(true);
@@ -1178,7 +1364,7 @@ function MilestoneForm(props: KinWorkTarget & { readonly project: KinRecordKey }
             list: "milestones",
             title: name.trim(),
             project: props.project,
-            ...(due === "" ? {} : { dueAt: due, dueAllDay: true }),
+            ...(due === null ? {} : { dueAt: due, dueAllDay: true }),
             clientRequestId: requestId,
           },
         }),
@@ -1187,8 +1373,9 @@ function MilestoneForm(props: KinWorkTarget & { readonly project: KinRecordKey }
       own: null,
     });
     setSaving(false);
-    if (outcome.ok) navigation.goBack();
-    else setProblem(outcome.problem);
+    if (!outcome.ok) return setProblem(outcome.problem);
+    leave();
+    navigation.goBack();
   };
   return (
     <FormShell
@@ -1207,17 +1394,15 @@ function MilestoneForm(props: KinWorkTarget & { readonly project: KinRecordKey }
           autoFocus
           disabled={saving}
           maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder={KIN_WORK_FORM_COPY.milestoneExample}
           onChangeText={setName}
         />
-        <KinWorkTextField
+        <KinDayField
           label="Due"
-          value={due}
-          keyboard="numbers"
+          day={due}
+          zone={zone}
+          now={opened}
           disabled={saving}
-          maxLength={10}
-          placeholder="2026-12-31"
-          onChangeText={(text) => setDue(text.trim())}
+          onPick={setDue}
         />
       </ListSection>
     </FormShell>

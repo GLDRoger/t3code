@@ -1,3 +1,4 @@
+import { KIN_VISUAL_HOSTS } from "@t3tools/client-runtime/kin/kinConnections";
 import { KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -28,7 +29,10 @@ import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicato
 import { AppText as Text } from "../../../components/ui/AppText";
 import { REVIEW_MONO_FONT_FAMILY } from "../../review/reviewDiffRendering";
 import * as Dialog from "../../../components/ui/Dialog";
-import { shareGeneratedAttachment } from "../../../lib/attachmentDownload";
+import {
+  downloadAndShareAttachment,
+  shareGeneratedAttachment,
+} from "../../../lib/attachmentDownload";
 import { tryOpenExternalUrl } from "../../../lib/openExternalUrl";
 import { useAssetUrlState, useRefreshAssetUrl } from "../../../state/assets";
 import { useAtomCommand } from "../../../state/use-atom-command";
@@ -149,7 +153,7 @@ function KinVisualWebView(props: {
       asking.current = false;
     };
     Dialog.confirm({
-      title: "Open this link?",
+      title: KIN_VISUAL_HOSTS.openLink,
       message: `A link in “${props.title}” goes to:\n\n${url}`,
       confirmText: "Open link",
       onCancel: done,
@@ -227,6 +231,41 @@ function KinVisualWebView(props: {
   );
 }
 
+/**
+ * The phone's share sheet for the page itself, which offers Save to Files and every app that
+ * takes a file. The host keeps the page, not a picture of it, so there is no image to save yet.
+ */
+function KinVisualShare(props: { readonly uri: string; readonly title: string }) {
+  const [sharing, setSharing] = useState(false);
+  const share = () => {
+    setSharing(true);
+    downloadAndShareAttachment({
+      url: props.uri,
+      attachment: { name: htmlRenderFileName(props.title), mimeType: "text/html" },
+      signal: new AbortController().signal,
+    }).then(
+      () => setSharing(false),
+      () => {
+        setSharing(false);
+        Dialog.alert(KIN_CARD_COPY.saveFileFailed, "Sharing didn't finish.");
+      },
+    );
+  };
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled: sharing }}
+      disabled={sharing}
+      hitSlop={12}
+      onPress={share}
+    >
+      <Text textRole="footnote" className="font-t3-medium text-primary">
+        {sharing ? "Opening…" : "Save or share"}
+      </Text>
+    </Pressable>
+  );
+}
+
 function KinVisualFullScreen(props: {
   readonly uri: string;
   readonly title: string;
@@ -251,6 +290,7 @@ function KinVisualFullScreen(props: {
               >
                 {props.title}
               </Text>
+              <KinVisualShare uri={props.uri} title={props.title} />
               <Pressable accessibilityRole="button" hitSlop={12} onPress={props.onClose}>
                 <Text textRole="body" className="font-t3-medium text-primary">
                   Close
@@ -343,7 +383,9 @@ export const KinVisual = memo(function KinVisual(props: {
         }).then((result) => {
           setAllowing(null);
           if (!AsyncResult.isSuccess(result)) {
-            setProblem(kinFailureText(squashAtomCommandFailure(result), "Couldn't allow it."));
+            setProblem(
+              kinFailureText(squashAtomCommandFailure(result), KIN_VISUAL_HOSTS.allowFailed),
+            );
             return;
           }
           setBlocked(null);
@@ -360,6 +402,7 @@ export const KinVisual = memo(function KinVisual(props: {
           {title}
         </Text>
         {props.visual.sensitive === true ? <KinWorkPrivateMark label="" /> : null}
+        {showing ? <KinVisualShare uri={uri} title={title} /> : null}
         {showing ? (
           <Pressable accessibilityRole="button" hitSlop={12} onPress={() => setExpanded(true)}>
             <Text textRole="footnote" className="font-t3-medium text-primary">

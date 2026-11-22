@@ -30,6 +30,8 @@ import {
   type KinWorkRef,
 } from "./kinWork.ts";
 import { kinFailure } from "./kinAnswers.ts";
+import { kinNowMs } from "./kinNow.ts";
+import type { KinLink } from "./kinHost.ts";
 import { kinWorkRefOf } from "./kinWorkClients.ts";
 
 export const KIN_WORK_PAGE = 50;
@@ -59,6 +61,8 @@ export interface KinPagedListState<Filter, Row> {
   readonly moreFailed: boolean;
   /** A read-again failed, so the rows shown are older than the host's. */
   readonly stale: boolean;
+  /** When the rows shown were last read or caught up, epoch ms; null before the first answer. */
+  readonly readAt: number | null;
 }
 
 export type KinWorkListState = KinPagedListState<KinWorkFilter, KinRecord>;
@@ -75,7 +79,23 @@ const emptyState = <Filter, Row>(filter: Filter): KinPagedListState<Filter, Row>
   loadingMore: false,
   moreFailed: false,
   stale: false,
+  readAt: null,
 });
+
+/**
+ * What a list screen shows where its rows go: the rows once any were read for this filter, kept
+ * through a failed or offline read again; with none held, offline says so rather than a spinner
+ * or a failure, which is all a read the connection can't carry would show.
+ */
+export function kinListShown(
+  state: Pick<KinPagedListState<unknown, unknown>, "seq" | "loading" | "failed">,
+  link: KinLink,
+): "rows" | "loading" | "offline" | "failed" {
+  if (state.seq !== null) return "rows";
+  if (link === "offline") return "offline";
+  if (state.loading) return "loading";
+  return state.failed === null ? "rows" : "failed";
+}
 
 export const kinPagedListInitial = emptyState;
 export const KIN_WORK_LIST_INITIAL: KinWorkListState = emptyState(KIN_WORK_DEFAULT_FILTER);
@@ -107,6 +127,7 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
   readonly onChange: (state: KinPagedListState<Filter, Row>) => void;
   /** Runs `run` after `ms`; returns its cancel. */
   readonly schedule: (run: () => void, ms: number) => () => void;
+  readonly now?: () => number;
   /**
    * The rows held brought up to date without a read, from what the host already sent; null when
    * only a read can. `moved` says rows came or went, so the next page reads from the top.
@@ -125,6 +146,7 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
     return [...held, ...page.filter((row) => !seen.has(options.idOf(row)))];
   };
   const sameFilter = options.sameFilter;
+  const now = options.now ?? kinNowMs;
   let state: State = emptyState(options.initial);
   // Bumped whenever what is being read stops mattering: a new filter, a manual refresh, the end.
   let generation = 0;
@@ -201,6 +223,7 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
       loadingMore: false,
       moreFailed: false,
       stale: false,
+      readAt: now(),
     });
     afterRead();
   };
@@ -231,8 +254,9 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
       caught.records.length === state.records.length &&
       caught.records.every((row, index) => row === state.records[index]);
     // Nothing shown moved: the number advances without a redraw.
-    if (same) state = { ...state, seq };
-    else set({ records: caught.records, total: caught.total, more: caught.more, seq });
+    if (same) state = { ...state, seq, readAt: now() };
+    else
+      set({ records: caught.records, total: caught.total, more: caught.more, seq, readAt: now() });
   }
 
   const abandon = () => {
@@ -341,6 +365,7 @@ export function createKinWorkList(options: {
     idOf: (record) => record.recordId,
     onChange: options.onChange,
     schedule: options.schedule,
+    now: options.now,
     read: async (filter, page) => {
       const input = {
         ...kinWorkListQuery(options.orgId, filter, options.now(), options.hostFilters()),
@@ -418,17 +443,23 @@ export function createKinListEntries<Filter extends { readonly text: string }>(o
   };
 }
 
-/** How long a list off screen is kept to come back to; past this its dates may have moved on. */
+/** How long a list off screen is caught up from the stream; past this it is read again. */
 const KIN_LIST_KEPT_MS = 5 * 60_000;
 const KIN_LISTS_KEPT = 4;
 
 /**
- * Lists kept while their screen is away, so coming back shows what was held and catches up from
- * the stream instead of reading the page again. One screen holds a list at a time; a few are kept.
+ * Lists kept while their screen is away, so coming back shows what was held: caught up from the
+ * stream when recent, else read again with the rows still up, which stay if that read can't be
+ * made. One screen holds a list at a time; a few are kept.
  */
-export function createKinListKeeper<List extends { readonly dispose: () => void }, State>(
-  now: () => number,
-) {
+export function createKinListKeeper<
+  List extends {
+    readonly dispose: () => void;
+    readonly resume: () => void;
+    readonly refresh: () => void;
+  },
+  State,
+>(now: () => number) {
   type Kept = {
     readonly key: string;
     readonly list: List;
@@ -439,10 +470,10 @@ export function createKinListKeeper<List extends { readonly dispose: () => void 
   };
   const kept = new Map<string, Kept>();
   return {
-    /** The list kept under `key` when no screen shows it and it is recent, else a new one. */
+    /** The list kept under `key` when no screen shows it, else a new one. */
     take: (key: string, make: (onChange: (state: State) => void) => List): Kept => {
       const held = kept.get(key);
-      if (held !== undefined && !held.shown && now() - held.at < KIN_LIST_KEPT_MS) return held;
+      if (held !== undefined && !held.shown) return held;
       const sink = { current: (_state: State) => {} };
       return { key, list: make((state) => sink.current(state)), sink, shown: false, at: now() };
     },
@@ -457,6 +488,9 @@ export function createKinListKeeper<List extends { readonly dispose: () => void 
         if (!old.shown) kept.delete(old.key);
       }
     },
+    /** A kept list back on screen: caught up when recent, else read again over what it holds. */
+    resume: (entry: Kept) =>
+      now() - entry.at < KIN_LIST_KEPT_MS ? entry.list.resume() : entry.list.refresh(),
     /** Its screen left: reads in flight stop, and it waits to be taken again. */
     hide: (entry: Kept) => {
       entry.list.dispose();
@@ -770,16 +804,26 @@ export function kinPickerSearchView(input: {
     readonly done: ReadonlyArray<KinWorkRef>;
   };
   readonly held: KinWorkRef | null;
+  /** The only keys this viewer may pick, such as a teammate's led projects; null for any. */
+  readonly only?: ReadonlySet<string> | null;
 }) {
   const { search, held } = input;
   const words = search.text.trim();
-  const shown =
+  const found =
     words === ""
       ? input.loaded
       : (search.found ?? {
           open: kinWorkRefsMatching(input.loaded.open, words),
           done: kinWorkRefsMatching(input.loaded.done, words),
         });
+  const only = input.only ?? null;
+  const shown =
+    only === null
+      ? found
+      : {
+          open: found.open.filter((ref) => only.has(ref.key)),
+          done: found.done.filter((ref) => only.has(ref.key)),
+        };
   const listed = (ref: KinWorkRef) =>
     shown.open.some((one) => one.key === ref.key) || shown.done.some((one) => one.key === ref.key);
   const keep =

@@ -14,7 +14,9 @@ where you were. What you see in each depends on your place in the team; see
 [Who sees and does what](#who-sees-and-does-what).
 
 Settings has **You** (your profile, notifications and appearance) for everyone, and for the owner and co-owners
-**Company** (Team, Agents, Check-ins, Connections, Memory, Company details, Approvals). On the
+**Company** (Team, Agents, Check-ins, Connections, Deals, Memory, Company details, Approvals, and
+Recommendations for the owner himself). A member with **Can see Clients** has a Company group with
+Deals only, to read the company's deal stages. On the
 computer Kin runs on, **This computer** holds the app's own settings, such as providers and models,
 and how much of each provider's usage your agents have spent.
 
@@ -34,17 +36,20 @@ Once you're in, you add your other devices yourself. Open **Your devices** (unde
 web, in **Settings** on the phone) and choose **Link a device**. Kin shows a link and a QR code that
 work once, for 10 minutes. Scan the QR code with the new phone, or open the link in the new
 browser. Each time a device is linked, Kin tells you in your chat with the Team agent; without a
-Team agent, in your direct chats. Your iPhones with notifications on also get an alert, when phone
-alerts are set up for your company's Kin. Android phones don't get this alert yet. If no notice
-reaches you, check **Your devices** for any you didn't add.
+Team agent, in your direct chats. Your phones with notifications on also get an alert, when phone
+alerts are set up for your company's Kin. If no notice reaches you, check **Your devices** for any
+you didn't add.
 
 A linked device stays signed in for 30 days, then you link it again the same way. You can have 10
 devices at a time. Remove a device from the same list to sign it out at once, along with every
 device linked from it and the coding agent keys made on them. Signing a device out from **Sharing &
-access** does the same. **Leave this team** on a phone only forgets the team on that phone: the
-device stays in your list until you remove it. A device you linked can remove itself and the
-devices linked from it, but not the device you joined with. The owner can see and remove a
-teammate's devices on the **Team** page.
+access** does the same. On a phone, **Sign out of** your team under **Settings → This phone** forgets the team on that
+phone, on every computer the phone holds for it, and asks your Kin to stop that team's
+notifications there. If a computer doesn't confirm, because the phone is offline or Kin doesn't
+answer, the phone says so once, and its notifications may keep coming until the phone is removed
+from your devices. The phone stays in your list until it is removed. A device you linked can
+remove itself and the devices linked from it, but not the device you joined with: for that one, ask
+whoever runs your Kin. The owner can see and remove a teammate's devices on the **Team** page.
 
 ### Your profile
 
@@ -60,11 +65,13 @@ about a task. With **Hold non-urgent messages outside my working hours** on, whi
 everyone but the owner, those also wait outside your working hours. They arrive in order when your
 day starts, and whoever sent one is told when you'll get it. A reply to something you wrote in the
 last ten minutes, a teammate writing to you directly, and anything urgent arrive at once. Your
-phone rings by the same rule. Only you can change these two.
+phone rings by the same rule, except that a teammate's direct message in your quiet hours rings
+only when they end, once per teammate. Only you can change these two.
 
 **Settings → Notifications** sets how this device tells you about new messages. On the web and the
 desktop app it alerts you while Kin is open in a window you aren't looking at; on the phone it opens
-the phone's own notification settings.
+the phone's own notification settings. On Android those list Kin's kinds apart (Messages, Questions
+and approvals, Briefs, Devices and security), so you can silence one and keep the rest.
 
 ### Adding a teammate (owner and co-owners)
 
@@ -73,7 +80,7 @@ doesn't send it for you and won't show it again. Make the link from the address 
 reach Kin, not from `localhost`, or it won't open on anyone else's device.
 
 Each teammate starts as a **Member**. Open them under **Settings → Team** to make them a **Co-owner**, to
-turn on what they can see (Money, Clients, Docs), to choose which agents they can message, or to
+turn on what they can see (Money, Clients, Docs), to restrict who they can message, or to
 **Remove access**.
 
 Removing access signs them out everywhere and changes nothing else. Their open tasks stay in their
@@ -118,6 +125,11 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   under it, such as Mark W-4 “Set up the API” done, does exactly that when you tap it, with no
   wait for the agent. If what it names changed since, the card says nothing was done. A reaction
   never does it, and Kin never takes such an answer as a default: it waits for your tap.
+  On a phone, the notice of an agent's question with two answers lists them as 1 and 2; press
+  and hold it (on Android, expand it) and tap **Answer 1** or **Answer 2** to answer without
+  finding the chat. The phone
+  unlocks, opens the card and answers it once it reaches your Kin. Something to confirm, and a
+  question with more answers, opens the card instead.
 - **It asks once, and says what it will do.** An agent's question comes with the answer it will go
   with and the day, by default the end of your next working day (until 19:30). If you don't answer
   by then, it goes with that answer and tells you in one line; say "undo it" to reverse. Something
@@ -183,11 +195,21 @@ Changing what an agent may do needs more: an approval with Face ID on a
 phone set up under **Settings → Approvals** in the Kin app. Until one is set up, nothing that needs
 approval can happen.
 
-## Messaging a teammate
+## Messaging a teammate or an agent
 
-Anyone can message anyone else on the team: **New → Message a teammate**, or **Message** on their
+Anyone can message anyone else on the team: **New → Message someone**, or **Message** on their
 profile. It is a chat for the two of you, with no agent. Only you and they can read it, not the owner
 or a co-owner, and the chat says so at its top. Starting it again opens the same chat.
+
+**Message someone** also lists every agent you may message, with what teammates see about it. Your
+chat with an agent is your own; whoever runs the workspace can see it.
+
+Everyone can message every agent and everyone else, unless the owner or a co-owner restricts a pair.
+Restrict a person and an agent from either one's page (**Who can message** on the agent, or the
+agent's row on the person), and two people from the person's page with **Restrict messaging
+with…**. A restriction holds both ways; their chat stays, to read only, until you **Lift** it.
+**Settings → Team → Who can message** lists every restriction. Owners and co-owners can't be
+restricted.
 
 ## Group chats and the company chat
 
@@ -247,6 +269,8 @@ handling one. When nothing needs attention, the section isn't there.
   writes the task for you.
 - **Give to someone else** moves a task to a teammate or an agent. They get it in their Tasks and a
   message in their chat.
+- **With** puts other people or agents on a task beside whoever has it (up to 10): they see it
+  under Mine and can change it, and **Leave** takes you off one you're on.
 - **Hand back** returns a task you were given to the person who gave it, with a reason if you like.
   When someone asked an agent to give it to you, that person gave it ("Zoya gave this to you, via
   Chief of staff"), and it goes back to them.
@@ -274,6 +298,17 @@ address and ready-to-paste setup for common coding agents once; copy them before
 can hold three keys at a time, and each works for 30 days. If your coding agent's computer reaches
 Kin at a different address than the app you made the key in, use that address with the same ending.
 
+Each setup keeps the key in the coding agent's own settings, so it works in every session:
+
+- **Claude Code:** run the one line Kin shows in a terminal.
+- **Codex:** add the three lines Kin shows to the end of `~/.codex/config.toml`, then start a new
+  Codex session.
+- **Cursor:** add the block Kin shows to `~/.cursor/mcp.json`, beside any servers already there.
+
+To check it worked, ask your coding agent to list your Kin tasks; the key's row then says when it
+was last used. If you set Codex up before with a `bearer_token_env_var` line, remove that line from
+the `[mcp_servers.kin]` section and add the `http_headers` line Kin shows instead.
+
 Choose **Remove** beside a key to stop it; the coding agent loses access on its next call. The owner
 and co-owners can see and remove a teammate's keys on their profile, and removing someone's access
 ends all of their keys. Removing the device a key was made on ends that key too. A key made before
@@ -281,12 +316,16 @@ keys were tied to a device has ended; make a new one.
 
 ## Clients and projects
 
-Clients lists each client and their projects, with when you last spoke to them and what's next.
+Clients has three lists: Clients, Deals and Projects. Clients lists each client and prospect, with
+when you last spoke to them and what's next.
 On a client, add contacts and **Log contact** after a call or meeting. If nothing is logged for a
 while, the client shows up under Needs attention.
 
 A project has a lead, a target day, milestones and its tasks. Its page says whether it's on track,
-what's late or stuck, and who's on it. The owner, co-owners and the project's lead add milestones;
+what's late or stuck, and who's on it. An overdue invoice for it, or no contact with its client
+for longer than their check-in days (`client_checkin_days`, 14 by default), puts it at risk. Only
+invoices linked to the project count; Kin never guesses which project an invoice is for. The
+owner, co-owners and the project's lead add milestones;
 everyone on the project sees them. The owner or a co-owner sets the lead under **Project lead**.
 
 **People** on a project's page lists who's on it. The owner, co-owners and the project's lead choose
@@ -303,6 +342,49 @@ who can see the project read it on a task.
 A member sees client names and contacts only when the owner turns on **Can see Clients**, and never
 what a client is charged or owes. With it on, they also find the projects they're on, under their
 clients.
+
+### Deals
+
+A deal is a sale you're working on with a client or prospect: what it's worth, when you expect it
+to close, and who looks after it. It moves through your company's stages (New, In talks, Proposal
+and Deciding until you change them), then is won or lost. Winning a deal with a prospect makes the
+prospect a client. Losing one keeps a one-line reason. A won or lost deal can be reopened; it goes
+back to its last stage, and a client stays a client.
+
+A new deal names its first next step, a follow-up for whoever looks after it, or says there is none
+yet. Kin tells whoever looks after a deal when it has no next step, when it has gone quiet (14 days
+with nothing done on it, unless you change that) and when it's past its expected day. Totals are
+kept per currency and never converted.
+
+The owner and co-owners set the stages and the quiet days in **Settings → Deals**; removing a stage
+moves its open deals to the stage you pick. A member reaches Deals only with **Can see Clients**
+on. They see every deal except private ones and those under a private client, add deals on the
+clients they see, and change the deals they look after. Only the owner and co-owners mark a deal
+private. A deal is handed on only to someone who can see it, and the open next steps its keeper
+held go with it.
+
+To bring deals in from a spreadsheet or another CRM, the owner or a co-owner uses **Import a file**
+in Clients.
+
+### What we hear
+
+When a prospect raises a worry, such as price or timing, an agent notes it on the deal as a short
+label with the words it heard, and the deal lists it under **Concerns raised**. **What we hear**, in
+Deals, counts how many deals raised each concern and how many of those are still open, won or lost,
+so you can see which worries cost you sales. Open a concern to see the deals that raised it. Counts
+cover only the deals you can see.
+
+### Campaigns and marketing lists
+
+A campaign is a project marked **Campaign**. Choose it in **Came from** on a prospect or client,
+and the campaign's page counts the prospects and clients that came from it, their deals and how
+many were won. Give a campaign an **Audience** tag and its list is every contact carrying that tag.
+
+Tags are your company's own words, added to contacts on their client's page; a contact takes up to 20. A tag's list is every contact carrying it, and the Clients list also gives the contacts at the
+clients it shows. A list is worked out again each time you open it, so it's never out of date.
+**Export list** saves it as a CSV file for your mail tool. Lists and results hold only what you can
+see in Clients. Tag lists and campaign results need **Can see Clients**; a project's lead without it
+lists and exports their clients' contacts by name only, with no emails, phone numbers or tags.
 
 ## Money
 
@@ -368,6 +450,10 @@ Owners and co-owners connect services under **Settings → Connections**: Google
 GitHub, and others. Each mail account reads, and sends only on your Confirm. Tell an agent what an
 account is for ("accounts@ is for invoices") and it sends from the right one. A reply always goes
 from the account and thread the email is in.
+
+Google and Microsoft each need a sign-in client set up once; Settings shows the steps. If your
+company already has one for a mail app (a Google client, or a Microsoft app with a Web redirect and
+a client secret), use it instead: add the return address Settings shows and paste its ID and secret.
 
 The card shows exactly what will be sent, from which account, to whom. One **Confirm** sends it
 once. Only the owner or a co-owner can confirm. To fix a mail's words yourself, tap **Edit**:
@@ -447,15 +533,21 @@ once, from Kin, with your GitHub login (GitHub asks for admin on each repo; if i
 why and links to the page). Each repo in the watched list says whether agents work there as the App
 or as you. Only an organization's owners can put the App on it; if you aren't one, GitHub sends
 them your request. An App that is private to one account can't go on another until you make it public in its
-settings on GitHub. The section also lists the last few things done as you.
+settings on GitHub; then choose **Check again** on its row. The section also lists the last few things done as you.
 
 #### When things happen on GitHub
 
-With GitHub connected, Kin checks it about once a minute with your login, so there is no webhook
-to set up. On your repos and your organizations' repos, these start an agent on their own:
+Kin hears at once about repos its GitHub App is on, and about your other watched repos within a
+minute, from its own checks with your login. When your Kin has a public address, Kin sets up the
+webhook of an App it made; for an App it didn't make, choose **Let Kin set it up** under **How fast
+Kin hears from GitHub**, on the web or desktop. It leaves a webhook that points somewhere else alone.
+If **Settings → Connections → GitHub** lists events to tick, tick them once on GitHub; it links to
+the page. On your repos and your organizations' repos, these start an agent on their own:
 
 - **A teammate opens a pull request**, or marks a draft ready: it is reviewed and the review posted.
   On your own pull requests the review is a comment, since GitHub doesn't let you approve your own.
+- **New commits on a pull request Kin reviewed**: one more review of what changed, five minutes
+  after the last push.
 - **A call in a comment, an issue or a line comment**: a line that starts with `/kin`, or with an
   agent's name and a comma ("Tech lead, rename this"), which goes to that agent. On an issue the
   agent says what it will do, works on a branch and opens a pull request that closes the issue. On a
@@ -465,8 +557,9 @@ to set up. On your repos and your organizations' repos, these start an agent on 
 - **A review requested from you**, and **failing checks on an agent's own pull request**, which it
   fixes or explains.
 
-Only people who can write to the repo can call an agent. Anyone else's `/kin` starts nothing, and
-their pull request gets a comment review from its diff: their code never runs. An agent never reacts
+Only people GitHub lets write to the repo can call an agent or start one with the `kin` label.
+Anyone else's `/kin` starts nothing, and their pull request gets one comment review from its diff
+and nothing else: their code never runs, and that review is written knowing nothing private. An agent never reacts
 to its own posts, and a mention of you doesn't call it unless you tell it in chat to let mentions
 of you call it in a repo. Everything an agent posts on GitHub ends with its name ("_Tech lead, via
 Kin_"). It tells you once, in one line with the link; quiet hours hold that line, not the work. A
@@ -514,7 +607,10 @@ moved. By default the Chief of staff sends you a **Morning brief** around 9:30 e
 around 15:30 on weekdays, sends an **Evening summary** of the day around 18:30 on weekdays (what got
 done, what moved, what carries to tomorrow), and writes the **Weekly brief** around 9:00 on Mondays.
 On Monday you get one page: whichever of the morning and weekly briefs comes first carries the week's
-figures, written by Kin from its records, and the other isn't sent.
+figures, written by Kin from its records, and the other isn't sent. On the other mornings, the
+morning brief's **Money** section carries a line from Kin for each overdue invoice and each quote
+with no answer for five days (a playbook can change that number): who, how much and for how long,
+three of each at most, until it is settled.
 
 Check-in times are loose: "around 9:30" means near then, not on the minute. When you give an agent
 a plain time it keeps to it; say "around" or "-ish" for a loose one. The morning brief comes on a
@@ -527,9 +623,11 @@ Your quiet hours hold any of them that would land inside them; an evening summar
 you after its day is over isn't sent.
 
 A teammate who looks after clients, and has no agent of their own, gets Kin's **Morning page**
-instead: on a working morning with something about their clients, a "Good morning" page with what
-needs them, their clients and what's coming up. It comes at the start of their working hours, or
-08:00 on weekdays if they set none. They change its time and days, or turn it off, under **Settings
+instead: on a working morning with something new about their clients, a "Good morning" page with
+what needs them, their clients and what's coming up. Someone who may see Money also gets those
+Money lines on it, for what they may see, every morning until settled. It comes at the start of their working hours,
+or 08:00 on weekdays if they set none, with what is true at that minute; whatever stays open is also
+under **Needs you** in Tasks. They change its time and days, or turn it off, under **Settings
 → Briefs**. A change counts from the next time its time comes, so a page already sent today, or a
 time already past, starts tomorrow.
 
@@ -538,6 +636,28 @@ now**. Or say it in a chat: "check in at 11 instead".
 
 **Settings → Company details → Daily limit** caps how much work your agents do each day. Once
 they reach it, only your urgent messages run, on the agent's usual model, until midnight.
+
+**Settings → Company details → Stop all agents** (owners and co-owners) stops every agent at once,
+for everyone: work in progress stops, scheduled work due while they are stopped is skipped, and
+nothing anyone confirms goes out. Messages wait up to a day, and every chat with an agent says the
+agents are stopped. **Resume** starts them again.
+
+## Kin keeps watch
+
+Kin keeps a list of open loops, such as an overdue invoice waiting to be paid, and looks at each one
+every 45 minutes, day and night. It waits longer between looks while nothing changes and looks again
+soon after the thing itself changes. Most looks only read Kin's own records, so they cost nothing.
+When a loop closes, for example when the invoice is marked paid, Kin stops watching it by itself.
+
+A record Kin watches shows one quiet line under its header: what Kin is watching for, when it last
+looked and what it found, and when it looks next. **Look now** asks for a look at once without
+changing when the next one comes. **Stop watching** takes it off the list, and **Watch again** puts
+it back for three days after it closed or stopped.
+
+**What Kin checked** lists every look, one day at a time, with why it ran and what it did. Looks that
+found nothing new are folded into one row you can open. Open it from a watch line, or from
+**Settings → What Kin checked** (on the phone, the gear on Chats). Owners and co-owners see every
+watch; a teammate sees only the watches on their own things, never money.
 
 ## Recommendations
 
@@ -586,8 +706,8 @@ on the projects they lead.
 
 | What                                                 | Owner and co-owners                 | Member                                                                           | Project lead, on top                                 |
 | ---------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| Chat with agents                                     | All of them                         | The team agent, and agents the owner lets them message                           |                                                      |
-| Message a teammate                                   | Yes                                 | Yes                                                                              |                                                      |
+| Chat with agents                                     | All of them                         | All of them, unless the owner or a co-owner restricts one                        |                                                      |
+| Message someone                                      | Yes                                 | Yes                                                                              |                                                      |
 | Start a group, create an agent, add a teammate       | Yes                                 | No                                                                               |                                                      |
 | Tasks                                                | All, including tasks marked private | What they hold, made or gave, their projects' and the team's                     |                                                      |
 | Mark a task **Only me**                              | Yes                                 | No                                                                               | Yes                                                  |
@@ -600,7 +720,7 @@ on the projects they lead.
 | Docs                                                 | All                                 | Company docs with **Can see Docs**, and their projects' docs                     |                                                      |
 | Restore an older version of a doc                    | Yes                                 | No                                                                               |                                                      |
 | Confirm an email, statement or receipt; approve      | Yes                                 | No                                                                               |                                                      |
-| Settings, Check-ins, Connections, Memory, Team       | Yes                                 | No; their own profile only                                                       |                                                      |
+| Settings, Check-ins, Connections, Memory, Team       | Yes                                 | Their own profile, and Deals to read with **Can see Clients**                    |                                                      |
 
 The owner and co-owners edit a member's profile. Only the owner himself edits a co-owner's
 profile, manages co-owners, and sees his own private chats. Agents act with the authority of
@@ -622,9 +742,10 @@ To give agents characters you wrote yourself, see
 **Settings → Company details → Download everything** (the owner only) saves the company as one zip. On the phone,
 the same row downloads the zip and opens the share sheet.
 
-Your clients, contacts, projects, every list with its entries and their payments, each doc as it
-reads now, and the files entries and docs hold, in one zip. Kin's import makes the clients,
-contacts, projects and entries again; the docs and files are there to keep.
+Your clients, contacts, projects, every list with its entries and their payments, each entry's
+comments, the contact logged with each client, each doc as it reads now, and the files entries,
+comments and docs hold, in one zip. Kin's import makes the clients, contacts, projects and entries
+again; the comments, logged contact, docs and files are there to keep.
 
 It is not a full backup. Not in it: memory, which stays in your memory repository; chats; people
 and their access; agents and their characters; check-ins and reminders; connections, social

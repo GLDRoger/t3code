@@ -34,6 +34,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as DateTime from "effect/DateTime";
@@ -47,17 +48,21 @@ import { turnAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { TEAMMATE_WORDS, workEventText } from "../lead/LeadPrompt.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import { readPeople } from "../lead/peopleRead.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { taskNewsBanner } from "./assignNotices.ts";
+import { keepAllDayDays } from "./allDayZone.ts";
 import { importWork } from "./importWork.ts";
 import { newCompanyProfileJson } from "./companyProfile.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
+import { dayIn } from "./money.ts";
 import { KIN_OWNER_LEVEL, type KinViewer, teamVisible, viewerOfPeople } from "./teamView.ts";
 import { sensitiveShown } from "./sensitiveReads.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
@@ -66,6 +71,7 @@ import * as OwnerClients from "./ownerClients.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import * as WorkStream from "./workStream.ts";
 import { presetDefinition } from "./registers.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
@@ -189,6 +195,9 @@ const steps = [
   { title: "Draft the invented pricing page", due: "2026-11-20" },
   { title: "Chase the invented logo", side: "theirs" as const, owner: "owner" },
 ];
+/** A Work tool's result as it reaches the agent: encoded by the tool's own schema. */
+const encodeQuery = Schema.encodeEffect(LeadWork.QueryResult);
+const encodeGet = Schema.encodeEffect(LeadWork.GetResult);
 const assignedEvents = SqlClient.SqlClient.pipe(
   Effect.flatMap(
     (sql) => sql<{ agentId: string; json: string }>`SELECT agent_id AS "agentId", json
@@ -252,13 +261,43 @@ it.effect("record_create makes many entries in one call and a retry makes none",
       state: "open",
       due: "2026-11-20",
       owner: "Lead lead (you)",
-      assignedBy: "owner",
+      assignedBy: "Owner (owner)",
     });
     assert.notProperty(got, "suggested");
     assert.deepInclude(got.links, { kind: "message", relation: "source", target: "ask" });
-    assert.include(yield* LeadWork.get(scopeOf(lead), { key: "W-3" }), { owner: "owner" });
+    assert.include(yield* LeadWork.get(scopeOf(lead), { key: "W-3" }), { owner: "Owner (owner)" });
     // Its own entries, and the owner's, wake nobody.
     assert.lengthOf(yield* assignedEvents, 0);
+    // A task's steps are lines on it, never rows of their own, and the rows it reads carry them.
+    const stepped = yield* LeadWork.create(scopeOf(lead), {
+      sourceEventId: "ask-event",
+      records: [
+        {
+          title: "Invented: design the appointment screen",
+          steps: [{ title: "Wireframe" }, { title: "Review with Zoya", done: true }],
+          urgent: true,
+        },
+      ],
+    });
+    assert.lengthOf(yield* sql`SELECT 1 FROM kin_records`, 4);
+    const key = stepped.records[0]!.key;
+    const shown = {
+      steps: [{ title: "Wireframe" }, { title: "Review with Zoya", done: true as const }],
+      urgent: true as const,
+    };
+    assert.deepInclude(yield* LeadWork.get(scopeOf(lead), { key }), shown);
+    const listed = yield* LeadWork.query(scopeOf(lead), { keys: [key] });
+    assert.deepInclude((yield* encodeQuery(listed)).records[0], shown);
+    const changed = yield* LeadWork.update(scopeOf(lead), {
+      key,
+      sourceEventId: "ask-event",
+      steps: [{ title: "Wireframe", done: true }],
+      urgent: false,
+    });
+    assert.includeMembers([...(changed.changed ?? [])], ["steps", "urgent"]);
+    const after = yield* LeadWork.get(scopeOf(lead), { key });
+    assert.deepStrictEqual(after.steps, [{ title: "Wireframe", done: true }]);
+    assert.notProperty(after, "urgent");
   }).pipe(Effect.provide(layer)),
 );
 
@@ -277,7 +316,7 @@ it.effect('"me" is the one person who asked in the turn, and "you" is the lead i
         tasks: [{ key, to, reason: "Invented: asked" }],
       });
     // K008: the owner's "give it to me" lands on the owner, not on the lead.
-    assert.deepStrictEqual((yield* give("W-1", "me")).tasks, [{ key: "W-1", to: "owner" }]);
+    assert.deepStrictEqual((yield* give("W-1", "me")).tasks, [{ key: "W-1", to: "Owner (owner)" }]);
     const [mine] = yield* sql<{ kind: string; id: string }>`SELECT owner_kind AS kind,
         owner_id AS id FROM kin_records WHERE key = 'W-1'`;
     assert.deepStrictEqual(mine, { kind: "person", id: ownerId });
@@ -302,7 +341,126 @@ it.effect('"me" is the one person who asked in the turn, and "you" is the lead i
     assert.deepStrictEqual((yield* give("W-1", "you")).tasks, [
       { key: "W-1", to: "Lead lead (you)" },
     ]);
+    // Names as the tools show them read back, and a real name with parentheses stays a name.
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('sam', ${orgId}, 'sam', 'Sam (other)', ${at})`;
+    for (const to of ["Owner (owner)", "Lead lead (you)", "Lead other (other)", "Sam (other)"])
+      assert.deepStrictEqual((yield* give("W-2", to)).tasks, [{ key: "W-2", to }]);
   }).pipe(Effect.provide(layer)),
+);
+
+/** A running turn of `lead` woken by `personId`'s message in their own direct chat with it. */
+const ownChatTurn = Effect.fn("KinRecordsTest.ownChatTurn")(function* (
+  personId: KinPersonId,
+  audience: "owner_only" | "shared",
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const chat = `${personId}-lead-chat`;
+  yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+    VALUES (${chat}, ${orgId}, 'direct', ${`${personId}:${lead}`}, 1, ${at})`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+    VALUES (${`${chat}-person`}, ${orgId}, ${chat}, 'person', ${personId}, 'member', ${at})`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+    VALUES (${`${chat}-lead`}, ${orgId}, ${chat}, 'agent', ${lead}, 'member', ${at})`;
+  yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+      author_member_id, author_role, kind, body, mentions_json, status, created_at)
+    VALUES (${`ask-${personId}`}, ${orgId}, ${chat}, 1, 'human', ${personId}, ${`${chat}-person`},
+      'member', 'text', 'Mail the invented client our product list', '[]', 'posted', ${at})`;
+  yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+  yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status,
+      event_ids, audience)
+    VALUES (${`wake-${personId}`}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '[]',
+      ${audience})`;
+  const eventId = `event-${personId}`;
+  const event = {
+    _tag: "chat.message",
+    orgId,
+    agentId: lead,
+    eventId,
+    receivedAt: at,
+    dedupeKey: null,
+    provenance: { _tag: "human", personId, memberId: `${chat}-person` },
+    chatId: chat,
+    messageId: `ask-${personId}`,
+  };
+  yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+      queued_at, state, wakeup_id)
+    VALUES (${eventId}, ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0,
+      'claimed', ${`wake-${personId}`})`;
+  return eventId;
+});
+
+it.effect(
+  "a task put on the owner in someone else's chat is the asker's unless a reason says it is his",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const made = (sourceEventId: string, round: string) =>
+        Effect.gen(function* () {
+          yield* LeadWork.create(scopeOf(lead), {
+            sourceEventId,
+            records: [
+              { title: `Invented: mail the client the list ${round}`, owner: "owner" },
+              {
+                title: `Invented: send the list ${round}`,
+                owner: "Owner (owner)",
+                reason: "only the owner can send this",
+              },
+              { title: `Invented: wait on the reply ${round}`, state: "waiting" },
+            ],
+          });
+          return yield* sql<{ owner: string; waits: string | null; reason: string | null }>`
+            SELECT owner_id AS owner, waiting_on_id AS waits,
+              json_extract(fields_json, '$.reason') AS reason
+            FROM kin_records WHERE org_id = ${orgId} AND title LIKE ${`% ${round}`}
+            ORDER BY created_at, key`;
+        });
+      yield* seed;
+      yield* turn();
+      // The owner asked: what he named stands, and nobody named is waited on.
+      assert.deepStrictEqual(yield* made("ask-event", "owner"), [
+        { owner: ownerId, waits: null, reason: null },
+        { owner: ownerId, waits: null, reason: "only the owner can send this" },
+        { owner: lead, waits: null, reason: null },
+      ]);
+      // A co-owner in her own chat, and a teammate in theirs: it is theirs, said so when his.
+      const coId = KinPersonId.make("co");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+        VALUES (${coId}, ${orgId}, 'co', 'Co', 'co_owner', ${at})`;
+      for (const [asker, audience] of [
+        [coId, "owner_only"],
+        [mateId, "shared"],
+      ] as const) {
+        const sourceEventId = yield* ownChatTurn(asker, audience);
+        assert.deepStrictEqual(
+          yield* made(sourceEventId, asker),
+          [
+            { owner: asker, waits: null, reason: null },
+            { owner: ownerId, waits: null, reason: "Needs Owner: only the owner can send this" },
+            { owner: lead, waits: asker, reason: null },
+          ],
+          asker,
+        );
+        // Given back "to the owner" the same way, it comes back to the asker.
+        const [own] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE org_id = ${orgId} AND title = ${`Invented: wait on the reply ${asker}`}`;
+        const moved = yield* LeadWork.update(scopeOf(lead), {
+          key: own!.key,
+          sourceEventId,
+          state: "waiting",
+          waitingOn: "owner",
+          owner: "owner",
+        });
+        assert.isString(moved.routed);
+        assert.deepInclude(
+          yield* KinRecords.KinRecords.pipe(Effect.flatMap((r) => r.get(orgId, own!.key))),
+          {
+            ownerId: asker,
+            waitingOnId: asker,
+          },
+        );
+      }
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("record_update changes only named fields, logs each change, and both of two land", () =>
@@ -458,6 +616,12 @@ const asked = Effect.fn("KinRecordsTest.asked")(function* (
         audience = 'owner_only' WHERE wakeup_id = ${wakeupId}`;
   });
   const steer = Effect.suspend(() => queue.steer({ orgId, agentId: lead, wakeupId }));
+  /** Kin is stopped mid-turn and started again: its events come back in a new wake-up. */
+  const resume = Effect.fn("KinRecordsTest.resume")(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    yield* queue.release({ orgId, wakeupId, countAttempt: false, notBefore: now });
+    yield* wake();
+  });
   const later = TestClock.adjust(60_000);
   const rev = Effect.map(records.get(orgId, "W-1"), (row) => row!.rev);
   const write = (sourceEventId: string, change: object) =>
@@ -473,6 +637,7 @@ const asked = Effect.fn("KinRecordsTest.asked")(function* (
     say,
     wake,
     steer,
+    resume,
     later,
     rev,
     write,
@@ -568,20 +733,62 @@ const keptForPerson = [
       yield* scene.later;
       yield* scene.records.update(orgId, scene.ownerWrites, "W-1", {
         owner: { _tag: "agent", agentId: lead },
+        notes: "Invented: the owner's brief",
       });
       yield* scene.wake();
       const [given] = yield* scene.sql<{ eventId: string }>`SELECT event_id AS "eventId"
         FROM kin_events WHERE org_id = ${orgId} AND tag = 'record.changed'`;
-      yield* scene.write(given!.eventId, {
+      // The person's notes stay theirs: the agent's status goes on its activity, once, instead.
+      const status = {
         state: "doing",
         title: "Invented pricing tiers",
         due: "2026-11-20",
-        expectedRev: yield* scene.rev,
-      });
+        notes: "Invented: drafted, waiting on prices",
+      };
+      const seen = yield* scene.rev;
+      const written = yield* scene.write(given!.eventId, { ...status, expectedRev: seen });
+      assert.include(written, { notesKept: LeadWork.NOTES_KEPT });
+      yield* scene.write(given!.eventId, { ...status, expectedRev: seen });
+      // Blank words write nothing, and say nothing was noted.
+      const blank = yield* scene.write(given!.eventId, { notes: "  " });
+      assert.include(blank, { notesKept: LeadWork.NOTES_KEPT_BLANK });
+      // New words at a revision since changed are refused, and noted nowhere.
+      assert.include(
+        yield* Effect.flip(
+          scene.write(given!.eventId, { notes: "Invented: stale", expectedRev: seen }),
+        ),
+        { reason: "conflict" },
+      );
       assert.include(yield* scene.records.get(orgId, "W-1"), {
         state: "doing",
         title: "Invented pricing tiers",
         ownerKind: "agent",
+        notes: "Invented: the owner's brief",
+      });
+      const noted = yield* scene.sql<{ authorKind: string; authorId: string; body: string }>`
+        SELECT author_kind AS "authorKind", author_id AS "authorId", body
+        FROM kin_record_comments WHERE org_id = ${orgId} ORDER BY seq`;
+      assert.deepStrictEqual(noted, [
+        { authorKind: "agent", authorId: lead, body: "Invented: drafted, waiting on prices" },
+      ]);
+      // Stopped and resumed, its turn writes the same words for the same event once; new words
+      // are a new note.
+      yield* scene.resume();
+      yield* scene.write(given!.eventId, { notes: status.notes });
+      yield* scene.write(given!.eventId, { notes: "Invented: prices are in" });
+      const bodies = yield* scene.sql<{ body: string }>`SELECT body FROM kin_record_comments
+        WHERE org_id = ${orgId} ORDER BY seq`;
+      assert.deepStrictEqual(
+        bodies.map((one) => one.body),
+        [status.notes, "Invented: prices are in"],
+      );
+      // Notes the agent wrote itself it may write over, as before.
+      yield* scene.sql`UPDATE kin_records SET notes = '' WHERE org_id = ${orgId} AND key = 'W-1'`;
+      yield* scene.write(given!.eventId, { notes: "Invented: its own status" });
+      const again = yield* scene.write(given!.eventId, { notes: "Invented: its newer status" });
+      assert.notProperty(again, "notesKept");
+      assert.include(yield* scene.records.get(orgId, "W-1"), {
+        notes: "Invented: its newer status",
       });
     }),
   ),
@@ -859,6 +1066,42 @@ const keptForPerson = [
         assert.strictEqual(yield* state, to);
       }
     }),
+  ),
+  ...(["the owner", "the agent"] as const).map((who) =>
+    row(
+      `notes ${who} wrote on a repeating task keep their writer on its next occurrence`,
+      Effect.gen(function* () {
+        const scene = yield* asked({ _tag: "agent", agentId: lead });
+        yield* scene.records.update(orgId, scene.ownerWrites, "W-1", {
+          dueAt: Date.parse("2026-11-12T15:00:00Z"),
+          repeat: { every: "days", days: 7 },
+          ...(who === "the owner" ? { notes: "Invented: the owner's brief" } : {}),
+        });
+        if (who === "the agent") {
+          const ask = yield* scene.say("Note where W-1 stands");
+          yield* scene.wake();
+          yield* scene.write(ask, { notes: "Invented: its status" });
+        }
+        yield* scene.records.update(orgId, scene.ownerWrites, "W-1", { state: "done" });
+        const ask = yield* scene.say("Note where the next one stands");
+        yield* scene.wake();
+        const [next] = yield* scene.sql<{ key: string; notes: string }>`SELECT key, notes
+          FROM kin_records WHERE org_id = ${orgId} AND origin_key LIKE 'repeat:%'`;
+        const written = yield* LeadWork.update(scopeOf(lead), {
+          key: next!.key,
+          sourceEventId: ask,
+          notes: "Invented: its newer status",
+        });
+        const after = yield* scene.records.get(orgId, next!.key);
+        if (who === "the owner") {
+          assert.include(written, { notesKept: LeadWork.NOTES_KEPT });
+          assert.strictEqual(after!.notes, "Invented: the owner's brief");
+        } else {
+          assert.notProperty(written, "notesKept");
+          assert.strictEqual(after!.notes, "Invented: its newer status");
+        }
+      }),
+    ),
   ),
 ];
 it.effect.each(keptForPerson)("an agent keeps a person's newer change: $name", ({ run }) => run);
@@ -1201,6 +1444,8 @@ it.effect(
         // Their own; the owner level anyone's (`handOver`).
         "kin.work.handOver",
         "kin.work.update",
+        // Whoever may change the task, through the same write (`ownerWork.tickStep`).
+        "kin.work.tickStep",
         // Anyone who sees the entry; its author or the owner level removes one.
         "kin.work.comment",
         "kin.work.commentRemove",
@@ -1218,12 +1463,16 @@ it.effect(
         "kin.work.updateContact",
         "kin.work.logTouch",
         "kin.work.removeTouch",
+        // Reads of what they see in Clients, refused with it off (`ownerMarketing.ts`, crm tests).
+        "kin.work.marketing",
+        "kin.work.contactList",
+        "kin.work.exportContacts",
       ]);
       const methods = [
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 49);
+      assert.lengthOf(methods, 53);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),
@@ -1533,6 +1782,116 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "who else is on a task: someone here, once, at most ten, never its holder, and off it once it is theirs",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* TestClock.setTime(Date.parse("2026-11-11T09:00:00Z"));
+      const sql = yield* SqlClient.SqlClient;
+      const devId = KinPersonId.make("dev");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${devId}, ${orgId}, 'dev', 'Dev', ${at})`;
+      const person = (personId: KinPersonId) => ({ _tag: "person" as const, personId });
+      const made = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: launch plan",
+        clientRequestId: "also-1",
+        alsoOn: [person(mateId), toLead],
+      });
+      assert.deepStrictEqual(made.alsoOn, [person(mateId), toLead]);
+      const records = yield* KinRecords.KinRecords;
+      const byOwner = { actor: person(ownerId), via: "owner", askedBy: ownerId } as const;
+      const set = (alsoOn: ReadonlyArray<string>) =>
+        records.update(orgId, byOwner, made.key, { fields: { alsoOn } });
+      for (const alsoOn of [
+        [`person:${ownerId}`],
+        [`person:${mateId}`, `person:${mateId}`],
+        Array.from({ length: 11 }, (_, i) => `person:invented-${i}`),
+        ["Mate"],
+      ])
+        assert.include(yield* Effect.flip(set(alsoOn)), { reason: "invalid_state" }, `${alsoOn}`);
+      assert.include(yield* Effect.flip(set(["person:nobody"])), { reason: "not_found" });
+      assert.include(
+        yield* Effect.flip(
+          records.create(orgId, byOwner, {
+            list: "projects",
+            originKey: "also-project",
+            title: "Invented: portal",
+            owner: person(ownerId),
+            fields: { alsoOn: [`person:${mateId}`] },
+          }),
+        ),
+        { reason: "invalid_state" },
+      );
+      // An agent with no person behind its turn changes nothing of it.
+      yield* records.update(orgId, { actor: toLead, via: "lead" }, made.key, {
+        fields: { alsoOn: [`person:${devId}`] },
+      });
+      const unchanged = yield* OwnerWork.get([owner], { orgId, key: made.key });
+      assert.deepStrictEqual(unchanged.alsoOn, [person(mateId), toLead]);
+      assert.strictEqual(unchanged.rev, made.rev);
+      // Given to someone on it, they come off it in the same change; the old holder isn't put on.
+      const given = yield* OwnerWork.assign([owner], {
+        orgId,
+        key: made.key,
+        to: person(mateId),
+      });
+      assert.deepStrictEqual(given.alsoOn, [toLead]);
+      assert.deepInclude(given.changes[0]!.fields, {
+        field: "alsoOn",
+        from: `person:${mateId}, agent:${lead}`,
+        to: `agent:${lead}`,
+      });
+      // An agent's change to it, asked by a person, is in its history and Undo puts it back.
+      const asked = { actor: toLead, via: "lead", askedBy: ownerId } as const;
+      yield* records.update(orgId, asked, made.key, {
+        fields: { alsoOn: [`agent:${lead}`, `person:${devId}`] },
+      });
+      const [change] = yield* agentChanges(KIN_OWNER_LEVEL, orgId, lead);
+      assert.deepInclude(change, { key: made.key, undo: true });
+      yield* ownerLevelUndoAgentChange({ orgId, agentId: lead, seq: change!.seq, by: ownerId });
+      assert.deepStrictEqual((yield* OwnerWork.get([owner], { orgId, key: made.key })).alsoOn, [
+        toLead,
+      ]);
+      // Mine is what they hold and what they are on, each once; on time, theirs waits on its holder.
+      const alongside = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: price list",
+        clientRequestId: "also-2",
+        dueAt: "2026-11-12T12:00:00.000Z",
+        alsoOn: [person(mateId), person(devId)],
+      });
+      const mine = yield* OwnerWork.list([mate], { orgId, owner: person(mateId) });
+      assert.deepStrictEqual(mine.records.map((row) => row.key).toSorted(), [
+        made.key,
+        alongside.key,
+      ]);
+      assert.strictEqual(mine.total, 2);
+      const moveOf = Effect.fn(function* () {
+        const page = yield* OwnerWork.list([mate], { orgId, byMove: true });
+        return page.moves?.find((one) => one.key === alongside.key)?.group;
+      });
+      assert.strictEqual(yield* moveOf(), "waiting");
+      yield* TestClock.setTime(Date.parse("2026-11-13T09:00:00Z"));
+      assert.strictEqual(yield* moveOf(), "needsYou");
+      // Someone on it changes it as its holder would, and may take themselves off it.
+      const current = yield* OwnerWork.get([mate], { orgId, key: alongside.key });
+      const left = yield* OwnerWork.update([mate], {
+        orgId,
+        key: alongside.key,
+        rev: current.rev,
+        title: "Invented: price list v2",
+        alsoOn: [person(devId)],
+      });
+      assert.deepInclude(left, { title: "Invented: price list v2", alsoOn: [person(devId)] });
+      // Off it, it is no longer theirs to see.
+      assert.include(yield* Effect.flip(OwnerWork.get([mate], { orgId, key: alongside.key })), {
+        reason: "not_found",
+      });
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("assigning refuses closed entries and records the session's owner as the assigner", () =>
   Effect.gen(function* () {
     yield* seed;
@@ -1600,9 +1959,242 @@ it.effect(
         yield* OwnerWork.decline([owner], { orgId, key: declined.key, rev: declined.rev }),
         { rev: 2 },
       );
-      // The lead held it open, so it is told once.
-      assert.deepStrictEqual(yield* wakes, [[lead, "withdrawn", declined.key, ownerId]]);
+      // Kept, its own suggestion starts once; one never kept was never its work, so declining
+      // it wakes nobody.
+      const keptWake = [lead, "assigned", kept.key, ownerId];
+      assert.deepStrictEqual(yield* wakes, [keptWake]);
+      // Suggested for another agent, it wakes nobody until kept; kept, it is given once.
+      const forOther = (id: string) =>
+        records.create(
+          orgId,
+          { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: ownerId },
+          {
+            originKey: id,
+            title: `Invented: ${id}`,
+            owner: { _tag: "agent", agentId: other },
+            confirmed: false,
+          },
+        );
+      const build = (yield* forOther("build")).row;
+      const dismissed = (yield* forOther("dismissed")).row;
+      assert.deepStrictEqual(yield* wakes, [keptWake]);
+      yield* OwnerWork.decline([owner], { orgId, key: dismissed.key, rev: dismissed.rev });
+      assert.deepStrictEqual(yield* wakes, [keptWake]);
+      yield* OwnerWork.confirm([owner], { orgId, key: build.key, rev: build.rev });
+      yield* OwnerWork.confirm([owner], { orgId, key: build.key, rev: build.rev });
+      const buildWake = [other, "assigned", build.key, ownerId];
+      assert.deepStrictEqual(yield* wakes, [keptWake, buildWake]);
+      // Already started (a hand-off did it): keeping it later starts nothing a second time.
+      const started = (yield* forOther("started")).row;
+      const moved = yield* records.update(
+        orgId,
+        { actor: { _tag: "agent", agentId: other }, via: "lead" },
+        started.key,
+        { state: "doing" },
+      );
+      yield* OwnerWork.confirm([owner], { orgId, key: started.key, rev: moved.rev });
+      assert.deepStrictEqual(yield* wakes, [keptWake, buildWake]);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a task made on the owner's own comment is kept and given at once; through a coding agent it is a suggestion",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const held = (yield* records.create(orgId, ownerWrites, {
+        originKey: "reimburse",
+        title: "Invented: tally partner reimbursements",
+        owner: toLead,
+      })).row;
+      // His comment on it, by his own hand or through his coding agent, wakes its holder.
+      const commentTurn = (seq: number, codingAgentKey: string | null) =>
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq,
+              author_kind, author_id, body, request_hash, created_at, coding_agent_key)
+            VALUES (${orgId}, ${`c-${seq}`}, ${held.recordId}, ${seq}, 'person', ${ownerId},
+              'Get the other lead to build it if it is not possible today', ${`h-${seq}`}, 0,
+              ${codingAgentKey})`;
+          yield* records.commented(orgId, ownerId, held, seq, "Build it");
+          const wakeupId = `wake-${seq}`;
+          yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+          yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+              started_at, status, event_ids, audience)
+            VALUES (${wakeupId}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '[]',
+              'owner_only')`;
+          yield* sql`UPDATE kin_events SET wakeup_id = ${wakeupId}, state = 'claimed'
+            WHERE wakeup_id IS NULL AND agent_id = ${lead}
+              AND json_extract(json, '$.reason') = 'commented'`;
+          const [event] = yield* sql<{ id: string }>`SELECT event_id AS id FROM kin_events
+            WHERE wakeup_id = ${wakeupId} ORDER BY event_id`;
+          return LeadWork.create(scopeOf(lead), {
+            sourceEventId: event!.id,
+            records: [{ title: `Invented: build the reimbursement tag ${seq}`, owner: other }],
+          });
+        });
+      const own = yield* yield* commentTurn(1, null);
+      assert.notProperty(own.records[0], "suggested");
+      assert.include(yield* leadInOf("wake-1"), IN_PERSON);
+      const viaKey = yield* yield* commentTurn(2, "invented-key");
+      assert.include(viaKey.records[0], { suggested: true });
+      assert.notInclude(yield* leadInOf("wake-2"), IN_PERSON);
+      // Only the kept one starts the other lead, once.
+      assert.deepStrictEqual(
+        (yield* wakes).filter((wake) => wake[0] === other),
+        [[other, "assigned", own.records[0]!.key, ownerId]],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a co-owner's own task from her own chat is her ask in person, as her message is; his words passed on are not",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const coId = KinPersonId.make("co");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+        VALUES (${coId}, ${orgId}, 'co', 'Co', 'co_owner', ${at})`;
+      type Words =
+        | "hers"
+        | "the owner's"
+        | "edited after"
+        | "given later"
+        | "a card's"
+        | "imported";
+      const madeBy = (personId: KinPersonId, words: Words) =>
+        Effect.gen(function* () {
+          // Her own direct chat with the lead, where its turn on her task runs.
+          const chat = `${personId}-lead-chat`;
+          yield* sql`DELETE FROM kin_chat_members WHERE chat_id = ${chat}`;
+          yield* sql`DELETE FROM kin_chats WHERE chat_id = ${chat}`;
+          yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+            VALUES (${chat}, ${orgId}, 'direct', ${`${personId}:${lead}`}, 0, ${at})`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              person_id, role, joined_at)
+            VALUES (${`${chat}-person`}, ${orgId}, ${chat}, 'person', ${personId}, 'member', ${at})`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              agent_id, role, joined_at)
+            VALUES (${`${chat}-lead`}, ${orgId}, ${chat}, 'agent', ${lead}, 'member', ${at})`;
+          const hers = { actor: { _tag: "person" as const, personId }, via: "owner" as const };
+          const title = `Invented: get the brochure built ${words}`;
+          if (words === "given later" || words === "a card's" || words === "imported") {
+            // Hers to hold first: typed in Tasks, made by her Yes on an agent's card, or imported.
+            const made = yield* records.create(
+              orgId,
+              words === "imported" ? { ...hers, via: "import" } : hers,
+              {
+                originKey:
+                  words === "a card's"
+                    ? `chosen:${title}`
+                    : words === "imported"
+                      ? `import:entry:${title}`
+                      : `owner:${title}`,
+                title,
+                owner: { _tag: "person", personId },
+              },
+            );
+            yield* records.update(orgId, { ...hers, askedBy: personId }, made.row.key, {
+              owner: toLead,
+            });
+          } else if (words !== "the owner's") {
+            const made = yield* records.create(
+              orgId,
+              { ...hers, askedBy: personId },
+              { originKey: `owner:${title}`, title, owner: toLead },
+            );
+            // The project's lead rewrites the brief after she gave it, before its turn reads it.
+            if (words === "edited after")
+              yield* records.update(
+                orgId,
+                { actor: { _tag: "person", personId: mateId }, via: "owner" },
+                made.row.key,
+                { notes: "Invented: the lead's own brief" },
+              );
+          } else {
+            // His words, given to her; she passes them on with one tap.
+            const his = yield* ownerTask(title, { owner: { _tag: "person", personId } });
+            yield* records.update(orgId, { ...hers, askedBy: personId }, his.key, {
+              owner: toLead,
+            });
+          }
+          const wakeupId = `given-${words}`;
+          yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+          yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+              started_at, status, event_ids, audience)
+            VALUES (${wakeupId}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '[]',
+              'owner_only')`;
+          yield* sql`UPDATE kin_events SET wakeup_id = ${wakeupId}, state = 'claimed'
+            WHERE wakeup_id IS NULL AND agent_id = ${lead}`;
+          const [event] = yield* sql<{ id: string }>`SELECT event_id AS id FROM kin_events
+            WHERE wakeup_id = ${wakeupId} ORDER BY event_id`;
+          assert.isDefined(event, personId);
+          // The lead-in says what the server grants this turn, from the same check.
+          const said = yield* leadInOf(wakeupId);
+          assert.strictEqual(
+            said?.includes(IN_PERSON),
+            words === "hers" || words === "given later",
+          );
+          return yield* LeadWork.create(scopeOf(lead), {
+            sourceEventId: event!.id,
+            records: [{ title: `Invented: design the brochure ${words}`, owner: other }],
+          });
+        });
+      assert.notProperty((yield* madeBy(coId, "hers")).records[0], "suggested");
+      assert.include((yield* madeBy(coId, "the owner's")).records[0], { suggested: true });
+      assert.include((yield* madeBy(coId, "edited after")).records[0], { suggested: true });
+      assert.notProperty((yield* madeBy(coId, "given later")).records[0], "suggested");
+      assert.include((yield* madeBy(coId, "a card's")).records[0], { suggested: true });
+      assert.include((yield* madeBy(coId, "imported")).records[0], { suggested: true });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("closing a task with work left files that work as a linked follow-up, once", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
+    const client = (yield* records.create(orgId, ownerWrites, {
+      list: "clients",
+      originKey: "client",
+      title: "Invented Foundry",
+      owner: { _tag: "person", personId: ownerId },
+    })).row;
+    const task = (yield* records.create(orgId, ownerWrites, {
+      originKey: "invoices",
+      title: "Invented: link the old invoices",
+      owner: toLead,
+      partyId: client.recordId,
+    })).row;
+    const asLead = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
+    const closed = yield* records.update(orgId, asLead, task.key, {
+      state: "done",
+      leftover: "Link the two December invoices by hand",
+    });
+    assert.strictEqual(closed.state, "done");
+    const follow = () =>
+      sql<{ key: string; owner: string; party: string | null; state: string; link: string }>`
+        SELECT r.key, r.owner_id AS owner, r.party_id AS party, r.state, l.target AS link
+        FROM kin_records r JOIN kin_record_links l ON l.org_id = r.org_id AND l.record_id = r.record_id
+        WHERE r.org_id = ${orgId} AND r.title = 'Link the two December invoices by hand'
+        ORDER BY r.key`;
+    const [made] = yield* follow();
+    assert.deepInclude(made, {
+      owner: lead,
+      party: client.recordId,
+      state: "open",
+      link: task.recordId,
+    });
+    // Closed again after a reopen with nothing left, or retried: no second follow-up.
+    yield* records.update(orgId, asLead, task.key, {
+      state: "done",
+      leftover: "Link the two December invoices by hand",
+    });
+    assert.lengthOf(yield* follow(), 1);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect(
@@ -1743,6 +2335,22 @@ it.effect("an entry opens by id, and its links carry what opens the other end", 
         ],
       ],
     );
+    // An agent reads a linked entry that has the number people see by it, with its key.
+    yield* turn();
+    const linked = () =>
+      LeadWork.get(scopeOf(lead), { key: step.key }).pipe(
+        Effect.map((got) => got.links.filter((link) => link.kind === "record")),
+      );
+    assert.deepStrictEqual(
+      (yield* linked()).map((link) => link.target),
+      [parent.recordId, "rec_gone"],
+    );
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/004')
+      WHERE org_id = ${orgId} AND record_id = ${parent.recordId}`;
+    assert.deepStrictEqual(
+      (yield* linked()).map((link) => link.target),
+      [`AM/26-27/004 (${parent.key})`, "rec_gone"],
+    );
     // Its own change number moves with its links, not with another entry's change.
     assert.strictEqual(byId.seq, byId.changes[0]!.seq);
     yield* records.update(orgId, writer, parent.key, { state: "doing" });
@@ -1862,6 +2470,26 @@ it.effect("in a teammate's turn the lead reads and changes Work as their own scr
       yield* Effect.flip(LeadWork.get(scope, { key: hidden.key })),
       unknown(hidden.key),
     );
+    // By the number people see on screen too: theirs to read, else unknown, as a key is.
+    const sql = yield* SqlClient.SqlClient;
+    const numbered = (key: string, number: string) =>
+      sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', ${number})
+        WHERE org_id = ${orgId} AND key = ${key}`;
+    yield* numbered(shared.key, "AM/26-27/010");
+    yield* numbered(hidden.key, "AM/26-27/011");
+    assert.strictEqual((yield* LeadWork.get(scope, { key: "AM/26-27/010" })).key, shared.key);
+    for (const number of ["AM/26-27/011", "AM/26-27/012"])
+      assert.deepStrictEqual(
+        yield* Effect.flip(LeadWork.get(scope, { key: number })),
+        unknown(number),
+      );
+    // Two entries showing one number name neither, rather than a guess.
+    yield* numbered(theirs.key, "AM/26-27/010");
+    assert.deepStrictEqual(
+      yield* Effect.flip(LeadWork.get(scope, { key: "AM/26-27/010" })),
+      unknown("AM/26-27/010"),
+    );
+    yield* numbered(theirs.key, "AM/26-27/013");
     assert.deepStrictEqual(
       yield* Effect.flip(
         LeadWork.update(scope, { key: hidden.key, sourceEventId: "ask-event", state: "done" }),
@@ -2208,6 +2836,183 @@ it.effect(
 );
 
 it.effect(
+  "a task's steps keep their order; a tick bumps its rev once, by whoever may change it",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const made = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: design the appointment screen",
+        steps: ["Fields and states", "Wireframe", "Review with Zoya", "Hand-off"],
+        urgent: true,
+        clientRequestId: "steps",
+      });
+      const titles = (detail: KinRecordDetail) => detail.checklist?.map((step) => step.title);
+      assert.deepStrictEqual(titles(made), [
+        "Fields and states",
+        "Wireframe",
+        "Review with Zoya",
+        "Hand-off",
+      ]);
+      assert.deepInclude(made, { steps: { done: 0, of: 4 }, urgent: true });
+      assert.isTrue(made.can?.edit);
+      const tick = (index: number, title: string, done = true) =>
+        OwnerWork.tickStep([owner], { orgId, key: made.key, index, title, done });
+      const ticked = yield* tick(1, "Wireframe");
+      assert.strictEqual(ticked.rev, made.rev + 1);
+      assert.deepStrictEqual(ticked.steps, { done: 1, of: 4 });
+      assert.deepStrictEqual(titles(ticked), titles(made));
+      assert.deepStrictEqual(
+        ticked.checklist?.map((step) => step.done),
+        [false, true, false, false],
+      );
+      // A retry finds it ticked already and changes nothing.
+      assert.strictEqual((yield* tick(1, "Wireframe")).rev, ticked.rev);
+      // Steps that changed since the screen read them are a conflict, not a tick of another.
+      assert.include(yield* Effect.flip(tick(1, "Fields and states")), { reason: "conflict" });
+      assert.include(yield* Effect.flip(tick(9, "Wireframe")), { reason: "conflict" });
+      // Every step ticked leaves the task as it was: done is the holder's to say.
+      let last = ticked;
+      for (const [index, title] of [
+        [0, "Fields and states"],
+        [2, "Review with Zoya"],
+        [3, "Hand-off"],
+      ] as const)
+        last = yield* tick(index, title);
+      assert.deepInclude(last, { state: "open", steps: { done: 4, of: 4 } });
+      // The whole list changes by its revision; urgent comes off the same way.
+      const edited = yield* OwnerWork.update([owner], {
+        orgId,
+        key: made.key,
+        rev: last.rev,
+        steps: [{ title: "Hand-off", done: false }],
+        urgent: false,
+      });
+      assert.deepStrictEqual(edited.checklist, [{ title: "Hand-off", done: false }]);
+      assert.notProperty(edited, "urgent");
+      const [history] = yield* sql<{ fields: string }>`SELECT fields_json AS fields
+        FROM kin_record_changes WHERE org_id = ${orgId} AND rev = ${edited.rev}`;
+      assert.includeDeepMembers(JSON.parse(history!.fields), [
+        { field: "urgent", from: "true", to: "false" },
+      ]);
+      const cleared = yield* OwnerWork.update([owner], {
+        orgId,
+        key: made.key,
+        rev: edited.rev,
+        steps: [],
+      });
+      assert.deepStrictEqual(cleared.checklist, []);
+      assert.notProperty(cleared, "steps");
+      // A teammate who may not change it hears of no such task, as for any other change.
+      const unknown = { reason: "not_found" as const, message: `No entry ${made.key} in Work.` };
+      assert.deepInclude(
+        yield* Effect.flip(
+          OwnerWork.tickStep([mate], {
+            orgId,
+            key: made.key,
+            index: 0,
+            title: "Hand-off",
+            done: true,
+          }),
+        ),
+        unknown,
+      );
+      // Another company's person names the key and finds nothing there.
+      const elsewhere = KinOrgId.make("org-b");
+      yield* sql`INSERT INTO kin_orgs VALUES (${elsewhere}, 'Invented Other Co', ${at})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('stranger', ${elsewhere}, 'stranger', 'Stranger', ${at})`;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('stranger-session', ${elsewhere}, 'stranger', 0)`;
+      const stranger = {
+        _tag: "person" as const,
+        orgId: elsewhere,
+        personId: KinPersonId.make("stranger"),
+      };
+      assert.deepInclude(
+        yield* Effect.flip(
+          OwnerWork.tickStep([stranger], {
+            orgId: elsewhere,
+            key: made.key,
+            index: 0,
+            title: "Hand-off",
+            done: true,
+          }),
+        ),
+        unknown,
+      );
+      // Given to the teammate, it is theirs to tick, as it is theirs to change.
+      const given = yield* OwnerWork.update([owner], {
+        orgId,
+        key: made.key,
+        rev: cleared.rev,
+        steps: [{ title: "Hand-off", done: false }],
+      });
+      yield* OwnerWork.assign([owner], {
+        orgId,
+        key: made.key,
+        to: { _tag: "person", personId: mateId },
+        rev: given.rev,
+      });
+      const theirs = yield* OwnerWork.tickStep([mate], {
+        orgId,
+        key: made.key,
+        index: 0,
+        title: "Hand-off",
+        done: true,
+      });
+      assert.deepInclude(theirs, { steps: { done: 1, of: 1 } });
+      assert.isTrue(theirs.can?.edit);
+      // Only a task has steps.
+      const client = yield* OwnerClients.createParty([owner], {
+        orgId,
+        name: "Invented Harbourline",
+        kind: "client",
+        clientRequestId: "client",
+      });
+      assert.include(
+        yield* Effect.flip(
+          KinRecords.KinRecords.pipe(
+            Effect.flatMap((records) =>
+              records.update(orgId, ownerWrites, client.key, {
+                steps: [{ title: "x", done: false }],
+              }),
+            ),
+          ),
+        ),
+        { reason: "invalid_state" },
+      );
+      // Closing a repeating one makes the next with its steps unticked and no urgent mark.
+      const weekly = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: weekly close",
+        dueAt: "2026-11-20",
+        dueAllDay: true,
+        repeat: { every: "days", days: 7 },
+        steps: ["Reconcile"],
+        urgent: true,
+        clientRequestId: "weekly",
+      });
+      const closing = yield* OwnerWork.tickStep([owner], {
+        orgId,
+        key: weekly.key,
+        index: 0,
+        title: "Reconcile",
+        done: true,
+      });
+      yield* OwnerWork.update([owner], { orgId, key: weekly.key, rev: closing.rev, state: "done" });
+      const [next] = yield* sql<{ steps: string | null; urgent: number | null }>`SELECT
+          steps_json AS steps, urgent FROM kin_records
+        WHERE org_id = ${orgId} AND origin_key = ${`repeat:${weekly.recordId}`}`;
+      assert.deepStrictEqual(next, {
+        steps: JSON.stringify([{ title: "Reconcile", done: false }]),
+        urgent: null,
+      });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "a teammate files tasks of their own and changes only theirs, never a label or money",
   () =>
     Effect.gen(function* () {
@@ -2389,7 +3194,14 @@ it.effect(
       yield* seed;
       yield* mateMayMessage;
       const sql = yield* SqlClient.SqlClient;
-      // An agent its owner doesn't let them message is no agent to them, and nothing is written.
+      // An agent the owner restricted for them is no agent to them, and nothing is written.
+      yield* Reach.setLimit({
+        orgId,
+        by: ownerId,
+        a: Reach.person(mateId),
+        b: Reach.agent(other),
+        restricted: true,
+      });
       assert.deepInclude(
         yield* Effect.flip(
           OwnerWork.create([mate], {
@@ -2497,7 +3309,17 @@ it.effect("a task a teammate holds and gives an agent wakes it in their chat, at
     yield* seed;
     yield* mateMayMessage;
     const sql = yield* SqlClient.SqlClient;
-    const theirs = yield* ownerTask("theirs", { owner: { _tag: "person", personId: mateId } });
+    const records = yield* KinRecords.KinRecords;
+    const client = (yield* records.create(orgId, ownerWrites, {
+      list: "clients",
+      originKey: "client",
+      title: "Invented Client",
+      owner: { _tag: "person", personId: ownerId },
+    })).row;
+    const theirs = yield* ownerTask("theirs", {
+      owner: { _tag: "person", personId: mateId },
+      partyId: client.recordId,
+    });
     const hidden = yield* ownerTask("owner only", { sensitive: true });
     yield* OwnerWork.assign([mate], { orgId, key: theirs.key, to: toLead });
     const [event] = yield* assignedEvents;
@@ -2513,6 +3335,48 @@ it.effect("a task a teammate holds and gives an agent wakes it in their chat, at
     const woken = { orgId, agentId: lead, wakeupId: "mate-wake" };
     assert.strictEqual(yield* turnAudience(woken), "shared");
     assert.strictEqual(yield* KinLevels.originCap(woken), "L1");
+    // Its client is named only while they may read Clients.
+    const given = Effect.gen(function* () {
+      const text = yield* workEventText({
+        orgId,
+        event: (yield* lastGiven)!,
+        ownerOnly: false,
+        wakeupId: "mate-wake",
+      });
+      return JSON.parse(quotesIn(text!).get("work given to you (data)")!);
+    });
+    assert.notProperty(yield* given, "client");
+    yield* places(1, 0, 0);
+    assert.deepInclude(yield* given, {
+      client: `Invented Client (${client.key})`,
+      clientNextStep: true,
+    });
+    assert.notProperty(yield* given, "contacts");
+    // Read with someone else in the chat who can't see Clients, it names no client.
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES ('other-mate', ${orgId}, 'other-mate', 'Other mate', ${at}, 'member')`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+        role, joined_at)
+      VALUES ('mate-chat-other', ${orgId}, 'mate-chat', 'person', 'other-mate', 'member', ${at})`;
+    assert.notProperty(yield* given, "client");
+    yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'mate-chat-other'`;
+    // It names who gave it and what they are here, and it goes back to them, not the owner.
+    const leadIn = (ownerOnly: boolean) =>
+      Effect.flatMap(lastGiven, (event) =>
+        workEventText({ orgId, event: event!, ownerOnly, wakeupId: "mate-wake" }),
+      );
+    const mates = (yield* leadIn(false))!;
+    assert.match(mates, /^"Mate", a teammate, gave you this task/);
+    assert.include(mates, 'set it waiting on "Mate" and give it back to them');
+    assert.include(mates, 'words like "them" in it mean that client');
+    assert.notInclude(mates, "the owner");
+    yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${mateId}`;
+    const coOwners = (yield* leadIn(true))!;
+    assert.match(coOwners, /^"Mate", a co-owner, gave you this Work entry/);
+    assert.include(coOwners, 'set it waiting on "Mate" and give it back to them');
+    assert.notInclude(coOwners, "The owner gave you");
+    assert.notInclude(coOwners, "a teammate");
+    yield* sql`UPDATE kin_people SET access = NULL WHERE person_id = ${mateId}`;
     assert.include(yield* Effect.flip(LeadWork.get(scopeOf(lead), { key: hidden.key })), {
       reason: "not_found",
     });
@@ -2524,6 +3388,16 @@ it.effect("a task a teammate holds and gives an agent wakes it in their chat, at
 );
 
 const decodeEvent = Schema.decodeUnknownSync(KinEvent);
+/** The lead-in a wake-up's first task event gets in a turn the owner side alone reads. */
+const leadInOf = Effect.fn("KinRecordsTest.leadInOf")(function* (wakeupId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ json: string }>`SELECT json FROM kin_events
+    WHERE wakeup_id = ${wakeupId} ORDER BY event_id LIMIT 1`;
+  const event = decodeEvent(JSON.parse(row!.json));
+  if (event._tag !== "record.changed") return undefined;
+  return yield* workEventText({ orgId, event, ownerOnly: true, wakeupId });
+});
+const IN_PERSON = "as if they had asked you in their direct chat";
 /** The latest wake-up that gave a lead an entry, as stored. */
 const lastGiven = assignedEvents.pipe(
   Effect.map((rows) =>
@@ -2564,7 +3438,7 @@ it.effect(
         const event = (yield* lastGiven)!;
         assert.deepInclude(event.provenance, { _tag: "human", personId: ownerId });
         assert.notProperty(event, "chatId");
-        return yield* workEventText({ orgId, event, ownerOnly: true });
+        return yield* workEventText({ orgId, event, ownerOnly: true, wakeupId: "owner-wake" });
       });
       const first = (yield* told)!;
       assert.include(first, "The owner gave you this Work entry");
@@ -2606,6 +3480,66 @@ it.effect(
       const his = (yield* told)!;
       assert.include(his, "as if the owner had asked you");
       assert.notInclude(his, TEAMMATE_WORDS);
+      assert.notInclude(his, '"number"');
+      // An entry with the number people see carries it beside its key.
+      const sql = yield* SqlClient.SqlClient;
+      const event = (yield* lastGiven)!;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/004')
+        WHERE org_id = ${orgId} AND record_id = ${event.recordId}`;
+      assert.include(
+        quotesIn((yield* told)!).get("work given to you (data)")!,
+        `"key":"${event.key}","number":"AM/26-27/004"`,
+      );
+      // It names whose it is: its client, their contacts newest first, its project, and
+      // whether it is the client's next step.
+      const records = yield* KinRecords.KinRecords;
+      const made = (list: "clients" | "contacts" | "projects", title: string, partyId?: string) =>
+        records
+          .create(orgId, ownerWrites, {
+            list,
+            originKey: title,
+            title: `Invented ${title}`,
+            owner: { _tag: "person", personId: ownerId },
+            ...(partyId === undefined ? {} : { partyId }),
+          })
+          .pipe(Effect.map(({ row }) => row));
+      const client = yield* made("clients", "Northwind");
+      const other = yield* made("clients", "Harbor");
+      const older = yield* made("contacts", "Ilsa", client.recordId);
+      yield* sql`UPDATE kin_records SET created_at = created_at - 1000
+        WHERE org_id = ${orgId} AND record_id = ${older.recordId}`;
+      const newer = yield* made("contacts", "Omar", client.recordId);
+      yield* made("contacts", "Harbor's own", other.recordId);
+      const project = yield* made("projects", "Plant ERP", client.recordId);
+      yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: send them what we built for Harbor",
+        party: client.key,
+        project: project.key,
+        owner: toLead,
+        clientRequestId: "next step",
+      });
+      const facts = JSON.parse(quotesIn((yield* told)!).get("work given to you (data)")!);
+      assert.deepInclude(facts, {
+        client: `Invented Northwind (${client.key})`,
+        contacts: [`Invented Omar (${newer.key})`, `Invented Ilsa (${older.key})`],
+        project: `Invented Plant ERP (${project.key})`,
+        clientNextStep: true,
+      });
+      const lonely = yield* made("clients", "Lonely");
+      yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: a later one",
+        party: lonely.key,
+        owner: toLead,
+        clientRequestId: "lonely",
+      });
+      const lonelyTask = JSON.parse(quotesIn((yield* told)!).get("work given to you (data)")!);
+      assert.deepInclude(lonelyTask, {
+        client: `Invented Lonely (${lonely.key})`,
+        clientNextStep: true,
+      });
+      assert.notProperty(lonelyTask, "contacts");
     }).pipe(Effect.provide(layer)),
 );
 
@@ -2735,23 +3669,63 @@ it.effect("a teammate's change numbers move only with what they can see, on ever
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a teammate's live changes name only tasks they see, and one hidden from them once", () =>
+it.effect("a teammate's Tasks and Search find the projects they lead by its own index", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    // As the server runs: `Sqlite.setup` deletes the planner's statistics at every start.
+    assert.lengthOf(yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`, 0);
+    yield* OwnerWork.create([mate], { orgId, title: "Invented: theirs", clientRequestId: "t" });
+    const asked: Array<readonly [string, ReadonlyArray<unknown>]> = [];
+    const watched = Effect.provideService(Statement.CurrentTransformer, (statement) => {
+      const [text, params] = statement.compile();
+      if (text.includes("lp.register_id = 'projects'")) asked.push([text, params]);
+      return Effect.succeed(statement);
+    });
+    // Tasks' count and page, then Search: each reads through the same visibility.
+    yield* OwnerWork.list([mate], { orgId, open: true }).pipe(watched);
+    const read = asked.length;
+    assert.isAtLeast(read, 2);
+    yield* OwnerDocs.search([mate], { orgId, text: "theirs" }).pipe(watched);
+    assert.isAbove(asked.length, read);
+    for (const [text, params] of asked) {
+      const plan = yield* sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${text}`, params);
+      const led = plan.map((row) => row.detail).filter((detail) => /\blp\b/u.test(detail));
+      assert.deepStrictEqual(
+        led.map((detail) => detail.includes("idx_kin_records_owner_list")),
+        led.map(() => true),
+        led.join("\n"),
+      );
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("old live changes name to a teammate only what they see, to the owner all", () =>
   Effect.gen(function* () {
     yield* seed;
     const records = yield* KinRecords.KinRecords;
     const sql = yield* SqlClient.SqlClient;
     const heard = yield* Queue.unbounded<{
       readonly seq: number;
-      readonly key?: string;
-      readonly list?: string;
+      readonly key?: string | undefined;
+      readonly list?: string | undefined;
     }>();
-    yield* OwnerWork.subscribe([mate], { orgId }).pipe(
+    yield* WorkStream.subscribeChanged([mate], { orgId }).pipe(
       Stream.runForEach((event) => Queue.offer(heard, event)),
+      Effect.forkChild,
+    );
+    const told = yield* Queue.unbounded<{
+      readonly key?: string | undefined;
+      readonly list?: string | undefined;
+    }>();
+    yield* WorkStream.subscribeChanged([owner], { orgId }).pipe(
+      Stream.runForEach((event) => Queue.offer(told, event)),
       Effect.forkChild,
     );
     // Each is taken before the next write: a notice nobody should get would come first instead.
     const next = Queue.take(heard).pipe(Effect.map((event) => [event.key ?? null, event.seq]));
     assert.deepStrictEqual(yield* next, [null, 0]);
+    assert.strictEqual((yield* Queue.take(told)).key, undefined);
     const create = (title: string, owner = ownerId) =>
       records.create(orgId, ownerWrites, {
         originKey: title,
@@ -2760,6 +3734,14 @@ it.effect("a teammate's live changes name only tasks they see, and one hidden fr
       });
     yield* create("owner's");
     yield* create("for mate", mateId);
+    // The owner is told of both, by the company's numbers.
+    assert.deepStrictEqual(
+      [yield* Queue.take(told), yield* Queue.take(told)].map((event) => [event.key, event.list]),
+      [
+        ["W-1", "work"],
+        ["W-2", "work"],
+      ],
+    );
     // Their own numbers: one more for each change to what they could see, so nothing else shows.
     // The list is named, so their screens read again only what Work's own list can change.
     const theirs = yield* Queue.take(heard);
@@ -2887,6 +3869,14 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     );
     assert.isNull(page.party.terms);
     assert.notInclude(JSON.stringify(page), "net 30");
+    // Search finds the contact with its client, whose page opens for it.
+    assert.deepStrictEqual(
+      (yield* OwnerDocs.search([mate], { orgId, text: "Priya" })).hits.map((hit) => [
+        hit.key,
+        "client" in hit ? hit.client : undefined,
+      ]),
+      [[priya.row.key, client.key]],
+    );
     assert.include(yield* Effect.flip(OwnerDocs.list([mate], { orgId })), {
       reason: "not_allowed",
     });
@@ -2935,16 +3925,22 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     assert.strictEqual(named.title, "Invented Priya");
     assert.notInclude(JSON.stringify(named), "priya@acme");
     // Run 4: Money counted a lead's coming-up dates, then refused to list them. One read, one
-    // rule: the list holds what the count counted, and not the owner's own dates.
+    // rule: the list holds what the count counted, and not the owner's own dates. Money's dates
+    // are money's: a task due as soon is on neither.
     const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'dates', 'Dates', 'DT', 0, 0, ${JSON.stringify(presetDefinition("dates", "INR"))})`;
     const [project] = yield* sql<{ id: string }>`SELECT record_id AS id FROM kin_records
       WHERE org_id = ${orgId} AND register_id = 'projects'`;
     const now = yield* Clock.currentTimeMillis;
-    for (const [originKey, title, projectId] of [
-      ["their date", "Invented app review", project!.id],
-      ["owner date", "Invented rent renewal", undefined],
+    for (const [originKey, title, projectId, list] of [
+      ["their date", "Invented app review", project!.id, "dates"],
+      ["owner date", "Invented rent renewal", undefined, "dates"],
+      ["their task", "Invented app demo", project!.id, "work"],
     ] as const)
       yield* records.create(orgId, ownerWrites, {
+        list,
         originKey,
         title,
         dueAt: now + 5 * 86_400_000,
@@ -2995,26 +3991,32 @@ it.effect("a record lists what links to it, of what the reader sees, newest firs
     yield* linkTo(mine, doc.recordId);
     yield* Docs.link(orgId, ownerWrites, { key: doc.key }, [both.key], "relates");
     const from = (detail: Pick<KinRecordDetail, "linkedFrom" | "linkedFromMore">) => [
-      detail.linkedFrom?.map((link) => [link.record?.key, link.target]),
+      detail.linkedFrom?.map((link) => [link.record?.key, link.target, link.number]),
       detail.linkedFromMore,
     ];
+    // An issued number goes with the link, both ways round.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/7')
+      WHERE record_id = ${mine.recordId}`;
     // Newest first; one the doc links back to is in its own links, not here.
     assert.deepStrictEqual(from(yield* OwnerDocs.get([owner], { orgId, key: doc.key })), [
       [
-        [mine.key, mine.recordId],
-        [theirs.key, theirs.recordId],
+        [mine.key, mine.recordId, "AM/7"],
+        [theirs.key, theirs.recordId, undefined],
       ],
       undefined,
     ]);
     // A teammate who may not see the owner's task never learns of it, by key, title or count.
     const seen = yield* OwnerDocs.get([mate], { orgId, key: doc.key });
-    assert.deepStrictEqual(from(seen), [[[theirs.key, theirs.recordId]], undefined]);
+    assert.deepStrictEqual(from(seen), [[[theirs.key, theirs.recordId, undefined]], undefined]);
     assert.notInclude(JSON.stringify(seen), "owner's task");
     // The task's sheet reads the same way round: the doc is in its links, and nothing links to it.
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/8')
+      WHERE record_id = ${doc.recordId}`;
     const task = yield* OwnerWork.get([owner], { orgId, key: theirs.key });
     assert.deepStrictEqual(
-      [task.links.map((link) => link.record?.key), task.linkedFrom],
-      [[doc.key], undefined],
+      [task.links.map((link) => [link.record?.key, link.number]), task.linkedFrom],
+      [[[doc.key, "AM/8"]], undefined],
     );
 
     for (let n = 0; n < 60; n++) yield* linkTo(yield* ownerTask(`linker ${n}`), mine.recordId);
@@ -3293,6 +4295,9 @@ it.effect(
       yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'America/Los_Angeles', '08:30',
           '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')
         ON CONFLICT (org_id) DO UPDATE SET time_zone = 'America/Los_Angeles'`;
+      // Her own clock is a day ahead: a due day is still the company's, not hers.
+      yield* sql`UPDATE kin_people SET time_zone = 'Pacific/Auckland'
+        WHERE org_id = ${orgId} AND person_id = ${mateId}`;
       const scope = scopeOf("lead");
       // G03: the owner's turn has seen a price; what it writes is still not private for that.
       yield* sensitiveShown({ orgId, wakeupId: "wake" });
@@ -3324,8 +4329,13 @@ it.effect(
       assert.lengthOf(told, 1);
       assert.include(told[0]!.body, "gave you 3 tasks");
       assert.include(told[0]!.body, "W-2 Invented: fix the login screen, due Fri 20 Nov. Why: iOS");
+      yield* sql`UPDATE kin_people SET time_zone = NULL
+        WHERE org_id = ${orgId} AND person_id = ${mateId}`;
       // The agent reads the day the owner named, west of UTC too.
-      assert.include(yield* LeadWork.get(scope, { key: "W-2" }), { due: "2026-11-20" });
+      assert.include(yield* LeadWork.get(scope, { key: "W-2" }), {
+        due: "2026-11-20",
+        dueDay: "Fri 20 Nov 2026",
+      });
       // The owner asked, so the owner gave it; the agent only carried it.
       const given = yield* OwnerWork.get([mate], { orgId, key: "W-2" });
       assert.deepInclude(given, {
@@ -3337,11 +4347,11 @@ it.effect(
       const turnOf = { orgId, agentId: lead, wakeupId: "wake" };
       yield* TestClock.setTime(Date.parse("2026-11-16T00:00:00.000Z"));
       assert.include(
-        (yield* readPeople(turnOf)).quoted,
+        JSON.stringify(yield* readPeople(turnOf)),
         '"load":{"open":3,"late":0,"dueThisWeek":1,"openBySize":{"S":0,"M":1,"L":0,"unsized":2},"overloaded":false}',
       );
       yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
-      assert.notInclude((yield* readPeople(turnOf)).quoted, '"load"');
+      assert.notInclude(JSON.stringify(yield* readPeople(turnOf)), '"load"');
       // Handed back from the app, it goes to the owner who asked for it.
       assert.deepStrictEqual(
         yield* OwnerWork.handBack([mate], { orgId, key: "W-2", note: "I'm on the release" }),
@@ -3359,6 +4369,8 @@ it.effect(
         by: { _tag: "person", personId: mateId },
         at: "2026-11-16T00:00:00.000Z",
       });
+      // One instant for both: Tasks reads the hand-back as open until the task changes again.
+      assert.strictEqual(returned.updatedAt, returned.handedBack?.at);
       // Only whoever holds it hands it back.
       assert.include(
         yield* Effect.flip(
@@ -3368,36 +4380,89 @@ it.effect(
         ),
         { reason: "not_found" },
       );
-      // H15: the owner moving a task on his screen tells its holders as an agent would, and the
-      // agent's why goes with the agent's assignment.
+      // H15: the owner moving a task on his screen posts no chat line: its holders' news waits for
+      // one banner (`tellOnTasks`). The agent's why goes with the agent's assignment.
       yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
         VALUES (${orgId}, ${lead}, ${ownerId}, ${at})`;
       const notices = sql<{ body: string }>`SELECT body FROM kin_messages
         WHERE chat_id = 'mate-chat' AND message_id LIKE 'kin-assign-%' ORDER BY seq`;
       const before = (yield* notices).length;
+      const news = (personId: string) =>
+        sql<{ line: string }>`SELECT json_extract(body, '$.name') || ' ' ||
+            json_extract(body, '$.kind') || ' ' || json_extract(body, '$.key') AS line
+          FROM kin_held_posts WHERE person_id = ${personId}
+            AND substr(kind, 1, 14) = 'kin-task-news:'
+          ORDER BY held_at, rowid`.pipe(Effect.map((rows) => rows.map((row) => row.line)));
       const mateHolds = { _tag: "person" as const, personId: mateId };
       yield* OwnerWork.assign([owner], { orgId, key: "W-2", to: null });
       yield* OwnerWork.assign([owner], { orgId, key: "W-3", to: null });
       yield* OwnerWork.assign([owner], { orgId, key: "W-2", to: mateHolds });
       // Given again, it is no longer marked handed back.
       assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-2" })).handedBack);
-      assert.deepStrictEqual(
-        (yield* notices).slice(before).map((row) => row.body),
-        [
-          "Owner took over W-3 Invented: salary review.",
-          "Owner gave you W-2 Invented: fix the login screen, due Fri 20 Nov.",
-        ],
-      );
+      assert.deepStrictEqual((yield* notices).slice(before), []);
+      assert.deepStrictEqual(yield* news(mateId), ["Owner taken W-3", "Owner given W-2"]);
       assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-3" })).reason);
-      // Model tasks: handed back on the screen to the person who gave it, that person is told.
+      // Model tasks: handed back on the screen to the person who gave it, that person is told,
+      // on their Tasks and in a banner, not in a chat.
       yield* OwnerWork.handBack([mate], { orgId, key: "W-2", note: "Invented: blocked on design" });
       assert.deepStrictEqual(
-        (yield* sql<{ body: string }>`SELECT body FROM kin_messages
-          WHERE chat_id = 'lead-chat' AND message_id LIKE 'kin-assign-%' ORDER BY seq`).map(
-          (row) => row.body,
-        ),
-        ["Mate handed W-2 Invented: fix the login screen back: Invented: blocked on design."],
+        yield* sql`SELECT body FROM kin_messages
+          WHERE chat_id = 'lead-chat' AND message_id LIKE 'kin-assign-%' ORDER BY seq`,
+        [],
       );
+      // The two from before the company had a team agent are news too: no agent need carry it.
+      assert.deepStrictEqual(yield* news(ownerId), [
+        "Mate returned W-2",
+        "Mate returned W-1",
+        "Mate returned W-2",
+      ]);
+      // His Tasks row says who handed it back (the record) and why (the row's step).
+      const back = (yield* OwnerWork.list([owner], { orgId, byMove: true })).moves?.find(
+        (one) => one.key === "W-2",
+      );
+      assert.deepInclude(back, {
+        group: "needsYou",
+        handedBackNote: "Invented: blocked on design",
+      });
+      // The agent reads who handed it back on the record, with no chat line to quote.
+      yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'wake'`;
+      const handedBack = yield* LeadWork.get(scope, { key: "W-2" });
+      assert.propertyVal(yield* encodeGet(handedBack), "handedBackBy", "Mate");
+      // Ticked done, nothing reads it as handed back; Undo's reopen brings the hand-back back.
+      const heldBack = yield* OwnerWork.get([owner], { orgId, key: "W-2" });
+      const ticked = yield* OwnerWork.update([owner], {
+        orgId,
+        key: "W-2",
+        rev: heldBack.rev,
+        state: "done",
+        waitingOn: null,
+      });
+      assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-2" })).handedBack);
+      assert.notProperty(
+        yield* encodeGet(yield* LeadWork.get(scope, { key: "W-2" })),
+        "handedBackBy",
+      );
+      const closedRow = (yield* KinRecords.KinRecords.pipe(
+        Effect.flatMap((records) => records.moveRows(orgId, { keys: ["W-2"] })),
+      )).find((one) => one.key === "W-2");
+      assert.isNull(closedRow?.handedBackAt);
+      yield* OwnerWork.update([owner], {
+        orgId,
+        key: "W-2",
+        rev: ticked.rev,
+        state: heldBack.state,
+        waitingOn: heldBack.waitingOn ?? null,
+      });
+      assert.deepStrictEqual(
+        (yield* OwnerWork.get([owner], { orgId, key: "W-2" })).handedBack,
+        heldBack.handedBack,
+      );
+      assert.propertyVal(
+        yield* encodeGet(yield* LeadWork.get(scope, { key: "W-2" })),
+        "handedBackBy",
+        "Mate",
+      );
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
       // Given on from one teammate to another, each reads who gave it to whom from their side.
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
         VALUES ('mate-2', ${orgId}, 'mate2', 'Mate Two', ${at})`;
@@ -3430,18 +4495,13 @@ it.effect(
       assert.deepStrictEqual(
         (yield* notices).slice(givenOn).map((row) => row.body),
         [
-          "Owner gave you W-1 Invented: draft the onboarding copy.",
-          "Owner gave W-1 Invented: draft the onboarding copy to Mate Two.",
           "Lead lead gave you W-1 Invented: draft the onboarding copy. Why: Invented: on leave.",
           "Lead lead took over W-1 Invented: draft the onboarding copy: Invented: quicker.",
         ],
       );
       assert.deepStrictEqual(
         (yield* mateTwoNotices).map((row) => row.body),
-        [
-          "Owner gave you W-1 Invented: draft the onboarding copy.",
-          "Lead lead gave W-1 Invented: draft the onboarding copy to Mate: Invented: on leave.",
-        ],
+        ["Lead lead gave W-1 Invented: draft the onboarding copy to Mate: Invented: on leave."],
       );
       // K016: tell false gives it to her without a word; given to her again, she is told once.
       const quiet = (yield* notices).length;
@@ -3509,7 +4569,9 @@ it.effect(
         coming!,
         /^Lead lead added you to the meeting W-\d+ Invented review .+ on Thu 19 Nov \d{1,2}:\d\d [ap]m\.$/u,
       );
-      // Put on a project from the app, or made its lead, they are told once, with its key.
+      // Put on a project from the app, or made its lead, they are told once, with its key, on
+      // their Tasks and in a banner: no chat line.
+      const posted = (yield* notices).length;
       const portal = yield* OwnerClients.createProject([owner], {
         orgId,
         name: "Invented portal",
@@ -3527,11 +4589,74 @@ it.effect(
         rev: added.rev,
         owner: mateHolds,
       });
+      assert.lengthOf((yield* notices).slice(posted), 0);
+      assert.deepStrictEqual((yield* news(mateId)).slice(-2), [
+        `Owner added ${portal.key}`,
+        `Owner lead ${portal.key}`,
+      ]);
+    }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
+);
+
+// Play-test (Nov 2026): the owner opened Kin where it was the next day, his device stored that
+// zone as the company's, and a due read a day later on Tasks, to the agent, in a hand-over
+// notice and on a Changes line made before.
+it.effect(
+  "a due keeps its day for everyone when the company's zone moves east across midnight",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* mateMayMessage;
+      yield* turn();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Etc/GMT+5', '08:30', '18:30',
+        '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')`;
+      const scope = scopeOf("lead");
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented: send the plan", due: "2026-11-22" }],
+      });
+      yield* LeadWork.update(scope, { key: "W-1", sourceEventId: "ask-event", due: "2026-11-27" });
+      // What `KinRoutines.setTimeZone` writes, in one transaction: the zone, and the days kept.
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Asia/Kolkata' WHERE org_id = ${orgId}`;
+          yield* keepAllDayDays(orgId, "Etc/GMT+5", "Asia/Kolkata");
+        }),
+      );
+      const zone = "Asia/Kolkata";
+      // (a) Tasks.
+      const [task] = (yield* OwnerWork.list([owner], { orgId })).records;
+      assert.strictEqual(dayIn(Date.parse(task!.dueAt!), zone), "2026-11-27");
+      // (b) The agent's work tool.
+      assert.include(yield* LeadWork.get(scope, { key: "W-1" }), {
+        due: "2026-11-27",
+        dueDay: "Fri 27 Nov 2026",
+      });
+      // (c) A hand-over after the move, at 11:30 on the company's clock, outside quiet hours.
+      yield* TestClock.setTime(Date.parse("2026-11-11T06:00:00.000Z"));
+      yield* LeadWork.assign(scope, {
+        sourceEventId: "ask-event",
+        tasks: [{ key: "W-1", to: "Mate", reason: "she has the plan" }],
+      });
+      const [notice] = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE chat_id = 'mate-chat' ORDER BY seq DESC LIMIT 1`;
+      assert.include(notice!.body, "W-1 Invented: send the plan, due Fri 27 Nov.");
+      // (d) The Changes line made before the move, on the agent's page and the entry's.
+      const moved = (yield* agentChanges(KIN_OWNER_LEVEL, orgId, lead))
+        .flatMap((change) => (change.kind === "updated" ? change.fields : []))
+        .find((one) => one.field === "due")!;
       assert.deepStrictEqual(
-        (yield* notices).slice(-2).map((row) => row.body),
+        [moved.from, moved.to].map((one) => dayIn(Date.parse(one!), zone)),
+        ["2026-11-22", "2026-11-27"],
+      );
+      const history = (yield* OwnerWork.get([owner], { orgId, key: "W-1" })).changes.flatMap(
+        (change) => change.fields.filter((one) => one.field === "due"),
+      );
+      assert.deepStrictEqual(
+        history.map((one) => [one.from, one.to].map((at) => at && dayIn(Date.parse(at), zone))),
         [
-          `Owner added you to ${portal.key} Invented portal.`,
-          `Owner made you the lead of ${portal.key} Invented portal.`,
+          ["2026-11-22", "2026-11-27"],
+          [null, "2026-11-22"],
         ],
       );
     }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
@@ -3860,11 +4985,18 @@ it.effect(
         mateHolds,
       );
       yield* keepsItsWay();
-      // Told once for both.
-      const after = (yield* told).slice(before).map((row) => row.body);
-      assert.lengthOf(after, 1);
-      assert.include(after[0], keys[0]!);
-      assert.include(after[0], keys[1]!);
+      // Told once for both, in one banner, and in no chat.
+      assert.lengthOf((yield* told).slice(before), 0);
+      const holds = yield* sql<{ id: string }>`SELECT hold_id AS id FROM kin_held_posts
+        WHERE person_id = ${mateId} AND substr(kind, 1, 14) = 'kin-task-news:'
+          AND delivered_at IS NULL ORDER BY rowid`;
+      assert.strictEqual(
+        (yield* taskNewsBanner(
+          orgId,
+          holds.map((row) => row.id),
+        ))?.body,
+        "Meera reassigned 2 of your tasks",
+      );
       // Undo gives exactly those back.
       yield* OwnerWork.assign([owner], { orgId, key: keys[2]!, to: meeraHolds }).pipe(
         Effect.ignore,
@@ -4200,10 +5332,14 @@ it.effect("an agent's reply carries what its own wake-up changed, as each reader
       sourceEventId: "ask-event",
       tasks: [{ key: "W-1", to: "Finance", reason: "Invented: month end" }],
     });
-    // Named in no link of the reply: the receipt alone says it opens as a client.
+    // Named in no link of the reply: the receipt alone says it opens as a client, and a contact
+    // as its client's page.
     yield* LeadWork.create(scope, {
       sourceEventId: "ask-event",
-      records: [{ list: "clients", title: "Invented Acme" }],
+      records: [
+        { list: "clients", title: "Invented Acme" },
+        { list: "contacts", title: "Invented Ola", client: "Invented Acme" },
+      ],
     });
     yield* reply("first", "wake");
     // The next wake-up, in the same chat, changes seven things.
@@ -4236,15 +5372,21 @@ it.effect("an agent's reply carries what its own wake-up changed, as each reader
     yield* reply("empty", "wake-3");
     const read = yield* ownerReads;
     const first = read.get(KinMessageId.make("first"))!.turnChanges;
-    assert.deepInclude(first, { count: 3, more: 0 });
+    assert.deepInclude(first, { count: 4, more: 0 });
     assert.deepStrictEqual(receiptRows(first), [
       ["W-2", "created", true, false],
       ["W-1", "given to Finance", true, false],
       ["C-1", "created", false, false],
+      ["CT-1", "created", false, false],
     ]);
     assert.deepStrictEqual(
-      first!.items.map((item) => item.kind),
-      ["task", "task", "client"],
+      first!.items.map((item) => [item.kind, item.party]),
+      [
+        ["task", undefined],
+        ["task", undefined],
+        ["client", undefined],
+        ["entry", "C-1"],
+      ],
     );
     assert.deepStrictEqual(first!.items[0]!.change.agentId, lead);
     // A turn that changed nothing says so, unlike an older server.
@@ -4339,4 +5481,62 @@ it.effect(
       // The Undo is the owner's change, never counted in the agent's turn.
       assert.strictEqual(after.turnChanges!.count, 2);
     }).pipe(Effect.provide(receiptLayer)),
+);
+
+it.effect("an announcement reaches screens only once its transaction commits", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO sqlite_sequence (name, seq) SELECT 'kin_record_changes', 0
+      WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'kin_record_changes')`;
+    const pull = yield* Stream.toPull(records.changes(orgId));
+    const opening = (yield* pull)[0]!.seq;
+    // Screens read on readers: told before the commit, they would read what it undoes.
+    yield* sql
+      .withTransaction(records.announce(orgId).pipe(Effect.andThen(Effect.fail("rolled back"))))
+      .pipe(Effect.flip);
+    yield* sql`UPDATE sqlite_sequence SET seq = seq + 10 WHERE name = 'kin_record_changes'`;
+    yield* records.announce(orgId);
+    assert.deepStrictEqual(
+      (yield* pull).map((tick) => tick.seq),
+      [opening + 11],
+    );
+  }).pipe(Effect.scoped, Effect.provide(layer)),
+);
+
+it.effect("an entry's announcement reaches screens once, after its transaction commits", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
+    const { row } = yield* records.create(orgId, ownerWrites, {
+      list: "clients",
+      originKey: "Invented Grove",
+      title: "Invented Grove",
+      owner: { _tag: "person", personId: ownerId },
+    });
+    const pull = yield* Stream.toPull(records.changes(orgId));
+    const opening = (yield* pull)[0]!.seq;
+    yield* sql
+      .withTransaction(
+        records.announce(orgId, [row.recordId]).pipe(Effect.andThen(Effect.fail("rolled back"))),
+      )
+      .pipe(Effect.flip);
+    // Told at once, the entry's tick would overtake the whole org's one announced before it.
+    yield* sql.withTransaction(
+      records.announce(orgId).pipe(Effect.andThen(records.announce(orgId, [row.recordId]))),
+    );
+    yield* records.announce(orgId);
+    const heard = [];
+    for (let i = 0; i < 3; i++) heard.push(...(yield* pull));
+    assert.deepStrictEqual(
+      heard.map((tick) => [tick.seq, tick.key]),
+      [
+        [opening + 1, undefined],
+        [opening + 2, row.key],
+        [opening + 3, undefined],
+      ],
+    );
+  }).pipe(Effect.scoped, Effect.provide(layer)),
 );

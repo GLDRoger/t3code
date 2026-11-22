@@ -14,7 +14,9 @@ import { formatKinTime } from "./kinScreenState.ts";
 export const KIN_TASKS_KEY_LABEL_MAX = 60;
 // The name each setup below gives Kin's server in the coding agent's own config.
 const SERVER_NAME = "kin";
-const CODEX_KEY_ENV = "KIN_TASKS_KEY";
+/** Where the key goes in the setup lines the section always shows. */
+export const KIN_TASKS_KEY_STAND_IN = "YOUR_KEY";
+const ADDRESS_UNKNOWN = "The connection dropped before the address could be shown.";
 
 /** Every sentence both clients say about a person's coding agent keys. */
 export const KIN_TASKS_KEYS_COPY = {
@@ -29,7 +31,6 @@ export const KIN_TASKS_KEYS_COPY = {
   make: "Make a key",
   makeTitle: "Make a coding agent key",
   labelLabel: "What is it for?",
-  labelPlaceholder: "Work laptop, Claude Code",
   labelHint: "A short name, such as the computer or tool, so you know which key is which.",
   labelMissing: "Give the key a short name.",
   create: "Make key",
@@ -52,8 +53,17 @@ export const KIN_TASKS_KEYS_COPY = {
     "This is the address this phone reaches Kin by. If your coding agent's computer reaches Kin another way, use that address with the same ending.",
   localOnly:
     "This address only works on this computer. A coding agent anywhere else needs the address your team reaches Kin by.",
-  dropped:
-    "The connection dropped before the address could be shown. Remove this key and make another.",
+  dropped: `${ADDRESS_UNKNOWN} Remove this key and make another.`,
+  addressUnknown: ADDRESS_UNKNOWN,
+  setupHow: "How to set it up",
+  setupDetail: "The address and the lines to paste into your coding agent",
+  addressMissing: "Address unknown",
+  foldedTitle: "Use Kin from your coding agent",
+  foldedDetail: "For people who write code with Claude Code, Codex or Cursor",
+  show: "Show",
+  standIn: `Each line has ${KIN_TASKS_KEY_STAND_IN} where your key goes. Kin shows a key only once, when it is made.`,
+  check:
+    "To check it worked, ask your coding agent to list your Kin tasks. This key's row then says when it was last used.",
 } as const;
 
 /** One key as a row: its label and one line of when it was made, when it ends and when last used. */
@@ -136,8 +146,9 @@ export interface KinTasksKeySetup {
 }
 
 /**
- * Ready-to-paste setup for each common coding agent. Shapes: `claude mcp add --help` (2.1),
- * `codex mcp add --help` (0.166), and Cursor's `mcp.json` (`McpServerConfig` in @cursor/sdk).
+ * Ready-to-paste setup for each common coding agent, the key in the agent's own config. Shapes:
+ * `claude mcp add --help` (2.1); Codex's `config.toml` (`http_headers`), since `codex mcp add` can
+ * only name an environment variable; and Cursor's `mcp.json` (`McpServerConfig` in @cursor/sdk).
  */
 function kinTasksKeySetups(address: string, secret: string): readonly KinTasksKeySetup[] {
   return [
@@ -148,8 +159,8 @@ function kinTasksKeySetups(address: string, secret: string): readonly KinTasksKe
     },
     {
       agent: "Codex",
-      where: `Run in a terminal; Codex reads the key from ${CODEX_KEY_ENV}, so keep the first line in your shell profile:`,
-      text: `export ${CODEX_KEY_ENV}="${secret}"\ncodex mcp add ${SERVER_NAME} --url ${address} --bearer-token-env-var ${CODEX_KEY_ENV}`,
+      where: "Add these lines to the end of ~/.codex/config.toml, then start a new Codex session:",
+      text: `[mcp_servers.${SERVER_NAME}]\nurl = "${address}"\nhttp_headers = { "Authorization" = "Bearer ${secret}" }`,
     },
     {
       agent: "Cursor",
@@ -172,17 +183,34 @@ function kinTasksKeySetups(address: string, secret: string): readonly KinTasksKe
   ];
 }
 
-/** The once-only panel after a key is made: what it is, where it goes, and how to set it up. */
-export function kinTasksKeyMade(made: {
-  readonly key: KinTasksKey;
-  readonly secret: string;
+/** The address a coding agent uses, and the note on it: the host's own, else this client's. */
+function kinTasksKeyWhere(where: {
   /** The address the host says anyone reaches it by; absent when it knows none. */
   readonly origin?: string | undefined;
   readonly httpBaseUrl: string;
   readonly device: KinDevice;
 }) {
-  const address = kinTasksKeyAddress(made.origin ?? made.httpBaseUrl);
+  const address = kinTasksKeyAddress(where.origin ?? where.httpBaseUrl);
   const host = new URL(address).hostname;
+  return {
+    address,
+    addressNote: kinIsLocalOnlyHost(host)
+      ? KIN_TASKS_KEYS_COPY.localOnly
+      : where.device === "phone" && where.origin === undefined
+        ? KIN_TASKS_KEYS_COPY.phoneAddress
+        : null,
+  };
+}
+
+/** The once-only panel after a key is made: what it is, where it goes, and how to set it up. */
+export function kinTasksKeyMade(made: {
+  readonly key: KinTasksKey;
+  readonly secret: string;
+  readonly origin?: string | undefined;
+  readonly httpBaseUrl: string;
+  readonly device: KinDevice;
+}) {
+  const { address, addressNote } = kinTasksKeyWhere(made);
   return {
     title: KIN_TASKS_KEYS_COPY.madeTitle(made.key.label),
     lines: [
@@ -193,11 +221,19 @@ export function kinTasksKeyMade(made: {
     ],
     secret: made.secret,
     address,
-    addressNote: kinIsLocalOnlyHost(host)
-      ? KIN_TASKS_KEYS_COPY.localOnly
-      : made.device === "phone" && made.origin === undefined
-        ? KIN_TASKS_KEYS_COPY.phoneAddress
-        : null,
+    addressNote,
     setups: kinTasksKeySetups(address, made.secret),
   };
+}
+
+/** The address and setup lines a person's own section always shows, the key left to fill. */
+export function kinTasksKeyGuide(where: {
+  readonly origin?: string | undefined;
+  readonly httpBaseUrl: string | null;
+  readonly device: KinDevice;
+}) {
+  const base = where.origin ?? where.httpBaseUrl;
+  if (base === null) return null;
+  const { address, addressNote } = kinTasksKeyWhere({ ...where, httpBaseUrl: base });
+  return { address, addressNote, setups: kinTasksKeySetups(address, KIN_TASKS_KEY_STAND_IN) };
 }

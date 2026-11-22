@@ -143,6 +143,8 @@ it.live(
           due: null,
           review_by: "2000-01-01",
           invalid_at: "2000-01-01",
+          superseded_by: "spare-item",
+          what: `Invented maintenance window ${"detail ".repeat(40)}`,
         }),
       );
       // One thing the team can know and one for the owner alone; `a-item` was never labelled.
@@ -377,6 +379,7 @@ it.live(
           "team_say",
           "kin_ask",
           "kin_ask_close",
+          "kin_ask_person",
           "kin_chart",
           "kin_visual",
           "kin_react",
@@ -389,6 +392,7 @@ it.live(
           "kin_cancel",
           "kin_journal",
           "kin_github_review",
+          "kin_github_review_ask",
           "kin_github_watch",
           "kin_github_link",
         ]);
@@ -443,8 +447,44 @@ it.live(
           );
         assert.isFalse(toolRead.isError);
         assert.include(JSON.stringify(toolRead), "a-item");
+        // A hit carries enough to choose what to read; the rest of its front matter is a read away.
+        const toolSearch = yield* server
+          .callTool({ name: "memory_search", arguments: { kind: "claim" } })
+          .pipe(
+            Effect.provideService(McpInvocationContext, scope),
+            Effect.provideService(KinIdentity, identity),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+        assert.isFalse(toolSearch.isError);
+        const hits = toolSearch.structuredContent as typeof Lead.SearchResult.Encoded;
+        assert.deepStrictEqual(
+          ["a-item", "spare-item"].map((id) => hits.find((hit) => hit.id === id)),
+          [
+            {
+              id: "a-item",
+              kind: "claim",
+              title: "Invented service maintenance",
+              what: `Invented maintenance window ${"detail ".repeat(40)}`.slice(0, 199) + "…",
+              status: "open",
+              due: null,
+              reviewOverdue: false,
+              misleading: true,
+              supersededBy: "spare-item",
+              duplicate: false,
+            },
+            {
+              id: "spare-item",
+              kind: "claim",
+              title: "Invented service maintenance",
+              status: "open",
+              due: null,
+              reviewOverdue: true,
+              duplicate: false,
+            },
+          ],
+        );
         const opened = yield* service.read(scope, { id: KinMemoryItemId.make("a-item") });
-        assert.isTrue("head" in opened && opened.reviewOverdue);
+        assert.isTrue("head" in opened && !opened.reviewOverdue);
         assert.isTrue("head" in opened && opened.misleading);
         assert.lengthOf(
           yield* sql`SELECT 1 FROM kin_memory_reads WHERE org_id = ${orgId} AND item_id = 'a-item'`,
@@ -789,11 +829,47 @@ it.live(
           item: { ...input.item, id: KinMemoryItemId.make(id), title: `Invented ${id}`, body },
         });
         yield* service.write(scope, noted("amount-claim", "Invented retainer is $4,000 a month"));
+        const linked = (id: string, body: string, links: ReadonlyArray<string>) => {
+          const write = noted(id, body);
+          return { ...write, item: { ...write.item, links } };
+        };
         yield* service.write(
           scope,
-          noted("vault-claim", "The deploy key is in the vault under invented/deploy"),
+          linked("vault-claim", "The deploy key is in the vault under invented/deploy", [
+            "topic:launch",
+          ]),
         );
-        yield* service.write(scope, noted("status-claim", "Invented launch is on track"));
+        // A second thing said about one subject: the refusal lists what is there and the moves.
+        const status = linked("status-claim", "Invented launch is on track", [
+          "topic:launch",
+          "topic:plan",
+        ]);
+        assert.strictEqual(
+          (yield* service.write(scope, status).pipe(Effect.flip)).message,
+          'Open items of the same kind share a link with it: vault-claim "Invented vault-claim". If it says the same, there is nothing to save; if it replaces one, supersede that id; if it is a different matter, send the same write again with besides: ["vault-claim"].',
+        );
+        assert.strictEqual(
+          (yield* service
+            .write(scope, { ...status, besides: [KinMemoryItemId.make("a-item")] })
+            .pipe(Effect.flip)).message,
+          "Memory write refused: besides names only open items of the same kind that share a link with it.",
+        );
+        assert.strictEqual(
+          (yield* service
+            .write(scope, {
+              ...quoted,
+              item: { ...quoted.item, id: KinMemoryItemId.make("a-item"), sensitive: true },
+            })
+            .pipe(Effect.flip)).message,
+          "Memory item a-item already exists. Update it, or leave out `id` to make a new item.",
+        );
+        assert.deepStrictEqual(
+          yield* service.write(scope, {
+            ...status,
+            besides: [KinMemoryItemId.make("vault-claim")],
+          }),
+          { itemId: "status-claim" },
+        );
         // A turn that was shown something sensitive writes for the owner alone, whatever it says.
         yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
           VALUES (${orgId}, 'fixture-wakeup', 0)`;
@@ -1016,9 +1092,9 @@ it.live(
         yield* sql`UPDATE kin_leads SET level = 'L1' WHERE agent_id = ${agentId}`;
         yield* writerService.discard(orgId, "fixture-wakeup");
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'fixture-wakeup'`;
-        // A turn that only set up a schedule saved it at once: its end is no restart.
+        // A turn that only set up a schedule or posted a review saved it at once: its end is no restart.
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'schedule-wakeup', org_id, agent_id, thread_id, run_id, model, started_at, 'running', event_ids, audience FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
-        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'schedule-wakeup', 'schedule:sch-fixture', 'fixture-hash')`;
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'schedule-wakeup', 'schedule:sch-fixture', 'fixture-hash'), (${orgId}, 'schedule-wakeup', 'github-review:evt-fixture', 'posting')`;
         yield* writerService.commitWakeup(orgId, "schedule-wakeup", "completed");
         assert.isFalse(notices.some((notice) => notice.includes("lost on restart")));
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'schedule-wakeup'`;
@@ -1112,9 +1188,6 @@ it.live(
         // The owner's words show only while he can open the message they came from.
         const quotesShown = Effect.gen(function* () {
           const read = whole(yield* service.read(scope, { id: KinMemoryItemId.make("new-claim") }));
-          const found = (yield* service.search(scope, { kind: "claim" })).find(
-            (item) => item.id === "new-claim",
-          );
           // And in the files the lead greps, its checkout.
           const { read: checkout } = yield* memory.prepareWakeup(orgId, "shadow-wakeup", {
             lead: agentId,
@@ -1122,14 +1195,13 @@ it.live(
           const file = yield* fs.readFileString(`${checkout}/claims/new-claim.md`);
           return [
             read.head.quote,
-            found !== undefined && "quote" in found ? found.quote : "none",
             file.includes(`quote: ${quoted.quote}`),
             file.includes("Invented"),
           ];
         });
-        assert.deepStrictEqual(yield* quotesShown, [quoted.quote, quoted.quote, true, true]);
+        assert.deepStrictEqual(yield* quotesShown, [quoted.quote, true, true]);
         yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id = ${message.messageId}`;
-        assert.deepStrictEqual(yield* quotesShown, [undefined, "none", false, true]);
+        assert.deepStrictEqual(yield* quotesShown, [undefined, false, true]);
         yield* sql`UPDATE kin_messages SET status = 'posted' WHERE message_id = ${message.messageId}`;
         const armed = () =>
           sql<{ nextRunAt: number | null }>`SELECT next_run_at AS "nextRunAt" FROM kin_triggers
@@ -1326,6 +1398,33 @@ it.live(
           for (const hidden of ["a-item", "team-item", "Invented service maintenance"])
             assert.notInclude(message, hidden);
         }
+        // What it can see is listed with the moves; one item it can't makes it the fixed refusal,
+        // and naming one it can't in `besides` is refused the same way.
+        const topic = (
+          id: string,
+          links: ReadonlyArray<string>,
+          besides?: ReadonlyArray<string>,
+        ) => ({
+          ...said,
+          item: { ...said.item, id: KinMemoryItemId.make(id), links },
+          ...(besides === undefined
+            ? {}
+            : { besides: besides.map((id) => KinMemoryItemId.make(id)) }),
+        });
+        assert.include(
+          yield* refusal(service.write(scope, topic("plan-claim", ["topic:plan"]))),
+          'status-claim "Invented status-claim". If it says the same',
+        );
+        for (const attempt of [
+          topic("launch-claim", ["topic:launch"]),
+          topic("launch-claim", ["topic:launch"], ["status-claim"]),
+          topic("launch-claim", ["topic:launch"], ["status-claim", "vault-claim"]),
+        ])
+          assert.strictEqual(yield* refusal(service.write(scope, attempt)), ordinary);
+        assert.deepStrictEqual(
+          yield* service.write(scope, topic("plan-claim", ["topic:plan"], ["status-claim"])),
+          { itemId: "plan-claim" },
+        );
         // A teammate's messages cause at most so much to be saved a day, counted from stored rows.
         const now = yield* Clock.currentTimeMillis;
         for (let index = 0; index < 20; index++)

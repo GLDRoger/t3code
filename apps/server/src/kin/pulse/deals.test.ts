@@ -1,5 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
-import { KinAgentId, KinOrgId, KinPersonId, type KinPulseFact } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinOrgId,
+  KinPersonId,
+  kinIsBrief,
+  kinPageSections,
+  type KinPulseFact,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -12,6 +19,8 @@ import { withQuietDays } from "../work/deals.ts";
 import { PLAYBOOK_SEEDS } from "../work/playbookSeeds.ts";
 import * as CheckIns from "./checkIns.ts";
 import * as KinPulse from "./KinPulse.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
+import { morningMoneyLines } from "./morningMoney.ts";
 import { morningBody, morningDue, morningOf } from "./personMorning.ts";
 
 // Invented company, people, clients and deals only; nothing here reads a real database.
@@ -154,6 +163,30 @@ const setPage = (
     Effect.provide(Layer.mock(KinSchedules.KinSchedules)({})),
   );
 const tickAt = (at: number) => TestClock.setTime(at).pipe(Effect.andThen(KinPulse.tick(orgId, at)));
+/**
+ * The scheduler's pass once a minute from `from` to `to`, as a server that stays up runs it; the
+ * minute Zoya's page count first grew, or undefined.
+ */
+const passes = Effect.fn("test.passes")(function* (
+  last: KinPulse.Passes,
+  from: number,
+  to: number,
+) {
+  const before = (yield* pagesTo(zoya)).length;
+  for (let at = from; at <= to; at += MINUTE) {
+    yield* TestClock.setTime(at);
+    yield* KinPulse.pass(last);
+    if ((yield* pagesTo(zoya)).length > before) return at;
+  }
+  return undefined;
+});
+const toldDays = Effect.fn("test.toldDays")(function* (personId: KinPersonId) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ key: string }>`SELECT fact_key AS key FROM kin_pulse_told
+    WHERE org_id = ${orgId} AND person_id = ${personId} AND fact_key LIKE 'person-morning:%'
+    ORDER BY fact_key`;
+  return rows.map((row) => row.key.slice("person-morning:".length));
+});
 
 describe("deal senses", () => {
   it.effect(
@@ -347,8 +380,11 @@ describe("deal senses", () => {
       assert.deepStrictEqual(senses((yield* asZoya(at)).facts), []);
       yield* tickAt(MONDAY);
       assert.lengthOf(yield* pagesTo(zoya), 0);
+      // Lifted after her minute: that morning's page was written from what was true then.
       yield* aside("C-1", rhea, "lift", null);
       yield* tickAt(MONDAY + HOUR);
+      assert.lengthOf(yield* pagesTo(zoya), 0);
+      yield* tickAt(MONDAY + DAY);
       assert.lengthOf(yield* pagesTo(zoya), 1);
     }).pipe(Effect.provide(chatLayer)),
   );
@@ -390,13 +426,11 @@ describe("a teammate's morning page", () => {
           {
             form: "brief",
             body: [
-              "## Clients",
-              "",
+              "Clients:",
               "- Follow-ups today: 1.",
               "- Fennick & Daughters is a prospect with no deal and no next step.",
               "",
-              "## Coming up",
-              "",
+              "Coming up:",
               "- Intro call (Quillon Studios), Wed 4 Nov.",
               "- Stock and orders system for Corran Tiles is expected by Sun 8 Nov.",
             ].join("\n"),
@@ -440,6 +474,8 @@ describe("a teammate's morning page", () => {
       assert.lengthOf(yield* pagesTo(zoya), 0);
       yield* tickAt(monday + 30 * MINUTE);
       assert.lengthOf(yield* pagesTo(zoya), 1);
+      // A day ahead of the company, she still reads its day: Sunday, not her Monday.
+      assert.include((yield* pagesTo(zoya))[0]!.body, "is expected by Sun 8 Nov.");
       // Tuesday is not one of her days; a new fact waits for Wednesday.
       yield* insert({ id: "C-5", list: "clients", title: "Saltvik", category: "prospect" });
       yield* tickAt(monday + DAY + 30 * MINUTE);
@@ -549,12 +585,15 @@ describe("a teammate's morning page", () => {
         yield* setPage(zoya, MONDAY + 2 * HOUR, { at: "11:00", ...all });
         yield* tickAt(MONDAY + 3 * HOUR);
         assert.lengthOf(yield* pagesTo(zoya), 1);
+        // Each later page has something untold to carry.
+        yield* insert({ id: "C-8", list: "clients", title: "Saltvik", category: "prospect" });
         yield* tickAt(MONDAY + DAY + 3 * HOUR - MINUTE);
         assert.lengthOf(yield* pagesTo(zoya), 1);
         yield* tickAt(MONDAY + DAY + 3 * HOUR);
         assert.lengthOf(yield* pagesTo(zoya), 2);
         // Moved to a time already past, before it went: it starts the next morning.
         yield* setPage(zoya, MONDAY + 2 * DAY + 2 * HOUR, { at: "09:30", ...all });
+        yield* insert({ id: "C-9", list: "clients", title: "Halden", category: "prospect" });
         yield* tickAt(MONDAY + 2 * DAY + 2 * HOUR + MINUTE);
         yield* tickAt(MONDAY + 2 * DAY + 3 * HOUR);
         assert.lengthOf(yield* pagesTo(zoya), 2);
@@ -606,6 +645,119 @@ describe("a teammate's morning page", () => {
     }).pipe(Effect.provide(chatLayer)),
   );
 
+  it.effect("a morning with nothing untold sends no page, so no push and no unread", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      // The deal's step is due today and its own notice told it at 07:59: only the count is left.
+      yield* step("W-2", "DL-1", MONDAY + 4 * HOUR);
+      yield* tickAt(MONDAY - MINUTE);
+      const result = yield* tickAt(MONDAY);
+      assert.deepStrictEqual(result.pages, []);
+      assert.lengthOf(yield* pagesTo(zoya), 0);
+      // Decided at its minute: a fact true later that morning waits for the next one.
+      yield* insert({ id: "C-7", list: "clients", title: "Maple Kiln", category: "prospect" });
+      yield* tickAt(MONDAY + HOUR);
+      assert.lengthOf(yield* pagesTo(zoya), 0);
+      yield* tickAt(MONDAY + DAY);
+      const [page] = yield* pagesTo(zoya);
+      assert.include(page?.body, "Maple Kiln is a prospect with no deal and no next step.");
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("goes at its minute, whatever else has run since its facts arose", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      // A deal with no next step is made at 07:50; nothing else moves before 08:00.
+      yield* insert({
+        id: "DL-5",
+        list: "deals",
+        title: "Showroom tiles",
+        partyId: "C-1",
+        createdAt: MONDAY - 10 * MINUTE,
+      });
+      const sent = yield* passes(new Map(), MONDAY - 10 * MINUTE, MONDAY + 20 * MINUTE);
+      assert.strictEqual(sent, MONDAY);
+      const [page] = yield* pagesTo(zoya);
+      assert.include(page?.body, "Showroom tiles for Corran Tiles has no next step.");
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a set 09:30 on Tuesday and Thursday goes at 09:30 on Tuesday, never at 08:00", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* setPage(zoya, B, { at: "09:30", days: [2, 4], on: true });
+      const last: KinPulse.Passes = new Map();
+      assert.isUndefined(yield* passes(last, MONDAY - 10 * MINUTE, MONDAY + 2 * HOUR));
+      const tuesday = MONDAY + DAY;
+      assert.strictEqual(
+        yield* passes(last, tuesday - 10 * MINUTE, tuesday + 2 * HOUR),
+        tuesday + 90 * MINUTE,
+      );
+      assert.deepStrictEqual(yield* toldDays(zoya), ["2026-11-03"]);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a server down at the minute sends it once, late; back the next day, not at all", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      // Down from 07:59; back at 08:20 with nothing remembered: it goes then, once.
+      assert.isUndefined(yield* passes(new Map(), MONDAY - 10 * MINUTE, MONDAY - MINUTE));
+      const back: KinPulse.Passes = new Map();
+      assert.strictEqual(
+        yield* passes(back, MONDAY + 20 * MINUTE, MONDAY + HOUR),
+        MONDAY + 20 * MINUTE,
+      );
+      assert.isUndefined(yield* passes(back, MONDAY + HOUR, MONDAY + 2 * HOUR));
+      assert.lengthOf(yield* pagesTo(zoya), 1);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a server back the next morning never sends yesterday's page", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      assert.isUndefined(yield* passes(new Map(), MONDAY - 10 * MINUTE, MONDAY - MINUTE));
+      // Down through Monday's minute and its window; back on Tuesday before her minute.
+      const tuesday = MONDAY + DAY;
+      const back: KinPulse.Passes = new Map();
+      assert.isUndefined(yield* passes(back, tuesday - 30 * MINUTE, tuesday - MINUTE));
+      assert.strictEqual(yield* passes(back, tuesday, tuesday + 10 * MINUTE), tuesday);
+      assert.deepStrictEqual(yield* toldDays(zoya), ["2026-11-03"]);
+      assert.lengthOf(yield* pagesTo(zoya), 1);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("off, then on again: what is untold or newly true goes at the next set morning", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const last: KinPulse.Passes = new Map();
+      yield* setPage(zoya, B, { at: "08:00", days: [1, 2, 3, 4, 5], on: false, changed: ["on"] });
+      assert.isUndefined(yield* passes(last, MONDAY - 10 * MINUTE, MONDAY + 30 * MINUTE));
+      // Newly true while it is off: a prospect with no deal and no next step.
+      yield* insert({
+        id: "C-6",
+        list: "clients",
+        title: "Cedar Forge",
+        category: "prospect",
+        createdAt: MONDAY + DAY + 2 * HOUR,
+      });
+      assert.isUndefined(yield* passes(last, MONDAY + DAY - MINUTE, MONDAY + DAY + MINUTE));
+      yield* setPage(zoya, MONDAY + 2 * DAY + 4 * HOUR, {
+        at: "08:00",
+        days: [1, 2, 3, 4, 5],
+        on: true,
+        changed: ["on"],
+      });
+      const thursday = MONDAY + 3 * DAY;
+      assert.strictEqual(
+        yield* passes(last, thursday - 10 * MINUTE, thursday + 30 * MINUTE),
+        thursday,
+      );
+      const [page] = yield* pagesTo(zoya);
+      assert.include(page?.body, "Stock and orders system for Corran Tiles has no next step.");
+      assert.include(page?.body, "Cedar Forge is a prospect with no deal and no next step.");
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
   it("writes only the sections with something in them", () => {
     assert.strictEqual(morningBody({ needsYou: [], clients: [], comingUp: [] }), "");
     assert.strictEqual(
@@ -614,7 +766,18 @@ describe("a teammate's morning page", () => {
         clients: ["Follow-ups today: 2."],
         comingUp: [],
       }),
-      "## Needs you\n\n- W-1 Send the deck, due today\n\n## Clients\n\n- Follow-ups today: 2.",
+      "Needs you:\n- W-1 Send the deck, due today\n\nClients:\n- Follow-ups today: 2.",
+    );
+    // A page under her greeting, its titles real headings: no "##" or "- " reaches her as text.
+    const body = morningBody({
+      needsYou: ["W-1 Send the deck, due today"],
+      clients: ["Follow-ups today: 2."],
+      comingUp: ["Intro call (Quillon Studios), Wed 4 Nov."],
+    });
+    assert.isTrue(kinIsBrief(body, "brief"));
+    assert.deepStrictEqual(
+      kinPageSections(body).map((section) => section.title),
+      ["Needs you", "Clients", "Coming up"],
     );
   });
 
@@ -633,4 +796,239 @@ describe("a teammate's morning page", () => {
       "# Ours\n\nPlain words.\n\n## Thresholds\n```kin\ndeal_quiet_days: 9\n```\n",
     );
   });
+});
+
+describe("the morning page's Money lines", () => {
+  /** Kin's money lists, and an issued invoice or a sent quote of Corran Tiles' in `currency`. */
+  const money = Effect.fn("test.money")(function* (entry: {
+    readonly id: string;
+    readonly list: "invoices" | "quotes";
+    readonly minor: number;
+    readonly currency: string;
+    readonly dueAt?: number;
+    readonly sentAt: number;
+    /** Its own number, as the client reads it on the invoice or quote. */
+    readonly number?: string;
+    readonly client?: string;
+  }) {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+        owner_kind, owner_id, side, party_id, due_at, amount_minor, currency, created_by_kind,
+        created_by_id, origin_key, created_at, updated_at, fields_json)
+      VALUES (${orgId}, ${`r-${entry.id}`}, ${entry.list}, ${entry.id}, ${`Work for ${entry.id}`},
+        'waiting', 'person', ${rhea}, 'ours', ${`r-${entry.client ?? "C-1"}`},
+        ${entry.dueAt ?? null}, ${entry.minor}, ${entry.currency}, 'person', ${rhea},
+        ${`origin-${entry.id}`}, ${entry.sentAt}, ${entry.sentAt},
+        ${JSON.stringify(entry.number === undefined ? {} : { number: entry.number })})`;
+  });
+  const lists = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    for (const [id, prefix] of [
+      ["invoices", "INV"],
+      ["quotes", "QT"],
+    ] as const)
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at)
+        VALUES (${orgId}, ${id}, ${id}, ${prefix}, 1, 0)`;
+  });
+  // Noon UTC is the next morning in Auckland: the calendar days between them stay the same.
+  const NOW = B + 20 * DAY + 12 * HOUR;
+  const lines = (
+    viewer: Parameters<typeof morningMoneyLines>[0]["viewer"] = KIN_OWNER_LEVEL,
+    said?: string,
+    now = NOW,
+  ) => morningMoneyLines({ orgId, now, viewer, said });
+
+  it.effect("tells each overdue invoice and unanswered quote, until settled, in its currency", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* lists;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Pacific/Auckland'`;
+      yield* money({
+        id: "INV-1",
+        list: "invoices",
+        minor: 120000,
+        currency: "NZD",
+        dueAt: B + 6 * DAY + 12 * HOUR,
+        sentAt: B,
+        number: "CT/101",
+      });
+      // Due tomorrow, and a quote sent four days ago: neither is late yet.
+      yield* money({
+        id: "INV-2",
+        list: "invoices",
+        minor: 5000,
+        currency: "NZD",
+        dueAt: NOW + DAY,
+        sentAt: B,
+      });
+      yield* money({
+        id: "QT-1",
+        list: "quotes",
+        minor: 354000,
+        currency: "NZD",
+        sentAt: NOW - 6 * DAY - HOUR,
+        number: "CQ/7",
+      });
+      yield* money({
+        id: "QT-2",
+        list: "quotes",
+        minor: 1000,
+        currency: "NZD",
+        sentAt: NOW - 4 * DAY,
+      });
+      assert.deepStrictEqual(yield* lines(), [
+        // People read the numbers on the papers, never Kin's own keys.
+        "Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue.",
+        "Corran Tiles hasn't answered quote CQ/7 for NZ$3,540 in 6 days.",
+      ]);
+      // A teammate who may not see Money hears none of it; one who may, the same lines.
+      yield* sql`UPDATE kin_records SET team_shared = 1 WHERE register_id IN ('invoices', 'quotes')`;
+      // The agent named the quote by its title, as an unnumbered one shows: Kin says it once.
+      assert.deepStrictEqual(
+        yield* lines(KIN_OWNER_LEVEL, "Still chasing the Work for QT-1 quote."),
+        [
+          "Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue.",
+          "Corran Tiles hasn't answered quote CQ/7 for NZ$3,540 in 6 days.",
+        ],
+      );
+      yield* sql`UPDATE kin_records SET fields_json = '{}' WHERE record_id = 'r-QT-1'`;
+      assert.deepStrictEqual(
+        yield* lines(KIN_OWNER_LEVEL, "Still chasing the Work for QT-1 quote."),
+        ["Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue."],
+      );
+      yield* sql`UPDATE kin_records SET fields_json = '{"number":"CQ/7"}' WHERE record_id = 'r-QT-1'`;
+      assert.deepStrictEqual(yield* lines(viewerOfPeople([zoya])), []);
+      yield* sql`UPDATE kin_people SET sees_money = 1 WHERE person_id = ${zoya}`;
+      assert.lengthOf(yield* lines(viewerOfPeople([zoya])), 2);
+      // Paid in full, and the quote answered: nothing is left to say.
+      yield* sql`INSERT INTO kin_record_payments (payment_id, org_id, record_id, amount_minor,
+          currency, paid_on, origin_key, created_at, created_by_kind)
+        VALUES ('pay-1', ${orgId}, 'r-INV-1', 120000, 'NZD', '2026-11-20', 'pay-1', ${NOW},
+          'person')`;
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-QT-1'`;
+      assert.deepStrictEqual(yield* lines(), []);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("shows eight of each, longest overdue first, then how many more and how much", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* lists;
+      for (let n = 1; n <= 10; n++)
+        yield* money({
+          id: `INV-${n}`,
+          list: "invoices",
+          minor: n * 100_000,
+          currency: "COP",
+          dueAt: NOW - n * DAY,
+          sentAt: B,
+          number: `CT/${n}`,
+        });
+      const told = yield* lines();
+      assert.lengthOf(told, 9);
+      assert.match(
+        told[0] ?? "",
+        /^Corran Tiles owes COP\s1,000,000 on CT\/10, 10 days overdue\.$/,
+      );
+      // What is cut is the least overdue, and the cut says what it holds.
+      assert.match(told[8] ?? "", /^and 2 more overdue invoices, COP\s300,000 in all\.$/);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("leaves out what is set aside until its day, and what the agent already said", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* lists;
+      yield* insert({
+        id: "C-2",
+        list: "clients",
+        title: "Harbor Foundry LLP",
+        category: "client",
+      });
+      const due = NOW - 14 * DAY;
+      for (const [id, number, client] of [
+        ["INV-1", "CT/101", "C-1"],
+        ["INV-2", "CT/102", "C-1"],
+        ["INV-3", "HF/9", "C-2"],
+      ] as const)
+        yield* money({
+          id,
+          list: "invoices",
+          minor: 120000,
+          currency: "EUR",
+          dueAt: due,
+          sentAt: B,
+          number,
+          client,
+        });
+      // "Don't remind me till then": the Chief of staff takes CT/101 in hand for ten days on
+      // Rhea's word, and Rhea sets CT/102 aside for three.
+      yield* KinPulse.handle({
+        orgId,
+        at: NOW,
+        viewer: { _tag: "owner" },
+        by: { _tag: "agent", agentId: chief },
+        factKey: `invoice_overdue:INV-1:base=${due}`,
+        action: "got_it",
+        until: NOW + 10 * DAY,
+      });
+      yield* KinPulse.aside({
+        orgId,
+        at: NOW,
+        viewer: { _tag: "owner" },
+        by: { _tag: "person", personId: rhea },
+        recordKey: "INV-2",
+        action: "set",
+        until: NOW + 3 * DAY,
+        note: null,
+        holding: { _tag: "may", forPersonId: null, onWordOf: null },
+      });
+      const harbor = "Harbor Foundry LLP owes €1,200 on HF/9, 14 days overdue.";
+      assert.deepStrictEqual(yield* lines(), [harbor]);
+      // The agent's own Money section names a debt, by its client or its number: Kin adds none.
+      assert.deepStrictEqual(
+        yield* lines(KIN_OWNER_LEVEL, "- Harbor Foundry: €1,200, 14 days."),
+        [],
+      );
+      assert.deepStrictEqual(yield* lines(KIN_OWNER_LEVEL, "- HF/9 is still open."), []);
+      assert.deepStrictEqual(yield* lines(KIN_OWNER_LEVEL, "- Harbor Foundryworks paid."), [
+        harbor,
+      ]);
+      // Each comes back by itself when its day passes.
+      assert.deepStrictEqual(yield* lines(KIN_OWNER_LEVEL, undefined, NOW + 3 * DAY), [
+        "Corran Tiles owes €1,200 on CT/102, 17 days overdue.",
+        "Harbor Foundry LLP owes €1,200 on HF/9, 17 days overdue.",
+      ]);
+      assert.lengthOf(yield* lines(KIN_OWNER_LEVEL, undefined, NOW + 10 * DAY), 3);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a reader who may see Money gets their page for it alone, every morning", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* lists;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET sees_money = 1 WHERE person_id = ${zoya}`;
+      yield* money({
+        id: "INV-1",
+        list: "invoices",
+        minor: 120000,
+        currency: "EUR",
+        dueAt: B - 3 * DAY,
+        sentAt: B - 9 * DAY,
+      });
+      yield* sql`UPDATE kin_records SET team_shared = 1 WHERE register_id = 'invoices'`;
+      yield* tickAt(MONDAY - MINUTE);
+      yield* tickAt(MONDAY);
+      yield* tickAt(MONDAY + DAY);
+      const pages = (yield* pagesTo(zoya)).map((page) => page.body);
+      assert.lengthOf(pages, 2);
+      for (const page of pages)
+        assert.include(page, 'Money:\n- Corran Tiles owes €1,200 on "Work for INV-1",');
+      // Arjun may not see Money: his page, if any, has none.
+      for (const page of yield* pagesTo(arjun)) assert.notInclude(page.body, "Money:");
+    }).pipe(Effect.provide(chatLayer)),
+  );
 });

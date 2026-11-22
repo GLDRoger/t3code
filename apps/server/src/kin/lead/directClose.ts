@@ -4,6 +4,7 @@ import {
   KinMessageId,
   type KinOrgId,
   type KinPersonId,
+  kinPeopleChatTeamId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -113,7 +114,7 @@ export const closeDirect = Effect.fn("KinLeadProvision.closeDirect")(function* (
 
 /**
  * Inside the transaction that makes a co-owner a member: closes each of their direct chats with
- * a live lead they don't own, unless their own grant or the team agent still lets them write.
+ * a live lead they don't own whose pair with them is restricted (`Reach`).
  */
 export const closeUngranted = Effect.fn("KinDirectClose.closeUngranted")(function* (
   deps: DirectCloseDeps,
@@ -127,11 +128,43 @@ export const closeUngranted = Effect.fn("KinDirectClose.closeUngranted")(functio
       AND c.direct_key = ${personId} || ':' || a.agent_id
     WHERE a.org_id = ${orgId} AND a.role = 'lead' AND a.retired_at IS NULL
       AND a.owner_person_id IS NOT ${personId}
-      AND a.agent_id IS NOT ${LeadAccess.teamAgentSql(sql, orgId)}
-      AND NOT EXISTS (SELECT 1 FROM kin_lead_access x WHERE x.org_id = a.org_id
-        AND x.agent_id = a.agent_id AND x.person_id = ${personId} AND x.revoked_at IS NULL)
+      AND EXISTS (SELECT 1 FROM kin_reach_limits r WHERE r.org_id = a.org_id
+        AND r.one_kind = 'agent' AND r.one_id = a.agent_id AND r.other_kind = 'person'
+        AND r.other_id = ${personId} AND r.lifted_at IS NULL)
     ORDER BY a.agent_id`.pipe(
     Effect.mapError(toPersistenceSqlError("KinDirectClose.closeUngranted")),
   );
   for (const { agentId } of leads) yield* closeDirect(deps, { orgId, agentId }, personId, null);
+});
+
+/**
+ * Inside the caller's transaction: two people's own chat is read-only for both while their pair
+ * is restricted (`Reach`), and theirs to write in again once it is lifted.
+ */
+export const setPeoplePair = Effect.fn("KinDirectClose.setPeoplePair")(function* (
+  deps: DirectCloseDeps,
+  orgId: KinOrgId,
+  pair: readonly [KinPersonId, KinPersonId],
+  role: "guest" | "member",
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const { repo, hub } = deps;
+  const [chat] = yield* sql<{ chatId: KinChatId }>`SELECT chat_id AS "chatId" FROM kin_chats
+    WHERE org_id = ${orgId} AND kind = 'team_group'
+      AND team_id = ${kinPeopleChatTeamId(pair[0], pair[1])} AND archived_at IS NULL
+    ORDER BY created_at LIMIT 1`.pipe(
+    Effect.mapError(toPersistenceSqlError("KinDirectClose.setPeoplePair")),
+  );
+  if (chat === undefined) return;
+  for (const personId of pair) {
+    const member = yield* repo.activeMember({
+      orgId,
+      chatId: chat.chatId,
+      principal: { _tag: "person", personId },
+    });
+    if (Option.isNone(member) || member.value.role === role) continue;
+    const set = yield* repo.setRole({ ...member.value, role });
+    if (Option.isSome(set))
+      yield* hub.publish({ type: "member.updated", orgId, chatId: chat.chatId, member: set.value });
+  }
 });

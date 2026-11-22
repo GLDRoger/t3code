@@ -30,6 +30,8 @@ import { AsyncResult } from "effect/reactivity";
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { formatKinTime } from "./kinScreenState.ts";
 import { KIN_SERVICE_SLOW, KIN_SERVICE_UNREACHED, kinFailureText } from "./kinAnswers.ts";
+import { kinCount } from "./kinCount.ts";
+import { kinSettingDiffers, kinSettingSetAll, kinSettingSpread } from "./kinSettingsSpread.ts";
 
 /**
  * The owner's Connections screens: plain-word states for connections and their tools, the Add
@@ -39,6 +41,9 @@ export const KIN_CONNECTIONS_COPY = {
   describedChanged: "What the service says it does changed too.",
   inputsChanged: "What it takes changed too.",
   title: "Connections",
+  purpose: "What your agents can look things up in, and what they may do there.",
+  noKin: "Connect to your Kin to manage its connections.",
+  github: "GitHub",
   rowDetail: "Outside services your agents can read from.",
   intro:
     "Services your agents can use, in chats only you can see. You choose each tool they may use, and nothing is sent without your Confirm.",
@@ -55,7 +60,7 @@ export const KIN_CONNECTIONS_COPY = {
   urlPlaceholder: "https://mcp.example.com/mcp",
   keyLabel: "Key",
   keyPlaceholder: "Paste the key",
-  keyHint: "Sent to your Kin's computer and kept there. It is never shown again.",
+  keyHint: "Kin keeps it and never shows it again.",
   keyOptional: "Leave empty if the server needs no key.",
   connect: "Connect",
   connecting: "Connecting…",
@@ -76,8 +81,7 @@ export const KIN_CONNECTIONS_COPY = {
   orgPlaceholder: "Optional, for example my-company",
   secretUrlLabel: "Server address",
   secretUrlPlaceholder: "https://…zohomcp.com/mcp/…",
-  secretUrlHint:
-    "This address works like a password. It goes to your Kin's computer and is never shown again.",
+  secretUrlHint: "This address works like a password. Kin keeps it and never shows it again.",
   redirectLabel: "Return address",
   copy: "Copy",
   copied: "Copied",
@@ -111,6 +115,8 @@ export const KIN_CONNECTIONS_COPY = {
   refresh: "Check for changes",
   refreshing: "Checking…",
   changedTitle: "Changed since you allowed it",
+  changedShort: "Changed",
+  lookAt: "Look at the change",
   changedDetail: "Agents can't use it until you look at the change.",
   accept: "Allow the new version",
   acceptAll: "Allow all changes",
@@ -119,6 +125,8 @@ export const KIN_CONNECTIONS_COPY = {
   noCalls: "No agent has used this yet.",
   openWeb: "Can reach the open web",
   reachTitle: "Reaches only this service",
+  reachRow: "Only reads this service",
+  reachShort: "Turn off if it can also read other websites.",
   reachDetail:
     "Turn this off if the service can fetch pages or data from elsewhere. Agents then stop using it in a chat once they have read anything from outside.",
   pause: "Pause",
@@ -133,7 +141,7 @@ export const KIN_CONNECTIONS_COPY = {
   remove: "Remove connection",
   removeTitle: (label: string) => `Remove ${label}?`,
   removeDetail:
-    "Agents stop using it at once and its key is deleted from your Kin's computer. To use it again, add it again.",
+    "Agents stop using it at once and Kin deletes its key. To use it again, add it again.",
   removeConfirm: "Remove",
 } as const;
 
@@ -181,13 +189,20 @@ export interface KinConnectionStatus {
   readonly detail: string;
 }
 
-const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
-
 /** The outside websites visuals may load from: rarely needed, so folded under Advanced. */
 export const KIN_VISUAL_HOSTS = {
+  allowFailed: "Couldn't allow it.",
+  openLink: "Open this link?",
   advanced: "Advanced",
+  section: "Charts",
   title: "Websites charts can load from",
   count: (count: number) => (count === 0 ? "None" : String(count)),
+  summary: (hosts: ReadonlyArray<string>) =>
+    hosts.length === 0
+      ? "None. Charts stay offline."
+      : hosts.length === 1
+        ? (hosts[0] ?? "")
+        : `${hosts[0]} and ${hosts.length - 1} more`,
   detail:
     "Charts and pictures your agents make can't reach the internet. Add a website only if one needs maps, images or data from it. That website can see what the chart shows.",
   none: "None added.",
@@ -244,7 +259,7 @@ export function kinConnectionStatus(connection: KinConnection): KinConnectionSta
       label: "Needs a look",
       detail:
         changed > 0
-          ? `${plural(changed, "tool changed", "tools changed")} since you allowed ${changed === 1 ? "it" : "them"}.`
+          ? `${kinCount(changed, "tool changed", "tools changed")} since you allowed ${changed === 1 ? "it" : "them"}.`
           : KIN_CONNECTIONS_COPY.instructionsChanged,
     };
   return {
@@ -254,8 +269,8 @@ export function kinConnectionStatus(connection: KinConnection): KinConnectionSta
       connection.readTools === 0
         ? "Turn on the tools agents may use."
         : (connection.sendAs?.length ?? 0) > 0 && connection.needsSignInToSend !== true
-          ? "Read, and send on your Confirm."
-          : `Agents can use ${plural(connection.readTools, "tool", "tools")}.`,
+          ? "Kin reads it, and sends only after you confirm."
+          : `Agents can use ${kinCount(connection.readTools, "tool", "tools")}.`,
   };
 }
 
@@ -424,7 +439,7 @@ export type KinSetupStep = { readonly text: string; readonly address: boolean };
 
 /**
  * The one-time setup at Google or Microsoft: the steps, the exact return address, and what to
- * paste back. Microsoft's needs no secret: Kin signs in as an app that keeps none.
+ * paste back. A Microsoft app made as these steps say keeps no secret; one with a Web redirect does.
  */
 export const KIN_OWNER_CLIENT_SETUP: Readonly<
   Record<
@@ -446,7 +461,7 @@ export const KIN_OWNER_CLIENT_SETUP: Readonly<
   google: {
     title: "Set up Google once",
     detail:
-      "Google needs a sign-in client from your company's Google Cloud. It takes about ten minutes, on a computer, and you do it once.",
+      "Google needs a sign-in client from your company's Google Cloud. It takes about ten minutes, on a computer, and you do it once. If your company already has a Google sign-in client for a mail app, you can use it instead: add the address below to its Authorized redirect URIs and paste its client ID and secret.",
     steps: [
       "In Google Cloud console (console.cloud.google.com), signed in to the company account, create a project named Kin.",
       "In APIs & Services → Library, turn on the Gmail API and the Google Calendar API.",
@@ -464,7 +479,7 @@ export const KIN_OWNER_CLIENT_SETUP: Readonly<
   microsoft: {
     title: "Set up Microsoft once",
     detail:
-      "Microsoft needs Kin registered as an app. It takes about ten minutes, on a computer, and you do it once; every work, school or outlook.com account then signs in with it. If your organization asks an admin to approve new apps, the admin approves Kin the first time.",
+      "Microsoft needs Kin registered as an app. It takes about ten minutes, on a computer, and you do it once; every work, school or outlook.com account then signs in with it. If your organization asks an admin to approve new apps, the admin approves Kin the first time. An app your company already has with a Web redirect and a client secret works too: add the address below to its Web redirect URIs and paste its application ID and secret.",
     steps: [
       "On a computer, open entra.microsoft.com, sign in with your work account, and go to App registrations → New registration.",
       "Name it Kin. Under Supported account types, choose Accounts in any organizational directory and personal Microsoft accounts.",
@@ -738,3 +753,242 @@ export const kinConnectionChange = async <A>(sent: Sent<A>, doing: string) => {
   const outcome = await settle(sent, doing);
   return outcome.ok ? null : outcome.problem;
 };
+
+/**
+ * Mail and calendar, said once: three decisions over every mail account's tools. Each writes
+ * through the same per-tool modes; sending and calendar changes are only ever Off or Ask me.
+ */
+export type KinMailPermission = "read" | "send" | "calendar";
+
+const MAIL_TOOL_GROUP: Readonly<Record<string, KinMailPermission>> = {
+  mail_list_threads: "read",
+  mail_search: "read",
+  mail_read_thread: "read",
+  calendar_list_events: "read",
+  calendar_get_event: "read",
+  mail_send: "send",
+  mail_reply: "send",
+  calendar_save_event: "calendar",
+};
+
+/** Each mail and calendar tool in a person's words, keyed by its stable name. */
+const KIN_MAIL_TOOL_COPY: Readonly<
+  Record<string, { readonly title: string; readonly line: string }>
+> = {
+  mail_list_threads: { title: "See recent mail", line: "The latest conversations in this inbox." },
+  mail_search: { title: "Search mail", line: "Find messages by who sent them, words or dates." },
+  mail_read_thread: { title: "Read a conversation", line: "One conversation, start to finish." },
+  calendar_list_events: { title: "See the calendar", line: "Events over the coming days." },
+  calendar_get_event: { title: "Read an event", line: "One event, with who's invited." },
+  mail_send: { title: "Send an email", line: "A new email from this account." },
+  mail_reply: { title: "Reply to a conversation", line: "An answer in a conversation." },
+  calendar_save_event: {
+    title: "Add or change an event",
+    line: "An event on this calendar, and its invitations.",
+  },
+};
+
+const kinMailToolGroup = (toolName: string): KinMailPermission | null =>
+  MAIL_TOOL_GROUP[toolName] ?? null;
+
+/** A mail account: Google or Microsoft, signed in through Kin. */
+export const kinIsMailConnection = (connection: Pick<KinConnection, "kind" | "preset">) =>
+  connection.kind === "builtin" &&
+  (connection.preset === "google" || connection.preset === "microsoft");
+
+export const KIN_MAIL_COPY = {
+  section: "Mail and calendar",
+  providerAccounts: (preset: "google" | "microsoft") =>
+    preset === "google" ? "Google accounts" : "Microsoft accounts",
+  open: "Open",
+  sectionDetail: "For every account. Sending and calendar changes always wait for you.",
+  accountDetail: "Sending and calendar changes always wait for you.",
+  add: "Add account",
+  addTitle: (provider: string) => `Add a ${provider} account`,
+  empty: "Add a Google or Microsoft account and your agents can read mail and your calendar.",
+  loadFailed: "Couldn't load your accounts.",
+  changeFailed: "Couldn't change that. Nothing else was changed.",
+  agentsMay: "What agents may do",
+  eachTool: "Each tool",
+  eachToolDetail: (on: number, all: number) => `${on} of ${all} on. Set them one by one here.`,
+  pausedDetail: "Agents can't use it until you resume.",
+  noteTitle: "What it's for",
+  noteNone: "Not set",
+  nameTitle: "Name",
+  sendsFromTitle: "Sends from",
+  signInTitle: "Sign-in",
+  signInDetail: "Renew it if the service asks you to.",
+  accountSection: (mail: boolean) => (mail ? "Account" : "Service"),
+  keyDetail: "Kept out of sight. Replace it when the service gives you a new one.",
+  keyHint: "Kin checks it right away and never shows it again.",
+  hide: "Hide",
+  show: "Show",
+  turnOn: (count: number) => `Turn on (${count})`,
+  refreshDetail: "Ask the service for its current list.",
+  check: "Check",
+  callsFailed: "Couldn't load recent use.",
+  signInLapsed: "Its sign-in stopped working, so agents can't use it.",
+  removeAccount: "Remove this account",
+  removeService: "Remove this service",
+  nameNeeded: "Give it a name.",
+  keyNeeded: "Paste the new key.",
+  tooLong: "That's too long.",
+  saveName: "Save name",
+  saveNote: "Save note",
+  before: "Before",
+  now: "Now",
+  noDescription: "No description.",
+  allFailed: "Couldn't change every account. Some may already have the new choice.",
+  pauseTitle: "Pause",
+  pauseDetail: "Agents stop using it until you resume. Nothing else changes.",
+  resumeTitle: "Paused",
+  removeRowDetail: "Agents stop using it at once.",
+  pauseOrRemove: "Pause or remove",
+  otherServices: "Other services",
+  otherServicesEmpty: "Connect another service and your agents can look things up in it.",
+  addService: "Add service",
+  addServiceTitle: "Add a service",
+  removeAccountTitle: (address: string) => `Remove ${address}?`,
+  removeAccountDetail:
+    "Agents stop using it at once and Kin forgets its sign-in. To use it again, add it again.",
+} as const;
+
+export const KIN_MAIL_PERMISSIONS: ReadonlyArray<{
+  readonly permission: KinMailPermission;
+  readonly title: string;
+  readonly options: ReadonlyArray<{
+    readonly value: KinConnectionToolMode;
+    readonly label: string;
+  }>;
+}> = [
+  {
+    permission: "read",
+    title: "Read mail and calendar",
+    options: [
+      { value: "read", label: "Allowed" },
+      { value: "ask", label: "Ask me first" },
+      { value: "off", label: "Off" },
+    ],
+  },
+  {
+    permission: "send",
+    title: "Send mail and replies",
+    options: [
+      { value: "ask", label: "Ask me first" },
+      { value: "off", label: "Off" },
+    ],
+  },
+  {
+    permission: "calendar",
+    title: "Add or change calendar events",
+    options: [
+      { value: "ask", label: "Ask me first" },
+      { value: "off", label: "Off" },
+    ],
+  },
+];
+
+/** A tool's mode in the same words as the rows above it. */
+export const kinMailModeLabel = (mode: KinConnectionToolMode) =>
+  mode === "read" ? "Allowed" : mode === "ask" ? "Ask me first" : "Off";
+
+/** One account's value for a permission: one mode, `mixed` across its tools, or null with none. */
+export type KinMailAccountValue = KinConnectionToolMode | "mixed";
+
+const groupTools = (tools: ReadonlyArray<KinConnectionTool>, permission: KinMailPermission) =>
+  tools.filter((tool) => tool.removedAt === null && kinMailToolGroup(tool.name) === permission);
+
+export function kinMailAccountValue(
+  tools: ReadonlyArray<KinConnectionTool>,
+  permission: KinMailPermission,
+): KinMailAccountValue | null {
+  const spread = kinSettingSpread(groupTools(tools, permission).map((tool) => tool.mode));
+  return spread.kind === "none" ? null : spread.kind === "same" ? spread.value : "mixed";
+}
+
+/**
+ * The row said once over every account: the value every account has (null shows Mixed), and
+ * whether one account's own page says it differs. Hidden (`null`) with no account to say it for.
+ */
+export function kinMailPermission(
+  accounts: ReadonlyArray<ReadonlyArray<KinConnectionTool>>,
+  permission: KinMailPermission,
+) {
+  const values = accounts.flatMap((tools) => {
+    const value = kinMailAccountValue(tools, permission);
+    return value === null ? [] : [value];
+  });
+  const spread = kinSettingSpread(values);
+  if (spread.kind === "none") return null;
+  return {
+    value: spread.kind === "same" && spread.value !== "mixed" ? spread.value : null,
+    differs: (tools: ReadonlyArray<KinConnectionTool>) => {
+      const own = kinMailAccountValue(tools, permission);
+      return own !== null && kinSettingDiffers(own, spread);
+    },
+  };
+}
+
+/**
+ * What one account must be sent to have `mode` for a permission: only its tools that differ,
+ * never one waiting for a look at a change, and never Read for a tool that sends.
+ */
+export function kinMailModes(
+  tools: ReadonlyArray<KinConnectionTool>,
+  permission: KinMailPermission,
+  mode: KinConnectionToolMode,
+): Modes {
+  if (mode === "read" && permission !== "read") return [];
+  const rows = kinToolRows(groupTools(tools, permission)).filter(
+    (row) => row.state !== "changed" && row.modes.includes(mode),
+  );
+  return kinSettingSetAll(rows, (row) => row.mode, mode).flatMap((row) => kinToolMark(row, mode));
+}
+
+/** A tool's line on an account's page: a person's words for mail tools, nothing else's model text. */
+export const kinToolCopy = (row: Pick<KinToolRow, "name" | "title">) =>
+  KIN_MAIL_TOOL_COPY[row.name] ?? { title: row.title, line: null };
+
+const MAIL_ORDER = Object.keys(KIN_MAIL_TOOL_COPY);
+
+/** A mail account's tools in the order of the three rows: reads, sending, then the calendar. */
+export const kinMailToolOrder = (rows: ReadonlyArray<KinToolRow>): ReadonlyArray<KinToolRow> =>
+  [...rows].sort(
+    (a, b) =>
+      Number(b.state === "changed") - Number(a.state === "changed") ||
+      (MAIL_ORDER.indexOf(a.name) + 1 || 99) - (MAIL_ORDER.indexOf(b.name) + 1 || 99),
+  );
+
+/**
+ * One use on an account's page, in a person's words: what was done, who, how it went, when. The
+ * reason the host gave the agent is never shown; only an expired sign-in is said, as it's yours to fix.
+ */
+export function kinUseRow(
+  call: KinConnectionCall,
+  now: Date,
+  tools: ReadonlyArray<Pick<KinToolRow, "name" | "title">>,
+): KinCallRow {
+  const tool = tools.find((row) => row.name === call.toolName);
+  const what = tool === undefined ? call.toolName : kinToolCopy(tool).title;
+  const outcome =
+    call.status === "ok"
+      ? "Done"
+      : call.status === "offered"
+        ? "Asked you to connect it"
+        : call.status === "awaiting_approval"
+          ? "Waiting for you"
+          : call.status === "refused"
+            ? "Not allowed by your settings"
+            : /sign-?in/i.test(call.refusedReason ?? "")
+              ? "Didn't go through: the sign-in had expired"
+              : "Didn't go through";
+  return {
+    key: call.callId,
+    title: what,
+    // @effect-diagnostics-next-line globalDate:off - the shared clock-and-day label takes a Date.
+    detail: `${call.agentName ?? "An agent"} · ${outcome} · ${formatKinTime(new Date(call.createdAt), now)}`,
+    ok: call.status === "ok" || call.status === "offered" || call.status === "awaiting_approval",
+    // @effect-diagnostics-next-line globalDate:off - the shared clock-and-day label takes a Date.
+    time: formatKinTime(new Date(call.createdAt), now),
+  };
+}

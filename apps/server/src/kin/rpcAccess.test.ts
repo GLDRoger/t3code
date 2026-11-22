@@ -43,15 +43,25 @@ const MEMBER = [
   "kin.chat.history",
   "kin.chat.members",
   "kin.chat.subscribe",
+  "kin.chat.working",
   "kin.chats.clear",
   "kin.chats.createDirect",
   "kin.chats.mute",
+  "kin.chats.pin",
   "kin.chats.subscribe",
   "kin.chats.withPerson",
+  // A delete or its undo: `Docs.deleteByHand` allows exactly whom a hand edit allows, and
+  // never an agent's character or What we sell; the docs test pins who is refused.
+  "kin.docs.delete",
   "kin.docs.diff",
+  // A hand edit: `Docs.editSectionByHand` refuses all but the owner level and the doc's project
+  // lead, and keeps playbooks and What we sell to the owner level.
+  "kin.docs.editSection",
   "kin.docs.get",
   "kin.docs.history",
   "kin.docs.list",
+  // A teammate's own draft card: `sendUp` checks the card, the chat and the doc from stored rows.
+  "kin.docs.sendUp",
   "kin.docs.subscribe",
   "kin.goals.list",
   "kin.leads.list",
@@ -83,22 +93,33 @@ const MEMBER = [
   "kin.tasksKeys.list",
   "kin.tasksKeys.revoke",
   "kin.triggers.getTimeZone",
+  // What Kin keeps watch on: the service shows and acts on only the watches this person may see.
+  "kin.watches.again",
+  "kin.watches.list",
+  "kin.watches.log",
+  "kin.watches.look",
+  "kin.watches.stop",
   "kin.widgets.act",
   "kin.work.assign",
   "kin.work.comment",
   "kin.work.commentRemove",
   "kin.work.comments",
+  // Marketing's reads: `ownerMarketing.ts` shows what they see in Clients and refuses Clients off.
+  "kin.work.contactList",
   "kin.work.create",
   // The light CRM's: the gate lets a person through, and `ownerClients.ts` decides the rest.
   "kin.work.createContact",
   // Deals': the gate lets a person through, and `deals.ts` decides the rest (Clients on, `crmSees`).
   "kin.work.createDeal",
   "kin.work.createParty",
+  // Both writes of `ownerClients.createParty` and `deals.createIn`, each deciding as alone.
+  "kin.work.createPartyWithDeal",
   "kin.work.dates",
   "kin.work.deal",
   "kin.work.dealStages",
   "kin.work.dealStep",
   "kin.work.deals",
+  "kin.work.exportContacts",
   "kin.work.get",
   "kin.work.handBack",
   "kin.work.handOver",
@@ -108,6 +129,7 @@ const MEMBER = [
   "kin.work.list",
   "kin.work.lists",
   "kin.work.logTouch",
+  "kin.work.marketing",
   "kin.work.money",
   "kin.work.moveDeal",
   "kin.work.nudge",
@@ -119,6 +141,7 @@ const MEMBER = [
   "kin.work.removeTouch",
   "kin.work.subscribe",
   "kin.work.summary",
+  "kin.work.tickStep",
   "kin.work.update",
   "kin.work.updateContact",
   "kin.work.updateDeal",
@@ -196,6 +219,23 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         // Team memory is the owner's call: a co-owner (now Meera) may set it, a member never.
         assert.isTrue(yield* allowed("meera", "kin.memory.setTeamMemory"));
         assert.isFalse(yield* allowed("ravi", "kin.memory.setTeamMemory"));
+        // Who may not message whom is set by owners and co-owners alone.
+        for (const method of ["kin.reach.list", "kin.reach.set"]) {
+          assert.isTrue(yield* allowed("meera", method));
+          assert.isFalse(yield* allowed("ravi", method));
+          assert.isFalse(yield* allowed("stranger", method));
+        }
+        // Letting Kin set the webhook of an App it didn't make, and Check again, go as Disconnect does.
+        for (const method of [
+          "kin.github.app.disconnect",
+          "kin.github.app.hook.allow",
+          "kin.github.app.look",
+        ]) {
+          assert.isTrue(yield* allowed("kin-default-owner", method));
+          assert.isTrue(yield* allowed("meera", method));
+          assert.isFalse(yield* allowed("ravi", method));
+          assert.isFalse(yield* allowed("stranger", method));
+        }
 
         // The country refusal reaches a person with no name in it (an older phone hides names),
         // worded for who may choose the country now; any other refusal is as it was.

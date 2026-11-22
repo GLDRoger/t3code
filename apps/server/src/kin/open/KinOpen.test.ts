@@ -237,6 +237,15 @@ it.effect("each role reads what it may see, and no more", () =>
     const coOwner = yield* open(arjun, true);
     assert.lengthOf(factsOn(coOwner, "W-1"), 1);
     assert.lengthOf(factsOn(coOwner, "W-2"), 1);
+    // What waits on Rhea, the co-owner sees marked as hers, last and counted as nobody's here.
+    const others = coOwner.rows.flatMap((row) => (row.item._tag === "waiting" ? [row] : []));
+    assert.deepStrictEqual(
+      others.map((row) => [row.id, row.item._tag === "waiting" && row.item.waiting.waitsFor]),
+      [["waiting:wait-approval", { personId: rhea, name: "rhea" }]],
+    );
+    assert.strictEqual(coOwner.rows.at(-1)?.id, "waiting:wait-approval");
+    assert.strictEqual(coOwner.counts.waiting, 0);
+    assert.strictEqual(coOwner.counts.needsYou, coOwner.rows.length - 1);
     // Meera: her own late task and today's; none of Rhea's, no money fact, no money row.
     const member = yield* open(meera);
     assert.deepStrictEqual(
@@ -252,6 +261,11 @@ it.effect("each role reads what it may see, and no more", () =>
     const money = withMoney.rows.find((row) => row.id === "money:overdue");
     assert.deepStrictEqual(money?.item, { _tag: "money", invoices: 1 });
     assert.isFalse(withMoney.rows.some((row) => row.item._tag === "fact"));
+    // A teammate sees nothing that waits on anyone else, owner level or not.
+    for (const read of [member, withMoney])
+      assert.isFalse(
+        read.rows.some((row) => row.item._tag === "waiting" && row.item.waiting.waitsFor),
+      );
   }).pipe(Effect.provide(layer)),
 );
 

@@ -3,6 +3,7 @@ import {
   KIN_PROFILE_SKILLS_MAX,
   KIN_PROFILE_TALK_MAX,
   KIN_ROLE_TAGS_MAX,
+  KinGithubLogin,
   type KinAgentId,
   type KinLeadProfile,
   type KinPersonProfile,
@@ -10,16 +11,26 @@ import {
   type KinWorkHours,
 } from "@t3tools/contracts";
 
+import * as Schema from "effect/Schema";
+
+import { kinFailure } from "./kinAnswers.ts";
 import { kinZoneName } from "./kinTimeZone.ts";
 
 export { KIN_PROFILE_NAME_MAX, KIN_PROFILE_SKILLS_MAX, KIN_PROFILE_TALK_MAX };
 
 export const KIN_PROFILE_COPY = {
-  skillsExample: "SwiftUI, App Store releases",
+  runsWorkspace: "Runs this workspace",
+  skillsExample: "For example: SwiftUI, App Store releases",
   title: "Profile",
   mine: "Your profile",
   edit: "Edit profile",
+  /** Settings → Profile's one sentence. */
+  purpose: "How your teammates and agents see you, and when Kin can reach you.",
+  editOf: (what: string) => `Edit ${what.toLowerCase()}`,
+  saveProfile: "Save profile",
+  pictureLabel: "Picture",
   save: "Save",
+  saveUsername: "Save username",
   saving: "Saving…",
   failed: "Couldn't save.",
   loadFailed: "Couldn't load this profile.",
@@ -30,7 +41,6 @@ export const KIN_PROFILE_COPY = {
   skillsHint: "Everyone on the team and their agents can read this.",
   talkLabel: "How to talk to me",
   talkHint: "Agents read this before they write to you. Only you can change it.",
-  talkPlaceholder: "Short and direct. Numbers first. No messages after 8 pm.",
   noTalk: "Not said yet",
   hoursLabel: "Working hours",
   timeZoneLabel: "Time zone",
@@ -44,16 +54,68 @@ export const KIN_PROFILE_COPY = {
   noHours: "Not set",
   noSkills: "Nothing yet",
   noTags: "No roles yet",
+  /** Web's profile rows: one word for every empty value. */
+  rowEmpty: "Not set",
   pictureAdd: "Add picture",
   pictureChange: "Change picture",
   pictureRemove: "Remove picture",
   pictureFailed: "The picture didn't upload. Try a smaller image.",
+  pictureSaved: "Picture saved.",
+  pictureRemoved: "Picture removed.",
+  aboutYou: "About you",
+  yourTasks: "Your tasks",
+  moreAboutYou: "More about you",
+  moreAboutThem: "More about them",
 } as const;
+
+export const KIN_GITHUB_LOGIN = {
+  label: "GitHub username",
+  none: "Not set",
+  mineHint: "Kin uses it to find your pull requests when you ask an agent to review them.",
+  theirHint: "Kin uses it to find their pull requests when they ask an agent to review them.",
+  set: "Add GitHub username…",
+  change: "Change",
+  remove: "Remove",
+  removeTitle: "Remove the GitHub username?",
+  removeDetail: (mine: boolean) =>
+    mine
+      ? "Kin stops finding your pull requests until you add it again."
+      : "Kin stops finding their pull requests until it's added again.",
+  save: "Save",
+  saveUsername: "Save username",
+  saving: "Saving…",
+  invalid:
+    "That isn't a GitHub username. It is 1 to 39 letters, digits and single hyphens, and doesn't start or end with a hyphen.",
+  taken: "That GitHub username is already on file for someone else.",
+  failed: "Couldn't save the GitHub username.",
+} as const;
+
+const isGithubLogin = Schema.is(KinGithubLogin);
+
+/** What was typed, as the host takes it: a username, or null to clear it. A leading @ is dropped. */
+export function kinGithubLoginInput(
+  text: string,
+):
+  | { readonly ok: true; readonly login: string | null }
+  | { readonly ok: false; readonly problem: string } {
+  const typed = text.trim();
+  if (typed === "") return { ok: true, login: null };
+  const login = typed.replace(/^@/, "");
+  return isGithubLogin(login)
+    ? { ok: true, login }
+    : { ok: false, problem: KIN_GITHUB_LOGIN.invalid };
+}
+
+/** Where the row shows, the host refuses a username only when someone else has it, never saying whose. */
+export const kinGithubLoginFailure = (cause: unknown) =>
+  kinFailure(cause, KIN_GITHUB_LOGIN.failed, { refused: KIN_GITHUB_LOGIN.taken }).text;
 
 export const KIN_TEAM_AGENT_COPY = {
   label: "Team agent",
   off: "Off",
   detail: "Everyone on your team can chat with this agent. It sees only what each person may see.",
+  detailRestricted:
+    "Everyone on your team can chat with this agent, except the people restricted from it under Who can message. It sees only what each person may see.",
   suggested: "Suggested",
   failed: "Couldn't change the team agent.",
 } as const;

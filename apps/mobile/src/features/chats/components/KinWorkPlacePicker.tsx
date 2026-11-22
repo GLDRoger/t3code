@@ -41,6 +41,8 @@ export function KinWorkPlacePicker(props: {
   readonly choices: ReadonlyArray<KinWorkRef>;
   /** A task's done projects, offered after the open ones so a late task can still be filed there. */
   readonly done?: ReadonlyArray<KinWorkRef>;
+  /** The only keys this viewer may pick (`kinTaskProjectsAllowed`); null or absent for any. */
+  readonly only?: ReadonlySet<string> | null;
   readonly disabled: boolean;
   readonly onPick: (ref: KinWorkRef | null) => void;
   /** Whether "None" is offered: the host may let a value change but not be cleared. */
@@ -74,6 +76,7 @@ export function KinWorkPlacePicker(props: {
     search: search.state,
     loaded: { open: props.choices, done: props.done ?? [] },
     held: extra !== undefined && held?.key === extra.key ? null : held,
+    only: props.only ?? null,
   });
   const groups = kinTaskProjectMenu({ projects: view.open, doneProjects: view.done });
   const typed = query.trim() !== "";
@@ -122,6 +125,7 @@ export function KinWorkPlacePicker(props: {
         icon={props.icon}
         label={props.label}
         detail={held?.title ?? none}
+        detailEllipsizeMode="tail"
         {...(held !== null && side?.value === "theirs"
           ? { description: KIN_WORK_NEW_COPY.sideTheirs }
           : {})}

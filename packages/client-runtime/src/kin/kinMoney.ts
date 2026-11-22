@@ -1,4 +1,5 @@
 import type {
+  KinCash,
   KinChartSpec,
   KinListDefinition,
   KinListId,
@@ -23,6 +24,7 @@ import {
   kinTotalsText,
   type KinListFilter,
 } from "./kinLists.ts";
+import { kinCount } from "./kinCount.ts";
 
 /**
  * The Money part of Work: what is owed to us, what came in and went out, and the year so far.
@@ -59,6 +61,9 @@ export const KIN_MONEY = {
   suggestedNote: KIN_SUGGESTION_NOTE,
   /** Past the newest shown, the rest of one list's suggestions: "12 more in Invoices". */
   suggestedMore: (count: number, listName: string) => `${count} more in ${listName}`,
+  /** Past the clients a screen is sent, the rest, loaded on a tap. */
+  clientsMore: (count: number) => (count === 1 ? "1 more client" : `${count} more clients`),
+  clientsFewer: "Show fewer",
   lists: "Lists",
   clients: "Clients",
   none: {
@@ -84,7 +89,32 @@ export const KIN_MONEY = {
     detail: "An owner chooses the company's country first, so amounts, tax and dates read right.",
   },
   chooseCountry: "Open Company details",
+  /** Cash in the bank, as one line, before Kin has any statement or recorded money to show. */
+  noBank: "No bank statement yet",
 };
+
+/**
+ * Money's blocks, top to bottom: who owes us, then this month against last, ahead of what is
+ * suggested, the next 30 days and cash; the folded rows last.
+ */
+export const KIN_MONEY_BLOCKS = [
+  "owed",
+  "month",
+  "suggested",
+  "outlook",
+  "cash",
+  "folded",
+] as const;
+export type KinMoneyBlock = (typeof KIN_MONEY_BLOCKS)[number];
+
+/** True when Kin has nothing about the bank to show: Money draws it as `noBank`, one line. */
+export const kinCashEmpty = (cash: KinCash): boolean =>
+  !cash.known &&
+  cash.accounts.length === 0 &&
+  cash.byCurrency.length === 0 &&
+  cash.notOfRecord.length === 0 &&
+  (cash.alertAccounts ?? []).length === 0 &&
+  (cash.bankKnown?.through ?? null) === null;
 
 /** The lists the host's summary is built from. Everything else about a list is its definition. */
 const INVOICES = "invoices";
@@ -93,6 +123,10 @@ const EXPENSES = "expenses";
 /** The lists Money already opens from its own figures, which Work's Lists leaves out. */
 export const kinInMoney = (def: Pick<KinListDefinition, "list">): boolean =>
   def.list === INVOICES || def.list === EXPENSES || def.list === "quotes";
+
+/** Kin's own money lists keep their settings for the computer: the books are set up there. */
+export const kinListSettingsOnPhone = (def: Pick<KinListDefinition, "list" | "builtIn">) =>
+  !def.builtIn && ![INVOICES, EXPENSES, "receipts", "quotes"].includes(def.list);
 
 /** A list to open, already narrowed to the entries behind a figure. */
 export interface KinListOpen {
@@ -150,6 +184,8 @@ export interface KinMoneyView {
   readonly owed: KinMoneyFigure;
   readonly overdue: KinMoneyFigure;
   readonly clients: ReadonlyArray<KinMoneyClientView>;
+  /** The owing clients past those sent, as one row; null with none, and from an older host. */
+  readonly clientsMore: string | null;
   /** "November 2026". */
   readonly monthLabel: string;
   readonly received: KinMoneyFigure;
@@ -175,7 +211,6 @@ export interface KinMoneyView {
 
 const lines = (totals: KinMoneyTotals) =>
   totals.length === 0 ? [KIN_MONEY_NOTHING] : kinTotalsLines(totals);
-const plural = (count: number, one: string) => (count === 1 ? `1 ${one}` : `${count} ${one}s`);
 
 /** The Money summary as the screen shows it. `lists` says which figures have entries to open. */
 export function kinMoneyView(
@@ -248,7 +283,7 @@ export function kinMoneyView(
       id: "owed",
       label: KIN_MONEY.owed,
       lines: lines(summary.owed.total),
-      note: summary.owed.invoices === 0 ? null : plural(summary.owed.invoices, "invoice"),
+      note: summary.owed.invoices === 0 ? null : kinCount(summary.owed.invoices, "invoice"),
       late: false,
       open: open(invoices, owing),
     },
@@ -257,7 +292,9 @@ export function kinMoneyView(
       label: KIN_MONEY.overdue,
       lines: lines(summary.owed.overdue),
       note:
-        summary.owed.overdueInvoices === 0 ? null : plural(summary.owed.overdueInvoices, "invoice"),
+        summary.owed.overdueInvoices === 0
+          ? null
+          : kinCount(summary.owed.overdueInvoices, "invoice"),
       late: summary.owed.overdueInvoices > 0,
       open: open(invoices, { ...owing, late: true }),
     },
@@ -268,8 +305,8 @@ export function kinMoneyView(
       overdue:
         client.oldestOverdueDays === null
           ? null
-          : `${kinTotalsText(client.overdue)} overdue by ${plural(client.oldestOverdueDays, "day")}`,
-      invoices: plural(client.invoices, "invoice"),
+          : `${kinTotalsText(client.overdue)} overdue by ${kinCount(client.oldestOverdueDays, "day")}`,
+      invoices: kinCount(client.invoices, "invoice"),
       open: open(invoices, {
         ...owing,
         ...(client.party === null
@@ -277,6 +314,10 @@ export function kinMoneyView(
           : { party: { key: client.party.key, title: client.party.title } }),
       }),
     })),
+    clientsMore:
+      (summary.owed.byClientMore ?? 0) === 0
+        ? null
+        : KIN_MONEY.clientsMore(summary.owed.byClientMore ?? 0),
     monthLabel: kinMonthLabel(summary.thisMonth),
     received: {
       id: "received",

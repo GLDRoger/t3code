@@ -23,6 +23,7 @@ import {
   KIN_CACHED_MESSAGE_LIMIT,
   kinBadgeCount,
   kinChatSettled,
+  kinWaitingCount,
   selectKinInboxView,
   trimKinChatForCache,
   type KinChatState,
@@ -158,15 +159,40 @@ describe("kin inbox", () => {
     expect(view.rows[1]!.waitingCount).toBe(2);
     expect(view.waitingCount).toBe(3);
     expect(view.unreadCount).toBe(3);
-    // The host's open list stands in for the chat list's waiting: a settled ask leaves the fold.
-    const open = selectKinInboxView(state, [waiting("w3", "asks-busy", { reason: "decision" })]);
-    expect(open.rows.map((row) => [row.chat.chatId, row.fold]).slice(0, 2)).toEqual([
-      ["asks-busy", "needsYou"],
-      ["busy", "working"],
+  });
+
+  it("counts everything that waits on the viewer, and keeps others' apart, read-only", () => {
+    const rhea = { personId: "rhea", name: "Rhea Rao" } as never;
+    const state = applyKinInboxEvent(emptyKinInbox, {
+      _tag: "snapshot",
+      chats: [chat("mine")],
+      waiting: [
+        waiting("question", "mine"),
+        waiting("mail", "mine", { card: "mail", widgetId: "choice:mail" as never }),
+        waiting("draft", "mine", { card: "draft", widgetId: "choice:draft" as never }),
+        waiting("approval", "mine", { reason: "approval" }),
+        waiting("hers-2", "rhea-chat", { waitsFor: rhea, createdAt: at(5) }),
+        waiting("hers-1", "rhea-chat", { waitsFor: rhea, card: "mail", createdAt: at(1) }),
+      ],
+    });
+    const view = selectKinInboxView(state);
+    expect(view.waitingCount).toBe(4);
+    expect(kinWaitingCount(state.waiting)).toBe(4);
+    expect(view.waiting.map((item) => item.waitingId).toSorted()).toEqual([
+      "approval",
+      "draft",
+      "mail",
+      "question",
     ]);
-    expect(open.folds).toEqual({ needsYou: 1, working: 1, rest: 5 });
-    expect(open.waiting.map((item) => item.waitingId)).toEqual(["w3"]);
-    expect(open.waitingCount).toBe(1);
+    expect(view.waitsFor).toEqual([
+      {
+        personId: "rhea",
+        name: "Rhea Rao",
+        items: [state.waiting[5], state.waiting[4]],
+      },
+    ]);
+    // Someone else's row never puts their chat, or the viewer's, under Needs you.
+    expect(view.rows.map((row) => [row.chat.chatId, row.waitingCount])).toEqual([["mine", 4]]);
   });
 
   it("upserts chats without moving one backwards, and resolves waiting rows", () => {

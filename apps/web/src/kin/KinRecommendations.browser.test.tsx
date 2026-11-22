@@ -27,6 +27,7 @@ vi.mock("./kinClient", async () => {
   const allowed = A.make(true);
   host.show = () => registry.refresh(list);
   return {
+    markKinHostKnown: () => {},
     kinClient: {
       recommendations: () => list,
       recommendationAskAgain: {
@@ -98,7 +99,7 @@ describe("Settings → Recommendations", () => {
         action: { kind: "ask_again", label: "Ask again" },
       }),
     ]);
-    await using _screen = await render(settingsPage());
+    await using screen = await render(settingsPage());
     await expect.element(page.getByText("Waiting in Needs you.")).toBeVisible();
     await expect.element(page.getByText("Done 12 Nov: Meera can message Tech lead.")).toBeVisible();
     await expect.element(page.getByText(/\(waiting\)$/)).toBeVisible();
@@ -106,9 +107,8 @@ describe("Settings → Recommendations", () => {
     expect(page.getByRole("button", { name: "Ask again" }).elements()).toHaveLength(2);
 
     // Who can message an agent is changed on its page: the done row only goes there.
-    await expect
-      .element(page.getByRole("link", { name: "Open Tech lead's page" }))
-      .toHaveAttribute("href", expect.stringContaining("agent=tech"));
+    await userEvent.click(page.getByRole("button", { name: "Open Tech lead's page" }));
+    expect(new URLSearchParams(screen.router!.history.location.search).get("agent")).toBe("tech");
     await userEvent.click(page.getByRole("button", { name: "Ask again" }).first());
     await expect
       .element(page.getByText("Not now on 3 Nov. Kin may suggest it again."))

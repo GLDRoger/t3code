@@ -4,10 +4,12 @@ import {
   KIN_TASK_LINK,
   KIN_TASK_NOTE_COPY,
   KIN_TASK_RECORD,
+  KIN_TASK_WITH,
   type KinActivityIcon,
   type KinActivityLine,
   type KinNextStepView,
   type KinRecordChipTone,
+  type kinTaskWith,
   kinProjectNoteLine,
   kinTaskActivity,
   kinTaskLinkProblem,
@@ -59,6 +61,7 @@ import {
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { Menu, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -393,7 +396,7 @@ export function KinTaskActivity(
                           <Button
                             size="xs"
                             variant="ghost-muted"
-                            aria-label="Remove this note"
+                            aria-label={KIN_TASK_NOTE_COPY.removeLabel}
                             onClick={() => setRemoving(comment.commentId)}
                           >
                             {KIN_TASK_NOTE_COPY.remove}
@@ -798,5 +801,78 @@ export function KinTaskNoteComposer(props: TaskTarget) {
         </ComposerSurface.Host>
       </ComposerSurface.Shell>
     </div>
+  );
+}
+
+/**
+ * The With line under "Who has it": each person's picture and first name, × for a reader who may
+ * change the task and Leave on their own name, and + to put someone on it (`picker`, the holder's
+ * people-and-agents list), absent once the task holds as many as it takes.
+ */
+export function KinTaskWithLine(props: {
+  readonly with: ReturnType<typeof kinTaskWith>;
+  readonly saving: boolean;
+  /** The menu's items: whoever can still be put on it. */
+  readonly picker: React.ReactNode;
+  readonly onRemove: (key: string) => void;
+  readonly onLeave: () => void;
+}) {
+  const { people, add, full } = props.with;
+  return (
+    <>
+      <dt className="text-muted-foreground">{KIN_TASK_WITH.label}</dt>
+      <dd className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
+        {people.map((who) => (
+          <span key={who.key} className="flex min-w-0 items-center gap-1.5">
+            <KinAvatar avatar={who.avatar} size="xs" />
+            <span className="truncate text-foreground">{who.name}</span>
+            {who.status === null ? null : (
+              <span className="shrink-0 text-xs text-muted-foreground">{who.status}</span>
+            )}
+            {who.act === "remove" ? (
+              <Button
+                size="icon-xs"
+                variant="ghost-muted"
+                disabled={props.saving}
+                aria-label={KIN_TASK_WITH.remove(who.name)}
+                onClick={() => props.onRemove(who.key)}
+              >
+                <XIcon />
+              </Button>
+            ) : who.act === "leave" ? (
+              <Button
+                size="xs"
+                variant="ghost"
+                disabled={props.saving}
+                aria-label={KIN_TASK_WITH.leaveLabel}
+                onClick={props.onLeave}
+              >
+                {KIN_TASK_WITH.leave}
+              </Button>
+            ) : null}
+          </span>
+        ))}
+        {!add ? null : (
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  disabled={props.saving}
+                  aria-label={KIN_TASK_WITH.add}
+                />
+              }
+            >
+              <PlusIcon />
+            </MenuTrigger>
+            <MenuPopup align="start">{props.picker}</MenuPopup>
+          </Menu>
+        )}
+      </dd>
+      {full === null ? null : (
+        <dd className="col-start-2 -mt-1 text-xs text-muted-foreground">{full}</dd>
+      )}
+    </>
   );
 }

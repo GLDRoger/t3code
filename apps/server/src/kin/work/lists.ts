@@ -10,6 +10,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { withArticle } from "../article.ts";
 import { formatMoney } from "./money.ts";
 
 /**
@@ -41,7 +42,8 @@ export const LISTS: Record<ListName, List> = {
     categories: ["task", "issue", "obligation", "meeting"],
     // The project spine: a milestone's key, S/M/L, why its holder was picked, the doc section it
     // came from with that section's hash then, a meeting's people and place, the holder not
-    // told yet that it is theirs, and where a promise was made (`promises.ts`).
+    // told yet that it is theirs, who is on it besides its holder (`person:<id>`, `agent:<id>`),
+    // and where a promise was made (`promises.ts`).
     fields: [
       "milestone",
       "size",
@@ -53,6 +55,7 @@ export const LISTS: Record<ListName, List> = {
       "attendees",
       "where",
       "from",
+      "alsoOn",
     ],
   },
   clients: {
@@ -73,17 +76,27 @@ export const LISTS: Record<ListName, List> = {
     states: ["open", "dropped"],
     categories: [],
     // `emails` and `phones` hold every one, main first, only beside a second (`contactDetails.ts`).
-    fields: ["role", "email", "phone", "emails", "phones"],
+    fields: ["role", "email", "phone", "emails", "phones", "tags"],
   },
   projects: {
     name: "Projects",
     prefix: "P",
     noun: "project",
     states: ["open", "done", "dropped"],
-    categories: [],
+    // None is an ordinary project; a campaign's `audience` is a tag (`tags.ts`).
+    categories: ["campaign"],
     // `members` holds `person:<id>` and `agent:<id>`; days are `YYYY-MM-DD`; `noticeDays` a whole
     // number as text.
-    fields: ["repos", "billing", "value", "startsOn", "renewsOn", "noticeDays", "members"],
+    fields: [
+      "repos",
+      "billing",
+      "value",
+      "startsOn",
+      "renewsOn",
+      "noticeDays",
+      "members",
+      "audience",
+    ],
   },
   milestones: {
     name: "Milestones",
@@ -111,7 +124,7 @@ export const LISTS: Record<ListName, List> = {
     noun: "deal",
     states: ["open", "done", "dropped"],
     categories: [],
-    fields: ["stage", "value", "source", "lostReason"],
+    fields: ["stage", "value", "source", "lostReason", "concerns"],
   },
   docs: {
     name: "Docs",
@@ -187,7 +200,7 @@ export const checkFor = (
   const def = LISTS[list];
   if (input.state !== undefined && !def.states.includes(input.state))
     return invalid(
-      `A ${def.noun} is ${def.states.join(", ")}; ${input.state} is for Work entries.`,
+      `${withArticle(def.noun, "A")} is ${def.states.join(", ")}; ${input.state} is for Work entries.`,
     );
   if (
     input.category !== undefined &&
@@ -196,10 +209,10 @@ export const checkFor = (
   )
     return invalid(
       def.categories.length === 0
-        ? `A ${def.noun} has no category.`
-        : `A ${def.noun}'s kind is ${def.categories.join(" or ")}.`,
+        ? `${withArticle(def.noun, "A")} has no category.`
+        : `${withArticle(def.noun, "A")}'s kind is ${def.categories.join(" or ")}.`,
     );
   const extra = Object.keys(input.fields ?? {}).filter((key) => !def.fields.includes(key));
-  if (extra.length > 0) return invalid(`A ${def.noun} has no ${extra.join(", ")}.`);
+  if (extra.length > 0) return invalid(`${withArticle(def.noun, "A")} has no ${extra.join(", ")}.`);
   return undefined;
 };

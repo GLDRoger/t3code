@@ -24,7 +24,7 @@ import * as KinPulse from "./KinPulse.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
 import { holdIfQuiet } from "../triggers/quietHold.ts";
 import { inHoursAt, nudge } from "./nudge.ts";
-import { type OutsideRead, type OutsideSource, poll } from "./outside.ts";
+import { matchLines, type OutsideRead, type OutsideSource, poll } from "./outside.ts";
 
 // Invented company, people, mail and calendar only; nothing here reads a real database or service.
 const orgId = KinOrgId.make("org");
@@ -636,6 +636,41 @@ describe("pulse check-ins", () => {
       assert.strictEqual(again._tag === "duplicate" ? again.notBefore : 0, MONDAY + DAY + 8 * HOUR);
       const asked = yield* at("checkin-late", "run-now-2");
       assert.strictEqual(asked._tag === "queued" ? asked.notBefore : 0, night);
+      // Away until Friday: the week's morning briefs wait for them, and only the latest goes, with
+      // what the earlier ones carried.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET away_until = '2026-11-20' WHERE person_id = ${owner}`;
+      yield* record({ key: "W-2", list: "work", title: "Invented brochure", dueAt: MONDAY - DAY });
+      const morning = (day: number, outside: OutsideRead = nothingOutside) =>
+        queueCheckIn({
+          orgId,
+          agentId: chief,
+          scheduleId: KinMemoryItemId.make("checkin-morning"),
+          title: "Morning brief",
+          what: "Check-in.",
+          dueAt: MONDAY + day * DAY + 9 * HOUR,
+          looseAt: null,
+          zone: "UTC",
+          at: MONDAY + day * DAY + 9 * HOUR,
+          outside,
+        });
+      assert.include(
+        yield* morning(1, { lines: [mail("m-1", "Zoya", "Invented brief")], seen: [] }),
+        {
+          _tag: "queued",
+          facts: 1,
+        },
+      );
+      assert.include(yield* morning(2), { _tag: "queued", facts: 1, outside: 1 });
+      assert.include(yield* morning(3), { _tag: "queued", facts: 1, outside: 1 });
+      const briefs = yield* sql<{ key: string; state: string }>`SELECT dedupe_key AS key, state
+        FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'checkin:checkin-morning:%'
+        ORDER BY dedupe_key`;
+      assert.deepStrictEqual(briefs, [
+        { key: "checkin:checkin-morning:2026-11-17", state: "expired" },
+        { key: "checkin:checkin-morning:2026-11-18", state: "expired" },
+        { key: "checkin:checkin-morning:2026-11-19", state: "queued" },
+      ]);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -725,6 +760,42 @@ describe("pulse check-ins", () => {
           ["t1:a", null],
         ],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("mail naming an issued number is matched to that entry, only where one shows it", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at) VALUES (${orgId}, 'quotes', 'quotes', 'Q', 1, 0)`;
+      yield* record({
+        key: "INV-1",
+        list: "invoices",
+        title: "Retainer",
+        state: "waiting",
+        fields: '{"number":"INV/26-27/004"}',
+      });
+      yield* record({
+        key: "INV-2",
+        list: "invoices",
+        title: "Audit",
+        fields: '{"number":"2026-17"}',
+      });
+      yield* record({ key: "Q-1", list: "quotes", title: "Audit", fields: '{"number":"2026-17"}' });
+      const matched = (subject: string) =>
+        matchLines(orgId, [mail("m", "accounts@other.example", subject)]).pipe(
+          Effect.map((found) => found.map((match) => match.line.matched)),
+        );
+      const inv1 = ["invoice INV/26-27/004 (INV-1)"];
+      assert.deepStrictEqual(yield* matched("Invoice INV/26-27/004"), inv1);
+      assert.deepStrictEqual(yield* matched("Re: Invoice INV/26-27/004 paid."), inv1);
+      assert.deepStrictEqual(yield* matched("Re: INV-1 for the retainer"), inv1);
+      assert.deepStrictEqual(yield* matched("Invoice INV/26-27/0041"), []);
+      assert.deepStrictEqual(yield* matched("Invoice XINV/26-27/004"), []);
+      assert.deepStrictEqual(yield* matched("Invoice inv/26-27/004"), []);
+      // The invoice and the quote both show 2026-17: neither is guessed.
+      assert.deepStrictEqual(yield* matched("Re: 2026-17"), []);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -956,6 +1027,55 @@ describe("pulse check-ins", () => {
         );
         assert.isTrue(saved.every((input) => input.keepWording === true));
       }).pipe(Effect.provide(layer)),
+  );
+  it.effect("a check-in set in Settings keeps the owner's time across a clock change", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* companyClock("America/New_York");
+      const host = KinSchedules.hostTimeZone();
+      const weekdays = [1, 2, 3, 4, 5];
+      const JULY = Date.UTC(2026, 6, 13);
+      const DECEMBER = Date.UTC(2026, 11, 14);
+      // Set at 09:00 his time in July; "moved" was changed on T3's screen since.
+      const july = onHostClock("09:00", weekdays, "America/New_York", host, JULY);
+      for (const slug of ["mine", "moved"]) {
+        const at = slug === "moved" ? onHostClock("11:00", weekdays, "UTC", host, JULY) : july;
+        yield* scheduleRow({ slug, at: at.at, days: at.days, source: "kin-settings:check-ins" });
+        yield* sql`UPDATE kin_schedules SET owner_time_json = ${JSON.stringify({
+          at: "09:00",
+          days: weekdays,
+          host: july,
+        })} WHERE schedule_id = ${`checkin-${slug}`}`;
+      }
+      const saved: Array<KinSchedules.SaveInput> = [];
+      const schedules = KinSchedules.KinSchedules.of({
+        save: (input) => Effect.sync(() => void saved.push(input)),
+        cancel: () => Effect.void,
+        applyTaps: () => Effect.void,
+      });
+      yield* TestClock.setTime(JULY);
+      yield* followOwnerZone(orgId, schedules);
+      assert.deepStrictEqual(saved, []);
+      yield* TestClock.setTime(DECEMBER);
+      yield* followOwnerZone(orgId, schedules);
+      assert.deepStrictEqual(
+        saved.map(({ scheduleId, every, ownerTime, keepWording }) => ({
+          scheduleId,
+          every,
+          ownerTime,
+          keepWording,
+        })),
+        [
+          {
+            scheduleId: KinMemoryItemId.make("checkin-mine"),
+            every: onHostClock("09:00", weekdays, "America/New_York", host, DECEMBER),
+            ownerTime: { at: "09:00", days: weekdays },
+            keepWording: true,
+          },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
   );
   it.effect.each([
     { name: "Friday taken off", days: [1, 2, 3, 4] },

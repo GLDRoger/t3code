@@ -1,16 +1,21 @@
 import { describe, expect, it } from "@effect/vitest";
+import { KinAccessMeResult } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 
 import { kinPlaceReach } from "./kinJoin.ts";
 import {
   kinDestinations,
   kinDockSelection,
   kinDockShown,
+  kinPhoneSettingsRows,
   kinPlaceInPlace,
   kinSettingsGroups,
   kinSettingsPageOf,
 } from "./kinNavigation.ts";
+import { kinPlacesFromMe } from "./kinPlaces.ts";
 
 const none = { money: false, clients: false, docs: false };
+const decodeMe = Schema.decodeSync(KinAccessMeResult);
 
 // The seeded roles: the owner and a co-owner run the company; a lead leads a project; a member
 // has Clients switched on.
@@ -48,6 +53,59 @@ describe("kinDestinations", () => {
     expect(
       kinDestinations({ work: true, refused: none, ownerLevel: false, reaches: null }),
     ).toEqual(["chats", "tasks"]);
+  });
+});
+
+describe("kinPlacesFromMe", () => {
+  const me = (
+    access: "owner" | "co_owner" | "member",
+    places: Partial<typeof none>,
+    refused: { readonly money: boolean; readonly docs: boolean } | undefined,
+    leads: ReadonlyArray<string> = [],
+  ) =>
+    decodeMe({
+      personId: "rhea",
+      access,
+      places: { ...none, ...places },
+      leads: leads.map((key) => ({ recordId: key, key, title: "Invented project" })),
+      ...(refused === undefined ? {} : { refused }),
+    });
+  const all = ["chats", "tasks", "money", "clients", "docs"];
+  // Each role's tabs as the nav and the dock drew them from Work's, Money's and Docs' streams.
+  it.each([
+    // role, me, owner level, tabs
+    ["owner", me("owner", {}, { money: false, docs: false }), true, all],
+    ["co-owner", me("co_owner", {}, { money: false, docs: false }), true, all],
+    ["lead", me("member", {}, { money: false, docs: false }, ["P-1"]), false, all],
+    [
+      "member with Clients",
+      me("member", { clients: true }, { money: true, docs: true }),
+      false,
+      ["chats", "tasks", "clients"],
+    ],
+    [
+      "member with Money",
+      me("member", { clients: true, money: true }, { money: false, docs: true }),
+      false,
+      ["chats", "tasks", "money", "clients"],
+    ],
+    ["the owner's own session before the host answers", null, true, all],
+    ["a member before the host answers", null, false, ["chats", "tasks"]],
+  ] as const)("%s", (_, held, ownerLevel, tabs) => {
+    expect(kinPlacesFromMe({ me: held, ownerLevel, work: true })).toEqual({
+      destinations: tabs,
+      answered: held !== null,
+    });
+  });
+
+  it("leaves an older host's places to their own streams, and drops all but Chats without Work", () => {
+    expect(
+      kinPlacesFromMe({ me: me("member", {}, undefined), ownerLevel: false, work: true }),
+    ).toBe(null);
+    const owner = me("owner", {}, { money: false, docs: false });
+    expect(kinPlacesFromMe({ me: owner, ownerLevel: true, work: false })?.destinations).toEqual([
+      "chats",
+    ]);
   });
 });
 
@@ -101,14 +159,17 @@ describe("kinSettingsGroups", () => {
   it("gives everyone You, the owner level Company, and This computer only where it opens", () => {
     expect(groups("owner").map((group) => group.id)).toEqual(["you", "company", "computer"]);
     expect(groups("coOwner").map((group) => group.id)).toEqual(["you", "company"]);
-    expect(groups("lead").map((group) => group.id)).toEqual(["you"]);
-    expect(groups("member").map((group) => group.id)).toEqual(["you"]);
+    expect(groups("lead").map((group) => group.id)).toEqual(["you", "company"]);
+    expect(groups("member").map((group) => group.id)).toEqual(["you", "company"]);
+    // A teammate's Company holds What Kin checked alone: the watches on their own things.
+    expect(groups("member")[1]?.pages).toEqual(["watches"]);
     expect(groups("member")[0]?.pages).toEqual(["profile", "appearance"]);
     expect(groups("member", true)[0]?.pages).toEqual(["profile", "notifications", "appearance"]);
     expect(groups("coOwner")[1]?.pages).toEqual([
       "team",
       "agents",
       "check-ins",
+      "watches",
       "connections",
       "deals",
       "memory",
@@ -126,10 +187,22 @@ describe("kinSettingsGroups", () => {
     });
     expect(member.map((group) => [group.id, group.pages])).toEqual([
       ["you", ["profile", "appearance"]],
-      ["company", ["deals"]],
+      ["company", ["deals", "watches"]],
     ]);
     expect(kinSettingsPageOf("deals", member)).toBe("deals");
     expect(kinSettingsPageOf("deals", groups("member"))).toBe("profile");
+  });
+
+  it("keeps the phone's Settings to the day's rows: Company for the owner level, the log for a teammate", () => {
+    const owner = ["team", "agents", "company", "watches", "stop"];
+    expect(kinPhoneSettingsRows(ROLES.owner)).toEqual({
+      you: ["profile", "notifications", "appearance"],
+      company: owner,
+    });
+    expect(kinPhoneSettingsRows(ROLES.coOwner).company).toEqual(owner);
+    // Clients on or off, a teammate's Company is What Kin checked alone: no read-only Deals.
+    expect(kinPhoneSettingsRows(ROLES.member).company).toEqual(["watches"]);
+    expect(kinPhoneSettingsRows(ROLES.lead).company).toEqual(["watches"]);
   });
 
   it("opens a Company address only for the owner level; anything else lands on the profile", () => {

@@ -2,8 +2,10 @@
 import {
   KinAgentId,
   KinChatError,
+  KinOrgId,
   KinPersonId,
   KinRecordId,
+  KinRecordKey,
   type KinDocRow,
   type KinDocSection,
   type KinDocVersion,
@@ -17,7 +19,10 @@ import type { AtomCommandResult } from "../state/runtime.ts";
 import {
   createKinSearch,
   KIN_DOCS,
+  kinDocChangeItem,
   kinDocChangeLine,
+  kinDocCardDraft,
+  kinDocCopyText,
   kinDocPieces,
   kinSearchHit,
   KIN_DOCS_DEFAULT_FILTER,
@@ -25,9 +30,14 @@ import {
   kinDocFileInput,
   kinDocLibrary,
   kinDocsChip,
+  kinDocsMine,
+  kinDocsMineHeld,
   kinDocsQuery,
   kinDocRef,
   kinDocRefLabel,
+  kinDocEditInput,
+  kinDocEditOpen,
+  kinDocEditOutcome,
   kinDocRestoreOutcome,
   kinDocSections,
   kinDocRow,
@@ -140,6 +150,46 @@ describe("kinSearchHit", () => {
     ).toBeNull();
     // A deal comes back among entries, under its own name, so an older app opens it as one.
     expect(kinSearchHit({ ...hitInput, key: "DL-4", kind: "work" }).kindLabel).toBe("Deal");
+    // A contact carries its client, whose page opens for it; an older host sends none.
+    expect(hit.clientKey).toBeNull();
+    expect(
+      kinSearchHit({ ...hitInput, key: "CT-2", kind: "contacts", client: "C-1" }).clientKey,
+    ).toBe("C-1");
+  });
+});
+
+describe("kinDocsMine", () => {
+  const ref = (key: string) => ({ recordId: KinRecordId.make(`rec-${key}`), key, title: key });
+  const zoya = { _tag: "person", personId: KinPersonId.make("invented-zoya") } as const;
+  const held = kinDocsMineHeld(
+    zoya.personId,
+    [
+      { key: "C-1", owner: zoya },
+      { key: "C-2", owner: me },
+    ],
+    [{ key: "P-1" }],
+  );
+  const rows = [
+    row("D-1", { owner: zoya }),
+    row("D-2", { party: ref("C-1") }),
+    row("D-3", { project: ref("P-1") }),
+    row("D-4", { party: ref("C-2") }),
+    row("D-5", { project: ref("P-2"), owner: me }),
+    row("D-6", { company: true }),
+  ];
+
+  it("is mine when I keep it, or it is on a client I look after or a project I lead or am on", () => {
+    expect(kinDocsMine(rows, held, true).mine.map((one) => one.key)).toEqual(["D-1", "D-2", "D-3"]);
+    // Whoever has no id yet has nothing of theirs.
+    expect(kinDocsMine(rows, { ...held, me: null }, true).mine).toEqual([]);
+  });
+
+  it("counts both sides from the same rows, exactly only once the list holds every doc", () => {
+    expect(kinDocsMine(rows, held, true).counts).toEqual({ mine: { n: 3 }, everyone: { n: 6 } });
+    expect(kinDocsMine(rows, held, false).counts).toEqual({
+      mine: { n: 3, atLeast: true },
+      everyone: { n: 6, atLeast: true },
+    });
   });
 });
 
@@ -236,6 +286,14 @@ describe("kinDocLibrary", () => {
     expect(
       kinWhatWeSellAgent([lead("c", "growth", true), lead("b", "chief-of-staff")])?.agentId,
     ).toBe("b");
+    // Any agent the sales rules reach keeps it before the Chief of staff; a named seat stays first.
+    expect(kinWhatWeSellAgent([lead("b", "chief-of-staff"), lead("d", "marketing")])?.agentId).toBe(
+      "d",
+    );
+    expect(kinWhatWeSellAgent([lead("b", "chief-of-staff"), lead("e", "sales-ops")])?.agentId).toBe(
+      "e",
+    );
+    expect(kinWhatWeSellAgent([lead("a", "marketing"), lead("c", "growth")])?.agentId).toBe("c");
     expect(kinWhatWeSellAgent([lead("z", "finance"), lead("y", "social")])?.agentId).toBe("y");
     expect(kinWhatWeSellAgent([])).toBeNull();
   });
@@ -261,7 +319,7 @@ describe("kinDocLibrary", () => {
     expect(kinDocsChip(KIN_DOCS_DEFAULT_FILTER)).toBeNull();
     expect(
       kinDocsChip({ ...KIN_DOCS_DEFAULT_FILTER, archived: true, show: { _tag: "company" } }),
-    ).toBe("Company · Archived");
+    ).toBe("Company · Deleted");
   });
 
   it("files a doc under a client, the company, or nowhere", () => {
@@ -315,6 +373,104 @@ describe("kinDocSections", () => {
     expect(
       kinDocSections(body, [section("plan", "Plan", 1), section("pricing", "Pricing", 2)]),
     ).toBeNull();
+  });
+});
+
+describe("kinDocCopyText", () => {
+  it("gives clean text: no marks, a list's items as lines, a table's rows as tab-separated cells", () => {
+    const body = [
+      "# Ambermill launch post",
+      "",
+      "We **finally** ship the _invented_ [planner](https://example.com/planner) on `Monday`.",
+      "",
+      "- Faster sync",
+      "- [ ] Offline mode",
+      "  1. On the phone",
+      "",
+      "3. Book the room",
+      "4. Send the invite",
+      "",
+      "> Rhea: ~~maybe~~ yes.",
+      "",
+      "| Plan | Price |",
+      "| --- | ---: |",
+      "| Starter | 10 |",
+      "| Team | *20* |",
+      "",
+      "```kin_chart",
+      '{"type":"bar"}',
+      "```",
+      "",
+      "---",
+      "",
+      "Read [the invented thread](t3-thread:abc) or https://example.com/faq.",
+    ].join("\n");
+    expect(kinDocCopyText(body)).toBe(
+      [
+        "Ambermill launch post",
+        "",
+        "We finally ship the invented planner (https://example.com/planner) on Monday.",
+        "",
+        "Faster sync\nOffline mode\n1. On the phone",
+        "",
+        "3. Book the room\n4. Send the invite",
+        "",
+        "Rhea: maybe yes.",
+        "",
+        "Plan\tPrice\nStarter\t10\nTeam\t20",
+        "",
+        "Read the invented thread or https://example.com/faq.",
+      ].join("\n"),
+    );
+  });
+
+  // A draft's card copies the same clean text, and offers Send to only to the teammate it's for.
+  it("a draft card: Copy text for all, Send to only for its teammate until sent", () => {
+    const rhea = { personId: KinPersonId.make("rhea"), name: "Rhea" };
+    const draft = {
+      kind: "post" as const,
+      text: "## Teaser\n\n**Soon** at _Harbourline_.\n",
+      sendTo: rhea,
+      noAccount: { service: "Instagram", by: rhea },
+    };
+    const teammate = kinDocCardDraft({ draft }, false, false);
+    expect(teammate).toEqual({
+      copyText: "Teaser\n\nSoon at Harbourline.",
+      sendTo: "Send to Rhea",
+      sent: null,
+      noAccount: "No Instagram account is connected. Rhea can connect one on their computer.",
+    });
+    expect(kinDocCardDraft({ draft }, true, false)).toEqual({
+      ...teammate,
+      sendTo: null,
+      noAccount:
+        "No Instagram account is connected. You can connect one in Settings on your computer.",
+    });
+    const sent = { ...draft, sent: { name: "Rhea", at: "2026-11-16T06:00:00.000Z" } };
+    expect(kinDocCardDraft({ draft: sent }, false, false)).toMatchObject({
+      sendTo: null,
+      sent: "Sent to Rhea to approve.",
+    });
+    const { sendTo: _sendTo, ...ownersOwn } = draft;
+    expect(kinDocCardDraft({ draft: ownersOwn }, true, false)?.sendTo).toBeNull();
+    // A chat she may only read takes no send from her, so the card offers none.
+    expect(kinDocCardDraft({ draft }, false, true)?.sendTo).toBeNull();
+    // Waiting for the owner to be back, it says so rather than that it reached them.
+    const held = { ...draft, sent: { ...sent.sent, held: true as const } };
+    expect(kinDocCardDraft({ draft: held }, false, false)?.sent).toBe(
+      "Sent. Rhea gets it to approve when they're back.",
+    );
+    // The owner asked for changes first: sendable again, and it says why; sent again, it says so.
+    const changesFirst = { name: "Rhea", at: "2026-11-16T07:00:00.000Z" };
+    expect(kinDocCardDraft({ draft: { ...draft, changesFirst } }, false, false)).toMatchObject({
+      sendTo: "Send to Rhea",
+      sent: "Rhea asked for changes first.",
+    });
+    expect(kinDocCardDraft({ draft: { ...sent, changesFirst } }, false, false)).toMatchObject({
+      sendTo: null,
+      sent: "Sent to Rhea to approve.",
+    });
+    expect(kinDocCardDraft({ draft: null }, false, false)).toBeNull();
   });
 });
 
@@ -385,6 +541,83 @@ describe("kinDocRef", () => {
     expect(kinDocRefLabel(ref)).toBe("Launch plan › Pricing");
     // A section that is no longer in the doc points at the doc, not at nothing.
     expect(kinDocRefLabel(kinDocRef(doc, "gone"))).toBe("Launch plan");
+  });
+});
+
+describe("kinDocChangeItem", () => {
+  it.each([
+    ["the owner level, on a doc it may change", true, true, "hand", KIN_DOCS.change],
+    ["a lead, on their project's doc", true, false, "hand", KIN_DOCS.change],
+    ["the owner level, on an older version", false, true, "agent", KIN_DOCS.change],
+    ["a lead, on a playbook", false, false, "agent", KIN_DOCS.suggest],
+    ["a member", false, false, "agent", KIN_DOCS.suggest],
+  ] as const)("%s: one Change item", (_who, byHand, ownerLevel, by, label) => {
+    expect(kinDocChangeItem({ byHand, ownerLevel })).toEqual({ by, label });
+  });
+});
+
+describe("kinDocEditOpen", () => {
+  const read = (pricing: string, timeline: string) => ({
+    key: KinRecordKey.make("D-3"),
+    body: `## Pricing\n\n${pricing}\n\n## Timeline\n\n${timeline}\n`,
+    outline: [
+      { id: "pricing", title: "Pricing", level: 2, chars: 20, hash: `p:${pricing}` },
+      { id: "timeline", title: "Timeline", level: 2, chars: 20, hash: `t:${timeline}` },
+    ],
+  });
+  const orgId = KinOrgId.make("org");
+
+  it("saves against the section as opened, whatever version arrives while the editor is open", () => {
+    const v1 = read("Starter is 10.", "Launch on the 10th.");
+    const opened = kinDocEditOpen(v1, "pricing")!;
+    expect(opened).toEqual({
+      key: "D-3",
+      section: "pricing",
+      title: "Pricing",
+      hash: "p:Starter is 10.",
+      was: "## Pricing\n\nStarter is 10.\n",
+    });
+    // The same section changes underneath: the save still names version 1's text, so the host
+    // refuses it rather than write the older draft over the newer change.
+    const sameChanged = read("Starter is 12.", "Launch on the 10th.");
+    expect(kinDocEditOpen(sameChanged, "pricing")!.hash).toBe("p:Starter is 12.");
+    expect(kinDocEditInput(orgId, opened, "Starter is 11.", "r-1")).toEqual({
+      orgId,
+      key: "D-3",
+      section: "pricing",
+      hash: "p:Starter is 10.",
+      text: "Starter is 11.",
+      clientRequestId: "r-1",
+    });
+    // Another section changes underneath: the hash sent is still the section's own, which holds.
+    const otherChanged = read("Starter is 10.", "Launch on the 20th.");
+    expect(kinDocEditInput(orgId, opened, "Starter is 11.", "r-1").hash).toBe(
+      kinDocEditOpen(otherChanged, "pricing")!.hash,
+    );
+    expect(kinDocEditOpen(v1, "missing")).toBeNull();
+  });
+});
+
+describe("kinDocEditOutcome", () => {
+  it("says a newer change to the section refused the edit, in its own words", () => {
+    const failed = (reason: "conflict" | "not_allowed", message: string) =>
+      kinDocEditOutcome(
+        AsyncResult.failure(Cause.fail(new KinChatError({ reason, message }))) as AtomCommandResult<
+          never,
+          unknown
+        >,
+      );
+    expect(failed("conflict", "Section pricing changed, hash 9f")).toEqual({
+      _tag: "refused",
+      moved: true,
+      text: KIN_DOCS.editMoved,
+    });
+    const refusal = "Only the owner, a co-owner or the project's lead can change this doc by hand.";
+    expect(failed("not_allowed", refusal)).toEqual({
+      _tag: "refused",
+      moved: false,
+      text: refusal,
+    });
   });
 });
 

@@ -13,6 +13,7 @@ export const RunManifest = Schema.Struct({
   effort: Schema.String,
   harness: Schema.String,
   shellModel: Schema.String,
+  /** Model calls per sample; 0 is no limit, so it never compares with a run that had one. */
   maxSteps: Schema.Number,
   userInstructions: Schema.String,
   /** Hashes of the captured template and of the runner and graders. */
@@ -70,6 +71,8 @@ const unanimous = ({ passes, finished }: Tally) =>
  * with did not agree unanimously with them, so a candidate has the baseline's evidence or more.
  */
 export const needsTopUp = (first: Tally, baseline?: Tally) => {
+  // More samples of a case whose samples all errored buy more errors, not evidence.
+  if (first.finished === 0) return false;
   if (!unanimous(first)) return true;
   if (baseline === undefined || baseline.finished === 0) return false;
   const passed = first.passes > 0;
@@ -112,10 +115,13 @@ export interface Run {
   readonly rows: ReadonlyArray<Sampled & { readonly id: string }>;
 }
 
+const shown = (key: (typeof SHARED)[number], manifest: RunManifest) =>
+  key === "maxSteps" && manifest.maxSteps === 0 ? "no limit" : manifest[key];
+
 /** Why two runs cannot be compared; empty when they can. */
 export const refusals = (baseline: RunManifest, candidate: RunManifest) => [
   ...SHARED.filter((key) => baseline[key] !== candidate[key]).map(
-    (key) => `${key} differs: baseline ${baseline[key]}, candidate ${candidate[key]}`,
+    (key) => `${key} differs: baseline ${shown(key, baseline)}, candidate ${shown(key, candidate)}`,
   ),
   ...Object.entries(candidate.cases).flatMap(([id, { case: hash }]) => {
     const before = baseline.cases[id];
@@ -155,6 +161,7 @@ export const compare = (baseline: Run, candidates: ReadonlyArray<Run>) => {
   });
   const notRun = Object.keys(baseline.manifest.cases).filter((id) => !requests.has(id));
   const worse = cases.filter((row) => row.verdict === "worse");
+  const noData = cases.filter((row) => row.verdict === "no data");
   return {
     refused,
     cases,
@@ -163,7 +170,7 @@ export const compare = (baseline: Run, candidates: ReadonlyArray<Run>) => {
     sameText: [...requests].every(
       ([id, request]) => baseline.manifest.cases[id]?.request === request,
     ),
-    pass: refused.length === 0 && worse.length === 0,
+    pass: refused.length === 0 && worse.length === 0 && noData.length === 0,
   };
 };
 
@@ -186,6 +193,11 @@ export const report = (result: ReturnType<typeof compare>) => {
     ...(result.sameText ? ["Both sides sent identical requests: every difference is noise."] : []),
     ...(result.notRun.length > 0
       ? [`Not in the candidate run: ${result.notRun.length} baseline cases.`]
+      : []),
+    ...(count("no data") > 0
+      ? [
+          `No data means every sample of a case errored on one side, so nothing shows it is not worse: run those cases again.`,
+        ]
       : []),
     `Worse and better mean a one-sided Fisher exact p <= ${ALPHA}, unless the case is unstable on both sides.`,
     ...(worse.length > 0 && result.batches === 1

@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 
 import * as Effect from "effect/Effect";
 
+import { withArticle } from "../article.ts";
 import { officeProblem } from "./officeCheck.ts";
 import { svgProblem } from "./svgCheck.ts";
 
@@ -111,7 +112,7 @@ export const typeMismatch = async (
   extension: Extension,
   bytes: Uint8Array,
 ): Promise<string | undefined> => {
-  const wrong = `its bytes aren't a ${extension.toUpperCase()} file`;
+  const wrong = `its bytes aren't ${withArticle(extension.toUpperCase())} file`;
   switch (extension) {
     case "pdf":
       return startsWith(bytes, ascii("%PDF-")) ? undefined : wrong;
@@ -133,7 +134,7 @@ export const typeMismatch = async (
       const problem = await officeProblem(extension, bytes);
       return problem === undefined
         ? undefined
-        : `it's a ${extension.toUpperCase()} that ${problem}`;
+        : `it's ${withArticle(extension.toUpperCase())} that ${problem}`;
     }
     case "svg": {
       const text = utf8(bytes);

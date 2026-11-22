@@ -22,6 +22,7 @@ import type { KinChatService } from "../chat/KinChatService.ts";
 import { SHARED_REFUSAL, aborted, peopleBehind } from "../lead/Audience.ts";
 import { routeShown, runRoute } from "../lead/routeCard.ts";
 import { recommendShown, runRecommend } from "../recommend/card.ts";
+import { leaverShown, runLeaver } from "../people/leaver.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import * as Memory from "../memory/Memory.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
@@ -42,7 +43,7 @@ import {
 import type { KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
 import { repeatOf } from "../work/recordRows.ts";
-import { defineProposed, proposalToCreate } from "../work/registers.ts";
+import { defineProposed, listPlace, proposalToCreate, proposedList } from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
 import {
   type CardActionInput,
@@ -98,6 +99,8 @@ const labelOf = (plan: CardPlan): string => {
       return routeShown(plan).label;
     case "recommend":
       return recommendShown(plan).label;
+    case "leaver":
+      return leaverShown(plan).label;
     case "undo_default":
       return "Undo";
     case "keep_default":
@@ -127,6 +130,8 @@ const lineOf = (plan: CardPlan): string => {
       return routeShown(plan).line;
     case "recommend":
       return recommendShown(plan).line;
+    case "leaver":
+      return leaverShown(plan).line;
     case "undo_default":
       return undoLine(plan);
     case "keep_default":
@@ -339,7 +344,7 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
   if (source === undefined)
     return yield* refuse("That question's card is gone or answered, so there's no default.");
   const sealed = source.final;
-  if (sealed?.kind === "let_talk" || sealed?.kind === "recommend")
+  if (sealed?.kind === "let_talk" || sealed?.kind === "recommend" || sealed?.kind === "leaver")
     return yield* refuse("That question has no default to take.");
   if (sealed?.kind === "take_default")
     return yield* refuse(
@@ -450,6 +455,7 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   if (
     sealed.kind === "let_talk" ||
     sealed.kind === "recommend" ||
+    sealed.kind === "leaver" ||
     isTaken(sealed) ||
     isAnswered(sealed)
   )
@@ -538,11 +544,15 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   plan: CardPlan,
   deps: {
     readonly records: KinRecords["Service"];
-    readonly chat: Pick<KinChatService["Service"], "closeReplaced" | "reopenClosed" | "notice">;
+    readonly chat: Pick<
+      KinChatService["Service"],
+      "closeReplaced" | "reopenClosed" | "notice" | "setDocCardChangesFirst"
+    >;
   },
 ) {
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
   if (plan.kind === "recommend") return yield* runRecommend(tap, plan);
+  if (plan.kind === "leaver") return yield* runLeaver(tap, plan, deps.chat);
   if (isAnswered(plan)) return yield* runAnswered(tap, plan, deps.chat);
   if (isTaken(plan))
     return yield* runTaken(
@@ -616,7 +626,9 @@ export const untakenAtDay = Effect.fn("KinCardActions.untakenAtDay")(function* (
   if (!takesAsDefault(plan)) return undefined;
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ repeat: string | null; handedBack: number | null }>`SELECT
-      repeat_json AS repeat, handed_back_at AS "handedBack" FROM kin_records
+      repeat_json AS repeat,
+      CASE WHEN state IN ('done', 'dropped') THEN NULL ELSE handed_back_at END AS "handedBack"
+    FROM kin_records
     WHERE org_id = ${orgId} AND record_id = ${plan.recordId}`;
   return row === undefined ? undefined : outgrowsUndo(row);
 });
@@ -646,7 +658,8 @@ export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
     handedBack: number | null;
     waitingKind: string | null;
     waitingId: string | null;
-  }>`SELECT repeat_json AS repeat, handed_back_at AS "handedBack",
+  }>`SELECT repeat_json AS repeat,
+      CASE WHEN state IN ('done', 'dropped') THEN NULL ELSE handed_back_at END AS "handedBack",
       waiting_on_kind AS "waitingKind", waiting_on_id AS "waitingId" FROM kin_records
     WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
   if (more === undefined || outgrowsUndo(more) !== undefined) return false;
@@ -796,7 +809,10 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
           now: tap.now,
         }));
       if (why !== undefined) return nothingDone(why);
-      return { title: "List created", text: `Created the list ${quoted(plan.name, 60)}.` };
+      const made = proposedList(plan.definition);
+      if (made === undefined) return { title: "List created", text: "Created." };
+      const { words, ...open } = yield* listPlace(orgId, made);
+      return { title: "List created", text: `Created. It's in ${words}.`, open };
     }
   }
 });

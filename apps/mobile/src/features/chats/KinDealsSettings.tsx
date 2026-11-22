@@ -1,5 +1,6 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  KIN_DEALS,
   KIN_DEAL_QUIET,
   KIN_DEAL_STAGES,
   kinDealQuietProblem,
@@ -53,7 +54,7 @@ function DealStages(props: KinWorkTarget) {
       {state._tag === "loading" ? (
         <KinWorkLoading label="Loading stages" />
       ) : state._tag === "failed" ? (
-        <KinLoadFailed title="Stages didn't load" cause={state.cause} onRetry={refresh} />
+        <KinLoadFailed title={KIN_DEALS.stagesFailed} cause={state.cause} onRetry={refresh} />
       ) : (
         <EmptyState
           variant="plain"

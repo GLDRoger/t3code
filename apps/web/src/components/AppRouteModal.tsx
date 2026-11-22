@@ -73,7 +73,7 @@ export function AppRouteModal({
       }}
     >
       <DialogPrimitive.Portal>
-        <DialogBackdrop />
+        <DialogBackdrop variant="dim" />
         <DialogPrimitive.Viewport
           style={
             {

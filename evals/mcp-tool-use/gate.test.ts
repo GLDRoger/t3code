@@ -33,7 +33,8 @@ it("leaves errored samples out of a tally", () => {
 
 it.each([
   ["a split", t(2, 3), undefined, true],
-  ["no finished sample", t(0, 0), undefined, true],
+  ["no finished sample", t(0, 0), undefined, false],
+  ["no finished sample against a passing baseline", t(0, 0), t(8, 8), false],
   ["a unanimous pass with no baseline", t(3, 3), undefined, false],
   ["a unanimous pass the baseline agrees with", t(3, 3), t(8, 8), false],
   ["a unanimous fail the baseline agrees with", t(0, 3), t(0, 8), false],
@@ -63,7 +64,7 @@ const manifest = (overrides: Partial<RunManifest> = {}): RunManifest => ({
 const rows = (id: string, passes: number, of: number) =>
   Array.from({ length: of }, (_, i) => ({ id, pass: i < passes }));
 
-it("passes unless a case is worse in every batch pooled, and refuses runs made on other settings, cases or text", () => {
+it("passes unless a case is worse in every batch pooled or has no finished sample, and refuses runs made on other settings, cases or text", () => {
   const baseline = { manifest: manifest(), rows: [...rows("a", 8, 8), ...rows("b", 4, 8)] };
   const same = {
     manifest: manifest({ samples: 3 }),
@@ -84,6 +85,19 @@ it("passes unless a case is worse in every batch pooled, and refuses runs made o
     rows: rows("a", passes, 8),
   });
   assert.isTrue(compare(baseline, [worse, confirm(7)]).pass);
+  const errored = {
+    ...same,
+    rows: [...rows("a", 3, 3), ...rows("b", 0, 3).map((row) => ({ ...row, error: "529" }))],
+  };
+  assert.deepStrictEqual(
+    compare(baseline, [errored]).cases.map(({ id, verdict }) => [id, verdict]),
+    [
+      ["a", "same"],
+      ["b", "no data"],
+    ],
+  );
+  assert.isFalse(compare(baseline, [errored]).pass);
+  assert.isFalse(compare(baseline, [{ ...same, rows: rows("a", 3, 3) }]).pass);
   assert.isFalse(compare(baseline, [worse, confirm(1)]).pass);
   assert.deepStrictEqual(compare(baseline, [worse, confirm(7, "other text")]).refused, [
     "case a was sent different requests in two candidate runs",
@@ -101,4 +115,12 @@ it("passes unless a case is worse in every batch pooled, and refuses runs made o
     "case c is not in the baseline",
   ]);
   assert.isFalse(compare(baseline, [stale]).pass);
+  // A run with no step limit (Kin's) and one with a limit are never compared, either way round.
+  const unlimited = { manifest: manifest({ maxSteps: 0 }), rows: same.rows };
+  assert.deepStrictEqual(compare(baseline, [unlimited]).refused, [
+    "maxSteps differs: baseline 6, candidate no limit",
+  ]);
+  assert.deepStrictEqual(compare(unlimited, [same]).refused, [
+    "maxSteps differs: baseline no limit, candidate 6",
+  ]);
 });

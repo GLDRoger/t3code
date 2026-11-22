@@ -4,8 +4,10 @@ import {
   kinDealEditDraft,
   kinDealEditRequest,
   kinDealQuoteChoices,
+  kinDealValueRead,
   type KinDealEditDraft,
 } from "@t3tools/client-runtime/kin/kinDeals";
+import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { KinRecordKey, type KinDealPage } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -18,7 +20,12 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { KinDayField } from "./components/KinDayField";
 import { KinDealQuoteRow } from "./components/KinDealPicks";
 import { KinLoadFailed } from "./components/KinLoadFailed";
-import { KinWorkFrame, KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
+import {
+  KinWorkFrame,
+  KinWorkLoading,
+  KinWorkTextField,
+  useKinAskBeforeDiscard,
+} from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { useKinDealPage, useKinDealSend } from "./state/useKinDeals";
 import { useKinHomeCurrency } from "./state/useKinMoney";
@@ -71,13 +78,15 @@ function KinDealEditForm(
   const now = new Date(useNowMinuteMs());
   const send = useKinDealSend(props);
   const home = useKinHomeCurrency(props) ?? null;
-  const [draft, setDraft] = useState(() => kinDealEditDraft(deal, names));
+  const [opened] = useState(() => kinDealEditDraft({ ...deal, notes: page.notes }, names));
+  const [draft, setDraft] = useState(opened);
   const quotes = kinDealQuoteChoices(page, draft.quote);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const request = kinDealEditRequest(deal, draft, names, home);
-  const moneyBad = !request.ok && request.problem !== null;
+  const request = kinDealEditRequest({ ...deal, notes: page.notes }, draft, names, home);
+  const read = kinDealValueRead(draft.value, deal.value?.currency ?? home ?? "USD");
   const set = (change: Partial<KinDealEditDraft>) => setDraft((held) => ({ ...held, ...change }));
+  const leave = useKinAskBeforeDiscard(kinFormTyped(opened, draft));
 
   const save = async () => {
     if (!request.ok || saving) return;
@@ -86,6 +95,7 @@ function KinDealEditForm(
     const outcome = await send.update(request.input);
     setSaving(false);
     if (!outcome.ok) return setProblem(outcome.problem);
+    leave();
     navigation.goBack();
   };
 
@@ -105,6 +115,8 @@ function KinDealEditForm(
         <KinWorkTextField
           label={KIN_DEALS.what}
           value={draft.title}
+          placeholder={KIN_DEALS.whatPlaceholder}
+          wraps
           maxLength={280}
           disabled={saving}
           onChangeText={(title) => set({ title })}
@@ -112,15 +124,26 @@ function KinDealEditForm(
         <KinWorkTextField
           label={KIN_DEALS.value}
           value={draft.value}
+          placeholder={KIN_DEALS.valuePlaceholder}
           keyboard="numbers"
           disabled={saving}
-          hint={moneyBad ? KIN_DEALS.notAmount : KIN_DEALS.valueHint}
+          hint={read.hint}
           onChangeText={(value) => set({ value })}
+        />
+        <KinWorkTextField
+          label={KIN_DEALS.notes}
+          value={draft.notes}
+          placeholder={KIN_DEALS.notesPlaceholder}
+          multiline
+          maxLength={4_000}
+          disabled={saving}
+          hint={KIN_DEALS.notesHint}
+          onChangeText={(notes) => set({ notes })}
         />
         <KinDayField
           label={KIN_DEALS.expected}
           day={draft.expected}
-          names={names}
+          zone={names.zone}
           now={now}
           disabled={saving}
           onPick={(expected) => set({ expected })}
@@ -130,6 +153,7 @@ function KinDealEditForm(
         <KinWorkTextField
           label={KIN_DEALS.cameFrom}
           value={draft.source}
+          placeholder={KIN_DEALS.cameFromPlaceholder}
           maxLength={120}
           disabled={saving}
           onChangeText={(source) => set({ source })}

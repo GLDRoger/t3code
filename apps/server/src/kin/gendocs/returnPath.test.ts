@@ -104,7 +104,7 @@ it.effect("takes only named, plain, regular files of the type their names say", 
         ["secret.exe", ".exe isn't a file type Kin takes back"],
         [
           "macro.xlsx",
-          "it's a XLSX that carries xl/vbaProject.bin, which runs, embeds or fetches content",
+          "it's an XLSX that carries xl/vbaProject.bin, which runs, embeds or fetches content",
         ],
         ["link.pdf", "it's a link"],
         ["hard.pdf", "it has another link to it (a hard link)"],
@@ -265,11 +265,11 @@ it("takes an SVG only when it parses as a drawing made of listed parts", async (
       "<foreignObject>",
     ],
     ['<h:iframe xmlns:h="http://www.w3.org/1999/xhtml"/>', "<h:iframe>, which isn't SVG"],
-    ['<rect onload="x()"/>', "a onload attribute"],
-    ['<rect ONLOAD="x()"/>', "a ONLOAD attribute"],
+    ['<rect onload="x()"/>', "an onload attribute"],
+    ['<rect ONLOAD="x()"/>', "an ONLOAD attribute"],
     [
       '<rect ev:event="click" xmlns:ev="http://www.w3.org/2001/xml-events"/>',
-      "a ev:event attribute",
+      "an ev:event attribute",
     ],
     ['<a href="https://example.invalid">x</a>', "<a>"],
     ['<image href="data:image/png;base64,AA=="/>', "<image>"],
@@ -307,7 +307,7 @@ it("takes an SVG only when it parses as a drawing made of listed parts", async (
       `<?xml-stylesheet href="https://example.invalid/t.css"?><svg ${NS}/>`,
       "a processing instruction",
     ],
-    [`<?xml version="1.0" encoding="ISO-8859-1"?><svg ${NS}/>`, "a ISO-8859-1 encoding"],
+    [`<?xml version="1.0" encoding="ISO-8859-1"?><svg ${NS}/>`, "an ISO-8859-1 encoding"],
     ['<svg viewBox="0 0 1 1"/>', "<svg>, which isn't SVG"],
     [`<g ${NS}><svg/></g>`, "no <svg> at its root"],
   ] as const)
@@ -318,6 +318,6 @@ it("takes an SVG only when it parses as a drawing made of listed parts", async (
     );
   assert.strictEqual(
     await typeMismatch("svg", Buffer.from("not xml")),
-    "its bytes aren't a SVG file",
+    "its bytes aren't an SVG file",
   );
 });

@@ -240,10 +240,13 @@ export const kinWorkHeldPage = (
 const STATE_RANK: Record<string, number> = { doing: 0, waiting: 1, open: 2 };
 const time = (iso: string | null) => (iso === null ? null : Date.parse(iso));
 
-/** `KinRecords.query`'s order for Work: under way first, then soonest due, then oldest, then key. */
-function kinWorkOrder(a: KinRecord, b: KinRecord): number {
+/**
+ * `KinRecords.query`'s order for Work: under way first, then soonest due, then oldest, then key.
+ * A read with a due window (`dueBy`) is soonest due first whatever the state (`dueFirst`).
+ */
+function kinWorkOrder(a: KinRecord, b: KinRecord, dueFirst: boolean): number {
   const rank = (record: KinRecord) => STATE_RANK[record.state] ?? 3;
-  if (rank(a) !== rank(b)) return rank(a) - rank(b);
+  if (!dueFirst && rank(a) !== rank(b)) return rank(a) - rank(b);
   const dueA = time(a.dueAt);
   const dueB = time(b.dueAt);
   if ((dueA === null) !== (dueB === null)) return dueA === null ? 1 : -1;
@@ -255,6 +258,12 @@ function kinWorkOrder(a: KinRecord, b: KinRecord): number {
 }
 
 const CLOSED = new Set(["done", "dropped"]);
+
+/** A person's tasks are those they hold or are on besides its holder; an agent's, those it holds. */
+const ownedBy = (owner: KinWorkPrincipal, record: KinRecord) =>
+  principalKey(owner) === principalKey(record.owner) ||
+  (owner._tag === "person" &&
+    (record.alsoOn ?? []).some((who) => principalKey(who) === principalKey(owner)));
 
 /**
  * Whether `record` is one `input` asks for, as `KinRecords.query` filters; undefined for a filter
@@ -277,8 +286,7 @@ function kinWorkMatches(
     input.totalsBy !== undefined
   )
     return undefined;
-  if (input.owner !== undefined && principalKey(input.owner) !== principalKey(record.owner))
-    return false;
+  if (input.owner !== undefined && !ownedBy(input.owner, record)) return false;
   if (input.states !== undefined && input.states.length > 0) {
     if (!input.states.includes(record.state)) return false;
   } else if (input.open === true && CLOSED.has(record.state)) return false;
@@ -328,6 +336,7 @@ export function kinPatchWorkPage(
       moved: false,
     };
   const list = input.list ?? "work";
+  const dueFirst = input.dueBy !== undefined;
   const records = [...page.records];
   let { total } = page;
   const known = new Map(page.known);
@@ -367,8 +376,8 @@ export function kinPatchWorkPage(
       const last = records.at(-1);
       // With nothing held and more beyond, where it falls among them is unknown.
       if (page.more && last === undefined) return null;
-      if (!page.more || (last !== undefined && kinWorkOrder(record, last) < 0)) {
-        const index = records.findIndex((held) => kinWorkOrder(record, held) < 0);
+      if (!page.more || (last !== undefined && kinWorkOrder(record, last, dueFirst) < 0)) {
+        const index = records.findIndex((held) => kinWorkOrder(record, held, dueFirst) < 0);
         records.splice(index < 0 ? records.length : index, 0, record);
         known.delete(entry.key);
       }

@@ -5,7 +5,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
+import { SALES_SHARED_TOOLS } from "../sales/policies.ts";
 import { aborted, askedIn, askersDirectChat, effectiveAudience, turnChat } from "./Audience.ts";
+import { reviewToolAllowed } from "./outsideReview.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -76,6 +78,8 @@ export const SHARED_TOOLS = {
   kin_ask: "allowed",
   // Closes a question to the person in the turn's chat; only its asker withdraws one.
   kin_ask_close: "allowed",
+  // Checked against everyone behind the turn, in its own transaction (`askPerson`).
+  kin_ask_person: "allowed",
   kin_react: "allowed",
   // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
   kin_chart: "allowed",
@@ -112,6 +116,8 @@ export const SHARED_TOOLS = {
   kin_schedule: "refused",
   kin_cancel: ownReminderCancel,
   kin_github_review: "refused",
+  // Only from the asker's own direct chat with this agent, checked by the service (`askReview`).
+  kin_github_review_ask: "allowed",
   kin_github_link: "refused",
   kin_github_watch: "refused",
   // Work tasks every person behind the turn may see, shaped as their own screens show them.
@@ -179,6 +185,7 @@ export const SHARED_TOOLS = {
   social_draft: "refused",
   social_week: "refused",
   social_pack: "refused",
+  ...SALES_SHARED_TOOLS,
   // A shell's worth of reach as the owner, on his GitHub login (`AgentSession`).
   ...t3ToolsRefused,
 } satisfies Record<string, SharedToolPolicy>;
@@ -210,13 +217,15 @@ export const sharedToolAllowed = Effect.fn("KinSharedTools.allowed")(
 );
 
 /**
- * The one check for a tool call: nothing in a turn aborted for its audience, everything in an
- * owner-only one, else what `SHARED_TOOLS` allows. The gate runs it before every call; services
- * whose writes outlive the call run it again inside them.
+ * The one check for a tool call: nothing in a turn aborted for its audience, only `REVIEW_TOOLS`
+ * in an outside review, everything in an owner-only turn, else what `SHARED_TOOLS` allows. The
+ * gate runs it before every call; services whose writes outlive the call run it again inside them.
  */
 export const toolAdmitted = Effect.fn("KinSharedTools.admitted")(
   function* (turn: Turn, name: string, args: unknown) {
     if (yield* aborted(turn)) return false;
+    const review = yield* reviewToolAllowed(turn, name, args);
+    if (review !== undefined) return review;
     if ((yield* effectiveAudience(turn)) === "owner_only") return true;
     return yield* sharedToolAllowed(turn, name, args);
   },

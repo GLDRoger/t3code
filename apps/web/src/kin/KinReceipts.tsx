@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  KIN_INVOICES,
   KIN_RECEIPTS,
   kinReceiptModeLabel,
   kinReceiptModes,
@@ -264,7 +265,12 @@ function KinAdvanceDialog(
     const made = await actions.makeReceipt(undefined, input, clientRequestId);
     if (made !== null) props.onClose();
   };
-  const text = (key: "towards" | "reference", label: string, placeholder: string, max: number) => (
+  const text = (
+    key: "towards" | "reference",
+    label: string,
+    placeholder: string | undefined,
+    max: number,
+  ) => (
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={ids[key]}>{label}</Label>
       <Input
@@ -330,7 +336,6 @@ function KinAdvanceDialog(
                     inputMode="decimal"
                     autoComplete="off"
                     autoFocus
-                    placeholder={KIN_RECEIPTS.amountPlaceholder}
                     value={draft.amount}
                     onChange={(event) => setDraft({ ...draft, amount: event.target.value })}
                   />
@@ -346,7 +351,7 @@ function KinAdvanceDialog(
                   />
                 </div>
               </div>
-              {text("towards", KIN_RECEIPTS.towards, KIN_RECEIPTS.towardsPlaceholder, 300)}
+              {text("towards", KIN_RECEIPTS.towards, undefined, 300)}
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor={ids.mode}>{KIN_RECEIPTS.mode}</Label>
@@ -468,7 +473,7 @@ function KinSetAgainstDialog(
           ) : invoices === null ? (
             <div className="flex flex-col items-start gap-2">
               <Alert variant="error">
-                <AlertDescription>Couldn't load invoices.</AlertDescription>
+                <AlertDescription>{KIN_INVOICES.loadFailed}</AlertDescription>
               </Alert>
               <Button size="sm" variant="outline" onClick={() => setAttempt((n) => n + 1)}>
                 Retry

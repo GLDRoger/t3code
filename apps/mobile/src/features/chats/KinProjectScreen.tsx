@@ -13,6 +13,7 @@ import {
   KIN_PROJECT_GONE,
   KIN_PROJECT_REFUSED,
   KIN_PROJECT_LEAD,
+  kinCampaignResultOpens,
   kinProjectPageView,
   type KinProjectPageView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
@@ -37,25 +38,26 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { useNowMinuteMs } from "../../lib/clock";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import {
   KinFoldSection,
+  KinGateView,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkPrivateMark,
   KinWorkProblemNotice,
   KinWorkTaskRow,
   KinWorkTimelineLines,
-  KinGateView,
+  KinWorkToggleRow,
 } from "./components/KinWorkPieces";
 import { KinWorkHealthWord } from "./KinWorkLists";
 import { KinTasksList } from "./KinTasksList";
 import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
+import { KinCampaignResultsSection } from "./KinMarketing";
 import { KinProjectPeopleSection } from "./KinProjectPeopleScreen";
 import { kinClient } from "./state/kinClient";
 import { useKinAskRecord } from "./state/useKinAskRecord";
@@ -326,6 +328,30 @@ function KinProjectBody(
                   }
                 />
               }
+              results={
+                props.page.results === undefined ? null : (
+                  <KinCampaignResultsSection
+                    results={props.page.results}
+                    audience={view.audience}
+                    onOpen={(id) => {
+                      const opened = kinCampaignResultOpens(orgId, view.key, view.name, id);
+                      navigation.navigate("KinMarketingList", {
+                        environmentId,
+                        orgId,
+                        title: opened.title,
+                        ...(opened.to === "contacts"
+                          ? { campaign: view.key }
+                          : opened.to === "deals"
+                            ? { campaign: view.key, deals: id === "won" ? "won" : "open" }
+                            : {
+                                cameFrom: opened.filter.cameFrom ?? "",
+                                show: id === "prospects" ? "prospects" : "clients",
+                              }),
+                      });
+                    }}
+                  />
+                )
+              }
               docs={
                 <KinDocsUnder
                   environmentId={environmentId}
@@ -396,6 +422,8 @@ function KinProjectSummary(props: {
   readonly docs: ReactNode;
   /** Who is on it, and the ways to change that. */
   readonly people: ReactNode;
+  /** A campaign's results, for a reader with Clients. */
+  readonly results: ReactNode;
 }) {
   const { view } = props;
   const { party } = view;
@@ -420,7 +448,9 @@ function KinProjectSummary(props: {
           )}
         </View>
         <Text textRole="footnote" className="text-foreground-muted">
-          {[party?.title, view.target, view.ledBy].filter((part) => part != null).join(" · ")}
+          {[view.kind, party?.title, view.target, view.ledBy]
+            .filter((part) => part != null)
+            .join(" · ")}
         </Text>
         {view.terms === null ? null : (
           <Text textRole="footnote" className="text-foreground-muted">
@@ -449,6 +479,7 @@ function KinProjectSummary(props: {
           />
         </ListSection>
       )}
+      {props.results}
       <ListSection title={KIN_PROJECT_LEAD.title}>
         {props.onChangeLead === null ? (
           <ListRowLayout label={view.lead.name} />
@@ -612,7 +643,7 @@ function KinProjectSummary(props: {
             </View>
           )}
           {props.privacy.shown ? (
-            <ListToggleRow
+            <KinWorkToggleRow
               icon="lock"
               label={KIN_PROJECTS.privateLabel}
               description={view.privacy.note}

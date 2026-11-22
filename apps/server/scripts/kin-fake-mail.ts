@@ -1,7 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalDate:off - a dev command's output and the mail's time.
 // Delivers mail to, or lists what was sent from, a dev server's fake mailbox (KIN_DEV_FAKE_MAIL).
 //   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json deliver --to hello@invented-co.example \
-//     --from "Ravi Menon <ravi@lumen.example>" --subject "Launch date" --body "Can we move it?" [--thread ft3]
+//     --from "Ravi Menon <ravi@lumen.example>" --subject "Launch date" --body "Can we move it?" [--thread ft3] \
+//     [--auth "mx.invented.example; dmarc=pass header.from=lumen.example"]
 //   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json sent
 //   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json expire hello@invented-co.example [--back]
 //   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json approve <authorizationUrl> hello@invented-co.example
@@ -66,6 +67,7 @@ if (command === "sent") {
       subject: { type: "string" },
       body: { type: "string" },
       thread: { type: "string" },
+      auth: { type: "string" },
     },
   });
   if (!values.to || !values.from || !values.subject || !values.body) {
@@ -79,6 +81,7 @@ if (command === "sent") {
     body: values.body,
     at: kinNow(),
     ...(values.thread === undefined ? {} : { threadId: values.thread }),
+    ...(values.auth === undefined ? {} : { authResults: [values.auth] }),
   });
   console.log(JSON.stringify({ threadId: message.threadId, messageId: message.messageId }));
 }

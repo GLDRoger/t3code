@@ -5,7 +5,6 @@ import {
   type KinDestination,
 } from "@t3tools/client-runtime/kin/kinNavigation";
 import { Link, useLocation } from "@tanstack/react-router";
-import { useEffect } from "react";
 import {
   BanknoteIcon,
   BriefcaseBusinessIcon,
@@ -23,18 +22,15 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "../components/ui/sidebar";
-import { appAtomRegistry } from "../rpc/atomRegistry";
-import { kinNewLeadTarget } from "./KinNewLeadButton";
 import {
   kinDestinationAt,
   kinDestinationLink,
   kinInboxUnreadAtom,
-  kinShownDestinationsAtom,
   kinListShownAt,
 } from "./kinListSwitch";
-import { useKinHost } from "./useKinHost";
+import { useKinTasksNeedsYou } from "./useKinAttention";
+import { kinHostKeptTarget, useKinHost } from "./useKinHost";
 import { useKinDestinations } from "./useKinPlaces";
-import { useKinTasksNeedsYou } from "./useKinTasksNeedsYou";
 import type { KinWorkTarget } from "./useKinWork";
 
 const ICON: Record<KinDestination, LucideIcon> = {
@@ -56,14 +52,6 @@ function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
   const unread = useAtomValue(kinInboxUnreadAtom(target.environmentId));
   // The same number as Tasks' Needs you heading, as the phone's dock badge reads it.
   const needsYou = useKinTasksNeedsYou(target);
-  const key = destinations.join(",");
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes the destinations this person has, so the command palette lists the same ones the nav shows
-  useEffect(() => {
-    appAtomRegistry.set(kinShownDestinationsAtom, {
-      target: { environmentId: target.environmentId, orgId: target.orgId },
-      destinations: key.split(",") as ReadonlyArray<KinDestination>,
-    });
-  }, [key, target.environmentId, target.orgId]);
   return destinations.map((destination) => ({
     destination,
     badge:
@@ -80,7 +68,7 @@ const badgeLabel = (destination: KinDestination, badge: string) =>
 
 /** Kin's five destinations at the top of the sidebar. T3's coding threads are not offered in Kin. */
 export function KinNav() {
-  const target = kinNewLeadTarget(useKinHost());
+  const target = kinHostKeptTarget(useKinHost());
   if (target === null) return null;
   return <KinNavList environmentId={target.environmentId} orgId={target.orgId} />;
 }

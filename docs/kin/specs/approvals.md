@@ -365,7 +365,7 @@ Agents write as Kin's GitHub App when Settings holds one (`appStore.ts`), made t
 
 Kin never merges code or approves. The shell's `gh` refuses merging, approving and settings changes under either identity; under the owner that refusal is the only wall, since the shell runs as the server's OS user. Branch protection is whatever the owner sets on GitHub; Kin doesn't apply or check rulesets. Kin's own memory repo is the exception (triggers spec, memory repo guard rails). Comments and PR bodies carry the agent's signature line.
 
-The App's webhook, the owner's merge token, `RequestAction` handlers, `scripts/kin-github-app.ts` and `scripts/kin-rulesets.ts` stay removed.
+The App's webhook exists only as a reason to look sooner: Kin points it at its public address with a secret it makes and keeps beside the App's key, verifies each delivery's signature before reading it, and queues a look at the one thread it names (`appHook.ts`, `hookHttp.ts`). A delivery carries no authority and none of its text is kept or shown; the look reads GitHub as the poll does and claims the same keys, so a lost, late or repeated delivery changes nothing the poll wouldn't. Setting the hook needs no new permission. The owner's merge token, `RequestAction` handlers, `scripts/kin-github-app.ts` and `scripts/kin-rulesets.ts` stay removed.
 
 ### 11. Audit
 

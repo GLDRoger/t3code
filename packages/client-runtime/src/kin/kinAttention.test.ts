@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Fixtures read days relative to a fixed local date.
 import {
   KinAgentId,
+  KinChatId,
   KinPersonId,
   KinRecordId,
   type KinGoal,
@@ -14,6 +15,7 @@ import {
   kinAsideOf,
   kinAttention,
   kinAttentionCount,
+  kinGoalDraft,
   kinGoalView,
   kinNeedsYouBeside,
   kinPlainDates,
@@ -140,6 +142,25 @@ describe("kinAttention", () => {
     });
     expect(project.open.map((row) => row.factKey)).toEqual(["task_late:W-2", "task_due_soon:W-1"]);
     expect(project.open[0]!.about).toBe("W-2");
+    // An issued invoice is named by its number; one without a number yet by its key.
+    const numbered = kinAttention(
+      read([
+        fact("invoice_overdue", "INV-7", {
+          subject: { kind: "record", key: "INV-7", title: "Retainer", number: "AM/26-27/004" },
+        }),
+        fact("invoice_overdue", "INV-8"),
+      ]),
+      { scope: { type: "money" }, names, now },
+    );
+    expect(numbered.open.map((row) => row.about)).toEqual([
+      "AM/26-27/004 · Atlas · Lumen",
+      "INV-8 · Atlas · Lumen",
+    ]);
+    // Asked about, the agent hears the number the person sees and the key its tools take.
+    expect(numbered.open.map((row) => row.askDraft.split(":")[0])).toEqual([
+      "About AM/26-27/004 (INV-7) Retainer",
+      "About INV-8 Invented INV-8",
+    ]);
     expect(project.handled.map((row) => row.handled)).toEqual([
       expect.stringMatching(/^Arjun has it until /),
     ]);
@@ -200,6 +221,35 @@ describe("kinAttention", () => {
       kinTasksBadgeCount({ ownerLevel: true, attention: twoOwed, mineDue: null }),
     );
     expect(onMe?.onMe).toBe(1);
+    // What waits on you is never behind "See all": the sidebar's "Waiting on you" lists it.
+    const waitingRow: KinNeedsYouRow = {
+      id: "waiting:w-1",
+      kind: "waiting",
+      title: "Draft to approve · Chief of staff",
+      detail: "Approve it to go as a proposal?",
+      late: false,
+      open: { type: "chat", chatId: KinChatId.make("chat-1"), messageId: null },
+    };
+    const lateTask: KinNeedsYouRow = {
+      id: "task:W-9",
+      kind: "task",
+      title: "Send the deck",
+      detail: "W-9 · Late",
+      late: true,
+      open: { type: "task", key: "W-9" },
+    };
+    const full = kinTasksBlock({
+      ownerLevel: true,
+      onMe: new Set(),
+      attention: owing.rows,
+      needs: [...(owing.moneyRow === null ? [] : [owing.moneyRow]), lateTask, waitingRow],
+      hidden: 0,
+      handled: 0,
+      expanded: false,
+    });
+    expect(full?.needs.map((row) => row.id)).toEqual(["attention:money", waitingRow.id]);
+    expect(full?.attention).toHaveLength(2);
+    expect(full?.more).toBe(true);
     // A project or client fact does not repeat its own name after its key.
     const own = kinAttention(
       read([
@@ -313,5 +363,18 @@ describe("kinAttention", () => {
     expect(
       kinGoalView({ ...goal, currency: "KWD", target: 2_000_000, current: 1_234_567 }, now).figure,
     ).toBe("KWD\u00a01,235 of KWD\u00a02,000");
+  });
+
+  it("starts a new goal on today in the company's zone, wherever the device is", () => {
+    // 20:00 UTC on 20 Nov is still the 20th in Los Angeles and already the 21st in Auckland.
+    const at = new Date("2026-11-20T20:00:00.000Z");
+    expect(kinGoalDraft(null, at, "America/Los_Angeles")).toMatchObject({
+      startsOn: "2026-11-20",
+      dueOn: "2027-02-20",
+    });
+    expect(kinGoalDraft(null, at, "Pacific/Auckland")).toMatchObject({
+      startsOn: "2026-11-21",
+      dueOn: "2027-02-21",
+    });
   });
 });

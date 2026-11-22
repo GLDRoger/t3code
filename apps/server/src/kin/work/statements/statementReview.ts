@@ -33,10 +33,12 @@ import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinChatRepository } from "../../chat/KinChatRepository.ts";
 import { choiceCardState } from "../../widgets/choiceCard.ts";
 import { fieldText, parseFields } from "../lists.ts";
-import { homeCurrency } from "../companyProfile.ts";
+import { companyMoney, homeCurrency } from "../companyProfile.ts";
+import { regionOf } from "../region.ts";
 import { dayIn } from "../money.ts";
 import { keptEntry, ownerZone } from "../recordRows.ts";
 import { listDef } from "../registers.ts";
+import { type AlertCheck, alertCheck } from "./bankAlerts.ts";
 import { bankStates, directionOf, findBankList, type KnownRow, knownRows } from "./bankList.ts";
 import type { FileOutcome } from "./statementFiles.ts";
 import { readIsolated } from "./statementReader.ts";
@@ -72,6 +74,7 @@ const StoredReview = Schema.Struct({
   known: Schema.Array(Schema.Tuple([Schema.Number, Schema.Unknown])),
   matches: Schema.Array(Schema.Tuple([Schema.Number, Schema.Unknown])),
   missing: Schema.optional(Schema.Array(Schema.Unknown)),
+  alerts: Schema.optional(Schema.Unknown),
 });
 const ReviewJson = Schema.fromJsonString(StoredReview);
 const encodeReview = Schema.encodeEffect(ReviewJson);
@@ -88,6 +91,7 @@ export const reviewOf = (json: string): Review | undefined =>
       ...(stored.missing === undefined || stored.missing.length === 0
         ? {}
         : { missing: stored.missing as ReadonlyArray<Missing> }),
+      ...(stored.alerts === undefined ? {} : { alerts: stored.alerts as AlertCheck }),
     }),
   });
 const storeReview = (review: Review) =>
@@ -98,6 +102,7 @@ const storeReview = (review: Review) =>
     known: [...review.known.entries()],
     matches: [...review.matches.entries()],
     ...(review.missing === undefined ? {} : { missing: review.missing }),
+    ...(review.alerts === undefined ? {} : { alerts: review.alerts }),
   });
 
 export type StatementRow = {
@@ -198,7 +203,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
   statementId: string | undefined,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const home = yield* homeCurrency(orgId);
+  const { homeCurrency: home, country } = yield* companyMoney(orgId);
   const zone = yield* ownerZone(orgId);
   const day = (ms: number | null) => (ms === null ? null : dayIn(ms, zone));
   // Banks list newest first as often as oldest first; the window starts before either end.
@@ -286,6 +291,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     WHERE org_id = ${orgId} AND account IS NOT NULL ORDER BY account`;
   return {
     currency: statement.currency,
+    withholdsAtSource: regionOf(country)?.withholdsAtSource === true,
     bank: statement.bank,
     invoices: invoiceRows.map((row) => {
       const fields = parseFields(row.fieldsJson);
@@ -417,6 +423,7 @@ export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
       if (other.recordId === earlier.recordId || index === row.index) known.delete(index);
     known.set(row.index, { recordId: earlier.recordId, key: earlier.key, state: earlier.state });
   }
+  const alerts = yield* alertCheck(orgId, def?.id, statement, known);
   const states = def === undefined ? undefined : bankStates(def);
   const open = statement.rows.filter((row) => {
     const had = known.get(row.index);
@@ -444,6 +451,7 @@ export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
     known,
     matches: new Map(open.map((row, index) => [row.index, judged[index]!])),
     ...(missing.length === 0 ? {} : { missing }),
+    ...(alerts === undefined ? {} : { alerts }),
   } satisfies Review;
 });
 

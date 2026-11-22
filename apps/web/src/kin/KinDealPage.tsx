@@ -4,13 +4,16 @@ import {
   kinDealChangeText,
   kinDealEditDraft,
   kinDealEditRequest,
+  kinDealValueRead,
   kinDealNext,
   kinDealNextStage,
   kinDealPill,
   kinDealQuoteChoices,
   kinDealStageName,
   kinDealStrip,
+  kinDealWithoutConcern,
   kinDealWhen,
+  kinDealChangeWhen,
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_PROMISES, kinDealPromises } from "@t3tools/client-runtime/kin/kinPromises";
@@ -21,6 +24,7 @@ import {
   kinWorkName,
   type KinWorkDraft,
 } from "@t3tools/client-runtime/kin/kinWork";
+import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type {
   KinDealMove,
   KinDealPage as KinDealPageValue,
@@ -43,6 +47,7 @@ import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { Textarea } from "../components/ui/textarea";
 import {
   Menu,
   MenuItem,
@@ -60,9 +65,10 @@ import {
 } from "../components/ui/select";
 import { randomUUID } from "../lib/utils";
 import { KinAsideNote } from "./KinAttention";
+import { KinWatchLine } from "./KinWatchLine";
 import { kinClient } from "./kinClient";
 import { KinDealLostDialog, KinDealMoveMenu, KinDealNextLine } from "./KinDeals";
-import { Field, FormShell } from "./KinWorkForms";
+import { Field, FormShell, oneParagraph } from "./KinWorkForms";
 import { GiveItems } from "./KinWorkItemSheet";
 import {
   KinLoadFailed,
@@ -201,6 +207,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
           record={deal.key}
           names={names}
         />
+        <KinWatchLine environmentId={props.environmentId} orgId={orgId} recordKey={deal.key} />
       </div>
 
       {deal.state !== "open" ? null : (
@@ -410,6 +417,36 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
       )}
 
       <DealPromises {...props} />
+      {deal.concerns === undefined ? null : (
+        <KinWorkSection title={KIN_DEALS.concernsRaised}>
+          <ul className="flex flex-col gap-2 text-sm">
+            {deal.concerns.map((concern) => (
+              <li key={concern.label} className="flex items-start gap-2">
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <span className="text-foreground">{concern.label}</span>
+                  {concern.heard === undefined ? null : (
+                    <span className="text-xs text-muted-foreground">
+                      {KIN_DEALS.heard(concern.heard)}
+                    </span>
+                  )}
+                </div>
+                {!deal.can.edit ? null : (
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    disabled={busy}
+                    aria-label={KIN_DEALS.removeConcern(concern.label)}
+                    title={KIN_DEALS.removeConcern(concern.label)}
+                    onClick={() => void change(kinDealWithoutConcern(deal, concern.label))}
+                  >
+                    <XIcon />
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </KinWorkSection>
+      )}
 
       <KinWorkSection title={KIN_DEALS.details}>
         <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
@@ -456,7 +493,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
           {deal.state === "open" && next !== null ? (
             <>
               <dt className="text-muted-foreground">{KIN_DEALS.nextStep}</dt>
-              <dd>{deal.next?.title ?? KIN_DEALS.noNextStep}</dd>
+              <dd>{deal.next?.title ?? next.text}</dd>
             </>
           ) : null}
           {deal.source === undefined ? null : (
@@ -532,10 +569,13 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
             </>
           )}
         </dl>
-        {page.notes === "" ? null : (
-          <p className="whitespace-pre-wrap text-sm text-foreground">{page.notes}</p>
-        )}
       </KinWorkSection>
+
+      {page.notes === "" ? null : (
+        <KinWorkSection title={KIN_DEALS.notes}>
+          <p className="whitespace-pre-wrap text-sm text-foreground">{page.notes}</p>
+        </KinWorkSection>
+      )}
 
       {page.changes.length === 0 ? null : (
         <KinWorkSection title={KIN_DEALS.activity}>
@@ -546,7 +586,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
                   {kinDealChangeText(change, names, now)}
                 </span>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  {kinWorkDueText({ dueAt: change.at, dueAllDay: false }, names, now)}
+                  {kinDealChangeWhen(change, now)}
                 </span>
               </li>
             ))}
@@ -659,19 +699,26 @@ function DealEdit(
   const { names } = props.directory;
   const send = useKinDealSend(props);
   const home = useKinHomeCurrency(props);
-  const [draft, setDraft] = useState(() => kinDealEditDraft(deal, names));
+  const [opened] = useState(() => kinDealEditDraft({ ...deal, notes: props.page.notes }, names));
+  const [draft, setDraft] = useState(opened);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const ids = {
     party: useId(),
     title: useId(),
     value: useId(),
+    notes: useId(),
     expected: useId(),
     source: useId(),
     quote: useId(),
   };
-  const request = kinDealEditRequest(deal, draft, names, home ?? null);
-  const moneyBad = !request.ok && request.problem !== null;
+  const request = kinDealEditRequest(
+    { ...deal, notes: props.page.notes },
+    draft,
+    names,
+    home ?? null,
+  );
+  const read = kinDealValueRead(draft.value, deal.value?.currency ?? home ?? "USD");
   const quotes = kinDealQuoteChoices(props.page, draft.quote);
   const set = (change: Partial<typeof draft>) => setDraft((held) => ({ ...held, ...change }));
   const save = async () => {
@@ -693,27 +740,27 @@ function DealEdit(
       onOpenExisting={() => {}}
       onSave={() => void save()}
       onClose={props.onClose}
+      typed={kinFormTyped(opened, draft)}
     >
       <Field id={ids.party} label={KIN_DEALS.clientField} hint={KIN_DEALS.clientStays}>
         <Input id={ids.party} value={deal.party.title} readOnly />
       </Field>
       <Field id={ids.title} label={KIN_DEALS.what}>
-        <Input
+        <Textarea
           id={ids.title}
+          rows={1}
           maxLength={280}
+          placeholder={KIN_DEALS.whatPlaceholder}
           value={draft.title}
+          onKeyDown={oneParagraph}
           onChange={(event) => set({ title: event.target.value })}
         />
       </Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field
-          id={ids.value}
-          label={KIN_DEALS.value}
-          hint={moneyBad ? KIN_DEALS.notAmount : KIN_DEALS.valueHint}
-        >
+        <Field id={ids.value} label={KIN_DEALS.value} hint={read.hint}>
           <Input
             id={ids.value}
-            inputMode="decimal"
+            placeholder={KIN_DEALS.valuePlaceholder}
             value={draft.value}
             onChange={(event) => set({ value: event.target.value })}
           />
@@ -729,6 +776,16 @@ function DealEdit(
           />
         </Field>
       </div>
+      <Field id={ids.notes} label={KIN_DEALS.notes} hint={KIN_DEALS.notesHint}>
+        <Textarea
+          id={ids.notes}
+          rows={2}
+          maxLength={4_000}
+          placeholder={KIN_DEALS.notesPlaceholder}
+          value={draft.notes}
+          onChange={(event) => set({ notes: event.target.value })}
+        />
+      </Field>
       <Field id={ids.source} label={KIN_DEALS.cameFrom}>
         <Input
           id={ids.source}

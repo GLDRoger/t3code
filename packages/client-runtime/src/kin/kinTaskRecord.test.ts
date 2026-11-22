@@ -12,6 +12,8 @@ import {
   KinChatId,
   KinMessageId,
   KinWidgetId,
+  KIN_CODING_AGENT_UNNAMED,
+  KIN_DISMISSED_FIELD,
   KIN_TAKEN_DEFAULT_FIELD,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -23,6 +25,9 @@ import {
   kinRecordChip,
   kinTaskActivity,
   kinTaskControls,
+  kinTaskPeopleFolded,
+  kinTaskWith,
+  kinTaskWithChoices,
 } from "./kinTaskRecord.ts";
 import { kinWorkItemView, type KinWorkNames } from "./kinWork.ts";
 
@@ -222,26 +227,44 @@ describe("kinNextStep", () => {
   });
 
   it.each([
+    // Waiting on the reader is theirs to do, never a pause: no "Waiting on you" anywhere.
     {
       who: "the person it waits on, who holds it",
       item: task({ owner: zoya, state: "waiting", waitingOn: zoya }),
       names: asZoya,
-      chip: "Waiting on you",
-      step: { kind: "yours", line: "have this", note: null },
+      chip: "Yours to do",
+      step: { kind: "yours", line: "have this", note: "Yours to do." },
+    },
+    {
+      who: "the person it waits on, who holds it, with the agent's reason and a brief",
+      item: task({
+        owner: zoya,
+        state: "waiting",
+        waitingOn: zoya,
+        reason: "Needs your sign-off on the price",
+        notes: "Send the quote to the clinic.",
+      }),
+      names: asZoya,
+      chip: "Yours to do",
+      step: {
+        kind: "yours",
+        words: "Send the quote to the clinic.",
+        note: "Yours to do: Needs your sign-off on the price",
+      },
     },
     {
       who: "the person it waits on, who doesn't hold it",
       item: task({ state: "waiting", waitingOn: zoya, can: readOnly }),
       names: asZoya,
-      chip: "Waiting on you",
-      step: { kind: "held", line: "is waiting on you", note: null },
+      chip: "Yours to do",
+      step: { kind: "held", line: "has this", note: "Yours to do." },
     },
     {
       who: "the person an agent's task waits on",
       item: task({ owner: chief, state: "waiting", waitingOn: zoya, can: readOnly }),
       names: asZoya,
-      chip: "Waiting on you",
-      step: { kind: "agent", line: "is on it", note: "Waiting on you." },
+      chip: "Yours to do",
+      step: { kind: "agent", line: "is on it", note: "Yours to do." },
     },
     {
       who: "the person a late task waits on",
@@ -256,7 +279,7 @@ describe("kinNextStep", () => {
       names: asZoya,
       // Due the 15th, read the 18th: three calendar days, as Money counts days overdue.
       chip: "3 days late",
-      step: { kind: "late", note: "Waiting on you." },
+      step: { kind: "late", note: "Yours to do." },
     },
     {
       who: "a third person, on a task waiting on its own holder",
@@ -319,6 +342,34 @@ describe("kinNextStep", () => {
     });
   });
 
+  it("shows the holder the brief on top, and why it came only while there is no brief", () => {
+    const why = task({ owner: rhea, reason: "Owner's ask; Dev leads the booking app" });
+    expect(stepOf(why).words).toBe("Owner's ask; Dev leads the booking app");
+    expect(stepOf({ ...why, notes: "Book two pilot clinics for the beta." }).words).toBe(
+      "Book two pilot clinics for the beta.",
+    );
+  });
+
+  it("folds Details' Asked by and Held by when the card already names that person", () => {
+    // Your own: "You have this", asked by you.
+    const own = task({ owner: rhea, createdBy: rhea, assignedBy: null });
+    expect(kinTaskPeopleFolded(own, stepOf(own))).toEqual({
+      asked: true,
+      held: true,
+      label: "Who asked and who has it",
+    });
+    // Meera holds it and Rhea asked: the card names Meera, so only Held by folds.
+    const hers = task();
+    expect(kinTaskPeopleFolded(hers, stepOf(hers))).toMatchObject({ asked: false, held: true });
+    // An agent's suggestion names the agent, who neither asked nor holds it here.
+    const suggested = task({ owner: meera, createdBy: finance, confirmed: false });
+    expect(kinTaskPeopleFolded(suggested, stepOf(suggested))).toBeNull();
+    // Rhea is on Meera's own task: the folded row says who's on it, for her only.
+    const on = task({ owner: meera, createdBy: meera, alsoOn: [rhea] });
+    expect(kinTaskPeopleFolded(on, stepOf(on), names)?.label).toBe("Who asked and who's on it");
+    expect(kinTaskPeopleFolded(on, stepOf(on), asZoya)?.label).toBe("Who asked and who has it");
+  });
+
   it("quotes the words a task came back with", () => {
     const item = task({
       owner: rhea,
@@ -331,6 +382,58 @@ describe("kinNextStep", () => {
       line: "handed this back",
       acts: [{ id: "done" }, { id: "give" }],
     });
+  });
+});
+
+describe("kinTaskWith", () => {
+  it("offers x to whoever may change it, Leave to the reader, + until ten, and marks who is gone", () => {
+    const people = (who: ReturnType<typeof kinTaskWith>) =>
+      who.people.map((one) => [one.name, one.status, one.act]);
+    const shown = kinTaskWith({
+      item: { alsoOn: [zoya, rhea, finance] },
+      names: { ...names, retired: new Set([finance.agentId]) },
+      edit: true,
+      change: true,
+      joined: [rhea.personId, meera.personId],
+    });
+    expect(people(shown)).toEqual([
+      ["Zoya", "No access", "remove"],
+      ["You", null, "leave"],
+      ["Finance", "Retired", "remove"],
+    ]);
+    expect([shown.add, shown.full]).toEqual([true, null]);
+    // Someone who may not change the task reads it; Leave is still theirs.
+    const reader = kinTaskWith({
+      item: { alsoOn: [zoya, rhea] },
+      names,
+      edit: false,
+      change: true,
+    });
+    expect(people(reader)).toEqual([
+      ["Zoya", null, null],
+      ["You", null, "leave"],
+    ]);
+    expect([reader.add, reader.full]).toEqual([false, null]);
+    // Ten is all a task takes: + goes and one quiet line says why.
+    const ten = Array.from({ length: 10 }, (_, index) => ({
+      _tag: "person" as const,
+      personId: KinPersonId.make(`ambermill-${index}`),
+    }));
+    const full = kinTaskWith({ item: { alsoOn: ten }, names, edit: true, change: true });
+    expect([full.add, full.full]).toEqual([false, "10 are on it, the most a task takes."]);
+    // The picker leaves out its holder and whoever is on it already.
+    const row = (principal: typeof rhea | typeof meera | typeof chief) => ({
+      key: principal._tag === "agent" ? principal.agentId : principal.personId,
+      principal,
+      name: "",
+      avatar: { kind: "person" as const, seed: "" },
+      current: false,
+    });
+    const choices = kinTaskWithChoices(
+      { leads: [row(chief)], people: [row(rhea), row(meera)] },
+      { owner: meera, alsoOn: [rhea] },
+    );
+    expect([...choices.leads, ...choices.people].map((one) => one.principal)).toEqual([chief]);
   });
 });
 
@@ -552,6 +655,16 @@ describe("kinTaskActivity", () => {
             at: "2026-11-10T14:00:00.000Z",
             fields: [{ field: "default", from: null, to: "q-2" }],
           }),
+          // Zoya dismissed the question it waited on her for, so it stopped waiting on her.
+          change({
+            seq: 6,
+            by: zoya,
+            at: "2026-11-10T16:00:00.000Z",
+            fields: [
+              { field: "state", from: "waiting", to: "open" },
+              { field: KIN_DISMISSED_FIELD, from: null, to: "q-3" },
+            ],
+          }),
           // Zoya's coding agent started it and left a note, through her key.
           change({
             seq: 5,
@@ -576,6 +689,21 @@ describe("kinTaskActivity", () => {
             at: "2026-11-10T15:00:00.000Z",
             body: "Logo draft checked.",
           }),
+          // Meera reads another teammate's key by the server's generic name; a key named "Kin" is quoted.
+          comment({
+            seq: 4,
+            by: zoya,
+            codingAgent: KIN_CODING_AGENT_UNNAMED,
+            at: "2026-11-10T16:00:00.000Z",
+            body: "Logo exported.",
+          }),
+          comment({
+            seq: 5,
+            by: zoya,
+            codingAgent: "Kin",
+            at: "2026-11-10T17:00:00.000Z",
+            body: "Done here.",
+          }),
         ],
       }),
       names,
@@ -588,8 +716,11 @@ describe("kinTaskActivity", () => {
       ["comment", "You", "removed this note", null],
       ["state", "Chief of staff", "went with the default: finished it (nobody answered)", null],
       ["change", "Chief of staff", "updated it", null],
-      ["state", "Zoya", "started on it", "Work laptop"],
-      ["comment", "Zoya", "", "Work laptop"],
+      ["state", "Zoya", "started on it", "coding agent “Work laptop”"],
+      ["comment", "Zoya", "", "coding agent “Work laptop”"],
+      ["state", "Zoya", "dismissed the question without choosing", null],
+      ["comment", "Zoya", "", "a coding agent"],
+      ["comment", "Zoya", "", "coding agent “Kin”"],
     ]);
     expect(lines[1]?.comment).toMatchObject({ body: "On it.", removed: false });
   });

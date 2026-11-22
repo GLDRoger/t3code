@@ -65,11 +65,20 @@ it.effect(
           owner: { _tag: "person", personId: zoya.personId },
         },
       );
+      // Each key check verifies the session once: a count of them is a count of checks.
+      const store = yield* SessionStore;
+      let verified = 0;
+      const counted = SessionStore.of({
+        ...store,
+        verify: (token) => Effect.sync(() => verified++).pipe(Effect.andThen(store.verify(token))),
+      });
       // What the tools read through: Kin's services, as the running server holds them.
-      const services = (yield* Effect.context<
-        SqlClient.SqlClient | KinIdentity | KinRecords
-      >()) as Context.Context<
-        SqlClient.SqlClient | KinIdentity | KinRecords
+      const services = Context.add(
+        yield* Effect.context<SqlClient.SqlClient | KinIdentity | KinRecords>(),
+        SessionStore,
+        counted,
+      ) as Context.Context<
+        SqlClient.SqlClient | KinIdentity | KinRecords | SessionStore
       > as unknown as Context.Context<Services>;
       const routes = KinTasksKeyMcp.layer.pipe(
         Layer.provide(
@@ -79,7 +88,7 @@ it.effect(
             subscribeForViewer: Option.none(),
           }),
         ),
-        Layer.provide(Layer.succeedContext(yield* Effect.context<SessionStore>())),
+        Layer.provide(Layer.succeed(SessionStore, counted)),
         Layer.provide(
           Layer.mock(ServerEnvironment)({
             getEnvironmentId: Effect.succeed(EnvironmentId.make("environment")),
@@ -185,6 +194,7 @@ it.effect(
           set_task_state: write,
         },
       );
+      const checked = verified;
       const mine = yield* call({
         token: issued.secret,
         method: "tools/call",
@@ -192,6 +202,7 @@ it.effect(
         ...(session === undefined ? {} : { session }),
       });
       assert.strictEqual(mine.status, 200);
+      assert.strictEqual(verified - checked, 1);
       assert.include(yield* text(mine), "Invented: book the hall");
 
       yield* TasksKeys.revoke(zoya.app, { orgId, sessionId: issued.key.sessionId });

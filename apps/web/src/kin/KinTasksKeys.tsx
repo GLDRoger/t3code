@@ -3,6 +3,7 @@ import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   KIN_TASKS_KEY_LABEL_MAX,
   KIN_TASKS_KEYS_COPY,
+  kinTasksKeyGuide,
   kinTasksKeyLabelCheck,
   kinTasksKeyMade,
   kinTasksKeyMakeBlocked,
@@ -19,19 +20,10 @@ import type {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { CheckIcon, CopyIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
-import {
-  AlertDialog,
-  AlertDialogClose,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogPopup,
-  AlertDialogTitle,
-} from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
 import {
   Dialog,
@@ -49,7 +41,16 @@ import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClip
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { usePreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinConfirm } from "./KinConfirm";
 import { kinClient } from "./kinClient";
+import {
+  KinSettingsEmpty,
+  KinSettingsLoadFailed,
+  KinSettingsLoading,
+  KinSettingsRow,
+  KinSettingsSection,
+  KinSettingsStatus,
+} from "./settings/KinSettingsLayout";
 
 interface KinTasksKeysTarget {
   readonly environmentId: EnvironmentId;
@@ -77,16 +78,27 @@ export function KinTasksKeysSection(
   const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
   const [asking, setAsking] = useState<KinTasksKeyRow | null>(null);
   const [making, setMaking] = useState(false);
+  const [shown, setShown] = useState(false);
+  const [guiding, setGuiding] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const keys = Option.getOrNull(AsyncResult.value(result))?.keys ?? null;
+  const connection = Option.getOrNull(usePreparedConnection(environmentId));
+  const listed = Option.getOrNull(AsyncResult.value(result));
+  const keys = listed?.keys ?? null;
   const live = keys?.filter((key) => !removed.has(key.sessionId)) ?? null;
   const rows = live === null ? null : kinTasksKeyRows(live);
   const blocked = live === null ? null : kinTasksKeyMakeBlocked(live.length);
   const refresh = () => appAtomRegistry.refresh(query);
   const removal = asking === null ? null : kinTasksKeyRemoveCopy(asking.label, holder);
+  const guide =
+    holder === null && listed !== null
+      ? kinTasksKeyGuide({
+          origin: listed.origin,
+          httpBaseUrl: connection?.httpBaseUrl ?? null,
+          device: "browser",
+        })
+      : undefined;
 
   const remove = async (row: KinTasksKeyRow) => {
-    setAsking(null);
     setProblem(null);
     setRemoved((held) => new Set(held).add(row.sessionId));
     const outcome = await revoke({ environmentId, input: { orgId, sessionId: row.sessionId } });
@@ -105,62 +117,111 @@ export function KinTasksKeysSection(
     refresh();
   };
 
+  const hasKeys = rows !== null && rows.length > 0;
+  // Someone else's keys show only once they have some.
+  if (holder !== null && !hasKeys) return null;
+  // Most people never use one, so your own section stays folded until you have a key or ask.
+  const folded = holder === null && !hasKeys && !shown;
+  const mayMake = holder === null && canMake;
+
   return (
-    <section className="flex flex-col gap-2" aria-label={KIN_TASKS_KEYS_COPY.title}>
-      <h3 className="text-xs font-medium text-muted-foreground">{KIN_TASKS_KEYS_COPY.title}</h3>
-      <p className="text-sm text-muted-foreground">
-        {holder === null ? KIN_TASKS_KEYS_COPY.intro : KIN_TASKS_KEYS_COPY.theirsIntro(holder)}
-      </p>
-      {rows === null ? (
-        <p className="text-sm text-muted-foreground">
-          {AsyncResult.isFailure(result) ? KIN_TASKS_KEYS_COPY.loadFailed : "Loading…"}
-        </p>
-      ) : rows.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          {holder === null ? KIN_TASKS_KEYS_COPY.none : KIN_TASKS_KEYS_COPY.noneTheirs(holder)}
-        </p>
-      ) : (
-        <ul className="flex flex-col">
-          {rows.map((row) => (
-            <li
-              key={row.sessionId}
-              className="flex items-center gap-3 border-b border-border/60 py-2 last:border-b-0"
-            >
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="truncate text-sm font-medium text-foreground">{row.label}</span>
-                <span className="text-xs text-muted-foreground">{row.line}</span>
-              </span>
-              {canRemove && row.canRemove ? (
-                <Button
-                  size="sm"
-                  variant="destructive-outline"
-                  aria-label={`${KIN_TASKS_KEYS_COPY.remove} ${row.label}`}
-                  onClick={() => setAsking(row)}
-                >
-                  {KIN_TASKS_KEYS_COPY.remove}
-                </Button>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      )}
-      {problem === null ? null : (
-        <p role="alert" className="text-sm text-destructive-foreground">
-          {problem}
-        </p>
-      )}
-      {holder === null && canMake ? (
-        <>
+    <KinSettingsSection
+      title={KIN_TASKS_KEYS_COPY.title}
+      description={
+        folded
+          ? undefined
+          : (blocked ??
+            (holder === null ? KIN_TASKS_KEYS_COPY.intro : KIN_TASKS_KEYS_COPY.theirsIntro(holder)))
+      }
+      action={
+        folded || !mayMake ? undefined : (
           <Button
+            size="xs"
             variant="outline"
-            className="self-start"
             disabled={blocked !== null || rows === null}
             onClick={() => setMaking(true)}
           >
+            <PlusIcon />
             {KIN_TASKS_KEYS_COPY.make}
           </Button>
-          {blocked === null ? null : <p className="text-xs text-muted-foreground">{blocked}</p>}
+        )
+      }
+      problem={problem}
+    >
+      {folded ? (
+        <KinSettingsRow
+          title={KIN_TASKS_KEYS_COPY.foldedTitle}
+          wrap
+          detail={KIN_TASKS_KEYS_COPY.foldedDetail}
+          control={
+            <Button size="xs" variant="outline" onClick={() => setShown(true)}>
+              {KIN_TASKS_KEYS_COPY.show}
+            </Button>
+          }
+        />
+      ) : (
+        <>
+          {guide === undefined ? null : (
+            <KinSettingsRow
+              title={KIN_TASKS_KEYS_COPY.setupHow}
+              wrap
+              detail={KIN_TASKS_KEYS_COPY.setupDetail}
+              status={
+                guide === null ? (
+                  <KinSettingsStatus tone="attention">
+                    {KIN_TASKS_KEYS_COPY.addressMissing}
+                  </KinSettingsStatus>
+                ) : null
+              }
+              onOpen={() => setGuiding(true)}
+            />
+          )}
+          {rows === null ? (
+            AsyncResult.isFailure(result) ? (
+              <KinSettingsLoadFailed onRetry={refresh}>
+                {KIN_TASKS_KEYS_COPY.loadFailed}
+              </KinSettingsLoadFailed>
+            ) : (
+              <KinSettingsLoading rows={1} />
+            )
+          ) : rows.length === 0 ? (
+            <KinSettingsEmpty>{KIN_TASKS_KEYS_COPY.none}</KinSettingsEmpty>
+          ) : (
+            rows.map((row) => (
+              <KinSettingsRow
+                key={row.sessionId}
+                title={row.label}
+                detail={row.line}
+                control={
+                  canRemove && row.canRemove ? (
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      aria-label={`${KIN_TASKS_KEYS_COPY.remove} ${row.label}`}
+                      onClick={() => setAsking(row)}
+                    >
+                      {KIN_TASKS_KEYS_COPY.remove}
+                    </Button>
+                  ) : null
+                }
+              />
+            ))
+          )}
         </>
+      )}
+      {guiding && guide !== undefined ? (
+        <KinTasksKeyGuide
+          guide={guide}
+          onMake={
+            mayMake && rows?.length === 0 && blocked === null
+              ? () => {
+                  setGuiding(false);
+                  setMaking(true);
+                }
+              : null
+          }
+          onClose={() => setGuiding(false)}
+        />
       ) : null}
       {making ? (
         <KinTasksKeyDialog
@@ -170,21 +231,23 @@ export function KinTasksKeysSection(
           onClose={() => setMaking(false)}
         />
       ) : null}
-      <AlertDialog open={asking !== null} onOpenChange={(open) => !open && setAsking(null)}>
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{removal?.title}</AlertDialogTitle>
-            <AlertDialogDescription>{removal?.detail}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button variant="destructive" onClick={() => asking !== null && void remove(asking)}>
-              {removal?.confirm}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
-    </section>
+      <KinConfirm
+        ask={
+          asking === null || removal === null
+            ? null
+            : {
+                title: removal.title,
+                detail: removal.detail,
+                action: removal.confirm,
+                destructive: true,
+              }
+        }
+        onConfirm={() => {
+          if (asking !== null) void remove(asking);
+        }}
+        onClose={() => setAsking(null)}
+      />
+    </KinSettingsSection>
   );
 }
 
@@ -247,7 +310,6 @@ function KinTasksKeyDialog(props: {
                     id={labelId}
                     value={label}
                     maxLength={KIN_TASKS_KEY_LABEL_MAX}
-                    placeholder={KIN_TASKS_KEYS_COPY.labelPlaceholder}
                     autoComplete="off"
                     autoFocus
                     onChange={(event) => setLabel(event.target.value)}
@@ -344,6 +406,65 @@ function KinTasksKeyOnce(props: {
         </Button>
       </DialogFooter>
     </>
+  );
+}
+
+/** Where a key goes and what to paste, opened from your own section. */
+function KinTasksKeyGuide(props: {
+  readonly guide: ReturnType<typeof kinTasksKeyGuide>;
+  /** The next step for someone with no key yet; null when they have one or can't make one. */
+  readonly onMake: (() => void) | null;
+  readonly onClose: () => void;
+}) {
+  const { guide } = props;
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) props.onClose();
+      }}
+    >
+      <DialogPopup className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{KIN_TASKS_KEYS_COPY.setupTitle}</DialogTitle>
+          <DialogDescription>{KIN_TASKS_KEYS_COPY.standIn}</DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          {guide === null ? (
+            <Alert variant="error">
+              <AlertDescription>{KIN_TASKS_KEYS_COPY.addressUnknown}</AlertDescription>
+            </Alert>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <CopyField label={KIN_TASKS_KEYS_COPY.addressLabel} value={guide.address} rows={1} />
+              {guide.addressNote === null ? null : (
+                <Alert variant="warning">
+                  <AlertDescription>{guide.addressNote}</AlertDescription>
+                </Alert>
+              )}
+              {guide.setups.map((setup) => (
+                <CopyField
+                  key={setup.agent}
+                  label={setup.agent}
+                  hint={setup.where}
+                  value={setup.text}
+                  rows={Math.min(10, setup.text.split("\n").length + 1)}
+                />
+              ))}
+              <p className="text-sm text-muted-foreground">{KIN_TASKS_KEYS_COPY.check}</p>
+            </div>
+          )}
+        </DialogPanel>
+        <DialogFooter>
+          {props.onMake === null ? null : (
+            <Button variant="outline" onClick={props.onMake}>
+              {KIN_TASKS_KEYS_COPY.makeTitle}
+            </Button>
+          )}
+          <Button onClick={props.onClose}>{KIN_TASKS_KEYS_COPY.done}</Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
   );
 }
 

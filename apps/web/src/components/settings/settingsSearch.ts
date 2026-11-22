@@ -16,9 +16,15 @@ import { writeLocalStorageValue } from "../../hooks/useLocalStorage";
 import type { MessageResolver } from "../../i18n/messages";
 import { commandLabel } from "./KeybindingsSettings.logic";
 import type { ResolvedSettingsScope } from "./settingsScope";
-import { KIN_PROFILE_SETTINGS_SEARCH_ITEMS } from "../../kin/kinSettingsSearch";
+import {
+  KIN_SETTINGS_CATEGORY_SCOPES,
+  KIN_SETTINGS_SEARCH_ITEMS,
+  KIN_SETTINGS_SECTION_LABELS,
+  type KinSettingsPath,
+} from "../../kin/kinSettingsSearch";
 
 export type SettingsPath =
+  | KinSettingsPath
   | "/settings/projects"
   | "/settings/general"
   | "/settings/diagnostics"
@@ -37,13 +43,7 @@ export type SettingsPath =
   | "/settings/worktrees"
   | "/settings/connections"
   | "/settings/access"
-  | "/settings/approvals"
   | "/settings/secrets"
-  | "/settings/company"
-  | "/settings/check-ins"
-  | "/settings/deals"
-  | "/settings/kin-connections"
-  | "/settings/kin-profile"
   | "/settings/maintenance"
   | "/settings/labs"
   | "/settings/about"
@@ -120,18 +120,13 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/worktrees": msg("Worktrees"),
   "/settings/connections": msg("Environments"),
   "/settings/access": msg("Sharing & access"),
-  "/settings/approvals": msg("Approvals"),
   "/settings/secrets": msg("Secrets"),
-  "/settings/company": msg("Company details"),
-  "/settings/check-ins": msg("Check-ins"),
-  "/settings/deals": msg("Deals"),
-  "/settings/kin-connections": msg("Connections"),
-  "/settings/kin-profile": msg("Profile"),
   "/settings/maintenance": msg("Maintenance"),
   "/settings/labs": msg("Labs"),
   "/settings/about": msg("About"),
   "/settings/voice": msg("Voice"),
   "/settings/archived": msg("Archive"),
+  ...KIN_SETTINGS_SECTION_LABELS,
 };
 
 /** Sidebar labels; an entry of its own lets a translator shorten one below its page title. */
@@ -142,25 +137,6 @@ export const SETTINGS_NAV_LABELS: Readonly<Record<SettingsPath, string>> = {
   }),
   "/settings/access": msg("Sharing & access", { $context: "settings navigation item" }),
 };
-
-/** Pages that exist only while a connected host runs Kin. */
-export const KIN_ONLY_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set([
-  "/settings/approvals",
-  "/settings/check-ins",
-  "/settings/deals",
-  "/settings/kin-connections",
-  "/settings/kin-profile",
-]);
-
-/** Kin's pages, which Kin's own Settings holds while a host runs Kin. */
-export const KIN_MOVED_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set([
-  "/settings/approvals",
-  "/settings/check-ins",
-  "/settings/company",
-  "/settings/deals",
-  "/settings/kin-connections",
-  "/settings/kin-profile",
-]);
 
 /** Sidebar order. A group with a hidden heading is set apart on screen by space alone. */
 export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
@@ -200,17 +176,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     paths: [
       "/settings/connections",
       "/settings/access",
-      "/settings/approvals",
       ...(isSecretsFeatureEnabled ? (["/settings/secrets"] as const) : []),
-    ],
-  },
-  {
-    heading: msg("Kin"),
-    paths: [
-      "/settings/company",
-      "/settings/check-ins",
-      "/settings/deals",
-      "/settings/kin-connections",
     ],
   },
   {
@@ -492,16 +458,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "composer-context",
     title: msg("Composer context"),
     to: "/settings/appearance",
-  },
-  {
-    id: "approval-phones",
-    kinOnly: true,
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Phones that can approve",
-    to: "/settings/approvals",
-    searchTerms: [
-      "kin approvals approve phone face id set up remove key device lost new recent changes",
-    ],
   },
   {
     id: "project-grouping",
@@ -1374,56 +1330,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("turn off on disable enable local server agents remote only restart")],
     desktopOnly: true,
   },
-  {
-    id: "company-details",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Company details",
-    to: "/settings/company",
-    searchTerms: ["kin legal name address gstin pan tax bank account ifsc upi invoice"],
-  },
-  {
-    id: "kin-connections",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Connections",
-    to: "/settings/kin-connections",
-    searchTerms: ["kin connected services tools posthog github key agents read"],
-  },
-  {
-    id: "kin-time-zone",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Time zone",
-    to: "/settings/company",
-    searchTerms: ["kin timezone zone check-ins due dates hours clock"],
-  },
-  {
-    id: "kin-agents",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Agents",
-    to: "/settings/company",
-    searchTerms: ["kin agents model character personality pause retire new agents default"],
-  },
-  {
-    id: "kin-daily-limit",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Daily limit",
-    to: "/settings/company",
-    searchTerms: ["kin budget agents usage spend limit"],
-  },
-  {
-    id: "kin-check-ins",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Check-ins",
-    to: "/settings/check-ins",
-    searchTerms: ["kin schedule morning afternoon weekly brief routine time run now"],
-  },
-  ...KIN_PROFILE_SETTINGS_SEARCH_ITEMS,
-  {
-    id: "kin-deals",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Deal stages",
-    to: "/settings/deals",
-    searchTerms: ["kin deals stages pipeline won lost sales prospect"],
-  },
+  ...KIN_SETTINGS_SEARCH_ITEMS,
   {
     id: "network-access",
     title: msg("Network access"),
@@ -1582,18 +1489,13 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/worktrees": "project-defaults",
   "/settings/connections": "connections",
   "/settings/access": "connections",
-  "/settings/approvals": null,
   "/settings/secrets": null,
-  "/settings/company": null,
-  "/settings/check-ins": null,
-  "/settings/deals": null,
-  "/settings/kin-connections": null,
-  "/settings/kin-profile": null,
   "/settings/scheduled-tasks": null,
   "/settings/maintenance": null,
   "/settings/labs": null,
   "/settings/about": null,
   "/settings/archived": "project-defaults",
+  ...KIN_SETTINGS_CATEGORY_SCOPES,
 };
 
 const RENAMED_SETTINGS_PATHS: Readonly<Record<string, SettingsPath>> = {

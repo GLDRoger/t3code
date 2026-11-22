@@ -155,6 +155,8 @@ export const KinChatMember = Schema.Struct({
   joinedAt: IsoDateTime,
   leftAt: Schema.NullOr(IsoDateTime),
   mutedUntil: Schema.NullOr(IsoDateTime),
+  // When this member pinned the chat to the top of their list; absent when it isn't pinned.
+  pinnedAt: Schema.optionalKey(IsoDateTime),
 });
 export type KinChatMember = typeof KinChatMember.Type;
 
@@ -283,6 +285,8 @@ export const KinTurnChange = Schema.Struct({
   key: KinRefKey,
   // Absent from an older host.
   kind: Schema.optional(KinRecordLinkKind),
+  /** A contact's client, whose page lists it, when this reader sees it; absent from an older host. */
+  party: Schema.optional(KinRefKey),
   title: Schema.String,
   what: Schema.String,
   change: Schema.Struct({ agentId: KinAgentId, seq: PositiveInt }),
@@ -413,6 +417,13 @@ export const kinChoiceActionNote = (options: ReadonlyArray<KinChoiceOption>) => 
 /** A `choice` card's buttons post `actionId: "choose"` with the option id as `value`. */
 export const KIN_CHOICE_CARD_ACTION = "choose";
 /**
+ * Closes an open choice card without choosing, for the person it asks; posts nothing in the chat.
+ * A Confirm card for something leaving the company (`send`) is never dismissed.
+ */
+export const KIN_CHOICE_DISMISS_ACTION = "dismiss";
+/** The dismisser's Undo: the card opens again as it was while nothing else closed its question. */
+export const KIN_CHOICE_UNDISMISS_ACTION = "undismiss";
+/**
  * An unanswered choice card stops taking taps this long after it was posted (its revision-1
  * `updatedAt`): the same day-long window after which Kin stops waking a lead for old messages.
  */
@@ -470,6 +481,8 @@ export const KinSendCard = Schema.Struct({
       /** "Invoice INV/26-27/004 · ₹1,18,000.00", read by the server from the record. */
       label: Schema.NullOr(KinText.check(Schema.isMaxLength(200))),
       bytes: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      /** An invoice's, drawn while the company had no bank account or UPI id to be paid to. */
+      bankMissing: Schema.optionalKey(Schema.Literal(true)),
     }),
   ).check(Schema.isMaxLength(10)),
   outcome: Schema.NullOr(
@@ -497,6 +510,21 @@ export type KinSendCard = typeof KinSendCard.Type;
 export const KinChoiceCardState = Schema.Struct({
   question: KinTrimmedText.check(Schema.isMaxLength(240)),
   detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),
+  /**
+   * Asked for someone else: who asks, and through which agent, as the card's first line, above
+   * the question. `detail` opens with the same line for older clients.
+   */
+  askedBy: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(500))),
+  /**
+   * What holds only until someone answers, such as "Until someone chooses, …": shown while the
+   * card is open, never once it is settled. `detail` opens with it for older clients.
+   */
+  whileOpen: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(600))),
+  /**
+   * A teammate's draft sent up for approval, as written (markdown): shown rendered, as a doc is.
+   * `detail` carries the same words for older clients.
+   */
+  draft: Schema.optionalKey(KinText.check(Schema.isMaxLength(2000))),
   // An agent's kin_ask offers at most four; Kin's own cards, such as a statement's currency, up to eight.
   options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
   /** A picture of what is asked about, such as a new logo: a file in this card's chat. */
@@ -510,8 +538,38 @@ export const KinChoiceCardState = Schema.Struct({
   send: Schema.optionalKey(KinSendCard),
   /** Set when a newer card for the same thing closed this one. */
   replaced: Schema.optionalKey(Schema.Literal(true)),
+  /** On a replaced card: the newer one, and once that was answered, who chose what on it. */
+  replacedBy: Schema.optionalKey(
+    Schema.Struct({
+      widgetId: KinWidgetId,
+      decided: Schema.optionalKey(
+        Schema.Struct({
+          name: KinTrimmedText.check(Schema.isMaxLength(200)),
+          label: KinTrimmedText.check(Schema.isMaxLength(80)),
+        }),
+      ),
+    }),
+  ),
+  /** Who settled the card, by name at the time; set by the host beside `answer`. */
+  decidedBy: Schema.optionalKey(
+    Schema.Struct({
+      personId: KinPersonId,
+      name: KinTrimmedText.check(Schema.isMaxLength(200)),
+    }),
+  ),
   /** An agent's open question: it takes taps until the question closes, not for a day. */
   untilAnswered: Schema.optionalKey(Schema.Literal(true)),
+  /**
+   * Set while the person it asked dismissed it without choosing: by whom, by name then, and when.
+   * The card is closed; its Undo (`KIN_CHOICE_UNDISMISS_ACTION`) opens it again as it was.
+   */
+  dismissed: Schema.optionalKey(
+    Schema.Struct({
+      personId: KinPersonId,
+      name: KinTrimmedText.check(Schema.isMaxLength(200)),
+      at: IsoDateTime,
+    }),
+  ),
   /**
    * What the answer did, in the owner's words, set by the server on a card Kin asked itself: a
    * past-tense title ("Money recorded") and what happened ("Receipt RCT/26-27/001 for ₹25,000…").
@@ -520,6 +578,15 @@ export const KinChoiceCardState = Schema.Struct({
     Schema.Struct({
       title: KinTrimmedText.check(Schema.isMaxLength(120)),
       text: KinText.check(Schema.isMaxLength(600)),
+      /** Where what the tap made lives, for the card to open: a list, in its place. */
+      open: Schema.optionalKey(
+        Schema.Struct({
+          place: Schema.Literals(["money", "clients", "docs"]),
+          list: KinTrimmedText.check(Schema.isMaxLength(40)),
+          /** Money's Subscriptions, which shows this list. */
+          subscriptions: Schema.optionalKey(Schema.Literal(true)),
+        }),
+      ),
       /** Set when the person undid what a default Kin took: who, by name then, and when. */
       undone: Schema.optionalKey(
         Schema.Struct({
@@ -668,14 +735,41 @@ export const KinWaitingItem = Schema.Struct({
   question: Schema.optional(Schema.NullOr(KinTrimmedText)),
   /** Set while an agent's question on that card is open; absent from servers without it. */
   ask: Schema.optional(KinWaitingAsk),
+  /** What the waiting card is, when more than a question: a mail ready to send, a draft sent up. */
+  card: Schema.optional(Schema.Literals(["mail", "draft"])),
+  /** The first lines of what the card asks about, such as a draft or a doc; absent without one. */
+  excerpt: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(300))),
+  /**
+   * Set when this waits for someone else, not the viewer: whom, by name. Sent only to a client
+   * that asks for it; the viewer may look but not answer, and the host refuses any answer.
+   */
+  waitsFor: Schema.optional(
+    Schema.Struct({
+      personId: KinPersonId,
+      name: KinTrimmedText.check(Schema.isMaxLength(200)),
+    }),
+  ),
 });
 export type KinWaitingItem = typeof KinWaitingItem.Type;
+/** A page's line for a chat row, sent with `acceptPreview` instead of the page's whole body. */
+export const KinChatPreview = Schema.Struct({
+  /** `kinPageGist` of the whole body. */
+  gist: KinText,
+  /** The page is a brief, whose line reads after its greeting. */
+  brief: Schema.Boolean,
+});
+export type KinChatPreview = typeof KinChatPreview.Type;
 export const KinChatSummary = Schema.Struct({
   ...KinChat.fields,
   // A direct chat's two members. A group's row carries only the viewer's own, with `leftAt` set
   // once they are no longer in it; `kin.chat.members` lists the rest.
   members: Schema.Array(KinChatMember),
   lastMessage: Schema.NullOr(KinMessage),
+  /**
+   * With `acceptPreview`, when `lastMessage` is a page: its line, and that message then comes with
+   * its body cut short and without embeds or turn changes. Absent otherwise.
+   */
+  lastPreview: Schema.optional(KinChatPreview),
   // In a group, the person who wrote `lastMessage`, when it wasn't the viewer.
   lastAuthorName: Schema.optional(KinTrimmedText),
   unread: NonNegativeInt,
@@ -776,7 +870,13 @@ export const KinOrgsListResult = Schema.Struct({
   ),
 });
 export type KinOrgsListResult = typeof KinOrgsListResult.Type;
-export const KinChatsSubscribeInput = Schema.Struct({ orgId: Schema.optional(KinOrgId) });
+export const KinChatsSubscribeInput = Schema.Struct({
+  orgId: Schema.optional(KinOrgId),
+  /** The client reads `lastPreview`; older servers ignore it and send whole messages. */
+  acceptPreview: Schema.optional(Schema.Boolean),
+  /** The client shows `waitsFor` rows read-only; others get none of them. */
+  acceptWaitsFor: Schema.optional(Schema.Boolean),
+});
 export type KinChatsSubscribeInput = typeof KinChatsSubscribeInput.Type;
 export const KinChatsCreateDirectInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
 export type KinChatsCreateDirectInput = typeof KinChatsCreateDirectInput.Type;
@@ -802,6 +902,25 @@ export const KinChatMembersResult = Schema.Struct({
   members: Schema.Array(Schema.Struct({ ...KinChatMember.fields, displayName: KinTrimmedText })),
 });
 export type KinChatMembersResult = typeof KinChatMembersResult.Type;
+/**
+ * Other agents a chat's messages were handed to, while that work is queued or running. Each
+ * names its agent and the chat it runs in (null when the caller isn't in that chat).
+ */
+export const KinChatWorkingResult = Schema.Struct({
+  handoffs: Schema.Array(
+    Schema.Struct({
+      agentId: KinAgentId,
+      chatId: Schema.NullOr(KinChatId),
+      // Null while queued; a running one can be stopped by its wake-up.
+      wakeupId: Schema.NullOr(KinWakeupId),
+      state: Schema.Literals(["queued", "running"]),
+      // The asking message's opening words, which the caller can already read in this chat.
+      asked: KinText.check(Schema.isMaxLength(80)),
+      since: IsoDateTime,
+    }),
+  ),
+});
+export type KinChatWorkingResult = typeof KinChatWorkingResult.Type;
 export const KinGroupAddMemberInput = Schema.Struct({ chatId: KinChatId, principal: KinPrincipal });
 export type KinGroupAddMemberInput = typeof KinGroupAddMemberInput.Type;
 export const KinGroupRemoveMemberInput = Schema.Struct({
@@ -903,6 +1022,9 @@ export const KinMessagesMarkReadResult = Schema.Struct({});
 /** Mutes or unmutes the caller's own notifications for one chat; the badge still counts it. */
 export const KinChatsMuteInput = Schema.Struct({ chatId: KinChatId, muted: Schema.Boolean });
 export type KinChatsMuteInput = typeof KinChatsMuteInput.Type;
+/** Pins or unpins one chat at the top of the caller's own list. */
+export const KinChatsPinInput = Schema.Struct({ chatId: KinChatId, pinned: Schema.Boolean });
+export type KinChatsPinInput = typeof KinChatsPinInput.Type;
 export type KinMessagesMarkReadResult = typeof KinMessagesMarkReadResult.Type;
 /**
  * Empties a chat for everyone in it, for good: its messages, cards, reactions and files. The chat,
@@ -965,6 +1087,13 @@ export class KinChatError extends Schema.TaggedError<KinChatError>()("KinChatErr
   message: Schema.String,
   /** On a send refused for its sent-mail tick: the try, for the words that were refused. */
   mayHaveGone: Schema.optionalKey(KinSendTry),
+  /** On a person's save whose amount reads like a slip: the list and its largest entry, if any. */
+  farAbove: Schema.optionalKey(
+    Schema.Struct({
+      list: Schema.String,
+      largest: Schema.NullOr(Schema.Struct({ minor: Schema.Number, currency: Schema.String })),
+    }),
+  ),
 }) {}
 
 export const KIN_CHAT_WS_METHODS = {
@@ -973,8 +1102,10 @@ export const KIN_CHAT_WS_METHODS = {
   chatsCreateDirect: "kin.chats.createDirect",
   chatsWithPerson: "kin.chats.withPerson",
   chatsMute: "kin.chats.mute",
+  chatsPin: "kin.chats.pin",
   chatsClear: "kin.chats.clear",
   chatMembers: "kin.chat.members",
+  chatWorking: "kin.chat.working",
   chatSubscribe: "kin.chat.subscribe",
   chatHistory: "kin.chat.history",
   messagesSend: "kin.messages.send",
@@ -1010,6 +1141,11 @@ export const KinChatRpcs = [
     success: KinChatMember,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatsPin, {
+    payload: KinChatsPinInput,
+    success: KinChatMember,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
   Rpc.make(KIN_CHAT_WS_METHODS.chatsClear, {
     payload: KinChatsClearInput,
     success: KinChatsClearResult,
@@ -1018,6 +1154,11 @@ export const KinChatRpcs = [
   Rpc.make(KIN_CHAT_WS_METHODS.chatMembers, {
     payload: KinChatMembersInput,
     success: KinChatMembersResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatWorking, {
+    payload: KinChatMembersInput,
+    success: KinChatWorkingResult,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
   Rpc.make(KIN_CHAT_WS_METHODS.chatSubscribe, {
@@ -1061,11 +1202,15 @@ export const KIN_CHAT_RPC_SCOPES = {
   [KIN_CHAT_WS_METHODS.chatsWithPerson]: AuthKinChatScope,
   // Only quiets the caller's own pushes, like marking a chat read.
   [KIN_CHAT_WS_METHODS.chatsMute]: AuthKinChatScope,
+  // Only orders the caller's own list, like a mute.
+  [KIN_CHAT_WS_METHODS.chatsPin]: AuthKinChatScope,
   // A teammate clears their own direct chat with a lead, so chat access reaches the method; the
   // chat service decides per chat, and refuses a group to anyone but the owner.
   [KIN_CHAT_WS_METHODS.chatsClear]: AuthKinChatScope,
   // Names of the people and leads in a chat the caller is in.
   [KIN_CHAT_WS_METHODS.chatMembers]: AuthKinChatScope,
+  // What a chat the caller is in handed to other agents; membership is checked per chat.
+  [KIN_CHAT_WS_METHODS.chatWorking]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatSubscribe]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatHistory]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.messagesSend]: AuthKinChatScope,

@@ -85,16 +85,17 @@ export const docsForViewer = Effect.fn("KinPrivateDocs.forViewer")(function* (
     ),
     widgets: page.widgets.map((widget) => {
       const card = cardOf(widget);
-      return card === undefined || !hidden.has(card.key)
-        ? widget
-        : {
-            ...widget,
-            state: {
-              ...card,
-              title: PRIVATE_DOC,
-              change: { ...card.change, summary: "" },
-            } satisfies KinDocCardState,
-          };
+      if (card === undefined || !hidden.has(card.key)) return widget;
+      // A draft's card carries its text: none of it, and no Send to, once it is private.
+      const { draft: _draft, ...shown } = card;
+      return {
+        ...widget,
+        state: {
+          ...shown,
+          title: PRIVATE_DOC,
+          change: { ...card.change, summary: "" },
+        } satisfies KinDocCardState,
+      };
     }),
   };
 });

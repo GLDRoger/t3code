@@ -5,6 +5,7 @@ import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinEmbed } from "./kinEmbed.ts";
 import { KinMemoryItemId, KinWorkerId } from "./kinLead.ts";
+import { KinSocialPlatform } from "./kinSocial.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -15,6 +16,7 @@ import {
   KinPersonId,
   KinText,
   KinTrimmedText,
+  KinWidgetId,
 } from "./kinChat.ts";
 import {
   KinRecordChangeVia,
@@ -163,8 +165,14 @@ export const KinDocRow = Schema.Struct({
   /** The owner shared it with the team: members who can see Docs read it. */
   shared: Schema.optional(Schema.Literal(true)),
   archived: Schema.Boolean,
+  /** For a deleted (archived) doc: who deleted it and when. Absent from older hosts. */
+  deleted: Schema.optional(Schema.Struct({ at: IsoDateTime, by: KinWorkActor })),
+  /** This viewer may delete it, or bring it back (`kin.docs.delete`); the host decides again. */
+  deletable: Schema.optional(Schema.Literal(true)),
   /** The company's What we sell, pinned first in Docs. */
   whatWeSell: Schema.optional(Schema.Literal(true)),
+  /** An agent's character, which its page changes; the phone's Docs leaves it out. */
+  character: Schema.optional(Schema.Literal(true)),
   bodyKind: KinDocBodyKind,
   /** The latest version, with its "what changed" line. */
   latest: KinDocVersion,
@@ -211,6 +219,8 @@ export const KinDocDetail = Schema.Struct({
   seq: NonNegativeInt,
   /** Absent from servers that draw no blocks. */
   embeds: Schema.optional(Schema.Array(KinDocEmbed)),
+  /** This reader may change a section by hand (`kin.docs.editSection`); the host decides again. */
+  editable: Schema.optional(Schema.Literal(true)),
 });
 export type KinDocDetail = typeof KinDocDetail.Type;
 
@@ -314,6 +324,34 @@ export const KinDocRestoreInput = Schema.Struct({
   latest: PositiveInt,
 });
 export type KinDocRestoreInput = typeof KinDocRestoreInput.Type;
+
+/**
+ * One section changed by hand, as a new version: by the owner level, or the lead of the project
+ * the doc is filed under. A section whose hash is no longer `hash` is refused, and nothing changes.
+ */
+export const KinDocEditSectionInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  section: KinDocSectionId,
+  /** The section's hash in the outline that was read. */
+  hash: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  /** Its new markdown; without a heading line the heading stays. */
+  text: Schema.String.check(Schema.isMaxLength(200_000)),
+  /** The same id and text again returns what that request made. */
+  clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+});
+export type KinDocEditSectionInput = typeof KinDocEditSectionInput.Type;
+
+/**
+ * A person deletes a doc, or brings a deleted one back with `deleted: false`, exactly as it was.
+ * Whoever may change it by hand may; never an agent's character or What we sell. Again is harmless.
+ */
+export const KinDocDeleteInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  deleted: Schema.Boolean,
+});
+export type KinDocDeleteInput = typeof KinDocDeleteInput.Type;
 
 /** The owner level starts What we sell: Kin writes its outline once, or brings an archived one back. */
 export const KinDocStartWhatWeSellInput = Schema.Struct({ orgId: KinOrgId });
@@ -517,6 +555,8 @@ export const KinSearchInput = Schema.Struct({
   closed: Schema.optional(Schema.Boolean),
   /** Money entries and memory too: a client that can open them asks, so an older one never gets them. */
   everything: Schema.optional(Schema.Literal(true)),
+  /** Deals too, by their words and their key, when `kinds` leaves out `work`. */
+  deals: Schema.optional(Schema.Literal(true)),
   limit: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(50)),
   ),
@@ -532,6 +572,8 @@ export const KinSearchHit = Schema.Struct({
   snippet: KinText,
   /** For a doc, the section the match is in, to open it there. */
   section: Schema.optional(Schema.Struct({ id: KinDocSectionId, title: KinText })),
+  /** For a contact, which has no page of its own, its client's key, to open that client's page. */
+  client: Schema.optional(KinRecordKey),
   sensitive: Schema.Boolean,
   closed: Schema.Boolean,
   updatedAt: IsoDateTime,
@@ -544,6 +586,39 @@ export const KinSearchResult = Schema.Struct({
   asOf: IsoDateTime,
 });
 export type KinSearchResult = typeof KinSearchResult.Type;
+
+/** What an agent's draft is of; the owner's Approve on it makes that one thing. */
+const KIN_DRAFT_KINDS = ["proposal", "quote", "invoice", "terms", "mail", "post"] as const;
+export const KinDraftKind = Schema.Literals(KIN_DRAFT_KINDS);
+export type KinDraftKind = typeof KinDraftKind.Type;
+
+const KinNamedPerson = Schema.Struct({ personId: KinPersonId, name: KinTrimmedText });
+
+/** A doc card that is one draft: its text to copy, and where it goes up to be approved. */
+export const KinDocCardDraft = Schema.Struct({
+  kind: KinDraftKind,
+  /** The draft as filed, in markdown; Copy text takes it without the marks. */
+  text: KinText,
+  /** For a post: where it goes. */
+  on: Schema.optional(KinSocialPlatform),
+  /** The client it was filed for; Send to sends it for this client only. */
+  client: Schema.optional(KinRecordRef),
+  /** Who "Send to" sends it up to: set only in a teammate's own chat with the agent. */
+  sendTo: Schema.optional(KinNamedPerson),
+  /** Sent up: to whom, and when; `held` while it waits for them to be back. */
+  sent: Schema.optional(
+    Schema.Struct({
+      name: KinTrimmedText,
+      at: IsoDateTime,
+      held: Schema.optional(Schema.Literal(true)),
+    }),
+  ),
+  /** Its owner answered Changes first on what went up, and when: it may go up again. */
+  changesFirst: Schema.optional(Schema.Struct({ name: KinTrimmedText, at: IsoDateTime })),
+  /** Kin can't post it: no account on this service is connected, and who can connect one. */
+  noAccount: Schema.optional(Schema.Struct({ service: KinTrimmedText, by: KinNamedPerson })),
+});
+export type KinDocCardDraft = typeof KinDocCardDraft.Type;
 
 export const KIN_DOC_CARD = "doc";
 /** The chat card an agent shows a doc with. Filled by the server from stored rows. */
@@ -561,8 +636,24 @@ export const KinDocCardState = Schema.Struct({
   }),
   /** The version before, to open "See changes"; `null` for a new doc. */
   previousVersion: Schema.NullOr(PositiveInt),
+  draft: Schema.optional(KinDocCardDraft),
 });
 export type KinDocCardState = typeof KinDocCardState.Type;
+
+/** "Send to" on a teammate's draft card: it goes up to the agent's owner as one card to approve. */
+export const KinDocSendUpInput = Schema.Struct({
+  orgId: KinOrgId,
+  chatId: KinChatId,
+  widgetId: KinWidgetId,
+});
+export type KinDocSendUpInput = typeof KinDocSendUpInput.Type;
+export const KinDocSendUpResult = Schema.Struct({
+  /** Who it went up to. */
+  to: KinTrimmedText,
+  /** Waiting for their quiet hours to end before it reaches them. */
+  held: Schema.Boolean,
+});
+export type KinDocSendUpResult = typeof KinDocSendUpResult.Type;
 
 const KIN_DOCS_WS_METHODS = {
   list: "kin.docs.list",
@@ -581,6 +672,9 @@ const KIN_DOCS_WS_METHODS = {
   labelRecipe: "kin.docs.labelRecipe",
   setDefaultRecipe: "kin.docs.setDefaultRecipe",
   startWhatWeSell: "kin.docs.startWhatWeSell",
+  editSection: "kin.docs.editSection",
+  sendUp: "kin.docs.sendUp",
+  delete: "kin.docs.delete",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -651,6 +745,21 @@ export const KinDocsRpcs = [
     success: KinDocDetail,
     error,
   }),
+  Rpc.make(KIN_DOCS_WS_METHODS.editSection, {
+    payload: KinDocEditSectionInput,
+    success: KinDocDetail,
+    error,
+  }),
+  Rpc.make(KIN_DOCS_WS_METHODS.sendUp, {
+    payload: KinDocSendUpInput,
+    success: KinDocSendUpResult,
+    error,
+  }),
+  Rpc.make(KIN_DOCS_WS_METHODS.delete, {
+    payload: KinDocDeleteInput,
+    success: KinDocDetail,
+    error,
+  }),
 ] as const;
 
 export const KIN_DOCS_RPC_SCOPES = {
@@ -676,4 +785,10 @@ export const KIN_DOCS_RPC_SCOPES = {
   [KIN_DOCS_WS_METHODS.setDefaultRecipe]: AuthKinChatScope,
   // Writes Kin's outline once, as restore writes a version; it starts no agent work.
   [KIN_DOCS_WS_METHODS.startWhatWeSell]: AuthKinChatScope,
+  // Writes a version, as restore does; it starts no agent work.
+  [KIN_DOCS_WS_METHODS.editSection]: AuthKinChatScope,
+  // Asks the agent's owner on a card, as a chat message to the agent would; it starts no turn.
+  [KIN_DOCS_WS_METHODS.sendUp]: AuthKinChatScope,
+  // Moves a doc in or out of Deleted, as filing it does; it starts no agent work.
+  [KIN_DOCS_WS_METHODS.delete]: AuthKinChatScope,
 } as const;

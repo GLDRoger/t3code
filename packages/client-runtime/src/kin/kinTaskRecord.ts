@@ -1,5 +1,8 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
+  KIN_CODING_AGENT_UNNAMED,
+  KIN_WORK_ALSO_ON_MAX,
+  type KinPersonId,
   kinWorkMove,
   type KinWorkMoveGroup,
   KIN_RECORD_COMMENT_FILES_MAX,
@@ -13,10 +16,13 @@ import {
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 
+import { KIN_RETIRED_LABEL } from "./kinAgentRetire.ts";
 import { kinAwayDay } from "./kinAway.ts";
 import { kinSafeWebUrl } from "./kinLinks.ts";
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import {
+  KIN_WORK_YOURS_TO_DO,
+  kinWorkWaitsOnMe,
   kinWorkActorName,
   kinWorkAvatar,
   kinWorkChangeText,
@@ -24,12 +30,16 @@ import {
   kinWorkDueDays,
   kinWorkDueText,
   kinWorkName,
+  kinWorkPrincipalKey,
+  kinWorkSamePrincipal,
+  type KinWorkAssignee,
   type KinWorkItemView,
   type KinWorkNames,
 } from "./kinWork.ts";
 import { kinWorkStatusOffer } from "./kinWorkChanges.ts";
 
 export const KIN_TASK_RECORD = {
+  editBrief: "Edit the brief",
   details: "Details",
   askedBy: "Asked by",
   heldBy: "Held by",
@@ -55,10 +65,22 @@ export const KIN_TASK_RECORD = {
   fromProject: "From the project",
   toldWhenBack: (name: string, day: string) =>
     `${name} is away until ${day}, so they'll be told when they're back.`,
+  /** The Details row that opens what the card above already says; `on`: the reader is With. */
+  folded: (asked: boolean, held: boolean, on = false) =>
+    asked && held
+      ? on
+        ? "Who asked and who's on it"
+        : "Who asked and who has it"
+      : held
+        ? on
+          ? "Who's on it"
+          : "Who has it"
+        : "Who asked",
 } as const;
 
 /** A task's note box and its notes, on web and phone. */
 export const KIN_TASK_NOTE_COPY = {
+  removeLabel: "Remove this note",
   send: "Add note",
   sending: "Sending…",
   retry: "Retry",
@@ -132,7 +154,7 @@ export function kinRecordWho(who: KinWorkPrincipal, names: KinWorkNames): KinRec
   };
 }
 
-const isMe = (who: KinWorkPrincipal, names: KinWorkNames) =>
+const isMe = (who: KinWorkPrincipal, names: Pick<KinWorkNames, "me">) =>
   who._tag === "person" && who.personId === names.me;
 
 /**
@@ -200,6 +222,7 @@ export function kinRecordMove(
     | "askedBy"
     | "givenBy"
     | "waiting"
+    | "alsoOn"
   >,
   names: KinWorkNames,
   ownerLevel: boolean,
@@ -216,6 +239,7 @@ export function kinRecordMove(
       askedBy: asker?._tag === "person" ? asker.personId : null,
       givenBy: item.givenBy ?? null,
       card: item.waiting !== undefined,
+      ...(item.alsoOn === undefined ? {} : { alsoOn: item.alsoOn }),
     },
     { personId: names.me, ownerLevel },
   );
@@ -234,6 +258,8 @@ export function kinRecordChip(
   if (item.state === "dropped") return { tone: "plain", label: "Dropped" };
   if (item.late && item.dueAt !== null)
     return { tone: "late", label: kinLateWords(item, names, now) };
+  // Waiting on this viewer is theirs to move, never a pause (`kinWorkWaitsOnMe`).
+  if (kinWorkWaitsOnMe(item, names)) return { tone: "plain", label: KIN_WORK_YOURS_TO_DO };
   const handedToMe = item.handedBack !== undefined && isMe(item.owner, names);
   // Tasks' Needs you and this chip read one rule; a plain task of your own says its status.
   const move = kinRecordMove(item, names, view.can.confirm);
@@ -313,6 +339,35 @@ export function kinNextStep(input: NextStepInput): KinNextStepView {
 }
 
 /**
+ * Which of Details' Asked by and Held by name only the person the next-step card already
+ * names, so they fold under one row. Null where neither does.
+ */
+export function kinTaskPeopleFolded(
+  item: Pick<
+    KinRecordDetail,
+    "owner" | "createdBy" | "assignedBy" | "askedBy" | "handedBack" | "alsoOn"
+  >,
+  step: Pick<KinNextStepView, "kind">,
+  /** The reader, so the label says "who's on it" when they are With. */
+  names?: Pick<KinWorkNames, "me">,
+): { readonly asked: boolean; readonly held: boolean; readonly label: string } | null {
+  const named =
+    step.kind === "yours" || step.kind === "held" || step.kind === "late" || step.kind === "agent"
+      ? item.owner
+      : step.kind === "suggested" && item.createdBy._tag !== "system"
+        ? item.createdBy
+        : step.kind === "handedBack" && item.handedBack !== undefined
+          ? item.handedBack.by
+          : null;
+  if (named === null) return null;
+  const asker = kinRecordAskedBy(item);
+  const asked = asker !== null && samePrincipal(asker, named);
+  const held = samePrincipal(item.owner, named);
+  const on = names !== undefined && (item.alsoOn ?? []).some((who) => isMe(who, names));
+  return asked || held ? { asked, held, label: KIN_TASK_RECORD.folded(asked, held, on) } : null;
+}
+
+/**
  * Where a task page's own controls sit for this viewer: status on the page, the rest in the ••• /
  * More menu; the Brief section carries the page's edit. Each is present only where the host takes
  * that move from this viewer, and Done or Reopen only where the next-step card doesn't offer it.
@@ -366,6 +421,11 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
   const waitsOnMe =
     item.state === "waiting" && item.waitingOn !== null && isMe(item.waitingOn, names);
   const nothingNeeded = waitsOnMe ? `${view.status}.` : KIN_TASK_RECORD.nothingNeeded;
+  // Theirs to do, with why it is when the record says and the card doesn't quote it already.
+  const yoursToDo = (quoted: string | null) =>
+    view.reason === null || quoted === view.reason
+      ? `${KIN_WORK_YOURS_TO_DO}.`
+      : `${KIN_WORK_YOURS_TO_DO}: ${view.reason}`;
   if (view.suggestion !== null) {
     const acts =
       input.change && view.can.confirm
@@ -424,8 +484,9 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
       who: { name: "You", avatar: holder.avatar },
       line: "have this",
       when: due === null ? null : `due ${due}`,
-      words: view.reason,
-      note: null,
+      // What to do: the brief, and why it came only while there is none.
+      words: view.notes ?? view.reason,
+      note: waitsOnMe ? yoursToDo(view.notes ?? view.reason) : null,
       acts: [...done, ...back],
     };
   }
@@ -467,6 +528,7 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
   }
   const waiting =
     item.state === "waiting" &&
+    !waitsOnMe &&
     !(item.waitingOn !== null && samePrincipal(item.waitingOn, item.owner));
   return {
     kind: "held",
@@ -474,8 +536,7 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
     line: waiting ? view.status.replace(/^Waiting/, "is waiting") : "has this",
     when: due === null ? null : `due ${due}`,
     words: null,
-    // The line already says it waits on this viewer.
-    note: toldLater ?? (waitsOnMe ? null : KIN_TASK_RECORD.nothingNeeded),
+    note: toldLater ?? (waitsOnMe ? yoursToDo(null) : KIN_TASK_RECORD.nothingNeeded),
     acts: [],
   };
 }
@@ -546,6 +607,14 @@ function beforeAfter(change: KinRecordChange, names: KinWorkNames, now: Date) {
   return { before: null, after: null };
 }
 
+/** "coding agent “Work laptop”": the kind is Kin's word and the name the key's, quoted, so none poses as Kin. */
+const codingAgentVia = (name: string | undefined) =>
+  name === undefined
+    ? null
+    : name === KIN_CODING_AGENT_UNNAMED
+      ? KIN_CODING_AGENT_UNNAMED
+      : `coding agent “${name}”`;
+
 function changeLine(change: KinRecordChange, names: KinWorkNames, now: Date): KinActivityLine {
   const full = kinWorkChangeText(change, names, now, "work", "brief");
   const actor = kinWorkActorName(change.by, names);
@@ -568,7 +637,7 @@ function changeLine(change: KinRecordChange, names: KinWorkNames, now: Date): Ki
       asker !== undefined
         ? actor
         : named && change.by._tag === "person"
-          ? (change.codingAgent ?? null)
+          ? codingAgentVia(change.codingAgent)
           : null,
     comment: null,
   };
@@ -584,7 +653,7 @@ function commentLine(comment: KinRecordComment, names: KinWorkNames, now: Date):
     when: formatKinTime(new Date(comment.at), now),
     before: null,
     after: null,
-    via: comment.by._tag === "person" ? (comment.codingAgent ?? null) : null,
+    via: comment.by._tag === "person" ? codingAgentVia(comment.codingAgent) : null,
     comment: {
       commentId: comment.commentId,
       body: comment.body,
@@ -639,5 +708,105 @@ export function kinBriefBy(
     when: formatKinTime(new Date(wrote?.at ?? item.createdAt), now),
   };
 }
+
+/** The With line under "Who has it": who else is on a task besides its holder. */
+export const KIN_TASK_WITH = {
+  label: "With",
+  add: "Put someone on it",
+  remove: (name: string) => `Take ${name} off it`,
+  leave: "Leave",
+  leaveLabel: "Leave this task",
+  full: `${KIN_WORK_ALSO_ON_MAX} are on it, the most a task takes.`,
+  /** As the Team list says it beside someone whose access was removed. */
+  noAccess: "No access",
+  invited: "Invited",
+} as const;
+
+export interface KinTaskWithPerson {
+  readonly key: string;
+  readonly principal: KinWorkPrincipal;
+  /** A person's first name, an agent's whole name; "You" for the reader. */
+  readonly name: string;
+  readonly avatar: KinAvatarView;
+  /** No access, Invited or Retired, said quietly beside the name; null when all is well. */
+  readonly status: string | null;
+  /** × takes them off, Leave takes the reader off; null offers neither. */
+  readonly act: "remove" | "leave" | null;
+}
+
+/**
+ * Who else is on a task, as its sheet lists them under "Who has it", and whether the reader may
+ * put someone on it: `edit` is the task's `can.edit`, `change` whether this device may update
+ * tasks at all, which is all Leave needs. `joined` marks who no longer opens Kin.
+ */
+export function kinTaskWith(input: {
+  readonly item: Pick<KinRecord, "alsoOn">;
+  readonly names: KinWorkNames;
+  readonly edit: boolean;
+  readonly change: boolean;
+  readonly joined?: ReadonlyArray<KinPersonId> | null;
+  readonly invited?: ReadonlyArray<KinPersonId> | null;
+}): {
+  readonly people: ReadonlyArray<KinTaskWithPerson>;
+  readonly add: boolean;
+  readonly full: string | null;
+} {
+  const { names } = input;
+  const on = input.item.alsoOn ?? [];
+  const edit = input.edit && input.change;
+  const joined = input.joined == null ? null : new Set<string>(input.joined);
+  const invited = new Set<string>(input.invited ?? []);
+  const people = on.map((who): KinTaskWithPerson => {
+    const me = isMe(who, names);
+    const status =
+      who._tag === "agent"
+        ? names.retired?.has(who.agentId) === true
+          ? KIN_RETIRED_LABEL
+          : null
+        : joined === null || joined.has(who.personId)
+          ? null
+          : invited.has(who.personId)
+            ? KIN_TASK_WITH.invited
+            : KIN_TASK_WITH.noAccess;
+    const name = kinWorkName(who, names);
+    return {
+      key: kinWorkPrincipalKey(who),
+      principal: who,
+      name: who._tag === "agent" || me ? name : (name.split(/\s+/)[0] ?? name),
+      avatar: kinWorkAvatar(who),
+      status,
+      act: me && input.change ? "leave" : edit ? "remove" : null,
+    };
+  });
+  const room = on.length < KIN_WORK_ALSO_ON_MAX;
+  return { people, add: edit && room, full: edit && !room ? KIN_TASK_WITH.full : null };
+}
+
+/** Who can be put on a task: the holder's own picker, less its holder and whoever is on it. */
+export function kinTaskWithChoices(
+  assignees: {
+    readonly leads: ReadonlyArray<KinWorkAssignee>;
+    readonly people: ReadonlyArray<KinWorkAssignee>;
+  },
+  item: {
+    readonly owner: KinWorkPrincipal | null;
+    readonly alsoOn?: ReadonlyArray<KinWorkPrincipal> | undefined;
+  },
+) {
+  const free = (row: KinWorkAssignee) =>
+    !kinWorkSamePrincipal(row.principal, item.owner) &&
+    !(item.alsoOn ?? []).some((who) => kinWorkSamePrincipal(who, row.principal));
+  return {
+    leads: assignees.leads.filter(free).map((row) => ({ ...row, current: false })),
+    people: assignees.people.filter(free).map((row) => ({ ...row, current: false })),
+  };
+}
+
+/** The list once `who` is taken off it. */
+export const kinTaskWithout = (
+  item: Pick<KinRecord, "alsoOn">,
+  who: KinWorkPrincipal,
+): ReadonlyArray<KinWorkPrincipal> =>
+  (item.alsoOn ?? []).filter((one) => !kinWorkSamePrincipal(one, who));
 
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);

@@ -89,6 +89,34 @@ export const GUARDS: ReadonlyArray<Guard> = [
     replace: "triage: false",
   },
   {
+    file: "apps/desktop/src/app/DesktopConfig.ts",
+    reason:
+      "Kin's desktop app reads its own home override, so a T3CODE_HOME in someone's environment " +
+      "never points Kin at T3 Code's data. (The ignore list keeps T3CODE_ names for rules.)",
+    pattern: { context: '({ t3Home: trimmedString("T3CODE_HOME") })', selector: "pair" },
+    replace: 't3Home: trimmedString("KIN_HOME")',
+  },
+  {
+    file: "apps/desktop/src/app/DesktopEnvironment.ts",
+    reason:
+      "Kin's desktop app has no release stage, so its window, menu and About panel say Kin, " +
+      'never "Kin (Beta)".',
+    pattern: {
+      context: "({ displayName: `${APP_BASE_NAME} (${stageLabel})` })",
+      selector: "pair",
+    },
+    replace: "displayName: APP_BASE_NAME",
+  },
+  {
+    file: "apps/desktop/src/app/DesktopAppIdentity.ts",
+    reason:
+      "The app's name labels its macOS menu (About, Hide and Quit Kin), so it is Kin, never " +
+      '"Kin Beta".',
+    pattern:
+      "electronApp.setName(`${environment.branding.baseName} ${environment.branding.stageLabel}`)",
+    replace: "electronApp.setName(environment.branding.baseName)",
+  },
+  {
     file: "apps/web/src/components/chat/TriageDraftHero.tsx",
     reason: "The triage draft's hero suggests `npx t3 triage`; Kin opens no triage drafts.",
     function: "TriageDraftHero",
@@ -144,6 +172,15 @@ export const GUARDS: ReadonlyArray<Guard> = [
       "The Welcome page's Phone section shows a QR code for T3 Code's mobile app, which can't " +
       "open Kin's kin:// pairing links.",
     function: "PhoneSection",
+  },
+  {
+    file: "scripts/build-desktop-artifact.ts",
+    reason:
+      "Kin's Windows payload is 109 files, over upstream's cap of 80: Kin keeps the bundled " +
+      "server (with its 41-entry compile cache) so a later version can make this computer the " +
+      "team's host. The cap still catches a payload that balloons.",
+    pattern: "export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 80;",
+    replace: "export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 128;",
   },
 ];
 

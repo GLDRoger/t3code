@@ -16,6 +16,7 @@ import type * as SqlError from "effect/sql/SqlError";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { validZone } from "../triggers/quietHold.ts";
+import { setWeeklyPipeline, weeklyPipelineOf } from "../work/dealStages.ts";
 import { theOwner, viewerOf } from "../work/ownerWork.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { coveredToday } from "./checkIn.ts";
@@ -27,6 +28,7 @@ import { morningJson, morningOf, pageReaders } from "./personMorning.ts";
  * the schedules' next pass applies, as a card's are; a new time or a new check-in saves the task now.
  */
 
+const WEEKLY = "checkin-weekly";
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const unread = <A, R>(self: Effect.Effect<A, KinChatError | SqlError.SqlError, R>) =>
   Effect.mapError(self, (error) =>
@@ -50,6 +52,7 @@ const read = Effect.fn("KinCheckIns.read")(function* (orgId: KinOrgId) {
   const host = KinSchedules.hostTimeZone();
   const leads = yield* leadsOf(sql, orgId);
   const rows = yield* KinSchedules.listSchedules(sql, orgId);
+  const pipeline = yield* weeklyPipelineOf(orgId);
   const checkIns = [];
   for (const row of rows) {
     if (row.checkIn !== 1 || row.deletedAt !== null) continue;
@@ -79,6 +82,7 @@ const read = Effect.fn("KinCheckIns.read")(function* (orgId: KinOrgId) {
       on,
       runNowPending: row.runNowAt !== null,
       ...(covered === undefined ? {} : { coveredToday: covered }),
+      ...(row.scheduleId === WEEKLY ? { numbers: pipeline ? ["pipeline" as const] : [] } : {}),
     });
   }
   return {
@@ -126,12 +130,13 @@ export const save = Effect.fn("KinCheckIns.save")(function* (
       KinMemoryItemId.make(`checkin-${now.toString(36)}-${person.personId}`),
     existing: existing !== undefined,
     chatId: existing?.chatId ?? KinChatId.make(lead.chatId),
-    // Not the seed's: a default moved here stays where it was put (`followOwnerZone`).
+    // Not the seed's: it keeps the owner's time it was set at (`followOwnerZone`).
     sourceEvent: `kin-settings:check-ins:${input.orgId}`,
     saidBy: person.personId,
     title: input.title,
     prompt: input.what,
     every,
+    ownerTime: { at: input.at, days: input.days.toSorted((a, b) => a - b) },
     // Seeded ones run somewhere around their time; a new one too, so they don't all land at once.
     around: existing === undefined || existing.looseAt !== null,
     checkIn: true,
@@ -163,6 +168,12 @@ export const act = Effect.fn("KinCheckIns.act")(function* (
       break;
     case "remove":
       yield* sql`UPDATE kin_schedules SET deleted_at = ${now}, updated_at = ${now} WHERE ${where}`;
+      break;
+    case "numbers_on":
+    case "numbers_off":
+      if (row.scheduleId !== WEEKLY)
+        return yield* invalid("Only the weekly brief adds the pipeline to its numbers.");
+      yield* setWeeklyPipeline(input.orgId, input.action === "numbers_on", now);
       break;
   }
   return yield* read(input.orgId);
@@ -292,12 +303,13 @@ export const saveBrief = Effect.fn("KinBriefs.save")(function* (
       scheduleId: row.scheduleId,
       existing: true,
       chatId: row.chatId,
-      // Not the seed's: a default moved here stays where it was put (`followOwnerZone`).
+      // Not the seed's: it keeps the owner's time it was set at (`followOwnerZone`).
       sourceEvent: `kin-settings:briefs:${input.orgId}`,
       saidBy: person.personId,
       title: task.title,
       prompt: task.prompt,
       every: onHostClock(at, days, zone, KinSchedules.hostTimeZone(), now),
+      ownerTime: { at, days },
       // As it fires now: one made exact on T3's screen stays exact.
       around: brief.around,
       checkIn: true,

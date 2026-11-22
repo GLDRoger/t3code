@@ -9,14 +9,18 @@ import {
   type KinPulseScope,
   type KinPulseScreenRead,
   type KinRecordKey,
+  type KinWorkPrincipal,
   formatKinWhen,
+  kinWhenParts,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { kinMoneyDraft, kinMoneyText } from "./kinLists.ts";
+import { kinMoneyDraft, kinMoneyText, kinRecordName } from "./kinLists.ts";
+import { kinAskName } from "./kinAskRecord.ts";
 import { KIN_NEEDS_YOU_SHOWN, type KinNeedsYouRow } from "./kinWorkHome.ts";
 import { kinFailure } from "./kinAnswers.ts";
 import { kinIsDealKey } from "./kinDeals.ts";
+import { kinMidSentence, kinWorkName } from "./kinWork.ts";
 
 /**
  * "Needs attention": what Kin worked out needs someone, on the screens it is about. One model for
@@ -42,6 +46,7 @@ export const KIN_ATTENTION = {
   failed: "Couldn't save that.",
   whatsNext: "What's next?",
   notNow: "Not now",
+  menu: (title: string) => `Snooze or set aside ${title}`,
 } as const;
 
 /** "Not now" on a deal with no next step: its own hold, this many days. */
@@ -99,8 +104,16 @@ const URGENT = KIN_PULSE_URGENT;
 /** Open facts Needs you asks for: the rows it shows before "See all", and some to spare. */
 export const KIN_NEEDS_YOU_PAGE = 8;
 
+/** What a deal or prospect stopping moving reads as: Tasks lists these for whoever has it. */
+export const KIN_DEAL_SENSES: ReadonlySet<KinPulseFact["sense"]> = new Set<KinPulseFact["sense"]>([
+  "deal_no_next_step",
+  "deal_quiet",
+  "deal_date_passed",
+]);
+
 /** A client's own matters, and its tasks that are late or due. */
 const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
+  ...KIN_DEAL_SENSES,
   "task_late",
   "task_due_soon",
   "client_cold",
@@ -111,9 +124,6 @@ const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
   "invoice_overdue",
   "retainer_due",
   "renewal_due",
-  "deal_no_next_step",
-  "deal_quiet",
-  "deal_date_passed",
   "notice_due",
 ]);
 
@@ -142,7 +152,7 @@ const inScope = (fact: KinPulseFact, scope: KinAttentionScope) => {
 };
 
 const openOf = (fact: KinPulseFact): KinAttentionOpen =>
-  fact.family === "goals" || fact.subject.kind === "budget"
+  fact.family === "goals" || fact.subject.kind === "budget" || fact.subject.kind === "bank"
     ? { type: "money" }
     : fact.subject.kind === "record"
       ? { type: "record", key: fact.subject.key }
@@ -157,10 +167,7 @@ const dayLabel = (at: DateTime.Utc, now: Date) =>
 const handledText = (fact: KinPulseFact, names: ReadonlyMap<string, string>, now: Date) => {
   const handled = fact.handled;
   if (handled === null) return null;
-  const by =
-    handled.by._tag === "agent"
-      ? (names.get(handled.by.agentId) ?? "An agent")
-      : (names.get(handled.by.personId) ?? "Someone");
+  const by = kinWorkName(handled.by, { people: names, agents: names });
   return handled.until === null
     ? `${by}: not a problem`
     : `${by} has it until ${dayLabel(handled.until, now)}`;
@@ -205,7 +212,10 @@ function kinAttentionRow(
   },
 ): KinAttentionRow {
   const { subject, scope } = fact;
-  const label = subject.kind === "record" ? `${subject.key} ${subject.title}` : subject.title;
+  const label =
+    subject.kind === "record"
+      ? `${kinAskName(subject.key, subject.number)} ${subject.title}`
+      : subject.title;
   const where = [
     input.scope.type === "project" ? null : (scope.projectTitle ?? null),
     input.scope.type === "client" || input.scope.type === "project"
@@ -218,7 +228,7 @@ function kinAttentionRow(
     title: subject.title,
     detail: kinPlainDates(fact.consequence),
     about:
-      [subject.kind === "record" ? subject.key : null, ...where]
+      [subject.kind === "record" ? kinRecordName(subject.key, subject.number) : null, ...where]
         .filter((part) => part !== null)
         .join(" · ") || null,
     urgent: URGENT.has(fact.sense),
@@ -241,17 +251,15 @@ function kinAsideText(aside: KinPulseAside, names: ReadonlyMap<string, string>, 
     aside.until === null
       ? "Set aside until lifted"
       : `Set aside until ${dayLabel(aside.until, now)}`;
-  const setBy =
-    aside.by._tag === "agent"
-      ? (names.get(aside.by.agentId) ?? "an agent")
-      : (names.get(aside.by.personId) ?? "someone");
-  const by = aside.byYou ? "by you" : `by ${setBy}`;
+  const name = (who: KinWorkPrincipal) =>
+    kinMidSentence(kinWorkName(who, { people: names, agents: names }));
+  const by = aside.byYou ? "by you" : `by ${name(aside.by)}`;
   const word = aside.yourWord
     ? ", on your word"
     : aside.onWordOf === null ||
         aside.onWordOf === (aside.by._tag === "person" ? aside.by.personId : null)
       ? ""
-      : `, on ${names.get(aside.onWordOf) ?? "someone"}'s word`;
+      : `, on ${name({ _tag: "person", personId: aside.onWordOf })}'s word`;
   return `${until} · ${by}${word}`;
 }
 
@@ -484,18 +492,24 @@ export function kinTasksBlock(input: {
   const total = rows + onMe + input.needs.reduce((sum, row) => sum + (row.count ?? 1) - 1, 0);
   // The rows it shows, so the list below keeps every task the block doesn't. A money row leads,
   // so a long run of attention rows never hides it.
+  // What waits on the viewer is never cut: it lists what the sidebar's "Waiting on you" lists.
   const limit = input.expanded ? rows : KIN_NEEDS_YOU_SHOWN;
   const lead = needs[0]?.id === "attention:money" ? 1 : 0;
-  const shownAttention = attention.slice(0, Math.max(0, limit - lead));
+  const waiting = needs.filter((row) => row.kind === "waiting");
+  const room = Math.max(0, limit - lead - waiting.length);
+  const shownAttention = attention.slice(0, room);
+  const rest = new Set(
+    needs
+      .slice(lead)
+      .filter((row) => row.kind !== "waiting")
+      .slice(0, Math.max(0, room - shownAttention.length)),
+  );
   return {
     attention: shownAttention,
-    needs: [
-      ...needs.slice(0, lead),
-      ...needs.slice(lead, lead + Math.max(0, limit - lead - shownAttention.length)),
-    ],
+    needs: needs.filter((row, index) => index < lead || row.kind === "waiting" || rest.has(row)),
     total,
     onMe,
-    more: rows > KIN_NEEDS_YOU_SHOWN,
+    more: rows > Math.max(KIN_NEEDS_YOU_SHOWN, lead + waiting.length),
   };
 }
 
@@ -536,6 +550,7 @@ export function kinSetAsideDays(now: Date) {
 // Goals
 
 export const KIN_GOALS = {
+  unitPlaceholder: "For example: hires",
   saveFailed: "Couldn't save the goal.",
   title: "Goals",
   add: "Add goal",
@@ -558,12 +573,6 @@ export const KIN_GOALS = {
     clients_won: "Clients won",
     tasks_done: "Tasks done",
     manual: "A number we update",
-  } satisfies Record<KinGoal["measure"], string>,
-  targetHint: {
-    revenue_received: "40 lakh, ₹40,00,000",
-    clients_won: "5",
-    tasks_done: "40",
-    manual: "2",
   } satisfies Record<KinGoal["measure"], string>,
 } as const;
 
@@ -631,9 +640,20 @@ export function kinGoalsSummary(views: ReadonlyArray<Pick<KinGoalView, "status">
     .join(", ");
 }
 
-/** A goal as its edit sheet starts: the figures as a person would type them. */
-export function kinGoalDraft(goal: KinGoal | null, now: Date) {
-  const today = dayOf(now);
+/** Today on `zone`'s calendar, the company's, else on this device. */
+const todayIn = (now: Date, zone: string | null) => {
+  if (zone === null) return dayOf(now);
+  try {
+    return kinWhenParts(now, zone).isoDay;
+  } catch {
+    return dayOf(now);
+  }
+};
+
+/** A goal as its edit sheet starts: the figures as a person would type them, days in `zone`. */
+export function kinGoalDraft(goal: KinGoal | null, now: Date, zone: string | null = null) {
+  const today = todayIn(now, zone);
+  const [year, month, date] = today.split("-").map(Number);
   if (goal === null)
     return {
       title: "",
@@ -642,7 +662,7 @@ export function kinGoalDraft(goal: KinGoal | null, now: Date) {
       current: "",
       unit: "",
       startsOn: today,
-      dueOn: dayOf(new Date(now.getFullYear(), now.getMonth() + 3, now.getDate())),
+      dueOn: dayOf(new Date(year ?? 1970, (month ?? 1) - 1 + 3, date ?? 1)),
     };
   return {
     title: goal.title,

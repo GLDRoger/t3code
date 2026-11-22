@@ -1,5 +1,8 @@
 {
   "kinOwned": [
+    "**/*.kin.test.ts",
+    "**/*.kin.test.tsx",
+    "**/*.kin.browser.test.tsx",
     "apps/server/src/kin/**",
     "apps/web/src/kin/**",
     "packages/client-runtime/src/kin/**",
@@ -9,10 +12,12 @@
     "docs/kin/**",
     "verification/kin/**",
     "scripts/kin*",
+    "scripts/kin*/**",
     "scripts/lib/kin*",
     "branding/**",
     "infra/kin-sign-in/**",
     ".agents/skills/verify-kin*/**",
+    ".github/workflows/kin.yml",
     "KIN.md",
     "docs/operations/kin-*",
     "docs/user/kin*",
@@ -46,8 +51,13 @@
     "evals/mcp-tool-use/appServer.ts",
     "evals/mcp-tool-use/compare.ts",
     "evals/mcp-tool-use/estimate.ts",
+    "evals/mcp-tool-use/estimate.test.ts",
+    "evals/mcp-tool-use/kin*",
     "evals/mcp-tool-use/gate.ts",
+    "evals/mcp-tool-use/gate.test.ts",
     "evals/mcp-tool-use/margin.ts",
-    "evals/mcp-tool-use/rubric.ts"
+    "evals/mcp-tool-use/margin.test.ts",
+    "evals/mcp-tool-use/rubric.ts",
+    "apps/desktop/src/kin/**"
   ]
 }

@@ -94,17 +94,14 @@ export type WakeupEventBase = {
   readonly dedupeKey: null;
 };
 
-export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (input: {
+/**
+ * Ends every running wake-up of the org as `status`, through the queue's own finish, and stops
+ * its run, as the runner does when a turn ends.
+ */
+export const endAgentWakeups = Effect.fn("test.endAgentWakeups")(function* (input: {
   readonly orgId: KinOrgId;
-  readonly agentId: KinAgentId;
   readonly threadId: ThreadId;
-  readonly message?: KinMessage;
-  /** Wakes on this reaction to `message` instead of the message itself. */
-  readonly reaction?: KinReactionEmoji;
-  /** Marks the reaction as a changed answer, from this emoji. */
-  readonly changedFrom?: KinReactionEmoji;
-  /** Wakes on this event instead, built on the wake-up's own base fields. */
-  readonly event?: (base: WakeupEventBase) => KinEvent;
+  readonly status: "completed" | "failed";
 }) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -119,7 +116,7 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
     yield* queue.finish({
       orgId: input.orgId,
       wakeupId: KinWakeupId.make(wakeup.wakeup_id),
-      status: "completed",
+      status: input.status,
     });
     // Each run on its own agent's thread: several agents take turns in one test.
     const runThread = wakeup.thread_id === null ? input.threadId : ThreadId.make(wakeup.thread_id);
@@ -133,6 +130,25 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
         runId: run.id,
       });
   }
+});
+
+export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly threadId: ThreadId;
+  readonly message?: KinMessage;
+  /** Wakes on this reaction to `message` instead of the message itself. */
+  readonly reaction?: KinReactionEmoji;
+  /** Marks the reaction as a changed answer, from this emoji. */
+  readonly changedFrom?: KinReactionEmoji;
+  /** Wakes on this event instead, built on the wake-up's own base fields. */
+  readonly event?: (base: WakeupEventBase) => KinEvent;
+  /** Enqueues nothing: the wake-up takes what is already queued. */
+  readonly queued?: true;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const queue = yield* KinEventQueue.KinEventQueue;
+  yield* endAgentWakeups({ orgId: input.orgId, threadId: input.threadId, status: "completed" });
   const wakeupId = KinWakeupId.make(SecureRandom.uuidV4Unsafe());
   const base = {
     orgId: input.orgId,
@@ -159,7 +175,7 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
             chatId: input.message.chatId,
             messageId: input.message.messageId,
           };
-  yield* queue.enqueue(event);
+  if (input.queued !== true) yield* queue.enqueue(event);
   // The owner's message is claimed after its short burst window; anyone else's waits the full one.
   yield* TestClock.adjust(input.message?.authorRole === "owner" ? 2_000 : 20_000);
   yield* Effect.scoped(

@@ -1,4 +1,5 @@
 import {
+  KIN_CAMPAIGN_SOURCE,
   KIN_CONTACT_DETAILS_MAX,
   KIN_DEFAULT_HOME_CURRENCY,
   KIN_GST_STATES,
@@ -23,13 +24,8 @@ import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { kinFailureText } from "./kinAnswers.ts";
-import {
-  isKinChatError,
-  kinWorkFailuresOf,
-  kinWorkRefused,
-  type KinWorkRef,
-  kinWorkDueLabel,
-} from "./kinWork.ts";
+import type { KinLink } from "./kinHost.ts";
+import { isKinChatError, kinWorkFailuresOf, kinWorkRefused, type KinWorkRef } from "./kinWork.ts";
 import { kinMoneyDraft, kinParseMoney } from "./kinLists.ts";
 import { kinNoticeDays } from "./kinPromises.ts";
 import { kinContactEmailOk, kinContactPhoneOk, KIN_PROJECTS } from "./kinWorkClients.ts";
@@ -44,7 +40,6 @@ const PLACE_MAX = 60;
 export const KIN_WORK_FORM_LIMITS = { name: NAME_MAX, short: SHORT_MAX, notes: NOTES_MAX };
 
 export const KIN_WORK_FORM_COPY = {
-  milestoneExample: "Beta to the client",
   save: "Save",
   cancel: "Cancel",
   openExisting: "Open it",
@@ -53,7 +48,6 @@ export const KIN_WORK_FORM_COPY = {
     editTitle: "Edit client",
     add: "Add client",
     name: "Name",
-    namePlaceholder: "Acme Foods",
     kind: "They are a",
     kindProspect: "Prospect",
     kindClient: "Client",
@@ -65,13 +59,12 @@ export const KIN_WORK_FORM_COPY = {
     tagsPlaceholder: "Words to find them by, separated by commas",
     memberHint: "Terms, tax details and Keep private stay with the owner and co-owners.",
     terms: "Terms",
-    termsPlaceholder: "Retainer, billed monthly, net 30",
+    termsPlaceholder: "How and when they pay",
     termsHint: "Always private. Only you see the terms.",
     address: "Billing address",
-    addressPlaceholder: "Street, city, state and PIN code",
+    addressPlaceholder: "Street, city and postal code",
     addressHint: "Printed on their invoices.",
     gstin: "GSTIN",
-    gstinPlaceholder: "27ABCDE1234F1Z5",
     gstinHint: "Leave empty if they aren't registered for GST.",
     place: "State",
     placeNone: "Not set",
@@ -79,7 +72,6 @@ export const KIN_WORK_FORM_COPY = {
     placeHint:
       "Where the supply goes. Invoices charge CGST and SGST in your own state, IGST in another.",
     country: "Country",
-    countryPlaceholder: "United States",
     notes: "Notes",
     notesPlaceholder: "Anything worth remembering about them",
     contact: "Contact",
@@ -92,9 +84,7 @@ export const KIN_WORK_FORM_COPY = {
     editTitle: "Edit contact",
     add: "Add contact",
     name: "Name",
-    namePlaceholder: "Mira Shah",
     role: "Role",
-    rolePlaceholder: "Head of marketing",
     email: "Email",
     phone: "Phone",
     addEmail: "Add another email",
@@ -103,7 +93,7 @@ export const KIN_WORK_FORM_COPY = {
     removePhone: "Remove this phone",
     detailsHint: "Emails and phone numbers are always private.",
     notes: "Notes",
-    notesPlaceholder: "Prefers calls after lunch",
+    notesPlaceholder: "Anything worth remembering about them",
     remove: "No longer a contact",
     restore: "Make a contact again",
   },
@@ -112,7 +102,6 @@ export const KIN_WORK_FORM_COPY = {
     editTitle: "Edit project",
     add: "Add project",
     name: "Name",
-    namePlaceholder: "Website relaunch",
     party: "Client",
     noClient: "No client",
     target: "Target date",
@@ -121,7 +110,7 @@ export const KIN_WORK_FORM_COPY = {
     billing: "Billing",
     noBilling: "Not set",
     value: "Value",
-    valuePlaceholder: "600000 or $12,000",
+    valuePlaceholder: "Amount, and its currency if it isn't yours",
     startsOn: "Starts",
     renewsOn: "Renews on",
     notes: "Notes",
@@ -187,6 +176,7 @@ export const kinClientDraftOf = (
     | "kind"
     | "prospect"
     | "source"
+    | "campaign"
     | "tags"
     | "terms"
     | "address"
@@ -210,7 +200,11 @@ export const kinClientDraftOf = (
           : party.prospect === true
             ? "prospect"
             : "client",
-    source: party?.source ?? "",
+    // A campaign is stored by its key; the field shows its name (`kinCameFromLabel`).
+    source:
+      party?.campaign === undefined
+        ? (party?.source ?? "")
+        : `${KIN_CAMPAIGN_SOURCE}${party.campaign.key}`,
     tags: (party?.tags ?? []).join(", "),
     terms: party?.terms ?? "",
     address: party?.address ?? "",
@@ -362,6 +356,8 @@ export interface KinContactDraft {
   readonly emails: ReadonlyArray<string>;
   readonly phones: ReadonlyArray<string>;
   readonly notes: string;
+  /** Absent on a client's first contact, which takes none. */
+  readonly tags?: ReadonlyArray<string>;
 }
 
 /** Every one a contact has, main first, from a host that sends the list or only the main one. */
@@ -374,6 +370,7 @@ export const kinContactDraftOf = (contact?: KinContact): KinContactDraft => ({
   emails: detailsOf(contact?.emails, contact?.email),
   phones: detailsOf(contact?.phones, contact?.phone),
   notes: contact?.notes ?? "",
+  tags: contact?.tags ?? [],
 });
 
 /** One more empty field below the last, up to what a contact takes. */
@@ -462,6 +459,7 @@ export const kinContactCreateInput = (
   name: draft.name.trim(),
   ...(draft.role.trim() === "" ? {} : { role: draft.role.trim() }),
   ...newDetails(draft.emails, draft.phones),
+  ...(draft.tags === undefined || draft.tags.length === 0 ? {} : { tags: draft.tags }),
   ...(draft.notes.trim() === "" ? {} : { notes: draft.notes.trim() }),
 });
 
@@ -471,6 +469,7 @@ export const kinContactUpdateInput = (
   ...(changed.name === undefined ? {} : { name: changed.name.trim() }),
   ...(changed.role === undefined ? {} : { role: changed.role.trim() || null }),
   ...changedDetails(changed.emails, changed.phones),
+  ...(changed.tags === undefined ? {} : { tags: changed.tags }),
   ...(changed.notes === undefined ? {} : { notes: changed.notes.trim() }),
 });
 
@@ -492,6 +491,9 @@ export interface KinProjectDraft {
   readonly renewsOn: string | null;
   /** Days of notice before it renews, as typed; empty for none (`kinNoticeDays`). */
   readonly noticeDays: string;
+  readonly campaign: boolean;
+  /** A campaign's audience tag; empty for none. */
+  readonly audience: string;
 }
 
 export const KIN_PROJECT_BILLING_LABELS: Readonly<Record<KinProjectBilling, string>> = {
@@ -532,6 +534,8 @@ export const kinProjectDraftOf = (
     project?.noticeDays === undefined || project.noticeDays === null
       ? ""
       : String(project.noticeDays),
+  campaign: project?.campaign === true,
+  audience: project?.audience ?? "",
 });
 const valueOf = (text: string, currency: string) =>
   text.trim() === "" ? null : kinParseMoney(text.trim(), currency);
@@ -545,11 +549,10 @@ const reposOf = (text: string) =>
 
 const NOT_A_DAY = "Enter a real date.";
 
-/** What the target field says under itself while the owner types a day. */
-export const kinProjectTargetHint = (target: string, now: Date): string => {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(target))
-    return `A day as year-month-day. Leave it empty for ${KIN_PROJECTS.noTarget.toLowerCase()}.`;
-  return kinRealDay(target) ? kinWorkDueLabel(target, now) : NOT_A_DAY;
+/** What the target field says under itself; the picked day is on the field, so then nothing. */
+export const kinProjectTargetHint = (target: string | null): string | null => {
+  if (target === null) return `Leave it empty for ${KIN_PROJECTS.noTarget.toLowerCase()}.`;
+  return kinRealDay(target) ? null : NOT_A_DAY;
 };
 
 export const kinProjectDraftCheck = (draft: KinProjectDraft): string | null => {
@@ -564,7 +567,11 @@ export const kinProjectDraftCheck = (draft: KinProjectDraft): string | null => {
   if (typeof notice === "object" && notice !== null) return notice.problem;
   if (draft.value.trim() !== "" && valueOf(draft.value, draft.currency) === null)
     return "Write the value as an amount, such as 600000 or $12,000.";
-  return tooLong(draft.name, NAME_MAX, "the name") ?? tooLong(draft.notes, NOTES_MAX, "the notes");
+  return (
+    tooLong(draft.name, NAME_MAX, "the name") ??
+    tooLong(draft.audience, TAG_MAX, "the audience") ??
+    tooLong(draft.notes, NOTES_MAX, "the notes")
+  );
 };
 
 const repoNames = (text: string) => reposOf(text).filter((repo) => isRepo(repo));
@@ -587,6 +594,8 @@ export const kinProjectCreateInput = (
   ...(typeof kinNoticeDays(draft.noticeDays) === "number"
     ? { noticeDays: kinNoticeDays(draft.noticeDays) as number }
     : {}),
+  ...(draft.campaign ? { campaign: true } : {}),
+  ...(draft.campaign && draft.audience.trim() !== "" ? { audience: draft.audience.trim() } : {}),
 });
 
 export const kinProjectUpdateInput = (
@@ -608,6 +617,8 @@ export const kinProjectUpdateInput = (
   ...(changed.startsOn === undefined ? {} : { startsOn: changed.startsOn }),
   ...(changed.renewsOn === undefined ? {} : { renewsOn: changed.renewsOn }),
   ...(changed.noticeDays === undefined ? {} : { noticeDays: noticeOrNull(changed.noticeDays) }),
+  ...(changed.campaign === undefined ? {} : { campaign: changed.campaign }),
+  ...(changed.audience === undefined ? {} : { audience: changed.audience.trim() || null }),
 });
 const noticeOrNull = (text: string) => {
   const days = kinNoticeDays(text);
@@ -728,6 +739,30 @@ export async function kinWorkSend<A>(input: {
 }
 
 // A form
+
+/** Asked once when a form that holds typed, unsaved words is closed. */
+export const KIN_FORM_DISCARD = {
+  title: "Discard what you typed?",
+  keep: "Keep editing",
+  discard: "Discard",
+} as const;
+
+const typedValue = (value: unknown): unknown =>
+  typeof value === "string"
+    ? value.trim()
+    : Array.isArray(value)
+      ? value.map(typedValue).filter((one) => one !== "")
+      : value;
+
+/**
+ * Whether closing a form would throw away something: a field that now says other than it did
+ * when the form opened. Spaces, and an empty "Add another" row, are nothing typed.
+ */
+export function kinFormTyped<D extends object>(from: D, draft: D): boolean {
+  return (Object.keys(draft) as Array<keyof D>).some(
+    (key) => JSON.stringify(typedValue(draft[key])) !== JSON.stringify(typedValue(from[key])),
+  );
+}
 
 /** A form's fields: text, a switch, or a client picked by its key. */
 type Draft = object;
@@ -882,6 +917,13 @@ export type KinWorkReadState<A> =
       readonly stale: boolean;
     };
 
+/**
+ * A read with nothing held that the connection can't carry: it says neither loading nor failed,
+ * since the page's one offline line already says why.
+ */
+export const kinWorkReadUnreachable = (state: KinWorkReadState<unknown>, link: KinLink) =>
+  link === "offline" && (state._tag === "loading" || state._tag === "failed");
+
 export function kinWorkReadState<A>(
   result: AsyncResult.AsyncResult<A, unknown>,
 ): KinWorkReadState<A> {
@@ -905,6 +947,8 @@ function kinWorkPageAffected(
   page: { readonly own: string; readonly held: ReadonlySet<string> },
 ): "yes" | "no" | "ask" {
   if (key === page.own || page.held.has(key)) return "yes";
+  // A campaign's counts read every client, contact and deal: `kinProjectPageKeys` holds `C-*`.
+  if (page.held.has(`${kindOf(key)}-*`)) return "yes";
   // Another client never shows on a client's page, nor another project on a project's.
   if (kindOf(key) === kindOf(page.own)) return "no";
   // A task, contact or project the page doesn't hold might have just been pointed at it.

@@ -270,6 +270,13 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
       ),
+    "kin.chats.pin": (input) =>
+      viewer.pipe(
+        Effect.flatMap(({ chat, people }) => chat.pin(people, input)),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
     "kin.chats.clear": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.clear(people, input)),
@@ -278,6 +285,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.catchDefect(defect),
       ),
     "kin.chat.members": (input) => group((groups, people) => groups.members(people, input)),
+    "kin.chat.working": (input) => group((groups, people) => groups.working(people, input)),
     "kin.groups.create": (input) => group((groups, people) => groups.create(people, input)),
     "kin.chats.withPerson": (input) => group((groups, people) => groups.withPerson(people, input)),
     "kin.groups.addMember": (input) => group((groups, people) => groups.addMember(people, input)),
@@ -385,10 +393,17 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
             );
             // An org the session's person isn't in has no leads to show them.
             if (person === undefined)
-              return { leads: [], contacts: [], teamAgentId: null, companyChat: null };
+              return {
+                leads: [],
+                contacts: [],
+                messageable: [],
+                teamAgentId: null,
+                companyChat: null,
+              };
             return yield* Effect.all({
               leads: LeadProvision.profiles(person, { includeRetired: input.includeRetired }),
               contacts: LeadProvision.contacts(person),
+              messageable: LeadProvision.messageable(person),
               teamAgentId: LeadProvision.teamAgent(person.orgId),
               companyChat: companyChatOf(person.orgId),
             }).pipe(Effect.provideContext(kin.value.services.value));
@@ -572,6 +587,38 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
           Effect.gen(function* () {
             if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
             return yield* LeadProvision.disallow({
+              ...input,
+              editor: { _tag: "session", session },
+            }).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.reach.list": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.reachList({
+              ...input,
+              editor: { _tag: "session", session },
+            }).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.reach.set": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.reachSet({
               ...input,
               editor: { _tag: "session", session },
             }).pipe(Effect.provideContext(kin.value.services.value));

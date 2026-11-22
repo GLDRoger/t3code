@@ -3,7 +3,13 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { type CompanyMoney, readProfile, recordingCurrency } from "../work/companyProfile.ts";
+import {
+  type CompanyMoney,
+  printsClientTaxNumber,
+  readProfile,
+  recordingCurrency,
+} from "../work/companyProfile.ts";
+import { unregisteredTax } from "../work/region.ts";
 import { GST_REGIME, type TaxRegime } from "./compute.ts";
 import { logoFile, logoPath } from "./brand.ts";
 import { KinRecords } from "../work/KinRecords.ts";
@@ -34,6 +40,7 @@ import {
   sourceOf,
   type Value,
 } from "./recipe.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * What a recipe's inputs read from stored rows, gathered before the job starts. Every value is
@@ -41,7 +48,6 @@ import {
  */
 
 type Cell = string | number | boolean | Money | null;
-const DAY_MS = 86_400_000;
 
 const isMoney = (value: unknown): value is Money =>
   typeof value === "object" &&
@@ -58,16 +64,29 @@ const cellOf = (fields: FieldValues, key: string): Cell => {
 const amountOf = (minor: number | null, currency: string | null): Money | null =>
   minor === null || currency === null ? null : { minor, currency };
 
-/** The tax a document charges, by the company's country: GST in India, else its own one tax. */
-export const taxRegimeOf = (money: Pick<CompanyMoney, "country" | "tax">): TaxRegime =>
-  money.country === "IN"
-    ? GST_REGIME
+/**
+ * The tax a document charges, by the company's country: GST in India, else its own one tax; none,
+ * with the line its documents say instead, for a company not registered for it.
+ */
+export const taxRegimeOf = (
+  money: Pick<CompanyMoney, "country" | "tax"> & {
+    readonly taxRegistered?: false | null | undefined;
+  },
+): TaxRegime => {
+  const unregistered =
+    money.taxRegistered === false
+      ? { notRegistered: unregisteredTax(money.country, money.tax?.name).line }
+      : {};
+  return money.country === "IN"
+    ? { ...GST_REGIME, ...unregistered }
     : {
         _tag: "flat",
         name: money.tax?.name ?? "Tax",
         rate: money.tax?.rate ?? null,
         pricesInclude: money.tax?.pricesInclude === true,
+        ...unregistered,
       };
+};
 
 export type Gathered = {
   readonly facts: Facts;
@@ -114,6 +133,8 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
   const zone = yield* ownerZone(orgId);
   const now = yield* Clock.currentTimeMillis;
   const profile = yield* readProfile(orgId);
+  // The client keeps its number; a company not registered for the tax never prints it.
+  const clientTaxNumber = printsClientTaxNumber(profile);
   const wantsLogo = recipe.inputs.some((input) => sourceOf(input.from)?._tag === "logo");
   const logoBytes = wantsLogo && profile.logo !== null ? yield* logoFile(profile.logo) : null;
   const logo =
@@ -275,7 +296,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         const amount = amountOf(row.minor, row.currency);
         const tax = cellOf(own, "tax");
         return pick(input, {
-          clientGstin: cellOf(party, "gstin"),
+          clientGstin: clientTaxNumber ? cellOf(party, "gstin") : null,
           placeOfSupply: cellOf(own, "placeOfSupply") ?? cellOf(party, "placeOfSupply"),
           // Only what the entry holds: no tax, or another currency's, leaves it blank.
           taxable:
@@ -335,6 +356,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         return entry === undefined ? undefined : cellOf(fields, source.field);
       case "client":
         if (client === undefined) return undefined;
+        if (source.key === "gstin" && !clientTaxNumber) return null;
         return source.key === "name" ? client.title : cellOf(clientFields, source.key);
       case "company": {
         const [head, tail] = source.key.split(".");

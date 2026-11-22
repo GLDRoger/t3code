@@ -126,6 +126,8 @@ export const readTree = Effect.fn("Memory.readTree")(function* (
   return entries;
 });
 
+const BLOB_BATCH_BYTES = 16 * 1024 * 1024;
+
 export const readFiles = Effect.fn("Memory.readFiles")(function* (
   orgId: KinOrgId,
   cwd: string,
@@ -134,8 +136,40 @@ export const readFiles = Effect.fn("Memory.readFiles")(function* (
   const all = yield* readTree(orgId, cwd, commit);
   const entries = all.filter((entry) => entry.mode !== "160000");
   const files = new Map<string, Buffer>();
-  for (let index = 0; index < entries.length; index += 32) {
-    const batch = entries.slice(index, index + 32);
+  // Batched by size like Memory.prepare: each git call costs a process and a hardened git dir.
+  const sizes = new Map<string, number>();
+  if (entries.length > 32)
+    for (const line of (yield* memoryGit(
+      cwd,
+      ["cat-file", "--batch-check"],
+      entries.map(({ sha }) => sha).join("\n") + "\n",
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new MemoryCheckoutInvalid({
+            orgId,
+            operation: "object",
+            reason: "Unreadable object sizes",
+          }),
+      ),
+    ))
+      .trim()
+      .split("\n")) {
+      const [sha, , size] = line.split(" ");
+      if (sha && size) sizes.set(sha, Number(size));
+    }
+  const batches: Array<typeof entries> = [];
+  let batchBytes = Infinity;
+  for (const entry of entries) {
+    const bytes = sizes.get(entry.sha) ?? 0;
+    if (batchBytes + bytes > BLOB_BATCH_BYTES || batches.at(-1)!.length >= 4096) {
+      batches.push([]);
+      batchBytes = 0;
+    }
+    batches.at(-1)!.push(entry);
+    batchBytes += bytes;
+  }
+  for (const batch of batches) {
     const objects = yield* readObjects(
       orgId,
       cwd,

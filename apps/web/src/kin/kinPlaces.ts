@@ -1,4 +1,6 @@
+import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinInMoney } from "@t3tools/client-runtime/kin/kinMoney";
+import type { KinClientsTab } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KinAgentId,
   KinDocSectionId,
@@ -6,6 +8,7 @@ import {
   KinPersonId,
   KinRecordKey,
   type KinMessageLinkTarget,
+  type KinSearchKind,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
@@ -21,8 +24,15 @@ export const KIN_PLACE_PATH = {
   docs: "/kin/$environmentId/$orgId/docs",
 } as const satisfies Record<KinPlace, string>;
 
-/** The page and search that open a record a message names. */
-export function kinRecordPlace(to: Extract<KinMessageLinkTarget, { readonly _tag: "record" }>) {
+type KinRecordKind = Extract<KinMessageLinkTarget, { readonly _tag: "record" }>["kind"];
+
+/**
+ * The page and search that open a record, from a message link, a notice or a search hit alike.
+ * A deal opens on Clients' Deals tab, whatever kind it came as.
+ */
+export function kinRecordPlace(to: { readonly kind: KinRecordKind; readonly key: KinRecordKey }) {
+  if ((to.kind === "entry" || to.kind === "task") && kinIsDealKey(to.key))
+    return { to: KIN_PLACE_PATH.clients, search: { tab: "deals" as const, task: to.key } };
   switch (to.kind) {
     case "client":
       return { to: KIN_PLACE_PATH.clients, search: { client: to.key } };
@@ -35,6 +45,48 @@ export function kinRecordPlace(to: Extract<KinMessageLinkTarget, { readonly _tag
     case "task":
       return { to: KIN_PLACE_PATH.tasks, search: { task: to.key } };
   }
+}
+
+const SEARCH_HIT_RECORD: Record<Exclude<KinSearchKind, "memory">, KinRecordKind> = {
+  work: "task",
+  contacts: "task",
+  clients: "client",
+  projects: "project",
+  docs: "doc",
+  invoices: "entry",
+  quotes: "entry",
+  expenses: "entry",
+  receipts: "entry",
+};
+
+/** Where a search hit opens, at the doc section found; null for memory, which opens in Settings. */
+export function kinSearchHitPlace(hit: {
+  readonly kind: KinSearchKind;
+  readonly key: KinRecordKey;
+  readonly section: { readonly id: string } | null;
+  readonly clientKey: KinRecordKey | null;
+}) {
+  if (hit.kind === "memory") return null;
+  // A contact has no page of its own: its client's opens.
+  if (hit.kind === "contacts" && hit.clientKey !== null)
+    return kinRecordPlace({ kind: "client", key: hit.clientKey });
+  const place = kinRecordPlace({ kind: SEARCH_HIT_RECORD[hit.kind], key: hit.key });
+  return place.to === KIN_PLACE_PATH.docs && hit.section !== null
+    ? { ...place, search: { ...place.search, section: hit.section.id } }
+    : place;
+}
+
+/**
+ * Where a place's Search Work sends a hit: a deal to where it lives, unless that is the tab
+ * searched from; null for the rest, which open over the place searched from.
+ */
+export function kinSearchDialogPlace(
+  from: { readonly place: KinPlace; readonly tab: KinClientsTab },
+  hit: Parameters<typeof kinSearchHitPlace>[0],
+) {
+  const home = kinSearchHitPlace(hit);
+  if (home === null || !("tab" in home.search)) return null;
+  return from.place === "clients" && from.tab === home.search.tab ? null : home;
 }
 
 /** The record open beside a place's list: a client, project, list, the coming dates, the subscriptions, or a doc. */
@@ -69,7 +121,8 @@ export interface KinPlaceSearch {
   person?: KinPersonId;
 }
 
-export type KinPlaceDialog = "new" | "search";
+/** `import` is Clients' Import a file, which opens in the place itself. */
+export type KinPlaceDialog = "new" | "search" | "import";
 
 /** An agent's page, open over whatever Kin page is under it. */
 export interface KinAgentSearch {
@@ -114,7 +167,9 @@ export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSe
     ...(changes === undefined ? {} : { changes }),
     ...(from === undefined ? {} : { from }),
     ...(raw.history === true ? { history: true } : {}),
-    ...(raw.open === "new" || raw.open === "search" ? { open: raw.open } : {}),
+    ...(raw.open === "new" || raw.open === "search" || raw.open === "import"
+      ? { open: raw.open }
+      : {}),
     ...(raw.tab === "projects" || raw.tab === "deals" ? { tab: raw.tab } : {}),
     ...(isPerson(raw.person) ? { person: raw.person } : {}),
   };

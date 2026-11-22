@@ -5,14 +5,43 @@ import {
   kinApprovalActionIdOf,
   type KinApprovalView,
   type KinCheckRun,
+  type KinGrantUnsignedPayload,
   type KinPendingAction,
   type KinWidget,
   type KinMergeMethod,
 } from "@t3tools/contracts";
+import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { kinSentences } from "./kinScreenState.ts";
+import { kinCount } from "./kinCount.ts";
+
+/** The title of the list of phones that may approve, wherever Kin shows or finds it. */
+export const KIN_APPROVER_PHONES_TITLE = "Phones that can approve";
+
+/** Web Settings → Approvals, said to whoever runs the company. */
+export const KIN_APPROVALS_SETTINGS = {
+  purpose:
+    "Some steps, like changing what an agent may do, wait for your yes on one of these phones. To add a phone, open Approvals in the Kin app on it.",
+  phonesDetail: "You get a message in your chat whenever a phone is added or removed.",
+  empty: "No phone can approve yet, so anything that needs approval waits.",
+  noHost: "Connect to the computer that runs Kin to see the phones that approve.",
+  notPerson: "This sign-in isn't a person in Kin.",
+  cantRemove: "To remove a phone, use Kin signed in as yourself.",
+  added: (when: string) => `added ${when}`,
+  lastUsed: (when: string) => `last approved ${when}`,
+  notUsed: "not used yet",
+  recent: "Recent changes",
+  setUp: (when: string) => `set up ${when}`,
+  removed: (when: string) => `removed ${when}`,
+  removing: "Removing…",
+  removeTitle: (phone: string) => `Remove ${phone}?`,
+  removeLast:
+    "It's the only phone that can approve. Once it's removed, nothing that needs approval can happen until you set up a phone again. Anything it approved that hasn't run yet is cancelled.",
+  removeOther:
+    "It stops approving for Kin, and anything it approved that hasn't run yet is cancelled. To use it again, set up approvals on it.",
+} as const;
 
 /** What a chat message's approval widget says: which action, and where it stood when drawn. */
 export interface KinApprovalWidgetView {
@@ -104,8 +133,6 @@ const KEY_HARDWARE: Record<"secure_enclave" | "strongbox" | "tee", string> = {
   strongbox: "StrongBox",
   tee: "Secure hardware",
 };
-
-const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 function checksSummary(checks: ReadonlyArray<KinCheckRun>): string {
   if (checks.length === 0) return "None reported";
@@ -221,7 +248,7 @@ function fullView(
     fact(
       "changes",
       "Changes",
-      `${count(resolved.files, "file")}, +${resolved.additions} −${resolved.deletions}`,
+      `${kinCount(resolved.files, "file")}, +${resolved.additions} −${resolved.deletions}`,
     );
     fact("checks", "Checks", checksSummary(resolved.checks));
     checks = resolved.checks
@@ -501,3 +528,40 @@ export function kinApprovalFailure(
       };
   }
 }
+
+/** The facts a grant binds, as the server records them (approvals spec §5). */
+const signedFacts = (facts: {
+  readonly kind: string;
+  readonly target: unknown;
+  readonly headSha?: string | undefined;
+  readonly base?: string | undefined;
+  readonly mergeMethod?: string | undefined;
+}) =>
+  stableStringify({
+    kind: facts.kind,
+    target: facts.target,
+    headSha: facts.headSha,
+    base: facts.base,
+    mergeMethod: facts.mergeMethod,
+  });
+
+const shownFacts = (action: KinPendingAction) =>
+  signedFacts({
+    kind: action.kind,
+    target: action.target,
+    headSha: action.resolved._tag === "none" ? undefined : action.resolved.headSha,
+    base: action.resolved._tag === "pull_request" ? action.resolved.base : undefined,
+    mergeMethod: action.target._tag === "pull_request" ? action.target.mergeMethod : undefined,
+  });
+
+/**
+ * Whether the host's challenge asks to sign what the card showed: the same action, revision and
+ * signed facts. A newer head or revision means the owner looks again before Face ID.
+ */
+export const kinChallengeMatchesCard = (
+  payload: KinGrantUnsignedPayload,
+  action: KinPendingAction,
+): boolean =>
+  payload.actionId === action.id &&
+  payload.revision === action.revision &&
+  signedFacts(payload) === shownFacts(action);

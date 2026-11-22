@@ -8,6 +8,7 @@ import { kinSameTimeZone, kinZoneLabel } from "./kinTimeZone.ts";
 /** "Away until <day>" on a profile: what Kin holds meanwhile, and the way back. */
 export const KIN_AWAY = {
   label: "Away",
+  notAway: "Not set",
   set: "Set away…",
   change: "Change",
   back: "I'm back",
@@ -18,6 +19,8 @@ export const KIN_AWAY = {
     `Kin holds messages that can wait until the day ${name} is back. Agents see it and plan around it.`,
   dayLabel: "Back on",
   save: "Save",
+  /** Web's form submit: the action, beside "I'm back". */
+  setSubmit: "Set away",
   saving: "Saving…",
   notAfterToday: "Pick a day after today.",
   failed: "Couldn't save that.",
@@ -52,11 +55,17 @@ export const kinAwayDay = (day: string, now: Date = kinNow()) => {
 
 /**
  * Who is away and until when, true for this reader: the day is on the away person's calendar, so
- * a reader on another clock is told whose. Null when they aren't away.
+ * a reader on another clock is told whose. `short` is for a row already titled Away. Null when
+ * they aren't away.
  */
 export function kinAwayLine(
   profile: Pick<KinPersonProfile, "awayUntil" | "timeZone" | "displayName">,
-  reader: { readonly mine: boolean; readonly zone?: string; readonly now?: Date },
+  reader: {
+    readonly mine: boolean;
+    readonly short?: boolean;
+    readonly zone?: string;
+    readonly now?: Date;
+  },
 ): string | null {
   if (profile.awayUntil === undefined) return null;
   const day = kinAwayDay(profile.awayUntil, reader.now);
@@ -64,6 +73,7 @@ export function kinAwayLine(
     profile.timeZone === null || kinSameTimeZone(profile.timeZone, reader.zone ?? deviceZone())
       ? ""
       : ` (${kinZoneLabel(profile.timeZone)})`;
+  if (reader.short === true) return `Until ${day}${theirs}`;
   return reader.mine ? `You're away until ${day}${theirs}` : `Away until ${day}${theirs}`;
 }
 
@@ -98,10 +108,33 @@ export function kinWhenText(when: KinMessageWhen, readerZone: string = deviceZon
   return when.of === undefined ? mine : `${mine}, ${timeIn(at, when.zone)} for ${when.of}`;
 }
 
+/** Kin's note in the asking chat when a request waits for the person it went to (`arrivesNote`). */
+const ARRIVES_NOTE = "kin-arrives:";
+
+/**
+ * Who will see the request and when, on their clock: "Rhea Kapoor will see your request at
+ * 7:00 AM (Sat Nov 21).", and on another clock also when that is for the reader.
+ */
+export function kinArrivesText(
+  when: KinMessageWhen & { readonly of: string },
+  readerZone: string = deviceZone(),
+): string {
+  const at = new Date(when.at);
+  const day = dayIn(at, when.zone);
+  if (kinSameTimeZone(when.zone, readerZone))
+    return `${when.of} will see your request at ${timeIn(at, when.zone)} (${day}).`;
+  const myDay = dayIn(at, readerZone);
+  const mine = `${timeIn(at, readerZone)} your time${myDay === day ? "" : ` (${myDay})`}`;
+  return `${when.of} will see your request at ${timeIn(at, when.zone)} their time (${day}), ${mine}.`;
+}
+
 /** The message as this reader reads it: a time it names, on their own clock. */
 export function kinMessageOnMyClock(message: KinMessage, readerZone?: string): KinMessage {
   const when = message.when;
-  if (when === undefined || !message.body.includes(when.text)) return message;
+  if (when === undefined) return message;
+  if (message.messageId.startsWith(ARRIVES_NOTE) && when.of !== undefined)
+    return { ...message, body: kinArrivesText({ ...when, of: when.of }, readerZone) };
+  if (!message.body.includes(when.text)) return message;
   const text = kinWhenText(when, readerZone);
   return text === when.text ? message : { ...message, body: message.body.replace(when.text, text) };
 }

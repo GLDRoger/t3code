@@ -33,10 +33,24 @@ export const closeSubject = Effect.fn("KinOpen.closeSubject")(function* (
   const { orgId, recordId, key, state, now } = input;
   const def = yield* listDef(orgId, input.registerId);
   const word = (def === undefined ? state : stateLabel(def, state)).toLowerCase();
-  const text = `Closed: ${key} is ${word} now.`;
+  // A doc's only closed state is deleted: a card for its draft can't be confirmed any more.
+  const doc = input.registerId === "docs";
+  const title = doc
+    ? "Deleted with its draft"
+    : input.registerId === "work"
+      ? "Closed with its task"
+      : "Closed";
+  const text = doc ? `${title}: ${key} was deleted.` : `${title}: ${key} is ${word} now.`;
   const asks =
     state === "dropped"
-      ? yield* staleAsksAbout(orgId, recordId, `${key} is ${word} now, so nothing was sent.`, now)
+      ? yield* staleAsksAbout(
+          orgId,
+          recordId,
+          doc
+            ? `${key} was deleted, so nothing was sent.`
+            : `${key} is ${word} now, so nothing was sent.`,
+          now,
+        )
       : [];
   // Open choice cards (few, by the type and closed index) with every action about this entry.
   const plans = yield* sql<{ widgetId: string; target: string | null }>`SELECT
@@ -69,10 +83,10 @@ export const closeSubject = Effect.fn("KinOpen.closeSubject")(function* (
     ]),
   ].filter((widgetId) => !input.sparing.includes(widgetId));
   yield* closeQuestionsAbout(
-    { orgId, key, cards, sparing: input.sparing, text, closedAt: now },
+    { orgId, key, cards, sparing: input.sparing, text, closedAt: now, title },
     chat,
   );
-  const outcome = { title: "Closed", text };
+  const outcome = { title, text };
   for (const widgetId of new Set([...asks, ...cards]))
     yield* chat.closeReplaced({ orgId, widgetId: KinWidgetId.make(widgetId), outcome });
 });

@@ -32,6 +32,8 @@ import { wordOf } from "./holds.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { headStarts } from "./headStart.ts";
 import { buildPulseSection } from "./prompt.ts";
+import { screenFacts } from "./people.ts";
+import { factSig } from "./told.ts";
 import { projectLastMoved } from "./senses/projects.ts";
 import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } from "./weekly.ts";
 
@@ -492,11 +494,15 @@ describe("KinPulse", () => {
       assert.strictEqual(before!.consequence, "Was due 2026-11-11, yesterday.");
       assert.strictEqual(after!.consequence, "Was due 2026-11-11, yesterday.");
 
+      yield* sql`UPDATE kin_records SET fields_json = '{"number":"AM/26-27/001"}'
+        WHERE record_id = 'r-INV-1'`;
       const overdue = keyed((yield* read(B + 12 * DAY)).facts, "invoice_overdue", "INV-1")[0]!;
       assert.strictEqual(overdue.consequence, "₹1,77,000 owed, 10 days past due (2026-11-03).");
+      assert.strictEqual(overdue.subject.number, "AM/26-27/001");
       assert.deepStrictEqual(overdue.actor, { _tag: "agent", agentId: finance });
       assert.deepStrictEqual(overdue.measure?.from, { _tag: "default" });
       const lumen = keyed((yield* read(B + 9 * DAY)).facts, "invoice_overdue", "INV-5")[0]!;
+      assert.notProperty(lumen.subject, "number");
       assert.deepStrictEqual(lumen.measure?.from, {
         _tag: "playbook",
         key: "D-1",
@@ -523,6 +529,17 @@ describe("KinPulse", () => {
         assert.strictEqual(drafting.stage, "draft");
         assert.notInclude(drafting.consequence, "drafting starts");
         assert.isTrue((yield* headStarts(orgId, [drafting])).byFact.has(drafting.key));
+        // Nobody is told to act on a heads-up; from the draft day, Finance acts.
+        const told = (fact: KinPulseFact, now: number) =>
+          buildPulseSection({
+            orgId,
+            agentId: chief,
+            now,
+            wokeFor: [],
+            checkIn: new Set([fact.key]),
+          }).pipe(Effect.map((section) => section?.byProject.flatMap((group) => group.facts)[0]));
+        assert.notProperty(yield* told(ahead, B + 33 * DAY - MINUTE), "acts");
+        assert.include(yield* told(drafting, B + 33 * DAY), { acts: "fin (fin)" });
         // Lumen's own playbook drafts 3 days ahead; the company's, 10.
         yield* insert({
           id: "DT-3",
@@ -581,6 +598,15 @@ describe("KinPulse", () => {
       yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-INV-1'`;
       const later = yield* KinPulse.tick(orgId, at + 2 * MINUTE);
       assert.isAtLeast(later.cleared, 1);
+      // Back under the same key: a new wake, once.
+      yield* sql`UPDATE kin_records SET state = 'waiting' WHERE record_id = 'r-INV-1'`;
+      const back = yield* KinPulse.tick(orgId, at + 3 * MINUTE);
+      const overdue = first.woken.filter((key) => key.startsWith("invoice_overdue:"));
+      assert.deepStrictEqual(back.woken, overdue);
+      assert.lengthOf((yield* KinPulse.tick(orgId, at + 4 * MINUTE)).woken, 0);
+      const wakes = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+          AND dedupe_key NOT LIKE 'holders:%'`;
+      assert.lengthOf(wakes, first.woken.length + overdue.length);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -881,6 +907,24 @@ describe("KinPulse", () => {
       const renamed = yield* observed(KinPulse.tick(orgId, at));
       assert.strictEqual(renamed.cleared, 0);
       assert.deepStrictEqual(touched, ["pulse"]);
+      // A handling running out moves it too: the invoice counts again on screens. Budgets and a
+      // goals' pace are sensed as of now, so they would move every tick.
+      yield* sql`DELETE FROM kin_money_budgets WHERE org_id = ${orgId}`;
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE org_id = ${orgId} AND key LIKE 'G-%'`;
+      const fact = keyed((yield* read(at)).facts, "invoice_overdue", "INV-1")[0]!;
+      yield* KinPulse.handle({
+        orgId,
+        at,
+        viewer: { _tag: "owner" },
+        by: { _tag: "agent", agentId: finance },
+        factKey: fact.key,
+        action: "got_it",
+        until: at + 2 * MINUTE,
+      });
+      yield* observed(KinPulse.tick(orgId, at + MINUTE));
+      touched.length = 0;
+      yield* observed(KinPulse.tick(orgId, at + 2 * MINUTE));
+      assert.deepStrictEqual(touched, ["pulse"]);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -923,8 +967,11 @@ describe("KinPulse", () => {
       yield* handle("got_it");
       assert.strictEqual(yield* open(at + KinPulse.GOT_IT_MS - MINUTE), 0);
       assert.strictEqual(yield* open(at + KinPulse.GOT_IT_MS), 1);
+      // Still owed, it is not a problem only until the next chase is due, then counts again.
+      const chase = fact.measure!.threshold * DAY;
       yield* handle("not_a_problem");
-      assert.strictEqual(yield* open(at + 30 * DAY), 0);
+      assert.strictEqual(yield* open(at + chase - MINUTE), 0);
+      assert.strictEqual(yield* open(at + chase), 1);
       yield* handle("undo");
       assert.strictEqual(yield* open(at), 1);
     }).pipe(Effect.provide(layer)),
@@ -983,6 +1030,31 @@ describe("KinPulse", () => {
         assert.isTrue(woke.some((event) => event.json.includes("INV-1")));
         // Lifted, and only the invoice set aside: its client's task is back, the invoice not.
         assert.isNull(yield* aside("C-1", "lift"));
+        // Told first since the hold ended: the reading agent's own owner is "the owner".
+        const task = (yield* read(at)).facts.find((fact) => fact.subject.key === "W-10")!;
+        const ended = () =>
+          buildPulseSection({
+            orgId,
+            agentId: chief,
+            now: at,
+            wokeFor: [],
+            checkIn: new Set([task.key]),
+            checkInEvents: [],
+          }).pipe(
+            Effect.map(
+              (section) => section?.byProject.flatMap((group) => group.facts)[0]?.setAsideEnded,
+            ),
+          );
+        assert.match(
+          (yield* ended()) ?? "",
+          /^set aside by fin \(fin\) on the owner's word on \S+ until \S+; lifted by fin \(fin\) on \S+$/,
+        );
+        yield* sql`UPDATE kin_holds SET on_word_of = ${mate}, lifted_by_kind = 'person',
+          lifted_by_id = ${owner} WHERE org_id = ${orgId}`;
+        assert.match(
+          (yield* ended()) ?? "",
+          /^set aside by fin \(fin\) on Meera's word on \S+ until \S+; lifted by the owner on \S+$/,
+        );
         yield* aside("INV-5", "set");
         const after = yield* open();
         assert.include(after, "W-10");
@@ -1277,8 +1349,13 @@ describe("KinPulse", () => {
         new Map(
           (shown?.byProject ?? []).flatMap((group) => group.facts).map((one) => [one.key, one]),
         );
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/001')
+        WHERE org_id = ${orgId} AND record_id = 'r-INV-1'`;
       const first = yield* section();
       const byKey = rows(first);
+      // Named as the owner's screen names it, with the key its tools take; a draft by its key.
+      assert.match(byKey.get(keys[1]!)!.about, /^AM\/26-27\/001 \(INV-1\) /);
+      assert.match(byKey.get(keys[0]!)!.about, /^INV-5 /);
       assert.deepInclude(byKey.get(keys[0]!), {
         writeTo: { name: "Anita", email: "anita@lumen.example" },
         document: { key: "D-wk-5", file: "INV-5.pdf", draft: true },
@@ -1377,6 +1454,112 @@ describe("KinPulse", () => {
       assert.notInclude(
         (yield* read(at, { _tag: "people", people: [mate] })).facts.map((fact) => fact.sense),
         "holder_removed",
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a missing month's statement is one line for the owner, its count Kin's own", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const statement = (id: string, from: string, to: string, applied: boolean) =>
+        sql`INSERT INTO kin_bank_statements (org_id, statement_id, attachment_id, file_name,
+            chat_id, agent_id, wakeup_id, status, review_json, created_at, read_at, applied_at)
+          VALUES (${orgId}, ${id}, ${`att-${id}`}, 'invented.csv', ${`chat-${finance}`},
+            ${finance}, 'w-old', 'read', ${JSON.stringify({
+              statement: {
+                kind: "account",
+                bank: "Invented Bank",
+                account: "1234",
+                currency: "INR",
+                from,
+                to,
+                rows: [],
+              },
+            })}, 0, 0, ${applied ? 1 : null})`;
+      const missing = (at: number, viewer?: KinPulse.Viewer) =>
+        read(at, viewer).pipe(
+          Effect.map((pulse) => pulse.facts.filter((fact) => fact.sense === "statement_missing")),
+        );
+      // A company that never confirmed a statement has no month to wait on.
+      assert.lengthOf(yield* missing(B + 20 * DAY), 0);
+      yield* statement("st-sep", "2026-09-01", "2026-09-30", true);
+      yield* insert({
+        id: "INV-71",
+        list: "invoices",
+        state: "waiting",
+        amount: 9_000_00,
+        dueAt: B - 5 * DAY,
+      });
+      // October ended on the 31st; five days on by default, it is a line on the 6th.
+      assert.lengthOf(yield* missing(B + 5 * DAY - MINUTE), 0);
+      const [october] = yield* missing(B + 5 * DAY);
+      assert.deepInclude(october!, {
+        key: "statement_missing:2026-10",
+        consequence: "October's statement isn't in yet: 1 invoice can't be confirmed until it is.",
+        family: "money",
+        sensitive: true,
+        wake: "brief",
+        actor: { _tag: "agent", agentId: finance },
+      });
+      // Another unpaid invoice changes its words, never its key or what it is told on: once.
+      yield* insert({
+        id: "INV-72",
+        list: "invoices",
+        state: "waiting",
+        amount: 1_000_00,
+        dueAt: B - 2 * DAY,
+      });
+      const [later] = yield* missing(B + 9 * DAY);
+      assert.strictEqual(
+        later!.consequence,
+        "October's statement isn't in yet: 2 invoices can't be confirmed until it is.",
+      );
+      assert.strictEqual(later!.key, october!.key);
+      assert.strictEqual(
+        factSig(later!, B + 9 * DAY, "UTC"),
+        factSig(october!, B + 5 * DAY, "UTC"),
+      );
+      // A screen of a build that can't read the sense never gets it.
+      assert.lengthOf(screenFacts([october!], undefined), 0);
+      assert.lengthOf(screenFacts([october!], ["statement_missing"]), 1);
+      // A teammate never reads it.
+      assert.lengthOf(yield* missing(B + 9 * DAY, { _tag: "people", people: [mate] }), 0);
+      // Read but not confirmed, October is still missing; confirmed, the line is gone.
+      yield* statement("st-oct", "2026-10-01", "2026-10-31", false);
+      assert.lengthOf(yield* missing(B + 9 * DAY), 1);
+      yield* sql`UPDATE kin_bank_statements SET applied_at = 1 WHERE statement_id = 'st-oct'`;
+      assert.lengthOf(yield* missing(B + 9 * DAY), 0);
+      // The company's playbook sets the days: November's line waits ten after the 30th.
+      yield* insert({ id: "D-3", list: "docs", category: "playbook" });
+      yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
+          operations_json, actor_kind, actor_id, via, origin_key, created_at)
+        VALUES (${orgId}, 'r-D-3', 1, ${"# Money\n\n```kin\nstatement_due_days: 10\n```\n"},
+          'Money', 'created', 'Seeded', '[]', 'person', ${owner}, 'owner', 'seed-D-3', 0)`;
+      assert.lengthOf(yield* missing(B + 40 * DAY - MINUTE), 0);
+      const [november] = yield* missing(B + 40 * DAY);
+      assert.strictEqual(november!.key, "statement_missing:2026-11");
+      assert.match(november!.consequence, /^November's statement isn't in yet/);
+      // A second account that is further on: the line names the account still waited on.
+      yield* sql`INSERT INTO kin_bank_statements (org_id, statement_id, attachment_id, file_name,
+          chat_id, agent_id, wakeup_id, status, review_json, created_at, read_at, applied_at)
+        VALUES (${orgId}, 'st-other', 'att-st-other', 'invented.csv', ${`chat-${finance}`},
+          ${finance}, 'w-old', 'read', ${JSON.stringify({
+            statement: {
+              kind: "account",
+              bank: "Invented Bank",
+              account: "5678",
+              currency: "INR",
+              from: "2026-10-01",
+              to: "2026-11-30",
+              rows: [],
+            },
+          })}, 0, 0, 1)`;
+      const [named] = yield* missing(B + 40 * DAY);
+      assert.strictEqual(named!.key, "statement_missing:2026-11");
+      assert.match(
+        named!.consequence,
+        /^November's statement for Invented Bank Account ••1234 isn't in yet/,
       );
     }).pipe(Effect.provide(layer)),
   );
@@ -1520,7 +1703,57 @@ describe("KinPulse", () => {
       const euros = yield* weeklyFigures({ orgId, now: at });
       assert.include(euros, "Open quotes:\n- QT-1: €600,000.00, sent, no answer yet");
       assert.notInclude(euros, "₹");
+      // Once issued, an invoice or quote is named by its number, then the key its tools take.
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/001')
+        WHERE org_id = ${orgId} AND record_id = 'r-INV-1'`;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'Q 2026 7')
+        WHERE org_id = ${orgId} AND record_id = 'r-QT-1'`;
+      yield* insert({
+        id: "INV-9",
+        list: "invoices",
+        state: "waiting",
+        amount: 2_000_00,
+        dueAt: at + 2 * DAY,
+        fields: '{"number":"AM/26-27/002"}',
+      });
+      const named = yield* weeklyFigures({ orgId, now: at });
+      assert.match(named, /^- AM\/26-27\/001 \(INV-1\):.*unpaid, overdue for \d+ days/m);
+      assert.include(named, "Open quotes:\n- Q 2026 7 (QT-1): €600,000.00, sent, no answer yet");
+      assert.include(named, "Invoices not yet due:\n- AM/26-27/002 (INV-9): ₹2,000.00 due");
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "the week's Behind is a project off track, less what Overdue and Quiet clients say",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        // P-5's task has waited since it was added; P-6's invoice is overdue; P-7's client has had
+        // no contact since they were added a month and a half ago.
+        yield* insert({ id: "P-5", list: "projects", title: "Invented waiting build" });
+        yield* insert({ id: "W-30", state: "waiting", projectId: "P-5" });
+        yield* insert({ id: "P-6", list: "projects", title: "Invented billed build" });
+        yield* insert({
+          id: "INV-9",
+          list: "invoices",
+          state: "waiting",
+          amount: 1_000_00,
+          dueAt: B,
+          projectId: "P-6",
+        });
+        yield* insert({ id: "C-5", list: "clients", title: "Invented Quiet Co" });
+        yield* insert({
+          id: "P-7",
+          list: "projects",
+          title: "Invented quiet build",
+          partyId: "r-C-5",
+        });
+        const figures = yield* weeklyFigures({ orgId, now: B + 15 * DAY });
+        const behind = figures.split("\n\n").find((block) => block.startsWith("Behind:")) ?? "";
+        assert.match(behind, /^- P-5 Invented waiting build, 1 open, 1 waiting over a week$/m);
+        assert.notMatch(behind, /P-6|P-7|overdue|contact/);
+        assert.match(figures, /^Overdue:\n(- .*\n)*- INV-9/m);
+      }).pipe(Effect.provide(layer)),
   );
 });
 

@@ -1,10 +1,17 @@
-// @effect-diagnostics globalDate:off - Pure view helpers format a mail thread's date for React render, outside an Effect runtime.
+// @effect-diagnostics globalDate:off globalTimers:off - Pure view helpers format a mail thread's date, and a held press waits on the device's timer, outside an Effect runtime.
 import { kinNow } from "./kinNow.ts";
 import {
   KIN_CHOICE_CARD_ACTION,
+  KIN_CHOICE_DISMISS_ACTION,
+  KIN_CHOICE_UNDISMISS_ACTION,
   KinChatError,
+  type EnvironmentId,
+  type KinConnectionSaveEdited,
   type KinConnectionSaveEditedInput,
+  type KinConnectionSendEdited,
   type KinConnectionSendEditedInput,
+  type KinConnectionSetSendFrom,
+  type KinConnectionSetSendFromInput,
   KIN_CHOICE_CARD_TTL_MS,
   KinChoiceCardState,
   type KinPersonId,
@@ -17,18 +24,30 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { AsyncResult } from "effect/reactivity";
 
+import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { kinPersonWords } from "./kinAnswers.ts";
-import { type KinCardNotice, kinActionFailureNotice } from "./kinDeferralPresentation.ts";
+import { kinConnectionChange } from "./kinConnections.ts";
+import {
+  type KinCardNotice,
+  type KinCardStatus,
+  createKinCardActions,
+  kinActionFailureNotice,
+} from "./kinDeferralPresentation.ts";
 import { formatKinTime, kinSentences } from "./kinScreenState.ts";
 
 const KIN_CHOICE_EXPIRED_TEXT = "This question expired. Answer in the chat instead.";
 const KIN_CHOICE_REPLACED_TEXT = "Replaced by a newer one.";
+const kinChoiceReplacedText = (decided: { readonly name: string; readonly label: string }) =>
+  `Replaced by a newer one, where ${decided.name} chose “${line(decided.label)}”.`;
 
 export interface KinChoiceCardView {
   readonly orgId: KinWidget["orgId"];
   readonly widgetId: KinWidget["widgetId"];
   readonly revision: number;
+  /** Asked for someone else: who asks, and through which agent, shown above the question. */
+  readonly askedBy: string | null;
   readonly question: string;
   readonly detail: string | null;
   readonly options: ReadonlyArray<{
@@ -36,6 +55,8 @@ export interface KinChoiceCardView {
     readonly label: string;
     /** What a tap on it does, in the server's words: shown under the option. */
     readonly action: string | null;
+    /** The yes or no of a yes/no pair, such as a send card's Confirm and Cancel. */
+    readonly kind: "yes" | "no" | null;
   }>;
   /** A picture of what is asked about, such as a new logo: a file in the card's chat. */
   readonly image: { readonly attachmentId: string; readonly mimeType: string } | null;
@@ -45,7 +66,14 @@ export interface KinChoiceCardView {
     readonly personId: KinPersonId;
   } | null;
   /** What the answer did, in the owner's words, on a card Kin asked itself. */
-  readonly outcome: { readonly title: string; readonly text: string } | null;
+  readonly outcome: {
+    readonly title: string;
+    readonly text: string;
+    /** Where what it made lives, to open from the card: a list, in its place. */
+    readonly open: KinChoiceOpen | null;
+  } | null;
+  /** Who settled it, by name then; null from a host that doesn't say. */
+  readonly decidedBy: { readonly personId: KinPersonId; readonly name: string } | null;
   /** Who undid what a default Kin took, by name then, and when; null on any other card. */
   readonly undone: {
     readonly personId: KinPersonId;
@@ -54,11 +82,58 @@ export interface KinChoiceCardView {
   } | null;
   /** What a send card would send, in full: shown instead of `detail`. */
   readonly send: KinSendView | null;
+  /** A teammate's draft sent up for approval: rendered as a doc is, instead of `detail`. */
+  readonly draft: KinChoiceDraftView | null;
+  /** Who it asks: only they see Dismiss, and the host decides. */
+  readonly awaiting: ReadonlyArray<KinPersonId>;
+  /** Set while the person it asked dismissed it without choosing: who, by name then, and when. */
+  readonly dismissed: {
+    readonly personId: KinPersonId;
+    readonly name: string;
+    readonly atMs: number;
+  } | null;
   /** When an unanswered card stops taking taps; the host refuses later ones. */
   readonly expiresAtMs: number;
   readonly closed: boolean;
   /** What a closed or expired card says instead of its buttons. */
   readonly closedText: string;
+}
+
+export type KinChoiceOpen = NonNullable<NonNullable<KinChoiceCardState["outcome"]>["open"]>;
+
+export const KIN_CHOICE_OPEN_LABEL = "Open";
+
+export interface KinChoiceDraftView {
+  /** The card's own words around the draft, such as "Proposal for Harbourline". */
+  readonly before: string | null;
+  readonly markdown: string;
+  readonly after: string | null;
+  /** Long, it opens to its first blocks under Show all; `preview` is those blocks. */
+  readonly folds: boolean;
+  readonly preview: string;
+}
+
+export const KIN_CHOICE_DRAFT_COPY = { showAll: "Show all", showLess: "Show less" } as const;
+
+const DRAFT_FOLD_LINES = 12;
+const DRAFT_PREVIEW_LINES = 8;
+
+/** The draft's place in the card's detail, which carries it for older clients. */
+function choiceDraft(detail: string | null, draft: string | undefined): KinChoiceDraftView | null {
+  if (draft === undefined || detail === null) return null;
+  const at = detail.indexOf(draft);
+  if (at < 0) return null;
+  const around = (text: string) => (text.trim() === "" ? null : text.trim());
+  const lines = draft.trim().split("\n");
+  // Folded at a blank line where it can be, so no list or table is cut through.
+  const cut = lines.findLastIndex((text, index) => index <= DRAFT_PREVIEW_LINES && text === "");
+  return {
+    before: around(detail.slice(0, at)),
+    markdown: draft.trim(),
+    after: around(detail.slice(at + draft.length)),
+    folds: lines.length > DRAFT_FOLD_LINES,
+    preview: lines.slice(0, cut > 0 ? cut : DRAFT_PREVIEW_LINES).join("\n"),
+  };
 }
 
 export interface KinSendView {
@@ -81,6 +156,10 @@ export interface KinSendView {
   /** Other Froms the owner may pick before Confirm, with the one in use; empty when none. */
   readonly fromChoices: ReadonlyArray<KinSendFromChoice>;
   readonly attachments: ReadonlyArray<{ readonly name: string; readonly detail: string }>;
+  /** An attached invoice says nothing about how to pay: what is missing and where to add it. */
+  readonly noBank: string | null;
+  /** A mail's body folds under Read the whole email on a phone, so who, what and Confirm fit. */
+  readonly folds: boolean;
   /** After the tap: "Sending…", "Sent", or why it wasn't sent. */
   readonly outcome: { readonly tone: "pending" | "ok" | "error"; readonly text: string } | null;
   /** A mail's words as stored, which a person may change before it goes; null on other cards. */
@@ -129,6 +208,13 @@ export const KIN_SEND_EDIT_COPY = {
   attachments: "Attached files go as they are.",
   quotedLabel: "Quoted message",
   quoted: "The quoted message goes below yours as it is.",
+} as const;
+
+export const KIN_SEND_COPY = {
+  noBank:
+    "The company has no bank details yet, so this invoice doesn't say how to pay. Add them in Settings → Company details, then make its PDF again.",
+  readAll: "Read the whole email",
+  hideAll: "Hide the email",
 } as const;
 
 /** The tick a card for a mail that may already have gone needs before its Confirm. */
@@ -270,6 +356,10 @@ function kinSendView(send: KinSendCard, now: Date, confirmId: string | null): Ki
       name: file.name,
       detail: [file.label, kb(file.bytes)].filter((part) => part !== null).join(" · "),
     })),
+    noBank: send.attachments.some((file) => file.bankMissing === true)
+      ? KIN_SEND_COPY.noBank
+      : null,
+    folds: send.action === "email" || send.action === "reply",
     outcome:
       send.outcome === null
         ? null
@@ -327,10 +417,11 @@ export function kinChoiceCardView(
     id: option.optionId,
     label: line(option.label),
     action: option.action === undefined ? null : line(option.action.line),
+    kind: option.kind ?? null,
   }));
   // The server repeats each option's action line in `detail` for older clients; shown here once.
   const note = kinChoiceActionNote(card.options);
-  const own =
+  const noted =
     card.detail === null || note === ""
       ? card.detail
       : card.detail === note
@@ -338,6 +429,24 @@ export function kinChoiceCardView(
         : card.detail.endsWith(`\n\n${note}`)
           ? card.detail.slice(0, -note.length - 2)
           : card.detail;
+  // `detail` opens with the asker's line too, for older clients; shown here once, first.
+  const by = card.askedBy;
+  const asked =
+    noted === null || by === undefined
+      ? noted
+      : noted === by
+        ? null
+        : noted.startsWith(`${by}\n`)
+          ? noted.slice(by.length + 1)
+          : noted;
+  // Settled, it shows only what happened: never what held while it waited.
+  const own =
+    asked === null ||
+    card.whileOpen === undefined ||
+    (card.answer === null && widget.closedAt === null) ||
+    !asked.startsWith(card.whileOpen)
+      ? asked
+      : asked.slice(card.whileOpen.length);
   const chosen =
     card.answer === null
       ? undefined
@@ -354,6 +463,7 @@ export function kinChoiceCardView(
     orgId: widget.orgId,
     widgetId: widget.widgetId,
     revision: widget.revision,
+    askedBy: by === undefined ? null : line(by),
     // Answered, the title says what happened, never the question it asked.
     question:
       card.answer !== null && card.outcome !== undefined
@@ -364,7 +474,11 @@ export function kinChoiceCardView(
     outcome:
       card.answer === null || card.outcome === undefined
         ? null
-        : { title: line(card.outcome.title), text: card.outcome.text.trim() },
+        : {
+            title: line(card.outcome.title),
+            text: card.outcome.text.trim(),
+            open: card.outcome.open ?? null,
+          },
     undone:
       card.outcome?.undone === undefined
         ? null
@@ -374,6 +488,7 @@ export function kinChoiceCardView(
             atMs: Date.parse(card.outcome.undone.at),
           },
     detail: own === null || own.trim() === "" ? null : own.trim(),
+    draft: choiceDraft(own, card.draft),
     options,
     image: card.image === undefined ? null : card.image,
     send,
@@ -385,6 +500,15 @@ export function kinChoiceCardView(
             label: chosen?.label ?? card.answer.optionId,
             personId: card.answer.personId,
           },
+    awaiting: widget.awaiting,
+    dismissed:
+      card.dismissed === undefined || card.answer !== null
+        ? null
+        : {
+            personId: card.dismissed.personId,
+            name: card.dismissed.name,
+            atMs: Date.parse(card.dismissed.at),
+          },
     // Unanswered cards are never rewritten, so `updatedAt` is still the time it was posted. An
     // agent's open question takes taps until the host closes it.
     expiresAtMs:
@@ -393,20 +517,64 @@ export function kinChoiceCardView(
         : Date.parse(widget.updatedAt) + KIN_CHOICE_CARD_TTL_MS,
     closed: widget.closedAt !== null,
     // A question closed unanswered says what became of it ("Went with “Draft it”.").
+    decidedBy: card.decidedBy ?? null,
     closedText:
       card.replaced === true
-        ? KIN_CHOICE_REPLACED_TEXT
+        ? card.replacedBy?.decided === undefined
+          ? KIN_CHOICE_REPLACED_TEXT
+          : kinChoiceReplacedText(card.replacedBy.decided)
         : card.outcome !== undefined
           ? card.outcome.text
           : KIN_CHOICE_EXPIRED_TEXT,
   };
 }
 
-export type KinChoicePhase = "open" | "answered" | "expired";
+export type KinChoicePhase = "open" | "answered" | "expired" | "dismissed";
 
 export function kinChoicePhase(view: KinChoiceCardView, nowMs: number): KinChoicePhase {
   if (view.answer !== null) return "answered";
+  if (view.dismissed !== null) return "dismissed";
   return view.closed || nowMs >= view.expiresAtMs ? "expired" : "open";
+}
+
+export const KIN_CHOICE_DISMISS_COPY = {
+  dismiss: "Dismiss",
+  dismissName: "Dismiss this question without choosing",
+  dismissed: "Dismissed",
+  undo: "Undo",
+  undoName: "Undo dismiss and show the question again",
+} as const;
+
+/**
+ * Whether the viewer is offered Dismiss: an open card that asks them, not a Confirm for
+ * something leaving the company, which has its own way to say no.
+ */
+export function kinChoiceDismissible(
+  view: Pick<KinChoiceCardView, "send" | "awaiting">,
+  phase: KinChoicePhase,
+  viewerPersonId: KinPersonId | null,
+): boolean {
+  return (
+    phase === "open" &&
+    view.send === null &&
+    viewerPersonId !== null &&
+    view.awaiting.includes(viewerPersonId)
+  );
+}
+
+/**
+ * A dismissed card's one line, and whether it offers Undo: the dismisser's says "Dismissed" with
+ * Undo; anyone else reads who did it.
+ */
+export function kinChoiceDismissedLine(
+  view: Pick<KinChoiceCardView, "dismissed">,
+  viewerPersonId: KinPersonId | null,
+): { readonly text: string; readonly undo: boolean } | null {
+  const { dismissed } = view;
+  if (dismissed === null) return null;
+  return dismissed.personId === viewerPersonId
+    ? { text: KIN_CHOICE_DISMISS_COPY.dismissed, undo: true }
+    : { text: `Dismissed by ${dismissed.name}`, undo: false };
 }
 
 // Imperative first words an agent's option starts with, and how the outcome says them.
@@ -486,6 +654,31 @@ export function kinChoiceAnswered(
   return { text: view.send?.outcome == null ? text : null };
 }
 
+/**
+ * Who settled the card, under it: "Rhea Rao chose “Same terms”.", "Meera Shah sent it.". Null
+ * while it is open, from a host that doesn't say, or for the viewer's own plain answer, which the
+ * card already reads as theirs. A send's yes says "sent it" only once the host stored it sent.
+ */
+export function kinChoiceDecidedLine(
+  view: Pick<KinChoiceCardView, "answer" | "decidedBy" | "outcome" | "send" | "options">,
+  viewerPersonId: KinPersonId | null,
+): string | null {
+  const { answer, decidedBy } = view;
+  if (answer === null || decidedBy === null) return null;
+  const mine = decidedBy.personId === viewerPersonId;
+  if (mine && view.outcome === null && view.send === null) return null;
+  const who = mine ? "You" : decidedBy.name;
+  if (view.send !== null) {
+    const yes = view.options.find((option) => option.id === answer.optionId)?.kind === "yes";
+    const mail = view.send.edit !== null;
+    // Only a mail is "sent"; a calendar event's own outcome line says it was saved.
+    if (yes)
+      return `${who} ${mail && view.send.outcome?.tone === "ok" ? "sent it" : "confirmed it"}.`;
+    return `${who} chose not to ${mail ? "send it" : "go ahead"}.`;
+  }
+  return `${who} chose “${answer.label}”.`;
+}
+
 /** "Undone by you at 9:52 AM.", or by name on another day: under a taken default's note. */
 export function kinChoiceUndoneLine(
   view: Pick<KinChoiceCardView, "undone">,
@@ -528,11 +721,29 @@ export function kinChoiceAccessibilityLabel(
     ]);
   return kinSentences([
     view.outcome === null ? "Question" : null,
+    view.askedBy,
     view.question,
     view.detail,
     status,
   ]);
 }
+
+/** The card's Dismiss, or its dismisser's Undo of it. */
+export function kinChoiceDismissInput(
+  view: Pick<KinChoiceCardView, "widgetId" | "revision">,
+  undo: boolean,
+  clientActionId: string,
+): KinWidgetsActInput {
+  return {
+    widgetId: view.widgetId,
+    revision: view.revision,
+    actionId: undo ? KIN_CHOICE_UNDISMISS_ACTION : KIN_CHOICE_DISMISS_ACTION,
+    clientActionId,
+  };
+}
+
+const isDismissAction = (actionId: string) =>
+  actionId === KIN_CHOICE_DISMISS_ACTION || actionId === KIN_CHOICE_UNDISMISS_ACTION;
 
 /** `checkedSent`: the try the person's sent-mail tick is for (`kinSendTicked`). */
 export function kinChoiceActInput(
@@ -615,8 +826,11 @@ export function kinSendCheckPending(
  * Why a choice tap was refused. A card Kin asked for itself (a receipt, a statement's currency)
  * refuses in the owner's words, such as "The figures changed…", so those are shown as said.
  */
-export function kinChoiceFailureNotice(cause: KinChatError): KinCardNotice {
+export function kinChoiceFailureNotice(cause: KinChatError, actionId?: string): KinCardNotice {
   const said = cause.message.trim();
+  // A refused Dismiss or Undo says why in the host's words: settled since, or not theirs.
+  if (actionId !== undefined && isDismissAction(actionId) && kinPersonWords(said))
+    return { kind: cause.reason === "widget_changed" ? "stale" : "error", text: said };
   if ((cause.reason === "conflict" || cause.reason === "widget_changed") && said !== "")
     return { kind: cause.reason === "conflict" ? "error" : "stale", text: said };
   // Kin can't send it until the person acts, such as a mail account signing in again: said as is.
@@ -885,4 +1099,243 @@ export function kinSendEditRefused(
   return isKinChatError(cause) && cause.reason === "widget_changed"
     ? { ...next, revision: kinSendEditBound(editing, view).revision, stale: true }
     : next;
+}
+
+type KinChoiceSend<I, A> = (value: {
+  readonly environmentId: EnvironmentId;
+  readonly input: I;
+}) => Promise<AtomCommandResult<A, unknown>>;
+
+export type KinChoiceCardStatus = (KinCardStatus & { readonly optionId: string }) | null;
+
+/** What a card keeps between renders outside React: its tap queue and the tick a press reads. */
+export interface KinChoiceCardTaps {
+  queue: ReturnType<typeof createKinCardActions<KinChoiceCardView, string>> | null;
+  ticked: KinSendTry | null;
+}
+export const kinChoiceCardTaps = (): KinChoiceCardTaps => ({ queue: null, ticked: null });
+
+/**
+ * What a choice card's taps do, the same on every client: each app holds the state and draws it.
+ */
+export function kinChoiceCardActions(options: {
+  readonly choice: KinChoiceCardView;
+  readonly environmentId: EnvironmentId;
+  readonly newId: () => string;
+  /** Made once per card (`kinChoiceCardTaps`): a press reads the tick when it posts. */
+  readonly taps: KinChoiceCardTaps;
+  readonly heldKey: string;
+  readonly state: {
+    readonly pending: string | null;
+    readonly switching: boolean;
+    /** The editor as shown (`kinSendEditShown`), else null. */
+    readonly editing: KinSendEditing | null;
+    readonly editBusy: KinSendEditBusy;
+    readonly editable: boolean;
+    readonly ticked: KinSendTry | null;
+    readonly nowMs: number;
+  };
+  readonly commands: {
+    readonly post: KinChoiceSend<KinWidgetsActInput, unknown>;
+    readonly setSendFrom: KinChoiceSend<KinConnectionSetSendFromInput, KinConnectionSetSendFrom>;
+    readonly sendEdited: KinChoiceSend<KinConnectionSendEditedInput, KinConnectionSendEdited>;
+    readonly saveEdited: KinChoiceSend<KinConnectionSaveEditedInput, KinConnectionSaveEdited>;
+  };
+  readonly set: {
+    readonly pending: (pending: string | null) => void;
+    readonly lastStatus: (status: KinChoiceCardStatus) => void;
+    readonly switching: (switching: boolean) => void;
+    readonly switchProblem: (problem: string | null) => void;
+    readonly editBusy: (busy: KinSendEditBusy) => void;
+    readonly editing: (editing: KinSendEditing | null) => void;
+    readonly ack: (ack: KinSendEditAck) => void;
+    readonly ticked: (ticked: KinSendTry | null) => void;
+  };
+}) {
+  const { choice, environmentId, taps, state, commands, set } = options;
+  const shownEdit = state.editing;
+  const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
+  const warnedView = kinSendEditWarned(choice, shownEdit, new Date(state.nowMs));
+
+  /** The person ticked they checked the sent mail, for the try the warning beside it names. */
+  const tick = (next: boolean) => {
+    taps.ticked = next ? kinSendTry(warnedView) : null;
+    set.ticked(taps.ticked);
+  };
+  const press = async (optionId: string) => {
+    if (state.pending !== null) return;
+    if (taps.queue === null)
+      taps.queue = createKinCardActions<KinChoiceCardView, string>({
+        newId: options.newId,
+        toInput: (view, optionId, id) =>
+          isDismissAction(optionId)
+            ? kinChoiceDismissInput(view, optionId === KIN_CHOICE_UNDISMISS_ACTION, id)
+            : kinChoiceActInput(view, optionId, id, kinSendTicked(view, taps.ticked)),
+        failureNotice: kinChoiceFailureNotice,
+        post: async (input) => {
+          const result = await commands.post({ environmentId, input });
+          return AsyncResult.isFailure(result)
+            ? { ok: false, cause: squashAtomCommandFailure(result) }
+            : { ok: true };
+        },
+      });
+    const revision = choice.revision;
+    const outcome = await taps.queue(choice, optionId, () => {
+      set.pending(optionId);
+      set.lastStatus(null);
+    });
+    if (outcome.status === "ignored") return;
+    set.pending(null);
+    set.lastStatus(
+      outcome.status === "failed"
+        ? { revision, optionId, notice: outcome.notice, holding: false }
+        : { revision, optionId, notice: null, holding: true },
+    );
+  };
+
+  const pickFrom = async (choiceId: string) => {
+    if (state.switching || state.pending !== null) return;
+    set.switching(true);
+    set.switchProblem(null);
+    const failed = await kinConnectionChange(
+      commands.setSendFrom({
+        environmentId,
+        input: {
+          orgId: choice.orgId,
+          widgetId: choice.widgetId,
+          revision: choice.revision,
+          choice: choiceId,
+        },
+      }),
+      "change who it's from",
+    );
+    set.switching(false);
+    set.switchProblem(failed);
+  };
+
+  /** The editor after the host answered: words it refused stay on this device until let go. */
+  const settle = (next: KinSendEditing | null, kept: KinSendEditing | null = next) => {
+    kinSendEditHold(options.heldKey, kept);
+    set.editing(next);
+  };
+  const sendEdit = async () => {
+    if (shownEdit === null || state.editBusy !== null || editBound?.ready !== true) return;
+    set.editBusy("sending");
+    const result = await commands.sendEdited({
+      environmentId,
+      input: kinSendEditInput(
+        choice,
+        shownEdit,
+        options.newId(),
+        kinSendTicked(warnedView, state.ticked),
+      ),
+    });
+    set.editBusy(null);
+    settle(
+      AsyncResult.isFailure(result)
+        ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
+        : null,
+    );
+  };
+  /** Save closes the editor; a save on leaving keeps it open over the saved card. */
+  const saveEdit = async (stay = false) => {
+    if (shownEdit === null || state.editBusy !== null || editBound?.ready !== true) return;
+    if (!kinSendEditUnsaved(shownEdit)) return settle(null);
+    set.editBusy("saving");
+    const result = await commands.saveEdited({
+      environmentId,
+      input: kinSendEditSaveInput(choice, shownEdit),
+    });
+    set.editBusy(null);
+    if (AsyncResult.isFailure(result))
+      return settle(kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result)));
+    set.ack({ revision: result.value.revision, saved: shownEdit.draft });
+    settle(stay ? kinSendEditKept(shownEdit, result.value.revision) : null, null);
+  };
+  const discardEdit = async () => {
+    if (shownEdit === null || state.editBusy !== null) return;
+    const input = kinSendEditDiscardInput(choice, shownEdit, state.editable);
+    if (input === null) return settle(null);
+    set.editBusy("discarding");
+    const result = await commands.saveEdited({ environmentId, input });
+    set.editBusy(null);
+    if (AsyncResult.isSuccess(result)) set.ack({ revision: result.value.revision, saved: null });
+    settle(
+      AsyncResult.isFailure(result)
+        ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
+        : null,
+    );
+  };
+  /** Dismiss posts nothing in the chat; its Undo opens the card again (`kinChoiceDismissedLine`). */
+  const dismiss = (undo = false) =>
+    press(undo ? KIN_CHOICE_UNDISMISS_ACTION : KIN_CHOICE_DISMISS_ACTION);
+  return { tick, press, pickFrom, sendEdit, saveEdit, discardEdit, dismiss };
+}
+
+/** A mail card's Cancel asks first, then waits a few seconds for Undo before it is sent. */
+export const KIN_MAIL_CANCEL_COPY = {
+  ask: "Don't send this mail?",
+  detail: "The mail won't go, and its card closes.",
+  yes: "Don't send",
+  no: "Keep it",
+  held: "This mail won't be sent.",
+  undo: "Undo",
+} as const;
+export const KIN_MAIL_CANCEL_UNDO_MS = 5_000;
+
+/** Whether a tap on this option is a mail card's Cancel, which is asked and held for Undo. */
+export function kinMailCancels(
+  view: Pick<KinChoiceCardView, "send" | "options">,
+  optionId: string,
+): boolean {
+  return (
+    view.send?.edit != null && view.options.find((option) => option.id === optionId)?.kind === "no"
+  );
+}
+
+export interface KinHeldPress {
+  /** Starts the wait; a second hold while one waits changes nothing. */
+  readonly hold: () => void;
+  /** Drops the waiting press: nothing is sent. */
+  readonly undo: () => void;
+  /** Sends a waiting press now, as leaving the screen does. */
+  readonly flush: () => void;
+  readonly waiting: () => boolean;
+}
+
+/** The device's own timers, for `createKinHeldPress`. */
+export const kinDeviceTimers = {
+  set: (run: () => void, ms: number) => globalThis.setTimeout(run, ms),
+  clear: (handle: ReturnType<typeof setTimeout>) => globalThis.clearTimeout(handle),
+};
+
+/** A press held back `delayMs` so it can be undone; it is sent at most once. */
+export function createKinHeldPress<H>(input: {
+  readonly delayMs: number;
+  readonly send: () => void;
+  readonly timers: {
+    readonly set: (run: () => void, ms: number) => H;
+    readonly clear: (handle: H) => void;
+  };
+}): KinHeldPress {
+  const { timers } = input;
+  let handle: { readonly value: H } | null = null;
+  const fire = () => {
+    if (handle === null) return;
+    timers.clear(handle.value);
+    handle = null;
+    input.send();
+  };
+  return {
+    hold: () => {
+      if (handle === null) handle = { value: timers.set(fire, input.delayMs) };
+    },
+    undo: () => {
+      if (handle === null) return;
+      timers.clear(handle.value);
+      handle = null;
+    },
+    flush: fire,
+    waiting: () => handle !== null,
+  };
 }

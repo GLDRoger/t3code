@@ -8,6 +8,7 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as Schema from "effect/Schema";
 
 import {
+  ACTIVITY_MAIL,
   isPlainAddress,
   type MailCalendarEvent,
   type MailContext,
@@ -18,10 +19,11 @@ import {
 import { htmlToText } from "./MailText.ts";
 import { answeredWith, failure, mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * Microsoft's sign-in for work or school accounts in any organization and personal accounts.
- * The owner's app registration is a public client, so the code is redeemed with PKCE alone.
+ * A public-client app redeems the code with PKCE alone; a Web app sends its secret with it too.
  */
 const MICROSOFT_SERVER: AuthServer = {
   issuer: "https://login.microsoftonline.com/common/v2.0",
@@ -214,7 +216,6 @@ const EVENT_FIELDS =
   "id,subject,start,end,isAllDay,location,organizer,attendees,isCancelled,bodyPreview";
 const UTC = 'outlook.timezone="UTC"';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const calendarBase = (calendarId: string | undefined) =>
   calendarId === undefined || calendarId === "primary"
@@ -295,6 +296,8 @@ const calendarChanges = Effect.fn("KinMicrosoft.calendarChanges")(function* (
       const next = text(field(answer, "@odata.nextLink"));
       link = delta ?? next ?? link;
       if (delta !== undefined || next === undefined) break;
+      if (page === DELTA_PAGES - 1)
+        yield* Effect.logInfo("Kin read its most calendar pages; the next read goes on from there");
       url = next;
       params = {};
     }
@@ -319,9 +322,39 @@ const calendarChanges = Effect.fn("KinMicrosoft.calendarChanges")(function* (
           field(event, "@removed") !== undefined ||
           Date.parse(text(field(event, "lastModifiedDateTime")) ?? "") >= since,
       )
-      .slice(0, 50)
       .map(eventOf),
     cursor: found.cursor,
+  };
+});
+
+/**
+ * Inbox mail since `since`, oldest first, at most `ACTIVITY_MAIL` messages; a read that stops
+ * there says until when it read everything.
+ */
+const inboxSince = Effect.fn("KinMicrosoft.inboxSince")(function* (
+  context: MailContext,
+  since: number,
+) {
+  const messages: Array<unknown> = [];
+  let url = `${GRAPH}/mailFolders/inbox/messages`;
+  let params: Request["params"] = {
+    $filter: `receivedDateTime ge ${iso(since)}`,
+    $orderby: "receivedDateTime asc",
+    $select: SUMMARY,
+    $top: "50",
+  };
+  let next: string | undefined;
+  do {
+    const answer = yield* api(context, url, { params });
+    messages.push(...list(field(answer, "value")));
+    next = text(field(answer, "@odata.nextLink"));
+    url = next ?? url;
+    params = {};
+  } while (next !== undefined && messages.length < ACTIVITY_MAIL);
+  const last = Date.parse(text(field(messages.at(-1), "receivedDateTime")) ?? "");
+  return {
+    threads: conversations(messages.toReversed(), Infinity),
+    until: next === undefined || Number.isNaN(last) ? undefined : last,
   };
 });
 
@@ -538,20 +571,14 @@ const microsoft: MailVendor = {
     }).pipe(Effect.map(eventOf)),
   activity: (context, since, cursor) =>
     Effect.all({
-      mail: api(context, `${GRAPH}/mailFolders/inbox/messages`, {
-        params: {
-          $filter: `receivedDateTime ge ${iso(since)}`,
-          $orderby: "receivedDateTime desc",
-          $select: SUMMARY,
-          $top: "50",
-        },
-      }),
+      mail: inboxSince(context, since),
       calendar: calendarChanges(context, since, cursor),
     }).pipe(
       Effect.map(({ mail, calendar }) => ({
-        threads: conversations(list(field(mail, "value")), 25),
+        threads: mail.threads,
         events: calendar.events,
         cursor: calendar.cursor,
+        ...(mail.until === undefined ? {} : { until: mail.until }),
       })),
     ),
   account: (http, token) => profile(http, token).pipe(Effect.map(accountOf)),

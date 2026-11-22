@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { homeCurrency } from "./companyProfile.ts";
-import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth } from "./money.ts";
+import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth, timeIn } from "./money.ts";
 import { dates } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL } from "./teamView.ts";
 import {
@@ -18,9 +18,19 @@ import {
   startOfDay,
 } from "./recordRows.ts";
 import { nextDates, repeatsBetween } from "./repeat.ts";
+import { alertsBeside, type AlertBalance } from "./statements/bankAlerts.ts";
+import { bankKnown } from "./statements/bankKnown.ts";
+import {
+  type AccountRead,
+  firstRowOf,
+  openingOf,
+  periodOf,
+  sameAccounts,
+} from "./statements/bankAccounts.ts";
 import { findBankList } from "./statements/bankList.ts";
 import { reviewOf } from "./statements/statementReview.ts";
 import type { Statement } from "./statements/statementTable.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * The owner's money questions, answered by code from what Kin stores: cash from the statements
@@ -28,7 +38,6 @@ import type { Statement } from "./statements/statementTable.ts";
  * integer minor units, one per currency. Owner only; callers check that before calling.
  */
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 /** A closing balance older than this many days is reported as stale. */
 const STALE_DAYS = 7;
 const HORIZONS = [30, 60, 90] as const;
@@ -63,7 +72,7 @@ const closingOf = (statement: Statement) => {
 };
 
 /** Only a statement's four digits name its account: the rest of what it says is the bank's text. */
-const accountLabel = (statement: Statement) => {
+const accountLabel = (statement: Pick<Statement, "kind" | "bank" | "account">) => {
   const digits = /^\d{4}$/.test(statement.account ?? "") ? ` ••${statement.account}` : "";
   const label = `${statement.kind === "card" ? "Card" : "Account"}${digits}`;
   return statement.bank === null ? label : `${statement.bank} ${label}`;
@@ -100,17 +109,12 @@ const recordedMoney = Effect.fn("KinMoneyAnswers.recorded")(function* (
   };
 });
 
-type Read = {
+type Read = AccountRead & {
   readonly statementId: string;
   /** Everything Kin stores of an account: kind, bank, last four digits, and currency. */
   readonly identity: string;
   readonly label: string;
-  readonly kind: Statement["kind"];
-  readonly currency: string;
-  readonly from: string | null;
-  readonly opening: number | null;
   readonly minor: number;
-  readonly on: string;
   readonly check: Statement["check"]["status"];
   /** Why it isn't a balance of record, or `undefined` when it is one. */
   readonly standing:
@@ -121,23 +125,9 @@ type Read = {
 };
 
 /**
- * Whether `newer` continues `older`'s account: the same statement read twice, or one that opens on
- * the other's closing balance and starts once it ends. Digits alone never prove it.
- */
-const continues = (older: Read, newer: Read) =>
-  (newer.from === older.from &&
-    newer.on === older.on &&
-    newer.opening === older.opening &&
-    newer.minor === older.minor) ||
-  (newer.opening !== null &&
-    newer.opening === older.minor &&
-    newer.from !== null &&
-    newer.from >= older.on);
-
-/**
- * Per account, the latest closing balance of a statement the owner confirmed (not undone, check
- * not off); newer reads beside it, never counted. Same-identity statements no chain links are
- * listed apart with no total. Records carry no account, so movements are per currency.
+ * Per account (`sameAccounts`), the latest closing balance of a statement the owner confirmed
+ * (not undone, check not off); newer reads beside it, never counted. Accounts Kin can't tell
+ * apart are listed with no total. Records carry no account, so movements are per currency.
  */
 export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
   orgId: KinOrgId,
@@ -159,7 +149,9 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
   const reads = stored.flatMap((row): ReadonlyArray<Read> => {
     const statement = reviewOf(row.reviewJson)?.statement;
     const closing = statement === undefined ? undefined : closingOf(statement);
-    if (statement === undefined || closing === undefined) return [];
+    const period = statement === undefined ? undefined : periodOf(statement);
+    if (statement === undefined || closing === undefined || period === undefined) return [];
+    const digits = /^\d{4}$/.test(statement.account ?? "") ? statement.account : null;
     return [
       {
         statementId: row.statementId,
@@ -171,11 +163,15 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
         ].join("\u0000"),
         label: accountLabel(statement),
         kind: statement.kind,
+        bank: statement.bank,
+        digits,
+        accountId: statement.accountId ?? null,
         currency: statement.currency,
-        from: statement.from,
-        opening: statement.openingMinor,
-        minor: closing.minor,
+        from: period.from < closing.on ? period.from : closing.on,
         on: closing.on,
+        opening: openingOf(statement, firstRowOf(statement)),
+        closing: closing.minor,
+        minor: closing.minor,
         check: statement.check.status,
         standing:
           row.appliedAt === null || row.undoneAt !== null
@@ -189,31 +185,45 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
     ];
   });
   const byDay = (a: Read, b: Read) => (a.on === b.on ? 0 : a.on < b.on ? -1 : 1);
-  const chains: Array<Array<Read>> = [];
-  for (const read of reads.filter((one) => one.standing === undefined).toSorted(byDay)) {
-    const chain = chains.find(
-      (one) => one[0]!.identity === read.identity && continues(one.at(-1)!, read),
-    );
-    if (chain === undefined) chains.push([read]);
-    else chain.push(read);
-  }
-  const heads = chains.map((chain) => chain.at(-1)!);
-  const twins = (head: Read) => heads.filter((one) => one.identity === head.identity).length > 1;
+  const groups = sameAccounts(reads.filter((one) => one.standing === undefined));
+  // A read not of record belongs beside the one account it could be, when there is just one.
+  const candidates = (read: Read) =>
+    groups.filter((group) => {
+      const head = group.reads.at(-1)!;
+      return (
+        head.kind === read.kind &&
+        head.currency === read.currency &&
+        (group.digits === null || read.digits === null || group.digits === read.digits) &&
+        (group.bank === null ||
+          read.bank === null ||
+          group.bank.toLowerCase() === read.bank.toLowerCase())
+      );
+    });
   // The newest read not of record per identity, unless a balance of record is as new.
   const pending = new Map<string, Read>();
-  for (const read of reads.filter((one) => one.standing !== undefined).toSorted(byDay)) {
-    const recordOn = heads.filter((one) => one.identity === read.identity).map((one) => one.on);
-    if (recordOn.every((on) => on < read.on)) pending.set(read.identity, read);
-  }
-  const accounts = heads
-    .map((head) => {
+  for (const read of reads.filter((one) => one.standing !== undefined).toSorted(byDay))
+    if (candidates(read).every((group) => group.reads.at(-1)!.on < read.on))
+      pending.set(read.identity, read);
+  const statementAccounts = groups
+    .map((group) => {
+      const head = group.reads.at(-1)!;
       const ageDays = Math.max(daysBetween(head.on, today), 0);
-      const newer = twins(head) ? undefined : pending.get(head.identity);
+      const newer = group.apart
+        ? undefined
+        : [...pending.values()].findLast((read) => {
+            const fits = candidates(read);
+            return fits.length === 1 && fits[0] === group;
+          });
       return {
         ...head,
+        label: accountLabel({
+          kind: head.kind,
+          bank: group.bank,
+          account: group.digits,
+        }),
         ageDays,
         stale: ageDays > STALE_DAYS,
-        cannotTellApart: twins(head),
+        cannotTellApart: group.apart,
         newerRead: newer,
       };
     })
@@ -223,6 +233,8 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
         (a.label === b.label ? 0 : a.label < b.label ? -1 : 1) ||
         byDay(a, b),
     );
+  const alerts = yield* alertsBeside(orgId, statementAccounts);
+  const accounts = statementAccounts.map((one) => ({ ...one, alert: alerts.beside.get(one) }));
   const shownBeside = new Set(
     accounts.flatMap((one) => (one.newerRead === undefined ? [] : [one.newerRead])),
   );
@@ -266,6 +278,9 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
     accounts,
     notOfRecord,
     byCurrency,
+    bank: yield* bankKnown(orgId, now),
+    /** Bank alert balances of accounts no confirmed statement has. */
+    alertAccounts: alerts.alone,
   };
 });
 export type CashPosition = Effect.Success<ReturnType<typeof cashPosition>>;
@@ -273,6 +288,14 @@ export type CashPosition = Effect.Success<ReturnType<typeof cashPosition>>;
 /** A currency's balance now if every recorded movement since went through its accounts. */
 export const cashEstimate = (one: CashPosition["byCurrency"][number]) =>
   one.total !== null && one.sameDay ? one.total + one.receivedSince - one.spentSince : null;
+
+const alertLabel = (one: AlertBalance) => `${one.bank} ••${one.account}`;
+/** An alert's balance as an agent quotes it: the bank's own mail, not a statement. */
+const alertLine = (one: AlertBalance, zone: string) => ({
+  availableBalance: formatMinor(BigInt(one.balanceMinor), one.currency),
+  at: timeIn(one.sentAt, zone),
+  source: `The available balance printed in the newest ${one.bank} alert mail, read by code. It is the bank's figure at that moment, not a confirmed statement; totals below are from statements.`,
+});
 
 const notRecordLine = (one: Read) => ({
   account: one.label,
@@ -283,13 +306,24 @@ const notRecordLine = (one: Read) => ({
 
 /** The cash position as an agent quotes it: every figure formatted by code. */
 export const cashAnswer = (cash: CashPosition) => {
+  const zone = cash.timeZone;
   const notOfRecord =
     cash.notOfRecord.length === 0 ? {} : { notOfRecord: cash.notOfRecord.map(notRecordLine) };
+  const fromAlerts =
+    cash.alertAccounts.length === 0
+      ? {}
+      : {
+          fromBankAlerts: cash.alertAccounts.map((one) => ({
+            account: alertLabel(one),
+            ...alertLine(one, zone),
+          })),
+        };
   if (!cash.known)
     return {
       known: false as const,
       note: "Kin has no balance of record: no bank statement the owner confirmed gives one, so the cash balance is unknown. The owner can send one in this chat and confirm it on its card.",
       ...notOfRecord,
+      ...fromAlerts,
     };
   const line = (one: CashPosition["accounts"][number]) => ({
     account: one.label,
@@ -299,6 +333,7 @@ export const cashAnswer = (cash: CashPosition) => {
     ...(one.stale ? { stale: `No statement covers the ${one.ageDays} days since ${one.on}.` } : {}),
     ...(one.check === "adds_up" ? {} : { statementCheck: one.check }),
     ...(one.cannotTellApart ? { cannotTellApart: true as const } : {}),
+    ...(one.alert === undefined ? {} : { bankAlert: alertLine(one.alert, zone) }),
     ...(one.newerRead === undefined
       ? {}
       : {
@@ -316,6 +351,7 @@ export const cashAnswer = (cash: CashPosition) => {
     accounts: cash.accounts.filter((one) => one.kind === "account").map(line),
     ...(cards.length === 0 ? {} : { cardsOwed: cards.map(line) }),
     ...notOfRecord,
+    ...fromAlerts,
     byCurrency: cash.byCurrency.map((one) => {
       const estimate = cashEstimate(one);
       return {
@@ -323,7 +359,7 @@ export const cashAnswer = (cash: CashPosition) => {
         accounts: one.accounts,
         ...(one.total === null
           ? {
-              totalWithheld: `Kin can't tell apart balances with the same bank and last four digits, so ${one.currency} has no total. A statement that opens on another's closing balance links them.`,
+              totalWithheld: `Kin can't tell apart balances that may be one account's, so ${one.currency} has no total. A statement that opens on another's closing balance links them.`,
             }
           : { totalOfTheseAccounts: formatMinor(one.total, one.currency) }),
         recordedSince: {

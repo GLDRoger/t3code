@@ -2,14 +2,17 @@ import { useAtomValue } from "@effect/atom-react";
 import { kinChatListRows } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { type KinInboxState, selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import type { KinDestination } from "@t3tools/client-runtime/kin/kinNavigation";
+import type { KinPlaces } from "@t3tools/client-runtime/kin/kinPlaces";
 import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 import { isMacPlatform } from "@t3tools/shared/keybindings";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { KIN_IMPORT } from "@t3tools/client-runtime/kin/kinImport";
 import {
   CalendarDaysIcon,
+  FileUpIcon,
   ContactRoundIcon,
   FileTextIcon,
   FolderKanbanIcon,
@@ -22,10 +25,11 @@ import {
 
 import { type CommandPaletteActionItem, ITEM_ICON_CLASS } from "../components/CommandPalette.logic";
 import { KinAvatar } from "./KinAvatar";
-import { kinDestinationLink, kinShownDestinationsAtom } from "./kinListSwitch";
+import { kinDestinationLink } from "./kinListSwitch";
 import { KIN_PLACE_PATH } from "./kinPlaces";
 import { kinClient } from "./kinClient";
-import { useKinHost } from "./useKinHost";
+import { kinHostKeptTarget, useKinHost } from "./useKinHost";
+import { kinPlacesAtom } from "./kinPlacesAtom";
 
 const PLACE: Record<
   KinDestination,
@@ -58,16 +62,23 @@ const PLACE: Record<
   },
 };
 
+const noPlacesAtom = Atom.make<KinPlaces | null>(null);
+
 /**
  * One row per place this person's menu shows, with its shortcut, then the other words for where
  * things are (Projects, Lists, Dates), each only beside the place that holds it.
  */
 export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
   const navigate = useNavigate();
-  const shown = useAtomValue(kinShownDestinationsAtom);
+  const target = kinHostKeptTarget(useKinHost());
+  // T3's palette tests answer every atom with [], so the places may be absent there.
+  const shown = useAtomValue(target === null ? noPlacesAtom : kinPlacesAtom(target));
+  // The owner level's, as the host has it: the same gate the host applies to the call.
+  const canImport = useAtomValue(
+    kinClient.importApply.permissionAtom(target?.environmentId ?? null),
+  );
   const destinations = shown?.destinations ?? [];
-  if (shown === null || destinations.length === 0) return [];
-  const { target } = shown;
+  if (target === null || destinations.length === 0) return [];
   const row = (
     value: string,
     title: string,
@@ -109,6 +120,33 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
                 to: KIN_PLACE_PATH.clients,
                 params: target,
                 search: { tab: "projects" },
+              });
+            },
+          ),
+        ]
+      : []),
+    ...(has("clients") && canImport
+      ? [
+          row(
+            "import",
+            `${KIN_IMPORT.entry}: bring clients, contacts and deals in from a spreadsheet`,
+            FileUpIcon,
+            [
+              "import",
+              "csv",
+              "spreadsheet",
+              "upload",
+              "excel",
+              "crm",
+              "contacts",
+              "deals",
+              "bring in",
+            ],
+            async () => {
+              await navigate({
+                to: KIN_PLACE_PATH.clients,
+                params: target,
+                search: { open: "import" },
               });
             },
           ),

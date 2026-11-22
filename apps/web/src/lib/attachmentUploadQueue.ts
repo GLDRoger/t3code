@@ -1,7 +1,5 @@
 import { msg } from "gt-react";
 import {
-  AuthKinChatScope,
-  AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
   type ChatAttachment,
@@ -40,9 +38,9 @@ import { attachmentEnvironment } from "../state/attachments";
 import { readEnvironmentScope, readPreparedConnection } from "../state/session";
 import type { AttachmentUploadState, ReadyAttachmentUpload } from "./attachmentUploadState";
 import { m } from "../i18n/messages";
+import { mayUploadAttachments } from "@t3tools/client-runtime/kin/kinAttachmentAccess";
 
 const MAX_UPLOADS_PER_ENVIRONMENT = 3;
-
 const UPLOAD_TIMEOUT_MS = 5 * 60_000;
 
 interface AttachmentUploadStore {
@@ -176,10 +174,8 @@ function uploadBytes(input: {
   });
 }
 
-// A Kin teammate's chat-only session uploads too: the host lets it ask for upload URLs.
 const canOperate = (environmentId: EnvironmentId) =>
-  readEnvironmentScope(environmentId, AuthOrchestrationOperateScope) ||
-  readEnvironmentScope(environmentId, AuthKinChatScope);
+  mayUploadAttachments((scope) => readEnvironmentScope(environmentId, scope));
 
 const uploadFailureReason = (reasonMessage: string) => ({
   reason: m(reasonMessage),

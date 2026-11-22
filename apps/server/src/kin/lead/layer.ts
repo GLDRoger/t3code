@@ -1,10 +1,12 @@
 import * as SocialMcp from "../social/mcp.ts";
+import * as SalesMcp from "../sales/mcp.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as DeferralFlow from "../triggers/deferralFlow.ts";
 import * as ScheduledTasks from "../triggers/scheduledTasks.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import * as Watchdogs from "../triggers/watchdogs.ts";
+import * as HostBackup from "../hostBackup.ts";
 import * as GithubReaders from "../triggers/githubReaders.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
@@ -52,11 +54,11 @@ import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import * as KinWatchRounds from "../watches/KinWatchRounds.ts";
 import * as KinRecommend from "../recommend/KinRecommend.ts";
-import * as OpenShadow from "../open/shadow.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
 import { importWork } from "../work/importWork.ts";
-import { reportIssuedWithoutAmount } from "../gendocs/amounts.ts";
+import { fillDraftAmounts, reportIssuedWithoutAmount } from "../gendocs/amounts.ts";
 import { countedEntry } from "../work/recordRows.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
@@ -75,6 +77,8 @@ import * as GitHubWatch from "../github/GitHubWatch.ts";
 import * as TaskWake from "./TaskWake.ts";
 import * as DelegatedTasks from "./DelegatedTasks.ts";
 import * as ChatWake from "./ChatWake.ts";
+import { archiveEarlierKinProjects } from "./leadProject.ts";
+import { withAlwaysLoaded } from "./deferredTools.ts";
 
 export class KinLeadStartupError extends Schema.TaggedError<KinLeadStartupError>()(
   "KinLeadStartupError",
@@ -104,9 +108,10 @@ const routineRuntime = Layer.mergeAll(
   ScheduledTasks.layer,
   GitHubWatch.liveLayer,
   Watchdogs.layer,
+  HostBackup.layer,
   KinPulse.layer,
+  KinWatchRounds.layer,
   KinRecommend.layer,
-  OpenShadow.layer,
 ).pipe(
   Layer.provideMerge(LeadDelivery.layer),
   Layer.provideMerge(TriggerScheduler.layer),
@@ -289,12 +294,13 @@ const memoryPullRequests = Layer.unwrap(
 
 const registration = Layer.mergeAll(
   SocialMcp.registration,
-  McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers),
-  McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
-  McpHttpServer.toolkitRegistration(KinDocsToolkit, docHandlers),
+  SalesMcp.registration,
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinLeadToolkit), handlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinWorkToolkit), workHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocsToolkit), docHandlers),
   McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers),
-  McpHttpServer.toolkitRegistration(KinDocumentToolkit, documentHandlers),
-  McpHttpServer.toolkitRegistration(KinPulseToolkit, pulseHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocumentToolkit), documentHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPulseToolkit), pulseHandlers),
 );
 const toolkit = LeadMemory.layer.pipe(
   Layer.provide(KinSchedules.layer),
@@ -388,6 +394,36 @@ const issuedAmounts = Layer.effectDiscard(
     forkParked,
   ),
 );
+// At every start: a draft with a document and no amount takes its document's (`gendocs/amounts.ts`).
+const draftAmounts = Layer.effectDiscard(
+  fillDraftAmounts().pipe(
+    Effect.tap((filled) =>
+      filled === 0
+        ? Effect.void
+        : Effect.logInfo("Kin gave drafts their documents' amounts", { filled }),
+    ),
+    Effect.catchCause((cause) =>
+      Effect.logWarning(
+        "Kin couldn't give drafts their documents' amounts; the next start tries again",
+        {
+          cause: Cause.pretty(cause),
+        },
+      ),
+    ),
+    forkParked,
+  ),
+);
+// Once per project, at every start: Kin's projects from before it archived them at creation.
+const earlierProjects = Layer.effectDiscard(
+  archiveEarlierKinProjects().pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin couldn't archive its earlier projects; the next start tries again", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+    forkParked,
+  ),
+);
 const production = withServices(
   Layer.mergeAll(
     runner,
@@ -397,6 +433,8 @@ const production = withServices(
     DelegatedTasks.layer,
     workImport,
     issuedAmounts,
+    draftAmounts,
+    earlierProjects,
   ).pipe(
     Layer.provideMerge(documents),
     Layer.provideMerge(Team.layer),
@@ -436,5 +474,5 @@ const unconfigured = containStartup(
   ),
 );
 
-export const layerServer = configured(layer);
-export const layerMcp = configured(production);
+/** Kin's agent runtime as the server builds it, inside the Kin MCP endpoint (`kin/mcp/layer.ts`). */
+export const layerRuntime = configured(production);

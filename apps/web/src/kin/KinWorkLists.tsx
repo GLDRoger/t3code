@@ -1,4 +1,4 @@
-import { KIN_RETRY, kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY, kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_LISTS,
@@ -19,6 +19,7 @@ import {
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
@@ -27,7 +28,7 @@ import type {
   KinListId,
   KinRecordKey,
 } from "@t3tools/contracts";
-import { Settings2Icon, TableIcon, XIcon } from "lucide-react";
+import { PlusIcon, Settings2Icon, TableIcon, XIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -68,6 +69,7 @@ import {
   KinLoadFailed,
   KinWorkStaleLine,
 } from "./KinWorkParts";
+import { KinNewExpenseDialog, KinNewInvoiceDialog } from "./KinMoneyForms";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { KinPlaceCombobox } from "./KinPlaceCombobox";
@@ -156,6 +158,18 @@ function KinListEntries(
   );
   const [layout, setLayout] = useState<Layout>("rows");
   const [editing, setEditing] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(props.environmentId));
+  const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(props.environmentId));
+  // Invoices and Expenses take a new one typed by hand; no other list has a form of its own.
+  const adds =
+    def.archivedAt !== null
+      ? null
+      : def.list === "invoices" && canInvoice
+        ? KIN_MONEY_FORMS.invoice.title
+        : def.list === "expenses" && canExpense
+          ? KIN_MONEY_FORMS.expense.title
+          : null;
   const { filter } = state;
   const header = kinListHeader(def, filter, totals, state.total, context.yearStartMonth);
   const rows = state.records.map((record) =>
@@ -186,6 +200,12 @@ function KinListEntries(
               </p>
             )}
           </div>
+          {adds === null ? null : (
+            <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+              <PlusIcon />
+              {adds}
+            </Button>
+          )}
           {canEdit ? (
             <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
               <Settings2Icon />
@@ -481,7 +501,7 @@ function KinListEntries(
         {footer === null ? null : (
           <div className="flex items-center gap-3 px-2">
             <p className="text-xs text-muted-foreground" role="status">
-              {state.moreFailed ? "Couldn't load more." : footer}
+              {state.moreFailed ? KIN_MORE_FAILED : footer}
             </p>
             <Button
               size="xs"
@@ -506,6 +526,20 @@ function KinListEntries(
           }}
         />
       ) : null}
+      {!adding ? null : def.list === "invoices" ? (
+        <KinNewInvoiceDialog
+          {...props}
+          party={filter.party}
+          onOpenKey={props.onOpenKey}
+          onClose={() => setAdding(false)}
+        />
+      ) : (
+        <KinNewExpenseDialog
+          {...props}
+          onOpenKey={props.onOpenKey}
+          onClose={() => setAdding(false)}
+        />
+      )}
     </div>
   );
 }

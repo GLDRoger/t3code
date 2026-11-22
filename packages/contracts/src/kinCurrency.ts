@@ -165,6 +165,13 @@ const MULTIPLIERS: ReadonlyArray<readonly [RegExp, bigint]> = [
   [/\b(?:millions?|mn)\b/giu, 1_000_000n],
   [/\b(?:thousand|k)\b|(?<=\d)k\b/giu, 1_000n],
 ];
+// Read in an amount only, never when spotting money in a title, where "5 m" or "10L" is a size.
+const SHORT_MULTIPLIERS: ReadonlyArray<readonly [RegExp, bigint]> = [
+  [/(?<=\d\s?)m\b/giu, 1_000_000n],
+  [/(?<=\d\s?)l\b/giu, 100_000n],
+];
+// A rough figure is still the figure: "~90k", "about 9 lakh".
+const ROUGHLY = /^(?:~|≈|about|around|approx\.?|approximately|roughly|nearly|almost)\s*/iu;
 
 // Commas and dots read one way only: thousands, lakh and crore, or a decimal comma that has
 // exactly the currency's decimals after it. Our own grouped forms win where two would fit.
@@ -188,7 +195,7 @@ const readFigure = (number: string, decimals: number) => {
 
 /**
  * A spoken or written amount in minor units: "4.2 lakh", "₹1,23,456.78", "$12.5", "1.5 crore",
- * "12k", "JPY 1500", "-20", "1.234,56 EUR". The currency is the one the text names, else
+ * "12k", "9L", "1.2m", "~90k", "about 90k", "JPY 1500", "-20", "1.234,56 EUR". The currency is the one the text names, else
  * `fallback`; naming two, a grouping that reads no one way, more decimals than the currency has,
  * or a figure past a safe integer is refused with why. Below zero is the caller's to take or not.
  */
@@ -196,7 +203,7 @@ export const parseKinMoney = (
   text: string,
   fallback: string,
 ): { readonly money: KinMoney } | { readonly error: string } => {
-  let rest = text.trim().replace(/\/-$/u, "");
+  let rest = text.trim().replace(/\/-$/u, "").replace(ROUGHLY, "");
   const named = new Set<string>();
   for (const [pattern, code] of [...NAMED, ...SPOKEN])
     rest = rest.replace(pattern, () => {
@@ -210,7 +217,7 @@ export const parseKinMoney = (
     return " ";
   });
   let multiplier = 1n;
-  for (const [pattern, factor] of MULTIPLIERS)
+  for (const [pattern, factor] of [...MULTIPLIERS, ...SHORT_MULTIPLIERS])
     rest = rest.replace(pattern, () => {
       multiplier *= factor;
       return " ";

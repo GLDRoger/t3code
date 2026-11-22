@@ -5,7 +5,9 @@ import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
+import { sensitiveShown } from "../work/sensitiveReads.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
+import { SALES_OUTSIDE_TOOLS } from "../sales/policies.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -26,7 +28,7 @@ export type OutsideToolPolicy = "allowed" | "refused" | Condition;
 
 /** The one line a tool refused after outside text answers with. */
 export const OUTSIDE_REFUSAL =
-  "This turn read text from a connected service, so it can't do this now. Offer it to the owner with kin_ask instead; their tap starts it in a fresh turn.";
+  "This turn read text from a connected service, so it can't do this now. Offer it to the owner with kin_ask instead; their tap starts it in a fresh turn. Next time, start the work before you read it.";
 
 const field = (args: unknown, name: string) =>
   Predicate.hasProperty(args, name) ? args[name] : undefined;
@@ -42,6 +44,9 @@ export const OUTSIDE_TOOLS = {
   kin_widget_upsert: "allowed",
   kin_ask: "allowed",
   kin_ask_close: "allowed",
+  // The question carries the turn's stamp, so the turn its answer wakes reads as outside.
+  // A question to one person of the company, checked for what they may read; no action rides on it.
+  kin_ask_person: "allowed",
   kin_react: "allowed",
   kin_chart: "allowed",
   kin_visual: "allowed",
@@ -76,6 +81,8 @@ export const OUTSIDE_TOOLS = {
   // Posts on its own only to the company's repos; anywhere else on the owner's Confirm.
   kin_github_review: "allowed",
   kin_github_link: "allowed",
+  // Outside text could start reviews in a person's name.
+  kin_github_review_ask: "refused",
   // Outside text could tell Kin to stop watching a repo.
   kin_github_watch: "refused",
   records_query: "allowed",
@@ -103,7 +110,8 @@ export const OUTSIDE_TOOLS = {
   doc_history: "allowed",
   doc_restore: "allowed",
   list_define: "allowed",
-  payment_record: "allowed",
+  // A bank's or anyone's text must not become money received; a person's tap records it.
+  payment_record: "refused",
   deal_stages: "allowed",
   money_summary: "allowed",
   money_query: "allowed",
@@ -130,6 +138,7 @@ export const OUTSIDE_TOOLS = {
   social_draft: "allowed",
   social_week: "allowed",
   social_pack: "allowed",
+  ...SALES_OUTSIDE_TOOLS,
   // A delegated task, clone or browser is work outside text could steer.
   ...(Object.fromEntries(LEAD_T3_TOOLS.map((name) => [name, "refused" as const])) as Record<
     (typeof LEAD_T3_TOOLS)[number],
@@ -173,6 +182,24 @@ export const markOutside = Effect.fn("KinOutsideContent.mark")(function* (
     ON CONFLICT (org_id, event_id) DO NOTHING`;
 });
 
+const CODING_AGENT_SOURCE = "coding-agent:";
+/** The stamp for text a person's coding agent wrote through its key, by the key's name. */
+export const codingAgentSource = (name: string) => `${CODING_AGENT_SOURCE}${name}`;
+
+/**
+ * The turn is shown what a person's coding agent wrote: outside-read and sensitive-shown at once,
+ * so the two marks never differ. Before the text reaches the turn.
+ */
+export const codingAgentTextShown = Effect.fn("KinOutsideContent.codingAgentTextShown")(function* (
+  turn: Pick<Turn, "orgId" | "wakeupId">,
+  source: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* Effect.all([markOutside(turn, source), sensitiveShown(turn)], { discard: true }).pipe(
+    sql.withTransaction,
+  );
+});
+
 /** An event an outside-read turn made carries its stamp; a retry or a requeue keeps it. */
 export const stampEvent = Effect.fn("KinOutsideContent.stampEvent")(function* (
   orgId: KinOrgId,
@@ -183,6 +210,17 @@ export const stampEvent = Effect.fn("KinOutsideContent.stampEvent")(function* (
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
     VALUES (${orgId}, ${eventId}, ${source}) ON CONFLICT (org_id, event_id) DO NOTHING`;
+});
+
+/** The stamp stored under `key`: an event's, or a question's an outside-read turn asked. */
+export const storedStamp = Effect.fn("KinOutsideContent.storedStamp")(function* (
+  orgId: KinOrgId,
+  key: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ source: string }>`SELECT outside_from AS source
+    FROM kin_event_outside WHERE org_id = ${orgId} AND event_id = ${key}`;
+  return row?.source;
 });
 
 /**
@@ -205,8 +243,50 @@ export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (
           WHERE org_id = ${input.orgId} AND event_id IN ${sql.in(input.eventIds)}
           ORDER BY event_id LIMIT 1`;
   const source = events[0]?.source;
-  if (source !== undefined) yield* markOutside(input, source);
+  if (source === undefined) return;
+  yield* source.startsWith(CODING_AGENT_SOURCE)
+    ? codingAgentTextShown(input, source)
+    : markOutside(input, source);
 });
+
+const PAGES_TURNS = 200;
+const PAGES_PER_TURN = 2_000;
+/** Per wake-up, the page addresses it was given (`web_page`): the newest 200 turns, 2,000 each. */
+const pagesSeen = new Map<string, Set<string>>();
+const turnKey = (turn: Pick<Turn, "orgId" | "wakeupId">) => `${turn.orgId} ${turn.wakeupId}`;
+const pageKey = (address: string) => {
+  if (!URL.canParse(address)) return undefined;
+  const url = new URL(address);
+  url.hash = "";
+  return url.href;
+};
+
+/** Pages the turn read, and the links they gave, which it may open after outside text. */
+export const rememberPages = (
+  turn: Pick<Turn, "orgId" | "wakeupId">,
+  addresses: ReadonlyArray<string>,
+) =>
+  Effect.sync(() => {
+    const key = turnKey(turn);
+    const seen = pagesSeen.get(key) ?? new Set<string>();
+    pagesSeen.delete(key);
+    pagesSeen.set(key, seen);
+    for (const address of addresses) {
+      if (seen.size >= PAGES_PER_TURN) break;
+      const page = pageKey(address);
+      if (page !== undefined) seen.add(page);
+    }
+    for (const old of pagesSeen.keys()) {
+      if (pagesSeen.size <= PAGES_TURNS) break;
+      pagesSeen.delete(old);
+    }
+  });
+
+/** Whether the turn read this page, or a page it read links to it. */
+export const pageSeen = (turn: Pick<Turn, "orgId" | "wakeupId">, address: string) => {
+  const page = pageKey(address);
+  return page !== undefined && pagesSeen.get(turnKey(turn))?.has(page) === true;
+};
 
 /** Whether `name` may run with these arguments once the turn has read outside text. */
 export const outsideToolAllowed = Effect.fn("KinOutsideContent.allowed")(

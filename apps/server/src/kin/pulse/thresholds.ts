@@ -2,6 +2,8 @@ import type { KinOrgId, KinPulseThresholdSource } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { type PlaybookKey, playbookThresholds } from "../work/playbooks.ts";
+import { DAY_MS, HOUR_MS } from "../durations.ts";
+export { DAY_MS, HOUR_MS };
 
 /** Pulse thresholds playbooks don't declare: their unit and code default. */
 const PULSE_ONLY = {
@@ -13,6 +15,7 @@ const PLAYBOOK_UNITS = {
   stalled_after_days: "days",
   waiting_too_long_days: "days",
   chase_invoice_after_days: "days",
+  statement_due_days: "days",
   quote_follow_up_days: "days",
   renewal_heads_up_days: "days",
   renewal_draft_days: "days",
@@ -57,6 +60,4 @@ export const thresholds = Effect.fn("KinPulse.thresholds")(function* (orgId: Kin
   };
 });
 
-export const HOUR_MS = 60 * 60 * 1000;
-export const DAY_MS = 24 * HOUR_MS;
 export const toMs = (t: Threshold) => t.value * (t.unit === "hours" ? HOUR_MS : DAY_MS);
