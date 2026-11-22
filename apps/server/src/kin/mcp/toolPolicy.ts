@@ -29,10 +29,6 @@ const toolCallGateFn =
           ),
         );
 
-export const toolCallRefusal = <R>(
-  refusal: (name: string, args: unknown) => Effect.Effect<string | undefined, never, R>,
-) => McpServer.middleware()(toolCallGateFn(refusal), { global: true });
-
 /**
  * Every tool call on the server this joins passes `admit` before its handler, whichever toolkit
  * registered the tool, including ones added later. `admit` sees the tool name and its raw
@@ -42,10 +38,13 @@ export const toolCallGate = <R>(
   admit: (name: string, args: unknown) => Effect.Effect<boolean, never, R>,
   refusal: string | ((args: unknown) => string),
 ) =>
-  toolCallRefusal((name, args) =>
-    Effect.map(admit(name, args), (admitted) =>
-      admitted ? undefined : typeof refusal === "string" ? refusal : refusal(args),
+  McpServer.middleware()(
+    toolCallGateFn((name, args) =>
+      Effect.map(admit(name, args), (admitted) =>
+        admitted ? undefined : typeof refusal === "string" ? refusal : refusal(args),
+      ),
     ),
+    { global: true },
   );
 
 /**

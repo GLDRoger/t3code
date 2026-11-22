@@ -168,7 +168,9 @@ const inRunningTurn = <A, B>(
       if (Option.isNone(kin) || Option.isNone(kin.value.services)) return otherwise;
       const identity = Context.get(kin.value.services.value, KinIdentity);
       const sql = Context.get(kin.value.services.value, SqlClient.SqlClient);
-      const agent = yield* identity.resolveAgent(yield* McpInvocationContext).pipe(Effect.option);
+      const caller = yield* Effect.serviceOption(McpInvocationContext);
+      if (Option.isNone(caller)) return otherwise;
+      const agent = yield* identity.resolveAgent(caller.value).pipe(Effect.option);
       if (Option.isNone(agent)) return otherwise;
       const { orgId, agentId, threadId } = agent.value;
       const [row] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
@@ -295,58 +297,60 @@ const sectionRefusal = (
 };
 
 const forwardedTools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
-const sectionAdmitted = McpToolPolicy.toolCallRefusal((name, args) => {
-  if (!Object.hasOwn(SECTIONS.tools, name) || forwardedTools.has(name)) return Effect.undefined;
-  const foreign = name === "kin_connection_call";
-  const references = new Set<string>();
-  const sections = sectionsOfArguments(
-    args,
-    (value) => {
-      if (looksLikeRecordReference(value)) references.add(value);
-      return null;
-    },
-    foreign,
-  );
-  const tool = sectionOfTool(name);
-  const template =
-    name === "list_define" &&
-    Predicate.hasProperty(args, "template") &&
-    typeof args.template === "string"
-      ? sectionOfList(args.template)
-      : null;
-  if (tool !== null) sections.add(tool);
-  if (template !== null) sections.add(template);
-  if (sections.size === 0 && references.size === 0) return Effect.undefined;
-  const unavailable = "Kin couldn't check this company's sections. Nothing was done.";
-  return inRunningTurn(
-    "KinToolGate.section",
-    (turn) =>
-      Effect.gen(function* () {
-        const shell = yield* KinShell.get(turn.orgId);
-        if (shell.sections.every(({ on }) => on)) return undefined;
-        const viewer =
-          references.size === 0 || (yield* effectiveAudience(turn)) === "owner_only"
-            ? KIN_OWNER_LEVEL
-            : viewerOfPeople((yield* turnPeople(turn))?.people ?? []);
-        const sectionOfReference = yield* resolveSections(turn.orgId, references, viewer);
-        const off =
-          tool !== null && !KinShell.sectionOn(shell, tool)
-            ? tool
-            : [...sectionsOfArguments(args, sectionOfReference, foreign), ...sections].find(
-                (id) => !KinShell.sectionOn(shell, id),
+const sectionAdmitted = McpToolPolicy.toolCallRefusal(
+  Effect.succeed((name: string, args: unknown) => {
+    if (!Object.hasOwn(SECTIONS.tools, name) || forwardedTools.has(name)) return Effect.undefined;
+    const foreign = name === "kin_connection_call";
+    const references = new Set<string>();
+    const sections = sectionsOfArguments(
+      args,
+      (value) => {
+        if (looksLikeRecordReference(value)) references.add(value);
+        return null;
+      },
+      foreign,
+    );
+    const tool = sectionOfTool(name);
+    const template =
+      name === "list_define" &&
+      Predicate.hasProperty(args, "template") &&
+      typeof args.template === "string"
+        ? sectionOfList(args.template)
+        : null;
+    if (tool !== null) sections.add(tool);
+    if (template !== null) sections.add(template);
+    if (sections.size === 0 && references.size === 0) return Effect.undefined;
+    const unavailable = "Kin couldn't check this company's sections. Nothing was done.";
+    return inRunningTurn(
+      "KinToolGate.section",
+      (turn) =>
+        Effect.gen(function* () {
+          const shell = yield* KinShell.get(turn.orgId);
+          if (shell.sections.every(({ on }) => on)) return undefined;
+          const viewer =
+            references.size === 0 || (yield* effectiveAudience(turn)) === "owner_only"
+              ? KIN_OWNER_LEVEL
+              : viewerOfPeople((yield* turnPeople(turn))?.people ?? []);
+          const sectionOfReference = yield* resolveSections(turn.orgId, references, viewer);
+          const off =
+            tool !== null && !KinShell.sectionOn(shell, tool)
+              ? tool
+              : [...sectionsOfArguments(args, sectionOfReference, foreign), ...sections].find(
+                  (id) => !KinShell.sectionOn(shell, id),
+                );
+          return off === undefined
+            ? undefined
+            : sectionRefusal(
+                `${KinShell.sectionName(shell, off)} is turned off for this company.`,
+                args,
+                off,
+                sectionOfReference,
               );
-        return off === undefined
-          ? undefined
-          : sectionRefusal(
-              `${KinShell.sectionName(shell, off)} is turned off for this company.`,
-              args,
-              off,
-              sectionOfReference,
-            );
-      }).pipe(Effect.orElseSucceed(() => unavailable)),
-    unavailable,
-  )(name, args);
-});
+        }).pipe(Effect.orElseSucceed(() => unavailable)),
+      unavailable,
+    )(name, args);
+  }),
+);
 const admitted = besideReview(toolAdmitted);
 const outside = besideReview(outsideToolAllowed);
 
