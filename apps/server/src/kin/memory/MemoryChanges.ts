@@ -120,11 +120,17 @@ export class KinMemoryChanges extends Context.Service<
     readonly recordDecision: (orgId: KinOrgId, decision: KinDecision) => Effect.Effect<void>;
     /**
      * Current items that hold every word, newest first, for search; the owner level only, and
-     * nothing for anyone else or while memory isn't running here.
+     * nothing for anyone else or while memory isn't running here. `teamOnly` keeps to what the
+     * team may know, before the limit.
      */
     readonly search: (
       people: ReadonlyArray<PersonIdentity>,
-      input: { readonly orgId: KinOrgId; readonly text: string; readonly limit: number },
+      input: {
+        readonly orgId: KinOrgId;
+        readonly text: string;
+        readonly limit: number;
+        readonly teamOnly?: boolean;
+      },
     ) => Effect.Effect<ReadonlyArray<KinMemoryHit>>;
     /** The owner's switch for team memory in chats with teammates; owner level only. */
     readonly setTeamMemory: (
@@ -141,6 +147,8 @@ export type KinMemoryHit = {
   readonly snippet: string;
   readonly sensitive: boolean;
   readonly recordedAt: number;
+  /** Who said it, as its file records them. */
+  readonly saidBy: string;
 };
 const SEARCH_SNIPPET = 160;
 const searchWords = (text: string) =>
@@ -498,8 +506,20 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed((): ReadonlyArray<MemoryItem> => []),
       );
       const now = yield* Clock.currentTimeMillis;
+      const labels =
+        input.teamOnly === true
+          ? yield* storedLabels(input.orgId).pipe(
+              provideSql,
+              Effect.tapError((error) =>
+                Effect.logWarning("Kin memory search failed", { errorTag: error._tag }),
+              ),
+              Effect.option,
+            )
+          : undefined;
+      if (labels !== undefined && labels._tag === "None") return [];
       return current(all, now)
         .flatMap((item): ReadonlyArray<KinMemoryHit> => {
+          if (labels !== undefined && visibility(item, labels.value) !== "team") return [];
           const text = `${item.head.title}\n${item.head.what ?? ""}\n${item.body}`;
           const lower = text.toLowerCase();
           if (!words.every((word) => lower.includes(word))) return [];
@@ -515,6 +535,7 @@ const make = Effect.gen(function* () {
                   : body,
               sensitive: item.head.sensitive !== false,
               recordedAt: Number.isFinite(recordedAt) ? recordedAt : 0,
+              saidBy: item.head.said_by,
             },
           ];
         })

@@ -41,6 +41,7 @@ import * as People from "../people/KinPeople.ts";
 import * as Records from "../work/KinRecords.ts";
 import * as Work from "../work/ownerWork.ts";
 import { TasksKeyAudience } from "./audience.ts";
+import { MATERIAL } from "../you/projection.ts";
 import { commentMine, getMine, listMine, setStateMine } from "./tasks.ts";
 import { admitted, layer, layerAt, team } from "./tasksKey.testkit.ts";
 import * as TasksKeys from "./TasksKeys.ts";
@@ -190,6 +191,7 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
     assert.deepStrictEqual(yield* getMine(zoyaKey, hers.key), {
       ...task,
       brief: "Invented brief: two rooms",
+      material: MATERIAL,
       comments: [],
     });
     for (const other of [shared, given, owners])

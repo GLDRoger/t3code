@@ -47,7 +47,7 @@ const initialize = {
 };
 
 it.effect(
-  "the endpoint serves four tools to a live key and drops it mid-session once revoked",
+  "the endpoint serves its tools to a live key, money and memory only to whom they open, and drops it mid-session once revoked",
   () =>
     Effect.gen(function* () {
       const { orgId, zoya, rhea } = yield* team;
@@ -166,17 +166,16 @@ it.effect(
       });
       assert.strictEqual(opened.status, 200);
       const session = opened.headers["mcp-session-id"];
-      const listed = yield* call({
-        token: issued.secret,
-        method: "tools/list",
-        params: {},
-        ...(session === undefined ? {} : { session }),
-      });
-      // A person's own terminal client asks before a call by these; a flip shows here.
-      const read = { readOnly: true, destructive: false, idempotent: true, openWorld: false };
-      const write = { readOnly: false, destructive: false, idempotent: true, openWorld: false };
-      assert.deepStrictEqual(
-        Object.fromEntries(
+      const toolsOf = Effect.fn("test.toolsOf")(function* (token: string) {
+        const started = yield* call({ token, method: "initialize", params: initialize });
+        const id = started.headers["mcp-session-id"];
+        const listed = yield* call({
+          token,
+          method: "tools/list",
+          params: {},
+          ...(id === undefined ? {} : { session: id }),
+        });
+        return Object.fromEntries(
           decodeTools(yield* text(listed)).result.tools.map(({ name, annotations }) => [
             name,
             {
@@ -186,14 +185,48 @@ it.effect(
               openWorld: annotations.openWorldHint,
             },
           ]),
-        ),
-        {
-          list_my_tasks: read,
-          get_task: read,
-          comment_on_task: write,
-          set_task_state: write,
-        },
+        );
+      });
+      // A person's own terminal client asks before a call by these; a flip shows here. Only a
+      // task's comment and state are written; every other tool only reads.
+      const read = { readOnly: true, destructive: false, idempotent: true, openWorld: false };
+      const write = { readOnly: false, destructive: false, idempotent: true, openWorld: false };
+      const reads = { find: read, open_project: read, open_client: read, read_doc: read };
+      // Zoya has no Money and no Memory page, so her key lists neither.
+      assert.deepStrictEqual(yield* toolsOf(issued.secret), {
+        list_my_tasks: read,
+        get_task: read,
+        comment_on_task: write,
+        set_task_state: write,
+        ...reads,
+      });
+      const owners = yield* TasksKeys.issue(rhea.app, { orgId });
+      assert.deepStrictEqual(yield* toolsOf(owners.secret), {
+        list_my_tasks: read,
+        get_task: read,
+        comment_on_task: write,
+        set_task_state: write,
+        ...reads,
+        money_summary: read,
+        search_memory: read,
+      });
+      assert.deepStrictEqual(
+        Object.keys(yield* toolsOf(owners.secret)).toSorted(),
+        KinTasksKeyMcp.TASKS_KEY_TOOLS.toSorted(),
       );
+      // And called anyway, they answer as tools that aren't there.
+      for (const name of ["money_summary", "search_memory"]) {
+        const refused = yield* text(
+          yield* call({
+            token: issued.secret,
+            method: "tools/call",
+            params: { name, arguments: name === "money_summary" ? {} : { text: "kiln" } },
+            ...(session === undefined ? {} : { session }),
+          }),
+        );
+        assert.include(refused, `"error"`);
+        assert.notInclude(refused, "owed");
+      }
       const checked = verified;
       const mine = yield* call({
         token: issued.secret,

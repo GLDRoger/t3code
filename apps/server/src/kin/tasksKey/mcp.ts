@@ -1,4 +1,12 @@
-import { KinChatError, KinRecordKey, KinRecordState, KinTrimmedText } from "@t3tools/contracts";
+import {
+  KinChatError,
+  KinMoney,
+  KinMoneySummary,
+  KinMoneyTotals,
+  KinRecordKey,
+  KinRecordState,
+  KinTrimmedText,
+} from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -16,6 +24,19 @@ import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import { KinServer, type Services } from "../KinServer.ts";
+import { toolVisibility } from "../mcp/toolPolicy.ts";
+import {
+  findDocs,
+  listClients,
+  listProjects,
+  moneySummary,
+  openClient,
+  openProject,
+  readDoc,
+  readsMemory,
+  readsMoney,
+  searchMemory,
+} from "./reads.ts";
 import { commentMine, getMine, listMine, setStateMine } from "./tasks.ts";
 import { admit, type TasksKeyHolder } from "./TasksKeys.ts";
 
@@ -36,12 +57,138 @@ const TaskSummary = Schema.Struct({
 const TaskDetail = Schema.Struct({
   ...TaskSummary.fields,
   brief: Schema.String,
+  material: Schema.String,
   comments: Schema.Array(
     Schema.Struct({ by: Schema.String, at: Schema.String, text: Schema.String }),
   ),
 });
 const shared = { failure: KinChatError, failureMode: "return" as const };
 const TaskKey = KinRecordKey.annotate({ description: "The task's key, such as W-12." });
+const Ref = Schema.NullOr(Schema.Struct({ key: Schema.String, title: Schema.String }));
+const Words = Schema.String.check(Schema.isMaxLength(200));
+const ProjectRow = Schema.Struct({
+  key: Schema.String,
+  title: Schema.String,
+  client: Ref,
+  state: Schema.String,
+  lead: Schema.String,
+});
+const ClientRow = Schema.Struct({
+  key: Schema.String,
+  name: Schema.String,
+  kind: Schema.String,
+  prospect: Schema.Boolean,
+  active: Schema.Boolean,
+});
+const DocRow = Schema.Struct({
+  key: Schema.String,
+  title: Schema.String,
+  kind: Schema.String,
+  client: Ref,
+  project: Ref,
+  updatedAt: Schema.String,
+});
+const ProjectSheet = Schema.Struct({
+  ...ProjectRow.fields,
+  target: Schema.NullOr(Schema.String),
+  repos: Schema.Array(Schema.String),
+  notes: Schema.String,
+  pinned: Schema.NullOr(Schema.String),
+  material: Schema.String,
+  myOpenTasks: Schema.Array(TaskSummary),
+  docs: Schema.NullOr(Schema.Array(Schema.Struct({ key: Schema.String, title: Schema.String }))),
+});
+const ClientSheet = Schema.Struct({
+  ...ClientRow.fields,
+  lookedAfterBy: Schema.String,
+  notes: Schema.String,
+  material: Schema.String,
+  contacts: Schema.Array(
+    Schema.Struct({
+      key: Schema.String,
+      name: Schema.String,
+      role: Schema.NullOr(Schema.String),
+      email: Schema.NullOr(Schema.String),
+      phone: Schema.NullOr(Schema.String),
+      notes: Schema.String,
+    }),
+  ),
+  projects: Schema.Array(
+    Schema.Struct({ key: Schema.String, title: Schema.String, state: Schema.String }),
+  ),
+  deals: Schema.NullOr(
+    Schema.Array(
+      Schema.Struct({
+        key: Schema.String,
+        title: Schema.String,
+        state: Schema.String,
+        value: Schema.NullOr(KinMoney),
+        expected: Schema.NullOr(Schema.String),
+      }),
+    ),
+  ),
+});
+const DocPage = Schema.Struct({
+  key: Schema.String,
+  title: Schema.String,
+  client: Ref,
+  project: Ref,
+  updatedAt: Schema.String,
+  page: Schema.Int,
+  pages: Schema.Int,
+  material: Schema.String,
+  text: Schema.String,
+});
+const { owed, received, spent } = KinMoneySummary.fields;
+const MoneySheet = Schema.Struct({
+  asOf: Schema.String,
+  thisMonth: Schema.String,
+  lastMonth: Schema.String,
+  financialYear: Schema.String,
+  owed: Schema.Struct({
+    total: owed.fields.total,
+    overdue: owed.fields.overdue,
+    invoices: owed.fields.invoices,
+    overdueInvoices: owed.fields.overdueInvoices,
+    byClient: Schema.Array(
+      Schema.Struct({
+        client: Ref,
+        owed: KinMoneyTotals,
+        overdue: KinMoneyTotals,
+        invoices: Schema.Int,
+        oldestOverdueDays: Schema.NullOr(Schema.Int),
+      }),
+    ),
+    moreClients: Schema.Int,
+  }),
+  received: Schema.Struct({ ...received.fields, thisFinancialYear: KinMoneyTotals }),
+  spent: Schema.Struct({ ...spent.fields, thisFinancialYear: KinMoneyTotals }),
+  coming: Schema.Array(
+    Schema.Struct({
+      key: Schema.String,
+      title: Schema.String,
+      list: Schema.String,
+      state: Schema.String,
+      what: Schema.String,
+      at: Schema.String,
+      amount: Schema.NullOr(Schema.Struct({ minor: Schema.Number, currency: Schema.String })),
+      late: Schema.Boolean,
+    }),
+  ),
+  moreComing: Schema.Int,
+});
+const MemoryLines = Schema.Struct({
+  material: Schema.String,
+  lines: Schema.Array(
+    Schema.Struct({
+      title: Schema.String,
+      text: Schema.String,
+      source: Schema.String,
+      recordedAt: Schema.String,
+    }),
+  ),
+});
+
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
 
 const TasksKeyToolkit = Toolkit.make(
@@ -97,8 +244,109 @@ const TasksKeyToolkit = Toolkit.make(
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
+  Tool.make("find", {
+    ...shared,
+    description:
+      "Find projects, clients or docs the person this key belongs to can see in Kin, by words in the name or title; docs also by client or project key. Returns keys and titles; open one with open_project, open_client or read_doc.",
+    parameters: Schema.Struct({
+      kind: Schema.Literals(["projects", "clients", "docs"]),
+      text: Schema.optional(Words.annotate({ description: "Words in the name or title." })),
+      client: Schema.optional(
+        KinRecordKey.annotate({ description: "Projects or docs: only this client's, by key." }),
+      ),
+      project: Schema.optional(
+        KinRecordKey.annotate({ description: "Docs: only this project's, by key." }),
+      ),
+      mine: Schema.optional(
+        Schema.Boolean.annotate({ description: "Projects: only those the person is on." }),
+      ),
+    }),
+    success: Schema.Union([
+      Schema.Struct({ projects: Schema.Array(ProjectRow), more: Schema.Boolean }),
+      Schema.Struct({ clients: Schema.Array(ClientRow), more: Schema.Boolean }),
+      Schema.Struct({ docs: Schema.Array(DocRow), more: Schema.Boolean }),
+    ]),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("open_project", {
+    ...shared,
+    description:
+      "Open one project by its key, such as a task's project: client, state, lead, repositories, notes, the person's own open tasks on it and its docs. One they can't see is not found.",
+    parameters: Schema.Struct({
+      key: KinRecordKey.annotate({ description: "The project's key, such as P-3." }),
+    }),
+    success: ProjectSheet,
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("open_client", {
+    ...shared,
+    description:
+      "Open one client by its key: notes, contacts, projects, and deals when the person can see deals. One they can't see is not found.",
+    parameters: Schema.Struct({
+      key: KinRecordKey.annotate({ description: "The client's key, such as C-4." }),
+    }),
+    success: ClientSheet,
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("read_doc", {
+    ...shared,
+    description:
+      "Read a doc's latest text by its key, one page at a time: the answer says which page it is and how many there are; ask for the next page to read on.",
+    parameters: Schema.Struct({
+      key: KinRecordKey.annotate({ description: "The doc's key, such as D-7." }),
+      page: Schema.optional(
+        Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).annotate({
+          description: "Which page, from 1 (the default).",
+        }),
+      ),
+    }),
+    success: DocPage,
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("money_summary", {
+    ...shared,
+    description:
+      "What the person's Money page shows: what clients owe and what is overdue, money in and out this month, last month and this financial year, and money coming due soon, each entry by key.",
+    success: MoneySheet,
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make("search_memory", {
+    ...shared,
+    description:
+      "Search what Kin remembers about the company that the person may read, by words. Each line comes with who it came from and when it was recorded.",
+    parameters: Schema.Struct({
+      text: Words.check(Schema.isMinLength(1)).annotate({ description: "Words to look for." }),
+    }),
+    success: MemoryLines,
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
 );
 export const TASKS_KEY_TOOLS = Object.keys(TasksKeyToolkit.tools);
+/** Listed, and callable, only for a person whose own screens open Money or Memory now. */
+const GATED: Partial<
+  Record<string, (holder: TasksKeyHolder) => Effect.Effect<boolean, KinChatError, Services>>
+> = {
+  money_summary: readsMoney,
+  search_memory: readsMemory,
+};
 
 // Read from the request, not declared: tool services are built with the server, and the holder
 // exists only per request. Without `auth` in front there is none, and every call fails.
@@ -127,7 +375,44 @@ const handlers = McpToolAccess.toLayer(TasksKeyToolkit, {
       asHolder((holder) => setStateMine(holder, input)),
     ),
   ),
+  find: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.find")(function* ({ kind, ...input }) {
+      if (kind === "projects") return yield* asHolder((holder) => listProjects(holder, input));
+      if (kind === "clients") return yield* asHolder((holder) => listClients(holder, input));
+      return yield* asHolder((holder) => findDocs(holder, input));
+    }),
+  ),
+  open_project: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.openProject")((input) =>
+      asHolder((holder) => openProject(holder, input.key)),
+    ),
+  ),
+  open_client: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.openClient")((input) =>
+      asHolder((holder) => openClient(holder, input.key)),
+    ),
+  ),
+  read_doc: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.readDoc")((input) => asHolder((holder) => readDoc(holder, input))),
+  ),
+  money_summary: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.money")(() => asHolder(moneySummary)),
+  ),
+  search_memory: McpToolAccess.reads(
+    Effect.fn("KinTasksKeyTools.memory")((input) =>
+      asHolder((holder) => searchMemory(holder, input.text)),
+    ),
+  ),
 });
+
+// Untraced: it runs for every tool on each list and call.
+const listed = toolVisibility(
+  Effect.fnUntraced(function* (name: string) {
+    const gate = GATED[name];
+    if (gate === undefined) return true;
+    return yield* asHolder(gate).pipe(Effect.orElseSucceed(() => false));
+  }),
+);
 
 const refused = HttpServerResponse.jsonUnsafe(
   { error: "invalid_kin_key", message: "A live Kin coding agent key is required." },
@@ -207,9 +492,9 @@ const keyAsClient = Layer.mergeAll(
   ),
 );
 
-/** `/kin/you/mcp`: these four tools and nothing else, for a person's own coding agent. */
+/** `/kin/you/mcp`: these tools and nothing else, for a person's own coding agent. */
 const endpoint = McpHttpServer.layerMcpTransport(
-  McpHttpServer.toolkitRegistration(TasksKeyToolkit, handlers),
+  Layer.mergeAll(McpHttpServer.toolkitRegistration(TasksKeyToolkit, handlers), listed),
 ).pipe(
   Layer.provide(keyAsClient),
   Layer.fresh,
