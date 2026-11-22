@@ -149,6 +149,8 @@ export const QUOTE_LABELS = {
   scheduledUntrusted: "scheduled task (untrusted)",
   approvedDraft: "approved draft (data)",
   answeredQuestion: "answered question (data)",
+  dismissedQuestion: "dismissed question (data)",
+  reopenedQuestion: "reopened question (data)",
   openQuestion: "open question (data)",
   githubEvent: "GitHub event (untrusted hint)",
   teamRoomTurn: "Team room turn",
@@ -573,7 +575,7 @@ export class KinLeadPrompt extends Context.Service<
             events.push(
               told === undefined
                 ? `${eventQuote}\n\nKin couldn't read that question just now. Write exactly ${SILENT_REPLY}.`
-                : `${eventQuote}\n\n${told.text} End your turn with exactly ${SILENT_REPLY}.\n\n${quote(event.subject.reopened === true ? "reopened question (data)" : "dismissed question (data)", told.data, true)}`,
+                : `${eventQuote}\n\n${told.text} End your turn with exactly ${SILENT_REPLY}.\n\n${quote(event.subject.reopened === true ? QUOTE_LABELS.reopenedQuestion : QUOTE_LABELS.dismissedQuestion, told.data, true)}`,
             );
             continue;
           }

@@ -46,4 +46,4 @@ export const personInTurn = Effect.fn("KinDismissedHold.personInTurn")(function*
 
 /** What an agent hears when it puts a task a dismissal released back to waiting on that person. */
 export const dismissedHoldText = (name: string, key: string) =>
-  `${name} dismissed that question, so ${key} does not wait on them.`;
+  `${name} dismissed that question, so ${key} does not wait on them. Leave it open with you, or say what it needs in one comment.`;

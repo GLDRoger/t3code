@@ -1853,7 +1853,7 @@ export const dismissedTurnText = Effect.fn("KinQuestions.dismissedTurnText")(fun
       data,
     };
   return {
-    text: `${who} dismissed your question “${row.question}” without choosing. That is not a choice and not approval of your pick: do not ask it again and do not take a default. If the work can go on without that answer, go on; if it cannot, set the task aside and say why in one line on the task. Do not reply in chat.`,
+    text: `${who} dismissed your question “${row.question}” without choosing. That is not a choice and not approval of your pick: do not ask it again and do not take a default. If the work can go on without that answer, do that work now, in this turn. If it cannot, leave the task open with you: change neither its state nor its notes, and add one comment of one line on it saying what it needs. Do not reply in chat, but not replying is not stopping: do the work first.`,
     data,
   };
 });
