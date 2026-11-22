@@ -81,7 +81,8 @@ const TASK_ASKER = ownerLevelSql("e.org_id", "json_extract(e.json, '$.provenance
 /**
  * A task event that is its giver's own words to this agent, by their own hand (never a coding
  * agent's): their comment on it, or their giving it, when they wrote it and every change to its
- * title and notes up to then was theirs too. From another chat, only their own direct chat with it.
+ * title and notes, to now (what the turn's prompt shows), was theirs too. From another chat, only
+ * their own direct chat with it.
  */
 const OWN_TASK_ACT = `json_extract(e.json, '$.provenance._tag') = 'human' AND ${TASK_ASKER}
   AND ((json_extract(e.json, '$.origin') IS NULL
@@ -108,7 +109,7 @@ const OWN_TASK_ACT = `json_extract(e.json, '$.provenance._tag') = 'human' AND ${
           WHERE json_extract(f.value, '$.field') = 'owner'
             AND json_extract(f.value, '$.to') = 'agent:' || e.agent_id)
         AND NOT EXISTS (SELECT 1 FROM kin_record_changes ow, json_each(ow.fields_json) wf
-          WHERE ow.org_id = orr.org_id AND ow.record_id = orr.record_id AND ow.seq <= og.seq
+          WHERE ow.org_id = orr.org_id AND ow.record_id = orr.record_id
             AND json_extract(wf.value, '$.field') IN ('title', 'notes')
             AND (ow.actor_kind <> 'person' OR ow.actor_id IS NOT orr.created_by_id
               OR ow.coding_agent_key IS NOT NULL)))

@@ -1946,7 +1946,7 @@ it.effect(
       const coId = KinPersonId.make("co");
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
         VALUES (${coId}, ${orgId}, 'co', 'Co', 'co_owner', ${at})`;
-      const madeBy = (personId: KinPersonId, words: "hers" | "the owner's") =>
+      const madeBy = (personId: KinPersonId, words: "hers" | "the owner's" | "edited after") =>
         Effect.gen(function* () {
           // Her own direct chat with the lead, where its turn on her task runs.
           const chat = `${personId}-lead-chat`;
@@ -1962,13 +1962,21 @@ it.effect(
             VALUES (${`${chat}-lead`}, ${orgId}, ${chat}, 'agent', ${lead}, 'member', ${at})`;
           const hers = { actor: { _tag: "person" as const, personId }, via: "owner" as const };
           const title = `Invented: get the brochure built ${words}`;
-          if (words === "hers")
-            yield* records.create(
+          if (words !== "the owner's") {
+            const made = yield* records.create(
               orgId,
               { ...hers, askedBy: personId },
-              { originKey: title, title, owner: toLead },
+              { originKey: `owner:${title}`, title, owner: toLead },
             );
-          else {
+            // The project's lead rewrites the brief after she gave it, before its turn reads it.
+            if (words === "edited after")
+              yield* records.update(
+                orgId,
+                { actor: { _tag: "person", personId: mateId }, via: "owner" },
+                made.row.key,
+                { notes: "Invented: the lead's own brief" },
+              );
+          } else {
             // His words, given to her; she passes them on with one tap.
             const his = yield* ownerTask(title, { owner: { _tag: "person", personId } });
             yield* records.update(orgId, { ...hers, askedBy: personId }, his.key, {
@@ -1993,6 +2001,7 @@ it.effect(
         });
       assert.notProperty((yield* madeBy(coId, "hers")).records[0], "suggested");
       assert.include((yield* madeBy(coId, "the owner's")).records[0], { suggested: true });
+      assert.include((yield* madeBy(coId, "edited after")).records[0], { suggested: true });
     }).pipe(Effect.provide(layer)),
 );
 
