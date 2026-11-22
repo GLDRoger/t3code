@@ -363,7 +363,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
                 reason: "not_allowed",
                 message: "Only the owner or a co-owner can create agents.",
               });
-            const { _tag, lead } = yield* LeadProvision.create({
+            const provision = LeadProvision.create({
               creator: { _tag: "session", session },
               name: input.name,
               domain: input.domain,
@@ -371,7 +371,13 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               intro: input.intro,
               model: input.model,
               workerProjects: input.workerProjects ?? [],
-            }).pipe(Effect.provideContext(kin.value.services.value), withHostModels);
+            }).pipe(
+              Effect.provideContext(kin.value.services.value),
+              Effect.provideService(ServerSettingsService, settings.value),
+            );
+            const { _tag, lead } = yield* Option.isSome(providerRegistry)
+              ? provision.pipe(Effect.provideService(ProviderRegistry, providerRegistry.value))
+              : provision;
             // No agent goes without a character; a failure leaves the next start to write it.
             yield* seedCharacters(lead.orgId).pipe(
               Effect.provideContext(kin.value.services.value),
