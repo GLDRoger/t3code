@@ -15,7 +15,6 @@ import {
   type KinHostUsage,
   type KinOrgId,
   type KinTroubleCause,
-  type KinWidget,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
@@ -53,8 +52,8 @@ export const HOLD_MS: Readonly<Partial<Record<KinTroubleCause, number>>> = {
   program: 15 * 60_000,
   usage_limit: 15 * 60_000,
 };
-/** Causes any agent's next good turn proves gone; the rest clear per agent. */
-const HOST_WIDE: ReadonlySet<KinTroubleCause> = new Set(["space", "unreachable"]);
+/** Causes any stopped agent's next good turn proves gone; the rest clear agent by agent. */
+const HOST_WIDE: ReadonlySet<KinTroubleCause> = new Set(["space"]);
 // A low-space warning cleans at most this often; an out-of-space failure always cleans.
 const LOW_CLEAN_EVERY_MS = 10 * 60_000;
 const LOW_PERCENT = 20;
@@ -343,7 +342,8 @@ const make = Effect.gen(function* () {
       agentId: string;
       name: string;
     }>`SELECT agent_id AS "agentId", name FROM kin_trouble_agents
-      WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} ORDER BY rowid`;
+      WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId}
+        AND (worked_at IS NULL OR ${trouble.closedAt} IS NOT NULL) ORDER BY rowid`;
     const [counts] = yield* sql<{ held: number | null; done: number | null }>`SELECT
         SUM(CASE WHEN state = 'queued' THEN 1 ELSE 0 END) AS held,
         SUM(CASE WHEN state = 'done' THEN 1 ELSE 0 END) AS done
@@ -519,7 +519,7 @@ const make = Effect.gen(function* () {
                 COALESCE(json_extract(l.models_json, '$.instanceId'),
                   json_extract(l.models_json, '$.provider'))
               FROM kin_leads l WHERE l.org_id = ${orgId} AND l.agent_id = ${input.agentId}
-              ON CONFLICT (trouble_id, agent_id) DO NOTHING`;
+              ON CONFLICT (trouble_id, agent_id) DO UPDATE SET worked_at = NULL`;
             yield* sql`UPDATE kin_troubles SET
                 detail = COALESCE(${input.detail?.slice(0, 600) ?? null}, detail),
                 reset_at = COALESCE(${input.resetAt ?? null}, reset_at)
@@ -559,8 +559,36 @@ const make = Effect.gen(function* () {
         if (trouble.cause === "backup") continue;
         const [affected] = yield* sql`SELECT 1 FROM kin_trouble_agents
           WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} AND agent_id = ${agentId}`;
-        if (HOST_WIDE.has(trouble.cause) || affected !== undefined)
+        // An agent this trouble never stopped proves nothing about it.
+        if (affected === undefined) continue;
+        if (HOST_WIDE.has(trouble.cause)) {
           yield* close(orgId, trouble.troubleId);
+          continue;
+        }
+        // Its own part is over: its held turns run, the others' stay held.
+        yield* troubleLock.withPermits(1)(
+          Effect.gen(function* () {
+            const now = yield* Clock.currentTimeMillis;
+            yield* sql`UPDATE kin_trouble_agents SET worked_at = ${now}
+              WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} AND agent_id = ${agentId}`;
+            const own = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+              WHERE org_id = ${orgId} AND held_by = ${trouble.troubleId} AND agent_id = ${agentId}
+                AND state IN ('queued', 'failed') ORDER BY event_id`;
+            yield* queue.wake(
+              orgId,
+              own.map((row) => KinEventId.make(row.eventId)),
+            );
+          }),
+        );
+        // Over when no stopped agent is left with a held turn.
+        const [still] = yield* sql`SELECT 1 FROM kin_trouble_agents a
+          WHERE a.org_id = ${orgId} AND a.trouble_id = ${trouble.troubleId} AND a.worked_at IS NULL
+            AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = a.org_id
+              AND e.held_by = a.trouble_id AND e.agent_id = a.agent_id
+              AND e.state IN ('queued', 'failed'))
+          LIMIT 1`;
+        if (still === undefined) yield* close(orgId, trouble.troubleId);
+        else yield* projectQuietly(orgId, trouble.troubleId, false);
       }
       // A closed notice counts its held turns as they finish, for a day after it closed.
       const since = (yield* Clock.currentTimeMillis) - 24 * 60 * 60_000;
@@ -586,7 +614,8 @@ const make = Effect.gen(function* () {
         if (trouble.cause === "backup") continue;
         if (HOST_WIDE.has(trouble.cause)) return trouble.cause;
         const [affected] = yield* sql`SELECT 1 FROM kin_trouble_agents
-          WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} AND agent_id = ${agentId}`;
+          WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} AND agent_id = ${agentId}
+            AND worked_at IS NULL`;
         if (affected !== undefined) return trouble.cause;
       }
       return undefined;

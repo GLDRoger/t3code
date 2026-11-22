@@ -403,6 +403,52 @@ it.effect(
     }).pipe(Effect.provide(services)),
 );
 
+it.effect(
+  "an agent working again releases only its own held turns; the trouble closes when every agent has",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(DAY_START);
+      yield* seed;
+      const care = yield* KinHostCare.KinHostCare;
+      const sql = yield* SqlClient.SqlClient;
+      const chief = KinAgentId.make("chief");
+      const finance = KinAgentId.make("finance");
+      const mine = yield* queued("c1", "chief");
+      const theirs = yield* queued("f1", "finance");
+      yield* care.failed({ orgId, agentId: chief, cause: "signin", eventIds: [mine] });
+      yield* care.failed({ orgId, agentId: finance, cause: "signin", eventIds: [theirs] });
+      const due = sql<{ eventId: string; notBefore: number }>`SELECT event_id AS "eventId",
+      not_before AS "notBefore" FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`;
+      // Finance's account is signed in again; Chief of staff's is not.
+      yield* care.succeeded(orgId, finance);
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [card.cause, card.open, card.agents.map((one) => one.name)]),
+        [["signin", true, ["Chief of staff"]]],
+      );
+      assert.deepStrictEqual(yield* due, [
+        { eventId: "c1", notBefore: NOW + 5 * 60_000 },
+        { eventId: "f1", notBefore: DAY_START },
+      ]);
+      assert.strictEqual(yield* care.causeFor(orgId, chief), "signin");
+      assert.isUndefined(yield* care.causeFor(orgId, finance));
+      // An agent the trouble never stopped proves nothing about it, even for the provider.
+      yield* care.failed({ orgId, agentId: chief, cause: "unreachable", eventIds: [] });
+      yield* care.succeeded(orgId, finance);
+      assert.isTrue(yield* care.troubleOpen(orgId, "unreachable"));
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE event_id = 'f1'`;
+      yield* care.succeeded(orgId, chief);
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [card.cause, card.open]),
+        [
+          ["signin", false],
+          ["unreachable", false],
+        ],
+      );
+      // Only the turn that finished counts as run.
+      assert.strictEqual((yield* cards)[0]!.closed?.ran, 1);
+    }).pipe(Effect.provide(services)),
+);
+
 const space =
   (left: Record<string, number>) =>
   (folder: string): Effect.Effect<Option.Option<HostBackup.SpaceReading>> =>
