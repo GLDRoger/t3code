@@ -141,11 +141,9 @@ export const alsoOnIt = (sql: SqlClient.SqlClient, personId: KinPersonId | State
     WHERE o.value = 'person:' || ${personId}))`;
 
 /**
- * What a non-owner-level person sees everywhere: a picture by its own rule alone, unlabelled
- * (`pictureReader`); a task they hold, are on, attend or marked private; unlabelled, what they
- * made, gave or share, their projects with those projects' entries and docs (never a private
- * task), docs filed as their own drafts (`draftDoc`'s mark), company docs with Docs on, and with
- * Clients on the deals of clients they see.
+ * What a non-owner-level person sees: a picture by `pictureReader` alone; else a task they hold, are
+ * on, attend or marked private; what they made, gave or share; their projects' entries and docs;
+ * their drafts; company docs with Docs on; with Clients on, the deals of clients they see.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`(CASE WHEN ${isPicture(sql)} THEN (NOT ${sensitiveNow(sql)} AND ${pictureReader(sql, personId)})
