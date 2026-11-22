@@ -3595,7 +3595,14 @@ const make = Effect.gen(function* () {
       }
       // A shared chat's own reminder or routine is its asker's, the owner's or a co-owner's.
       const asker = chatOwnAsker(widget);
-      if (asker !== undefined && !owning && asker.personId !== identity.personId)
+      // A shared chat's own: its setter, or the owner or a co-owner by their live access.
+      if (
+        asker !== undefined &&
+        asker.personId !== identity.personId &&
+        !(yield* ownerLevel(identity.orgId, identity.personId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ))
+      )
         return yield* new KinChatError({ reason: "not_allowed", message: KIN_ASKER_ONLY_REFUSAL });
       // Reminders and scheduled tasks act for the owner, so only the owner taps them, except a
       // reminder in someone's own direct chat: theirs to finish or snooze.

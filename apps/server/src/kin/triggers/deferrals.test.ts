@@ -986,6 +986,13 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
     source_event: KinEventId.make("set-event"),
     said_by: "teammate",
   });
+  const partners = makeDeferral("def-c", {
+    on_due: "remind",
+    due: "2026-11-13T11:00+05:30",
+    chat: KinChatId.make("group-a"),
+    source_event: KinEventId.make("set-event"),
+    said_by: "teammate",
+  });
   const gone = makeDeferral("def-m", {
     on_due: "remind",
     due: "2026-11-13T10:00+05:30",
@@ -1001,6 +1008,8 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
     yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES
       ('teammate', ${orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z'),
       ('bystander', ${orgId}, 'bystander', 'Bystander', '1970-01-01T00:00:00.000Z')`;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES ('partner', ${orgId}, 'partner', 'Partner', '1970-01-01T00:00:00.000Z', 'co_owner')`;
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at, direct_key)
       VALUES ('group-a', ${orgId}, 'team_group', 'Plans', 0, '1970-01-01T00:00:00.000Z', NULL),
         ('teammate-direct', ${orgId}, 'direct', NULL, 0, '1970-01-01T00:00:00.000Z',
@@ -1026,6 +1035,8 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
     yield* join("group-a", "group-lead", { _tag: "agent", agentId: lead });
     yield* join("group-a", "group-teammate", person("teammate"));
     yield* join("group-a", "group-bystander", person("bystander"));
+    // A co-owner who is a plain member of the group, and did not ask.
+    yield* join("group-a", "group-partner", person("partner"));
     yield* join("teammate-direct", "direct-teammate", person("teammate"));
     yield* join("teammate-direct", "direct-lead", { _tag: "agent", agentId: lead });
     // The teammate asked in the group, which everyone there read: a shared turn.
@@ -1050,6 +1061,7 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
     const triggers = yield* TriggerService.KinTriggerService;
     yield* triggers.syncItem(here);
     yield* triggers.syncItem(gone);
+    yield* triggers.syncItem(partners);
 
     // Everyone there sees it, with who asked; only they, the owner or a co-owner stop it.
     const set = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: widgetFor("def-s") }));
@@ -1059,19 +1071,21 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
       name: "Teammate",
     });
     const chat = yield* Chat.KinChatService;
-    const undo = (personId: string) =>
+    const undo = (personId: string, itemId = "def-m") =>
       chat.act(
         { _tag: "person", orgId, personId: KinPersonId.make(personId) },
         {
-          widgetId: widgetFor("def-m"),
+          widgetId: widgetFor(itemId),
           revision: 1,
           actionId: "undo",
-          value: "def-m",
+          value: itemId,
           clientActionId: `undo-${personId}`,
         },
       );
     const refused = yield* undo("bystander").pipe(Effect.flip);
     assert.deepInclude(refused, { reason: "not_allowed", message: KIN_ASKER_ONLY_REFUSAL });
+    yield* undo("partner", "def-c");
+    assert.strictEqual((yield* runOf("def-c"))?.state, "undone");
 
     yield* tick(dueAt);
     const eventId = yield* reminderEvent();
@@ -1108,7 +1122,7 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
       FROM kin_messages WHERE org_id = ${orgId} AND body LIKE 'Reminder: def-m.%' ORDER BY seq`;
     assert.equal(moved?.chatId, "teammate-direct");
     assert.include(moved?.body ?? "", "It was for Plans, which");
-  }).pipe(Effect.provide(layerFor([here, gone])));
+  }).pipe(Effect.provide(layerFor([here, gone, partners])));
 });
 
 it.effect("a teammate's own reminder comes to them in their chat, never the owner's", () => {
