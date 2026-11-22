@@ -71,7 +71,7 @@ import {
   type StoredDraft,
 } from "./approval.ts";
 
-export type QuestionState = "open" | "answered" | "default_taken" | "withdrawn";
+export type QuestionState = "open" | "answered" | "default_taken" | "withdrawn" | "dismissed";
 export type QuestionRow = {
   readonly questionId: string;
   readonly agentId: KinAgentId;

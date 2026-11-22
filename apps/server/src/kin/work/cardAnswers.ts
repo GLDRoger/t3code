@@ -1,4 +1,5 @@
 import {
+  KIN_DISMISSED_FIELD,
   KinAgentId,
   KinChatError,
   type KinOrgId,
@@ -16,6 +17,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { isPrivateWriteRefused } from "../chat/KinChatRepository.ts";
 import {
   type ChoiceAnswerHandler,
+  type ChoiceDismissHandler,
   type ChoiceRefusedHandler,
   KinChatService,
 } from "../chat/KinChatService.ts";
@@ -24,6 +26,7 @@ import { cardDecision } from "../memory/decisions.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { answerCard } from "../questions/openQuestions.ts";
+import { dismissQuestion, undismissQuestion } from "../questions/dismissed.ts";
 import { answerReceiptCard } from "../gendocs/receiptProposals.ts";
 import { receiptDocument } from "../gendocs/receipts.ts";
 import { answerCurrencyCard } from "./statements/statementReview.ts";
@@ -214,6 +217,53 @@ const chosenWork = Effect.fn("KinCardAnswers.chosenWork")(function* (
     title: `${asked}: ${input.option.label}`.slice(0, CHOSEN_TITLE),
     owner: { _tag: "agent", agentId: KinAgentId.make(question.agentId) },
   });
+});
+
+/**
+ * A person's Dismiss on a card, or their Undo of it, in the tap's transaction. A question it asks
+ * closes as dismissed, and each of its asker's tasks it is about that waited on this person for
+ * it alone opens again, with its history saying why (`KIN_DISMISSED_FIELD`). The Undo puts back
+ * those still as the dismissal left them.
+ */
+export const dismissChoice = Effect.fn("KinCardAnswers.dismiss")(function* (
+  input: Parameters<ChoiceDismissHandler>[0],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const card = { orgId: input.orgId, widgetId: input.widget.widgetId, personId: input.personId };
+  const question = input.undo
+    ? yield* undismissQuestion({ ...card, dismissedAt: input.dismissedAt, now: input.now })
+    : yield* dismissQuestion({ ...card, now: input.now });
+  if (question === undefined || question.about.length === 0) return;
+  const records = yield* KinRecords;
+  const writer = { actor: { _tag: "person", personId: input.personId }, via: "owner" } as const;
+  if (!input.undo) {
+    const held = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
+      WHERE r.org_id = ${input.orgId} AND r.register_id = 'work' AND r.key IN ${sql.in(question.about)}
+        AND r.owner_kind = 'agent' AND r.owner_id = ${question.agentId} AND r.state = 'waiting'
+        AND r.waiting_on_kind = 'person' AND r.waiting_on_id = ${input.personId}
+        AND NOT EXISTS (SELECT 1 FROM kin_questions q WHERE q.org_id = r.org_id
+          AND q.state = 'open' AND q.person_id = ${input.personId}
+          AND (' ' || q.about || ' ') LIKE ('% ' || r.key || ' %'))
+      ORDER BY r.key`;
+    for (const task of held)
+      yield* records.update(input.orgId, writer, task.key, { state: "open" }, undefined, [
+        { field: KIN_DISMISSED_FIELD, from: null, to: question.questionId },
+      ]);
+    return;
+  }
+  const released = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
+    WHERE r.org_id = ${input.orgId} AND r.register_id = 'work' AND r.key IN ${sql.in(question.about)}
+      AND r.owner_kind = 'agent' AND r.owner_id = ${question.agentId} AND r.state = 'open'
+      AND EXISTS (SELECT 1 FROM json_each((SELECT c.fields_json FROM kin_record_changes c
+          WHERE c.org_id = r.org_id AND c.record_id = r.record_id ORDER BY c.seq DESC LIMIT 1)) f
+        WHERE json_extract(f.value, '$.field') = ${KIN_DISMISSED_FIELD}
+          AND json_extract(f.value, '$.to') = ${question.questionId})
+    ORDER BY r.key`;
+  for (const task of released)
+    yield* records.update(input.orgId, writer, task.key, {
+      state: "waiting",
+      waitingOn: { _tag: "person", personId: input.personId },
+    });
 });
 
 /** Saves the answer to memory once the tap commits, when the owner or a co-owner gave it. */

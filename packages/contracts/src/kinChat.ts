@@ -417,6 +417,13 @@ export const kinChoiceActionNote = (options: ReadonlyArray<KinChoiceOption>) => 
 /** A `choice` card's buttons post `actionId: "choose"` with the option id as `value`. */
 export const KIN_CHOICE_CARD_ACTION = "choose";
 /**
+ * Closes an open choice card without choosing, for the person it asks; posts nothing in the chat.
+ * A Confirm card for something leaving the company (`send`) is never dismissed.
+ */
+export const KIN_CHOICE_DISMISS_ACTION = "dismiss";
+/** The dismisser's Undo: the card opens again as it was while nothing else closed its question. */
+export const KIN_CHOICE_UNDISMISS_ACTION = "undismiss";
+/**
  * An unanswered choice card stops taking taps this long after it was posted (its revision-1
  * `updatedAt`): the same day-long window after which Kin stops waking a lead for old messages.
  */
@@ -552,6 +559,17 @@ export const KinChoiceCardState = Schema.Struct({
   ),
   /** An agent's open question: it takes taps until the question closes, not for a day. */
   untilAnswered: Schema.optionalKey(Schema.Literal(true)),
+  /**
+   * Set while the person it asked dismissed it without choosing: by whom, by name then, and when.
+   * The card is closed; its Undo (`KIN_CHOICE_UNDISMISS_ACTION`) opens it again as it was.
+   */
+  dismissed: Schema.optionalKey(
+    Schema.Struct({
+      personId: KinPersonId,
+      name: KinTrimmedText.check(Schema.isMaxLength(200)),
+      at: IsoDateTime,
+    }),
+  ),
   /**
    * What the answer did, in the owner's words, set by the server on a card Kin asked itself: a
    * past-tense title ("Money recorded") and what happened ("Receipt RCT/26-27/001 for ₹25,000…").

@@ -329,6 +329,11 @@ export type KinRecordChange = typeof KinRecordChange.Type;
 export const KIN_CODING_AGENT_UNNAMED = "a coding agent";
 /** The field a change carries when Kin took a question's default: no list field's key has a colon. */
 export const KIN_TAKEN_DEFAULT_FIELD = "kin:default";
+/**
+ * The field a change carries when the person a question waited on dismissed it without choosing,
+ * which stopped the task waiting on them: the question's id in `to`.
+ */
+export const KIN_DISMISSED_FIELD = "kin:dismissed";
 /** The field a hand-over carries for someone who left the team: `person:<id>` in `from`. */
 export const KIN_LEFT_FIELD = "kin:left";
 /** The field a deal's hand-over carries for each next step that went with it: the step's key in `to`. */
