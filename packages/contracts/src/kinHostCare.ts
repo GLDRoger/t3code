@@ -238,7 +238,7 @@ function wordsByCause(card: TroubleFacts, at: (iso: string) => string): TroubleW
             : `Kin's last good backup was at ${at(card.lastGoodAt)}, so a failed disk could lose what changed since.`,
         doing:
           card.backupConfigured === true
-            ? "Kin closes this by itself once a backup runs."
+            ? "Kin closes this by itself once a backup succeeds."
             : "Nightly backups aren't set up on this computer yet. Whoever set up Kin's computer can turn them on.",
         actions: card.backupConfigured === true ? ["back_up"] : [],
       };
