@@ -5181,7 +5181,7 @@ describe("money answers", () => {
           fundedBy: "person:meera",
           reimbursement: "not reimbursable",
         });
-        // As an import left them before K207: an address that paid, and nothing said yet.
+        // As an import left them before K208: an address that paid, and nothing said yet.
         const imported = (key: string, day: string, rupees: number, address: string) =>
           Effect.gen(function* () {
             const { row } = yield* spend(key, day, rupees);
@@ -5203,7 +5203,7 @@ describe("money answers", () => {
           return { view, cash: cashAnswer(yield* cashPosition(orgId, NOW)) };
         });
 
-        // K207 again on a list it hadn't reached: no figure moves, nothing is marked owed.
+        // K208 again on a list it hadn't reached: no figure moves, nothing is marked owed.
         const fields = yield* sql<{ json: string }>`SELECT definition_json AS json
           FROM kin_registers WHERE org_id = ${orgId} AND register_id = 'expenses'`;
         const definition = JSON.parse(fields[0]!.json) as {
@@ -5218,7 +5218,7 @@ describe("money answers", () => {
         yield* sql`UPDATE kin_registers SET definition_json = ${before}, built_in = 0
           WHERE org_id = ${orgId} AND register_id = 'expenses'`;
         const unmigrated = yield* figures;
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 208`;
         yield* runKinMigrations();
         assert.deepStrictEqual(yield* figures, unmigrated);
 

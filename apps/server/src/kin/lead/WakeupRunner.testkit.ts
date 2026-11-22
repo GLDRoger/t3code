@@ -156,6 +156,8 @@ type HarnessOptions = {
   readonly failed?: boolean;
   /** The failed turn's failure code, as an adapter names it. */
   readonly failureCode?: string;
+  /** The failed turn's failure text; a full disk names itself here. */
+  readonly failureMessage?: string;
   readonly writer?: Layer.Layer<Writer.MemoryWriter, never, SqlClient.SqlClient>;
   readonly piUsage?: boolean;
   readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
@@ -452,7 +454,7 @@ function parts(options: HarnessOptions) {
                       failureItemOrdinal: 1,
                       failure: {
                         class: "provider_error" as const,
-                        message: "Fixture provider failure",
+                        message: options.failureMessage ?? "Fixture provider failure",
                         code: options.failureCode ?? null,
                         retryable: false,
                       },

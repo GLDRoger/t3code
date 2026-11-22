@@ -67,6 +67,8 @@ export const KIN_MONEY_FORMS = {
     whatPlaceholder: "Such as courier for samples",
     amount: "Amount",
     amountPlaceholder: "Such as 2,350",
+    /** Under the amount: an amount below zero is a refund or credit. */
+    amountRefundHint: "For a refund, put a minus in front: -500.",
     paidOn: "Paid on",
     paidOnHint: "A day still ahead saves it as to pay.",
     vendor: "Who was paid",

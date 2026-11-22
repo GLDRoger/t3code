@@ -46,6 +46,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
+import * as KinWatches from "../watches/KinWatches.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { type AssignNotice, movedNotices } from "./assignNotices.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
@@ -1843,6 +1844,7 @@ export type LeaverHeld = {
   readonly clients: number;
   readonly followUps: number;
   readonly promises: number;
+  readonly watches: number;
 };
 
 /**
@@ -1878,7 +1880,10 @@ export const leaverHeld = Effect.fn("KinDeals.leaverHeld")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
 ) {
-  return heldOf(yield* leaverRows(orgId, personId).pipe(workFailure)) satisfies LeaverHeld;
+  return {
+    ...heldOf(yield* leaverRows(orgId, personId).pipe(workFailure)),
+    watches: yield* KinWatches.countForPerson(orgId, personId).pipe(workFailure),
+  } satisfies LeaverHeld;
 });
 
 /** Whether `personId` may take a leaver's clients and deals: on the team, owner level or Clients on. */
@@ -1902,8 +1907,8 @@ const leaverReceiver = Effect.fn("KinDeals.leaverReceiver")(function* (
 });
 
 /**
- * Gives every open deal, prospect, client, follow-up and promise `from` looked after to `to`, in
- * the caller's transaction: each logs who gave it and that `from` left, and one refusal moves
+ * Gives every open deal, prospect, client, follow-up, promise and watch `from` looked after to `to`, in
+ * the caller's transaction: records log who gave them and that `from` left, and one refusal moves
  * none. The owner level only, for someone removed from the team.
  */
 export const handOverLeaver = Effect.fn("KinDeals.handOverLeaver")(function* (input: {
@@ -1947,5 +1952,8 @@ export const handOverLeaver = Effect.fn("KinDeals.handOverLeaver")(function* (in
     );
     yield* seesItAfter(orgId, after, to);
   }
-  return heldOf(rows) satisfies LeaverHeld;
+  return {
+    ...heldOf(rows),
+    watches: yield* KinWatches.handOver(orgId, input.from, input.to).pipe(workFailure),
+  } satisfies LeaverHeld;
 });

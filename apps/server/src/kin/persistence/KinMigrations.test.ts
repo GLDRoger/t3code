@@ -183,6 +183,8 @@ const tableNames = [
   "kin_trigger_inbox",
   "kin_trigger_settings",
   "kin_triggers",
+  "kin_trouble_agents",
+  "kin_troubles",
   "kin_turn_figures",
   "kin_visual_hosts",
   "kin_waiting",
@@ -587,6 +589,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_doc_versions_file" },
           { name: "idx_kin_dream_runs_material" },
           { name: "idx_kin_events_dedupe" },
+          { name: "idx_kin_events_held_by" },
           { name: "idx_kin_events_queue" },
           { name: "idx_kin_events_wakeup" },
           { name: "idx_kin_floor_grant_scope" },
@@ -639,6 +642,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_trigger_inbox_pending" },
           { name: "idx_kin_trigger_inbox_retention" },
           { name: "idx_kin_triggers_due" },
+          { name: "idx_kin_troubles_open" },
           { name: "idx_kin_waiting_open_widget_person" },
           { name: "idx_kin_waiting_person_resolved_at" },
           { name: "idx_kin_wakeups_running_lead" },
@@ -768,6 +772,8 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_budget_charges`;
       yield* sql`DROP TABLE kin_lead_deliveries`;
       yield* sql`DROP TABLE kin_scheduled_tasks`;
+      yield* sql`DROP INDEX idx_kin_events_held_by`;
+      yield* sql`ALTER TABLE kin_events DROP COLUMN held_by`;
       yield* sql`ALTER TABLE kin_events DROP COLUMN replied_at`;
       yield* sql`ALTER TABLE kin_events DROP COLUMN budget_deferred`;
       for (const column of [
@@ -1882,7 +1888,7 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
-    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 207, and runs again",
+    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 208, and runs again",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -1912,7 +1918,7 @@ describe("Kin migrations", () => {
         // Later branches' migrations run after these too; only these three are this test's.
         assert.deepStrictEqual(
           (yield* runKinMigrations()).map(([id]) => id),
-          [196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207],
+          [196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208],
         );
         assert.deepStrictEqual(yield* receipts, [
           { trigger_key: "review:ambermill/shop#7", review_url: null },
@@ -1939,7 +1945,7 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("a host on K196 migrates through 197 to 207, and again", () =>
+  it.effect("a host on K196 migrates through 197 to 208, and again", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const added = sql<{ name: string }>`
@@ -1961,7 +1967,7 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* added, []);
       assert.deepStrictEqual(
         (yield* runKinMigrations()).map(([id]) => id),
-        [197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207],
+        [197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208],
       );
       const all = [
         "approved_at",
@@ -1977,7 +1983,7 @@ describe("Kin migrations", () => {
         (yield* added).map(({ name }) => name),
         all,
       );
-      for (const from of [197, 198, 199, 200, 201, 202, 203, 204, 205, 206]) {
+      for (const from of [197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208]) {
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
         assert.deepStrictEqual(
@@ -2151,6 +2157,34 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect(
+    "K207 gives a host on K206 the trouble tables and held_by, one open trouble per cause, and reruns",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        yield* sql`DROP INDEX idx_kin_events_held_by`;
+        yield* sql`ALTER TABLE kin_events DROP COLUMN held_by`;
+        yield* sql`DROP TABLE kin_trouble_agents`;
+        yield* sql`DROP TABLE kin_troubles`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(207));
+        const open = (id: string, closedAt: number | null) =>
+          sql`INSERT INTO kin_troubles (trouble_id, org_id, cause, opened_at, closed_at)
+            VALUES (${id}, 'org', 'space', 1, ${closedAt})`;
+        yield* open("t1", 2);
+        yield* open("t2", null);
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(open("t3", null))));
+        const columns = yield* sql<{
+          name: string;
+        }>`SELECT name FROM pragma_table_info('kin_events')
+          WHERE name = 'held_by'`;
+        assert.lengthOf(columns, 1);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(207));
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("K204 gives a host on K203 the bank alert log, and runs again harmlessly", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -2230,11 +2264,11 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("K207 gives Expenses who funded it, changes no entry or label, and reruns", () =>
+  it.effect("K208 gives Expenses who funded it, changes no entry or label, and reruns", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 208`;
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
       const fields = [
         { key: "vendor", label: "Vendor", type: "text", sensitive: false },
@@ -2272,7 +2306,7 @@ describe("Kin migrations", () => {
           entries,
         };
       });
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(207));
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(208));
       const once = yield* read;
       assert.deepStrictEqual(once.fields, [
         "vendor:Vendor",
@@ -2292,19 +2326,19 @@ describe("Kin migrations", () => {
       const [funded] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_records
           WHERE json_extract(fields_json, '$.fundedBy') IS NOT NULL`;
       assert.strictEqual(funded!.n, 0);
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(207));
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 208`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(208));
       assert.deepStrictEqual(yield* read, once);
     }).pipe(Effect.provide(layer)),
   );
 
   it.effect(
-    "K207 adds only the missing fields and leaves a list's own reimbursement of another kind",
+    "K208 adds only the missing fields and leaves a list's own reimbursement of another kind",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* runKinMigrations();
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 208`;
         yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
         const fields = [
           { key: "fundedBy", label: "Funded by", type: "person", sensitive: false },
@@ -2318,7 +2352,7 @@ describe("Kin migrations", () => {
             owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
           VALUES ('org', 'e', 'expenses', 'EXP-1', 'Train tickets', 'done', 'person', 'dev',
             'person', 'e', 1, 1, ${stored})`;
-        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(207));
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(208));
         const [list] = yield* sql<{
           json: string;
         }>`SELECT definition_json AS json FROM kin_registers`;
@@ -2335,11 +2369,11 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("K207 adds nothing to an Expenses list with no room for all three fields", () =>
+  it.effect("K208 adds nothing to an Expenses list with no room for all three fields", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 208`;
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
       const fields = Array.from({ length: 18 }, (_, n) => ({
         key: `extra${n}`,
@@ -2355,7 +2389,7 @@ describe("Kin migrations", () => {
           owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
         VALUES ('org', 'e', 'expenses', 'EXP-1', 'Train tickets', 'done', 'person', 'dev',
           'person', 'e', 1, 1, ${JSON.stringify({ paidPersonallyBy: "partner@ambermill.example" })})`;
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(207));
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(208));
       const [list] = yield* sql<{ json: string; rev: number }>`SELECT definition_json AS json, rev
         FROM kin_registers`;
       assert.deepStrictEqual(list, { json: definition, rev: 1 });
@@ -2471,6 +2505,7 @@ describe("Kin migrations", () => {
           attempts: 1,
           budget_deferred: 0,
           replied_at: null,
+          held_by: null,
         },
         kin_workers: {
           org_id: "org",

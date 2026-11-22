@@ -113,7 +113,7 @@ function KinAgentSheet(props: { readonly target: KinAgentPageTarget }) {
   const closePage = () =>
     void navigate({ to: ".", search: ({ agent: _closed, ...rest }) => rest, replace: true });
   const can = useKinAgentPageCan(environmentId);
-  const working = useKinWorkingAgents(environmentId);
+  const working = useKinWorkingAgents(environmentId, orgId);
   const leads = Option.getOrNull(
     AsyncResult.value(useAtomValue(kinClient.leads({ environmentId, input: { orgId } }))),
   );

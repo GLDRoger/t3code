@@ -391,6 +391,7 @@ export function KinNewExpenseDialog(
   const ids = {
     what: useId(),
     amount: useId(),
+    amountHint: useId(),
     day: useId(),
     vendor: useId(),
     category: useId(),
@@ -466,14 +467,18 @@ export function KinNewExpenseDialog(
       <div className="grid grid-cols-2 gap-3">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={ids.amount}>{KIN_MONEY_FORMS.expense.amount}</Label>
+          {/* No decimal keypad: the iPhone's has no minus, and a refund needs one. */}
           <Input
             id={ids.amount}
-            inputMode="decimal"
             autoComplete="off"
             placeholder={KIN_MONEY_FORMS.expense.amountPlaceholder}
+            aria-describedby={ids.amountHint}
             value={draft.amount}
             onChange={(event) => set({ amount: event.target.value })}
           />
+          <p id={ids.amountHint} className="text-xs text-muted-foreground">
+            {KIN_MONEY_FORMS.expense.amountRefundHint}
+          </p>
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={ids.day}>{KIN_MONEY_FORMS.expense.paidOn}</Label>

@@ -18,7 +18,7 @@ import * as TestClock from "effect/testing/TestClock";
 import {
   comparisonBase,
   defaultConcurrency,
-  docReaderTests,
+  crossFileTests,
   gitLines,
   ignoredCheckInputs,
   runSteps,
@@ -43,10 +43,35 @@ describe("check:changed", () => {
     assert.isTrue(
       decide(["docs/user/t3-connect-troubleshooting.md"], packages, false).outputs.test_server,
     );
-    assert.deepStrictEqual(docReaderTests(["docs/user/t3-connect-troubleshooting.md"]), [
+    assert.deepStrictEqual(crossFileTests(["docs/user/t3-connect-troubleshooting.md"]), [
       "apps/server/src/cloud/ConnectReachability.test.ts",
     ]);
     assert.deepStrictEqual(decide(["docs/user/install.md"], packages, false).affected, []);
+  });
+
+  it.each([
+    ["apps/server/src/kin/persistence/migrations/K203_Watches.ts", ["leaver", "budgets"]],
+    ["apps/server/src/kin/persistence/KinMigrations.ts", ["leaver", "budgets"]],
+    ["apps/server/src/kin/work/mcp/docTools.ts", ["budgets"]],
+    ["apps/server/src/kin/work/leadWork.ts", ["budgets"]],
+    ["apps/server/src/kin/mcp/agentContextBudget.json", ["budgets"]],
+    ["apps/server/src/mcp/toolkits/thread/tools.ts", ["budgets"]],
+    ["packages/contracts/src/kinChat.ts", ["budgets"]],
+    ["packages/shared/src/kinVisual.ts", ["budgets"]],
+    ["apps/web/src/components/sidebar/SidebarThreadRow.tsx", []],
+    ["apps/server/src/kin/people/leaver.test.ts", []],
+  ] as const)("runs cross-file checks for %s", (file, checks) => {
+    const tests = {
+      leaver: ["apps/server/src/kin/people/leaver.test.ts"],
+      budgets: [
+        "apps/server/src/kin/lead/deferredTools.test.ts",
+        "apps/server/src/kin/mcp/layer.test.ts",
+      ],
+    };
+    assert.deepStrictEqual(
+      crossFileTests([file]),
+      checks.flatMap((check) => tests[check]),
+    );
   });
 
   it.effect(
