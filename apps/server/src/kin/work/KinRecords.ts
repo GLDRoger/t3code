@@ -136,7 +136,12 @@ import { cleanTags } from "./tags.ts";
 import { notAVendor } from "./vendorName.ts";
 import { withArticle } from "../article.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
-import { dismissedHold, dismissedHoldText, personInTurn } from "./dismissedHold.ts";
+import {
+  dismissedHold,
+  dismissedHoldText,
+  personInTurn,
+  personSpokeInTurn,
+} from "./dismissedHold.ts";
 import {
   alsoOnIt,
   bumpTeamSeqs,
@@ -1155,7 +1160,7 @@ const make = Effect.gen(function* () {
     if (!reserved) return;
     if (
       writer.wakeupId !== undefined &&
-      (yield* personInTurn(orgId, agentId, writer.wakeupId).pipe(provideSql))
+      (yield* personSpokeInTurn(orgId, agentId, writer.wakeupId).pipe(provideSql))
     )
       return;
     const [named] =

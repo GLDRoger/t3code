@@ -1996,27 +1996,53 @@ it.effect(
         }),
         { key: task.key },
       );
-      // A person's own word in the turn lets it, and the tools take who is on it by name.
-      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
-          author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
-        VALUES ('close-it', ${orgId}, 'lead-chat', 2, 'human', ${ownerId}, 'lead-chat-owner', 'owner',
-          'text', 'Put Mate on it too', '[]', 'posted', ${at})`;
-      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
-          queued_at, state, wakeup_id)
-        VALUES ('close-event', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify({
-          _tag: "chat.message",
-          orgId,
-          agentId: lead,
-          eventId: "close-event",
-          receivedAt: at,
-          dedupeKey: null,
-          provenance: { _tag: "human", personId: ownerId, memberId: "lead-chat-owner" },
-          chatId: "lead-chat",
-          messageId: "close-it",
-        })}, 0, 0, 'claimed', 'joined-turn')`;
+      // A person's own word in the turn lets it, and the tools take who is on it by name. Kin's
+      // private copy of their group words, an agent's relay or another chat's message does not.
+      const say = Effect.fn(function* (
+        messageId: string,
+        seq: number,
+        clientId: string | null,
+        event: { readonly origin?: object } = {},
+        chatId = "lead-chat",
+      ) {
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+            created_at, client_message_id)
+          VALUES (${messageId}, ${orgId}, ${chatId}, ${seq}, 'human', ${ownerId}, 'lead-chat-owner',
+            'owner', 'text', 'Put Mate on it too', '[]', 'posted', ${at}, ${clientId})`;
+        const eventId = `${messageId}-event`;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state, wakeup_id)
+          VALUES (${eventId}, ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify({
+            _tag: "chat.message",
+            orgId,
+            agentId: lead,
+            eventId,
+            receivedAt: at,
+            dedupeKey: null,
+            provenance: { _tag: "human", personId: ownerId, memberId: "lead-chat-owner" },
+            chatId: "lead-chat",
+            messageId,
+            ...event,
+          })}, 0, 0, 'claimed', 'joined-turn')`;
+        return eventId;
+      });
+      yield* say("copied", 2, "send:private:group-words");
+      yield* say("relayed", 3, null, {
+        origin: { agentId: other, chatId: "other-chat", personId: ownerId },
+      });
+      yield* say("elsewhere", 4, null, {}, "other-chat");
+      assert.deepInclude(
+        yield* Effect.flip(
+          records.update(orgId, helper, task.key, { fields: { alsoOn: [`agent:${lead}`, `agent:${other}`] } }),
+        ),
+        { reason: "not_allowed", message: KinRecords.helperRefusal("Dev", task.key) },
+      );
+      yield* sql`DELETE FROM kin_events WHERE wakeup_id = 'joined-turn' AND tag = 'chat.message'`;
+      const closeEvent = yield* say("close-it", 5, null);
       yield* LeadWork.update(scopeOf(lead), {
         key: task.key,
-        sourceEventId: "close-event",
+        sourceEventId: closeEvent,
         alsoOn: ["you", "Mate"],
       });
       assert.include(yield* LeadWork.get(scopeOf(lead), { key: task.key }), {

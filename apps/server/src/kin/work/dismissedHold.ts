@@ -48,6 +48,28 @@ export const personInTurn = Effect.fn("KinDismissedHold.personInTurn")(function*
   return rows.length > 0;
 });
 
+/**
+ * Whether a person's own words woke this turn: their message or card tap in the chat the event
+ * names, not an agent-made event (`$.origin`) and not Kin's copy of group words taken private.
+ */
+export const personSpokeInTurn = Effect.fn("KinDismissedHold.personSpokeInTurn")(function* (
+  orgId: string,
+  agentId: string,
+  wakeupId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_events e
+    JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+      AND m.chat_id = json_extract(e.json, '$.chatId')
+      AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
+    WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
+      AND e.tag IN ('chat.message', 'widget.action') AND json_extract(e.json, '$.origin') IS NULL
+      AND m.author_kind = 'human' AND m.author_person_id IS NOT NULL
+      AND COALESCE(m.client_message_id, '') NOT LIKE 'send:private:%'
+    LIMIT 1`;
+  return rows.length > 0;
+});
+
 /** What an agent hears when it puts a task a dismissal released back to waiting on that person. */
 export const dismissedHoldText = (name: string, key: string) =>
   `${name} dismissed that question, so ${key} does not wait on them. Leave it open with you, or say what it needs in one comment.`;
