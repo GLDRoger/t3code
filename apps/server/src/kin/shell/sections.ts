@@ -266,8 +266,8 @@ export const sectionOfRegister = ({ id, name, payments }: SectionRegister): Sect
 export const registerSectionColumns = (sql: SqlClient.SqlClient) =>
   sql`r.register_id AS id, g.name, json_extract(g.definition_json, '$.payments') AS payments`;
 
-export const looksLikeRecordReference = (value: string) =>
-  value.length <= 40 && /\d/.test(value) && !/[\r\n]/.test(value);
+export const looksLikeRecordReference = (value: string, explicit = false) =>
+  value.length > 0 && value.length <= 40 && !/[\r\n]/.test(value) && (explicit || /\d/.test(value));
 
 // An unresolved reference only gets a prefix classification for Kin's reserved built-ins.
 export const sectionOfBuiltInKey = (key: string) =>

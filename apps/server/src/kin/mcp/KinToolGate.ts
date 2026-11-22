@@ -253,7 +253,7 @@ const besideReview =
     );
 const sectionsOfArguments = (
   args: unknown,
-  sectionOfReference: (value: string) => SectionId | null,
+  sectionOfReference: (value: string, field: string) => SectionId | null,
   skipForeignArguments = false,
 ) => {
   const sections = new Set<SectionId>();
@@ -262,7 +262,7 @@ const sectionsOfArguments = (
     const { value, field } = pending.pop()!;
     if (typeof value === "string") {
       const section =
-        sectionOfReference(value.trim()) ??
+        sectionOfReference(value.trim(), field) ??
         (field === "list" || field === "lists" ? sectionOfList(value) : null) ??
         ((field === "client" || field === "project") && value.trim() !== "" ? "clients" : null);
       if (section !== null) sections.add(section);
@@ -281,7 +281,7 @@ const sectionRefusal = (
   message: string,
   args: unknown,
   section: SectionId,
-  sectionOfReference: (value: string) => SectionId | null,
+  sectionOfReference: (value: string, field: string) => SectionId | null,
 ) => {
   if (!Predicate.hasProperty(args, "records") || !Array.isArray(args.records)) return message;
   const index = args.records.findIndex((row: unknown) =>
@@ -296,6 +296,7 @@ const sectionRefusal = (
   return `Row ${index + 1}${named}: ${message} Nothing was saved.`;
 };
 
+const referenceFields = new Set(["key", "keys", "entry", "against", "record", "attachments"]);
 const forwardedTools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
 const sectionAdmitted = McpToolPolicy.toolCallRefusal(
   Effect.succeed((name: string, args: unknown) => {
@@ -304,8 +305,8 @@ const sectionAdmitted = McpToolPolicy.toolCallRefusal(
     const references = new Set<string>();
     const sections = sectionsOfArguments(
       args,
-      (value) => {
-        if (looksLikeRecordReference(value)) references.add(value);
+      (value, field) => {
+        if (looksLikeRecordReference(value, referenceFields.has(field))) references.add(value);
         return null;
       },
       foreign,

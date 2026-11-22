@@ -325,16 +325,14 @@ export const deferredSectionOff = Effect.fn("Deferrals.sectionOff")(function* (
   title: string,
   links: ReadonlyArray<string> = [],
 ) {
-  const references = new Set(
-    [
-      ...links,
-      ...(title.match(
-        /(?<![\w/-])(?:[A-Z][A-Z0-9]{0,7}-[1-9]\d{0,8}|[A-Z0-9-]+(?:\/[A-Z0-9-]+)+)(?![\w/-])/gi,
-      ) ?? []),
-    ]
-      .map((value) => value.trim())
-      .filter(looksLikeRecordReference),
-  );
+  const mentioned =
+    title.match(
+      /(?<![\w/-])(?:[A-Z][A-Z0-9]{0,7}-[1-9]\d{0,8}|[A-Z0-9-]+(?:\/[A-Z0-9-]+)+)(?![\w/-])/gi,
+    ) ?? [];
+  const references = new Set([
+    ...links.map((value) => value.trim()).filter((value) => looksLikeRecordReference(value, true)),
+    ...mentioned.filter((value) => looksLikeRecordReference(value)),
+  ]);
   if (references.size === 0) return false;
   const shell = yield* KinShell.get(orgId);
   if (shell.sections.every(({ on }) => on)) return false;

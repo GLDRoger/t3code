@@ -706,10 +706,13 @@ it.effect.each([true, false])(
         );
         yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at, definition_json)
           VALUES (${person.orgId}, 'invoices', 'Invoices', 'BL', 0, ${JSON.stringify(presetDefinition("invoices", "GBP"))}),
-          (${person.orgId}, 'board', 'Board', 'INV', 0, ${JSON.stringify({ ...presetDefinition("dates", "GBP"), noun: "note" })})`;
+          (${person.orgId}, 'board', 'Board', 'INV', 0, ${JSON.stringify({ ...presetDefinition("dates", "GBP"), noun: "note" })}),
+          (${person.orgId}, 'bank-ledger', 'Bank transactions', 'BKX', 0, ${JSON.stringify(presetDefinition("dates", "GBP"))})`;
         for (const [list, key, number] of [
           ["invoices", "BL-4", "INV/26-27/003"],
+          ["invoices", "BL-5", "RETAINED"],
           ["receipts", "RCT-4", "RCT/26-27/001"],
+          ["bank-ledger", "BKX-1", ""],
           ["board", "INV-3", ""],
         ] as const)
           yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
@@ -724,6 +727,7 @@ it.effect.each([true, false])(
         const resolved = [
           (yield* lookup("INV/26-27/003")).includes(invoiceRefusal),
           (yield* lookup("BL-4")).includes(invoiceRefusal),
+          (yield* lookup("RETAINED")).includes(invoiceRefusal),
           (yield* lookup("INV-3")).includes('"isError":false'),
           (yield* leadCall("kin_issue", { entry: "INV/26-27/003" })).includes(invoiceRefusal),
           (yield* leadCall("kin_receipt", { against: "INV/26-27/003" })).includes(invoiceRefusal),
@@ -731,9 +735,10 @@ it.effect.each([true, false])(
         yield* store(7, moneyOff);
         resolved.push(
           (yield* lookup("RCT/26-27/001")).includes(moneyRefusal),
+          (yield* lookup("BKX-1")).includes(moneyRefusal),
           (yield* leadCall("kin_receipt", { entry: "RCT/26-27/001" })).includes(moneyRefusal),
         );
-        assert.deepStrictEqual(resolved, [true, true, true, true, true, true, true]);
+        assert.deepStrictEqual(resolved, [true, true, true, true, true, true, true, true, true]);
         yield* store(8, []);
         yield* setProfile(
           person.orgId,
