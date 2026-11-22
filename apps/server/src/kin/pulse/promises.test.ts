@@ -28,6 +28,7 @@ const MONDAY = B + DAY + 8 * HOUR;
 const stamp = "2026-10-01T00:00:00.000Z";
 
 const chatLayer = Chat.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
+const shellLayer = KinShell.layer.pipe(Layer.provideMerge(chatLayer));
 
 interface Entry {
   readonly id: string;
@@ -307,7 +308,7 @@ describe("promises both ways", () => {
         assert.sameMembers(about((yield* read(late + 2 * HOUR)).facts), ["W-7", "W-10"]);
         assert.sameMembers(about((yield* asZoya(late + 2 * HOUR)).facts), ["W-7", "W-10"]);
         assert.deepStrictEqual(yield* noticesTo(zoya), ["W-10 Signed form was due 2 days ago."]);
-      }).pipe(Effect.provide(KinShell.layer), Effect.provide(chatLayer)),
+      }).pipe(Effect.provide(shellLayer)),
   );
 
   it.effect(
