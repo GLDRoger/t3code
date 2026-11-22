@@ -427,7 +427,8 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
           className="flex-1"
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="interactive"
-          automaticallyAdjustKeyboardInsets
+          // In this sheet React Native's own keyboard inset scrolls the focused title under the
+          // bar on open; the fields further down lift themselves (`KinWorkAboveKeyboard`).
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
