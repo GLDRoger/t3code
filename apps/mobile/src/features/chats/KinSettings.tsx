@@ -24,6 +24,7 @@ import { SettingsSection } from "../settings/components/SettingsSection";
 import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinBriefsSection } from "./KinBriefs";
+import { KinQuietHoursRows } from "./KinQuietHoursRows";
 import { useKinIsHome } from "./state/kinHome";
 import { openKinNotificationSettings } from "./notifications/installKinNotifications";
 import { KinStopRows } from "./KinStopRows";
@@ -170,6 +171,17 @@ export function KinSettings(props: {
               }
             })}
           </SettingsSection>
+          {host._tag !== "host" ||
+          orgId === null ||
+          profiles === null ||
+          myPersonId === null ? null : (
+            <KinQuietHoursRows
+              environmentId={host.environmentId}
+              orgId={orgId}
+              profiles={profiles}
+              personId={myPersonId}
+            />
+          )}
           {host._tag !== "host" || orgId === null ? null : (
             <KinBriefsSection
               environmentId={host.environmentId}
