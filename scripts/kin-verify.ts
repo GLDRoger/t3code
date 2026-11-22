@@ -85,6 +85,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   clock set "<mon 09:01|tomorrow 09:30|2026-11-23 09:30>"   move now forward to then (company zone)
   clock advance <90m|12h|3d|2w>           move now forward; nothing restarts
   clock age <3d>                          move every stored Kin time back instead (restarts)
+  week-measure                             last complete company week, read-only JSON
   db "<select …>"                         read-only SQL on this instance's database
   phone pair [--android] [--as <person>]  deep link that pairs the dev client to this instance
   phone metro [--full-app]                Metro for this checkout, as the Kin app (stopped by down)`;
@@ -808,6 +809,14 @@ async function main() {
     }
     case "clock":
       return clock(instance, args);
+    case "week-measure": {
+      const filename = NodePath.join(instance.userdata, "statev2.sqlite");
+      if (!NodeFS.existsSync(filename))
+        throw new VerifyError("no database yet; run `kin-verify up`");
+      const { readWeekMeasure } = await import("../apps/server/src/kin/pulse/weekMeasureCli.ts");
+      const counts = await readWeekMeasure(filename, ORG, Date.now() + readOffset(instance));
+      return console.log(JSON.stringify(counts));
+    }
     case "db": {
       const sql = args.positional[0];
       if (sql === undefined)
