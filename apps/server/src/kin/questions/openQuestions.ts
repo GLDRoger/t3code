@@ -333,10 +333,11 @@ const UNTAKEN_WHY: Record<Exclude<Untaken, "none">, string> = {
   money: "the card mentions an amount or a percentage, or is about a money record",
   leaves: "the wording suggests sending something out or moving money",
   action: "only a tap runs that option's action",
-  repeats: "its task repeats",
+  repeats:
+    "its task repeats. It stays as it is until they answer; say so, and set nothing to take it later",
   handed_back: "its task was handed back",
 };
-/** What Kin won't do with the default, and the rule that says so; nothing about later. */
+/** What Kin won't do with the default, and the rule that says so; only a repeating task's says what comes next. */
 const untakenNote = (label: string | null, why: Untaken) =>
   why === "none" || label === null
     ? "Kin won't take any answer on its own: no default was set."

@@ -215,9 +215,10 @@ it("a turn reads Kin's part, then the owner's under one line, and neither when a
     kin,
   };
   const custom: Character = { ...base, body: "# Growth\n\nInvented: our own.", kin: undefined };
-  // Owner-only turns: the doc to change, Kin's part, and the owner's after it when he has one.
-  assert.match(characterForTurn(kinOnly, true), /^Doc D-7\b/);
-  assert.isTrue(characterForTurn(kinOnly, true).endsWith(kin));
+  // Owner-only turns: Kin's part right under the heading, then the empty doc to write in; with
+  // the owner's part, the doc to change, Kin's part, and the owner's after it.
+  assert.isTrue(characterForTurn(kinOnly, true).startsWith(kin.trimEnd()));
+  assert.match(characterForTurn(kinOnly, true), /\n\nDoc D-7\b/);
   assert.include(characterForTurn(kinOnly, true), "empty now");
   assert.notInclude(characterForTurn(kinOnly, true), OWN_WORDS);
   const whole = characterForTurn(both, true);

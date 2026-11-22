@@ -1861,7 +1861,7 @@ it.effect("a default Kin couldn't undo, or on a task changed since, waits for it
       assert.deepStrictEqual(
         asked.map((one) => one.note),
         [
-          "Kin won't take “Mark W-1 done” on its own: its task repeats.",
+          "Kin won't take “Mark W-1 done” on its own: its task repeats. It stays as it is until they answer; say so, and set nothing to take it later.",
           "Kin won't take “Mark W-2 done” on its own: its task was handed back.",
           undefined,
           undefined,

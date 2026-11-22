@@ -69,7 +69,7 @@ export const characterForTurn = (character: Character, ownerOnly: boolean) => {
   const own = character.body.trim();
   if (ownerOnly)
     return own === ""
-      ? `Doc ${character.key} holds the owner's part, empty now: when he tells you how to sound, write it there with doc_edit and confirm in one line.\n${character.kin}`
+      ? `${character.kin.trimEnd()}\n\nDoc ${character.key} holds the owner's part, empty now: when he tells you how to sound, write it there with doc_edit and confirm in one line.`
       : `Doc ${character.key} holds the owner's part, the last below: when he tells you how to sound, change it there with doc_edit and confirm in one line; doc_restore brings the last one back.\n${character.kin}\n\n${OWN_WORDS}\n${own}`;
   const voice = parseCharacter(character.kin).voice;
   const ownVoice = own === "" ? "" : parseCharacter(own).voice;
