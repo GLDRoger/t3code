@@ -7,6 +7,7 @@ import type {
   KinNewExpenseInput,
   KinNewInvoiceInput,
   KinOutlook,
+  KinPersonId,
   KinRecordKey,
 } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -184,6 +185,33 @@ export function makeKinMoneyAnswersHooks<R, ER>(
     };
   }
 
+  /** The owner names the person an import's partner address is; Money reads again after. */
+  function useKinMatchPartner(target: KinScreenTarget) {
+    const send = useAtomCommand(kinClient.workMatchPartner, { reportFailure: false });
+    const [busy, setBusy] = useState(false);
+    const [problem, setProblem] = useState<string | null>(null);
+    return {
+      busy,
+      problem,
+      match: async (address: string, personId: KinPersonId) => {
+        setBusy(true);
+        setProblem(null);
+        const outcome = await kinListSend({
+          online: () => kinHostConnected(target.environmentId),
+          send: () =>
+            send({
+              environmentId: target.environmentId,
+              input: { orgId: target.orgId, address, personId },
+            }),
+        });
+        setBusy(false);
+        registry.refresh(outlookAtom(target));
+        if (!outcome.ok) setProblem(outcome.problem);
+        return outcome.ok;
+      },
+    };
+  }
+
   /**
    * One form's save that asks once about an amount far above its list: the line stands while the
    * amount is the one asked about, and the next save of it keeps it.
@@ -219,6 +247,7 @@ export function makeKinMoneyAnswersHooks<R, ER>(
   return {
     useKinNewInvoice,
     useKinNewExpense,
+    useKinMatchPartner,
     useKinCash,
     useKinOutlook,
     useKinBudgets,

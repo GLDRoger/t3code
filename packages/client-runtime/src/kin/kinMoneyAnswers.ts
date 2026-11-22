@@ -104,6 +104,11 @@ export const KIN_OUTLOOK = {
   apart: (currency: string) => `No ${currency} runway: two accounts look the same.`,
   notRunningDown: (currency: string) =>
     `${currency} cash isn't running down: the last three months brought in at least what went out.`,
+  partners: "Owed to partners, counted as going out",
+  partnerNote: (count: number, oldest: string) =>
+    `${count} expense${count === 1 ? "" : "s"} they paid, since ${oldest}`,
+  unmatched: "An imported address no teammate is matched to yet",
+  whoIsThis: "Who is this?",
 };
 
 export const KIN_BUDGETS = {
@@ -352,6 +357,14 @@ export interface KinOutlookView {
   readonly more: { readonly incoming: number; readonly outgoing: number };
   readonly notes: ReadonlyArray<string>;
   readonly runway: ReadonlyArray<{ readonly currency: string; readonly text: string }>;
+  /** Who the company owes back; an unmatched one carries the import's address to match. */
+  readonly partners: ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly amount: string;
+    readonly note: string;
+    readonly address: string | null;
+  }>;
 }
 
 /** Runway in a line: the host's months when it has them, else plainly why not. */
@@ -409,6 +422,16 @@ export function kinOutlookView(
       ...(outlook.incomplete.length === 0 ? [] : [KIN_OUTLOOK.short]),
     ],
     runway: outlook.runway.map((one) => ({ currency: one.currency, text: kinRunwayText(one) })),
+    partners: (outlook.owedToPartners ?? []).map((one) => ({
+      id: one.personId ?? `address:${one.address ?? one.name}`,
+      name: one.name,
+      amount: kinTotalsLines(one.owed).join(" + "),
+      note:
+        one.personId === null
+          ? KIN_OUTLOOK.unmatched
+          : KIN_OUTLOOK.partnerNote(one.expenses, onLabel(one.oldest, now)),
+      address: one.personId === null ? one.address : null,
+    })),
   };
 }
 

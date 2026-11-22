@@ -46,6 +46,9 @@ RECIPE.md starts with front matter between --- lines:
     confirmed as) and field_<field>;
   - payments (a table, with period:): payments received in the month, with columns invoice,
     client, amount, paidOn, receipt; tds the same, for tax clients deducted;
+  - reimbursements (a table, with period:): paid expenses a partner funded that the company still
+    owed them at the month's end or paid back in it, with columns key, title, date, partner,
+    state (owed or repaid), repaidOn and amount;
   - system.number, system.draft, system.today.
 - computed (typst): fields Kin works out, in order, each one function: times [amount, factor],
   percent [amount, rate] (round: half-up, half-even, down or up), sum [amounts or table.column],
@@ -778,7 +781,7 @@ the owner may change is at the top of template.typ.
   "recipes/accountant-pack/RECIPE.md": String.raw`---
 name: accountant-pack
 title: Accountant's monthly pack
-description: One month's sales register, receipts, TDS deducted, expenses and bank transactions as a workbook and a CSV per sheet, with exact totals per currency, for the accountant.
+description: One month's sales register, receipts, TDS deducted, expenses, what partners are owed back and bank transactions as a workbook and a CSV per sheet, with exact totals per currency, for the accountant.
 kind: table
 sensitive: true
 inputs:
@@ -810,6 +813,11 @@ inputs:
     period: month
     states: [open, doing, waiting]
     columns: { key: text, title: text, date: date, category: text, state: text, field_vendor: text, amount: money }
+  partners:
+    type: table
+    from: reimbursements
+    period: month
+    columns: { key: text, title: text, date: date, partner: text, state: text, repaidOn: date, amount: money }
   bank:
     type: table
     from: rows.bank_transactions
@@ -877,6 +885,19 @@ sheets:
       - { header: Status, field: state }
       - { header: Amount, field: amount }
       - { header: Currency, field: amount.currency }
+  - name: Owed to partners
+    input: partners
+    file: "owed-to-partners-{month}.csv"
+    columns:
+      - { header: Partner, field: partner }
+      - { header: Date, field: date }
+      - { header: Entry, field: key }
+      - { header: What, field: title }
+      - { header: Status, field: state }
+      - { header: "Repaid on", field: repaidOn }
+      - { header: Amount, field: amount }
+      - { header: Currency, field: amount.currency }
+    totalsBy: state
   - name: Bank transactions
     input: bank
     file: "bank-{month}.csv"
@@ -893,7 +914,7 @@ sheets:
       - { header: "Matched to", field: matched }
     leaveOutOfTotals: { field: stateKey, values: [dropped] }
     totalsBy: field_direction
-outputs: ["accounts-{month}.xlsx", "sales-register-{month}.csv", "receipts-{month}.csv", "tds-{month}.csv", "expenses-{month}.csv", "unpaid-expenses-{month}.csv", "bank-{month}.csv"]
+outputs: ["accounts-{month}.xlsx", "sales-register-{month}.csv", "receipts-{month}.csv", "tds-{month}.csv", "expenses-{month}.csv", "unpaid-expenses-{month}.csv", "owed-to-partners-{month}.csv", "bank-{month}.csv"]
 ---
 
 The month's pack for the accountant. Kin writes the rows as they are stored and adds the totals
