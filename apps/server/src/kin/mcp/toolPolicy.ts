@@ -29,7 +29,8 @@ const toolCallGateFn =
           ),
         );
 
-export const toolCallRefusal = <R>(
+/** As `toolCallRefusal`, for a check that reads the request's services on every call. */
+export const toolCallCheck = <R>(
   refusal: (name: string, args: unknown) => Effect.Effect<string | undefined, never, R>,
 ) => McpServer.middleware()(toolCallGateFn(refusal), { global: true });
 
@@ -42,7 +43,7 @@ export const toolCallGate = <R>(
   admit: (name: string, args: unknown) => Effect.Effect<boolean, never, R>,
   refusal: string | ((args: unknown) => string),
 ) =>
-  toolCallRefusal((name, args) =>
+  toolCallCheck((name, args) =>
     Effect.map(admit(name, args), (admitted) =>
       admitted ? undefined : typeof refusal === "string" ? refusal : refusal(args),
     ),

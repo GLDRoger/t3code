@@ -272,7 +272,7 @@ const sectionRefusal = (message: string, args: unknown, section: SectionId) => {
   return `Row ${index + 1}${named}: ${message} Nothing was saved.`;
 };
 
-const sectionAdmitted = McpToolPolicy.toolCallRefusal((name, args) => {
+const sectionAdmitted = McpToolPolicy.toolCallCheck((name, args) => {
   const sections = sectionsOfArguments(args);
   const tool = sectionOfTool(name);
   const template =
