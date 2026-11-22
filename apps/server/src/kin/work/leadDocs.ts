@@ -659,10 +659,10 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     (input.project === undefined && input.company !== true
       ? yield* projectFor(lead, input, partyId ?? undefined)
       : undefined);
-  // Kin makes the redraft once the owner approves it, so it is filed only if it can't go up. A
-  // private one is no redraft: it goes nowhere.
+  // Kin makes the redraft once the owner approves it, so it is filed only if it can't go up. Marked
+  // sensitive or not: none of its body reaches the teammate, and nothing is filed.
   const back =
-    input.draft === undefined || input.sensitive === true
+    input.draft === undefined
       ? undefined
       : yield* putBack(
           lead,

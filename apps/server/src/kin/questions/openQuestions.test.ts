@@ -2595,16 +2595,11 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       });
       assert.notInclude(other.note ?? "", "Changes first");
       assert.lengthOf(yield* drafts, 1);
-      // A redraft filed as sensitive is private: filed as today, nothing posted in Zoya's chat.
-      const secret = yield* proposal(words, { title: "Private proposal", sensitive: true });
-      assert.notStrictEqual(secret.key, "");
-      assert.notInclude(secret.note ?? "", "Changes first");
-      assert.lengthOf(yield* drafts, 1);
-      assert.lengthOf(yield* shownUp(zoyaChat), 1);
-      // The redraft goes back to her with every figure in it, Zoya's read check or not: nothing
-      // filed, one new card asked for Zoya's chat, which holds the redraft only on Rhea's card.
+      // The redraft goes back to her with every figure in it, Zoya's read check or not, marked
+      // sensitive as an agent may mark a priced one: nothing filed, one new card asked for Zoya's
+      // chat, which holds the redraft only on Rhea's card.
       const filed = yield* docCount;
-      const back = yield* proposal(words);
+      const back = yield* proposal(words, { sensitive: true });
       const told =
         "Not filed: this is Zoya Sheikh's proposal back from Rhea Rao's Changes first, so Kin put it to Rhea Rao again with Approve and Changes first and told Zoya Sheikh. Say in one line that it is back with Rhea Rao to approve; don't repeat the draft.";
       assert.deepInclude(back, { key: "", changed: false, note: told });
@@ -2630,7 +2625,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
           )).some((item) => item.widgetId === card.widgetId && item.card === "draft"),
         );
       // The same call again in this turn finds that card; another text here is refused, so filed.
-      assert.deepInclude(yield* proposal(words), { key: "", note: told });
+      assert.deepInclude(yield* proposal(words, { sensitive: true }), { key: "", note: told });
       assert.lengthOf(yield* drafts, 2);
       // Kin showed Zoya her own draft as it went up; of Rhea's, once, the retry included, only
       // Kin's line that it changed. Nothing in her chat holds the redraft or a figure of it.
