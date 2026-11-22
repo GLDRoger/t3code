@@ -6,6 +6,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_MISSING_CARD_TEXT,
   kinCardView,
+  kinTaskCardWithoutThread,
   type KinDigestCardView,
   type KinTaskCardView,
   type KinTaskTone,
@@ -132,6 +133,7 @@ import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatement
 import { KinVisual } from "./KinVisual";
 import { kinClient } from "./kinClient";
 import { kinHostConnected, useKinHostAt } from "./useKinHost";
+import { KIN_WEB_ONLY } from "./kinWebOnly";
 import { toastManager } from "../components/ui/toast";
 import { serverEnvironment } from "../state/server";
 
@@ -217,7 +219,7 @@ export const KinCard = memo(function KinCard(props: {
   );
   switch (view.kind) {
     case "task":
-      return <KinTaskCard task={view.task} />;
+      return <KinTaskCard task={KIN_WEB_ONLY ? kinTaskCardWithoutThread(view.task) : view.task} />;
     case "deferral":
       return <KinDeferralCard deferral={view.deferral} environmentId={props.environmentId} />;
     case "choice":
