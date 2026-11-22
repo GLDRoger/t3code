@@ -2828,6 +2828,21 @@ it.effect("a task a teammate holds and gives an agent wakes it in their chat, at
       contacts: "none recorded",
       clientNextStep: true,
     });
+    // It names who gave it and what they are here, and it goes back to them, not the owner.
+    const leadIn = (ownerOnly: boolean) =>
+      Effect.flatMap(lastGiven, (event) => workEventText({ orgId, event: event!, ownerOnly }));
+    const mates = (yield* leadIn(false))!;
+    assert.match(mates, /^"Mate", a teammate, gave you this task/);
+    assert.include(mates, 'set it waiting on "Mate" and give it back to them');
+    assert.include(mates, 'words like "them" in it mean that client');
+    assert.notInclude(mates, "the owner");
+    yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${mateId}`;
+    const coOwners = (yield* leadIn(true))!;
+    assert.match(coOwners, /^"Mate", a co-owner, gave you this Work entry/);
+    assert.include(coOwners, 'set it waiting on "Mate" and give it back to them');
+    assert.notInclude(coOwners, "The owner gave you");
+    assert.notInclude(coOwners, "a teammate");
+    yield* sql`UPDATE kin_people SET access = NULL WHERE person_id = ${mateId}`;
     assert.include(yield* Effect.flip(LeadWork.get(scopeOf(lead), { key: hidden.key })), {
       reason: "not_found",
     });
