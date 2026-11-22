@@ -4078,17 +4078,43 @@ it.effect(
           yield* Dismissed.dismissalGone(KinOrgId.make(orgId), { questionId, at: dismissedAt }),
         );
 
-        // Dismissed again, and Finance's turn has run: her Undo tells it once that it is open again.
+        // Dismissed again, and Finance's turn has started on it: her Undo tells it once more.
         yield* TestClock.adjust(60_000);
         yield* press(owner, "dismiss", "phone-2");
         const again = Date.parse(
           ((yield* widget()).state as { dismissed: { at: string } }).dismissed.at,
         );
-        yield* sql`UPDATE kin_events SET state = 'done'
-          WHERE dedupe_key = ${`question-dismissed:${questionId}:${again}`}`;
+        const finance = KinAgentId.make("finance");
+        const turn = yield* startAgentWakeup({
+          orgId,
+          agentId: finance,
+          threadId: ThreadId.make("finance-thread"),
+          queued: true,
+        });
+        const stored = yield* sql<{ json: string }>`SELECT json FROM kin_events
+          WHERE org_id = ${orgId} AND wakeup_id = ${turn} ORDER BY rowid`;
+        const built = yield* Effect.flatMap(KinLeadPrompt, (prompt) =>
+          prompt.build({
+            orgId,
+            agentId: finance,
+            wakeupId: turn,
+            events: stored.map((row) => decodeEvent(JSON.parse(row.json))),
+            memoryHead: "fixture",
+            lane: { chatId: chatOf("finance"), mode: "reply" },
+          }),
+        ).pipe(Effect.provide(promptLayer));
+        assert.include(
+          built,
+          "Rhea Rao dismissed your question “Which way should I build the client portal?” without choosing. That is not a choice and not approval of your pick: do not ask it again and do not take a default. If the work can go on without that answer, go on; if it cannot, set the task aside and say why in one line on the task. Do not reply in chat. End your turn with exactly NO_REPLY.",
+        );
         yield* press(owner, "undismiss", "undo-2");
+        const reopenedText = yield* Questions.dismissedTurnText(KinOrgId.make(orgId), {
+          questionId,
+          reopened: true,
+        });
+        assert.include(reopenedText!.text, "Rhea Rao undid dismissing your question");
         assert.deepStrictEqual((yield* events).slice(1), [
-          { key: `question-dismissed:${questionId}:${again}`, state: "done" },
+          { key: `question-dismissed:${questionId}:${again}`, state: "claimed" },
           { key: `question-reopened:${questionId}:${again}`, state: "queued" },
         ]);
 

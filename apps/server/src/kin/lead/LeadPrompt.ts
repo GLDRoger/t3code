@@ -103,6 +103,7 @@ import { buildSeat } from "./seat.ts";
 import {
   answeredTurnText,
   askedForSection,
+  dismissedTurnText,
   dueTurnText,
   openQuestionsSection,
   redraftsSection,
@@ -484,6 +485,26 @@ export class KinLeadPrompt extends Context.Service<
                     Option.getOrUndefined(words),
                     true,
                   )}`,
+            );
+            continue;
+          }
+          if (
+            event._tag === "deferral.due" &&
+            event.subject.type === "question" &&
+            event.subject.dismissed === true
+          ) {
+            fromOwner = false;
+            const told = yield* dismissedTurnText(orgId, event.subject).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin open question unreadable", cause).pipe(Effect.as(undefined)),
+              ),
+            );
+            const eventQuote = quote("event data", { event: event.eventId });
+            events.push(
+              told === undefined
+                ? `${eventQuote}\n\nKin couldn't read that question just now. Write exactly ${SILENT_REPLY}.`
+                : `${eventQuote}\n\n${told.text} End your turn with exactly ${SILENT_REPLY}.\n\n${quote(event.subject.reopened === true ? "reopened question (data)" : "dismissed question (data)", told.data, true)}`,
             );
             continue;
           }

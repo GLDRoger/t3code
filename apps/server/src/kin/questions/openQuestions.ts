@@ -1823,6 +1823,33 @@ export const undoneTurnText = Effect.fn("KinQuestions.undoneTurnText")(function*
 });
 
 /**
+ * What the asker's turn is told when its person dismissed its question without choosing, or
+ * (`reopened`) undid that after the turn that heard it. Undefined when there is nothing to say.
+ */
+export const dismissedTurnText = Effect.fn("KinQuestions.dismissedTurnText")(function* (
+  orgId: KinOrgId,
+  subject: { readonly questionId: string; readonly reopened?: true | undefined },
+) {
+  const row = yield* readQuestion(orgId, subject.questionId);
+  if (row === undefined) return undefined;
+  const who = yield* personName(orgId, row.personId);
+  const data = {
+    question: row.question,
+    options: row.options.map((option) => option.label),
+    ...(row.about.length === 0 ? {} : { about: row.about }),
+  };
+  if (subject.reopened === true)
+    return {
+      text: `${who} undid dismissing your question “${row.question}”: it is open again on its card, waiting for their answer. Don't ask it again and don't take a default; wait for their answer. Do not reply in chat.`,
+      data,
+    };
+  return {
+    text: `${who} dismissed your question “${row.question}” without choosing. That is not a choice and not approval of your pick: do not ask it again and do not take a default. If the work can go on without that answer, go on; if it cannot, set the task aside and say why in one line on the task. Do not reply in chat.`,
+    data,
+  };
+});
+
+/**
  * What the asker's turn is told when a question it asked for a chat was answered, in that chat's
  * lane; undefined when there is nothing to carry on.
  */
