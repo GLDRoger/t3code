@@ -62,7 +62,7 @@
       "schema": 293
     },
     "doc_move": {
-      "desc": 356,
+      "desc": 416,
       "schema": 1189
     },
     "doc_read": {
@@ -291,7 +291,7 @@
     },
     "record_update": {
       "desc": 1966,
-      "schema": 7491
+      "schema": 7638
     },
     "records_query": {
       "desc": 1324,
