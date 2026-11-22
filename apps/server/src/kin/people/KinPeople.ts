@@ -1401,9 +1401,8 @@ export const make = Effect.gen(function* () {
         : { clients: places.clients, docs: places.docs, money: places.money },
       leads: places.leads,
       refused,
-      shell: yield* KinShell.get(input.orgId).pipe(
+      shell: yield* KinShell.getForDisplay(input.orgId).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
-        Effect.mapError(toPersistenceSqlError("KinPeople.accessMe")),
       ),
       ...(yield* companyMoney(input.orgId).pipe(
         Effect.map(({ homeCurrency, country, financialYearStartMonth }) => ({

@@ -199,6 +199,10 @@ export const SECTIONS = {
     deal_no_next_step: "deals",
     deal_quiet: "deals",
     deal_date_passed: "deals",
+    number_off: null,
+    number_stale: null,
+    entry_late: null,
+    entry_check: null,
   } satisfies Record<KinPulseSense, SectionId | null>,
 };
 
@@ -213,6 +217,6 @@ export const sectionOfKey = (recordKey: string) =>
     recordKey
       .trim()
       .toUpperCase()
-      .match(/^([A-Z]+)-\d+$/)?.[1] ?? "",
+      .match(/^([A-Z][A-Z0-9]{0,7})-[1-9]\d{0,8}$/)?.[1] ?? "",
   );
 export const sectionOfSense = (senseId: string) => section(SECTIONS.senses, senseId);

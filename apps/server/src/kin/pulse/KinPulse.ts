@@ -32,7 +32,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import * as KinShell from "../shell/KinShell.ts";
-import { sectionOfSense } from "../shell/sections.ts";
+import { sectionOfKey, sectionOfSense } from "../shell/sections.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { matchName } from "../work/nameMatch.ts";
@@ -375,8 +375,10 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
   readonly limit?: number | undefined;
   /** What a tick already sensed (`lastTick`), instead of sensing again. */
   readonly sensed?: ReadonlyArray<SensedFact> | undefined;
+  readonly shell?: Shell | undefined;
 }) {
   const { orgId, at, scope } = input;
+  const shell = input.shell ?? (yield* KinShell.getForDisplay(orgId));
   const sensed = input.sensed ?? (yield* sense(orgId, at));
   const holds = yield* liveHolds(orgId, at);
   // Before a teammate's view drops the scope it can't name: a hold on that client still counts.
@@ -386,7 +388,7 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
       return hold === undefined ? [] : [[fact.key, hold] as const];
     }),
   );
-  const visible = yield* visibleTo(orgId, input.viewer, sensed);
+  const visible = yield* visibleTo(orgId, input.viewer, sensed, shell);
   const scoped = visible.filter(
     (fact) =>
       (scope?.family === undefined || fact.family === scope.family) &&
@@ -412,6 +414,9 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
   const narrowed = scope?.client !== undefined || scope?.project !== undefined;
   const shownHolds = holdsFor(holds, input.viewer).filter(
     (hold) =>
+      (input.withAside !== true ||
+        KinShell.onIn(shell, "deals") ||
+        sectionOfKey(hold.recordKey) !== "deals") &&
       (input.viewer._tag === "owner" ||
         hold.forPersonId !== null ||
         visible.some((fact) => asides.get(fact.key)?.holdId === hold.holdId)) &&

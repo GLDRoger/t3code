@@ -35,11 +35,13 @@ const toolCallGateFn =
  */
 export const toolCallGate = <R>(
   admit: (name: string, args: unknown) => Effect.Effect<boolean, never, R>,
-  refusal: string,
+  refusal: string | ((args: unknown) => string),
 ) =>
   McpServer.middleware()(
     toolCallGateFn((name, args) =>
-      Effect.map(admit(name, args), (admitted) => (admitted ? undefined : refusal)),
+      Effect.map(admit(name, args), (admitted) =>
+        admitted ? undefined : typeof refusal === "string" ? refusal : refusal(args),
+      ),
     ),
     { global: true },
   );

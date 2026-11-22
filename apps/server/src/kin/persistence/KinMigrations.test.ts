@@ -2182,7 +2182,7 @@ describe("Kin migrations", () => {
         const cursors = sql<{ until: number }>`SELECT checked_until AS until
           FROM kin_connection_cursors ORDER BY connection_id`;
         yield* runKinMigrations();
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 205`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 205`;
         yield* sql`DROP TABLE kin_arrivals`;
         yield* sql`ALTER TABLE kin_connection_cursors DROP COLUMN mail_cursor`;
         assert.deepStrictEqual(yield* shape, []);
@@ -2200,7 +2200,7 @@ describe("Kin migrations", () => {
           all,
         );
         assert.deepStrictEqual(yield* cursors, [{ until: 42 }]);
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 205`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 205`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(205));
         assert.deepStrictEqual(yield* cursors, [{ until: 42 }]);
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
