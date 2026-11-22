@@ -230,6 +230,10 @@ const heldBy = (
 /** What an agent on a task hears when it tries what only its holder, or a person's word, may do. */
 export const ALSO_ON_UNASKED =
   "Who is on a task changes only when a person asks for it in this turn. Nothing was saved: ask them.";
+/** The helper guard's refusal: a timed default it stops falls back to asking the person. */
+export class KinHelperRefusal extends KinChatError {}
+// @effect-diagnostics-next-line instanceOfSchema:off -- the subclass, not the schema, marks it.
+export const isHelperRefusal = (error: unknown) => error instanceof KinHelperRefusal;
 export const helperRefusal = (holder: string, key: string) =>
   `${holder} holds ${key}: put it to them as a comment or a card.`;
 
@@ -1191,7 +1195,7 @@ const make = Effect.gen(function* () {
             WHERE org_id = ${orgId} AND agent_id = ${holder.agentId}`
         : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
             WHERE org_id = ${orgId} AND person_id = ${holder.personId}`;
-    return yield* new KinChatError({
+    return yield* new KinHelperRefusal({
       reason: "not_allowed",
       message: helperRefusal(named?.name ?? "Someone else", row.key),
     });
