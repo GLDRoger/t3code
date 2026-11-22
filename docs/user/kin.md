@@ -287,10 +287,13 @@ the figures in the quote or the invoice.
 
 ### Your tasks in your own coding agent
 
-A coding agent key lets your own coding agent, such as Claude Code, Codex or Cursor, read the tasks
-you hold, add notes to them, and set them to to-do, in progress or done. It can't reach anyone
-else's tasks, anything labelled sensitive or under a client or project labelled sensitive, or any
-chats, money or files.
+A coding agent key lets your own coding agent, such as Claude Code, Codex or Cursor, work from what
+you see in Kin. It reads the tasks you hold, adds notes to them, and sets them to to-do, in progress
+or done; a task's notes and state are the only things it can change. It can also read, never change,
+the projects, clients and docs you can see, your Money figures if you have Money, and, for the owner
+and co-owners, what Kin remembers (a co-owner's agent reads only what the team may know). It can't
+reach anyone else's tasks, a task labelled sensitive or under a client or project labelled
+sensitive, your chats, or anything your own screens don't show you.
 
 To make one, open **Settings → Profile** and choose **Make a
 key** under **Coding agent keys**. Name it for the computer or tool it's for. Kin shows the key, its
