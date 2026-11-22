@@ -350,7 +350,15 @@ it.effect.each([true, false])(
         const [passed] = yield* passedOn(sql, orgId, tech);
         yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'tech-wake'
           WHERE org_id = ${orgId} AND event_id = ${passed!.event.eventId}`;
-        yield* inheritOutside({ orgId, wakeupId: "tech-wake", eventIds: [passed!.event.eventId] });
+        const follows = yield* inheritOutside({
+          orgId,
+          wakeupId: "tech-wake",
+          eventIds: [passed!.event.eventId],
+        });
+        assert.strictEqual(
+          follows === undefined ? undefined : describeOutside(follows),
+          named.afterReading,
+        );
         assert.isFalse(yield* ownerLevelAsked(orgId, tech, "tech-wake"));
         const carried = yield* outsideStamp({ orgId, wakeupId: "tech-wake" });
         assert.strictEqual(

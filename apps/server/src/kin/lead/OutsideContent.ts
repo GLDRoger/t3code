@@ -281,6 +281,7 @@ export const storedStamp = Effect.fn("KinOutsideContent.storedStamp")(function* 
 /**
  * A turn starts outside-read when it shows outside text itself, or when an event it shows, or the
  * event a reminder it shows was asked in, carries a stamp. Run before the prompt is sent; a failure stops the prompt.
+ * Returns the stamp it took from an event, the read this turn follows; none for what it shows.
  */
 export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (input: {
   readonly orgId: KinOrgId;
@@ -291,7 +292,10 @@ export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (
   /** What a person reads for what it shows, such as the first mail's sender and subject. */
   readonly showsReadable?: string | undefined;
 }) {
-  if (input.shows !== undefined) return yield* markOutside(input, input.shows, input.showsReadable);
+  if (input.shows !== undefined) {
+    yield* markOutside(input, input.shows, input.showsReadable);
+    return undefined;
+  }
   const sql = yield* SqlClient.SqlClient;
   const events =
     input.eventIds.length === 0
@@ -300,10 +304,11 @@ export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (
           WHERE org_id = ${input.orgId} AND event_id IN ${sql.in(input.eventIds)}
           ORDER BY event_id LIMIT 1`;
   const source = events[0]?.source;
-  if (source === undefined) return;
+  if (source === undefined) return undefined;
   yield* source.startsWith(CODING_AGENT_SOURCE)
     ? codingAgentTextShown(input, source)
     : markOutside(input, source);
+  return source;
 });
 
 const PAGES_TURNS = 200;
