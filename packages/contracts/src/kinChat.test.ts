@@ -488,6 +488,29 @@ const samples = {
   ],
   KinLeadInterruptInput: [{ orgId: "org-1", wakeupId: "wakeup-1" }],
   KinLeadInterruptResult: [{ interrupted: true }, { interrupted: false }],
+  KinChatWorkingResult: [
+    { handoffs: [] },
+    {
+      handoffs: [
+        {
+          agentId: "lead-1",
+          chatId: null,
+          wakeupId: null,
+          state: "queued",
+          asked: "Chase the Ambermill invoice",
+          since: at,
+        },
+        {
+          agentId: "lead-2",
+          chatId: "chat-1",
+          wakeupId: "w-1",
+          state: "running",
+          asked: "",
+          since: at,
+        },
+      ],
+    },
+  ],
   KinChatError: [
     "not_found",
     "not_allowed",
