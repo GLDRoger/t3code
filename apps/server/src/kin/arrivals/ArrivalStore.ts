@@ -151,7 +151,7 @@ export const parkedAgain = Effect.fn("KinArrivalStore.parkedAgain")(function* (
     WHERE org_id = ${orgId} AND arrival_id = ${parked.arrivalId} AND state = 'parked'`;
 });
 
-export type Arrived = {
+type Arrived = {
   readonly arrivalId: string;
   readonly connectionId: string;
   readonly messageId: string;

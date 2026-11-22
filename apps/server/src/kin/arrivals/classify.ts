@@ -66,39 +66,38 @@ export type ArrivalRows = {
 };
 
 /** Who looks: Finance, the Chief of staff, or the agent whose mail it answers. */
-export type ArrivalLook = {
+type ArrivalLook = {
   readonly by: "finance" | "chief" | { readonly agentId: string };
-  /** The line the woken turn reads beside the mail, as today's watch wrote it. */
+  /** Suggested match text; the outside watch keeps its own routing. */
   readonly matched: string;
   readonly clientId?: string;
 };
 
-export type Classified = {
+type Classified = {
   readonly class: ArrivalClass;
   readonly reason: string;
   readonly look?: ArrivalLook;
 };
 
 const ADDRESS = /<([^<>\s]+@[^<>\s]+)>|([^\s<>,;"]+@[^\s<>,;"]+)/;
-export const addressOf = (who: string | null) => {
+const addressOf = (who: string | null) => {
   const found = who === null ? null : ADDRESS.exec(who);
   return found === null ? undefined : (found[1] ?? found[2])!.toLowerCase();
 };
 const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-export const AUTOMATED_SENDER =
+const AUTOMATED_SENDER =
   /^(?:no-?reply|do-?not-?reply|donotreply|notifications?|notify|mailer-daemon|postmaster|bounces?|news(?:letter)?|marketing|digest|alerts?|updates?)(?:[+._-]|@)/i;
-export const BULK_DOMAIN =
-  /@(?:em|email|mail|mailer|bounce|news|newsletter|marketing|send|e)\d*\./i;
+const BULK_DOMAIN = /@(?:em|email|mail|mailer|bounce|news|newsletter|marketing|send|e)\d*\./i;
 const domainOf = (address: string) => address.slice(address.lastIndexOf("@") + 1);
 
 /** Letters, digits and the joins numbers are written with: "INV/26-27/004" is not "004". */
-export const numberIn = (number: string, subject: string) =>
+const numberIn = (number: string, subject: string) =>
   new RegExp(
     `(?<![\\p{L}\\p{N}/_.-])${escaped(number)}(?![\\p{L}\\p{N}/_-]|\\.[\\p{L}\\p{N}])`,
     "u",
   ).test(subject);
-export const keyIn = (key: string, subject: string) =>
+const keyIn = (key: string, subject: string) =>
   new RegExp(`(^|[^a-z0-9-])${escaped(key.toLowerCase())}($|[^a-z0-9])`).test(
     subject.toLowerCase(),
   );

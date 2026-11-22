@@ -24,7 +24,7 @@ const FEED_EVERY_MS = MINUTE_MS;
 const BACK_OFF_MAX_MS = 30 * MINUTE_MS;
 const PRUNE_EVERY_MS = DAY_MS;
 
-export type FeedRead = {
+type FeedRead = {
   /** The mailbox's mail reads are off, so nothing was read. */
   readonly off: boolean;
   /** More of the change record waits; the next read goes on at once. */
@@ -34,10 +34,10 @@ export type FeedRead = {
 };
 
 /** A mailbox's read failed before it committed: nothing moved, and the next read tries again. */
-export class KinArrivalFeedError extends Schema.TaggedError<KinArrivalFeedError>()(
-  "KinArrivalFeedError",
-  { connectionId: Schema.String, cause: Schema.Defect() },
-) {
+class KinArrivalFeedError extends Schema.TaggedError<KinArrivalFeedError>()("KinArrivalFeedError", {
+  connectionId: Schema.String,
+  cause: Schema.Defect(),
+}) {
   override get message(): string {
     return "Kin couldn't read a mailbox's new mail.";
   }
