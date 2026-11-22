@@ -67,9 +67,9 @@ export const fundingOf = (fields: FieldValues): Funding => {
 const valueOf = (sql: SqlClient.SqlClient, key: string) =>
   sql`json_extract(r.fields_json, ${`$.${key}`})`;
 
-/** An expense `r` a partner funded: `fundingOf` in SQL. */
+/** An expense `r` a partner funded: `fundingOf` in SQL, case-sensitive like it (GLOB, not LIKE). */
 export const partnerFunded = (sql: SqlClient.SqlClient) =>
-  sql`(COALESCE(${valueOf(sql, FUNDED_BY)}, '') LIKE 'person:%'
+  sql`(COALESCE(${valueOf(sql, FUNDED_BY)}, '') GLOB 'person:*'
     OR COALESCE(${valueOf(sql, REIMBURSEMENT)}, '') IN ('owed', 'repaid'))`;
 
 /** An expense `r` the company still owes the partner who funded it. */

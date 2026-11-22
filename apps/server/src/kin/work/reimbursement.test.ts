@@ -11,6 +11,7 @@ const partner = "person:meera";
 const cases: ReadonlyArray<[string, FieldValues, ReturnType<typeof fundingOf>]> = [
   ["nothing said", {}, { by: "company" }],
   ["an agent named", { fundedBy: "agent:finance" }, { by: "company" }],
+  ["a person id in capitals", { fundedBy: "PERSON:meera" }, { by: "company" }],
   ["not reimbursable alone", { reimbursement: "not reimbursable" }, { by: "company" }],
   [
     "a partner, nothing marked",
