@@ -182,7 +182,7 @@ export const personHoldNow = Effect.fn("KinQuiet.holdNow")(function* (
  * How long after someone asks the answer still rings in their quiet hours. Long work they started
  * before bed is often what they stay up for; past this, it waits in their notifications.
  */
-export const ANSWER_RINGS_WITHIN_MS = 3 * 60 * MINUTE_MS;
+const ANSWER_RINGS_WITHIN_MS = 3 * 60 * MINUTE_MS;
 
 /**
  * Whether an answer to what `personId` asked at `askedAt` rings in their quiet hours now: their
