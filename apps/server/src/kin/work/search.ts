@@ -7,7 +7,7 @@ import { sectionsOf } from "./docBody.ts";
 import { latestOf } from "./docs.ts";
 import { listOf } from "./lists.ts";
 import { inheritedSensitive, sensitiveNow } from "./recordRows.ts";
-import { docKindWords, searchIndexed } from "./searchIndex.ts";
+import { docKindWords, searchIndexed, stepText } from "./searchIndex.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 
 /**
@@ -206,10 +206,10 @@ const scan = Effect.fnUntraced(function* (
     AND v.record_id = r.record_id ORDER BY v.version DESC LIMIT 1), '')`;
   // The scan reads fields only for the owner: which are sensitive is the index's job.
   const fields = viewer === "owner" ? sql`r.fields_json || ' ' ||` : sql``;
-  const text = sql`lower(r.title || ' ' || r.notes || ' ' || ${fields} ${body} || ' '
-    || ${docKindWords(sql)})`;
+  const shown = sql`r.title || ' ' || r.notes || ' ' || ${body} || ' ' || ${stepText(sql)}`;
+  const text = sql`lower(${shown} || ' ' || ${fields} ${docKindWords(sql)})`;
   const rows = yield* sql<Omit<Row, "part" | "snippet"> & { readonly text: string }>`
-    SELECT ${columns}, r.title || ' ' || r.notes || ' ' || ${body} AS text
+    SELECT ${columns}, ${shown} AS text
     FROM kin_records r
     WHERE ${sql.and([
       ...where,

@@ -45,6 +45,7 @@ import { playbookIndex, playbookThreshold } from "./playbooks.ts";
 import { PLAYBOOK_SEEDS, seedPlaybooks } from "./playbookSeeds.ts";
 import { characters, parseCharacter, seedCharacters, setCharacter } from "../lead/characters.ts";
 import { search } from "./search.ts";
+import { indexStoredSteps } from "./searchIndex.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 
 // Invented org, people and docs only; nothing here reads a real database or memory.
@@ -1402,6 +1403,33 @@ it.effect("one search finds entries and docs, and the team view hides what label
       partyId: secret.row.recordId,
       sensitive: true,
     });
+    const checklist = yield* records.create(orgId, writer, {
+      originKey: "checklist-work",
+      title: "Invented release task",
+      owner: me,
+      steps: [{ title: "Verify cobalt packaging", done: false }],
+    });
+    assert.deepStrictEqual(
+      (yield* search(orgId, {
+        text: "cobalt packaging",
+        limit: 20,
+        viewer: "team",
+        scope: KIN_OWNER_LEVEL,
+      })).hits.map((hit) => hit.recordId),
+      [checklist.row.recordId],
+    );
+    const sql = yield* SqlClient.SqlClient;
+    const indexedBody = sql<{ body: string }>`SELECT s.body FROM kin_search s
+      JOIN kin_search_rows m ON m.id = s.rowid
+      WHERE m.org_id = ${orgId} AND m.record_id = ${checklist.row.recordId} AND m.part = 'public'`;
+    yield* sql`UPDATE kin_search SET body = 'Legacy body without steps' WHERE rowid IN (
+      SELECT id FROM kin_search_rows WHERE org_id = ${orgId}
+        AND record_id = ${checklist.row.recordId} AND part = 'public')`;
+    yield* indexStoredSteps(orgId);
+    yield* indexStoredSteps(orgId);
+    assert.deepStrictEqual(yield* indexedBody, [
+      { body: "Legacy body without steps Verify cobalt packaging" },
+    ]);
     const found = (viewer: "owner" | "team") =>
       search(orgId, { text: "pricing", limit: 20, viewer, scope: KIN_OWNER_LEVEL }).pipe(
         Effect.map(({ hits, indexed }) => ({
@@ -1465,7 +1493,6 @@ it.effect("one search finds entries and docs, and the team view hides what label
       "Invented launch plan",
     ]);
     // Without FTS5 the scan keeps the same rules.
-    const sql = yield* SqlClient.SqlClient;
     yield* sql`DROP TABLE kin_search`;
     const scanned = yield* found("team");
     assert.isFalse(scanned.indexed);
