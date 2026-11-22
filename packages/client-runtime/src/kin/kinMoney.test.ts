@@ -328,6 +328,19 @@ describe("company details", () => {
         .flatMap((one) => one.rows)
         .filter((row) => row.id === "gstin" || row.id === "notRegistered"),
     ).toEqual([{ id: "gstin", label: "GSTIN", value: "Not registered for GST", missing: false }]);
+    // What only a registered company fills is no gap to read and no field to fill.
+    const bare = { ...(profile as object), taxRegistered: false, placeOfSupply: null } as never;
+    expect(
+      kinCompanyRead(bare)
+        .flatMap((one) => one.rows)
+        .map((row) => row.id),
+    ).not.toContain("placeOfSupply");
+    const offered = kinCompanyEditSections(said, kinCompanyDraftOf(said)).flatMap((section) =>
+      section.fields.map((field) => field.id),
+    );
+    expect(offered).toContain("pan");
+    for (const id of ["placeOfSupply", "sac", "lutNumber", "lutDate"])
+      expect(offered).not.toContain(id);
   });
 
   it("asks for India's tax ids only in India, and for its own tax anywhere else", () => {

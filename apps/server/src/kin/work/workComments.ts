@@ -22,7 +22,7 @@ import type { PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
 import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
-import { type AssignNotice, tellPeople } from "./assignNotices.ts";
+import { alsoOnPeople, type AssignNotice, tellPeople } from "./assignNotices.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { KinToolText } from "./leadSchemas.ts";
 import { admitted, leadTool, type Lead, namer, viewOf, viewWriter, writerFor } from "./leadWork.ts";
@@ -38,6 +38,7 @@ import {
   viewerOf,
 } from "./ownerWork.ts";
 import {
+  canHearRecord,
   commentIdFor,
   commentsPage,
   insertComment,
@@ -48,7 +49,7 @@ import {
   withCanRemove,
   writeProjectNote,
 } from "./recordComments.ts";
-import { notFound, workFailure } from "./recordRows.ts";
+import { isClosed, isSuggestion, notFound, workFailure } from "./recordRows.ts";
 import { viewVisible } from "./teamView.ts";
 
 const NOTICE_WORDS = 280;
@@ -146,17 +147,19 @@ const commentNotices = Effect.fn("KinWorkComments.notices")(function* (
   const [asked] = yield* sql<{ askedBy: string | null }>`SELECT asked_by_person_id AS "askedBy"
     FROM kin_records WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
   const readers = new Set(
-    [row.ownerKind === "person" ? row.ownerId : null, asked?.askedBy ?? null].filter(
-      (one): one is string => one !== null && one !== author,
-    ),
+    [
+      row.ownerKind === "person" ? row.ownerId : null,
+      asked?.askedBy ?? null,
+      ...(row.registerId !== "work" || isSuggestion(row) || isClosed(row.state)
+        ? []
+        : alsoOnPeople(row)),
+    ].filter((one): one is string => one !== null && one !== author),
   );
   const why = oneLine(body, NOTICE_WORDS);
   const notices: Array<AssignNotice> = [];
   for (const reader of readers) {
     const personId = KinPersonId.make(reader);
-    const here = yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId}
-      AND person_id = ${personId} AND removed_at IS NULL`;
-    if (here.length === 0 || !(yield* personSeesRecord(orgId, personId, row.recordId))) continue;
+    if (!(yield* canHearRecord(orgId, personId, row.recordId))) continue;
     notices.push({ personId, kind: "commented", row, why: why === "" ? null : why });
   }
   return notices;
