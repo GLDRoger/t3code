@@ -65,7 +65,7 @@ import * as KinStop from "./KinStop.ts";
 import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
-import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
+import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -76,7 +76,15 @@ import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
-import { harness, seed, orgId, agentId, event, toolCall } from "./WakeupRunner.testkit.ts";
+import {
+  harness,
+  orchestrationHarness,
+  seed,
+  orgId,
+  agentId,
+  event,
+  toolCall,
+} from "./WakeupRunner.testkit.ts";
 import { ProviderAdapterSteerRunError } from "@t3tools/provider-core/server/ProviderAdapter";
 import { ProviderDriverKind, ProviderThreadId } from "@t3tools/contracts";
 
@@ -1030,6 +1038,98 @@ describe("WakeupRunner", () => {
         }).pipe(
           Effect.provide(
             harness({ failed: true, ...(failureCode === undefined ? {} : { failureCode }) }).pipe(
+              Layer.provide(bridge),
+            ),
+          ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect(
+    "retries a failed batch one at a time and gives up only on the event that cannot start",
+    () =>
+      Effect.gen(function* () {
+        const starts: Array<ReadonlyArray<string>> = [];
+        const notices: Array<{ outcome: string; wakeupId: KinWakeupId }> = [];
+        const bridge = Layer.mock(KinReplyBridge)({
+          lane: () =>
+            Effect.succeedSome({
+              chatId: KinChatId.make("owner-chat"),
+              mode: "reply",
+              owed: true,
+              leadName: "Lead",
+            }),
+          preparing: () => Effect.void,
+          begin: () => Effect.void,
+          complete: () => Effect.void,
+          end: () => Effect.void,
+          failed: ({ outcome, wakeupId }) =>
+            Effect.sync(() => void notices.push({ outcome, wakeupId })),
+        });
+        const rejectBad = Layer.effect(
+          KinLeadPrompt,
+          Effect.map(KinLeadPrompt, (prompt) => ({
+            ...prompt,
+            build: Effect.fn("test.build")(function* (input: KinLeadPromptInput) {
+              const ids = input.events.map((event) => event.eventId);
+              starts.push(ids);
+              if (ids.some((id) => id === "c-bad"))
+                return yield* new KinLeadPromptError({
+                  orgId,
+                  reason: "Cannot prepare this event",
+                });
+              return yield* prompt.build(input);
+            }),
+          })),
+        );
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          const queue = yield* KinEventQueue.KinEventQueue;
+          for (const id of ["a-good", "b-good", "c-bad"])
+            yield* queue.enqueue(yield* ownerSays(id));
+          const step = Effect.gen(function* () {
+            const [next] = yield* queue.readyLeads(orgId);
+            assert.isDefined(next);
+            const now = yield* Clock.currentTimeMillis;
+            if (next!.readyAt > now) yield* TestClock.adjust(next!.readyAt - now);
+            const result = yield* Fiber.join(yield* run()).pipe(Effect.result);
+            if (result._tag === "Failure")
+              assert.instanceOf(result.failure.cause, KinLeadPromptError);
+          });
+          for (let turn = 0; turn < 4; turn++) yield* step;
+          const states = sql`SELECT event_id, state, attempts FROM kin_events
+          WHERE org_id = ${orgId} ORDER BY event_id`;
+          const good = [
+            { event_id: "a-good", state: "done", attempts: 0 },
+            { event_id: "b-good", state: "done", attempts: 0 },
+          ];
+          assert.deepStrictEqual(yield* states, [
+            ...good,
+            { event_id: "c-bad", state: "queued", attempts: 1 },
+          ]);
+          for (let turn = 0; turn < 3; turn++) yield* step;
+          assert.deepStrictEqual(yield* states, [
+            ...good,
+            { event_id: "c-bad", state: "failed", attempts: 4 },
+          ]);
+          assert.deepStrictEqual(starts, [
+            ["a-good", "b-good", "c-bad"],
+            ["a-good"],
+            ["b-good"],
+            ...Array.from({ length: 4 }, () => ["c-bad"]),
+          ]);
+          const gaveUp = notices.filter(({ outcome }) => outcome === "gave_up");
+          assert.lengthOf(gaveUp, 1);
+          assert.deepStrictEqual(
+            yield* sql`SELECT event_ids FROM kin_wakeups
+            WHERE org_id = ${orgId} AND wakeup_id = ${gaveUp[0]!.wakeupId}`,
+            [{ event_ids: '["c-bad"]' }],
+          );
+        }).pipe(
+          Effect.provide(
+            WakeupRunner.layer.pipe(
+              Layer.provide(rejectBad),
+              Layer.provideMerge(orchestrationHarness()),
               Layer.provide(bridge),
             ),
           ),
