@@ -217,6 +217,9 @@ describe("the log", () => {
         words,
       ),
     ).toEqual(["03:15 · 41 looks, nothing new"]);
+    expect(kinWatchLogRows([{ _tag: "look", look: look("11:10") }], words)).toEqual([
+      "11:10 · Routine round · Nothing new · Brightwell Labs' INV-11",
+    ]);
   });
 
   it.each([

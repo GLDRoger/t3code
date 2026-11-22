@@ -187,8 +187,8 @@ export function kinWatchLogDay(day: string, now: number, words: KinWatchWords = 
 
 /**
  * Each row of one day of the log, newest first, as it reads: a look is "time · why it ran · what it
- * did · what it was about: what it found"; a fold of nothing-new looks is "time · 9 more looks,
- * nothing new" ("9 looks" on a day with nothing else).
+ * did · what it was about: what it found" (a "Nothing new" look stops at what it was about); a fold of
+ * nothing-new looks is "time · 9 more looks, nothing new" ("9 looks" on a day with nothing else).
  */
 export function kinWatchLogRows(
   rows: ReadonlyArray<KinWatchLogRow>,
@@ -199,7 +199,7 @@ export function kinWatchLogRows(
   const more = rows.some((row) => row._tag === "look") ? " more" : "";
   return rows.map((row) =>
     row._tag === "look"
-      ? `${time(row.look.at)} · ${KIN_WATCH_WHY_LABELS[row.look.why]} · ${KIN_WATCH_DID_LABELS[row.look.did]} · ${row.look.about}: ${row.look.line}`
+      ? `${time(row.look.at)} · ${KIN_WATCH_WHY_LABELS[row.look.why]} · ${KIN_WATCH_DID_LABELS[row.look.did]} · ${row.look.about}${row.look.did === "nothing_new" ? "" : `: ${row.look.line}`}`
       : `${time(row.folded.at)} · ${row.folded.count}${more} looks, nothing new`,
   );
 }
