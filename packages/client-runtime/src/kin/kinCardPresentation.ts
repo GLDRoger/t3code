@@ -124,7 +124,7 @@ const clamp = (text: string, max: number) => {
 const OPENS_THREAD = "Opens the thread";
 
 /** A failed task's line, by the cause the server told; `stopped` leads anything else. */
-export const KIN_TASK_FAILURE_COPY = {
+const KIN_TASK_FAILURE_COPY = {
   model_not_offered:
     "This server's AI provider doesn't offer the model this task asked for. Ask the agent to start it again on its own model.",
   signed_out:

@@ -111,10 +111,7 @@ const hiddenModel = (
  * The models a helper task (`delegate_task`) may run on: the ones Kin's agent picker offers, on an
  * installed provider agents may run on, less those the owner hid. Current models first.
  */
-export const kinHelperModels = (
-  settings: ServerSettings,
-  providers: ReadonlyArray<ServerProvider>,
-) =>
+const kinHelperModels = (settings: ServerSettings, providers: ReadonlyArray<ServerProvider>) =>
   providers
     .filter(
       (provider) =>

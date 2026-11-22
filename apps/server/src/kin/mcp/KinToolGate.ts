@@ -56,7 +56,7 @@ const namesOtherMachine = Effect.fnUntraced(function* (args: unknown) {
 });
 
 /** What a Kin agent reads when the check itself failed. */
-export const HELPER_MODEL_UNCHECKED =
+const HELPER_MODEL_UNCHECKED =
   "Kin can't check this task's model right now, so it didn't start it. Leave target.model and target.providerInstanceId out to run it on your own model.";
 
 const decodeTarget = Schema.decodeUnknownOption(
@@ -77,7 +77,7 @@ type HelperModelHost = Effect.Success<typeof helperModelHost>;
  * Why a Kin agent's `delegate_task` may not start on the provider and model its target names
  * (`helperModelRefusal`), before any task exists; a target T3 can't decode is T3's to refuse.
  */
-export const helperModelRefused = Effect.fn("KinToolGate.helperModel")(
+const helperModelRefused = Effect.fn("KinToolGate.helperModel")(
   function* (tool: string, args: unknown, host: HelperModelHost) {
     if (tool !== "delegate_task" || !Predicate.hasProperty(args, "target")) return undefined;
     const target = Option.getOrUndefined(decodeTarget(args.target));
