@@ -2719,11 +2719,39 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       const [again] = (yield* drafts).slice(-1);
       assert.notStrictEqual(again!.questionId, mailUp!.questionId);
       assert.deepInclude((yield* draftOf()).sent, { name: "Rhea Rao" });
-      yield* tap(owner, again!.questionId, "option-2", "rhea-changes-mail-again");
-      assert.notProperty(yield* draftOf(), "sent");
       const shownBefore = yield* shownUp(zoyaChat);
-      // Her new fee, written her way in the edit ("₹3,00,000" for her 300000), goes up as hers.
+      // This round Rhea answers in words, and the agent closes it as Changes first: the same as
+      // her tap. No turn in Zoya's chat, Kin's line there, her card sendable, Rhea's card says so.
       const edit = yield* turnOn("rhea", chatOf("chief"), "Say 3 December, fee 300000.");
+      yield* Questions.closeQuestion(
+        {
+          orgId: org,
+          agentId: chief,
+          wakeupId: edit.wakeupId,
+          questionId: again!.questionId,
+          outcome: "answered",
+          answer: "Changes first",
+          now: yield* Clock.currentTimeMillis,
+        },
+        chats,
+        Context.get(services, KinEventQueue.KinEventQueue),
+      );
+      assert.deepStrictEqual(yield* team.answeredWakes, []);
+      assert.strictEqual(
+        (yield* team.kinLines(zoyaChat)).at(-1),
+        "Rhea Rao wants changes first; the new mail goes back to Rhea Rao to approve.",
+      );
+      assert.notProperty(yield* draftOf(), "sent");
+      assert.deepInclude(
+        (yield* team.widgetOf((yield* team.cardOf(again!.questionId)).widgetId!)).state,
+        {
+          outcome: {
+            title: "Answered",
+            text: "Say here what to change; the new draft comes back to you to approve.",
+          },
+        },
+      );
+      // Her new fee, written her way in the edit ("₹3,00,000" for her 300000), goes up as hers.
       const cardsBefore = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
         WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'`;
       const edited = yield* LeadDocs.edit(scopeOf("chief"), {
