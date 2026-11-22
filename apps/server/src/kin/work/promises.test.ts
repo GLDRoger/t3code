@@ -382,6 +382,48 @@ it.effect(
 );
 
 it.effect(
+  "a promise on a deal kept private: members neither open the deal nor learn it from the promise",
+  () =>
+    Effect.gen(function* () {
+      const { corran } = yield* seed;
+      const kept = yield* Deals.create([rhea], {
+        orgId,
+        party: corran,
+        title: "Invented quiet buyout",
+        sensitive: true,
+        clientRequestId: "kept",
+      });
+      const made = yield* OwnerWork.create(
+        [rhea],
+        promise("Invented terms sheet", { deal: kept.deal.key, from: "At the board lunch" }),
+      );
+      for (const who of [rhea, cora])
+        assert.deepStrictEqual(
+          (yield* Deals.page([who], { orgId, key: kept.deal.key })).promises?.map((one) => one.key),
+          [made.key],
+        );
+      for (const who of [zoya, arjun]) {
+        assert.include(
+          ["not_found", "not_allowed"],
+          yield* refusal(Deals.page([who], { orgId, key: kept.deal.key })),
+        );
+        const client = JSON.stringify(yield* Clients.party([who], { orgId, key: corran }));
+        assert.notInclude(client, kept.deal.key, who.personId);
+        assert.notInclude(client, "Invented quiet buyout", who.personId);
+        assert.strictEqual(
+          yield* refusal(
+            OwnerWork.create(
+              [who],
+              promise(`Invented by ${who.personId}`, { deal: kept.deal.key }),
+            ),
+          ),
+          "not_found",
+        );
+      }
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "a deal's promises and a client's contract dates, to each role: owner, co-owner, looker-after, another with Clients on; Clients off sees nothing",
   () =>
     Effect.gen(function* () {

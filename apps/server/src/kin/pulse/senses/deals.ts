@@ -1,5 +1,6 @@
 import {
   formatKinWhen,
+  KIN_PROMISE_SENSES,
   KIN_TEXT_LOCALE,
   KinPersonId,
   KinRecordId,
@@ -209,5 +210,5 @@ export const DEAL_SENSES: ReadonlySet<string> = new Set([
   "deal_no_next_step",
   "deal_quiet",
   "deal_date_passed",
-  "notice_due",
+  ...KIN_PROMISE_SENSES,
 ]);
