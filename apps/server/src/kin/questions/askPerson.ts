@@ -194,6 +194,8 @@ type TurnLead = AgentIdentity & { readonly wakeupId: KinWakeupId };
 /** A draft still waiting on the owner's Changes first, as `redoOf` found it. */
 export type Redraft = {
   readonly questionId: string;
+  /** The owner's chat the redraft is made in. */
+  readonly chatId: KinChatId;
   readonly question: string;
   readonly about: ReadonlyArray<string>;
   readonly intent: string;
@@ -288,7 +290,7 @@ export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
         "docKey" in redraft
           ? about.includes(redraft.docKey)
           : draft.kind === redraft.kind && (draft.for?.partyId ?? null) === redraft.partyId;
-      return same ? [{ ...row, about, draft }] : [];
+      return same ? [{ ...row, chatId: lane.value.chatId, about, draft }] : [];
     }),
   );
   return found.length === 1 ? found[0] : undefined;
@@ -387,15 +389,16 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           return yield* refuse(
             "Kin writes this card's buttons, Approve and Changes first: leave out options when you send a draft up.",
           );
-        // A redraft's source is the draft she sent up, held to her then.
+        // A redraft's source is the draft she sent up, held to her then, and the owner's own words
+        // this turn answers: a figure she gave is hers to put in it.
         const source =
           redone !== null
             ? null
             : (turn ??
               (press?.madeIn === undefined ? null : { orgId, agentId, wakeupId: press.madeIn }));
         hers =
-          redone !== null
-            ? [redone.draft.text]
+          from._tag === "redo"
+            ? [from.of.draft.text, ...(yield* ownMessages(from.lead, from.of.chatId, self.owner))]
             : source === null
               ? undefined
               : yield* draftSource(source, here.chatId, asker);
@@ -756,14 +759,7 @@ const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
   asker: KinPersonId,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const own = yield* sql<{ body: string }>`SELECT m.body FROM kin_events e
-    JOIN kin_messages m ON m.org_id = e.org_id
-      AND m.message_id = json_extract(e.json, '$.messageId')
-    WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId}
-      AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message'
-      AND json_extract(e.json, '$.origin') IS NULL AND m.chat_id = ${chatId}
-      AND m.author_kind = 'human' AND m.author_person_id = ${asker} AND m.origin_json IS NULL
-    ORDER BY e.event_id`;
+  const own = yield* ownMessages(turn, chatId, asker);
   const answered = yield* sql<{ eventId: string; questionId: string; draft: string }>`SELECT
       e.event_id AS "eventId", q.question_id AS "questionId", q.draft_json AS draft
     FROM kin_events e
@@ -787,6 +783,24 @@ const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
   );
   if (own.length === 0 && earlier.length === 0) return undefined;
   return own.length > 0
-    ? own.map((one) => one.body)
+    ? own
     : earlier.flatMap((one) => Option.toArray(decodeStoredDraft(one.draft)).map((d) => d.text));
+});
+
+/** What this person wrote themselves in that chat, in the messages this turn answers. */
+const ownMessages = Effect.fn("KinQuestions.ownMessages")(function* (
+  turn: { readonly orgId: string; readonly agentId: string; readonly wakeupId: string },
+  chatId: string,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ body: string }>`SELECT m.body FROM kin_events e
+    JOIN kin_messages m ON m.org_id = e.org_id
+      AND m.message_id = json_extract(e.json, '$.messageId')
+    WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId}
+      AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message'
+      AND json_extract(e.json, '$.origin') IS NULL AND m.chat_id = ${chatId}
+      AND m.author_kind = 'human' AND m.author_person_id = ${personId} AND m.origin_json IS NULL
+    ORDER BY e.event_id`;
+  return rows.map((one) => one.body);
 });

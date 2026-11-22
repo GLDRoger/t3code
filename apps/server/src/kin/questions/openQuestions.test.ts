@@ -2445,6 +2445,7 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
 // Changes first on a teammate's draft: the owner says what to change in her own chat, and the
 // redraft goes back to her on a new Approve card, asked for the teammate's chat as the first was.
 // Exactly one waiting draft matches, or nothing is raised; a raise the server refuses files it.
+// A figure the owner herself wrote this turn is hers to give the teammate; any other is held.
 it.effect("after the owner's Changes first, her redraft comes back to her to approve", () =>
   Effect.andThen(
     TestClock.setTime(IST_MON_1130),
@@ -2464,6 +2465,13 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
             owner_id, created_by_kind, origin_key, created_at, updated_at)
           VALUES (${orgId}, ${id}, 'clients', ${key}, ${title}, 'person', ${owner.personId},
             'person', ${id}, 0, 0)`;
+      // An invoice of ₹45,000 only Rhea sees.
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 1, 0) ON CONFLICT DO NOTHING`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at, amount_minor, currency)
+        VALUES (${orgId}, 'rec_inv', 'invoices', 'INV-4', 'Bramble shoot', 'person',
+          ${owner.personId}, 'person', 'rec_inv', 0, 0, 4500000, 'INR')`;
       yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id IN ('zoya', 'arjun')`;
       yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
         VALUES ('s-zoya', ${orgId}, 'zoya', 0)`;
@@ -2488,7 +2496,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         LeadDocs.create(scopeOf("chief"), {
           sourceEventId: at.eventId,
           title: "Harbourline proposal",
-          body: "Harbourline proposal: four shoots, price: ____",
+          body: "Harbourline proposal: four shoots, ₹300000 a month",
           kind: "proposal",
           client: "C-7",
           draft: { kind: "proposal" },
@@ -2542,7 +2550,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         "Rhea Rao wants changes first; the new proposal goes back to Rhea Rao to approve.",
       );
       yield* TestClock.adjust("1 minute");
-      const words = yield* turnOn("rhea", chatOf("chief"), "Make it four shoots.");
+      const words = yield* turnOn("rhea", chatOf("chief"), "Make it four shoots, 300000 a month.");
       // Another client's proposal is another draft: today's plain card, nothing raised.
       const other = yield* proposal(words, {
         title: "Tidewater proposal",
@@ -2551,7 +2559,8 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       });
       assert.notInclude(other.note ?? "", "Changes first");
       assert.lengthOf(yield* drafts, 1);
-      // A figure Zoya may not read can't go to her chat: filed as today, and the agent hears why.
+      // A figure Rhea didn't write that Zoya may not read can't go to her chat: filed as today,
+      // and the agent hears why. So with the sum of an invoice Zoya doesn't see.
       const priced = yield* proposal(words, {
         title: "All in price",
         body: "All in for ₹40,000",
@@ -2561,8 +2570,23 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         priced.note,
         "This is Zoya Sheikh's proposal back from Rhea Rao's Changes first, but Kin couldn't put it to Rhea Rao again: Not for Zoya Sheikh: “₹40,000” reads as an amount of money, which they may not see. Nothing was asked.",
       );
+      const hidden = yield* proposal(words, {
+        title: "With travel",
+        body: "Harbourline proposal: four shoots, ₹300000 a month, travel 45000",
+      });
+      assert.notStrictEqual(hidden.key, "");
+      assert.include(
+        hidden.note,
+        "Kin couldn't put it to Rhea Rao again: Not for Zoya Sheikh: it carries a figure that is a sum they may not see.",
+      );
+      // Rhea keeps her redraft as its own card in her chat.
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")}
+          AND type = 'doc' AND json_extract(state_json, '$.key') = ${hidden.key}`,
+        1,
+      );
       assert.lengthOf(yield* drafts, 1);
-      // The redraft itself goes back to her: nothing filed, one new card asked for Zoya's chat.
+      // The redraft at Rhea's own new price goes back to her: nothing filed, one new card asked for Zoya's chat.
       const filed = yield* docCount;
       const back = yield* proposal(words);
       const told =
@@ -2576,12 +2600,12 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         forChatId: zoyaChat,
         forPersonId: "zoya",
         intent: "harbourline proposal",
-        text: "Harbourline proposal: four shoots, price: ____",
+        text: "Harbourline proposal: four shoots, ₹300000 a month",
       });
       const card = yield* team.cardOf(redone!.questionId);
       assert.include((yield* team.widgetOf(card.widgetId!)).state, {
         detail:
-          "Zoya Sheikh asks, through Chief of staff.\n\nHarbourline proposal: four shoots, price: ____\n\nProposal for Harbourline Hotels",
+          "Zoya Sheikh asks, through Chief of staff.\n\nHarbourline proposal: four shoots, ₹300000 a month\n\nProposal for Harbourline Hotels",
       });
       // Her waiting list shows it again as a draft to approve, and Meera's read-only row returns.
       for (const who of [owner, team.person("meera")])
@@ -2600,7 +2624,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
           author: "agent",
         },
         {
-          body: "With Rhea Rao to approve:\n\nHarbourline proposal: four shoots, price: ____",
+          body: "With Rhea Rao to approve:\n\nHarbourline proposal: four shoots, ₹300000 a month",
           author: "agent",
         },
       ]);
@@ -2698,14 +2722,17 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       yield* tap(owner, again!.questionId, "option-2", "rhea-changes-mail-again");
       assert.notProperty(yield* draftOf(), "sent");
       const shownBefore = yield* shownUp(zoyaChat);
-      const edit = yield* turnOn("rhea", chatOf("chief"), "Say 3 December.");
+      // Her new fee, written her way in the edit ("₹3,00,000" for her 300000), goes up as hers.
+      const edit = yield* turnOn("rhea", chatOf("chief"), "Say 3 December, fee 300000.");
       const cardsBefore = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
         WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'`;
       const edited = yield* LeadDocs.edit(scopeOf("chief"), {
         key: mail.key,
         sourceEventId: edit.eventId,
         summary: "Moved to 3 December",
-        operations: [{ op: "replace_phrase", find: "2 December", replace: "3 December" }],
+        operations: [
+          { op: "replace_phrase", find: "2 December", replace: "3 December, for ₹3,00,000" },
+        ],
         card: true,
       }).pipe(Effect.provideService(KinIdentity, identity));
       assert.strictEqual(
@@ -2715,7 +2742,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.deepInclude((yield* drafts).at(-1), {
         state: "open",
         forChatId: zoyaChat,
-        text: "We launch on 3 December.\n",
+        text: "We launch on 3 December, for ₹3,00,000.\n",
       });
       // Her card reads sent again with the redraft's text: Kin posts it nowhere else.
       assert.deepInclude((yield* draftOf()).sent, { name: "Rhea Rao" });
