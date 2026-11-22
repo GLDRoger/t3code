@@ -3865,7 +3865,7 @@ it.effect(
           created_by_id, origin_key, created_at, updated_at)
         VALUES (${orgId}, 'rec_w7', 'work', 'W-7', 'Build the client portal', 'waiting', 'agent',
           'finance', 'person', ${owner.personId}, '{}', 'person', ${owner.personId}, 'w7', 0, 0)`;
-        yield* wake(
+        const asking = yield* wake(
           "finance",
           yield* chats.send(owner, {
             chatId: chatOf("finance"),
@@ -3873,6 +3873,18 @@ it.effect(
             clientMessageId: "m1",
           }),
         );
+        // In the same turn Finance also set W-8 waiting on her, without naming it on the card.
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, waiting_on_kind, waiting_on_id, fields_json, created_by_kind,
+            created_by_id, origin_key, created_at, updated_at)
+          VALUES (${orgId}, 'rec_w8', 'work', 'W-8', 'Pick the portal host', 'waiting', 'agent',
+            'finance', 'person', ${owner.personId}, '{}', 'agent', 'finance', 'w8', 0, 0)`;
+        yield* sql`INSERT INTO kin_record_changes (seq, org_id, record_id, rev, at, actor_kind,
+            actor_id, via, kind, fields_json, wakeup_id)
+          VALUES ((SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_record_changes), ${orgId}, 'rec_w8', 1,
+            0, 'agent', 'finance', 'lead', 'updated',
+            ${JSON.stringify([{ field: "waitingOn", from: null, to: `person:${owner.personId}` }])},
+            ${asking})`;
         const asked = yield* callAs("finance", "kin_ask", {
           question: "Which way should I build the client portal?",
           options: [{ label: "Static site" }, { label: "Web app" }, { label: "Hosted tool" }],
@@ -3907,10 +3919,12 @@ it.effect(
         });
         const events = sql<{ key: string; state: string }>`SELECT dedupe_key AS key, state
         FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'question-%' ORDER BY rowid`;
-        const task = sql<{ state: string; waitingOn: string | null }>`SELECT state,
-          waiting_on_id AS "waitingOn" FROM kin_records WHERE record_id = 'rec_w7'`.pipe(
-          Effect.map((rows) => rows[0]!),
-        );
+        const taskOf = (id: string) =>
+          sql<{ state: string; waitingOn: string | null }>`SELECT state,
+              waiting_on_id AS "waitingOn" FROM kin_records WHERE record_id = ${id}`.pipe(
+            Effect.map((rows) => rows[0]!),
+          );
+        const task = taskOf("rec_w7");
         const lines = sql<{ by: string; fields: string }>`SELECT actor_id AS by,
           fields_json AS fields FROM kin_record_changes WHERE record_id = 'rec_w7' ORDER BY seq`;
         const waitingHere = repo
@@ -3993,6 +4007,7 @@ it.effect(
         assert.strictEqual((yield* questionRow(sql, questionId)).state, "dismissed");
         assert.lengthOf(yield* waitingHere, 0);
         assert.deepStrictEqual(yield* task, { state: "open", waitingOn: null });
+        assert.deepStrictEqual(yield* taskOf("rec_w8"), { state: "open", waitingOn: null });
         const released = (yield* lines).at(-1)!;
         assert.strictEqual(released.by, owner.personId);
         assert.deepInclude(JSON.parse(released.fields), {
@@ -4052,6 +4067,10 @@ it.effect(
         assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
         assert.lengthOf(yield* waitingHere, 1);
         assert.deepStrictEqual(yield* task, { state: "waiting", waitingOn: owner.personId });
+        assert.deepStrictEqual(yield* taskOf("rec_w8"), {
+          state: "waiting",
+          waitingOn: owner.personId,
+        });
         assert.deepStrictEqual(yield* events, [
           { key: `question-dismissed:${questionId}:${dismissedAt}`, state: "expired" },
         ]);
@@ -4066,7 +4085,7 @@ it.effect(
           ((yield* widget()).state as { dismissed: { at: string } }).dismissed.at,
         );
         yield* sql`UPDATE kin_events SET state = 'done'
-        WHERE dedupe_key = ${`question-dismissed:${questionId}:${again}`}`;
+          WHERE dedupe_key = ${`question-dismissed:${questionId}:${again}`}`;
         yield* press(owner, "undismiss", "undo-2");
         assert.deepStrictEqual((yield* events).slice(1), [
           { key: `question-dismissed:${questionId}:${again}`, state: "done" },
