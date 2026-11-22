@@ -34,9 +34,12 @@ import { WEEKLY_RULE } from "../pulse/weekly.ts";
 import { MONEY_RULE, WITHDRAWN_WORK } from "../work/workPrompt.ts";
 import { KinLeadPrompt, SHARED_TURN_LINE, TURN_DIVIDER, workForText } from "./LeadPrompt.ts";
 import {
+  markOutside,
   outsideRead,
   outsideSource,
   outsideStamp,
+  renderSource,
+  snapshotSource,
   stampEvent,
   stampReads,
 } from "./OutsideContent.ts";
@@ -2587,6 +2590,44 @@ it.effect(
       expect(stampReads((yield* outsideStamp(input)) ?? "")).toEqual([lenaMail]);
       expect(yield* ownerLevelAsked(orgId, agentId, input.wakeupId)).toBe(false);
     }).pipe(Effect.provide(markedPrompt)),
+);
+
+// A deferral keeps the source of its own making: not a read its turn made after it was set.
+it.effect("a deferral carries what was read when it was set, and nothing read after", () =>
+  Effect.gen(function* () {
+    yield* leadWithOwner;
+    const setting = { orgId, wakeupId: "set-wake" };
+    // A search, then the thread: the source names the thread it was set up after.
+    const search = { k: "mail", id: "conn-1", account: "Invented mail" } as const;
+    yield* markOutside(setting, "conn-1", [search]);
+    yield* markOutside(setting, "conn-1", [lenaMail]);
+    yield* snapshotSource(setting, "zqmark-started");
+    yield* markOutside(setting, "web:later.example");
+    // The asking event carries the whole turn's reads, the later page too.
+    yield* stampEvent(orgId, "set-wake:event-set", yield* outsideStamp(setting));
+    const wakeup = yield* decodeRawEvent(
+      due("started", { type: "deferral", itemId: "zqmark-started", phase: "due" }),
+    );
+    yield* stored(input.wakeupId, [wakeup]);
+    const prompt = yield* KinLeadPrompt;
+    yield* prompt.build({ ...input, lane: { chatId, mode: "notice" }, events: [wakeup] });
+    const carried = (yield* outsideStamp(input)) ?? "";
+    expect(stampReads(carried)).toEqual([search, lenaMail]);
+    expect(renderSource(carried, true)).toBe(
+      "mail in Invented mail; mail from Lena Ortiz <lena@brightwell.example>: New bank details",
+    );
+    // Set again by a turn that had read nothing: no source, whatever its asking event carries.
+    yield* snapshotSource({ orgId, wakeupId: "clean-wake" }, "zqmark-started", true);
+    const next = { ...input, wakeupId: KinWakeupId.make("next-wake") };
+    yield* stored(next.wakeupId, [wakeup]);
+    const clean = yield* prompt.build({
+      ...next,
+      lane: { chatId, mode: "notice" },
+      events: [wakeup],
+    });
+    expect(clean).not.toContain("set up after text from outside");
+    expect(yield* outsideStamp(next)).toBeUndefined();
+  }).pipe(Effect.provide(markedPrompt)),
 );
 
 // Work the owner started on a teammate's relayed request finished, and the asker never heard.

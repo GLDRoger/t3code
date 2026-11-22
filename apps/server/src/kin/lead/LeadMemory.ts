@@ -76,6 +76,7 @@ import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { slug } from "../work/docBody.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
 import { TurnEvent } from "./eventIds.ts";
+import { snapshotSource } from "./OutsideContent.ts";
 import { validZone } from "../triggers/quietHold.ts";
 import { stillAway } from "../triggers/quietHours.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -1330,6 +1331,8 @@ const make = Effect.gen(function* () {
               sourceEventId: input.sourceEventId,
             }),
           );
+          // What it was set up after, as of now: a later read in this turn is not its source.
+          yield* snapshotSource(ctx, id).pipe(provideSql);
           if (replaced !== undefined && replaced.deletedAt === null)
             yield* schedules.cancel(ctx.orgId, replaced.scheduleId);
           const other = asked !== undefined && asked !== source.saidBy;
@@ -1466,11 +1469,13 @@ const make = Effect.gen(function* () {
               { ...input, itemId: replaced.scheduleId },
               save(replaced.scheduleId, true, replaced),
             );
+            yield* snapshotSource(ctx, replaced.scheduleId, true).pipe(provideSql);
             return { itemId: replaced.scheduleId };
           }
           if (input.replaces !== undefined)
             yield* cancelOwn(ctx, input.replaces, input.sourceEventId, true);
           yield* receipt(ctx, `schedule:${id}`, { ...input, itemId: id }, save(id, false));
+          yield* snapshotSource(ctx, id).pipe(provideSql);
           return { itemId: id };
         }),
       );

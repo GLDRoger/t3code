@@ -426,12 +426,40 @@ export const storedStamp = Effect.fn("KinOutsideContent.storedStamp")(function* 
   return row?.source;
 });
 
-/** The stamp a schedule or deferral was made under: that of the event that asked for it. */
+/** Where a schedule or deferral keeps the stamp that applied when it was made. */
+const itemSourceKey = (itemId: string) => `memory-item:${itemId}`;
+
+/**
+ * Keeps the stamp the making turn had when it made a schedule or deferral ('' for none), so a
+ * read after it is never its source. A retry keeps the first; a replacement writes its own.
+ */
+export const snapshotSource = Effect.fn("KinOutsideContent.snapshotSource")(function* (
+  turn: Pick<Turn, "orgId" | "wakeupId">,
+  itemId: string,
+  replaced = false,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const stamp = (yield* outsideStamp(turn)) ?? "";
+  yield* replaced
+    ? sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
+        VALUES (${turn.orgId}, ${itemSourceKey(itemId)}, ${stamp})
+        ON CONFLICT (org_id, event_id) DO UPDATE SET outside_from = excluded.outside_from`
+    : sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
+        VALUES (${turn.orgId}, ${itemSourceKey(itemId)}, ${stamp})
+        ON CONFLICT (org_id, event_id) DO NOTHING`;
+});
+
+/**
+ * The stamp a schedule or deferral was made under: its own snapshot, or for one made before
+ * snapshots, the stamp of the event that asked for it.
+ */
 export const itemSource = Effect.fn("KinOutsideContent.itemSource")(function* (
   orgId: KinOrgId,
-  _itemId: string,
+  itemId: string,
   sourceEvent: string | undefined,
 ) {
+  const snapshot = yield* storedStamp(orgId, itemSourceKey(itemId));
+  if (snapshot !== undefined) return snapshot === "" ? undefined : snapshot;
   return sourceEvent === undefined ? undefined : yield* storedStamp(orgId, sourceEvent);
 });
 

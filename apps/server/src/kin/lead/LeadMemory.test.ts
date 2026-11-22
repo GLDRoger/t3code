@@ -49,6 +49,7 @@ import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { KinHandoff } from "./Handoff.ts";
 import { KinTeam } from "../team/KinTeam.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
+import { markOutside, stampReads, storedStamp } from "./OutsideContent.ts";
 import * as Lead from "./LeadMemory.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { recordingSchedules } from "../triggers/kinSchedules.testkit.ts";
@@ -659,6 +660,22 @@ it.live(
         );
         const second = yield* service.defer(scope, { ...deferred, what: "Another invented task" });
         assert.notStrictEqual(second.itemId, first.itemId);
+        // Each keeps the stamp its turn had when it was made: none here, and a retry after a read
+        // keeps none; one made after the read carries it.
+        const madeUnder = (itemId: string) => storedStamp(orgId, `memory-item:${itemId}`);
+        assert.strictEqual(yield* madeUnder(first.itemId), "");
+        const fixtureTurn = { orgId, wakeupId: "fixture-wakeup" };
+        yield* markOutside(fixtureTurn, "web:example.org");
+        assert.deepStrictEqual(yield* service.defer(scope, deferred), first);
+        assert.strictEqual(yield* madeUnder(first.itemId), "");
+        const afterPage = yield* service.defer(scope, {
+          ...deferred,
+          what: "Invented after a page",
+        });
+        assert.deepStrictEqual(stampReads((yield* madeUnder(afterPage.itemId)) ?? ""), [
+          { k: "web", host: "example.org" },
+        ]);
+        yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE wakeup_id = 'fixture-wakeup'`;
         // Every follow-up says what its due run does, whoever it is for.
         assert.strictEqual(first.scheduled, "due_card");
         assert.strictEqual(
