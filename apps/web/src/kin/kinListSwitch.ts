@@ -26,6 +26,8 @@ import { KIN_PLACE_PATH } from "./kinPlaces";
 import type { KinWorkTarget } from "./useKinWork";
 import { hasSavedKinHost, kinHostAtom, kinHostKeptTarget } from "./useKinHost";
 import { kinPlacesAtom } from "./kinPlacesAtom";
+import { startKinStrayThreadLanding } from "./kinStrayThread";
+import { KIN_WEB_ONLY } from "./kinWebOnly";
 
 export function kinListAt(pathname: string): KinList {
   return pathname === "/kin" || pathname.startsWith("/kin/") ? "kin" : "threads";
@@ -62,6 +64,7 @@ export function kinDestinationAt(pathname: string): KinDestination | null {
  * they keep that page's list instead of swapping the thread list in behind them.
  */
 export function kinListShownAt(pathname: string): KinList {
+  if (KIN_WEB_ONLY) return "kin";
   return isAppModalPage(pathname) ? listBehindModal : kinListAt(pathname);
 }
 
@@ -147,7 +150,7 @@ export function startKinListTracking(
     if (cancelled) return;
     // The saved host may have turned Kin off since; then the launch belongs on threads.
     whenSettled((host) => {
-      if (host._tag === "none" && router.state.location.pathname === "/kin") {
+      if (!KIN_WEB_ONLY && host._tag === "none" && router.state.location.pathname === "/kin") {
         void router.navigate({ to: "/", replace: true });
       }
     });
@@ -163,10 +166,13 @@ export function startKinListTracking(
       });
   }
 
+  const stopStrayLanding = startKinStrayThreadLanding(router, registry);
+
   return () => {
     cancelled = true;
     stopRecording();
     stopSettle();
+    stopStrayLanding();
   };
 }
 

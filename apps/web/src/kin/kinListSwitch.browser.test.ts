@@ -36,7 +36,7 @@ const keybindings: ResolvedKeybindingsConfig = (
 }));
 
 function fakeRouter(pathname: string) {
-  const location = { pathname, href: pathname };
+  const location = { pathname, href: pathname, state: {} };
   const navigate = vi.fn(async (to: { readonly to?: string; readonly href?: string }) => {
     location.pathname = to.to ?? to.href ?? location.pathname;
     location.href = location.pathname;
