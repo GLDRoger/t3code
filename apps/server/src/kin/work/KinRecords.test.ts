@@ -2024,7 +2024,10 @@ it.effect(
           assert.isDefined(event, personId);
           // The lead-in says what the server grants this turn, from the same check.
           const said = yield* leadInOf(wakeupId);
-          assert.strictEqual(said?.includes(IN_PERSON), words === "hers" || words === "given later");
+          assert.strictEqual(
+            said?.includes(IN_PERSON),
+            words === "hers" || words === "given later",
+          );
           return yield* LeadWork.create(scopeOf(lead), {
             sourceEventId: event!.id,
             records: [{ title: `Invented: design the brochure ${words}`, owner: other }],
