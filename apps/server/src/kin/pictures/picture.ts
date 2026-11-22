@@ -66,6 +66,9 @@ const PAUSED = "Kin is paused by the owner, so nothing new is made until they re
 export const UNASKED_AFTER_OUTSIDE =
   "This turn read text from a connected service and no one asked for this picture in their own message, so nothing was generated or counted. Design it with html instead.";
 
+/** A generated batch is 1 to 4 pictures, checked before anything is set aside for it. */
+export const COUNT_RANGE = "count is a whole number from 1 to 4, so nothing was made.";
+
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const sha256 = (value: string | Uint8Array) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex");
@@ -234,6 +237,11 @@ const SENTENCE_REASONS = {
 /** `kin_picture`: draws the page or generates from the prompt, files each as a doc and puts it on the reply. */
 export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: PictureInput) =>
   Effect.gen(function* () {
+    if (
+      input.count !== undefined &&
+      !(Number.isInteger(input.count) && input.count >= 1 && input.count <= 4)
+    )
+      return yield* invalid(COUNT_RANGE);
     yield* admitted(lead, TOOL, input);
     if (yield* isOrgPaused(lead.orgId))
       return yield* new KinChatError({ reason: "not_allowed", message: PAUSED });

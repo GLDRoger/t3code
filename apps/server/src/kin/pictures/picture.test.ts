@@ -54,6 +54,7 @@ import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { makeFakeImageVendor } from "./FakeImageVendor.ts";
 import { GENERATE_SENTENCES, KinPictures, makeLayer as picturesLayer } from "./KinPictures.ts";
 import {
+  COUNT_RANGE,
   KEPT,
   makePicture,
   type PictureInput,
@@ -1073,6 +1074,18 @@ describe("kin_picture", () => {
             "A change makes one picture, the doc's next version: leave count out, so nothing was made.",
         },
       );
+      // A count out of 1 to 4 is refused before anything is set aside for it.
+      yield* (yield* KinPictures).set([person(ownerId)], {
+        orgId,
+        key: Redacted.make("sk-invented-ambermill"),
+      });
+      for (const count of [0, 2.5, 5, 1e9])
+        assert.include(
+          yield* Effect.flip(
+            makePicture(scope, { title: "Mill", size: "square", prompt: "The mill", count }),
+          ),
+          { reason: "invalid_state", message: COUNT_RANGE },
+        );
       assert.deepStrictEqual([placed, fake.calls], [[], []]);
     }).pipe(Effect.provide(layer)),
   );
