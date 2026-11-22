@@ -1775,7 +1775,7 @@ describe("the accountant's pack", () => {
         ["owed", 20_00, day("2026-10-25"), {}],
         ["repaid", 30_00, day("2026-10-20"), { reimbursement: "repaid", repaidOn: "2026-11-10" }],
         ["earlier", 40_00, day("2026-10-01"), { reimbursement: "repaid", repaidOn: "2026-10-15" }],
-        ["later", 5_00, day("2026-10-02"), { reimbursement: "repaid", repaidOn: "2026-12-01" }],
+        ["later", 5_00, day("2026-10-02"), { reimbursement: "repaid", repaidOn: "2026-11-12" }],
         ["given", 60_00, day("2026-10-03"), { reimbursement: "not reimbursable" }],
         ["undated", 7_00, day("2026-11-05"), { reimbursement: "repaid" }],
       ] as const)
@@ -1789,6 +1789,10 @@ describe("the accountant's pack", () => {
           fields: { fundedBy: `person:${ownerId}`, ...fields },
           originKey: `partner:${key}`,
         });
+      // A day ahead of today, stored before Kin refused one: no report counts it yet.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.repaidOn',
+          '2026-12-01') WHERE title = 'Invented partner later'`;
       // Money in on a live invoice counts; on one since voided it doesn't.
       yield* LeadWork.create(scope, {
         sourceEventId: work,
