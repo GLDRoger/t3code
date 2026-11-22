@@ -944,8 +944,10 @@ const make = Effect.gen(function* () {
     agentId: KinAgentId,
     personId: KinPersonId,
     now: number,
+    /** Putting it on is refused whoever writes: saved with no way to wake it would be a lie. */
+    always: boolean,
   ) {
-    const own = writer.actor._tag === "person" && writer.actor.personId === personId;
+    const own = always || (writer.actor._tag === "person" && writer.actor.personId === personId);
     const refuse = (error: KinChatError) => (own ? Effect.fail(error) : Effect.void);
     // A co-owner has no daily cap, as the owner does.
     const level = yield* ownerLevel(orgId, personId).pipe(provideSql);
@@ -1029,7 +1031,7 @@ const make = Effect.gen(function* () {
     const teammate = ownsAgent(lead, assignedBy)
       ? undefined
       : reason !== "withdrawn"
-        ? yield* teammateWake(orgId, writer, to.agentId, assignedBy, now)
+        ? yield* teammateWake(orgId, writer, to.agentId, assignedBy, now, reason === "joined")
         : undefined;
     if (!ownsAgent(lead, assignedBy) && teammate === undefined) return false;
     // One change may put several agents on a task, or take several off it.
@@ -1107,7 +1109,6 @@ const make = Effect.gen(function* () {
     return worked !== undefined;
   });
 
-  /** Whether this agent was put on this entry before, or has worked on it: keeping it wakes it no more. */
   const alreadyJoined = Effect.fn("KinRecords.alreadyJoined")(function* (
     orgId: KinOrgId,
     recordId: string,
@@ -1118,12 +1119,31 @@ const make = Effect.gen(function* () {
         AND json_extract(json, '$.recordId') = ${recordId}
         AND json_extract(json, '$.reason') = 'joined'
       LIMIT 1`;
-    if (woken !== undefined) return true;
-    const [worked] = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_record_changes
-      WHERE org_id = ${orgId} AND record_id = ${recordId} AND actor_kind = 'agent'
-        AND actor_id = ${agentId} AND kind <> 'created'
-      LIMIT 1`;
-    return worked !== undefined;
+    return woken !== undefined;
+  });
+
+  /**
+   * Joined wakes. An agent newly put on an open, kept Work task gets one; on a done or dropped
+   * one it is saved and never woken, even on reopen; putting itself on wakes nothing; keeping a
+   * suggestion wakes each agent on it never woken for it; an adder who can't reach it is refused.
+   */
+  const joinedWakes = Effect.fn("KinRecords.joinedWakes")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    row: { readonly recordId: string; readonly key: string; readonly registerId: string },
+    state: KinRecordState,
+    added: ReadonlyArray<string>,
+    seq: number,
+    now: number,
+    keeping: boolean,
+  ) {
+    if (isClosed(state)) return;
+    for (const text of added) {
+      const on = storedPrincipal(text);
+      if (on?._tag !== "agent") continue;
+      if (keeping && (yield* alreadyJoined(orgId, row.recordId, on.agentId))) continue;
+      yield* wakeLead(orgId, writer, row, on, textBy(writer), seq, now, "joined");
+    }
   });
 
   /**
@@ -1765,21 +1785,17 @@ const make = Effect.gen(function* () {
         seq,
         now,
       );
-    if (options.wake && kept && !isClosed(state))
-      for (const text of fieldList(fields, "alsoOn")) {
-        const on = storedPrincipal(text);
-        if (on?._tag === "agent")
-          yield* wakeLead(
-            orgId,
-            writer,
-            { recordId, key, registerId: list },
-            on,
-            textBy(writer),
-            seq,
-            now,
-            "joined",
-          );
-      }
+    if (options.wake && kept)
+      yield* joinedWakes(
+        orgId,
+        writer,
+        { recordId, key, registerId: list },
+        state,
+        fieldList(fields, "alsoOn"),
+        seq,
+        now,
+        false,
+      );
     const row = yield* byId(orgId, recordId).pipe(provideSql);
     if (row === undefined) return yield* unavailable;
     return { row, created: true };
@@ -2664,18 +2680,11 @@ const make = Effect.gen(function* () {
             now,
             "withdrawn",
           );
-        if (alsoOn !== undefined && !isClosed(state) && (!isSuggestion(row) || keeping)) {
+        if (alsoOn !== undefined && (!isSuggestion(row) || keeping)) {
           const was = fieldList(stored, "alsoOn");
-          for (const text of alsoOn) {
-            const on = storedPrincipal(text);
-            if (on?._tag !== "agent") continue;
-            if (keeping) {
-              if (!(yield* alreadyJoined(orgId, row.recordId, on.agentId)))
-                yield* wakeLead(orgId, writer, row, on, textBy(writer), seq, now, "joined");
-            } else if (!was.includes(text))
-              yield* wakeLead(orgId, writer, row, on, textBy(writer), seq, now, "joined");
-          }
-          if (!isSuggestion(row) && writer.actor._tag === "person")
+          const added = keeping ? alsoOn : alsoOn.filter((text) => !was.includes(text));
+          yield* joinedWakes(orgId, writer, row, state, added, seq, now, keeping);
+          if (!isClosed(state) && !isSuggestion(row) && writer.actor._tag === "person")
             for (const text of was) {
               const off = storedPrincipal(text);
               if (off?._tag !== "agent" || alsoOn.includes(text)) continue;

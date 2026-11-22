@@ -2148,6 +2148,95 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "joined wakes: one per agent newly on an open kept task, none closed or self, refused unreachable",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const byOwner = { actor: owner, via: "owner", askedBy: ownerId } as const;
+      const task = Effect.fn(function* (title: string, state?: "done" | "dropped") {
+        const made = yield* OwnerWork.create([owner], {
+          orgId,
+          title,
+          clientRequestId: title,
+          owner: mate,
+        });
+        if (state !== undefined) yield* records.update(orgId, byOwner, made.key, { state });
+        return made;
+      });
+      const alsoOn = (key: string) =>
+        OwnerWork.get([owner], { orgId, key }).pipe(Effect.map((row) => row.alsoOn));
+      // Open and kept: one wake, and writing the same list again wakes no one.
+      const open = yield* task("Invented: draft the brief");
+      for (const _ of [1, 2])
+        yield* records.update(orgId, byOwner, open.key, { fields: { alsoOn: [`agent:${lead}`] } });
+      assert.deepStrictEqual(yield* wakes, [[lead, "joined", open.key, ownerId]]);
+      // Done: saved, no wake, none on reopening; an agent that did it is told so.
+      const done = yield* task("Invented: file the receipts", "done");
+      yield* records.update(orgId, byOwner, done.key, { fields: { alsoOn: [`agent:${other}`] } });
+      yield* records.update(orgId, byOwner, done.key, { state: "open" });
+      assert.lengthOf(yield* wakes, 1);
+      const dropped = yield* task("Invented: chase the refund", "dropped");
+      yield* turn();
+      assert.include(
+        yield* LeadWork.update(scopeOf(lead), {
+          key: dropped.key,
+          sourceEventId: "ask-event",
+          alsoOn: ["Lead other", "you"],
+        }),
+        { notWoken: LeadWork.CLOSED_NOT_WOKEN },
+      );
+      assert.deepStrictEqual(yield* alsoOn(dropped.key), [
+        { _tag: "agent", agentId: other },
+        toLead,
+      ]);
+      // Putting itself on wakes nothing.
+      const self = yield* task("Invented: tidy the drive");
+      yield* LeadWork.update(scopeOf(lead), {
+        key: self.key,
+        sourceEventId: "ask-event",
+        alsoOn: ["you"],
+      });
+      assert.deepStrictEqual(yield* alsoOn(self.key), [toLead]);
+      assert.lengthOf(yield* wakes, 1);
+      // Kept, a suggestion wakes each agent on it never woken for it, even one that edited it.
+      const asked = { actor: toLead, via: "lead", askedBy: ownerId, wakeupId: "wake" } as const;
+      const suggested = (yield* records.create(orgId, asked, {
+        originKey: "joined-keep",
+        title: "Invented: compare couriers",
+        owner: mate,
+        confirmed: false,
+        fields: { alsoOn: [`agent:${lead}`, `agent:${other}`] },
+      })).row;
+      const edited = yield* records.update(orgId, asked, suggested.key, {
+        notes: "Invented: three couriers",
+      });
+      yield* OwnerWork.confirm([owner], { orgId, key: suggested.key, rev: edited.rev });
+      assert.deepStrictEqual((yield* wakes).slice(1).toSorted(), [
+        [lead, "joined", suggested.key, ownerId],
+        [other, "joined", suggested.key, ownerId],
+      ]);
+      // A teammate who can't reach the agent can't have it put on, by their own hand or an agent's.
+      yield* sql`DELETE FROM kin_chat_members WHERE person_id = ${mateId}`;
+      const theirs = yield* task("Invented: book the van");
+      for (const writer of [
+        { actor: mate, via: "owner" },
+        { actor: toLead, via: "lead", askedBy: mateId },
+      ] as const)
+        assert.include(
+          yield* Effect.flip(
+            records.update(orgId, writer, theirs.key, { fields: { alsoOn: [`agent:${other}`] } }),
+          ),
+          { _tag: "KinChatError" },
+          writer.via,
+        );
+      assert.isUndefined(yield* alsoOn(theirs.key));
+      assert.lengthOf(yield* wakes, 3);
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("assigning refuses closed entries and records the session's owner as the assigner", () =>
   Effect.gen(function* () {
     yield* seed;

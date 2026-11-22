@@ -115,6 +115,7 @@ import {
   notFound,
   overdueFor,
   owedInvoices,
+  isClosed,
   ownerZone,
   principalId,
   recordName,
@@ -605,6 +606,7 @@ export const CreateResult = Schema.Struct({
       alsoNamed: Schema.optional(Schema.String),
       /** Other contacts with the same email. */
       sameEmail: Schema.optional(Schema.Array(Named)),
+      notWoken: Schema.optional(Schema.String),
     }),
   ),
 });
@@ -683,6 +685,8 @@ const Updated = Schema.Struct({
   projectLeft: Schema.optional(Schema.String),
   /** Its notes are a person's: the agent's text went on its activity (`KinRecords.update`). */
   notesKept: Schema.optional(Schema.String),
+  /** Agents put on a closed task: saved there, and never woken for it (`KinRecords.update`). */
+  notWoken: Schema.optional(Schema.String),
   openSteps: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -711,6 +715,7 @@ export const UpdateResult = Schema.Struct({
   sameEmail: Updated.fields.sameEmail,
   projectLeft: Updated.fields.projectLeft,
   notesKept: Updated.fields.notesKept,
+  notWoken: Updated.fields.notWoken,
   openSteps: Updated.fields.openSteps,
   entries: Schema.optional(Schema.Array(Updated)),
 });
@@ -760,6 +765,19 @@ export const HandBackResult = Schema.Struct({
 });
 
 export type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
+export const CLOSED_NOT_WOKEN = "Saved; it is closed, so nobody was woken.";
+/** Another agent this write put on a task that is closed: it stays on and is never woken for it. */
+const closedNotWoken = (
+  lead: Lead,
+  was: ReadonlyArray<string>,
+  after: { readonly state: KinRecordState; readonly fieldsJson: string },
+) =>
+  isClosed(after.state) &&
+  fieldList(parseFields(after.fieldsJson), "alsoOn").some(
+    (text) => text.startsWith("agent:") && text !== `agent:${lead.agentId}` && !was.includes(text),
+  )
+    ? { notWoken: CLOSED_NOT_WOKEN }
+    : {};
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const isKinChatError = Schema.is(KinChatError);
 const isDoc = (key: string) =>
@@ -2714,6 +2732,7 @@ const createRow = Effect.fnUntraced(function* (
     ...(created && alsoOpen.length > 0 ? { alsoOpen } : {}),
     ...(alsoNamed === undefined ? {} : { alsoNamed }),
     ...(sameEmail === undefined ? {} : { sameEmail }),
+    ...(created ? closedNotWoken(lead, [], stored) : {}),
   };
 });
 const DEAL_FIELDS = ["stage", "source", "lostReason", "concerns"];
@@ -3628,6 +3647,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
       ...(input.notes !== undefined && input.notes !== before.notes && after.notes === before.notes
         ? { notesKept: input.notes.trim() === "" ? NOTES_KEPT_BLANK : NOTES_KEPT }
         : {}),
+      ...closedNotWoken(lead, fieldList(parseFields(before.fieldsJson), "alsoOn"), after),
       ...(written.projectId === undefined && before.projectKey !== null && after.projectId === null
         ? {
             projectLeft: `${before.projectKey} is another client's project, so ${after.key} is on no project now. Give it a project of its client with project if it needs one.`,
