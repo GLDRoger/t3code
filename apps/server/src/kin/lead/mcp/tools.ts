@@ -92,7 +92,7 @@ export const KinLeadToolkit = Toolkit.make(
     ...shared,
     dependencies: [...shared.dependencies, KinIdentity, SqlClient.SqlClient],
     description:
-      "Read how Kin's computer is doing: what stops agents' turns now and why (cause, agents, held turns, what Kin is doing, what the owner can tap in the app), space, backups, turns running, version and last restart. When someone asks why you or another agent stopped, failed or went quiet, answer from this, never a guess. Read-only.",
+      "Read how Kin's computer is doing. In an owner-only turn, this shows stopped agents, what the owner can do, space, backups and runtime status. In any other turn, it only says whether your work in this chat is held. When asked why work stopped, use the answer you get, not a guess. Read-only.",
     success: AgentRead.KinComputerResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("people_read", {
