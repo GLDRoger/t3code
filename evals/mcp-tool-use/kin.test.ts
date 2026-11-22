@@ -522,6 +522,12 @@ it.effect("hands a Kin case's files to the turn as Kin and the provider adapters
   }),
 );
 
+// No call here reaches the shell simulator, so nothing is sent.
+const noNetwork = Layer.succeed(
+  HttpClient.HttpClient,
+  HttpClient.make(() => Effect.die(new Error("no request expected"))),
+);
+
 it("reads every Kin tool's access from the server's declarations", () => {
   for (const tool of KIN_TOOLS) assert.isTrue(KIN_TOOL_ACCESS.has(tool), tool);
   assert.strictEqual(KIN_TOOL_ACCESS.get("record_get"), "reads");
@@ -599,7 +605,7 @@ it.effect(
       assert.notInclude(section, "| c |");
       // T3's runs, which call no Kin tool, keep their summary.
       assert.notInclude(summarize([row("c")], options), "no mock");
-    }),
+    }).pipe(Effect.provide(noNetwork)),
 );
 
 it.effect("gives a Kin rubric's judge each call whole up to its bound, and says where it cut", () =>
