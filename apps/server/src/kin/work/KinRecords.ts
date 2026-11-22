@@ -50,6 +50,7 @@ import { approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
 import {
   changeStampKey,
   codingAgentSource,
+  followsOutsideRead,
   outsideStamp,
   stampEvent,
 } from "../lead/OutsideContent.ts";
@@ -1400,6 +1401,19 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * An agent's turn that follows an outside read it did not make, and that no owner-level person
+   * asked in person: anything new it makes, on any list, waits to be kept.
+   */
+  const followsUnasked = Effect.fn("KinRecords.followsUnasked")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+  ) {
+    if (writer.actor._tag !== "agent" || writer.wakeupId === undefined) return false;
+    if (!(yield* followsOutsideRead(orgId, writer.wakeupId).pipe(provideSql))) return false;
+    return !(yield* ownerLevelAsked(orgId, writer.actor.agentId, writer.wakeupId).pipe(provideSql));
+  });
+
+  /**
    * Whether a new entry starts kept, from who makes it, in the write's transaction. Made from a
    * suggestion, or asked to be one, it is one. A quote or invoice is real only on an owner-level
    * person's word: theirs, or their ask in person of an agent (an approved draft's one entry is
@@ -1572,7 +1586,8 @@ const make = Effect.gen(function* () {
       options.kept === undefined ? yield* approvalKeeps(orgId, writer, list, partyId) : undefined;
     const kept =
       options.kept ??
-      (approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps);
+      ((approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps) &&
+        !(yield* followsUnasked(orgId, writer)));
     // Nobody issued, sent or was paid for what nobody kept: it waits as a draft on its own day.
     // Only Issue makes an invoice owed, with its number; an agent sets none, so it starts a draft.
     // An approval's entry is the owner's Draft whatever state it was given.

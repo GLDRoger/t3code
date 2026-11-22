@@ -493,6 +493,29 @@ it.effect(
         records: [{ title: "Invented: confirm the vendor's new account", owner: "owner" }],
       });
       assert.include(onward.records[0], { suggested: true });
+      // Every path, also a shared turn's, which takes the default: what it makes waits too.
+      const agentWrites = {
+        actor: { _tag: "agent" as const, agentId: other },
+        via: "lead" as const,
+        wakeupId: "other-wake",
+      };
+      const { row: shared } = yield* records.create(orgId, agentWrites, {
+        originKey: "invented-shared-path",
+        title: "Invented: pay the new account",
+        owner: { _tag: "person", personId: ownerId },
+      });
+      assert.strictEqual(shared.confirmed, 0);
+      // The reading turn's own records for the owner who asked stay kept.
+      const { row: own } = yield* records.create(
+        orgId,
+        { actor: { _tag: "agent", agentId: lead }, via: "lead", wakeupId: "wake" },
+        {
+          originKey: "invented-reader-path",
+          title: "Invented: call Ravi on Tuesday",
+          owner: { _tag: "person", personId: ownerId },
+        },
+      );
+      assert.strictEqual(own.confirmed, 1);
       const kept = onward.records[0]!.key;
       yield* records.update(
         orgId,

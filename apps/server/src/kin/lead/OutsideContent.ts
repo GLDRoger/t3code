@@ -506,7 +506,17 @@ export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (
   yield* stampKey(source).startsWith(CODING_AGENT_SOURCE)
     ? codingAgentTextShown(input, source)
     : markOutside(input, source);
+  yield* stampEvent(input.orgId, followsKey(input.wakeupId), source);
   return source;
+});
+
+const followsKey = (wakeupId: string) => `follows:${wakeupId}`;
+/** Whether the turn started from an outside read it did not make itself (`inheritOutside`). */
+export const followsOutsideRead = Effect.fn("KinOutsideContent.followsOutsideRead")(function* (
+  orgId: KinOrgId,
+  wakeupId: string,
+) {
+  return (yield* storedStamp(orgId, followsKey(wakeupId))) !== undefined;
 });
 
 const PAGES_TURNS = 200;
