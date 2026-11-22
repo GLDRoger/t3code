@@ -253,6 +253,9 @@ it.layer(layer)((it) => {
       assert.lengthOf(beside.alone, 0);
       const newer = yield* alertsBeside(orgId, [account("2026-11-30")]);
       assert.deepStrictEqual([newer.beside.size, newer.alone.length], [0, 0]);
+      // A statement's balance is its day's close, so that day's alerts are older than it.
+      const sameDay = yield* alertsBeside(orgId, [account("2026-11-18")]);
+      assert.deepStrictEqual([sameDay.beside.size, sameDay.alone.length], [0, 0]);
       const twins = yield* alertsBeside(orgId, [mine, account("2026-10-31", null)]);
       assert.deepStrictEqual([twins.beside.size, twins.alone.length], [0, 1]);
       assert.lengthOf((yield* alertsBeside(orgId, [])).alone, 1);

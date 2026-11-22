@@ -47,7 +47,7 @@ export const KinCashAccount = Schema.Struct({
   newerRead: Schema.NullOr(
     Schema.Struct({ balance: KinSignedMoney, on: KinDay, standing: KinStatementStanding }),
   ),
-  /** A bank alert from `on` or later: the balance shown. Absent from older hosts. */
+  /** A bank alert from after `on`: the balance shown. Absent from older hosts. */
   alert: Schema.optional(KinCashAlert),
 });
 export type KinCashAccount = typeof KinCashAccount.Type;

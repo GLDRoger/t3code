@@ -351,7 +351,7 @@ interface CashAccount {
 
 /**
  * Each alert balance beside the one statement account it is (same digits and currency, the same
- * bank or none named), when it is from that balance's day or later; else on its own. One that
+ * bank or none named), when it is from after that balance's day; else on its own. One that
  * could be two accounts' is on its own, so it is never shown as either's.
  */
 export const alertsBeside = Effect.fn("KinBankAlerts.beside")(function* <A extends CashAccount>(
@@ -371,7 +371,7 @@ export const alertsBeside = Effect.fn("KinBankAlerts.beside")(function* <A exten
         (one.bank === null || format?.names(one.bank) === true),
     );
     if (fits.length !== 1) alone.push(balance);
-    else if (dayIn(balance.sentAt, zone) >= fits[0]!.on) beside.set(fits[0]!, balance);
+    else if (dayIn(balance.sentAt, zone) > fits[0]!.on) beside.set(fits[0]!, balance);
   }
   return { beside, alone };
 });
