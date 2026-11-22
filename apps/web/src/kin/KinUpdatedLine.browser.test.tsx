@@ -78,7 +78,10 @@ describe("a tab older than its Kin host", () => {
   it("waits for a draft that holds only a picture, and keeps the picture for the reload", async () => {
     setup();
     function Pictures() {
-      useKinComposerAttachments({ environmentId: EnvironmentId.make("env-1"), draftKey: DRAFT_KEY });
+      useKinComposerAttachments({
+        environmentId: EnvironmentId.make("env-1"),
+        draftKey: DRAFT_KEY,
+      });
       return null;
     }
     await using _screen = await render(

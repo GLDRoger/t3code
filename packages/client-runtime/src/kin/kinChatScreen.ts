@@ -271,7 +271,7 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
             : row.type === "fold"
               ? row.discussionId === landOn
               : row.type === "cards" &&
-              [row.question, ...row.tasks].some((card) => card?.message.messageId === landOn),
+                [row.question, ...row.tasks].some((card) => card?.message.messageId === landOn),
         );
   const earlierPage = kinEarlierPage(input.chatId, messages, input.exhausted, live.clearedSeq);
   // Older than what has loaded: page back to it rather than open at the end.
