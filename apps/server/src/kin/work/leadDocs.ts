@@ -54,13 +54,7 @@ import {
 import { iso, type RecordRow } from "./recordRows.ts";
 import { DRAFT_TEXT_MAX, docCardId, draftCardOf } from "./draftCards.ts";
 import { search } from "./search.ts";
-import {
-  DRAFT_OWN_CHAT_ONLY,
-  KIN_OWNER_LEVEL,
-  viewSees,
-  viewVisible,
-  viewerOfPeople,
-} from "./teamView.ts";
+import { DRAFT_OWN_CHAT_ONLY, KIN_OWNER_LEVEL, viewSees, viewerOfPeople } from "./teamView.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
@@ -623,13 +617,11 @@ const putBack = Effect.fn("KinDocTools.putBack")(function* (
   };
   const chat = yield* Effect.serviceOption(KinChatService);
   if (Option.isNone(chat)) return undefined;
-  const found = yield* redoOf(turn, redraft);
-  if (found === undefined) return undefined;
   // An edited doc goes to her chat only while she sees it and its client now.
-  if (edited !== undefined)
-    for (const id of [edited.recordId, edited.partyId])
-      if (id !== null && !(yield* viewVisible(lead.orgId, [found.forPersonId], id)))
-        return undefined;
+  const seen =
+    edited === undefined ? [] : [edited.recordId, edited.partyId].filter((id) => id !== null);
+  const found = yield* redoOf(turn, redraft, seen);
+  if (found === undefined) return undefined;
   const of =
     on === undefined
       ? found

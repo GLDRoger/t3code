@@ -601,6 +601,34 @@ export const waitingRedrafts = Effect.fn("KinQuestions.waitingRedrafts")(functio
   );
 });
 
+/** The teammates' drafts whose cards in this chat still wait on the agent's owner. */
+export const draftsOnHerCard = Effect.fn("KinQuestions.draftsOnHerCard")(function* (
+  turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId },
+  chatId: KinChatId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    questionId: string;
+    about: string;
+    forPersonId: KinPersonId;
+    draft: string;
+  }>`SELECT q.question_id AS "questionId", q.about, q.for_person_id AS "forPersonId",
+      q.draft_json AS draft
+    FROM kin_questions q
+    JOIN kin_agents a ON a.org_id = q.org_id AND a.agent_id = q.agent_id AND a.retired_at IS NULL
+    WHERE q.org_id = ${turn.orgId} AND q.agent_id = ${turn.agentId}
+      AND q.chat_id = ${chatId} AND q.person_id = a.owner_person_id AND q.state = 'open'
+      AND q.draft_json IS NOT NULL AND q.for_chat_id IS NOT NULL AND q.for_person_id IS NOT NULL
+    ORDER BY q.question_id`;
+  return rows.flatMap((row) =>
+    Option.toArray(decodeStoredDraft(row.draft)).map((draft) => ({
+      ...row,
+      about: row.about === "" ? [] : row.about.split(" "),
+      draft,
+    })),
+  );
+});
+
 /** Whether a card asks a question for another chat: its tap answers there, not here. */
 export const askedForCard = Effect.fn("KinQuestions.askedForCard")(function* (
   orgId: KinOrgId,

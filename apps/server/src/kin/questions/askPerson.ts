@@ -23,7 +23,7 @@ import * as NodeCrypto from "node:crypto";
 
 import { storedClientId } from "../chat/KinChatRepository.ts";
 import { keysIn } from "../chat/messageLinks.ts";
-import type { KinChatService } from "../chat/KinChatService.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
 import {
   aborted,
@@ -34,6 +34,7 @@ import {
   turnPeople,
 } from "../lead/Audience.ts";
 import { arrivesNote } from "../lead/Handoff.ts";
+import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import type { KinLevelGate } from "../lead/LevelGate.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
@@ -44,11 +45,12 @@ import { heldUntil } from "../triggers/quietHold.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
-import { personSees, unreadableBy } from "../work/teamView.ts";
+import { personSees, unreadableBy, viewVisible } from "../work/teamView.ts";
 import {
   DRAFT_KINDS,
   answeredEventId,
   approvalOf,
+  CHANGES_FIRST,
   decodeStoredDraft,
   DRAFT_OPTIONS,
   DRAFT_WORDS,
@@ -59,7 +61,9 @@ import {
 } from "./approval.ts";
 import {
   askedBy,
+  closeQuestion,
   draftCardsAbout,
+  draftsOnHerCard,
   encodeHeldCard,
   openFor,
   personClock,
@@ -294,12 +298,15 @@ export const redo = Effect.fn("KinQuestions.redo")(function* (
  * In the owner's own turn on her words in her chat with the agent, the one teammate's draft she
  * answered Changes first on there and that no later round replaced, which this redraft is: the
  * same kind for the same client, or an edit of a doc it was about. Undefined unless exactly one.
+ * With none, her redraft of the one whose card still waits on her is her Changes first in words.
+ * `seen`: records its teammate must still see.
  */
 export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
   turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: KinWakeupId },
   redraft:
     | { readonly kind: StoredDraft["kind"]; readonly partyId: string | null }
     | { readonly docKey: string },
+  seen: ReadonlyArray<string> = [],
 ) {
   const sql = yield* SqlClient.SqlClient;
   if ((yield* effectiveAudience(turn)) !== "owner_only") return undefined;
@@ -314,13 +321,46 @@ export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
     (yield* ownMessages(turn, lane.value.chatId, agent.owner)).length === 0
   )
     return undefined;
-  const current = yield* waitingRedrafts(turn, lane.value.chatId);
-  const found = current.filter((row) =>
+  const chatId = lane.value.chatId;
+  type Row = {
+    readonly about: ReadonlyArray<string>;
+    readonly forPersonId: KinPersonId;
+    readonly draft: StoredDraft;
+  };
+  const isIt = (row: Row) =>
     "docKey" in redraft
       ? row.about.includes(redraft.docKey)
-      : row.draft.kind === redraft.kind && (row.draft.for?.partyId ?? null) === redraft.partyId,
-  );
-  return found.length === 1 ? found[0] : undefined;
+      : row.draft.kind === redraft.kind && (row.draft.for?.partyId ?? null) === redraft.partyId;
+  const matching = <A extends Row>(rows: ReadonlyArray<A>) =>
+    Effect.filter(rows.filter(isIt), (row) =>
+      Effect.forEach(seen, (id) => viewVisible(turn.orgId, [row.forPersonId], id)).pipe(
+        Effect.map((each) => each.every(Boolean)),
+      ),
+    );
+  const found = yield* matching(yield* waitingRedrafts(turn, chatId));
+  if (found.length > 0) return found.length === 1 ? found[0] : undefined;
+  const onCard = yield* matching(yield* draftsOnHerCard(turn, chatId));
+  const chat = yield* Effect.serviceOption(KinChatService);
+  const queue = yield* Effect.serviceOption(KinEventQueue);
+  if (onCard.length !== 1 || Option.isNone(chat) || Option.isNone(queue)) return undefined;
+  // Whatever closed it first, her tap or this, the card now waits on a redraft or on nothing.
+  yield* sql
+    .withTransaction(
+      closeQuestion(
+        {
+          ...turn,
+          questionId: onCard[0]!.questionId,
+          outcome: "answered",
+          answer: CHANGES_FIRST,
+          now: yield* Clock.currentTimeMillis,
+        },
+        chat.value,
+        queue.value,
+      ),
+    )
+    .pipe(Effect.catchTags({ KinChatError: () => Effect.void }));
+  const now = yield* matching(yield* waitingRedrafts(turn, chatId));
+  return now.length === 1 ? now[0] : undefined;
 });
 
 const ask = Effect.fn("KinQuestions.ask")(function* (

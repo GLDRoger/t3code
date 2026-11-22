@@ -2544,7 +2544,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       });
 
       /** Rhea's turn puts a draft to herself, as the agent's instructions send a teammate's up. */
-      const askHerself = (at: { readonly wakeupId: KinWakeupId }, detail: string) =>
+      const askHerself = (at: { readonly wakeupId: KinWakeupId }, detail: string, client = "C-7") =>
         askFor("chief", at.wakeupId, {
           to: "Rhea",
           question: "Approve the proposal?",
@@ -2552,13 +2552,13 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
           about: undefined,
           intent: undefined,
           detail,
-          draft: { kind: "proposal", for: "C-7" },
+          draft: { kind: "proposal", for: client },
         });
       // Zoya's proposal goes up; Rhea answers Changes first and says what to change in her chat.
       const first = yield* sendUp("zoya", "C-7", "harbourline proposal");
-      // While it waits on her, no draft is hers to redo: a draft put to herself is refused as ever.
-      const early = yield* turnOn("rhea", chatOf("chief"), "Make it four shoots.");
-      const notYet = yield* Effect.flip(askHerself(early, "Harbourline proposal: four shoots"));
+      // While it waits on her, another client's draft put to herself is refused as ever.
+      const early = yield* turnOn("rhea", chatOf("chief"), "Draft Tidewater one survey day.");
+      const notYet = yield* Effect.flip(askHerself(early, "Tidewater: one survey day", "C-8"));
       // Her turns are told of a draft waiting on her redraft only while one does.
       const WAITING = "# Drafts back from Changes first (not redrafted yet)";
       const waitsOnHer = `${WAITING}\n\n- Zoya Sheikh's proposal for Harbourline Hotels (C-7): its new draft goes up with kin_ask_person and draft, or doc_create with draft; Kin puts it back on Rhea Rao's Approve card.`;
@@ -2648,14 +2648,9 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       const herPrompt = yield* team.promptOf(asksZoya.wakeupId, zoyaChat);
       assert.include(herPrompt, "Approve the proposal?");
       for (const bit of redrafted) assert.notInclude(herPrompt, bit);
-      // A redraft in a later turn, while that one waits, matches nothing: today's plain card.
-      const later = yield* turnOn("rhea", chatOf("chief"), "And add a reel.");
+      // While that one waits on her card, a later turn of hers is told of no draft to redo.
+      const later = yield* turnOn("rhea", chatOf("chief"), "Any news from Zoya?");
       assert.notInclude(yield* team.promptOf(later.wakeupId, chatOf("chief")), WAITING);
-      const plain = yield* proposal(later, {
-        body: "Harbourline proposal: four shoots and a reel",
-      });
-      assert.notStrictEqual(plain.key, "");
-      assert.notInclude(plain.note ?? "", "Changes first");
       assert.lengthOf(yield* drafts, 2);
 
       // Changes first again: the next round goes back up by either call. First by kin_ask_person
@@ -2678,15 +2673,27 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         intent: "harbourline proposal",
         text: "Four shoots and a reel",
       });
-      // Then by doc_create with draft, after her Changes first on that one.
-      yield* tap(owner, byAsk.questionId, "option-2", "rhea-changes-3");
+      // Then by doc_create with draft, from her words alone while that card still waits on her:
+      // her redraft is her Changes first said in words, as closing it so is. No turn in Zoya's chat.
       const fourth = yield* turnOn("rhea", chatOf("chief"), "Two reels.");
       assert.deepInclude(yield* proposal(fourth, { body: "Four shoots and two reels" }), {
         key: "",
         note: told,
       });
-      const [, , , latest] = yield* drafts;
+      const [, , saidFirst, latest] = yield* drafts;
+      assert.deepInclude(saidFirst, { questionId: byAsk.questionId, state: "answered" });
+      assert.deepInclude(
+        (yield* team.widgetOf((yield* team.cardOf(byAsk.questionId)).widgetId!)).state,
+        {
+          outcome: { title: "Answered", text: "The new draft comes back to you to approve." },
+        },
+      );
       assert.deepInclude(latest, { state: "open", forChatId: zoyaChat, forPersonId: "zoya" });
+      assert.deepStrictEqual(yield* team.answeredWakes, []);
+      assert.deepStrictEqual((yield* team.kinLines(zoyaChat)).slice(-2), [
+        "Rhea Rao wants changes first; the new proposal goes back to Rhea Rao to approve.",
+        "Rhea Rao changed the proposal; the new one is with Rhea Rao to approve.",
+      ]);
 
       // Approve on the redraft has it made, and Zoya hears so, as on the first card.
       yield* tap(owner, latest!.questionId, "option-1", "rhea-approve");
