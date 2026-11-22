@@ -695,6 +695,10 @@ const make = Effect.gen(function* () {
           orgId: wake.orgId,
           chatId: wake.lane.chatId,
           now: yield* Clock.currentTimeMillis,
+          said: kinPageSections(slot.body)
+            .filter(({ title }) => title !== null && KIN_MONEY_SECTION.match.test(title.trim()))
+            .map(({ markdown }) => markdown)
+            .join("\n"),
         }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
         if (money.length === 0) return;
         const page = kinPageWithLines(slot.body, KIN_MONEY_SECTION, money);

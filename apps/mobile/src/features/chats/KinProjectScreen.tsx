@@ -38,20 +38,20 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { useNowMinuteMs } from "../../lib/clock";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import {
   KinFoldSection,
+  KinGateView,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkPrivateMark,
   KinWorkProblemNotice,
   KinWorkTaskRow,
   KinWorkTimelineLines,
-  KinGateView,
+  KinWorkToggleRow,
 } from "./components/KinWorkPieces";
 import { KinWorkHealthWord } from "./KinWorkLists";
 import { KinTasksList } from "./KinTasksList";
@@ -643,7 +643,7 @@ function KinProjectSummary(props: {
             </View>
           )}
           {props.privacy.shown ? (
-            <ListToggleRow
+            <KinWorkToggleRow
               icon="lock"
               label={KIN_PROJECTS.privateLabel}
               description={view.privacy.note}

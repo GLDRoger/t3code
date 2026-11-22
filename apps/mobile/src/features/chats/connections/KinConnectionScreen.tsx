@@ -28,7 +28,6 @@ import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { ListActionRow } from "../../../components/ui/ListActionRow";
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { ListSection } from "../../../components/ui/ListSection";
-import { ListToggleRow } from "../../../components/ui/ListToggleRow";
 import { Notice } from "../../../components/ui/Notice";
 import { SegmentedControl } from "../../../components/ui/SegmentedControl";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
@@ -44,6 +43,7 @@ import {
   type KinConnectionParams,
   type KinConnectionsTarget,
 } from "./kinConnectionTarget";
+import { KinWorkToggleRow } from "../components/KinWorkPieces";
 
 /** One connection as its record: how it stands, its tools inline, recent use, and its controls. */
 export function KinConnectionScreen({ route }: StaticScreenProps<KinConnectionParams>) {
@@ -323,7 +323,7 @@ function ConnectionRecord(props: {
           </ListSection>
 
           <ListSection footer={COPY.reachDetail}>
-            <ListToggleRow
+            <KinWorkToggleRow
               label={COPY.reachTitle}
               value={connection.reach === "closed"}
               disabled={busy !== null}

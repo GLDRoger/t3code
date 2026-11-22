@@ -29,7 +29,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
-import { useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useRef, useState, type ComponentProps, type ComponentRef, type ReactNode } from "react";
 import { TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -43,7 +43,6 @@ import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -57,6 +56,7 @@ import { KinPersonTasks } from "./components/KinPersonTasks";
 import { KinPageFold } from "./components/KinPageFold";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinZoneLabel } from "@t3tools/client-runtime/kin/kinTimeZone";
+import { KinWorkFieldBox, KinWorkToggleRow } from "./components/KinWorkPieces";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 export type KinProfileParams = {
@@ -615,7 +615,7 @@ function ProfileForm(props: {
         </ListSection>
         {props.mine ? (
           <ListSection footer={KIN_PROFILE_COPY.holdHint}>
-            <ListToggleRow
+            <KinWorkToggleRow
               label={KIN_PROFILE_COPY.holdLabel}
               value={draft.holdOutside}
               onValueChange={(holdOutside) => set({ holdOutside })}
@@ -636,14 +636,15 @@ function Field(props: {
   readonly borderTop?: boolean;
   readonly onChange: (value: string) => void;
 }) {
+  const input = useRef<ComponentRef<typeof TextInput>>(null);
   return (
-    <View
-      className={
-        props.borderTop ? "gap-2 border-t border-border-subtle px-4 py-3" : "gap-2 px-4 py-3"
-      }
+    <KinWorkFieldBox
+      label={props.label}
+      input={input}
+      className={props.borderTop ? "border-t border-border-subtle" : undefined}
     >
-      <Text className="text-sm text-foreground-muted">{props.label}</Text>
       <TextInput
+        ref={input}
         accessibilityLabel={props.label}
         value={props.value}
         autoCapitalize={props.autoCapitalize}
@@ -654,6 +655,6 @@ function Field(props: {
         placeholderTextColorClassName="accent-placeholder"
         className="min-h-8 font-sans text-base text-foreground"
       />
-    </View>
+    </KinWorkFieldBox>
   );
 }

@@ -1,6 +1,5 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { KIN_DEALS, kinDealStepHint } from "@t3tools/client-runtime/kin/kinDeals";
-import { kinParseMoney } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_DEALS, kinDealStepHint, kinDealValueRead } from "@t3tools/client-runtime/kin/kinDeals";
 import {
   KIN_SHORT_FORMS,
   kinShortFormFold,
@@ -19,13 +18,17 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Chip } from "../../components/ui/Chip";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
 import { KinDayField } from "./components/KinDayField";
 import { KinPageFold } from "./components/KinPageFold";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
-import { KinGateView, KinWorkTextField, useKinAskBeforeDiscard } from "./components/KinWorkPieces";
+import {
+  KinGateView,
+  KinWorkTextField,
+  KinWorkToggleRow,
+  useKinAskBeforeDiscard,
+} from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { kinWorkRefParam } from "./state/kinWorkParams";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
@@ -88,6 +91,7 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
   const [party, setParty] = useState<KinWorkRef | null>(props.party);
   const [title, setTitle] = useState("");
   const [value, setValue] = useState("");
+  const [notes, setNotes] = useState("");
   const [expected, setExpected] = useState<string | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const stage = picked ?? stages[0]?.id ?? null;
@@ -98,8 +102,9 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
   const [noneYet, setNoneYet] = useState(false);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const money = value.trim() === "" ? null : kinParseMoney(value, home);
-  const moneyBad = value.trim() !== "" && money === null;
+  const read = kinDealValueRead(value, home);
+  const { money } = read;
+  const moneyBad = read.bad;
   const stepHint = kinDealStepHint(step, noneYet);
   const canSave = party !== null && title.trim() !== "" && !moneyBad && stepHint === undefined;
   const people = [...names.people.entries()].filter(([id]) => id !== names.me);
@@ -107,7 +112,7 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
   const startKey = props.party === null ? null : props.party.key;
   const leave = useKinAskBeforeDiscard(
     partyKey !== startKey ||
-      [title, value, source, step].some((typed) => typed.trim() !== "") ||
+      [title, value, notes, source, step].some((typed) => typed.trim() !== "") ||
       expected !== null ||
       picked !== null ||
       owner !== ME ||
@@ -187,6 +192,7 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
             <KinWorkTextField
               label={KIN_DEALS.cameFrom}
               value={source}
+              placeholder={KIN_DEALS.cameFromPlaceholder}
               maxLength={120}
               disabled={saving}
               onChangeText={setSource}
@@ -207,6 +213,7 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
       ...(money === null ? {} : { value: money }),
       ...(expected === null ? {} : { expectedOn: expected }),
       ...(source.trim() === "" ? {} : { source: source.trim() }),
+      ...(notes.trim() === "" ? {} : { notes: notes.trim() }),
       ...(owner === ME || !ownerLevel
         ? {}
         : { owner: { _tag: "person", personId: owner as KinPersonId } }),
@@ -255,6 +262,8 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
         <KinWorkTextField
           label={KIN_DEALS.what}
           value={title}
+          placeholder={KIN_DEALS.whatPlaceholder}
+          wraps
           autoFocus={props.party !== null}
           maxLength={280}
           disabled={saving}
@@ -263,16 +272,29 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
         <KinWorkTextField
           label={KIN_DEALS.value}
           value={value}
+          placeholder={KIN_DEALS.valuePlaceholder}
           keyboard="numbers"
           disabled={saving}
-          hint={moneyBad ? KIN_DEALS.notAmount : KIN_DEALS.valueHint}
+          hint={read.hint}
           onChangeText={setValue}
+        />
+        <KinWorkTextField
+          label={KIN_DEALS.notes}
+          value={notes}
+          placeholder={KIN_DEALS.notesPlaceholder}
+          multiline
+          maxLength={4_000}
+          disabled={saving}
+          hint={KIN_DEALS.notesHint}
+          onChangeText={setNotes}
         />
       </ListSection>
       <ListSection title={KIN_DEALS.nextStep}>
         <KinWorkTextField
           label={KIN_DEALS.nextStep}
           value={step}
+          placeholder={KIN_DEALS.stepPlaceholder}
+          wraps
           maxLength={280}
           disabled={saving || noneYet}
           hint={stepHint}
@@ -288,7 +310,7 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
             onPick={setStepDay}
           />
         )}
-        <ListToggleRow
+        <KinWorkToggleRow
           label={KIN_DEALS.noneYet}
           value={noneYet}
           disabled={saving}

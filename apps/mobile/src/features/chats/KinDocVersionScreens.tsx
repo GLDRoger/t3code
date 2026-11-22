@@ -21,14 +21,13 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { SearchField } from "../../components/ui/SearchField";
 import { useNowMinuteMs } from "../../lib/clock";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { PatchDiffView } from "../review/PatchDiffView";
-import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
+import { KinWorkFrame, KinWorkLoading, KinWorkToggleRow } from "./components/KinWorkPieces";
 import { useKinOpenHit } from "./state/kinWorkLink";
 import { KinDocChangesView } from "./KinDocChangesView";
 import { KinSearchHits } from "./KinDocsList";
@@ -377,7 +376,7 @@ function KinSearch(props: KinWorkTarget) {
         />
       </View>
       <ListSection>
-        <ListToggleRow
+        <KinWorkToggleRow
           label={KIN_SEARCH.includeClosed}
           value={state.closed}
           onValueChange={search.setClosed}

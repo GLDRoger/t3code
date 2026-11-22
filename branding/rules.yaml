@@ -709,6 +709,7 @@ leaks:
         - ops/kin/host/kin
         - ops/kin/host/kin-server.service
         - ops/kin/host/retire-workers.sh
+        - ops/kin/host/setup.sh
         - ops/kin/host/update.sh
     - reason: >-
         kin-verify drives the unbranded dev client from a source checkout (T3's dev scheme and
