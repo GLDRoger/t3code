@@ -8,6 +8,7 @@ import {
   KIN_SEARCH,
   kinDocDiffSummary,
   kinSearchHint,
+  kinSearchPlaceholder,
   kinDocVersionView,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
@@ -35,6 +36,7 @@ import { kinDocVersionParam, useKinDocRestore } from "./KinDocScreen";
 import { kinClient } from "./state/kinClient";
 import { useKinDoc, useKinDocHistory, useKinSearch } from "./state/useKinDocs";
 import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import { useKinShell } from "./state/useKinShell";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -361,6 +363,8 @@ function KinSearch(props: KinWorkTarget) {
   const navigation = useNavigation();
   const { state, search } = useKinSearch(props, null);
   const scope = useKinViewerScope(props.environmentId);
+  const shell = useKinShell(props.environmentId);
+  const placeholder = kinSearchPlaceholder(shell);
   const input = useRef<TextInputInstance>(null);
   const open = useKinOpenHit(props);
   return (
@@ -368,9 +372,9 @@ function KinSearch(props: KinWorkTarget) {
       <View className="flex-row">
         <SearchField
           inputRef={input}
-          accessibilityLabel={KIN_SEARCH.placeholder}
+          accessibilityLabel={placeholder}
           clearAccessibilityLabel="Clear search"
-          placeholder={KIN_SEARCH.placeholder}
+          placeholder={placeholder}
           value={state.text}
           onChangeText={search.setText}
         />
@@ -383,7 +387,7 @@ function KinSearch(props: KinWorkTarget) {
         />
       </ListSection>
       {state.text.trim() === "" ? (
-        <EmptyState variant="plain" {...kinSearchHint(scope)} />
+        <EmptyState variant="plain" {...kinSearchHint(scope, shell)} />
       ) : (
         <View className="-mx-4">
           <KinSearchHits state={state} scope={scope} onRetry={search.retry} onOpen={open} />

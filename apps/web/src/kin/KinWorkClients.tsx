@@ -17,7 +17,7 @@ import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import { kinWorkApplied, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
-  KIN_CLIENTS,
+  KIN_CLIENTS as KIN_CLIENTS_WORDS,
   KIN_CLIENT_FAILED,
   KIN_CLIENT_REFUSED,
   KIN_CLIENT_GONE,
@@ -105,7 +105,13 @@ import {
 import { KinWorkRow } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { KinClientDeals } from "./KinDeals";
-import { useKinSectionOn } from "./useKinShell";
+import { kinSectionNamedWords } from "@t3tools/client-runtime/kin/kinShell";
+import {
+  useKinSectionNamed,
+  useKinSectionOn,
+  useKinSectionWords,
+  useKinShell,
+} from "./useKinShell";
 import { KinConfirm } from "./KinConfirm";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinHostConnected, useKinHostAt } from "./useKinHost";
@@ -139,6 +145,9 @@ export function KinWorkClientsList(
     readonly start?: KinClientsFilter;
   },
 ) {
+  const KIN_CLIENTS = useKinSectionWords(props.environmentId, KIN_CLIENTS_WORDS);
+  const named = useKinSectionNamed(props.environmentId);
+  const shell = useKinShell(props.environmentId);
   const { names } = props.directory;
   const now = new Date(useNowMinuteMs());
   const scope = useKinViewerScope(props.environmentId);
@@ -307,9 +316,9 @@ export function KinWorkClientsList(
       ListEmptyComponent={
         <div className="mx-auto w-full max-w-3xl px-4">
           {listShown === "offline" ? (
-            <KinWorkNotice {...kinWorkOffline("clients")} />
+            <KinWorkNotice {...kinSectionNamedWords(shell, kinWorkOffline("clients"))} />
           ) : listShown === "loading" ? (
-            <div role="status" aria-label="Loading clients">
+            <div role="status" aria-label={named("Loading clients")}>
               <KinWorkRowSkeletons />
             </div>
           ) : listShown === "failed" ? (
@@ -343,7 +352,9 @@ export function KinWorkClientsList(
             <KinListMore
               failed={state.moreFailed}
               loading={state.loadingMore}
-              shown={`Showing ${state.records.length} of ${state.total ?? state.records.length} clients`}
+              shown={named(
+                `Showing ${state.records.length} of ${state.total ?? state.records.length} clients`,
+              )}
               onMore={() => void list.loadMore()}
             />
           )}
@@ -438,6 +449,7 @@ export function KinWorkProjectsTab(
     readonly selected?: KinRecordKey | null;
   },
 ) {
+  const shell = useKinShell(props.environmentId);
   const now = new Date(useNowMinuteMs());
   const scope = useKinViewerScope(props.environmentId);
   const { state, list } = useKinProjectsList(props, props.stale ? null : props.live.seq);
@@ -497,7 +509,7 @@ export function KinWorkProjectsTab(
       ListEmptyComponent={
         <div className="mx-auto w-full max-w-3xl px-4">
           {listShown === "offline" ? (
-            <KinWorkNotice {...kinWorkOffline("clients")} />
+            <KinWorkNotice {...kinSectionNamedWords(shell, kinWorkOffline("clients"))} />
           ) : listShown === "loading" ? (
             <div role="status" aria-label="Loading projects">
               <KinWorkRowSkeletons />
@@ -660,19 +672,27 @@ export function KinWorkClientPage(
     readonly onNewDeal?: ((party: KinWorkRef) => void) | null;
   },
 ) {
+  const named = useKinSectionNamed(props.environmentId);
+  const shell = useKinShell(props.environmentId);
   const { state, refresh } = useKinClientPage(props, props.clientKey);
   if (state._tag === "loading")
     return (
-      <div className="mx-auto w-full max-w-3xl p-4" role="status" aria-label="Loading client">
+      <div
+        className="mx-auto w-full max-w-3xl p-4"
+        role="status"
+        aria-label={named("Loading client")}
+      >
         <KinWorkRowSkeletons />
       </div>
     );
-  if (state._tag === "gone") return <KinWorkNotice {...KIN_CLIENT_GONE} />;
-  if (state._tag === "refused") return <KinWorkNotice {...KIN_CLIENT_REFUSED} />;
+  if (state._tag === "gone")
+    return <KinWorkNotice {...kinSectionNamedWords(shell, KIN_CLIENT_GONE)} />;
+  if (state._tag === "refused")
+    return <KinWorkNotice {...kinSectionNamedWords(shell, KIN_CLIENT_REFUSED)} />;
   if (state._tag === "failed")
     return (
       <KinLoadFailed
-        what={KIN_CLIENT_FAILED.title}
+        what={named(KIN_CLIENT_FAILED.title)}
         cause={state.cause}
         onRetry={refresh}
         className="mx-auto w-full max-w-3xl p-4"
@@ -688,6 +708,7 @@ function ClientPage(
     readonly onRefresh: () => void;
   },
 ) {
+  const KIN_CLIENTS = useKinSectionWords(props.environmentId, KIN_CLIENTS_WORDS);
   const { environmentId, orgId, page } = props;
   const { names } = props.directory;
   const { state: changed, changes } = props.changes;
@@ -695,6 +716,7 @@ function ClientPage(
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
   const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
   const dealsOn = useKinSectionOn(environmentId, "deals");
+  const invoicesOn = useKinSectionOn(environmentId, "invoices");
   const now = new Date(useNowMinuteMs());
   const [dialog, setDialog] = useState<ClientDialog>(null);
   const [tagList, setTagList] = useState<string | null>(null);
@@ -810,7 +832,7 @@ function ClientPage(
                 <span className="truncate text-foreground">{view.lookedAfter.name}</span>
               </p>
             </div>
-            {can.edit || can.owner || canInvoice ? (
+            {can.edit || can.owner || (canInvoice && invoicesOn) ? (
               <div className="flex shrink-0 items-center gap-1">
                 {can.edit ? (
                   <Button
@@ -832,7 +854,7 @@ function ClientPage(
                     <EllipsisIcon />
                   </MenuTrigger>
                   <MenuPopup align="end">
-                    {canInvoice && !view.vendor && !view.closed ? (
+                    {canInvoice && invoicesOn && !view.vendor && !view.closed ? (
                       <MenuItem onClick={() => setDialog({ type: "invoice" })}>
                         {KIN_MONEY_FORMS.invoice.title}
                       </MenuItem>
@@ -1226,9 +1248,12 @@ function KinClientNextStep(props: {
 }) {
   const { next } = props;
   return (
-    <KinWorkSection title={KIN_CLIENTS.nextStep} action={next === null ? props.add : undefined}>
+    <KinWorkSection
+      title={KIN_CLIENTS_WORDS.nextStep}
+      action={next === null ? props.add : undefined}
+    >
       {next === null ? (
-        <p className="text-sm text-warning-foreground">{KIN_CLIENTS.noNextStep}</p>
+        <p className="text-sm text-warning-foreground">{KIN_CLIENTS_WORDS.noNextStep}</p>
       ) : (
         <button
           type="button"

@@ -53,6 +53,8 @@ import {
 } from "./kinWork.ts";
 import { kinCount } from "./kinCount.ts";
 import { kinIsMine, type KinMineCount, type KinMineHeld } from "./kinWorkClients.ts";
+import { kinSectionNamed, kinSectionOn } from "./kinShell.ts";
+import type { KinShell } from "@t3tools/contracts";
 
 export const KIN_DOCS = {
   earlierVersions: "Show earlier versions",
@@ -216,19 +218,44 @@ export const KIN_SEARCH = {
   includeClosed: "Include closed and archived",
 } as const;
 
+/** What search looks through, as the company's sections have it: "tasks, patients, docs". */
+function searchKinds(shell: KinShell | null | undefined, detailed: boolean): ReadonlyArray<string> {
+  const clients = kinSectionOn(shell, "clients");
+  return [
+    "tasks",
+    ...(!clients
+      ? []
+      : detailed
+        ? [kinSectionNamed(shell, "clients"), "contacts", "projects"]
+        : [kinSectionNamed(shell, "clients")]),
+    "docs",
+    ...(kinSectionOn(shell, "money") ? ["money"] : []),
+  ];
+}
+
+const andList = (parts: ReadonlyArray<string>) =>
+  parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+
+/** The search box's placeholder, naming only the sections the company has on. */
+export const kinSearchPlaceholder = (shell?: KinShell | null) =>
+  `Search ${andList(searchKinds(shell, false))}`;
+
 /** What the empty search box says it looks through: the owner level finds what memory keeps too. */
-export const kinSearchHint = (scope: KinViewerScope) =>
-  scope.all
+export const kinSearchHint = (scope: KinViewerScope, shell?: KinShell | null) => {
+  const kinds = searchKinds(shell, true);
+  const listed = kinds.map((kind, index) => (index === 0 ? upperFirst(kind) : kind));
+  return scope.all
     ? {
         title: KIN_SEARCH.hint.title,
-        detail:
-          "Tasks, clients, contacts, projects, docs, money, and the decisions your agents remember, by any words in them.",
+        detail: `${listed.join(", ")}, and the decisions your agents remember, by any words in them.`,
       }
     : {
         title: KIN_SEARCH.hint.title,
-        detail:
-          "Tasks, clients, contacts, projects, docs and money you can see, by any words in them.",
+        detail: `${andList(listed)} you can see, by any words in them.`,
       };
+};
+
+const upperFirst = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
 
 // When and who
 

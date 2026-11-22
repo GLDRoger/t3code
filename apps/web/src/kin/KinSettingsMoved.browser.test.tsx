@@ -19,6 +19,7 @@ const ROUTE_PAGE: Partial<Record<SettingsPath, KinSettingsPage>> = {
   "/settings/check-ins": "check-ins",
   "/settings/company": "company",
   "/settings/deals": "deals",
+  "/settings/sections": "sections",
   "/settings/kin-connections": "connections",
   "/settings/kin-profile": "profile",
 };
@@ -28,6 +29,7 @@ const HOLDS: Readonly<Record<string, KinSettingsPage>> = {
   "approval-phones": "approvals",
   "kin-check-ins": "check-ins",
   "kin-deals": "deals",
+  "kin-sections": "sections",
   "company-details": "company",
   "kin-time-zone": "company",
   "kin-daily-limit": "company",
@@ -39,6 +41,7 @@ const HOLDS: Readonly<Record<string, KinSettingsPage>> = {
   "kin-working-hours": "profile",
   "kin-away": "profile",
   "kin-github-username": "profile",
+  "kin-notifications": "notifications",
 };
 
 const kinEntries = () => KIN_SETTINGS_SEARCH_ITEMS;

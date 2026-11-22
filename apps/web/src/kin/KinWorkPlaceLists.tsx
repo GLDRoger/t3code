@@ -19,6 +19,7 @@ import {
   useKinMoneySummary,
 } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
+import { useKinSectionOn } from "./useKinShell";
 
 const SHOWN = 5;
 
@@ -40,9 +41,13 @@ type Shared = KinWorkTarget & {
 export function KinWorkPlaceLists(props: Shared) {
   const lists = useKinLists(props, { enabled: true });
   const defs = kinListsOf(lists).filter((def) => !def.builtIn);
+  // What a client owes is invoices: it goes with Invoices and quotes.
+  const invoicesOn = useKinSectionOn(props.environmentId, "invoices");
   return (
     <>
-      {"party" in props.place ? <PlaceOwed {...props} party={props.place.party} /> : null}
+      {"party" in props.place && invoicesOn ? (
+        <PlaceOwed {...props} party={props.place.party} />
+      ) : null}
       {defs.map((def) => (
         <PlaceList key={def.list} {...props} def={def} />
       ))}

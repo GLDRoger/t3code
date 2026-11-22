@@ -15,6 +15,14 @@ import {
 import { kinPlacesFromMe } from "./kinPlaces.ts";
 
 const none = { money: false, clients: false, docs: false };
+// The company's sections with these switched off, as `kin.access.me` sends them.
+const sectionsOff = (...off: ReadonlyArray<string>) => ({
+  rev: 3,
+  sections: ["clients", "deals", "money", "invoices", "docs"].map((id) => ({
+    id,
+    on: !off.includes(id),
+  })),
+});
 const decodeMe = Schema.decodeSync(KinAccessMeResult);
 
 // The seeded roles: the owner and a co-owner run the company; a lead leads a project; a member
@@ -62,6 +70,7 @@ describe("kinPlacesFromMe", () => {
     places: Partial<typeof none>,
     refused: { readonly money: boolean; readonly docs: boolean } | undefined,
     leads: ReadonlyArray<string> = [],
+    off: ReadonlyArray<string> = [],
   ) =>
     decodeMe({
       personId: "rhea",
@@ -69,6 +78,7 @@ describe("kinPlacesFromMe", () => {
       places: { ...none, ...places },
       leads: leads.map((key) => ({ recordId: key, key, title: "Invented project" })),
       ...(refused === undefined ? {} : { refused }),
+      ...(off.length === 0 ? {} : { shell: sectionsOff(...off) }),
     });
   const all = ["chats", "tasks", "money", "clients", "docs"];
   // Each role's tabs as the nav and the dock drew them from Work's, Money's and Docs' streams.
@@ -89,6 +99,57 @@ describe("kinPlacesFromMe", () => {
       false,
       ["chats", "tasks", "money", "clients"],
     ],
+    // A section the company turned off leaves everyone's places; Docs, Tasks and Chats stay.
+    [
+      "owner, Clients off",
+      me("owner", {}, { money: false, docs: false }, [], ["clients"]),
+      true,
+      ["chats", "tasks", "money", "docs"],
+    ],
+    [
+      "owner, Money off",
+      me("owner", {}, { money: false, docs: false }, [], ["money", "invoices"]),
+      true,
+      ["chats", "tasks", "clients", "docs"],
+    ],
+    // Invoices and quotes, and Deals, live inside places: no place leaves with them.
+    [
+      "owner, Invoices off",
+      me("owner", {}, { money: false, docs: false }, [], ["invoices"]),
+      true,
+      all,
+    ],
+    ["owner, Deals off", me("owner", {}, { money: false, docs: false }, [], ["deals"]), true, all],
+    [
+      "co-owner, Clients and Money off",
+      me("co_owner", {}, { money: false, docs: false }, [], ["clients", "money", "invoices"]),
+      true,
+      ["chats", "tasks", "docs"],
+    ],
+    [
+      "lead, Clients off",
+      me("member", {}, { money: false, docs: false }, ["P-1"], ["clients"]),
+      false,
+      ["chats", "tasks", "money", "docs"],
+    ],
+    [
+      "member with Clients only, Clients off",
+      me("member", { clients: true }, { money: true, docs: true }, [], ["clients"]),
+      false,
+      ["chats", "tasks"],
+    ],
+    [
+      "member with Clients only, Money off",
+      me("member", { clients: true }, { money: true, docs: true }, [], ["money"]),
+      false,
+      ["chats", "tasks", "clients"],
+    ],
+    [
+      "member with Money, Money off",
+      me("member", { clients: true, money: true }, { money: false, docs: true }, [], ["money"]),
+      false,
+      ["chats", "tasks", "clients"],
+    ],
     ["the owner's own session before the host answers", null, true, all],
     ["a member before the host answers", null, false, ["chats", "tasks"]],
   ] as const)("%s", (_, held, ownerLevel, tabs) => {
@@ -106,6 +167,48 @@ describe("kinPlacesFromMe", () => {
     expect(kinPlacesFromMe({ me: owner, ownerLevel: true, work: false })?.destinations).toEqual([
       "chats",
     ]);
+  });
+});
+
+describe("kinPlaceReach", () => {
+  const reach = (
+    places: Partial<typeof none>,
+    leads: ReadonlyArray<string>,
+    off: ReadonlyArray<string>,
+  ) =>
+    kinPlaceReach({
+      places: { ...none, ...places },
+      leads,
+      ...(off.length === 0 ? {} : { shell: sectionsOff(...off) }),
+    });
+  it.each([
+    [
+      "Zoya, Clients only, all on",
+      { clients: true },
+      [],
+      [],
+      { money: false, clients: true, docs: false },
+    ],
+    ["Zoya, Clients off", { clients: true }, [], ["clients"], none],
+    [
+      "Arjun, Money and Clients, Money off",
+      { money: true, clients: true },
+      [],
+      ["money"],
+      { ...none, clients: true },
+    ],
+    ["a lead, Clients off", {}, ["P-1"], ["clients"], { money: true, clients: false, docs: true }],
+    ["a lead, Money off", {}, ["P-1"], ["money"], { money: false, clients: true, docs: true }],
+    // Invoices and Deals hold no place of their own; Docs can't be off.
+    [
+      "Zoya, Invoices and Deals off",
+      { clients: true },
+      [],
+      ["invoices", "deals"],
+      { ...none, clients: true },
+    ],
+  ] as const)("%s", (_, places, leads, off, reaches) => {
+    expect(reach(places, leads, off)).toEqual(reaches);
   });
 });
 
@@ -171,6 +274,7 @@ describe("kinSettingsGroups", () => {
       "check-ins",
       "watches",
       "connections",
+      "sections",
       "deals",
       "memory",
       "company",
@@ -197,8 +301,8 @@ describe("kinSettingsGroups", () => {
   });
 
   it("keeps the phone's Settings to the day's rows: Company for the owner level, the log for a teammate", () => {
-    // Deals is the owner level's, for its switch.
-    const owner = ["team", "agents", "company", "deals", "watches", "host", "stop"];
+    // Sections and Deals are the owner level's, for their switches.
+    const owner = ["team", "agents", "company", "sections", "deals", "watches", "host", "stop"];
     expect(kinPhoneSettingsRows(ROLES.owner)).toEqual({
       you: ["profile", "notifications", "appearance"],
       company: owner,
