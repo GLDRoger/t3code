@@ -14,6 +14,7 @@ import {
   BellIcon,
   Building2Icon,
   CalendarCheckIcon,
+  EyeIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CircleUserIcon,
@@ -71,6 +72,7 @@ import { KinDealsPage } from "./settings/KinDealsPage";
 import { KinHostPage } from "./settings/KinHostPage";
 import { KinMemoryPage } from "./settings/KinMemoryPage";
 import { KinProfilePage } from "./settings/KinProfilePage";
+import { KinWatchLogPage } from "./settings/KinWatchLogPage";
 import { KinSettingsTrail } from "./settings/KinSettingsSubpage";
 import type { KinSettingsTarget } from "./settings/kinSettingsTarget";
 
@@ -83,6 +85,7 @@ const PAGE_ICON: Record<KinSettingsPage, LucideIcon> = {
   team: UsersIcon,
   agents: BotIcon,
   "check-ins": CalendarCheckIcon,
+  watches: EyeIcon,
   connections: PlugIcon,
   deals: TrendingUpIcon,
   memory: BrainIcon,
@@ -349,6 +352,8 @@ function KinSettingsPageBody(props: {
       return <KinAgentsPage {...target} />;
     case "check-ins":
       return <KinCheckInsPage />;
+    case "watches":
+      return <KinWatchLogPage key={target.orgId} {...target} />;
     case "connections":
       return <KinConnectionsPage />;
     case "deals":

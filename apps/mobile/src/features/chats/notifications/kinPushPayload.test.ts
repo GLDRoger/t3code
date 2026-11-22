@@ -26,10 +26,12 @@ function response(input: {
   readonly action?: string;
   readonly category?: string | null;
   readonly identifier?: string;
+  readonly date?: number;
 }) {
   return {
     actionIdentifier: input.action ?? KIN_DEFAULT_ACTION_IDENTIFIER,
     notification: {
+      ...(input.date === undefined ? {} : { date: input.date }),
       request: {
         identifier: input.identifier ?? "note-1",
         content: { data: input.data, categoryIdentifier: input.category ?? null },
@@ -280,14 +282,15 @@ describe("kinNotificationRoute", () => {
     ).toMatchObject({ paths: [`${chatLink}?message=msg-ask`], act: null });
   });
 
-  it("acts once per notification and button, whichever path delivers it", () => {
-    const monday = (identifier: string) =>
+  it("acts once per delivery and button, whichever path delivers it", () => {
+    const monday = (identifier: string, date?: number) =>
       kinNotificationRoute(
         response({
           data: deferral,
           action: "monday",
           category: "kin.deferral.heads_up",
           identifier,
+          ...(date === undefined ? {} : { date }),
         }),
       );
     expect(monday("note-1")?.act?.clientActionId).toBe(monday("note-1")?.act?.clientActionId);
@@ -296,6 +299,14 @@ describe("kinNotificationRoute", () => {
       response({ data: deferral, category: "kin.deferral.heads_up" }),
     );
     expect(banner?.responseKey).not.toBe(monday("note-1")?.responseKey);
+    // A chat's pushes share its collapse id as their identifier; only the date tells them apart.
+    const tap = (date: number) =>
+      kinNotificationRoute(response({ data: deferral, identifier: "kin:7d82459c4d43", date }));
+    expect(tap(1795000000.25)?.responseKey).toBe(tap(1795000000.25)?.responseKey);
+    expect(tap(1795000090.5)?.responseKey).not.toBe(tap(1795000000.25)?.responseKey);
+    expect(monday("kin:7d82459c4d43", 1795000090.5)?.act?.clientActionId).not.toBe(
+      monday("kin:7d82459c4d43", 1795000000.25)?.act?.clientActionId,
+    );
   });
 
   it.each([

@@ -636,6 +636,48 @@ export const parseChanges = (json: string): ReadonlyArray<FieldChange> => {
 /** A history line as stored: its fields keep their `names` until a reader puts them in words. */
 export type StoredChange = KinRecordChange & { readonly fields: ReadonlyArray<FieldChange> };
 
+/**
+ * Who wrote an entry's title and notes up to change `upTo`, newest first, and who made the entry
+ * those words began on. A repeat's next occurrence (`spawnNext`) is made by Kin with the words of
+ * the one it follows, so its words are that one's, as they were when it was made.
+ */
+export const wordsOf = Effect.fn("KinRecords.wordsOf")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  upTo: number = Number.MAX_SAFE_INTEGER,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const copied = sql`r.created_by_kind = 'system' AND r.origin_key LIKE 'repeat:%'`;
+  const chain = sql`WITH RECURSIVE chain(record_id, bound) AS (
+      SELECT ${recordId}, ${upTo}
+      UNION
+      SELECT substr(r.origin_key, 8), (SELECT MIN(c.seq) FROM kin_record_changes c
+          WHERE c.org_id = ${orgId} AND c.record_id = chain.record_id)
+        FROM chain JOIN kin_records r ON r.org_id = ${orgId} AND r.record_id = chain.record_id
+        WHERE ${copied})`;
+  const writers = yield* sql<{
+    actorKind: string;
+    actorId: string | null;
+    coding: number;
+    notes: number;
+  }>`${chain} SELECT c.actor_kind AS "actorKind", c.actor_id AS "actorId",
+      c.coding_agent_key IS NOT NULL AS coding,
+      EXISTS (SELECT 1 FROM json_each(c.fields_json) f
+        WHERE json_extract(f.value, '$.field') = 'notes') AS notes
+    FROM chain JOIN kin_records r ON r.org_id = ${orgId} AND r.record_id = chain.record_id
+    JOIN kin_record_changes c ON c.org_id = r.org_id AND c.record_id = r.record_id
+      AND c.seq <= chain.bound
+    WHERE EXISTS (SELECT 1 FROM json_each(c.fields_json) f
+        WHERE json_extract(f.value, '$.field') IN ('title', 'notes'))
+      AND NOT (c.kind = 'created' AND ${copied})
+    ORDER BY c.seq DESC`;
+  const [madeBy] = yield* sql<{ kind: string; id: string | null }>`${chain}
+    SELECT r.created_by_kind AS kind, r.created_by_id AS id
+    FROM chain JOIN kin_records r ON r.org_id = ${orgId} AND r.record_id = chain.record_id
+    WHERE NOT (${copied}) ORDER BY r.created_at LIMIT 1`;
+  return { writers, madeBy };
+});
+
 const changesOf = Effect.fn("KinRecords.changesOf")(function* (
   orgId: KinOrgId,
   recordId: string,

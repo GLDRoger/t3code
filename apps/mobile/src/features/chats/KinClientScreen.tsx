@@ -83,6 +83,7 @@ import {
 import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { useKinOpenPlace } from "./state/kinHomeTab";
 import { useKinWorkLink } from "./state/kinWorkLink";
+import { KinWatchLine } from "./KinWatchLine";
 
 export type KinClientParams = {
   readonly environmentId: string;
@@ -440,6 +441,7 @@ function KinClientBody(
         <KinWorkProblemNotice problem={problem} onDismiss={() => setProblem(null)} />
       )}
       <KinAsideNote {...target} record={view.key} names={names} />
+      <KinWatchLine {...target} recordKey={view.key} />
       <KinAttentionSection
         {...target}
         scope={{ type: "client", key: view.key }}

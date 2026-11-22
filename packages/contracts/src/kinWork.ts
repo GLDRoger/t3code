@@ -37,6 +37,7 @@ import {
   KinPayment,
   KinRepeatRule,
 } from "./kinMoney.ts";
+import { KinWatchLine } from "./kinWatches.ts";
 
 /**
  * Work: everything someone owes someone, as entries in lists. Built in: Work, and the light CRM's
@@ -465,6 +466,8 @@ export const KinRecordDetail = Schema.Struct({
    * change the task (`can.edit`) ticks, adds and removes them and marks it urgent.
    */
   checklist: Schema.optional(KinWorkSteps),
+  /** What Kin is watching on it, for a reader who may see that watch; absent with none. */
+  watch: Schema.optional(KinWatchLine),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;

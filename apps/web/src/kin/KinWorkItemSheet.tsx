@@ -148,6 +148,7 @@ import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { KinAskRecord } from "./KinAskRecord";
 import { kinClient } from "./kinClient";
 import { openDestination } from "./KinNotifications";
+import { KinWatchLine } from "./KinWatchLine";
 import { useNowMinuteMs } from "./useKinClock";
 import {
   useKinPickerSearch,
@@ -766,6 +767,7 @@ function KinWorkItem(
               {remark}
             </p>
           ))}
+          <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={view.key} />
         </div>
       </Frame.Header>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">

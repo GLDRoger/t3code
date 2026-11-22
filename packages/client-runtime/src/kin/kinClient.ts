@@ -108,6 +108,7 @@ import {
   kinWorkLiveStream,
 } from "./kinWorkStream.ts";
 import { KIN_PERSON_TASKS, kinTasksMostUrgent } from "./kinTasksList.ts";
+import { makeKinWatches } from "./kinWatches.ts";
 
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
 const KIN_HISTORY_PAGE_TIMEOUT = Duration.seconds(20);
@@ -567,6 +568,7 @@ export function makeKinClient<R, ER>(
 
   /** Web's Kin reads and commands. Mobile's twin adds the device cache and push. */
   const kinClient = {
+    ...makeKinWatches(runtime, kinGuardedRead),
     orgs: createKinQueryAtomFamily(runtime, {
       label: "kin:orgs",
       execute: Effect.fn("KinClient.orgs")(function* (input: KinOrgsListInput) {

@@ -159,14 +159,17 @@ describe("kinSettingsGroups", () => {
   it("gives everyone You, the owner level Company, and This computer only where it opens", () => {
     expect(groups("owner").map((group) => group.id)).toEqual(["you", "company", "computer"]);
     expect(groups("coOwner").map((group) => group.id)).toEqual(["you", "company"]);
-    expect(groups("lead").map((group) => group.id)).toEqual(["you"]);
-    expect(groups("member").map((group) => group.id)).toEqual(["you"]);
+    expect(groups("lead").map((group) => group.id)).toEqual(["you", "company"]);
+    expect(groups("member").map((group) => group.id)).toEqual(["you", "company"]);
+    // A teammate's Company holds What Kin checked alone: the watches on their own things.
+    expect(groups("member")[1]?.pages).toEqual(["watches"]);
     expect(groups("member")[0]?.pages).toEqual(["profile", "appearance"]);
     expect(groups("member", true)[0]?.pages).toEqual(["profile", "notifications", "appearance"]);
     expect(groups("coOwner")[1]?.pages).toEqual([
       "team",
       "agents",
       "check-ins",
+      "watches",
       "connections",
       "deals",
       "memory",
@@ -187,22 +190,22 @@ describe("kinSettingsGroups", () => {
     });
     expect(member.map((group) => [group.id, group.pages])).toEqual([
       ["you", ["profile", "appearance"]],
-      ["company", ["deals"]],
+      ["company", ["deals", "watches"]],
     ]);
     expect(kinSettingsPageOf("deals", member)).toBe("deals");
     expect(kinSettingsPageOf("deals", groups("member"))).toBe("profile");
   });
 
-  it("keeps the phone's Settings to the day's rows: Company for the owner level, none for a teammate", () => {
-    const owner = ["team", "agents", "company", "host", "stop"];
+  it("keeps the phone's Settings to the day's rows: Company for the owner level, the log for a teammate", () => {
+    const owner = ["team", "agents", "company", "watches", "host", "stop"];
     expect(kinPhoneSettingsRows(ROLES.owner)).toEqual({
       you: ["profile", "notifications", "appearance"],
       company: owner,
     });
     expect(kinPhoneSettingsRows(ROLES.coOwner).company).toEqual(owner);
-    // Clients on or off, a teammate has no Company rows: no read-only Deals on the phone.
-    expect(kinPhoneSettingsRows(ROLES.member).company).toEqual([]);
-    expect(kinPhoneSettingsRows(ROLES.lead).company).toEqual([]);
+    // Clients on or off, a teammate's Company is What Kin checked alone: no read-only Deals.
+    expect(kinPhoneSettingsRows(ROLES.member).company).toEqual(["watches"]);
+    expect(kinPhoneSettingsRows(ROLES.lead).company).toEqual(["watches"]);
   });
 
   it("opens a Company address only for the owner level; anything else lands on the profile", () => {

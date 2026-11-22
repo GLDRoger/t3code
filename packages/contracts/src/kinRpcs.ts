@@ -45,6 +45,7 @@ import { KinPulseRpcs, KIN_PULSE_RPC_SCOPES } from "./kinPulse.ts";
 import { KinOpenRpcs, KIN_OPEN_RPC_SCOPES } from "./kinOpen.ts";
 import { KinRecommendationRpcs, KIN_RECOMMENDATION_RPC_SCOPES } from "./kinRecommendations.ts";
 import { KinHostRpcs, KIN_HOST_RPC_SCOPES } from "./kinHostCare.ts";
+import { KinWatchRpcs, KIN_WATCH_RPC_SCOPES } from "./kinWatches.ts";
 import {
   KinChatError,
   KinChatRpcs,
@@ -217,6 +218,7 @@ export const KinRpcs = [
   ...KinOpenRpcs,
   ...KinRecommendationRpcs,
   ...KinHostRpcs,
+  ...KinWatchRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
@@ -242,6 +244,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_OPEN_RPC_SCOPES,
   ...KIN_RECOMMENDATION_RPC_SCOPES,
   ...KIN_HOST_RPC_SCOPES,
+  ...KIN_WATCH_RPC_SCOPES,
   "kin.budget.get": AuthKinChatScope,
   "kin.budget.set": AuthKinChatScope,
   "kin.org.get": AuthKinChatScope,
@@ -504,6 +507,12 @@ const KIN_RPC_ACCESS = {
   "kin.host.freeSpace": "owner_level",
   "kin.host.backUpNow": "owner_level",
   "kin.host.retry": "owner_level",
+  // What Kin keeps watch on: the service shows and acts on only the watches this person may see.
+  "kin.watches.list": "person",
+  "kin.watches.log": "person",
+  "kin.watches.look": "person",
+  "kin.watches.stop": "person",
+  "kin.watches.again": "person",
   "kin.goals.list": "person",
   "kin.goals.save": "owner_level",
   "kin.checkIns.list": "owner_level",
@@ -597,6 +606,11 @@ export const KIN_RPC_AGGREGATES = {
   "kin.host.freeSpace": "kin-host",
   "kin.host.backUpNow": "kin-host",
   "kin.host.retry": "kin-host",
+  "kin.watches.list": "kin-watches",
+  "kin.watches.log": "kin-watches",
+  "kin.watches.look": "kin-watches",
+  "kin.watches.stop": "kin-watches",
+  "kin.watches.again": "kin-watches",
   "kin.goals.list": "kin-pulse",
   "kin.goals.save": "kin-pulse",
   "kin.checkIns.list": "kin-pulse",

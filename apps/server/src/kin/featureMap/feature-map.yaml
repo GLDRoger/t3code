@@ -1184,6 +1184,21 @@ features:
       - apps/server/src/kin/reply/KinReplyBridge.test.ts
       - packages/client-runtime/src/kin/kinCheckIns.test.ts
 
+  - id: watches
+    name: Kin keeps watch, the line on a watched record and What Kin checked
+    tab: settings
+    web: [settings, section:What Kin checked]
+    phone: [SettingsKin, KinWatchLog]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      The line sits under a watched record's header (invoices and other entries, tasks, clients,
+      deals, docs) with Look now, Stop watching or Watch again, and opens the log too. A teammate
+      sees only watches on their own things, never money; their log says when there are none.
+    proof:
+      - apps/server/src/kin/watches/KinWatches.test.ts
+      - packages/client-runtime/src/kin/kinWatches.test.ts
+      - packages/client-runtime/src/kin/kinNavigation.test.ts
+
   - id: connections
     name: Mail and tool connections
     tab: settings
