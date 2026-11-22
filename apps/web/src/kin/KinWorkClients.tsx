@@ -1150,6 +1150,7 @@ function ClientPage(
           orgId={orgId}
           editing={page.party}
           member={!can.owner}
+          privateHides={page.privateHides}
           onSaved={() => {
             setDialog(null);
             props.onRefresh();
