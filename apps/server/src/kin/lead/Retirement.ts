@@ -17,6 +17,7 @@ import {
   reopenRetiredQuestions,
   retiredQuestionText,
 } from "../questions/openQuestions.ts";
+import * as KinWatches from "../watches/KinWatches.ts";
 
 /**
  * What retiring an agent does to everything it has in flight, inside the transaction that sets
@@ -165,6 +166,7 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (
     },
     chat,
   );
+  yield* KinWatches.closeRetired(orgId, agentId, now);
   return {
     turns: turns.map((row) => KinWakeupId.make(row.wakeupId)),
     expired: expired.length,
@@ -185,7 +187,9 @@ export const restore = Effect.fn("KinRetirement.restore")(function* (input: {
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, agentId, now } = input;
-  yield* reopenRetiredQuestions({ orgId, agentId, retiredAt: Date.parse(input.retiredAt), now });
+  const retiredAt = Date.parse(input.retiredAt);
+  yield* reopenRetiredQuestions({ orgId, agentId, retiredAt, now });
+  yield* KinWatches.reopenRetired(orgId, agentId, retiredAt, now);
   const held = sql`SELECT target_id FROM kin_retirement_holds
     WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
   yield* sql`UPDATE kin_triggers AS t SET enabled = 1, updated_at = ${now},

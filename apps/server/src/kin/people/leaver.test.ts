@@ -22,19 +22,24 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { SessionStore } from "../../auth/SessionStore.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinRefreshHub } from "../chat/KinRefreshHub.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import type { Services } from "../KinServer.ts";
+import * as Shell from "../shell/KinShell.ts";
+import * as Watches from "../watches/readRpcs.ts";
 import * as Deals from "../work/deals.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import * as Clients from "../work/ownerClients.ts";
+import { viewerOfPeople } from "../work/teamView.ts";
 import * as People from "./KinPeople.ts";
 
 // Invented: Rhea's Ambermill. Zoya sells and leaves; Arjun sells too; Meera is a co-owner; Dev
@@ -56,7 +61,7 @@ const zoyaId = KinPersonId.make("zoya");
 const arjunId = KinPersonId.make("arjun");
 const meeraId = KinPersonId.make("meera");
 const devId = KinPersonId.make("dev");
-const HELD = "1 open deal, 1 prospect, 1 client, 1 follow-up and 1 promise";
+const HELD = "1 open deal, 1 prospect, 1 client, 1 follow-up, 1 promise and 1 watch";
 
 const seed = Effect.fn("LeaverTest.seed")(function* (services: Context.Context<Services>) {
   const identity = Context.get(services, KinIdentity);
@@ -235,6 +240,23 @@ const holders = (ctx: Ctx) =>
   Effect.forEach(ctx.keys, (key) =>
     ctx.records.get(ctx.orgId, key).pipe(Effect.map((row) => row?.ownerId)),
   );
+const seedWatches = Effect.fn("LeaverTest.seedWatches")(function* (ctx: Ctx) {
+  yield* ctx.sql`INSERT INTO kin_watches (org_id, watch_id, kind, source, source_key, about,
+      closes_when, for_person_id, audience, why, set_by_kind, set_by_id, latest_by, next_look_at,
+      interval_ms, state, closed_at, closed_by_kind, closed_by_id, created_at, updated_at)
+    VALUES (${ctx.orgId}, 'open-watch', 'task_out', 'person', 'open-watch', 'a task',
+        'the task is done', ${zoyaId}, 'person', 'asked', 'person', ${zoyaId}, 72000000, 0,
+        60000, 'open', NULL, NULL, NULL, 0, 0),
+      (${ctx.orgId}, 'closed-watch', 'task_out', 'person', 'closed-watch', 'an old task',
+        'the task is done', ${zoyaId}, 'person', 'asked', 'person', ${zoyaId}, 36000000, 0,
+        60000, 'stopped', 0, 'person', ${zoyaId}, 0, 0)`;
+});
+const watch = (ctx: Ctx, watchId: string) =>
+  ctx.sql`SELECT * FROM kin_watches WHERE org_id = ${ctx.orgId} AND watch_id = ${watchId}`.pipe(
+    Effect.map((rows) => rows[0]!),
+  );
+const watchesFor = (ctx: Ctx, personId: KinPersonId) =>
+  Watches.list(ctx.orgId, { personId, viewer: viewerOfPeople([personId]) }, {});
 const bringBack = (ctx: Ctx, displayName: string, personId: KinPersonId) =>
   Effect.gen(function* () {
     const link = yield* ctx.people.createInvite(ownerSession, {
@@ -266,6 +288,13 @@ it.effect(
         yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: devId });
         assert.deepStrictEqual(yield* cards(ctx), []);
 
+        yield* seedWatches(ctx);
+        const openBefore = yield* watch(ctx, "open-watch");
+        const closedBefore = yield* watch(ctx, "closed-watch");
+        const zoyasChat = yield* ctx.chats.createDirect(ctx.person(zoyaId), {
+          orgId: ctx.orgId,
+          agentId: chief,
+        });
         yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: zoyaId });
         // A retried removal asks nothing more.
         yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: zoyaId });
@@ -275,10 +304,6 @@ it.effect(
           [yield* chatOf(ctx, ctx.owner.personId), yield* chatOf(ctx, meeraId)].toSorted(),
         );
         for (const card of asked) {
-          assert.strictEqual(
-            card.question,
-            `Zoya left the team and looked after ${HELD}. Who takes them?`,
-          );
           // Shown only while nobody has chosen, on every copy.
           assert.strictEqual(
             card.whileOpen,
@@ -300,12 +325,35 @@ it.effect(
             "Failure",
         );
 
+        const refresh = (yield* KinRefreshHub).changes(ctx.orgId).pipe(Stream.runHead);
+        const before = Option.getOrThrow(yield* refresh);
         yield* tap(ctx, meeraId, meeras, "Give them to Arjun");
+        assert.strictEqual(Option.getOrThrow(yield* refresh).watches, before.watches + 1);
+        assert.deepInclude(yield* watch(ctx, "open-watch"), {
+          for_person_id: arjunId,
+          set_by_id: openBefore.set_by_id,
+          latest_by: openBefore.latest_by,
+        });
+        assert.deepStrictEqual(yield* watch(ctx, "closed-watch"), closedBefore);
+        assert.deepStrictEqual(
+          (yield* watchesFor(ctx, arjunId)).watches.map((one) => one.watchId),
+          ["open-watch"],
+        );
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT message_id FROM kin_messages WHERE org_id = ${ctx.orgId}
+            AND chat_id = ${zoyasChat.chatId} ORDER BY seq`,
+          [],
+        );
         assert.deepStrictEqual(
           yield* holders(ctx),
           ctx.keys.map(() => arjunId),
         );
-        const after = "To move one on, change who looks after it on its page.";
+        for (const card of asked)
+          assert.strictEqual(
+            card.question,
+            `Zoya left the team and looked after ${HELD}. Who takes them?`,
+          );
+        const after = "To move a record on, change who looks after it on its page.";
         const settled = yield* cards(ctx);
         assert.deepStrictEqual(settled.find((card) => card.widgetId === meeras.widgetId)?.outcome, {
           title: "Given to Arjun",
@@ -332,7 +380,7 @@ it.effect(
           WHERE m.org_id = ${ctx.orgId} AND m.message_id LIKE 'kin-holder-%' ORDER BY m.seq`;
         assert.deepStrictEqual(
           told.map((row) => row.body),
-          [`Meera gave you what Zoya looked after: ${HELD}. Each one's Activity says so.`],
+          [`Meera gave you what Zoya looked after: ${HELD}. Each record's Activity says so.`],
         );
         const given = (yield* activity(ctx, ctx.deal))[0]!;
         assert.strictEqual(given.actor, meeraId);
@@ -345,6 +393,10 @@ it.effect(
           ctx.keys.map(() => arjunId),
         );
         assert.deepStrictEqual((yield* activity(ctx, ctx.deal))[0], given);
+        assert.deepStrictEqual(
+          (yield* watchesFor(ctx, zoyaId)).watches.map((one) => one.watchId),
+          ["closed-watch"],
+        );
       }),
     ),
 );
@@ -354,7 +406,16 @@ it.effect(
   () =>
     run((ctx) =>
       Effect.gen(function* () {
+        yield* seedWatches(ctx);
+        const openBefore = yield* watch(ctx, "open-watch");
+        const closedBefore = yield* watch(ctx, "closed-watch");
+        yield* ctx.sql`INSERT INTO kin_company_shell (org_id, rev, shell_json, set_by, set_at)
+          VALUES (${ctx.orgId}, 1, '[{"id":"docs","on":false}]', ${zoyaId}, 0)`;
+        const shellRow = ctx.sql`SELECT * FROM kin_company_shell WHERE org_id = ${ctx.orgId}`;
+        const shellBefore = yield* shellRow;
         yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: zoyaId });
+        assert.deepStrictEqual(yield* shellRow, shellBefore);
+        assert.isFalse(Shell.onIn(yield* Shell.get(ctx.orgId), "docs"));
         const [rheas, meeras] = yield* cards(ctx).pipe(
           Effect.map((all) => all.toSorted((a) => (a.chatId === ctx.ownerChat ? -1 : 1))),
         );
@@ -388,6 +449,7 @@ it.effect(
         );
 
         yield* tap(ctx, ctx.owner.personId, rheas!, "Leave them as they are");
+        assert.deepStrictEqual(yield* watch(ctx, "open-watch"), openBefore);
         const text = `${HELD} stay in Zoya's name. If Zoya comes back with a new link, they are Zoya's again.`;
         const settled = yield* cards(ctx);
         assert.deepStrictEqual(
@@ -411,6 +473,12 @@ it.effect(
           yield* holders(ctx),
           ctx.keys.map(() => zoyaId),
         );
+        assert.deepStrictEqual(
+          (yield* watchesFor(ctx, zoyaId)).watches.map((one) => one.watchId),
+          ["open-watch", "closed-watch"],
+        );
+        assert.deepStrictEqual(yield* watch(ctx, "closed-watch"), closedBefore);
+        assert.deepStrictEqual(yield* shellRow, shellBefore);
         for (const key of ctx.keys) {
           const [back, gone] = yield* activity(ctx, key);
           assert.deepStrictEqual(
@@ -445,12 +513,14 @@ it.effect(
 const HOLDS_SOMEONE: Record<string, string> = {
   kin_agent_threads: "agent_id",
   kin_agents: "agent_id owner_person_id retired_by_person_id",
+  kin_arrivals: "agent_id",
   kin_bank_statements: "agent_id applied_by",
   kin_chat_levels: "agent_id",
   kin_chat_members: "agent_id member_id person_id",
   kin_chats: "lead_agent_id",
   kin_client_touches: "logged_by_id person_id",
   kin_company_profile: "updated_by_id",
+  kin_company_shell: "set_by",
   kin_connection_asks: "agent_id decided_by",
   kin_connection_calls: "agent_id",
   kin_discussions: "ask_agent_id decider_agent_id opened_by_agent_id",
@@ -515,6 +585,7 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_visual_hosts: "added_by",
   kin_waiting: "person_id",
   kin_wakeups: "agent_id",
+  kin_watches: "agent_id closed_by_id for_person_id latest_by set_by_id",
   kin_worker_attempts: "agent_id approved_by declined_by",
   kin_worker_network: "changed_by",
   kin_workers: "agent_id",

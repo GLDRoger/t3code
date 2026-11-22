@@ -494,7 +494,7 @@ describe("KinRefreshHub", () => {
         "recommend/card.ts",
       ],
       kin_company_shell: ["shell/KinShell.ts"],
-      // The round, watch RPCs and retention alone write these; the topic moves on visible writes.
+      // The watch repository alone writes these; the topic moves on visible writes.
       kin_watches: ["watches/KinWatches.ts"],
       kin_watch_looks: ["watches/KinWatches.ts"],
     };
@@ -518,13 +518,14 @@ describe("KinRefreshHub", () => {
         ),
     );
     assert.deepStrictEqual(watchWriters.toSorted(), [
+      "lead/Retirement.ts",
       "persistence/KinRetention.ts",
       "watches/KinWatchRounds.ts",
       "watches/rpcHandlers.ts",
+      "work/deals.ts",
     ]);
     const watches = NodeFS.readFileSync(NodePath.join(root, "watches/KinWatches.ts"), "utf8");
-    // Each writer but retention's prune moves the topic: upsert, the clock, a round, and the buttons.
-    assert.strictEqual(watches.match(/touch\(orgId, "watches"\)/g)?.length, 6);
+    assert.strictEqual(watches.match(/touch\(orgId, "watches"\)/g)?.length, 9);
     const routines = NodeFS.readFileSync(NodePath.join(root, "triggers/routines.ts"), "utf8");
     assert.include(routines, "keepAllDayDays(settings.orgId, before, settings.timeZone)");
     for (const topic of ["pulse", "moneyStatements"])
