@@ -4,7 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRecords, type Writer } from "./KinRecords.ts";
 import { fieldText, parseFields } from "./lists.ts";
-import { addUp, dayIn } from "./money.ts";
+import { addUp, dayIn, formatMoney } from "./money.ts";
 import { countedEntry, moneyDay } from "./recordRows.ts";
 import {
   FUNDED_BY,
@@ -142,13 +142,13 @@ export const partnersAnswer = (
       one.personId === null
         ? { unmatched: one.address ?? "unknown", name: one.name }
         : { name: one.name },
-    owed: one.owed,
+    owed: one.owed.map(formatMoney),
     entries: one.entries.length,
     oldest: one.entries.slice(0, shown).map((entry) => ({
       key: entry.key,
       title: entry.title,
       paidOn: dayIn(entry.at, zone),
-      money: entry.money,
+      money: formatMoney(entry.money),
     })),
   })),
   ...(unsaid.length === 0
@@ -157,7 +157,7 @@ export const partnersAnswer = (
         paidPersonallyNotYetSaid: unsaid.map((one) => ({
           address: one.address,
           expenses: one.expenses,
-          total: one.total,
+          total: one.total.map(formatMoney),
           since: dayIn(one.at, zone),
         })),
       }),

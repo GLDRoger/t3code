@@ -5303,11 +5303,24 @@ describe("money answers", () => {
           ],
         );
         const asked = yield* LeadMoney.moneyQuery(scope, { view: "partners" });
+        // Amounts as Kin writes them, so the agent quotes them and never converts minor units.
+        const [meera] = (
+          asked.answer as {
+            partners: ReadonlyArray<{
+              owed: ReadonlyArray<string>;
+              oldest: ReadonlyArray<{ key: string; money: string }>;
+            }>;
+          }
+        ).partners;
         assert.deepStrictEqual(
-          (
-            asked.answer as { partners: ReadonlyArray<{ oldest: ReadonlyArray<{ key: string }> }> }
-          ).partners[0]?.oldest.map((one) => one.key),
-          ["EXP-5", second],
+          [meera?.owed, meera?.oldest.map((one) => [one.key, one.money])],
+          [
+            ["₹65,000.00"],
+            [
+              ["EXP-5", "₹5,000.00"],
+              [second, "₹60,000.00"],
+            ],
+          ],
         );
       }).pipe(Effect.provide(layer)),
   );
