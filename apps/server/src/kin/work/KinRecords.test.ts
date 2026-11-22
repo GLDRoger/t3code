@@ -221,7 +221,7 @@ it.effect("record_create makes many entries in one call and a retry makes none",
       ],
     );
     // QA Q12: a lead's 30 February is refused too, as a day or a time.
-    for (const due of ["2026-02-30", "2026-02-30T18:00+05:30"])
+    for (const due of ["2026-02-30", "2026-02-30T18:00+05:30", "February 30, 2026"])
       assert.include(
         yield* Effect.flip(
           LeadWork.create(scopeOf(lead), {
@@ -1499,7 +1499,7 @@ it.effect("the import brings open commitments and objectives in once", () =>
     yield* seed;
     const items = [
       head("promise", { due: "2026-11-20", chat: "other-chat" as never }),
-      head("goal", { kind: "objective", sensitive: undefined }),
+      head("goal", { kind: "objective", sensitive: undefined, due: "2026-02-31" }),
       head("kept", { status: "done" }),
       head("fact", { kind: "claim" }),
       head("wrong", { invalid_at: at }),
@@ -1515,6 +1515,7 @@ it.effect("the import brings open commitments and objectives in once", () =>
         ["Invented goal", "open", lead, 1],
       ],
     );
+    assert.isNull(rows.find((row) => row.title === "Invented goal")!.dueAt);
     // Run again, after someone moved one and dropped another: nothing new, nothing overwritten.
     const promise = rows.find((row) => row.title === "Invented promise")!;
     yield* records.update(orgId, { actor: { _tag: "system" }, via: "owner" }, promise.key, {

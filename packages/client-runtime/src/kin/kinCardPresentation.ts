@@ -617,5 +617,6 @@ export const KIN_CARD_COPY = {
   visualGone: "This visual is no longer available.",
   visualAllowAll: "Allow for every visual",
   seeHow: "See how they got there",
+  openDiscussion: "Open the discussion",
   pictureFailed: "The picture couldn't load. Open the chat to see the file.",
 } as const;

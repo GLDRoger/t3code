@@ -82,11 +82,12 @@ describe("kinDeferralCardView", () => {
     expect(view(deferral({ phase: "heads_up" }, { closedAt: DUE })).actions).toEqual([]);
   });
 
-  // The taps `KinChatService.act` accepts today; the rest mirror `actionsFor` in deferrals.ts.
+  // Only the taps `KinChatService.act` accepts today: Undo on the confirm card, nothing else
+  // until `deferralCardActionsReady`.
   it.each([
     ["confirm", {}, ["undo"]],
-    ["heads_up", { phase: "heads_up" }, ["start_now", "monday", "cancel"]],
-    ["asked", { phase: "asked" }, ["start_now", "monday", "cancel"]],
+    ["heads_up", { phase: "heads_up" }, []],
+    ["asked", { phase: "asked" }, []],
     ["started", { phase: "started" }, []],
   ])("offers the host's actions on a %s card", (_name, state, ids) => {
     expect(actionIds(deferral(state))).toEqual(ids);

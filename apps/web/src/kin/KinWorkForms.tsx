@@ -3,6 +3,7 @@ import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
 import {
   KIN_CLIENTS,
+  kinClientPrivateNote,
   KIN_PROJECT_PEOPLE,
   KIN_PROJECTS,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
@@ -294,6 +295,8 @@ export function KinClientDialog(
     readonly start?: KinClientDraftKind;
     /** Leaves out what only the owner level changes; a teammate's by default. */
     readonly member?: boolean;
+    /** Who stops seeing it once kept private (`KinPartyPage.privateHides`). */
+    readonly privateHides?: ReadonlyArray<string> | undefined;
     readonly onSaved: (key: KinRecordKey) => void;
     readonly onOpenExisting: (key: KinRecordKey) => void;
     readonly onClose: () => void;
@@ -625,7 +628,11 @@ export function KinClientDialog(
       ) : (
         <PrivateSwitch
           label={KIN_CLIENTS.privateLabel}
-          note={draft.private ? KIN_CLIENTS.privateOn : KIN_CLIENTS.privateOff}
+          note={kinClientPrivateNote({
+            private: draft.private,
+            wasPrivate: editing?.sensitive ?? false,
+            hides: props.privateHides,
+          })}
           checked={draft.private}
           disabled={state.saving}
           onChange={(checked) => form.edit({ private: checked })}
