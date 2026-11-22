@@ -79,6 +79,8 @@ export interface SettingsSearchItem {
   readonly managedTunnelOnly?: boolean;
   readonly peerLinksOnly?: boolean;
   readonly kinOnly?: boolean;
+  /** A Kin section the setting belongs to; it hides while that section is off. */
+  readonly kinSection?: string;
   readonly fastWorktreeCheckoutOnly?: boolean;
   readonly textGeneratorsOnly?: boolean;
   readonly secondary?: boolean;
@@ -96,6 +98,8 @@ export interface SettingsSearchAvailability {
   readonly managedTunnelActive?: boolean;
   readonly hasPeerLinkHost?: boolean;
   readonly hasKinHost?: boolean;
+  /** The Kin sections the company has switched off. */
+  readonly kinSectionsOff?: ReadonlyArray<string>;
   readonly hasFastWorktreeCheckoutEnvironment?: boolean;
   /** An environment without a provider allow-list, which hides text generators. */
   readonly hasTextGeneratorsEnvironment?: boolean;
@@ -1630,6 +1634,8 @@ export function filterAvailableSettingsSearchItems(
       (!item.managedTunnelOnly || availability.managedTunnelActive === true) &&
       (!item.peerLinksOnly || availability.hasPeerLinkHost === true) &&
       (!item.kinOnly || availability.hasKinHost === true) &&
+      (item.kinSection === undefined ||
+        availability.kinSectionsOff?.includes(item.kinSection) !== true) &&
       (!item.fastWorktreeCheckoutOnly ||
         availability.hasFastWorktreeCheckoutEnvironment === true) &&
       (!item.textGeneratorsOnly || availability.hasTextGeneratorsEnvironment === true),

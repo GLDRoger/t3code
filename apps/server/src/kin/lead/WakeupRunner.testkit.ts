@@ -16,6 +16,7 @@ import {
   KinAgentId,
   KinEvent,
   KinOrgId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ProviderDriverKind,
@@ -87,7 +88,11 @@ export const agentId = KinAgentId.make("lead");
 const timestamp = "2026-11-08T00:00:00.000Z";
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeEvent = Schema.decodeSync(KinEvent);
-const selection = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-4-6" };
+/** The lead's own model in this harness. */
+export const selection = {
+  instanceId: ProviderInstanceId.make("claudeAgent"),
+  model: "claude-opus-4-6",
+};
 const project = {
   id: ProjectId.make("kin:org"),
   title: "Kin · Org",
@@ -154,6 +159,8 @@ type HarnessOptions = {
   readonly hold?: Deferred.Deferred<void>;
   readonly entered?: Deferred.Deferred<void>;
   readonly failed?: boolean;
+  readonly beforeTurn?: ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"];
+  readonly replyText?: string;
   /** The failed turn's failure code, as an adapter names it. */
   readonly failureCode?: string;
   /** The failed turn's failure text; a full disk names itself here. */
@@ -215,6 +222,10 @@ type HarnessOptions = {
 };
 
 export function harness(options: HarnessOptions = {}) {
+  return harnessWith(options, Layer.empty);
+}
+
+export function harnessWith<A, E, R>(options: HarnessOptions, extra: Layer.Layer<A, E, R>) {
   // Only the runner's own reads count: T3's launch reads the thread it just created.
   const counted = Layer.effect(
     ThreadManagement.ThreadManagementService,
@@ -236,6 +247,7 @@ export function harness(options: HarnessOptions = {}) {
   );
   return WakeupRunner.layer.pipe(
     Layer.provide(counted),
+    Layer.provideMerge(extra),
     Layer.provideMerge(orchestrationHarness(options)),
   );
 }
@@ -342,6 +354,7 @@ function parts(options: HarnessOptions) {
             })),
           resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
           startTurn: Effect.fn("test.startTurn")(function* (input) {
+            if (options.beforeTurn !== undefined) yield* options.beforeTurn(input);
             options.runtimeModes?.push(input.runtimePolicy.runtimeMode);
             options.turnAttachments?.push(input.message?.attachments ?? []);
             if (options.entered !== undefined) yield* Deferred.succeed(options.entered, undefined);
@@ -408,6 +421,31 @@ function parts(options: HarnessOptions) {
                 },
               });
             const finish = Effect.gen(function* () {
+              if (options.replyText !== undefined)
+                yield* PubSub.publish(events, {
+                  type: "turn_item.updated",
+                  driver,
+                  turnItem: {
+                    id: TurnItemId.make(`reply:${id}`),
+                    threadId: input.threadId,
+                    runId: input.runId,
+                    nodeId: input.rootNodeId,
+                    providerThreadId: input.providerThread.id,
+                    providerTurnId: id,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: input.runOrdinal * 100,
+                    status: "completed",
+                    title: null,
+                    startedAt: time,
+                    completedAt: time,
+                    updatedAt: time,
+                    type: "assistant_message",
+                    messageId: MessageId.make(`reply:${id}`),
+                    text: options.replyText,
+                    streaming: false,
+                  },
+                });
               yield* PubSub.publish(events, {
                 type: "provider_turn.updated",
                 driver,

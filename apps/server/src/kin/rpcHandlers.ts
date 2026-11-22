@@ -23,6 +23,7 @@ import { KinIdentity } from "./chat/KinIdentity.ts";
 import { makeKinChatHandlers } from "./chat/rpcHandlers.ts";
 import { makeKinConnectionHandlers } from "./connections/rpcHandlers.ts";
 import { makeKinSocialHandlers } from "./social/rpcHandlers.ts";
+import { makeKinPicturesHandlers } from "./pictures/rpcHandlers.ts";
 import { makeKinLevelHandlers } from "./levels/rpcHandlers.ts";
 import { makeKinMemoryHandlers } from "./memory/rpcHandlers.ts";
 import { KinServer, type Services } from "./KinServer.ts";
@@ -107,6 +108,7 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
     ...(yield* makeKinPushHandlers(session)),
     ...(yield* makeKinConnectionHandlers(session)),
     ...(yield* makeKinSocialHandlers(session)),
+    ...(yield* makeKinPicturesHandlers(session)),
     ...(yield* makeKinRecommendHandlers(session)),
     ...(yield* makeKinHostHandlers(session)),
     ...(yield* makeKinWatchHandlers(session)),

@@ -117,7 +117,7 @@ import {
   encodeSteps,
   shownSteps,
   stepsOf,
-  keySensitive,
+  keyWithheld,
   sensitiveNow,
   type StoredRepeat,
   toDetail,
@@ -328,6 +328,8 @@ export type PlainImportInput = Pick<
   | "dateAllDay"
   | "createdAt"
   | "closedAt"
+  | "steps"
+  | "urgent"
 > & { readonly state: KinRecordState };
 
 export type Patch = Partial<Omit<Fields, "owner">> & {
@@ -2921,6 +2923,9 @@ const make = Effect.gen(function* () {
           changes.push({ field: "sensitive", from: "false", to: "true" });
           set("sensitive", 1);
           set("marked_by_person_id", textBy(writer));
+        } else if (patch.sensitive === true && row.markedBy === null) {
+          // Labelled only by its list's default until now: whose label it is now is recorded.
+          set("marked_by_person_id", textBy(writer));
         } else if (
           patch.sensitive === false &&
           row.sensitive === 1 &&
@@ -3572,7 +3577,7 @@ const make = Effect.gen(function* () {
     const where = [sql`r.org_id = ${orgId}`, sql`r.register_id = ${input.list ?? "work"}`];
     if (input.team !== undefined) where.push(personSees(sql, input.team));
     if (input.view !== undefined) where.push(viewSees(sql, input.view));
-    if (input.withoutSensitive === true) where.push(sql`NOT ${keySensitive(sql)}`);
+    if (input.withoutSensitive === true) where.push(sql`NOT ${keyWithheld(sql)}`);
     if (input.partyId !== undefined) where.push(sql`r.party_id IS ${input.partyId}`);
     if (input.projectId !== undefined) where.push(sql`r.project_id = ${input.projectId}`);
     if (input.repo !== undefined) where.push(sql`lower(r.repo) = lower(${input.repo})`);

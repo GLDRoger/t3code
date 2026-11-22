@@ -7,6 +7,7 @@ import {
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
+  KinPersonId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -223,6 +224,13 @@ it.effect("runs every listed agent read tool on a reader, and still marks what i
     const wakeupId = yield* startAgentWakeup({ orgId, agentId: chief, threadId, message: asked });
     assert.isFalse(yield* turnSensitive(orgId, wakeupId), "nothing sensitive read yet");
 
+    yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+      VALUES ('finance', ${orgId}, 'Finance', 'lead', ${owner!.personId}, ${at})`;
+    yield* sql`INSERT INTO kin_troubles (trouble_id, org_id, cause, opened_at, told_at)
+      VALUES ('sign-in', ${orgId}, 'signin', 0, 0), ('backup', ${orgId}, 'backup', 0, 0)`;
+    yield* sql`INSERT INTO kin_trouble_agents (trouble_id, org_id, agent_id, name)
+      VALUES ('sign-in', ${orgId}, 'finance', 'Finance')`;
+
     const reads: Record<string, Record<string, unknown>> = {
       records_query: {},
       record_get: { key: task!.key },
@@ -249,5 +257,36 @@ it.effect("runs every listed agent read tool on a reader, and still marks what i
     assert.deepStrictEqual(failed, {});
     // The sensitive client it showed marks the turn, written on the writer after the read.
     assert.isTrue(yield* turnSensitive(orgId, wakeupId));
+
+    const full = yield* call("kin_computer", {});
+    assert.isTrue(full.ok, full.text);
+    assert.include(full.text, "Finance");
+    assert.include(full.text, "backup");
+
+    const teammate = { _tag: "person" as const, orgId, personId: KinPersonId.make("meera") };
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${teammate.personId}, ${orgId}, 'meera', 'Meera', ${at})`;
+    const chat = yield* chats.createDirect(teammate, { orgId, agentId: chief });
+    const question = yield* chats.send(teammate, {
+      chatId: chat.chatId,
+      body: "Why hasn't my request run?",
+      clientMessageId: "waiting",
+    });
+    yield* startAgentWakeup({ orgId, agentId: chief, threadId, message: question });
+    const unrelated = yield* call("kin_computer", {});
+    assert.isTrue(unrelated.ok, unrelated.text);
+    assert.deepStrictEqual(JSON.parse(unrelated.text), {
+      message: "You have no requests held by a computer problem in this chat.",
+    });
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+        queued_at, state, not_before, held_by)
+      VALUES ('held-in-this-chat', ${orgId}, ${chief}, 'chat.message', 'P1',
+        json_object('chatId', ${chat.chatId}), 0, 0, 'queued', 72000000, 'sign-in')`;
+    const held = yield* call("kin_computer", {});
+    assert.isTrue(held.ok, held.text);
+    assert.deepStrictEqual(JSON.parse(held.text), {
+      message:
+        "Kin's computer has a problem its owner has been told about; your request will run when it is fixed.",
+    });
   }).pipe(Effect.scoped, Effect.provide(layer)),
 );

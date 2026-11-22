@@ -993,6 +993,24 @@ describe("lists through the tools", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("keeps an undated refund separate from the original charge", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "expenses" });
+      const entry = { list: "expenses", title: "Invented hosting", state: "open" as const };
+      const add = (sourceEventId: Effect.Success<ReturnType<typeof turn>>, amount: string) =>
+        LeadWork.create(scope, { sourceEventId, records: [{ ...entry, amount }] });
+      const charge = yield* add(yield* turn(3, "Log a charge"), "500");
+      const refund = yield* add(yield* turn(4, "Log a refund"), "-500");
+      assert.deepInclude(charge.records[0], { key: "EXP-1", created: true });
+      assert.deepInclude(refund.records[0], { key: "EXP-2", created: true });
+      const duplicate = yield* add(yield* turn(5, "Log the refund again"), "-500").pipe(
+        Effect.flip,
+      );
+      assert.include(duplicate.message, 'EXP-2 "Invented hosting" is open');
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("record one charge mailed as an invoice and a receipt once, keeping both files", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -5209,7 +5227,7 @@ describe("money answers", () => {
           fundedBy: "person:meera",
           reimbursement: "not reimbursable",
         });
-        // As an import left them before K208: an address that paid, and nothing said yet.
+        // As an import left them before K210: an address that paid, and nothing said yet.
         const imported = (key: string, day: string, rupees: number, address: string) =>
           Effect.gen(function* () {
             const { row } = yield* spend(key, day, rupees);
@@ -5231,7 +5249,7 @@ describe("money answers", () => {
           return { view, cash: cashAnswer(yield* cashPosition(orgId, NOW)) };
         });
 
-        // K208 again on a list it hadn't reached: no figure moves, nothing is marked owed.
+        // K210 again on a list it hadn't reached: no figure moves, nothing is marked owed.
         const fields = yield* sql<{ json: string }>`SELECT definition_json AS json
           FROM kin_registers WHERE org_id = ${orgId} AND register_id = 'expenses'`;
         const definition = JSON.parse(fields[0]!.json) as {
@@ -5246,7 +5264,7 @@ describe("money answers", () => {
         yield* sql`UPDATE kin_registers SET definition_json = ${before}, built_in = 0
           WHERE org_id = ${orgId} AND register_id = 'expenses'`;
         const unmigrated = yield* figures;
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 208`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 210`;
         yield* runKinMigrations();
         assert.deepStrictEqual(yield* figures, unmigrated);
 
@@ -5389,7 +5407,7 @@ describe("money answers", () => {
   );
 
   it.effect(
-    "read a company's own Reimbursement text as nothing owed: K208 moves it off Kin's key",
+    "read a company's own Reimbursement text as nothing owed: K210 moves it off Kin's key",
     () =>
       Effect.gen(function* () {
         yield* seed;
@@ -5423,7 +5441,7 @@ describe("money answers", () => {
           dateAt: on("2026-10-10"),
           fields: { reimbursement: "owed" },
         });
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 208`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 210`;
         yield* runKinMigrations();
 
         const view = outlookAnswer(yield* outlook(orgId, NOW));

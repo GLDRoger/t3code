@@ -2,6 +2,7 @@ import { type OrchestrationV2Subagent, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
@@ -11,6 +12,8 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import { forkParked } from "../../serverActivation.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import { KinBudget } from "./KinBudget.ts";
+import { modelNotOffered } from "./leadModels.ts";
+import { KinRefusedModels } from "./refusedModels.ts";
 import { taskChat } from "./TaskWake.ts";
 
 const ENDED: ReadonlySet<OrchestrationV2Subagent["status"]> = new Set([
@@ -34,6 +37,7 @@ export const make = Effect.gen(function* () {
   const chat = yield* Chat.KinChatService;
   const budget = yield* KinBudget;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const refusals = yield* Effect.serviceOption(KinRefusedModels);
   const services = Effect.provideContext(
     yield* Effect.context<OrchestratorV2 | ServerEnvironment | SqlClient.SqlClient>(),
   );
@@ -90,6 +94,20 @@ export const make = Effect.gen(function* () {
     if (ENDED.has(task.status) && !charged.has(end)) {
       yield* charge(lead.orgId, child);
       charged.add(end);
+      // The provider turned the helper away for its model: Kin stops offering that model.
+      if (task.status === "failed" && Option.isSome(refusals)) {
+        const shell = yield* OrchestratorV2.use((orchestrator) =>
+          orchestrator.getThreadShell(child),
+        ).pipe(services);
+        if (
+          shell !== null &&
+          modelNotOffered(
+            { code: shell.lastErrorCode, message: shell.lastError },
+            shell.modelSelection.model,
+          )
+        )
+          yield* refusals.value.refused({ orgId: lead.orgId, selection: shell.modelSelection });
+      }
     }
   });
 

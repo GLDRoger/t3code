@@ -192,6 +192,9 @@ const personIn = (name: string, narration: string) => {
   return found.length / wanted.length;
 };
 
+const hasNumber = (text: string, number: string) =>
+  squashed(number).length >= 4 && squashed(text).includes(squashed(number));
+
 const dayNumber = (day: string) =>
   Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10))) / DAY_MS;
 const daysBetween = (from: string, to: string) => dayNumber(to) - dayNumber(from);
@@ -243,12 +246,8 @@ const invoiceCandidate = (
   }
   const number = invoice.number ?? invoice.key;
   const numbered =
-    [invoice.number, invoice.key]
-      .filter((one): one is string => one !== null && squashed(one).length >= 4)
-      .some((one) => squashed(row.description).includes(squashed(one))) ||
-    (row.reference !== null &&
-      squashed(number).length >= 4 &&
-      squashed(row.reference).includes(squashed(number)));
+    [invoice.number, invoice.key].some((one) => one !== null && hasNumber(row.description, one)) ||
+    (row.reference !== null && hasNumber(row.reference, number));
   if (numbered) {
     score += 35;
     why.push("invoice number in the narration");
@@ -320,6 +319,7 @@ const expenseCandidate = (
   row: StatementRow,
   expense: ExpenseCandidate,
   currency: string,
+  transfer = false,
 ): Candidate | undefined => {
   const sign = row.direction === "credit" ? -1 : 1;
   const foreign =
@@ -339,6 +339,15 @@ const expenseCandidate = (
   if (named >= 0.5) {
     score += Math.round(30 * named);
     why.push("vendor named");
+  }
+  const refund = row.direction === "credit";
+  const numbered =
+    refund &&
+    (hasNumber(row.description, expense.key) ||
+      (row.reference !== null && hasNumber(row.reference, expense.key)));
+  if (numbered) {
+    score += 35;
+    why.push("expense reference in the narration");
   }
   if (day !== null && Math.abs(daysBetween(day, row.date)) <= 3) {
     score += 10;
@@ -360,7 +369,7 @@ const expenseCandidate = (
     title: expense.title,
     fit: foreign ? "foreign" : "exact",
     ...(expense.rev === undefined ? {} : { rev: expense.rev }),
-    score,
+    score: refund && (transfer || (named < 0.5 && !numbered)) ? PROPOSED : score,
     why,
   };
 };
@@ -710,7 +719,14 @@ export const matchRows = (
           ...(input.payments ?? []).map((payment) =>
             paymentCandidate(row, payment, input.currency),
           ),
-          ...input.expenses.map((expense) => expenseCandidate(row, expense, input.currency)),
+          ...input.expenses.map((expense) =>
+            expenseCandidate(
+              row,
+              expense,
+              input.currency,
+              suggest(row, input).action === "transfer",
+            ),
+          ),
         ]
       : input.expenses.map((expense) => expenseCandidate(row, expense, input.currency))
     ).filter((one): one is Candidate => one !== undefined && one.score >= PROPOSED),

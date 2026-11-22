@@ -207,7 +207,13 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.work.createPartyWithDeal": Effect.fn("KinWork.rpc.createPartyWithDeal")(
         function* (input) {
-          return yield* call((people) => Clients.createPartyWithDeal(people, input));
+          const result = yield* call((people) => Clients.createPartyWithDeal(people, input));
+          if (result.dealLeftOut !== undefined && input.acceptDealLeftOut !== true)
+            return yield* new KinChatError({
+              reason: "invalid_state",
+              message: `Client saved. Deal left out: ${result.dealLeftOut}`,
+            });
+          return result;
         },
       ),
       "kin.work.updateDeal": Effect.fn("KinWork.rpc.updateDeal")(function* (input) {

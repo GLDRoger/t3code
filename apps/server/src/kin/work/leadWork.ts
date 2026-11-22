@@ -3127,6 +3127,12 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
       ? sql`r.state NOT IN ('done', 'dropped')`
       : sql`r.state != 'dropped' AND r.amount_minor = ${paid.minor} AND r.currency = ${paid.currency}
           AND abs(r.date_at - ${row.dateAt}) <= ${(NEAR_DAYS + 1) * DAY_MS}`;
+  const sign =
+    row.list === "expenses" && row.money !== undefined && paid === undefined
+      ? row.money.minor < 0
+        ? sql`r.amount_minor IS NULL OR r.amount_minor <= 0`
+        : sql`r.amount_minor IS NULL OR r.amount_minor >= 0`
+      : sql`1 = 1`;
   const rows = yield* sql<{
     key: string;
     title: string;
@@ -3140,7 +3146,7 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
       ${sensitiveNow(sql)} AS sensitive
     FROM kin_records r
     WHERE r.org_id = ${lead.orgId} AND r.register_id = ${row.list} AND r.party_id IS ${row.partyId}
-      AND ${which} AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
+      AND ${which} AND (${sign}) AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
     ORDER BY r.key LIMIT ${REPEAT_CANDIDATES}`;
   // The same row from the same event is a retry, which the write itself returns.
   if (rows.some((one) => one.originKey === row.originKey)) return { alsoOpen: [] };

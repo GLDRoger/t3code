@@ -37,6 +37,7 @@ import {
   KinSettingsRow,
   KinSettingsSection,
 } from "./settings/KinSettingsLayout";
+import { KinSectionInactive, KinSectionSwitch } from "./settings/KinSectionSwitch";
 import { useKinDealQuietDaysSet, useKinDealStages, useKinDealStagesSet } from "./useKinDeals";
 import { useKinHost } from "./useKinHost";
 import type { KinWorkTarget } from "./useKinWork";
@@ -53,21 +54,23 @@ export function KinDealStagesSettings(props: KinWorkTarget) {
   const searchId = searchableSetting("kin-deals").id;
   if (state._tag !== "ready")
     return (
-      <KinSettingsPage>
-        <KinSettingsSection title={KIN_DEAL_STAGES.stages} searchId={searchId}>
-          {state._tag === "loading" ? (
-            <KinSettingsLoading rows={4} />
-          ) : (
-            <KinSettingsLoadFailed onRetry={refresh}>
-              {
-                kinFailure(
-                  state._tag === "failed" ? state.cause : null,
-                  `${KIN_DEALS.stagesFailed}.`,
-                ).text
-              }
-            </KinSettingsLoadFailed>
-          )}
-        </KinSettingsSection>
+      <KinSettingsPage top={<KinSectionSwitch {...props} id="deals" />}>
+        <KinSectionInactive environmentId={props.environmentId} id="deals">
+          <KinSettingsSection title={KIN_DEAL_STAGES.stages} searchId={searchId}>
+            {state._tag === "loading" ? (
+              <KinSettingsLoading rows={4} />
+            ) : (
+              <KinSettingsLoadFailed onRetry={refresh}>
+                {
+                  kinFailure(
+                    state._tag === "failed" ? state.cause : null,
+                    `${KIN_DEALS.stagesFailed}.`,
+                  ).text
+                }
+              </KinSettingsLoadFailed>
+            )}
+          </KinSettingsSection>
+        </KinSectionInactive>
       </KinSettingsPage>
     );
   return <Stages {...props} held={state.value} searchId={searchId} />;
@@ -83,52 +86,55 @@ function Stages(
   const canAdd = held.can && held.stages.length < 12;
   return (
     <KinSettingsPage
+      top={<KinSectionSwitch {...props} id="deals" />}
       purpose={held.can ? KIN_DEAL_STAGES.detail : KIN_DEAL_STAGES_SETTINGS.purposeReadOnly}
     >
-      <KinSettingsSection
-        title={KIN_DEAL_STAGES.stages}
-        searchId={props.searchId}
-        action={
-          canAdd ? (
-            <Button size="xs" variant="outline" onClick={() => setEditing({ _tag: "add" })}>
-              <PlusIcon />
-              {KIN_DEAL_STAGES_SETTINGS.add}
-            </Button>
-          ) : undefined
-        }
-      >
-        {held.stages.map((stage) => {
-          const open = held.open[stage.id] ?? 0;
-          return (
-            <KinSettingsRow
-              key={stage.id}
-              title={stage.name}
-              detail={open === 0 ? undefined : KIN_DEAL_STAGES.openDeals(open)}
-              {...(held.can
-                ? {
-                    openLabel: `${KIN_DEAL_STAGES_SETTINGS.edit}: ${stage.name}`,
-                    onOpen: () => setEditing({ _tag: "edit", stage }),
-                  }
-                : {})}
-            />
-          );
-        })}
-      </KinSettingsSection>
-      <KinSettingsSection title={KIN_DEAL_STAGES.ends}>
-        <KinSettingsRow
-          leading={<TrophyIcon aria-hidden className="size-4 text-success-foreground" />}
-          title="Won"
-          wrap
-          detail={KIN_DEAL_STAGES_SETTINGS.wonDetail}
-        />
-        <KinSettingsRow
-          leading={<XIcon aria-hidden className="size-4 text-destructive-foreground" />}
-          title="Lost"
-          wrap
-          detail={KIN_DEAL_STAGES_SETTINGS.lostDetail}
-        />
-      </KinSettingsSection>
-      <QuietDays {...props} />
+      <KinSectionInactive environmentId={props.environmentId} id="deals">
+        <KinSettingsSection
+          title={KIN_DEAL_STAGES.stages}
+          searchId={props.searchId}
+          action={
+            canAdd ? (
+              <Button size="xs" variant="outline" onClick={() => setEditing({ _tag: "add" })}>
+                <PlusIcon />
+                {KIN_DEAL_STAGES_SETTINGS.add}
+              </Button>
+            ) : undefined
+          }
+        >
+          {held.stages.map((stage) => {
+            const open = held.open[stage.id] ?? 0;
+            return (
+              <KinSettingsRow
+                key={stage.id}
+                title={stage.name}
+                detail={open === 0 ? undefined : KIN_DEAL_STAGES.openDeals(open)}
+                {...(held.can
+                  ? {
+                      openLabel: `${KIN_DEAL_STAGES_SETTINGS.edit}: ${stage.name}`,
+                      onOpen: () => setEditing({ _tag: "edit", stage }),
+                    }
+                  : {})}
+              />
+            );
+          })}
+        </KinSettingsSection>
+        <KinSettingsSection title={KIN_DEAL_STAGES.ends}>
+          <KinSettingsRow
+            leading={<TrophyIcon aria-hidden className="size-4 text-success-foreground" />}
+            title="Won"
+            wrap
+            detail={KIN_DEAL_STAGES_SETTINGS.wonDetail}
+          />
+          <KinSettingsRow
+            leading={<XIcon aria-hidden className="size-4 text-destructive-foreground" />}
+            title="Lost"
+            wrap
+            detail={KIN_DEAL_STAGES_SETTINGS.lostDetail}
+          />
+        </KinSettingsSection>
+        <QuietDays {...props} />
+      </KinSectionInactive>
       {editing === null ? null : (
         <StageDialog
           {...props}

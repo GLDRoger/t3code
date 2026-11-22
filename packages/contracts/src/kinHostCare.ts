@@ -23,6 +23,7 @@ export const KinTroubleCause = Schema.Literals([
   "restart",
   "backup",
   "unknown",
+  "memory",
 ]);
 export type KinTroubleCause = typeof KinTroubleCause.Type;
 
@@ -77,6 +78,7 @@ export const KinHostTroubleCard = Schema.Struct({
   expiring: Schema.optionalKey(NonNegativeInt),
   /** Turns Kin stopped retrying by itself: only Try again runs them now. */
   stopped: Schema.optionalKey(NonNegativeInt),
+  stranded: Schema.optionalKey(NonNegativeInt),
   /** The held turns' events, so Try again and the cause clearing run exactly those. */
   held: Schema.optionalKey(
     Schema.Array(KinTrimmedText.check(Schema.isMaxLength(200))).check(Schema.isMaxLength(500)),
@@ -109,6 +111,7 @@ export const KIN_TROUBLE_WHY: Readonly<Record<KinTroubleCause, string>> = {
   restart: "Kin restarted",
   backup: "Kin's computer has no recent backup",
   unknown: "something went wrong that Kin doesn't recognise",
+  memory: "Kin couldn't load its saved memory",
 };
 
 /**
@@ -117,12 +120,13 @@ export const KIN_TROUBLE_WHY: Readonly<Record<KinTroubleCause, string>> = {
  * `at` formats a time on the reader's clock; the server passes its own.
  */
 export function kinTroubleWords(
-  card: TroubleFacts & Pick<KinHostTroubleCard, "expiring" | "stopped">,
+  card: TroubleFacts & Pick<KinHostTroubleCard, "expiring" | "stopped" | "stranded">,
   at: (iso: string) => string,
 ): TroubleWords {
   const words = wordsByCause(card, at);
   const expiring = card.expiring ?? 0;
-  const stopped = card.stopped ?? 0;
+  const stranded = card.stranded ?? 0;
+  const stopped = Math.max(0, (card.stopped ?? 0) - stranded);
   const more = [
     expiring === 0
       ? null
@@ -132,13 +136,20 @@ export function kinTroubleWords(
     stopped === 0
       ? null
       : `Kin stopped retrying ${stopped === 1 ? "one turn" : `${stopped} turns`} by itself after too many tries. Try again runs ${them(stopped)}.`,
+    stranded === 0
+      ? null
+      : `${stranded === 1 ? "One turn stopped" : `${stranded} turns stopped`} after starting work. Check what was already done before tapping Try again.`,
   ].filter((line) => line !== null);
   if (more.length === 0) return words;
   return {
     what: words.what,
-    doing: [words.doing, ...more].filter((line) => line !== null).join(" "),
+    doing: [card.count === 0 && stranded > 0 ? null : words.doing, ...more]
+      .filter((line) => line !== null)
+      .join(" "),
     actions:
-      stopped > 0 && !words.actions.includes("retry") ? [...words.actions, "retry"] : words.actions,
+      stopped + stranded > 0 && !words.actions.includes("retry")
+        ? [...words.actions, "retry"]
+        : words.actions,
   };
 }
 
@@ -159,8 +170,8 @@ function wordsByCause(card: TroubleFacts, at: (iso: string) => string): TroubleW
       return {
         what:
           card.using === undefined
-            ? `Kin's computer ran out of space, so ${who} couldn't work. Kin cleared out old temporary files, but that wasn't enough.`
-            : `Kin's computer ran out of space, so ${who} couldn't work. Kin cleared out old temporary files, but that wasn't enough. ${card.using}`,
+            ? `Kin's computer ran out of space, so ${who} couldn't work.`
+            : `Kin's computer ran out of space, so ${who} couldn't work. ${card.using}`,
         doing: `Kin keeps ${turns(card.count)} and runs ${them(card.count)} as soon as there is space.`,
         actions: ["free_space", "retry"],
       };
@@ -206,7 +217,7 @@ function wordsByCause(card: TroubleFacts, at: (iso: string) => string): TroubleW
     case "unreachable":
       return {
         what: `Kin couldn't reach the AI provider, so ${who} couldn't work.`,
-        doing: "Kin keeps trying by itself.",
+        doing: card.count === 0 ? null : "Kin keeps trying by itself.",
         actions: ["retry"],
       };
     case "connection":
@@ -229,14 +240,21 @@ function wordsByCause(card: TroubleFacts, at: (iso: string) => string): TroubleW
             : `Kin's last good backup was at ${at(card.lastGoodAt)}, so a failed disk could lose what changed since.`,
         doing:
           card.backupConfigured === true
-            ? "Kin closes this by itself once a backup runs."
+            ? "Kin closes this by itself once a backup succeeds."
             : "Nightly backups aren't set up on this computer yet. Whoever set up Kin's computer can turn them on.",
         actions: card.backupConfigured === true ? ["back_up"] : [],
+      };
+    case "memory":
+      return {
+        what: `Kin couldn't load saved memory, so ${who} couldn't work.`,
+        doing: `Kin keeps ${turns(card.count)} and tries again by itself. If this keeps happening, whoever set up Kin's computer can check why its memory won't load.`,
+        actions: ["retry", "copy_details"],
       };
     case "unknown":
       return {
         what: "Something went wrong that Kin doesn't recognise.",
-        doing: `Kin keeps ${turns(card.count)} and tries again by itself.`,
+        doing:
+          card.count === 0 ? null : `Kin keeps ${turns(card.count)} and tries again by itself.`,
         actions: ["retry", "copy_details"],
       };
   }

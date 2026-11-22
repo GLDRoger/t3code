@@ -680,7 +680,7 @@ const microsoft: MailVendor = {
       prefer: `${UTC}, outlook.body-content-type="html"`,
     }).pipe(Effect.map(eventOf)),
   calendarName: (context, calendarId) =>
-    api(context, `${GRAPH}/calendars/${encodeURIComponent(calendarId)}`).pipe(
+    api(context, calendarId === "primary" ? `${GRAPH}/calendar` : calendarBase(calendarId)).pipe(
       Effect.map((calendar) => text(field(calendar, "name")) ?? null),
     ),
   activity: (context, since, cursor) =>

@@ -235,13 +235,15 @@ export function KinCameFromFields(props: {
 export function KinCampaignResultsSection(props: {
   readonly results: KinCampaignResults;
   readonly audience: string | null;
+  /** Whether the company runs deals (`kinSectionOn`): its deal counts go with them. */
+  readonly deals: boolean;
   readonly onOpen: (id: KinCampaignResultId) => void;
 }) {
-  const rows = kinCampaignResultRows(props.results, props.audience);
+  const rows = kinCampaignResultRows(props.results, props.audience, props.deals);
   return (
     <KinFoldSection
       title={KIN_MARKETING.results}
-      summary={kinCampaignResultsSummary(props.results, props.audience)}
+      summary={kinCampaignResultsSummary(props.results, props.audience, props.deals)}
     >
       {rows.map((row) => (
         <ListActionRow

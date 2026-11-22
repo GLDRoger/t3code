@@ -6,6 +6,7 @@ import {
   KinEventId,
   KinHostTroubleCard,
   KinOrgId,
+  KinWakeupId,
   type KinTroubleCause,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -17,8 +18,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
@@ -391,7 +395,17 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
     const finance = KinAgentId.make("finance");
     const first = yield* queued("e1", "chief");
     const second = yield* queued("e2", "finance");
+    const hub = yield* Hub.KinChatHub;
+    const chatEvents = yield* Stream.toQueue(yield* hub.subscribeAll, { capacity: "unbounded" });
     yield* care.failed({ orgId, agentId: chief, cause: "space", eventIds: [first] });
+    const posted = yield* Queue.take(chatEvents);
+    const changed = yield* Queue.take(chatEvents);
+    if (posted.type !== "message.posted" || changed.type !== "widget.updated")
+      return assert.fail("The held-turn card did not publish its message and widget");
+    assert.strictEqual(posted.message.chatId, "rhea-chief");
+    assert.strictEqual(changed.widget.chatId, posted.message.chatId);
+    assert.strictEqual(changed.widget.widgetId, posted.message.widgetId);
+
     // The same turn failing again holds nothing new.
     yield* care.failed({ orgId, agentId: chief, cause: "space", eventIds: [first] });
     yield* care.failed({ orgId, agentId: finance, cause: "space", eventIds: [second] });
@@ -414,9 +428,7 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
     // The space message goes on to read this computer's real disk; usingText's own test pins that.
     const [spaceNotice, signinNotice] = (yield* notices).toSorted();
     assert.isTrue(
-      spaceNotice?.startsWith(
-        "Kin's computer ran out of space, so Chief of staff couldn't work. Kin cleared out old temporary files, but that wasn't enough.",
-      ),
+      spaceNotice?.startsWith("Kin's computer ran out of space, so Chief of staff couldn't work."),
     );
     assert.strictEqual(
       signinNotice,
@@ -464,6 +476,89 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
       (yield* cards).filter((card) => card.cause === "space").map((card) => card.closed?.ran),
       [0, 1],
     );
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("commits a trouble notice with its card, and repairs a legacy bare notice", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    const care = yield* KinHostCare.KinHostCare;
+    const sql = yield* SqlClient.SqlClient;
+    const failure = {
+      orgId,
+      agentId: KinAgentId.make("chief"),
+      cause: "signin" as const,
+      eventIds: [],
+    };
+    yield* sql`CREATE TEMP TRIGGER fail_trouble_card BEFORE INSERT ON kin_widgets
+      BEGIN SELECT RAISE(ABORT, 'invented temporary widget error'); END`;
+    assert.isFalse(yield* care.failed(failure));
+    const afterError = yield* notices;
+    yield* sql`DROP TRIGGER fail_trouble_card`;
+    assert.isTrue(yield* care.failed(failure));
+    assert.deepStrictEqual(afterError, []);
+    assert.lengthOf(yield* notices, 1);
+    assert.lengthOf(yield* cards, 1);
+
+    const [shown] = (yield* care.status(orgId)).agents.troubles;
+    const { widgetId } = shown!;
+    yield* sql`UPDATE kin_messages SET widget_id = NULL WHERE org_id = ${orgId}
+      AND message_id = ${widgetId}`;
+    yield* sql`DELETE FROM kin_widgets WHERE org_id = ${orgId} AND widget_id = ${widgetId}`;
+    yield* sql`UPDATE kin_troubles SET told_at = NULL WHERE org_id = ${orgId}
+      AND trouble_id = ${widgetId}`;
+    yield* care.refresh(orgId);
+    assert.lengthOf(yield* notices, 1);
+    assert.lengthOf(yield* cards, 1);
+    assert.isTrue((yield* care.causeFor(orgId, failure.agentId))?.told);
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("a successful turn releases untouched space failures but not work stopped partway", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    const care = yield* KinHostCare.KinHostCare;
+    const queue = yield* KinEventQueue.KinEventQueue;
+    const sql = yield* SqlClient.SqlClient;
+    const chief = KinAgentId.make("chief");
+    const finance = KinAgentId.make("finance");
+    const wakeupId = KinWakeupId.make("w-partway");
+    const stranded = yield* queued("stranded", "chief");
+    const untouched = yield* queued("untouched", "finance");
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+      VALUES (${wakeupId}, ${orgId}, ${chief}, 'test', ${DAY_START}, 'running', '["stranded"]')`;
+    yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = ${wakeupId}
+      WHERE org_id = ${orgId} AND event_id = ${stranded}`;
+    yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
+      VALUES (${orgId}, ${wakeupId}, 'record_create', 'invented')`;
+    const finished = yield* queue.finish({ orgId, wakeupId, status: "failed" });
+    assert.strictEqual(finished.stranded, 1);
+    yield* care.failed({ orgId, agentId: chief, cause: "space", eventIds: [stranded] });
+    yield* care.failed({ orgId, agentId: finance, cause: "space", eventIds: [untouched] });
+
+    yield* care.succeeded(orgId, finance);
+    const events = sql<{ state: string; notBefore: number }>`SELECT state, not_before AS "notBefore"
+      FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`;
+    assert.deepStrictEqual(yield* events, [
+      { state: "failed", notBefore: HELD_UNTIL },
+      { state: "queued", notBefore: DAY_START },
+    ]);
+    assert.deepInclude((yield* cards)[0], { open: true, stopped: 1 });
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`UPDATE kin_agents SET retired_at = ${DateTime.formatIso(DateTime.makeUnsafe(DAY_START))}
+          WHERE org_id = ${orgId} AND agent_id = ${finance}`;
+        yield* KinHostCare.closeRetiredTroubles(orgId, finance, DAY_START);
+      }),
+    );
+    assert.isTrue(yield* care.troubleOpen(orgId, "space"));
+    assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 1 });
+    assert.deepStrictEqual(yield* events, [
+      { state: "queued", notBefore: DAY_START },
+      { state: "expired", notBefore: DAY_START },
+    ]);
   }).pipe(Effect.provide(services)),
 );
 
@@ -555,7 +650,26 @@ it.effect(
       yield* care.succeeded(orgId, finance);
       assert.isTrue(yield* care.troubleOpen(orgId, "unreachable"));
       yield* sql`UPDATE kin_events SET state = 'done' WHERE event_id = 'f1'`;
-      yield* care.succeeded(orgId, chief);
+      const transactions: Array<unknown> = [];
+      yield* care.succeeded(orgId, chief).pipe(
+        Effect.provideService(Statement.CurrentTransformer, (statement) =>
+          Effect.gen(function* () {
+            const [source] = statement.compile();
+            if (
+              source.includes("AND e.held_by = a.trouble_id") ||
+              source.includes("UPDATE kin_troubles SET closed_at") ||
+              source.includes("UPDATE kin_events SET state = 'queued', wakeup_id = NULL")
+            ) {
+              transactions.push(
+                Option.getOrUndefined(yield* Effect.serviceOption(sql.transactionService)),
+              );
+            }
+            return statement;
+          }),
+        ),
+      );
+      assert.isAtLeast(transactions.length, 3);
+      assert.isTrue(transactions.every((tx) => tx !== undefined));
       assert.deepStrictEqual(
         (yield* cards).map((card) => [card.cause, card.open]),
         [

@@ -279,27 +279,24 @@ async function teamTurn(server: McpServer | undefined, prompt: string): Promise<
   return { reply: "Said." };
 }
 
-function isCheckIn(prompt: string): boolean {
+/** The pulse this turn answers, if it is one: a check-in, or an ordinary pulse. */
+function pulseOf(prompt: string): "checkIn" | "pulse" | undefined {
+  let pulse: "checkIn" | "pulse" | undefined;
   for (const match of prompt.matchAll(
     /^> BEGIN QUOTE: event data\n> (\{[^\n]*\})\n> END QUOTE$/gm,
   )) {
     try {
       const event: unknown = JSON.parse(match[1]!);
-      if (
-        typeof event === "object" &&
-        event !== null &&
-        "type" in event &&
-        event.type === "pulse" &&
-        "checkIn" in event &&
-        event.checkIn !== null &&
-        typeof event.checkIn === "object"
-      )
-        return true;
+      if (typeof event !== "object" || event === null || !("type" in event)) continue;
+      if (event.type !== "pulse") continue;
+      if ("checkIn" in event && event.checkIn !== null && typeof event.checkIn === "object")
+        return "checkIn";
+      pulse = "pulse";
     } catch {
       continue;
     }
   }
-  return false;
+  return pulse;
 }
 
 async function runTurn(
@@ -318,11 +315,14 @@ async function runTurn(
   const id = due ? "due" : (marked ?? (notice === null ? undefined : "notice"));
   // A check-in (Run now) answers with `<verify dir>/checkin-reply.md` once, to show a brief.
   const brief = NodePath.join(verifyDir, "checkin-reply.md");
-  if (isCheckIn(prompt) && NodeFS.existsSync(brief)) {
+  const pulse = pulseOf(prompt);
+  if (pulse === "checkIn" && NodeFS.existsSync(brief)) {
     const reply = NodeFS.readFileSync(brief, "utf8");
     NodeFS.rmSync(brief);
     return { reply };
   }
+  // A pulse quotes the chat, so a marker in it is someone's message, not this turn's script.
+  if (pulse !== undefined) return { reply: "Noted." };
   if (id === undefined) return { reply: "Noted." };
   const task = notice?.[1] ?? notice?.[2];
   const scriptPath = NodePath.join(verifyDir, "turns", `${id}.json`);

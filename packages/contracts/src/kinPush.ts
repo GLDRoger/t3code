@@ -47,6 +47,8 @@ export const KinPushChannel = Schema.Literals([
   "kin.questions",
   "kin.briefs",
   "kin.account",
+  // Low importance: what arrives in quiet hours waits in the list, with no sound or banner.
+  "kin.quiet",
 ]);
 export type KinPushChannel = typeof KinPushChannel.Type;
 
@@ -134,6 +136,8 @@ export const KinPushRegisterDeviceInput = Schema.Struct({
   platform: KinPushPlatform,
   apsEnvironment: KinApsEnvironment,
   deviceLabel: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(80))),
+  /** An Android build that made the `kin.quiet` channel; without it, quiet pushes set no banner. */
+  quietChannel: Schema.optional(Schema.Boolean),
 });
 export type KinPushRegisterDeviceInput = typeof KinPushRegisterDeviceInput.Type;
 

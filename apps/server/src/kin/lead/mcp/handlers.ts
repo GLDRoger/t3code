@@ -35,8 +35,7 @@ import { KinTeam } from "../../team/KinTeam.ts";
 import { KinLevelGate } from "../LevelGate.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
 import { readPeople } from "../peopleRead.ts";
-import { kinComputerView } from "../../host/agentRead.ts";
-import { KinHostCare } from "../../host/KinHostCare.ts";
+import { readKinComputer } from "../../host/agentRead.ts";
 import { updatePeople } from "../peopleUpdate.ts";
 import { setAway } from "../awaySet.ts";
 import { updateAgent } from "../agentUpdate.ts";
@@ -77,11 +76,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
   ),
   kin_computer: McpToolAccess.reads(
     Effect.fn("KinLeadToolkit.computer")(function* () {
-      const lead = yield* resolveLead(yield* McpInvocationContext);
-      const care = yield* Effect.serviceOption(KinHostCare);
-      if (Option.isNone(care))
-        return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
-      return kinComputerView(yield* care.value.status(lead.orgId));
+      return yield* readKinComputer(yield* resolveLead(yield* McpInvocationContext));
     }, Effect.mapError(failure)),
   ),
   people_read: McpToolAccess.reads(

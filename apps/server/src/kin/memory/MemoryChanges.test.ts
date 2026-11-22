@@ -283,6 +283,14 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
     assert.deepStrictEqual(yield* found([owner], "invented terms"), ["terms"]);
     assert.deepStrictEqual(yield* found([owner], "invented summary"), ["legacy"]);
     assert.deepStrictEqual(yield* found([owner], "invented gone"), []);
+    // For anyone but the owner: only what the team may know, kept before the limit, and who said it.
+    const teamFound = (text: string, limit: number) =>
+      memory.search([owner], { orgId, text, limit, teamOnly: true });
+    assert.deepStrictEqual(yield* teamFound("invented terms", 5), []);
+    assert.deepStrictEqual(
+      (yield* teamFound("invented", 1)).map((hit) => [hit.itemId, hit.saidBy]),
+      [["said", "fixture"]],
+    );
     assert.include(yield* memory.setVisibility(member, flip).pipe(Effect.flip), {
       reason: "not_allowed",
     });
@@ -565,14 +573,17 @@ it.effect(
           entry.provenance,
         ]),
       );
+      // The message to open it at, only while he can open that message now.
+      const message = { chatId: direct.chatId, messageId: said.messageId };
       const stated = {
         saidBy: "fixture-owner",
         trust: "owner" as const,
         recordedAt: "2026-11-03T00:00:00.000Z",
       };
       assert.deepStrictEqual(listed, {
-        quoted: { ...stated, saidAt: said.createdAt, quote: "every report as a PDF" },
-        old: { ...stated, saidAt: said.createdAt, quote: null },
+        quoted: { ...stated, saidAt: said.createdAt, quote: "every report as a PDF", message },
+        old: { ...stated, saidAt: said.createdAt, quote: null, message },
+        // No link, and nothing that says the message or the room exists.
         deleted: { ...stated, saidAt: null, quote: null },
         left: { ...stated, saidAt: null, quote: null },
         inferred: {

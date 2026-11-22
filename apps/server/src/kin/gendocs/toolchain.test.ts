@@ -13,7 +13,15 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import * as ProcessRunner from "../../processRunner.ts";
-import { KinToolchain, layer, tarProblem, toolDirectories } from "./toolchain.ts";
+import { KIN_VISUAL_FONTS } from "@t3tools/shared/kinVisual";
+
+import {
+  KinToolchain,
+  layer,
+  PINNED_FONT_FILES,
+  tarProblem,
+  toolDirectories,
+} from "./toolchain.ts";
 
 const LINUX_X64 = "a6d077d0a95eed5a2eba715b2dae06be954f624ccbf85758a03f389ded33118c";
 const MiB = 1024 * 1024;
@@ -148,4 +156,11 @@ it("trusts a Typst archive only when every member is a plain file or folder in i
     [ok, verbose(ok.slice(0, 2)), "a listing that doesn't add up"],
   ] as const)
     assert.include(tarProblem(names, lines, root) ?? "", why);
+});
+
+it("serves pages exactly the fonts it fetches", () => {
+  assert.sameMembers(
+    KIN_VISUAL_FONTS.map((font) => font.file),
+    [...PINNED_FONT_FILES],
+  );
 });
