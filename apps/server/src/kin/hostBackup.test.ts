@@ -6,6 +6,7 @@ import {
   KinEventId,
   KinHostTroubleCard,
   KinOrgId,
+  KinWakeupId,
   type KinTroubleCause,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -464,6 +465,45 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
       (yield* cards).filter((card) => card.cause === "space").map((card) => card.closed?.ran),
       [0, 1],
     );
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("a successful turn releases untouched space failures but not work stopped partway", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    const care = yield* KinHostCare.KinHostCare;
+    const queue = yield* KinEventQueue.KinEventQueue;
+    const sql = yield* SqlClient.SqlClient;
+    const chief = KinAgentId.make("chief");
+    const finance = KinAgentId.make("finance");
+    const wakeupId = KinWakeupId.make("w-partway");
+    const stranded = yield* queued("stranded", "chief");
+    const untouched = yield* queued("untouched", "finance");
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+      VALUES (${wakeupId}, ${orgId}, ${chief}, 'test', ${DAY_START}, 'running', '["stranded"]')`;
+    yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = ${wakeupId}
+      WHERE org_id = ${orgId} AND event_id = ${stranded}`;
+    yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
+      VALUES (${orgId}, ${wakeupId}, 'record_create', 'invented')`;
+    const finished = yield* queue.finish({ orgId, wakeupId, status: "failed" });
+    assert.strictEqual(finished.stranded, 1);
+    yield* care.failed({ orgId, agentId: chief, cause: "space", eventIds: [stranded] });
+    yield* care.failed({ orgId, agentId: finance, cause: "space", eventIds: [untouched] });
+
+    yield* care.succeeded(orgId, finance);
+    const events = sql<{ state: string; notBefore: number }>`SELECT state, not_before AS "notBefore"
+      FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`;
+    assert.deepStrictEqual(yield* events, [
+      { state: "failed", notBefore: HELD_UNTIL },
+      { state: "queued", notBefore: DAY_START },
+    ]);
+    assert.deepInclude((yield* cards)[0], { open: true, stopped: 1 });
+    assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 1 });
+    assert.deepStrictEqual(yield* events, [
+      { state: "queued", notBefore: DAY_START },
+      { state: "queued", notBefore: DAY_START },
+    ]);
   }).pipe(Effect.provide(services)),
 );
 

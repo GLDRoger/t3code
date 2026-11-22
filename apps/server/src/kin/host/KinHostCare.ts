@@ -432,10 +432,13 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${orgId} AND trouble_id = ${troubleId} ORDER BY trouble_id`.pipe(
       Effect.map((rows) => rows[0]),
     );
-  /** The trouble's held turns, as their event rows say: no list kept anywhere else. */
-  const heldIds = (orgId: KinOrgId, troubleId: string) =>
+  // Only finish's partway branch leaves a failed event attached to its wake-up.
+  const stranded = sql`state = 'failed' AND wakeup_id IS NOT NULL`;
+  const heldIds = (orgId: KinOrgId, troubleId: string, automatic: boolean, agentId?: KinAgentId) =>
     sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
       WHERE org_id = ${orgId} AND held_by = ${troubleId} AND state IN ('queued', 'failed')
+        AND (${agentId ?? null} IS NULL OR agent_id = ${agentId ?? null})
+        AND (NOT ${automatic} OR NOT (${stranded}))
       ORDER BY event_id`.pipe(
       Effect.map((rows) => rows.map((row) => KinEventId.make(row.eventId))),
     );
@@ -497,9 +500,11 @@ const make = Effect.gen(function* () {
       done: number | null;
       expiring: number | null;
       stopped: number | null;
+      stranded: number | null;
     }>`SELECT
         SUM(CASE WHEN e.state = 'queued' THEN 1 ELSE 0 END) AS held,
         SUM(CASE WHEN e.state = 'failed' THEN 1 ELSE 0 END) AS stopped,
+        SUM(CASE WHEN ${stranded} THEN 1 ELSE 0 END) AS stranded,
         SUM(CASE WHEN e.state = 'done' THEN 1 ELSE 0 END) AS done,
         SUM(CASE WHEN e.state = 'queued' AND EXISTS (SELECT 1 FROM kin_lead_deliveries d
           WHERE d.org_id = e.org_id AND d.event_id = e.event_id AND d.status = 'pending')
@@ -531,6 +536,9 @@ const make = Effect.gen(function* () {
         : {}),
       ...((counts?.stopped ?? 0) > 0 && trouble.closedAt === null
         ? { stopped: counts!.stopped! }
+        : {}),
+      ...((counts?.stranded ?? 0) > 0 && trouble.closedAt === null
+        ? { stranded: counts!.stranded! }
         : {}),
       closed:
         trouble.closedAt === null ? null : { at: iso(trouble.closedAt), ran: counts?.done ?? 0 },
@@ -791,11 +799,20 @@ const make = Effect.gen(function* () {
     const closed = yield* troubleLock.withPermits(1)(
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
+        const [manual] = yield* sql`SELECT 1 FROM kin_events
+          WHERE org_id = ${orgId} AND held_by = ${troubleId} AND ${stranded} LIMIT 1`;
+        const held = yield* heldIds(orgId, troubleId, true);
+        if (manual !== undefined) {
+          yield* sql`UPDATE kin_trouble_agents SET worked_at = ${now}
+            WHERE org_id = ${orgId} AND trouble_id = ${troubleId} AND worked_at IS NULL`;
+          yield* queue.wake(orgId, held);
+          yield* noteRuns(orgId, held, undefined);
+          return true;
+        }
         const rows = yield* sql`UPDATE kin_troubles SET closed_at = ${now}
           WHERE org_id = ${orgId} AND trouble_id = ${troubleId} AND closed_at IS NULL
           RETURNING trouble_id`;
         if (rows.length === 0) return false;
-        const held = yield* heldIds(orgId, troubleId);
         yield* queue.wake(orgId, held);
         yield* noteRuns(orgId, held, undefined);
         return true;
@@ -823,10 +840,7 @@ const make = Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis;
             yield* sql`UPDATE kin_trouble_agents SET worked_at = ${now}
               WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} AND agent_id = ${agentId}`;
-            const own = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
-              WHERE org_id = ${orgId} AND held_by = ${trouble.troubleId} AND agent_id = ${agentId}
-                AND state IN ('queued', 'failed') ORDER BY event_id`;
-            const released = own.map((row) => KinEventId.make(row.eventId));
+            const released = yield* heldIds(orgId, trouble.troubleId, true, agentId);
             yield* queue.wake(orgId, released);
             yield* noteRuns(orgId, released, undefined);
           }),
@@ -866,7 +880,15 @@ const make = Effect.gen(function* () {
       for (const trouble of yield* openTroubles(orgId)) {
         if (trouble.cause === "backup") continue;
         const found = { cause: trouble.cause, told: trouble.toldAt !== null };
-        if (HOST_WIDE.has(trouble.cause)) return found;
+        if (HOST_WIDE.has(trouble.cause)) {
+          const [recovered] = yield* sql`SELECT 1 FROM kin_trouble_agents a
+            WHERE a.org_id = ${orgId} AND a.trouble_id = ${trouble.troubleId} AND a.worked_at IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM kin_trouble_agents b WHERE b.org_id = a.org_id
+                AND b.trouble_id = a.trouble_id AND b.worked_at IS NULL)
+            LIMIT 1`;
+          if (recovered === undefined) return found;
+          continue;
+        }
         const [affected] = yield* sql`SELECT 1 FROM kin_trouble_agents
           WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} AND agent_id = ${agentId}
             AND worked_at IS NULL`;
@@ -987,7 +1009,7 @@ const make = Effect.gen(function* () {
       let requeued = 0;
       for (const trouble of yield* openTroubles(orgId))
         if (trouble.cause !== "backup") {
-          const held = yield* heldIds(orgId, trouble.troubleId);
+          const held = yield* heldIds(orgId, trouble.troubleId, false);
           requeued += yield* queue.wake(orgId, held);
           yield* noteRuns(orgId, held, undefined);
         }

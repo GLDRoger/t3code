@@ -255,10 +255,11 @@ const make = Effect.gen(function* () {
       const tell =
         cause !== undefined &&
         !quiet &&
-        (HELD_CAUSES.has(cause)
-          ? held.length > 0 || finished.stranded > 0
-          : finished.failedEventIds.length > 0 ||
-            finished.retryInMs > KinEventQueue.FIRST_RETRY_MS);
+        (finished.stranded > 0 ||
+          (HELD_CAUSES.has(cause)
+            ? held.length > 0
+            : finished.failedEventIds.length > 0 ||
+              finished.retryInMs > KinEventQueue.FIRST_RETRY_MS));
       if (tell)
         told = yield* care.value.failed({
           orgId: row.orgId,

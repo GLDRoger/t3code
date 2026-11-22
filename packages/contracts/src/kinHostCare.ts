@@ -77,6 +77,7 @@ export const KinHostTroubleCard = Schema.Struct({
   expiring: Schema.optionalKey(NonNegativeInt),
   /** Turns Kin stopped retrying by itself: only Try again runs them now. */
   stopped: Schema.optionalKey(NonNegativeInt),
+  stranded: Schema.optionalKey(NonNegativeInt),
   /** The held turns' events, so Try again and the cause clearing run exactly those. */
   held: Schema.optionalKey(
     Schema.Array(KinTrimmedText.check(Schema.isMaxLength(200))).check(Schema.isMaxLength(500)),
@@ -117,12 +118,13 @@ export const KIN_TROUBLE_WHY: Readonly<Record<KinTroubleCause, string>> = {
  * `at` formats a time on the reader's clock; the server passes its own.
  */
 export function kinTroubleWords(
-  card: TroubleFacts & Pick<KinHostTroubleCard, "expiring" | "stopped">,
+  card: TroubleFacts & Pick<KinHostTroubleCard, "expiring" | "stopped" | "stranded">,
   at: (iso: string) => string,
 ): TroubleWords {
   const words = wordsByCause(card, at);
   const expiring = card.expiring ?? 0;
-  const stopped = card.stopped ?? 0;
+  const stranded = card.stranded ?? 0;
+  const stopped = Math.max(0, (card.stopped ?? 0) - stranded);
   const more = [
     expiring === 0
       ? null
@@ -132,13 +134,20 @@ export function kinTroubleWords(
     stopped === 0
       ? null
       : `Kin stopped retrying ${stopped === 1 ? "one turn" : `${stopped} turns`} by itself after too many tries. Try again runs ${them(stopped)}.`,
+    stranded === 0
+      ? null
+      : `${stranded === 1 ? "One turn stopped" : `${stranded} turns stopped`} after starting work. Check what was already done before tapping Try again.`,
   ].filter((line) => line !== null);
   if (more.length === 0) return words;
   return {
     what: words.what,
-    doing: [words.doing, ...more].filter((line) => line !== null).join(" "),
+    doing: [card.count === 0 && stranded > 0 ? null : words.doing, ...more]
+      .filter((line) => line !== null)
+      .join(" "),
     actions:
-      stopped > 0 && !words.actions.includes("retry") ? [...words.actions, "retry"] : words.actions,
+      stopped + stranded > 0 && !words.actions.includes("retry")
+        ? [...words.actions, "retry"]
+        : words.actions,
   };
 }
 
