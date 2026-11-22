@@ -34,6 +34,21 @@ import {
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
+import { UNISSUED_INVOICE } from "../../apps/server/src/kin/work/recordRows.ts";
+import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
+import { ASKED } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
+import { resultText } from "../../apps/server/src/kin/connections/ResultText.ts";
+import { outlineOf, sectionsOf, WHOLE_DOC } from "../../apps/server/src/kin/work/docBody.ts";
+import { parseRecipe } from "../../apps/server/src/kin/gendocs/recipe.ts";
+import { STARTER_FILES } from "../../apps/server/src/kin/gendocs/starter.ts";
+import { quote } from "../../apps/server/src/kin/lead/quote.ts";
+import { concernsLine, mineLine, totalsLine } from "../../apps/server/src/kin/sales/text.ts";
+import { whenLabel } from "../../apps/server/src/kin/social/rows.ts";
+import { moneySection } from "../../apps/server/src/kin/work/moneyViews.ts";
+import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
+import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
+import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
+import { KIN_TEXT_LOCALE, KinMoneySummary } from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
@@ -393,8 +408,246 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
     .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK)
     .replaceAll("{{PEOPLE_LABEL}}", PEOPLE_LABEL)
+    .replaceAll("{{UNISSUED_INVOICE}}", UNISSUED_INVOICE)
+    .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
+    .replaceAll("{{CONNECTION_ASKED}}", ASKED)
     .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names));
 
+const decodeMoneySummary = Schema.decodeUnknownSync(KinMoneySummary);
+/**
+ * Kin's pure answer builders a mock answer calls as `{{RENDER:<name>:<json input>}}`, the whole
+ * string, so its words and figures are the checkout's. The inputs are what each builder reads.
+ */
+const STARTER_RECIPES = Object.entries(STARTER_FILES).flatMap(([file, text]) => {
+  if (!/^recipes\/[^/]+\/RECIPE\.md$/.test(file)) return [];
+  const recipe = parseRecipe(text);
+  return "_tag" in recipe ? [] : [recipe];
+});
+const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  moneySection: (input: { summary: unknown; zone: string }) =>
+    moneySection(decodeMoneySummary(input.summary), input.zone),
+  // social_pack's answer for the call's at, as KinSocial.pack writes it; an at it refuses is its error.
+  socialPack: (input: { at: unknown; zone: string }) => {
+    const at = typeof input.at === "string" ? input.at : "";
+    const ms = Date.parse(at);
+    if (!Number.isFinite(ms) || !/[zZ]|[+-]\d{2}:?\d{2}$/.test(at))
+      return {
+        $error: {
+          _tag: "KinChatError",
+          reason: "invalid_state",
+          message: "at is a time with its offset, such as 2026-11-18T19:00:00+05:30.",
+        },
+      };
+    const packId = `pk_${ms.toString(36)}`;
+    return {
+      packId,
+      cardId: `kin-social-pack:${packId}`,
+      when: whenLabel(ms, { zone: input.zone, locale: KIN_TEXT_LOCALE }),
+    };
+  },
+  bankAnswer: (input: { through: string | null }) =>
+    bankAnswer({ through: input.through, accounts: [] }),
+  cashUnknown: (input: { timeZone: string }) =>
+    cashAnswer({
+      known: false,
+      notOfRecord: [],
+      alertAccounts: [],
+      timeZone: input.timeZone,
+    } as never),
+  // doc_read's answer from the doc's body, as runRead builds it: outline, whole body or sections.
+  docRead: (input: {
+    key: string;
+    title: string;
+    version: number;
+    latestVersion?: number;
+    updated: { at: string; by: string; summary: string };
+    body: string;
+    owner: string;
+    client?: string;
+    project?: string;
+    sections?: ReadonlyArray<string>;
+  }) => {
+    const { body, sections, client, project, owner, latestVersion, ...head } = input;
+    const whole = sections === undefined && body.length <= WHOLE_DOC;
+    const all = sectionsOf(body);
+    return {
+      ...head,
+      latestVersion: latestVersion ?? input.version,
+      chars: body.length,
+      outline: [...outlineOf(body)],
+      ...(whole ? { body } : {}),
+      ...(sections === undefined
+        ? {}
+        : {
+            sections: sections.map((id) => {
+              const found = all.find((one) => one.id === id);
+              return found === undefined
+                ? { id, title: "", hash: "", text: "(no such section)" }
+                : { id: found.id, title: found.title, hash: found.hash, text: found.text };
+            }),
+          }),
+      ...(whole || sections !== undefined
+        ? {}
+        : { note: "A long doc: read the sections you need by id." }),
+      owner,
+      ...(client === undefined ? {} : { client }),
+      ...(project === undefined ? {} : { project }),
+    };
+  },
+  // doc_create's and doc_edit's answer from the body written, as writeResult builds it.
+  docWritten: (input: {
+    key: string;
+    title: string;
+    version: number;
+    changed: boolean;
+    body: string;
+    kind: string;
+  }) => {
+    const { key, title, version, changed, body, kind } = input;
+    return { key, title, version, changed, outline: [...outlineOf(body)], kind };
+  },
+  // kin_recipes on a company with Kin's starter recipes, as runRecipes maps each.
+  starterRecipes: (input: { recipe?: string }) => {
+    const all = STARTER_RECIPES.filter(
+      (one) => input.recipe === undefined || one.name === input.recipe,
+    );
+    const defaults = new Set<string>();
+    const lists = new Set<string>();
+    for (const one of STARTER_RECIPES)
+      if (one.list !== null && one.default && !lists.has(one.list)) {
+        lists.add(one.list);
+        defaults.add(one.name);
+      }
+    return {
+      recipes: all.map((recipe) => {
+        const inputs = recipe.inputs.map((one) => ({
+          name: one.name,
+          type: one.type,
+          from: one.from,
+          required: one.required,
+          ...(one.description === undefined ? {} : { description: one.description }),
+          ...(one.type === "table" ? { columns: Object.keys(one.columns) } : {}),
+        }));
+        return {
+          name: recipe.name,
+          title: recipe.title,
+          description: recipe.description,
+          list: recipe.list,
+          numbered: recipe.numbered,
+          confidential: recipe.sensitive,
+          agentInputs: inputs
+            .filter((one) => one.from === "agent")
+            .map(({ from: _from, ...row }) => row),
+          ...(defaults.has(recipe.name) ? { default: true as const } : {}),
+          ...(input.recipe === undefined
+            ? {}
+            : {
+                kind: recipe.kind,
+                storedInputs: inputs.filter((one) => one.from !== "agent"),
+                computed: recipe.computed.map(([name]) => name),
+                outputs: [...recipe.outputs],
+              }),
+        };
+      }),
+    };
+  },
+  // Outside text as Kin quotes it into a tool result.
+  quote: (input: { label: string; value: unknown; capText?: boolean }) =>
+    quote(input.label, input.value, input.capText ?? false),
+  // pipeline_read's answer line for its view.
+  pipelineLine: (
+    input:
+      | { line: "mine"; who: ReadonlyArray<string>; person: string; listed: number; more: boolean }
+      | { line: "concerns"; who: ReadonlyArray<string>; listed: number; more: boolean }
+      | {
+          line: "totals";
+          who: ReadonlyArray<string>;
+          counts: { open: number; stages: number; won: number; lost: number };
+        },
+  ) =>
+    input.line === "mine"
+      ? mineLine(input.who, input.person, input.listed, input.more)
+      : input.line === "concerns"
+        ? concernsLine(input.who, input.listed, input.more)
+        : totalsLine(input.who, input.counts),
+  // A connected service's text as kin_connection_call quotes it.
+  connectionResult: (input: { label: string; tool: string; text: string }) =>
+    resultText({
+      label: input.label,
+      tool: { name: input.tool, inputSchema: { type: "object" } },
+      result: { content: [{ type: "text", text: input.text }] },
+    } as never).quoted,
+  cash: (input: {
+    today: string;
+    timeZone: string;
+    accounts: ReadonlyArray<Record<string, unknown>>;
+    byCurrency: ReadonlyArray<Record<string, unknown>>;
+  }) =>
+    cashAnswer({
+      known: input.accounts.length > 0,
+      notOfRecord: [],
+      alertAccounts: [],
+      ...input,
+      accounts: input.accounts.map((one) => ({
+        kind: "account",
+        stale: false,
+        check: "adds_up",
+        cannotTellApart: false,
+        ...one,
+      })),
+      byCurrency: input.byCurrency.map((one) => ({
+        ...one,
+        total: one.total === null ? null : BigInt(one.total as number),
+        receivedSince: BigInt(one.receivedSince as number),
+        spentSince: BigInt(one.spentSince as number),
+      })),
+    } as never),
+  outlook: (input: Record<string, unknown> & { windows: ReadonlyArray<Record<string, unknown>> }) =>
+    outlookAnswer({
+      incoming: [],
+      overdueIn: [],
+      undatedIn: [],
+      laterIn: [],
+      dueOut: [],
+      overdueOut: [],
+      incomplete: [],
+      datesWithoutAmount: [],
+      runway: [],
+      ...input,
+      windows: input.windows.map((one) => ({
+        expectedIn: [],
+        expectedOut: [],
+        ...one,
+        net: ((one.net ?? []) as ReadonlyArray<{ minor: number; currency: string }>).map((n) => ({
+          ...n,
+          minor: BigInt(n.minor),
+        })),
+      })),
+    } as never),
+  // Spent and money amounts are bigints in Kin; JSON carries them as numbers.
+  budgets: (input: { month: string; budgets: ReadonlyArray<Record<string, unknown>> }) =>
+    budgetsAnswer({
+      month: input.month,
+      budgets: input.budgets.map((one) => ({
+        category: null,
+        projectId: null,
+        projectKey: null,
+        projectTitle: null,
+        notCounted: [],
+        ...one,
+        spent: BigInt(one.spent as number),
+      })),
+    } as never),
+};
+/** A field of the call's input by its path, such as `records.0.title`. */
+const argAt = (args: unknown, path: string): unknown =>
+  path
+    .split(".")
+    .reduce<unknown>(
+      (at, step) =>
+        isRecord(at) || Array.isArray(at) ? (at as Record<string, unknown>)[step] : undefined,
+      args,
+    );
 /**
  * A Kin mock's answer as the agent reads it: `{{ARG:<field>}}` is that field of the call's input,
  * which the tool echoes back, and other placeholders are filled from Kin's code as a prompt's are.
@@ -406,11 +659,22 @@ export const fillKinMock = (
 ): unknown => {
   if (typeof value === "string") {
     const args = isRecord(input) ? input : {};
-    const whole = /^\{\{ARG:(\w+)\}\}$/.exec(value);
-    if (whole !== null) return args[whole[1]!];
+    const whole = /^\{\{ARG:([\w.]+)\}\}$/.exec(value);
+    // An optional field the call left out comes back null, as Kin's handlers write `?? null`.
+    if (whole !== null) return argAt(args, whole[1]!) ?? null;
+    const rendered = /^\{\{RENDER:(\w+):([\s\S]*)\}\}$/.exec(value);
+    if (rendered !== null) {
+      const render = MOCK_RENDERERS[rendered[1]!];
+      if (render === undefined) throw new Error(`No renderer ${rendered[1]} for a Kin mock.`);
+      // A field of the call goes into the builder's input as its JSON value.
+      const filled = rendered[2]!.replace(/"\{\{ARG:([\w.]+)\}\}"/g, (_, path: string) =>
+        JSON.stringify(argAt(args, path) ?? null),
+      );
+      return render(JSON.parse(filled));
+    }
     return fillKinRules(
-      value.replace(/\{\{ARG:(\w+)\}\}/g, (_, key: string) => {
-        const arg = args[key];
+      value.replace(/\{\{ARG:([\w.]+)\}\}/g, (_, key: string) => {
+        const arg = argAt(args, key);
         return typeof arg === "string" ? arg : (JSON.stringify(arg) ?? "");
       }),
       world,

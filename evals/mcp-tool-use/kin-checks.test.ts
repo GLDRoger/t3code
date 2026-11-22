@@ -45,6 +45,13 @@ it.each([
   ],
   ["a field echoed from the call", { memory_write: { itemId: "{{ARG:id}}" } }, []],
   [
+    "a field echoed from a row of the call",
+    {
+      record_create: { records: [{ key: "W-1", title: "{{ARG:records.0.title}}", created: true }] },
+    },
+    [],
+  ],
+  [
     "a placeholder nothing fills",
     { memory_write: { itemId: "{{ITEM_ID}}" } },
     ["memory_write has a placeholder Kin's code doesn't fill: {{ITEM_ID}}"],
@@ -64,7 +71,8 @@ it.each([
   assert.deepStrictEqual(kinMockProblems(mocks, known), [...expected]);
 });
 
-// Every Kin case, so a changed case or a changed Kin tool fails here as `kin:dry` would.
+// Every Kin case, so a changed case or a changed Kin tool fails here as `kin:dry` would. The
+// catalog is the widest a Kin turn gets; `kin:dry` checks each case against its own.
 const capture = JSON.parse(
   NodeZlib.gunzipSync(
     NodeFS.readFileSync(new URL("./templates/claude.json.gz", import.meta.url)),
@@ -75,6 +83,8 @@ const base = buildBase(capture, {
   keepUserInstructions: false,
   kinAgent: true,
   kinLead: true,
+  kinSession: true,
+  kinSocial: true,
 });
 const catalog = new Set(
   [...base.nativeTools, ...base.deferred].map((tool) => normalizeToolName(tool.name)),

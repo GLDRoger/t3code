@@ -20,6 +20,17 @@ const KIN_TOOLS: ReadonlyMap<string, KinTool> = new Map(
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** Sets "arg" at a call-input path, making the arrays and objects on the way. */
+const echo = (into: Record<string, unknown>, [step, ...rest]: ReadonlyArray<string>): void => {
+  if (step === undefined) return;
+  if (rest.length === 0) {
+    into[step] = "arg";
+    return;
+  }
+  const next = (into[step] ??= /^\d+$/.test(rest[0]!) ? [] : {}) as Record<string, unknown>;
+  echo(next, rest);
+};
+
 /** Each answer a mock can give, with where it sits in the mock. */
 const answers = (mock: unknown, at: string): ReadonlyArray<{ at: string; answer: unknown }> => {
   if (isRecord(mock) && Array.isArray(mock.$sequence))
@@ -70,12 +81,9 @@ export const kinMockProblems = (
       if (raw === "default")
         return [`${at} is "default", answered {"ok":true}, which ${name} never returns`];
       // A field it echoes from the call stands for any string the agent could send.
-      const echoed = Object.fromEntries(
-        [...JSON.stringify(raw ?? null).matchAll(/\{\{ARG:(\w+)\}\}/g)].map(([, key]) => [
-          key,
-          "arg",
-        ]),
-      );
+      const echoed: Record<string, unknown> = {};
+      for (const [, path] of JSON.stringify(raw ?? null).matchAll(/\{\{ARG:([\w.]+)\}\}/g))
+        echo(echoed, path!.split("."));
       const answer = fillKinMock(raw, echoed, world);
       const unfilled = JSON.stringify(answer ?? null).match(/\{\{[^}]*\}\}/);
       if (unfilled !== null)
