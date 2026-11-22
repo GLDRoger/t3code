@@ -866,7 +866,9 @@ describe("KinPulse", () => {
       assert.lengthOf(yield* slots, 0);
       yield* sql`UPDATE kin_people SET quiet_hours_json = NULL WHERE person_id = ${mate}`;
       // Given to someone else meanwhile: nothing for her.
-      yield* sql`UPDATE kin_records SET owner_id = ${owner} WHERE record_id = 'r-W-30'`;
+      // Given to someone else meanwhile, though the team still sees it: nothing for her.
+      yield* sql`UPDATE kin_records SET owner_id = ${owner}, team_shared = 1
+        WHERE record_id = 'r-W-30'`;
       assert.isUndefined(yield* draftWakeText(orgId, made!));
       yield* sql`UPDATE kin_records SET owner_id = ${mate} WHERE record_id = 'r-W-30'`;
       // A card from her own mailbox stands; a former holder's doesn't.

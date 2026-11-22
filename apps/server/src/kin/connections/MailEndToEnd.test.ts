@@ -67,7 +67,13 @@ import {
   UNREADABLE_FILE,
 } from "./ConnectionsService.ts";
 import { OWN_MAIL_TOUCH, sentMail } from "./Sending.ts";
-import { PRIVATE_MEMORY, PRIVATE_WRITE, privateRefusal, privateTo } from "./privateTurn.ts";
+import {
+  inheritPrivacy,
+  PRIVATE_MEMORY,
+  PRIVATE_WRITE,
+  privateRefusal,
+  privateTo,
+} from "./privateTurn.ts";
 import * as Connections from "./ConnectionsService.ts";
 import { guarded } from "./EgressGuard.ts";
 import { type FakeMail, makeFakeMail } from "./FakeMail.ts";
@@ -1685,6 +1691,37 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     ),
   );
 
+  it.effect("an invoice keeps only company sends on its record, not one from an own mailbox", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const records = yield* KinRecords.KinRecords;
+        fake.addAccount({ provider: "google", address: ARJUN_OWN, name: "Arjun" });
+        yield* connect(fake, "google", ACCOUNTS);
+        yield* connectOwn(fake, owner, ARJUN_OWN);
+        yield* wake({ person: owner });
+        const mail = {
+          to: ["ravi@lumen.example"],
+          subject: "November",
+          body: "x",
+          attachments: ["DOC-1"],
+        };
+        yield* callTool(ARJUN_OWN, "mail_send", mail);
+        assert.strictEqual((yield* tap(cards.at(-1)!.widgetId, owner))?.state, "sent");
+        const sentOn = Effect.gen(function* () {
+          const row = yield* records.get(orgId, "INV-1");
+          return (yield* records.detail(row!)).sent ?? [];
+        });
+        assert.lengthOf(yield* sentOn, 0);
+        yield* callTool(ACCOUNTS, "mail_send", { ...mail, subject: "November, again" });
+        assert.strictEqual((yield* tap(cards.at(-1)!.widgetId, owner))?.state, "sent");
+        assert.deepStrictEqual(
+          (yield* sentOn).map((one) => one.subject),
+          ["November, again"],
+        );
+      }),
+    ),
+  );
+
   it.effect("a turn that read a member's mailbox writes only into her chat, and no memory", () =>
     setUp((fake) =>
       Effect.gen(function* () {
@@ -1746,6 +1783,12 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           PRIVATE_WRITE("Meera"),
         );
         assert.isUndefined(yield* privateRefusal(woken, "kin_connection_call", {}));
+        // A reminder it set runs as a turn of hers too, before its prompt is read.
+        yield* wake({ person: owner });
+        const later = { orgId, agentId: lead, wakeupId: `wake-${wakes}` };
+        assert.isNull(yield* privateTo(later));
+        yield* inheritPrivacy(later, ["pulse-woken"]);
+        assert.strictEqual(yield* privateTo(later), member);
       }),
     ),
   );
@@ -1769,10 +1812,15 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             reason: "her private search",
           })
           .pipe(Effect.ignore);
+        // That turn never read her mailbox; the next one does.
+        const unread = `wake-${wakes}`;
+        yield* wake({ person: member });
         yield* callTool(MEERA, "mail_search", { query: "kickoff" });
         const log = yield* connections.calls(people(owner), { orgId });
         assert.isFalse(JSON.stringify(log.calls).includes("salary review"));
-        assert.isTrue(log.calls.every((one) => one.wakeupId !== `wake-${wakes}`));
+        assert.isTrue(
+          log.calls.every((one) => one.wakeupId !== unread && one.wakeupId !== `wake-${wakes}`),
+        );
         assert.isTrue(log.calls.some((one) => one.toolName === "mail_search"));
       }),
     ),
@@ -1971,7 +2019,9 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           // A sign-in again, still open when her mailbox is disconnected, can't finish after.
           yield* sql`UPDATE kin_connections SET state = 'needs_sign_in' WHERE person_id = ${member}`;
           const again = yield* start(member);
-          yield* connections.mineRemove(people(member), { orgId });
+          // The owner level disconnects it.
+          const hers = (yield* connections.mine(people(member), { orgId })).mailbox!;
+          yield* connections.remove(people(owner), { orgId, connectionId: hers.connectionId });
           const late = yield* finish(member, again.authorizationUrl, MEERA).pipe(Effect.flip);
           assert.include(late.message, "no longer open");
           const live = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_connections
