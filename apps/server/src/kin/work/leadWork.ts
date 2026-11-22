@@ -39,6 +39,7 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import {
   SHARED_REFUSAL,
   effectiveAudience,
+  peopleBehind,
   turnAsker,
   turnChat,
   turnPeople,
@@ -846,6 +847,51 @@ export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (
     });
   }
   return { _tag: "agent", agentId: KinAgentId.make(who) } satisfies KinWorkPrincipal;
+});
+
+/**
+ * Who a task is for, or waits on, in a turn someone other than the agent's owner asked where he
+ * isn't in the chat: put on him with no reason, it is the asker's; with one, it stays his and says
+ * so in a line on it ("Needs <owner>: …"). Any other turn takes what was given as it is.
+ */
+const routedTo = Effect.fn("KinWorkTools.routedTo")(function* (
+  lead: Lead,
+  who: KinWorkPrincipal,
+  reason: string | null | undefined,
+) {
+  const kept = { who, reason: undefined, routed: false };
+  if (who._tag !== "person") return kept;
+  const behind = yield* peopleBehind(lead);
+  const asker = yield* turnAsker(lead);
+  if (
+    behind === undefined ||
+    asker === null ||
+    asker === behind.owner ||
+    who.personId !== behind.owner ||
+    behind.readers.has(behind.owner)
+  )
+    return kept;
+  const why = reason?.trim() ?? "";
+  if (why === "")
+    return {
+      who: { _tag: "person", personId: asker } satisfies KinWorkPrincipal,
+      reason: undefined,
+      routed: true,
+    };
+  const sql = yield* SqlClient.SqlClient;
+  const [owner] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+    WHERE org_id = ${lead.orgId} AND person_id = ${behind.owner}`;
+  const name = owner?.name.trim() || "the owner";
+  return { who, reason: /^needs\b/i.test(why) ? why : `Needs ${name}: ${why}`, routed: false };
+});
+
+/** A task set waiting on nobody named, in a turn a co-owner or teammate asked: it waits on them. */
+const waitsOnAsker = Effect.fn("KinWorkTools.waitsOnAsker")(function* (lead: Lead) {
+  const asker = yield* turnAsker(lead);
+  const behind = yield* peopleBehind(lead);
+  return asker === null || behind === undefined || asker === behind.owner
+    ? undefined
+    : ({ _tag: "person", personId: asker } satisfies KinWorkPrincipal);
 });
 
 const atOf = (text: string) => {
@@ -2374,11 +2420,14 @@ const createRow = Effect.fnUntraced(function* (
   const contactFor = list === "contacts" && row.client !== undefined ? alone : undefined;
   const crmFor = prospectFor ?? contactFor;
   // A client or contact is the owner's to look after unless told otherwise; theirs, they look after.
-  const owner = yield* resolveWho(
+  const named = yield* resolveWho(
     lead,
     row.owner ??
       (crmFor !== undefined ? "me" : list === "clients" || list === "contacts" ? "owner" : "you"),
   ).pipe(asField("owner"));
+  const holder =
+    list === "work" ? yield* routedTo(lead, named, row.reason) : { who: named, reason: undefined };
+  const owner = holder.who;
   if (prospectFor !== undefined)
     yield* memberAdds(lead.orgId, prospectFor, {
       prospect: true,
@@ -2390,10 +2439,18 @@ const createRow = Effect.fnUntraced(function* (
         row.state === "done" ||
         row.state === "dropped",
     });
-  const waitingOn =
+  const waitsOn =
     row.waitingOn === undefined
-      ? undefined
+      ? list === "work" && row.state === "waiting"
+        ? yield* waitsOnAsker(lead)
+        : undefined
       : yield* resolveWho(lead, row.waitingOn).pipe(asField("waitingOn"));
+  const waitRoute =
+    waitsOn === undefined || list !== "work"
+      ? { who: waitsOn, reason: undefined }
+      : yield* routedTo(lead, waitsOn, row.reason);
+  const waitingOn = waitRoute.who;
+  const routedReason = holder.reason ?? waitRoute.reason;
   const due = row.due === undefined ? {} : yield* dueOf(lead.orgId, row.due);
   // Rows earlier in this call are already stored, so a contact can name the client just made.
   const party =
@@ -2422,7 +2479,10 @@ const createRow = Effect.fnUntraced(function* (
     });
   const spine = yield* spineOf(lead, def, row, projectId);
   const spineSet = Object.fromEntries(
-    Object.entries(spine.fields).filter((entry) => entry[1] !== null),
+    Object.entries({
+      ...spine.fields,
+      ...(routedReason === undefined ? {} : { reason: routedReason }),
+    }).filter((entry) => entry[1] !== null),
   );
   if (
     existing === undefined &&
@@ -3369,13 +3429,27 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     });
   yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category ?? undefined);
   const def = yield* listFor(lead, before.registerId);
+  const work = before.registerId === "work";
+  const route = (who: KinWorkPrincipal) =>
+    work
+      ? routedTo(lead, who, input.reason)
+      : Effect.succeed({ who, reason: undefined, routed: false });
+  const holder =
+    input.owner === undefined ? undefined : yield* route(yield* resolveWho(lead, input.owner));
+  const waitsOn =
+    input.waitingOn !== undefined
+      ? yield* route(yield* resolveWho(lead, input.waitingOn))
+      : work && input.state === "waiting" && before.waitingOnId === null
+        ? yield* Effect.map(waitsOnAsker(lead), (who) =>
+            who === undefined ? undefined : { who, reason: undefined, routed: false },
+          )
+        : undefined;
+  const routedReason = holder?.reason ?? waitsOn?.reason;
   const patch: Patch = {
     ...(input.title === undefined ? {} : { title: input.title }),
     ...(input.state === undefined ? {} : { state: input.state }),
-    ...(input.waitingOn === undefined
-      ? {}
-      : { waitingOn: yield* resolveWho(lead, input.waitingOn) }),
-    ...(input.owner === undefined ? {} : { owner: yield* resolveWho(lead, input.owner) }),
+    ...(waitsOn === undefined ? {} : { waitingOn: waitsOn.who }),
+    ...(holder === undefined ? {} : { owner: holder.who }),
     ...(input.due === undefined ? {} : yield* dueOf(lead.orgId, input.due)),
     ...(input.notes === undefined ? {} : { notes: input.notes }),
     ...(input.category === undefined ? {} : { category: input.category }),
@@ -3410,6 +3484,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...fieldsFrom(input),
     ...partyWords(before.registerId, { tags: input.tags, audience: input.audience }),
     ...spine.fields,
+    ...(routedReason === undefined ? {} : { reason: routedReason }),
     ...(yield* goalFields(lead.orgId, input, parseFields(before.fieldsJson))),
     ...(holds ? { untold: `person:${giving.personId}` } : releases ? { untold: null } : {}),
   };
