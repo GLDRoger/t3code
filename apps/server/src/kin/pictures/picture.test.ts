@@ -11,6 +11,7 @@ import {
   EnvironmentId,
   KinAgentId,
   KinChatError,
+  KinChatId,
   KinOrgId,
   KinPersonId,
   ProviderInstanceId,
@@ -709,6 +710,43 @@ describe("kin_picture", () => {
           [dev, false, false, false],
           [kabir, false, false, false],
         ]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a teammate's chip points at a picture's version only when everyone in the chat reads that version",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* group;
+        const sql = yield* SqlClient.SqlClient;
+        const chats = yield* ChatService.KinChatService;
+        yield* turn(1, "meera", "shared", "team-chat");
+        const first = yield* makePicture(scope, post("48px"));
+        yield* turn(2, "meera", "shared", "team-chat");
+        drawing.next = { _tag: "drawn", png: Uint8Array.of(...PNG, 0), width: 1080, height: 1080 };
+        yield* makePicture(scope, post("72px", { doc: first.doc }));
+        drawing.next = undefined;
+        // Dev joins between the two replies: he reads the second version, not the first.
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at, joined_seq)
+          VALUES ('team-chat-dev', ${orgId}, 'team-chat', 'person', ${dev}, 'member', ${at}, 102)`;
+        // Past the replies this file's gate posted by hand.
+        yield* sql`UPDATE kin_chats SET last_seq = 200 WHERE chat_id = 'team-chat'`;
+        const point = (version: number) =>
+          chats.send(person(meera), {
+            chatId: KinChatId.make("team-chat"),
+            clientMessageId: `chip-${version}`,
+            body: "This one?",
+            refs: [{ _tag: "doc", key: first.doc, version, section: null }],
+          });
+        assert.include(yield* Effect.flip(point(1)), {
+          reason: "not_found",
+          message: "Kin record not found.",
+        });
+        assert.deepStrictEqual(
+          (yield* point(2)).refs?.map((ref) => [ref.key, ref.version, ref.title]),
+          [[first.doc, 2, "Ambermill launch"]],
+        );
       }).pipe(Effect.provide(layer)),
   );
 

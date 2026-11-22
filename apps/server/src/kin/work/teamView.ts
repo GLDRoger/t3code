@@ -381,6 +381,26 @@ export const viewVisible = Effect.fn("KinTeamView.viewVisible")(function* (
 });
 
 /**
+ * Whether every one of these people may read this version of the entry now: the entry, and for a
+ * picture that version by its own rule (`pictureVersionSeen`).
+ */
+export const viewVersionVisible = Effect.fn("KinTeamView.viewVersionVisible")(function* (
+  orgId: KinOrgId,
+  people: ReadonlyArray<KinPersonId>,
+  recordId: string,
+  version: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if (people.length === 0) return false;
+  const rows = yield* sql`SELECT 1 FROM kin_records r JOIN kin_doc_versions pv
+      ON pv.org_id = r.org_id AND pv.record_id = r.record_id AND pv.version = ${version}
+    WHERE r.org_id = ${orgId} AND r.record_id = ${recordId} AND ${viewSees(sql, people)}
+      AND (NOT ${isPicture(sql)}
+        OR ${sql.and(people.map((person) => pictureVersionSeen(sql, person)))}) LIMIT 1`;
+  return rows.length > 0;
+});
+
+/**
  * A turn's write in a chat others read, inside its transaction. A task, meeting or milestone that
  * everyone there sees, and stays shared, may be made or changed for any of them (`roomWork`);
  * anything else only as each person behind it could on their own screens.

@@ -55,7 +55,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { isOrgOwner } from "../lead/orgState.ts";
 import { sectionsOf } from "../work/docBody.ts";
 import { sensitiveNow } from "../work/recordRows.ts";
-import { viewVisible } from "../work/teamView.ts";
+import { viewVersionVisible } from "../work/teamView.ts";
 import { encodeNames, nameKeys, nameThreads, withLinks } from "./messageLinks.ts";
 import { messageForViewer } from "./messageView.ts";
 import { chatShared, readableBy, readableFrom, recordJoin } from "./sharing.ts";
@@ -820,15 +820,16 @@ const make = Effect.gen(function* () {
           AND v.record_id = r.record_id AND v.version = ${ref.version}
         WHERE r.org_id = ${input.orgId} AND r.key = ${ref.key} AND r.register_id = 'docs'
         ORDER BY r.record_id`;
-      // A teammate points only at a doc everyone in the chat already reads; one they can't is none.
+      // A teammate points only at a doc version everyone in the chat reads; one they can't is none.
       const seen =
         doc !== undefined &&
         (owner ||
           (doc.sensitive === 0 &&
-            (yield* viewVisible(
+            (yield* viewVersionVisible(
               input.orgId,
               readers.map((reader) => reader.personId),
               doc.recordId,
+              ref.version,
             ).pipe(Effect.provideService(SqlClient.SqlClient, sql)))));
       if (doc === undefined || !seen)
         return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
