@@ -166,11 +166,9 @@ const tasksReread = (orgId: KinOrgId) =>
 const CHOSEN_TITLE = 160;
 
 /**
- * Work an owner-level person chose on an agent's card is tracked, in the tap's transaction: a task
- * of that agent's the card is about stops waiting on them (back open if it was closed); with none,
- * Kin makes one for the agent from the card's question and the option. The tap itself wakes the agent, so this
- * write wakes nobody. Only an option marked yes starts work; a draft's Approve or an option with
- * its own action makes nothing here.
+ * Work an owner-level person chose with an option marked yes is tracked: the agent's task the card
+ * is about stops waiting on them (reopened if closed), or Kin makes one from the question and the
+ * option. The tap already wakes the agent, so this write wakes nobody.
  */
 const chosenWork = Effect.fn("KinCardAnswers.chosenWork")(function* (
   input: Parameters<ChoiceAnswerHandler>[0],

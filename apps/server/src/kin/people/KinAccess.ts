@@ -46,10 +46,8 @@ export const ownerLevel = Effect.fn("KinAccess.ownerLevel")(function* (
 });
 
 /**
- * Whether an owner-level person asked this agent's turn in person: every event that woke it is
- * a message or a card tap by someone owner-level now, none passed on by another agent, or such a
- * person's own act on a task (`OWN_TASK_ACT`). A reaction, a brief, a routine, a handoff,
- * a teammate's word or anyone's change made through a coding agent among them is no ask. Only
+ * Whether an owner-level person asked this turn in person: every event that woke it is their own
+ * message or card tap, passed on by no agent, or their own act on a task (`OWN_TASK_ACT`). Only
  * this makes what an agent writes kept (`KinRecords`); `askedBy` keeps naming who asked.
  */
 export const ownerLevelAsked = Effect.fn("KinAccess.ownerLevelAsked")(function* (
