@@ -25,6 +25,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { newCompanyProfileJson, readProfile } from "./companyProfile.ts";
 import { insertComment } from "./recordComments.ts";
 import { IMPORT_BUSY } from "./importUndo.ts";
+import type { ImportEntry } from "./importFormat.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
 
@@ -264,6 +265,48 @@ const quiet = Effect.gen(function* () {
     yield* countOf("kin_messages"),
     yield* countOf("kin_widgets"),
   ];
+});
+
+const importState = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const tables = yield* sql<{ name: string }>`SELECT name FROM pragma_table_list
+    WHERE schema = 'main' AND (name GLOB 'kin_*' OR name = 'sqlite_sequence')
+      AND type IN ('table', 'virtual') ORDER BY name`;
+  const searchRows = yield* sql<{
+    id: number;
+    org_id: string;
+    record_id: string;
+    part: string;
+  }>`SELECT * FROM kin_search_rows ORDER BY id`;
+  // The test clock and record origins fix timestamps and domain IDs. FTS rowids are slot IDs.
+  const searchIds = new Map(
+    searchRows.map((row) => [row.id, JSON.stringify([row.org_id, row.record_id, row.part])]),
+  );
+  const entries = yield* Effect.forEach(tables, ({ name }) =>
+    Effect.gen(function* () {
+      if (name === "kin_search_rows")
+        return [
+          name,
+          searchRows.map((row) => JSON.stringify({ ...row, id: searchIds.get(row.id) })).toSorted(),
+        ] as const;
+      if (name === "kin_search") {
+        const rows = yield* sql<{ rowid: number }>`SELECT rowid, * FROM kin_search ORDER BY rowid`;
+        return [
+          name,
+          rows
+            .map((row) => {
+              const rowid = searchIds.get(row.rowid);
+              assert.isDefined(rowid);
+              return JSON.stringify({ ...row, rowid });
+            })
+            .toSorted(),
+        ] as const;
+      }
+      const rows = yield* sql`SELECT * FROM ${sql(name)}`;
+      return [name, rows.map((row) => JSON.stringify(row)).toSorted()] as const;
+    }),
+  );
+  return Object.fromEntries(entries);
 });
 
 describe("KinImport", () => {
@@ -941,6 +984,146 @@ describe("KinImport", () => {
       });
       assert.strictEqual((yield* Numbers.issue(orgId, owner, draft.key)).number, "INV/2026/005");
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps the same import reports and database state through chunk and row writes", () =>
+    Effect.gen(function* () {
+      const task = (source: string, extra?: Partial<ImportEntry>) => ({
+        entry: { source, list: "work", title: `Invented task ${source}`, state: "done", ...extra },
+      });
+      const expense = (source: string, amount: string, extra?: Partial<ImportEntry>) => ({
+        entry: {
+          source,
+          list: "expenses",
+          title: `Invented expense ${source}`,
+          state: "done",
+          date: "2026-05-14",
+          category: "software",
+          amount,
+          ...extra,
+        },
+      });
+      const chunks = [
+        [
+          task("plain"),
+          task("private", { sensitive: true, createdAt: "2026-04-05", closedAt: "2026-04-09" }),
+          task("public", { sensitive: false }),
+        ],
+        [
+          expense("fee", "12.50"),
+          expense("refund", "-7.50", { sensitive: false }),
+          expense("private-fee", "35.00", { sensitive: true }),
+        ],
+        [task("before-error"), task("invalid", { category: "not-a-kind" }), task("after-error")],
+        [task("repeated"), task("repeated"), rows[0]],
+        [task("unlinked"), task("linked", { client: "c1" }), rows[5]],
+        [task("visible-a"), task("visible-b")],
+        [
+          expense("confirmed", "200.00", { confirmed: true, currency: "EUR" }),
+          expense("after-confirmed", "4.00", { currency: "EUR" }),
+        ],
+      ];
+      const bindAfter = chunks.slice(0, 3).reduce((n, chunk) => n + chunk.length, 0);
+      const file = [
+        JSON.stringify(header),
+        ...chunks.flatMap((chunk, index) => {
+          const lines = chunk.map((row) => JSON.stringify(row));
+          // Blank lines preserve real chunk boundaries without writing filler records.
+          return index === chunks.length - 1
+            ? lines
+            : [
+                ...lines,
+                ...Array.from({ length: 100 - lines.length - (index === 0 ? 1 : 0) }, () => ""),
+              ];
+        }),
+      ];
+
+      const exercise = (forceRows: boolean) =>
+        Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          // SQLite stamps bootstrap migrations before the fixture's TestClock can act.
+          yield* sql`UPDATE kin_sql_migrations SET created_at = ${at}`;
+          const records = yield* KinRecords.KinRecords;
+          const attempts: Array<readonly [string, boolean]> = [];
+          const imports = Context.get(
+            yield* Layer.build(
+              KinImport.layer.pipe(
+                Layer.provide(
+                  Layer.succeed(KinRecords.KinRecords, {
+                    ...records,
+                    createImportChunk: (...args) =>
+                      (forceRows ? Effect.succeed(false) : records.createImportChunk(...args)).pipe(
+                        Effect.tap((made) =>
+                          Effect.sync(() => {
+                            attempts.push([args[2], made]);
+                          }),
+                        ),
+                      ),
+                  }),
+                ),
+              ),
+            ),
+            KinImport.KinImport,
+          );
+
+          const planned = yield* imports.plan(orgId, ownerId, Stream.fromIterable(file));
+          const afterPlan = yield* importState;
+          assert.deepStrictEqual(afterPlan.kin_records, []);
+          const applied = yield* imports.apply(orgId, ownerId, Stream.fromIterable(file), {
+            progress: (done) =>
+              done !== bindAfter
+                ? Effect.void
+                : sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+                VALUES ('invented-session', ${orgId}, ${ownerId}, ${NOW})`.pipe(
+                    Effect.orDie,
+                    Effect.asVoid,
+                  ),
+          });
+          const afterApply = yield* importState;
+          assert.isNotEmpty(afterApply.kin_team_seqs ?? []);
+          const again = yield* imports.apply(orgId, ownerId, Stream.fromIterable(file));
+          const afterRetry = yield* importState;
+          const undo = yield* imports.undo(orgId, ownerId, header.batch, {
+            apply: true,
+            includeChanged: false,
+          });
+          const afterUndo = yield* importState;
+          return {
+            reports: { planned, applied, again, undo },
+            states: [afterPlan, afterApply, afterRetry, afterUndo],
+            attempts,
+          };
+        }).pipe(Effect.provide(Layer.fresh(layer)), Effect.scoped);
+
+      const { attempts, ...chunk } = yield* exercise(false);
+      const { attempts: forced, ...row } = yield* exercise(true);
+      assert.deepStrictEqual(attempts, [
+        ["work", true],
+        ["expenses", true],
+        ["work", false],
+        ["work", true],
+        ["work", true],
+        ["expenses", true],
+        ["work", false],
+        ["work", false],
+      ]);
+      assert.deepStrictEqual(
+        forced,
+        attempts.map(([list]) => [list, false]),
+      );
+      assert.deepStrictEqual(chunk.reports, row.reports);
+      assert.deepStrictEqual(
+        chunk.reports.applied.problems.map((problem) => problem.source),
+        ["invalid", "repeated"],
+      );
+      for (const [phase, state] of chunk.states.entries()) {
+        const expected = row.states[phase] ?? {};
+        assert.deepStrictEqual(Object.keys(state), Object.keys(expected));
+        for (const [table, rows] of Object.entries(state))
+          assert.deepStrictEqual(rows, expected[table], `snapshot ${phase}: ${table}`);
+      }
+    }),
   );
 
   it.effect("plans and applies fifty thousand entries in chunks; a second apply makes none", () =>

@@ -1315,6 +1315,7 @@ const make = Effect.gen(function* () {
       const first = decoded[0]?.row;
       if (first === undefined || !("entry" in first)) return false;
       const list = first.entry.list;
+      // Other lists can need per-row issuance, name matching, links, or date-based start states.
       if ((list !== "work" && list !== "expenses") || failedLists.has(list)) return false;
       const specs: Array<ImportEntry> = [];
       const sources = new Set<string>();
