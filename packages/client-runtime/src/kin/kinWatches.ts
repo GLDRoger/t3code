@@ -133,6 +133,31 @@ export function kinWatchLine(
 export const KIN_WATCH_LOG_TITLE = "What Kin checked";
 export const KIN_WATCH_LOG_INTRO = "Kin looks at open loops every 45 minutes, day and night.";
 
+/** The line's buttons, the log's paging, and what a failed tap or read says. */
+export const KIN_WATCH_COPY = {
+  look: "Look now",
+  stop: "Stop watching",
+  again: "Watch again",
+  failed: {
+    look: "Couldn't ask Kin to look.",
+    stop: "Couldn't stop watching.",
+    again: "Couldn't start watching again.",
+  },
+  earlier: "Earlier",
+  unreadable: "Couldn't load what Kin checked.",
+} as const;
+
+/** Whether a log row was a look that waited on the Daily limit, and from when. */
+export function kinWatchLimitFrom(rows: ReadonlyArray<KinWatchLogRow>): number | null {
+  let from: number | null = null;
+  for (const row of rows)
+    if (row._tag === "look" && row.look.outcome === "skipped_limit") {
+      const at = ms(row.look.at);
+      if (from === null || at < from) from = at;
+    }
+  return from;
+}
+
 const KIN_WATCH_WHY_LABELS: Readonly<Record<KinWatchWhy, string>> = {
   asked: "You asked",
   again: "Worth another look",

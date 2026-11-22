@@ -84,6 +84,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinClientContact } from "./KinClientTouches";
 import { KinAsideNote, KinAttentionSection } from "./KinAttention";
+import { KinWatchLine } from "./KinWatchLine";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinClientDialog, KinContactDialog, KinProjectDialog } from "./KinWorkForms";
 import { KinNewInvoiceDialog } from "./KinMoneyForms";
@@ -865,6 +866,7 @@ function ClientPage(
             record={view.key}
             names={names}
           />
+          <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={view.key} />
         </div>
         <KinAttentionSection
           environmentId={environmentId}

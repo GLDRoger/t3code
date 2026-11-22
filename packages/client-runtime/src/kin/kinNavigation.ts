@@ -3,6 +3,8 @@
  * gear on Chats) holds for each person.
  */
 
+import { KIN_WATCH_LOG_TITLE } from "./kinWatches.ts";
+
 export type KinDestination = "chats" | "tasks" | "money" | "clients" | "docs";
 
 export const KIN_DESTINATION_NAMES: Readonly<Record<KinDestination, string>> = {
@@ -90,6 +92,7 @@ export type KinSettingsPage =
   | "team"
   | "agents"
   | "check-ins"
+  | "watches"
   | "connections"
   | "deals"
   | "memory"
@@ -104,6 +107,7 @@ const KIN_SETTINGS_PAGES: ReadonlyArray<KinSettingsPage> = [
   "team",
   "agents",
   "check-ins",
+  "watches",
   "connections",
   "deals",
   "memory",
@@ -119,6 +123,7 @@ export const KIN_SETTINGS_PAGE_TITLES: Readonly<Record<KinSettingsPage, string>>
   team: "Team",
   agents: "Agents",
   "check-ins": "Check-ins",
+  watches: KIN_WATCH_LOG_TITLE,
   connections: "Connections",
   deals: "Deals",
   memory: "Memory",
@@ -161,10 +166,16 @@ export function kinSettingsGroups(input: {
     title: KIN_SETTINGS_GROUP_TITLES.you,
     pages: ["profile", ...(input.notifications ? (["notifications"] as const) : []), "appearance"],
   };
+  // A teammate's What Kin checked holds the watches on their own things, or says there are none.
   if (!input.ownerLevel)
-    return input.deals === true
-      ? [you, { id: "company", title: KIN_SETTINGS_GROUP_TITLES.company, pages: ["deals"] }]
-      : [you];
+    return [
+      you,
+      {
+        id: "company",
+        title: KIN_SETTINGS_GROUP_TITLES.company,
+        pages: [...(input.deals === true ? (["deals"] as const) : []), "watches"],
+      },
+    ];
   return [
     you,
     {
@@ -174,6 +185,7 @@ export function kinSettingsGroups(input: {
         "team",
         "agents",
         "check-ins",
+        "watches",
         "connections",
         "deals",
         "memory",
@@ -196,11 +208,12 @@ export type KinPhoneSettingsRow =
   | "team"
   | "agents"
   | "company"
+  | "watches"
   | "stop";
 
 /**
  * The phone's Settings rows above its briefs (You) and below them (Company): the same for an owner
- * and a co-owner; a teammate has You alone, Clients or not. Set-up pages live on the computer.
+ * and a co-owner; a teammate has You and What Kin checked. Set-up pages live on the computer.
  */
 export function kinPhoneSettingsRows(input: { readonly ownerLevel: boolean }): {
   readonly you: ReadonlyArray<KinPhoneSettingsRow>;
@@ -208,7 +221,7 @@ export function kinPhoneSettingsRows(input: { readonly ownerLevel: boolean }): {
 } {
   return {
     you: ["profile", "notifications", "appearance"],
-    company: input.ownerLevel ? ["team", "agents", "company", "stop"] : [],
+    company: input.ownerLevel ? ["team", "agents", "company", "watches", "stop"] : ["watches"],
   };
 }
 

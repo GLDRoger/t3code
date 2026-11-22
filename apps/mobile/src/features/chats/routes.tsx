@@ -9,6 +9,7 @@ import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinClientScreen } from "./KinClientScreen";
 import { KinCompanyScreen } from "./KinCompanyScreen";
+import { KinWatchLogScreen } from "./KinWatchLogScreen";
 import { KinDealEditScreen } from "./KinDealEditScreen";
 import { KinDealNewScreen } from "./KinDealNewScreen";
 import { KinDealScreen } from "./KinDealScreen";
@@ -162,6 +163,11 @@ export const KIN_SCREENS = {
   KinRates: createNativeStackScreen({
     screen: KinRatesScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinWatchLog: createNativeStackScreen({
+    screen: KinWatchLogScreen,
+    linking: "kin/:environmentId/:orgId/watches",
+    options: pageRoute({ title: "What Kin checked" }),
   }),
   KinCompany: createNativeStackScreen({
     screen: KinCompanyScreen,

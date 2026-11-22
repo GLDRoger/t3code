@@ -141,6 +141,7 @@ import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate, useKinHostAt } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import { KinWatchLine } from "./KinWatchLine";
 
 export type KinWorkItemParams = {
   readonly environmentId: string;
@@ -654,6 +655,7 @@ function KinWorkItemBody(props: ItemTarget) {
           </Text>
         ))}
       </View>
+      <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={itemKey} />
       {edit === null ? null : (
         <View className="gap-3">
           <ListSection>

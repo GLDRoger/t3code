@@ -97,6 +97,7 @@ import { kinHostConnected } from "./state/useKinHost";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinEmbedView } from "./widgets/KinEmbedView";
+import { KinWatchLine } from "./KinWatchLine";
 
 export type KinDocParams = {
   readonly environmentId: string;
@@ -721,6 +722,7 @@ function KinDocBody(
                 />
               </ListSection>
             )}
+            <KinWatchLine {...target} recordKey={doc.key} />
             {previous === null ? null : (
               <Pressable
                 accessibilityRole="button"

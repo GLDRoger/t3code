@@ -51,6 +51,7 @@ import {
 } from "../components/ui/select";
 import { randomUUID } from "../lib/utils";
 import { KinAsideNote } from "./KinAttention";
+import { KinWatchLine } from "./KinWatchLine";
 import { kinClient } from "./kinClient";
 import { KinDealLostDialog, KinDealMoveMenu, KinDealNextLine } from "./KinDeals";
 import { Field, FormShell, oneParagraph } from "./KinWorkForms";
@@ -188,6 +189,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
           record={deal.key}
           names={names}
         />
+        <KinWatchLine environmentId={props.environmentId} orgId={orgId} recordKey={deal.key} />
       </div>
 
       {deal.state !== "open" ? null : (

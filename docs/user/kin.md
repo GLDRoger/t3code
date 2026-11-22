@@ -640,6 +640,23 @@ for everyone: work in progress stops, scheduled work due while they are stopped 
 nothing anyone confirms goes out. Messages wait up to a day, and every chat with an agent says the
 agents are stopped. **Resume** starts them again.
 
+## Kin keeps watch
+
+Kin keeps a list of open loops, such as an overdue invoice waiting to be paid, and looks at each one
+every 45 minutes, day and night. It waits longer between looks while nothing changes and looks again
+soon after the thing itself changes. Most looks only read Kin's own records, so they cost nothing.
+When a loop closes, for example when the invoice is marked paid, Kin stops watching it by itself.
+
+A record Kin watches shows one quiet line under its header: what Kin is watching for, when it last
+looked and what it found, and when it looks next. **Look now** asks for a look at once without
+changing when the next one comes. **Stop watching** takes it off the list, and **Watch again** puts
+it back for three days after it closed or stopped.
+
+**What Kin checked** lists every look, one day at a time, with why it ran and what it did. Looks that
+found nothing new are folded into one row you can open. Open it from a watch line, or from
+**Settings → What Kin checked** (on the phone, the gear on Chats). Owners and co-owners see every
+watch; a teammate sees only the watches on their own things, never money.
+
 ## Recommendations
 
 When the same hold-up keeps happening and a setting would end it, Kin suggests the change once, as a

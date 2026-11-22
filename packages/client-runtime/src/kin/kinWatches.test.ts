@@ -6,6 +6,7 @@ import {
   KIN_WATCH_LOG_INTRO,
   KIN_WATCH_LOG_TITLE,
   kinWatchAbout,
+  kinWatchLimitFrom,
   kinWatchLimitLine,
   kinWatchLine,
   kinWatchLogDay,
@@ -234,6 +235,12 @@ describe("the log", () => {
     expect(kinWatchLimitLine(Date.parse(at("18:20")), words)).toBe(
       "From 18:20 Kin only did the checks that need no model: today's daily limit was reached.",
     );
+    const waited = (time: string) =>
+      ({ _tag: "look", look: look(time, { outcome: "skipped_limit" }) }) as const;
+    expect(
+      kinWatchLimitFrom([waited("19:05"), { _tag: "look", look: look("18:50") }, waited("18:20")]),
+    ).toBe(Date.parse(at("18:20")));
+    expect(kinWatchLimitFrom([{ _tag: "look", look: look("18:50") }])).toBeNull();
     expect(kinWatchNoneText(true)).toBe(
       'Kin isn\'t watching anything yet. Ask any agent to keep an eye on something, such as "keep an eye on whether Lumen pays".',
     );
