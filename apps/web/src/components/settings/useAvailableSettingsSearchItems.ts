@@ -65,21 +65,20 @@ export function useAvailableSettingsSearchItems() {
   const wslSettingsRowVisible =
     isWslSettingsRowVisible({ state: desktopWsl.data, error: desktopWsl.error }) === true;
 
-  return kinSettingsShown(
-    filterAvailableSettingsSearchItems({
-      localEnvironmentDisabled,
-      hasCloudPublicConfig: cloudPublicConfig,
-      hasEnvironment,
-      hasProviderSettingsEnvironment,
-      canManageLocalBackend,
-      isWslSettingsRowVisible: wslSettingsRowVisible,
-      hasThreadAutoSettlement,
-      managedTunnelActive,
-      hasPeerLinkHost,
-      hasKinHost,
-      hasFastWorktreeCheckoutEnvironment,
-      hasTextGeneratorsEnvironment,
-      hasPrimaryEnvironment: primaryEnvironmentId !== null,
-    }),
-  );
+  const available = filterAvailableSettingsSearchItems({
+    localEnvironmentDisabled,
+    hasCloudPublicConfig: cloudPublicConfig,
+    hasEnvironment,
+    hasProviderSettingsEnvironment,
+    canManageLocalBackend,
+    isWslSettingsRowVisible: wslSettingsRowVisible,
+    hasThreadAutoSettlement,
+    managedTunnelActive,
+    hasPeerLinkHost,
+    hasKinHost,
+    hasFastWorktreeCheckoutEnvironment,
+    hasTextGeneratorsEnvironment,
+    hasPrimaryEnvironment: primaryEnvironmentId !== null,
+  });
+  return kinSettingsShown(available);
 }
