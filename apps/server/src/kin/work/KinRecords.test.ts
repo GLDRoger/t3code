@@ -220,7 +220,7 @@ it.effect("record_create makes many entries in one call and a retry makes none",
       ],
     );
     // QA Q12: a lead's 30 February is refused too, as a day or a time.
-    for (const due of ["2026-02-30", "2026-02-30T18:00+05:30"])
+    for (const due of ["2026-02-30", "2026-02-30T18:00+05:30", "February 30, 2026"])
       assert.include(
         yield* Effect.flip(
           LeadWork.create(scopeOf(lead), {

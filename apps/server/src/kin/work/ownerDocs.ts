@@ -50,7 +50,7 @@ import * as Docs from "./docs.ts";
 import { KinRecords, type Tick } from "./KinRecords.ts";
 import { LISTS } from "./lists.ts";
 import { OFFERINGS_ORIGIN, startOfferings, withOfferings } from "./offerings.ts";
-import { inList, ownerWriter, placeRefusals, theOwner, viewerOf } from "./ownerWork.ts";
+import { inList, millis, ownerWriter, placeRefusals, theOwner, viewerOf } from "./ownerWork.ts";
 import {
   chatLinksFor,
   iso,
@@ -283,7 +283,7 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
         ]),
     ...(input.changedSince === undefined
       ? []
-      : [sql`r.updated_at >= ${Date.parse(input.changedSince)}`]),
+      : [sql`r.updated_at >= ${yield* millis(input.changedSince, "changedSince")}`]),
     ...(input.whatWeSell === true ? [sql`r.origin_key = ${OFFERINGS_ORIGIN}`] : []),
   ]);
 });

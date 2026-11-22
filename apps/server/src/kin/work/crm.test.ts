@@ -3177,6 +3177,20 @@ it.effect("logging contact with a next step makes the follow-up in the same tran
     const sql = yield* SqlClient.SqlClient;
     yield* seed;
     yield* setup("ask-event");
+    yield* TestClock.adjust(70 * DAY);
+    for (const at of ["1970-02-31T12:00:00.000Z", "not a time"]) {
+      assert.include(
+        yield* Clients.logTouch([owner], {
+          orgId,
+          party: "C-1",
+          kind: "call",
+          at,
+          clientRequestId: "bad-time",
+        }).pipe(Effect.flip),
+        { reason: "invalid_state" },
+      );
+    }
+    yield* TestClock.setTime(0);
     const log = (clientRequestId: string, dueAt: string) =>
       Clients.logTouch([owner], {
         orgId,
