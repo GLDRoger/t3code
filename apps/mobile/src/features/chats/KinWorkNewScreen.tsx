@@ -11,14 +11,22 @@ import {
   kinWorkAssignees,
   kinWorkDraftCheck,
   kinWorkDraftFor,
+  kinWorkDraftHolder,
   kinWorkDraftHint,
   kinWorkDraftWords,
   kinWorkTitleCount,
   kinWorkTitleTooLong,
   kinWorkHostClients,
   kinWorkPrincipalKey,
+  type KinWorkAssignee,
   type KinWorkDraft,
 } from "@t3tools/client-runtime/kin/kinWork";
+import {
+  KIN_TASK_WITH,
+  kinTaskWith,
+  kinTaskWithChoices,
+  kinTaskWithout,
+} from "@t3tools/client-runtime/kin/kinTaskRecord";
 import {
   KIN_CLIENTS,
   KIN_SHORT_FORMS,
@@ -30,7 +38,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
-import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
+import { EnvironmentId, KIN_WORK_ALSO_ON_MAX, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { type ComponentRef, useRef, useState } from "react";
@@ -277,7 +285,9 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                   label={to.invited ? `${to.name}, invited` : to.name}
                   selected={to.key === ownerKey}
                   disabled={saving || to.invited === true}
-                  onPress={() => setDraft((held) => ({ ...held, owner: to.principal }))}
+                  onPress={() =>
+                    setDraft((held) => kinWorkDraftHolder(held, to.principal, names.me))
+                  }
                 />
               ))}
             </View>
@@ -286,6 +296,15 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                 {hint}
               </Text>
             )}
+            <KinWorkNewWith
+              draft={draft}
+              choices={kinTaskWithChoices(assignees, {
+                owner: everyone.find((to) => to.key === ownerKey)?.principal ?? draft.owner,
+              })}
+              names={names}
+              disabled={saving}
+              onChange={setDraft}
+            />
           </View>
         );
       case "due":
@@ -447,6 +466,79 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
           )}
         </ScreenScrollView>
       </ScreenContent>
+    </View>
+  );
+}
+
+/** "+ With" under who has it: who else is on the new task, picked from the holder's own list. */
+function KinWorkNewWith(props: {
+  readonly draft: KinWorkDraft;
+  readonly choices: ReturnType<typeof kinTaskWithChoices>;
+  readonly names: Parameters<typeof kinTaskWith>[0]["names"];
+  readonly disabled: boolean;
+  readonly onChange: (draft: KinWorkDraft) => void;
+}) {
+  const { draft, choices } = props;
+  const grows = useKinTextGrows();
+  const [open, setOpen] = useState(false);
+  const alsoOn = draft.alsoOn ?? [];
+  const shown = kinTaskWith({ item: { alsoOn }, names: props.names, edit: true, change: true });
+  const full = alsoOn.length >= KIN_WORK_ALSO_ON_MAX;
+  const take = (row: KinWorkAssignee, on: boolean) =>
+    props.onChange({
+      ...draft,
+      alsoOn: on ? kinTaskWithout({ alsoOn }, row.principal) : [...alsoOn, row.principal],
+    });
+  return (
+    <View className="gap-2">
+      <View className="flex-row flex-wrap gap-2">
+        {open
+          ? null
+          : shown.people.map((who) => (
+              <Chip
+                wrap={grows}
+                key={who.key}
+                leading={<KinAvatar avatar={who.avatar} size="mini" />}
+                label={who.name}
+                selected
+                trailingIcon="xmark"
+                accessibilityLabel={KIN_TASK_WITH.remove(who.name)}
+                disabled={props.disabled}
+                onPress={() =>
+                  props.onChange({ ...draft, alsoOn: kinTaskWithout({ alsoOn }, who.principal) })
+                }
+              />
+            ))}
+        <Chip
+          icon={open ? "chevron.up" : "plus"}
+          label={KIN_TASK_WITH.label}
+          disabled={props.disabled}
+          onPress={() => setOpen(!open)}
+        />
+      </View>
+      {open ? (
+        <View className="flex-row flex-wrap gap-2">
+          {[...choices.people, ...choices.leads].map((row) => {
+            const on = alsoOn.some((who) => kinWorkPrincipalKey(who) === row.key);
+            return (
+              <Chip
+                wrap={grows}
+                key={row.key}
+                leading={<KinAvatar avatar={row.avatar} size="mini" />}
+                label={row.invited ? `${row.name}, invited` : row.name}
+                selected={on}
+                disabled={props.disabled || row.invited === true || (full && !on)}
+                onPress={() => take(row, on)}
+              />
+            );
+          })}
+        </View>
+      ) : null}
+      {open && full ? (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {KIN_TASK_WITH.full}
+        </Text>
+      ) : null}
     </View>
   );
 }

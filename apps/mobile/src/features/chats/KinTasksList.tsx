@@ -12,6 +12,7 @@ import {
   KIN_TASK_MORE_VIEWS,
   kinTaskFilterProjects,
   kinTaskQuickFilters,
+  kinTasksOnCount,
   KIN_TASKS,
   kinNeedsYouCount,
   kinTaskGroupedChip,
@@ -106,6 +107,7 @@ import {
 } from "./components/KinWorkPieces";
 import { useKinViewerScope } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
+import { kinTaskLeftAtom } from "./state/kinTaskLeft";
 import { useKinOpenHit, useKinWorkLink } from "./state/kinWorkLink";
 import { useKinSearch } from "./state/useKinDocs";
 import { useKinAskAgent } from "./state/useKinMoney";
@@ -215,11 +217,21 @@ export function KinTasksList(
   const { filter } = listState;
   const shown = kinListShown(listState, kinHostLink(useKinHostAt(environmentId)));
   const scope = useKinViewerScope(environmentId);
-  const overview = kinWorkOverview(live.summary, filter, names);
+  const overview = kinWorkOverview(
+    live.summary,
+    filter,
+    names,
+    kinTasksOnCount(listState.records, names.me),
+  );
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
     kinWorkApplied(record, changed),
   );
   const notice = kinWorkListNotice(changed, null);
+  const leftAt = useAtomValue(kinTaskLeftAtom);
+  const left =
+    leftAt !== null && leftAt.environmentId === environmentId && leftAt.orgId === orgId
+      ? leftAt
+      : null;
   const [ticked, setTicked] = useState<ReadonlyArray<KinTaskTicked<KinRecord>>>([]);
   const held = kinTasksTickedShown(ticked, changed, notice);
   // A project's own list is always its project's, so only the rest of the filter is a chip.
@@ -612,6 +624,18 @@ export function KinTasksList(
           }}
         />
       </ScreenContent>
+      {left === null || (notice !== null && notice.undo !== null) ? null : (
+        <KinTasksUndoToast
+          key={`left:${left.record.key}`}
+          text={left.text}
+          bottom={(tab?.bottomClearance ?? 0) + 12}
+          onUndo={() => {
+            forgetLeft();
+            void changes.run(left.record, left.undo, names);
+          }}
+          onDismiss={forgetLeft}
+        />
+      )}
       {notice === null || notice.undo === null ? null : (
         <KinTasksUndoToast
           key={`${notice.key}:${notice.text}`}
@@ -764,6 +788,9 @@ function KinTasksUndoToast(props: {
 }
 
 const UNDO_MS = 8_000;
+
+/** Stable, so the toast's eight seconds don't start again on every render. */
+const forgetLeft = () => appAtomRegistry.set(kinTaskLeftAtom, null);
 
 /**
  * Tasks' one filter: five at a glance (`kinTaskQuickFilters`), then More filters with the other
