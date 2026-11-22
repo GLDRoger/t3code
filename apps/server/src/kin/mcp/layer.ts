@@ -12,7 +12,10 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { parseBearerToken } from "../../auth/EnvironmentAuth.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpToolPolicy } from "./toolPolicy.ts";
-import { type McpInvocationScope, type McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
+import {
+  type McpThreadInvocationScope,
+  type McpThreadCaller,
+} from "../../mcp/McpInvocationContext.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as AgentSession from "../lead/AgentSession.ts";
@@ -71,7 +74,7 @@ const logToolList = Effect.fnUntraced(function* (
     tools: result.tools.length,
   });
 });
-class KinBearerScope extends Context.Service<KinBearerScope, McpInvocationScope>()(
+class KinBearerScope extends Context.Service<KinBearerScope, McpThreadInvocationScope>()(
   "t3/kin/mcp/KinBearerScope",
 ) {}
 
