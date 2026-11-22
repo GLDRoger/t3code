@@ -142,6 +142,15 @@ export type WorkSection = {
     } & TaskFacts
   >;
   readonly moreChanged: number;
+  /** Open tasks someone else holds that this lead is on, to help their holder. */
+  readonly helpingOn?: ReadonlyArray<{
+    readonly key: string;
+    readonly title: string;
+    readonly state: string;
+    readonly holder: string;
+    readonly due: string | null;
+    readonly dueDay?: string;
+  }>;
 };
 
 /** Promotes the pending cursor once the lead's reply posted after it was set. */
@@ -264,6 +273,26 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
     KIN_OWNER_LEVEL,
   );
   const zone = yield* ownerZone(orgId);
+  const helping = yield* sql<{
+    key: string;
+    title: string;
+    state: string;
+    holder: string | null;
+    dueAt: number | null;
+    dueAllDay: number;
+  }>`SELECT r.key, r.title, r.state, COALESCE(p.display_name, a.display_name) AS holder,
+      r.due_at AS "dueAt", r.due_all_day AS "dueAllDay"
+    FROM kin_records r
+    LEFT JOIN kin_people p ON r.owner_kind = 'person' AND p.org_id = r.org_id
+      AND p.person_id = r.owner_id
+    LEFT JOIN kin_agents a ON r.owner_kind = 'agent' AND a.org_id = r.org_id
+      AND a.agent_id = r.owner_id
+    WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.state IN ${sql.in(OPEN)}
+      AND EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.alsoOn') o
+        WHERE o.value = ${`agent:${agentId}`})
+    ORDER BY r.due_at IS NULL, r.due_at, r.key LIMIT ${CHANGED_CAP}`;
+  const dueOf = (dueAt: number | null, allDay: boolean) =>
+    dueAt === null ? null : allDay ? dayIn(dueAt, zone) : timeIn(dueAt, zone);
   return {
     asOf: timeIn(now, zone),
     open: counts?.open ?? 0,
@@ -275,17 +304,24 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
       key: row.key,
       title: row.title,
       state: row.state,
-      due:
-        row.dueAt === null
-          ? null
-          : row.dueAllDay === 1
-            ? dayIn(row.dueAt, zone)
-            : timeIn(row.dueAt, zone),
+      due: dueOf(row.dueAt, row.dueAllDay === 1),
       ...(row.dueAt === null ? {} : { dueDay: dayWords(row.dueAt, zone) }),
       changes: lines.slice(-4),
       ...about.get(row.recordId),
     })),
     moreChanged: Math.max(0, all.length - CHANGED_CAP),
+    ...(helping.length === 0
+      ? {}
+      : {
+          helpingOn: helping.map((task) => ({
+            key: task.key,
+            title: task.title,
+            state: task.state,
+            holder: task.holder ?? "someone",
+            due: dueOf(task.dueAt, task.dueAllDay === 1),
+            ...(task.dueAt === null ? {} : { dueDay: dayWords(task.dueAt, zone) }),
+          })),
+        }),
   } satisfies WorkSection;
 });
 
