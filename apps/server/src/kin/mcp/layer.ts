@@ -154,9 +154,12 @@ export const transport = (base: typeof McpHttpServer.layer) =>
       if (Option.isNone(kin.services)) return base;
       // T3's own tools are served here too, shown to a lead only as `AgentSession` allows:
       // never scheduling or thread-launch tools, which would start work outside Kin's chats.
+      const host = yield* KinToolGate.helperModelHost;
       return Layer.merge(
         base.pipe(
-          Layer.provide(Layer.succeed(McpToolPolicy, KinToolGate.workerPolicy(kin.services.value))),
+          Layer.provide(
+            Layer.succeed(McpToolPolicy, KinToolGate.workerPolicy(kin.services.value, host)),
+          ),
         ),
         endpoint(
           Layer.mergeAll(

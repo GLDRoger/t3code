@@ -11,11 +11,14 @@ import {
   EnvironmentId,
   OrchestratorMcpFailure,
   ProviderInstanceId,
+  type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
+import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
+import * as ServerSettings from "../../serverSettings.ts";
 
 import * as Kin from "../layer.ts";
 import { KinDocumentToolkit } from "../gendocs/mcp.ts";
@@ -25,7 +28,8 @@ import { KinPulseToolkit } from "../pulse/mcp.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
-import { callCounts } from "./KinToolGate.ts";
+import { callCounts, helperModels } from "./KinToolGate.ts";
+import { McpProvidersOffered } from "./toolPolicy.ts";
 
 it("fills the event of every Kin tool that takes one, and of no other", () => {
   const takes = [
@@ -135,3 +139,117 @@ it.effect("counts each tool's calls in memory and logs them in one line an hour"
     ),
   );
 });
+
+const inventedProvider = (instanceId: string, driver: string, slugs: ReadonlyArray<string>) =>
+  ({
+    instanceId: ProviderInstanceId.make(instanceId),
+    driver,
+    enabled: true,
+    installed: true,
+    models: slugs.map((slug) => ({
+      slug,
+      name: slug,
+      isCustom: false,
+      ...(slug === "invented-quill" ? { aliases: ["quill"] } : {}),
+    })),
+  }) as unknown as ServerProvider;
+/** Stand-ins for T3's two tools, reading what Kin's gate leaves them. */
+const Delegation = Toolkit.make(
+  Tool.make("delegate_task", {
+    description: "Invented: starts a task.",
+    parameters: Schema.Struct({ task: Schema.String, target: Schema.optional(Schema.Unknown) }),
+    success: Schema.Struct({ ran: Schema.String }),
+    failure: OrchestratorMcpFailure,
+    failureMode: "return",
+  }),
+  Tool.make("orchestrator_capabilities", {
+    description: "Invented: lists models.",
+    success: Schema.Struct({ models: Schema.Array(Schema.String) }),
+    failure: OrchestratorMcpFailure,
+    failureMode: "return",
+  }),
+);
+
+it.effect.each([
+  ["a Kin agent", true],
+  ["plain T3 Code", false],
+] as const)(
+  "%s: a helper task starts only on a model agents may run on, and is offered only those",
+  ([_who, kin]) => {
+    const started: Array<unknown> = [];
+    let settings: Parameters<Effect.Success<typeof McpProvidersOffered>>[0];
+    const providers = [
+      inventedProvider("claudeAgent", "claudeAgent", ["invented-quill", "invented-moth"]),
+      inventedProvider("codex", "codex", ["invented-lark"]),
+    ];
+    const handlers = McpToolAccess.toLayer(Delegation, {
+      delegate_task: McpToolAccess.reads(({ target }) =>
+        Effect.sync(() => started.push(target ?? null)).pipe(Effect.as({ ran: "started" })),
+      ),
+      orchestrator_capabilities: McpToolAccess.reads(() =>
+        Effect.gen(function* () {
+          const offered = yield* (yield* McpProvidersOffered)(settings, providers);
+          return { models: offered.flatMap((one) => one.models.map((model) => model.slug)) };
+        }),
+      ),
+    });
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      settings = yield* (yield* ServerSettings.ServerSettingsService).getSettings;
+      const call = (name: string, args: object) =>
+        server.callTool({ name, arguments: args }).pipe(
+          Effect.provideService(McpSchema.McpServerClient, client),
+          Effect.provideService(McpInvocationContext, {
+            ...caller,
+            thread: {
+              ...caller.thread!,
+              providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+            },
+          }),
+          Effect.map((result) => JSON.stringify(result)),
+          Effect.catch((error) => Effect.succeed(JSON.stringify(error))),
+        );
+      const refused = [
+        { model: "invented-sparrow" },
+        { model: "invented-moth" },
+        { providerInstanceId: "codex", model: "invented-lark" },
+      ];
+      const admitted = [undefined, { model: "quill" }, { providerInstanceId: "claudeAgent" }];
+      for (const target of refused) {
+        const answer = yield* call("delegate_task", { task: "Invented: review", target });
+        if (kin) assert.include(answer, "Kin didn't start this task", JSON.stringify(target));
+        else assert.include(answer, "started");
+      }
+      // Nothing started for a refused call: no thread, card or run follows a handler never run.
+      assert.lengthOf(started, kin ? 0 : refused.length);
+      for (const target of admitted)
+        assert.include(
+          yield* call("delegate_task", { task: "Invented: review", ...(target ? { target } : {}) }),
+          "started",
+        );
+      assert.include(
+        yield* call("orchestrator_capabilities", {}),
+        kin
+          ? JSON.stringify({ models: ["invented-quill"] })
+          : JSON.stringify({ models: ["invented-quill", "invented-moth", "invented-lark"] }),
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          McpHttpServer.toolkitRegistration(Delegation, handlers),
+          kin ? helperModels : Layer.empty,
+        ).pipe(
+          Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provideMerge(
+            ServerSettings.layerTest({
+              providerModelPreferences: { claudeAgent: { hiddenModels: ["invented-moth"] } },
+            } as never),
+          ),
+          Layer.provideMerge(
+            Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed(providers) }),
+          ),
+        ),
+      ),
+    );
+  },
+);

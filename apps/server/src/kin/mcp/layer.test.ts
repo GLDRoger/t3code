@@ -190,7 +190,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(GitManager)({}),
   Layer.mock(ProviderAdapterRegistryV2)({}),
   Layer.mock(ProviderInstanceRegistry)({}),
-  Layer.mock(ProviderRegistry)({}),
+  Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([]) }),
   Layer.mock(PullRequestReviewGuideService)({}),
   Layer.mock(PullRequestService)({}),
   Layer.mock(RemoteDelegation)({ delegate: () => forwardedTo("delegate") }),
@@ -657,6 +657,15 @@ it.effect.each([true, false])(
         for (const [name, args] of elsewhere)
           assert.include(yield* leadCall(name, args), REMOTE_REFUSAL, name);
         assert.strictEqual(forwarded.length, before);
+        // A task on a model agents may not run on is refused before T3 sees it.
+        const unknownModel = {
+          task: "Invented: review the stack",
+          target: { model: "invented-sparrow" },
+        };
+        assert.include(
+          yield* leadCall("delegate_task", unknownModel),
+          "Kin didn't start this task",
+        );
         assert.notInclude(
           yield* leadCall("t3_thread_read", { environmentId: "environment", threadId }),
           REMOTE_REFUSAL,
@@ -1056,6 +1065,14 @@ it.effect.each([true, false])(
         assert.notInclude(
           yield* worker.call("t3_thread_read", { threadId: "lead-thread" }),
           WORKER_REFUSAL,
+        );
+        assert.include(
+          yield* worker.call("delegate_task", unknownModel),
+          "Kin didn't start this task",
+        );
+        assert.notInclude(
+          yield* plain.call("delegate_task", unknownModel),
+          "Kin didn't start this task",
         );
         // Nor does anything a worker asks for.
         const workerBefore = forwarded.length;

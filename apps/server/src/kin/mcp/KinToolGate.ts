@@ -3,7 +3,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import { OrchestratorMcpTarget } from "@t3tools/contracts";
 
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import * as McpToolPolicy from "./toolPolicy.ts";
@@ -18,6 +20,9 @@ import { APPROVED_REFUSAL, approvedToolAllowed } from "../lead/approvedDraft.ts"
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
+import { helperModelRefusal, isDevServer, kinHelperProviders } from "../lead/leadModels.ts";
+import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { DEALS_OFF, sectionOfKey, sectionOfList, sectionOfTool } from "../shell/sections.ts";
 import * as ReadTools from "./readTools.ts";
@@ -49,6 +54,83 @@ const namesOtherMachine = Effect.fnUntraced(function* (args: unknown) {
     Predicate.hasProperty(target, "environmentId") ? target.environmentId : undefined,
   ].some((environmentId) => environmentId !== undefined && environmentId !== here);
 });
+
+/** What a Kin agent reads when the check itself failed. */
+const HELPER_MODEL_UNCHECKED =
+  "Kin can't check this task's model right now, so it didn't start it. Leave target.model and target.providerInstanceId out to run it on your own model.";
+
+const decodeTarget = Schema.decodeUnknownOption(
+  Schema.Union([OrchestratorMcpTarget, Schema.fromJsonString(OrchestratorMcpTarget)]),
+);
+
+/** What a helper's check reads of the host, taken once when the gate is built. */
+export const helperModelHost = Effect.gen(function* () {
+  return {
+    settings: yield* Effect.serviceOption(ServerSettingsService),
+    registry: yield* Effect.serviceOption(ProviderRegistry),
+    devServer: yield* isDevServer,
+  };
+});
+type HelperModelHost = Effect.Success<typeof helperModelHost>;
+
+/**
+ * Why a Kin agent's `delegate_task` may not start on the provider and model its target names
+ * (`helperModelRefusal`), before any task exists; a target T3 can't decode is T3's to refuse.
+ */
+const helperModelRefused = Effect.fn("KinToolGate.helperModel")(
+  function* (tool: string, args: unknown, host: HelperModelHost) {
+    if (tool !== "delegate_task" || !Predicate.hasProperty(args, "target")) return undefined;
+    const target = Option.getOrUndefined(decodeTarget(args.target));
+    if (target === undefined) return undefined;
+    const callerInstanceId = Option.getOrUndefined(
+      yield* Effect.serviceOption(McpInvocationContext),
+    )?.thread?.providerInstanceId;
+    const named =
+      target.model !== undefined ||
+      target.driverKind !== undefined ||
+      (target.providerInstanceId !== undefined && target.providerInstanceId !== callerInstanceId);
+    if (!named) return undefined;
+    if (Option.isNone(host.settings)) return HELPER_MODEL_UNCHECKED;
+    const providers = Option.isNone(host.registry)
+      ? null
+      : yield* host.registry.value.getProviders.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't read the providers for a task", { cause }).pipe(
+              Effect.as(null),
+            ),
+          ),
+        );
+    return helperModelRefusal({
+      settings: yield* host.settings.value.getSettings,
+      providers,
+      devServer: host.devServer,
+      callerInstanceId,
+      target,
+    });
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin couldn't check a task's model; refusing", { cause }).pipe(
+      Effect.as<string | undefined>(HELPER_MODEL_UNCHECKED),
+    ),
+  ),
+);
+
+/** A Kin agent's `orchestrator_capabilities` offers what its helper tasks may run on. */
+const offeredToAgents = (
+  settings: Parameters<typeof kinHelperProviders>[0],
+  providers: Parameters<typeof kinHelperProviders>[1],
+) => Effect.succeed(kinHelperProviders(settings, providers));
+
+/** A Kin agent's helper tasks run only on what agents may, and it is offered only that. */
+export const helperModels = Layer.mergeAll(
+  McpToolPolicy.toolCallRefusal(
+    Effect.map(
+      helperModelHost,
+      (host) => (tool: string, args: unknown) => helperModelRefused(tool, args, host),
+    ),
+  ),
+  McpToolPolicy.providersOffered(offeredToAgents),
+);
 
 export const taskAdmitted: Check = Effect.fn("KinToolGate.taskAdmitted")(
   function* (turn, tool) {
@@ -206,7 +288,7 @@ const kinChecks = [
  * machine, each through the checks a call from the turn that asked for it passes
  * (`delegatedTurn`, as its shell follows). Every other thread's list and calls are T3's.
  */
-export const workerPolicy = (services: Context.Context<Services>) => {
+export const workerPolicy = (services: Context.Context<Services>, host: HelperModelHost) => {
   const sql = Context.get(services, SqlClient.SqlClient);
   // Per token: a thread's lineage is written before its session's token is issued.
   const known = new WeakMap<object, boolean>();
@@ -227,6 +309,13 @@ export const workerPolicy = (services: Context.Context<Services>) => {
   return {
     visible: (name: string) =>
       workerMayReach(name) ? Effect.succeed(true) : Effect.map(isWorker, (worker) => !worker),
+    offered: (
+      settings: Parameters<typeof kinHelperProviders>[0],
+      providers: Parameters<typeof kinHelperProviders>[1],
+    ) =>
+      Effect.map(isWorker, (worker) =>
+        worker ? kinHelperProviders(settings, providers) : providers,
+      ),
     refusal: Effect.fn("KinToolGate.workerRefusal")(
       function* (tool: string, args: unknown) {
         const { delegated, turn } = yield* lineage((yield* caller)?.thread);
@@ -237,7 +326,7 @@ export const workerPolicy = (services: Context.Context<Services>) => {
         for (const [check, refusal] of kinChecks)
           if (!(yield* check(turn, tool, args).pipe(Effect.provideContext(services))))
             return refusal;
-        return undefined;
+        return yield* helperModelRefused(tool, args, host);
       },
       Effect.catchCause((cause) =>
         Effect.logWarning("Kin worker tool gate failed; refusing", { cause }).pipe(
@@ -274,7 +363,7 @@ export const callCounts = Layer.unwrap(
  * Every Kin MCP call passes here first, whatever registered it: nothing to another machine, where
  * none of these checks follow; only the review in a stranger's pull request's turn
  * (`outsideReview`), only the one approved make in an approved draft's (`approvedDraft`); nothing reaches the owner's context in a turn others read (`SharedTools`); no
- * run outside text could steer (`OutsideContent`); no task past the limit.
+ * run outside text could steer (`OutsideContent`); no task past the limit (or off `helperModels`).
  */
 export const layer = ReadTools.layer.pipe(
   // Built last, so outermost: a read tool's gates read on the reader too.
@@ -291,6 +380,7 @@ export const layer = ReadTools.layer.pipe(
       McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", admitted), SHARED_REFUSAL),
       McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outside), OUTSIDE_REFUSAL),
       McpToolPolicy.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
+      helperModels,
       sectionAdmitted,
     ),
   ),

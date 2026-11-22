@@ -60,6 +60,7 @@ import * as KinGitHubHook from "./github/appHook.ts";
 import * as KinGitHubAppSetup from "./github/appSetup.ts";
 import * as Keychain from "./github/Keychain.ts";
 import * as AgentSession from "./lead/AgentSession.ts";
+import * as KinRefusedModels from "./lead/refusedModels.ts";
 import * as Workspace from "./gendocs/workspace.ts";
 import * as Vcs from "../vcs/VcsProcess.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -155,6 +156,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
             Layer.mergeAll(
               KinPush.layer,
               KinHostCare.layer,
+              KinRefusedModels.layer,
               LevelControl.layer,
               MemoryChanges.layer,
               KinImport.layer.pipe(Layer.provideMerge(KinRecords.layer)),
