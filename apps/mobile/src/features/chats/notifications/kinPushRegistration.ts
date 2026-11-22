@@ -1,3 +1,4 @@
+import { KIN_THIS_PHONE_COPY, type KinPhoneLeaver } from "@t3tools/client-runtime/kin/kinDevice";
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import {
   KinPushError,
@@ -114,13 +115,35 @@ export function kinPushLeaveOutcome(input: {
   readonly orgs: number;
   /** One per org; null when it timed out or couldn't be sent. */
   readonly answers: ReadonlyArray<boolean | null> | null;
-}): "nothing" | "confirmed" | "unconfirmed" {
+}): KinPushLeave {
   if (input.orgs === 0) return "nothing";
   return input.answers !== null &&
     input.answers.length === input.orgs &&
     input.answers.every((ok) => ok === true)
     ? "confirmed"
     : "unconfirmed";
+}
+
+export type KinPushLeave = "nothing" | "confirmed" | "unconfirmed";
+
+/**
+ * The one notice after leaving a team's computers: none unless one that names this person's org
+ * didn't take the phone's notices back. One that never named an org can't notify, so says nothing.
+ */
+export function kinPushLeaveNotice(input: {
+  readonly team: string;
+  readonly leaver: KinPhoneLeaver;
+  readonly left: ReadonlyArray<{ readonly computer: string; readonly outcome: KinPushLeave }>;
+}): { readonly title: string; readonly detail: string } | null {
+  const computers = input.left
+    .filter((one) => one.outcome === "unconfirmed")
+    .map((one) => one.computer);
+  return computers.length === 0
+    ? null
+    : {
+        title: KIN_THIS_PHONE_COPY.stillNotifiesTitle(input.team),
+        detail: KIN_THIS_PHONE_COPY.stillNotifiesDetail({ computers, leaver: input.leaver }),
+      };
 }
 
 /** Phones Kin can notify: an iPhone through APNs, an Android phone through FCM. */
