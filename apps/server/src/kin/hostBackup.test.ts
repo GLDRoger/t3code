@@ -20,6 +20,7 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
@@ -630,7 +631,26 @@ it.effect(
       yield* care.succeeded(orgId, finance);
       assert.isTrue(yield* care.troubleOpen(orgId, "unreachable"));
       yield* sql`UPDATE kin_events SET state = 'done' WHERE event_id = 'f1'`;
-      yield* care.succeeded(orgId, chief);
+      const transactions: Array<unknown> = [];
+      yield* care.succeeded(orgId, chief).pipe(
+        Effect.provideService(Statement.CurrentTransformer, (statement) =>
+          Effect.gen(function* () {
+            const [source] = statement.compile();
+            if (
+              source.includes("AND e.held_by = a.trouble_id") ||
+              source.includes("UPDATE kin_troubles SET closed_at") ||
+              source.includes("UPDATE kin_events SET state = 'queued', wakeup_id = NULL")
+            ) {
+              transactions.push(
+                Option.getOrUndefined(yield* Effect.serviceOption(sql.transactionService)),
+              );
+            }
+            return statement;
+          }),
+        ),
+      );
+      assert.isAtLeast(transactions.length, 3);
+      assert.isTrue(transactions.every((tx) => tx !== undefined));
       assert.deepStrictEqual(
         (yield* cards).map((card) => [card.cause, card.open]),
         [
