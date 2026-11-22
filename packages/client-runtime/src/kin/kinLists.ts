@@ -1209,6 +1209,8 @@ export interface KinListEntryView {
     readonly draft: string;
     readonly currency: string;
     readonly received: KinMoney | null;
+    /** An expense's amount goes below zero as a refund or credit, as when it was added. */
+    readonly belowZero: boolean;
   } | null;
   /** Entries that take payments: what is still owed and what came in. */
   readonly balance: {
@@ -1373,6 +1375,7 @@ export function kinListEntryView(
                 : kinMoneyDraft(item.amount, def?.currency ?? item.amount.currency),
             currency: item.amount?.currency ?? def?.currency ?? KIN_DEFAULT_HOME_CURRENCY,
             received: received !== null && received.minor > 0 ? received : null,
+            belowZero: item.list === "expenses",
           }
         : null,
     balance:
@@ -1451,12 +1454,17 @@ export function kinAmountCheck(
   text: string,
   currency: string,
   received: KinMoney | null,
+  belowZero = false,
 ): Checked<KinMoney | null> {
   if (text.trim() === "")
     return received === null
       ? { ok: true, value: null }
       : { ok: false, problem: "This entry has payments, so it needs an amount." };
-  const amount = kinParseMoney(text, currency);
+  const read = parseKinMoney(text, currency);
+  const amount =
+    "money" in read && (read.money.minor > 0 || (belowZero && read.money.minor < 0))
+      ? read.money
+      : null;
   if (amount === null) return { ok: false, problem: AMOUNT_PROBLEM };
   if (received === null) return { ok: true, value: amount };
   if (amount.currency !== received.currency)

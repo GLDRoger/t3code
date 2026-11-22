@@ -634,7 +634,12 @@ export function KinListEntry(
                   disabled={busy}
                   ask={changes.ask}
                   onSave={async (text) => {
-                    const checked = kinAmountCheck(text, amountEdit.currency, amountEdit.received);
+                    const checked = kinAmountCheck(
+                      text,
+                      amountEdit.currency,
+                      amountEdit.received,
+                      amountEdit.belowZero,
+                    );
                     if (!checked.ok) return checked.problem;
                     const save = () =>
                       changes.edit(item.rev, { amount: checked.value }, text.trim());
