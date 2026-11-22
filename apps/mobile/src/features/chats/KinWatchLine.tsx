@@ -16,8 +16,10 @@ import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
+import { Sheet } from "../../components/ui/Sheet";
 import { useNowMinuteMs } from "../../lib/clock";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -26,7 +28,8 @@ import type { KinWorkTarget } from "./state/useKinWork";
 
 /**
  * The line on a record Kin watches, in `kinWatchLine`'s words, beside the record's set-aside note:
- * the buttons this person may use, and What Kin checked. A record with no watch shows nothing.
+ * one row that opens a sheet with the buttons this person may use, and What Kin checked. A record
+ * with no watch shows nothing.
  */
 export function KinWatchLine(props: KinWorkTarget & { readonly recordKey: KinRecordKey }) {
   const { environmentId, orgId, recordKey } = props;
@@ -46,6 +49,7 @@ export function KinWatchLine(props: KinWorkTarget & { readonly recordKey: KinRec
   };
   const [busy, setBusy] = useState<KinWatchAction | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
   const view = watch === undefined ? null : kinWatchLine(watch, now);
   if (watch === undefined || view === null) return null;
 
@@ -64,30 +68,48 @@ export function KinWatchLine(props: KinWorkTarget & { readonly recordKey: KinRec
   };
 
   return (
-    <ListSection>
-      <View className="bg-grouped-card">
-        <ListRowLayout icon="eye" label={view.text} />
-      </View>
-      {view.actions
-        .filter((action) => may[action])
-        .map((action) => (
-          <ListActionRow
-            key={action}
-            label={KIN_WATCH_COPY[action]}
-            loading={busy === action}
-            disabled={busy !== null && busy !== action}
-            onPress={() => void act(action)}
-          />
-        ))}
-      <ListActionRow
-        label={KIN_WATCH_LOG_TITLE}
-        onPress={() => navigation.navigate("KinWatchLog", { environmentId, orgId })}
-      />
-      {problem === null ? null : (
-        <Text accessibilityRole="alert" className="px-4 py-2 text-sm text-danger-foreground">
-          {problem}
-        </Text>
-      )}
-    </ListSection>
+    <>
+      <ListSection>
+        <ListRow icon="eye" label={view.text} onPress={() => setOpen(true)} />
+      </ListSection>
+      {open ? (
+        // Plain: the line itself heads the sheet, so no new title is read.
+        <Sheet variant="plain" title={view.text} onClose={() => setOpen(false)}>
+          <View className="px-4 pt-7 pb-10">
+            <ListSection>
+              <View className="bg-grouped-card">
+                <ListRowLayout icon="eye" label={view.text} />
+              </View>
+              {view.actions
+                .filter((action) => may[action])
+                .map((action) => (
+                  <ListActionRow
+                    key={action}
+                    label={KIN_WATCH_COPY[action]}
+                    loading={busy === action}
+                    disabled={busy !== null && busy !== action}
+                    onPress={() => void act(action)}
+                  />
+                ))}
+              <ListActionRow
+                label={KIN_WATCH_LOG_TITLE}
+                onPress={() => {
+                  setOpen(false);
+                  navigation.navigate("KinWatchLog", { environmentId, orgId });
+                }}
+              />
+              {problem === null ? null : (
+                <Text
+                  accessibilityRole="alert"
+                  className="px-4 py-2 text-sm text-danger-foreground"
+                >
+                  {problem}
+                </Text>
+              )}
+            </ListSection>
+          </View>
+        </Sheet>
+      ) : null}
+    </>
   );
 }

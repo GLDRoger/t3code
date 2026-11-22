@@ -13,6 +13,7 @@ import {
   KinMessageId,
   KinWidgetId,
   KIN_CODING_AGENT_UNNAMED,
+  KIN_DISMISSED_FIELD,
   KIN_TAKEN_DEFAULT_FIELD,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -596,6 +597,16 @@ describe("kinTaskActivity", () => {
             at: "2026-11-10T14:00:00.000Z",
             fields: [{ field: "default", from: null, to: "q-2" }],
           }),
+          // Zoya dismissed the question it waited on her for, so it stopped waiting on her.
+          change({
+            seq: 6,
+            by: zoya,
+            at: "2026-11-10T16:00:00.000Z",
+            fields: [
+              { field: "state", from: "waiting", to: "open" },
+              { field: KIN_DISMISSED_FIELD, from: null, to: "q-3" },
+            ],
+          }),
           // Zoya's coding agent started it and left a note, through her key.
           change({
             seq: 5,
@@ -649,6 +660,7 @@ describe("kinTaskActivity", () => {
       ["change", "Chief of staff", "updated it", null],
       ["state", "Zoya", "started on it", "coding agent “Work laptop”"],
       ["comment", "Zoya", "", "coding agent “Work laptop”"],
+      ["state", "Zoya", "dismissed the question without choosing", null],
       ["comment", "Zoya", "", "a coding agent"],
       ["comment", "Zoya", "", "coding agent “Kin”"],
     ]);

@@ -1,3 +1,4 @@
+import { kinSentences } from "@t3tools/client-runtime/kin/kinScreenState";
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
@@ -24,6 +25,9 @@ import {
   KIN_MAIL_CANCEL_UNDO_MS,
   kinChoicePhase,
   kinChoiceUndoneLine,
+  KIN_CHOICE_DISMISS_COPY,
+  kinChoiceDismissedLine,
+  kinChoiceDismissible,
   kinSendEditControls,
   kinSendEditedLine,
   kinSendEditBound,
@@ -511,7 +515,7 @@ function KinChoiceCard(props: {
   const warnedView = kinSendEditWarned(choice, shownEdit, new Date(nowMs));
   const checked = kinSendTicked(warnedView, ticked) !== null;
 
-  const { tick, press, pickFrom, sendEdit, saveEdit, discardEdit } = kinChoiceCardActions({
+  const { tick, press, pickFrom, sendEdit, saveEdit, discardEdit, dismiss } = kinChoiceCardActions({
     choice,
     environmentId,
     newId: randomUUID,
@@ -569,6 +573,32 @@ function KinChoiceCard(props: {
   useEffect(() => () => heldPress.flush(), [heldPress]);
   const choose = (optionId: string) =>
     kinMailCancels(choice, optionId) ? setAsking(optionId) : void press(optionId);
+  const dismissible = canAct && kinChoiceDismissible(choice, phase, props.viewerPersonId);
+  const dismissed = kinChoiceDismissedLine(choice, props.viewerPersonId);
+
+  if (phase === "dismissed" && dismissed !== null)
+    return (
+      <section aria-label={kinSentences([dismissed.text, choice.question])} className="px-1">
+        <div className="flex min-h-6 items-center gap-2">
+          <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+            <span className="font-medium">{dismissed.text}</span> · {choice.question}
+          </p>
+          {dismissed.undo && canAct ? (
+            <Button
+              variant="ghost-muted"
+              size="xs"
+              aria-label={KIN_CHOICE_DISMISS_COPY.undoName}
+              aria-busy={pending !== null}
+              disabled={pending !== null}
+              onClick={() => void dismiss(true)}
+            >
+              {KIN_CHOICE_DISMISS_COPY.undo}
+            </Button>
+          ) : null}
+        </div>
+        <CardNotice notice={status?.notice} />
+      </section>
+    );
 
   return (
     <CardFrame label={kinChoiceAccessibilityLabel(choice, answered?.text ?? null, edited)}>
@@ -707,6 +737,22 @@ function KinChoiceCard(props: {
               </Button>
             ) : null}
           </div>
+          {dismissible ? (
+            <div className="flex">
+              <Button
+                variant="ghost-muted"
+                size="xs"
+                aria-label={KIN_CHOICE_DISMISS_COPY.dismissName}
+                aria-busy={
+                  pending !== null && choice.options.every((option) => option.id !== pending)
+                }
+                disabled={pending !== null || switching}
+                onClick={() => void dismiss()}
+              >
+                {KIN_CHOICE_DISMISS_COPY.dismiss}
+              </Button>
+            </div>
+          ) : null}
         </>
       )}
       {decided === null ? null : <p className="text-xs text-muted-foreground">{decided}</p>}

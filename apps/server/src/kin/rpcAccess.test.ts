@@ -43,6 +43,7 @@ const MEMBER = [
   "kin.chat.history",
   "kin.chat.members",
   "kin.chat.subscribe",
+  "kin.chat.working",
   "kin.chats.clear",
   "kin.chats.createDirect",
   "kin.chats.mute",

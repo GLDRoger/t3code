@@ -55,6 +55,7 @@ import * as Routines from "../triggers/routines.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { dueTurnText } from "../questions/openQuestions.ts";
+import { dismissalGone } from "../questions/dismissed.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
@@ -402,6 +403,7 @@ const make = Effect.gen(function* () {
       }
       if (subject.type !== "question" || subject.undone === true || subject.answered === true)
         return false;
+      if (subject.dismissed === true) return yield* dismissalGone(orgId, subject);
       const due = yield* dueTurnText(orgId, subject.questionId, yield* Clock.currentTimeMillis);
       return due === undefined;
     },

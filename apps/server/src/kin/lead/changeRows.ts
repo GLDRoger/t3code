@@ -8,6 +8,7 @@ import {
   KinRecordSide,
   KinRecordState,
   type KinWorkPrincipal,
+  KIN_DISMISSED_FIELD,
   KIN_TAKEN_DEFAULT_FIELD,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -50,9 +51,16 @@ export const millisOf = (shown: string | null) => {
 
 /**
  * Words that ride along with a move and go when it is put back; nothing to restore of their own.
- * `KIN_TAKEN_DEFAULT_FIELD` names the question whose default made the change (`defaultTaken.ts`).
+ * `KIN_TAKEN_DEFAULT_FIELD` names the question whose default made the change (`defaultTaken.ts`),
+ * `KIN_DISMISSED_FIELD` the one whose dismissal did (`dismissed.ts`).
  */
-export const ALONG = new Set(["reason", "handedBack", "untold", KIN_TAKEN_DEFAULT_FIELD]);
+export const ALONG = new Set([
+  "reason",
+  "handedBack",
+  "untold",
+  KIN_TAKEN_DEFAULT_FIELD,
+  KIN_DISMISSED_FIELD,
+]);
 
 /**
  * What putting back one change's old values writes, or undefined when Kin can't do it on its own:
