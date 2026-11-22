@@ -290,6 +290,74 @@ describe("statement matching", () => {
     assert.strictEqual(shown.category, category);
   });
 
+  it("repays a partner's oldest owed expenses a debit adds up to, lump sum after lump sum", () => {
+    const owed = (key: string, amountMinor: number) => ({
+      recordId: `rec_${key}`,
+      key,
+      amountMinor,
+    });
+    const partners = [
+      {
+        name: "Meera Rao",
+        currency: "INR",
+        owed: [owed("EXP-4", 120_000), owed("EXP-7", 80_000), owed("EXP-9", 50_000)],
+      },
+    ];
+    const debit = (index: number, date: string, description: string, amountMinor: number) =>
+      row({ index, date, description, amountMinor, direction: "debit" });
+    const rows = [
+      // Listed newest first, as many banks do: the earlier lump sum still settles the oldest.
+      debit(0, "2026-10-20", "IMPS-MEERA RAO-REIMB", 50_000),
+      debit(1, "2026-10-08", "NEFT DR-UTIB0000001-MEERA RAO", 200_000),
+      debit(2, "2026-10-09", "UPI-SOMEONE ELSE", 120_000),
+    ];
+    const results = matchRows(rows, {
+      currency: "INR",
+      withholdsAtSource: true,
+      invoices: [],
+      expenses: [],
+      partners,
+      ownAccounts: [],
+      known: [],
+      bank: null,
+    });
+    assert.deepStrictEqual(
+      results.map((one) => [one.group, one.candidates.map((c) => c.repays?.map((r) => r.key))]),
+      [
+        ["matched", [["EXP-9"]]],
+        ["matched", [["EXP-4", "EXP-7"]]],
+        // The oldest is already taken by the earlier lump sum, and nothing names her.
+        ["unmatched", []],
+      ],
+    );
+    // An amount alone is offered, never ticked; one that adds up to no oldest run isn't.
+    const alone = matchRows([debit(0, "2026-10-08", "NEFT DR-UTIB0000001-SOMEONE", 120_000)], {
+      currency: "INR",
+      withholdsAtSource: true,
+      invoices: [],
+      expenses: [],
+      partners,
+      ownAccounts: [],
+      known: [],
+      bank: null,
+    });
+    assert.deepStrictEqual(
+      [alone[0]!.group, alone[0]!.candidates[0]?.repays?.map((one) => one.key)],
+      ["choose", ["EXP-4"]],
+    );
+    const skips = matchRows([debit(0, "2026-10-08", "MEERA RAO", 80_000)], {
+      currency: "INR",
+      withholdsAtSource: true,
+      invoices: [],
+      expenses: [],
+      partners,
+      ownAccounts: [],
+      known: [],
+      bank: null,
+    });
+    assert.deepStrictEqual(skips[0]!.candidates, []);
+  });
+
   it("reads vendors the way banks write them", () => {
     assert.strictEqual(vendorOf("UPI/DR/412345/ZOMATO LTD/YESB/zomato@yes"), "Zomato Ltd");
     assert.strictEqual(vendorOf("ACH D- INVENTED INSURANCE CO-POLICY 88"), "Invented Insurance Co");

@@ -17,7 +17,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinRecords, type Writer } from "../KinRecords.ts";
 import type { RecordRow } from "../recordRows.ts";
-import { type FieldValue, parseFields } from "../lists.ts";
+import { type FieldValue, fieldText, parseFields } from "../lists.ts";
+import { fundingOf } from "../reimbursement.ts";
 import { endOfDay, isSuggestion, ownerZone, stillSuggestion } from "../recordRows.ts";
 import { homeCurrency } from "../companyProfile.ts";
 import { defineList, listDef, PRESETS, presetDefinition } from "../registers.ts";
@@ -77,6 +78,13 @@ const Prior = Schema.Struct({
   ),
   /** A payment recorded before this statement that its line was matched to (`paymentSourceColumns`). */
   matched: Schema.optional(Schema.String),
+  /** A partner's expense this line paid back: its reimbursement and day before. */
+  repaid: Schema.optional(
+    Schema.Struct({
+      reimbursement: Schema.NullOr(Schema.String),
+      repaidOn: Schema.NullOr(Schema.String),
+    }),
+  ),
 });
 const PriorJson = Schema.fromJsonString(Prior);
 const encodePrior = Schema.encodeEffect(PriorJson);
@@ -428,6 +436,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         tds: 0,
         paid: 0,
         linked: 0,
+        repaid: 0,
         created: 0,
         transfers: 0,
         ignored: 0,
@@ -448,6 +457,34 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           if (targetRow === undefined) return yield* changed;
           // A suggestion's line applies nothing: not its payment, not its bill, until it is kept.
           if (isSuggestion(targetRow)) return yield* invalid(stillSuggestion(targetRow.key));
+          if (candidate.repays !== undefined) {
+            // Each must still be owed: repaid since the read, it would be paid back twice.
+            const owed: Array<RecordRow> = [];
+            for (const one of candidate.repays) {
+              const expense = yield* records.getById(input.orgId, one.recordId);
+              const funding =
+                expense === undefined ? undefined : fundingOf(parseFields(expense.fieldsJson));
+              if (funding?.by !== "partner" || funding.state !== "owed") return yield* changed;
+              owed.push(expense!);
+            }
+            const prior = yield* settleBank(row, states.explained, "expense");
+            for (const expense of owed) {
+              const fields = parseFields(expense.fieldsJson);
+              yield* records.update(input.orgId, writer, expense.key, {
+                fields: { reimbursement: "repaid", repaidOn: row.date },
+              });
+              yield* entry(row, "expense_linked", expense.recordId, null, {
+                bank: prior,
+                repaid: {
+                  reimbursement: fieldText(fields, "reimbursement"),
+                  repaidOn: fieldText(fields, "repaidOn"),
+                },
+              });
+              yield* linkBoth(row, expense.recordId, expense.key);
+              tally.repaid += 1;
+            }
+            continue;
+          }
           if (candidate.kind === "invoice" && candidate.paymentId !== undefined) {
             yield* livePayment(candidate.paymentId);
             const prior = yield* settleBank(row, states.explained, "payment received");
@@ -606,6 +643,11 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           ? []
           : [
               `Linked ${tally.linked} paid expense${tally.linked === 1 ? "" : "s"} to their bank rows.`,
+            ]),
+        ...(tally.repaid === 0
+          ? []
+          : [
+              `Marked ${tally.repaid} partner-paid expense${tally.repaid === 1 ? "" : "s"} repaid.`,
             ]),
         ...(tally.created === 0
           ? []
@@ -784,7 +826,17 @@ export const undoStatement = Effect.fn("KinStatements.undo")(function* (input: {
           if (entry.action === "payment") tally.payments += 1;
         } else if (entry.action.startsWith("expense")) {
           if (target !== undefined) {
-            if (entry.action === "expense_paid" && prior?.expense !== undefined)
+            if (prior?.repaid !== undefined) {
+              // Only while it still reads repaid: a later change by hand is the owner's to keep.
+              const funding = fundingOf(parseFields(target.fieldsJson));
+              if (funding.by === "partner" && funding.state === "repaid")
+                yield* records.update(input.orgId, writer, target.key, {
+                  fields: {
+                    reimbursement: prior.repaid.reimbursement,
+                    repaidOn: prior.repaid.repaidOn,
+                  },
+                });
+            } else if (entry.action === "expense_paid" && prior?.expense !== undefined)
               yield* records.update(input.orgId, writer, target.key, {
                 state: prior.expense.state as KinRecordState,
                 dateAt: prior.expense.dateAt,
