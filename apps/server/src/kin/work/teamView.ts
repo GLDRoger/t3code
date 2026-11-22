@@ -180,6 +180,13 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
   OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND r.team_shared = 1 AND ${ownLabelOff(sql)}
     AND NOT ${inheritedSensitive(sql)} AND ${placeOn(sql, personId, "sees_money")})) END)`;
 
+/** Version `pv` of doc `r` as this person reads it: the doc, and a picture's version by its own rule. */
+export const docVersionSeen = (
+  sql: SqlClient.SqlClient,
+  personId: KinPersonId | Statement.Fragment,
+) =>
+  sql`(${personSees(sql, personId)} AND (NOT ${isPicture(sql)} OR ${pictureVersionSeen(sql, personId)}))`;
+
 /** `personSees` over another alias of `kin_records`, such as a directory's `c` or `p`. */
 export const personSeesAs = (sql: SqlClient.SqlClient, personId: KinPersonId, alias: string) =>
   sql`EXISTS (SELECT 1 FROM kin_records r WHERE r.org_id = ${sql(alias)}.org_id
@@ -394,9 +401,8 @@ export const viewVersionVisible = Effect.fn("KinTeamView.viewVersionVisible")(fu
   if (people.length === 0) return false;
   const rows = yield* sql`SELECT 1 FROM kin_records r JOIN kin_doc_versions pv
       ON pv.org_id = r.org_id AND pv.record_id = r.record_id AND pv.version = ${version}
-    WHERE r.org_id = ${orgId} AND r.record_id = ${recordId} AND ${viewSees(sql, people)}
-      AND (NOT ${isPicture(sql)}
-        OR ${sql.and(people.map((person) => pictureVersionSeen(sql, person)))}) LIMIT 1`;
+    WHERE r.org_id = ${orgId} AND r.record_id = ${recordId}
+      AND ${sql.and(people.map((person) => docVersionSeen(sql, person)))} LIMIT 1`;
   return rows.length > 0;
 });
 

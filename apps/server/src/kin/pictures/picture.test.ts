@@ -863,6 +863,56 @@ describe("kin_picture", () => {
   );
 
   it.effect(
+    "a source image that is a labelled doc's picture is used only for who reads that doc, asker included",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* group;
+        const sql = yield* SqlClient.SqlClient;
+        yield* turn(1, "meera", "shared", "team-chat");
+        const made = yield* makePicture(scope, post("48px"));
+        const image = made.files[0]!;
+        // The reply carries the picture as a sent image, as the real one does.
+        yield* sql`UPDATE kin_messages SET attachments_json = ${JSON.stringify([
+          {
+            type: "image",
+            id: image,
+            name: "ambermill-launch.png",
+            mimeType: "image/png",
+            sizeBytes: PNG.length,
+          },
+        ])} WHERE message_id IN (SELECT message_id FROM kin_message_attachments
+          WHERE attachment_id = ${image})`;
+        const reuse = post("64px", { html: `<img src="kin-file:${image}">`, title: "Again" });
+        // Unlabelled, Meera reads it, so it goes in.
+        yield* turn(2, "meera", "shared", "team-chat");
+        yield* makePicture(scope, reuse);
+        assert.deepStrictEqual(drawing.files, [[], [image]]);
+        // Labelled sensitive: Meera, who asked, no longer reads the doc, so it stays out.
+        yield* sql`UPDATE kin_records SET sensitive = 1 WHERE org_id = ${orgId} AND key = ${made.doc}`;
+        yield* turn(3, "meera", "shared", "team-chat");
+        assert.match(
+          (yield* Effect.flip(
+            makePicture(scope, post("80px", { html: `<img src="kin-file:${image}">` })),
+          )).message,
+          /^kin-file:.* is not an image sent in this chat/,
+        );
+        // Unasked, with Meera in the chat: out too.
+        yield* turn(4, "meera", "shared", "team-chat", { handedOn: true });
+        assert.match(
+          (yield* Effect.flip(
+            makePicture(scope, post("96px", { html: `<img src="kin-file:${image}">` })),
+          )).message,
+          /^kin-file:.* is not an image sent in this chat/,
+        );
+        // Rhea, at the owner level, reads it: asked by her, it goes in.
+        yield* turn(5, "rhea", "shared", "team-chat");
+        yield* makePicture(scope, post("112px", { html: `<img src="kin-file:${image}">` }));
+        assert.deepStrictEqual(drawing.files.at(-1), [image]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
     "after outside text, generates only when a person asked in their own message, and draws in any turn",
     () =>
       Effect.gen(function* () {

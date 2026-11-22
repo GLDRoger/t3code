@@ -5,6 +5,7 @@ import {
   KinChatError,
   type KinChatId,
   type KinOrgId,
+  type KinPersonId,
   KinWakeupId,
   KinWorkerId,
 } from "@t3tools/contracts";
@@ -33,7 +34,13 @@ import { admitted, type Lead, leadTool, viewOf, viewWriter, writerFor } from "..
 import { personReads } from "../chat/sharing.ts";
 import { readProfile } from "../work/companyProfile.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
-import { KIN_OWNER_LEVEL, PICTURE_DOC_ORIGIN, viewerOfPeople } from "../work/teamView.ts";
+import {
+  docVersionSeen,
+  KIN_OWNER_LEVEL,
+  PICTURE_DOC_ORIGIN,
+  viewerOfPeople,
+} from "../work/teamView.ts";
+import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { visualPage } from "../widgets/visualCard.ts";
 import { KinPictures } from "./KinPictures.ts";
 import { KinPictureRenderer, type PictureBrand, type PictureFile } from "./renderer.ts";
@@ -125,9 +132,9 @@ const messageAskers = Effect.fn("KinPictures.askers")(function* (lead: Lead) {
 });
 
 /**
- * Images the page names as `kin-file:<id>` that were sent in this chat, read for the renderer:
- * each only if whoever asked for the picture reads its message, or, when no one asked in person,
- * everyone in the chat does, so the picture shows no one an image they couldn't see.
+ * Images the page names as `kin-file:<id>` sent in this chat, read for the renderer: each only if
+ * whoever asked reads its message (with no one asking, everyone in the chat), and, for a doc's file
+ * or picture, each of them below the owner level reads that version of it (`docVersionSeen`).
  */
 const chatImages = Effect.fn("KinPictures.chatImages")(function* (
   lead: Lead,
@@ -146,6 +153,8 @@ const chatImages = Effect.fn("KinPictures.chatImages")(function* (
           FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chatId}
             AND principal_kind = 'person' AND left_at IS NULL AND person_id IS NOT NULL
           ORDER BY person_id`).map((row) => row.personId);
+  const owners = ids.length === 0 ? new Set<string>() : yield* ownerLevelPeople(orgId);
+  const below = readers.filter((person) => !owners.has(person));
   const found: Array<{ id: string; mimeType: string; path: string }> = [];
   for (const id of ids) {
     const [row] = yield* sql<{ mimeType: string | null; messageId: string }>`
@@ -164,12 +173,24 @@ const chatImages = Effect.fn("KinPictures.chatImages")(function* (
             WHERE who.org_id = ${orgId} AND who.person_id IN ${sql.in(readers)}
               AND kin_messages.org_id = ${orgId} AND kin_messages.message_id = ${row.messageId}
               AND ${personReads(sql, sql`who.person_id`)}`;
+    const [hidden] =
+      below.length === 0
+        ? [{ docs: 0 }]
+        : yield* sql<{ docs: number }>`SELECT COUNT(*) AS docs FROM kin_doc_versions pv
+            JOIN kin_records r ON r.org_id = pv.org_id AND r.record_id = pv.record_id
+            WHERE pv.org_id = ${orgId}
+              AND (pv.file_attachment_id = ${id.toLowerCase()} OR EXISTS (SELECT 1
+                FROM kin_picture_images pi WHERE pi.org_id = pv.org_id
+                  AND pi.record_id = pv.record_id AND pi.version = pv.version
+                  AND pi.attachment_id = ${id.toLowerCase()}))
+              AND NOT ${sql.and(below.map((person) => docVersionSeen(sql, person as KinPersonId)))}`;
     const path = resolveAttachmentPathById({ attachmentsDir, attachmentId: id.toLowerCase() });
     if (
       row?.mimeType == null ||
       !/^image\//i.test(row.mimeType) ||
       path === null ||
-      read?.readers !== readers.length
+      read?.readers !== readers.length ||
+      (hidden?.docs ?? 0) > 0
     )
       return yield* invalid(
         `kin-file:${id} is not an image sent in this chat, so nothing was made. Use the id of a picture sent here, or put the image in the page as a data: URL.`,
