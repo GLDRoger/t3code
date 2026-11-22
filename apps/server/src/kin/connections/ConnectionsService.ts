@@ -106,6 +106,7 @@ import {
   MAIL_SEND_TOOL_NAMES,
   MAIL_TOOL,
   type Mailbox,
+  type MailMessage,
   type MailProvider,
 } from "./MailProvider.ts";
 import { MAIL_PRESETS, mailProviderOf } from "./mailProviders.ts";
@@ -581,6 +582,16 @@ export class KinConnections extends Context.Service<
       until: number,
       cursor?: string | null,
     ) => Effect.Effect<void, KinChatError>;
+    /**
+     * Server use only (a pulse, never an agent tool): one mail thread's messages with their text,
+     * with the connection's own sign-in, and only while the owner has Read a thread on Read. None
+     * for a paused account or one that isn't mail.
+     */
+    readonly readThread: (
+      orgId: KinOrgId,
+      connectionId: string,
+      threadId: string,
+    ) => Effect.Effect<ReadonlyArray<MailMessage>, KinChatError>;
     readonly tools: Lead<typeof KinConnectionToolsInput.Type, typeof KinConnectionToolsResult.Type>;
     readonly call: Lead<typeof KinConnectionCallInput.Type, typeof KinConnectionCallResult.Type>;
     readonly offer: Lead<typeof KinConnectionOfferInput.Type, typeof KinConnectionOfferResult.Type>;
@@ -1817,6 +1828,26 @@ const make = Effect.gen(function* () {
           checked_until = MAX(checked_until, excluded.checked_until), updated_at = excluded.updated_at,
           calendar_cursor = CASE WHEN excluded.checked_until >= checked_until
             THEN COALESCE(excluded.calendar_cursor, calendar_cursor) ELSE calendar_cursor END`;
+  }, settle);
+
+  const readThread = Effect.fn("KinConnections.readThread")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+    threadId: string,
+  ) {
+    const row = yield* live(orgId, connectionId);
+    const provider = mailProviderOf(row);
+    if (provider === undefined || row.pausedAt !== null) return [];
+    // The server reads no more than an agent may: the owner's own Read setting for the tool.
+    const readable = (yield* toolsOf(orgId, row.connectionId).pipe(provideSql)).some(
+      (tool) => tool.name === MAIL_TOOL.read && tool.mode === "read" && tool.removedAt === null,
+    );
+    if (!readable) return [];
+    return yield* withSignIn(orgId, row, (force) =>
+      tokenOf(orgId, row, force).pipe(
+        Effect.flatMap((token) => provider.messages(http, token, mailboxOf(row), threadId)),
+      ),
+    );
   }, settle);
 
   type Turn = Effect.Success<ReturnType<typeof resolveLead>>;
@@ -3974,6 +4005,7 @@ const make = Effect.gen(function* () {
     setSendFrom,
     activity,
     activitySeen,
+    readThread,
     tools,
     call,
     offer,

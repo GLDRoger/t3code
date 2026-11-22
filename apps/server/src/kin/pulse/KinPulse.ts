@@ -43,6 +43,7 @@ import { iso, type SenseContext, type SensedFact } from "./senses/shared.ts";
 import { systemSenses } from "./senses/system.ts";
 import { workSenses } from "./senses/work.ts";
 import { fromConnections, noOutside, poll } from "./outside.ts";
+import { alertsOnMail } from "../work/statements/alertMail.ts";
 import { DAY_MS } from "./thresholds.ts";
 import { tellHolder } from "./holderNotice.ts";
 import { morningPages, pageMinuteSince } from "./personMorning.ts";
@@ -966,10 +967,10 @@ export const layer = Layer.effectDiscard(
     const refreshes = yield* KinRefreshObserver;
     const chats = yield* Effect.serviceOption(KinChatService);
     const last: Passes = new Map();
-    const outside = Option.match(yield* Effect.serviceOption(KinConnections), {
-      onNone: () => noOutside,
-      onSome: (connections) => fromConnections(connections, sql),
-    });
+    const connections = yield* Effect.serviceOption(KinConnections);
+    const outside = Option.isNone(connections)
+      ? noOutside
+      : fromConnections(connections.value, sql, yield* alertsOnMail(connections.value));
     const polled = new Map<string, number>();
     // Mail and calendar between check-ins: metadata reads with no model, waking only on a match.
     yield* ticks.register(

@@ -85,10 +85,17 @@ const linesOf = (
   }
 };
 
+/** What else a pass does with one mailbox's new mail (bank alerts): false when it couldn't. */
+export type OnMail = (
+  orgId: KinOrgId,
+  activity: Extract<KinConnectionActivity, { readonly _tag: "mail" }>,
+) => Effect.Effect<boolean>;
+
 /** Every live connection that is signed in and not paused, through the connections service. */
 export const fromConnections = (
   connections: KinConnections["Service"],
   sql: SqlClient.SqlClient,
+  onMail?: OnMail,
 ): OutsideSource => ({
   read: Effect.fn("KinPulseOutside.read")(
     function* (orgId: KinOrgId) {
@@ -110,6 +117,8 @@ export const fromConnections = (
           ),
         );
         if (activity === undefined || activity._tag === "unsupported") continue;
+        // As with a failed read: the mailbox stays where it was, and the next pass reads it again.
+        if (onMail !== undefined && !(yield* onMail(orgId, activity))) continue;
         lines.push(...linesOf(row.label, activity));
         seen.push({
           connectionId: row.connectionId,
