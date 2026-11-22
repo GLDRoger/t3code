@@ -1,6 +1,8 @@
 import {
+  type KinAgentId,
   KinChatError,
   type KinOrgId,
+  type KinPersonId,
   type KinWatchDid,
   type KinWatchOutcome,
   type KinWatchWhy,
@@ -81,8 +83,10 @@ export const upsert = Effect.fn("KinWatches.upsert")(function* (input: {
             ${found.about.slice(0, 200)}, ${found.closesWhen.slice(0, 200)}, ${found.agentId},
             'owner', ${found.why.slice(0, 200)}, 'code', ${found.latestBy ?? null}, ${at},
             ${FIRST_INTERVAL_MS}, 'open', ${at}, ${at}
-          WHERE ${found.recordId} IS NULL OR EXISTS (SELECT 1 FROM kin_records
-            WHERE org_id = ${orgId} AND record_id = ${found.recordId})
+          WHERE (${found.recordId} IS NULL OR EXISTS (SELECT 1 FROM kin_records
+            WHERE org_id = ${orgId} AND record_id = ${found.recordId}))
+            AND (${found.agentId} IS NULL OR EXISTS (SELECT 1 FROM kin_agents
+              WHERE org_id = ${orgId} AND agent_id = ${found.agentId} AND retired_at IS NULL))
           ON CONFLICT (org_id, kind, source_key) DO NOTHING RETURNING watch_id`;
         made += inserted.length;
       }
@@ -90,6 +94,72 @@ export const upsert = Effect.fn("KinWatches.upsert")(function* (input: {
       return made;
     }),
   );
+});
+
+export const countForPerson = Effect.fn("KinWatches.countForPerson")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_watches
+    WHERE org_id = ${orgId} AND for_person_id = ${personId} AND state = 'open'`;
+  return row?.count ?? 0;
+});
+
+/** In the leaver handover's transaction, after it checks both people. */
+export const handOver = Effect.fn("KinWatches.handOver")(function* (
+  orgId: KinOrgId,
+  from: KinPersonId,
+  to: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const at = yield* Clock.currentTimeMillis;
+  const moved = yield* sql`UPDATE kin_watches SET for_person_id = ${to}, updated_at = ${at}
+    WHERE org_id = ${orgId} AND for_person_id = ${from} AND state = 'open'
+    RETURNING watch_id`;
+  if (moved.length > 0) yield* (yield* KinRefreshObserver).touch(orgId, "watches");
+  return moved.length;
+});
+
+const RETIRED_HOW = "its agent was retired";
+
+/** The retirement's transaction closes open watches and keeps the reason in the log. */
+export const closeRetired = Effect.fn("KinWatches.closeRetired")(function* (
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  at: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const closed = yield* sql`UPDATE kin_watches SET state = 'closed', closed_at = ${at},
+      closed_how = ${RETIRED_HOW}, closed_by_kind = 'code', closed_by_id = NULL,
+      asked_look_at = NULL, updated_at = ${at}
+    WHERE org_id = ${orgId} AND agent_id = ${agentId} AND state = 'open'
+    RETURNING watch_id`;
+  if (closed.length === 0) return;
+  const roundId = `retired-${shortHash(`${orgId}\0${agentId}\0${at}`)}`;
+  yield* sql`INSERT INTO kin_watch_looks
+      (org_id, look_id, round_id, watch_id, at, why, by, outcome, did, line)
+    SELECT org_id, ${roundId} || ':' || watch_id, ${roundId}, watch_id, ${at}, 'routine', 'code',
+      'closed', 'closed', ${RETIRED_HOW}
+    FROM kin_watches WHERE org_id = ${orgId} AND agent_id = ${agentId} AND state = 'closed'
+      AND closed_at = ${at} AND closed_how = ${RETIRED_HOW}
+    ON CONFLICT (org_id, look_id) DO NOTHING`;
+  yield* (yield* KinRefreshObserver).touch(orgId, "watches");
+});
+
+export const reopenRetired = Effect.fn("KinWatches.reopenRetired")(function* (
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  retiredAt: number,
+  at: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const opened = yield* sql`UPDATE kin_watches SET state = 'open', closed_at = NULL,
+      closed_how = NULL, closed_by_kind = NULL, closed_by_id = NULL, updated_at = ${at}
+    WHERE org_id = ${orgId} AND agent_id = ${agentId} AND state = 'closed'
+      AND closed_at = ${retiredAt} AND closed_by_kind = 'code' AND closed_how = ${RETIRED_HOW}
+    RETURNING watch_id`;
+  if (opened.length > 0) yield* (yield* KinRefreshObserver).touch(orgId, "watches");
 });
 
 /** Every open watch of the org, oldest next look first. */
@@ -124,15 +194,18 @@ export const settleClock = Effect.fn("KinWatches.settleClock")(function* (input:
           // Asleep it is read again each first interval, so a hold lifted early wakes it.
           const next = Math.min(until ?? Infinity, at + FIRST_INTERVAL_MS);
           if (watch.aside === 1 && watch.asideUntil === until && watch.nextLookAt > at) continue;
-          yield* sql`UPDATE kin_watches SET aside = 1, aside_until = ${until},
+          const changedRows = yield* sql`UPDATE kin_watches SET aside = 1, aside_until = ${until},
               next_look_at = ${next}, updated_at = ${at}
-            WHERE org_id = ${orgId} AND watch_id = ${watch.watchId}`;
-          changed += 1;
+            WHERE org_id = ${orgId} AND watch_id = ${watch.watchId} AND state = 'open'
+            RETURNING watch_id`;
+          changed += changedRows.length;
         } else if (watch.aside === 1 || input.moved.has(watch.watchId)) {
-          yield* sql`UPDATE kin_watches SET aside = 0, aside_until = NULL, next_look_at = ${at},
+          const changedRows =
+            yield* sql`UPDATE kin_watches SET aside = 0, aside_until = NULL, next_look_at = ${at},
               interval_ms = ${FIRST_INTERVAL_MS}, updated_at = ${at}
-            WHERE org_id = ${orgId} AND watch_id = ${watch.watchId}`;
-          changed += 1;
+            WHERE org_id = ${orgId} AND watch_id = ${watch.watchId} AND state = 'open'
+            RETURNING watch_id`;
+          changed += changedRows.length;
         }
       }
       if (changed > 0) yield* (yield* KinRefreshObserver).touch(orgId, "watches");
@@ -197,13 +270,15 @@ export const recordRound = Effect.fn("KinWatches.recordRound")(function* (input:
         const { watch } = look;
         const outcome = outcomeOf(look.outcome);
         const line = lineOf(look.outcome).slice(0, 300);
-        counts[outcome] = (counts[outcome] ?? 0) + 1;
-        yield* sql`INSERT INTO kin_watch_looks (org_id, look_id, round_id, watch_id, at, why, by,
-            outcome, did, line, evidence_json)
-          VALUES (${orgId}, ${`l-${shortHash(`${roundId}\0${watch.watchId}`)}`}, ${roundId},
+        const recorded = yield* sql`INSERT INTO kin_watch_looks (org_id, look_id, round_id,
+            watch_id, at, why, by, outcome, did, line, evidence_json)
+          SELECT ${orgId}, ${`l-${shortHash(`${roundId}\0${watch.watchId}`)}`}, ${roundId},
             ${watch.watchId}, ${at}, ${look.why}, 'code', ${outcome}, ${didOf(look)}, ${line},
-            ${yield* encodeEvidence(evidenceOf(look.outcome))})
-          ON CONFLICT (org_id, look_id) DO NOTHING`;
+            ${yield* encodeEvidence(evidenceOf(look.outcome))}
+          FROM kin_watches WHERE org_id = ${orgId} AND watch_id = ${watch.watchId} AND state = 'open'
+          ON CONFLICT (org_id, look_id) DO NOTHING RETURNING look_id`;
+        if (recorded.length === 0) continue;
+        counts[outcome] = (counts[outcome] ?? 0) + 1;
         if (look.outcome._tag === "closed")
           yield* sql`UPDATE kin_watches SET state = 'closed', closed_at = ${at},
               closed_how = ${look.outcome.how.slice(0, 200)}, closed_by_kind = 'code',
@@ -223,6 +298,7 @@ export const recordRound = Effect.fn("KinWatches.recordRound")(function* (input:
             WHERE org_id = ${orgId} AND watch_id = ${watch.watchId} AND state = 'open'`;
         }
       }
+      if (Object.keys(counts).length === 0) return;
       yield* sql`INSERT INTO kin_watch_looks (org_id, look_id, round_id, watch_id, at, counts_json)
         VALUES (${orgId}, ${`l-${roundId}`}, ${roundId}, NULL, ${at}, ${yield* encodeCounts(counts)})
         ON CONFLICT (org_id, look_id) DO NOTHING`;
@@ -244,7 +320,10 @@ const seenWatch = Effect.fn("KinWatches.seen")(function* (
     source: string;
     setByKind: string;
     setById: string | null;
-  }>`SELECT w.state, w.source, w.set_by_kind AS "setByKind", w.set_by_id AS "setById"
+    retired: number;
+  }>`SELECT w.state, w.source, w.set_by_kind AS "setByKind", w.set_by_id AS "setById",
+      EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = w.org_id
+        AND a.agent_id = w.agent_id AND a.retired_at IS NOT NULL) AS retired
     FROM kin_watches w
     WHERE w.org_id = ${orgId} AND w.watch_id = ${watchId} AND ${watchSeen(sql, reader)}`;
   if (row === undefined) return yield* notFound;
@@ -329,6 +408,11 @@ export const again = Effect.fn("KinWatches.again")(function* (
     Effect.gen(function* () {
       const watch = yield* seenWatch(orgId, reader, watchId);
       if (watch.state === "open") return;
+      if (watch.retired === 1)
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: "This watch's agent was retired. Restore the agent before watching again.",
+        });
       yield* sql`UPDATE kin_watches SET state = 'open', closed_at = NULL, closed_how = NULL,
           closed_by_kind = NULL, closed_by_id = NULL, aside = 0, aside_until = NULL,
           interval_ms = ${FIRST_INTERVAL_MS}, next_look_at = ${at}, asked_look_at = ${at},
