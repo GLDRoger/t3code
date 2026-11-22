@@ -503,5 +503,7 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
       vendor.arrival({ http, token, mailbox: NO_MAILBOX }, messageId),
     sendMessage: vendor.sendMessage,
     saveEvent: vendor.saveEvent,
+    calendarName: (http, token, mailbox, calendarId) =>
+      vendor.calendarName({ http, token, mailbox }, calendarId),
   };
 };

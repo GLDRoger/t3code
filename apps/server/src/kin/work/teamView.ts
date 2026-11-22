@@ -28,6 +28,7 @@ import {
   issuedNumber,
   keySensitive,
   notFound,
+  type RecordRow,
   samePrincipal,
   sensitiveNow,
   wordsOf,
@@ -379,12 +380,24 @@ export const viewGuard = Effect.fn("KinTeamView.viewGuard")(function* (
     readonly people: ReadonlyArray<KinPersonId>;
     readonly askers: ReadonlyArray<KinPersonId>;
   },
-  write: Parameters<typeof teamGuard>[2],
+  write: TeamWrite & {
+    readonly row: Pick<RecordRow, "recordId" | "key" | "registerId"> | undefined;
+  },
   /** The agent's turn making the write, which `draftDoc` reads its ask from. */
   turn?: { readonly agentId: KinAgentId; readonly wakeupId: string },
 ) {
   if (view.people.length === 0) return yield* noLongerTeam;
-  if (yield* roomWork(orgId, view.people, write)) return;
+  const taskUpdate = write.changes && write.row?.registerId === "work";
+  const fields = write.input.fields;
+  const changesWith =
+    taskUpdate && typeof fields === "object" && fields !== null && "alsoOn" in fields;
+  if (changesWith && view.askers.length === 0) return yield* TEAM_REFUSED;
+  if (yield* roomWork(orgId, view.people, write)) {
+    if (taskUpdate)
+      for (const person of view.askers)
+        yield* teamGuard(orgId, person, write, { room: !changesWith });
+    return;
+  }
   const draft = yield* draftDoc(orgId, view, write, turn);
   if (draft === "filed") return { draftFor: view.people[0]! };
   for (const person of view.people)
@@ -568,13 +581,12 @@ const roomWork = Effect.fn("KinTeamView.roomWork")(function* (
 });
 
 /**
- * A teammate changes only a task they hold, are on, gave to whoever holds it or marked private,
+ * A teammate changes only a task they hold, gave to whoever holds it or marked private,
  * never one they only see; a project's lead also anything of the project in `LEAD_LISTS`, quotes
  * and invoices as drafts.
  */
 const teamWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
   sql`(${personSees(sql, personId)} AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
-    OR ${alsoOnIt(sql, personId)}
     OR (r.assigned_by_person_id = ${personId} AND r.register_id <> 'docs')
     OR r.marked_by_person_id = ${personId}
     OR ${leadWrites(sql, personId)}))`;
@@ -714,6 +726,8 @@ type TeamWrite = {
   readonly row: { readonly recordId: string; readonly key: string } | undefined;
   /** A change to the task, not a retry of the create that made it. */
   readonly changes: boolean;
+  /** The repository checked that this patch only takes this person off the task. */
+  readonly leaveBy?: KinPersonId | undefined;
   readonly input: Readonly<
     Partial<Record<(typeof OWNERS_FIELDS)[number] | "state" | "category", unknown>>
   >;
@@ -738,6 +752,9 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
       : yield* sql<{
           recordId: string;
           writes: number;
+          onTask: number;
+          ownerKind: string;
+          ownerId: string;
           leads: number;
           marked: number;
           gave: number;
@@ -748,6 +765,7 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
           projectPartyId: string | null;
         }>`SELECT
           r.record_id AS "recordId", ${teamWrites(sql, personId)} AS writes,
+          ${alsoOnIt(sql, personId)} AS "onTask", r.owner_kind AS "ownerKind", r.owner_id AS "ownerId",
           r.party_id AS "partyId", r.project_id AS "projectId",
           (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id
             AND p.record_id = r.project_id) AS "projectPartyId",
@@ -787,6 +805,7 @@ type TeamFacts = ReturnType<Effect.Success<ReturnType<typeof teamFactsOf>>>;
  */
 const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined => {
   if (!facts.member) return noLongerTeam;
+  if (write.changes && withOnly(facts)) return WITH_REFUSED;
   // Who is on a task besides its holder is set by whoever may change the task.
   if (alsoOnOnly(facts, write))
     return teamRule(facts, { ...write, input: { ...write.input, fields: undefined } });
@@ -859,6 +878,12 @@ const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined 
   return undefined;
 };
 
+const withOnly = (facts: TeamFacts) => facts.seen?.onTask === 1 && facts.seen.writes !== 1;
+const WITH_REFUSED = new KinChatError({
+  reason: "not_allowed",
+  message: "You're on this task, not holding it: you can comment or leave.",
+});
+
 /** A write to a task whose only list detail is who is on it (`fields.alsoOn`). */
 const alsoOnOnly = (facts: TeamFacts, write: TeamWrite) => {
   const { fields } = write.input;
@@ -920,14 +945,35 @@ export const teamGuard = Effect.fn("KinTeamView.guard")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   write: TeamWrite,
+  options?: { readonly room: boolean },
 ) {
-  const facts = yield* teamFactsOf(
+  const factsOf = yield* teamFactsOf(
     orgId,
     personId,
     write.row === undefined ? [] : [write.row.recordId],
     typeof write.input.partyId === "string" ? [write.input.partyId] : [],
   );
-  const refused = teamRule(facts(write.row?.recordId), write);
+  const facts = factsOf(write.row?.recordId);
+  if (facts.member && facts.seen != null) {
+    if (write.leaveBy === personId && facts.seen.onTask === 1) return;
+    if (options?.room === true && !withOnly(facts)) return;
+  }
+  const refused = teamRule(facts, write);
+  if (refused === WITH_REFUSED && facts.seen != null) {
+    const sql = yield* SqlClient.SqlClient;
+    const { ownerKind, ownerId } = facts.seen;
+    const [holder] =
+      ownerKind === "agent"
+        ? yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_agents
+            WHERE org_id = ${orgId} AND agent_id = ${ownerId}`
+        : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+            WHERE org_id = ${orgId} AND person_id = ${ownerId}`;
+    const name = holder?.name.trim() || "Whoever holds it";
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: `${WITH_REFUSED.message} ${name} can change it.`,
+    });
+  }
   if (refused !== undefined) return yield* refused;
 });
 

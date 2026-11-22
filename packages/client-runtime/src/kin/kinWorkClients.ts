@@ -205,7 +205,7 @@ export const KIN_CLIENTS = {
   active: "Active",
   closed: "Closed",
   privateLabel: "Keep private",
-  privateOn: "Private. Only you see this client, its projects and what's owed.",
+  privateOn: "Private. Only the owner and co-owners see this client, its projects and what's owed.",
   privateOff: "Your team will be able to see this client. Terms and contact details stay private.",
   kindProspect: "Prospect",
   kindClient: "Client",
@@ -229,6 +229,27 @@ export const KIN_CLIENTS = {
   makeClient: "Make it a client",
   makeProspect: "Make it a prospect again",
 };
+
+const andList = (names: ReadonlyArray<string>) =>
+  names.length <= 1
+    ? (names[0] ?? "")
+    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+
+/**
+ * The line under a client's Keep private switch. Turned on, before it is saved, it names who
+ * stops seeing the client, from the host's `privateHides`.
+ */
+export function kinClientPrivateNote(input: {
+  readonly private: boolean;
+  readonly wasPrivate: boolean;
+  readonly hides: ReadonlyArray<string> | undefined;
+}): string {
+  if (!input.private) return KIN_CLIENTS.privateOff;
+  if (input.wasPrivate || input.hides === undefined) return KIN_CLIENTS.privateOn;
+  return input.hides.length === 0
+    ? "Nobody else sees this client now, so nobody loses it."
+    : `${andList(input.hides)} will no longer see this client.`;
+}
 
 export const KIN_CLIENTS_SHOW = [
   { id: "open", label: "All open" },
