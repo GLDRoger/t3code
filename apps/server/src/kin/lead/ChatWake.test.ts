@@ -4,12 +4,16 @@ import * as NodePath from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
 import {
+  KinAgentId,
   KinChatId,
   KinEvent,
   KinMemberId,
   KinMessage,
   KinMessageId,
   KinOrgId,
+  KinPersonId,
+  KinWakeupId,
+  type KinReactionEmoji,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
@@ -23,6 +27,8 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
+import * as ChatService from "../chat/KinChatService.ts";
+import { reactionAnswer } from "../chat/reactions.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as ChatWake from "./ChatWake.ts";
@@ -360,6 +366,67 @@ describe("ChatWake", () => {
           { state: "queued", withdrawn: 1 },
         ]);
       }).pipe(Effect.provide(services)),
+  );
+
+  it.effect.each([
+    { swap: "✅", followup: undefined, answer: "yes", states: ["done"] },
+    { swap: "👎", followup: undefined, answer: "no", states: ["done", "expired"] },
+    { swap: "✅", followup: "👎", answer: "no", states: ["done", "expired"] },
+    { swap: "✅", followup: "remove", answer: null, states: ["expired"] },
+    { swap: "remove", followup: undefined, answer: null, states: ["expired"] },
+  ] as const)(
+    "keeps only the current answer when 👍 becomes $swap before pickup (follow-up: $followup)",
+    ({ swap, followup, answer, states }) =>
+      Effect.gen(function* () {
+        yield* seed("a");
+        const target = message("a", "lead-latest", { agent: true });
+        yield* storeMessage(target);
+        const { settle } = yield* start();
+        const chat = yield* ChatService.KinChatService;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const react = (emoji: KinReactionEmoji, on = true) =>
+          chat.react(
+            { _tag: "person", orgId: target.orgId, personId: KinPersonId.make("owner-a") },
+            { messageId: target.messageId, emoji, on },
+          );
+        yield* react("👍");
+        yield* settle;
+        yield* TestClock.adjust("1 second");
+        yield* swap === "remove" ? react("👍", false) : react(swap);
+        if (followup !== undefined) {
+          yield* TestClock.adjust("1 second");
+          yield* followup === "remove" ? react("✅", false) : react(followup);
+        }
+        yield* settle;
+        yield* TestClock.adjust("20 seconds");
+        const ready = yield* queue.readyLeads(target.orgId);
+        assert.lengthOf(ready, answer === null ? 0 : 1);
+        if (answer !== null) {
+          const claim = {
+            orgId: target.orgId,
+            agentId: KinAgentId.make("lead-a"),
+            wakeupId: KinWakeupId.make("reaction-wake"),
+            model: "fixture",
+          };
+          const events = yield* Effect.scoped(queue.claim(claim));
+          assert.deepStrictEqual(
+            events.map((event) =>
+              event._tag === "chat.reaction" && !event.withdrawn
+                ? reactionAnswer(event.emoji)
+                : null,
+            ),
+            [answer],
+          );
+          yield* queue.finish({ ...claim, status: "completed" });
+        }
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{ state: string }>`SELECT state FROM kin_events
+          WHERE org_id = ${target.orgId} ORDER BY state, event_id`;
+        assert.deepStrictEqual(
+          rows.map((row) => row.state),
+          [...states],
+        );
+      }).pipe(Effect.provide(ChatService.layer.pipe(Layer.provideMerge(services)))),
   );
 
   it.effect(
