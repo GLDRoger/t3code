@@ -702,6 +702,39 @@ describe("KinEventQueue", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("a split retry neither steers into an ordinary turn nor accepts a steer", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const sql = yield* SqlClient.SqlClient;
+      const message = (id: string) =>
+        stored(id, "chat-lead-a").pipe(Effect.andThen(event(id, "chat.message")));
+      yield* TestClock.adjust("1 second");
+      yield* queue.enqueue(yield* message("first"));
+      yield* queue.enqueue(yield* message("second"));
+      yield* TestClock.adjust("2 seconds");
+      const batch = input("batch");
+      const claimIds = (turn: ReturnType<typeof input>) =>
+        Effect.scoped(queue.claim(turn)).pipe(Effect.map((events) => events.map((e) => e.eventId)));
+      assert.deepStrictEqual(yield* claimIds(batch), ["first", "second"]);
+      const failed = yield* queue.finish({ ...batch, status: "failed" });
+      assert.strictEqual(failed.retryInMs, 15_000);
+      yield* queue.enqueue({ ...(yield* message("fresh")), receivedAt: DateTime.makeUnsafe(0) });
+      yield* TestClock.adjust("2 seconds");
+      const ordinary = input("ordinary");
+      assert.deepStrictEqual(yield* claimIds(ordinary), ["fresh"]);
+      yield* sql`UPDATE kin_wakeups SET run_id = 'ordinary-run' WHERE wakeup_id = 'ordinary'`;
+      assert.deepStrictEqual(yield* queue.steer(ordinary), []);
+      yield* finish("ordinary");
+      const solo = input("solo");
+      assert.deepStrictEqual(yield* claimIds(solo), ["first"]);
+      yield* sql`UPDATE kin_wakeups SET run_id = 'solo-run' WHERE wakeup_id = 'solo'`;
+      yield* queue.enqueue(yield* message("new-request"));
+      assert.deepStrictEqual(yield* queue.steer(solo), []);
+      yield* finish("solo");
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "steers a teammate only into a turn a teammate asked, and nothing into an aborted one",
     () =>

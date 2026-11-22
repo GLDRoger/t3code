@@ -722,60 +722,68 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
       }),
   );
 
-  it.effect("a member on a task sees and changes it; off the team, or not on it, they don't", () =>
-    Effect.gen(function* () {
-      const records = yield* KinRecords.KinRecords;
-      const sql = yield* SqlClient.SqlClient;
-      const task: Row = {
-        id: "e1",
-        list: "work",
-        owner: "owner",
-        createdBy: "owner",
-        assignedBy: null,
-        sensitive: true,
-        shared: false,
-        project: null,
-        party: null,
-        fields: { alsoOn: ["person:ana"] },
-        title: "Plan launch 1",
-      };
-      yield* install(emptyWorld, [task]);
-      const writer = (viewer: Member) => {
-        const personId = KinPersonId.make(viewer);
-        return {
-          actor: { _tag: "person" as const, personId },
-          via: "owner" as const,
-          teammate: true,
+  it.effect(
+    "a member on a private task sees it but can only leave, and only while on the team",
+    () =>
+      Effect.gen(function* () {
+        const records = yield* KinRecords.KinRecords;
+        const sql = yield* SqlClient.SqlClient;
+        const task: Row = {
+          id: "e1",
+          list: "work",
+          owner: "owner",
+          createdBy: "owner",
+          assignedBy: null,
+          sensitive: true,
+          shared: false,
+          project: null,
+          party: null,
+          fields: { alsoOn: ["person:ana"] },
+          title: "Plan launch 1",
         };
-      };
-      const renames = (viewer: Member) =>
-        records
-          .update(orgId, writer(viewer), "E-1", { title: "Plan launch again" })
-          .pipe(Effect.exit);
-      const edits = Effect.fn(function* (viewer: Member) {
-        const detail = yield* records.detail((yield* records.getById(orgId, "e1"))!, 1);
-        const can = yield* teamCan(orgId, KinPersonId.make(viewer), [
-          { ...detail, states: ["open", "doing", "waiting", "done", "dropped"] },
-        ]);
-        return can.get(detail.recordId)!.edit;
-      });
-      assert.isTrue((yield* seen("ana")).has("e1"));
-      assert.isTrue(yield* edits("ana"));
-      assert.isTrue(Exit.isSuccess(yield* renames("ana")));
-      assert.isFalse((yield* seen("ben")).has("e1"));
-      assert.isFalse(yield* edits("ben"));
-      assert.isTrue(Exit.isFailure(yield* renames("ben")));
-      // Off the team she is still on it, and changes it no more: back, she does again.
-      const away = (gone: boolean) =>
-        sql`UPDATE kin_session_bindings SET revoked_at = ${gone ? 1 : null}
-          WHERE org_id = ${orgId} AND person_id = 'ana'`;
-      yield* away(true);
-      yield* Effect.gen(function* () {
+        yield* install(emptyWorld, [task]);
+        const writer = (viewer: Member) => {
+          const personId = KinPersonId.make(viewer);
+          return {
+            actor: { _tag: "person" as const, personId },
+            via: "owner" as const,
+            teammate: true,
+          };
+        };
+        const renames = (viewer: Member) =>
+          records
+            .update(orgId, writer(viewer), "E-1", { title: "Plan launch again" })
+            .pipe(Effect.exit);
+        const leaves = (viewer: Member) =>
+          records
+            .update(orgId, writer(viewer), "E-1", { fields: { alsoOn: [] } })
+            .pipe(Effect.exit);
+        const edits = Effect.fn(function* (viewer: Member) {
+          const detail = yield* records.detail((yield* records.getById(orgId, "e1"))!, 1);
+          const can = yield* teamCan(orgId, KinPersonId.make(viewer), [
+            { ...detail, states: ["open", "doing", "waiting", "done", "dropped"] },
+          ]);
+          return can.get(detail.recordId)!.edit;
+        });
+        assert.isTrue((yield* seen("ana")).has("e1"));
         assert.isFalse(yield* edits("ana"));
         assert.isTrue(Exit.isFailure(yield* renames("ana")));
-      }).pipe(Effect.ensuring(away(false).pipe(Effect.orDie)));
-      assert.isTrue(Exit.isSuccess(yield* renames("ana")));
-    }),
+        assert.isFalse((yield* seen("ben")).has("e1"));
+        assert.isFalse(yield* edits("ben"));
+        assert.isTrue(Exit.isFailure(yield* renames("ben")));
+        assert.isTrue(Exit.isFailure(yield* leaves("ben")));
+        const away = (gone: boolean) =>
+          sql`UPDATE kin_session_bindings SET revoked_at = ${gone ? 1 : null}
+          WHERE org_id = ${orgId} AND person_id = 'ana'`;
+        yield* away(true);
+        yield* Effect.gen(function* () {
+          assert.isFalse(yield* edits("ana"));
+          assert.isTrue(Exit.isFailure(yield* renames("ana")));
+          assert.isTrue(Exit.isFailure(yield* leaves("ana")));
+        }).pipe(Effect.ensuring(away(false).pipe(Effect.orDie)));
+        assert.isTrue(Exit.isSuccess(yield* leaves("ana")));
+        assert.isFalse((yield* seen("ana")).has("e1"));
+      }),
   );
 
   it.effect.prop(
