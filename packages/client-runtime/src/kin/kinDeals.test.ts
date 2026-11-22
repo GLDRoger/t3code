@@ -340,6 +340,20 @@ describe("kinDealEditRequest", () => {
       "EUR",
     );
     expect(linked).toMatchObject({ input: { quote: "QT-3" } });
+    // The notes go only when changed, and emptied ones go as empty.
+    const noted = { ...held, notes: "Said about 18k" };
+    const withNotes = kinDealEditDraft(noted, names);
+    expect(withNotes.notes).toBe("Said about 18k");
+    expect(kinDealEditRequest(noted, withNotes, names, "EUR")).toEqual({
+      ok: true,
+      input: { key: held.key, rev: 1 },
+    });
+    expect(
+      kinDealEditRequest(noted, { ...withNotes, notes: " Said 20k, firm " }, names, "EUR"),
+    ).toMatchObject({ input: { notes: "Said 20k, firm" } });
+    expect(kinDealEditRequest(noted, { ...withNotes, notes: "" }, names, "EUR")).toMatchObject({
+      input: { notes: "" },
+    });
   });
 
   it("refuses an empty title and an amount it can't read", () => {
