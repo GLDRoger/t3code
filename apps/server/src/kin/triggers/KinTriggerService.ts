@@ -36,7 +36,7 @@ import {
   type DeferralPlan,
 } from "./deferrals.ts";
 import { type GithubLinkState, readGithubLinks, readGithubLinkSets } from "./deferralGithub.ts";
-import { askerOf, cardChatFor, sharedChatOf } from "./deferralOrigin.ts";
+import { askerOf, cardChatFor, sharedChatOf, wordsReadable } from "./deferralOrigin.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isScheduledTask, syncScheduledTasks } from "./scheduledTasks.ts";
 import { pauseTriggers } from "./KinTriggerStore.ts";
@@ -234,10 +234,14 @@ const make = Effect.gen(function* () {
     // A shared chat's own reminder shows there, with who asked, so its people can see and stop it.
     const own = plan.onDue === "remind" ? yield* sharedChatOf(sql, orgId, item) : undefined;
     const askedBy = own === undefined ? undefined : yield* askerOf(sql, orgId, item.said_by);
+    // Its title only while everyone there could read where it was set.
+    const titled =
+      own === undefined ||
+      (item.source_event !== undefined && (yield* wordsReadable(sql, orgId, item.source_event)));
     const state: KinDeferralCard = {
       ...(askedBy === undefined ? {} : { askedBy }),
       itemId,
-      title: item.title,
+      title: titled ? item.title : "",
       dueAt: iso(plan.dueAt),
       onDue: plan.onDue,
       text: confirmText(plan.dueAt, plan.onDue, {

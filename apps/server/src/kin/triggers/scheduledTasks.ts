@@ -480,7 +480,7 @@ const make = Effect.gen(function* () {
         if (every === undefined) return yield* consume;
         const base: KinScheduledTaskCard = {
           itemId,
-          title: task.title,
+          title: withheld ? "" : task.title,
           every,
           timeZone: KinSchedules.hostTimeZone(),
           status: task.enabled === 1 ? "active" : "paused",
@@ -690,9 +690,11 @@ const make = Effect.gen(function* () {
       const enabled = row.pendingEnabled === null ? task.enabled === 1 : row.pendingEnabled === 1;
       const chatOwn = yield* sharedChatOf(sql, orgId, sourceOf(row));
       const askedBy = chatOwn === undefined ? undefined : yield* askerOf(sql, orgId, row.saidBy);
+      // A room's own shows its title only while everyone there could read where it was set.
+      const titled = chatOwn === undefined || (yield* wordsReadable(sql, orgId, row.sourceEvent));
       const state = {
         itemId: row.scheduleId,
-        title: task.title,
+        title: titled ? task.title : "",
         every,
         timeZone: KinSchedules.hostTimeZone(),
         status: enabled ? ("active" as const) : ("paused" as const),
