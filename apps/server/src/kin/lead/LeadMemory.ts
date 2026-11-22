@@ -82,7 +82,12 @@ import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { slug } from "../work/docBody.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
 import { TurnEvent } from "./eventIds.ts";
-import { OUTSIDE_REFUSAL, followsOutsideRead, snapshotSource } from "./OutsideContent.ts";
+import {
+  OUTSIDE_REFUSAL,
+  followsOutsideRead,
+  outsideRead,
+  snapshotSource,
+} from "./OutsideContent.ts";
 import { validZone } from "../triggers/quietHold.ts";
 import { stillAway } from "../triggers/quietHours.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -577,7 +582,11 @@ const make = Effect.gen(function* () {
       return { chatId: input.chatId, shared: false, alone: false };
     const asker = yield* speaker(ctx, input.sourceEventId);
     if (asker === undefined || asker.chat !== input.chatId) return yield* invalid(TEAM_SOURCE);
-    if (yield* followsOutsideRead(ctx.orgId, ctx.wakeupId).pipe(provideSql))
+    // Read in this turn or followed from an earlier one: it offers it to a person instead.
+    if (
+      (yield* outsideRead(ctx).pipe(provideSql)) ||
+      (yield* followsOutsideRead(ctx.orgId, ctx.wakeupId).pipe(provideSql))
+    )
       return yield* invalid(OUTSIDE_REFUSAL);
     return { chatId: input.chatId, shared: true, alone: false };
   });

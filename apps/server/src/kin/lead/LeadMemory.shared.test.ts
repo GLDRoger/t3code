@@ -789,6 +789,14 @@ it.effect(
         "Only Other (who asked for it), the owner or a co-owner can change it.",
       );
 
+      // Nor after one it made itself: a mail it read in this turn.
+      yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+        VALUES (${orgId}, ${`wake-${leads.a}`}, 0, 'mail:invented')`;
+      assert.strictEqual(
+        (yield* defer({ what: "Invented: after reading the mail" }).pipe(Effect.flip)).message,
+        OUTSIDE_REFUSAL,
+      );
+      yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE org_id = ${orgId}`;
       // After an outside read it didn't make, a turn sets nothing for the group.
       yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
         VALUES (${orgId}, ${`follows:wake-${leads.a}`}, 'mail:invented')`;
