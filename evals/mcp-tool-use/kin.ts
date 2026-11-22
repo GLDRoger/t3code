@@ -63,6 +63,7 @@ import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
 import { KinPictureToolkit } from "../../apps/server/src/kin/pictures/mcp.ts";
 import { GENERATE_SENTENCES } from "../../apps/server/src/kin/pictures/KinPictures.ts";
+import { pictureNote } from "../../apps/server/src/kin/work/leadDocs.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
@@ -457,6 +458,8 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
   // kin_picture's refusal once this month's generated pictures are used, as KinPictures says it.
   pictureLimit: (input: { limit: number; resetsOn: string }) =>
     GENERATE_SENTENCES.limit(input.limit, formatKinPicturesDay(input.resetsOn)),
+  // doc_read's note on a picture's doc: changed from its page when drawn, else its prompt.
+  pictureNote: (input: { key: string; drawn: boolean }) => pictureNote(input.key, input.drawn),
   // The taxNote line for a company its owner said is not registered for its country's tax.
   notRegisteredFact: (input: { country: string }) =>
     notRegisteredFact({ taxRegistered: false, country: input.country, tax: null }),

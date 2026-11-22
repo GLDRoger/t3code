@@ -761,6 +761,11 @@ const readable = Effect.fn("KinDocTools.readable")(function* (lead: Lead, key: s
   return { row, seen: yield* Docs.versionsSeen(lead.orgId, viewer, row) };
 });
 
+/** What a picture's doc is and how to change it: from its page when drawn, else its prompt. */
+export const pictureNote = (key: string, drawn: boolean) =>
+  drawn
+    ? `${key} is a picture, and page is the page it was drawn from. To change it, call kin_picture with doc ${key} and that page, changed.`
+    : `${key} is a generated picture; its summary ends with the prompt. To change it, call kin_picture with doc ${key} and the prompt, changed.`;
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput.Type) {
   const { row, seen } = yield* readable(lead, input.key);
   const latest = yield* Docs.versionOf(lead.orgId, row.recordId);
@@ -809,6 +814,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
     ...(picture !== undefined
       ? {
           ...(picture.page === null ? {} : { page: picture.page }),
+          note: pictureNote(row.key, picture.page !== null),
         }
       : whole || asked !== undefined
         ? {}

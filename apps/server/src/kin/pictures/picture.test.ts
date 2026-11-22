@@ -367,6 +367,10 @@ describe("kin_picture", () => {
         const readBack = yield* LeadDocs.read(scope, { key: "D-1" });
         assert.strictEqual(pageOf(readBack), post("72px", { doc: "D-1" }).html);
         assert.strictEqual(
+          readBack.note,
+          "D-1 is a picture, and page is the page it was drawn from. To change it, call kin_picture with doc D-1 and that page, changed.",
+        );
+        assert.strictEqual(
           pageOf(yield* LeadDocs.read(scope, { key: "D-1", version: 1 })),
           post("48px").html,
         );
