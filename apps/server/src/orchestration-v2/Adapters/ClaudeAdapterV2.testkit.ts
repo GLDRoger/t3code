@@ -1,3 +1,6 @@
+import * as NodeEvents from "node:events";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- The fake CLI implements the SDK spawn interface.
+import * as NodeStream from "node:stream";
 import { ClaudeSettings } from "@t3tools/contracts";
 import {
   forkSession,
@@ -7,6 +10,8 @@ import {
   type SDKAssistantMessage,
   type SDKMessage,
   type SDKUserMessage,
+  type SpawnOptions,
+  type SpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -2850,4 +2855,59 @@ export function makeClaudeRestartReplayHarness(transcript: ClaudeAgentSdkReplayT
     } satisfies typeof ClaudeOrchestratorReplayHarness,
     assertComplete: replayQueryRunnerService(transcript, queryRunner).assertComplete,
   };
+}
+
+export function makeFakeClaudeCli(answerSetServers = true, exitOnFirstInitialize = false) {
+  const spawns: Array<SpawnOptions> = [];
+  const controlRequests: Array<object> = [];
+  const stdins: Array<NodeStream.PassThrough> = [];
+  const spawn = (options: SpawnOptions): SpawnedProcess => {
+    spawns.push(options);
+    const first = spawns.length === 1;
+    const stdin = new NodeStream.PassThrough();
+    const stdout = new NodeStream.PassThrough();
+    stdins.push(stdin);
+    const child = Object.assign(new NodeEvents.EventEmitter(), {
+      stdin,
+      stdout,
+      killed: false,
+      exitCode: null as number | null,
+      kill: () => {
+        stdout.end();
+        child.emit("exit", null, "SIGTERM");
+        return true;
+      },
+    });
+    let pending = "";
+    stdin.on("data", (chunk: Buffer) => {
+      pending += chunk.toString("utf8");
+      for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
+        const frame = JSON.parse(pending.slice(0, end));
+        pending = pending.slice(end + 1);
+        if (frame.type !== "control_request") continue;
+        controlRequests.push(frame.request);
+        if (first && exitOnFirstInitialize && frame.request.subtype === "initialize") {
+          child.exitCode = 1;
+          child.emit("exit", 1, null);
+          stdout.end();
+          continue;
+        }
+        const setServers = frame.request.subtype === "mcp_set_servers";
+        if (setServers && !answerSetServers) continue;
+        const response = {
+          subtype: "success",
+          request_id: frame.request_id,
+          response: setServers ? { added: [], removed: [], errors: {} } : {},
+        };
+        stdout.write(`${JSON.stringify({ type: "control_response", response })}\n`);
+      }
+    });
+    stdin.on("end", () => {
+      stdout.end();
+      child.emit("exit", 0, null);
+    });
+    return child;
+  };
+  const closed = () => stdins.length > 0 && stdins.every((stdin) => stdin.writableEnded);
+  return { spawn, spawns, controlRequests, closed };
 }

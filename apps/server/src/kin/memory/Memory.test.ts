@@ -4,6 +4,8 @@ import { assert, expect, it } from "@effect/vitest";
 import { KinAgentId, KinWakeupId, KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -358,6 +360,65 @@ it.live.each([
       Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
       Effect.scoped,
     ),
+);
+
+it.effect("does not use an invalid prefetch made while the memory writer holds the lock", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const writer = `${root}/a/memory`;
+    yield* fs.makeDirectory(`${writer}/.git/objects`, { recursive: true });
+    yield* fs.makeDirectory(`${writer}/.git/refs`, { recursive: true });
+    const repo = fakeRepository(fs);
+    repo.files.set("rules.md", "Fixture rules");
+    const entered = yield* Deferred.make<void>();
+    const prefetched = yield* Deferred.make<void>();
+    let missing = 0;
+    const watching = Layer.succeed(FileSystem.FileSystem, {
+      ...fs,
+      lstat: (file) =>
+        fs
+          .lstat(file)
+          .pipe(
+            Effect.tapError(() =>
+              file === `${writer}/.git` && ++missing === 2
+                ? Deferred.succeed(prefetched, undefined)
+                : Effect.void,
+            ),
+          ),
+    });
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const head = yield* memory.anchor(orgA, "main", repo.head());
+      const write = yield* memory
+        .withWriterLock(
+          orgA,
+          fs
+            .rename(`${writer}/.git`, `${writer}/.git-repair`)
+            .pipe(
+              Effect.andThen(Deferred.succeed(entered, undefined)),
+              Effect.andThen(Deferred.await(prefetched)),
+              Effect.ensuring(
+                fs.rename(`${writer}/.git-repair`, `${writer}/.git`).pipe(Effect.orDie),
+              ),
+            ),
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      const prepared = yield* memory.prepareWakeup(orgA).pipe(Effect.result);
+      yield* Fiber.join(write);
+      expect(prepared).toMatchObject({ _tag: "Success", success: { head } });
+      expect(yield* fs.readFileString(`${root}/a/memory-read/rules.md`)).toBe("Fixture rules");
+    }).pipe(
+      Effect.provide(
+        memoryTestLayer.pipe(
+          Layer.provide(configLayer(root, "unused")),
+          Layer.provide(repo.layer),
+          Layer.provide(watching),
+        ),
+      ),
+    );
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, databaseLayer)), Effect.scoped),
 );
 
 it.effect(
@@ -967,6 +1028,63 @@ it.live("gives each lead its own read checkout, swapped in whole on prepare", ()
     Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
     Effect.scoped,
   ),
+);
+
+it.effect.each(["missing", "dangling", "unfinished"] as const)(
+  "prepares or holds a $0 default ref without touching local work",
+  (scenario) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { root, source, git, commit } = yield* fixtureRepository();
+      const base = `${root}/state`;
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        const { writer } = yield* memory.ensureCheckouts(orgA);
+        const head = yield* memory.anchor(orgA, "main");
+        yield* git(writer, ["branch", "local", head]);
+        yield* fs.writeFileString(`${writer}/local.md`, "Only present in this checkout");
+        if (scenario === "unfinished") {
+          yield* memory.prepareWakeup(orgA);
+          const moved = yield* commit(writer);
+          yield* fs.writeFileString(
+            `${writer}/.git/MERGE_HEAD`,
+            `${head}
+`,
+          );
+          expect(yield* memory.prepareWakeup(orgA).pipe(Effect.result)).toMatchObject({
+            _tag: "Failure",
+            failure: { _tag: "MemoryCheckoutInvalid", reason: "Unfinished Git operation" },
+          });
+          expect(yield* git(writer, ["rev-parse", "refs/heads/main"])).toBe(moved);
+          expect(yield* memory.syncCheckout(orgA).pipe(Effect.result)).toMatchObject({
+            _tag: "Failure",
+            failure: { _tag: "MemoryCheckoutInvalid", reason: "Unfinished Git operation" },
+          });
+          expect(yield* git(writer, ["rev-parse", "refs/heads/main"])).toBe(moved);
+        } else {
+          yield* git(writer, ["update-ref", "-d", "refs/heads/main", head]);
+          if (scenario === "dangling") {
+            yield* git(writer, ["symbolic-ref", "refs/heads/main", "refs/heads/not-main"]);
+            expect(yield* memory.prepareWakeup(orgA).pipe(Effect.result)).toMatchObject({
+              _tag: "Failure",
+              failure: { _tag: "MemoryCheckoutInvalid" },
+            });
+            expect(
+              yield* git(writer, ["for-each-ref", "--format=%(refname)", "refs/heads"]),
+            ).not.toContain("refs/heads/not-main");
+          } else {
+            expect((yield* memory.prepareWakeup(orgA)).head).toBe(head);
+          }
+        }
+        expect(yield* git(writer, ["rev-parse", "refs/heads/local"])).toBe(head);
+        expect(yield* fs.readFileString(`${writer}/local.md`)).toBe(
+          "Only present in this checkout",
+        );
+      }).pipe(Effect.provide(memoryLayer(base, source)));
+    }).pipe(
+      Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
+      Effect.scoped,
+    ),
 );
 
 it.live.each([
