@@ -166,7 +166,8 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
 
 /**
  * A draft put to the agent's owner in her own turn that is her redraft of one waiting on her
- * Changes first (`redoOf`): the same kind, for the client or deal it names.
+ * Changes first (`redoOf`): the same kind, for the client or deal it names, or for any when it
+ * names none, since a draft put to her is never anything but a redraft.
  */
 const sentBack = Effect.fn("KinQuestions.sentBack")(function* (
   lead: TurnLead,
@@ -190,10 +191,10 @@ const sentBack = Effect.fn("KinQuestions.sentBack")(function* (
           WHERE r.org_id = ${lead.orgId} AND r.key IN ${sql.in(named)}
             AND r.register_id IN ('clients', 'deals')
           ORDER BY r.key`;
-  if (draft.for !== undefined && parties.length !== 1) return undefined;
+  if (named.length > 0 && parties.length !== 1) return undefined;
   return yield* redoOf(
     { orgId: lead.orgId, agentId: lead.agentId, wakeupId: lead.wakeupId },
-    { kind: draft.kind, partyId: parties[0]?.partyId ?? null },
+    named.length === 0 ? { kind: draft.kind } : { kind: draft.kind, partyId: parties[0]!.partyId },
   );
 });
 
@@ -297,14 +298,15 @@ export const redo = Effect.fn("KinQuestions.redo")(function* (
 /**
  * In the owner's own turn on her words in her chat with the agent, the one teammate's draft she
  * answered Changes first on there and that no later round replaced, which this redraft is: the
- * same kind for the same client, or an edit of a doc it was about. Undefined unless exactly one.
+ * same kind for the same client (any, with none given), or an edit of a doc it was about.
+ * Undefined unless exactly one.
  * With none, her redraft of the one whose card still waits on her is her Changes first in words.
  * `seen`: records its teammate must still see.
  */
 export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
   turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: KinWakeupId },
   redraft:
-    | { readonly kind: StoredDraft["kind"]; readonly partyId: string | null }
+    | { readonly kind: StoredDraft["kind"]; readonly partyId?: string | null }
     | { readonly docKey: string },
   seen: ReadonlyArray<string> = [],
 ) {
@@ -330,7 +332,8 @@ export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
   const isIt = (row: Row) =>
     "docKey" in redraft
       ? row.about.includes(redraft.docKey)
-      : row.draft.kind === redraft.kind && (row.draft.for?.partyId ?? null) === redraft.partyId;
+      : row.draft.kind === redraft.kind &&
+        (redraft.partyId === undefined || (row.draft.for?.partyId ?? null) === redraft.partyId);
   const matching = <A extends Row>(rows: ReadonlyArray<A>) =>
     Effect.filter(rows.filter(isIt), (row) =>
       Effect.forEach(seen, (id) => viewVisible(turn.orgId, [row.forPersonId], id)).pipe(

@@ -2661,7 +2661,8 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       // Never in Zoya's own turn, while it waits on Rhea.
       const zoyaWaits = yield* turnOn("zoya", zoyaChat, "Is the proposal done?");
       assert.notInclude(yield* team.promptOf(zoyaWaits.wakeupId, zoyaChat), WAITING);
-      const byAsk = yield* askHerself(third, "Four shoots and a reel");
+      // Its for naming no client or deal, as an agent may name the teammate there, it is still hers.
+      const byAsk = yield* askHerself(third, "Four shoots and a reel", "Zoya Sheikh");
       assert.strictEqual(byAsk.note, `This is ${told.slice("Not filed: this is ".length)}`);
       const [, , thirdUp] = yield* drafts;
       assert.deepInclude(thirdUp, {
