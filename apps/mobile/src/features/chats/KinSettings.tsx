@@ -44,8 +44,8 @@ const COMPANY_ROWS: Partial<
   Record<
     KinPhoneSettingsRow,
     {
-      readonly icon: "person.2" | "robot" | "doc.text" | "eye";
-      readonly route: "KinTeam" | "KinAgents" | "KinCompany" | "KinWatchLog";
+      readonly icon: "person.2" | "robot" | "doc.text" | "eye" | "server.rack";
+      readonly route: "KinTeam" | "KinAgents" | "KinCompany" | "KinWatchLog" | "KinHost";
       readonly title: string;
     }
   >
@@ -54,6 +54,7 @@ const COMPANY_ROWS: Partial<
   agents: { icon: "robot", route: "KinAgents", title: KIN_SETTINGS_PAGE_TITLES.agents },
   company: { icon: "doc.text", route: "KinCompany", title: KIN_SETTINGS_PAGE_TITLES.company },
   watches: { icon: "eye", route: "KinWatchLog", title: KIN_SETTINGS_PAGE_TITLES.watches },
+  host: { icon: "server.rack", route: "KinHost", title: KIN_SETTINGS_PAGE_TITLES.host },
 };
 
 export function KinSettings(props: {

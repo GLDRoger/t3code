@@ -234,6 +234,7 @@ it.effect("runs every listed agent read tool on a reader, and still marks what i
       pulse_read: {},
       pipeline_read: { view: "totals" },
       people_read: {},
+      kin_computer: {},
       kin_leads: {},
       docs_search: { text: "Grove" },
       doc_read: { key: docKey },

@@ -87,6 +87,7 @@ vi.mock(import("./kinClient"), async () => {
     },
     // Imported by the pages a card can open; no test here reaches them.
     refreshKinAgents: () => {},
+    refreshKinHost: () => {},
     retryKinAccess: () => {},
     kinReads: {},
   } as never;

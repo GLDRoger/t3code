@@ -26,6 +26,7 @@ const READS = [
   "pipeline_read",
   "people_read",
   "kin_leads",
+  "kin_computer",
   "docs_search",
   "doc_read",
   "doc_history",

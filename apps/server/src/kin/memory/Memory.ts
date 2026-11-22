@@ -156,6 +156,8 @@ export class MemoryRecoveryHooks extends Context.Service<
       conflictBranch?: string;
       /** What the owner reads, in plain words, when they must act or lost something; else only logged. */
       owner?: string;
+      /** The agent whose turn a restart cut, so the owner's line names it. */
+      restartOf?: KinAgentId;
     }) => Effect.Effect<void>;
   }
 >()("t3/kin/memory/Memory/MemoryRecoveryHooks") {}

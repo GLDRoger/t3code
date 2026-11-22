@@ -590,6 +590,7 @@ const make = Effect.gen(function* () {
           reason:
             "Staged changes were lost on restart; tool receipts do not prove those changes were committed.",
           owner: RESTART_OWNER_NOTICE,
+          restartOf: ctx.agentId,
         });
       }
     }
