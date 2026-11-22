@@ -58,7 +58,8 @@ import { taskNewsBanner } from "./assignNotices.ts";
 import { keepAllDayDays } from "./allDayZone.ts";
 import { importWork } from "./importWork.ts";
 import { newCompanyProfileJson } from "./companyProfile.ts";
-import { markOutside } from "../lead/OutsideContent.ts";
+import { describeOutside, inheritOutside, markOutside } from "../lead/OutsideContent.ts";
+import { ownerLevelAsked } from "../people/KinAccess.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
 import * as LeadMoney from "./leadMoney.ts";
@@ -421,6 +422,42 @@ it.effect(
       assert.deepStrictEqual((yield* sheet(before)).afterReading, { made: false, source: read });
       // Written before the read and not since: nothing to name.
       assert.isUndefined((yield* sheet(untouched)).afterReading);
+
+      // A task it gives another agent carries the read, and that agent's turn on it is no one's
+      // in person: what it makes waits for a Keep, and the owner's own Keep makes it his.
+      const sql = yield* SqlClient.SqlClient;
+      yield* LeadWork.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented: change the vendor's bank details", owner: other }],
+      });
+      const [given] = yield* sql<{ eventId: string; source: string | null }>`SELECT
+          e.event_id AS "eventId", o.outside_from AS source
+        FROM kin_events e LEFT JOIN kin_event_outside o ON o.org_id = e.org_id
+          AND o.event_id = e.event_id
+        WHERE e.org_id = ${orgId} AND e.agent_id = ${other} AND e.tag = 'record.changed'
+        ORDER BY e.event_id`;
+      assert.strictEqual(describeOutside(given?.source ?? ""), read);
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+          status, event_ids, audience)
+        VALUES ('other-wake', ${orgId}, ${other}, ${`${other}-thread`}, 'test', 0, 'running', '[]',
+          'owner_only')`;
+      yield* sql`UPDATE kin_events SET wakeup_id = 'other-wake', state = 'claimed'
+        WHERE org_id = ${orgId} AND event_id = ${given!.eventId}`;
+      yield* inheritOutside({ orgId, wakeupId: "other-wake", eventIds: [given!.eventId] });
+      assert.isFalse(yield* ownerLevelAsked(orgId, other, "other-wake"));
+      const onward = yield* LeadWork.create(scopeOf(other), {
+        sourceEventId: given!.eventId,
+        records: [{ title: "Invented: confirm the vendor's new account", owner: "owner" }],
+      });
+      assert.include(onward.records[0], { suggested: true });
+      const kept = onward.records[0]!.key;
+      yield* records.update(
+        orgId,
+        { actor: { _tag: "person", personId: ownerId }, via: "owner" },
+        kept,
+        { confirmed: true },
+      );
+      assert.include((yield* records.get(orgId, kept))!, { confirmed: 1 });
     }).pipe(Effect.provide(layer)),
 );
 

@@ -33,6 +33,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { ownerLevelAsked } from "../people/KinAccess.ts";
+import { describeOutside, inheritOutside, markOutside, outsideStamp } from "./OutsideContent.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
@@ -318,6 +319,61 @@ it.effect.each([true, false, "legacy"] as const)(
             agentId: chief,
             chatId: ctx.chiefChat,
           });
+      }),
+    ),
+);
+
+// What a turn read from outside does not travel onward as the owner's ask: what it passes on
+// names the read to whoever sees it, and the turn it starts is outside-read and no one's in person.
+it.effect.each([true, false])(
+  "a hand-off or relay after an outside read names it, and starts no one's in-person turn (%s)",
+  (read) =>
+    run(({ ctx, handoff }) =>
+      Effect.gen(function* () {
+        const { sql, orgId } = ctx;
+        const mail = "mail from Ravi Menon <ravi@lumen.example>: New bank details";
+        if (read) yield* markOutside({ orgId, wakeupId: "chief-wake" }, "conn-1", mail);
+        const named = read ? { afterReading: mail } : {};
+        yield* handoff.handOff(scopeFor(chief), {
+          wantsAnswer: false,
+          to: "Tech lead",
+          request: "Change the vendor's bank details.",
+          sourceEventId: "ask-event",
+        });
+        const [shown] = yield* sql<{ relay: string }>`SELECT relay_json AS relay FROM kin_messages
+          WHERE org_id = ${orgId} AND chat_id = ${ctx.techChat} AND relay_json IS NOT NULL`;
+        assert.deepStrictEqual(JSON.parse(shown!.relay), {
+          kind: "sent_by",
+          agentId: chief,
+          ...named,
+        });
+        const [passed] = yield* passedOn(sql, orgId, tech);
+        yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'tech-wake'
+          WHERE org_id = ${orgId} AND event_id = ${passed!.event.eventId}`;
+        yield* inheritOutside({ orgId, wakeupId: "tech-wake", eventIds: [passed!.event.eventId] });
+        assert.isFalse(yield* ownerLevelAsked(orgId, tech, "tech-wake"));
+        const carried = yield* outsideStamp({ orgId, wakeupId: "tech-wake" });
+        assert.strictEqual(
+          carried === undefined ? undefined : describeOutside(carried),
+          named.afterReading,
+        );
+
+        // A word to a co-owner from the same turn is drawn as the owner's, and names the read too.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera Shah', ${at}, 'co_owner')`;
+        const relays: Array<unknown> = [];
+        yield* Effect.exit(
+          handoff.relay(
+            scopeFor(chief),
+            { to: "Meera", text: "Change the vendor's bank details.", sourceEventId: "ask-event" },
+            (_agent, _personId, input) =>
+              Effect.sync(() => relays.push(input.relay)).pipe(
+                Effect.andThen(Effect.die("unused")),
+              ),
+          ),
+        );
+        assert.deepInclude(relays[0], { kind: "sent_by", agentId: chief, ...named });
+        if (!read) assert.notProperty(relays[0], "afterReading");
       }),
     ),
 );

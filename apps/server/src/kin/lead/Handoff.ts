@@ -48,7 +48,7 @@ import { teammatesLimited } from "./KinBudget.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import * as Reach from "./Reach.ts";
 import { directKey } from "./LeadAccess.ts";
-import { outsideStamp, stampEvent } from "./OutsideContent.ts";
+import { describeOutside, outsideStamp, stampEvent } from "./OutsideContent.ts";
 import { type TeammateAsk, forward, forwardEventId } from "./routeCard.ts";
 import { choiceExpired } from "../widgets/choiceCard.ts";
 import { isHeld, type KinLevelGate } from "./LevelGate.ts";
@@ -945,6 +945,9 @@ const make = Effect.gen(function* () {
     const unseen = (yield* signedIn(ctx.orgId, to.personId).pipe(access))
       ? undefined
       : `${to.name} hasn't signed in to Kin yet: it waits in their chat with you and reaches them when they do. Nobody was alerted.`;
+    // Words sent after the turn read outside text say so wherever they are drawn as someone's.
+    const read = yield* outsideStamp(ctx).pipe(access);
+    const afterReading = read === undefined ? {} : { afterReading: describeOutside(read) };
     if ((yield* effectiveAudience(ctx).pipe(access)) === "owner_only") {
       const direct = { chatId: theirChat };
       // Whose words these are: the one person the turn acts for, drawn as sent by them.
@@ -965,6 +968,7 @@ const make = Effect.gen(function* () {
                   agentId: ctx.agentId,
                   personId: KinPersonId.make(sender),
                   ...(senderRow === undefined ? {} : { personName: senderRow.name }),
+                  ...afterReading,
                 },
               }),
         },
@@ -1035,6 +1039,7 @@ const make = Effect.gen(function* () {
       agentId: ctx.agentId,
       personId: asker,
       ...(who === undefined ? {} : { personName: who.name }),
+      ...afterReading,
     };
     // One step: the one ask about a routed request, and the message that carries it.
     return yield* sql.withTransaction(
@@ -1363,13 +1368,18 @@ const make = Effect.gen(function* () {
             ${input.wantsAnswer ? 1 : 0})
           ON CONFLICT (org_id, message_id) DO NOTHING RETURNING to_agent_id AS "toAgentId"`;
         if (claimed.length === 0) return (yield* already()) ?? (yield* unavailable());
+        const read = yield* outsideStamp(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql));
         const { message } = yield* chat.notice({
           orgId: ctx.orgId,
           chatId: target.ownerChatId,
           audience: "owner",
           messageId: KinMessageId.make(`kin-handoff:${id}`),
           body,
-          relay: { kind: "sent_by", agentId: ctx.agentId },
+          relay: {
+            kind: "sent_by",
+            agentId: ctx.agentId,
+            ...(read === undefined ? {} : { afterReading: describeOutside(read) }),
+          },
           silent: true,
         });
         yield* queue.enqueue({
@@ -1392,8 +1402,7 @@ const make = Effect.gen(function* () {
           origin: { agentId: ctx.agentId, chatId: self.ownerChatId },
         });
         // Passed on after an outside read: the other lead's turn starts outside-read too.
-        yield* outsideStamp(ctx).pipe(
-          Effect.flatMap((source) => stampEvent(ctx.orgId, `handoff-${id}`, source)),
+        yield* stampEvent(ctx.orgId, `handoff-${id}`, read).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
         );
         return { to: target.name, passed: true as const };
