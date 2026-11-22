@@ -63,7 +63,7 @@ export const characterForTurn = (character: Character, ownerOnly: boolean) => {
   if (character.kin === undefined) {
     const parsed = parseCharacter(character.body);
     return ownerOnly
-      ? `Doc ${character.key}. When the owner tells you how to sound, change it with doc_edit and confirm in one line; doc_restore brings the last one back.${parsed.starter ? " It is a starter: offer him a sharper one." : ""}\n${character.body.trim()}`
+      ? `Doc ${character.key}. When the owner tells you how to sound, change it with doc_edit and confirm in one line; doc_restore brings the last one back.${parsed.starter ? " It is a starter: offer them a sharper one." : ""}\n${character.body.trim()}`
       : parsed.voice;
   }
   const own = character.body.trim();
@@ -128,7 +128,7 @@ To colleagues: Runs ${domain}. Talk to it plainly about its own lane.
 
 You are ${name}. ${job}
 
-${STARTER} In your next chat with the owner, offer him a sharper one in two or three lines (an archetype, what you love, what you push back on, how you write) and, on his word, save it over this paragraph with doc_edit.
+${STARTER} In your next chat with the owner, offer them a sharper one in two or three lines (an archetype, what you love, what you push back on, how you write) and, once they agree, save it over this paragraph with doc_edit.
 
 Until then: plain, direct and short. Have a view, say it once, and disagree with the owner when the facts support it.
 `;
