@@ -945,6 +945,42 @@ const keptForPerson = [
       }
     }),
   ),
+  ...(["the owner", "the agent"] as const).map((who) =>
+    row(
+      `notes ${who} wrote on a repeating task keep their writer on its next occurrence`,
+      Effect.gen(function* () {
+        const scene = yield* asked({ _tag: "agent", agentId: lead });
+        yield* scene.records.update(orgId, scene.ownerWrites, "W-1", {
+          dueAt: Date.parse("2026-11-12T15:00:00Z"),
+          repeat: { every: "days", days: 7 },
+          ...(who === "the owner" ? { notes: "Invented: the owner's brief" } : {}),
+        });
+        if (who === "the agent") {
+          const ask = yield* scene.say("Note where W-1 stands");
+          yield* scene.wake();
+          yield* scene.write(ask, { notes: "Invented: its status" });
+        }
+        yield* scene.records.update(orgId, scene.ownerWrites, "W-1", { state: "done" });
+        const ask = yield* scene.say("Note where the next one stands");
+        yield* scene.wake();
+        const [next] = yield* scene.sql<{ key: string; notes: string }>`SELECT key, notes
+          FROM kin_records WHERE org_id = ${orgId} AND origin_key LIKE 'repeat:%'`;
+        const written = yield* LeadWork.update(scopeOf(lead), {
+          key: next!.key,
+          sourceEventId: ask,
+          notes: "Invented: its newer status",
+        });
+        const after = yield* scene.records.get(orgId, next!.key);
+        if (who === "the owner") {
+          assert.include(written, { notesKept: LeadWork.NOTES_KEPT });
+          assert.strictEqual(after!.notes, "Invented: the owner's brief");
+        } else {
+          assert.notProperty(written, "notesKept");
+          assert.strictEqual(after!.notes, "Invented: its newer status");
+        }
+      }),
+    ),
+  ),
 ];
 it.effect.each(keptForPerson)("an agent keeps a person's newer change: $name", ({ run }) => run);
 

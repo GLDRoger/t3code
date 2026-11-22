@@ -108,6 +108,7 @@ import {
   toDetail,
   toRecord,
   unavailable,
+  wordsOf,
 } from "./recordRows.ts";
 import {
   checkFields,
@@ -1701,18 +1702,19 @@ const make = Effect.gen(function* () {
     );
   });
 
-  /** Whether an entry's notes were last written by a person (a coding agent's write is not). */
+  /**
+   * Whether an entry's notes were last written by a person (a coding agent's write is not), back
+   * through a repeat's earlier occurrences (`wordsOf`).
+   */
   const notesByPerson = Effect.fn("KinRecords.notesByPerson")(function* (
     orgId: KinOrgId,
     recordId: string,
   ) {
-    const [row] = yield* sql<{ byPerson: number | null }>`SELECT COALESCE((SELECT
-          c.actor_kind = 'person' AND c.coding_agent_key IS NULL FROM kin_record_changes c
-        WHERE c.org_id = r.org_id AND c.record_id = r.record_id AND EXISTS (SELECT 1
-          FROM json_each(c.fields_json) f WHERE json_extract(f.value, '$.field') = 'notes')
-        ORDER BY c.seq DESC LIMIT 1), r.created_by_kind = 'person') AS "byPerson"
-      FROM kin_records r WHERE r.org_id = ${orgId} AND r.record_id = ${recordId}`;
-    return row?.byPerson === 1;
+    const { writers, madeBy } = yield* wordsOf(orgId, recordId).pipe(provideSql);
+    const last = writers.find((one) => one.notes === 1);
+    return last === undefined
+      ? madeBy?.kind === "person"
+      : last.actorKind === "person" && last.coding === 0;
   });
 
   const update = Effect.fn("KinRecords.update")(function* (
