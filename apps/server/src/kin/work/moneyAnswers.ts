@@ -18,6 +18,8 @@ import {
   startOfDay,
 } from "./recordRows.ts";
 import { nextDates, repeatsBetween } from "./repeat.ts";
+import { companyCashOut, partnerFunded, repaidDay } from "./reimbursement.ts";
+import { partnersOwed } from "./partnersOwed.ts";
 import { alertsBeside, type AlertBalance } from "./statements/bankAlerts.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
 import {
@@ -92,20 +94,24 @@ const recordedMoney = Effect.fn("KinMoneyAnswers.recorded")(function* (
     WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
       AND r.register_id IN ('invoices', 'receipts') AND p.paid_on >= ${sinceDay}
     ORDER BY p.paid_on, p.payment_id`;
-  const spent = yield* sql<{ minor: number; currency: string; at: number }>`
-    SELECT r.amount_minor AS minor, r.currency, ${moneyDay(sql)} AS at
+  // A partner's expense leaves the company's accounts on the day it is paid back, if ever.
+  const spent = yield* sql<{ minor: number; currency: string; at: number; repaid: string | null }>`
+    SELECT r.amount_minor AS minor, r.currency, ${moneyDay(sql)} AS at,
+      CASE WHEN ${partnerFunded(sql)} THEN ${repaidDay(sql)} END AS repaid
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
-      AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
-      AND ${moneyDay(sql)} >= ${startOfDay(sinceDay, zone)}
+      AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${companyCashOut(sql)}
+      AND (${moneyDay(sql)} >= ${startOfDay(sinceDay, zone)} OR ${repaidDay(sql)} >= ${sinceDay})
     ORDER BY at, r.key`;
   return {
     received: received.map((one) => ({ minor: one.minor, currency: one.currency, day: one.day })),
-    spent: spent.map((one) => ({
-      minor: one.minor,
-      currency: one.currency,
-      day: dayIn(one.at, zone),
-    })),
+    spent: spent
+      .map((one) => ({
+        minor: one.minor,
+        currency: one.currency,
+        day: one.repaid ?? dayIn(one.at, zone),
+      }))
+      .filter((one) => one.day >= sinceDay),
   };
 });
 
@@ -396,8 +402,8 @@ type Expected = {
 /**
  * What is expected in and out from now to `days` ahead (each of `HORIZONS` by default): issued
  * invoices by due date, with overdue ones apart and never counted as coming; open amounts we owe by
- * their due date or date, past-due ones counted as going out; and the next occurrences of entries
- * set to repeat. Then runway from the last three complete months.
+ * their due date or date, past-due ones and what partners are owed back counted as going out; and
+ * the next occurrences of entries set to repeat. Then runway from the last three complete months.
  */
 export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
   orgId: KinOrgId,
@@ -548,6 +554,10 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
     now,
   );
 
+  // What the company owes partners back is due now: it goes out in every window.
+  const partners = yield* partnersOwed(orgId, home);
+  const toPartners = partners.flatMap((one) => one.entries);
+
   const windows = ends.map(({ days: span, end }) => {
     const inWindow = (one: Expected) => one.at <= end;
     const expectedIn = addUp(
@@ -555,7 +565,11 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
       home,
     );
     const expectedOut = addUp(
-      [...overdueOut.map((one) => one.money), ...dueOut.filter(inWindow).map((one) => one.money)],
+      [
+        ...overdueOut.map((one) => one.money),
+        ...toPartners.map((one) => one.money),
+        ...dueOut.filter(inWindow).map((one) => one.money),
+      ],
       home,
     );
     const currencies = [...new Set([...expectedIn, ...expectedOut].map((one) => one.currency))];
@@ -593,6 +607,7 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
     ),
     dueOut,
     overdueOut,
+    partners,
     datesWithoutAmount: undated.rows,
     incomplete,
     runway: yield* runway(orgId, now, zone, today),
@@ -624,15 +639,23 @@ const runway = Effect.fn("KinMoneyAnswers.runway")(function* (
     WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
       AND r.register_id IN ('invoices', 'receipts')
     GROUP BY p.currency ORDER BY p.currency`;
-  const spentFirst = yield* sql<{ currency: string; at: number }>`SELECT r.currency,
-      MIN(${moneyDay(sql)}) AS at
+  const repaid = sql`CASE WHEN ${partnerFunded(sql)} THEN ${repaidDay(sql)} END`;
+  const spentFirst = yield* sql<{ currency: string; at: number | null; repaid: string | null }>`
+    SELECT r.currency, MIN(CASE WHEN ${repaid} IS NULL THEN ${moneyDay(sql)} END) AS at,
+      MIN(${repaid}) AS repaid
     FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'expenses'
       AND r.state = 'done' AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
+      AND ${companyCashOut(sql)}
     GROUP BY r.currency ORDER BY r.currency`;
   const sinceOf = (currency: string) =>
     [
       ...paidFirst.filter((one) => one.currency === currency).map((one) => one.day),
-      ...spentFirst.filter((one) => one.currency === currency).map((one) => dayIn(one.at, zone)),
+      ...spentFirst
+        .filter((one) => one.currency === currency)
+        .flatMap((one) => [
+          ...(one.at === null ? [] : [dayIn(one.at, zone)]),
+          ...(one.repaid === null ? [] : [one.repaid]),
+        ]),
     ].toSorted()[0];
   const cash = yield* cashPosition(orgId, now);
   const currencies = [
@@ -722,6 +745,15 @@ export const outlookAnswer = (view: Outlook) => ({
   ...(view.overdueOut.length === 0
     ? {}
     : { pastDueCountedAsGoingOut: itemsShown(view.overdueOut, view.timeZone) }),
+  ...(view.partners.length === 0
+    ? {}
+    : {
+        owedToPartnersCountedAsGoingOut: view.partners.map((one) => ({
+          partner: one.personId === null ? `${one.name} (unmatched)` : one.name,
+          owed: shown(one.owed),
+          expenses: one.entries.length,
+        })),
+      }),
   ...(view.incomplete.length === 0
     ? {}
     : {
@@ -769,5 +801,5 @@ export const outlookAnswer = (view: Outlook) => ({
         }),
   })),
   basis:
-    "Expected in is issued invoices' unpaid balances by due date; overdue ones are listed, never counted. Expected out is open amounts we owe by due date, past-due ones counted, and the next dates of entries set to repeat. Runway is cash divided by the average monthly net of the last three complete months, from payments and paid expenses recorded in Kin; TDS is never cash.",
+    "Expected in is issued invoices' unpaid balances by due date; overdue ones are listed, never counted. Expected out is open amounts we owe by due date, past-due ones counted, what partners are owed back for expenses they paid, and the next dates of entries set to repeat. Runway is cash divided by the average monthly net of the last three complete months, from payments and paid expenses recorded in Kin; a partner's expense counts on the day it was paid back, never before; TDS is never cash.",
 });

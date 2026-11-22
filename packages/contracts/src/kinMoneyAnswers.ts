@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinChatError, KinOrgId, KinTrimmedText } from "./kinChat.ts";
+import { KinChatError, KinOrgId, KinPersonId, KinTrimmedText } from "./kinChat.ts";
 import { KinSacCode } from "./kinFinance.ts";
 import {
   KinBankKnown,
@@ -132,6 +132,20 @@ export const KinRunway = Schema.Struct({
 });
 export type KinRunway = typeof KinRunway.Type;
 
+/**
+ * What the company owes one partner back for Paid expenses they funded: a Kin person, or an
+ * import's address that no person matches yet (`personId` null).
+ */
+export const KinPartnerOwed = Schema.Struct({
+  personId: Schema.NullOr(KinPersonId),
+  name: Schema.String,
+  address: Schema.NullOr(Schema.String),
+  owed: KinMoneyTotals,
+  expenses: NonNegativeInt,
+  oldest: KinDay,
+});
+export type KinPartnerOwed = typeof KinPartnerOwed.Type;
+
 /** The next `days`: invoices due in, amounts owed and repeating bills out, and runway. */
 export const KinOutlook = Schema.Struct({
   today: KinDay,
@@ -149,6 +163,8 @@ export const KinOutlook = Schema.Struct({
   pastDueOut: Schema.Array(KinOutlookItem),
   /** Overdue invoices: listed, never counted as coming in. */
   overdueIn: Schema.Array(KinOutlookItem),
+  /** What partners are owed back, counted as going out now; absent from older hosts. */
+  owedToPartners: Schema.optional(Schema.Array(KinPartnerOwed)),
   /** Keys of repeating entries that repeat more often than the host projects. */
   incomplete: Schema.Array(Schema.String),
   runway: Schema.Array(KinRunway),
@@ -285,6 +301,16 @@ export type KinNewExpenseInput = typeof KinNewExpenseInput.Type;
 export const KinNewExpenseResult = Schema.Struct({ expense: KinRecordKey });
 export type KinNewExpenseResult = typeof KinNewExpenseResult.Type;
 
+/** The owner says which person an import's partner address is; their expenses take that funder. */
+export const KinMatchPartnerInput = Schema.Struct({
+  orgId: KinOrgId,
+  address: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  personId: KinPersonId,
+});
+export type KinMatchPartnerInput = typeof KinMatchPartnerInput.Type;
+export const KinMatchPartnerResult = Schema.Struct({ matched: Schema.Array(KinRecordKey) });
+export type KinMatchPartnerResult = typeof KinMatchPartnerResult.Type;
+
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 export const KinMoneyAnswerRpcs = [
   Rpc.make("kin.work.cash", { payload: KinCashInput, success: KinCash, error }),
@@ -315,6 +341,11 @@ export const KinMoneyAnswerRpcs = [
     success: KinNewExpenseResult,
     error,
   }),
+  Rpc.make("kin.work.matchPartner", {
+    payload: KinMatchPartnerInput,
+    success: KinMatchPartnerResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_MONEY_ANSWER_RPC_SCOPES = {
@@ -326,4 +357,5 @@ export const KIN_MONEY_ANSWER_RPC_SCOPES = {
   "kin.work.invoiceFromQuote": AuthKinChatScope,
   "kin.work.newInvoice": AuthKinChatScope,
   "kin.work.newExpense": AuthKinChatScope,
+  "kin.work.matchPartner": AuthKinChatScope,
 } as const;
