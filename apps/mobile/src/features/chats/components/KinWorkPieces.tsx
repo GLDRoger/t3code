@@ -388,7 +388,9 @@ export function KinTaskRow(props: {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={
-              line.with === null ? row.accessibilityLabel : `${row.accessibilityLabel}, ${line.with}`
+              line.with === null
+                ? row.accessibilityLabel
+                : `${row.accessibilityLabel}, ${line.with}`
             }
             onPress={props.onPress}
             className="gap-0.5 active:opacity-60"

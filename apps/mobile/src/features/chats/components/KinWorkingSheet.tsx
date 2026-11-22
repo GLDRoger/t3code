@@ -85,10 +85,7 @@ export function KinWorkingSheet(props: {
   const now = useVisibleSecondClock(true);
   return (
     <Sheet title={KIN_WORKING_COPY.title} onClose={props.onClose}>
-      <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
-        contentContainerClassName="px-5 pb-10"
-      >
+      <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerClassName="px-5 pb-10">
         {props.items.map((item) => (
           <KinWorkingRow
             key={item.key}

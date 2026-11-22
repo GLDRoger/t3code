@@ -11,10 +11,7 @@ import {
   kinWorkItemState,
   type KinWorkAssignee,
 } from "@t3tools/client-runtime/kin/kinWork";
-import {
-  KIN_TASK_WITH,
-  kinTaskWithChoices,
-} from "@t3tools/client-runtime/kin/kinTaskRecord";
+import { KIN_TASK_WITH, kinTaskWithChoices } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import {
   EnvironmentId,
   KIN_WORK_ALSO_ON_MAX,
