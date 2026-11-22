@@ -1,0 +1,13 @@
+# Hourly clear of old temporary files (clean-temp.sh). Installed by setup.sh and update.sh.
+[Unit]
+Description=Clear old Kin temporary files
+# Nothing to run before the first build.
+ConditionPathExists=%h/kin-current/ops/kin/host/clean-temp.sh
+
+[Service]
+Type=oneshot
+# PATH, KIN_CHECKOUT and TMPDIR (Kin's temp folder), written by setup.sh and update.sh.
+EnvironmentFile=%h/.config/kin/kin-server.env
+ExecStart=/usr/bin/env bash ${KIN_CHECKOUT}/ops/kin/host/clean-temp.sh
+Nice=10
+IOSchedulingClass=idle

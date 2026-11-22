@@ -193,6 +193,14 @@ space_short() {
   done
 }
 
+# Kin's temp folder on the main disk: service.env's TMPDIR when it names one (kin-server.env, read
+# after it, repeats it so the host's choice stands), else ~/.cache/kin-tmp. Keep in step with setup.sh.
+kin_tmpdir() {
+  local dir=""
+  if [ -f "$SERVICE_ENV" ]; then dir="$(sed -n 's/^ *\(export \)\{0,1\}TMPDIR=["'\'']\{0,1\}\(\/[^"'\'']*\).*/\2/p' "$SERVICE_ENV" | tail -n1)"; fi
+  echo "${dir:-$HOME/.cache/kin-tmp}"
+}
+
 server_url() {
   local port=""
   if [ -f "$SERVICE_ENV" ]; then port="$(sed -n 's/^ *\(export \)\{0,1\}T3CODE_PORT=["'\'']\{0,1\}\([0-9]*\).*/\2/p' "$SERVICE_ENV" | tail -n1)"; fi
@@ -307,6 +315,7 @@ write_env_file() {
     "KIN_REPO=$REPO" \
     "KIN_CHECKOUT=$CURRENT" \
     "KIN_NODE_VERSION=$1" \
+    "TMPDIR=$(kin_tmpdir)" \
     ${2:+"KIN_BUILD_COMMIT=$2"} >"$tmp" || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$ENV_FILE"; then
     rm -f "$tmp"
     return 1
@@ -316,7 +325,9 @@ write_env_file() {
 install_units() {
   local unit
   mkdir -p "$UNIT_DIR" || return 1
-  for unit in kin-server.service kin-backup.service kin-backup.timer; do
+  for unit in kin-server.service kin-backup.service kin-backup.timer kin-temp-clean.service kin-temp-clean.timer; do
+    # A build from before a unit existed leaves that unit as it is.
+    [ -f "$1/ops/kin/host/$unit" ] || continue
     cmp -s "$1/ops/kin/host/$unit" "$UNIT_DIR/$unit" ||
       install -m 0644 "$1/ops/kin/host/$unit" "$UNIT_DIR/$unit" || return 1
   done
@@ -371,6 +382,8 @@ deploy() {
   if [ -z "$problem" ]; then
     rm -f "$ENV_FILE.prev"
     say "running $sha, healthy: up, answering, migrations at $(db_heads | sed 's/ /\/K/'). Previous build: ${previous:-none}."
+    systemctl --user enable --now kin-temp-clean.timer 2>/dev/null ||
+      say "couldn't turn on the hourly temp clean; see systemctl --user status kin-temp-clean.timer."
     prune_builds "$build" "$previous"
     prune_backups
     return 0
@@ -416,6 +429,11 @@ main() {
   local KIN_REPO=""
   if [ -f "$ENV_FILE" ]; then KIN_REPO="$(sed -n 's/^KIN_REPO=//p' "$ENV_FILE" | tail -n1)"; fi
   REPO="${KIN_REPO:-$HOME/t3code}"
+  # The build (install, compile, cc) and its tests write here, not to a small /tmp.
+  TMPDIR="$(kin_tmpdir)"
+  export TMPDIR
+  mkdir -p "$TMPDIR"
+  if [ -O "$TMPDIR" ]; then chmod 700 "$TMPDIR"; fi
 
   [ "$(git -C "$REPO" branch --show-current)" = kin ] || { say "$REPO is not on branch kin."; exit 1; }
   [ -f "$REPO/.env" ] || { say "$REPO/.env is missing (cp .env.example .env)."; exit 1; }

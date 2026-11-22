@@ -160,7 +160,7 @@ else
 fi
 
 UNIT_CHANGED=0
-for unit in kin-server.service kin-backup.service kin-backup.timer; do
+for unit in kin-server.service kin-backup.service kin-backup.timer kin-temp-clean.service kin-temp-clean.timer; do
   if [ -f "$UNIT_DIR/$unit" ] && cmp -s "$SCRIPT_DIR/$unit" "$UNIT_DIR/$unit"; then
     say "$unit is current."
   else
@@ -168,6 +168,16 @@ for unit in kin-server.service kin-backup.service kin-backup.timer; do
     if [ "$unit" = kin-server.service ]; then UNIT_CHANGED=1; fi
   fi
 done
+
+# Kin's temporary files go on the main disk, not a small /tmp: service.env's TMPDIR when it names
+# one (this file is read after it, so the same value keeps the host's choice), else ~/.cache/kin-tmp.
+KIN_TMP=""
+if [ -f "$KIN_HOME/.t3/service.env" ]; then
+  KIN_TMP="$(sed -n 's/^ *\(export \)\{0,1\}TMPDIR=["'\'']\{0,1\}\(\/[^"'\'']*\).*/\2/p' "$KIN_HOME/.t3/service.env" | tail -n1)"
+fi
+KIN_TMP="${KIN_TMP:-$KIN_HOME/.cache/kin-tmp}"
+# As kin, so a path kin wrote into service.env never has root create anything.
+if [ ! -d "$KIN_TMP" ]; then run as_kin mkdir -p -m 0700 "$KIN_TMP"; fi
 
 # Keep in step with update.sh, which writes the same file.
 ENV_FILE="$CONFIG_DIR/kin-server.env"
@@ -178,7 +188,8 @@ ENV_CONTENT="KIN_ENABLED=true
 PATH=$KIN_HOME/.local/bin:$KIN_HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
 KIN_REPO=$CHECKOUT
 KIN_CHECKOUT=$CURRENT
-KIN_NODE_VERSION=$NODE_VERSION${BUILD_COMMIT:+
+KIN_NODE_VERSION=$NODE_VERSION
+TMPDIR=$KIN_TMP${BUILD_COMMIT:+
 KIN_BUILD_COMMIT=$BUILD_COMMIT}"
 if [ -f "$ENV_FILE" ] && [ "$(cat "$ENV_FILE")" = "$ENV_CONTENT" ]; then
   say "$ENV_FILE is current."
@@ -207,6 +218,7 @@ fi
 run as_kin systemctl --user daemon-reload
 run as_kin systemctl --user enable kin-server.service
 run as_kin systemctl --user enable --now kin-backup.timer
+run as_kin systemctl --user enable --now kin-temp-clean.timer
 if [ -f "$CURRENT/apps/server/dist/bin.mjs" ]; then
   # `start` is a no-op for a running server; changed settings wait for a planned restart.
   run as_kin systemctl --user start kin-server.service
@@ -252,6 +264,8 @@ check "sleep targets masked" sh -c "[ \"\$(systemctl is-enabled sleep.target sus
 check "kin-server enabled" as_kin systemctl --user is-enabled kin-server.service
 check "kin-server running" as_kin systemctl --user is-active kin-server.service
 check "backup timer enabled" as_kin systemctl --user is-enabled kin-backup.timer
+check "hourly temp clean enabled" as_kin systemctl --user is-enabled kin-temp-clean.timer
+check "temp folder on the main disk ($KIN_TMP)" test -d "$KIN_TMP"
 check "backup destination set (~/.config/kin/backup.env)" test -f "$CONFIG_DIR/backup.env"
 check "T3 policy installed ($POLICY_FILE)" cmp -s "$SCRIPT_DIR/policy.json" "$POLICY_FILE"
 
