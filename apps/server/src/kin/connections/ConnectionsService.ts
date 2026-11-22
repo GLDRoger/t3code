@@ -77,6 +77,7 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import {
   markOutside,
   outsideRead,
+  type OutsideReadItem,
   outsideStamp,
   OUTSIDE_REFUSAL,
   stampKey,
@@ -2005,7 +2006,9 @@ const make = Effect.gen(function* () {
       // Instructions, names, descriptions and schemas are the server's words: the turn is
       // outside-read before any of them reaches it, even a listing with nothing to read.
       const connectionId = row.connectionId;
-      const mark = sql.withTransaction(shown(turn, connectionId, `${row.label}'s tools`));
+      const mark = sql.withTransaction(
+        shown(turn, connectionId, { k: "service", label: row.label }),
+      );
       const waiting = all.filter(changed).length;
       const label = `${row.label} tools`;
       const note = [
@@ -2066,10 +2069,13 @@ const make = Effect.gen(function* () {
   );
 
   /** The turn now carries outside text: it is outside-read, and what it writes is the owner's. */
-  const shown = (turn: Turn, connectionId: string, readable: string) =>
-    Effect.all([markOutside(turn, connectionId, readable), sensitiveShown(turn)], {
-      discard: true,
-    }).pipe(provideSql);
+  const shown = (turn: Turn, connectionId: string, read: OutsideReadItem) =>
+    Effect.all(
+      [markOutside(turn, connectionId, [{ ...read, id: connectionId }]), sensitiveShown(turn)],
+      {
+        discard: true,
+      },
+    ).pipe(provideSql);
 
   /**
    * Takes one call and up to one result's characters from the turn's allowance in one statement,

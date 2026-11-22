@@ -32,10 +32,10 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import {
-  describeOutside,
   inheritOutside,
   outsideStamp,
   outsideToolAllowed,
+  renderSource,
   stampKey,
 } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -1347,7 +1347,7 @@ it.effect(
         wakeupId: "work-turn",
       });
       assert.strictEqual(
-        describeOutside((yield* outsideStamp({ orgId, wakeupId: "work-turn" })) ?? ""),
+        renderSource((yield* outsideStamp({ orgId, wakeupId: "work-turn" })) ?? "", true),
         "Invented laptop, a coding agent",
       );
       assert.include(

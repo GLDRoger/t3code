@@ -48,7 +48,7 @@ import { teammatesLimited } from "./KinBudget.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import * as Reach from "./Reach.ts";
 import { directKey } from "./LeadAccess.ts";
-import { describeOutside, outsideStamp, stampEvent } from "./OutsideContent.ts";
+import { outsideStamp, renderSource, stampEvent } from "./OutsideContent.ts";
 import { type TeammateAsk, forward, forwardEventId } from "./routeCard.ts";
 import { choiceExpired } from "../widgets/choiceCard.ts";
 import { isHeld, type KinLevelGate } from "./LevelGate.ts";
@@ -100,6 +100,8 @@ export const HandOffResult = Schema.Union([
     passed: Schema.Literal(true),
     // A teammate's request: what they were already shown of it.
     note: Schema.optional(Schema.String),
+    // After an outside read: what it went with, as this turn may name it.
+    source: Schema.optional(Schema.String),
   }),
   // Not passed on: the note says why (today's limit, or a card an earlier build drew).
   Schema.Struct({ passed: Schema.Literal(false), note: Schema.String }),
@@ -142,13 +144,15 @@ export const RelayResult = Schema.Struct({
   to: Schema.String,
   sent: Schema.Literal(true),
   note: Schema.String,
+  // After an outside read: what it went with, as this turn may name it.
+  source: Schema.optional(Schema.String),
 });
 /** What `relay` posts with: the gate's message to one person (`KinLevelGate.postTo`). */
 type PostTo = KinLevelGate["Service"]["postTo"];
 
 const NOTHING = "Nothing was passed on.";
 /** What a hand-off or relay sent after an outside read tells the sending agent. */
-const asRequest = (source: string) => ` It went as a request, with its source (${source}).`;
+const AS_REQUEST = " It went as a request, with its source.";
 /** An urgent message's word on what it withdrew (`urgentNow`), so anything unrelated is sent again. */
 const replacedLine = (name: string, replaced: number | undefined) =>
   replaced === undefined || replaced === 0
@@ -948,10 +952,14 @@ const make = Effect.gen(function* () {
       ? undefined
       : `${to.name} hasn't signed in to Kin yet: it waits in their chat with you and reaches them when they do. Nobody was alerted.`;
     // Words sent after the turn read outside text say so wherever they are drawn as someone's.
+    // Each reader is named what they may see of it (`renderSource`): the recipient, and this turn.
     const read = yield* outsideStamp(ctx).pipe(access);
-    const afterReading = read === undefined ? {} : { afterReading: describeOutside(read) };
-    const sentAs = read === undefined ? "" : asRequest(describeOutside(read));
-    if ((yield* effectiveAudience(ctx).pipe(access)) === "owner_only") {
+    const ownerTurn = (yield* effectiveAudience(ctx).pipe(access)) === "owner_only";
+    const afterReading =
+      read === undefined ? {} : { afterReading: renderSource(read, toOwnerSide) };
+    const sentAs = read === undefined ? "" : AS_REQUEST;
+    const named = read === undefined ? {} : { source: renderSource(read, ownerTurn) };
+    if (ownerTurn) {
       const direct = { chatId: theirChat };
       // Whose words these are: the one person the turn acts for, drawn as sent by them.
       const posted = yield* postTo(
@@ -987,6 +995,7 @@ const make = Effect.gen(function* () {
             ? `${heldUntil(to.name, posted)}; Kin delivers it in their chat with you then. Tell the asker they'll have it then; their answer arrives there.`
             : `Sent in ${to.name}'s chat with you; their answer arrives there.`)
         }${isHeld(posted) ? "" : replacedLine(to.name, posted.replaced)}${sentAs}`,
+        ...named,
       };
     }
     // A teammate's turn: their request or their words, to anyone in the company.
@@ -1010,7 +1019,11 @@ const make = Effect.gen(function* () {
     const flat = (text: string) => text.replace(/\s+/g, " ");
     // A routed relay quotes her stored words too, so they are held to the same reader.
     if (!toOwnerSide)
-      for (const text of original === undefined ? [input.text] : [input.text, original.body]) {
+      for (const text of [
+        input.text,
+        ...(original === undefined ? [] : [original.body]),
+        ...(afterReading.afterReading === undefined ? [] : [afterReading.afterReading]),
+      ]) {
         const why = yield* unreadableBy(ctx.orgId, to.personId, flat(text), asker).pipe(access);
         if (why !== undefined)
           return yield* refuse(
@@ -1084,6 +1097,7 @@ const make = Effect.gen(function* () {
               unseen ??
               `${heldUntil(to.name, { ...held, at })}; Kin delivers it then, waiting on them in their chat with you. Tell ${who?.name ?? "the asker"} it reaches ${to.name} then; the answer comes back through you.`
             }${sentAs}`,
+            ...named,
           };
         }
         yield* chat.notice({
@@ -1103,6 +1117,7 @@ const make = Effect.gen(function* () {
             unseen ??
             `It waits on ${to.name} in their chat with you, quoted as ${who?.name ?? "the asker"}'s words. Tell them it is with ${to.name}; the answer comes back through you.`
           }${replacedLine(to.name, replaced)}${sentAs}`,
+          ...named,
         };
       }),
     );
@@ -1373,6 +1388,25 @@ const make = Effect.gen(function* () {
           ON CONFLICT (org_id, message_id) DO NOTHING RETURNING to_agent_id AS "toAgentId"`;
         if (claimed.length === 0) return (yield* already()) ?? (yield* unavailable());
         const read = yield* outsideStamp(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        // Each reader is named what they may see of it: the other lead's owner, and this turn.
+        const named =
+          read === undefined
+            ? undefined
+            : {
+                notice: renderSource(
+                  read,
+                  yield* ownerLevel(ctx.orgId, target.ownerPersonId).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                    Effect.orElseSucceed(() => false),
+                  ),
+                ),
+                turn: renderSource(
+                  read,
+                  (yield* effectiveAudience(ctx).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                  )) === "owner_only",
+                ),
+              };
         const { message } = yield* chat.notice({
           orgId: ctx.orgId,
           chatId: target.ownerChatId,
@@ -1382,7 +1416,7 @@ const make = Effect.gen(function* () {
           relay: {
             kind: "sent_by",
             agentId: ctx.agentId,
-            ...(read === undefined ? {} : { afterReading: describeOutside(read) }),
+            ...(named === undefined ? {} : { afterReading: named.notice }),
           },
           silent: true,
         });
@@ -1412,10 +1446,11 @@ const make = Effect.gen(function* () {
         return {
           to: target.name,
           passed: true as const,
-          ...(read === undefined
+          ...(named === undefined
             ? {}
             : {
-                note: `Passed to ${target.name} as a request, with its source (${describeOutside(read)}): what ${target.name} makes from it waits to be kept.`,
+                note: `Passed to ${target.name} as a request, with its source: what ${target.name} makes from it waits to be kept.`,
+                source: named.turn,
               }),
         };
       }),

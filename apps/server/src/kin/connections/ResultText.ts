@@ -2,6 +2,7 @@ import { stableStringify } from "@t3tools/shared/relaySigning";
 import type { McpSchema } from "effect/ai";
 import * as Predicate from "effect/Predicate";
 
+import type { OutsideReadItem } from "../lead/OutsideContent.ts";
 import { quote } from "../lead/quote.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
 
@@ -117,7 +118,7 @@ export const resultSource = (input: {
   readonly label: string;
   readonly tool: string;
   readonly result: McpSchema.CallToolResult;
-}) => {
+}): OutsideReadItem => {
   const shown = parsed(input.result);
   const messages = Predicate.hasProperty(shown, "messages") ? shown.messages : undefined;
   if (Array.isArray(messages) && messages.length > 0) {
@@ -128,9 +129,14 @@ export const resultSource = (input: {
     const from = named(theirs, "from");
     const subject = named(messages[0], "subject");
     if (from !== undefined)
-      return subject === undefined ? `mail from ${from}` : `mail from ${from}: ${subject}`;
+      return {
+        k: "mail",
+        account: input.label,
+        from,
+        ...(subject === undefined ? {} : { subject }),
+      };
   }
-  if (Predicate.hasProperty(shown, "threads")) return `mail in ${input.label}`;
-  if (Predicate.hasProperty(shown, "events")) return `the calendar of ${input.label}`;
-  return `${input.label} (${input.tool})`;
+  if (Predicate.hasProperty(shown, "threads")) return { k: "mail", account: input.label };
+  if (Predicate.hasProperty(shown, "events")) return { k: "calendar", account: input.label };
+  return { k: "service", label: input.label, tool: input.tool };
 };

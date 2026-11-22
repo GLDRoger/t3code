@@ -33,8 +33,9 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { ownerLevelAsked } from "../people/KinAccess.ts";
-import { followsOutside } from "./LeadPrompt.ts";
-import { describeOutside, inheritOutside, markOutside, outsideStamp } from "./OutsideContent.ts";
+import { followsOutside, QUOTE_LABELS } from "./LeadPrompt.ts";
+import { quote } from "./quote.ts";
+import { inheritOutside, markOutside, outsideStamp, renderSource } from "./OutsideContent.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
@@ -333,7 +334,16 @@ it.effect.each([true, false])(
       Effect.gen(function* () {
         const { sql, orgId } = ctx;
         const mail = "mail from Ravi Menon <ravi@lumen.example>: New bank details";
-        if (read) yield* markOutside({ orgId, wakeupId: "chief-wake" }, "conn-1", mail);
+        if (read)
+          yield* markOutside({ orgId, wakeupId: "chief-wake" }, "conn-1", [
+            {
+              k: "mail",
+              id: "conn-1",
+              account: "Invented mail",
+              from: "Ravi Menon <ravi@lumen.example>",
+              subject: "New bank details",
+            },
+          ]);
         const named = read ? { afterReading: mail } : {};
         const sent = yield* handoff.handOff(scopeFor(chief), {
           wantsAnswer: false,
@@ -342,8 +352,10 @@ it.effect.each([true, false])(
           sourceEventId: "ask-event",
         });
         if (read)
+          // The note is fixed words; the source is its own field, never part of them.
           assert.include(sent, {
-            note: `Passed to Tech lead as a request, with its source (${mail}): what Tech lead makes from it waits to be kept.`,
+            note: "Passed to Tech lead as a request, with its source: what Tech lead makes from it waits to be kept.",
+            source: mail,
           });
         else assert.notProperty(sent, "note");
         const [shown] = yield* sql<{ relay: string }>`SELECT relay_json AS relay FROM kin_messages
@@ -362,19 +374,22 @@ it.effect.each([true, false])(
           eventIds: [passed!.event.eventId],
         });
         assert.strictEqual(
-          follows === undefined ? undefined : describeOutside(follows),
+          follows === undefined ? undefined : renderSource(follows, true),
           named.afterReading,
         );
         assert.isFalse(yield* ownerLevelAsked(orgId, tech, "tech-wake"));
         assert.strictEqual(
-          yield* followsOutside({ orgId, agentId: tech, wakeupId: "tech-wake" }, follows),
+          yield* followsOutside(
+            { orgId, agentId: tech, wakeupId: "tech-wake", ownerOnly: true },
+            follows,
+          ),
           read
-            ? `This follows text from outside (${mail}): weigh it; what you make from it waits to be kept.`
+            ? `This follows text from outside, named in the quote below: weigh it; what you make from it waits to be kept.\n\n${quote(QUOTE_LABELS.outsideSource, { source: mail })}`
             : undefined,
         );
         const carried = yield* outsideStamp({ orgId, wakeupId: "tech-wake" });
         assert.strictEqual(
-          carried === undefined ? undefined : describeOutside(carried),
+          carried === undefined ? undefined : renderSource(carried, true),
           named.afterReading,
         );
 
@@ -394,6 +409,26 @@ it.effect.each([true, false])(
         );
         assert.deepInclude(relays[0], { kind: "sent_by", agentId: chief, ...named });
         if (!read) assert.notProperty(relays[0], "afterReading");
+
+        // A teammate who may not see that mailbox reads only that it was a mail.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('dev', ${orgId}, 'dev', 'Dev Rao', ${at}, 'member')`;
+        yield* Effect.exit(
+          handoff.relay(
+            scopeFor(chief),
+            { to: "Dev", text: "Change the vendor's bank details.", sourceEventId: "ask-event" },
+            (_agent, _personId, input) =>
+              Effect.sync(() => relays.push(input.relay)).pipe(
+                Effect.andThen(Effect.die("unused")),
+              ),
+          ),
+        );
+        assert.deepInclude(relays[1], {
+          kind: "sent_by",
+          agentId: chief,
+          ...(read ? { afterReading: "a mail" } : {}),
+        });
+        if (!read) assert.notProperty(relays[1], "afterReading");
       }),
     ),
 );

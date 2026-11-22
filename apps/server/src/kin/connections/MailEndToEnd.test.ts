@@ -35,7 +35,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
-import { describeOutside, outsideStamp } from "../lead/OutsideContent.ts";
+import { outsideStamp, renderSource } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { fromConnections, poll } from "../pulse/outside.ts";
 import * as KinRecords from "../work/KinRecords.ts";
@@ -749,8 +749,9 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           // Each read is named for a person once: the mailboxes listed, then the mail's sender.
           yield* callTool(ACCOUNTS, "mail_read_thread", { threadId: billing.threadId });
           yield* callTool(ACCOUNTS, "mail_read_thread", { threadId: billing.threadId });
-          const read = describeOutside(
+          const read = renderSource(
             (yield* outsideStamp({ orgId, wakeupId: `wake-${wakes}` })) ?? "",
+            true,
           ).split("; ");
           assert.sameMembers(read, [
             `mail in ${ACCOUNTS}`,

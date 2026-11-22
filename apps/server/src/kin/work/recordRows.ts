@@ -824,6 +824,18 @@ export const chatLinksFor = Effect.fn("KinRecords.chatLinksFor")(function* <
   };
 });
 
+/**
+ * An entry's "after reading" line for its reader: anyone reads what kind of text it was; an
+ * owner-level reader also reads where it came from (`renderSource`).
+ */
+export const afterReadingFor = Effect.fn("KinRecords.afterReadingFor")(function* <
+  A extends { readonly recordId: string; readonly afterReading?: KinRecordDetail["afterReading"] },
+>(orgId: KinOrgId, ownerLevelReader: boolean, detail: A) {
+  if (detail.afterReading === undefined || !ownerLevelReader) return detail;
+  const afterReading = yield* entryAfterReading(orgId, detail.recordId, true);
+  return afterReading === undefined ? detail : { ...detail, afterReading };
+});
+
 export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
   row: RecordRow,
   now: number,
