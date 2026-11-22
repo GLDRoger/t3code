@@ -885,6 +885,20 @@ describe("the morning page's Money lines", () => {
       ]);
       // A teammate who may not see Money hears none of it; one who may, the same lines.
       yield* sql`UPDATE kin_records SET team_shared = 1 WHERE register_id IN ('invoices', 'quotes')`;
+      // The agent named the quote by its title, as an unnumbered one shows: Kin says it once.
+      assert.deepStrictEqual(
+        yield* lines(KIN_OWNER_LEVEL, "Still chasing the Work for QT-1 quote."),
+        [
+          "Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue.",
+          "Corran Tiles hasn't answered quote CQ/7 for NZ$3,540 in 6 days.",
+        ],
+      );
+      yield* sql`UPDATE kin_records SET fields_json = '{}' WHERE record_id = 'r-QT-1'`;
+      assert.deepStrictEqual(
+        yield* lines(KIN_OWNER_LEVEL, "Still chasing the Work for QT-1 quote."),
+        ["Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue."],
+      );
+      yield* sql`UPDATE kin_records SET fields_json = '{"number":"CQ/7"}' WHERE record_id = 'r-QT-1'`;
       assert.deepStrictEqual(yield* lines(viewerOfPeople([zoya])), []);
       yield* sql`UPDATE kin_people SET sees_money = 1 WHERE person_id = ${zoya}`;
       assert.lengthOf(yield* lines(viewerOfPeople([zoya])), 2);

@@ -60,7 +60,7 @@ const total = (amounts: ReadonlyArray<{ readonly minor: number; readonly currenc
  * The morning page's own Money lines, every morning until settled: each invoice past its due date
  * and each sent quote with no answer for its follow-up days (5 unless a playbook says otherwise),
  * as `viewer` may see them. An invoice set aside (`invoiceAsides`) is left out until its day; one
- * `said` (the agent's own Money section) names by number or client is not said again.
+ * `said` (the agent's own Money section) names by number (else title) or client is not said again.
  */
 export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (input: {
   readonly orgId: KinOrgId;
@@ -72,8 +72,10 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
   const { orgId, now } = input;
   const seen = seenBy(sql, input.viewer);
   const said = ` ${fold(input.said ?? "")} `;
-  const saysNumber = (number: unknown) =>
-    typeof number === "string" && fold(number) !== "" && said.includes(` ${fold(number)} `);
+  const saysName = (number: unknown, title: string) => {
+    const name = fold(typeof number === "string" && number.trim() !== "" ? number : title);
+    return name !== "" && said.includes(` ${name} `);
+  };
   const shown = <T>(
     entries: ReadonlyArray<T>,
     line: (entry: T) => string,
@@ -92,7 +94,9 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
     overdue
       .filter(
         (one) =>
-          !asides.has(one.recordId) && !saysNumber(one.number) && !names(said, one.partyTitle),
+          !asides.has(one.recordId) &&
+          !saysName(one.number, one.title) &&
+          !names(said, one.partyTitle),
       )
       .toSorted((a, b) => b.daysOverdue - a.daysOverdue),
     (one) =>
@@ -123,7 +127,7 @@ export const morningMoneyLines = Effect.fn("KinMorningMoney.lines")(function* (i
     quotes.filter(
       (one) =>
         one.lastAt <= now - toMs(limits("quote_follow_up_days", one.clientId ?? undefined)) &&
-        !saysNumber(one.number),
+        !saysName(one.number, one.title),
     ),
     (one) => {
       const amount =
