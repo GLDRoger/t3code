@@ -116,7 +116,7 @@ it.layer(layer)((it) => {
         },
       );
       const [made] = yield* entries;
-      assert.strictEqual(made!.originKey, "alert:hdfc:4821:632211110001");
+      assert.strictEqual(made!.originKey, "alert:hdfc:4821:debit:632211110001");
       assert.strictEqual(made!.amountMinor, 125_000);
       assert.deepStrictEqual(parseFields(made!.fieldsJson), {
         direction: "debit",
@@ -147,6 +147,17 @@ it.layer(layer)((it) => {
         FROM kin_bank_alerts WHERE org_id = ${orgId} AND record_id IS NOT NULL`;
       assert.deepStrictEqual(linked, [{ recordId: made!.recordId }]);
 
+      // A failed payment's reversal quotes the debit's own reference: money back, its own entry.
+      const reversal = (way: "debited from" | "credited to") =>
+        alert(
+          `<m-${way.slice(0, 3)}@hdfc>`,
+          `Rs.700.00 has been ${way} account **5530 on 18-11-26. Your UPI transaction reference number is 632211110050.`,
+        );
+      assert.deepStrictEqual(
+        yield* take("work-mail", "t5", [reversal("debited from"), reversal("credited to")]),
+        { recorded: 2, duplicate: 0, rejected: 0 },
+      );
+
       // A thread Kin read to its newest mail needn't be read again; a newer mail in it must.
       const sent = Date.parse("2026-11-18T04:30:00Z");
       assert.isTrue(yield* threadSeen(orgId, "work-mail", "t1", sent));
@@ -158,6 +169,7 @@ it.layer(layer)((it) => {
     Effect.gen(function* () {
       const records = yield* KinRecords.KinRecords;
       const def = yield* ensureBankList(orgId, NOW);
+      const before = (yield* entries).length;
       // As a confirmed statement saves it: its own key, the bank's zero-padded reference.
       yield* records.create(
         orgId,
@@ -189,7 +201,7 @@ it.layer(layer)((it) => {
         now: NOW,
       });
       assert.deepStrictEqual(tally, { recorded: 0, duplicate: 1, rejected: 0 });
-      assert.strictEqual((yield* entries).length, 2);
+      assert.strictEqual((yield* entries).length, before + 1);
     }),
   );
 

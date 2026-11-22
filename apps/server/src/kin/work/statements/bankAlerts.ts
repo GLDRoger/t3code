@@ -55,8 +55,9 @@ const alertIdOf = (connectionId: string, threadId: string, message: AlertMessage
       : `${connectionId}\0${message.messageId}`,
   );
 
-const alertOriginKey = (alert: Pick<HdfcAlert, "account" | "reference">) =>
-  `alert:hdfc:${alert.account}:${referenceKey(alert.reference)}`;
+/** A reversal quotes its debit's reference, so the way the money moved is part of the key. */
+const alertOriginKey = (alert: Pick<HdfcAlert, "account" | "reference" | "direction">) =>
+  `alert:hdfc:${alert.account}:${alert.direction}:${referenceKey(alert.reference)}`;
 
 /** An alert as the one statement row it is, so its entry reads as a statement's would. */
 const asStatement = (alert: HdfcAlert): { statement: Statement; row: StatementRow } => {
