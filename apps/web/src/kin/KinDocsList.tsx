@@ -69,6 +69,7 @@ import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinHostAt } from "./useKinHost";
 import { useKinDocDelete } from "./useKinDocDelete";
+import { toastDocRestored } from "./kinDocDeleteToasts";
 import {
   useKinDocsList,
   useKinDocsLive,
@@ -738,7 +739,10 @@ export function KinDocsList(
                 {...(deleting.allowed && item.row.archived && item.row.deletable === true
                   ? {
                       onRestore: () =>
-                        void deleting.restore(item.row).then((ok) => ok && list.refresh()),
+                        void deleting.restore(item.row.key).then((why) => {
+                          toastDocRestored(item.row.title, why);
+                          if (why === null) list.refresh();
+                        }),
                       restoring: deleting.busy === item.row.key,
                     }
                   : {})}

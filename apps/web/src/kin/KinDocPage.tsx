@@ -98,6 +98,7 @@ import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinDoc, useKinDocAsk, useKinDocHistory } from "./useKinDocs";
 import { useKinDocDelete } from "./useKinDocDelete";
+import { toastDocDeleted, toastDocRestored } from "./kinDocDeleteToasts";
 import { kinHostConnected } from "./useKinHost";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
@@ -318,7 +319,12 @@ export function KinDocPage(
                   variant="outline"
                   disabled={deleting.busy !== null}
                   aria-busy={deleting.busy !== null}
-                  onClick={() => void deleting.restore(doc).then((ok) => ok && refresh())}
+                  onClick={() =>
+                    void deleting.restore(doc.key).then((why) => {
+                      toastDocRestored(doc.title, why);
+                      if (why === null) refresh();
+                    })
+                  }
                 >
                   {deleting.busy === null ? KIN_DOCS.restoreDoc : KIN_DOCS.restoringDoc}
                 </Button>
@@ -443,11 +449,11 @@ export function KinDocPage(
             mayDelete && !doc.archived && deleting.busy === null
               ? () => {
                   setProblem(null);
-                  void deleting
-                    .remove(doc, () => onGo(null))
-                    .then((done) => {
-                      if (!done.ok) setProblem(done.problem);
-                    });
+                  void deleting.remove(doc.key).then((why) => {
+                    if (why !== null) return setProblem(why);
+                    onGo(null);
+                    toastDocDeleted(doc.title, () => deleting.restore(doc.key));
+                  });
                 }
               : null
           }

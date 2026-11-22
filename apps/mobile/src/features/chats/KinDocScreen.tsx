@@ -544,7 +544,9 @@ function KinDocBody(
                     title: KIN_DOCS.delete,
                     destructive: true,
                     onPress: () =>
-                      void deleting.remove(doc.key).then((done) => done && props.onRefresh()),
+                      void deleting
+                        .remove(doc.key)
+                        .then((why) => why === null && props.onRefresh()),
                   },
                 ]
               : []),
@@ -793,7 +795,9 @@ function KinDocBody(
                           deleting.justDeleted === doc.key ? KIN_DOCS.undo : KIN_DOCS.restoreDoc,
                         pending: deleting.busy !== null,
                         onPress: () =>
-                          void deleting.restore(doc.key).then((done) => done && props.onRefresh()),
+                          void deleting
+                            .restore(doc.key)
+                            .then((why) => why === null && props.onRefresh()),
                       },
                     }
                   : {})}

@@ -880,7 +880,7 @@ const deletableBy = (row: Deletable, ownerLevel: boolean, leads: ReadonlySet<str
     (row.projectId !== null && kindOf(row) !== "playbook" && leads.has(row.projectId)));
 
 /** The projects this person leads now. */
-export const ledProjects = Effect.fn("KinDocs.ledProjects")(function* (
+const ledProjects = Effect.fn("KinDocs.ledProjects")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
 ) {
@@ -911,7 +911,7 @@ export const deletableDocs = Effect.fn("KinDocs.deletableDocs")(function* (
  * may. Whoever may change its text by hand may (a generated file too); an agent's character and
  * What we sell are not deleted this way, by anyone.
  */
-export const deleteRefusal = Effect.fn("KinDocs.deleteRefusal")(function* (
+const deleteRefusal = Effect.fn("KinDocs.deleteRefusal")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   ownerLevel: boolean,

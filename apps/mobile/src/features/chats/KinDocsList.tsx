@@ -962,7 +962,9 @@ export function KinDocsList(
                 {...(deleting.allowed && item.row.archived && item.row.deletable === true
                   ? {
                       onRestore: () =>
-                        void deleting.restore(item.row.key).then((ok) => ok && list.refresh()),
+                        void deleting
+                          .restore(item.row.key)
+                          .then((why) => why === null && list.refresh()),
                       restoring: deleting.busy === item.row.key,
                     }
                   : {})}
