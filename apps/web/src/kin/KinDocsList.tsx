@@ -104,7 +104,7 @@ function KinDocRowButton(props: {
         aria-label={row.accessibilityLabel}
         aria-current={props.selected === true ? true : undefined}
         onClick={props.onOpen}
-        className={ROW}
+        className={cn(ROW, "min-w-0")}
       >
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-1.5">
@@ -124,7 +124,7 @@ function KinDocRowButton(props: {
             <span className="truncate text-xs text-muted-foreground">{row.deletedLine}</span>
           )}
         </span>
-        {row.archived ? (
+        {row.archived && row.deletedLine === null ? (
           <Badge size="sm" variant="outline">
             {KIN_DOCS.archived}
           </Badge>

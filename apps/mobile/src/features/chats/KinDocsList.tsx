@@ -161,7 +161,7 @@ function KinDocRowButton(props: {
             </Text>
           )}
         </Pressable>
-        {row.archived ? (
+        {row.archived && row.deletedLine === null ? (
           <Text textRole="footnote" className="font-t3-medium text-foreground-muted">
             {KIN_DOCS.archived}
           </Text>
