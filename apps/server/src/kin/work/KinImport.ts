@@ -34,7 +34,7 @@ import {
   type ImportClient,
   type ImportProject,
 } from "./importFormat.ts";
-import { type CreateInput, KinRecords, type Writer } from "./KinRecords.ts";
+import { type CreateInput, KinRecords, type PlainImportInput, type Writer } from "./KinRecords.ts";
 import { type FieldValue, fieldList, fieldText, parseFields } from "./lists.ts";
 import { dayIn, farAbove, issuedAfterDue, largestIn, parseAmount } from "./money.ts";
 import { companyMoneyState } from "./companyProfile.ts";
@@ -361,15 +361,19 @@ const make = Effect.gen(function* () {
       spec: ImportEntry,
       def: ListDef,
       amount: KinMoney | undefined,
+      pending = largest,
     ) {
       if (spec.confirmed === true) return undefined;
       if (amount !== undefined && amount.minor >= 0) {
         const slot = `${def.id}|${amount.currency}`;
-        const most = largest.get(slot) ?? (yield* largestIn(orgId, def.id, amount.currency));
+        const most =
+          pending.get(slot) ??
+          largest.get(slot) ??
+          (yield* largestIn(orgId, def.id, amount.currency));
         const far = farAbove(def.name, amount, most, home);
         if (far !== undefined) return far;
         const size = BigInt(amount.minor);
-        largest.set(slot, size > most ? size : most);
+        pending.set(slot, size > most ? size : most);
       }
       return def.id === "invoices" && spec.date !== undefined && spec.due !== undefined
         ? issuedAfterDue(at(spec.date, true), at(spec.due, true), zone)
@@ -903,6 +907,66 @@ const make = Effect.gen(function* () {
       stale.set(def.id, one);
     };
 
+    const amountOf = (spec: ImportEntry, def: ListDef) =>
+      spec.amount === undefined
+        ? undefined
+        : parseAmount(spec.amount, spec.currency ?? def.currency, def.id === "expenses");
+
+    const openFor = (
+      spec: ImportEntry,
+      def: ListDef,
+      amount: KinMoney | undefined,
+      due: ReadonlyArray<ImportPayment>,
+    ) =>
+      !CLOSED.includes(spec.state ?? def.defaultState) &&
+      (amount === undefined ||
+        due.length === 0 ||
+        paidOf(due, amount.currency) !== BigInt(amount.minor));
+
+    const entryInput = (
+      spec: ImportEntry,
+      def: ListDef,
+      amount: KinMoney | undefined,
+      open: boolean,
+      due: ReadonlyArray<ImportPayment>,
+    ): PlainImportInput => {
+      const notes = [
+        spec.notes ?? "",
+        open && doc.asOf !== undefined
+          ? `Imported from ${doc.source ?? doc.batch} on ${today}. Those records were last kept up on ${doc.asOf}, so check this is still current.`
+          : "",
+      ]
+        .filter((part) => part !== "")
+        .join("\n\n");
+      const dateAt = spec.date === undefined ? undefined : at(spec.date, true);
+      const createdAt = spec.createdAt === undefined ? undefined : at(spec.createdAt);
+      return {
+        originKey: originOf("entry", spec.source),
+        title: spec.title,
+        state:
+          spec.state ??
+          (def.id === "invoices" && due.length === 0
+            ? startState(def, {
+                dateAt: dateAt ?? null,
+                numbered: spec.number !== undefined,
+                now,
+                zone,
+              })
+            : def.defaultState),
+        ...(spec.category === undefined ? {} : { category: spec.category }),
+        ...(spec.due === undefined
+          ? {}
+          : { dueAt: at(spec.due, true), dueAllDay: DAY.test(spec.due) }),
+        ...(dateAt === undefined ? {} : { dateAt, dateAllDay: DAY.test(spec.date ?? "") }),
+        ...(amount === undefined ? {} : { amount }),
+        ...(notes === "" ? {} : { notes }),
+        ...(spec.sensitive === undefined ? {} : { sensitive: spec.sensitive }),
+        ...(createdAt === undefined ? {} : { createdAt }),
+        closedAt:
+          spec.closedAt === undefined ? (dateAt ?? createdAt ?? now) : at(spec.closedAt, true),
+      };
+    };
+
     const entry = Effect.fn("KinImport.entry")(function* (line: number, spec: ImportEntry) {
       const due = (spec.payments ?? []).filter((payment) => {
         if (!seen.payment.has(payment.source)) {
@@ -934,17 +998,10 @@ const make = Effect.gen(function* () {
       // Before any amount is read, so no line shows one in the placeholder currency.
       if (company.pending && withMoney(spec, def)) return fail(COUNTRY_FIRST);
       const currency = spec.currency ?? def.currency;
-      const parsed =
-        spec.amount === undefined
-          ? undefined
-          : parseAmount(spec.amount, currency, def.id === "expenses");
+      const parsed = amountOf(spec, def);
       if (parsed !== undefined && "error" in parsed) return fail(parsed.error.message);
       const amount = parsed?.money;
-      const open =
-        !CLOSED.includes(spec.state ?? def.defaultState) &&
-        (amount === undefined ||
-          due.length === 0 ||
-          paidOf(due, amount.currency) !== BigInt(amount.minor));
+      const open = openFor(spec, def, amount, due);
       const had = yield* existing("entry", spec.source, true);
       if (had !== undefined) {
         if (had.edited) counts.payments.changed += due.length;
@@ -961,14 +1018,6 @@ const make = Effect.gen(function* () {
         spec.project === undefined ? undefined : yield* project(line, spec.project, false);
       if (spec.project !== undefined && (projectId === undefined || projectId === null))
         return fail(`Its project ${spec.project} isn't above it or imported before.`);
-      const notes = [
-        spec.notes ?? "",
-        open && doc.asOf !== undefined
-          ? `Imported from ${doc.source ?? doc.batch} on ${today}. Those records were last kept up on ${doc.asOf}, so check this is still current.`
-          : "",
-      ]
-        .filter((part) => part !== "")
-        .join("\n\n");
       const made = yield* row(
         line,
         "entry",
@@ -985,38 +1034,13 @@ const make = Effect.gen(function* () {
               );
             if (def.fields.some((one) => one.key === "number")) fields.number = spec.number;
           }
-          const dateAt = spec.date === undefined ? undefined : at(spec.date, true);
-          const createdAt = spec.createdAt === undefined ? undefined : at(spec.createdAt);
           const input: CreateInput = {
+            ...entryInput(spec, def, amount, open, due),
             list: def.id,
-            originKey: originOf("entry", spec.source),
-            title: spec.title,
             owner: me,
-            // An invoice the file gives no state starts as a new one would, unless it was paid.
-            state:
-              spec.state ??
-              (def.id === "invoices" && due.length === 0
-                ? startState(def, {
-                    dateAt: dateAt ?? null,
-                    numbered: spec.number !== undefined,
-                    now,
-                    zone,
-                  })
-                : def.defaultState),
-            ...(spec.category === undefined ? {} : { category: spec.category }),
             ...(partyId === undefined ? {} : { partyId }),
             ...(projectId === undefined || projectId === null ? {} : { projectId }),
-            ...(spec.due === undefined
-              ? {}
-              : { dueAt: at(spec.due, true), dueAllDay: DAY.test(spec.due) }),
-            ...(dateAt === undefined ? {} : { dateAt, dateAllDay: DAY.test(spec.date ?? "") }),
-            ...(amount === undefined ? {} : { amount }),
-            ...(notes === "" ? {} : { notes }),
-            ...(spec.sensitive === undefined ? {} : { sensitive: spec.sensitive }),
             fields,
-            ...(createdAt === undefined ? {} : { createdAt }),
-            closedAt:
-              spec.closedAt === undefined ? (dateAt ?? createdAt ?? now) : at(spec.closedAt, true),
           };
           const { row: record } = yield* records.create(orgId, writer, input);
           if (spec.number !== undefined && rule !== undefined)
@@ -1025,7 +1049,7 @@ const make = Effect.gen(function* () {
               record.recordId,
               spec.number,
               rule,
-              dateAt ?? createdAt ?? now,
+              input.dateAt ?? input.createdAt ?? now,
             );
           yield* payAll(line, due, record.key, record.currency ?? currency);
           // Lowered once its numbers and payments are in, as it was when they were recorded.
@@ -1284,6 +1308,70 @@ const make = Effect.gen(function* () {
           memo.named.set(one.lower, { recordId: one.recordId, key: one.key, gstin: one.gstin });
     });
 
+    // Only independent new entries can share a write. Refusals go through the ordered row path.
+    const createPlainChunk = Effect.fn("KinImport.createPlainChunk")(function* (
+      decoded: ReadonlyArray<Decoded>,
+    ) {
+      const first = decoded[0]?.row;
+      if (first === undefined || !("entry" in first)) return false;
+      const list = first.entry.list;
+      // Other lists can need per-row issuance, name matching, links, or date-based start states.
+      if ((list !== "work" && list !== "expenses") || failedLists.has(list)) return false;
+      const specs: Array<ImportEntry> = [];
+      const sources = new Set<string>();
+      for (const { row } of decoded) {
+        if (row === undefined || !("entry" in row)) return false;
+        const spec = row.entry;
+        if (
+          spec.list !== list ||
+          spec.client !== undefined ||
+          spec.project !== undefined ||
+          spec.number !== undefined ||
+          spec.suggested === true ||
+          // Explicitly confirmed amounts can become the next row's stored slip baseline.
+          spec.confirmed === true ||
+          (spec.payments?.length ?? 0) > 0 ||
+          Object.keys(spec.fields ?? {}).length > 0 ||
+          seen.entry.has(spec.source) ||
+          sources.has(spec.source) ||
+          memo.found.get(originOf("entry", spec.source)) !== undefined
+        )
+          return false;
+        specs.push(spec);
+        sources.add(spec.source);
+      }
+
+      const def = yield* listOf(list);
+      if (def === undefined) return false;
+      const pending = new Map<string, bigint>();
+      const inputs = [];
+      for (const spec of specs) {
+        if (company.pending && withMoney(spec, def)) return false;
+        const parsed = amountOf(spec, def);
+        if (parsed !== undefined && "error" in parsed) return false;
+        const amount = parsed?.money;
+        if ((yield* slip(spec, def, amount, pending)) !== undefined) return false;
+        const open = openFor(spec, def, amount, []);
+        inputs.push({ spec, amount, open, input: entryInput(spec, def, amount, open, []) });
+      }
+      if (
+        !(yield* records.createImportChunk(
+          orgId,
+          owner,
+          list,
+          inputs.map((one) => one.input),
+        ))
+      )
+        return false;
+      for (const [slot, most] of pending) largest.set(slot, most);
+      for (const { spec, amount, open } of inputs) {
+        seen.entry.add(spec.source);
+        tally(spec, def, amount, open);
+      }
+      counts.entries.create += inputs.length;
+      return true;
+    });
+
     const rolledBack = <A, R>(work: Effect.Effect<A, Failure, R>) =>
       sql
         .withTransaction(work.pipe(Effect.andThen(Effect.fail(new Rollback()))))
@@ -1336,7 +1424,7 @@ const make = Effect.gen(function* () {
           const work = Effect.gen(function* () {
             if (!keep) yield* defineLists(false);
             yield* prefetch(decoded);
-            for (const one of decoded) yield* rowStep(one);
+            if (!(yield* createPlainChunk(decoded))) for (const one of decoded) yield* rowStep(one);
             // What it filled and how far it got commit with the chunk, so an undo after a crash
             // still empties what it filled, and anyone reading the run sees where it stands.
             if (runSeq !== undefined) {
