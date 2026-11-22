@@ -8,10 +8,18 @@ import { assert, it } from "@effect/vitest";
 import type { KinPushToken } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as TestClock from "effect/testing/TestClock";
 
-import { FCM_SCOPE, FCM_TOKEN_URL, loadFcmCredentials, makeFcmTransport } from "./Fcm.ts";
+import {
+  FCM_SCOPE,
+  FCM_TOKEN_URL,
+  KinFcmTransport,
+  layer,
+  loadFcmCredentials,
+  makeFcmTransport,
+} from "./Fcm.ts";
 
 const NOW = Date.parse("2026-11-08T00:00:00Z");
 const token = "fcm-phone:APA91b-test_token-0123456789" as KinPushToken;
@@ -90,6 +98,27 @@ it.effect("loads the service account only from its file, and never says what is 
     }
     const loaded = yield* load({ KIN_FCM_SERVICE_ACCOUNT_FILE: file.good });
     assert.isTrue(loaded._tag === "Success" && loaded.success.projectId === "ambermill-kin");
+    // Unset, the server starts as before: Android push is off, said once, and nothing is sent.
+    const said: Array<unknown> = [];
+    const off = yield* Effect.gen(function* () {
+      const fcm = yield* KinFcmTransport;
+      return { status: fcm.status, sent: yield* fcm.send({ token, data: {}, priority: "HIGH" }) };
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
+      Effect.provide(
+        Logger.layer([Logger.make(({ message }) => said.push(message))], {
+          mergeWithExisting: false,
+        }),
+      ),
+    );
+    assert.deepStrictEqual(off, {
+      status: "unconfigured",
+      sent: { status: 0, reason: "unconfigured" },
+    });
+    assert.deepStrictEqual(said.flat(), [
+      "Kin push to Android is off: no FCM service account is configured.",
+    ]);
   }),
 );
 
