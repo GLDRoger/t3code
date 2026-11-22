@@ -116,6 +116,7 @@ import {
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
+import { KinWatchLine } from "./KinWatchLine";
 
 const NO_PLAYBACK = () => {};
 const DAY = "day:";
@@ -480,6 +481,7 @@ export function KinListEntryBody(
         <Notice message={changes.problem} tone="danger" onDismiss={changes.dismiss} />
       )}
       <KinAsideNote environmentId={environmentId} orgId={orgId} record={item.key} names={names} />
+      <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={item.key} />
       <ListSection>
         {!canChange || quote !== null ? null : (
           <Menu

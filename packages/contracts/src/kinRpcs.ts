@@ -44,6 +44,7 @@ import { KinRefreshRpcs, KIN_REFRESH_RPC_SCOPES } from "./kinRefresh.ts";
 import { KinPulseRpcs, KIN_PULSE_RPC_SCOPES } from "./kinPulse.ts";
 import { KinOpenRpcs, KIN_OPEN_RPC_SCOPES } from "./kinOpen.ts";
 import { KinRecommendationRpcs, KIN_RECOMMENDATION_RPC_SCOPES } from "./kinRecommendations.ts";
+import { KinWatchRpcs, KIN_WATCH_RPC_SCOPES } from "./kinWatches.ts";
 import {
   KinChatError,
   KinChatRpcs,
@@ -215,6 +216,7 @@ export const KinRpcs = [
   ...KinPulseRpcs,
   ...KinOpenRpcs,
   ...KinRecommendationRpcs,
+  ...KinWatchRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
@@ -239,6 +241,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_PULSE_RPC_SCOPES,
   ...KIN_OPEN_RPC_SCOPES,
   ...KIN_RECOMMENDATION_RPC_SCOPES,
+  ...KIN_WATCH_RPC_SCOPES,
   "kin.budget.get": AuthKinChatScope,
   "kin.budget.set": AuthKinChatScope,
   "kin.org.get": AuthKinChatScope,
@@ -497,6 +500,12 @@ const KIN_RPC_ACCESS = {
   // What Kin suggested to the owner and his answers: his alone, as the cards are.
   "kin.recommendations.list": "org_owner",
   "kin.recommendations.askAgain": "org_owner",
+  // What Kin keeps watch on: the service shows and acts on only the watches this person may see.
+  "kin.watches.list": "person",
+  "kin.watches.log": "person",
+  "kin.watches.look": "person",
+  "kin.watches.stop": "person",
+  "kin.watches.again": "person",
   "kin.goals.list": "person",
   "kin.goals.save": "owner_level",
   "kin.checkIns.list": "owner_level",
@@ -586,6 +595,11 @@ export const KIN_RPC_AGGREGATES = {
   "kin.open.subscribe": "kin-pulse",
   "kin.recommendations.list": "kin-recommendations",
   "kin.recommendations.askAgain": "kin-recommendations",
+  "kin.watches.list": "kin-watches",
+  "kin.watches.log": "kin-watches",
+  "kin.watches.look": "kin-watches",
+  "kin.watches.stop": "kin-watches",
+  "kin.watches.again": "kin-watches",
   "kin.goals.list": "kin-pulse",
   "kin.goals.save": "kin-pulse",
   "kin.checkIns.list": "kin-pulse",

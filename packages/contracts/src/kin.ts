@@ -21,6 +21,7 @@ export * from "./kinWhen.ts";
 export * from "./kinPulse.ts";
 export * from "./kinOpen.ts";
 export * from "./kinRecommendations.ts";
+export * from "./kinWatches.ts";
 export * from "./kinMoneyLive.ts";
 export * from "./kinWire.ts";
 export * from "./kinWorkRows.ts";
