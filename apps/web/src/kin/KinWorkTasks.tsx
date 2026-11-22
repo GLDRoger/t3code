@@ -1025,8 +1025,8 @@ export function KinWorkRow(props: {
   readonly onOpen: () => void;
   /** Null where this browser or this host can't change a task. */
   readonly onAct: ((action: KinWorkAction) => void) | null;
-  /** A promise to or from a client: its "Promised" mark. */
-  readonly promised?: boolean;
+  /** A promise to or from a client: its "Promised" mark, or the mark given, such as "They owe". */
+  readonly promised?: boolean | string;
 }) {
   const { row, onAct } = props;
   const tick = onAct === null ? null : row.tick;
@@ -1084,11 +1084,11 @@ export function KinWorkRow(props: {
             )}
           </span>
         </span>
-        {props.promised === true ? (
+        {props.promised === undefined || props.promised === false ? null : (
           <Badge size="sm" variant="info">
-            {KIN_PROMISES.mark}
+            {props.promised === true ? KIN_PROMISES.mark : props.promised}
           </Badge>
-        ) : null}
+        )}
         {row.markText === null ? null : (
           <Badge
             size="sm"

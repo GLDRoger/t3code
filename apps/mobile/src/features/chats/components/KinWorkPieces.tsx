@@ -214,8 +214,9 @@ export function KinWorkTaskRow(props: {
   readonly onAct: ((action: KinWorkAction) => void) | null;
   /** Inside a rounded section the row keeps to the section's edges. */
   readonly inset?: boolean;
-  /** A promise to or from a client: its "Promised" mark, and where it was made. */
+  /** A promise to or from a client: its "Promised" mark (or `mark`), and where it was made. */
   readonly promise?: {
+    readonly mark?: string;
     readonly from: string | null;
     /** Opens the chat message it was made in, where the reader may; null is words only. */
     readonly onOpen: (() => void) | null;
@@ -286,7 +287,7 @@ export function KinWorkTaskRow(props: {
           </View>
           {promise == null ? null : (
             <Text textRole="footnote" className="font-t3-medium text-primary-text">
-              {KIN_PROMISES.mark}
+              {promise.mark ?? KIN_PROMISES.mark}
             </Text>
           )}
           {row.markText === null ? null : (

@@ -846,7 +846,10 @@ function DealPromises(props: DealPageProps & { readonly page: KinDealPageValue }
   const party = { key: deal.party.key, title: deal.party.title };
   const add = (side: "ours" | "theirs") =>
     props.onAddTask?.(kinWorkDraftFor({ party, side, deal: { key: deal.key, title: deal.title } }));
-  const rows = [...promises.ours, ...promises.theirs];
+  const rows = [
+    ...promises.ours.map((row) => ({ row, mark: KIN_PROMISES.oursShort })),
+    ...promises.theirs.map((row) => ({ row, mark: KIN_PROMISES.theirsShort })),
+  ];
   return (
     <KinWorkSection
       title={KIN_PROMISES.title}
@@ -869,14 +872,14 @@ function DealPromises(props: DealPageProps & { readonly page: KinDealPageValue }
         <p className="text-sm text-muted-foreground">{KIN_PROMISES.none}</p>
       ) : (
         <ul className="flex flex-col">
-          {rows.map((row) => (
+          {rows.map(({ row, mark }) => (
             <li key={row.key} className="border-b border-border/60 last:border-b-0">
               <KinWorkRow
                 row={row}
                 saving={false}
                 onOpen={() => props.onOpenTask(row.key)}
                 onAct={null}
-                promised
+                promised={mark}
               />
               <KinPromiseFrom
                 environmentId={props.environmentId}

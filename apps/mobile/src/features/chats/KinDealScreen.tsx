@@ -428,7 +428,10 @@ function KinDealBody(
           {promises.ours.length + promises.theirs.length === 0 ? (
             <ListRowLayout label={KIN_PROMISES.none} disabled />
           ) : (
-            [...promises.ours, ...promises.theirs].map((row) => (
+            [
+              ...promises.ours.map((row) => ({ row, mark: KIN_PROMISES.oursShort })),
+              ...promises.theirs.map((row) => ({ row, mark: KIN_PROMISES.theirsShort })),
+            ].map(({ row, mark }) => (
               <KinWorkTaskRow
                 key={row.key}
                 inset
@@ -437,6 +440,7 @@ function KinDealBody(
                 onPress={() => openTask(row.key)}
                 onAct={null}
                 promise={{
+                  mark,
                   from: row.promise?.from ?? null,
                   onOpen:
                     row.promise?.open == null

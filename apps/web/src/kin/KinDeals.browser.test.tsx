@@ -333,7 +333,8 @@ describe("one deal's page", () => {
     await expect.element(page.getByRole("heading", { name: "Promises" })).toBeVisible();
     const rows = page.getByRole("button", { name: /Send the revised quote|Signed order form/ });
     expect(rows.elements().map((one) => one.textContent?.includes("Send"))).toEqual([true, false]);
-    await expect.element(page.getByText("Promised").first()).toBeVisible();
+    await expect.element(page.getByText("We promised")).toBeVisible();
+    await expect.element(page.getByText("They owe")).toBeVisible();
     await expect.element(page.getByText("At the site visit")).toBeVisible();
     await expect.element(page.getByText("From a meeting")).toBeVisible();
     await userEvent.click(page.getByRole("button", { name: "Add" }));
