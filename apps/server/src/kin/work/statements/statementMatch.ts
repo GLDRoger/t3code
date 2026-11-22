@@ -83,7 +83,11 @@ export type Candidate = {
   readonly score: number;
   readonly why: ReadonlyArray<string>;
   /** A partner's owed expenses this debit pays back, oldest first; `recordId` is the first's. */
-  readonly repays?: ReadonlyArray<{ readonly recordId: string; readonly key: string }>;
+  readonly repays?: ReadonlyArray<{
+    readonly recordId: string;
+    readonly key: string;
+    readonly amountMinor: number;
+  }>;
 };
 export type Suggestion = {
   readonly action: "expense" | "transfer" | "ignore" | "later";
@@ -319,62 +323,99 @@ const expenseCandidate = (
 const REPAYS_AT_MOST = 50;
 
 /**
- * Debits that pay a partner back: the partner's oldest owed expenses whose amounts add up to the
- * row, exactly. Rows are taken in date order, each after what earlier clear ones repaid, so
- * successive lump sums settle successive expenses.
+ * A debit that pays `partner` back from their `from`th owed expense: the narration names them and
+ * a run of their oldest owed expenses adds up to it exactly. An amount alone may be anyone's bill.
+ */
+const repayment = (row: StatementRow, partner: PartnerCandidate, from: number) => {
+  const named = nameIn(partner.name, row.description);
+  if (named < 0.5) return undefined;
+  let sum = 0;
+  for (let end = from; end < Math.min(partner.owed.length, from + REPAYS_AT_MOST); end += 1) {
+    sum += partner.owed[end]!.amountMinor;
+    if (sum > row.amountMinor) return undefined;
+    if (sum !== row.amountMinor) continue;
+    const repays = partner.owed.slice(from, end + 1);
+    const why = [`adds up to ${partner.name}'s oldest owed expenses`, "partner named"];
+    let score = 40 + Math.round(30 * named);
+    if (DRAWINGS.test(row.description)) {
+      score += 10;
+      why.push("says reimbursement");
+    }
+    const candidate: Candidate = {
+      kind: "expense",
+      recordId: repays[0]!.recordId,
+      key: repays[0]!.key,
+      title: `Repays ${partner.name}: ${repays.length} expense${repays.length === 1 ? "" : "s"}`,
+      fit: "exact",
+      score,
+      why,
+      repays,
+    };
+    return { candidate, next: end + 1 };
+  }
+  return undefined;
+};
+
+/**
+ * Debits that pay partners back, in date order, each from after what earlier ones settled, so
+ * successive lump sums settle successive expenses. Only a repayment that is its row's clear match
+ * against `others` (the row's other candidates) moves past them; same-day debits are tried in any
+ * order until none settles.
  */
 const repayments = (
   rows: ReadonlyArray<StatementRow>,
   partners: ReadonlyArray<PartnerCandidate>,
   currency: string,
+  others: (index: number) => ReadonlyArray<Candidate>,
 ): ReadonlyMap<number, ReadonlyArray<Candidate>> => {
   const settled = partners.map(() => 0);
-  const found = new Map<number, Array<Candidate>>();
+  const offers = (index: number) =>
+    partners.flatMap((partner, at) => {
+      if (partner.currency !== currency) return [];
+      const offer = repayment(rows[index]!, partner, settled[at]!);
+      return offer === undefined ? [] : [{ at, ...offer }];
+    });
+  const clear = (index: number) => {
+    const mine = offers(index);
+    const [best, next] = [...mine.map((one) => one.candidate), ...others(index)].toSorted(
+      (left, right) => right.score - left.score,
+    );
+    const won = mine.find((one) => one.candidate === best);
+    return won !== undefined &&
+      best!.score >= CONFIDENT &&
+      (next === undefined || best!.score - next.score >= MARGIN)
+      ? won
+      : undefined;
+  };
+  const found = new Map<number, ReadonlyArray<Candidate>>();
   const debits = rows
     .map((row, index) => ({ row, index }))
     .filter(({ row }) => row.direction === "debit")
     .toSorted((a, b) =>
       a.row.date === b.row.date ? a.index - b.index : a.row.date < b.row.date ? -1 : 1,
     );
-  for (const { row, index } of debits)
-    for (const [at, partner] of partners.entries()) {
-      if (partner.currency !== currency) continue;
-      const from = settled[at]!;
-      let sum = 0;
-      for (let end = from; end < Math.min(partner.owed.length, from + REPAYS_AT_MOST); end += 1) {
-        sum += partner.owed[end]!.amountMinor;
-        if (sum > row.amountMinor) break;
-        if (sum !== row.amountMinor) continue;
-        const repays = partner.owed.slice(from, end + 1);
-        const why = [`adds up to ${partner.name}'s oldest owed expenses`];
-        let score = 40;
-        const named = nameIn(partner.name, row.description);
-        if (named >= 0.5) {
-          score += Math.round(30 * named);
-          why.push("partner named");
-        }
-        if (DRAWINGS.test(row.description)) {
-          score += 10;
-          why.push("says reimbursement");
-        }
-        found.set(index, [
-          ...(found.get(index) ?? []),
-          {
-            kind: "expense",
-            recordId: repays[0]!.recordId,
-            key: repays[0]!.key,
-            title: `Repays ${partner.name}: ${repays.length} expense${repays.length === 1 ? "" : "s"}`,
-            fit: "exact",
-            score,
-            why,
-            repays: repays.map((one) => ({ recordId: one.recordId, key: one.key })),
-          },
-        ]);
-        // Only a clear repayment moves past them: an amount alone may be someone else's bill.
-        if (score >= CONFIDENT) settled[at] = end + 1;
+  for (let start = 0; start < debits.length;) {
+    let end = start;
+    while (end < debits.length && debits[end]!.row.date === debits[start]!.row.date) end += 1;
+    const pending = debits.slice(start, end).map((one) => one.index);
+    for (let settling = true; settling;) {
+      settling = false;
+      for (const index of pending) {
+        const won = clear(index);
+        if (won === undefined) continue;
+        found.set(index, [won.candidate]);
+        settled[won.at] = won.next;
+        pending.splice(pending.indexOf(index), 1);
+        settling = true;
         break;
       }
     }
+    for (const index of pending) {
+      const left = offers(index).map((one) => one.candidate);
+      if (left.length > 0) found.set(index, left);
+    }
+    start = end;
+  }
   return found;
 };
 
@@ -587,23 +628,28 @@ export const matchRows = (
   },
 ): ReadonlyArray<RowMatch> => {
   const taken = new Set<string>();
-  const repaying = repayments(rows, input.partners ?? [], input.currency);
+  const others = rows.map((row) =>
+    (row.direction === "credit"
+      ? [
+          ...input.invoices.map((invoice) =>
+            invoiceCandidate(row, invoice, input.currency, input.withholdsAtSource),
+          ),
+          ...(input.payments ?? []).map((payment) =>
+            paymentCandidate(row, payment, input.currency),
+          ),
+          ...input.expenses.map((expense) => expenseCandidate(row, expense, input.currency)),
+        ]
+      : input.expenses.map((expense) => expenseCandidate(row, expense, input.currency))
+    ).filter((one): one is Candidate => one !== undefined && one.score >= PROPOSED),
+  );
+  const repaying = repayments(
+    rows,
+    input.partners ?? [],
+    input.currency,
+    (index) => others[index]!,
+  );
   const results = rows.map((row, index) => {
-    const candidates = [
-      ...(repaying.get(index) ?? []),
-      ...(row.direction === "credit"
-        ? [
-            ...input.invoices.map((invoice) =>
-              invoiceCandidate(row, invoice, input.currency, input.withholdsAtSource),
-            ),
-            ...(input.payments ?? []).map((payment) =>
-              paymentCandidate(row, payment, input.currency),
-            ),
-            ...input.expenses.map((expense) => expenseCandidate(row, expense, input.currency)),
-          ]
-        : input.expenses.map((expense) => expenseCandidate(row, expense, input.currency))),
-    ]
-      .filter((one): one is Candidate => one !== undefined && one.score >= PROPOSED)
+    const candidates = [...(repaying.get(index) ?? []), ...others[index]!]
       .toSorted((left, right) => right.score - left.score || left.key.localeCompare(right.key))
       .slice(0, 5);
     return {
@@ -620,13 +666,14 @@ export const matchRows = (
   const settled = new Map<number, RowMatch>();
   for (const { index } of order) {
     const { row, candidates } = results[index]!;
-    const open = candidates.filter((one) => !taken.has(one.recordId));
+    const claims = (one: Candidate) => one.repays?.map((each) => each.recordId) ?? [one.recordId];
+    const open = candidates.filter((one) => !claims(one).some((id) => taken.has(id)));
     const [best, next] = open;
     const clear =
       best !== undefined &&
       best.score >= CONFIDENT &&
       (next === undefined || best.score - next.score >= MARGIN);
-    if (clear) taken.add(best.recordId);
+    if (clear) for (const id of claims(best)) taken.add(id);
     settled.set(index, {
       group: clear ? "matched" : open.length > 0 ? "choose" : "unmatched",
       candidates: clear ? [best] : open,

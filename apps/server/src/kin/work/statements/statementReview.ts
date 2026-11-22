@@ -289,15 +289,18 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     WHERE org_id = ${orgId} AND register_id = 'expenses' AND state = 'done'
       AND json_extract(fields_json, '$.vendor') IS NOT NULL
     ORDER BY updated_at DESC LIMIT 500`;
-  const partners = (yield* partnersOwed(orgId, home)).flatMap((partner) =>
-    [...new Set(partner.entries.map((one) => one.money.currency))].map((currency) => ({
-      name: partner.name,
-      currency,
-      owed: partner.entries
-        .filter((one) => one.money.currency === currency)
-        .map((one) => ({ recordId: one.recordId, key: one.key, amountMinor: one.money.minor })),
-    })),
-  );
+  // A debit must name its partner; the expenses of one Kin can't name can't be told apart.
+  const partners = (yield* partnersOwed(orgId, home))
+    .filter((partner) => partner.personId !== null || partner.address !== null)
+    .flatMap((partner) =>
+      [...new Set(partner.entries.map((one) => one.money.currency))].map((currency) => ({
+        name: partner.name,
+        currency,
+        owed: partner.entries
+          .filter((one) => one.money.currency === currency)
+          .map((one) => ({ recordId: one.recordId, key: one.key, amountMinor: one.money.minor })),
+      })),
+    );
   const accounts = yield* sql<{ account: string }>`SELECT DISTINCT account FROM kin_bank_statements
     WHERE org_id = ${orgId} AND account IS NOT NULL ORDER BY account`;
   return {

@@ -55,13 +55,21 @@ export const STATEMENT_REVIEW_TEXT =
   "Kin read a bank statement and matched its rows. Review and confirm them on its card.";
 
 export const OPEN_INVOICE_NOTE = "An open invoice: pick it if this money is its payment";
+/** Every key Confirm marks, or the count and its first and last when they don't all fit. */
+const repaysNote = (repays: ReadonlyArray<{ readonly key: string }>) => {
+  const all = `Marks ${repays.map((one) => one.key).join(", ")} repaid`;
+  return all.length <= 200
+    ? all
+    : `Marks ${repays.length} expenses repaid: ${repays[0]!.key} … ${repays.at(-1)!.key}`;
+};
+
 const target = (candidate: Candidate, option: number, currency: string): KinStatementTarget => ({
   option,
   kind: candidate.kind,
   key: candidate.key,
   label: clamp(`${candidate.key} · ${candidate.title}`, 200),
   ...(candidate.repays !== undefined
-    ? { note: clamp(`Marks ${candidate.repays.map((one) => one.key).join(", ")} repaid`, 200) }
+    ? { note: repaysNote(candidate.repays) }
     : candidate.fit === "tds" && candidate.tdsMinor !== undefined
       ? { note: `Paid with ${money(candidate.tdsMinor, currency)} TDS deducted` }
       : candidate.fit === "part"
