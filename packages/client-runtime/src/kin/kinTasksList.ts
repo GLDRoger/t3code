@@ -75,6 +75,9 @@ export const KIN_TASKS = {
   noDate: "No date",
   notInProject: "Not in a project",
   notForClient: "Not for a client",
+  with: (name: string) => `with ${name}`,
+  withCount: (count: number) => `with ${count}`,
+  withYou: "with you",
 } as const;
 
 export const KIN_TASK_GROUP_BY: ReadonlyArray<{
@@ -146,7 +149,8 @@ export function kinTaskQuickFilters(
             count:
               known === null
                 ? null
-                : (overview.owners.find(
+                : // Held or on it, when the overview was given what the reader is on (`onMine`).
+                  (overview.owners.find(
                     (one) => one.owner._tag === "person" && one.owner.personId === me,
                   )?.open ?? 0),
             selected: isMine,
@@ -160,6 +164,18 @@ export function kinTaskQuickFilters(
     view("waiting"),
     view("late"),
   ];
+}
+
+/**
+ * Open tasks in hand the reader is on but doesn't hold: what the host's per-holder counts leave
+ * out of Mine (`kinWorkOverview`'s `onMine`).
+ */
+export function kinTasksOnCount(records: ReadonlyArray<KinRecord>, me: KinWorkNames["me"]): number {
+  const isMe = (who: KinRecord["owner"]) => who._tag === "person" && who.personId === me;
+  return records.filter(
+    (record) =>
+      !kinWorkClosed(record.state) && !isMe(record.owner) && (record.alsoOn ?? []).some(isMe),
+  ).length;
 }
 
 /** The chip that says the list is grouped some other way, and clears it; null for Me first. */
@@ -186,6 +202,8 @@ export const kinNeedsYouCount = (input: {
 export interface KinTaskLine {
   /** Null on the reader's own Tasks for a task they hold: the list is theirs. */
   readonly holder: string | null;
+  /** Who else is on it, after the holder: "with Asha", "with 2", or "with you" for the reader. */
+  readonly with: string | null;
   readonly lead: { readonly text: string; readonly tone: "late" | "soon" | "working" } | null;
   readonly rest: string;
   /** Someone marked it urgent and it is still open: the row's flag. */
@@ -237,8 +255,21 @@ export function kinTaskLine(
         ? kinWorkStatusText(record, names)
         : `Waiting on ${kinMidSentence(kinWorkName(record.waitingOn, names, "you"))}`;
   const mine = record.owner._tag === "person" && record.owner.personId === names.me;
+  const on = record.alsoOn ?? [];
+  const only = on[0];
   return {
     holder: options.ownList === true && mine ? null : kinWorkName(record.owner, names),
+    with: on.some((who) => who._tag === "person" && who.personId === names.me)
+      ? KIN_TASKS.withYou
+      : only === undefined
+        ? null
+        : on.length > 1
+          ? KIN_TASKS.withCount(on.length)
+          : KIN_TASKS.with(
+              only._tag === "agent"
+                ? kinWorkName(only, names)
+                : (kinWorkName(only, names).split(/\s+/)[0] ?? ""),
+            ),
     lead,
     rest: [
       waiting,
@@ -484,6 +515,7 @@ const moveOfRow = (record: KinRecord, names: KinWorkNames, ownerLevel: boolean) 
           askedBy: null,
           givenBy: record.givenBy ?? null,
           card: false,
+          ...(record.alsoOn === undefined ? {} : { alsoOn: record.alsoOn }),
         },
         { personId: names.me, ownerLevel },
       );

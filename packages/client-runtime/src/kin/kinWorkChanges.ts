@@ -81,6 +81,16 @@ export type KinWorkAction =
       readonly type: "steps";
       readonly steps: ReadonlyArray<KinWorkStep>;
       readonly said: "added" | "removed" | "back";
+    }
+  /**
+   * Who else is on it, the whole list after one person was put on or taken off (`who`); `left`
+   * is the reader taking themselves off, and `back` puts the list as it was.
+   */
+  | {
+      readonly type: "alsoOn";
+      readonly alsoOn: ReadonlyArray<KinWorkPrincipal>;
+      readonly who: KinWorkPrincipal;
+      readonly said: "added" | "removed" | "left" | "back";
     };
 
 export const KIN_WORK_OFFLINE_CHANGE = "You're offline. Changes need a connection.";
@@ -157,6 +167,7 @@ type Patch = Partial<
     | "urgent"
     | "steps"
     | "checklist"
+    | "alsoOn"
   >
 >;
 
@@ -329,8 +340,22 @@ function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames
         : action.said === "removed"
           ? "Step removed."
           : "Step put back.";
+    case "alsoOn": {
+      if (action.said === "left") return KIN_WORK_ALSO_ON_COPY.left(record.title);
+      const who = kinWorkName(action.who, names);
+      const you = action.who._tag === "person" && action.who.personId === names.me;
+      if (action.said === "back") return you ? "You're back on it." : `${who} is back on it.`;
+      if (action.said === "added") return you ? "You're on it." : `${who} is on it.`;
+      return you ? "You're off it." : `${who} is off it.`;
+    }
   }
 }
+
+/** Leaving a task, and the host refusing to put the reader back on it. */
+export const KIN_WORK_ALSO_ON_COPY = {
+  left: (title: string) => `You left “${title}”. You may no longer see it.`,
+  backRefused: "You can't put yourself back on it now. Ask whoever holds it.",
+} as const;
 
 /** The steps a change would leave, shown at once with their count while the host answers. */
 const stepsShown = (steps: ReadonlyArray<KinWorkStep>): Patch => ({
@@ -350,6 +375,8 @@ const undoOf = (
     return { type: "dueBack", dueAt: record.dueAt, allDay: record.dueAllDay };
   if (action.type === "steps" && action.said === "removed" && "checklist" in record)
     return { type: "steps", steps: record.checklist ?? [], said: "back" };
+  if (action.type === "alsoOn" && (action.said === "removed" || action.said === "left"))
+    return { type: "alsoOn", alsoOn: record.alsoOn ?? [], who: action.who, said: "back" };
   return !kinWorkClosed(record.state) &&
     (action.type === "decline" || (action.type === "state" && kinWorkClosed(action.state)))
     ? { type: "state", state: record.state, waitingOn: record.waitingOn }
@@ -422,6 +449,8 @@ function patchOf(
     }
     case "steps":
       return stepsShown(action.steps);
+    case "alsoOn":
+      return { alsoOn: action.alsoOn.length === 0 ? undefined : action.alsoOn };
   }
 }
 
@@ -529,6 +558,8 @@ export function createKinWorkChanges(options: {
         );
       case "steps":
         return kinWorkSettled(await options.update({ ...at, steps: action.steps }));
+      case "alsoOn":
+        return kinWorkSettled(await options.update({ ...at, alsoOn: action.alsoOn }));
     }
   };
 
@@ -575,7 +606,16 @@ export function createKinWorkChanges(options: {
       notice: {
         key,
         kind: outcome.changed ? "conflict" : "failed",
-        text: outcome.changed && action.type === "edit" ? KIN_WORK_EDIT_CHANGED : outcome.problem,
+        text:
+          outcome.changed && action.type === "edit"
+            ? KIN_WORK_EDIT_CHANGED
+            : !outcome.changed &&
+                action.type === "alsoOn" &&
+                action.said === "back" &&
+                action.who._tag === "person" &&
+                action.who.personId === names.me
+              ? KIN_WORK_ALSO_ON_COPY.backRefused
+              : outcome.problem,
         undo: null,
       },
     });

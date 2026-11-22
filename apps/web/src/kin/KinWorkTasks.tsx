@@ -10,6 +10,7 @@ import {
   kinNeedsYouCount,
   kinTaskGroupedChip,
   kinTaskLine,
+  kinTasksOnCount,
   kinTaskStep,
   kinTaskStepStatusShown,
   kinTasksByMove,
@@ -234,7 +235,13 @@ export function KinWorkTaskList(
     if (next.groupBy !== undefined && next.groupBy !== filter.groupBy) saveGroupBy(next.groupBy);
     list.setFilter(next);
   };
-  const overview = kinWorkOverview(live.summary, filter, names);
+  // The host counts each task under its holder; the reader's own row counts what they are on too.
+  const overview = kinWorkOverview(
+    live.summary,
+    filter,
+    names,
+    kinTasksOnCount(listState.records, names.me),
+  );
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
     kinWorkApplied(record, changed),
   );
@@ -665,6 +672,12 @@ function KinTaskRow(props: {
             ) : null}
             <KinAvatar avatar={row.ownerAvatar} size="xs" />
             <span className="max-w-[60%] shrink-0 truncate text-foreground/80">{line.holder}</span>
+            {line.with === null ? null : (
+              <span className="shrink-0">
+                {line.holder === null ? null : <span aria-hidden>· </span>}
+                {line.with}
+              </span>
+            )}
             {tail ? (
               <span className="min-w-0 truncate">
                 <span aria-hidden>· </span>
