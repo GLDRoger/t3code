@@ -780,7 +780,8 @@ function KinTasksUndoToast(props: {
       pointerEvents="box-none"
     >
       <Toast
-        singleLine
+        // Without an Undo beside it, a notice wraps so its whole sentence is read.
+        singleLine={onUndo !== null}
         opaque
         message={props.text}
         {...(onUndo === null ? {} : { action: { label: KIN_WORK_COPY.undo, onPress: onUndo } })}
