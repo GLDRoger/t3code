@@ -1,3 +1,4 @@
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -6,7 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 /**
  * Expenses gain Funded by, Reimbursement and Repaid on, all or none within 20 fields; an import's
  * `paidFrom` (where an entry came from) reads Source. Kin keeps no person's address, so a Paid
- * entry an import left `paidPersonallyBy` on is marked owed and matched to nobody.
+ * entry an import left `paidPersonallyBy` on is marked owed and matched to nobody, on its history.
  */
 
 const ADDED = [
@@ -21,6 +22,7 @@ const ADDED = [
   { key: "repaidOn", label: "Repaid on", type: "date", sensitive: false },
 ] as const;
 const MAX_FIELDS = 20;
+const OWED_CHANGE = JSON.stringify([{ field: "reimbursement", from: null, to: "owed" }]);
 
 const Definition = Schema.fromJsonString(
   Schema.StructWithRest(
@@ -39,6 +41,7 @@ const encodeDefinition = Schema.encodeEffect(Definition);
 
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
   const lists = yield* sql<{ orgId: string; json: string }>`SELECT org_id AS "orgId",
       definition_json AS json
     FROM kin_registers WHERE register_id = 'expenses' AND built_in = 0 ORDER BY org_id`;
@@ -63,14 +66,29 @@ export default Effect.gen(function* () {
       yield* sql`UPDATE kin_registers SET definition_json = ${json}, rev = rev + 1
         WHERE org_id = ${list.orgId} AND register_id = 'expenses' AND built_in = 0`;
     }
-    const marks = next.some((field) => field.key === "reimbursement");
+    // A list's own `reimbursement` of another kind keeps what it holds.
+    const marks = next.some(
+      (field) =>
+        field.key === "reimbursement" &&
+        field.type === "choice" &&
+        Array.isArray(field.choices) &&
+        field.choices.includes("owed"),
+    );
     if (!marks) continue;
-    yield* sql`UPDATE kin_records
-      SET fields_json = json_set(fields_json, '$.reimbursement', 'owed'), rev = rev + 1
+    const value = (key: string) =>
+      sql`CASE WHEN json_valid(fields_json) THEN json_extract(fields_json, ${`$.${key}`}) END`;
+    const marked = yield* sql<{ recordId: string; rev: number }>`UPDATE kin_records
+      SET fields_json = json_set(fields_json, '$.reimbursement', 'owed'), rev = rev + 1,
+        updated_at = ${now}
       WHERE org_id = ${list.orgId} AND register_id = 'expenses' AND state = 'done'
-        AND json_valid(fields_json)
-        AND trim(COALESCE(json_extract(fields_json, '$.paidPersonallyBy'), '')) <> ''
-        AND json_extract(fields_json, '$.reimbursement') IS NULL
-        AND json_extract(fields_json, '$.fundedBy') IS NULL`;
+        AND trim(COALESCE(${value("paidPersonallyBy")}, '')) <> ''
+        AND ${value("reimbursement")} IS NULL
+        AND ${value("fundedBy")} IS NULL
+      RETURNING record_id AS "recordId", rev`;
+    for (const row of marked)
+      yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id,
+          via, kind, fields_json)
+        VALUES (${list.orgId}, ${row.recordId}, ${row.rev}, ${now}, 'system', NULL, 'import',
+          'updated', ${OWED_CHANGE})`;
   }
 });

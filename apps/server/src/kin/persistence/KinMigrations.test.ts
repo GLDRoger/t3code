@@ -35,6 +35,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -2211,6 +2212,7 @@ describe("Kin migrations", () => {
             entries,
           };
         });
+        yield* TestClock.setTime(Date.parse(timestamp));
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(205));
         const once = yield* read;
         assert.deepStrictEqual(once.fields, [
@@ -2228,12 +2230,63 @@ describe("Kin migrations", () => {
           { key: "EXP-3", owed: null },
           { key: "EXP-4", owed: "repaid" },
         ]);
+        // The mark is on the entry's history, as the system's, at the time it was made.
+        const history = yield* sql<{ id: string; rev: number; touched: number; fields: string }>`
+          SELECT c.record_id AS id, c.rev, r.updated_at = c.at AND c.at = ${Date.parse(timestamp)} AS touched,
+            c.fields_json AS fields
+          FROM kin_record_changes c JOIN kin_records r USING (org_id, record_id)
+          WHERE c.actor_kind = 'system' AND c.via = 'import'`;
+        assert.deepStrictEqual(history, [
+          {
+            id: "EXP-1",
+            rev: 2,
+            touched: 1,
+            fields: JSON.stringify([{ field: "reimbursement", from: null, to: "owed" }]),
+          },
+        ]);
         const [funded] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_records
           WHERE json_extract(fields_json, '$.fundedBy') IS NOT NULL`;
         assert.strictEqual(funded!.n, 0);
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 205`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(205));
         assert.deepStrictEqual(yield* read, once);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "K205 adds only the missing fields and leaves a list's own reimbursement of another kind",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 205`;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+        const fields = [
+          { key: "fundedBy", label: "Funded by", type: "person", sensitive: false },
+          { key: "reimbursement", label: "Reimbursement", type: "text", sensitive: false },
+        ];
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+            definition_json, created_at) VALUES ('org', 'expenses', 'Expenses', 'EXP', 0,
+            ${JSON.stringify({ noun: "expense", fields })}, 1)`;
+        const stored = JSON.stringify({ paidPersonallyBy: "partner@ambermill.example" });
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
+          VALUES ('org', 'e', 'expenses', 'EXP-1', 'Train tickets', 'done', 'person', 'dev',
+            'person', 'e', 1, 1, ${stored})`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(205));
+        const [list] = yield* sql<{
+          json: string;
+        }>`SELECT definition_json AS json FROM kin_registers`;
+        const shape = JSON.parse(list!.json) as {
+          fields: ReadonlyArray<{ key: string; type: string }>;
+        };
+        assert.deepStrictEqual(
+          shape.fields.map((one) => `${one.key}:${one.type}`),
+          ["fundedBy:person", "reimbursement:text", "repaidOn:date"],
+        );
+        const [row] = yield* sql<{ json: string; rev: number }>`SELECT fields_json AS json, rev
+          FROM kin_records`;
+        assert.deepStrictEqual(row, { json: stored, rev: 1 });
       }).pipe(Effect.provide(layer)),
   );
 
