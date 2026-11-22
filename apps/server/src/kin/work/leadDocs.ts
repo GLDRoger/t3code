@@ -433,6 +433,7 @@ export const shown = Effect.fn("KinDocTools.shown")(function* (
       chatId: lane.value.chatId,
       clientMessageId: docCardId(turn.wakeupId, written.row.recordId, written.version.version),
       type: KIN_DOC_CARD,
+      intent: lane.value.mode === "reply" ? "answer" : "evidence",
       state: {
         recordId: KinRecordId.make(written.row.recordId),
         key: written.row.key,
