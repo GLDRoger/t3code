@@ -23,6 +23,7 @@ import {
   executeCodex,
   gradeSample,
   makeSample,
+  nextMock,
   ranCalls,
   McpToolUseCase,
   savesPastedSecrets,
@@ -5066,4 +5067,27 @@ it.each([
     }),
     [],
   );
+});
+
+it("selects readbacks only after a matching mock result in this sample", () => {
+  const create = { input: { records: [{ list: "deals" }] }, output: { key: "DL-4" } };
+  const contact = { input: { records: [{ list: "contacts" }] }, output: { key: "CT-4" } };
+  const sample = { mockCalls: new Map(), mockHistory: new Map([["record_create", [contact]]]) };
+  const fixture = {
+    $when: [
+      {
+        args: { key: "DL-4" },
+        after: { tool: "record_create", args: { "records.0.list": "deals" } },
+        result: "{{ARG:prior.output.key}}",
+      },
+    ],
+    $else: { $error: "not found" },
+  };
+  assert.deepEqual(nextMock(sample, "record_get", fixture, { key: "DL-4" }).mock, fixture.$else);
+  sample.mockHistory.set("record_create", [create, contact]);
+  assert.deepEqual(nextMock(sample, "record_get", fixture, { key: "DL-4" }), {
+    mock: "{{ARG:prior.output.key}}",
+    prior: create,
+  });
+  assert.deepEqual(nextMock(sample, "record_get", fixture, { key: "DL-5" }).mock, fixture.$else);
 });
