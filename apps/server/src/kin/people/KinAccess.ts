@@ -79,10 +79,10 @@ export const ownerLevelAsked = Effect.fn("KinAccess.ownerLevelAsked")(function* 
  */
 const TASK_ASKER = ownerLevelSql("e.org_id", "json_extract(e.json, '$.provenance.personId')");
 /**
- * A task event that is its giver's own words to this agent, by their own hand (never a coding
- * agent's): their comment on it, or their giving it, when they wrote it and every change to its
- * title and notes, to now (what the turn's prompt shows), was theirs too. From another chat, only
- * their own direct chat with it.
+ * A task event that is its giver's own words to this agent, by their own hand: their comment, or
+ * their giving it when they typed it in Tasks (`owner:` key; not a card's Yes, an import or a coding
+ * agent) and every title and notes change to now, which the prompt shows, was theirs in the app.
+ * From another chat, only their own direct chat with it.
  */
 const OWN_TASK_ACT = `json_extract(e.json, '$.provenance._tag') = 'human' AND ${TASK_ASKER}
   AND ((json_extract(e.json, '$.origin') IS NULL
@@ -102,6 +102,7 @@ const OWN_TASK_ACT = `json_extract(e.json, '$.provenance._tag') = 'human' AND ${
       WHERE orr.org_id = e.org_id AND orr.record_id = json_extract(e.json, '$.recordId')
         AND orr.created_by_kind = 'person'
         AND orr.created_by_id = json_extract(e.json, '$.provenance.personId')
+        AND orr.origin_key LIKE 'owner:%'
         AND og.org_id = orr.org_id AND og.record_id = orr.record_id
         AND og.seq = json_extract(e.json, '$.seq') AND og.actor_kind = 'person'
         AND og.actor_id = orr.created_by_id AND og.coding_agent_key IS NULL
@@ -112,7 +113,7 @@ const OWN_TASK_ACT = `json_extract(e.json, '$.provenance._tag') = 'human' AND ${
           WHERE ow.org_id = orr.org_id AND ow.record_id = orr.record_id
             AND json_extract(wf.value, '$.field') IN ('title', 'notes')
             AND (ow.actor_kind <> 'person' OR ow.actor_id IS NOT orr.created_by_id
-              OR ow.coding_agent_key IS NOT NULL)))
+              OR ow.via <> 'owner' OR ow.coding_agent_key IS NOT NULL)))
     ELSE 0 END`;
 
 /** The org's owner-level people. */

@@ -1946,7 +1946,14 @@ it.effect(
       const coId = KinPersonId.make("co");
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
         VALUES (${coId}, ${orgId}, 'co', 'Co', 'co_owner', ${at})`;
-      const madeBy = (personId: KinPersonId, words: "hers" | "the owner's" | "edited after") =>
+      type Words =
+        | "hers"
+        | "the owner's"
+        | "edited after"
+        | "given later"
+        | "a card's"
+        | "imported";
+      const madeBy = (personId: KinPersonId, words: Words) =>
         Effect.gen(function* () {
           // Her own direct chat with the lead, where its turn on her task runs.
           const chat = `${personId}-lead-chat`;
@@ -1962,7 +1969,26 @@ it.effect(
             VALUES (${`${chat}-lead`}, ${orgId}, ${chat}, 'agent', ${lead}, 'member', ${at})`;
           const hers = { actor: { _tag: "person" as const, personId }, via: "owner" as const };
           const title = `Invented: get the brochure built ${words}`;
-          if (words !== "the owner's") {
+          if (words === "given later" || words === "a card's" || words === "imported") {
+            // Hers to hold first: typed in Tasks, made by her Yes on an agent's card, or imported.
+            const made = yield* records.create(
+              orgId,
+              words === "imported" ? { ...hers, via: "import" } : hers,
+              {
+                originKey:
+                  words === "a card's"
+                    ? `chosen:${title}`
+                    : words === "imported"
+                      ? `import:entry:${title}`
+                      : `owner:${title}`,
+                title,
+                owner: { _tag: "person", personId },
+              },
+            );
+            yield* records.update(orgId, { ...hers, askedBy: personId }, made.row.key, {
+              owner: toLead,
+            });
+          } else if (words !== "the owner's") {
             const made = yield* records.create(
               orgId,
               { ...hers, askedBy: personId },
@@ -2002,6 +2028,9 @@ it.effect(
       assert.notProperty((yield* madeBy(coId, "hers")).records[0], "suggested");
       assert.include((yield* madeBy(coId, "the owner's")).records[0], { suggested: true });
       assert.include((yield* madeBy(coId, "edited after")).records[0], { suggested: true });
+      assert.notProperty((yield* madeBy(coId, "given later")).records[0], "suggested");
+      assert.include((yield* madeBy(coId, "a card's")).records[0], { suggested: true });
+      assert.include((yield* madeBy(coId, "imported")).records[0], { suggested: true });
     }).pipe(Effect.provide(layer)),
 );
 
