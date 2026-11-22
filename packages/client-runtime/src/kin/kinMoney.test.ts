@@ -1,5 +1,6 @@
 import {
   KinListId,
+  KinOrgId,
   KinRecordId,
   type KinCash,
   type KinListDefinition,
@@ -19,6 +20,7 @@ import {
   kinCountryName,
 } from "./kinCompanyProfile.ts";
 import { kinDatesMonth, kinMonthWindow, kinZonedDayStart } from "./kinDates.ts";
+import { kinListFilterParam, kinListQuery } from "./kinLists.ts";
 import {
   KIN_MONEY_BLOCKS,
   kinCashEmpty,
@@ -107,9 +109,20 @@ describe("the Money summary", () => {
     expect(view.received.open?.filter.paid).toEqual({ from: "2026-11-01", to: "2026-11-30" });
     expect(view.categories[0]!.open).toMatchObject({
       list: "expenses",
-      filter: { show: "done", category: "travel", period: { from: "2026-11-01" } },
+      filter: { show: "done", category: "travel", spent: { from: "2026-11-01" } },
     });
-    expect(view.yearSpent.open?.filter.period).toEqual({ from: "2026-04-01", to: "2027-03-31" });
+    expect(view.yearSpent.open?.filter.spent).toEqual({ from: "2026-04-01", to: "2027-03-31" });
+    // The phone carries it in a link: what the figure counts arrives whole, and asks the host so.
+    const spentYear = view.yearSpent.open!.filter;
+    expect(kinListFilterParam(JSON.stringify(spentYear))).toEqual(spentYear);
+    expect(kinListQuery(KinOrgId.make("org"), KinListId.make("expenses"), spentYear)).toMatchObject(
+      {
+        states: ["done"],
+        kept: true,
+        spentFrom: "2026-04-01",
+        spentTo: "2027-03-31",
+      },
+    );
     // Two currencies moved, so two charts: they never share an axis.
     expect(view.charts.map((chart) => chart.unit)).toEqual([
       { kind: "money", currency: "INR" },
@@ -171,13 +184,13 @@ describe("the Money summary", () => {
       [list("expenses")],
     );
     expect(calendar.yearLabel).toBe("FY 2026, January to December");
-    expect(calendar.yearSpent.open?.filter.period).toEqual({
+    expect(calendar.yearSpent.open?.filter.spent).toEqual({
       from: "2026-01-01",
       to: "2026-12-31",
     });
     const july = kinMoneyView({ ...summary, financialYearStartMonth: 7 }, [list("expenses")]);
     expect(july.yearLabel).toBe("FY 2026–27, July to June");
-    expect(july.yearSpent.open?.filter.period).toEqual({ from: "2026-07-01", to: "2027-06-30" });
+    expect(july.yearSpent.open?.filter.spent).toEqual({ from: "2026-07-01", to: "2027-06-30" });
     // A host from before company years says none: April to March, as it always was.
     expect(kinMoneyView(summary, []).yearLabel).toBe("FY 2026–27, April to March");
   });

@@ -470,7 +470,10 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
   )
     return yield* unknownList(input.list);
   const zone =
-    input.dateFrom === undefined && input.dateTo === undefined
+    input.dateFrom === undefined &&
+    input.dateTo === undefined &&
+    input.spentFrom === undefined &&
+    input.spentTo === undefined
       ? "UTC"
       : yield* ownerZone(input.orgId).pipe(workFailure);
   const filter = {
@@ -495,6 +498,20 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
     ...(input.dateTo === undefined ? {} : { dateTo: endOfDay(input.dateTo, zone) + 1 }),
     ...(input.paidFrom === undefined ? {} : { paidFrom: input.paidFrom }),
     ...(input.paidTo === undefined ? {} : { paidTo: input.paidTo }),
+    ...(input.spentFrom === undefined && input.spentTo === undefined
+      ? {}
+      : {
+          spent: {
+            from: input.spentFrom ?? "0000-01-01",
+            to: input.spentTo ?? "9999-12-31",
+            fromAt:
+              input.spentFrom === undefined ? 0 : endOfDay(input.spentFrom, zone) - DAY_MS + 1,
+            toAt:
+              input.spentTo === undefined
+                ? Number.MAX_SAFE_INTEGER
+                : endOfDay(input.spentTo, zone) + 1,
+          },
+        }),
     ...(input.kept === undefined ? {} : { kept: input.kept }),
     ...(input.side === undefined ? {} : { side: input.side }),
     ...(partyId === undefined || partyId === null ? {} : { partyId }),

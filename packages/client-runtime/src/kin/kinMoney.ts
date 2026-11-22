@@ -230,11 +230,11 @@ export function kinMoneyView(
         { list: def.list, filter: { ...KIN_LIST_DEFAULT_FILTER, kept: true, ...filter } };
   // Issued and not yet paid in full: the state the host counts as owed.
   const owing = { show: "waiting" as const };
-  // Paid expenses by their own date: what the host counts as spent.
-  const spentIn = (period: KinListFilter["period"], category?: string | null) =>
+  // Money out by the day it left the accounts: exactly what the host counts as spent.
+  const spentIn = (spent: KinListFilter["spent"], category?: string | null) =>
     open(expenses, {
       show: "done",
-      period,
+      spent,
       ...(category === undefined ? {} : category === null ? { noCategory: true } : { category }),
     });
   const receivedIn = (paid: KinListFilter["paid"]) => open(invoices, { paid });

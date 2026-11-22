@@ -5245,6 +5245,29 @@ describe("money answers", () => {
             ["2026-10", "₹1,80,000.00"],
           ],
         );
+        // Spent's drill-down holds exactly what each month's figure counts.
+        const spentIn = (spentFrom: string, spentTo: string) =>
+          OwnerWork.list(people, {
+            orgId,
+            list: "expenses",
+            states: ["done"],
+            kept: true,
+            spentFrom,
+            spentTo,
+            totalsBy: "none",
+          }).pipe(
+            Effect.map((page) => [
+              page.records.map((one) => one.title).toSorted(),
+              page.totals?.total,
+            ]),
+          );
+        assert.deepStrictEqual(
+          [yield* spentIn("2026-09-01", "2026-09-30"), yield* spentIn("2026-10-01", "2026-10-31")],
+          [
+            [["Invented domain", "Invented payroll 2026-09-10"], [inr(103_000)]],
+            [["Invented laptop", "Invented payroll 2026-10-10", "Invented repaid"], [inr(180_000)]],
+          ],
+        );
 
         const as = (personId: string) => [
           { _tag: "person" as const, orgId, personId: KinPersonId.make(personId) },

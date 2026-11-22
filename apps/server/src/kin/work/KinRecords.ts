@@ -141,7 +141,14 @@ import { contactFields } from "./contactDetails.ts";
 import { directionOf, findBankList } from "./statements/bankList.ts";
 import { cleanTags } from "./tags.ts";
 import { notAVendor } from "./vendorName.ts";
-import { FUNDED_BY, fundingOf, REIMBURSEMENT, REPAID_ON } from "./reimbursement.ts";
+import {
+  companyCashOut,
+  FUNDED_BY,
+  fundingOf,
+  partnerRepaidDay,
+  REIMBURSEMENT,
+  REPAID_ON,
+} from "./reimbursement.ts";
 import { withArticle } from "../article.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
@@ -424,6 +431,16 @@ export type QueryInput = {
   readonly late?: boolean;
   readonly dueBy?: number;
   readonly dueAfter?: number;
+  /**
+   * Paid expenses Money's "spent" counts in these days: the company's own by their date in
+   * `[fromAt, toAt)`, a partner's by the day it was paid back, `from` to `to`.
+   */
+  readonly spent?: {
+    readonly from: string;
+    readonly to: string;
+    readonly fromAt: number;
+    readonly toAt: number;
+  };
   /** Its own date, or the time it was added when it has none, in `[dateFrom, dateTo)`. */
   readonly dateFrom?: number;
   readonly dateTo?: number;
@@ -3475,6 +3492,13 @@ const make = Effect.gen(function* () {
     if (input.dateFrom !== undefined) where.push(sql`${moneyDay(sql)} >= ${input.dateFrom}`);
     if (input.dateTo !== undefined) where.push(sql`${moneyDay(sql)} < ${input.dateTo}`);
     if (input.category !== undefined) where.push(sql`r.category IS ${input.category}`);
+    // The tile's own rule (`moneyViews` spent): money that left the company's accounts.
+    if (input.spent !== undefined)
+      where.push(sql`(r.state = 'done' AND r.amount_minor IS NOT NULL AND ${companyCashOut(sql)}
+        AND CASE WHEN ${partnerRepaidDay(sql)} IS NOT NULL
+          THEN ${partnerRepaidDay(sql)} BETWEEN ${input.spent.from} AND ${input.spent.to}
+          ELSE ${moneyDay(sql)} >= ${input.spent.fromAt} AND ${moneyDay(sql)} < ${input.spent.toAt}
+        END)`);
     if (input.paidFrom !== undefined || input.paidTo !== undefined)
       where.push(sql`EXISTS (SELECT 1 FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL
