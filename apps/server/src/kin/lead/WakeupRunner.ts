@@ -1042,6 +1042,7 @@ const make = Effect.gen(function* () {
           .interruptThread({
             projectId: projection.value.thread.projectId,
             threadId: row.threadId,
+            ...(row.runId === null ? {} : { runId: row.runId }),
             commandId: CommandId.make(`kin-exit:${row.wakeupId}`),
           })
           .pipe(Effect.ignore);
@@ -1276,6 +1277,8 @@ const make = Effect.gen(function* () {
                   orgId,
                   wakeupId,
                   errorTag: error._tag,
+                  operation: error.operation,
+                  ...(error._tag === "MemoryCheckoutInvalid" ? { reason: error.reason } : {}),
                 }),
               ),
               Effect.tapError((error) =>

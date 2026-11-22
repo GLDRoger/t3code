@@ -56,6 +56,7 @@ export const HOLD_MS: Readonly<Partial<Record<KinTroubleCause, number>>> = {
   model: 15 * 60_000,
   program: 15 * 60_000,
   usage_limit: 15 * 60_000,
+  memory: KinEventQueue.FIRST_RETRY_MS,
 };
 /** Causes any stopped agent's next good turn proves gone; the rest clear agent by agent. */
 const HOST_WIDE: ReadonlySet<KinTroubleCause> = new Set(["space"]);

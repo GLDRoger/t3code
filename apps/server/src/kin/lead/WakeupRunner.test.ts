@@ -31,12 +31,14 @@ import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
 import * as Presence from "../reply/KinPresence.ts";
+import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import * as LevelGate from "./LevelGate.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Floor from "../floor/KinFloor.ts";
 import { FLOOR_GRANT_TTL_MS } from "../floor/FloorManager.ts";
 import * as Clock from "effect/Clock";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -65,7 +67,17 @@ import * as KinStop from "./KinStop.ts";
 import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import * as HostCare from "../host/KinHostCare.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
+import * as ClaudeAdapter from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { makeFakeClaudeCli } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.testkit.ts";
+import * as PortScanner from "../../preview/PortScanner.ts";
+import * as ProcessRunner from "../../processRunner.ts";
+import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import {
+  ProviderAdapterTurnStartError,
+  type ProviderAdapterV2TurnInput,
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import * as PlatformError from "effect/PlatformError";
 import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -80,6 +92,7 @@ import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
 import {
   harness,
+  harnessWith,
   orchestrationHarness,
   seed,
   orgId,
@@ -172,6 +185,42 @@ const sessions = Effect.fn("test.sessions")(function* () {
       return numbers.get(run.providerThreadId);
     });
 });
+
+const privateRequest = Effect.fn("test.privateRequest")(function* (id: string) {
+  yield* seed;
+  yield* seedDirectChats;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_leads SET owner_chat_id = 'direct' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+    VALUES ('direct-agent', ${orgId}, 'direct', 'agent', ${agentId}, 'member', '2026-11-08T00:00:00.000Z')`;
+  const message = yield* ownerSays(id, "direct");
+  yield* sql`UPDATE kin_chats SET last_seq = 1, direct_key = 'owner:lead'
+    WHERE org_id = ${orgId} AND chat_id = 'direct'`;
+  const repo = yield* KinChatRepository.KinChatRepository;
+  const chat = Option.getOrThrow(yield* repo.getChat({ orgId, chatId: KinChatId.make("direct") }));
+  const posted = Option.getOrThrow(
+    yield* repo.getMessage({ orgId, messageId: KinMessageId.make(id) }),
+  );
+  yield* (yield* Floor.KinFloor).open(posted, chat);
+  yield* (yield* KinEventQueue.KinEventQueue).enqueue(message);
+});
+
+const chatLayers = Layer.mergeAll(
+  LevelGate.layer.pipe(Layer.provideMerge(ChatService.layer)),
+  Presence.layer,
+).pipe(Layer.provideMerge(ChatHub.layer), Layer.provideMerge(KinChatRepository.layer));
+
+const hostCare = HostCare.layerWithoutRunner.pipe(
+  Layer.provide(
+    Layer.mock(ProcessRunner.ProcessRunner)({
+      run: () => Effect.die("This fixture is not a managed Kin host"),
+    }),
+  ),
+  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-wakeup-host-" })),
+  Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
+  Layer.provide(NodeServices.layer),
+  Layer.provideMerge(chatLayers),
+);
 
 describe("WakeupRunner", () => {
   it.effect("does not spin the org loop while a lead with queued events is still finishing", () =>
@@ -2633,6 +2682,146 @@ describe("WakeupRunner", () => {
       yield* Fiber.join(yield* run());
       assert.lengthOf(yield* sql`SELECT 1 FROM kin_wakeups`, 2);
     }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  );
+
+  it.effect(
+    "holds a memory failure behind one notice and runs the held turn after memory returns",
+    () =>
+      Effect.gen(function* () {
+        let blocked = true;
+        const invalid = new Memory.MemoryCheckoutInvalid({
+          orgId,
+          operation: "sync",
+          reason: "Unfinished Git operation",
+        });
+        const program = Effect.gen(function* () {
+          yield* privateRequest("memory-held");
+          const sql = yield* SqlClient.SqlClient;
+          for (const _attempt of [1, 2, 3]) {
+            assert.strictEqual((yield* Fiber.await(yield* run()))._tag, "Failure");
+            assert.deepStrictEqual(
+              yield* sql`SELECT state, attempts FROM kin_events WHERE org_id = ${orgId}`,
+              [{ state: "queued", attempts: 0 }],
+            );
+          }
+          const notices = sql`SELECT m.body FROM kin_messages m JOIN kin_widgets w
+          ON w.org_id = m.org_id AND w.message_id = m.message_id
+          WHERE m.org_id = ${orgId} AND w.type = 'host_trouble' ORDER BY m.message_id`;
+          assert.deepStrictEqual(yield* notices, [
+            { body: "Kin couldn't load saved memory, so Lead couldn't work." },
+          ]);
+          assert.deepStrictEqual(
+            yield* sql`SELECT cause FROM kin_troubles WHERE org_id = ${orgId} AND closed_at IS NULL`,
+            [{ cause: "memory" }],
+          );
+          blocked = false;
+          yield* Fiber.join(yield* run());
+          assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events WHERE org_id = ${orgId}`, [
+            { state: "done" },
+          ]);
+          assert.lengthOf(yield* notices, 1);
+          assert.deepStrictEqual(
+            yield* sql`SELECT cause FROM kin_troubles WHERE org_id = ${orgId} AND closed_at IS NOT NULL`,
+            [{ cause: "memory" }],
+          );
+        });
+        yield* program.pipe(
+          Effect.provide(
+            harnessWith(
+              {
+                prepare: () =>
+                  blocked
+                    ? Effect.fail(invalid)
+                    : Effect.succeed({
+                        head: "abc",
+                        indexAsOf: DateTime.makeUnsafe(0),
+                        read: "/private/tmp",
+                      }),
+              },
+              hostCare,
+            ),
+          ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect(
+    "answers a cold Claude wake-up once when its first CLI exits before prompt delivery",
+    () =>
+      Effect.gen(function* () {
+        const cli = makeFakeClaudeCli(true, true);
+        const query = yield* ClaudeAdapter.ClaudeAgentSdkQueryRunner;
+        const beforeTurn = Effect.fn("test.coldClaudeStart")(
+          function* (input: ProviderAdapterV2TurnInput) {
+            const opened = yield* query.open({
+              threadId: input.threadId,
+              providerSessionId: input.providerThread.providerSessionId!,
+              options: {
+                ...ClaudeAdapter.makeClaudeQueryOptions({
+                  modelSelection: input.modelSelection,
+                  nativeThreadId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                  title: "Lead",
+                  resume: false,
+                  cwd: null,
+                  environment: { PATH: "/usr/bin" },
+                  mcpServers: { "t3-code": { type: "http", url: "http://127.0.0.1:43123/mcp" } },
+                }),
+                pathToClaudeCodeExecutable: "/opt/claude/cli.js",
+                spawnClaudeCodeProcess: cli.spawn,
+              },
+            });
+            yield* opened
+              .setModel(input.modelSelection.model)
+              .pipe(Effect.ensuring(opened.close.pipe(Effect.ignore)));
+          },
+          (effect, input) =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterTurnStartError({
+                    cause,
+                    driver: ProviderDriverKind.make("claudeAgent"),
+                    runId: input.runId,
+                    threadId: input.threadId,
+                    providerThreadId: input.providerThread.id,
+                  }),
+              ),
+            ),
+        );
+        yield* Effect.gen(function* () {
+          yield* privateRequest("cold");
+          const sql = yield* SqlClient.SqlClient;
+          yield* Fiber.join(yield* run());
+          assert.deepStrictEqual(
+            yield* sql`SELECT status FROM kin_wakeups WHERE org_id = ${orgId}`,
+            [{ status: "completed" }],
+          );
+          assert.deepStrictEqual(
+            yield* sql`SELECT author_kind, body FROM kin_messages WHERE org_id = ${orgId} AND author_kind IN ('agent', 'system') ORDER BY seq`,
+            [{ author_kind: "agent", body: "The fixture is ready." }],
+          );
+          assert.deepStrictEqual(
+            yield* sql`SELECT cause FROM kin_troubles WHERE org_id = ${orgId}`,
+            [],
+          );
+          assert.lengthOf(cli.spawns, 2);
+        }).pipe(
+          Effect.provide(
+            harnessWith(
+              { beforeTurn, replyText: "The fixture is ready." },
+              ReplyBridge.layer.pipe(Layer.provide(chatLayers), Layer.provideMerge(hostCare)),
+            ),
+          ),
+        );
+      }).pipe(
+        Effect.provide(ClaudeAdapter.layerQueryRunner.pipe(Layer.provide(PortScanner.layerTest))),
+        Effect.provideService(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+        Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        provideDeterministicTestRuntime,
+      ),
   );
 
   it.effect.each(["MemorySyncConflict", "MemoryCheckoutInvalid"] as const)(

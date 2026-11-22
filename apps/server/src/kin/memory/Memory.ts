@@ -637,6 +637,7 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     paths: { writer: string; repo: { repoUrl: string } },
     checkTip = true,
+    repairMissingRef = false,
   ) {
     yield* Effect.gen(function* () {
       const entry = yield* fs.lstat(path.join(paths.writer, ".git"));
@@ -656,7 +657,18 @@ const make = Effect.gen(function* () {
             reason: "Invalid git directory",
           });
       }
-      const head = (yield* git(orgId, paths.writer, ["rev-parse", `refs/heads/${branch}`])).trim();
+      const ref = `refs/heads/${branch}`;
+      const head = (yield* git(orgId, paths.writer, ["rev-parse", "--verify", ref]).pipe(
+        Effect.catchTags({
+          MemoryError: (error) =>
+            repairMissingRef
+              ? restoreMissingDefaultRef(orgId, paths.writer, ref, expected).pipe(
+                  Effect.andThen(git(orgId, paths.writer, ["rev-parse", "--verify", ref])),
+                  Effect.mapError(() => error),
+                )
+              : Effect.fail(error),
+        }),
+      )).trim();
       if (!checkTip) return;
       if (head !== expected) {
         yield* git(orgId, paths.writer, ["update-ref", `refs/heads/${branch}`, expected, head]);
@@ -685,6 +697,7 @@ const make = Effect.gen(function* () {
   const ensureCheckouts = Effect.fn("Memory.ensureCheckouts")(function* (
     orgId: KinOrgId,
     reusePin = false,
+    repairMissingRef = false,
   ) {
     const paths = yield* pathsFor(orgId);
     if (reusePin && initializedCheckouts.has(orgId) && pinnedHeads.has(orgId)) {
@@ -694,7 +707,7 @@ const make = Effect.gen(function* () {
     yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
     yield* removeStaleClones(orgId, paths.root);
     if (yield* io(orgId, "exists", fs.exists(paths.writer))) {
-      yield* validateWriter(orgId, paths, false);
+      yield* validateWriter(orgId, paths, false, repairMissingRef);
     } else {
       // The remote can still hold the old history until the purge's push lands.
       yield* refuseDuringPurge(orgId, "clone");
@@ -1239,6 +1252,26 @@ const make = Effect.gen(function* () {
     return branch;
   });
 
+  const restoreMissingDefaultRef = Effect.fn("Memory.restoreMissingDefaultRef")(function* (
+    orgId: KinOrgId,
+    writer: string,
+    ref: string,
+    head: string,
+  ) {
+    yield* refuseDuringPurge(orgId, "recover");
+    yield* refuseUnfinishedOperation(orgId, writer);
+    yield* readFiles(orgId, writer, head).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(VcsProcess, vcs),
+    );
+    // A zero expected tip can only recreate an absent ref. Existing refs and the worktree stay put.
+    yield* git(orgId, writer, ["update-ref", ref, head, "0".repeat(head.length)]);
+    yield* Effect.logInfo("Kin restored missing memory ref from its SQLite anchor", {
+      orgId,
+      branch: mainBranch,
+    });
+  });
+
   const recover = Effect.fn("Memory.recover")(function* (orgId: KinOrgId, reclone = false) {
     const paths = yield* pathsFor(orgId);
     yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
@@ -1463,12 +1496,16 @@ const make = Effect.gen(function* () {
     const generation = historyGenerations.get(orgId) ?? 0;
     return { generation, fetched: yield* fetchRemote(orgId, writer, repo.repoUrl) };
   });
-  // A purge that ran since the fetch dropped the checkout its objects went to.
+  // A purge may have dropped the fetched objects; an invalid prefetch must be rechecked under lock.
   const stillFetched = (
     orgId: KinOrgId,
     prefetched: Effect.Success<ReturnType<typeof prefetch>>,
   ) =>
-    prefetched?.generation === (historyGenerations.get(orgId) ?? 0)
+    prefetched?.generation === (historyGenerations.get(orgId) ?? 0) &&
+    !(
+      prefetched.fetched._tag === "Failure" &&
+      prefetched.fetched.failure._tag === "MemoryCheckoutInvalid"
+    )
       ? prefetched.fetched
       : undefined;
 
@@ -1829,7 +1866,7 @@ const make = Effect.gen(function* () {
     view?: LeadView,
     prefetched?: Fetched,
   ) {
-    const paths = yield* ensureCheckouts(orgId);
+    const paths = yield* ensureCheckouts(orgId, false, true);
     if (synced.get(orgId) === true) {
       yield* validateWriter(orgId, yield* pathsFor(orgId));
       yield* refuseUnfinishedOperation(orgId, paths.writer);

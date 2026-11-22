@@ -76,6 +76,7 @@ const KIN_TROUBLE_TITLES: Readonly<Record<KinTroubleCause, string>> = {
   restart: "Kin restarted",
   backup: "No recent backup",
   unknown: "Something went wrong",
+  memory: "Saved memory unavailable",
 };
 
 /**

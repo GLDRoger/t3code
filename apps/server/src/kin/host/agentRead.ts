@@ -7,11 +7,16 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+// Keep the agent tool's enum stable; the accompanying words still identify the memory problem.
+const ComputerTroubleCause = Schema.Literals(
+  KinTroubleCause.literals.filter((cause) => cause !== "memory"),
+);
+
 /** What `kin_computer` answers: the facts Settings › Kin's computer shows, in the table's words. */
 export const KinComputerResult = Schema.Struct({
   troubles: Schema.Array(
     Schema.Struct({
-      cause: KinTroubleCause,
+      cause: ComputerTroubleCause,
       agents: Schema.Array(Schema.String),
       heldTurns: Schema.Number,
       openedAt: Schema.String,
@@ -39,7 +44,7 @@ export const kinComputerView = (status: KinHostStatus): typeof KinComputerResult
   troubles: status.agents.troubles.map(({ card }) => {
     const words = kinTroubleWords(card, (iso) => iso);
     return {
-      cause: card.cause,
+      cause: card.cause === "memory" ? "unknown" : card.cause,
       agents: card.agents.map((agent) => agent.name),
       heldTurns: card.count,
       openedAt: card.openedAt,
