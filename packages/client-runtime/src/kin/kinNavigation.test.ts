@@ -176,7 +176,10 @@ describe("kinSettingsGroups", () => {
       "memory",
       "company",
       "approvals",
+      "host",
     ]);
+    // Kin's computer is the owner level's: a teammate never reaches it, even by its address.
+    expect(kinSettingsPageOf("host", groups("member"))).toBe("profile");
     // What Kin suggested is the owner's alone: a co-owner's Company has no Recommendations.
     expect(groups("owner")[1]?.pages.at(-1)).toBe("recommendations");
     // A teammate with Clients on reads the deal stages, and nothing else of the company's.
@@ -195,7 +198,7 @@ describe("kinSettingsGroups", () => {
   });
 
   it("keeps the phone's Settings to the day's rows: Company for the owner level, the log for a teammate", () => {
-    const owner = ["team", "agents", "company", "watches", "stop"];
+    const owner = ["team", "agents", "company", "watches", "host", "stop"];
     expect(kinPhoneSettingsRows(ROLES.owner)).toEqual({
       you: ["profile", "notifications", "appearance", "mailbox"],
       company: owner,
