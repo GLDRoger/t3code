@@ -800,9 +800,27 @@ const make = Effect.gen(function* () {
       );
     }
     // The same event a mention makes: an agent named in the message already has it, so it answers once.
-    yield* queue
-      .enqueue(wakeEvent(ask.message, target.agentId, undefined))
-      .pipe(Effect.catchTags({ KinEventQueueConflict: () => Effect.void }));
+    // After an outside read it is this agent's pass, not the person's ask, and carries the read.
+    const event = wakeEvent(ask.message, target.agentId, undefined);
+    const read = yield* outsideStamp(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    yield* (
+      read === undefined
+        ? queue.enqueue(event)
+        : queue
+            .enqueue(
+              event._tag === "chat.message"
+                ? { ...event, origin: { agentId: ctx.agentId, chatId: ask.message.chatId } }
+                : event,
+            )
+            .pipe(
+              Effect.tap(() =>
+                stampEvent(ctx.orgId, event.eventId, read).pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                ),
+              ),
+              sql.withTransaction,
+            )
+    ).pipe(Effect.catchTags({ KinEventQueueConflict: () => Effect.void }));
     return { to: target.name, passed: true as const };
   });
 
@@ -1211,6 +1229,29 @@ const make = Effect.gen(function* () {
    * From a check-in, a pulse fact another agent acts on: Kin's own words for the fact, then the
    * lead's line, land in that agent's chat with the owner and wake it there. Once per fact a turn.
    */
+  /**
+   * What an outside read is called for each reader (`renderSource`): the person whose chat the
+   * pass lands in, and this turn's own readers.
+   */
+  const readNames = Effect.fnUntraced(function* (
+    ctx: Lead,
+    read: string | undefined,
+    readerId: KinPersonId,
+  ) {
+    if (read === undefined) return undefined;
+    const access = Effect.provideService(SqlClient.SqlClient, sql);
+    return {
+      notice: renderSource(
+        read,
+        yield* ownerLevel(ctx.orgId, readerId).pipe(
+          access,
+          Effect.orElseSucceed(() => false),
+        ),
+      ),
+      turn: renderSource(read, (yield* effectiveAudience(ctx).pipe(access)) === "owner_only"),
+    };
+  });
+
   const passFact = Effect.fnUntraced(function* (
     ctx: Lead,
     self: Colleague,
@@ -1261,6 +1302,8 @@ const make = Effect.gen(function* () {
     ]
       .join("\n")
       .slice(0, messageBodyLimit);
+    const read = yield* outsideStamp(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    const named = yield* readNames(ctx, read, target.ownerPersonId);
     // Shown the T3 way, on the owner's side as sent by the passing agent; he didn't write it.
     const { message } = yield* chat.notice({
       orgId: ctx.orgId,
@@ -1268,7 +1311,11 @@ const make = Effect.gen(function* () {
       audience: "owner",
       messageId,
       body,
-      relay: { kind: "sent_by", agentId: ctx.agentId },
+      relay: {
+        kind: "sent_by",
+        agentId: ctx.agentId,
+        ...(named === undefined ? {} : { afterReading: named.notice }),
+      },
       silent: true,
     });
     yield* queue.enqueue({
@@ -1289,7 +1336,20 @@ const make = Effect.gen(function* () {
       messageId: message.messageId,
       origin: { agentId: ctx.agentId, chatId: self.ownerChatId },
     });
-    return { to: target.name, passed: true as const };
+    // A check-in that showed outside text passes it on marked, like any hand-off.
+    yield* stampEvent(ctx.orgId, `handoff-${id}`, read).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    return {
+      to: target.name,
+      passed: true as const,
+      ...(named === undefined
+        ? {}
+        : {
+            note: `Passed to ${target.name} as a request, with its source: what ${target.name} makes from it waits to be kept.`,
+            source: named.turn,
+          }),
+    };
   });
 
   const handOff = Effect.fn("KinHandoff.handOff")(function* (
@@ -1388,25 +1448,7 @@ const make = Effect.gen(function* () {
           ON CONFLICT (org_id, message_id) DO NOTHING RETURNING to_agent_id AS "toAgentId"`;
         if (claimed.length === 0) return (yield* already()) ?? (yield* unavailable());
         const read = yield* outsideStamp(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-        // Each reader is named what they may see of it: the other lead's owner, and this turn.
-        const named =
-          read === undefined
-            ? undefined
-            : {
-                notice: renderSource(
-                  read,
-                  yield* ownerLevel(ctx.orgId, target.ownerPersonId).pipe(
-                    Effect.provideService(SqlClient.SqlClient, sql),
-                    Effect.orElseSucceed(() => false),
-                  ),
-                ),
-                turn: renderSource(
-                  read,
-                  (yield* effectiveAudience(ctx).pipe(
-                    Effect.provideService(SqlClient.SqlClient, sql),
-                  )) === "owner_only",
-                ),
-              };
+        const named = yield* readNames(ctx, read, target.ownerPersonId);
         const { message } = yield* chat.notice({
           orgId: ctx.orgId,
           chatId: target.ownerChatId,
@@ -1525,7 +1567,8 @@ const make = Effect.gen(function* () {
             if (claimed.length === 0) return;
             const [asker] = yield* sql<{
               ownerChatId: KinChatId;
-            }>`SELECT l.owner_chat_id AS "ownerChatId"
+              ownerPersonId: KinPersonId;
+            }>`SELECT l.owner_chat_id AS "ownerChatId", a.owner_person_id AS "ownerPersonId"
               FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
                 AND a.retired_at IS NULL
               WHERE l.org_id = ${input.orgId} AND l.agent_id = ${handoff.fromAgentId}`;
@@ -1534,13 +1577,29 @@ const make = Effect.gen(function* () {
             // Keyed by the answer, not the hand-off: one reply to several hand-offs is one relay.
             const key = `handoff-back:${reply.messageId}:${asker.ownerChatId}`;
             const id = NodeCrypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
+            // An answer written after its turn read outside text goes back marked, like a hand-off.
+            const read = yield* outsideStamp(input).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
+            const afterReading =
+              read === undefined
+                ? {}
+                : {
+                    afterReading: renderSource(
+                      read,
+                      yield* ownerLevel(input.orgId, asker.ownerPersonId).pipe(
+                        Effect.provideService(SqlClient.SqlClient, sql),
+                        Effect.orElseSucceed(() => false),
+                      ),
+                    ),
+                  };
             const { message: back } = yield* chat.notice({
               orgId: input.orgId,
               chatId: asker.ownerChatId,
               audience: "owner",
               messageId: KinMessageId.make(`kin-handoff-back:${id}`),
               body: `${message.value.body.slice(0, messageBodyLimit - where.length)}${where}`,
-              relay: { kind: "reply_from", agentId: input.agentId },
+              relay: { kind: "reply_from", agentId: input.agentId, ...afterReading },
               silent: true,
             });
             if (handoff.wantsAnswer === 0) return;
@@ -1558,6 +1617,11 @@ const make = Effect.gen(function* () {
                 origin: { agentId: handoff.fromAgentId, chatId: asker.ownerChatId },
               })
               .pipe(
+                Effect.tap(() =>
+                  stampEvent(input.orgId, `handoff-back-${id}`, read).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                  ),
+                ),
                 Effect.catchTags({
                   KinEventQueueConflict: () => Effect.void,
                   KinEventQueueRetiredAgent: () => Effect.void,

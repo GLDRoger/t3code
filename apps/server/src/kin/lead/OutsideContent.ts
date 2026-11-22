@@ -426,6 +426,15 @@ export const storedStamp = Effect.fn("KinOutsideContent.storedStamp")(function* 
   return row?.source;
 });
 
+/** The stamp a schedule or deferral was made under: that of the event that asked for it. */
+export const itemSource = Effect.fn("KinOutsideContent.itemSource")(function* (
+  orgId: KinOrgId,
+  _itemId: string,
+  sourceEvent: string | undefined,
+) {
+  return sourceEvent === undefined ? undefined : yield* storedStamp(orgId, sourceEvent);
+});
+
 /**
  * A turn starts outside-read when it shows outside text itself, or when an event it shows, or the
  * event a reminder it shows was asked in, carries a stamp. Run before the prompt is sent; a failure stops the prompt.
@@ -439,24 +448,32 @@ export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (
   readonly shows?: string | undefined;
   /** What it shows, such as the check-in's first mail by sender and subject. */
   readonly showsReads?: ReadonlyArray<OutsideReadItem> | undefined;
+  /** Schedules and deferrals it runs, each with the stamp it was made under (`itemSource`). */
+  readonly items?: ReadonlyArray<{ readonly itemId: string; readonly sourceEvent?: string }>;
 }) {
   if (input.shows !== undefined) {
     yield* markOutside(input, input.shows, input.showsReads);
     return undefined;
   }
   const sql = yield* SqlClient.SqlClient;
-  const stamps =
+  const events =
     input.eventIds.length === 0
       ? []
       : yield* sql<{ source: string }>`SELECT outside_from AS source FROM kin_event_outside
           WHERE org_id = ${input.orgId} AND event_id IN ${sql.in(input.eventIds)}
+            AND outside_from <> ''
           ORDER BY event_id`;
-  const first = stamps[0]?.source;
+  const stamps = events.map((row) => row.source);
+  for (const item of input.items ?? []) {
+    const stamp = yield* itemSource(input.orgId, item.itemId, item.sourceEvent);
+    if (stamp !== undefined) stamps.push(stamp);
+  }
+  const first = stamps[0];
   if (first === undefined) return undefined;
   // Every event's reads, so a turn woken by two passed-on requests names both.
   const source = outsideSource(
     first,
-    stamps.flatMap((row) => stampReads(row.source)),
+    stamps.flatMap((stamp) => stampReads(stamp)),
   );
   yield* stampKey(source).startsWith(CODING_AGENT_SOURCE)
     ? codingAgentTextShown(input, source)
