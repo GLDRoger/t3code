@@ -51,7 +51,14 @@ import {
 import { sectionsOf } from "../work/docBody.ts";
 import { budgetFlags } from "../work/budgets.ts";
 import { moneySection, moneySummary } from "../work/moneyViews.ts";
-import { buildWorkSection, MONEY_RULE, WITHDRAWN_WORK, WORK_RULE } from "../work/workPrompt.ts";
+import {
+  buildWorkSection,
+  MONEY_RULE,
+  taskFacts,
+  type TaskFacts,
+  WITHDRAWN_WORK,
+  WORK_RULE,
+} from "../work/workPrompt.ts";
 import { buildStartedSection, STARTED_RULE } from "./startedSection.ts";
 import { DECLINED_RULE, declinedRequests } from "./declinedSection.ts";
 import {
@@ -1928,6 +1935,14 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
     Effect.orElseSucceed(() => []),
   );
   if (!ownerOnly && entry === undefined) return undefined;
+  const about =
+    entry === undefined || withdrawn
+      ? undefined
+      : (yield* taskFacts(
+          orgId,
+          [event.recordId],
+          ownerOnly || teammate === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([teammate]),
+        ).pipe(Effect.orElseSucceed(() => new Map<string, TaskFacts>()))).get(event.recordId);
   const attributed = ownerOnly && !withdrawn;
   const titleBy = attributed ? (entry?.titleBy ?? null) : null;
   const notesBy = attributed && entry?.notes !== "" ? (entry?.notesBy ?? null) : null;
@@ -1968,6 +1983,7 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
               ...(entry.dueAt === null
                 ? {}
                 : { due: DateTime.formatIso(DateTime.makeUnsafe(entry.dueAt)) }),
+              ...about,
             }),
       },
       true,

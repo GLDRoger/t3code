@@ -2790,7 +2790,17 @@ it.effect("a task a teammate holds and gives an agent wakes it in their chat, at
     yield* seed;
     yield* mateMayMessage;
     const sql = yield* SqlClient.SqlClient;
-    const theirs = yield* ownerTask("theirs", { owner: { _tag: "person", personId: mateId } });
+    const records = yield* KinRecords.KinRecords;
+    const client = (yield* records.create(orgId, ownerWrites, {
+      list: "clients",
+      originKey: "client",
+      title: "Invented Client",
+      owner: { _tag: "person", personId: ownerId },
+    })).row;
+    const theirs = yield* ownerTask("theirs", {
+      owner: { _tag: "person", personId: mateId },
+      partyId: client.recordId,
+    });
     const hidden = yield* ownerTask("owner only", { sensitive: true });
     yield* OwnerWork.assign([mate], { orgId, key: theirs.key, to: toLead });
     const [event] = yield* assignedEvents;
@@ -2806,6 +2816,18 @@ it.effect("a task a teammate holds and gives an agent wakes it in their chat, at
     const woken = { orgId, agentId: lead, wakeupId: "mate-wake" };
     assert.strictEqual(yield* turnAudience(woken), "shared");
     assert.strictEqual(yield* KinLevels.originCap(woken), "L1");
+    // Its client is named only while they may read Clients.
+    const given = Effect.gen(function* () {
+      const text = yield* workEventText({ orgId, event: (yield* lastGiven)!, ownerOnly: false });
+      return JSON.parse(quotesIn(text!).get("work given to you (data)")!);
+    });
+    assert.notProperty(yield* given, "client");
+    yield* places(1, 0, 0);
+    assert.deepInclude(yield* given, {
+      client: `Invented Client (${client.key})`,
+      contacts: "none recorded",
+      clientNextStep: true,
+    });
     assert.include(yield* Effect.flip(LeadWork.get(scopeOf(lead), { key: hidden.key })), {
       reason: "not_found",
     });
@@ -2909,6 +2931,55 @@ it.effect(
         quotesIn((yield* told)!).get("work given to you (data)")!,
         `"key":"${event.key}","number":"AM/26-27/004"`,
       );
+      // It names whose it is: its client, their contacts newest first, its project, and
+      // whether it is the client's next step.
+      const records = yield* KinRecords.KinRecords;
+      const made = (list: "clients" | "contacts" | "projects", title: string, partyId?: string) =>
+        records
+          .create(orgId, ownerWrites, {
+            list,
+            originKey: title,
+            title: `Invented ${title}`,
+            owner: { _tag: "person", personId: ownerId },
+            ...(partyId === undefined ? {} : { partyId }),
+          })
+          .pipe(Effect.map(({ row }) => row));
+      const client = yield* made("clients", "Northwind");
+      const other = yield* made("clients", "Harbor");
+      const older = yield* made("contacts", "Ilsa", client.recordId);
+      yield* sql`UPDATE kin_records SET created_at = created_at - 1000
+        WHERE org_id = ${orgId} AND record_id = ${older.recordId}`;
+      const newer = yield* made("contacts", "Omar", client.recordId);
+      yield* made("contacts", "Harbor's own", other.recordId);
+      const project = yield* made("projects", "Plant ERP", client.recordId);
+      yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: send them what we built for Harbor",
+        party: client.key,
+        project: project.key,
+        owner: toLead,
+        clientRequestId: "next step",
+      });
+      const facts = JSON.parse(quotesIn((yield* told)!).get("work given to you (data)")!);
+      assert.deepInclude(facts, {
+        client: `Invented Northwind (${client.key})`,
+        contacts: [`Invented Omar (${newer.key})`, `Invented Ilsa (${older.key})`],
+        project: `Invented Plant ERP (${project.key})`,
+        clientNextStep: true,
+      });
+      const lonely = yield* made("clients", "Lonely");
+      yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: a later one",
+        party: lonely.key,
+        owner: toLead,
+        clientRequestId: "lonely",
+      });
+      assert.deepInclude(JSON.parse(quotesIn((yield* told)!).get("work given to you (data)")!), {
+        client: `Invented Lonely (${lonely.key})`,
+        contacts: "none recorded",
+        clientNextStep: true,
+      });
     }).pipe(Effect.provide(layer)),
 );
 
