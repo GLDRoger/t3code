@@ -978,7 +978,9 @@ export const tellMoved = (
     : tellOnScreen(person, `${after.recordId}:${after.rev}`, movedNotices(before, after));
 export const tellOnScreen = Effect.fn("KinWork.tellOnScreen")(
   function* (person: PersonIdentity, change: string, all: ReadonlyArray<AssignNotice>) {
-    const notices = all.filter((notice) => notice.personId !== person.personId);
+    const notices = all.filter(
+      (notice) => notice.personId !== person.personId || notice.kind === "tookOff",
+    );
     if (notices.length === 0) return;
     yield* tellOnTasks(
       {
@@ -1176,11 +1178,28 @@ export const update = Effect.fn("KinWork.update")(function* (
     },
     input.rev,
   );
-  if (input.fields === undefined || row === undefined) return yield* save;
   // The files are checked and kept in one transaction, so none slips in between the two.
-  return yield* sql
-    .withTransaction(ownFiles(person, row.fieldsJson, input.fields).pipe(Effect.andThen(save)))
+  const withFiles =
+    input.fields === undefined || row === undefined
+      ? save
+      : sql
+          .withTransaction(
+            ownFiles(person, row.fieldsJson, input.fields).pipe(Effect.andThen(save)),
+          )
+          .pipe(workFailure);
+  if (input.alsoOn === undefined) return yield* withFiles;
+  const records = yield* KinRecords;
+  const moved = yield* sql
+    .withTransaction(
+      Effect.gen(function* () {
+        const before = yield* records.get(input.orgId, input.key);
+        const shown = yield* withFiles;
+        return { before, shown, after: yield* records.get(input.orgId, input.key) };
+      }),
+    )
     .pipe(workFailure);
+  yield* tellMoved(person, moved.before, moved.after);
+  return moved.shown;
 });
 
 /** Ticks one of a task's steps, by whoever may change the task, through the same write. */
