@@ -31,7 +31,7 @@ const zoneOf = (words: KinWatchWords) =>
 const ms = (iso: string) => Date.parse(iso);
 
 /** "14:10" today, "Mon 14:10" on any other day, in the reader's zone. */
-export function kinWatchTime(at: number, now: number, words: KinWatchWords = {}): string {
+function kinWatchTime(at: number, now: number, words: KinWatchWords = {}): string {
   const zone = zoneOf(words);
   const time = formatKinWhen(at, "time", { zone, locale: words.locale });
   if (kinWhenParts(at, zone).isoDay === kinWhenParts(now, zone).isoDay) return time;
@@ -133,13 +133,13 @@ export function kinWatchLine(
 export const KIN_WATCH_LOG_TITLE = "What Kin checked";
 export const KIN_WATCH_LOG_INTRO = "Kin looks at open loops every 45 minutes, day and night.";
 
-export const KIN_WATCH_WHY_LABELS: Readonly<Record<KinWatchWhy, string>> = {
+const KIN_WATCH_WHY_LABELS: Readonly<Record<KinWatchWhy, string>> = {
   asked: "You asked",
   again: "Worth another look",
   routine: "Routine round",
 };
 
-export const KIN_WATCH_DID_LABELS: Readonly<Record<KinWatchDid, string>> = {
+const KIN_WATCH_DID_LABELS: Readonly<Record<KinWatchDid, string>> = {
   problem: "Spotted a problem",
   closed: "Closed a loop",
   checked_work: "Checked work",

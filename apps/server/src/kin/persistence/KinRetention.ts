@@ -4,6 +4,8 @@ import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { pruneLooks } from "../watches/KinWatches.ts";
+
 /** How long history stays after its wake-up ended, and how much one pass deletes. */
 const KEEP = Duration.days(90);
 const BATCH = 5_000;
@@ -26,6 +28,8 @@ export const prune = Effect.fn("KinRetention.prune")(function* () {
       RETURNING 1`;
     if (gone.length < BATCH) break;
   }
+  // What Kin checked keeps 30 days (`watches/KinWatches.ts`).
+  yield* pruneLooks(yield* Clock.currentTimeMillis);
 });
 
 /** Pruned at start and daily. */

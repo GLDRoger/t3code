@@ -10,7 +10,7 @@ import { TimeZone } from "./kinTime.ts";
  * What Kin keeps watch on (`kin_watches`): one open loop, its next look and what the last one found.
  * A kind names how the loop is found and checked; a host may add kinds, so it is a plain string.
  */
-export const KIN_WATCH_KINDS = [
+const KIN_WATCH_KINDS = [
   "asked",
   "invoice_paid",
   "reply_owed",
@@ -142,7 +142,7 @@ export type KinWatchLogRow = typeof KinWatchLogRow.Type;
 
 /**
  * One day of the log in `timeZone` (the reader's; the company's when left out): `day` when given,
- * else the latest day with a look. Only looks on watches this reader may see.
+ * else today. Only looks on watches this reader may see.
  */
 export const KinWatchesLogInput = Schema.Struct({
   orgId: KinOrgId,
@@ -177,7 +177,7 @@ export type KinWatchActInput = typeof KinWatchActInput.Type;
 export const KinWatchActResult = Schema.Struct({ watch: KinWatch });
 export type KinWatchActResult = typeof KinWatchActResult.Type;
 
-export const KIN_WATCH_WS_METHODS = {
+const KIN_WATCH_WS_METHODS = {
   list: "kin.watches.list",
   log: "kin.watches.log",
   look: "kin.watches.look",

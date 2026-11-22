@@ -3,6 +3,8 @@ import { describe, expect, it } from "vite-plus/test";
 import { KIN_TEXT_LOCALE, type KinWatchLine, type KinWatchLogLook } from "@t3tools/contracts";
 
 import {
+  KIN_WATCH_LOG_INTRO,
+  KIN_WATCH_LOG_TITLE,
   kinWatchAbout,
   kinWatchLimitLine,
   kinWatchLine,
@@ -225,6 +227,10 @@ describe("the log", () => {
   });
 
   it("says the limit, and each empty state", () => {
+    expect([KIN_WATCH_LOG_TITLE, KIN_WATCH_LOG_INTRO]).toEqual([
+      "What Kin checked",
+      "Kin looks at open loops every 45 minutes, day and night.",
+    ]);
     expect(kinWatchLimitLine(Date.parse(at("18:20")), words)).toBe(
       "From 18:20 Kin only did the checks that need no model: today's daily limit was reached.",
     );

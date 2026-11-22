@@ -51,6 +51,7 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.recommendations === b.recommendations &&
   a.imports === b.imports &&
   a.stop === b.stop &&
+  a.watches === b.watches &&
   a.boot === b.boot;
 
 /**
@@ -151,6 +152,8 @@ export const subscribeRefreshes = (
               pulse: now.pulse,
               workLists: lists,
               stop: now.stop,
+              // Moves say "read again"; the reads show a teammate only their own watches.
+              watches: now.watches,
               // Only a company that waited on its country: no other gains a byte.
               ...(waited ? { company } : {}),
               boot: hub.boot,
