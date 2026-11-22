@@ -2523,6 +2523,61 @@ describe("the owner's taps", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("sends only list definition features the caller accepts", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "expenses" });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_registers SET definition_json = json_set(definition_json,
+        '$.fields', json(${JSON.stringify([
+          { key: "count", label: "Count", type: "number", sensitive: false },
+          { key: "checked", label: "Checked", type: "yesno", sensitive: false },
+          {
+            key: "shelf",
+            label: "Shelf",
+            type: "link",
+            link: "list",
+            linkList: "shelves",
+            sensitive: false,
+          },
+          { key: "client", label: "Client", type: "link", link: "clients", sensitive: false },
+          { key: "reviewOn", label: "Review on", type: "date", sensitive: false },
+        ])}), '$.remindOn', 'reviewOn', '$.check', json('{"field":"count","below":2}'))
+        WHERE org_id = ${orgId} AND register_id = 'expenses'`;
+      const read = (accept?: ReadonlyArray<string>) =>
+        OwnerMoney.lists(people, { orgId, accept }).pipe(
+          Effect.map(({ lists }) => lists.find(({ list }) => list === "expenses")),
+        );
+
+      const legacy = yield* read();
+      assert.deepStrictEqual(
+        legacy?.fields.map(({ type }) => type),
+        ["text", "text", "link", "date"],
+      );
+      assert.strictEqual(legacy?.fields.find(({ key }) => key === "client")?.link, "clients");
+      assert.notProperty(legacy, "remindOn");
+      assert.notProperty(legacy, "check");
+
+      const partial = yield* read(["number"]);
+      assert.deepStrictEqual(
+        partial?.fields.map(({ type }) => type),
+        ["number", "text", "link", "date"],
+      );
+
+      const current = yield* read(["number", "yesno", "list", "remindOn", "check"]);
+      assert.deepStrictEqual(
+        current?.fields.map(({ type }) => type),
+        ["number", "yesno", "link", "link", "date"],
+      );
+      assert.include(
+        current?.fields.find(({ key }) => key === "shelf"),
+        { link: "list", linkList: "shelves" },
+      );
+      assert.strictEqual(current?.remindOn, "reviewOn");
+      assert.deepStrictEqual(current?.check, { field: "count", below: 2 });
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("pay any list over time once its definition says so, and only then", () =>
     Effect.gen(function* () {
       yield* seed;

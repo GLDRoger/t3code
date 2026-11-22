@@ -3,7 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import {
   KinChatError,
   KinCurrency,
-  type KinListDefinition,
+  KinListDefinition,
   KinListField,
   KinListFieldKey,
   KinNumberingRule,
@@ -67,6 +67,8 @@ export const StoredDefinition = Schema.Struct({
   defaultState: KinRecordState,
   categories: Schema.Array(Label).check(Schema.isMaxLength(30)),
   fields: Schema.Array(KinListField).check(Schema.isMaxLength(20)),
+  remindOn: KinListDefinition.fields.remindOn,
+  check: KinListDefinition.fields.check,
   sensitive: Schema.Boolean,
   amount: Schema.Boolean,
   currency: KinCurrency,
@@ -600,30 +602,42 @@ const shownLabels = (labels: Readonly<Record<string, string>> | undefined) => {
 export const toDefinition = (
   def: ListDef,
   open: number,
-  numbering = numberingOf(def),
-): KinListDefinition => ({
-  list: def.id,
-  name: def.name,
-  prefix: def.prefix,
-  builtIn: def.builtIn !== null,
-  states: def.states,
-  stateLabels: def.stateLabels,
-  defaultState: def.defaultState,
-  categories: def.categories,
-  fields: def.fields,
-  sensitive: def.sensitive,
-  amount: def.amount,
-  currency: def.currency,
-  ...shownLabels(def.categoryLabels),
-  ...(def.payments === true ? { payments: true as const } : {}),
-  ...(def.dueLabel === undefined ? {} : { dueLabel: def.dueLabel }),
-  ...(def.dateLabel === undefined ? {} : { dateLabel: def.dateLabel }),
-  ...(numbering === undefined ? {} : { numbering }),
-  archivedAt:
-    def.archivedAt === null ? null : DateTime.formatIso(DateTime.makeUnsafe(def.archivedAt)),
-  rev: def.rev,
-  open,
-});
+  accept?: ReadonlyArray<string>,
+): KinListDefinition => {
+  const numbering = numberingOf(def);
+  return {
+    list: def.id,
+    name: def.name,
+    prefix: def.prefix,
+    builtIn: def.builtIn !== null,
+    states: def.states,
+    stateLabels: def.stateLabels,
+    defaultState: def.defaultState,
+    categories: def.categories,
+    fields: def.fields.flatMap((field): ReadonlyArray<FieldDef> => {
+      if (field.link === "list" && !accept?.includes("list")) return [];
+      if ((field.type === "number" || field.type === "yesno") && !accept?.includes(field.type))
+        return [{ ...field, type: "text" }];
+      return [field];
+    }),
+    ...(def.remindOn !== undefined && accept?.includes("remindOn")
+      ? { remindOn: def.remindOn }
+      : {}),
+    ...(def.check !== undefined && accept?.includes("check") ? { check: def.check } : {}),
+    sensitive: def.sensitive,
+    amount: def.amount,
+    currency: def.currency,
+    ...shownLabels(def.categoryLabels),
+    ...(def.payments === true ? { payments: true as const } : {}),
+    ...(def.dueLabel === undefined ? {} : { dueLabel: def.dueLabel }),
+    ...(def.dateLabel === undefined ? {} : { dateLabel: def.dateLabel }),
+    ...(numbering === undefined ? {} : { numbering }),
+    archivedAt:
+      def.archivedAt === null ? null : DateTime.formatIso(DateTime.makeUnsafe(def.archivedAt)),
+    rev: def.rev,
+    open,
+  };
+};
 
 // Defining a list in conversation: proposed in one turn, created from a later one the owner's
 // answer in that chat woke. Proposals are by the lead and chat; nothing else creates one.
