@@ -363,6 +363,17 @@ describe("kin_picture", () => {
         assert.notStrictEqual(placed[1]!.attachment.id, first.files[0]);
         assert.deepStrictEqual(placed.at(-1)!.doc, { key: "D-1", version: 2 });
 
+        // Deleted from Docs, it isn't changed out of sight: the change is a new doc.
+        yield* OwnerDocs.remove([person(ownerId)], { orgId, key: "D-1", deleted: true });
+        yield* turn(3);
+        const afterDelete = yield* makePicture(scope, post("60px", { doc: "D-1" }));
+        assert.deepInclude(afterDelete, { doc: "D-2", version: 1 });
+        assert.strictEqual(
+          (yield* versions("D-2"))[0]?.summary,
+          "Picture, 1080×1080, changed from D-1",
+        );
+        assert.lengthOf(yield* versions("D-1"), 2);
+
         // A doc that isn't a picture is not one to draw again.
         yield* Docs.create(
           orgId,
@@ -376,10 +387,10 @@ describe("kin_picture", () => {
             originKey: "test:hours",
           },
         );
-        const notPicture = yield* Effect.flip(makePicture(scope, post("72px", { doc: "D-2" })));
+        const notPicture = yield* Effect.flip(makePicture(scope, post("72px", { doc: "D-3" })));
         assert.strictEqual(
           notPicture.message,
-          "D-2 isn't a picture, so nothing was made. Leave doc out to make a new picture.",
+          "D-3 isn't a picture, so nothing was made. Leave doc out to make a new picture.",
         );
         // A file the page names must be an image sent in this chat.
         const stranger = yield* Effect.flip(

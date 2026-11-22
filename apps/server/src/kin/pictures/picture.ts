@@ -261,8 +261,10 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
       return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
     const chatId = lane.value.chatId;
     const found = input.doc === undefined ? undefined : yield* earlierPicture(lead, input.doc);
-    // A doc's versions are all one chat's: a change asked for elsewhere starts this chat's own.
-    const earlier = found?.chatId === chatId ? found.row : undefined;
+    // A doc's versions are all one chat's: a change asked for elsewhere starts this chat's own,
+    // and so does a change to a deleted picture, which would otherwise land out of sight.
+    const earlier =
+      found?.chatId === chatId && found.row.state !== "dropped" ? found.row : undefined;
     const changedFrom = found !== undefined && earlier === undefined ? found.row.key : undefined;
     const team = yield* viewOf(lead);
     const owned = yield* writerFor(lead);
