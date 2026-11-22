@@ -16,7 +16,7 @@ import { isOrgPaused } from "../lead/orgState.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { shown } from "../work/leadDocs.ts";
 import { askOwner } from "../work/leadMoney.ts";
-import { readProfile, recordingCurrency } from "../work/companyProfile.ts";
+import { notRegisteredFact, readProfile, recordingCurrency } from "../work/companyProfile.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { isMoney, parseFields } from "../work/lists.ts";
 import { formatMoney, parseAmount } from "../work/money.ts";
@@ -99,6 +99,8 @@ const OnRecord = Schema.Struct({
   tax: Schema.optional(Schema.String),
   /** What the company details lack that its document needs. */
   missing: Schema.optional(Schema.Array(Schema.String)),
+  /** The company said it is not registered for its tax. */
+  taxNote: Schema.optional(Schema.String),
 });
 export const DocumentResult = Schema.Struct({
   recipe: Schema.NullOr(Schema.String),
@@ -136,9 +138,13 @@ export const onRecord = Effect.fn("KinDocuments.onRecord")(function* (
   const tax = parseFields(row.fieldsJson).tax;
   const profile = yield* readProfile(orgId);
   // The profile keeps a tax number only where its Company details offer one (`gstin`, India's).
-  const taxNumber = profile.country === "IN" ? regionOf(profile.country)?.taxIdLabel : undefined;
+  const region = regionOf(profile.country);
+  const taxNumber = region?.keepsTaxNumber === true ? region.taxIdLabel : undefined;
+  const taxNote = notRegisteredFact(profile);
   const missing = [
-    ...(taxNumber !== undefined && profile.gstin === null ? [`tax number (${taxNumber})`] : []),
+    ...(taxNumber !== undefined && profile.gstin === null && taxNote === undefined
+      ? [`tax number (${taxNumber})`]
+      : []),
     ...(row.registerId === "invoices" &&
     profile.bank.accountNumber === null &&
     profile.bank.upi === null
@@ -157,6 +163,7 @@ export const onRecord = Effect.fn("KinDocuments.onRecord")(function* (
       : { total: formatMoney({ minor: row.amountMinor, currency: row.currency }) }),
     ...(tax !== undefined && tax !== null && isMoney(tax) ? { tax: formatMoney(tax) } : {}),
     ...(missing.length === 0 ? {} : { missing }),
+    ...(taxNote === undefined ? {} : { taxNote }),
   } satisfies typeof OnRecord.Type;
 });
 

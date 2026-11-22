@@ -536,6 +536,11 @@ const KinCompanyProfileFields = {
   financialYearStartMonth: Schema.optional(KinMonthNumber),
   /** Null charges no tax; India's GST is worked out by the invoice recipe instead. */
   tax: Schema.optional(Schema.NullOr(KinCompanyTax)),
+  /**
+   * False when an owner said the company is not registered for its country's tax: its documents
+   * charge none and print no client's tax number. Absent or null when not said.
+   */
+  taxRegistered: Schema.optional(Schema.NullOr(Schema.Literal(false))),
 };
 export const KinCompanyProfileData = Schema.Struct(KinCompanyProfileFields);
 export type KinCompanyProfileData = typeof KinCompanyProfileData.Type;
@@ -605,6 +610,8 @@ export const KinCompanyProfileSetInput = Schema.Struct({
   country: Schema.optional(Schema.NullOr(KinCountryCode)),
   financialYearStartMonth: Schema.optional(KinMonthNumber),
   tax: Schema.optional(Schema.NullOr(KinCompanyTax)),
+  /** False says the company is not registered for its tax, and clears its tax number; null unsays it. */
+  taxRegistered: Schema.optional(Schema.NullOr(Schema.Literal(false))),
 });
 export type KinCompanyProfileSetInput = typeof KinCompanyProfileSetInput.Type;
 

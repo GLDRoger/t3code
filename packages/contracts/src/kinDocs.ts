@@ -165,6 +165,10 @@ export const KinDocRow = Schema.Struct({
   /** The owner shared it with the team: members who can see Docs read it. */
   shared: Schema.optional(Schema.Literal(true)),
   archived: Schema.Boolean,
+  /** For a deleted (archived) doc: who deleted it and when. Absent from older hosts. */
+  deleted: Schema.optional(Schema.Struct({ at: IsoDateTime, by: KinWorkActor })),
+  /** This viewer may delete it, or bring it back (`kin.docs.delete`); the host decides again. */
+  deletable: Schema.optional(Schema.Literal(true)),
   /** The company's What we sell, pinned first in Docs. */
   whatWeSell: Schema.optional(Schema.Literal(true)),
   /** An agent's character, which its page changes; the phone's Docs leaves it out. */
@@ -337,6 +341,17 @@ export const KinDocEditSectionInput = Schema.Struct({
   clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
 });
 export type KinDocEditSectionInput = typeof KinDocEditSectionInput.Type;
+
+/**
+ * A person deletes a doc, or brings a deleted one back with `deleted: false`, exactly as it was.
+ * Whoever may change it by hand may; never an agent's character or What we sell. Again is harmless.
+ */
+export const KinDocDeleteInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  deleted: Schema.Boolean,
+});
+export type KinDocDeleteInput = typeof KinDocDeleteInput.Type;
 
 /** The owner level starts What we sell: Kin writes its outline once, or brings an archived one back. */
 export const KinDocStartWhatWeSellInput = Schema.Struct({ orgId: KinOrgId });
@@ -659,6 +674,7 @@ const KIN_DOCS_WS_METHODS = {
   startWhatWeSell: "kin.docs.startWhatWeSell",
   editSection: "kin.docs.editSection",
   sendUp: "kin.docs.sendUp",
+  delete: "kin.docs.delete",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -739,6 +755,11 @@ export const KinDocsRpcs = [
     success: KinDocSendUpResult,
     error,
   }),
+  Rpc.make(KIN_DOCS_WS_METHODS.delete, {
+    payload: KinDocDeleteInput,
+    success: KinDocDetail,
+    error,
+  }),
 ] as const;
 
 export const KIN_DOCS_RPC_SCOPES = {
@@ -768,4 +789,6 @@ export const KIN_DOCS_RPC_SCOPES = {
   [KIN_DOCS_WS_METHODS.editSection]: AuthKinChatScope,
   // Asks the agent's owner on a card, as a chat message to the agent would; it starts no turn.
   [KIN_DOCS_WS_METHODS.sendUp]: AuthKinChatScope,
+  // Moves a doc in or out of Deleted, as filing it does; it starts no agent work.
+  [KIN_DOCS_WS_METHODS.delete]: AuthKinChatScope,
 } as const;

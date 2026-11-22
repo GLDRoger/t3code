@@ -4,6 +4,7 @@ import {
   KIN_COMPANY_SETTINGS,
   kinCompanyCountrySuggestion,
   kinCompanyEditSections,
+  kinCompanyDraftEdit,
   kinCompanyDraftOf,
   kinCountryName,
   kinDeviceRegion,
@@ -19,10 +20,11 @@ import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { KinCompanyProfile } from "@t3tools/contracts";
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import { useSearchableSetting } from "../components/settings/settingsSearch";
 import { Button } from "../components/ui/button";
+import { Checkbox } from "../components/ui/checkbox";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -225,6 +227,16 @@ function ProfileDialog(
             {section.title}
           </legend>
           {section.fields.map((field) => {
+            if (field.choice)
+              return (
+                <KinCompanyChoice
+                  key={field.id}
+                  label={field.label}
+                  checked={draft[field.id] !== ""}
+                  disabled={saving}
+                  onChange={(checked) => setDraft(kinCompanyDraftEdit(draft, field.id, checked))}
+                />
+              );
             const fieldProblem = problems[field.id];
             const help =
               fieldProblem === undefined ? (
@@ -245,7 +257,7 @@ function ProfileDialog(
                     id: ids.control,
                     value: draft[field.id],
                     placeholder: field.placeholder,
-                    disabled: saving,
+                    disabled: saving || (field.id === "gstin" && draft.notRegistered !== ""),
                     "aria-invalid": fieldProblem !== undefined,
                   };
                   return (
@@ -255,7 +267,7 @@ function ProfileDialog(
                           {...shared}
                           rows={3}
                           onChange={(event) =>
-                            setDraft({ ...draft, [field.id]: event.target.value })
+                            setDraft(kinCompanyDraftEdit(draft, field.id, event.target.value))
                           }
                         />
                       ) : (
@@ -266,7 +278,7 @@ function ProfileDialog(
                           spellCheck={false}
                           autoCapitalize={field.code ? "characters" : undefined}
                           onChange={(event) =>
-                            setDraft({ ...draft, [field.id]: event.target.value })
+                            setDraft(kinCompanyDraftEdit(draft, field.id, event.target.value))
                           }
                         />
                       )}
@@ -292,6 +304,28 @@ function ProfileDialog(
         </fieldset>
       ))}
     </KinSettingsFormDialog>
+  );
+}
+
+function KinCompanyChoice(props: {
+  readonly label: string;
+  readonly checked: boolean;
+  readonly disabled: boolean;
+  readonly onChange: (checked: boolean) => void;
+}) {
+  const id = useId();
+  return (
+    <div className="flex items-center gap-2">
+      <Checkbox
+        id={id}
+        checked={props.checked}
+        disabled={props.disabled}
+        onCheckedChange={(checked) => props.onChange(checked === true)}
+      />
+      <label htmlFor={id} className="cursor-pointer text-sm text-foreground">
+        {props.label}
+      </label>
+    </div>
   );
 }
 
