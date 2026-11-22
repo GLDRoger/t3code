@@ -48,7 +48,12 @@ import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
 import { approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
 import { codingAgentSource, outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
-import { commentsPage, insertComment, requestHashOf as commentHashOf } from "./recordComments.ts";
+import {
+  commentIdFor,
+  commentsPage,
+  insertComment,
+  requestHashOf as commentHashOf,
+} from "./recordComments.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
 import {
@@ -2224,15 +2229,24 @@ const make = Effect.gen(function* () {
                         AND wakeup_id = ${writer.wakeupId}
                       ORDER BY event_id LIMIT 2`;
               const source = events.length === 1 ? `${events[0]!.eventId}:` : "";
+              const noter = {
+                _tag: "agent" as const,
+                agentId: writer.actor.agentId,
+                askedBy: writer.askedBy ?? null,
+              };
+              const requestId = `notes:${source}${requestHash}`;
+              // A stale revision writes no new note; a retry of one already written still lands.
+              if (expectedRev !== undefined && expectedRev !== row.rev) {
+                const [noted] = yield* sql`SELECT 1 FROM kin_record_comments
+                  WHERE org_id = ${orgId}
+                    AND comment_id = ${commentIdFor(orgId, row.recordId, noter, requestId)}`;
+                if (noted === undefined) return yield* conflict(row.key, row.rev);
+              }
               yield* insertComment({
                 orgId,
                 key: row.key,
-                author: {
-                  _tag: "agent",
-                  agentId: writer.actor.agentId,
-                  askedBy: writer.askedBy ?? null,
-                },
-                requestId: `notes:${source}${requestHash}`,
+                author: noter,
+                requestId,
                 requestHash,
                 body: patch.notes,
                 files: [],

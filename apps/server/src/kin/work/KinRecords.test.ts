@@ -631,12 +631,17 @@ const keptForPerson = [
         due: "2026-11-20",
         notes: "Invented: drafted, waiting on prices",
       };
-      const written = yield* scene.write(given!.eventId, {
-        ...status,
-        expectedRev: yield* scene.rev,
-      });
+      const seen = yield* scene.rev;
+      const written = yield* scene.write(given!.eventId, { ...status, expectedRev: seen });
       assert.include(written, { notesKept: LeadWork.NOTES_KEPT });
-      yield* scene.write(given!.eventId, status);
+      yield* scene.write(given!.eventId, { ...status, expectedRev: seen });
+      // New words at a revision since changed are refused, and noted nowhere.
+      assert.include(
+        yield* Effect.flip(
+          scene.write(given!.eventId, { notes: "Invented: stale", expectedRev: seen }),
+        ),
+        { reason: "conflict" },
+      );
       assert.include(yield* scene.records.get(orgId, "W-1"), {
         state: "doing",
         title: "Invented pricing tiers",
