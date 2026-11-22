@@ -56,7 +56,7 @@ const alert = (
   text,
 });
 const debit = (reference: string, balance = "4,10,000.00") =>
-  `Rs.1,250.00 has been debited from account **4821 to VPA cafe@okaxis LAKEVIEW CAFE on 18-11-26. Your UPI transaction reference number is ${reference}. Avl bal: INR ${balance}`;
+  `Rs.1,250.00 has been debited from account **4821 to VPA lakeview.cafe@invented LAKEVIEW CAFE on 18-11-26. Your UPI transaction reference number is ${reference}. Avl bal: INR ${balance}`;
 
 const layer = Layer.mergeAll(
   KinRecords.layer,
@@ -195,7 +195,7 @@ it.layer(layer)((it) => {
         messages: [
           alert(
             "<m2@hdfc>",
-            "Rs.999.00 has been debited from account **4821 to VPA cafe@okaxis LAKEVIEW CAFE on 18-11-26. Your UPI transaction reference number is 632211110077.",
+            "Rs.999.00 has been debited from account **4821 to VPA lakeview.cafe@invented LAKEVIEW CAFE on 18-11-26. Your UPI transaction reference number is 632211110077.",
           ),
         ],
         now: NOW,
@@ -337,7 +337,7 @@ it.layer(layer)((it) => {
       ): StatementRow => ({
         index,
         date,
-        description: "UPI-SOMEONE-OKAXIS",
+        description: "UPI-SOMEONE-INVENTED",
         reference,
         amountMinor,
         direction,

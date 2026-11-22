@@ -17,7 +17,7 @@ const mail = (text: string, more: Partial<AlertMail> = {}): AlertMail => ({
   ...more,
 });
 const UPI_DEBIT =
-  "Dear Customer,\n\nRs.1,250.00 has been debited from account **4821 to VPA lakeview.cafe@okaxis LAKEVIEW CAFE on 18-11-26. Your UPI transaction reference number is 632211110001.\n\nIf you did not authorize this transaction, please report it immediately by calling 18000000000 or SMS BLOCK UPI to 7000000000.\n\nAvl bal: INR 4,10,250.50\n\nWarm Regards,\nHDFC Bank";
+  "Dear Customer,\n\nRs.1,250.00 has been debited from account **4821 to VPA lakeview.cafe@invented LAKEVIEW CAFE on 18-11-26. Your UPI transaction reference number is 632211110001.\n\nIf you did not authorize this transaction, please report it immediately by calling 18000000000 or SMS BLOCK UPI to 7000000000.\n\nAvl bal: INR 4,10,250.50\n\nWarm Regards,\nHDFC Bank";
 const NEFT_CREDIT =
   "Dear Customer, INR 95,000.00 was credited to your A/c No. XX4821 on 17-11-2026 for NEFT Cr-INVT0000001-AMBERMILL DESIGN LLP-Invoice 26-27/004. UTR No: INVTN52026111700042. Available balance: INR 5,05,250.50. Never share your OTP, PIN or CVV with anyone.";
 
@@ -33,7 +33,7 @@ describe("an HDFC alert mail", () => {
         account: "4821",
         date: "2026-11-18",
         reference: "632211110001",
-        counterparty: "LAKEVIEW CAFE lakeview.cafe@okaxis",
+        counterparty: "LAKEVIEW CAFE lakeview.cafe@invented",
         balanceMinor: 41_025_050,
         sentAt: Date.parse("2026-11-18T08:35:09Z"),
       },
@@ -53,7 +53,7 @@ describe("an HDFC alert mail", () => {
     });
     const noBalance = readHdfcAlert(
       mail(
-        "Dear Customer, Rs.5000.00 is successfully credited to your account **4821 by VPA rhea.s@okhdfcbank RHEA SEN on 18-11-26. Your UPI transaction reference number is 632211110002. Thank you for banking with us.",
+        "Dear Customer, Rs.5000.00 is successfully credited to your account **4821 by VPA rhea.invented@invented RHEA INVENTED on 18-11-26. Your UPI transaction reference number is 632211110002. Thank you for banking with us.",
       ),
     );
     assert.strictEqual(noBalance._tag, "alert");
@@ -73,7 +73,7 @@ describe("an HDFC alert mail", () => {
       ],
       [
         "two movements",
-        mail(`${UPI_DEBIT} Rs.10.00 has been debited from account **4821 to VPA x@y on 18-11-26.`),
+        mail(`${UPI_DEBIT} Rs.10.00 has been debited from account **4821 to VPA someone@invented on 18-11-26.`),
         "unparsed",
       ],
       ["no amount", mail(UPI_DEBIT.replace("Rs.1,250.00 ", "")), "unparsed"],
