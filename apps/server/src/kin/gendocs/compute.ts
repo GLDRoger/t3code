@@ -261,8 +261,13 @@ const gst = (args: {
   readonly clientGstin: unknown;
   readonly clientPlace: unknown;
   readonly exportUnderLut: boolean;
+  /** The line its documents print instead of tax: the company said it isn't registered for GST. */
+  readonly notRegistered: string | undefined;
 }) => {
-  const registered = typeof args.supplierGstin === "string" && args.supplierGstin.length > 0;
+  const registered =
+    args.notRegistered === undefined &&
+    typeof args.supplierGstin === "string" &&
+    args.supplierGstin.length > 0;
   const supplier = stateOf(args.supplierGstin, args.supplierPlace);
   const client = stateOf(args.clientGstin, args.clientPlace);
   const exported = client === undefined;
@@ -294,6 +299,7 @@ const gst = (args: {
     if (one !== null && one.currency !== currency) fail(`every amount must be in ${currency}`);
   let taxable: bigint;
   let amounts: ReadonlyArray<bigint>;
+  if (args.notRegistered !== undefined) refuseRecordedTax(args.recordedTax, "GST");
   if (args.taxable !== null) {
     taxable = BigInt(args.taxable.minor);
     amounts = components.map((one) => divide(taxable * one.num, one.den * 100n));
@@ -328,7 +334,8 @@ const gst = (args: {
     exported,
     exportUnderLut: exported && args.exportUnderLut,
     supplierState: supplier === null || supplier === undefined ? null : stateName(supplier),
-    placeOfSupply: exported || client === null ? null : stateName(client),
+    placeOfSupply:
+      exported || client === null || args.notRegistered !== undefined ? null : stateName(client),
     country: exported ? args.clientPlace : null,
     taxable: money(taxable, currency),
     taxes: components.map((one, index) => ({
@@ -338,7 +345,16 @@ const gst = (args: {
     })),
     tax: money(tax, currency),
     total: money(taxable + tax, currency),
+    ...(args.notRegistered === undefined ? {} : { notCharged: args.notRegistered }),
   };
+};
+
+/** A company not registered for its tax charges none: tax recorded on the entry can't be printed. */
+const refuseRecordedTax = (recorded: Money | null, name: string) => {
+  if (recorded !== null && recorded.minor !== 0)
+    fail(
+      `the entry records tax, but the company isn't registered for ${name}, so its invoices charge none`,
+    );
 };
 
 /**
@@ -347,12 +363,14 @@ const gst = (args: {
  * is right in any country.
  */
 export type TaxRegime =
-  | { readonly _tag: "gst" }
+  | { readonly _tag: "gst"; readonly notRegistered?: string }
   | {
       readonly _tag: "flat";
       readonly name: string;
       readonly rate: string | null;
       readonly pricesInclude: boolean;
+      /** The line its documents print instead: the company said it isn't registered for it. */
+      readonly notRegistered?: string;
     };
 export const GST_REGIME: TaxRegime = { _tag: "gst" };
 let regime: TaxRegime = GST_REGIME;
@@ -373,8 +391,9 @@ const flatTax = (
     args.taxable?.currency ?? args.total?.currency ?? fail("there is no amount and no lines");
   for (const one of [args.taxable, args.total, args.recordedTax])
     if (one !== null && one.currency !== currency) fail(`every amount must be in ${currency}`);
-  const rate = tax.rate === null ? { num: 0n, den: 1n } : fraction(tax.rate);
-  const charged = tax.rate !== null;
+  if (tax.notRegistered !== undefined) refuseRecordedTax(args.recordedTax, tax.name);
+  const charged = tax.rate !== null && tax.notRegistered === undefined;
+  const rate = !charged || tax.rate === null ? { num: 0n, den: 1n } : fraction(tax.rate);
   const outOf = (gross: bigint) =>
     args.recordedTax !== null && charged
       ? gross - BigInt(args.recordedTax.minor)
@@ -408,6 +427,7 @@ const flatTax = (
       : [],
     tax: money(amount, currency),
     total: money(taxable + amount, currency),
+    ...(tax.notRegistered === undefined ? {} : { notCharged: tax.notRegistered }),
   };
 };
 
@@ -675,6 +695,7 @@ const evaluate = (scope: Scope, name: string, spec: Spec): unknown => {
         clientGstin: get("clientGstin"),
         clientPlace: get("clientPlace"),
         exportUnderLut: get("exportUnderLut") !== false,
+        notRegistered: regime.notRegistered,
       });
     }
     case "markdown": {
