@@ -838,7 +838,7 @@ export const keyLeftOut = Effect.fn("KinMoneyViews.keyLeftOut")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records r
-    WHERE r.org_id = ${orgId} AND r.state <> 'dropped' AND ${keptEntry(sql)}
+    WHERE r.org_id = ${orgId} AND ${countedEntry(sql)}
       AND (r.register_id IN ${sql.in(MONEY_LISTS)}
         OR (r.amount_minor IS NOT NULL AND r.register_id NOT IN ('work', 'deals')))
       AND ${seenBy(sql, viewer)} AND ${keySensitive(sql)}`;
