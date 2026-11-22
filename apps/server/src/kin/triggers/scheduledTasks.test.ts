@@ -415,6 +415,7 @@ const save = Effect.fn("test.nativeSave")(function* (
     readonly chatId?: string;
     readonly prompt?: string;
     readonly existing?: boolean;
+    readonly forChat?: boolean;
   } = {},
 ) {
   yield* (yield* KinSchedules.KinSchedules).save({
@@ -423,6 +424,7 @@ const save = Effect.fn("test.nativeSave")(function* (
     scheduleId,
     existing: overrides.existing ?? false,
     chatId: KinChatId.make(overrides.chatId ?? "chat-a"),
+    ...(overrides.forChat === true ? { audience: "shared" as const } : {}),
     sourceEvent: "set-event",
     saidBy: "owner-a",
     title: "Stuck PRs",
@@ -592,6 +594,7 @@ it.effect(
 
 const nativeSetupInGroup = Effect.fn("test.nativeSetupInGroup")(function* (
   audience: "owner_only" | "shared" = "owner_only",
+  forChat = false,
 ) {
   yield* seed();
   const sql = yield* SqlClient.SqlClient;
@@ -621,8 +624,26 @@ const nativeSetupInGroup = Effect.fn("test.nativeSetupInGroup")(function* (
       queued_at, state, wakeup_id)
     VALUES ('set-event', ${orgId}, 'lead-a', 'chat.message', 'P0', ${JSON.stringify(asked)}, 0, 0,
       'done', 'set-wake')`;
-  yield* save({ chatId: "group-a" });
+  yield* save({ chatId: "group-a", forChat });
   yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
+});
+
+it.effect("a routine set for a room of owner-level people runs in that room", () => {
+  const { layer } = harness();
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* TestClock.setTime(start);
+    yield* nativeSetupInGroup("owner_only", true);
+    // A co-owner joined, so the room was shared; the owner and she set it for the room.
+    yield* sql`UPDATE kin_chats SET shared_at = 1 WHERE chat_id = 'group-a'`;
+    yield* runNow();
+    const [run] = yield* sql<{ chatId: string | null; lane: string }>`SELECT
+        json_extract(e.json, '$.chatId') AS "chatId", d.chat_id AS lane
+      FROM kin_events e JOIN kin_lead_deliveries d ON d.org_id = e.org_id AND d.event_id = e.event_id
+      WHERE e.org_id = ${orgId} AND json_extract(e.json, '$.subject.itemId') = ${scheduleId}
+      ORDER BY e.received_at`;
+    assert.deepStrictEqual(run, { chatId: "group-a", lane: "group-a" });
+  }).pipe(Effect.provide(layer));
 });
 
 it.effect("a co-owner's routine for them alone runs in their own chat with the agent", () => {
@@ -657,7 +678,7 @@ it.effect("a group's own routine runs in the group, and pauses once its agent le
     const sql = yield* SqlClient.SqlClient;
     yield* TestClock.setTime(start);
     // Set in the group by a turn its people read: it is the group's, shown there with who asked.
-    yield* nativeSetupInGroup("shared");
+    yield* nativeSetupInGroup("shared", true);
     const shown = yield* nativeCard();
     assert.equal(shown.widget.chatId, "group-a");
     assert.equal(shown.state.askedBy?.personId, "owner-a");

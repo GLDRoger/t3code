@@ -32,7 +32,8 @@ export const recordingSchedules = (saves: KinSchedules.SaveInput[], cancels: str
               source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
             VALUES (${KinSchedules.scheduleTaskId(input.orgId, input.scheduleId)}, ${input.orgId},
               ${input.scheduleId}, ${input.agentId}, ${input.chatId}, ${input.sourceEvent},
-              ${input.saidBy}, 'owner_only', 'hash', 'inbox', ${input.now}, ${input.now})`.pipe(
+              ${input.saidBy}, ${input.audience ?? "owner_only"}, 'hash', 'inbox', ${input.now},
+              ${input.now})`.pipe(
             Effect.tap(() => Effect.sync(() => saves.push(input))),
             Effect.asVoid,
             Effect.orDie,

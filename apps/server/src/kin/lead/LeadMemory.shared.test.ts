@@ -734,6 +734,7 @@ it.effect(
         }).pipe(Effect.flatMap((input) => service.defer(scopeOf(leads.a), input)));
       assert.isString((yield* defer()).itemId);
       assert.include(staged[0], "chat: group-chat");
+      assert.include(staged[0], "for_chat: true");
       assert.isString((yield* defer({ what: "Invented: mine alone", alone: true })).itemId);
       assert.include(staged[1], "chat: member-direct");
       // Only a reminder: a start from a chat others read stays refused.
@@ -768,6 +769,7 @@ it.effect(
           on_due: "remind",
           chat: KinChatId.make("group-chat"),
           source_event: KinEventId.make("set-in-group"),
+          for_chat: true,
           said_by: saidBy,
           trust: "member",
           source: "kin:chat:group-chat:message:set-message",

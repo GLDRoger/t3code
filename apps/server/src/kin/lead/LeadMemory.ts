@@ -125,6 +125,7 @@ const {
   sensitive: _sensitive,
   shared_by: _sharedBy,
   shared_from: _sharedFrom,
+  for_chat: _forChat,
   ...writableFields
 } = MemoryItemFrontMatter.fields;
 export const WriteInput = Schema.Struct({
@@ -600,7 +601,7 @@ const make = Effect.gen(function* () {
   ) {
     const { ctx, audience } = yield* turn(scope);
     const place = yield* placeFor(ctx, input);
-    if (audience === "owner_only") return { ctx, chatId: place.chatId };
+    if (audience === "owner_only") return { ctx, chatId: place.chatId, forChat: place.shared };
     // `replaces` is checked in `cancelOwn`: only a reminder this asker may change, in this chat.
     if (
       input.onDue !== "remind" ||
@@ -611,7 +612,7 @@ const make = Effect.gen(function* () {
       )
     )
       return yield* invalid(SHARED_REFUSAL);
-    return { ctx, chatId: place.chatId };
+    return { ctx, chatId: place.chatId, forChat: place.shared };
   });
   /** A routine: in a turn someone else reads, only for the chat it was asked in or the asker alone. */
   const routineTurn = Effect.fn("LeadMemory.routineTurn")(function* (
@@ -622,7 +623,7 @@ const make = Effect.gen(function* () {
     const place = yield* placeFor(ctx, input);
     if (audience !== "owner_only" && !place.alone && !place.shared)
       return yield* invalid(SHARED_REFUSAL);
-    return { ctx, chatId: place.chatId };
+    return { ctx, chatId: place.chatId, forChat: place.shared };
   });
   /**
    * A shared chat's own reminder or routine, set by this lead, changed from a turn asked in that
@@ -634,6 +635,7 @@ const make = Effect.gen(function* () {
       readonly chat?: string | undefined;
       readonly source_event?: string | undefined;
       readonly said_by: string;
+      readonly for_chat?: true | undefined;
     },
     sourceEventId: string,
   ) {
@@ -641,6 +643,7 @@ const make = Effect.gen(function* () {
       chat: item.chat === undefined ? undefined : KinChatId.make(item.chat),
       source_event:
         item.source_event === undefined ? undefined : KinEventId.make(item.source_event),
+      ...(item.for_chat === true ? { for_chat: true as const } : {}),
     });
     if (
       shared === undefined ||
@@ -940,7 +943,12 @@ const make = Effect.gen(function* () {
       (yield* effectiveAudience(ctx).pipe(provideSql)) !== "owner_only" &&
       !(yield* chatsOwn(
         ctx,
-        { chat: schedule.chatId, source_event: schedule.sourceEvent, said_by: schedule.saidBy },
+        {
+          chat: schedule.chatId,
+          source_event: schedule.sourceEvent,
+          said_by: schedule.saidBy,
+          ...(schedule.audience === "shared" ? { for_chat: true as const } : {}),
+        },
         sourceEventId,
       ))
     )
@@ -1398,7 +1406,7 @@ const make = Effect.gen(function* () {
         ctx.agentId,
         Effect.gen(function* () {
           // Again under the lock: a join may have aborted the turn since.
-          const { ctx, chatId } = yield* reminderTurn(scope, input);
+          const { ctx, chatId, forChat } = yield* reminderTurn(scope, input);
           yield* checkSource(ctx, input.sourceEventId);
           const source = (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
             input.sourceEventId,
@@ -1447,6 +1455,7 @@ const make = Effect.gen(function* () {
             what: input.what,
             ...(asked === undefined ? {} : { owner: asked }),
             chat: chatId,
+            ...(forChat ? { for_chat: true as const } : {}),
             source_event: input.sourceEventId,
             // Out of the team's memory, whoever set it.
             sensitive: true,
@@ -1525,7 +1534,7 @@ const make = Effect.gen(function* () {
         ctx.agentId,
         Effect.gen(function* () {
           // Again under the lock: a join may have aborted the turn since.
-          const { ctx, chatId } = yield* routineTurn(scope, input);
+          const { ctx, chatId, forChat } = yield* routineTurn(scope, input);
           yield* checkSource(ctx, input.sourceEventId);
           const source = (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
             input.sourceEventId,
@@ -1572,6 +1581,7 @@ const make = Effect.gen(function* () {
                   scheduleId,
                   existing,
                   chatId,
+                  ...(forChat ? { audience: "shared" as const } : {}),
                   sourceEvent: input.sourceEventId,
                   saidBy: owner.person,
                   title: input.title ?? input.what.slice(0, 120),

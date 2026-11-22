@@ -185,48 +185,37 @@ export const askersChat = Effect.fn("Deferrals.askersChat")(function* (
 });
 
 /**
- * A shared chat's own reminder or routine: set in a chat that is not a direct one, and not the
- * owner's private work in a chat shared since (`firingOrigin`). It fires back into that chat as
- * the agent that set it. `open` is false once the chat is archived or gone, or that agent left it.
+ * A shared chat's own reminder or routine: set for the chat it was asked in (`for_chat`, a
+ * schedule's `audience` 'shared'), never someone's own. It fires back into that chat as the agent
+ * that set it. `open` is false once the chat is archived or gone, or that agent left it.
  */
 export const sharedChatOf = Effect.fn("Deferrals.sharedChatOf")(function* (
   sql: SqlClient.SqlClient,
   orgId: KinOrgId,
-  item: DeferralSource | undefined,
+  item: (DeferralSource & { readonly for_chat?: true | undefined }) | undefined,
 ) {
-  if (item?.chat === undefined || item.source_event === undefined) return undefined;
+  if (item?.for_chat !== true || item.chat === undefined || item.source_event === undefined)
+    return undefined;
   const [row] = yield* sql<{
     agentId: string;
-    audience: string | null;
     kind: string | null;
     title: string | null;
-    shared: number | null;
     open: number;
     leadName: string | null;
     ownerChatId: string | null;
-  }>`SELECT e.agent_id AS "agentId", w.audience, c.kind, c.title,
-      c.shared_at IS NOT NULL AS shared,
+  }>`SELECT e.agent_id AS "agentId", c.kind, c.title,
       (c.archived_at IS NULL AND EXISTS (SELECT 1 FROM kin_chat_members m
         WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id AND m.principal_kind = 'agent'
           AND m.agent_id = e.agent_id AND m.left_at IS NULL)) AS open,
       l.name AS "leadName", l.owner_chat_id AS "ownerChatId"
     FROM kin_events e
-    LEFT JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
     LEFT JOIN kin_chats c ON c.org_id = e.org_id AND c.chat_id = ${item.chat}
     LEFT JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
       AND a.role = 'lead' AND a.retired_at IS NULL
     LEFT JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
     WHERE e.org_id = ${orgId} AND e.event_id = ${item.source_event}
-      AND json_extract(e.json, '$.chatId') = ${item.chat}
     ORDER BY e.event_id`;
   if (row === undefined || row.kind === "direct") return undefined;
-  // A chat that is gone counts only when a turn others read set it there.
-  if (
-    row.kind === null
-      ? row.audience !== "shared"
-      : row.shared === 1 && row.audience === "owner_only"
-  )
-    return undefined;
   return {
     chatId: KinChatId.make(item.chat),
     agentId: KinAgentId.make(row.agentId),

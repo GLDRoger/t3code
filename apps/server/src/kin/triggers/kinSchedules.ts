@@ -215,6 +215,8 @@ export interface SaveInput {
   /** True changes an existing schedule in place: same native task, same card. */
   readonly existing: boolean;
   readonly chatId: KinChatId;
+  /** 'shared': set for the chat it was asked in, so it runs there (`sharedChatOf`). */
+  readonly audience?: "shared" | undefined;
   readonly sourceEvent: string;
   readonly saidBy: string;
   readonly title: string;
@@ -333,7 +335,7 @@ const make = Effect.gen(function* () {
         source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at,
         loose_at, check_in, owner_time_json)
       VALUES (${taskId}, ${input.orgId}, ${input.scheduleId}, ${input.agentId}, ${input.chatId},
-        ${input.sourceEvent}, ${input.saidBy}, 'owner_only', ${hash}, ${inbox}, ${input.now},
+        ${input.sourceEvent}, ${input.saidBy}, ${input.audience ?? "owner_only"}, ${hash}, ${inbox}, ${input.now},
         ${input.now}, ${input.around === true ? input.every.at : null},
         ${input.checkIn === true ? 1 : 0},
         ${input.ownerTime === undefined ? null : yield* encodeOwnerTime({ ...input.ownerTime, host: input.every })})

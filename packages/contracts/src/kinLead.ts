@@ -517,6 +517,8 @@ export const MemoryItemFrontMatter = Schema.Struct({
   shared_by: Schema.optional(MemoryItemSharedBy),
   // Set on an item saved in a chat other people read: who said it and where. Server-written.
   shared_from: Schema.optional(MemoryItemSharedFrom),
+  // A reminder set for the chat it was asked in (not someone's own): it fires there. Server-written.
+  for_chat: Schema.optional(Schema.Literal(true)),
 });
 export type MemoryItemFrontMatter = typeof MemoryItemFrontMatter.Type;
 

@@ -254,6 +254,7 @@ it.effect(
           links: [],
           chat: group,
           source_event: KinEventId.make("set-in-plans"),
+          for_chat: true,
           sensitive: true,
           orgId,
           path: "deferrals/def-plans.md",

@@ -382,13 +382,14 @@ export const leaverChatOwn = Effect.fn("KinLeaver.chatOwn")(function* (input: {
   }>`SELECT s.task_id AS "taskId", s.chat_id AS "chatId", s.source_event AS "sourceEvent",
       n.title FROM kin_schedules s JOIN scheduled_tasks n ON n.task_id = s.task_id
     WHERE s.org_id = ${orgId} AND s.said_by = ${gone.personId} AND s.deleted_at IS NULL
-      AND COALESCE(s.pending_enabled, n.enabled) = 1
+      AND s.audience = 'shared' AND COALESCE(s.pending_enabled, n.enabled) = 1
     ORDER BY s.task_id`;
   const paused: Array<string> = [];
   for (const row of routines) {
     const own = yield* sharedChatOf(sql, orgId, {
       chat: KinChatId.make(row.chatId),
       source_event: KinEventId.make(row.sourceEvent),
+      for_chat: true,
     });
     if (own === undefined) continue;
     yield* sql`UPDATE kin_schedules SET pending_enabled = 0, updated_at = ${removedAt}

@@ -985,6 +985,7 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
     chat: KinChatId.make("group-a"),
     source_event: KinEventId.make("set-event"),
     said_by: "teammate",
+    for_chat: true,
   });
   const partners = makeDeferral("def-c", {
     on_due: "remind",
@@ -992,6 +993,7 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
     chat: KinChatId.make("group-a"),
     source_event: KinEventId.make("set-event"),
     said_by: "teammate",
+    for_chat: true,
   });
   const gone = makeDeferral("def-m", {
     on_due: "remind",
@@ -999,6 +1001,7 @@ it.effect("a group's own reminder fires into the group as its agent, else to who
     chat: KinChatId.make("group-a"),
     source_event: KinEventId.make("set-event"),
     said_by: "teammate",
+    for_chat: true,
   });
   return Effect.gen(function* () {
     yield* setup();

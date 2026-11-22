@@ -100,9 +100,13 @@ const triggerNext = (sql: SqlClient.SqlClient, orgId: KinOrgId, itemId: string) 
     Effect.map((rows) => rows[0]?.nextRunAt ?? null),
   );
 
-const sourceOf = (row: Pick<KinSchedules.KinSchedule, "chatId" | "sourceEvent">) => ({
+/** A schedule as `sharedChatOf` reads it: set for its chat when its row's audience is 'shared'. */
+export const sourceOf = (
+  row: Pick<KinSchedules.KinSchedule, "chatId" | "sourceEvent" | "audience">,
+) => ({
   chat: row.chatId,
   source_event: KinEventId.make(row.sourceEvent),
+  ...(row.audience === "shared" ? { for_chat: true as const } : {}),
 });
 
 /** Writes the standing card: in place when it exists, else posted to `chatId`. */

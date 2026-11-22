@@ -623,7 +623,7 @@ it.effect(
         yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
             source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
           VALUES ('task-room', ${orgId}, 'sch-room', ${chief}, 'plans-room', 'asked-in-room',
-            ${arjunId}, 'owner_only', 'hash', 'inbox', 0, 0)`;
+            ${arjunId}, 'shared', 'hash', 'inbox', 0, 0)`;
 
         yield* ctx.people.removeAccess(ownerSession, { orgId, personId: arjunId });
         const card = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: reminder }));
