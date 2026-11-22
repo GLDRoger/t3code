@@ -49,7 +49,7 @@ import { notRegisteredFact } from "../../apps/server/src/kin/work/companyProfile
 import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
-import { KIN_TEXT_LOCALE, KinMoneySummary } from "@t3tools/contracts";
+import { formatKinPicturesDay, KIN_TEXT_LOCALE, KinMoneySummary } from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
@@ -59,6 +59,7 @@ import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
 import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
 import { KinPictureToolkit } from "../../apps/server/src/kin/pictures/mcp.ts";
+import { GENERATE_SENTENCES } from "../../apps/server/src/kin/pictures/KinPictures.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
@@ -450,6 +451,9 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       when: whenLabel(ms, { zone: input.zone, locale: KIN_TEXT_LOCALE }),
     };
   },
+  // kin_picture's refusal once this month's generated pictures are used, as KinPictures says it.
+  pictureLimit: (input: { limit: number; resetsOn: string }) =>
+    GENERATE_SENTENCES.limit(input.limit, formatKinPicturesDay(input.resetsOn)),
   // The taxNote line for a company its owner said is not registered for its country's tax.
   notRegisteredFact: (input: { country: string }) =>
     notRegisteredFact({ taxRegistered: false, country: input.country, tax: null }),
