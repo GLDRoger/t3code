@@ -329,7 +329,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           (yield* Reach.reaches(orgId, Reach.person(her.personId), Reach.agent(agentId))) &&
           (yield* chat.mayPost(her, redone.forChatId).pipe(
             Effect.as(true),
-            Effect.catchTag("KinChatError", () => Effect.succeed(false)),
+            Effect.catchTags({ KinChatError: () => Effect.succeed(false) }),
           ));
         if (!stays) return yield* refuse(`${redone.draft.names.asker} is no longer here.`);
       }
