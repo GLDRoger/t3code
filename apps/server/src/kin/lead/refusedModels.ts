@@ -14,7 +14,7 @@ import { holdIfQuiet } from "../triggers/quietHold.ts";
 import { findProviderModel } from "./leadModels.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 
-export const refusedModelNotice = (provider: string, model: string) =>
+const refusedModelNotice = (provider: string, model: string) =>
   `${provider} on this server doesn't offer ${model}, so Kin stopped offering it. If that changes, turn it back on in Settings › Providers.`;
 
 /**
