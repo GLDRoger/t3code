@@ -2,6 +2,7 @@ import { stableStringify } from "@t3tools/shared/relaySigning";
 import type { McpSchema } from "effect/ai";
 import * as Predicate from "effect/Predicate";
 
+import type { OutsideReadItem } from "../lead/OutsideContent.ts";
 import { quote } from "../lead/quote.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
 
@@ -92,4 +93,50 @@ export const resultText = (input: {
     bytes: new TextEncoder().encode(full).length,
     cut,
   };
+};
+
+const parsed = (result: McpSchema.CallToolResult): unknown => {
+  if (result.structuredContent !== undefined) return result.structuredContent;
+  const first = result.content[0];
+  if (first?.type !== "text") return undefined;
+  try {
+    return JSON.parse(first.text);
+  } catch {
+    return undefined;
+  }
+};
+const named = (value: unknown, key: string) => {
+  const one = Predicate.hasProperty(value, key) ? value[key] : undefined;
+  return typeof one === "string" && one.trim() !== "" ? clean(one).trim().slice(0, 100) : undefined;
+};
+
+/**
+ * What a person reads for what one result showed the turn: a mail's sender and subject, the
+ * mailbox or calendar a list came from, or the connection.
+ */
+export const resultSource = (input: {
+  readonly label: string;
+  readonly tool: string;
+  readonly result: McpSchema.CallToolResult;
+}): OutsideReadItem => {
+  const shown = parsed(input.result);
+  const messages = Predicate.hasProperty(shown, "messages") ? shown.messages : undefined;
+  if (Array.isArray(messages) && messages.length > 0) {
+    const mailbox = input.label.toLowerCase();
+    const theirs =
+      messages.findLast((one) => !(named(one, "from") ?? "").toLowerCase().includes(mailbox)) ??
+      messages.at(-1);
+    const from = named(theirs, "from");
+    const subject = named(messages[0], "subject");
+    if (from !== undefined)
+      return {
+        k: "mail",
+        account: input.label,
+        from,
+        ...(subject === undefined ? {} : { subject }),
+      };
+  }
+  if (Predicate.hasProperty(shown, "threads")) return { k: "mail", account: input.label };
+  if (Predicate.hasProperty(shown, "events")) return { k: "calendar", account: input.label };
+  return { k: "service", label: input.label, tool: input.tool };
 };

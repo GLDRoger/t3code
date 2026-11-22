@@ -38,13 +38,15 @@ const heldText = (held: LeaverHeld) => {
     held.clients > 0 ? plural(held.clients, "client", "clients") : null,
     held.followUps > 0 ? plural(held.followUps, "follow-up", "follow-ups") : null,
     held.promises > 0 ? plural(held.promises, "promise", "promises") : null,
+    held.watches > 0 ? plural(held.watches, "watch", "watches") : null,
   ].filter((part) => part !== null);
   return parts.length < 2
     ? (parts[0] ?? "nothing open")
     : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
 };
-const heldCount = (held: LeaverHeld) =>
+const recordCount = (held: LeaverHeld) =>
   held.deals + held.prospects + held.clients + held.followUps + held.promises;
+const heldCount = (held: LeaverHeld) => recordCount(held) + held.watches;
 
 const clamp = (text: string, max: number) =>
   text.length <= max ? text : `${text.slice(0, max - 1)}…`;
@@ -124,9 +126,9 @@ export const leaverCards = Effect.fn("KinLeaver.cards")(function* (input: {
   const more = receivers.length - shown.length;
   const detail = [
     `Until someone chooses, they stay in ${gone.displayName}'s name and can still be found.`,
-    ...(more > 0
+    ...(more > 0 && recordCount(held) > 0
       ? [
-          `${plural(more, "more person", "more people")} could take them; to give one to them, change who looks after it on its page.`,
+          `${plural(more, "more person", "more people")} could take them; to give ${held.watches === 0 ? "one" : "a record"} to them, change who looks after it on its page.`,
         ]
       : []),
   ].join(" ");
@@ -285,6 +287,7 @@ export const runLeaver = Effect.fn("KinLeaver.run")(function* (
     return yield* settle(none, none);
   }
   const what = heldText(held);
+  const someRecords = recordCount(held) > 0;
   if (to !== tap.personId) {
     const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
     if (lead !== undefined)
@@ -292,23 +295,34 @@ export const runLeaver = Effect.fn("KinLeaver.run")(function* (
         orgId,
         personId: to,
         agentId: lead.agentId,
-        body: `${byName} gave you what ${gone} looked after: ${what}. Each one's Activity says so.`,
+        body: `${byName} gave you what ${gone} looked after: ${what}.${
+          held.watches === 0
+            ? " Each one's Activity says so."
+            : someRecords
+              ? " Each record's Activity says so."
+              : ""
+        }`,
         key: `leaver-${plan.personId}-${plan.removedAt}`,
       });
   }
   const title = clamp(`Given to ${toName}`, 120);
-  const after = "To move one on, change who looks after it on its page.";
+  const after =
+    held.watches === 0
+      ? " To move one on, change who looks after it on its page."
+      : someRecords
+        ? " To move a record on, change who looks after it on its page."
+        : "";
   return yield* settle(
     {
       title,
       text:
         to === tap.personId
-          ? `You now look after ${what} that ${gone} looked after. ${after}`
-          : `${toName} now looks after ${what} that ${gone} looked after, and was told. ${after}`,
+          ? `You now look after ${what} that ${gone} looked after.${after}`
+          : `${toName} now looks after ${what} that ${gone} looked after, and was told.${after}`,
     },
     {
       title,
-      text: `${byName} gave ${toName} ${what} that ${gone} looked after. ${after}`,
+      text: `${byName} gave ${toName} ${what} that ${gone} looked after.${after}`,
     },
   );
 });

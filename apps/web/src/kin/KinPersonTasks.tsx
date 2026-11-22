@@ -34,11 +34,11 @@ export function KinPersonTasks(props: {
   if (AsyncResult.isFailure(result))
     return <p className="text-sm text-muted-foreground">{KIN_PERSON_TASKS.failed}</p>;
   if (!AsyncResult.isSuccess(result)) return <Skeleton className="h-16 w-full" />;
-  const { total, records } = result.value;
+  const { total, records, count } = result.value;
   if (total === 0) return <p className="text-sm text-muted-foreground">{KIN_PERSON_TASKS.none}</p>;
   return (
     <div className="flex flex-col gap-1">
-      <p className="text-sm text-foreground">{KIN_PERSON_TASKS.count(total)}</p>
+      <p className="text-sm text-foreground">{count}</p>
       <ul className="flex flex-col">
         {records.map((record) => {
           const line = kinTaskLine(record, names, now);

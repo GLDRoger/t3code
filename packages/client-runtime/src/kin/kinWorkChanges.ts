@@ -376,7 +376,10 @@ const undoOf = (
   if (action.type === "steps" && action.said === "removed" && "checklist" in record)
     return { type: "steps", steps: record.checklist ?? [], said: "back" };
   if (action.type === "alsoOn" && (action.said === "removed" || action.said === "left"))
-    return { type: "alsoOn", alsoOn: record.alsoOn ?? [], who: action.who, said: "back" };
+    // Someone only on it may leave but never put anyone on it, themselves included.
+    return action.said === "left" && "can" in record && record.can?.edit === false
+      ? null
+      : { type: "alsoOn", alsoOn: record.alsoOn ?? [], who: action.who, said: "back" };
   return !kinWorkClosed(record.state) &&
     (action.type === "decline" || (action.type === "state" && kinWorkClosed(action.state)))
     ? { type: "state", state: record.state, waitingOn: record.waitingOn }

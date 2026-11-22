@@ -206,7 +206,7 @@ const make = Effect.gen(function* () {
   }) => (Option.isSome(bridge) ? bridge.value.end(row) : Effect.void);
   const finishWakeup = Effect.fn("WakeupRunner.finishWakeup")(function* (
     row: typeof RunningRow.Type,
-    status: "completed" | "failed" | "timed_out",
+    status: "completed" | "failed" | "interrupted" | "timed_out",
     setup: SetupFailure | null = null,
     failure: unknown = null,
   ) {
@@ -859,15 +859,20 @@ const make = Effect.gen(function* () {
             ),
           );
       }
-      const status = result.timedOut
+      const ended = result.timedOut
         ? "timed_out"
         : result.run?.status === "completed"
           ? "completed"
           : "failed";
+      // The stop switch interrupted this run: hand its events back without spending an attempt.
+      const stopped = ended === "failed" && (yield* paused(row.orgId));
+      // Otherwise an interrupted run was a person's Stop (`KinStop.interrupt`), not a failure.
+      const status =
+        ended === "failed" && !stopped && result.run?.status === "interrupted"
+          ? "interrupted"
+          : ended;
       const setup = status === "failed" ? setupFailureIn(final, runId) : null;
       const failure = status === "failed" ? providerFailureIn(final, runId) : null;
-      // The stop switch interrupted this run: hand its events back without spending an attempt.
-      const stopped = status === "failed" && (yield* paused(row.orgId));
       // Someone besides the owner joined while it worked: it says nothing more, and a fresh
       // wake-up answers its events (`KinEventQueue.finish`).
       let abandoned = yield* isAborted(row);

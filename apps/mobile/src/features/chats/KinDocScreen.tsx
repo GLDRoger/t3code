@@ -92,7 +92,7 @@ import { KinLinkedSection, useKinOpenLinked } from "./KinWorkItemScreen";
 import { KinWorkShareRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
 import { useKinDocLabel } from "./state/useKinDocLabel";
-import { useKinDocDelete } from "./state/useKinDocDelete";
+import { kinDocLeftDeletedAtom, useKinDocDelete } from "./state/useKinDocDelete";
 import { useKinDoc } from "./state/useKinDocs";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { kinHostConnected } from "./state/useKinHost";
@@ -544,9 +544,17 @@ function KinDocBody(
                     title: KIN_DOCS.delete,
                     destructive: true,
                     onPress: () =>
-                      void deleting
-                        .remove(doc.key)
-                        .then((why) => why === null && props.onRefresh()),
+                      void deleting.remove(doc.key).then((why) => {
+                        if (why !== null) return;
+                        // Docs offers the Undo, as the web's list does once a doc is deleted.
+                        appAtomRegistry.set(kinDocLeftDeletedAtom, {
+                          environmentId,
+                          orgId,
+                          key: doc.key,
+                          title: doc.title,
+                        });
+                        navigation.goBack();
+                      }),
                   },
                 ]
               : []),

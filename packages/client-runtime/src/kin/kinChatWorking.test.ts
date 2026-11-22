@@ -71,12 +71,14 @@ const items = (input: {
   widgets?: ReadonlyArray<KinWidget>;
   handoffs?: KinChatWorkingResult["handoffs"];
   messages?: ReadonlyArray<KinMessage>;
+  workingChats?: ReadonlyArray<string>;
 }) =>
   kinChatWorkingItems({
     presence: input.presence ?? [],
     widgets: input.widgets ?? [],
     messages: input.messages ?? [],
     handoffs: input.handoffs ?? [],
+    workingChats: input.workingChats ?? ["chat-finance"],
     agentNames,
     now: START + 180_000,
   });
@@ -106,6 +108,14 @@ describe("kinChatWorkingItems", () => {
       { kind: "chat", chatId: "chat-finance" },
       { kind: "message", messageId: "m-a" },
     ]);
+    // The chat list hears a turn end before a read of the hand-offs does: its word wins.
+    expect(items({ handoffs: [handoff()], workingChats: [] })).toEqual([]);
+    expect(
+      items({
+        handoffs: [handoff({ state: "queued", wakeupId: null }), handoff({ chatId: null })],
+        workingChats: [],
+      }).map((item) => item.state),
+    ).toEqual(["Waiting to start", "Working"]);
   });
 
   it("marks held turns: paused, waiting for budget, silent, or a hand-off not started", () => {

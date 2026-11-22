@@ -741,9 +741,7 @@ function KinTeammateTasks(props: {
   return (
     <KinSettingsSection
       title={KIN_PERSON_TASKS.title}
-      description={
-        held === null || held.total === 0 ? undefined : KIN_PERSON_TASKS.count(held.total)
-      }
+      description={held === null || held.total === 0 ? undefined : held.count}
       action={
         profile === null || (profile.load?.open ?? 0) === 0 ? undefined : (
           <KinHandOverButton

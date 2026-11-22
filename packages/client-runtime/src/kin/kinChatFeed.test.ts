@@ -417,7 +417,11 @@ describe("rows", () => {
         agentMessage(1, {
           ...system,
           body: "Keep both **Pristine** runs?\nMeera wants the March one.",
-          relay: { kind: "sent_by", agentId: KIN_FIXTURE_AGENT },
+          relay: {
+            kind: "sent_by",
+            agentId: KIN_FIXTURE_AGENT,
+            afterReading: "mail from lena@brightwell.example: New bank details",
+          },
         }),
         agentMessage(2, {
           ...system,
@@ -452,6 +456,7 @@ describe("rows", () => {
         agentLabel: "Tech lead",
         discussionId: null,
         summary: "Keep both Pristine runs?",
+        afterReading: "Sent after reading: mail from lena@brightwell.example: New bank details",
       },
       {
         relay: "reply_from",
@@ -463,6 +468,7 @@ describe("rows", () => {
       { relay: "reply_from", summary: null },
       { relay: "reply_from", summary: null },
     ]);
+    expect(rows.filter((row) => "afterReading" in row)).toHaveLength(1);
     // A person's words the agent passed on read as theirs, carried by the agent.
     const passed = messageRows(
       [
@@ -477,7 +483,12 @@ describe("rows", () => {
         }),
         agentMessage(4, {
           body: "Rhea says yes.",
-          relay: { kind: "sent_by", agentId: KIN_FIXTURE_AGENT, personId: "rhea" as KinPersonId },
+          relay: {
+            kind: "sent_by",
+            agentId: KIN_FIXTURE_AGENT,
+            personId: "rhea" as KinPersonId,
+            afterReading: "the web page brightwell.example",
+          },
         }),
       ],
       viewer,
@@ -491,8 +502,14 @@ describe("rows", () => {
         personLabel: "Zoya Sheikh",
         text: "Can the copy move a week?",
       },
-      { type: "relay", personLabel: "A teammate", text: "Rhea says yes." },
+      {
+        type: "relay",
+        personLabel: "A teammate",
+        text: "Rhea says yes.",
+        afterReading: "Sent after reading: the web page brightwell.example",
+      },
     ]);
+    expect("afterReading" in passed[0]!).toBe(false);
     // In the Team room a discussion is open under its line until the viewer closes it.
     const room = all.slice(19, 26);
     const open = (closed: ReadonlySet<string>) =>

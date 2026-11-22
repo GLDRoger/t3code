@@ -139,7 +139,9 @@ export function useForgetReplacedComputers(enabled: boolean): void {
     for (const environmentId of replaced) {
       if (asked.current.has(environmentId)) continue;
       asked.current.add(environmentId);
-      void removeEnvironment(environmentId);
+      // A replaced computer never answers by definition, and the same Kin that does keeps this
+      // phone's alerts: "may still notify" would alarm about nothing on every such clean-up.
+      void removeEnvironment(environmentId, () => {});
     }
   }, [enabled, replaced, removeEnvironment]);
 }

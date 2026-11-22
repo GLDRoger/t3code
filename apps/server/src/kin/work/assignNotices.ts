@@ -28,6 +28,8 @@ import { awayBackOn, heldUntil, holdFor, holdLine } from "../triggers/quietHold.
 import { textLocale, type TextClock } from "./companyProfile.ts";
 import { fieldList, parseFields } from "./lists.ts";
 import { canHearRecord } from "./recordComments.ts";
+import { entryAfterReading } from "../lead/OutsideContent.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import {
   byId,
   dueWhenText,
@@ -65,6 +67,8 @@ export type AssignNotice = {
   readonly by?: string;
   /** Where a task taken from them went: words it as given on, unless whoever moved it took it. */
   readonly to?: { readonly kind: "person" | "agent"; readonly id: string };
+  /** A task given after its giver read outside text: what it was, as this person may see it. */
+  readonly afterReading?: string;
 };
 type Turn = {
   readonly orgId: KinOrgId;
@@ -302,7 +306,9 @@ const line = (notice: AssignNotice, clock: NoticeClock, gaveTo: string | null = 
   if (notice.kind === "commented") return `commented on ${task}${why}`;
   if (notice.kind === "nudged") return `asked where ${task} stands`;
   return notice.kind === "given"
-    ? `${task}${dueText(notice.row, clock)}${notice.why === null ? "" : `. Why: ${notice.why}`}`
+    ? `${task}${dueText(notice.row, clock)}${notice.why === null ? "" : `. Why: ${notice.why}`}${
+        notice.afterReading === undefined ? "" : `. ${notice.afterReading}`
+      }`
     : notice.kind === "taken"
       ? gaveTo === null
         ? `took over ${task}${why}`
@@ -312,6 +318,35 @@ const line = (notice: AssignNotice, clock: NoticeClock, gaveTo: string | null = 
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 /** A sentence ends once: a note that ends in its own stop gets no second one. */
 const ended = (text: string) => (/[.!?…]["”’)]?$/.test(text) ? text : `${text}.`);
+
+/**
+ * Each task given to `personId` that its giver made or changed after an outside read says so,
+ * as the task's sheet does, with as much of the source as they may see (`renderSource`).
+ */
+const withAfterReading = Effect.fn("KinAssignNotices.withAfterReading")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  notices: ReadonlyArray<AssignNotice>,
+) {
+  if (!notices.some((notice) => notice.kind === "given")) return notices;
+  const detailed = yield* ownerLevel(orgId, personId);
+  const out: Array<AssignNotice> = [];
+  for (const notice of notices) {
+    const read =
+      notice.kind === "given"
+        ? yield* entryAfterReading(orgId, notice.row.recordId, detailed)
+        : undefined;
+    out.push(
+      read === undefined
+        ? notice
+        : {
+            ...notice,
+            afterReading: `${read.made ? "Made" : "Changed"} after reading: ${read.source}`,
+          },
+    );
+  }
+  return out;
+});
 
 /** One message for the person: a line when it is one task, else a list under one heading. */
 const bodyFor = (
@@ -435,10 +470,12 @@ export const heldGivenBody = Effect.fn("KinAssignNotices.heldGiven")(function* (
   const company = yield* ownerZone(orgId);
   const clock = { zone: profile?.zone ?? company, company, locale: yield* textLocale(orgId) };
   const now = yield* Clock.currentTimeMillis;
-  return [
-    ...[...byGiver].map(([by, notices]) => bodyFor(by, notices, clock, now, () => null)),
-    ...comments,
-  ].join("\n\n");
+  const bodies: Array<string> = [];
+  for (const [by, notices] of byGiver)
+    bodies.push(
+      bodyFor(by, yield* withAfterReading(orgId, personId, notices), clock, now, () => null),
+    );
+  return [...bodies, ...comments].join("\n\n");
 });
 
 /** The day a task's holder is back and hears it is theirs, while that line waits on them away. */
@@ -532,7 +569,11 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
     byPerson.set(notice.personId, [...(byPerson.get(notice.personId) ?? []), notice]);
   for (const [personId, all] of byPerson) {
     const person = KinPersonId.make(personId);
-    const theirs = yield* dropUnheard(turn.orgId, person, all);
+    const theirs = yield* withAfterReading(
+      turn.orgId,
+      person,
+      yield* dropUnheard(turn.orgId, person, all),
+    );
     if (theirs.length === 0) continue;
     if (here !== undefined) {
       const reading = yield* sql`SELECT 1 FROM kin_chat_members WHERE org_id = ${turn.orgId}

@@ -24,6 +24,7 @@ import {
   formatKinWhen,
   mentionsKinMoney,
 } from "@t3tools/contracts";
+import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -47,7 +48,13 @@ import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
 import { approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
-import { codingAgentSource, outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
+import {
+  changeStampKey,
+  codingAgentSource,
+  followsOutsideRead,
+  outsideStamp,
+  stampEvent,
+} from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
 import {
   commentIdFor,
@@ -55,7 +62,7 @@ import {
   insertComment,
   requestHashOf as commentHashOf,
 } from "./recordComments.ts";
-import { indexRecord } from "./searchIndex.ts";
+import { indexRecord, indexRecords } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
 import {
   fieldList,
@@ -283,6 +290,22 @@ export type CreateInput = Fields & {
   readonly createdAt?: number;
   readonly closedAt?: number;
 };
+export type PlainImportInput = Pick<
+  CreateInput,
+  | "originKey"
+  | "title"
+  | "category"
+  | "dueAt"
+  | "dueAllDay"
+  | "notes"
+  | "sensitive"
+  | "amount"
+  | "dateAt"
+  | "dateAllDay"
+  | "createdAt"
+  | "closedAt"
+> & { readonly state: KinRecordState };
+
 export type Patch = Partial<Omit<Fields, "owner">> & {
   readonly owner?: KinWorkPrincipal;
   /** The holder gives it back to `owner`, whoever gave it to them, in their own words. */
@@ -668,6 +691,13 @@ const zeroOwed = (
 export class KinRecords extends Context.Service<
   KinRecords,
   {
+    /** Creates an independent import chunk, or returns false with nothing written. */
+    readonly createImportChunk: (
+      orgId: KinOrgId,
+      personId: KinPersonId,
+      list: "work" | "expenses",
+      entries: ReadonlyArray<PlainImportInput>,
+    ) => Effect.Effect<boolean>;
     readonly create: (
       orgId: KinOrgId,
       writer: Writer,
@@ -844,15 +874,16 @@ const make = Effect.gen(function* () {
   const transaction = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
     failed(sql.withTransaction(effect));
 
-  const ensureRegister = Effect.fn("KinRecords.ensureRegister")(function* (
+  const reserveKeys = Effect.fn("KinRecords.reserveKeys")(function* (
     orgId: KinOrgId,
     def: ListDef,
     now: number,
+    count: number,
   ) {
     const take = sql<{ next: number; prefix: string }>`
-      UPDATE kin_registers SET next_number = next_number + 1
+      UPDATE kin_registers SET next_number = next_number + ${count}
       WHERE org_id = ${orgId} AND register_id = ${def.id}
-      RETURNING next_number - 1 AS next, key_prefix AS prefix`;
+      RETURNING next_number - ${count} AS next, key_prefix AS prefix`;
     let [register] = yield* take;
     // A defined list's register is written when it is defined; a built-in one on first use.
     if (register === undefined && def.builtIn !== null) {
@@ -862,7 +893,33 @@ const make = Effect.gen(function* () {
       [register] = yield* take;
     }
     if (register === undefined) return yield* unavailable;
-    return `${register.prefix}-${register.next}`;
+    return register;
+  });
+
+  // Each created row uses the same audit shape, including rows inserted in a chunk.
+  const changeValues = Effect.fnUntraced(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    row: { readonly recordId: string; readonly rev: number },
+    kind: "created" | "updated" | "linked",
+    fields: ReadonlyArray<FieldChange>,
+    now: number,
+  ) {
+    return {
+      org_id: orgId,
+      record_id: row.recordId,
+      rev: row.rev,
+      at: now,
+      actor_kind: writer.actor._tag,
+      actor_id: actorIdOf(writer),
+      via: writer.via,
+      kind,
+      fields_json: yield* encodeFields(fields),
+      wakeup_id: writer.wakeupId ?? null,
+      chat_id: writer.chatId ?? null,
+      asked_by_person_id: writer.actor._tag === "agent" ? (writer.askedBy ?? null) : null,
+      coding_agent_key: writer.codingAgentKey ?? null,
+    };
   });
 
   const logChange = Effect.fn("KinRecords.logChange")(function* (
@@ -874,21 +931,16 @@ const make = Effect.gen(function* () {
     now: number,
     team?: TeamScope,
   ) {
-    const actorId =
-      writer.actor._tag === "agent"
-        ? writer.actor.agentId
-        : writer.actor._tag === "person"
-          ? writer.actor.personId
-          : null;
-    const [change] = yield* sql<{ seq: number }>`INSERT INTO kin_record_changes (org_id, record_id,
-        rev, at, actor_kind, actor_id, via, kind, fields_json, wakeup_id, chat_id,
-        asked_by_person_id, coding_agent_key)
-      VALUES (${orgId}, ${row.recordId}, ${row.rev}, ${now}, ${writer.actor._tag}, ${actorId},
-        ${writer.via}, ${kind}, ${yield* encodeFields(fields)}, ${writer.wakeupId ?? null},
-        ${writer.chatId ?? null}, ${writer.actor._tag === "agent" ? (writer.askedBy ?? null) : null},
-        ${writer.codingAgentKey ?? null})
-      RETURNING seq`;
+    const values = yield* changeValues(orgId, writer, row, kind, fields, now);
+    const [change] = yield* sql<{ seq: number }>`INSERT INTO kin_record_changes
+      ${sql.insert(values)} RETURNING seq`;
     const seq = change?.seq ?? 0;
+    // What the agent's turn had read from outside when it wrote this, for the entry's sheet.
+    if (writer.actor._tag === "agent" && writer.wakeupId !== undefined)
+      yield* outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
+        Effect.flatMap((source) => stampEvent(orgId, changeStampKey(row.recordId, seq), source)),
+        provideSql,
+      );
     // Who sees it as this change leaves it, and what else of theirs it showed or hid (`personSees`).
     const [stored] = yield* sql<{ registerId: string; projectKey: string | null }>`SELECT
         r.register_id AS "registerId", p.key AS "projectKey"
@@ -1441,6 +1493,19 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * An agent's turn that follows an outside read it did not make, and that no owner-level person
+   * asked in person: anything new it makes, on any list, waits to be kept.
+   */
+  const followsUnasked = Effect.fn("KinRecords.followsUnasked")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+  ) {
+    if (writer.actor._tag !== "agent" || writer.wakeupId === undefined) return false;
+    if (!(yield* followsOutsideRead(orgId, writer.wakeupId).pipe(provideSql))) return false;
+    return !(yield* ownerLevelAsked(orgId, writer.actor.agentId, writer.wakeupId).pipe(provideSql));
+  });
+
+  /**
    * Whether a new entry starts kept, from who makes it, in the write's transaction. Made from a
    * suggestion, or asked to be one, it is one. A quote or invoice is real only on an owner-level
    * person's word: theirs, or their ask in person of an agent (an approved draft's one entry is
@@ -1489,60 +1554,30 @@ const make = Effect.gen(function* () {
     return { questionId: approval.questionId, keeps };
   });
 
-  /**
-   * One new entry, in the caller's transaction. `wake` is false for the next occurrence of a
-   * repeating entry, which is owed later and is nobody's new instruction.
-   */
-  const insert = Effect.fn("KinRecords.insert")(function* (
+  type InsertOptions = {
+    readonly wake: boolean;
+    readonly repeat?: StoredRepeat;
+    /** Whose words the copied title and notes are, for an occurrence copied from another. */
+    readonly authors?: { readonly title: string | null; readonly notes: string | null };
+    /** Decided for it already, as for an occurrence by whoever closed the one before. */
+    readonly kept?: boolean;
+  };
+
+  // The caller traces the single insert or the whole chunk.
+  const prepareNew = Effect.fnUntraced(function* (
     orgId: KinOrgId,
     writer: Writer,
     input: CreateInput,
-    options: {
-      readonly wake: boolean;
-      readonly repeat?: StoredRepeat;
-      /** Whose words the copied title and notes are, for an occurrence copied from another. */
-      readonly authors?: { readonly title: string | null; readonly notes: string | null };
-      /** Decided for it already, as for an occurrence by whoever closed the one before. */
-      readonly kept?: boolean;
-    },
+    recordId: string,
+    guarded: { readonly draftFor: KinPersonId } | undefined,
+    options: InsertOptions,
+    batch?: { readonly def: ListDef; readonly prefix: string; readonly next: number },
   ) {
-    const recordId = recordIdFor(orgId, input.originKey);
-    const existing = yield* byId(orgId, recordId).pipe(provideSql);
-    if (writer.teammate === true && writer.actor._tag === "person")
-      yield* teamGuard(orgId, writer.actor.personId, {
-        row: existing,
-        changes: false,
-        input,
-      }).pipe(provideSql);
-    const guarded =
-      writer.view === undefined
-        ? undefined
-        : yield* viewGuard(
-            orgId,
-            writer.view,
-            { row: existing, changes: false, input },
-            writer.actor._tag === "agent" && writer.wakeupId !== undefined
-              ? { agentId: writer.actor.agentId, wakeupId: writer.wakeupId }
-              : undefined,
-          ).pipe(provideSql);
-    if (existing !== undefined) {
-      const [stored] = yield* sql<{ hash: string | null }>`SELECT request_hash AS hash
-        FROM kin_records WHERE org_id = ${orgId} AND record_id = ${recordId}`;
-      if (
-        input.requestHash !== undefined &&
-        stored?.hash != null &&
-        stored.hash !== input.requestHash
-      )
-        return yield* new KinChatError({
-          reason: "not_allowed",
-          message: "That retry key already created a different entry.",
-        });
-      return { row: existing, created: false };
-    }
     // Before the list is read: an amount for a list not made yet waits on the country too.
     // A list that may hold money takes entries without any, such as a deadline with no fee.
-    if (recordsMoney(input.amount, input.fields)) yield* countryFirst(orgId).pipe(provideSql);
-    const def = yield* resolveList(orgId, input.list ?? "work");
+    if (batch === undefined && recordsMoney(input.amount, input.fields))
+      yield* countryFirst(orgId).pipe(provideSql);
+    const def = batch?.def ?? (yield* resolveList(orgId, input.list ?? "work"));
     if (def.archivedAt !== null)
       return yield* invalid(`${def.name} is archived; the owner can restore it.`);
     const list = def.id;
@@ -1594,7 +1629,7 @@ const make = Effect.gen(function* () {
     if (invalidRefs !== undefined) return yield* invalidRefs;
     const party = partyId === null ? undefined : yield* target(orgId, partyId, "clients");
     yield* sameName(orgId, list, input.title, partyId, null, input.category, writer.namesSeenBy);
-    yield* ownerExists(orgId, input.owner);
+    if (batch === undefined) yield* ownerExists(orgId, input.owner);
     if (list === "work") {
       // Kin's own copy, such as a repeat's next one, keeps whoever was on the one before.
       const copied = writer.actor._tag === "system" ? fieldList(fields, "alsoOn") : [];
@@ -1608,12 +1643,14 @@ const make = Effect.gen(function* () {
         ? undefined
         : yield* storedRepeat(orgId, input.repeat, input.dueAt ?? null, input.dateAt ?? null));
     const now = yield* Clock.currentTimeMillis;
-    const key = yield* ensureRegister(orgId, def, now);
+    const next = batch ?? (yield* reserveKeys(orgId, def, now, 1));
+    const key = `${next.prefix}-${next.next}`;
     const approved =
       options.kept === undefined ? yield* approvalKeeps(orgId, writer, list, partyId) : undefined;
     const kept =
       options.kept ??
-      (approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps);
+      ((approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps) &&
+        !(yield* followsUnasked(orgId, writer)));
     // Nobody issued, sent or was paid for what nobody kept: it waits as a draft on its own day.
     // Only Issue makes an invoice owed, with its number; an agent sets none, so it starts a draft.
     // An approval's entry is the owner's Draft whatever state it was given.
@@ -1641,38 +1678,66 @@ const make = Effect.gen(function* () {
     const notes = input.notes ?? "";
     const author = textBy(writer);
     const steps = input.steps ?? [];
-    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
-        waiting_on_kind, waiting_on_id, owner_kind, owner_id, side, category, due_at, due_all_day,
-        sensitive, confirmed, notes, rev, source_chat_id, source_message_id, created_by_kind,
-        created_by_id, assigned_by_person_id, assigned_at, origin_key, created_at, updated_at,
-        closed_at, party_id, project_id, repo, fields_json, amount_minor, currency, date_at,
-        date_all_day, repeat_json, request_hash, team_shared, title_by, notes_by,
-        assigned_by_agent_id, marked_by_person_id, asked_by_person_id, steps_json, urgent)
-      VALUES (${orgId}, ${recordId}, ${list}, ${key}, ${input.title}, ${state},
-        ${waitingOn?._tag ?? null}, ${waitingOn === null ? null : principalId(waitingOn)},
-        ${input.owner._tag}, ${principalId(input.owner)}, ${input.side ?? "ours"},
-        ${input.category ?? null}, ${input.dueAt ?? null}, ${input.dueAllDay === true ? 1 : 0},
-        ${input.sensitive === true || def.sensitive ? 1 : 0}, ${kept ? 1 : 0},
-        ${notes}, 1, ${input.source?.chatId ?? null},
-        ${input.source?.messageId ?? null}, ${writer.actor._tag},
-        ${writer.actor._tag === "agent" ? writer.actor.agentId : writer.actor._tag === "person" ? writer.actor.personId : null},
-        ${assignedBy}, ${assignedBy === null ? null : now}, ${input.originKey},
-        ${input.createdAt ?? now}, ${now}, ${isClosed(state) ? (input.closedAt ?? now) : null},
-        ${partyId}, ${projectId}, ${input.repo ?? null},
-        ${yield* encodeFieldValues(guarded === undefined ? fields : { ...fields, draftFor: guarded.draftFor })},
-        ${amount?.minor ?? null}, ${amount?.currency ?? null},
-        ${input.dateAt ?? null}, ${input.dateAllDay === true ? 1 : 0},
-        ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null},
-        ${input.team === true || writer.teammate === true || writer.teamShared === true || (writer.view !== undefined && (ROOM_LISTS as ReadonlyArray<string>).includes(list)) ? 1 : 0},
-        ${options.authors === undefined ? author : options.authors.title},
-        ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes},
-        ${givenAway && writer.actor._tag === "agent" && writer.askedBy == null ? writer.actor.agentId : null},
-        ${input.sensitive === true ? textBy(writer) : null}, ${textBy(writer)},
-        ${steps.length === 0 ? null : yield* encodeSteps(steps)}, ${input.urgent === true ? 1 : null})`;
-    if (approved?.keeps === true)
-      yield* recordMade(orgId, approved.questionId, { kind: "entry", recordId, key, list }).pipe(
-        provideSql,
-      );
+    const values = {
+      org_id: orgId,
+      record_id: recordId,
+      register_id: list,
+      key,
+      title: input.title,
+      state,
+      waiting_on_kind: waitingOn?._tag ?? null,
+      waiting_on_id: waitingOn === null ? null : principalId(waitingOn),
+      owner_kind: input.owner._tag,
+      owner_id: principalId(input.owner),
+      side: input.side ?? "ours",
+      category: input.category ?? null,
+      due_at: input.dueAt ?? null,
+      due_all_day: input.dueAllDay === true ? 1 : 0,
+      sensitive: input.sensitive === true || def.sensitive ? 1 : 0,
+      confirmed: kept ? 1 : 0,
+      notes,
+      rev: 1,
+      source_chat_id: input.source?.chatId ?? null,
+      source_message_id: input.source?.messageId ?? null,
+      created_by_kind: writer.actor._tag,
+      created_by_id: actorIdOf(writer),
+      assigned_by_person_id: assignedBy,
+      assigned_at: assignedBy === null ? null : now,
+      origin_key: input.originKey,
+      created_at: input.createdAt ?? now,
+      updated_at: now,
+      closed_at: isClosed(state) ? (input.closedAt ?? now) : null,
+      party_id: partyId,
+      project_id: projectId,
+      repo: input.repo ?? null,
+      fields_json: yield* encodeFieldValues(
+        guarded === undefined ? fields : { ...fields, draftFor: guarded.draftFor },
+      ),
+      amount_minor: amount?.minor ?? null,
+      currency: amount?.currency ?? null,
+      date_at: input.dateAt ?? null,
+      date_all_day: input.dateAllDay === true ? 1 : 0,
+      repeat_json: repeat === undefined ? null : yield* encodeRepeat(repeat),
+      request_hash: input.requestHash ?? null,
+      team_shared:
+        input.team === true ||
+        writer.teammate === true ||
+        writer.teamShared === true ||
+        (writer.view !== undefined && (ROOM_LISTS as ReadonlyArray<string>).includes(list))
+          ? 1
+          : 0,
+      title_by: options.authors === undefined ? author : options.authors.title,
+      notes_by:
+        notes === "" ? null : options.authors === undefined ? author : options.authors.notes,
+      assigned_by_agent_id:
+        givenAway && writer.actor._tag === "agent" && writer.askedBy == null
+          ? writer.actor.agentId
+          : null,
+      marked_by_person_id: input.sensitive === true ? author : null,
+      asked_by_person_id: author,
+      steps_json: steps.length === 0 ? null : yield* encodeSteps(steps),
+      urgent: input.urgent === true ? 1 : null,
+    };
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
       { field: "state", from: null, to: state },
@@ -1704,8 +1769,68 @@ const make = Effect.gen(function* () {
         to: shownField(value),
       })),
     ];
+    return { values, changes, now, approved, givenAway, assignedBy, kept };
+  });
+
+  /**
+   * One new entry, in the caller's transaction. `wake` is false for the next occurrence of a
+   * repeating entry, which is owed later and is nobody's new instruction.
+   */
+  const insert = Effect.fn("KinRecords.insert")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    input: CreateInput,
+    options: InsertOptions,
+  ) {
+    const recordId = recordIdFor(orgId, input.originKey);
+    const existing = yield* byId(orgId, recordId).pipe(provideSql);
+    if (writer.teammate === true && writer.actor._tag === "person")
+      yield* teamGuard(orgId, writer.actor.personId, {
+        row: existing,
+        changes: false,
+        input,
+      }).pipe(provideSql);
+    const guarded =
+      writer.view === undefined
+        ? undefined
+        : yield* viewGuard(
+            orgId,
+            writer.view,
+            { row: existing, changes: false, input },
+            writer.actor._tag === "agent" && writer.wakeupId !== undefined
+              ? { agentId: writer.actor.agentId, wakeupId: writer.wakeupId }
+              : undefined,
+          ).pipe(provideSql);
+    if (existing !== undefined) {
+      const [stored] = yield* sql<{ hash: string | null }>`SELECT request_hash AS hash
+        FROM kin_records WHERE org_id = ${orgId} AND record_id = ${recordId}`;
+      if (
+        input.requestHash !== undefined &&
+        stored?.hash != null &&
+        stored.hash !== input.requestHash
+      )
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: "That retry key already created a different entry.",
+        });
+      return { row: existing, created: false };
+    }
+    const { values, changes, now, approved, givenAway, assignedBy, kept } = yield* prepareNew(
+      orgId,
+      writer,
+      input,
+      recordId,
+      guarded,
+      options,
+    );
+    const { key, register_id: list } = values;
+    yield* sql`INSERT INTO kin_records ${sql.insert(values)}`;
+    if (approved?.keeps === true)
+      yield* recordMade(orgId, approved.questionId, { kind: "entry", recordId, key, list }).pipe(
+        provideSql,
+      );
     const seq = yield* logChange(orgId, writer, { recordId, key, rev: 1 }, "created", changes, now);
-    yield* choicesMoved(orgId, def.id);
+    yield* choicesMoved(orgId, list);
     if (input.source !== undefined)
       yield* insertLink(
         orgId,
@@ -1834,6 +1959,78 @@ const make = Effect.gen(function* () {
         return result;
       }),
     );
+  });
+
+  const createImportChunk = Effect.fn("KinRecords.createImportChunk")(function* (
+    orgId: KinOrgId,
+    personId: KinPersonId,
+    list: "work" | "expenses",
+    entries: ReadonlyArray<PlainImportInput>,
+  ) {
+    if (entries.length === 0) return true;
+    return yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const owner = { _tag: "person", personId } as const;
+          const writer: Writer = { actor: owner, via: "import" };
+          if (entries.some((entry) => recordsMoney(entry.amount, undefined)))
+            yield* countryFirst(orgId).pipe(provideSql);
+          const def = yield* resolveList(orgId, list);
+          yield* ownerExists(orgId, owner);
+          const reservation = yield* reserveKeys(
+            orgId,
+            def,
+            yield* Clock.currentTimeMillis,
+            entries.length,
+          );
+          const records = [];
+          const history = [];
+          for (const [offset, entry] of entries.entries()) {
+            const recordId = recordIdFor(orgId, entry.originKey);
+            const { values, changes, now } = yield* prepareNew(
+              orgId,
+              writer,
+              { ...entry, list, owner },
+              recordId,
+              undefined,
+              { wake: false },
+              { def, prefix: reservation.prefix, next: reservation.next + offset },
+            );
+            records.push(values);
+            history.push(
+              yield* changeValues(orgId, writer, { recordId, rev: 1 }, "created", changes, now),
+            );
+          }
+          if (!Arr.isArrayNonEmpty(records) || !Arr.isArrayNonEmpty(history))
+            return yield* unavailable;
+          yield* sql`INSERT INTO kin_records ${sql.insert(records)}`;
+          const ids = records.map((one) => one.record_id);
+          // Replay one by one if these writes move a teammate's per-entry sequence.
+          if ((yield* teamPairs(orgId, ids).pipe(provideSql)).length > 0) return yield* unavailable;
+          const changes = yield* sql<{ recordId: string; seq: number }>`
+        INSERT INTO kin_record_changes ${sql.insert(history)} RETURNING record_id AS "recordId", seq`;
+          const sequenceById = new Map(changes.map((one) => [one.recordId, one.seq]));
+          yield* indexRecords(orgId, ids).pipe(provideSql);
+          let previous = 0;
+          for (const one of records) {
+            const seq = sequenceById.get(one.record_id);
+            if (seq === undefined || seq <= previous) return yield* unavailable;
+            previous = seq;
+            yield* sql.afterCommit(
+              PubSub.publish(ticks, {
+                orgId,
+                seq,
+                key: one.key,
+                registerId: list,
+                created: true,
+                team: new Map<string, number>(),
+              }),
+            );
+          }
+          return true;
+        }),
+      )
+      .pipe(Effect.orElseSucceed(() => false));
   });
 
   /**
@@ -3225,6 +3422,7 @@ const make = Effect.gen(function* () {
 
   return KinRecords.of({
     create,
+    createImportChunk,
     update,
     principalExists: Effect.fn("KinRecords.principalExists")(function* (orgId, who, role) {
       return yield* failed(ownerExists(orgId, who, role));
