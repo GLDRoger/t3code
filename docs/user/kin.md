@@ -416,9 +416,10 @@ hosting", "the GST filing is due on the 20th". It records the entry and answers 
   [Bank and card statements](./kin-statements.md)); or set it yourself, with the day in **Repaid
   on**. Choose **not reimbursable** when the partner won't be paid back. A refund on something a
   partner paid for, entered as a minus amount funded by them, comes off what they're owed. In
-  **Next 30 days**, **Owed to partners** lists each partner, per currency. Pick **Who is this?**
-  beside expenses marked owed with an address or no partner, to set that teammate as Funded by on
-  all of them.
+  **Next 30 days**, each partner's balance is its own row, per currency: what they're owed under
+  **Going out**, and refunds they hold under **Coming in**; one partner never offsets another.
+  Under **Partners to name**, pick **Who is this?** beside expenses marked owed with an address or
+  no partner, to set that teammate as Funded by on all of them.
 - **Imported expenses a partner paid.** An import can say a partner paid with an email address,
   without saying who that is in Kin or whether they were paid back. Until you say, those expenses
   count as the company's own spending, as they did before. **Paid personally, not counted as owed

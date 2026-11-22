@@ -306,7 +306,7 @@ function OutlookRows(props: {
               note={row.note}
               amount={row.amount}
               estimate={row.estimate}
-              onOpen={() => props.onOpenKey(row.key)}
+              {...(row.key === null ? {} : { onOpen: () => props.onOpenKey(row.key!) })}
             />
           </li>
         ))}

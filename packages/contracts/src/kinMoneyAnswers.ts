@@ -172,7 +172,10 @@ export const KinOutlook = Schema.Struct({
   pastDueOut: Schema.Array(KinOutlookItem),
   /** Overdue invoices: listed, never counted as coming in. */
   overdueIn: Schema.Array(KinOutlookItem),
-  /** What partners are owed back, counted as going out now; absent from older hosts. */
+  /**
+   * What partners are owed back, per currency: a positive balance counts going out now, a negative
+   * one (refunds they hold) coming in; never netted across partners. Absent from older hosts.
+   */
   owedToPartners: Schema.optional(Schema.Array(KinPartnerOwed)),
   /** Imported partner addresses waiting for the owner's word; counted as before until then. */
   partnersUnsaid: Schema.optional(Schema.Array(KinPartnerUnsaid)),

@@ -105,9 +105,11 @@ export const KIN_OUTLOOK = {
   apart: (currency: string) => `No ${currency} runway: two accounts look the same.`,
   notRunningDown: (currency: string) =>
     `${currency} cash isn't running down: the last three months brought in at least what went out.`,
-  partners: "Owed to partners, counted as going out",
+  partners: "Partners to name",
   partnerNote: (count: number, oldest: string) =>
     `${count} expense${count === 1 ? "" : "s"} they paid, since ${oldest}`,
+  partnerOwed: (name: string) => `Owed back to ${name}`,
+  partnerReturns: (name: string) => `Refunds ${name} holds, coming back`,
   unmatched: "An imported address no teammate is matched to yet",
   nameless: "Marked owed with no partner named",
   whoIsThis: "Who is this?",
@@ -358,7 +360,8 @@ export function kinCashView(cash: KinCash, rates: KinRates | null, now: Date): K
 
 export interface KinOutlookRowView {
   readonly id: string;
-  readonly key: KinRecordKey;
+  /** Null for a partner's balance: it sums their expenses and opens none. */
+  readonly key: KinRecordKey | null;
   readonly title: string;
   /** "Invoices · 20 Nov · repeats". */
   readonly note: string;
@@ -434,7 +437,32 @@ export function kinOutlookView(
     const about = estimateOf(money, rates);
     if (about !== null) estimates.set(kinSignedText(money, false), about);
   }
-  const outgoing = [...outlook.pastDueOut, ...outlook.goingOut];
+  // A partner's balance in each currency is its own row, under the figure it counts in.
+  const balances = (outlook.owedToPartners ?? []).flatMap((one) =>
+    one.owed.map((money) => ({ one, money })),
+  );
+  const partnerRow = ({ one, money }: (typeof balances)[number]): KinOutlookRowView => {
+    const shownMoney = money.minor < 0 ? { ...money, minor: -money.minor } : money;
+    return {
+      id: `partner:${one.personId ?? one.address ?? one.name}:${money.currency}`,
+      key: null,
+      title:
+        money.minor < 0 ? KIN_OUTLOOK.partnerReturns(one.name) : KIN_OUTLOOK.partnerOwed(one.name),
+      note:
+        one.personId !== null
+          ? KIN_OUTLOOK.partnerNote(one.expenses, afterLabel(onLabel(one.oldest, now)))
+          : one.address === null
+            ? KIN_OUTLOOK.nameless
+            : KIN_OUTLOOK.unmatched,
+      amount: kinMoneyText(shownMoney),
+      estimate: kinEstimate(shownMoney, rates)?.text ?? null,
+    };
+  };
+  const outgoing = [
+    ...outlook.pastDueOut.map(row("out")),
+    ...outlook.goingOut.map((one, index) => row("out")(one, outlook.pastDueOut.length + index)),
+    ...balances.filter(({ money }) => money.minor > 0).map(partnerRow),
+  ];
   return {
     empty:
       outlook.expectedIn.length === 0 &&
@@ -444,26 +472,32 @@ export function kinOutlookView(
     goingOut: kinTotalsLines(outlook.expectedOut),
     net: outlook.net.map((one) => kinSignedText(one, false)),
     estimates,
-    incoming: outlook.comingIn.map(row("in")),
-    outgoing: outgoing.map(row("out")),
+    incoming: [
+      ...outlook.comingIn.map(row("in")),
+      ...balances.filter(({ money }) => money.minor < 0).map(partnerRow),
+    ],
+    outgoing,
     more: { incoming: outlook.moreComingIn, outgoing: outlook.moreGoingOut },
     notes: [
       ...(outlook.overdueIn.length === 0 ? [] : [KIN_OUTLOOK.overdueIn(outlook.overdueIn.length)]),
       ...(outlook.incomplete.length === 0 ? [] : [KIN_OUTLOOK.short]),
     ],
     runway: outlook.runway.map((one) => ({ currency: one.currency, text: kinRunwayText(one) })),
-    partners: (outlook.owedToPartners ?? []).map((one) => ({
-      id: one.personId ?? `address:${one.address ?? one.name}`,
-      name: one.name,
-      amount: kinTotalsLines(one.owed).join(" + "),
-      note:
-        one.personId !== null
-          ? KIN_OUTLOOK.partnerNote(one.expenses, afterLabel(onLabel(one.oldest, now)))
-          : one.address === null
-            ? KIN_OUTLOOK.nameless
-            : KIN_OUTLOOK.unmatched,
-      match: one.personId === null ? { address: one.address } : null,
-    })),
+    // Only who still needs a person named: every balance is already a row above.
+    partners: (outlook.owedToPartners ?? [])
+      .filter((one) => one.personId === null)
+      .map((one) => ({
+        id: one.personId ?? `address:${one.address ?? one.name}`,
+        name: one.name,
+        amount: kinTotalsLines(one.owed).join(" + "),
+        note:
+          one.personId !== null
+            ? KIN_OUTLOOK.partnerNote(one.expenses, afterLabel(onLabel(one.oldest, now)))
+            : one.address === null
+              ? KIN_OUTLOOK.nameless
+              : KIN_OUTLOOK.unmatched,
+        match: one.personId === null ? { address: one.address } : null,
+      })),
     unsaid: (outlook.partnersUnsaid ?? []).map((one) => ({
       address: one.address,
       amount: kinTotalsLines(one.total).join(" + "),

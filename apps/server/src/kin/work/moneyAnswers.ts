@@ -554,20 +554,25 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
     now,
   );
 
-  // What the company owes partners back is due now: it goes out in every window.
+  // What the company owes partners back is due now, in every window. Each partner's balance
+  // stands alone: one owed back goes out, one holding refunds returns them, never netted.
   const partners = yield* partnersOwed(orgId, home);
-  const toPartners = partners.flatMap((one) => one.entries);
+  const balances = partners.flatMap((one) => one.owed);
+  const toPartners = balances.filter((money) => money.minor > 0);
+  const fromPartners = balances
+    .filter((money) => money.minor < 0)
+    .map((money) => ({ minor: -money.minor, currency: money.currency }));
 
   const windows = ends.map(({ days: span, end }) => {
     const inWindow = (one: Expected) => one.at <= end;
     const expectedIn = addUp(
-      incoming.filter(inWindow).map((one) => one.money),
+      [...incoming.filter(inWindow).map((one) => one.money), ...fromPartners],
       home,
     );
     const expectedOut = addUp(
       [
         ...overdueOut.map((one) => one.money),
-        ...toPartners.map((one) => one.money),
+        ...toPartners,
         ...dueOut.filter(inWindow).map((one) => one.money),
       ],
       home,
@@ -719,6 +724,28 @@ const itemsShown = (items: ReadonlyArray<Expected>, zone: string) =>
   }));
 
 /** The outlook as an agent quotes it, inputs included so it can say how a figure was reached. */
+/** Each partner's balance on its own: owed back counts going out, refunds they hold coming in. */
+const partnerBalances = (partners: Outlook["partners"]) => {
+  const named = (one: Outlook["partners"][number]) =>
+    one.personId === null ? `${one.name} (unmatched)` : one.name;
+  const owing = partners.flatMap((one) => {
+    const owed = one.owed.filter((money) => money.minor > 0);
+    return owed.length === 0
+      ? []
+      : [{ partner: named(one), owed: shown(owed), expenses: one.entries.length }];
+  });
+  const holding = partners.flatMap((one) => {
+    const held = one.owed
+      .filter((money) => money.minor < 0)
+      .map((money) => ({ minor: -money.minor, currency: money.currency }));
+    return held.length === 0 ? [] : [{ partner: named(one), returns: shown(held) }];
+  });
+  return {
+    ...(owing.length === 0 ? {} : { owedToPartnersCountedAsGoingOut: owing }),
+    ...(holding.length === 0 ? {} : { refundsPartnersHoldCountedAsComingIn: holding }),
+  };
+};
+
 export const outlookAnswer = (view: Outlook) => ({
   today: view.today,
   windows: view.windows.map((one) => ({
@@ -748,15 +775,7 @@ export const outlookAnswer = (view: Outlook) => ({
   ...(view.overdueOut.length === 0
     ? {}
     : { pastDueCountedAsGoingOut: itemsShown(view.overdueOut, view.timeZone) }),
-  ...(view.partners.length === 0
-    ? {}
-    : {
-        owedToPartnersCountedAsGoingOut: view.partners.map((one) => ({
-          partner: one.personId === null ? `${one.name} (unmatched)` : one.name,
-          owed: shown(one.owed),
-          expenses: one.entries.length,
-        })),
-      }),
+  ...partnerBalances(view.partners),
   ...(view.unsaid.length === 0
     ? {}
     : {

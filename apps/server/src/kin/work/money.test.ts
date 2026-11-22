@@ -5419,6 +5419,33 @@ describe("money answers", () => {
           out: [inr(3_700), { minor: 3_000, currency: "USD" }],
           spent: {},
         });
+        // Another partner holding a refund nets against nobody: it comes back, on its own row.
+        const comingIn = Effect.map(outlook(orgId, NOW), (view) => view.windows[0]!.expectedIn);
+        const before = yield* comingIn;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('zoya', ${orgId}, 'zoya', 'Zoya', ${at})`;
+        const { row: held } = yield* spend("zoya refund", "2026-09-07", inr(-3_000), {
+          fundedBy: "person:zoya",
+        });
+        const view = yield* outlook(orgId, NOW);
+        assert.deepStrictEqual(
+          [
+            view.windows[0]!.expectedOut,
+            addUp([...before, inr(3_000)], "INR"),
+            outlookAnswer(view).owedToPartnersCountedAsGoingOut,
+            outlookAnswer(view).refundsPartnersHoldCountedAsComingIn,
+          ],
+          [
+            [inr(3_700), { minor: 3_000, currency: "USD" }],
+            view.windows[0]!.expectedIn,
+            [
+              { partner: "Meera", owed: "₹3,200.00 + $30.00", expenses: 3 },
+              { partner: "Dev Malhotra", owed: "₹500.00", expenses: 1 },
+            ],
+            [{ partner: "Zoya", returns: "₹3,000.00" }],
+          ],
+        );
+        yield* records.update(orgId, system, held.key, { state: "dropped" });
 
         // Paid back on 2026-10-20: out of what is owed, into October's spending, once.
         for (const key of ["EXP-1", "EXP-2", "EXP-3", "EXP-6"])
