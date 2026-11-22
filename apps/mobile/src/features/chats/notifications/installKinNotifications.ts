@@ -39,6 +39,7 @@ import {
   kinPushPermissionStep,
   kinPushRegisterInput,
   kinPushToken,
+  type KinPushLeave,
 } from "./kinPushRegistration";
 
 // A refusal is final for this response; anything else (a dropped socket) waits for a connect.
@@ -226,11 +227,13 @@ async function takeBackPush(environmentId: EnvironmentId) {
 
 /**
  * Forgets a host after taking this phone's Kin alerts back from it. Leaving always completes;
- * when the host didn't confirm, the person is told the alerts may continue.
+ * when the host didn't confirm, the person is told the alerts may continue, or `tell` is given
+ * the outcome to tell it with others.
  */
 export async function forgetKinHost<A>(
   environmentId: EnvironmentId,
   remove: () => Promise<A>,
+  tell?: (outcome: KinPushLeave) => void,
 ): Promise<A> {
   if (os === null) return remove();
   const { outcome, team } = await takeBackPush(environmentId);
@@ -238,7 +241,8 @@ export async function forgetKinHost<A>(
     return await remove();
   } finally {
     pushFence.release(environmentId);
-    if (outcome === "unconfirmed")
+    if (tell !== undefined) tell(outcome);
+    else if (outcome === "unconfirmed")
       Dialog.alert(
         `${team ?? "This team"} may still notify this phone`,
         "Kin couldn't confirm with that computer. To stop them, remove this phone under Your devices from another device.",

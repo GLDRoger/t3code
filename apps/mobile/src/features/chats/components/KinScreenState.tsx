@@ -104,7 +104,9 @@ export function KinScreenState(props: {
       return teammate ? (
         <EmptyState
           variant="plain"
-          {...(state.unreachable === true ? KIN_TEAMMATE_UNREACHABLE : KIN_TEAMMATE_NO_HOST)}
+          {...(state.unreachable === true
+            ? { ...KIN_TEAMMATE_UNREACHABLE, onAction: () => navigation.navigate("KinJoin") }
+            : KIN_TEAMMATE_NO_HOST)}
         />
       ) : (
         <EmptyState

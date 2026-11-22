@@ -14,11 +14,12 @@ export const KIN_ONLY_UNREACHABLE = {
   actionLabel: "Connect to your Kin",
 } as const;
 
-/** A teammate's phone with no answer from their team's Kin. */
+/** A teammate's phone with no answer from their team's Kin; after signing out, the way back in. */
 export const KIN_TEAMMATE_UNREACHABLE = {
   title: "Can't reach your team's Kin",
   detail:
     "Your chats come back when it answers. If you signed out, ask your team for a new join link.",
+  actionLabel: "Join with a new link",
 } as const;
 
 /** A teammate's phone connected to a computer that doesn't run Kin. */

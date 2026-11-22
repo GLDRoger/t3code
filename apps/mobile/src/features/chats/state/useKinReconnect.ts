@@ -28,6 +28,7 @@ import { appAtomRegistry } from "../../../state/atom-registry";
 import { environmentPresentations } from "../../../state/presentation";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { useConnectionController } from "../../connection/useConnectionController";
+import type { KinPushLeave } from "../notifications/kinPushRegistration";
 import { kinLeavingAtom, kinLetGo } from "./kinLeaving";
 import { kinCachedOrgsAtom, kinClient } from "./kinClient";
 
@@ -143,13 +144,24 @@ export function useForgetReplacedComputers(enabled: boolean): void {
   }, [enabled, replaced, removeEnvironment]);
 }
 
-/** What this phone is letting go of, and the way to let one go. */
+/**
+ * What this phone is letting go of, and the way to let computers go, which gives back what each
+ * said to taking this phone's notices back, for the caller to tell once.
+ */
 export function useKinLeaving(): {
   readonly leaving: ReadonlyArray<EnvironmentId>;
-  readonly forget: (environmentId: EnvironmentId) => void;
+  readonly letGo: (
+    environmentIds: ReadonlyArray<EnvironmentId>,
+  ) => Promise<ReadonlyMap<EnvironmentId, KinPushLeave>>;
 } {
   const leaving = useAtomValue(kinLeavingAtom);
   const { removeEnvironment } = useConnectionController();
-  const forget = (environmentId: EnvironmentId) => void kinLetGo(environmentId, removeEnvironment);
-  return { leaving, forget };
+  const letGo = async (environmentIds: ReadonlyArray<EnvironmentId>) => {
+    const outcomes = new Map<EnvironmentId, KinPushLeave>();
+    await kinLetGo(environmentIds, (id) =>
+      removeEnvironment(id, (outcome) => outcomes.set(id, outcome)),
+    );
+    return outcomes;
+  };
+  return { leaving, letGo };
 }

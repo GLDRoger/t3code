@@ -4,6 +4,7 @@ import {
   kinJoinSignedInAs,
   kinReplacedComputers,
   kinSignOutExits,
+  kinSignOutGroup,
   type KinExitCandidate,
   type KinHeldComputer,
 } from "./kinDevice.ts";
@@ -132,6 +133,29 @@ describe("kinSignOutExits", () => {
     for (const one of cases) {
       expect(kinSignOutExits(one.rows, one.host), one.name).toEqual(one.exits);
     }
+  });
+
+  it("signing out of a team takes every held computer of that team, the pressed one first, and no other team's", () => {
+    const row = (environmentId: string, overrides: Partial<KinExitCandidate> = {}) => ({
+      environmentId,
+      label: "Studio desktop",
+      team: "Ambermill",
+      connected: false,
+      ...overrides,
+    });
+    const rows = [
+      row("old-1"),
+      row("never-named", { team: null }),
+      row("other-team", { team: "Lumen Grove" }),
+      row("live", { connected: true }),
+      row("old-2"),
+    ];
+    expect(kinSignOutGroup(rows, "live")).toEqual(["live", "old-1", "old-2"]);
+    // A computer that never named its team leaves with the computers of its name.
+    expect(
+      kinSignOutGroup([row("live", { team: null }), row("old", { team: null })], "live"),
+    ).toEqual(["live", "old"]);
+    expect(kinSignOutGroup(rows, "gone")).toEqual([]);
   });
 });
 
