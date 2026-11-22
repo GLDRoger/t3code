@@ -179,6 +179,8 @@ const tableNames = [
   "kin_trigger_inbox",
   "kin_trigger_settings",
   "kin_triggers",
+  "kin_trouble_agents",
+  "kin_troubles",
   "kin_turn_figures",
   "kin_visual_hosts",
   "kin_waiting",
@@ -583,6 +585,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_doc_versions_file" },
           { name: "idx_kin_dream_runs_material" },
           { name: "idx_kin_events_dedupe" },
+          { name: "idx_kin_events_held_by" },
           { name: "idx_kin_events_queue" },
           { name: "idx_kin_events_wakeup" },
           { name: "idx_kin_floor_grant_scope" },
@@ -635,6 +638,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_trigger_inbox_pending" },
           { name: "idx_kin_trigger_inbox_retention" },
           { name: "idx_kin_triggers_due" },
+          { name: "idx_kin_troubles_open" },
           { name: "idx_kin_waiting_open_widget_person" },
           { name: "idx_kin_waiting_person_resolved_at" },
           { name: "idx_kin_wakeups_running_lead" },
@@ -764,6 +768,8 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_budget_charges`;
       yield* sql`DROP TABLE kin_lead_deliveries`;
       yield* sql`DROP TABLE kin_scheduled_tasks`;
+      yield* sql`DROP INDEX idx_kin_events_held_by`;
+      yield* sql`ALTER TABLE kin_events DROP COLUMN held_by`;
       yield* sql`ALTER TABLE kin_events DROP COLUMN replied_at`;
       yield* sql`ALTER TABLE kin_events DROP COLUMN budget_deferred`;
       for (const column of [
@@ -1908,7 +1914,7 @@ describe("Kin migrations", () => {
         // Later branches' migrations run after these too; only these three are this test's.
         assert.deepStrictEqual(
           (yield* runKinMigrations()).map(([id]) => id),
-          [196, 197, 198, 199, 200, 201, 202, 203],
+          [196, 197, 198, 199, 200, 201, 202, 203, 205],
         );
         assert.deepStrictEqual(yield* receipts, [
           { trigger_key: "review:ambermill/shop#7", review_url: null },
@@ -1957,7 +1963,7 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* added, []);
       assert.deepStrictEqual(
         (yield* runKinMigrations()).map(([id]) => id),
-        [197, 198, 199, 200, 201, 202, 203],
+        [197, 198, 199, 200, 201, 202, 203, 205],
       );
       const all = [
         "approved_at",
@@ -1973,7 +1979,7 @@ describe("Kin migrations", () => {
         (yield* added).map(({ name }) => name),
         all,
       );
-      for (const from of [197, 198, 199, 200, 201, 202, 203]) {
+      for (const from of [197, 198, 199, 200, 201, 202, 203, 205]) {
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
         assert.deepStrictEqual(
@@ -2147,6 +2153,34 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect(
+    "K205 gives a host on K203 the trouble tables and held_by, one open trouble per cause, and reruns",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        yield* sql`DROP INDEX idx_kin_events_held_by`;
+        yield* sql`ALTER TABLE kin_events DROP COLUMN held_by`;
+        yield* sql`DROP TABLE kin_trouble_agents`;
+        yield* sql`DROP TABLE kin_troubles`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 205`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(205));
+        const open = (id: string, closedAt: number | null) =>
+          sql`INSERT INTO kin_troubles (trouble_id, org_id, cause, opened_at, closed_at)
+            VALUES (${id}, 'org', 'space', 1, ${closedAt})`;
+        yield* open("t1", 2);
+        yield* open("t2", null);
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(open("t3", null))));
+        const columns = yield* sql<{
+          name: string;
+        }>`SELECT name FROM pragma_table_info('kin_events')
+          WHERE name = 'held_by'`;
+        assert.lengthOf(columns, 1);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 205`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(205));
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -2157,7 +2191,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 203");
+      assert.include(String(exit), "below the latest applied migration 205");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -2251,6 +2285,7 @@ describe("Kin migrations", () => {
           attempts: 1,
           budget_deferred: 0,
           replied_at: null,
+          held_by: null,
         },
         kin_workers: {
           org_id: "org",

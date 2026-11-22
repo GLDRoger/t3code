@@ -337,18 +337,20 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
     // Chief of staff ran a turn: space is back for everyone, but Finance is still signed out.
     yield* care.succeeded(orgId, chief);
     assert.isUndefined(yield* care.causeFor(orgId, chief));
+    // Closed, its held turns woken: none has run yet, and the notice says only what has.
     assert.deepStrictEqual(
       (yield* cards).map((card) => [card.cause, card.open, card.closed?.ran]),
       [
         ["signin", true, undefined],
-        ["space", false, 2],
+        ["space", false, 0],
       ],
     );
     const events = yield* sql<{ eventId: string; notBefore: number }>`SELECT event_id AS "eventId",
       not_before AS "notBefore" FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`;
+    // Finance's turn is held by the sign-in trouble it hit last, so space coming back leaves it.
     assert.deepStrictEqual(events, [
       { eventId: "e1", notBefore: DAY_START },
-      { eventId: "e2", notBefore: DAY_START },
+      { eventId: "e2", notBefore: NOW + 5 * 60_000 },
     ]);
     // A new failure for space after it closed opens a fresh notice.
     yield* care.failed({ orgId, agentId: chief, cause: "space", eventIds: [first] });
@@ -363,14 +365,42 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
     // Try again runs exactly the held turns; they stay listed until a turn proves the cause gone.
     yield* sql`UPDATE kin_events SET not_before = ${DAY_START + HOUR}`;
     assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 2 });
-    // Try again ran the held turn before a turn proved space back: it still counts as run.
+    // Try again ran the held turn before a turn proved space back: it counts as run, as a turn
+    // the first notice held counts once it has finished.
     yield* sql`UPDATE kin_events SET state = 'done' WHERE event_id = ${first}`;
     yield* care.succeeded(orgId, chief);
     assert.deepStrictEqual(
       (yield* cards).filter((card) => card.cause === "space").map((card) => card.closed?.ran),
-      [2, 1],
+      [0, 1],
     );
   }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "keeps a trouble's held turns on their own rows, however many, for Settings and Try again",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(DAY_START);
+      yield* seed;
+      const care = yield* KinHostCare.KinHostCare;
+      const sql = yield* SqlClient.SqlClient;
+      const chief = KinAgentId.make("chief");
+      const ids = yield* Effect.forEach(
+        Array.from({ length: 600 }, (_, n) => n),
+        (n) => queued(`e${String(n).padStart(3, "0")}`, "chief"),
+      );
+      yield* care.failed({ orgId, agentId: chief, cause: "signin", eventIds: ids });
+      const shown = (yield* care.status(orgId)).agents.troubles;
+      assert.deepStrictEqual(
+        shown.map(({ card }) => [card.cause, card.count]),
+        [["signin", 600]],
+      );
+      const held = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_events
+      WHERE org_id = ${orgId} AND held_by = ${shown[0]!.widgetId}`;
+      assert.deepStrictEqual(held, [{ n: 600 }]);
+      yield* sql`UPDATE kin_events SET not_before = ${DAY_START + HOUR}`;
+      assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 600 });
+    }).pipe(Effect.provide(services)),
 );
 
 const space =

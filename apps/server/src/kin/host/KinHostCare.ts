@@ -4,12 +4,12 @@ import {
   kinBytesText,
   KIN_HOST_TROUBLE_CARD,
   KinChatError,
+  KinEventId,
   KinHostTroubleCard,
   KinMessageId,
   KinWidgetId,
   kinTroubleWords,
   type KinAgentId,
-  type KinEventId,
   type KinHostFreeSpaceResult,
   type KinHostStatus,
   type KinHostUsage,
@@ -55,15 +55,15 @@ export const HOLD_MS: Readonly<Partial<Record<KinTroubleCause, number>>> = {
 };
 /** Causes any agent's next good turn proves gone; the rest clear per agent. */
 const HOST_WIDE: ReadonlySet<KinTroubleCause> = new Set(["space", "unreachable"]);
-const HELD_IDS_KEPT = 500;
 // A low-space warning cleans at most this often; an out-of-space failure always cleans.
 const LOW_CLEAN_EVERY_MS = 10 * 60_000;
 const LOW_PERCENT = 20;
 const OUT_BYTES = 64 * 1024 * 1024;
 
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
-const decodeCard = Schema.decodeUnknownOption(Schema.fromJsonString(KinHostTroubleCard));
+const decodeCardValue = Schema.decodeUnknownOption(KinHostTroubleCard);
 const encodeCard = Schema.encodeSync(KinHostTroubleCard);
+const encodeCardJson = Schema.encodeSync(Schema.fromJsonString(KinHostTroubleCard));
 const encodeIds = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
 const decodeDevSpace = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ freeBytes: Schema.Number, totalBytes: Schema.Number })),
@@ -303,22 +303,72 @@ const make = Effect.gen(function* () {
       });
   });
 
+  // One writer of troubles at a time in this process; the open-cause index guards the rest.
   const troubleLock = yield* Semaphore.make(1);
-  const openCards = Effect.fn("KinHostCare.openCards")(function* (orgId: KinOrgId) {
-    const rows = yield* sql<{ widgetId: string; state: string }>`SELECT widget_id AS "widgetId",
-        state_json AS state FROM kin_widgets
-      WHERE org_id = ${orgId} AND type = ${KIN_HOST_TROUBLE_CARD} AND closed_at IS NULL
-      ORDER BY widget_id`;
-    return rows.flatMap((row) =>
-      Option.toArray(
-        Option.map(decodeCard(row.state), (card) => ({
-          widgetId: KinWidgetId.make(row.widgetId),
-          card,
-        })),
-      ),
+  type Trouble = {
+    readonly troubleId: string;
+    readonly cause: KinTroubleCause;
+    readonly openedAt: number;
+    readonly closedAt: number | null;
+    readonly autoCleanAt: number | null;
+    readonly toldAt: number | null;
+    readonly resetAt: string | null;
+    readonly detail: string | null;
+    readonly backupConfigured: number | null;
+    readonly lastGoodAt: string | null;
+  };
+  const troubleColumns = sql`trouble_id AS "troubleId", cause, opened_at AS "openedAt",
+    closed_at AS "closedAt", auto_clean_at AS "autoCleanAt", told_at AS "toldAt",
+    reset_at AS "resetAt", detail, backup_configured AS "backupConfigured",
+    last_good_at AS "lastGoodAt"`;
+  const openTroubles = (orgId: KinOrgId) =>
+    sql<Trouble>`SELECT ${troubleColumns} FROM kin_troubles
+      WHERE org_id = ${orgId} AND closed_at IS NULL ORDER BY trouble_id`;
+  const troubleById = (orgId: KinOrgId, troubleId: string) =>
+    sql<Trouble>`SELECT ${troubleColumns} FROM kin_troubles
+      WHERE org_id = ${orgId} AND trouble_id = ${troubleId} ORDER BY trouble_id`.pipe(
+      Effect.map((rows) => rows[0]),
     );
+  /** The trouble's held turns, as their event rows say: no list kept anywhere else. */
+  const heldIds = (orgId: KinOrgId, troubleId: string) =>
+    sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+      WHERE org_id = ${orgId} AND held_by = ${troubleId} AND state IN ('queued', 'failed')
+      ORDER BY event_id`.pipe(
+      Effect.map((rows) => rows.map((row) => KinEventId.make(row.eventId))),
+    );
+
+  /** The notice's facts, read from the trouble and its turns' own rows. */
+  const cardOf = Effect.fn("KinHostCare.cardOf")(function* (orgId: KinOrgId, trouble: Trouble) {
+    const agents = yield* sql<{
+      agentId: string;
+      name: string;
+    }>`SELECT agent_id AS "agentId", name FROM kin_trouble_agents
+      WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} ORDER BY rowid`;
+    const [counts] = yield* sql<{ held: number | null; done: number | null }>`SELECT
+        SUM(CASE WHEN state = 'queued' THEN 1 ELSE 0 END) AS held,
+        SUM(CASE WHEN state = 'done' THEN 1 ELSE 0 END) AS done
+      FROM kin_events WHERE org_id = ${orgId} AND held_by = ${trouble.troubleId}`;
+    const using = trouble.cause === "space" ? usingText(usage) : undefined;
+    return {
+      cause: trouble.cause,
+      agents: agents.slice(0, 50).map((agent) => ({
+        agentId: agent.agentId as KinAgentId,
+        name: agent.name,
+      })),
+      count: counts?.held ?? 0,
+      openedAt: iso(trouble.openedAt),
+      ...(trouble.resetAt === null ? {} : { resetAt: trouble.resetAt }),
+      ...(using === undefined ? {} : { using }),
+      ...(trouble.backupConfigured === null
+        ? {}
+        : { backupConfigured: trouble.backupConfigured === 1 }),
+      ...(trouble.lastGoodAt === null ? {} : { lastGoodAt: trouble.lastGoodAt }),
+      ...(trouble.detail === null ? {} : { detail: trouble.detail }),
+      closed:
+        trouble.closedAt === null ? null : { at: iso(trouble.closedAt), ran: counts?.done ?? 0 },
+    } satisfies KinHostTroubleCard;
   });
-  const heldOf = (card: KinHostTroubleCard) => (card.held ?? []).map((id) => id as KinEventId);
+
   const words = Effect.fn("KinHostCare.words")(function* (
     orgId: KinOrgId,
     card: KinHostTroubleCard,
@@ -340,14 +390,35 @@ const make = Effect.gen(function* () {
     // The message says what is wrong; its card carries what changes (the count, the fix).
     return kinTroubleWords(card, at).what;
   });
-  const writeCard = Effect.fn("KinHostCare.writeCard")(function* (
+
+  /** Where the owner is told: the lead's chat with them. */
+  const noticeChat = Effect.fn("KinHostCare.noticeChat")(function* (orgId: KinOrgId) {
+    const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
+    return lead?.ownerChatId;
+  });
+
+  /**
+   * Draws the trouble's notice from its stored state: redraws a posted one when its facts changed,
+   * and posts it when `announce` and nothing was posted yet. Posting records that the owner was
+   * told; a refused post leaves the trouble as it is, still shown in Settings.
+   */
+  const project = Effect.fn("KinHostCare.project")(function* (
     orgId: KinOrgId,
-    existing: KinWidget | undefined,
-    card: KinHostTroubleCard,
-    now: number,
+    troubleId: string,
+    announce: boolean,
   ) {
+    const trouble = yield* troubleById(orgId, troubleId);
+    if (trouble === undefined) return;
+    const card = yield* cardOf(orgId, trouble);
     const state = encodeCard(card);
+    const now = yield* Clock.currentTimeMillis;
+    const widgetId = KinWidgetId.make(troubleId);
+    const existing = yield* repo
+      .getWidget({ orgId, widgetId })
+      .pipe(Effect.map(Option.getOrUndefined));
     if (existing !== undefined) {
+      const shown = decodeCardValue(existing.state);
+      if (Option.isSome(shown) && encodeCardJson(shown.value) === encodeCardJson(card)) return;
       const widget = yield* repo.updateWidget({
         ...existing,
         audience: "owner",
@@ -359,17 +430,12 @@ const make = Effect.gen(function* () {
       yield* publish({ type: "widget.updated", orgId, widget });
       return;
     }
-    const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
-    if (lead === undefined) return;
-    const prefix = `kin-trouble:${orgId}:${card.cause}:`;
-    // Callers hold `troubleLock` in a transaction, so the next number is this one's alone.
-    const [{ opened } = { opened: 0 }] = yield* sql<{ opened: number }>`SELECT COUNT(*) AS opened
-      FROM kin_widgets WHERE org_id = ${orgId} AND type = ${KIN_HOST_TROUBLE_CARD}
-        AND substr(widget_id, 1, ${prefix.length}) = ${prefix}`;
-    const widgetId = KinWidgetId.make(`${prefix}${opened + 1}`);
+    if (!announce || trouble.closedAt !== null) return;
+    const chatId = yield* noticeChat(orgId);
+    if (chatId === undefined) return;
     const message = yield* repo.insertMessage({
       orgId,
-      chatId: lead.ownerChatId,
+      chatId,
       audience: "owner",
       messageId: KinMessageId.make(widgetId),
       author: { _tag: "system" },
@@ -388,7 +454,7 @@ const make = Effect.gen(function* () {
     });
     const widget = {
       orgId,
-      chatId: lead.ownerChatId,
+      chatId,
       messageId: message.messageId,
       widgetId,
       widgetClass: "native" as const,
@@ -403,170 +469,168 @@ const make = Effect.gen(function* () {
       updatedAt: iso(now),
     };
     yield* repo.insertWidget({ ...widget, audience: "owner" });
+    yield* sql`UPDATE kin_troubles SET told_at = ${now}
+      WHERE org_id = ${orgId} AND trouble_id = ${troubleId}`;
     // The insert links the message to the card; clients only attach a card through that link.
     yield* publish({ type: "message.posted", orgId, message: { ...message, widgetId } });
     yield* publish({ type: "widget.updated", orgId, widget: { ...widget, revision: 1 } });
   });
-  const widgetOf = (orgId: KinOrgId, widgetId: KinWidgetId) =>
-    repo.getWidget({ orgId, widgetId }).pipe(Effect.map(Option.getOrUndefined));
+  /** A notice that can't be drawn never undoes the trouble it shows. */
+  const projectQuietly = (orgId: KinOrgId, troubleId: string, announce: boolean) =>
+    project(orgId, troubleId, announce).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Kin trouble notice not drawn", { orgId, troubleId, cause }),
+      ),
+    );
+
+  /** The open trouble for `cause`, opened now if there is none. Inside a transaction. */
+  const openOrGet = Effect.fn("KinHostCare.openOrGet")(function* (
+    orgId: KinOrgId,
+    cause: KinTroubleCause,
+    now: number,
+  ) {
+    const [open] = yield* sql<{ troubleId: string }>`SELECT trouble_id AS "troubleId"
+      FROM kin_troubles WHERE org_id = ${orgId} AND cause = ${cause} AND closed_at IS NULL
+      ORDER BY trouble_id`;
+    if (open !== undefined) return open.troubleId;
+    const prefix = `kin-trouble:${orgId}:${cause}:`;
+    // Numbered after every earlier one, including notices drawn before troubles had a table.
+    const [{ before } = { before: 0 }] = yield* sql<{ before: number }>`SELECT MAX(
+        (SELECT COUNT(*) FROM kin_troubles WHERE org_id = ${orgId} AND cause = ${cause}),
+        (SELECT COUNT(*) FROM kin_widgets WHERE org_id = ${orgId}
+          AND type = ${KIN_HOST_TROUBLE_CARD} AND substr(widget_id, 1, ${prefix.length}) = ${prefix})
+      ) AS before`;
+    const troubleId = `${prefix}${before + 1}`;
+    yield* sql`INSERT INTO kin_troubles (trouble_id, org_id, cause, opened_at)
+      VALUES (${troubleId}, ${orgId}, ${cause}, ${now})`;
+    return troubleId;
+  });
 
   const failed = Effect.fn("KinHostCare.failed")(
     function* (input: TroubleInput) {
       const { orgId } = input;
-      yield* troubleLock.withPermits(1)(
+      const troubleId = yield* troubleLock.withPermits(1)(
         sql.withTransaction(
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis;
-            const [agent] = yield* sql<{ name: string }>`SELECT name FROM kin_leads
-              WHERE org_id = ${orgId} AND agent_id = ${input.agentId} ORDER BY agent_id`;
-            const open = (yield* openCards(orgId)).find((one) => one.card.cause === input.cause);
-            const before = open?.card;
-            const held = new Set(before?.held ?? []);
-            const fresh = input.eventIds.filter((id) => !held.has(id));
-            for (const id of fresh) held.add(id);
-            const agents = before?.agents ?? [];
-            const named = agents.some((one) => one.agentId === input.agentId)
-              ? agents
-              : [...agents, { agentId: input.agentId, name: agent?.name ?? "An agent" }];
-            const using = input.cause === "space" ? usingText(usage) : undefined;
-            const resetAt = input.resetAt ?? before?.resetAt;
-            const card: KinHostTroubleCard = {
-              cause: input.cause,
-              agents: named.slice(0, 50),
-              count: (before?.count ?? 0) + fresh.length,
-              openedAt: before?.openedAt ?? iso(now),
-              ...(resetAt === undefined ? {} : { resetAt }),
-              ...(using === undefined ? {} : { using }),
-              ...(input.detail === undefined ? {} : { detail: input.detail.slice(0, 600) }),
-              held: [...held].slice(-HELD_IDS_KEPT),
-              closed: null,
-            };
-            const widget = open === undefined ? undefined : yield* widgetOf(orgId, open.widgetId);
-            yield* writeCard(orgId, widget, card, now);
+            const troubleId = yield* openOrGet(orgId, input.cause, now);
+            yield* sql`INSERT INTO kin_trouble_agents (trouble_id, org_id, agent_id, name, instance_id)
+              SELECT ${troubleId}, l.org_id, l.agent_id, l.name,
+                COALESCE(json_extract(l.models_json, '$.instanceId'),
+                  json_extract(l.models_json, '$.provider'))
+              FROM kin_leads l WHERE l.org_id = ${orgId} AND l.agent_id = ${input.agentId}
+              ON CONFLICT (trouble_id, agent_id) DO NOTHING`;
+            yield* sql`UPDATE kin_troubles SET
+                detail = COALESCE(${input.detail?.slice(0, 600) ?? null}, detail),
+                reset_at = COALESCE(${input.resetAt ?? null}, reset_at)
+              WHERE org_id = ${orgId} AND trouble_id = ${troubleId}`;
+            if (input.eventIds.length > 0)
+              yield* sql`UPDATE kin_events SET held_by = ${troubleId}
+                WHERE org_id = ${orgId} AND state IN ('queued', 'failed')
+                  AND event_id IN (SELECT value FROM json_each(${yield* encodeIds(input.eventIds)}))`;
+            return troubleId;
           }),
         ),
       );
+      yield* projectQuietly(orgId, troubleId, true);
     },
-    Effect.catchCause((cause) => Effect.logWarning("Kin trouble notice failed", { cause })),
+    Effect.catchCause((cause) => Effect.logWarning("Kin trouble not recorded", { cause })),
   );
 
-  const close = Effect.fn("KinHostCare.close")(function* (
-    orgId: KinOrgId,
-    which: (card: KinHostTroubleCard) => boolean,
-  ) {
-    yield* troubleLock.withPermits(1)(
+  /** Closes the trouble and runs what it held; its notice says so. */
+  const close = Effect.fn("KinHostCare.close")(function* (orgId: KinOrgId, troubleId: string) {
+    const closed = yield* troubleLock.withPermits(1)(
       Effect.gen(function* () {
-        for (const open of yield* openCards(orgId)) {
-          if (!which(open.card)) continue;
-          const held = heldOf(open.card);
-          // Try again may have run some already: they count as run, as do those woken now.
-          const [done] =
-            held.length === 0
-              ? [{ n: 0 }]
-              : yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_events
-                  WHERE org_id = ${orgId} AND state = 'done'
-                    AND event_id IN (SELECT value FROM json_each(${yield* encodeIds(held)}))`;
-          const ran = (done?.n ?? 0) + (yield* queue.wake(orgId, held));
-          const widget = yield* widgetOf(orgId, open.widgetId);
-          if (widget === undefined) continue;
-          const now = yield* Clock.currentTimeMillis;
-          yield* sql.withTransaction(
-            writeCard(orgId, widget, { ...open.card, closed: { at: iso(now), ran } }, now),
-          );
-        }
+        const now = yield* Clock.currentTimeMillis;
+        const rows = yield* sql`UPDATE kin_troubles SET closed_at = ${now}
+          WHERE org_id = ${orgId} AND trouble_id = ${troubleId} AND closed_at IS NULL
+          RETURNING trouble_id`;
+        if (rows.length === 0) return false;
+        yield* queue.wake(orgId, yield* heldIds(orgId, troubleId));
+        return true;
       }),
     );
+    if (closed) yield* projectQuietly(orgId, troubleId, false);
   });
 
   const succeeded = Effect.fn("KinHostCare.succeeded")(
     function* (orgId: KinOrgId, agentId: KinAgentId) {
-      yield* close(
-        orgId,
-        (card) =>
-          card.cause !== "backup" &&
-          (HOST_WIDE.has(card.cause) || card.agents.some((one) => one.agentId === agentId)),
-      );
+      for (const trouble of yield* openTroubles(orgId)) {
+        if (trouble.cause === "backup") continue;
+        const [affected] = yield* sql`SELECT 1 FROM kin_trouble_agents
+          WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} AND agent_id = ${agentId}`;
+        if (HOST_WIDE.has(trouble.cause) || affected !== undefined)
+          yield* close(orgId, trouble.troubleId);
+      }
+      // A closed notice counts its held turns as they finish, for a day after it closed.
+      const since = (yield* Clock.currentTimeMillis) - 24 * 60 * 60_000;
+      const settling = yield* sql<{ troubleId: string }>`SELECT t.trouble_id AS "troubleId"
+        FROM kin_troubles t WHERE t.org_id = ${orgId} AND t.closed_at >= ${since}
+          AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = t.org_id
+            AND e.held_by = t.trouble_id AND e.agent_id = ${agentId})
+        ORDER BY t.trouble_id`;
+      for (const { troubleId } of settling) yield* projectQuietly(orgId, troubleId, false);
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin trouble close failed", { cause })),
   );
 
   const troubleOpen = (orgId: KinOrgId, cause: KinTroubleCause) =>
-    openCards(orgId).pipe(
-      Effect.map((cards) => cards.some((one) => one.card.cause === cause)),
+    openTroubles(orgId).pipe(
+      Effect.map((troubles) => troubles.some((one) => one.cause === cause)),
       Effect.orElseSucceed(() => false),
     );
 
-  const causeFor = (orgId: KinOrgId, agentId: KinAgentId) =>
-    openCards(orgId).pipe(
-      Effect.map(
-        (cards) =>
-          cards.find(
-            ({ card }) =>
-              card.cause !== "backup" &&
-              (HOST_WIDE.has(card.cause) || card.agents.some((one) => one.agentId === agentId)),
-          )?.card.cause,
-      ),
-      Effect.orElseSucceed(() => undefined),
-    );
+  const causeFor = Effect.fn("KinHostCare.causeFor")(
+    function* (orgId: KinOrgId, agentId: KinAgentId) {
+      for (const trouble of yield* openTroubles(orgId)) {
+        if (trouble.cause === "backup") continue;
+        if (HOST_WIDE.has(trouble.cause)) return trouble.cause;
+        const [affected] = yield* sql`SELECT 1 FROM kin_trouble_agents
+          WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} AND agent_id = ${agentId}`;
+        if (affected !== undefined) return trouble.cause;
+      }
+      return undefined;
+    },
+    Effect.orElseSucceed(() => undefined),
+  );
 
   const backupConfigured = fs.exists(backupEnv).pipe(Effect.orElseSucceed(() => false));
   const checkBackup = Effect.fn("KinHostCare.checkBackup")(
     function* (orgId: KinOrgId, problem: { readonly lastGoodAt: number | null } | undefined) {
-      const open = (yield* openCards(orgId)).find((one) => one.card.cause === "backup");
+      const open = (yield* openTroubles(orgId)).find((one) => one.cause === "backup");
       if (problem === undefined) {
-        if (open !== undefined) yield* close(orgId, (card) => card.cause === "backup");
+        if (open !== undefined) yield* close(orgId, open.troubleId);
         return;
       }
-      const configured = yield* backupConfigured;
-      const lastGoodAt = problem.lastGoodAt === null ? undefined : iso(problem.lastGoodAt);
-      const now = yield* Clock.currentTimeMillis;
+      const configured = (yield* backupConfigured) ? 1 : 0;
+      const lastGoodAt = problem.lastGoodAt === null ? null : iso(problem.lastGoodAt);
       if (open !== undefined) {
-        if (open.card.backupConfigured === configured && open.card.lastGoodAt === lastGoodAt)
-          return;
-        const widget = yield* widgetOf(orgId, open.widgetId);
-        if (widget === undefined) return;
-        const { lastGoodAt: _was, ...rest } = open.card;
-        yield* troubleLock.withPermits(1)(
-          sql.withTransaction(
-            writeCard(
-              orgId,
-              widget,
-              {
-                ...rest,
-                backupConfigured: configured,
-                ...(lastGoodAt === undefined ? {} : { lastGoodAt }),
-              },
-              now,
-            ),
-          ),
-        );
+        if (open.backupConfigured === configured && open.lastGoodAt === lastGoodAt) return;
+        yield* sql`UPDATE kin_troubles SET backup_configured = ${configured},
+            last_good_at = ${lastGoodAt}
+          WHERE org_id = ${orgId} AND trouble_id = ${open.troubleId}`;
+        yield* projectQuietly(orgId, open.troubleId, open.toldAt === null);
         return;
       }
-      // Posted outside the owner's quiet hours: the next hourly check tries again.
+      // Opened outside the owner's quiet hours: the next hourly check tries again.
       const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
       if (lead === undefined) return;
       const hold = yield* personHoldNow(orgId, lead.ownerPersonId).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
       );
       if (hold !== undefined) return;
-      yield* troubleLock.withPermits(1)(
+      const troubleId = yield* troubleLock.withPermits(1)(
         sql.withTransaction(
-          writeCard(
-            orgId,
-            undefined,
-            {
-              cause: "backup",
-              agents: [],
-              count: 0,
-              openedAt: iso(now),
-              backupConfigured: configured,
-              ...(lastGoodAt === undefined ? {} : { lastGoodAt }),
-              closed: null,
-            },
-            now,
-          ),
+          Effect.gen(function* () {
+            const troubleId = yield* openOrGet(orgId, "backup", yield* Clock.currentTimeMillis);
+            yield* sql`UPDATE kin_troubles SET backup_configured = ${configured},
+                last_good_at = ${lastGoodAt}
+              WHERE org_id = ${orgId} AND trouble_id = ${troubleId}`;
+            return troubleId;
+          }),
         ),
       );
+      yield* projectQuietly(orgId, troubleId, true);
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin backup notice failed", { cause })),
   );
@@ -591,10 +655,11 @@ const make = Effect.gen(function* () {
           (SELECT COUNT(*) FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running') AS running,
           (SELECT COUNT(*) FROM kin_events WHERE org_id = ${orgId} AND state = 'queued'
             AND attempts > 0) AS held`;
-      const troubles = (yield* openCards(orgId)).map(({ widgetId, card }) => {
-        const { held: _held, ...shown } = card;
-        return { widgetId, card: shown };
-      });
+      const troubles = yield* Effect.forEach(yield* openTroubles(orgId), (trouble) =>
+        cardOf(orgId, trouble).pipe(
+          Effect.map((card) => ({ widgetId: KinWidgetId.make(trouble.troubleId), card })),
+        ),
+      );
       const heldByTroubles = troubles.reduce((total, one) => total + one.card.count, 0);
       return {
         host,
@@ -623,8 +688,9 @@ const make = Effect.gen(function* () {
   const retry = Effect.fn("KinHostCare.retry")(
     function* (orgId: KinOrgId) {
       let requeued = 0;
-      for (const open of yield* openCards(orgId))
-        if (open.card.cause !== "backup") requeued += yield* queue.wake(orgId, heldOf(open.card));
+      for (const trouble of yield* openTroubles(orgId))
+        if (trouble.cause !== "backup")
+          requeued += yield* queue.wake(orgId, yield* heldIds(orgId, trouble.troubleId));
       return { requeued };
     },
     Effect.mapError(() => unavailable),
