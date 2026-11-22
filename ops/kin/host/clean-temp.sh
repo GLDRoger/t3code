@@ -3,14 +3,16 @@
 #
 #   systemctl --user start kin-temp-clean    # by hand; journalctl --user -u kin-temp-clean shows what it did
 #
-# Kin's server runs it with --now when a turn fails for want of space or a person taps Free up space
-# now: the low-space rule applies whatever the free space, and a last line `kin-clean removed=N
-# freed_kb=N failed=N` follows. --tmpdir-only (a dev server's stand-in) leaves /tmp alone.
+# Kin's server runs it with --now when a person taps Free up space now or a turn fails for want of
+# space (then also --space-failed): a last line `kin-clean removed=N freed_kb=N failed=N` follows.
+# --tmpdir-only (a dev server's stand-in) leaves /tmp alone. One clean runs at a time: the timer's
+# and the server's take the same lock (LOCK).
 #
 # Removes the user's own top-level entries in each folder of ROOTS that nothing has modified inside
 # for MAX_AGE_MINUTES (LOW_SPACE_AGE_MINUTES while a folder's disk, or the user's quota on it, has
-# less than LOW_SPACE_PERCENT left; a git checkout always gets the full MAX_AGE_MINUTES) and that no
-# process of the user is in, holds open or listens on.
+# less than LOW_SPACE_PERCENT left, or after a turn failed for space; an entry holding a git checkout
+# up to two levels down always gets the full MAX_AGE_MINUTES) and that no process of the user is in,
+# holds open or listens on, looked at again right before it goes.
 # Never touches another user's files, never follows a symlink, never leaves ROOTS.
 #
 # Sourcing this file defines its functions and runs nothing (scripts/kin-clean-temp.test.ts).
@@ -22,6 +24,13 @@ LOW_SPACE_AGE_MINUTES=120
 LOW_SPACE_PERCENT=20
 # Seconds since the epoch the ages count back from; empty means the clock.
 NOW=""
+LOCK="${KIN_CLEAN_LOCK:-$HOME/.cache/kin-clean.lock}"
+
+# Waits for any other clean to finish; held until this script exits. No flock (macOS): no lock.
+take_lock() {
+  command -v flock >/dev/null 2>&1 || return 0
+  mkdir -p "$(dirname "$LOCK")" && exec 9>>"$LOCK" && flock 9
+}
 
 # Every path a process of this user has as its working directory or an open file, and every
 # listening socket's path, one per line.
@@ -70,6 +79,11 @@ utc() {
   date -u -d "@$1" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -u -r "$1" '+%Y-%m-%d %H:%M:%S'
 }
 
+# holds_checkout <entry>: true when the entry is a git checkout or holds one up to two levels down.
+holds_checkout() {
+  [ -n "$(find "$1" -mindepth 1 -maxdepth 3 -name .git -print -quit 2>/dev/null)" ]
+}
+
 # recent <entry> <utc time>: true when the entry or anything under it was modified after it.
 recent() {
   [ -n "$(TZ=UTC find "$1" -xdev -newermt "$2" -print -quit 2>/dev/null)" ]
@@ -84,14 +98,17 @@ human() {
 main() {
   set -uo pipefail
   local now root age cutoff day_cutoff limit entry held kb removed=0 freed=0 failed=0 low="" asked=""
+  local space_failed=""
   local arg
   for arg in "$@"; do
     case "$arg" in
       --now) asked=1 ;;
+      --space-failed) space_failed=1 ;;
       --tmpdir-only) ROOTS=("${TMPDIR:-$HOME/.cache/kin-tmp}") ;;
       *) echo "clean-temp.sh: unknown option $arg" >&2; return 2 ;;
     esac
   done
+  take_lock || { echo "clean-temp.sh: couldn't take $LOCK" >&2; return 1; }
   now="${NOW:-$(date +%s)}"
   held="$(held_paths)"
   for root in "${ROOTS[@]}"; do
@@ -99,7 +116,7 @@ main() {
     # /proc names held paths physically, so entries must be named the same way.
     root="$(cd -P "$root" && pwd)" || continue
     age="$MAX_AGE_MINUTES"
-    if [ -n "$asked" ] || [ "$(percent_left "$root")" -lt "$LOW_SPACE_PERCENT" ]; then
+    if [ -n "$space_failed" ] || [ "$(percent_left "$root")" -lt "$LOW_SPACE_PERCENT" ]; then
       age="$LOW_SPACE_AGE_MINUTES"
       low=1
     fi
@@ -108,8 +125,10 @@ main() {
     while IFS= read -r -d '' entry; do
       limit="$cutoff"
       # An agent's checkout may be waiting on a person's answer with work not yet pushed.
-      if [ -e "$entry/.git" ]; then limit="$day_cutoff"; fi
+      if holds_checkout "$entry"; then limit="$day_cutoff"; fi
       if in_use "$entry" "$held" || recent "$entry" "$limit"; then continue; fi
+      # The scan took time: a process may have started using it since.
+      if in_use "$entry" "$(held_paths)"; then continue; fi
       kb="$(du -sk "$entry" 2>/dev/null | awk '{ print $1 }')"
       # A read-only folder (a package cache) can't be emptied until it is writable again.
       if ! rm -rf "$entry" 2>/dev/null && [ -d "$entry" ] && [ ! -L "$entry" ]; then

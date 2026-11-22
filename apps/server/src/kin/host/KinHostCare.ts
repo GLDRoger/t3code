@@ -283,7 +283,14 @@ const make = Effect.gen(function* () {
       // A fixed script and fixed flags: nothing a person or an agent typed reaches it.
       const out = yield* runner.run({
         command: "bash",
-        args: [script, "--now", ...(devCheckout === undefined ? [] : ["--tmpdir-only"])],
+        args: [
+          script,
+          "--now",
+          // Only a turn that failed for space makes two hours old; a tap keeps the day rule
+          // unless the script finds space low itself.
+          ...(why === "out_of_space" ? ["--space-failed"] : []),
+          ...(devCheckout === undefined ? [] : ["--tmpdir-only"]),
+        ],
         timeout: "15 minutes",
         maxOutputBytes: 16_384,
         outputMode: "truncate",
