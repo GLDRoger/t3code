@@ -257,6 +257,61 @@ describe("kinCashView", () => {
       ["INR", null, null],
       ["USD", "$1,000.00", "$950"],
     ]);
+    // How far Kin sees the bank, quietly; an older host says nothing, and with no balance at all
+    // Money's own line already says no statement is confirmed.
+    expect(view.bank).toBeNull();
+    const bank = (known: boolean, through: string | null) =>
+      kinCashView({ ...cash, known, bankKnown: { through } }, rates, now).bank;
+    expect(bank(true, "2026-10-31")).toBe("Bank known to Oct 31");
+    expect(bank(true, null)).toBe("Kin can't see the bank yet: upload a statement");
+    expect(bank(false, null)).toBeNull();
+  });
+});
+
+describe("kinCashView with bank alerts", () => {
+  it("shows a newer alert's Avl bal as the balance, says it is one, and lists alert-only accounts", () => {
+    const statement = {
+      label: "HDFC Bank Account ••4821",
+      kind: "account" as const,
+      balance: inr(4_00_000_00),
+      on: "2026-10-31",
+      ageDays: 15,
+      stale: true,
+      check: "adds_up" as const,
+      cannotTellApart: false,
+      newerRead: null,
+    };
+    const cash: KinCash = {
+      asOf: "2026-11-15T06:00:00.000Z",
+      today: "2026-11-15",
+      timeZone: "Asia/Kolkata",
+      known: true,
+      accounts: [
+        { ...statement, alert: { balance: inr(4_10_250_50), at: "2026-11-14T08:35:09.000Z" } },
+      ],
+      notOfRecord: [],
+      byCurrency: [],
+      alertAccounts: [
+        {
+          label: "HDFC Bank ••9001",
+          alert: { balance: inr(12_000_00), at: "2026-11-13T04:00:00.000Z" },
+        },
+      ],
+    };
+    const view = kinCashView(cash, rates, now);
+    expect(view.accounts.map((one) => [one.label, one.amount, one.flag, one.stale])).toEqual([
+      ["HDFC Bank Account ••4821", "₹4,10,250.50", "From a bank alert", false],
+      ["HDFC Bank ••9001", "₹12,000.00", "From a bank alert", false],
+    ]);
+    expect(view.accounts[0]!.when).not.toContain("bank alert");
+    expect(view.accounts[0]!.notes).toEqual([
+      "This is the available balance in the newest bank alert mail, not a confirmed statement. The last confirmed statement closed at ₹4,00,000.00 (Sat, Oct 31).",
+    ]);
+    // With no confirmed statement at all, an alert's balance is still a balance to show.
+    expect(kinCashView({ ...cash, known: false, accounts: [] }, rates, now).known).toBe(true);
+    expect(kinCashView({ ...cash, accounts: [statement] }, rates, now).accounts[0]!.amount).toBe(
+      "₹4,00,000.00",
+    );
   });
 });
 

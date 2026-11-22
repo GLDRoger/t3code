@@ -1,5 +1,7 @@
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { useKinHostAt } from "./useKinHost";
 import { useKinOwnerLevel, useKinViewerScope } from "./useKinOwnerLevel";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_TASK_GROUP_BY,
@@ -11,7 +13,12 @@ import {
   kinTaskStep,
   kinTaskStepStatusShown,
   kinTasksByMove,
+  kinTasksDealFacts,
   kinTasksGroupedBy,
+  kinTasksTick,
+  kinTasksTickedShown,
+  kinTasksWithTicked,
+  type KinTaskTicked,
   type KinTaskLine,
   type KinTaskStep,
   type KinTasksItem,
@@ -24,6 +31,7 @@ import {
   kinWorkHostEdits,
   kinWorkListFooter,
   kinWorkNothing,
+  kinWorkOffline,
   kinWorkOverview,
   kinWorkRow,
   kinWorkShown,
@@ -45,6 +53,7 @@ import {
   KIN_WORK_LIST_INITIAL,
   createKinListKeeper,
   createKinWorkList,
+  kinListShown,
   type KinWorkList,
   type KinWorkListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
@@ -67,6 +76,7 @@ import {
   ChevronRightIcon,
   CircleCheckIcon,
   FileTextIcon,
+  FlagIcon,
   MessageSquareTextIcon,
   PlusIcon,
   XIcon,
@@ -90,11 +100,12 @@ import {
   KinLoadFailed,
   KinWorkStaleLine,
 } from "./KinWorkParts";
+import { KinAttentionItem } from "./KinAttention";
 import { KinAvatar } from "./KinAvatar";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
-import { useKinOpen } from "./useKinOpen";
+import { useKinAttention, useKinAttentionHandle } from "./useKinAttention";
 import { useKinTaskSteps, type KinTaskStepStatus } from "./useKinTaskSteps";
 import {
   kinWorkLiveAtom,
@@ -208,7 +219,7 @@ export function KinWorkTaskList(
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when the page shows (or catches a kept one up), and stops what is in flight when it leaves
   useEffect(() => {
     kinTaskLists.show(kept, setListState);
-    if (resumed) list.resume();
+    if (resumed) kinTaskLists.resume(kept);
     else list.start();
     return () => kinTaskLists.hide(kept);
   }, [kept, list, resumed]);
@@ -218,6 +229,7 @@ export function KinWorkTaskList(
   }, [list, live.seq, props.stale]);
 
   const { filter } = listState;
+  const shown = kinListShown(listState, kinHostLink(useKinHostAt(environmentId)));
   const setFilter = (next: KinWorkFilter) => {
     if (next.groupBy !== undefined && next.groupBy !== filter.groupBy) saveGroupBy(next.groupBy);
     list.setFilter(next);
@@ -227,15 +239,28 @@ export function KinWorkTaskList(
     kinWorkApplied(record, changed),
   );
   const ownerLevel = useKinOwnerLevel(environmentId);
-  const open = useKinOpen({ environmentId, orgId });
+  const pulse = useKinAttention({ environmentId, orgId }, within === undefined);
+  const facts = kinTasksDealFacts({ ownerLevel, names, now, pulse });
   const counts = list.counts();
   // The same number the nav's Tasks count shows (`useKinTasksNeedsYou`).
-  const needsYou = kinNeedsYouCount({ open: open ?? null, counts });
+  const needsYou = kinNeedsYouCount({ counts, dealFacts: facts.length });
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";
-  const items: ReadonlyArray<KinTasksItem<KinRecord>> =
+  const notice = kinWorkListNotice(changed, props.openKey);
+  const [ticked, setTicked] = useState<ReadonlyArray<KinTaskTicked<KinRecord>>>([]);
+  const held = kinTasksTickedShown(ticked, changed, notice);
+  const listed: ReadonlyArray<KinTasksItem<KinRecord>> =
     within === undefined && kinWorkByMove(filter)
-      ? kinTasksByMove({ records, moves: list.moves(), counts, needsYou, ownerLevel, names })
+      ? kinTasksByMove({
+          records,
+          moves: list.moves(),
+          counts,
+          needsYou,
+          ownerLevel,
+          names,
+          facts,
+          read: listState.seq !== null,
+        })
       : within === undefined && groupBy !== "me" && !searching
         ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
         : records.map((record, index) => ({
@@ -247,20 +272,28 @@ export function KinWorkTaskList(
             first: index === 0,
             last: index === records.length - 1,
           }));
+  const items =
+    shown !== "rows"
+      ? []
+      : kinTasksWithTicked(listed, held, (record) => kinWorkApplied(record, changed));
   const steps = useKinTaskSteps({ environmentId, orgId });
+  const answers = useKinAttentionHandle({ environmentId, orgId });
   const act = (key: KinRecordKey, action: KinWorkAction) => {
-    const record = records.find((held) => held.key === key);
-    if (record !== undefined) void changes.run(record, action, names);
+    const shown = items.find((item) => item.type === "task" && item.key === key);
+    if (shown?.type !== "task") return;
+    const tick = kinTasksTick({ held, items, key, action, notice });
+    if (tick.undo) return void changes.undo(names, shown.record);
+    setTicked(tick.ticked);
+    void changes.run(shown.record, action, names);
   };
   const openCard = (step: KinTaskStep) => {
-    if (step.kind === "nudge") return;
+    if (step.kind === "nudge" || step.kind === "told") return;
     void navigate({
       to: "/kin/$environmentId/$orgId/$chatId",
       params: { environmentId, orgId, chatId: step.card.chatId },
       search: { message: step.card.messageId },
     });
   };
-  const notice = kinWorkListNotice(changed, props.openKey);
   const nothing = kinWorkNothing(filter, names, scope);
   const footer = kinWorkListFooter(
     filter,
@@ -276,15 +309,19 @@ export function KinWorkTaskList(
         data={items}
         keyExtractor={(item) => item.key}
         getItemType={(item) => item.type}
-        extraData={[listState, changed, steps.status, steps.nudged, needsYou]}
+        extraData={[listState, changed, steps.status, steps.nudged, needsYou, answers.busy]}
         recycleItems
         onEndReached={() => void list.loadMore()}
         onEndReachedThreshold={0.5}
         ListHeaderComponent={
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
             {props.header}
-            {props.stale || listState.stale ? (
-              <KinWorkStaleLine environmentId={environmentId} onRetry={list.refresh} />
+            {shown === "rows" && (props.stale || listState.stale) ? (
+              <KinWorkStaleLine
+                environmentId={environmentId}
+                onRetry={list.refresh}
+                readAt={listState.readAt}
+              />
             ) : null}
             <KinWorkFilters
               overview={overview}
@@ -299,16 +336,23 @@ export function KinWorkTaskList(
             {notice === null || notice.undo !== null ? null : (
               <KinWorkListNotice notice={notice} onDismiss={changes.dismiss} />
             )}
+            {answers.problem === null ? null : (
+              <p role="alert" className="px-2 text-xs text-destructive-foreground">
+                {answers.problem}
+              </p>
+            )}
           </div>
         }
         ListEmptyComponent={
           records.length > 0 || items.length > 0 ? null : (
             <div className="mx-auto w-full max-w-3xl px-4">
-              {listState.loading ? (
+              {shown === "offline" ? (
+                <KinWorkNotice {...kinWorkOffline("tasks")} />
+              ) : shown === "loading" ? (
                 <div role="status" aria-label="Loading tasks">
                   <KinWorkRowSkeletons />
                 </div>
-              ) : listState.failed !== null ? (
+              ) : shown === "failed" ? (
                 <KinLoadFailed
                   what={KIN_WORK_LOAD_FAILED}
                   cause={listState.failed}
@@ -338,7 +382,7 @@ export function KinWorkTaskList(
           footer === null ? null : (
             <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6 py-3">
               <p className="text-xs text-muted-foreground" role="status">
-                {listState.moreFailed ? "Couldn't load more." : footer}
+                {listState.moreFailed ? KIN_MORE_FAILED : footer}
               </p>
               <Button
                 size="xs"
@@ -424,6 +468,18 @@ export function KinWorkTaskList(
                   {item.text}
                 </p>
               );
+            case "fact":
+              return (
+                <ul className="mx-auto w-full max-w-3xl border-b border-border/60 px-4 py-1.5">
+                  <KinAttentionItem
+                    environmentId={environmentId}
+                    orgId={orgId}
+                    row={item.row}
+                    handler={answers}
+                    onOpen={(to) => (to.type === "record" ? props.onOpen(to.key) : undefined)}
+                  />
+                </ul>
+              );
             case "task": {
               const { record } = item;
               const step = kinTaskStep(record, item.move, names);
@@ -442,16 +498,17 @@ export function KinWorkTaskList(
                     )}
                     line={kinTaskLine(record, names, now, {
                       inProject: item.inProject,
-                      quietNoDate: shown !== null,
+                      quietNoDate: shown !== null && shown.kind !== "told",
                     })}
                     step={shown}
                     status={kinTaskStepStatusShown(steps.status[record.key], shown)}
+                    ticked={item.ticked === true}
                     saving={changed.pending[item.key] !== undefined}
                     selected={item.key === props.openKey}
                     onOpen={() => props.onOpen(record.key)}
                     onAct={canChange ? (action) => act(record.key, action) : null}
                     onChoose={
-                      canAnswer && shown !== null && shown.kind !== "nudge"
+                      canAnswer && shown !== null && shown.kind !== "nudge" && shown.kind !== "told"
                         ? (optionId) => void steps.choose(record.key, shown, optionId)
                         : null
                     }
@@ -538,6 +595,8 @@ function KinTaskRow(props: {
   readonly line: KinTaskLine;
   readonly step: KinTaskStep | null;
   readonly status: KinTaskStepStatus | null;
+  /** Ticked done just now and held in its place until its Undo goes. */
+  readonly ticked: boolean;
   readonly saving: boolean;
   readonly selected: boolean;
   readonly onOpen: () => void;
@@ -567,7 +626,12 @@ function KinTaskRow(props: {
             disabled={props.saving}
             aria-label={`${TICK_LABEL[tick]}: ${row.title}`}
             title={TICK_LABEL[tick]}
-            onClick={() => onAct({ type: "state", state: tick === "done" ? "done" : "open" })}
+            // The second click of a double click would land on the flipped circle and undo it.
+            onClick={(event) =>
+              event.detail > 1
+                ? undefined
+                : onAct({ type: "state", state: tick === "done" ? "done" : "open" })
+            }
           >
             <KinWorkStateIcon state={row.state} />
           </Button>
@@ -583,9 +647,22 @@ function KinTaskRow(props: {
           onClick={props.onOpen}
           className="flex min-w-0 flex-col gap-0.5 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-[current=true]:bg-accent"
         >
-          <span className="line-clamp-2 text-sm text-foreground">{row.title}</span>
+          <span
+            className={cn(
+              "line-clamp-2 text-sm",
+              props.ticked ? "text-muted-foreground line-through" : "text-foreground",
+            )}
+          >
+            {row.title}
+          </span>
           {/* Who has it never gives way: the rest of the line cuts off before it does. */}
           <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+            {line.urgent ? (
+              <FlagIcon
+                aria-hidden
+                className="size-3 shrink-0 fill-current text-warning-foreground"
+              />
+            ) : null}
             <KinAvatar avatar={row.ownerAvatar} size="xs" />
             <span className="max-w-[60%] shrink-0 truncate text-foreground/80">{line.holder}</span>
             {tail ? (
@@ -618,7 +695,7 @@ function KinTaskRow(props: {
         {step?.kind !== "send" || step.mayHaveGone === null ? null : (
           <p className="px-2 text-xs font-medium text-destructive-foreground">{step.mayHaveGone}</p>
         )}
-        {step === null ? null : status?.kind === "done" ? (
+        {step === null || step.kind === "told" ? null : status?.kind === "done" ? (
           <p role="status" className="px-2 text-xs font-medium text-foreground">
             {status.text}
           </p>
@@ -679,6 +756,7 @@ function KinTaskStepButtons(props: {
   const { step, busyId, onChoose } = props;
   const busy = busyId !== null;
   const label = (what: string) => `${what}: ${props.title}`;
+  if (step.kind === "told") return null;
   if (step.kind === "nudge") {
     const nudgeText = step.nudged ? KIN_TASKS.nudged : KIN_TASKS.nudge(step.name);
     return (
@@ -948,7 +1026,12 @@ export function KinWorkRow(props: {
             disabled={props.saving}
             aria-label={`${TICK_LABEL[tick]}: ${row.title}`}
             title={TICK_LABEL[tick]}
-            onClick={() => onAct({ type: "state", state: tick === "done" ? "done" : "open" })}
+            // The second click of a double click would land on the flipped circle and undo it.
+            onClick={(event) =>
+              event.detail > 1
+                ? undefined
+                : onAct({ type: "state", state: tick === "done" ? "done" : "open" })
+            }
           >
             <KinWorkStateIcon state={row.state} />
           </Button>
@@ -967,6 +1050,12 @@ export function KinWorkRow(props: {
           <span className="line-clamp-2 text-sm text-foreground">{row.title}</span>
           {/* Who has it never gives way: the rest of the line cuts off before it does. */}
           <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+            {row.urgent ? (
+              <FlagIcon
+                aria-hidden
+                className="size-3 shrink-0 fill-current text-warning-foreground"
+              />
+            ) : null}
             <KinAvatar avatar={row.ownerAvatar} size="xs" />
             <span className="max-w-[60%] shrink-0 truncate text-foreground/80">{row.holder}</span>
             {row.detail === "" ? null : (

@@ -7,22 +7,14 @@ import {
   KinOrgId,
   type KinChatId,
   type KinChatSummary,
-  type KinLeadAccessResult,
   type KinLeadContact,
   type KinLeadProfile,
-  type KinPeopleListResult,
-  type KinPersonId,
 } from "@t3tools/contracts";
 import {
   kinDomainLabel,
-  KIN_LEAD_EVERYONE,
-  kinLeadAccessCandidates,
-  kinLeadAccessChanged,
   kinLeadContactAbout,
   kinLeadOwnerSeesLine,
-  kinLeadAccessProblem,
   kinLeadTrackingDetail,
-  KIN_AGENTS_COPY,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import {
   KIN_RETIRE_ACTION,
@@ -42,12 +34,16 @@ import {
   kinClearChatKept,
   kinOwnsDirectChat,
 } from "@t3tools/client-runtime/kin/kinClearChat";
-import { kinAgentAvatar, kinChatMuted } from "@t3tools/client-runtime/kin/kinScreenState";
+import { KIN_CHATS_PIN } from "@t3tools/client-runtime/kin/kinChatListRows";
+import {
+  kinAgentAvatar,
+  kinChatMuted,
+  kinChatPinned,
+} from "@t3tools/client-runtime/kin/kinScreenState";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { AsyncResult, Atom } from "effect/reactivity";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { useState, type ReactNode } from "react";
+import { AsyncResult } from "effect/reactivity";
+import type { ReactNode } from "react";
 import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -58,21 +54,21 @@ import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { Menu } from "../../components/ui/Menu";
-import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinAgentSections } from "./KinAgentSections";
+import { KinAgentReachSection } from "./KinReachSections";
 import { kinClient } from "./state/kinClient";
 import { useKinWorkingAgents } from "./state/useKinInbox";
 import { useKinWorkDirectory } from "./state/useKinWork";
 import { kinRetiredWhenNow, useKinAgentRetire } from "./state/useKinAgentRetire";
 import { useKinHostAt } from "./state/useKinHost";
+import { KinWorkToggleRow } from "./components/KinWorkPieces";
 
 export type KinLeadParams = {
   readonly environmentId: string;
@@ -83,19 +79,13 @@ export type KinLeadParams = {
 const kinSentenceParts = (parts: ReadonlyArray<string | null>) =>
   parts.filter((part) => part !== null).join(" · ") || null;
 
-type AccessResult = AsyncResult.AsyncResult<KinLeadAccessResult, unknown>;
-type AccessPerson = KinLeadAccessResult["people"][number];
-type PeopleResult = AsyncResult.AsyncResult<KinPeopleListResult, unknown>;
-// Read only by a session that may change who messages a lead; others ask the host nothing.
-const noAccessAtom: Atom.Atom<AccessResult> = Atom.make(AsyncResult.initial());
-const noPeopleAtom: Atom.Atom<PeopleResult> = Atom.make(AsyncResult.initial());
-
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 
 /**
- * A lead as its owner sees it: who it is, what it is for, who can message it and what it has in
- * hand. A person let message someone else's lead sees its name and what its owner wrote for them.
+ * A lead as its owner sees it: who it is, what it is for, what it has in hand and who can message
+ * it, with the rest folded. A person let message someone else's lead sees its name and what its
+ * owner wrote for them.
  */
 export function KinLeadScreen({ route }: StaticScreenProps<KinLeadParams>) {
   const navigation = useNavigation();
@@ -198,15 +188,22 @@ function KinLeadBody(props: {
                       </ListSection>
                     ) : null
                   ) : (
-                    <KinLeadAccess environmentId={environmentId} lead={lead} />
+                    <KinAgentReachSection environmentId={environmentId} lead={lead} />
                   )
                 }
               />
-              <KinAgentSections environmentId={environmentId} orgId={orgId} lead={lead} />
-              <KinLeadNotifications
+              <KinAgentSections
                 environmentId={environmentId}
-                orgId={lead.orgId}
-                chatId={lead.ownerChatId}
+                orgId={orgId}
+                lead={lead}
+                mute={
+                  <KinLeadNotifications
+                    environmentId={environmentId}
+                    orgId={lead.orgId}
+                    chatId={lead.ownerChatId}
+                    pinnable={held?.teamAgentId !== agentId}
+                  />
+                }
               />
               <KinLeadClearChat
                 environmentId={environmentId}
@@ -252,6 +249,9 @@ function KinLeadBody(props: {
                   {retireOffer.why}
                 </Text>
               )}
+              <Text textRole="footnote" className="px-4 text-foreground-muted">
+                {KIN_AGENT_PAGE.setOnComputer}
+              </Text>
             </>
           ) : contact !== null ? (
             <>
@@ -260,6 +260,7 @@ function KinLeadBody(props: {
                 environmentId={environmentId}
                 orgId={contact.orgId}
                 chatId={contact.chatId}
+                pinnable={held?.teamAgentId !== agentId}
               />
               <KinLeadClearChat
                 environmentId={environmentId}
@@ -307,17 +308,21 @@ function KinLeadBody(props: {
 const mutedNow = (chat: KinChatSummary, personId: string) =>
   kinChatMuted(chat, new Set([personId]), Date.now());
 
-/** The viewer's mute for their chat with this lead; nothing until the chat and viewer are known. */
+/** The viewer's mute and pin for their chat with this lead; nothing until both are known. */
 function KinLeadNotifications(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly chatId: KinChatId;
+  /** The main agent's chat is always on top, so it offers no pin. */
+  readonly pinnable: boolean;
 }) {
   const { environmentId } = props;
   const host = useKinHostAt(environmentId);
   const inbox = useAtomValue(kinClient.inbox({ environmentId, input: {} }));
   const canMute = useAtomValue(kinClient.mute.permissionAtom(environmentId));
   const runMute = useAtomCommand(kinClient.mute, "Muting this chat");
+  const canPin = useAtomValue(kinClient.pin.permissionAtom(environmentId)) && props.pinnable;
+  const runPin = useAtomCommand(kinClient.pin, KIN_CHATS_PIN.failed);
   const { personId } = kinFeedViewer(
     host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
     props.orgId,
@@ -330,13 +335,23 @@ function KinLeadNotifications(props: {
   const muted = mutedNow(chat, personId);
   return (
     <ListSection title="Notifications">
-      <ListToggleRow
+      <KinWorkToggleRow
         label="Mute notifications"
         value={muted}
         onValueChange={(next) =>
           void runMute({ environmentId, input: { chatId: chat.chatId, muted: next } })
         }
       />
+      {canPin ? (
+        <KinWorkToggleRow
+          label={KIN_CHATS_PIN.setting}
+          description={KIN_CHATS_PIN.settingDetail}
+          value={kinChatPinned(chat, new Set([personId]))}
+          onValueChange={(next) =>
+            void runPin({ environmentId, input: { chatId: chat.chatId, pinned: next } })
+          }
+        />
+      ) : null}
     </ListSection>
   );
 }
@@ -402,148 +417,6 @@ function KinLeadClearChat(props: {
   );
 }
 
-/** Who besides the owner can message this lead, and the way to add or remove a person. */
-function KinLeadAccess(props: {
-  readonly environmentId: EnvironmentId;
-  readonly lead: KinLeadProfile;
-}) {
-  const { environmentId, lead } = props;
-  const host = useKinHostAt(environmentId);
-  const target = { orgId: lead.orgId, agentId: lead.agentId };
-  const accessAtom = kinClient.leadAccess({ environmentId, input: target });
-  const canShare = useAtomValue(kinClient.leadAllow.permissionAtom(environmentId));
-  const access = useAtomValue(canShare ? accessAtom : noAccessAtom);
-  const people = useAtomValue(
-    canShare ? kinClient.people({ environmentId, input: { orgId: lead.orgId } }) : noPeopleAtom,
-  );
-  const allow = useAtomCommand(kinClient.leadAllow, { reportFailure: false });
-  const disallow = useAtomCommand(kinClient.leadDisallow, { reportFailure: false });
-  const [busy, setBusy] = useState<string | null>(null);
-  const [note, setNote] = useState<{ readonly text: string; readonly failed: boolean } | null>(
-    null,
-  );
-  if (!canShare) return null;
-  const { personId } = kinFeedViewer(
-    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
-    lead.orgId,
-  );
-  // What was last read stays up while a change is read again.
-  const read = Option.getOrNull(AsyncResult.value(access));
-  const allowed = read?.people ?? null;
-  // The team agent is everyone's: no one is added or removed there.
-  const everyone = read?.everyone === true;
-  const candidates = kinLeadAccessCandidates(
-    everyone ? [] : (Option.getOrNull(AsyncResult.value(people))?.people ?? []),
-    allowed ?? [],
-    personId,
-  );
-
-  const change = async (
-    person: {
-      readonly personId: KinPersonId;
-      readonly displayName: string;
-      readonly ownerLevel?: boolean | undefined;
-    },
-    on: boolean,
-  ) => {
-    if (busy !== null) return;
-    setBusy(person.personId);
-    setNote(null);
-    const input = { ...target, personId: person.personId };
-    const result = await (on ? allow : disallow)({ environmentId, input });
-    setBusy(null);
-    if (AsyncResult.isSuccess(result)) {
-      appAtomRegistry.refresh(accessAtom);
-      setNote({
-        text: kinLeadAccessChanged(person.displayName, lead.name, on, person.ownerLevel),
-        failed: false,
-      });
-      return;
-    }
-    setNote({
-      text: kinLeadAccessProblem(
-        AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null,
-      ),
-      failed: true,
-    });
-  };
-
-  const askAdd = () =>
-    Dialog.alert(`Who can message ${lead.name}?`, undefined, [
-      ...candidates.map((person) => ({
-        text: person.displayName,
-        onPress: () => void change(person, true),
-      })),
-      { text: "Cancel", style: "cancel" as const },
-    ]);
-
-  const askRemove = (person: AccessPerson) =>
-    Dialog.confirm({
-      title: `Remove ${person.displayName}?`,
-      message: KIN_AGENTS_COPY.removeAccess(person.displayName, lead.name, person.ownerLevel),
-      confirmText: "Remove",
-      destructive: true,
-      onConfirm: () => void change(person, false),
-    });
-
-  const intro = (lead.intro ?? "").trim();
-  const footer =
-    note !== null
-      ? note.text
-      : allowed === null || everyone || allowed.length === 0
-        ? undefined
-        : intro === ""
-          ? KIN_AGENTS_COPY.nameOnly
-          : KIN_AGENTS_COPY.seesIntro(intro);
-  return (
-    <ListSection title="Who can message" footer={footer}>
-      {allowed === null ? (
-        <View className="px-4 py-3">
-          <Text textRole="body" className="text-foreground-muted">
-            {AsyncResult.isFailure(access) ? KIN_AGENTS_COPY.accessFailed : "Loading…"}
-          </Text>
-        </View>
-      ) : everyone || allowed.length === 0 ? (
-        <View className="px-4 py-3">
-          <Text textRole="body" className="text-foreground-muted">
-            {everyone ? KIN_LEAD_EVERYONE : KIN_AGENTS_COPY.onlyOwners}
-          </Text>
-        </View>
-      ) : (
-        allowed.map((person, index) => (
-          <View
-            key={person.personId}
-            className={index === 0 ? undefined : "border-t border-border-subtle"}
-          >
-            <ListRow
-              label={person.displayName}
-              leading={
-                <KinAvatar
-                  avatar={{ kind: "person", seed: `person:${person.personId}` }}
-                  size="small"
-                />
-              }
-              detail={busy === person.personId ? "Removing…" : "Remove"}
-              disabled={busy !== null}
-              onPress={() => askRemove(person)}
-            />
-          </View>
-        ))
-      )}
-      {allowed !== null && candidates.length > 0 ? (
-        <View className="border-t border-border-subtle">
-          <ListActionRow
-            label="Add a person"
-            icon="plus"
-            disabled={busy !== null}
-            onPress={askAdd}
-          />
-        </View>
-      ) : null}
-    </ListSection>
-  );
-}
-
 /** A lead someone else set up, as a person let message it sees it. */
 function KinLeadContactView({ contact }: { readonly contact: KinLeadContact }) {
   return (
@@ -577,7 +450,7 @@ export function KinLeadProfileView({
   readonly working?: boolean;
   /** Who a waiting task waits on is named from these, as Tasks names them. */
   readonly names?: KinWorkNames | null;
-  /** The owner's "Who can message" section, placed under what the lead is for. */
+  /** The owner's "Who can message" section, placed under what it has in hand. */
   readonly access?: ReactNode;
 }) {
   const charter = lead.charter.trim();
@@ -616,13 +489,10 @@ export function KinLeadProfileView({
             selectable
             className={charter === "" ? "text-foreground-muted" : "text-foreground"}
           >
-            {charter === ""
-              ? "Nothing written yet. Add a few lines so it knows what to focus on."
-              : charter}
+            {charter === "" ? KIN_AGENT_PAGE.charterNone : charter}
           </Text>
         </View>
       </ListSection>
-      {access}
       <ListSection title={retired === undefined ? "In hand" : "On hold"}>
         {lead.tracking.length === 0 ? (
           <View className="px-4 py-3">
@@ -639,12 +509,13 @@ export function KinLeadProfileView({
             <View key={index} className={index === 0 ? undefined : "border-t border-border-subtle"}>
               <ListRowLayout
                 label={item.title}
-                description={kinLeadTrackingDetail(item, undefined, undefined, names)}
+                description={kinLeadTrackingDetail(item, undefined, undefined, names) ?? undefined}
               />
             </View>
           ))
         )}
       </ListSection>
+      {access}
     </>
   );
 }

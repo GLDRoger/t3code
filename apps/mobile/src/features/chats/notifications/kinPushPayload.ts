@@ -6,17 +6,22 @@ import {
   type KinChatId,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
+import { kinChoiceActInput } from "@t3tools/client-runtime/kin/kinChoicePresentation";
 import { kinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { KIN_NOTIFICATION_CATEGORIES, type KinNotificationAction } from "./kinCategories";
+import {
+  KIN_CHOICE_ANSWERS,
+  KIN_NOTIFICATION_CATEGORIES,
+  type KinNotificationAction,
+} from "./kinCategories";
 
 /** expo-notifications' `DEFAULT_ACTION_IDENTIFIER`: the banner itself was tapped. */
 export const KIN_DEFAULT_ACTION_IDENTIFIER = "expo.modules.notifications.actions.DEFAULT";
 
 export interface KinNotificationRoute {
-  /** One per notification and button, so the live listener and the cold-start read act once. */
+  /** One per delivery and button, so the live listener and the cold-start read act once. */
   readonly responseKey: string;
   readonly environmentId: EnvironmentId;
   /** Opened in order: the chat, then what the push is about over it, so Back lands in the chat. */
@@ -84,7 +89,10 @@ function landing(
   const destination = opensChat
     ? kinNotificationDestination({ chatId: data.chatId, subject })
     : null;
-  if (destination === null) return [target.path];
+  if (destination === null)
+    return target.path.startsWith(`${kinPath(target.environmentId, data.orgId, "work")}/`)
+      ? [kinPath(target.environmentId, data.orgId, "work"), target.path]
+      : [target.path];
   if (destination._tag === "chat")
     return [
       destination.messageId === null
@@ -101,12 +109,18 @@ function landing(
 
 /**
  * Where a push's `deepLink` opens, checked against the ids it carries. The sender writes
- * `/kin/<environmentId>/<orgId>/(chats|actions)/<id>`, `/kin/<environmentId>/<orgId>/approvals` or
+ * `/kin/<environmentId>/<orgId>/(chats|actions|work|projects)/<id>`,
+ * `/kin/<environmentId>/<orgId>/(approvals|work)` or
  * `/kin/<environmentId>/<orgId>/people/<personId>/devices`; anything else is dropped.
  */
 function linkTarget(data: KinPushData): { environmentId: string; path: string } | null {
   const parts = data.deepLink.split("/");
   if (parts[0] !== "" || parts[1] !== "kin") return null;
+  if (parts.length === 5 && parts[4] === "work") {
+    const [environmentId, orgId] = parts.slice(2, 4).map(decodeSegment);
+    if (!environmentId || orgId !== data.orgId) return null;
+    return { environmentId, path: kinPath(environmentId, orgId, "work") };
+  }
   if (parts.length === 5 && parts[4] === "approvals") {
     const [environmentId, orgId] = parts.slice(2, 4).map(decodeSegment);
     if (!environmentId || orgId !== data.orgId) return null;
@@ -130,25 +144,43 @@ function linkTarget(data: KinPushData): { environmentId: string; path: string } 
     if (data.chatId !== undefined && data.chatId !== id) return null;
     return { environmentId, path: kinChatPath(environmentId, orgId, id) };
   }
+  // Someone's moves on the reader's tasks, told in no chat: the one task or project, over Tasks.
+  if (kind === "work" || kind === "projects")
+    return { environmentId, path: kinPath(environmentId, orgId, kind, id) };
   if (kind === "actions") {
     if (data.pendingActionId !== undefined && data.pendingActionId !== id) return null;
     // MOB-8: open the `KinApproval` route (this link, re-encoded) once it exists. Until then
-    // Review opens the chat holding the card, or the chat list for an approval with no chat.
+    // Review opens the chat holding the card, or Waiting on you for an approval with no chat.
     return {
       environmentId,
-      path: data.chatId === undefined ? "/kin" : kinChatPath(environmentId, orgId, data.chatId),
+      path:
+        data.chatId === undefined ? "/kin/waiting" : kinChatPath(environmentId, orgId, data.chatId),
     };
   }
   return null;
 }
 
-function deferralAct(
+/** A button's widget action: a question's answer exactly as a tap on its card posts it. */
+function buttonAct(
   data: KinPushData,
   action: KinNotificationAction,
-  notificationId: string,
+  delivery: string,
 ): KinWidgetsActInput | null {
   if (action.identifier === "review") return null;
   if (data.widgetId === undefined || data.revision === undefined || data.revision < 1) return null;
+  // The host dedupes on this, so a replayed response can't act twice.
+  const clientActionId = `push:${delivery}:${action.identifier}`;
+  const answer = KIN_CHOICE_ANSWERS.findIndex((one) => one === action.identifier);
+  if (answer >= 0) {
+    const optionId = data.choices?.[answer];
+    return optionId === undefined
+      ? null
+      : kinChoiceActInput(
+          { widgetId: data.widgetId, revision: data.revision },
+          optionId,
+          clientActionId,
+        );
+  }
   const itemId = kinDeferralItemIdFromWidgetId(data.orgId, data.widgetId);
   if (itemId === null) return null;
   return {
@@ -156,8 +188,7 @@ function deferralAct(
     revision: data.revision,
     actionId: action.identifier,
     value: itemId,
-    // The host dedupes on this, so a replayed response can't act twice.
-    clientActionId: `push:${notificationId}:${action.identifier}`,
+    clientActionId,
   };
 }
 
@@ -173,6 +204,10 @@ export function kinNotificationRoute(response: unknown): KinNotificationRoute | 
   const notificationId = field(request, "identifier");
   const actionIdentifier = field(response, "actionIdentifier");
   if (typeof notificationId !== "string" || notificationId.length === 0) return null;
+  // A chat's pushes share one collapse id, which iOS and Android make the identifier: each
+  // delivery is told apart by its date.
+  const date = field(field(response, "notification"), "date");
+  const delivery = typeof date === "number" ? `${notificationId}:${date}` : notificationId;
   const pressed = typeof actionIdentifier === "string" ? actionIdentifier : "";
   const category = field(content, "categoryIdentifier");
   const actions: ReadonlyArray<KinNotificationAction> = isCategory(category)
@@ -183,10 +218,10 @@ export function kinNotificationRoute(response: unknown): KinNotificationRoute | 
       ? undefined
       : actions.find((candidate) => candidate.identifier === pressed);
   return {
-    responseKey: `${notificationId}\u0000${pressed}`,
+    responseKey: `${delivery}\u0000${pressed}`,
     environmentId: EnvironmentId.make(target.environmentId),
     paths: landing(data, read.subject, target),
-    act: action === undefined ? null : deferralAct(data, action, notificationId),
+    act: action === undefined ? null : buttonAct(data, action, delivery),
   };
 }
 

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import type { KinChartCardState, KinMessage, KinMessageLink } from "@t3tools/contracts";
+import {
+  kinIsBrief,
+  kinPageGist,
+  type KinChartCardState,
+  type KinMessage,
+  type KinMessageLink,
+} from "@t3tools/contracts";
 
 import {
   kinDraftMarkdown,
@@ -247,6 +253,22 @@ describe("kinPageView", () => {
       ),
     ).toMatch(/^Good (morning|afternoon|evening) · W-2 is due today\.$/);
     expect(kinMessageGistMarkdown(said("Done.", { form: "brief" }))).toBe("Done.");
+  });
+
+  it("reads the same line from the server's preview of a page as from its whole body", () => {
+    for (const message of [
+      said(BRIEF, { form: "brief" }),
+      said("## Plan\nShip on Friday.\n\n## Risks\nNone."),
+      said("Good afternoon Rhea.\n\n## Work\nW-2 is due today.", { form: "brief" }),
+    ]) {
+      const preview = {
+        gist: kinPageGist(message.body),
+        brief: kinIsBrief(message.body, message.form),
+      };
+      expect(kinMessageGistMarkdown({ ...message, body: "## Plan" }, preview)).toBe(
+        kinMessageGistMarkdown(message),
+      );
+    }
   });
 });
 

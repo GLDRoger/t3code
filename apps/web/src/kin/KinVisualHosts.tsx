@@ -4,20 +4,21 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { ChevronDownIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
+import { KinSettingsDialog } from "./settings/KinSettingsControls";
+import { KinSettingsRow, KinSettingsSection } from "./settings/KinSettingsLayout";
 
 const failureText = (result: AsyncResult.AsyncResult<unknown, unknown>, fallback: string) => {
   const cause = AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null;
   return cause instanceof Error && cause.message !== "" ? cause.message : fallback;
 };
 
-/** The owner's list of outside hosts visuals may load from: see it, add to it, take from it. */
+/** Charts: the websites charts may load from, one row that opens the list to add to or take from. */
 export function KinVisualHosts(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
@@ -48,33 +49,38 @@ export function KinVisualHosts(props: {
   };
 
   return (
-    <section aria-label={COPY.title} className="flex flex-col gap-2 border-t border-border/60 pt-4">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-xs font-medium text-muted-foreground">
-          {open ? COPY.title : COPY.advanced}
-        </h3>
-        <Button size="xs" variant="ghost" aria-expanded={open} onClick={() => setOpen(!open)}>
-          {open ? "Hide" : `${COPY.title} · ${hosts === null ? "…" : COPY.count(hosts.length)}`}
-          <ChevronDownIcon className={open ? "rotate-180" : undefined} />
-        </Button>
-      </div>
+    <>
+      <KinSettingsSection title={COPY.section}>
+        <KinSettingsRow
+          title={COPY.title}
+          wrap
+          detail={hosts === null ? undefined : COPY.summary(hosts)}
+          onOpen={() => {
+            setProblem(null);
+            setOpen(true);
+          }}
+        />
+      </KinSettingsSection>
       {!open ? null : (
-        <>
-          <p className="text-sm text-muted-foreground">{COPY.detail}</p>
-          {hosts === null ? null : hosts.length === 0 ? (
-            <p className="text-sm">{COPY.none}</p>
+        <KinSettingsDialog
+          title={COPY.title}
+          description={COPY.detail}
+          busy={busy}
+          problem={problem}
+          onClose={() => setOpen(false)}
+        >
+          {hosts === null || hosts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{COPY.none}</p>
           ) : (
-            <ul className="flex flex-col">
+            <ul className="flex flex-col divide-y rounded-lg border">
               {hosts.map((host) => (
-                <li
-                  key={host}
-                  className="flex items-center gap-2 border-b border-border/60 py-1.5 last:border-b-0"
-                >
-                  <span className="min-w-0 flex-1 truncate font-mono text-sm">{host}</span>
+                <li key={host} className="flex min-h-10 items-center gap-2 px-3 py-1">
+                  <span className="min-w-0 flex-1 truncate text-sm">{host}</span>
                   <Button
                     size="xs"
-                    variant="ghost-destructive"
+                    variant="ghost"
                     disabled={busy}
+                    aria-label={`${COPY.remove} ${host}`}
                     onClick={() => void change(host, false)}
                   >
                     {COPY.remove}
@@ -103,13 +109,8 @@ export function KinVisualHosts(props: {
               {COPY.add}
             </Button>
           </form>
-          {problem === null ? null : (
-            <p role="alert" className="text-xs text-destructive-foreground">
-              {problem}
-            </p>
-          )}
-        </>
+        </KinSettingsDialog>
       )}
-    </section>
+    </>
   );
 }

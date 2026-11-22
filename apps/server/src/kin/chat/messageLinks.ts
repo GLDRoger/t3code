@@ -65,7 +65,7 @@ const around = (pattern: string, flags: string) =>
 
 /**
  * What a message names among `names` and `keys`, by exact spelling: keys (INV-1) and printed
- * numbers (INV/26-27/004) of entries, and whole names of agents, people, clients and projects,
+ * numbers (INV/26-27/004) of entries, and whole names of agents, people, clients, projects and deals,
  * case and all ("Finance", not "finance"), longest first, each once. An agent also matches as
  * "<name> chat" in any case. Built once for a batch; its patterns run only where a name appears.
  */
@@ -154,6 +154,8 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
   viewer: KinViewer,
   keys: ReadonlyArray<string>,
   numbers: ReadonlyArray<string>,
+  /** The batch's linkable text, for the open tasks it names by title. */
+  text: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   // Their own direct chats with agents: the chat a name like "Finance" opens.
@@ -172,8 +174,19 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
     WHERE org_id = ${orgId} AND removed_at IS NULL AND person_id <> ${personId}`;
   const named = yield* sql<{ key: string; title: string; register: string; state: string }>`SELECT
       r.key, r.title, r.register_id AS register, r.state FROM kin_records r
-    WHERE r.org_id = ${orgId} AND r.register_id IN ('clients', 'projects')
+    WHERE r.org_id = ${orgId} AND r.register_id IN ('clients', 'projects', 'deals')
       AND r.state <> 'dropped' AND ${seenBy(sql, viewer)}`;
+  // Open tasks written by their whole title, found here rather than listing every task. A title of
+  // one word is an ordinary word too often.
+  const titled =
+    text.trim() === ""
+      ? []
+      : yield* sql<{ key: string; title: string; register: string; state: string }>`SELECT
+          r.key, r.title, r.register_id AS register, r.state FROM kin_records r
+        WHERE r.org_id = ${orgId} AND r.register_id = 'work'
+          AND r.state NOT IN ('done', 'dropped') AND instr(trim(r.title), ' ') > 0
+          AND instr(${text}, trim(r.title)) > 0 AND ${seenBy(sql, viewer)}
+        ORDER BY r.key`;
   // A document's own number, such as INV/26-27/004, as it is printed and mailed.
   const numbered =
     numbers.length === 0
@@ -219,9 +232,17 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
       to: { _tag: "person" as const, personId: row.personId },
       note: null,
     })),
-    ...named.map((row) => ({ name: row.title, ...record(row) })),
+    ...named
+      .filter((row) => row.register !== "deals")
+      .map((row) => ({ name: row.title, ...record(row) })),
     ...numbered.map((row) => ({ name: row.number, ...record(row) })),
+    ...titled.map((row) => ({ name: row.title.trim(), ...record(row) })),
   ];
+  // A deal named like its client, or anything else, leaves that name to it.
+  const others = new Set(names.map((one) => one.name));
+  for (const row of named)
+    if (row.register === "deals" && !others.has(row.title))
+      names.push({ name: row.title, ...record(row) });
   // Two things by one name would be a guess, so neither links.
   const counts = new Map<string, number>();
   for (const one of names) counts.set(one.name, (counts.get(one.name) ?? 0) + 1);
@@ -347,7 +368,14 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
     ]),
   ];
   const numbers = [...new Set(texts.flatMap((message) => numbersIn(message.body)))].slice(0, 500);
-  const sources = yield* linkSources(orgId, reader.personId, viewer, keys, numbers);
+  const sources = yield* linkSources(
+    orgId,
+    reader.personId,
+    viewer,
+    keys,
+    numbers,
+    texts.map((message) => linkableText(message.body)).join("\n"),
+  );
   // A name Kin wrote for a key links where the key did, for a reader who may open it.
   const taken = new Set(sources.names.map((one) => one.name));
   const written = new Map<string, LinkName>();

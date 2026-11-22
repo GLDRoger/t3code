@@ -58,6 +58,7 @@ import {
 } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as Pings from "./pings.ts";
+import { KinPushSender } from "../push/KinPushSender.ts";
 import { deliverHeld } from "./heldDelivery.ts";
 import { settleDue } from "../questions/openQuestions.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -154,6 +155,8 @@ const make = Effect.gen(function* () {
   const queue = yield* KinEventQueue.KinEventQueue;
   // A question's default that runs its own action writes through it (`settleDue`).
   const records = yield* Effect.serviceOption(KinRecords);
+  // Task news held for a banner rings through it (`deliverHeld`).
+  const push = Option.getOrUndefined(yield* Effect.serviceOption(KinPushSender));
 
   /**
    * Hands a due reminder to its lead, who writes it in its own voice; the server attaches the
@@ -556,7 +559,7 @@ const make = Effect.gen(function* () {
           Effect.catch((cause) => Effect.logWarning("Kin pings sweep failed", { orgId, cause })),
           // Lines held through someone's quiet hours post once those end.
           Effect.andThen(
-            deliverHeld(orgId, chat).pipe(
+            deliverHeld(orgId, chat, push).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.catch((cause) =>
                 Effect.logWarning("Kin held lines not delivered", { orgId, cause }),

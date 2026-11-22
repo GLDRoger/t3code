@@ -23,16 +23,22 @@ import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
 import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
+import * as KinImport from "./work/KinImport.ts";
 import * as KinRecords from "./work/KinRecords.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
 import * as FileSystem from "effect/FileSystem";
 import { ServerConfig } from "../config.ts";
-import { answerChoice, refusedChoice, resumeInterruptedSends } from "./work/cardAnswers.ts";
+import {
+  answerChoice,
+  dismissChoice,
+  refusedChoice,
+  resumeInterruptedSends,
+} from "./work/cardAnswers.ts";
 import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
 import { KinIdentity, KinNewCompanyCountryUnset } from "./chat/KinIdentity.ts";
 import { seedPlaybooks } from "./work/playbookSeeds.ts";
-import { seedCharacters } from "./lead/characters.ts";
+import { seedCharacters, splitCharacters } from "./lead/characters.ts";
 import { closeSubject } from "./open/closeSubject.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
@@ -49,6 +55,7 @@ import * as GitHubLogin from "./connections/GitHubLogin.ts";
 import { devAppStandIn } from "./github/devAppStandIn.ts";
 import * as KinGitHubApp from "./github/KinGitHubApp.ts";
 import * as KinGitHubAppKey from "./github/appKey.ts";
+import * as KinGitHubHook from "./github/appHook.ts";
 import * as KinGitHubAppSetup from "./github/appSetup.ts";
 import * as Keychain from "./github/Keychain.ts";
 import * as AgentSession from "./lead/AgentSession.ts";
@@ -90,6 +97,16 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Effect.logWarning("Kin default characters not written", Cause.pretty(cause)),
         ),
       );
+      yield* splitCharacters(owner.orgId, chat).pipe(
+        Effect.provide(services),
+        Effect.catchCause((cause) =>
+          Effect.logWarning(
+            "Kin couldn't separate Kin's part of the characters",
+            Cause.pretty(cause),
+          ),
+        ),
+      );
+
       yield* DevFakeMail.connectFakeAccounts(owner).pipe(Effect.provide(services));
       const hub = yield* KinChatHub;
       const scope = yield* Effect.scope;
@@ -104,6 +121,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               Effect.logWarning("Kin couldn't show a card's sent-mail check", Cause.pretty(cause)),
             ),
           ),
+        (input) => dismissChoice(input).pipe(Effect.provide(services)),
       );
       yield* resumeInterruptedSends(owner.orgId, yield* Clock.currentTimeMillis).pipe(
         Effect.provide(services),
@@ -136,7 +154,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               KinPush.layer,
               LevelControl.layer,
               MemoryChanges.layer,
-              KinRecords.layer,
+              KinImport.layer.pipe(Layer.provideMerge(KinRecords.layer)),
               Render.layer.pipe(
                 Layer.provideMerge(Workspace.layer),
                 Layer.provide(
@@ -164,6 +182,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           // Kin's GitHub App: the identity agents' shells and Kin's own GitHub writes use.
           Layer.provideMerge(
             KinGitHubAppSetup.layer.pipe(
+              Layer.provideMerge(KinGitHubHook.layer.pipe(Layer.provide(ServerSecretStore.layer))),
               Layer.provideMerge(KinGitHubApp.layer),
               Layer.provide(KinGitHubApp.KinGitHubAppConfig.layer),
               Layer.provide(KinGitHubAppKey.layer.pipe(Layer.provide(ServerSecretStore.layer))),

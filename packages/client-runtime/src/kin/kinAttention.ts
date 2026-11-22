@@ -4,17 +4,23 @@ import {
   KIN_PULSE_URGENT,
   kinPulseFactRecord,
   type KinGoal,
+  type KinPulseAside,
   type KinPulseFact,
   type KinPulseScope,
   type KinPulseScreenRead,
   type KinRecordKey,
+  type KinWorkPrincipal,
   formatKinWhen,
+  kinWhenParts,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { kinMoneyDraft, kinMoneyText } from "./kinLists.ts";
+import { kinMoneyDraft, kinMoneyText, kinRecordName } from "./kinLists.ts";
+import { kinAskName } from "./kinAskRecord.ts";
 import { KIN_NEEDS_YOU_SHOWN, type KinNeedsYouRow } from "./kinWorkHome.ts";
 import { kinFailure } from "./kinAnswers.ts";
+import { kinIsDealKey } from "./kinDeals.ts";
+import { kinMidSentence, kinWorkName } from "./kinWork.ts";
 
 /**
  * "Needs attention": what Kin worked out needs someone, on the screens it is about. One model for
@@ -31,8 +37,20 @@ export const KIN_ATTENTION = {
   snoozeTomorrow: "Snooze until tomorrow",
   snoozeMonday: "Snooze until Monday",
   snoozeWeek: "Snooze for a week",
+  setAside: "Set aside until…",
+  setAsideTitle: "Set aside until",
+  setAsideDay: "Until this day",
+  untilLifted: "Until I lift it",
+  setAsideSave: "Set aside",
+  cancel: "Cancel",
   failed: "Couldn't save that.",
+  whatsNext: "What's next?",
+  notNow: "Not now",
+  menu: (title: string) => `Snooze or set aside ${title}`,
 } as const;
+
+/** "Not now" on a deal with no next step: its own hold, this many days. */
+const KIN_NOT_NOW_DAYS = 14;
 
 /** Where a row opens: the entry itself, Money, or nowhere of its own (ask the agent instead). */
 export type KinAttentionOpen =
@@ -58,6 +76,20 @@ export interface KinAttentionRow {
   readonly handled: string | null;
   /** About money: Tasks counts these in one row that opens Money, which lists them. */
   readonly money: boolean;
+  /** The record it is about, which "Set aside until…" holds; null when it is not a record. */
+  readonly record: KinRecordKey | null;
+  /** A deal with no next step: "What's next?" opens it, "Not now" holds it for 14 days. */
+  readonly whatsNext: KinRecordKey | null;
+}
+
+/** A record set aside, one row in Handled whatever it covers, with its Undo when it is yours. */
+export interface KinAsideRow {
+  readonly id: string;
+  readonly record: KinRecordKey;
+  readonly title: string;
+  /** "Set aside until 17 Dec · by Finance, on your word". */
+  readonly detail: string;
+  readonly liftable: boolean;
 }
 
 /** Which facts a screen is about: the whole company, one project, one client, or Money. */
@@ -72,8 +104,16 @@ const URGENT = KIN_PULSE_URGENT;
 /** Open facts Needs you asks for: the rows it shows before "See all", and some to spare. */
 export const KIN_NEEDS_YOU_PAGE = 8;
 
+/** What a deal or prospect stopping moving reads as: Tasks lists these for whoever has it. */
+export const KIN_DEAL_SENSES: ReadonlySet<KinPulseFact["sense"]> = new Set<KinPulseFact["sense"]>([
+  "deal_no_next_step",
+  "deal_quiet",
+  "deal_date_passed",
+]);
+
 /** A client's own matters, and its tasks that are late or due. */
 const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
+  ...KIN_DEAL_SENSES,
   "task_late",
   "task_due_soon",
   "client_cold",
@@ -111,7 +151,7 @@ const inScope = (fact: KinPulseFact, scope: KinAttentionScope) => {
 };
 
 const openOf = (fact: KinPulseFact): KinAttentionOpen =>
-  fact.family === "goals" || fact.subject.kind === "budget"
+  fact.family === "goals" || fact.subject.kind === "budget" || fact.subject.kind === "bank"
     ? { type: "money" }
     : fact.subject.kind === "record"
       ? { type: "record", key: fact.subject.key }
@@ -126,10 +166,7 @@ const dayLabel = (at: DateTime.Utc, now: Date) =>
 const handledText = (fact: KinPulseFact, names: ReadonlyMap<string, string>, now: Date) => {
   const handled = fact.handled;
   if (handled === null) return null;
-  const by =
-    handled.by._tag === "agent"
-      ? (names.get(handled.by.agentId) ?? "An agent")
-      : (names.get(handled.by.personId) ?? "Someone");
+  const by = kinWorkName(handled.by, { people: names, agents: names });
   return handled.until === null
     ? `${by}: not a problem`
     : `${by} has it until ${dayLabel(handled.until, now)}`;
@@ -174,7 +211,10 @@ function kinAttentionRow(
   },
 ): KinAttentionRow {
   const { subject, scope } = fact;
-  const label = subject.kind === "record" ? `${subject.key} ${subject.title}` : subject.title;
+  const label =
+    subject.kind === "record"
+      ? `${kinAskName(subject.key, subject.number)} ${subject.title}`
+      : subject.title;
   const where = [
     input.scope.type === "project" ? null : (scope.projectTitle ?? null),
     input.scope.type === "client" || input.scope.type === "project"
@@ -187,7 +227,7 @@ function kinAttentionRow(
     title: subject.title,
     detail: kinPlainDates(fact.consequence),
     about:
-      [subject.kind === "record" ? subject.key : null, ...where]
+      [subject.kind === "record" ? kinRecordName(subject.key, subject.number) : null, ...where]
         .filter((part) => part !== null)
         .join(" · ") || null,
     urgent: URGENT.has(fact.sense),
@@ -196,7 +236,52 @@ function kinAttentionRow(
     askDraft: `About ${label}: ${fact.consequence} `,
     handled: handledText(fact, input.names, input.now),
     money: fact.family === "money",
+    record: subject.kind === "record" ? subject.key : null,
+    whatsNext:
+      fact.sense === "deal_no_next_step" && subject.kind === "record" && kinIsDealKey(subject.key)
+        ? subject.key
+        : null,
   };
+}
+
+/** How a hold reads: until when, who set it and on whose word. */
+function kinAsideText(aside: KinPulseAside, names: ReadonlyMap<string, string>, now: Date): string {
+  const until =
+    aside.until === null
+      ? "Set aside until lifted"
+      : `Set aside until ${dayLabel(aside.until, now)}`;
+  const name = (who: KinWorkPrincipal) =>
+    kinMidSentence(kinWorkName(who, { people: names, agents: names }));
+  const by = aside.byYou ? "by you" : `by ${name(aside.by)}`;
+  const word = aside.yourWord
+    ? ", on your word"
+    : aside.onWordOf === null ||
+        aside.onWordOf === (aside.by._tag === "person" ? aside.by.personId : null)
+      ? ""
+      : `, on ${name({ _tag: "person", personId: aside.onWordOf })}'s word`;
+  return `${until} · ${by}${word}`;
+}
+
+const asideRow = (
+  aside: KinPulseAside,
+  names: ReadonlyMap<string, string>,
+  now: Date,
+): KinAsideRow => ({
+  id: `aside:${aside.record.key}`,
+  record: aside.record.key,
+  title: aside.record.title,
+  detail: kinAsideText(aside, names, now),
+  liftable: aside.liftable,
+});
+
+/** The hold on this record itself, for one quiet line on its own page; null when none. */
+export function kinAsideOf(
+  read: KinPulseScreenRead | null,
+  key: KinRecordKey,
+  input: { readonly names: ReadonlyMap<string, string>; readonly now: Date },
+): KinAsideRow | null {
+  const aside = read?.setAside?.find((one) => one.record.key === key);
+  return aside === undefined ? null : asideRow(aside, input.names, input.now);
 }
 
 /**
@@ -213,16 +298,42 @@ export function kinAttention(
 ): {
   readonly open: ReadonlyArray<KinAttentionRow>;
   readonly handled: ReadonlyArray<KinAttentionRow>;
+  /** What is set aside here, one row per record; a fact under one is not in `handled`. */
+  readonly asides: ReadonlyArray<KinAsideRow>;
+  /** The facts those cover: not drawn, but what they are about is answered. */
+  readonly held: ReadonlyArray<KinAttentionRow>;
 } {
-  if (read === null) return { open: [], handled: [] };
+  if (read === null) return { open: [], handled: [], asides: [], held: [] };
   const facts = read.facts.filter((fact) => inScope(fact, input.scope));
+  const covering = new Set(facts.flatMap((fact) => (fact.aside ? [fact.aside.record.key] : [])));
+  const scopeKey =
+    input.scope.type === "client" || input.scope.type === "project" ? input.scope.key : null;
+  const asides = (read.setAside ?? [])
+    .filter(
+      (aside) =>
+        input.scope.type === "all" ||
+        aside.record.key === scopeKey ||
+        covering.has(aside.record.key),
+    )
+    .map((aside) => asideRow(aside, input.names, input.now));
   const rows = (list: ReadonlyArray<KinPulseFact>) =>
     [...list]
       .sort((a, b) => Number(URGENT.has(b.sense)) - Number(URGENT.has(a.sense)))
       .map((fact) => kinAttentionRow(fact, input));
+  // An older host sends no list of holds: its held facts stay rows of their own.
+  const listed = new Set((read.setAside ?? []).map((aside) => aside.record.key));
   return {
     open: rows(facts.filter((fact) => fact.handled === null)),
-    handled: rows(facts.filter((fact) => fact.handled !== null)),
+    handled: rows(
+      facts.filter(
+        (fact) =>
+          fact.handled !== null && (fact.aside === undefined || !listed.has(fact.aside.record.key)),
+      ),
+    ),
+    asides,
+    held: rows(
+      facts.filter((fact) => fact.aside !== undefined && listed.has(fact.aside.record.key)),
+    ),
   };
 }
 
@@ -318,11 +429,11 @@ export const kinAttentionBadge = (count: number) =>
  */
 export function kinNeedsYouBeside(
   rows: ReadonlyArray<KinNeedsYouRow>,
-  { open, handled }: ReturnType<typeof kinAttention>,
+  { open, handled, held }: ReturnType<typeof kinAttention>,
   read?: KinPulseScreenRead | null,
 ): ReadonlyArray<KinNeedsYouRow> {
   // Something already answered stays answered here too, not back as a plain row.
-  const attention = [...open, ...handled];
+  const attention = [...open, ...handled, ...held];
   const outline = read?.outline;
   const covered = new Set<string>(
     outline?.records ??
@@ -380,18 +491,24 @@ export function kinTasksBlock(input: {
   const total = rows + onMe + input.needs.reduce((sum, row) => sum + (row.count ?? 1) - 1, 0);
   // The rows it shows, so the list below keeps every task the block doesn't. A money row leads,
   // so a long run of attention rows never hides it.
+  // What waits on the viewer is never cut: it lists what the sidebar's "Waiting on you" lists.
   const limit = input.expanded ? rows : KIN_NEEDS_YOU_SHOWN;
   const lead = needs[0]?.id === "attention:money" ? 1 : 0;
-  const shownAttention = attention.slice(0, Math.max(0, limit - lead));
+  const waiting = needs.filter((row) => row.kind === "waiting");
+  const room = Math.max(0, limit - lead - waiting.length);
+  const shownAttention = attention.slice(0, room);
+  const rest = new Set(
+    needs
+      .slice(lead)
+      .filter((row) => row.kind !== "waiting")
+      .slice(0, Math.max(0, room - shownAttention.length)),
+  );
   return {
     attention: shownAttention,
-    needs: [
-      ...needs.slice(0, lead),
-      ...needs.slice(lead, lead + Math.max(0, limit - lead - shownAttention.length)),
-    ],
+    needs: needs.filter((row, index) => index < lead || row.kind === "waiting" || rest.has(row)),
     total,
     onMe,
-    more: rows > KIN_NEEDS_YOU_SHOWN,
+    more: rows > Math.max(KIN_NEEDS_YOU_SHOWN, lead + waiting.length),
   };
 }
 
@@ -421,9 +538,18 @@ export function kinSnoozeDays(now: Date) {
   ] as const;
 }
 
+/** The day "Not now" holds a deal with no next step until. */
+export const kinNotNowUntil = (now: Date) => dayOf(plusDays(now, KIN_NOT_NOW_DAYS));
+
+/** "Set aside until…": the first day it may be set to (tomorrow) and the day it starts on. */
+export function kinSetAsideDays(now: Date) {
+  return { min: dayOf(plusDays(now, 1)), initial: dayOf(plusDays(now, 30)) } as const;
+}
+
 // Goals
 
 export const KIN_GOALS = {
+  unitPlaceholder: "For example: hires",
   saveFailed: "Couldn't save the goal.",
   title: "Goals",
   add: "Add goal",
@@ -446,12 +572,6 @@ export const KIN_GOALS = {
     clients_won: "Clients won",
     tasks_done: "Tasks done",
     manual: "A number we update",
-  } satisfies Record<KinGoal["measure"], string>,
-  targetHint: {
-    revenue_received: "40 lakh, ₹40,00,000",
-    clients_won: "5",
-    tasks_done: "40",
-    manual: "2",
   } satisfies Record<KinGoal["measure"], string>,
 } as const;
 
@@ -519,9 +639,20 @@ export function kinGoalsSummary(views: ReadonlyArray<Pick<KinGoalView, "status">
     .join(", ");
 }
 
-/** A goal as its edit sheet starts: the figures as a person would type them. */
-export function kinGoalDraft(goal: KinGoal | null, now: Date) {
-  const today = dayOf(now);
+/** Today on `zone`'s calendar, the company's, else on this device. */
+const todayIn = (now: Date, zone: string | null) => {
+  if (zone === null) return dayOf(now);
+  try {
+    return kinWhenParts(now, zone).isoDay;
+  } catch {
+    return dayOf(now);
+  }
+};
+
+/** A goal as its edit sheet starts: the figures as a person would type them, days in `zone`. */
+export function kinGoalDraft(goal: KinGoal | null, now: Date, zone: string | null = null) {
+  const today = todayIn(now, zone);
+  const [year, month, date] = today.split("-").map(Number);
   if (goal === null)
     return {
       title: "",
@@ -530,7 +661,7 @@ export function kinGoalDraft(goal: KinGoal | null, now: Date) {
       current: "",
       unit: "",
       startsOn: today,
-      dueOn: dayOf(new Date(now.getFullYear(), now.getMonth() + 3, now.getDate())),
+      dueOn: dayOf(new Date(year ?? 1970, (month ?? 1) - 1 + 3, date ?? 1)),
     };
   return {
     title: goal.title,

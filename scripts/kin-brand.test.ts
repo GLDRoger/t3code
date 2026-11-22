@@ -216,6 +216,24 @@ describe("kin-brand", () => {
     }).pipe(Effect.scoped, Effect.provide(TestLayer)),
   );
 
+  it.live("copies a link that git checked out as a plain file, as on Windows", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const { root, repo } = yield* makeRepo({});
+      const git = (...args: ReadonlyArray<string>) =>
+        spawner.string(ChildProcess.make("git", args, { cwd: repo }));
+      yield* fs.writeFileString(path.join(repo, "app/alias.ts"), "name.ts");
+      const blob = (yield* git("hash-object", "-w", "app/alias.ts")).trim();
+      yield* git("update-index", "--add", "--cacheinfo", `120000,${blob},app/alias.ts`);
+
+      const target = path.join(root, "kin");
+      yield* brand(repo, target);
+      assert.strictEqual(yield* fs.readLink(path.join(target, "app/alias.ts")), "name.ts");
+    }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+  );
+
   it.live("fails on new drift, counts duplicates, and reports gone entries", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

@@ -1,8 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
-import { KIN_INVOICES } from "@t3tools/client-runtime/kin/kinInvoices";
-import { KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { KIN_INVOICES, kinConfirmTotal } from "@t3tools/client-runtime/kin/kinInvoices";
+import { KIN_BANK, KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
+import { kinWorkReadUnreachable } from "@t3tools/client-runtime/kin/kinWorkForms";
+import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import {
   KIN_BUDGETS,
   KIN_CASH,
@@ -41,7 +44,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { useState } from "react";
-import type { KinMakeStep } from "./KinInvoice";
+import type { KinMakeStep } from "./kinMakeStep";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -60,6 +63,7 @@ import { KinFoldSection, KinWorkFrame, KinWorkTextField } from "./components/Kin
 import { kinClient } from "./state/kinClient";
 import {
   kinListsOf,
+  useKinAskAgent,
   useKinListEntries,
   useKinLists,
   useKinMoneyActions,
@@ -72,8 +76,10 @@ import {
   useKinInvoiceFromQuote,
   useKinOutlook,
 } from "./state/useKinMoneyAnswers";
+import { useKinHostAt } from "./state/useKinHost";
 import { useKinWorkChoices, type KinWorkTarget } from "./state/useKinWork";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
 const PEEK = 5;
 type Section = KinWorkTarget & { readonly seq: number | null; readonly rates: KinRates | null };
@@ -89,6 +95,7 @@ function Row(props: {
   readonly onPress?: () => void;
   readonly children?: React.ReactNode;
 }) {
+  const grows = useKinTextGrows();
   return (
     <Pressable
       accessibilityRole={props.onPress === undefined ? "text" : "button"}
@@ -100,13 +107,13 @@ function Row(props: {
       className="min-h-11 flex-row items-start gap-3 bg-grouped-card px-4 py-2.5 active:opacity-60"
     >
       <View className="min-w-0 flex-1 gap-0.5">
-        <Text textRole="body" numberOfLines={1} className="text-foreground">
+        <Text textRole="body" numberOfLines={kinLines(1, grows)} className="text-foreground">
           {props.label}
         </Text>
         {props.note == null || props.note === "" ? null : (
           <Text
             textRole="footnote"
-            numberOfLines={1}
+            numberOfLines={kinLines(1, grows)}
             className={props.late ? "text-danger-foreground" : "text-foreground-muted"}
           >
             {props.note}
@@ -158,9 +165,12 @@ const useOpenEntry = (target: KinWorkTarget) => {
 export function KinCashSection(props: Section) {
   const now = new Date(useNowMinuteMs());
   const { state, refresh } = useKinCash(props, true);
+  const agent = useKinAskAgent(props, "money");
   const [why, setWhy] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
+  const link = kinHostLink(useKinHostAt(props.environmentId));
   if (state._tag === "refused" || state._tag === "gone") return null;
+  if (kinWorkReadUnreachable(state, link)) return null;
   const view = state._tag === "ready" ? kinCashView(state.value, props.rates, now) : null;
   return (
     <ListSection title={KIN_CASH.title}>
@@ -199,6 +209,15 @@ export function KinCashSection(props: Section) {
               )}
             </Row>
           ))}
+          {agent !== null ? (
+            <ListActionRow
+              label={KIN_BANK.upload}
+              {...(view.bank === null ? {} : { description: view.bank })}
+              onPress={() => agent.ask(KIN_BANK.uploadMessage)}
+            />
+          ) : view.bank === null ? null : (
+            <Plain>{view.bank}</Plain>
+          )}
           {view.currencies.map((one) => (
             <View key={one.currency} className="gap-1 bg-grouped-card px-4 py-2.5">
               <View className="flex-row justify-between gap-3">
@@ -298,7 +317,9 @@ export function KinOutlookSection(props: Section) {
   const open = useOpenEntry(props);
   const { state, refresh } = useKinOutlook(props, true);
   const [all, setAll] = useState(false);
+  const link = kinHostLink(useKinHostAt(props.environmentId));
   if (state._tag === "refused" || state._tag === "gone") return null;
+  if (kinWorkReadUnreachable(state, link)) return null;
   const view = state._tag === "ready" ? kinOutlookView(state.value, props.rates, now) : null;
   const longer = view !== null && view.incoming.length + view.outgoing.length > 0;
   return (
@@ -376,7 +397,7 @@ export function KinOutlookSection(props: Section) {
 }
 
 // As Money counts them: no suggestion is an open quote until it is kept.
-const OPEN_QUOTES = { ...KIN_LIST_DEFAULT_FILTER, show: "open" as const, kept: true };
+const OPEN_QUOTES = { ...KIN_LIST_DEFAULT_FILTER, show: "notClosed" as const, kept: true };
 
 /** Open quotes first, each opening the quote; See all opens the whole list. */
 export function KinQuotesSection(
@@ -391,7 +412,9 @@ function QuotesPeek(props: Section) {
   const now = new Date(useNowMinuteMs());
   const open = useOpenEntry(props);
   const { state } = useKinListEntries(props, KIN_QUOTES_LIST, OPEN_QUOTES, props.seq);
+  const link = kinHostLink(useKinHostAt(props.environmentId));
   const rows = state.records.map((record) => kinQuoteRow(record, props.rates, now));
+  if (kinListShown(state, link) === "offline") return null;
   return (
     <KinFoldSection
       title={KIN_QUOTES.title}
@@ -434,6 +457,7 @@ function QuotesPeek(props: Section) {
 }
 
 function BudgetRow(props: { readonly view: KinBudgetView; readonly onPress?: () => void }) {
+  const grows = useKinTextGrows();
   const { view } = props;
   return (
     <Pressable
@@ -447,7 +471,11 @@ function BudgetRow(props: { readonly view: KinBudgetView; readonly onPress?: () 
       className="min-h-11 gap-1.5 bg-grouped-card px-4 py-2.5 active:opacity-60"
     >
       <View className="flex-row justify-between gap-3">
-        <Text textRole="body" numberOfLines={1} className="min-w-0 flex-1 text-foreground">
+        <Text
+          textRole="body"
+          numberOfLines={kinLines(1, grows)}
+          className="min-w-0 flex-1 text-foreground"
+        >
           {view.label}
         </Text>
         <Text textRole="body" className="tabular-nums text-foreground">
@@ -497,7 +525,9 @@ export function KinBudgetsSection(
   const canChange = useAtomValue(kinClient.workSetBudget.permissionAtom(props.environmentId));
   const [all, setAll] = useState(false);
   const expenses = props.lists.find((one) => one.list === "expenses") ?? null;
+  const link = kinHostLink(useKinHostAt(props.environmentId));
   if (state._tag === "refused" || state._tag === "gone") return null;
+  if (kinWorkReadUnreachable(state, link)) return null;
   const views = state._tag === "ready" ? kinBudgetsView(state.value, expenses, props.rates) : [];
   // Absent with none set: Money's Add sets the first one.
   if (state._tag === "ready" && views.length === 0) return null;
@@ -656,7 +686,6 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
         <KinWorkTextField
           label={KIN_BUDGETS.limit}
           value={draft.limit}
-          placeholder={KIN_BUDGETS.limitPlaceholder}
           keyboard="numbers"
           disabled={setter.busy}
           onChangeText={(limit) => setDraft({ ...draft, limit })}
@@ -739,7 +768,9 @@ export function KinQuoteActions(
           onPress={() =>
             Dialog.confirm({
               title: KIN_QUOTES.sendTitle,
-              message: KIN_QUOTES.sendDetail,
+              message: [kinConfirmTotal(item.amount, item.party?.title), KIN_QUOTES.sendDetail]
+                .filter((line) => line !== null)
+                .join("\n"),
               confirmText: KIN_QUOTES.send,
               onConfirm: () => void actions.issue(item.key),
             })
@@ -816,6 +847,9 @@ export function KinLinesFields(props: {
   readonly lines: ReadonlyArray<KinLineDraft>;
   readonly disabled: boolean;
   readonly onChange: (lines: ReadonlyArray<KinLineDraft>) => void;
+  /** Each line's SAC or HSN code, which only India's invoices carry; shown unless false. */
+  readonly codes?: boolean;
+  readonly detail?: string;
 }) {
   const set = (index: number, patch: Partial<KinLineDraft>) =>
     props.onChange(props.lines.map((one, at) => (at === index ? { ...one, ...patch } : one)));
@@ -826,7 +860,7 @@ export function KinLinesFields(props: {
           {KIN_LINES.title}
         </Text>
         <Text textRole="footnote" className="text-foreground-muted">
-          {KIN_LINES.detail}
+          {props.detail ?? KIN_LINES.detail}
         </Text>
       </View>
       {props.lines.map((line, index) => (
@@ -839,15 +873,16 @@ export function KinLinesFields(props: {
             disabled={props.disabled}
             onChangeText={(description) => set(index, { description })}
           />
-          <KinWorkTextField
-            label={KIN_LINES.sac}
-            value={line.sac}
-            placeholder={KIN_LINES.sacPlaceholder}
-            maxLength={8}
-            keyboard="numbers"
-            disabled={props.disabled}
-            onChangeText={(sac) => set(index, { sac })}
-          />
+          {props.codes === false ? null : (
+            <KinWorkTextField
+              label={KIN_LINES.sac}
+              value={line.sac}
+              maxLength={8}
+              keyboard="numbers"
+              disabled={props.disabled}
+              onChangeText={(sac) => set(index, { sac })}
+            />
+          )}
           <KinWorkTextField
             label={KIN_LINES.quantity}
             value={line.quantity}

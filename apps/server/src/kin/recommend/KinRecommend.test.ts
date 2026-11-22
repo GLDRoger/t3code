@@ -4,7 +4,6 @@ import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
-  EnvironmentId,
   KinAgentId,
   KinConnectionId,
   type KinPersonId,
@@ -23,7 +22,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
-import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import type { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
@@ -33,7 +31,6 @@ import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
 import type { Services } from "../KinServer.ts";
-import { recordAudience, turnAudience } from "../lead/Audience.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
@@ -49,7 +46,6 @@ import {
   agentPaused,
   connectionPaused,
   dailyLimit,
-  routeAccess,
 } from "./rules.ts";
 
 const at = "1970-01-01T00:00:00.000Z";
@@ -63,22 +59,9 @@ const models = JSON.stringify({
   instanceId: ProviderInstanceId.make("codex"),
   model: "gpt-5.1-codex",
 });
-const scopeFor = (agentId: string): McpInvocationScope => ({
-  environmentId: EnvironmentId.make("environment"),
-  requestNamespace: "test",
-  issuedAt: 0,
-  capabilities: new Set(),
-  client: undefined,
-  thread: {
-    threadId: ThreadId.make(`${agentId}-thread`),
-    providerSessionId: `${agentId}-session`,
-    providerInstanceId: ProviderInstanceId.make("codex"),
-  },
-});
-
 /**
- * Rhea's Ambermill: the Chief of staff and Tech lead, and Meera, who may message the Chief of
- * staff but not the Tech lead, and a co-owner, Dev. Meera's asks go through the real hand-off.
+ * Rhea's Ambermill: the Chief of staff and Tech lead, Meera, a teammate, and a co-owner, Dev.
+ * Meera's asks go through the real hand-off.
  */
 const setup = Effect.gen(function* () {
   const kin = yield* Kin.KinServer;
@@ -119,8 +102,6 @@ const setup = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
     VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at}, 'member'),
       ('dev', ${orgId}, 'dev', 'Dev', ${at}, 'co_owner')`;
-  yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at, revoked_at)
-    VALUES (${orgId}, ${chief}, 'meera', ${owner.personId}, 0, NULL)`;
   yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
       dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
     VALUES (${orgId}, 'UTC', '08:30', '18:00', '02:00', 0, 1, '09:00',
@@ -161,66 +142,12 @@ const run = <A, E>(
     ),
   );
 
-/** Meera asks the Chief of staff for the Tech lead's work, and it passes the request on. */
-const meeraAsks = Effect.fn("RecommendTest.meeraAsks")(function* (
-  ctx: Ctx,
-  handoff: Handoff.KinHandoff["Service"],
-  eventId: string,
-) {
-  yield* ctx.sql`UPDATE kin_wakeups SET status = 'running'
-    WHERE org_id = ${ctx.orgId} AND wakeup_id = 'chief-wake'`;
-  const sent = yield* ctx.chats.send(ctx.meera, {
-    chatId: ctx.direct,
-    body: `Can I get the staging logs? (${eventId})`,
-    clientMessageId: eventId,
-  });
-  yield* ctx.sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
-    VALUES (${eventId}, ${ctx.orgId}, ${chief}, 'chat.message', 'P0', ${JSON.stringify({
-      _tag: "chat.message",
-      orgId: ctx.orgId,
-      agentId: chief,
-      eventId,
-      receivedAt: at,
-      dedupeKey: null,
-      provenance: sent.author,
-      chatId: ctx.direct,
-      messageId: sent.messageId,
-    })}, 0, 0, 'claimed', 'chief-wake')`;
-  const turn = { orgId: ctx.orgId, agentId: chief, wakeupId: "chief-wake" };
-  yield* recordAudience(turn, yield* turnAudience(turn));
-  yield* handoff.handOff(scopeFor(chief), {
-    wantsAnswer: true,
-    to: "Tech lead",
-    request: "Meera wants the staging logs.",
-    sourceEventId: eventId,
-  });
-  yield* ctx.sql`UPDATE kin_events SET state = 'done', wakeup_id = NULL
-    WHERE org_id = ${ctx.orgId} AND event_id = ${eventId}`;
-  // Its turn ends: a wake-up still running would hold Kin's own card back.
-  yield* ctx.sql`UPDATE kin_wakeups SET status = 'completed'
-    WHERE org_id = ${ctx.orgId} AND wakeup_id = 'chief-wake'`;
-});
-
 /**
- * Three asks over two days: the first card ran out, a second ask waited on it, and the third's
- * card waits now. The rule's threshold, exactly.
+ * Two days in, the Tech lead has been paused four days with three things waiting for it: rule 5
+ * fires, and stands for any suggestion in what the ledger does with it.
  */
-const threeAsks = Effect.fn("RecommendTest.threeAsks")(function* (
-  ctx: Ctx,
-  handoff: Handoff.KinHandoff["Service"],
-) {
-  yield* meeraAsks(ctx, handoff, "ask-1");
-  yield* meeraAsks(ctx, handoff, "ask-2");
-  yield* TestClock.adjust("25 hours");
-  yield* meeraAsks(ctx, handoff, "ask-3");
-  yield* TestClock.adjust("23 hours");
-});
-
-const verdicts = (ctx: Ctx) =>
-  Effect.gen(function* () {
-    const now = yield* Clock.currentTimeMillis;
-    return yield* routeAccess(yield* ruleContext(ctx.orgId, ctx.owner.personId, now));
-  });
+const techWaits = (ctx: Ctx) =>
+  Effect.all([TestClock.adjust("48 hours"), pausedTech(ctx, 4, 3), idle(ctx)]);
 
 /** Kin's suggestion cards in Rhea's chat with the Chief of staff, oldest first. */
 const cards = (ctx: Ctx) =>
@@ -266,17 +193,6 @@ const list = (ctx: Ctx, personId = ctx.owner.personId) =>
   KinRecommend.list(ctx.orgId, personId).pipe(
     Effect.map((result) => result.rows.map(({ outcome, action }) => ({ outcome, action }))),
   );
-const meeraMayMessageTech = (ctx: Ctx) =>
-  ctx.sql`SELECT 1 FROM kin_lead_access WHERE org_id = ${ctx.orgId} AND agent_id = ${tech}
-    AND person_id = 'meera' AND revoked_at IS NULL`.pipe(Effect.map((rows) => rows.length > 0));
-/** Her asks moved back by `ms`, as if that much time had passed since. */
-const asksAge = (ctx: Ctx, ms: number) =>
-  Effect.andThen(
-    ctx.sql`UPDATE kin_handoffs SET created_at = created_at - ${ms} WHERE org_id = ${ctx.orgId}`,
-    ctx.sql`UPDATE kin_messages SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_at,
-        ${`-${ms / 1000} seconds`})
-      WHERE org_id = ${ctx.orgId} AND author_person_id = 'meera'`,
-  );
 /** Rhea's open waiting rows for this card: on the card, or on its message alone. */
 const waitingOn = (ctx: Ctx, card: { widgetId: string; messageId: string }) =>
   ctx.sql`SELECT 1 FROM kin_waiting WHERE org_id = ${ctx.orgId}
@@ -302,15 +218,7 @@ const needsYouOn = (ctx: Ctx, card: { widgetId: string; messageId: string }) =>
 const chiefMessages = (ctx: Ctx) =>
   ctx.sql`SELECT message_id FROM kin_messages WHERE org_id = ${ctx.orgId}
     AND chat_id = ${ctx.chiefChat} ORDER BY seq`;
-/** Meera's own message for an ask, and the hand-off recorded for it. */
-const askOf = (ctx: Ctx, eventId: string) =>
-  ctx.sql<{ messageId: string; widgetId: string | null }>`SELECT m.message_id AS "messageId",
-      h.route_widget_id AS "widgetId" FROM kin_messages m
-    JOIN kin_handoffs h ON h.org_id = m.org_id AND h.message_id = m.message_id
-    WHERE m.org_id = ${ctx.orgId} AND m.body LIKE ${`%(${eventId})%`}`.pipe(
-    Effect.map((rows) => rows[0]!),
-  );
-/** `days` pass for the suggestions alone: Meera's asks stay as recent as they were. */
+/** `days` pass for the suggestions alone: what waits stays as it was. */
 const timePasses = (ctx: Ctx, days: number) =>
   ctx.sql`UPDATE kin_recommendations SET posted_at = posted_at - ${days * DAY},
       decided_at = decided_at - ${days * DAY}, quiet_until = quiet_until - ${days * DAY}
@@ -339,178 +247,15 @@ const declines = (ctx: Ctx) =>
     WHERE org_id = ${ctx.orgId} AND state = 'declined'`.pipe(Effect.map((rows) => rows[0]!.n));
 
 const NOTICED =
-  "Since 1 Jan, 3 of Meera's requests for Tech lead had to wait for your yes, and 2 ran out or waited behind another.";
-
-it.effect(
-  "rule 1 counts Meera's unanswered asks for the Tech lead over 30 days, and is silent below the threshold, after Meera's access, Rhea's Not this time, a revoke and the window",
-  () =>
-    run(({ ctx, handoff }) =>
-      Effect.gen(function* () {
-        const { sql, orgId, owner } = ctx;
-        yield* meeraAsks(ctx, handoff, "ask-1");
-        yield* meeraAsks(ctx, handoff, "ask-2");
-        // Two asks, both unanswered: one short of "frequently".
-        assert.deepStrictEqual(yield* verdicts(ctx), [
-          {
-            _tag: "silent",
-            subject: "person:meera|agent:tech",
-            reason: "Meera hasn't been waiting on you for Tech lead that often lately",
-          },
-        ]);
-        yield* TestClock.adjust("25 hours");
-        yield* meeraAsks(ctx, handoff, "ask-3");
-        const [fires] = yield* verdicts(ctx);
-        assert.deepStrictEqual(fires, {
-          _tag: "fires",
-          candidate: {
-            rule: "route_access",
-            subject: "person:meera|agent:tech",
-            weight: 3,
-            noticed: NOTICED,
-            ask: "Let Meera message Tech lead directly?",
-            gives:
-              "Meera could then ask Tech lead without waiting for you. Tech lead talks and drafts for Meera within what Meera is allowed to see, and starting work stays yours to ask for.",
-            change: {
-              kind: "lead_access",
-              personId: "meera",
-              personName: "Meera",
-              agentId: "tech",
-              agentName: "Tech lead",
-            },
-          },
-        });
-
-        const reasonNow = Effect.map(verdicts(ctx), (all) =>
-          all[0]!._tag === "fires" ? "fires" : all[0]!.reason,
-        );
-        const quiet = "Meera hasn't been waiting on you for Tech lead that often lately";
-        const ask1 = yield* askOf(ctx, "ask-1");
-        const ask3 = yield* askOf(ctx, "ask-3");
-        // A request counts by when Meera sent it, not when its hand-off was recorded.
-        yield* sql`UPDATE kin_messages SET created_at = '1969-12-31T10:00:00.000Z'
-          WHERE org_id = ${orgId} AND message_id = ${ask1.messageId}`;
-        const [moved] = yield* verdicts(ctx);
-        assert.include(moved?._tag === "fires" ? moved.candidate.noticed : "", "Since 31 Dec, 3 ");
-        yield* sql`UPDATE kin_messages SET created_at = '1969-12-02T10:00:00.000Z'
-          WHERE org_id = ${orgId} AND message_id = ${ask1.messageId}`;
-        assert.strictEqual(yield* reasonNow, quiet);
-        yield* sql`UPDATE kin_messages SET created_at = '1970-01-01T10:00:00.000Z'
-          WHERE org_id = ${orgId} AND message_id = ${ask1.messageId}`;
-        // Its card closed early, or was cleared: it didn't run out.
-        yield* sql`UPDATE kin_widgets SET closed_at = '1970-01-01T11:00:00.000Z'
-          WHERE org_id = ${orgId} AND widget_id = ${ask1.widgetId}`;
-        assert.strictEqual(yield* reasonNow, quiet);
-        yield* sql`UPDATE kin_widgets SET closed_at = NULL
-          WHERE org_id = ${orgId} AND widget_id = ${ask1.widgetId}`;
-        // A wait recorded after its card ran out didn't wait on an open card.
-        yield* sql`UPDATE kin_handoffs SET created_at = created_at + ${25 * 60 * 60 * 1000}
-          WHERE org_id = ${orgId} AND route_state = 'waited'`;
-        assert.strictEqual(yield* reasonNow, quiet);
-        yield* sql`UPDATE kin_handoffs SET created_at = created_at - ${25 * 60 * 60 * 1000}
-          WHERE org_id = ${orgId} AND route_state = 'waited'`;
-        const noticedNow = Effect.map(verdicts(ctx), (all) =>
-          all[0]!._tag === "fires" ? all[0]!.candidate.noticed : all[0]!.reason,
-        );
-        // Passed on and later cancelled: not a request that waited on Rhea.
-        yield* sql`UPDATE kin_handoffs SET route_state = 'stale'
-          WHERE org_id = ${orgId} AND message_id = ${ask3.messageId}`;
-        assert.strictEqual(yield* reasonNow, quiet);
-        yield* sql`UPDATE kin_handoffs SET route_state = 'pending'
-          WHERE org_id = ${orgId} AND message_id = ${ask3.messageId}`;
-        assert.strictEqual(yield* reasonNow, "fires");
-
-        // She can already message it: nothing to suggest.
-        yield* LeadProvision.allow({
-          editor: owner,
-          orgId,
-          agentId: tech,
-          personId: ctx.meera.personId,
-        });
-        assert.deepInclude((yield* verdicts(ctx))[0], {
-          reason: "Meera can already message Tech lead",
-        });
-        // He took it away again: not suggested back for 90 days.
-        yield* LeadProvision.disallow({
-          editor: owner,
-          orgId,
-          agentId: tech,
-          personId: ctx.meera.personId,
-        });
-        assert.deepInclude((yield* verdicts(ctx))[0], {
-          reason: "you stopped Meera messaging Tech lead",
-        });
-        yield* sql`UPDATE kin_lead_access SET revoked_at = revoked_at - ${91 * DAY}
-          WHERE org_id = ${orgId} AND agent_id = ${tech}`;
-        assert.strictEqual((yield* verdicts(ctx))[0]!._tag, "fires");
-
-        // Rhea's last answer for the pair was Not this time, tapped on its card: judgement, not
-        // time. Her taps stand in as Meera's messages, whose times are known.
-        const tapped = (widgetId: string | null, option: string, messageId: string | null) =>
-          sql`UPDATE kin_card_plans SET ran_message_id = ${messageId}
-            WHERE org_id = ${orgId} AND widget_id = ${widgetId} AND option_id = ${option}`;
-        yield* sql`UPDATE kin_handoffs SET route_state = 'declined'
-          WHERE org_id = ${orgId} AND message_id = ${ask3.messageId}`;
-        yield* tapped(ask3.widgetId, "option-2", ask3.messageId);
-        assert.deepInclude((yield* verdicts(ctx))[0], {
-          reason: "you said Not this time to Meera's last request for Tech lead",
-        });
-        yield* sql`UPDATE kin_handoffs SET route_state = 'pending'
-          WHERE org_id = ${orgId} AND route_state = 'declined'`;
-        assert.strictEqual((yield* verdicts(ctx))[0]!._tag, "fires");
-        yield* tapped(ask3.widgetId, "option-2", null);
-        // The last answer is the one Rhea gave last, by when her tap came, not the latest
-        // request's: her Not this time on ask-3's card came after a Let on ask-1's, which a later
-        // ask carries.
-        yield* TestClock.adjust("1 hour");
-        yield* meeraAsks(ctx, handoff, "ask-4");
-        const ask4 = yield* askOf(ctx, "ask-4");
-        yield* sql`UPDATE kin_handoffs SET route_state = 'declined'
-          WHERE org_id = ${orgId} AND message_id = ${ask3.messageId}`;
-        yield* tapped(ask3.widgetId, "option-2", ask3.messageId);
-        yield* sql`UPDATE kin_handoffs SET route_state = 'passed', route_widget_id = ${ask1.widgetId}
-          WHERE org_id = ${orgId} AND message_id = ${ask4.messageId}`;
-        yield* tapped(ask1.widgetId, "option-1", ask1.messageId);
-        const declinedLast = "you said Not this time to Meera's last request for Tech lead";
-        assert.strictEqual(yield* reasonNow, declinedLast);
-        // A later Let that found nothing to pass on changed nothing: not an answer.
-        yield* sql`UPDATE kin_handoffs SET route_state = 'stale'
-          WHERE org_id = ${orgId} AND message_id = ${ask4.messageId}`;
-        yield* tapped(ask1.widgetId, "option-1", ask4.messageId);
-        assert.strictEqual(yield* reasonNow, declinedLast);
-        // Her Not this time's card cleared since: no tap time is left to place it by, and the
-        // request's own time doesn't stand in for one.
-        yield* tapped(ask3.widgetId, "option-2", null);
-        yield* sql`UPDATE kin_handoffs SET route_state = 'waited', route_widget_id = ${ask3.widgetId}
-          WHERE org_id = ${orgId} AND message_id = ${ask4.messageId}`;
-        assert.strictEqual(yield* reasonNow, "fires");
-        yield* sql`UPDATE kin_handoffs SET route_state = 'pending'
-          WHERE org_id = ${orgId} AND message_id = ${ask3.messageId}`;
-        // Requests that went straight to the Tech lead aren't in the count, and the sentence
-        // claims only the ones that waited for Rhea.
-        yield* sql`UPDATE kin_handoffs SET route_state = NULL, route_widget_id = NULL
-          WHERE org_id = ${orgId} AND message_id = ${ask4.messageId}`;
-        assert.strictEqual(yield* noticedNow, NOTICED);
-        yield* sql`UPDATE kin_handoffs SET route_state = 'waited', route_widget_id = ${ask3.widgetId}
-          WHERE org_id = ${orgId} AND message_id = ${ask4.messageId}`;
-
-        // A month on, the first asks fall out of the window, then the last.
-        yield* asksAge(ctx, 29 * DAY + 12 * 60 * 60 * 1000);
-        assert.deepInclude((yield* verdicts(ctx))[0], {
-          reason: "Meera hasn't been waiting on you for Tech lead that often lately",
-        });
-        yield* asksAge(ctx, DAY);
-        assert.deepStrictEqual(yield* verdicts(ctx), []);
-      }),
-    ),
-);
+  "Tech lead has been paused since 30 Dec, and 3 things wait for it, 1 of them a message from you.";
 
 it.effect(
   "the pass posts one silent card in Needs you, once, and stays silent in a company's first 14 days",
   () =>
-    run(({ ctx, handoff }) =>
+    run(({ ctx }) =>
       Effect.gen(function* () {
         const { sql, orgId, owner } = ctx;
-        yield* threeAsks(ctx, handoff);
+        yield* techWaits(ctx);
         yield* sql`UPDATE kin_orgs SET created_at = '1969-12-25T00:00:00.000Z' WHERE org_id = ${orgId}`;
         assert.deepStrictEqual(yield* tick(ctx), { _tag: "skipped", why: "new_company" });
         yield* sql`UPDATE kin_orgs SET created_at = '1969-12-01T00:00:00.000Z' WHERE org_id = ${orgId}`;
@@ -527,12 +272,11 @@ it.effect(
         const [card, ...more] = yield* cards(ctx);
         assert.lengthOf(more, 0);
         assert.strictEqual(card!.silent, 1);
-        assert.strictEqual(card!.state.question, "Let Meera message Tech lead directly?");
+        assert.strictEqual(card!.state.question, "Resume Tech lead?");
         assert.include(card!.state.detail, NOTICED);
-        assert.include(card!.state.detail, "starting work stays yours to ask for.");
         assert.deepStrictEqual(
           card!.state.options.map((option) => option.label),
-          ["Give Meera direct access to Tech lead", "Not now"],
+          ["Resume Tech lead", "Not now"],
         );
         assert.deepStrictEqual(
           yield* sql`SELECT option_id AS "optionId", json_extract(plan_json, '$.kind') AS kind,
@@ -588,86 +332,12 @@ it.effect(
 );
 
 it.effect(
-  "Do it grants through the agent page's method as the owner and records it, a replay does it once, and its Settings row says only what the stored grant shows",
-  () =>
-    run(({ ctx, handoff }) =>
-      Effect.gen(function* () {
-        const { sql, orgId, owner } = ctx;
-        yield* threeAsks(ctx, handoff);
-        yield* tick(ctx);
-        const [card] = yield* cards(ctx);
-        const tapped = yield* tap(ctx, card!.widgetId, "option-1");
-        assert.isTrue(JSON.parse(tapped.body).handled);
-        assert.lengthOf(
-          yield* sql`SELECT 1 FROM kin_lead_access WHERE org_id = ${orgId} AND agent_id = ${tech}
-            AND person_id = 'meera' AND revoked_at IS NULL AND granted_by = ${owner.personId}`,
-          1,
-        );
-        // Her own direct chat with the Tech lead, as the agent's page makes it.
-        assert.lengthOf(
-          yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${orgId} AND direct_key = 'meera:tech'`,
-          1,
-        );
-        assert.deepStrictEqual((yield* cards(ctx))[0]!.state.outcome, {
-          title: "Done",
-          text: "You gave Meera direct access to Tech lead. Tech lead's page is where you change that.",
-        });
-        assert.deepStrictEqual(
-          yield* sql`SELECT state, decided_by AS "decidedBy" FROM kin_recommendations
-            WHERE org_id = ${orgId}`,
-          [{ state: "done", decidedBy: owner.personId }],
-        );
-        // Let settles its one row in Needs you.
-        assert.strictEqual(yield* waitingOn(ctx, card!), 0);
-        // The same tap again returns the first; nothing runs twice.
-        const again = yield* tap(ctx, card!.widgetId, "option-1");
-        assert.strictEqual(again.messageId, tapped.messageId);
-        // Access is changed in one place, the agent's page: the row only points there.
-        const done = [
-          {
-            outcome: "Done 3 Jan: Meera can message Tech lead.",
-            action: { kind: "open_agent" as const, label: "Open Tech lead's page", agentId: tech },
-          },
-        ];
-        assert.deepStrictEqual(yield* list(ctx), done);
-        // Clearing the chat takes the card, not the grant: Settings reads its own row.
-        yield* ctx.chats.clear(owner, { chatId: ctx.chiefChat });
-        assert.deepStrictEqual(yield* list(ctx), done);
-
-        // Removed on the agent's page, then given there again: the row follows the stored grant.
-        const page = (allow: boolean) =>
-          (allow ? LeadProvision.allow : LeadProvision.disallow)({
-            editor: owner,
-            orgId,
-            agentId: tech,
-            personId: ctx.meera.personId,
-          });
-        yield* page(false);
-        assert.deepStrictEqual(yield* list(ctx), [
-          {
-            outcome: "Done 3 Jan. Meera's own access to Tech lead was removed since.",
-            action: null,
-          },
-        ]);
-        yield* page(true);
-        assert.deepStrictEqual(yield* list(ctx), done);
-        // Retired, its grant kept: the row says it's gone, and points nowhere.
-        yield* sql`UPDATE kin_agents SET retired_at = '1970-01-03T11:00:00.000Z'
-          WHERE org_id = ${orgId} AND agent_id = ${tech}`;
-        assert.deepStrictEqual(yield* list(ctx), [
-          { outcome: "Done 3 Jan. Tech lead is no longer there.", action: null },
-        ]);
-      }),
-    ),
-);
-
-it.effect(
   "clearing the chat ends an open suggestion then: its quiet week runs from the clear, and its old tap does nothing",
   () =>
-    run(({ ctx, handoff }) =>
+    run(({ ctx }) =>
       Effect.gen(function* () {
         const { orgId, owner } = ctx;
-        yield* threeAsks(ctx, handoff);
+        yield* techWaits(ctx);
         yield* tick(ctx);
         const [card] = yield* cards(ctx);
         yield* TestClock.adjust("23 hours");
@@ -680,7 +350,7 @@ it.effect(
         ]);
         assert.strictEqual(yield* waitingOn(ctx, card!), 0);
         yield* Effect.flip(tap(ctx, card!.widgetId, "option-1"));
-        assert.isFalse(yield* meeraMayMessageTech(ctx));
+        assert.isNotNull(yield* techPausedAt(ctx));
         assert.strictEqual(
           (yield* KinRecommend.list(orgId, owner.personId)).rows[0]!.outcome,
           "Not answered. Kin may suggest it again after 11 Jan.",
@@ -692,10 +362,10 @@ it.effect(
 it.effect(
   "Not now quiets the suggestion 30 days, then 90, then for good, and Ask again lets it speak",
   () =>
-    run(({ ctx, handoff }) =>
+    run(({ ctx }) =>
       Effect.gen(function* () {
         const { orgId, owner } = ctx;
-        yield* threeAsks(ctx, handoff);
+        yield* techWaits(ctx);
         const notNow = Effect.gen(function* () {
           assert.strictEqual((yield* tick(ctx))._tag, "posted");
           const card = (yield* cards(ctx)).at(-1)!;
@@ -708,7 +378,7 @@ it.effect(
           title: "Not now",
           text: "You left it as it is. Settings, under Recommendations, can ask again.",
         });
-        assert.isFalse(yield* meeraMayMessageTech(ctx));
+        assert.isNotNull(yield* techPausedAt(ctx));
         assert.deepStrictEqual((yield* list(ctx))[0], {
           outcome: "Not now on 3 Jan. Kin won't suggest this before 2 Feb.",
           action: { kind: "ask_again", label: "Ask again" },
@@ -746,33 +416,21 @@ it.effect(
 it.effect(
   "a tap after the situation changed does nothing and says so; one a day, never past five in Needs you, never in quiet hours",
   () =>
-    run(({ ctx, handoff }) =>
+    run(({ ctx }) =>
       Effect.gen(function* () {
         const { sql, orgId, owner } = ctx;
-        yield* threeAsks(ctx, handoff);
+        yield* techWaits(ctx);
         yield* tick(ctx);
         const [card] = yield* cards(ctx);
-        // Given on the agent's page meanwhile: Do it changes nothing.
-        yield* LeadProvision.allow({
-          editor: owner,
-          orgId,
-          agentId: tech,
-          personId: ctx.meera.personId,
-        });
-        const before = yield* sql`SELECT granted_at FROM kin_lead_access
-          WHERE org_id = ${orgId} AND agent_id = ${tech}`;
+        // Resumed on the agent's page meanwhile: Do it changes nothing.
+        yield* LeadProvision.setPaused({ by: owner, orgId, agentId: tech, paused: false });
         yield* tap(ctx, card!.widgetId, "option-1");
         assert.deepStrictEqual((yield* cards(ctx))[0]!.state.outcome, {
           title: "Nothing changed",
-          text: "Nothing changed: Meera can already message Tech lead.",
+          text: "Nothing changed: Tech lead isn't paused any more.",
         });
-        assert.deepStrictEqual(
-          yield* sql`SELECT granted_at FROM kin_lead_access
-            WHERE org_id = ${orgId} AND agent_id = ${tech}`,
-          before,
-        );
-        assert.strictEqual((yield* list(ctx))[0]!.action, null);
-        yield* sql`DELETE FROM kin_lead_access WHERE org_id = ${orgId} AND agent_id = ${tech}`;
+        assert.isNull(yield* techPausedAt(ctx));
+        yield* pausedTech(ctx, 4, 0);
 
         // One a day: the same day, nothing more even with the rule firing again.
         assert.deepStrictEqual(yield* tick(ctx), { _tag: "skipped", why: "posted_today" });
@@ -807,12 +465,12 @@ it.effect(
 );
 
 it.effect(
-  "a teammate made a co-owner, or a name changed, after the card was drawn: either answer changes nothing, says why and counts no Not now",
+  "a name changed after the card was drawn: either answer changes nothing, says why and counts no Not now",
   () =>
-    run(({ ctx, handoff }) =>
+    run(({ ctx }) =>
       Effect.gen(function* () {
         const { sql, orgId } = ctx;
-        yield* threeAsks(ctx, handoff);
+        yield* techWaits(ctx);
         const drawn = Effect.gen(function* () {
           assert.strictEqual((yield* tick(ctx))._tag, "posted");
           return (yield* cards(ctx)).at(-1)!;
@@ -822,45 +480,22 @@ it.effect(
             yield* tap(ctx, (yield* cards(ctx)).at(-1)!.widgetId, option);
             return (yield* cards(ctx)).at(-1)!.state.outcome;
           });
-        const promoted = {
-          title: "Nothing changed",
-          text: "Nothing changed: Meera can already message Tech lead.",
-        };
         const renamed = {
           title: "Nothing changed",
           text: "Nothing changed: the names on this card have changed since Kin drew it.",
         };
-        const promote = (access: string) =>
-          sql`UPDATE kin_people SET access = ${access} WHERE org_id = ${orgId} AND person_id = 'meera'`;
-        // A co-owner messages every agent already: never drawn for one, and neither answer counts.
-        yield* drawn;
-        yield* promote("co_owner");
-        assert.deepInclude((yield* verdicts(ctx))[0], {
-          _tag: "silent",
-          reason: "Meera can already message Tech lead",
-        });
-        assert.deepStrictEqual(yield* answered("option-2"), promoted);
-        assert.strictEqual(yield* declines(ctx), 0);
-        yield* promote("member");
-        yield* TestClock.adjust("24 hours");
-        yield* drawn;
-        yield* promote("co_owner");
-        assert.deepStrictEqual(yield* answered("option-1"), promoted);
-        assert.isFalse(yield* meeraMayMessageTech(ctx));
-        yield* promote("member");
-
-        // Renamed before the tap, its words no longer name who or what it is about.
-        yield* TestClock.adjust("24 hours");
-        yield* drawn;
-        yield* sql`UPDATE kin_leads SET name = 'Tech' WHERE org_id = ${orgId} AND agent_id = ${tech}`;
-        assert.deepStrictEqual(yield* answered("option-2"), renamed);
-        assert.strictEqual(yield* declines(ctx), 0);
-        yield* sql`UPDATE kin_leads SET name = 'Tech lead' WHERE org_id = ${orgId} AND agent_id = ${tech}`;
-        yield* TestClock.adjust("24 hours");
-        yield* drawn;
-        yield* sql`UPDATE kin_people SET display_name = 'Meera Rao' WHERE org_id = ${orgId} AND person_id = 'meera'`;
-        assert.deepStrictEqual(yield* answered("option-1"), renamed);
-        assert.isFalse(yield* meeraMayMessageTech(ctx));
+        const rename = (name: string) =>
+          sql`UPDATE kin_leads SET name = ${name} WHERE org_id = ${orgId} AND agent_id = ${tech}`;
+        // Renamed before the tap, its words no longer name what it is about.
+        for (const option of ["option-2", "option-1"] as const) {
+          yield* drawn;
+          yield* rename("Tech");
+          assert.deepStrictEqual(yield* answered(option), renamed);
+          assert.strictEqual(yield* declines(ctx), 0);
+          assert.isNotNull(yield* techPausedAt(ctx));
+          yield* rename("Tech lead");
+          yield* TestClock.adjust("24 hours");
+        }
       }),
     ),
 );
@@ -868,7 +503,7 @@ it.effect(
 it.effect(
   "an open Recommendations list hears every change to a suggestion: drawn, answered, asked again, ran out, cleared; a co-owner hears none",
   () =>
-    run(({ ctx, handoff }) =>
+    run(({ ctx }) =>
       Effect.gen(function* () {
         const { orgId, owner } = ctx;
         const heard = (who: typeof owner) =>
@@ -885,7 +520,7 @@ it.effect(
         const askAgain = Effect.flatMap(latest, (row) =>
           KinRecommend.askAgain(orgId, owner.personId, row.recId),
         );
-        yield* threeAsks(ctx, handoff);
+        yield* techWaits(ctx);
         yield* moves(tick(ctx));
         yield* moves(tap(ctx, (yield* cards(ctx)).at(-1)!.widgetId, "option-2"));
         yield* moves(askAgain);
@@ -904,10 +539,10 @@ it.effect(
 it.effect(
   "only the owner sees or answers a suggestion: a co-owner and a teammate can neither read, tap nor ask again",
   () =>
-    run(({ ctx, handoff }) =>
+    run(({ ctx }) =>
       Effect.gen(function* () {
         const { orgId, owner } = ctx;
-        yield* threeAsks(ctx, handoff);
+        yield* techWaits(ctx);
         const posted = yield* tick(ctx);
         assert.strictEqual(posted._tag, "posted");
         if (posted._tag !== "posted") return;
@@ -948,7 +583,7 @@ it.effect(
         );
         assert.strictEqual(refused._tag, "KinChatError");
         // Still open for Rhea, and nothing changed.
-        assert.isFalse(yield* meeraMayMessageTech(ctx));
+        assert.isNotNull(yield* techPausedAt(ctx));
         assert.deepStrictEqual(yield* list(ctx, owner.personId), [
           { outcome: "Waiting in Needs you.", action: null },
         ]);

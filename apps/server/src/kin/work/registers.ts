@@ -18,6 +18,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import {
   fieldText,
   type FieldValue,
@@ -326,12 +327,15 @@ const builtInDef = (name: ListName, currency: string): ListDef => {
 };
 export const isBuiltIn = (id: string): id is ListName => Object.hasOwn(LISTS, id);
 const isPreset = (id: string): id is PresetId => (PRESET_IDS as ReadonlyArray<string>).includes(id);
+/** An Invoices draft: not issued yet, so nobody owes it. */
+export const isInvoiceDraft = (list: string, state: KinRecordState) =>
+  list === "invoices" && state === "open";
 /** Whether an entry in `state` owes its balance: not closed, and not an Invoices draft. */
 export const owesIn = (def: ListDef, state: KinRecordState) =>
-  state !== "done" && state !== "dropped" && !(def.id === "invoices" && state === "open");
+  state !== "done" && state !== "dropped" && !isInvoiceDraft(def.id, state);
 /**
- * Where a new entry with no state asked for starts: an invoice is Issued only once it has an
- * issue day or a number, else Draft; an expense is Paid only on or before today, else To pay.
+ * Where a new entry with no state asked for starts: an invoice is Issued once it has a number or
+ * an issue day on or before today, else Draft; an expense is Paid only on or before today, else To pay.
  */
 export const startState = (
   def: ListDef,
@@ -344,7 +348,10 @@ export const startState = (
 ): KinRecordState => {
   const fallback = def.states.includes("open") ? "open" : def.defaultState;
   if (def.id === "invoices" && def.defaultState === "waiting")
-    return entry.dateAt !== null || entry.numbered ? "waiting" : fallback;
+    return entry.numbered ||
+      (entry.dateAt !== null && dayIn(entry.dateAt, entry.zone) <= dayIn(entry.now, entry.zone))
+      ? "waiting"
+      : fallback;
   if (def.id === "expenses" && def.defaultState === "done" && entry.dateAt !== null)
     return dayIn(entry.dateAt, entry.zone) > dayIn(entry.now, entry.zone) ? fallback : "done";
   return def.defaultState;
@@ -934,17 +941,20 @@ export const propose = Effect.fn("KinRegisters.propose")(function* (input: {
     WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
   if (chat === undefined) return yield* invalid("This turn has no chat to propose a list in.");
   // The same list asked again in this chat, from a later turn such as the owner's tap on it, is
-  // that question still: one card. Only a no the owner gave closes it.
-  const [open] = yield* sql<{ proposalId: string; widgetId: string | null; owner: string }>`
-    SELECT p.proposal_id AS "proposalId", p.widget_id AS "widgetId", a.owner_person_id AS owner
+  // that question still: one card. So is that list proposed again in one turn, however worded.
+  // Only a no an owner or co-owner gave closes it.
+  const [open] = yield* sql<{ proposalId: string; widgetId: string | null }>`
+    SELECT p.proposal_id AS "proposalId", p.widget_id AS "widgetId"
     FROM kin_list_proposals p
-    JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = p.agent_id
     WHERE p.org_id = ${input.orgId} AND p.agent_id = ${input.agentId}
-      AND p.chat_id = ${input.chatId} AND p.definition_json = ${json} AND p.defined_at IS NULL
+      AND p.chat_id = ${input.chatId} AND p.defined_at IS NULL
+      AND (p.definition_json = ${json} OR (p.wakeup_id = ${input.wakeupId}
+        AND p.register_id = ${input.proposal.id}
+        AND p.extends_existing = ${input.proposal._tag === "extend" ? 1 : 0}))
     ORDER BY p.proposed_at DESC, p.proposal_id LIMIT 1`;
   if (
     open !== undefined &&
-    (open.widgetId === null || (yield* cardAnswer(input.orgId, open.widgetId, open.owner)) !== "no")
+    (open.widgetId === null || (yield* cardAnswer(input.orgId, open.widgetId)) !== "no")
   )
     return open.proposalId;
   const proposalId = proposalIdFor(input.orgId, input.agentId, input.wakeupId, json);
@@ -955,6 +965,17 @@ export const propose = Effect.fn("KinRegisters.propose")(function* (input: {
       ${input.now})
     ON CONFLICT DO NOTHING`;
   return proposalId;
+});
+
+/** A proposal as stored, for what its card and its tool result show. */
+export const storedProposal = Effect.fn("KinRegisters.storedProposal")(function* (
+  orgId: KinOrgId,
+  proposalId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ json: string }>`SELECT definition_json AS json
+    FROM kin_list_proposals WHERE org_id = ${orgId} AND proposal_id = ${proposalId}`;
+  return row === undefined ? undefined : Option.getOrUndefined(decodeProposal(row.json));
 });
 
 /** The card Kin put the proposal to the owner with; a retry keeps the first. */
@@ -1042,12 +1063,9 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
     definedAt: number | null;
     registerId: string;
     widgetId: string | null;
-    owner: string;
   }>`SELECT p.chat_id AS "chatId", p.definition_json AS json, p.chat_seq AS "chatSeq",
-      p.defined_at AS "definedAt", p.register_id AS "registerId", p.widget_id AS "widgetId",
-      a.owner_person_id AS owner
+      p.defined_at AS "definedAt", p.register_id AS "registerId", p.widget_id AS "widgetId"
     FROM kin_list_proposals p
-    JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = p.agent_id
     WHERE p.org_id = ${input.orgId} AND p.proposal_id = ${input.proposalId}
       AND p.agent_id = ${input.agentId}`;
   if (row === undefined)
@@ -1056,16 +1074,15 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
       message: `No proposal ${input.proposalId.slice(0, 40)} of yours. Propose the list first.`,
     });
   if (row.definedAt !== null) return { id: row.registerId, created: false };
-  const tapped =
-    row.widgetId === null ? undefined : yield* cardAnswer(input.orgId, row.widgetId, row.owner);
+  const tapped = row.widgetId === null ? undefined : yield* cardAnswer(input.orgId, row.widgetId);
   if (tapped === "no")
     return yield* new KinChatError({
       reason: "not_allowed",
       message:
         "The owner said no to this proposal on its card, so nothing was created. Propose it again only if they ask for it.",
     });
-  // Every person here is read from the stored event and the stored message both: a tap is the
-  // owner's own tap row on this proposal's card, a message is the owner's own text after it.
+  // Every person here is read from the stored event and the stored message both: a tap is an
+  // owner's or co-owner's own tap row on this proposal's card, a message their own text after it.
   const answered = yield* sql`SELECT 1 FROM kin_events e
     JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
       AND m.chat_id = json_extract(e.json, '$.chatId')
@@ -1073,8 +1090,8 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
       AND e.wakeup_id = ${input.wakeupId} AND m.chat_id = ${row.chatId}
       AND json_extract(e.json, '$.origin.personId') IS NULL
       AND json_extract(e.json, '$.provenance._tag') = 'human'
-      AND json_extract(e.json, '$.provenance.personId') = ${row.owner}
-      AND m.author_kind = 'human' AND m.author_person_id = ${row.owner}
+      AND json_extract(e.json, '$.provenance.personId') = m.author_person_id
+      AND m.author_kind = 'human' AND ${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))}
       AND ((e.tag = 'chat.message' AND m.kind = 'text' AND m.seq > ${row.chatSeq})
         OR (e.tag = 'widget.action' AND m.kind = 'widget_action'
           AND m.widget_id = ${row.widgetId ?? ""} AND ${tapped === "yes" ? 1 : 0} = 1))
@@ -1126,6 +1143,9 @@ export const proposalToCreate = Effect.fn("KinRegisters.proposalToCreate")(funct
     : `there is already a list “${taken.name}”`;
 });
 
+/** The list a stored proposal makes, by id. */
+export const proposedList = (json: string) => Option.getOrUndefined(decodeProposal(json))?.id;
+
 /**
  * Creates the list a proposal names from the owner's tap on a card that offered exactly it, in
  * the tap's transaction. The reason nothing was created, or undefined once it is.
@@ -1150,6 +1170,33 @@ export const defineProposed = Effect.fn("KinRegisters.defineProposed")(function*
   yield* sql`UPDATE kin_list_proposals SET defined_at = ${input.now}
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}`;
   return undefined;
+});
+
+/**
+ * Where a list lives among the clients' places, as they place it (`kinPlaceLists`): the
+ * company's Subscriptions list in Money's Subscriptions, Kin's money lists in Money, its client
+ * lists in Clients, every other in Docs.
+ */
+export const listPlace = Effect.fn("KinRegisters.place")(function* (orgId: KinOrgId, id: string) {
+  const live = (yield* definedLists(orgId)).filter((def) => def.archivedAt === null);
+  const subscriptions =
+    live.find((def) => def.id === "subscriptions") ??
+    live.find((def) => /subscription/i.test(def.name));
+  const name = (yield* listDef(orgId, id))?.name ?? id;
+  if (subscriptions?.id === id)
+    return {
+      place: "money",
+      list: id,
+      subscriptions: true,
+      words: "Money → Subscriptions",
+    } as const;
+  const place = ["invoices", "expenses", "quotes"].includes(id)
+    ? ("money" as const)
+    : ["clients", "deals"].includes(id)
+      ? ("clients" as const)
+      : ("docs" as const);
+  const words = { money: "Money", clients: "Clients", docs: "Docs" }[place];
+  return { place, list: id, words: id === "clients" ? words : `${words} → ${name}` };
 });
 
 /** Open entries per list, for the definitions the owner sees. */
@@ -1178,13 +1225,24 @@ export const listOrPreset = Effect.fn("KinRegisters.listOrPreset")(function* (
   id: string,
   now: number,
 ) {
+  return isRecipeList(id)
+    ? yield* presetList(orgId, id as PresetId, now)
+    : yield* listDef(orgId, id);
+});
+
+/** A preset's list, made from the preset when this org has none yet: an owner-level person's own write. */
+export const presetList = Effect.fn("KinRegisters.presetList")(function* (
+  orgId: KinOrgId,
+  id: PresetId,
+  now: number,
+) {
   const sql = yield* SqlClient.SqlClient;
   const existing = yield* listDef(orgId, id);
-  if (existing !== undefined || !isRecipeList(id)) return existing;
+  if (existing !== undefined) return existing;
   // One transaction, so a country saved meanwhile either rewrites this list or comes after it.
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      const proposal = yield* proposalFor(orgId, { template: id as PresetId });
+      const proposal = yield* proposalFor(orgId, { template: id });
       yield* defineList(orgId, proposal, now).pipe(
         // Two first quotes at once: the other made it, which is the same list.
         Effect.catchIf(

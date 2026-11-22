@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Fixtures build times relative to a fixed clock.
+import { AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -9,14 +10,19 @@ import {
   KinRecordKey,
   type KinPartyPage,
   type KinPartyRow,
+  type KinProjectPage,
   type KinProjectRow,
 } from "@t3tools/contracts";
 
 import {
   kinProjectPeopleChoices,
   kinNewTaskChoices,
+  kinShortFormFold,
+  kinWorkDraftAnother,
   kinClientContactLine,
   kinClientPageView,
+  kinClientsChosenAtom,
+  kinClientsChosenKey,
   kinClientRow,
   kinClientsNothing,
   kinClientsQuery,
@@ -24,9 +30,14 @@ import {
   kinClientsStartFilter,
   kinClientsTabShown,
   kinClientsTabs,
+  kinClientsSide,
+  kinMineChoices,
+  kinMineOpens,
   KIN_CLIENTS_DEFAULT_FILTER,
   kinLastContactLine,
+  kinProjectPageView,
   kinProjectsByClient,
+  kinTaskProjectsAllowed,
   kinTouchAt,
   kinTouchNext,
   kinWorkTimeline,
@@ -116,6 +127,13 @@ describe("kinClientRow", () => {
     expect(kinClientRow(row, names, now).line).toBe("");
   });
 
+  it("says which contact the search found it through", () => {
+    const found = kinClientRow({ ...row, lastContactAt: null, contact: "Ola" }, names, now);
+    expect(found.line).toBe("Contact: Ola · Nothing open · No logged contact yet");
+    expect(found.accessibilityLabel).toContain("Contact: Ola");
+    expect(kinClientRow({ ...row, contact: "Ola" }, names, now).line).toBe("Contact: Ola");
+  });
+
   const zoya = KinPersonId.make("zoya");
   const named = { ...names, people: new Map([[zoya, "Zoya"]]) };
   const prospect: KinPartyRow = {
@@ -199,6 +217,13 @@ describe("the clients list's Show and Looked after by", () => {
     expect(
       kinClientsQuery(orgId, { show: "prospects", lookedAfter: arjun, text: " Fen " }),
     ).toEqual({ orgId, prospect: true, owner: arjun, text: "Fen" });
+    expect(
+      kinClientsQuery(orgId, {
+        ...KIN_CLIENTS_DEFAULT_FILTER,
+        cameFrom: "campaign:P-3",
+        tag: "harbour",
+      }),
+    ).toEqual({ orgId, source: "campaign:P-3", tag: "harbour" });
   });
 
   it("offers someone who reads names only no choice that tells a prospect from a client", () => {
@@ -241,6 +266,64 @@ describe("the clients list's Show and Looked after by", () => {
       offerNew: true,
     });
     expect(nothing({ lookedAfter: arjun })).toMatchObject({ offerNew: false });
+    expect(
+      kinClientsNothing(
+        { ...KIN_CLIENTS_DEFAULT_FILTER, lookedAfter: { _tag: "person", personId: me } },
+        undefined,
+        me,
+        "Everyone",
+      ).detail,
+    ).toBe("Add a prospect, or show Everyone to see the rest.");
+  });
+});
+
+describe("Mine / Everyone", () => {
+  it("opens on the side last chosen; unchosen, on Mine when Mine has something, else Everyone", () => {
+    // A brand-new teammate: nothing of theirs, a full company.
+    expect(kinMineOpens(null, { n: 0 })).toBe("everyone");
+    expect(kinMineOpens(null, { n: 3 })).toBe("mine");
+    // A side the person chose holds, an empty Mine included, without waiting for a count.
+    expect(kinMineOpens("mine", { n: 0 })).toBe("mine");
+    expect(kinMineOpens("mine", { n: 3 })).toBe("mine");
+    expect(kinMineOpens("mine", null)).toBe("mine");
+    expect(kinMineOpens("everyone", null)).toBe("everyone");
+    expect(kinMineOpens("everyone", { n: 3 })).toBe("everyone");
+    // Nothing is shown on a guess while Mine's count is unread.
+    expect(kinMineOpens(null, null)).toBeNull();
+  });
+
+  it("puts each side's count beside it once read, so nothing reads as gone", () => {
+    expect(kinMineChoices({ mine: null, everyone: null }).map((one) => one.label)).toEqual([
+      "Mine",
+      "Everyone",
+    ]);
+    expect(
+      kinMineChoices({ mine: { n: 0 }, everyone: { n: 12, atLeast: true } }).map(
+        (one) => one.label,
+      ),
+    ).toEqual(["Mine · 0", "Everyone · 12+"]);
+  });
+
+  it("reads the clients filter's side from who looks after them", () => {
+    const zoya = KinPersonId.make("zoya");
+    expect(kinClientsSide("anyone", zoya)).toBe("everyone");
+    expect(kinClientsSide({ _tag: "person", personId: zoya }, zoya)).toBe("mine");
+    expect(kinClientsSide({ _tag: "person", personId: KinPersonId.make("dev") }, zoya)).toBeNull();
+    expect(kinClientsSide({ _tag: "person", personId: zoya }, null)).toBeNull();
+  });
+});
+
+describe("kinClientsChosenAtom", () => {
+  it("keeps a person's choice of Anyone for the next time the list opens, and only theirs", () => {
+    const registry = AtomRegistry.make();
+    const zoya = kinClientsChosenAtom(kinClientsChosenKey("env-1", "zoya"));
+    registry.set(zoya, { show: "open", lookedAfter: "anyone" });
+    expect(registry.get(kinClientsChosenAtom(kinClientsChosenKey("env-1", "zoya")))).toEqual({
+      show: "open",
+      lookedAfter: "anyone",
+    });
+    expect(registry.get(kinClientsChosenAtom(kinClientsChosenKey("env-1", "dev")))).toBeNull();
+    expect(registry.get(kinClientsChosenAtom(kinClientsChosenKey("env-2", "zoya")))).toBeNull();
   });
 });
 
@@ -312,6 +395,19 @@ describe("kinClientPageView", () => {
     expect(step).toMatchObject({ title: "Send the revised proposal", late: true });
     expect(step?.line).toMatch(/^Was due .+ · W-38$/);
     expect(kinClientPageView(page({ kind: "vendor" }), names, now, true).nextStep).toBeNull();
+  });
+
+  it("says who adds its contacts to a reader who can't", () => {
+    const reader = (can: KinPartyPage["can"], party: Partial<KinPartyPage["party"]> = {}) =>
+      kinClientPageView(page(party, can), names, now, false).contactsWho;
+    expect(reader({ edit: true, log: true, owner: false })).toBeNull();
+    expect(reader({ edit: false, log: true, owner: false, contacts: true })).toBeNull();
+    expect(reader({ edit: false, log: true, owner: false, contacts: false })).toBe(
+      "Zoya looks after this one. They, or anyone with an open deal here, add and change its contacts.",
+    );
+    expect(reader({ edit: false, log: true, owner: false }, { kind: "vendor" })).toBe(
+      "Zoya looks after this one, and adds and changes its contacts.",
+    );
   });
 
   it("takes what the host says this reader may do, and from an older host only the owner level", () => {
@@ -491,6 +587,58 @@ describe("kinProjectPeopleChoices", () => {
   });
 });
 
+describe("kinShortFormFold", () => {
+  it("asks the few first and folds the rest, in order, showing what the form opened holding", () => {
+    expect(kinShortFormFold("task")).toEqual({
+      first: ["title", "owner", "due"],
+      more: ["repeat", "client", "project", "notes"],
+      moreLine: "Repeats, client, project and notes",
+    });
+    // Opened from a client's page: the client it holds stays in sight; with no projects, none.
+    expect(kinShortFormFold("task", { held: ["client"], absent: ["project"] })).toEqual({
+      first: ["title", "owner", "due", "client"],
+      more: ["repeat", "notes"],
+      moreLine: "Repeats and notes",
+    });
+    // A teammate's prospect: no kind to pick and no owner's fields.
+    expect(
+      kinShortFormFold("party", {
+        absent: ["kind", "terms", "address", "tax", "private"],
+      }),
+    ).toEqual({
+      first: ["name", "contact", "value"],
+      more: ["source", "tags", "role", "notes"],
+      moreLine: "Where they came from, tags, their role and notes",
+    });
+    // A vendor has no deal, so no amount.
+    expect(kinShortFormFold("party", { absent: ["value"] }).first).toEqual(["name", "contact"]);
+    expect(kinShortFormFold("deal")).toMatchObject({
+      first: ["client", "what", "value", "next"],
+      more: ["expected", "stage", "keeper", "source"],
+    });
+    expect(kinShortFormFold("touch", { held: ["when", "next"] })).toEqual({
+      first: ["kind", "note", "when", "next"],
+      more: [],
+      moreLine: null,
+    });
+  });
+
+  it("starts the next task with nothing typed and the same who, when and where", () => {
+    const party = { key: KinRecordKey.make("C-1"), title: "Invented Tidewater" };
+    const draft = {
+      title: "Invented: call back",
+      owner: { _tag: "person" as const, personId: KinPersonId.make("dev") },
+      due: "2026-11-27",
+      notes: "Invented note",
+      party,
+      project: null,
+      side: "ours" as const,
+      repeat: null,
+    };
+    expect(kinWorkDraftAnother(draft)).toEqual({ ...draft, title: "", notes: "" });
+  });
+});
+
 describe("kinNewTaskChoices", () => {
   it("offers a teammate only the projects they lead and no client, as the host takes them", () => {
     const p1 = { key: KinRecordKey.make("P-1") };
@@ -510,5 +658,80 @@ describe("kinNewTaskChoices", () => {
     expect(
       kinNewTaskChoices(choices, { access: "member", leads, places: { clients: true } as never }),
     ).toEqual({ clients: ["C-1"], projects: [p1] });
+    // A task's page moves it only into a project its picker may offer, found by search too.
+    expect(kinTaskProjectsAllowed({ access: "member", leads })).toEqual(new Set(["P-1"]));
+    expect(kinTaskProjectsAllowed({ access: "co_owner", leads })).toBeNull();
+    expect(kinTaskProjectsAllowed(null)).toBeNull();
+  });
+});
+
+describe("kinProjectPageView", () => {
+  const now = new Date("2026-11-18T09:00:00.000Z");
+  const rhea = KinPersonId.make("ambermill-rhea");
+  const names = { people: new Map([[rhea, "Rhea"]]), agents: new Map(), me: rhea, zone: "UTC" };
+  const waiting = {
+    recordId: KinRecordId.make("rec-W-8"),
+    orgId: KinOrgId.make("ambermill"),
+    key: "W-8",
+    title: "Invented appointment screen",
+    state: "waiting",
+    waitingOn: { _tag: "person", personId: rhea },
+    owner: { _tag: "person", personId: rhea },
+    category: null,
+    side: "ours",
+    dueAt: null,
+    dueAllDay: false,
+    late: false,
+    confirmed: true,
+    sensitive: false,
+    working: false,
+    pullRequest: null,
+    rev: 1,
+    createdAt: "2026-11-10T09:00:00.000Z",
+    updatedAt: "2026-11-17T09:00:00.000Z",
+    closedAt: null,
+  } as const;
+  const page = (blocked: KinProjectPage["blocked"]): KinProjectPage => ({
+    project: {
+      recordId: KinRecordId.make("rec-P-1"),
+      key: KinRecordKey.make("P-1"),
+      name: "Invented booking app",
+      party: null,
+      owner: { _tag: "person", personId: rhea },
+      state: "open",
+      targetAt: null,
+      targetAllDay: true,
+      open: 3,
+      late: 0,
+      health: "on_track",
+      sensitive: false,
+      sensitiveInherited: false,
+      rev: 1,
+      notes: "",
+      repos: [],
+      healthBecause: { targetPassed: false, late: 0, waitingOverAWeek: 0 },
+      createdAt: "2026-11-01T09:00:00.000Z",
+      updatedAt: "2026-11-17T09:00:00.000Z",
+      closedAt: null,
+      seq: 4,
+    },
+    counts: { open: 3, doing: 0, waiting: blocked.length, done: 0, dropped: 0, late: 0 },
+    blocked,
+    nextDue: null,
+    pullRequests: [],
+    changedThisWeek: { items: [], total: 0 },
+    seq: 4,
+    asOf: "2026-11-18T09:00:00.000Z",
+  });
+
+  it("never says nothing is stuck above its own Blocked section", () => {
+    expect(kinProjectPageView(page([]), names, now).why).toEqual(["Nothing is late or stuck."]);
+    expect(
+      kinProjectPageView(
+        page([{ record: waiting, on: null, since: "2026-11-17T09:00:00.000Z" }]),
+        names,
+        now,
+      ).why,
+    ).toEqual(["Nothing is late."]);
   });
 });

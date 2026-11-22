@@ -30,6 +30,7 @@ import {
   updateReleasePackageVersions,
 } from "./update-release-package-versions.ts";
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
+import { kinDesktopMac } from "./lib/kinDesktopBuild.ts";
 import {
   BRAND_ASSET_PATHS,
   resolveWebAssetBrandForChannel,
@@ -2836,7 +2837,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "mac") {
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
-    buildConfig.mac = {
+    buildConfig.mac = kinDesktopMac({
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
@@ -2886,7 +2887,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
             provisioningProfile: macPasskeySigning.provisioningProfilePath,
           }
         : {}),
-    };
+    });
   }
 
   if (platform === "mac" && target === "dmg") {

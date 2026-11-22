@@ -1,13 +1,14 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
   EnvironmentAuthorizationError,
+  KinAgentId,
   KinChatError,
   type EnvironmentId,
   type KinChatId,
   type KinOrgId,
   type KinOrgsListResult,
   type KinPerson,
-  type KinPersonId,
+  KinPersonId,
   type KinRecord,
   type KinRecordChange,
   type KinRecordCan,
@@ -22,7 +23,13 @@ import {
   type KinWorkCreateInput,
   type KinWorkListInput,
   type KinWorkPrincipal,
+  type KinWorkStep,
+  type KinWorkStepCount,
   type KinWorkSummary,
+  KIN_LEFT_FIELD,
+  KIN_WORK_STEP_MAX,
+  KIN_WORK_STEPS_MAX,
+  KIN_DISMISSED_FIELD,
   KIN_TAKEN_DEFAULT_FIELD,
   kinWhenFormat,
   kinWhenParts,
@@ -40,7 +47,12 @@ import type { KinLink } from "./kinHost.ts";
 import { KIN_SCOPE_ALL, kinScopeNote, type KinViewerScope } from "./kinViewerScope.ts";
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { kinLinkLabel } from "./kinLinks.ts";
-import { formatKinTime, kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
+import {
+  formatKinTime,
+  kinAgentAvatar,
+  kinLastUpdated,
+  type KinAvatarView,
+} from "./kinScreenState.ts";
 import { kinPickablePeople } from "./kinTeam.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
 
@@ -57,11 +69,16 @@ export const KIN_WORK_REFRESH_FAILED = "Couldn't refresh. Showing the last updat
  */
 export function kinWorkStaleNotice(
   link: KinLink,
+  /** When the rows shown were last read, as the chat's offline line says it; null unknown. */
+  readAt: number | null = null,
+  formatTime: (date: Date) => string = formatKinTime,
 ): { readonly message: string; readonly retry: boolean } | null {
   if (link === "connecting") return null;
-  return link === "offline"
-    ? { message: KIN_WORK_STALE, retry: false }
-    : { message: KIN_WORK_REFRESH_FAILED, retry: true };
+  if (link !== "offline") return { message: KIN_WORK_REFRESH_FAILED, retry: true };
+  return {
+    message: readAt === null ? KIN_WORK_STALE : `Offline. ${kinLastUpdated(readAt, formatTime)}`,
+    retry: false,
+  };
 }
 /** Kin's work pages, each reached from the sidebar. */
 export type KinWorkPageName = "tasks" | "money" | "clients" | "docs";
@@ -170,17 +187,38 @@ export const kinWorkSamePrincipal = (a: KinWorkPrincipal | null, b: KinWorkPrinc
 const isMe = (who: KinWorkPrincipal, names: KinWorkNames) =>
   who._tag === "person" && who.personId === names.me;
 
+/** The names `kinWorkName` reads; a screen holding one map for everyone passes it as both. */
+export type KinWhoNames = Pick<KinWorkNames, "people"> &
+  Partial<Pick<KinWorkNames, "agents" | "me">>;
+
+/**
+ * The one way a screen names who holds or changed something: "You", a person's or agent's
+ * display name, or a plain stand-in for one the directory no longer lists. Never an id.
+ */
+export function kinWorkName(who: KinWorkPrincipal, names: KinWhoNames, you = "You"): string {
+  if (who._tag === "agent") return names.agents?.get(who.agentId) ?? "An agent";
+  return who.personId === names.me ? you : (names.people.get(who.personId) ?? "A teammate");
+}
+
+/** A stored `person:<id>` or `agent:<id>` by `kinWorkName`; null for text that names nobody. */
+export function kinWorkNameOfText(text: string, names: KinWhoNames, you = "You"): string | null {
+  const shown = /^(person|agent):(.+)$/.exec(text);
+  if (shown === null) return null;
+  const id = shown[2]!;
+  return kinWorkName(
+    shown[1] === "agent"
+      ? { _tag: "agent", agentId: KinAgentId.make(id) }
+      : { _tag: "person", personId: KinPersonId.make(id) },
+    names,
+    you,
+  );
+}
+
 /** "you" to the owner; to anyone else the owner by name, so "you" never means someone else. */
 const ownerWord = (names: Pick<KinWorkNames, "me" | "owner" | "people">) =>
   names.owner == null || names.owner === names.me
     ? null
-    : (names.people.get(names.owner) ?? "the owner");
-
-/** "You", a name, or a plain stand-in for someone the directory no longer lists. */
-export function kinWorkName(who: KinWorkPrincipal, names: KinWorkNames, you = "You"): string {
-  if (who._tag === "agent") return names.agents.get(who.agentId) ?? "An agent";
-  return isMe(who, names) ? you : (names.people.get(who.personId) ?? "A teammate");
-}
+    : kinMidSentence(kinWorkName({ _tag: "person", personId: names.owner }, names));
 
 /** A name inside a sentence: the stand-ins "An agent" and "A teammate" lose their capital. */
 export const kinMidSentence = (name: string) =>
@@ -233,7 +271,8 @@ export const KIN_WORK_DEFAULT_FILTER: KinWorkFilter = {
 const VIEWS: ReadonlyArray<{ readonly id: KinWorkViewId; readonly label: string }> = [
   { id: "open", label: "Open" },
   { id: "doing", label: "In progress" },
-  { id: "waiting", label: "Waiting" },
+  // Its status is Waiting; Tasks' "Waiting on others" is every task in someone else's hands.
+  { id: "waiting", label: "Marked waiting" },
   { id: "late", label: "Late" },
   { id: "week", label: "Due this week" },
   { id: "closed", label: "Closed" },
@@ -561,9 +600,102 @@ export const kinWorkStatusText = (
 const statusText = (record: KinRecord, names: KinWorkNames): string =>
   kinWorkStatusText(record, names);
 
+/** What a task waiting on its own reader says in place of "Waiting on you". */
+export const KIN_WORK_YOURS_TO_DO = "Yours to do";
+
+/** A task's checklist: lines under it, never tasks of their own. */
+export const KIN_WORK_STEPS = {
+  title: "Steps",
+  /** "2 of 4", on the row and above the checklist. */
+  count: (count: KinWorkStepCount) => `${count.done} of ${count.of}`,
+  /** The count read out: "2 of 4 steps done". */
+  spoken: (count: KinWorkStepCount) =>
+    `${count.done} of ${count.of} ${count.of === 1 ? "step" : "steps"} done`,
+  add: "Add a step",
+  placeholder: "Add a step",
+  remove: "Remove step",
+  tick: (title: string) => `Tick: ${title}`,
+  untick: (title: string) => `Untick: ${title}`,
+  /** Said once every step is ticked: the task itself stays open until someone says done. */
+  allDone: "Every step is ticked. Mark the task done when it's finished.",
+  tooLong: `Keep a step under ${KIN_WORK_STEP_MAX} characters.`,
+  tooMany: `A task holds up to ${KIN_WORK_STEPS_MAX} steps.`,
+} as const;
+
+/** A task someone marked urgent: first within its day, with a flag on its row and its page. */
+export const KIN_WORK_URGENT = {
+  label: "Urgent",
+  mark: "Mark urgent",
+  unmark: "Not urgent",
+} as const;
+
+/** A task's steps as its page shows them, with what this reader may do to them. */
+export interface KinWorkStepsView {
+  /** "2 of 4"; null with no steps yet. */
+  readonly count: string | null;
+  readonly items: ReadonlyArray<{
+    readonly index: number;
+    readonly title: string;
+    readonly done: boolean;
+    /** What a tap on its box does, read out. */
+    readonly label: string;
+  }>;
+  /** The reader may tick, add and remove steps: whoever may change the task (`can.edit`). */
+  readonly editable: boolean;
+  /** Every step ticked while the task is still open: `KIN_WORK_STEPS.allDone`. */
+  readonly allDone: string | null;
+}
+
+/** The page's Steps: null where the host keeps none for it, or has none and lets nobody add. */
+function kinWorkSteps(
+  item: Pick<KinRecordDetail, "checklist" | "can" | "state">,
+): KinWorkStepsView | null {
+  // An older host sends no checklist: it would drop steps sent to it.
+  if (item.checklist === undefined) return null;
+  const steps: ReadonlyArray<KinWorkStep> = item.checklist;
+  const editable = item.can?.edit === true;
+  if (steps.length === 0 && !editable) return null;
+  const done = steps.filter((step) => step.done).length;
+  return {
+    count: steps.length === 0 ? null : KIN_WORK_STEPS.count({ done, of: steps.length }),
+    items: steps.map((step, index) => ({
+      index,
+      title: step.title,
+      done: step.done,
+      label: step.done ? KIN_WORK_STEPS.untick(step.title) : KIN_WORK_STEPS.tick(step.title),
+    })),
+    editable,
+    allDone:
+      steps.length > 0 && done === steps.length && !kinWorkClosed(item.state)
+        ? KIN_WORK_STEPS.allDone
+        : null,
+  };
+}
+
+/** Why a typed step can't be added, or null when it can. */
+export const kinWorkStepProblem = (title: string, steps: number): string | null =>
+  title.trim().length > KIN_WORK_STEP_MAX
+    ? KIN_WORK_STEPS.tooLong
+    : steps >= KIN_WORK_STEPS_MAX
+      ? KIN_WORK_STEPS.tooMany
+      : null;
+
+/**
+ * Waiting on the reader themself: not paused for them but theirs to move, so drawn and said as
+ * a to-do from their seat. The stored state stays `waiting`.
+ */
+export const kinWorkWaitsOnMe = (
+  record: Pick<KinRecord, "state" | "waitingOn">,
+  names: Pick<KinWorkNames, "me">,
+): boolean =>
+  record.state === "waiting" &&
+  record.waitingOn?._tag === "person" &&
+  record.waitingOn.personId === names.me;
+
 export interface KinWorkRowView {
   readonly key: KinRecordKey;
   readonly title: string;
+  /** Where it stands from the reader's seat, for its mark: open when it waits on them. */
   readonly state: KinRecordState;
   /** "In progress", "Waiting on Priya", "Done". */
   readonly status: string;
@@ -597,6 +729,10 @@ export interface KinWorkRowView {
   readonly mark: KinWorkMark | null;
   /** The mark's words: "Late", "Handed back by Zoya". */
   readonly markText: string | null;
+  /** "2 of 4" of its steps ticked; null with none. */
+  readonly steps: string | null;
+  /** Someone marked it urgent: its flag. */
+  readonly urgent: boolean;
 }
 
 /** Why one of your own tasks leads "On me": shown on the task, not as a second list. */
@@ -637,6 +773,9 @@ export const kinRepeatText = (rule: KinRepeatRule): string =>
 export const KIN_WORK_REPEAT = {
   label: "Repeats",
   never: "Doesn't repeat",
+  /** Its menu item, on one line: "Make it repeat", or how it repeats now. */
+  menu: (text: string | null) =>
+    text === null ? "Make it repeat" : `Repeats ${text.toLowerCase()}`,
   stop: "Stop repeating",
   needsDue: "Give it a due date first: the next one is made from it.",
   /** Said once, beside the row: a repeat makes the next task, never the money in it. */
@@ -676,7 +815,12 @@ export function kinWorkRow(
       : record.party !== undefined && record.party.key !== within?.party?.key
         ? record.party.title
         : null;
-  const status = record.working ? "Working on it now" : statusText(record, names);
+  const onMe = kinWorkWaitsOnMe(record, names);
+  const status = record.working
+    ? "Working on it now"
+    : onMe
+      ? KIN_WORK_YOURS_TO_DO
+      : statusText(record, names);
   const day = kinWorkClosed(record.state) ? null : kinWorkDueText(record, names, now);
   const due = day === null ? null : `Due ${day}`;
   const ownerRetired = kinWorkRetired(record.owner, names);
@@ -696,12 +840,15 @@ export function kinWorkRow(
   // What a narrow row keeps when it cuts the end off: who has it always (the row sets it apart),
   // then when it is due and where it stands, then its client or project. "Not started" is what
   // the empty circle already says.
+  const steps = record.steps === undefined ? null : KIN_WORK_STEPS.count(record.steps);
+  const urgent = record.urgent === true && !kinWorkClosed(record.state);
   const detail = [
     due,
+    steps,
     record.repeat === undefined || kinWorkClosed(record.state)
       ? null
       : kinRepeatText(record.repeat),
-    record.state === "open" && !record.working ? null : status,
+    (record.state === "open" || onMe) && !record.working ? null : status,
     about,
     record.side === "theirs" && !kinWorkClosed(record.state) && within?.sided !== true
       ? "They owe this"
@@ -713,7 +860,7 @@ export function kinWorkRow(
   return {
     key: record.key,
     title: record.title,
-    state: record.state,
+    state: onMe ? "open" : record.state,
     status,
     owner,
     ownerAvatar: kinWorkAvatar(record.owner),
@@ -738,10 +885,19 @@ export function kinWorkRow(
     detail: detail.join(" · "),
     line: parts.join(" · "),
     accessibilityLabel: kinSentences(
-      [record.title, ...parts, record.late ? "Late" : handedBack].filter((part) => part !== null),
+      [
+        record.title,
+        urgent ? KIN_WORK_URGENT.label : null,
+        ...parts.map((part) =>
+          part === steps && record.steps !== undefined ? KIN_WORK_STEPS.spoken(record.steps) : part,
+        ),
+        record.late ? "Late" : handedBack,
+      ].filter((part) => part !== null),
     ),
     mark: record.late ? "late" : handedBack === null ? null : "handed_back",
     markText: record.late ? KIN_WORK_MARKS.late : handedBackMark,
+    steps,
+    urgent,
   };
 }
 
@@ -939,6 +1095,10 @@ export interface KinWorkItemView {
   readonly can: KinRecordCan;
   /** How it comes back once closed, as a rule and in words; null when it doesn't. */
   readonly repeat: { readonly rule: KinRepeatRule; readonly text: string } | null;
+  /** Its checklist (`kinWorkSteps`); null where it has none to show or add. */
+  readonly steps: KinWorkStepsView | null;
+  /** Someone marked it urgent. */
+  readonly urgent: boolean;
 }
 
 /** How private something is, and what to say about it beside the label. */
@@ -957,7 +1117,6 @@ export const KIN_WORK_HAND_BACK = {
   title: "Hand back this task?",
   detail: (to: string) => `It goes back to ${kinMidSentence(to)} to give to someone else.`,
   reasonLabel: "Why (optional)",
-  reasonPlaceholder: "I'm on the release this week",
   confirm: "Hand back",
   failed: "Couldn't hand it back.",
 } as const;
@@ -1045,7 +1204,7 @@ export function kinWorkAudience(
   };
   const ids = (["people", "team", "me"] as const).filter(reachable);
   const choices = ids.map((id) => ({ id, label: label[id] }));
-  return { current, answer, choices: choices.length > 1 ? choices : [] };
+  return { current, answer, short: label[current], choices: choices.length > 1 ? choices : [] };
 }
 
 /** What picking `to` changes, null where it stays: its private mark, and its sharing. */
@@ -1155,6 +1314,9 @@ export function kinWorkChangeText(
     if (link?.field === "pull_request") return `${who} linked ${link.to ?? "a pull request"}`;
     return `${who} added a link`;
   }
+  // Kin stopped the task waiting on the person a question asked, who dismissed it unanswered.
+  if (field(KIN_DISMISSED_FIELD) !== undefined)
+    return `${who} dismissed the question without choosing`;
   const clauses: Array<string> = [];
   // Access moves leave the task where it is; the line says whose access and who moved it.
   const removed = principalFromText(field("accessRemoved")?.from ?? null);
@@ -1168,13 +1330,14 @@ export function kinWorkChangeText(
   const owner = field("owner");
   const to = principalFromText(owner?.to ?? null);
   const handedBack = field("handedBack");
+  const left = principalFromText(field(KIN_LEFT_FIELD)?.from ?? null);
   if (to !== null) {
     clauses.push(
       handedBack !== undefined
         ? `handed it back to ${kinWorkName(to, names, "you")}${handedBack.to === null ? "" : `: “${handedBack.to}”`}`
         : change.by._tag !== "system" && kinWorkSamePrincipal(change.by, to)
           ? "took it on"
-          : `gave it to ${kinWorkName(to, names, "you")}`,
+          : `gave it to ${kinWorkName(to, names, "you")}${left === null ? "" : ` (${kinWorkName(left, names)} left)`}`,
     );
   }
   // A held notice: `untold` names the holder not told yet, and clears once they are.
@@ -1235,6 +1398,10 @@ export function kinWorkChangeText(
   const project = field("project");
   if (project !== undefined)
     clauses.push(project.to === null ? "took it out of its project" : "put it in a project");
+  if (field("steps") !== undefined) clauses.push("changed its steps");
+  const urgent = field("urgent")?.to;
+  if (urgent === "true") clauses.push("marked it urgent");
+  else if (urgent === "false") clauses.push("took the urgent mark off");
   const sensitive = field("sensitive")?.to;
   if (sensitive === "true") clauses.push("made it private");
   else if (sensitive === "false") clauses.push("made it not private");
@@ -1539,6 +1706,8 @@ export function kinWorkItemView(
     can,
     repeat:
       item.repeat === undefined ? null : { rule: item.repeat, text: kinRepeatText(item.repeat) },
+    steps: kinWorkSteps({ ...item, can }),
+    urgent: item.urgent === true,
   };
 }
 
@@ -1554,7 +1723,7 @@ const markerWord = (
     ? ownerWord(names)
     : markedBy === names.me
       ? null
-      : (names.people.get(markedBy) ?? "a teammate");
+      : kinMidSentence(kinWorkName({ _tag: "person", personId: markedBy }, names));
 
 /** A host from before `can`: it took what its sheet offered then, and checked on the write. */
 const olderHostCan = (
@@ -1581,7 +1750,11 @@ const olderHostCan = (
 });
 
 /** An all-day date as `YYYY-MM-DD` where the owner is; null with no date or a timed one. */
-export function kinWorkAllDay(at: string | null, allDay: boolean, names: KinWorkNames) {
+export function kinWorkAllDay(
+  at: string | null,
+  allDay: boolean,
+  names: Pick<KinWorkNames, "zone">,
+) {
   const date = at === null ? null : new Date(at);
   return date === null || !allDay || Number.isNaN(date.getTime())
     ? null
@@ -1734,31 +1907,26 @@ export const kinWorkDraftFor = (
 export function kinWorkDraftWords(draft: Pick<KinWorkDraft, "party" | "side">): {
   readonly title: string;
   readonly titleLabel: string;
-  readonly titlePlaceholder: string;
 } {
   if (draft.party === null || draft.side === null)
     return {
       title: KIN_WORK_NEW,
       titleLabel: KIN_WORK_NEW_COPY.titleLabel,
-      titlePlaceholder: KIN_WORK_NEW_COPY.titlePlaceholder,
     };
   return draft.side === "theirs"
     ? {
         title: `What ${draft.party.title} owes you`,
         titleLabel: "What they owe",
-        titlePlaceholder: "Send the signed contract",
       }
     : {
         title: `What you owe ${draft.party.title}`,
         titleLabel: "What you owe them",
-        titlePlaceholder: "Send the monthly report",
       };
 }
 
 export const KIN_WORK_NEW_COPY = {
   title: KIN_WORK_NEW,
   titleLabel: "What needs doing",
-  titlePlaceholder: "Send Acme the revised quote",
   ownerLabel: "Give it to",
   dueLabel: "Due",
   noDue: "No date",

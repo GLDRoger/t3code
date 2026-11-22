@@ -3,22 +3,30 @@ import {
   type KinMoney,
   type KinNumberingRule,
   type KinOrgId,
-  type KinPersonId,
+  KinPersonId,
   type KinRecordState,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
 
 import { IMPORTED_SERIES, ruleProblem, seriesOf } from "../gendocs/numbering.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
+import { contactAll, contactFields } from "./contactDetails.ts";
+import { createAs } from "./deals.ts";
 import {
   ImportHeader,
+  type ImportContact,
+  type ImportDeal,
   type ImportEntry,
   type ImportList,
   type ImportPayment,
@@ -27,10 +35,17 @@ import {
   type ImportProject,
 } from "./importFormat.ts";
 import { type CreateInput, KinRecords, type Writer } from "./KinRecords.ts";
-import { type FieldValue } from "./lists.ts";
+import { type FieldValue, fieldList, fieldText, parseFields } from "./lists.ts";
 import { dayIn, farAbove, issuedAfterDue, largestIn, parseAmount } from "./money.ts";
 import { companyMoneyState } from "./companyProfile.ts";
-import { endOfDay, ownerZone, startOfDay, workFailure } from "./recordRows.ts";
+import {
+  byKey,
+  endOfDay,
+  ownerZone,
+  type RecordRow,
+  startOfDay,
+  workFailure,
+} from "./recordRows.ts";
 import { regionOf } from "./region.ts";
 import {
   defineList,
@@ -40,10 +55,11 @@ import {
   numberingOf,
   type Proposal,
   proposalFor,
+  startState,
   storedCategoryLabels,
 } from "./registers.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { undoBatch, type UndoReport } from "./importUndo.ts";
+import { IMPORT_BUSY, notImporting, undoBatch, type UndoReport } from "./importUndo.ts";
 
 // Everything an import makes is keyed `import:<batch>:<kind>:<source>`, so a rerun makes nothing
 // twice and leaves alone what someone changed since. Rows go a hundred to a transaction: a crash
@@ -59,6 +75,7 @@ const NOT_ENTRIES = ["clients", "projects", "docs"];
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const isKinError = Schema.is(KinChatError);
 const COUNTRY_FIRST =
   "This row has money, and Kin records none until the company's country is chosen in Settings, Company details. Import the file again once it is.";
 /** Whether a row puts money on its entry: an amount, a payment, or an amount in a field. */
@@ -75,6 +92,10 @@ const decodeRow = Schema.decodeUnknownEffect(Schema.fromJsonString(ImportRow));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 class Rollback extends Schema.TaggedError<Rollback>()("KinImportRollback", {}) {}
 type Failure = KinChatError | SqlError.SqlError | Schema.SchemaError;
+type Decoded =
+  | { readonly line: number; readonly row: ImportRow }
+  | { readonly line: number; readonly row: undefined; readonly failure: string };
+type Named = { readonly recordId: string; readonly key: string; readonly gstin: unknown };
 
 type Counts = {
   create: number;
@@ -84,7 +105,16 @@ type Counts = {
   problems: number;
 };
 const zero = (): Counts => ({ create: 0, unchanged: 0, matched: 0, changed: 0, problems: 0 });
-type Kind = "client" | "project" | "entry" | "payment";
+type Kind = "client" | "project" | "entry" | "payment" | "contact" | "deal";
+/** A field an import filled on a record Kin had, empty before; undo empties it again at `rev`. */
+export type ImportFill = {
+  readonly recordId: string;
+  readonly key: string;
+  readonly rev: number;
+  readonly fields: ReadonlyArray<string>;
+};
+const NO_DEALS_HERE =
+  "Deals come in through Clients, Add, Import a file, where Kin knows who imports them.";
 export type ImportProblem = {
   /** The file's line, from 1; null for the file as a whole. */
   readonly line: number | null;
@@ -108,6 +138,12 @@ export type ImportReport = {
   readonly projects: Counts;
   readonly entries: Counts;
   readonly payments: Counts;
+  readonly contacts: Counts;
+  readonly deals: Counts;
+  /** Fields filled on clients and contacts Kin had, which had none. */
+  readonly filled: number;
+  /** Of the clients made, how many as prospects. */
+  readonly prospects: number;
   /** Imported before and changed in Kin since: left as they are, with their payments. */
   readonly changed: ReadonlyArray<{ readonly source: string; readonly key: string }>;
   /** What the company's country calls a tax id, which a client's `gstin` holds: GSTIN in India. */
@@ -142,6 +178,13 @@ export type ImportReport = {
 /** The file's lines; `fromFile` reads one from this host's disk. */
 export type Lines = Stream.Stream<string, KinChatError>;
 export type Progress = (done: number, of: number) => Effect.Effect<void>;
+export type RunOptions = {
+  readonly progress?: Progress | undefined;
+  /** Checked in the transaction that starts the run: who may import, from stored rows. */
+  readonly guard?: Effect.Effect<void, KinChatError, SqlClient.SqlClient> | undefined;
+  /** The file's name, kept with the run for the list of earlier imports. */
+  readonly file?: string | undefined;
+};
 
 export class KinImport extends Context.Service<
   KinImport,
@@ -151,13 +194,13 @@ export class KinImport extends Context.Service<
       orgId: KinOrgId,
       owner: KinPersonId,
       lines: Lines,
-      progress?: Progress,
+      options?: RunOptions,
     ) => Effect.Effect<ImportReport, KinChatError>;
     readonly apply: (
       orgId: KinOrgId,
       owner: KinPersonId,
       lines: Lines,
-      progress?: Progress,
+      options?: RunOptions,
     ) => Effect.Effect<ImportReport, KinChatError>;
     /** Takes a batch away: what it made that nobody changed or uses since. */
     readonly undo: (
@@ -167,22 +210,77 @@ export class KinImport extends Context.Service<
       options: { readonly apply: boolean; readonly includeChanged: boolean },
     ) => Effect.Effect<UndoReport, KinChatError>;
     readonly fromFile: (path: string) => Lines;
+    /** The checks, imports and undos this host is running for the org, oldest first. */
+    readonly running: (orgId: KinOrgId) => Effect.Effect<ReadonlyArray<ImportLive>>;
   }
 >()("t3/kin/work/KinImport") {}
+
+/** A run going on in this host; an import's and an undo's own row is `seq` in `kin_import_runs`. */
+export type ImportLive = {
+  readonly action: "check" | "apply" | "undo";
+  readonly personId: KinPersonId;
+  readonly startedAt: number;
+  batch: string;
+  file: string | null;
+  seq: number | null;
+  done: number;
+  of: number;
+};
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
   const refreshes = yield* KinRefreshObserver;
   const fs = yield* FileSystem.FileSystem;
+  // The command line has no session: deals, whose rules are a person's, come in from the screen.
+  const identity = yield* Effect.serviceOption(KinIdentity);
+  const scope = yield* Scope.Scope;
+  const live = new Map<KinOrgId, Set<ImportLive>>();
+
+  /**
+   * Runs `work` as `entry`, seen by `running` until it ends. An import or undo is refused while
+   * another runs for the org, and runs on in the host's own scope: a caller that goes away, as a
+   * dropped connection does, stops waiting for it but not it.
+   */
+  const tracked = Effect.fn("KinImport.tracked")(function* <A>(
+    orgId: KinOrgId,
+    entry: ImportLive,
+    work: (entry: ImportLive) => Effect.Effect<A, KinChatError>,
+  ) {
+    const held = live.get(orgId) ?? new Set<ImportLive>();
+    const writes = entry.action !== "check";
+    if (writes && [...held].some((one) => one.action !== "check"))
+      return yield* new KinChatError({ reason: "conflict", message: IMPORT_BUSY });
+    held.add(entry);
+    live.set(orgId, held);
+    const body = work(entry).pipe(
+      Effect.ensuring(
+        Effect.suspend(() => {
+          held.delete(entry);
+          if (held.size === 0 && live.get(orgId) === held) live.delete(orgId);
+          // One that stopped part way holds nothing: running it again may start at once.
+          const letGo =
+            entry.seq === null
+              ? Effect.void
+              : sql`UPDATE kin_import_runs SET summary_json = json_remove(summary_json, '$.beat')
+                  WHERE seq = ${entry.seq} AND finished_at IS NULL`.pipe(Effect.ignore);
+          return Effect.andThen(letGo, refreshes.touch(orgId, "imports"));
+        }),
+      ),
+    );
+    if (!writes) return yield* body;
+    return yield* Fiber.join(yield* Effect.forkIn(body, scope));
+  });
 
   const run = Effect.fn("KinImport.run")(function* (
     orgId: KinOrgId,
     owner: KinPersonId,
     lines: Lines,
     keep: boolean,
-    progress: Progress | undefined,
+    options: RunOptions,
+    watched: ImportLive,
   ) {
+    const { progress } = options;
     // A first pass, before anything is written: the header, the size, and no line too long.
     const scan = yield* Stream.runFold(
       lines,
@@ -210,15 +308,27 @@ const make = Effect.gen(function* () {
         invalid(`The first line isn't a kin-import header: ${error.message.slice(0, 1_000)}`),
       ),
     );
+    watched.batch = doc.batch;
+    watched.file = options.file ?? null;
+    watched.of = scan.rows;
 
     const problems: Array<ImportProblem> = [];
     let more = 0;
-    const counts = { clients: zero(), projects: zero(), entries: zero(), payments: zero() };
+    const counts = {
+      clients: zero(),
+      projects: zero(),
+      entries: zero(),
+      payments: zero(),
+      contacts: zero(),
+      deals: zero(),
+    };
     const SECTION = {
       client: "clients",
       project: "projects",
       entry: "entries",
       payment: "payments",
+      contact: "contacts",
+      deal: "deals",
     } as const;
     const problem = (
       line: number | null,
@@ -266,11 +376,65 @@ const make = Effect.gen(function* () {
         : undefined;
     });
 
+    // What this chunk's rows point at, read once per chunk inside its transaction and forgotten
+    // when it ends: a plan's chunk is rolled back, and a later chunk reads afresh.
+    const memo = {
+      found: new Map<string, { recordId: string; key: string } | undefined>(),
+      edited: new Set<string>(),
+      /** By `lower(title)`: the first open client by key, as the one-name read below finds it. */
+      named: new Map<string, Named | undefined>(),
+      /** Names as SQLite's `lower` writes them, so the two never disagree. */
+      lowered: new Map<string, string>(),
+      people: new Map<string, string | undefined>(),
+    };
+    const forget = () => {
+      memo.found.clear();
+      memo.edited.clear();
+      memo.named.clear();
+      memo.lowered.clear();
+      memo.people.clear();
+    };
+    /** An open client named `name` but for case, first by key. */
+    const sameNamed = Effect.fn("KinImport.sameNamed")(function* (name: string) {
+      const lower = memo.lowered.get(name);
+      if (lower !== undefined && memo.named.has(lower)) return memo.named.get(lower);
+      const [same] = yield* sql<Named>`SELECT
+          record_id AS "recordId", key, json_extract(fields_json, '$.gstin') AS gstin
+        FROM kin_records WHERE org_id = ${orgId} AND register_id = 'clients'
+          AND state NOT IN ${sql.in(CLOSED)} AND lower(title) = lower(${name})
+          ORDER BY +key LIMIT 1`;
+      return same;
+    });
+    /** A client this chunk made, which the one-name read would find from now on. */
+    const namedNow = (row: RecordRow) => {
+      if (CLOSED.includes(row.state)) return;
+      const lower = memo.lowered.get(row.title);
+      // A title not lowered ahead: every name is read again rather than guessed.
+      if (lower === undefined) return memo.named.clear();
+      if (!memo.named.has(lower)) return;
+      const held = memo.named.get(lower);
+      if (held === undefined || row.key < held.key)
+        memo.named.set(lower, {
+          recordId: row.recordId,
+          key: row.key,
+          gstin: parseFields(row.fieldsJson).gstin ?? null,
+        });
+    };
     const found = Effect.fn("KinImport.found")(function* (originKey: string) {
+      if (memo.found.has(originKey)) return memo.found.get(originKey);
       const [row] = yield* sql<{ recordId: string; key: string }>`SELECT record_id AS "recordId",
           key FROM kin_records WHERE org_id = ${orgId} AND origin_key = ${originKey}`;
+      if (row !== undefined) {
+        const others = yield* sql`SELECT 1 FROM kin_record_changes
+          WHERE org_id = ${orgId} AND record_id = ${row.recordId} AND via <> 'import' LIMIT 1`;
+        if (others.length > 0) memo.edited.add(row.recordId);
+      }
+      memo.found.set(originKey, row);
       return row;
     });
+    const made = (originKey: string, row: { readonly recordId: string; readonly key: string }) => {
+      memo.found.set(originKey, { recordId: row.recordId, key: row.key });
+    };
     const changed: Array<{ source: string; key: string }> = [];
     const clientMatches: Array<ImportReport["clientMatches"][number]> = [];
     const matchedClient = (match: ImportReport["clientMatches"][number]) => {
@@ -279,15 +443,13 @@ const make = Effect.gen(function* () {
     };
     /** Made by an earlier run; `edited` when anyone but an import has changed it since. */
     const existing = Effect.fn("KinImport.existing")(function* (
-      kind: "client" | "project" | "entry",
+      kind: "client" | "project" | "entry" | "contact" | "deal",
       source: string,
       tally: boolean,
     ) {
       const row = yield* found(originOf(kind, source));
       if (row === undefined) return undefined;
-      const others = yield* sql`SELECT 1 FROM kin_record_changes
-        WHERE org_id = ${orgId} AND record_id = ${row.recordId} AND via <> 'import' LIMIT 1`;
-      const edited = others.length > 0;
+      const edited = memo.edited.has(row.recordId);
       if (tally) {
         counts[SECTION[kind]][edited ? "changed" : "unchanged"] += 1;
         if (edited) {
@@ -394,8 +556,68 @@ const make = Effect.gen(function* () {
 
     const clients = new Map<string, ImportClient>();
     const projects = new Map<string, ImportProject>();
-    const seen = { entry: new Set<string>(), payment: new Set<string>() };
+    const seen = {
+      entry: new Set<string>(),
+      payment: new Set<string>(),
+      contact: new Set<string>(),
+      deal: new Set<string>(),
+    };
     const failed = { client: new Set<string>(), project: new Set<string>() };
+    const fills: Array<ImportFill> = [];
+    let prospects = 0;
+    let fillsWritten = 0;
+    /** A person on the team by id, else whoever imports. */
+    const lookerAfter = Effect.fn("KinImport.lookerAfter")(function* (
+      personId: string | undefined,
+    ) {
+      if (personId === undefined || personId === owner) return me;
+      if (!memo.people.has(personId)) {
+        const [person] = yield* sql<{ id: string }>`SELECT person_id AS id FROM kin_people
+          WHERE org_id = ${orgId} AND person_id = ${personId} AND removed_at IS NULL`;
+        memo.people.set(personId, person?.id);
+      }
+      const id = memo.people.get(personId);
+      return id === undefined ? me : { _tag: "person" as const, personId: KinPersonId.make(id) };
+    });
+    /** Fills on `key` only what it lacks; a field it has stays as someone typed it. */
+    const fill = Effect.fn("KinImport.fill")(function* (
+      key: string,
+      list: "clients" | "contacts",
+      given: { readonly notes?: string | undefined; readonly fields: Record<string, FieldValue> },
+    ) {
+      const had = yield* byKey(orgId, key);
+      if (had === undefined || had.registerId !== list)
+        return yield* invalid(`There is no ${list === "clients" ? "client" : "contact"} ${key}.`);
+      const stored = parseFields(had.fieldsJson);
+      const fields: Record<string, FieldValue | null> = {};
+      const named: Array<string> = [];
+      for (const [field, value] of Object.entries(given.fields)) {
+        if (field === "emails" || field === "phones") {
+          const kind = field === "emails" ? "email" : "phone";
+          if (contactAll(stored, kind).length > 0 || !Array.isArray(value)) continue;
+          const made = contactFields(stored, { [field]: value });
+          if (isKinError(made)) return yield* made;
+          Object.assign(fields, made);
+          named.push(kind);
+          continue;
+        }
+        const stays = Array.isArray(value)
+          ? fieldList(stored, field).length > 0
+          : fieldText(stored, field) !== null;
+        if (stays) continue;
+        fields[field] = value;
+        named.push(field);
+      }
+      const notes = given.notes !== undefined && had.notes.trim() === "" ? given.notes : undefined;
+      if (notes !== undefined) named.push("notes");
+      if (named.length === 0) return had;
+      const after = yield* records.update(orgId, writer, key, {
+        ...(Object.keys(fields).length === 0 ? {} : { fields }),
+        ...(notes === undefined ? {} : { notes }),
+      });
+      fills.push({ recordId: after.recordId, key: after.key, rev: after.rev, fields: named });
+      return after;
+    });
     /** One row in its own savepoint: a refusal undoes only it and becomes its problem line. */
     const row = <A, R>(
       line: number,
@@ -426,13 +648,30 @@ const make = Effect.gen(function* () {
       const spec = clients.get(source);
       if (spec === undefined) return (yield* found(originOf("client", source)))?.recordId;
       if (failed.client.has(source)) return undefined;
+      const extra = {
+        ...(spec.address === undefined ? {} : { address: spec.address }),
+        ...(spec.cameFrom === undefined ? {} : { source: spec.cameFrom }),
+        ...(spec.tags === undefined || spec.tags.length === 0 ? {} : { tags: [...spec.tags] }),
+      };
+      if (spec.match !== undefined) {
+        const key = spec.match;
+        const matched = yield* row(
+          line,
+          "client",
+          source,
+          fill(key, "clients", {
+            ...(spec.notes === undefined ? {} : { notes: spec.notes }),
+            fields: extra,
+          }),
+          () => failed.client.add(source),
+        );
+        if (matched === undefined) return undefined;
+        if (tally) counts.clients.matched += 1;
+        return matched.recordId;
+      }
       const had = yield* existing("client", source, tally);
       if (had !== undefined) return had.recordId;
-      const [same] = yield* sql<{ recordId: string; key: string; gstin: unknown }>`SELECT
-          record_id AS "recordId", key, json_extract(fields_json, '$.gstin') AS gstin
-        FROM kin_records WHERE org_id = ${orgId} AND register_id = 'clients'
-          AND state NOT IN ${sql.in(CLOSED)} AND lower(title) = lower(${spec.name})
-          ORDER BY key LIMIT 1`;
+      const same = yield* sameNamed(spec.name);
       // Two tax ids that differ are two businesses, however alike their names.
       const differs =
         same !== undefined &&
@@ -447,12 +686,16 @@ const make = Effect.gen(function* () {
         }
         return same.recordId;
       }
-      const fields = Object.fromEntries(
-        (["gstin", "address", "terms", "placeOfSupply"] as const).flatMap((key) => {
-          const value = spec[key];
-          return value === undefined ? [] : [[key, value] as const];
-        }),
-      );
+      const fields: Record<string, FieldValue> = {
+        ...Object.fromEntries(
+          (["gstin", "terms", "placeOfSupply"] as const).flatMap((key) => {
+            const value = spec[key];
+            return value === undefined ? [] : [[key, value] as const];
+          }),
+        ),
+        ...extra,
+      };
+      const lookedAfter = yield* lookerAfter(spec.owner);
       const created = yield* row(
         line,
         "client",
@@ -461,7 +704,7 @@ const make = Effect.gen(function* () {
           list: "clients",
           originKey: originOf("client", source),
           title: differs ? `${spec.name} (${spec.gstin})` : spec.name,
-          owner: me,
+          owner: lookedAfter,
           category: spec.kind ?? "client",
           ...(spec.state === undefined ? {} : { state: spec.state }),
           ...(spec.notes === undefined ? {} : { notes: spec.notes }),
@@ -472,8 +715,11 @@ const make = Effect.gen(function* () {
         () => failed.client.add(source),
       );
       if (created === undefined) return undefined;
+      made(originOf("client", source), created.row);
+      namedNow(created.row);
       if (tally) {
         counts.clients.create += 1;
+        if (spec.kind === "prospect") prospects += 1;
         if (differs)
           matchedClient({ source, name: spec.name, key: same.key, made: created.row.key });
       }
@@ -519,6 +765,7 @@ const make = Effect.gen(function* () {
         () => failed.project.add(source),
       );
       if (created === undefined) return undefined;
+      made(originOf("project", source), created.row);
       if (tally) counts.projects.create += 1;
       return created.row.recordId;
     });
@@ -742,7 +989,17 @@ const make = Effect.gen(function* () {
             originKey: originOf("entry", spec.source),
             title: spec.title,
             owner: me,
-            state: spec.state ?? def.defaultState,
+            // An invoice the file gives no state starts as a new one would, unless it was paid.
+            state:
+              spec.state ??
+              (def.id === "invoices" && due.length === 0
+                ? startState(def, {
+                    dateAt: dateAt ?? null,
+                    numbered: spec.number !== undefined,
+                    now,
+                    zone,
+                  })
+                : def.defaultState),
             ...(spec.category === undefined ? {} : { category: spec.category }),
             ...(partyId === undefined ? {} : { partyId }),
             ...(projectId === undefined || projectId === null ? {} : { projectId }),
@@ -796,16 +1053,139 @@ const make = Effect.gen(function* () {
       tally(spec, def, amount, open);
     });
 
-    const rowStep = Effect.fn("KinImport.row")(function* (text: string, line: number) {
-      const decoded = yield* decodeRow(text).pipe(Effect.result);
-      if (decoded._tag === "Failure")
+    /** Its client's record id, or a problem line saying it isn't there. */
+    const parentOf = Effect.fn("KinImport.parentOf")(function* (
+      line: number,
+      kind: "contact" | "deal",
+      spec: ImportContact | ImportDeal,
+    ) {
+      const partyId = yield* client(line, spec.client, false);
+      if (partyId === undefined)
+        problem(
+          line,
+          kind,
+          spec.source,
+          `Its client ${spec.client} isn't above it or imported before.`,
+        );
+      return partyId;
+    });
+
+    const contact = Effect.fn("KinImport.contact")(function* (line: number, spec: ImportContact) {
+      if (seen.contact.has(spec.source))
+        return problem(line, "contact", spec.source, "Another contact has this source id.");
+      seen.contact.add(spec.source);
+      const given: Record<string, FieldValue> = {
+        ...(spec.role === undefined ? {} : { role: spec.role }),
+        ...(spec.emails === undefined || spec.emails.length === 0
+          ? {}
+          : { emails: [...spec.emails] }),
+        ...(spec.phones === undefined || spec.phones.length === 0
+          ? {}
+          : { phones: [...spec.phones] }),
+      };
+      if (spec.match !== undefined) {
+        const key = spec.match;
+        const matched = yield* row(
+          line,
+          "contact",
+          spec.source,
+          fill(key, "contacts", {
+            ...(spec.notes === undefined ? {} : { notes: spec.notes }),
+            fields: given,
+          }),
+        );
+        if (matched !== undefined) counts.contacts.matched += 1;
+        return;
+      }
+      if ((yield* existing("contact", spec.source, true)) !== undefined) return;
+      const partyId = yield* parentOf(line, "contact", spec);
+      if (partyId === undefined) return;
+      const made = yield* row(
+        line,
+        "contact",
+        spec.source,
+        Effect.gen(function* () {
+          const details = contactFields({}, given);
+          if (isKinError(details)) return yield* details;
+          const fields = Object.fromEntries(
+            Object.entries(details).flatMap(([key, value]) =>
+              value === null ? [] : [[key, value] as const],
+            ),
+          );
+          return yield* records.create(orgId, writer, {
+            list: "contacts",
+            originKey: originOf("contact", spec.source),
+            title: spec.name,
+            owner: me,
+            partyId,
+            ...(spec.notes === undefined ? {} : { notes: spec.notes }),
+            fields,
+          });
+        }),
+      );
+      if (made !== undefined) counts.contacts.create += 1;
+    });
+
+    const deal = Effect.fn("KinImport.deal")(function* (line: number, spec: ImportDeal) {
+      if (seen.deal.has(spec.source))
+        return problem(line, "deal", spec.source, "Another deal has this source id.");
+      seen.deal.add(spec.source);
+      if ((yield* existing("deal", spec.source, true)) !== undefined) return;
+      if (Option.isNone(identity)) return problem(line, "deal", spec.source, NO_DEALS_HERE);
+      const partyId = yield* parentOf(line, "deal", spec);
+      if (partyId === undefined) return;
+      const value =
+        spec.value === undefined ? undefined : parseAmount(spec.value.amount, spec.value.currency);
+      if (value !== undefined && "error" in value)
+        return problem(line, "deal", spec.source, value.error.message);
+      const lookedAfter = yield* lookerAfter(spec.owner);
+      const made = yield* row(
+        line,
+        "deal",
+        spec.source,
+        Effect.gen(function* () {
+          const [party] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+            WHERE org_id = ${orgId} AND record_id = ${partyId}`;
+          if (party === undefined) return yield* invalid("Its client isn't in Kin.");
+          return yield* createAs(
+            {
+              orgId,
+              writer: { ...writer, deal: true },
+              members: [],
+              person: owner,
+            },
+            {
+              partyKey: party.key,
+              title: spec.title,
+              stage: spec.stage,
+              ...(value === undefined ? {} : { value: value.money }),
+              ...(spec.expected === undefined
+                ? {}
+                : { dueAt: endOfDay(spec.expected, zone), dueAllDay: true }),
+              ...(spec.cameFrom === undefined ? {} : { source: spec.cameFrom }),
+              ...(spec.notes === undefined ? {} : { notes: spec.notes }),
+              owner: lookedAfter,
+              originKey: originOf("deal", spec.source),
+            },
+          ).pipe(
+            Effect.provideService(KinIdentity, identity.value),
+            Effect.provideService(KinRecords, records),
+          );
+        }),
+      );
+      if (made !== undefined) counts.deals.create += 1;
+    });
+
+    const rowStep = Effect.fn("KinImport.row")(function* (decoded: Decoded) {
+      const { line } = decoded;
+      if (decoded.row === undefined)
         return problem(
           line,
           "file",
           null,
-          `This line doesn't fit the format: ${decoded.failure.message.slice(0, 500)}`,
+          `This line doesn't fit the format: ${decoded.failure.slice(0, 500)}`,
         );
-      const one = decoded.success;
+      const one = decoded.row;
       if ("client" in one) {
         if (clients.has(one.client.source))
           return problem(line, "client", one.client.source, "Another client has this source id.");
@@ -823,7 +1203,82 @@ const make = Effect.gen(function* () {
         projects.set(one.project.source, one.project);
         return yield* project(line, one.project.source, true);
       }
+      if ("contact" in one) return yield* contact(line, one.contact);
+      if ("deal" in one) return yield* deal(line, one.deal);
       return yield* entry(line, one.entry);
+    });
+
+    /**
+     * One read per kind for the chunk's rows, in its transaction: what they point at, whether
+     * anyone changed it, and the clients their names already have. A row the chunk didn't name
+     * ahead still reads alone, so nothing depends on this being complete.
+     */
+    const prefetch = Effect.fn("KinImport.prefetch")(function* (chunk: ReadonlyArray<Decoded>) {
+      const origins = new Set<string>();
+      const named: Array<ImportClient> = [];
+      for (const { row: one } of chunk) {
+        if (one === undefined) continue;
+        if ("client" in one) {
+          origins.add(originOf("client", one.client.source));
+          if (one.client.match === undefined) named.push(one.client);
+          continue;
+        }
+        const [kind, spec] =
+          "project" in one
+            ? (["project", one.project] as const)
+            : "contact" in one
+              ? (["contact", one.contact] as const)
+              : "deal" in one
+                ? (["deal", one.deal] as const)
+                : (["entry", one.entry] as const);
+        origins.add(originOf(kind, spec.source));
+        if (spec.client !== undefined) origins.add(originOf("client", spec.client));
+        if ("project" in spec && spec.project !== undefined)
+          origins.add(originOf("project", spec.project));
+      }
+      const asked = [...origins].filter((origin) => !memo.found.has(origin));
+      if (asked.length > 0) {
+        const rows = yield* sql<{ recordId: string; key: string; origin: string }>`SELECT
+            record_id AS "recordId", key, origin_key AS origin FROM kin_records
+          WHERE org_id = ${orgId} AND origin_key IN ${sql.in(asked)} ORDER BY origin_key`;
+        const byOrigin = new Map(rows.map((one) => [one.origin, one]));
+        for (const origin of asked) {
+          const one = byOrigin.get(origin);
+          memo.found.set(
+            origin,
+            one === undefined ? undefined : { recordId: one.recordId, key: one.key },
+          );
+        }
+        if (rows.length > 0) {
+          const edited = yield* sql<{ id: string }>`SELECT DISTINCT record_id AS id
+            FROM kin_record_changes WHERE org_id = ${orgId} AND via <> 'import'
+              AND record_id IN ${sql.in(rows.map((one) => one.recordId))} ORDER BY record_id`;
+          for (const one of edited) memo.edited.add(one.id);
+        }
+      }
+      const names = named
+        .filter((spec) => memo.found.get(originOf("client", spec.source)) === undefined)
+        .flatMap((spec) =>
+          spec.gstin === undefined ? [spec.name] : [spec.name, `${spec.name} (${spec.gstin})`],
+        )
+        .filter((name) => !memo.lowered.has(name));
+      if (names.length === 0) return;
+      const lowered = yield* sql<{ name: string; lower: string }>`SELECT value AS name,
+          lower(value) AS lower FROM json_each(${encodeJson(names)}) ORDER BY key`;
+      for (const one of lowered) memo.lowered.set(one.name, one.lower);
+      const wanted = [...new Set(lowered.map((one) => one.lower))].filter(
+        (lower) => !memo.named.has(lower),
+      );
+      if (wanted.length === 0) return;
+      const same = yield* sql<Named & { lower: string }>`SELECT record_id AS "recordId", key,
+          json_extract(fields_json, '$.gstin') AS gstin, lower(title) AS lower
+        FROM kin_records WHERE org_id = ${orgId} AND register_id = 'clients'
+          AND state NOT IN ${sql.in(CLOSED)} AND lower(title) IN ${sql.in(wanted)}
+        ORDER BY +key`;
+      for (const lower of wanted) memo.named.set(lower, undefined);
+      for (const one of same)
+        if (memo.named.get(one.lower) === undefined)
+          memo.named.set(one.lower, { recordId: one.recordId, key: one.key, gstin: one.gstin });
     });
 
     const rolledBack = <A, R>(work: Effect.Effect<A, Failure, R>) =>
@@ -831,20 +1286,33 @@ const make = Effect.gen(function* () {
         .withTransaction(work.pipe(Effect.andThen(Effect.fail(new Rollback()))))
         .pipe(Effect.catchTags({ KinImportRollback: () => Effect.void }));
 
+    const started = Effect.fn("KinImport.started")(function* (
+      action: "apply" | "check",
+      lists: ReadonlyArray<string>,
+    ) {
+      const [row] = yield* sql<{ seq: number }>`INSERT INTO kin_import_runs (org_id, batch,
+          action, person_id, started_at, lists_json, summary_json)
+        VALUES (${orgId}, ${doc.batch}, ${action}, ${owner}, ${now}, ${encodeJson(lists)},
+          ${encodeJson({ done: 0, rows: scan.rows, beat: now, ...(options.file === undefined ? {} : { file: options.file }) })})
+        RETURNING seq`;
+      return row?.seq;
+    });
     // The run's own row commits with its lists, so an undo knows which lists the batch made.
     const begin = Effect.gen(function* () {
+      if (options.guard !== undefined) yield* options.guard;
+      if (keep) yield* notImporting(orgId);
       yield* defineLists(true);
       if (!keep) return undefined;
       const made = listReport.filter((one) => one.action === "create").map((one) => one.list);
-      const [started] = yield* sql<{ seq: number }>`INSERT INTO kin_import_runs (org_id, batch,
-          action, person_id, started_at, lists_json)
-        VALUES (${orgId}, ${doc.batch}, 'apply', ${owner}, ${now}, ${encodeJson(made)})
-        RETURNING seq`;
-      return started?.seq;
+      return yield* started("apply", made);
     });
     const runSeq = keep
       ? yield* sql.withTransaction(begin)
       : yield* rolledBack(begin).pipe(Effect.as(undefined));
+    // A check keeps only its own row while it runs, so how far it is reads as an import's does.
+    const checkSeq = keep ? undefined : yield* started("check", []);
+    watched.seq = runSeq ?? checkSeq ?? null;
+    yield* refreshes.touch(orgId, "imports");
 
     let done = 0;
     yield* lines.pipe(
@@ -852,16 +1320,55 @@ const make = Effect.gen(function* () {
       Stream.grouped(CHUNK),
       Stream.runForEach((chunk) =>
         Effect.gen(function* () {
+          const decoded: Array<Decoded> = [];
+          for (const [text, index] of chunk)
+            if (index + 1 > scan.headerAt && text.trim() !== "") {
+              const one = yield* decodeRow(text).pipe(Effect.result);
+              decoded.push(
+                one._tag === "Success"
+                  ? { line: index + 1, row: one.success }
+                  : { line: index + 1, row: undefined, failure: one.failure.message },
+              );
+            }
           const work = Effect.gen(function* () {
             if (!keep) yield* defineLists(false);
-            for (const [text, index] of chunk)
-              if (index + 1 > scan.headerAt && text.trim() !== "") yield* rowStep(text, index + 1);
+            yield* prefetch(decoded);
+            for (const one of decoded) yield* rowStep(one);
+            // What it filled and how far it got commit with the chunk, so an undo after a crash
+            // still empties what it filled, and anyone reading the run sees where it stands.
+            if (runSeq !== undefined) {
+              const fresh = fills.slice(fillsWritten);
+              // Appended, not written whole: a large file's fills would be rewritten every chunk.
+              const summary =
+                fresh.length === 0
+                  ? sql`COALESCE(summary_json, '{}')`
+                  : sql`json_set(COALESCE(summary_json, '{}'), '$.filled', json((
+                      SELECT json_group_array(json(value)) FROM (
+                        SELECT value FROM json_each(COALESCE(summary_json, '{}'), '$.filled')
+                        UNION ALL SELECT value FROM json_each(${encodeJson(fresh)})))))`;
+              yield* sql`UPDATE kin_import_runs
+                SET summary_json = json_set(${summary}, '$.done', ${done + decoded.length},
+                  '$.beat', ${yield* Clock.currentTimeMillis},
+                  '$.rows', ${scan.rows}, '$.clients', json(${encodeJson(counts.clients)}),
+                  '$.contacts', json(${encodeJson(counts.contacts)}),
+                  '$.deals', json(${encodeJson(counts.deals)}),
+                  '$.entries', json(${encodeJson(counts.entries)}),
+                  '$.projects', json(${encodeJson(counts.projects)}))
+                WHERE seq = ${runSeq}`;
+              fillsWritten = fills.length;
+            }
           });
           if (keep) yield* sql.withTransaction(work);
           else yield* rolledBack(work);
-          done += chunk.filter(
-            ([text, index]) => index + 1 > scan.headerAt && text.trim() !== "",
-          ).length;
+          if (checkSeq !== undefined)
+            yield* sql`UPDATE kin_import_runs
+              SET summary_json = json_set(summary_json, '$.done', ${done + decoded.length},
+                '$.beat', ${yield* Clock.currentTimeMillis})
+              WHERE seq = ${checkSeq}`;
+          forget();
+          done += decoded.length;
+          watched.done = done;
+          yield* refreshes.touch(orgId, "imports");
           if (progress !== undefined) yield* progress(done, scan.rows);
         }),
       ),
@@ -890,14 +1397,17 @@ const make = Effect.gen(function* () {
         paid: asMoney(one.paid, one.currency),
       })),
       stale: byName(stale).map(([list, one]) => ({ list, ...one })),
+      filled: fills.length,
+      prospects,
       problems,
       more,
     };
     if (runSeq !== undefined) {
       const finished = yield* Clock.currentTimeMillis;
       yield* sql`UPDATE kin_import_runs SET finished_at = ${finished},
-          summary_json = ${encodeJson({ ...counts, rows: scan.rows })}
+          summary_json = ${encodeJson({ ...counts, rows: scan.rows, filled: fills, ...(options.file === undefined ? {} : { file: options.file }) })}
         WHERE seq = ${runSeq}`;
+      if (counts.clients.create > 0) yield* refreshes.touch(orgId, "workChoices");
     }
     return report;
   }, workFailure);
@@ -921,30 +1431,74 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const entryFor = Effect.fn("KinImport.entryFor")(function* (
+    action: ImportLive["action"],
+    personId: KinPersonId,
+    batch: string,
+  ) {
+    return {
+      action,
+      personId,
+      startedAt: yield* Clock.currentTimeMillis,
+      batch,
+      file: null,
+      seq: null,
+      done: 0,
+      of: 0,
+    } satisfies ImportLive;
+  });
+
   return KinImport.of({
-    plan: Effect.fn("KinImport.plan")(function* (orgId, owner, lines, progress) {
-      return yield* run(orgId, owner, lines, false, progress).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
+    plan: Effect.fn("KinImport.plan")(function* (orgId, owner, lines, options) {
+      const entry = yield* entryFor("check", owner, "");
+      const forget = Effect.suspend(() =>
+        entry.seq === null
+          ? Effect.void
+          : sql`DELETE FROM kin_import_runs WHERE seq = ${entry.seq} AND action = 'check'`.pipe(
+              Effect.ignore,
+            ),
+      );
+      return yield* tracked(orgId, entry, (one) =>
+        run(orgId, owner, lines, false, options ?? {}, one).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.ensuring(forget),
+        ),
       );
     }),
-    apply: Effect.fn("KinImport.apply")(function* (orgId, owner, lines, progress) {
-      return yield* run(orgId, owner, lines, true, progress).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
+    apply: Effect.fn("KinImport.apply")(function* (orgId, owner, lines, options) {
+      const entry = yield* entryFor("apply", owner, "");
+      return yield* tracked(orgId, entry, (one) =>
+        run(orgId, owner, lines, true, options ?? {}, one).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ),
       );
     }),
     undo: Effect.fn("KinImport.undo.run")(function* (orgId, owner, batch, options) {
-      const undone = yield* undoBatch(orgId, owner, batch, options).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      );
-      // An undo deletes entries outright, so no logged change tells anyone it happened.
-      if (undone.applied) {
-        yield* records.announce(orgId);
-        if (undone.removes.clients + undone.removes.projects > 0)
-          yield* refreshes.touch(orgId, "workChoices");
-      }
-      return undone;
+      const work = Effect.fn("KinImport.undo.work")(function* (entry: ImportLive | undefined) {
+        const undone = yield* undoBatch(orgId, owner, batch, options, entry).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(KinRecords, records),
+          Effect.provideService(KinRefreshObserver, refreshes),
+        );
+        // An undo deletes entries outright, so no logged change tells anyone it happened.
+        if (undone.applied) {
+          yield* records.announce(orgId);
+          if (undone.removes.clients + undone.removes.projects > 0)
+            yield* refreshes.touch(orgId, "workChoices");
+        }
+        return undone;
+      });
+      if (!options.apply) return yield* work(undefined);
+      return yield* tracked(orgId, yield* entryFor("undo", owner, batch), work);
     }),
     fromFile,
+    running: Effect.fn("KinImport.running")((orgId) =>
+      Effect.sync(() =>
+        [...(live.get(orgId) ?? [])]
+          .map((one) => ({ ...one }))
+          .toSorted((a, b) => a.startedAt - b.startedAt),
+      ),
+    ),
   });
 });
 

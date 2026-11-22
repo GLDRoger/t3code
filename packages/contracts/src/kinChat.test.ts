@@ -6,6 +6,7 @@ import { KIN_FIGURE_SCHEME, KIN_MESSAGE_PAGES_MAX } from "./kinEmbed.ts";
 import { KinCheckRun } from "./kinApprovals.ts";
 import { KinListUpdateInput } from "./kinFinance.ts";
 import { KinPushRegisterDeviceInput } from "./kinPush.ts";
+import { IsoDateTime, KinText, KinTrimmedText } from "./baseSchemas.ts";
 
 const at = "2026-11-07T00:00:00.000Z";
 const person = {
@@ -130,6 +131,14 @@ const waiting = {
   resolvedAt: null,
   resolution: null,
 };
+/** A row a co-owner sees read-only: it waits for the owner. */
+const waitsForRow = {
+  ...waiting,
+  widgetId: "widget-1",
+  card: "draft",
+  excerpt: "Workshop, 6 hours at the day rate",
+  waitsFor: { personId: "person-2", name: "Rhea" },
+};
 const summary = { ...chat, members: [member], lastMessage: message, unread: 1 };
 const reaction = {
   orgId: "org-1",
@@ -154,6 +163,19 @@ const choiceOptions = [
   { optionId: "no", label: "Wait", kind: "no" },
 ];
 const choice = { question: "Ship today?", detail: null, options: choiceOptions, answer: null };
+const decidedCard = {
+  ...choice,
+  replaced: true,
+  replacedBy: { widgetId: "widget-2", decided: { name: "Meera", label: "Cancel" } },
+  answer: {
+    optionId: "yes",
+    personId: "person-1",
+    via: "tap",
+    emoji: null,
+    answeredAt: "2026-11-07T00:00:00.000Z",
+  },
+  decidedBy: { personId: "person-1", name: "Rhea" },
+};
 const send = { chatId: "chat-1", clientMessageId: "client-1", body: "Hello" };
 const sendCard = {
   service: "Gmail",
@@ -246,6 +268,7 @@ const samples = {
         undone: { personId: "person-1", name: "Rhea", at },
       },
     },
+    decidedCard,
   ],
   KinPresenceState: Kin.KinPresenceState.literals,
   KinPresence: [presence, { ...presence, wakeupId: null, state: "seen", label: null }],
@@ -258,7 +281,7 @@ const samples = {
   KinAgent: [agent],
   KinChat: [chat],
   KinPrincipal: principals,
-  KinChatMember: [member],
+  KinChatMember: [member, { ...member, pinnedAt: at }],
   KinAuthor: authors,
   KinMessage: [
     {
@@ -291,8 +314,14 @@ const samples = {
   KinWaitingItem: [
     waiting,
     { ...waiting, messageId: null, widgetId: "widget-1", resolvedAt: at, resolution: "superseded" },
+    waitsForRow,
   ],
-  KinChatSummary: [summary, { ...summary, lastMessage: null }],
+  KinChatPreview: [{ gist: "Approve the venue deposit", brief: true }],
+  KinChatSummary: [
+    summary,
+    { ...summary, lastMessage: null },
+    { ...summary, lastPreview: { gist: "Approve the venue deposit", brief: false } },
+  ],
   KinChatListEvent: [
     { _tag: "snapshot", chats: [summary], waiting: [waiting] },
     { _tag: "chat", chat: summary },
@@ -353,7 +382,7 @@ const samples = {
     },
     { orgs: [{ ...org, agents: [] }], me: [] },
   ],
-  KinChatsSubscribeInput: [{}, { orgId: "org-1" }],
+  KinChatsSubscribeInput: [{}, { orgId: "org-1" }, { acceptPreview: true }],
   KinChatsCreateDirectInput: [{ orgId: "org-1", agentId: "agent-1" }],
   KinChatsWithPersonInput: [{ orgId: "org-1", personId: "person-1" }],
   KinGroupTitle: ["Launch"],
@@ -413,6 +442,10 @@ const samples = {
     { chatId: "chat-1", muted: true },
     { chatId: "chat-1", muted: false },
   ],
+  KinChatsPinInput: [
+    { chatId: "chat-1", pinned: true },
+    { chatId: "chat-1", pinned: false },
+  ],
   KinChatsClearInput: [{ chatId: "chat-1" }, { chatId: "chat-1", preview: true }],
   KinChatsClearResult: [{}, { keptFiles: 2 }],
   KinAgentMessageBody: ["Hello"],
@@ -455,6 +488,29 @@ const samples = {
   ],
   KinLeadInterruptInput: [{ orgId: "org-1", wakeupId: "wakeup-1" }],
   KinLeadInterruptResult: [{ interrupted: true }, { interrupted: false }],
+  KinChatWorkingResult: [
+    { handoffs: [] },
+    {
+      handoffs: [
+        {
+          agentId: "lead-1",
+          chatId: null,
+          wakeupId: null,
+          state: "queued",
+          asked: "Chase the Ambermill invoice",
+          since: at,
+        },
+        {
+          agentId: "lead-2",
+          chatId: "chat-1",
+          wakeupId: "w-1",
+          state: "running",
+          asked: "",
+          since: at,
+        },
+      ],
+    },
+  ],
   KinChatError: [
     "not_found",
     "not_allowed",
@@ -583,4 +639,69 @@ describe("Kin chat contracts", () => {
       }),
     ).toBe("kin-chat://org-1/chat-1/message-1");
   });
+
+  // A phone in the field decodes with the schemas as they were before `waitsFor` and `decidedBy`.
+  it("an older client still reads a waiting row and a card with the newer fields", () => {
+    expect(decodeWaitingBefore(waitsForRow)).toStrictEqual(
+      decodeWaitingBefore({ ...waiting, widgetId: "widget-1" }),
+    );
+    const { decidedBy: _decided, replacedBy: _replaced, ...before } = decidedCard;
+    expect(decodeCardBefore(decidedCard)).toStrictEqual(decodeCardBefore(before));
+  });
 });
+
+// The two schemas as they stood before this change, copied as they were.
+const KinWaitingItemBefore = Schema.Struct({
+  waitingId: Kin.KinWaitingId,
+  orgId: Kin.KinOrgId,
+  personId: Kin.KinPersonId,
+  chatId: Kin.KinChatId,
+  messageId: Schema.NullOr(Kin.KinMessageId),
+  widgetId: Schema.NullOr(Kin.KinWidgetId),
+  reason: Kin.KinWaitingReason,
+  createdAt: IsoDateTime,
+  resolvedAt: Schema.NullOr(IsoDateTime),
+  resolution: Schema.NullOr(KinTrimmedText),
+  question: Schema.optional(Schema.NullOr(KinTrimmedText)),
+  ask: Schema.optional(Kin.KinWaitingAsk),
+});
+const KinChoiceCardStateBefore = Schema.Struct({
+  question: KinTrimmedText.check(Schema.isMaxLength(240)),
+  detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),
+  askedBy: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(500))),
+  whileOpen: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(600))),
+  options: Schema.Array(Kin.KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
+  image: Schema.optionalKey(
+    Schema.Struct({
+      attachmentId: KinTrimmedText,
+      mimeType: KinTrimmedText.check(Schema.isMaxLength(100)),
+    }),
+  ),
+  send: Schema.optionalKey(Kin.KinSendCard),
+  replaced: Schema.optionalKey(Schema.Literal(true)),
+  untilAnswered: Schema.optionalKey(Schema.Literal(true)),
+  outcome: Schema.optionalKey(
+    Schema.Struct({
+      title: KinTrimmedText.check(Schema.isMaxLength(120)),
+      text: KinText.check(Schema.isMaxLength(600)),
+      undone: Schema.optionalKey(
+        Schema.Struct({
+          personId: Kin.KinPersonId,
+          name: KinTrimmedText.check(Schema.isMaxLength(200)),
+          at: IsoDateTime,
+        }),
+      ),
+    }),
+  ),
+  answer: Schema.NullOr(
+    Schema.Struct({
+      optionId: KinTrimmedText,
+      personId: Kin.KinPersonId,
+      via: Schema.Literals(["tap", "reaction"]),
+      emoji: Schema.NullOr(Kin.KinReactionEmoji),
+      answeredAt: IsoDateTime,
+    }),
+  ),
+});
+const decodeWaitingBefore = Schema.decodeUnknownSync(KinWaitingItemBefore);
+const decodeCardBefore = Schema.decodeUnknownSync(KinChoiceCardStateBefore);

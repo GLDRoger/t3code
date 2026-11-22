@@ -18,7 +18,7 @@ import { waitingFor } from "../chat/KinChatService.ts";
 import { carriesEntry } from "../connections/ConnectionRows.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { screenFacts } from "../pulse/people.ts";
-import { iso } from "../pulse/senses/shared.ts";
+import { iso, type SensedFact } from "../pulse/senses/shared.ts";
 import { validZone } from "../triggers/quietHold.ts";
 import { dayIn } from "../work/money.ts";
 import { moneyViewer } from "../work/ownerMoney.ts";
@@ -67,11 +67,10 @@ export const dayEndFor = Effect.fn("KinOpen.dayEnd")(function* (
 });
 
 /** The person's tasks not closed and due by `dayEnd`, every one of them, soonest first. */
-export const ownTasks = Effect.fn("KinOpen.ownTasks")(function* (input: {
+const ownTasks = Effect.fn("KinOpen.ownTasks")(function* (input: {
   readonly orgId: KinOrgId;
   readonly personId: KinPersonId;
   readonly dayEnd: number;
-  readonly limit?: number | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
@@ -89,8 +88,7 @@ export const ownTasks = Effect.fn("KinOpen.ownTasks")(function* (input: {
     WHERE r.org_id = ${input.orgId} AND r.register_id = 'work' AND r.owner_kind = 'person'
       AND r.owner_id = ${input.personId} AND r.state NOT IN ('done', 'dropped')
       AND r.due_at IS NOT NULL AND r.due_at <= ${input.dayEnd}
-    ORDER BY r.due_at, r.key
-    ${input.limit === undefined ? sql`` : sql`LIMIT ${input.limit}`}`;
+    ORDER BY r.due_at, r.key`;
   return rows.map((row): OwnTask => ({ ...row, dueAllDay: row.dueAllDay === 1 }));
 });
 
@@ -169,11 +167,14 @@ export const sources = Effect.fn("KinOpen.sources")(function* (input: {
   readonly viewer: OpenViewer;
   readonly at: number;
   readonly acceptSenses?: ReadonlyArray<string> | undefined;
+  /** What a tick already sensed (`KinPulse.lastTick`), instead of sensing again. */
+  readonly sensed?: ReadonlyArray<SensedFact> | undefined;
 }) {
   const { orgId, viewer, at } = input;
   const pulse = yield* KinPulse.read({
     orgId,
     at,
+    sensed: input.sensed,
     viewer: viewer.ownerLevel ? { _tag: "owner" } : { _tag: "people", people: [viewer.personId] },
     includeHandled: true,
     limit: FACT_CAP,
@@ -181,7 +182,10 @@ export const sources = Effect.fn("KinOpen.sources")(function* (input: {
   const facts = screenFacts(pulse.facts, input.acceptSenses);
   // A fact on a record stands for its task, handled or not, as Needs you shows it today.
   const covered = new Set(facts.flatMap((fact) => kinPulseFactRecord(fact) ?? []));
-  const waiting = yield* waitingFor({ _tag: "person", orgId, personId: viewer.personId });
+  const waiting = yield* waitingFor(
+    { _tag: "person", orgId, personId: viewer.personId },
+    { others: true },
+  );
   const dayEnd = yield* dayEndFor(orgId, viewer.personId, at);
   return {
     facts: facts.filter((fact) => fact.handled === null),
@@ -236,11 +240,14 @@ export const rowsOf = (from: OpenSources, at: number, cap = ROW_CAP): KinOpenRea
       row: { id: "money:overdue", late: true, item: { _tag: "money", invoices: from.overdue } },
     });
   let waiting = 0;
+  let others = 0;
   for (const item of from.waiting) {
     if (from.settled.has(item.waitingId)) continue;
-    waiting += 1;
+    // Someone else's, to look at only: listed last, and counted as nobody's need here.
+    if (item.waitsFor === undefined) waiting += 1;
+    else others += 1;
     ranked.push({
-      rank: 5,
+      rank: item.waitsFor === undefined ? 5 : 7,
       at: DateTime.toEpochMillis(DateTime.makeUnsafe(item.createdAt)),
       row: {
         id: `waiting:${item.waitingId}`,
@@ -255,7 +262,7 @@ export const rowsOf = (from: OpenSources, at: number, cap = ROW_CAP): KinOpenRea
   );
   return {
     asOf: iso(at),
-    counts: { needsYou: ranked.length, waiting },
+    counts: { needsYou: ranked.length - others, waiting },
     rows: ranked.slice(0, cap).map((one) => one.row),
   };
 };
@@ -266,6 +273,7 @@ export const compute = Effect.fn("KinOpen.compute")(function* (input: {
   readonly viewer: OpenViewer;
   readonly at: number;
   readonly acceptSenses?: ReadonlyArray<string> | undefined;
+  readonly sensed?: ReadonlyArray<SensedFact> | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const from = yield* sql.withTransaction(sources(input)).pipe(NodeSqliteClient.readOnly);

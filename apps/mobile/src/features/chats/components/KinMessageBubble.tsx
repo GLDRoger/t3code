@@ -13,6 +13,7 @@ import { Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import { AppText as Text } from "../../../components/ui/AppText";
 import type { FilePreviewSource } from "../../../components/ui/FilePreviewModal";
 import { FilePreviewGallery } from "../../../components/ui/FilePreviewGallery";
+import { Button } from "../../../components/ui/Button";
 import { Chip } from "../../../components/ui/Chip";
 import * as Dialog from "../../../components/ui/Dialog";
 import * as Haptics from "expo-haptics";
@@ -44,6 +45,7 @@ import {
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import * as Clipboard from "expo-clipboard";
 import {
+  KIN_REACTION_COPY,
   KIN_PICKER_REACTIONS,
   KIN_REACTION_NAMES,
   type KinReactionChip,
@@ -56,7 +58,8 @@ import {
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
-import { kinTurnReceiptLine } from "@t3tools/client-runtime/kin/kinTurnReceipt";
+import { kinTurnReceiptOpen, kinTurnReceiptLine } from "@t3tools/client-runtime/kin/kinTurnReceipt";
+import { kinReplyButtons, type KinReplyButton } from "@t3tools/client-runtime/kin/kinReplyButtons";
 import { kinCardDraws, KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   kinDraftMarkdown,
@@ -76,6 +79,7 @@ import { KinVisualInView } from "../widgets/KinVisual";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 import { KinCardGroup } from "../widgets/KinCardGroup";
 import { KinAvatar } from "./KinAvatar";
+import { kinLines, useKinTextGrows } from "./kinTextGrows";
 import { KinDocRefs } from "./KinDocRefs";
 import { KinLinkedText, KinMessagePage, useKinOpenTarget } from "./KinMessagePage";
 
@@ -186,6 +190,8 @@ export function KinMessageBubble(props: {
   readonly viewerPersonId: KinPersonId | null;
   /** The card's agent by name when it is retired. */
   readonly heldFor?: string | null;
+  /** The viewer may only read this chat: its cards offer nothing that writes in it. */
+  readonly readOnly?: boolean;
   /** The chat's agents by id, for a doc card's "by Growth". */
   readonly agentNames?: ReadonlyMap<string, string>;
   readonly reactions: ReadonlyArray<KinReactionChip>;
@@ -236,6 +242,8 @@ export function KinMessageBubble(props: {
     (!hasCard && attachments.length === 0) || hasBody || suggested || message.editedAt !== null;
   const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
   const receipt = deleted ? null : kinTurnReceiptLine(message.turnChanges);
+  const grows = useKinTextGrows();
+  const buttons = kinReplyButtons(message);
   // The sheet's actions, reachable without the long press.
   const sheetActions = [
     ...(onReact === null || deleted
@@ -265,6 +273,7 @@ export function KinMessageBubble(props: {
         viewerPersonId={props.viewerPersonId}
         onOpenLink={props.onLinkPress}
         heldFor={props.heldFor ?? null}
+        readOnly={props.readOnly === true}
         {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
         {...longPress}
       />
@@ -291,6 +300,8 @@ export function KinMessageBubble(props: {
           onOpenTarget={onOpenTarget}
           head={kinPageHead(message, props.firstName ?? null)}
           foot={hasCard ? card : null}
+          // As in a bubble: the long press opens the sheet, not the system's text menu too.
+          selectable={onOpenActions === null}
         />
         {wideTable ? (
           <Text textRole="caption" className="text-foreground-muted">
@@ -452,15 +463,22 @@ export function KinMessageBubble(props: {
         </Pressable>
       )}
       {hasCard && page === null ? <View className="w-[85%]">{card}</View> : null}
+      {buttons.length === 0 ? null : (
+        <KinReplyButtons buttons={buttons} onOpenTarget={onOpenTarget} />
+      )}
       {receipt === null ? null : (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${receipt}. Show the changes`}
+          accessibilityLabel={kinTurnReceiptOpen(receipt)}
           hitSlop={8}
           onPress={props.onOpenReceipt}
           className="max-w-full px-1 active:opacity-60"
         >
-          <Text textRole="caption" numberOfLines={1} className="text-foreground-muted">
+          <Text
+            textRole="caption"
+            numberOfLines={kinLines(1, grows)}
+            className="text-foreground-muted"
+          >
             {receipt}
           </Text>
         </Pressable>
@@ -477,13 +495,33 @@ export function KinMessageBubble(props: {
               accessibilityLabel={
                 onReact === null
                   ? chip.label
-                  : `${chip.label}. ${chip.mine ? "Remove your reaction" : "Add yours"}`
+                  : `${chip.label}. ${chip.mine ? KIN_REACTION_COPY.remove : KIN_REACTION_COPY.add}`
               }
               onPress={onReact === null ? undefined : () => onReact(chip.emoji)}
             />
           ))}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/** Up to three buttons under an agent's reply, each opening what it named; they wrap, never cut. */
+function KinReplyButtons(props: {
+  readonly buttons: ReadonlyArray<KinReplyButton>;
+  readonly onOpenTarget: ReturnType<typeof useKinOpenTarget>;
+}) {
+  return (
+    <View className="max-w-full flex-row flex-wrap gap-2 px-1 pt-1">
+      {props.buttons.map((button) => (
+        <Button
+          key={button.id}
+          label={button.label}
+          tone="outline"
+          {...(button.note === null ? {} : { accessibilityHint: button.note })}
+          onPress={() => props.onOpenTarget(button.to)}
+        />
+      ))}
     </View>
   );
 }

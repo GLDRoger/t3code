@@ -1,11 +1,11 @@
 import type { KinRecord, KinRecordDetail } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/sql/SqlClient";
 
 import type { CodingAgentConnection } from "../work/codingAgent.ts";
-import { dayIn } from "../work/money.ts";
+import { dayIn, dayWords } from "../work/money.ts";
 import { latestComments, personSeesRecord } from "../work/recordComments.ts";
 import { effectivelySensitive, ownerZone } from "../work/recordRows.ts";
+import { orgOwner, toolName, toolNamesOf } from "../work/toolNames.ts";
 
 /**
  * Everything a person's coding agent is told, built here and only here from what a Work method
@@ -46,6 +46,7 @@ const row = Effect.fn("KinYouProjection.row")(function* (
         : task.dueAllDay
           ? dayIn(Date.parse(task.dueAt), zone)
           : task.dueAt,
+    ...(task.dueAt === null ? {} : { dueDay: dayWords(Date.parse(task.dueAt), zone) }),
     project: yield* projectNamed(connection, task),
   };
 });
@@ -68,32 +69,18 @@ export const taskSheet = Effect.fn("KinYouProjection.taskSheet")(function* (
   connection: CodingAgentConnection,
   task: Task & Pick<KinRecordDetail, "notes">,
 ) {
-  const sql = yield* SqlClient.SqlClient;
   const { orgId, personId } = connection;
   const shown = (yield* latestComments(orgId, task.recordId, COMMENTS_SHOWN)).comments;
-  const idOf = (one: (typeof shown)[number]) =>
-    one.by._tag === "person" ? one.by.personId : one.by.agentId;
-  const ids = [...new Set(shown.map(idOf))];
-  const names = new Map(
-    ids.length === 0
-      ? []
-      : (yield* sql<{ id: string; name: string }>`SELECT person_id AS id, display_name AS name
-            FROM kin_people WHERE org_id = ${orgId} AND person_id IN ${sql.in(ids)}
-          UNION ALL SELECT agent_id AS id, display_name AS name
-            FROM kin_agents WHERE org_id = ${orgId} AND agent_id IN ${sql.in(ids)}
-          ORDER BY id`).map((one) => [one.id, one.name] as const),
-  );
+  const names = yield* toolNamesOf(orgId, yield* orgOwner(orgId));
+  const reader = { _tag: "person", personId } as const;
   return {
     ...(yield* row(connection, task, yield* ownerZone(orgId))),
     brief: task.notes,
-    comments: shown.map((one) => {
-      const id = idOf(one);
-      return {
-        by: id === personId ? "you" : (names.get(id) ?? "someone"),
-        at: one.at,
-        text: one.body,
-      };
-    }),
+    comments: shown.map((one) => ({
+      by: toolName(one.by, names, reader),
+      at: one.at,
+      text: one.body,
+    })),
   };
 });
 

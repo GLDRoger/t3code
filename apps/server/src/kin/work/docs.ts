@@ -10,6 +10,7 @@ import {
   type KinDocVersion,
   type KinDocVersionKind,
   type KinOrgId,
+  type KinPersonId,
   type KinRecordRelation,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
@@ -20,12 +21,16 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
+import { KinChatService } from "../chat/KinChatService.ts";
+import { mayActAsOwner } from "../people/KinAccess.ts";
 import {
   applyOperations,
   DOC_BODY_MAX,
   normalize,
   type Operation,
+  replaceSectionByHand,
   rewriteRefusal,
+  sectionsOf,
 } from "./docBody.ts";
 import { keepDocFiles } from "./docFiles.ts";
 import { KinRecords, type Writer } from "./KinRecords.ts";
@@ -115,6 +120,11 @@ const failed = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect
   );
 const transaction = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.flatMap(SqlClient.SqlClient, (sql) => failed(sql.withTransaction(effect)));
+
+/** An agent's character is a doc found by this origin (`characters.ts`), changed on its page. */
+export const CHARACTER_ORIGIN = "kin-character:";
+/** The company's What we sell is the doc with this origin; `offerings.ts` keeps the same, as a test pins. */
+export const OFFERINGS_ORIGIN = "kin-offerings";
 
 export const docNotFound = (key: string) =>
   new KinChatError({ reason: "not_found", message: `No doc ${key.slice(0, 40)}.` });
@@ -464,7 +474,23 @@ const revise = Effect.fn("KinDocs.revise")(function* (
     [{ field: "version", from: String(current.version), to: String(version) }],
   );
   yield* guardPlaybook(orgId, row.recordId);
+  if (next.file === undefined) yield* refreshCards(orgId, row.recordId, next.body);
   return { ...(yield* settle(orgId, row.recordId)), created: true };
+});
+
+/** A draft's cards take its new text, and open chats read them again as they may see them now. */
+const refreshCards = Effect.fn("KinDocs.refreshCards")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  text?: string,
+) {
+  const chats = yield* Effect.serviceOption(KinChatService);
+  if (Option.isSome(chats))
+    yield* chats.value.refreshDocCards({
+      orgId,
+      recordId,
+      ...(text === undefined ? {} : { text }),
+    });
 });
 
 /** The same call again in the same turn returns what it made; anything else starts fresh. */
@@ -566,7 +592,13 @@ export const replaceBody = Effect.fn("KinDocs.replaceBody")(function* (
   writer: Writer,
   provenance: Provenance,
   ref: { readonly key: string },
-  input: { readonly body: string; readonly summary: string; readonly originKey: string },
+  input: {
+    readonly body: string;
+    readonly summary: string;
+    readonly originKey: string;
+    /** Writes only while the doc is still at this version; otherwise nothing changes. */
+    readonly atVersion?: number;
+  },
 ) {
   const body = normalize(input.body);
   if (body.length > DOC_BODY_MAX) return yield* tooLong(body.length);
@@ -576,13 +608,112 @@ export const replaceBody = Effect.fn("KinDocs.replaceBody")(function* (
       const current = yield* versionOf(orgId, row.recordId);
       if (current === undefined) return yield* unavailable;
       if (current.bodyKind === "file") return yield* fileOnly(row.key);
-      if (current.body === body) return { row, version: current, created: false };
+      if (
+        current.body === body ||
+        (input.atVersion !== undefined && current.version !== input.atVersion)
+      )
+        return { row, version: current, created: false };
       return yield* revise(orgId, writer, provenance, row, current, {
         title: row.title,
         body,
         kind: "rewritten",
         summary: input.summary,
         operations: [{ op: "rewrite" }],
+        originKey: input.originKey,
+      });
+    }),
+  );
+});
+
+const notHandEditor = new KinChatError({
+  reason: "not_allowed",
+  message:
+    "Only the owner, a co-owner or the project's lead can change this doc by hand. Suggest a change instead; nothing was changed.",
+});
+const characterByHand = new KinChatError({
+  reason: "invalid_state",
+  message: "This is an agent's character. Change it on the agent's page; nothing was changed.",
+});
+const sectionMoved = new KinChatError({
+  reason: "conflict",
+  message:
+    "This section changed since you opened it, so your change wasn't saved. Copy what you wrote, then open the doc again.",
+});
+
+/**
+ * Why this person may not change this doc's text by hand, from stored rows (D3); undefined when
+ * they may. The owner level may change any text doc they read but an agent's character, which its
+ * page changes; anyone else only one filed under a project they lead now, never a playbook or What
+ * we sell: those steer agents past the project, for its client or the whole company.
+ */
+export const handRefusal = Effect.fn("KinDocs.handRefusal")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  ownerLevel: boolean,
+  row: Pick<RecordRow, "key" | "originKey" | "projectId" | "category">,
+  latest: Pick<VersionRow, "bodyKind">,
+) {
+  if (row.originKey.startsWith(CHARACTER_ORIGIN)) return characterByHand;
+  if (latest.bodyKind === "file") return fileOnly(row.key);
+  if (ownerLevel) return undefined;
+  if (row.projectId === null || kindOf(row) === "playbook" || row.originKey === OFFERINGS_ORIGIN)
+    return notHandEditor;
+  const sql = yield* SqlClient.SqlClient;
+  const leads = yield* sql`SELECT 1 FROM kin_records p WHERE p.org_id = ${orgId}
+    AND p.register_id = 'projects' AND p.record_id = ${row.projectId}
+    AND p.owner_kind = 'person' AND p.owner_id = ${personId} LIMIT 1`;
+  return leads.length === 0 ? notHandEditor : undefined;
+});
+
+/**
+ * A person changes one section by hand (D3), as a new version through `revise`. Who may is read
+ * here, in the write's transaction, from stored rows only: the caller's kind, the doc and its
+ * project's lead. A doc they can't read is no doc at all; a teammate's write also passes `teamGuard`.
+ */
+export const editSectionByHand = Effect.fn("KinDocs.editSectionByHand")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  /** The host's own owner (`KinIdentity`), never the caller's word. */
+  owner: { readonly personId: string },
+  ref: { readonly key: string },
+  input: {
+    readonly section: string;
+    readonly hash: string;
+    readonly text: string;
+    readonly originKey: string;
+  },
+) {
+  return yield* transaction(
+    Effect.gen(function* () {
+      const ownerLevel = yield* mayActAsOwner(orgId, personId, owner);
+      const row = yield* docRow(
+        orgId,
+        ref,
+        ownerLevel ? KIN_OWNER_LEVEL : viewerOfPeople([personId]),
+      );
+      const current = yield* versionOf(orgId, row.recordId);
+      if (current === undefined) return yield* unavailable;
+      const refused = yield* handRefusal(orgId, personId, ownerLevel, row, current);
+      if (refused !== undefined) return yield* refused;
+      const again = yield* retried(orgId, row.recordId, input.originKey);
+      if (again !== undefined) return again;
+      const section = sectionsOf(current.body).find((one) => one.id === input.section);
+      if (section === undefined || section.hash !== input.hash) return yield* sectionMoved;
+      const applied = replaceSectionByHand(current.body, section.id, input.text);
+      if (applied._tag === "refused") return yield* applied.error;
+      if (applied.body === current.body) return { row, version: current, created: false };
+      const writer: Writer = {
+        actor: { _tag: "person", personId },
+        via: "owner",
+        askedBy: personId,
+        ...(ownerLevel ? {} : { teammate: true }),
+      };
+      return yield* revise(orgId, writer, {}, row, current, {
+        title: row.title,
+        body: applied.body,
+        kind: "edited",
+        summary: `Changed ${section.id === "top" ? "the introduction" : `"${section.title}"`} by hand`,
+        operations: [{ op: "replace_section", section: section.id }],
         originKey: input.originKey,
       });
     }),
@@ -750,9 +881,136 @@ export const move = Effect.fn("KinDocs.move")(function* (
       );
       // A doc made a playbook, filed elsewhere or brought back is checked as one.
       yield* guardPlaybook(orgId, row.recordId);
+      yield* refreshCards(orgId, row.recordId);
       return yield* settle(orgId, row.recordId);
     }),
   );
+});
+
+const notDeleter = new KinChatError({
+  reason: "not_allowed",
+  message:
+    "Only the owner, a co-owner or the project's lead can delete this doc or bring it back. Nothing was changed.",
+});
+const notDeletable = (row: Pick<RecordRow, "originKey">) =>
+  new KinChatError({
+    reason: "invalid_state",
+    message: row.originKey.startsWith(CHARACTER_ORIGIN)
+      ? "This is an agent's character. Change it on the agent's page; nothing was changed."
+      : "What we sell stays in Docs. Change what it says instead; nothing was changed.",
+  });
+
+type Deletable = Pick<RecordRow, "originKey" | "projectId" | "category">;
+const special = (row: Pick<RecordRow, "originKey">) =>
+  row.originKey.startsWith(CHARACTER_ORIGIN) || row.originKey === OFFERINGS_ORIGIN;
+/** As `handRefusal`: the owner level, or the lead of the doc's project for any but a playbook. */
+const deletableBy = (row: Deletable, ownerLevel: boolean, leads: ReadonlySet<string>) =>
+  !special(row) &&
+  (ownerLevel ||
+    (row.projectId !== null && kindOf(row) !== "playbook" && leads.has(row.projectId)));
+
+/** The projects this person leads now. */
+const ledProjects = Effect.fn("KinDocs.ledProjects")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ recordId: string }>`SELECT record_id AS "recordId" FROM kin_records
+    WHERE org_id = ${orgId} AND register_id = 'projects' AND owner_kind = 'person'
+      AND owner_id = ${personId} ORDER BY record_id`;
+  return new Set(rows.map((row) => row.recordId));
+});
+
+/** Which of these docs this viewer may delete or bring back (`deleteRefusal`'s rule). */
+export const deletableDocs = Effect.fn("KinDocs.deletableDocs")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  rows: ReadonlyArray<Deletable & { readonly recordId: string }>,
+) {
+  const ownerLevel = viewer._tag === "ownerLevel";
+  const [one, ...more] = ownerLevel ? [] : viewer.people;
+  if (!ownerLevel && (one === undefined || more.length > 0)) return new Set<string>();
+  const leads = one === undefined ? new Set<string>() : yield* ledProjects(orgId, one);
+  return new Set(
+    rows.filter((row) => deletableBy(row, ownerLevel, leads)).map((row) => row.recordId),
+  );
+});
+
+/**
+ * Why this person may not delete this doc or bring it back, from stored rows; undefined when they
+ * may. Whoever may change its text by hand may (a generated file too); an agent's character and
+ * What we sell are not deleted this way, by anyone.
+ */
+const deleteRefusal = Effect.fn("KinDocs.deleteRefusal")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  ownerLevel: boolean,
+  row: Deletable,
+) {
+  if (special(row)) return notDeletable(row);
+  const leads = ownerLevel ? new Set<string>() : yield* ledProjects(orgId, personId);
+  return deletableBy(row, ownerLevel, leads) ? undefined : notDeleter;
+});
+
+/**
+ * A person deletes a doc (`deleted`) or brings one back, through `move`'s archive as an agent's
+ * does. Who may is read here, in the write's transaction; a second delete or restore changes nothing.
+ */
+export const deleteByHand = Effect.fn("KinDocs.deleteByHand")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  /** The host's own owner (`KinIdentity`), never the caller's word. */
+  owner: { readonly personId: string },
+  ref: { readonly key: string },
+  deleted: boolean,
+) {
+  return yield* transaction(
+    Effect.gen(function* () {
+      const ownerLevel = yield* mayActAsOwner(orgId, personId, owner);
+      const row = yield* docRow(
+        orgId,
+        ref,
+        ownerLevel ? KIN_OWNER_LEVEL : viewerOfPeople([personId]),
+      );
+      const refused = yield* deleteRefusal(orgId, personId, ownerLevel, row);
+      if (refused !== undefined) return yield* refused;
+      if ((row.state === "dropped") === deleted) return yield* settle(orgId, row.recordId);
+      const writer: Writer = {
+        actor: { _tag: "person", personId },
+        via: "owner",
+        askedBy: personId,
+        ...(ownerLevel ? {} : { teammate: true }),
+      };
+      return yield* move(orgId, writer, { key: row.key }, { archived: deleted });
+    }),
+  );
+});
+
+/** Who deleted each of these docs and when: the latest change that moved it to `dropped`. */
+export const deletedOf = Effect.fn("KinDocs.deletedOf")(function* (
+  orgId: KinOrgId,
+  recordIds: ReadonlyArray<string>,
+) {
+  const found = new Map<string, { readonly at: string; readonly by: ReturnType<typeof actorOf> }>();
+  if (recordIds.length === 0) return found;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    recordId: string;
+    at: number;
+    actorKind: string;
+    actorId: string | null;
+  }>`SELECT c.record_id AS "recordId", c.at, c.actor_kind AS "actorKind", c.actor_id AS "actorId"
+    FROM kin_record_changes c JOIN kin_records r ON r.org_id = c.org_id
+      AND r.record_id = c.record_id AND r.state = 'dropped'
+    WHERE c.org_id = ${orgId} AND c.record_id IN ${sql.in(recordIds)}
+      AND EXISTS (SELECT 1 FROM json_each(c.fields_json) f
+        WHERE json_extract(f.value, '$.field') = 'state'
+          AND json_extract(f.value, '$.to') = 'dropped')
+    ORDER BY c.seq DESC`;
+  for (const row of rows)
+    if (!found.has(row.recordId))
+      found.set(row.recordId, { at: iso(row.at), by: actorOf(row.actorKind, row.actorId) });
+  return found;
 });
 
 /** Links a doc and entries or other docs both ways, so each shows the other. */

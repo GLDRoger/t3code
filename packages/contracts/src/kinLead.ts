@@ -13,6 +13,7 @@ import {
   ScheduledTaskId,
   ThreadId,
   TrimmedNonEmptyString,
+  TrimmedString,
 } from "./baseSchemas.ts";
 import {
   KinAgentId,
@@ -74,7 +75,10 @@ export type KinLeadDomain = typeof KinLeadDomain.Type;
 export const KinLeadCharter = Schema.String.check(Schema.isMaxLength(1_000));
 export type KinLeadCharter = typeof KinLeadCharter.Type;
 
-/** Seats that sell, as owners name them. */
+/** A domain that sells: its agent's prompt carries the sales rules, and it may keep What we sell. */
+export const isKinSalesDomain = (domain: string) =>
+  /^(growth|sales|business|marketing)/.test(domain);
+/** The selling seats as owners name them, kept first so no company's keeper moves to another. */
 const KIN_SALES_DOMAINS: ReadonlyArray<string> = ["growth", "sales", "business-development"];
 /**
  * The agent that keeps What we sell: a selling seat's, else the Chief of staff's, else any. By
@@ -88,10 +92,35 @@ export const kinSalesLead = <L extends { readonly agentId: string; readonly doma
   );
   return (
     byId.find((lead) => KIN_SALES_DOMAINS.includes(lead.domain)) ??
+    byId.find((lead) => isKinSalesDomain(lead.domain)) ??
     byId.find((lead) => lead.domain === "chief-of-staff") ??
     byId[0]
   );
 };
+
+/** The areas Kin has a ready-made character for; any other area starts on a plain one. */
+export const KIN_CHARACTER_SEATS = [
+  "chief-of-staff",
+  "engineering",
+  "social",
+  "finance",
+  "growth",
+] as const;
+export type KinCharacterSeat = (typeof KIN_CHARACTER_SEATS)[number];
+const KIN_CHARACTER_SEAT_ALIASES: Readonly<Record<string, KinCharacterSeat>> = {
+  tech: "engineering",
+  "tech-lead": "engineering",
+  marketing: "growth",
+  content: "social",
+  sales: "growth",
+  "sales-and-marketing": "growth",
+  "business-development": "growth",
+  chief: "chief-of-staff",
+};
+/** The ready-made seat an area takes, its own or the one people commonly mean by it; else null. */
+export const kinCharacterSeat = (domain: string): KinCharacterSeat | null =>
+  KIN_CHARACTER_SEATS.find((seat) => seat === domain) ??
+  (Object.hasOwn(KIN_CHARACTER_SEAT_ALIASES, domain) ? KIN_CHARACTER_SEAT_ALIASES[domain]! : null);
 
 /** What teammates see about a lead: a line or two the owner writes, shown to people it may talk to. */
 export const KinLeadIntro = Schema.String.check(Schema.isMaxLength(200));
@@ -192,9 +221,21 @@ export const KinLeadContact = Schema.Struct({
   ownerName: Schema.optional(TrimmedNonEmptyString),
 });
 export type KinLeadContact = typeof KinLeadContact.Type;
+/** A live agent the viewer may message, chat or not yet: what the new-chat picker lists. */
+export const KinLeadMessageable = Schema.Struct({
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  name: TrimmedNonEmptyString,
+  intro: KinLeadIntro,
+  // Who runs the workspace and so can see the viewer's chat with it.
+  ownerName: TrimmedNonEmptyString,
+});
+export type KinLeadMessageable = typeof KinLeadMessageable.Type;
 export const KinLeadsListResult = Schema.Struct({
   leads: Schema.Array(KinLeadProfile),
   contacts: Schema.optional(Schema.Array(KinLeadContact)),
+  // Older hosts leave it out.
+  messageable: Schema.optional(Schema.Array(KinLeadMessageable)),
   // The agent every teammate may message; null when off. Older hosts leave it out.
   teamAgentId: Schema.optional(Schema.NullOr(KinAgentId)),
   // The company chat while it is on, and who answers there by default. Older hosts leave it out.
@@ -267,8 +308,15 @@ export const KinAgentPage = Schema.Struct({
   runsOn: ModelSelection,
   // Why it runs on something else, in the owner's words; null when it runs on its own choice.
   modelNote: Schema.NullOr(Schema.String),
-  // Its character doc as written now; null before Kin has given it one.
+  // Its whole character now, Kin's part then the owner's; `key` is the owner's part's doc. Null
+  // before Kin has given it one.
   character: Schema.NullOr(Schema.Struct({ key: KinRecordKey, body: Schema.String })),
+  // Kin's part, as the running release ships it; null when the agent's area has none. Absent
+  // from older hosts.
+  kinCharacter: Schema.optional(Schema.NullOr(Schema.String)),
+  // The owner's own part, which wins where the two differ; "" when he has written none. Absent
+  // from older hosts.
+  ownCharacter: Schema.optional(Schema.String),
   teamAgent: Schema.Boolean,
   // This month's turns and tokens, by the owner's calendar.
   usedThisMonth: Schema.Struct({ turns: NonNegativeInt, tokens: NonNegativeInt }),
@@ -295,11 +343,14 @@ export const KinAgentUndoChangeInput = Schema.Struct({
   seq: PositiveInt,
 });
 export type KinAgentUndoChangeInput = typeof KinAgentUndoChangeInput.Type;
-/** A new character for one agent, written over the old as a version its history keeps. */
+/**
+ * The owner's part of one agent's character, written over the old as a version its history keeps;
+ * empty clears it.
+ */
 export const KinAgentCharacterSetInput = Schema.Struct({
   orgId: KinOrgId,
   agentId: KinAgentId,
-  body: TrimmedNonEmptyString.check(Schema.isMaxLength(20_000)),
+  body: TrimmedString.check(Schema.isMaxLength(20_000)),
 });
 export type KinAgentCharacterSetInput = typeof KinAgentCharacterSetInput.Type;
 export const KinAgentDefaultsInput = Schema.Struct({ orgId: KinOrgId });
@@ -348,6 +399,39 @@ export const KinLeadAccessResult = Schema.Struct({
   ),
 });
 export type KinLeadAccessResult = typeof KinLeadAccessResult.Type;
+
+/** Either side of a pair the owner may restrict: a person, or an agent paired with a person. */
+export const KinReachParty = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("person"), personId: KinPersonId }),
+  Schema.Struct({ kind: Schema.Literal("agent"), agentId: KinAgentId }),
+]);
+export type KinReachParty = typeof KinReachParty.Type;
+/** Everyone may message everyone but the pairs listed. Owners and co-owners read and set them. */
+export const KinReachListInput = Schema.Struct({ orgId: KinOrgId });
+export type KinReachListInput = typeof KinReachListInput.Type;
+export const KinReachListResult = Schema.Struct({
+  limits: Schema.Array(
+    Schema.Struct({
+      one: KinReachParty,
+      other: KinReachParty,
+      setBy: KinPersonId,
+      setAt: Schema.toEncoded(CanonicalUtcTimestamp),
+      /** Groups both are in: a restriction doesn't take either out of one. An older server leaves it out. */
+      groups: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+    }),
+  ),
+  /** The people still in the company who aren't owners or co-owners: who can be restricted. */
+  restrictable: Schema.Array(KinPersonId),
+});
+export type KinReachListResult = typeof KinReachListResult.Type;
+/** Restricts a pair both ways, or lifts it. Owners and co-owners are never restricted. */
+export const KinReachSetInput = Schema.Struct({
+  orgId: KinOrgId,
+  a: KinReachParty,
+  b: KinReachParty,
+  restricted: Schema.Boolean,
+});
+export type KinReachSetInput = typeof KinReachSetInput.Type;
 
 export const MemoryItemKind = Schema.Literals([
   "objective",
@@ -656,8 +740,15 @@ export const KinGithubTrigger = Schema.Struct({
       fork: Schema.Boolean,
       /** The owner's own account opened it: GitHub allows only a comment review. */
       ownersOwn: Schema.Boolean,
+      /** The head commit Kin read; a review someone asked for is posted against it. */
+      headSha: Schema.optional(Schema.String),
       /** For an outside PR, whose turn gets no shell: the diff as the server read it, clipped. */
       diff: Schema.optional(Schema.String),
+      /**
+       * A re-review after new commits: the head Kin last reviewed, and whether `diff` is the whole
+       * PR's at `headSha` because GitHub didn't give what changed since `from`.
+       */
+      reReview: Schema.optional(Schema.Struct({ from: Schema.String, whole: Schema.Boolean })),
     }),
   ),
   /** Failing check names, for `checks`. */
@@ -700,6 +791,8 @@ export const KinEvent = Schema.Union([
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     webhookDeliveryId: Schema.optional(ScheduledTaskWebhookDeliveryId),
     trigger: Schema.optional(KinGithubTrigger),
+    /** The person who asked for this review in Kin (`kin_github_review_ask`); told its outcome. */
+    askedBy: Schema.optional(KinPersonId),
   }),
   Schema.TaggedStruct("deferral.due", {
     ...EventBase,
@@ -715,16 +808,21 @@ export const KinEvent = Schema.Union([
         itemId: KinMemoryItemId,
         person: KinPersonId,
       }),
-      // An agent's open question reached its day unanswered: the asker takes its default. With
-      // `undone`, the person put back what Kin's taking it changed; with `words` too, they
-      // instead undid the answer its asker took from their words. With `answered`, the person
-      // asked for another chat answered, and the asker's turn there carries it on.
+      // An agent's open question reached its day unanswered: the asker takes its default.
+      // `undone`: the person put that back; with `words`, the answer taken from their words.
+      // `answered`: the person asked for another chat answered, and the turn carries it on; with
+      // `approved`, the owner approved a teammate's sent-up draft, and the turn is his own.
       Schema.Struct({
         type: Schema.Literal("question"),
         questionId: TrimmedNonEmptyString,
         undone: Schema.optional(Schema.Literal(true)),
         words: Schema.optional(Schema.Literal(true)),
         answered: Schema.optional(Schema.Literal(true)),
+        approved: Schema.optional(Schema.Literal(true)),
+        // The person dismissed it without choosing, at `at`; with `reopened`, they undid that.
+        dismissed: Schema.optional(Schema.Literal(true)),
+        reopened: Schema.optional(Schema.Literal(true)),
+        at: Schema.optional(NonNegativeInt),
       }),
       // One run of a scheduled task; `runId` names the fire or Run now tap that started it.
       Schema.Struct({
@@ -737,6 +835,9 @@ export const KinEvent = Schema.Union([
     // The chat the deferral was asked from, when it isn't the running lead's owner chat. The
     // server derives it from the item's source event; the wake-up works at no more than its level.
     origin: Schema.optional(KinEventOrigin),
+    // The chat its turn answers in, else the owner chat: set only on an answer to a question
+    // asked for another chat, which is that chat.
+    chatId: Schema.optional(KinChatId),
   }),
   Schema.TaggedStruct("routine", {
     ...EventBase,
@@ -877,6 +978,9 @@ export const KinBudget = Schema.Struct({
   /** The owner's view: today's lead units on turns a teammate asked for, within `leadUnits`. */
   teammateUnits: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
   limits: KinBudgetLimits,
+  /** The owner's view: today's lead input tokens, and how many the provider read from its cache. */
+  inputTokens: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+  cachedInputTokens: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
   /** The owner's view: the daily limit a client offers as "the usual", to scale its choices from. */
   usual: Schema.optional(Schema.Struct({ leadUnits: KinBudgetUnits, workerUnits: KinBudgetUnits })),
   /** Work held for a limit, by agent: it runs when the day turns or a limit is raised. */

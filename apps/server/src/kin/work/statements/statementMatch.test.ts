@@ -52,9 +52,11 @@ const match = (
   rows: ReadonlyArray<StatementRow>,
   invoices: ReadonlyArray<InvoiceCandidate> = [],
   expenses: ReadonlyArray<ExpenseCandidate> = [],
+  withholdsAtSource = true,
 ) =>
   matchRows(rows, {
     currency: "INR",
+    withholdsAtSource,
     invoices,
     expenses,
     ownAccounts: ["7710"],
@@ -86,6 +88,20 @@ describe("statement matching", () => {
       expenses: [],
       group: "matched",
       fit: "tds",
+    },
+    {
+      name: "the same short credit for a company whose country withholds no tax at source",
+      rows: [
+        row({
+          description: "NEFT CR-UTIB0000002-NORTHWIND RETAIL PVT LTD",
+          amountMinor: 9_000_000,
+        }),
+      ],
+      invoices: [invoice({ amountMinor: 10_000_000, client: "Northwind Retail Pvt Ltd" })],
+      expenses: [],
+      withholds: false,
+      group: "choose",
+      fit: "part",
     },
     {
       name: "TDS on the amount before GST",
@@ -187,8 +203,8 @@ describe("statement matching", () => {
       group: "unmatched",
       fit: undefined,
     },
-  ] as const)("$name", ({ rows, invoices, expenses, group, fit }) => {
-    const [result] = match(rows, invoices, expenses);
+  ] as const)("$name", ({ rows, invoices, expenses, group, fit, ...rest }) => {
+    const [result] = match(rows, invoices, expenses, "withholds" in rest ? rest.withholds : true);
     assert.strictEqual(result!.group, group);
     assert.strictEqual(result!.candidates[0]?.fit, fit);
   });
@@ -223,6 +239,7 @@ describe("statement matching", () => {
       ],
       {
         currency: "INR",
+        withholdsAtSource: true,
         invoices: [],
         payments: [
           {
@@ -280,5 +297,21 @@ describe("statement matching", () => {
     assert.strictEqual(vendorOf("UPI DR 412345 CLOUDNEST"), "Cloudnest");
     assert.strictEqual(vendorOf("DR FIGMA INC"), "Figma Inc");
     assert.strictEqual(vendorOf("POS DR THIRD WAVE COFFEE"), "Third Wave Coffee");
+    // A card statement's line is often just the merchant and its city.
+    assert.strictEqual(vendorOf("NETFLIX.COM MUMBAI"), "Netflix");
+    // W-26: a narration no rail or channel word explains names nobody, and a generic word isn't one.
+    assert.strictEqual(vendorOf("BEING AMOUNT PAID TOWARDS MAINTENANCE NOV"), undefined);
+    assert.strictEqual(vendorOf("CHQ PAID 004512 CLEARING"), undefined);
+    assert.strictEqual(vendorOf("BIL/INVOICE 22"), undefined);
+    // An older expense's junk vendor is never offered again, since Kin would refuse it.
+    const junk = suggest(
+      row({ direction: "debit", description: "UPI-INVOICE-PAY", amountMinor: 1 }),
+      {
+        ownAccounts: [],
+        known: [{ vendor: "Invoice", category: "software" }],
+        bank: null,
+      },
+    );
+    assert.strictEqual(junk.vendor, undefined);
   });
 });

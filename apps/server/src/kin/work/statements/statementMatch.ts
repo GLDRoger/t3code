@@ -1,5 +1,8 @@
+import { currencyDigits } from "../money.ts";
 import { RAILS } from "./statementRegion.ts";
 import type { StatementRow } from "./statementTable.ts";
+import { DAY_MS } from "../../durations.ts";
+import { notAVendor } from "../vendorName.ts";
 
 /**
  * Which invoice a credit pays and which expense a debit is, by plain rules: the exact amount
@@ -84,8 +87,6 @@ export type RowMatch = {
 
 /** Rates of TDS Indian clients commonly deduct (194J, 194C, 194H, 194I, 194Q). */
 const TDS_RATES = [10, 2, 1, 5, 20, 0.1] as const;
-/** TDS is rounded to the rupee, so a payment within this of the expected is the same. */
-const TDS_SLACK_MINOR = 100;
 /** One candidate this far ahead of the next is the answer; closer, the owner chooses. */
 const CONFIDENT = 60;
 const MARGIN = 20;
@@ -130,7 +131,6 @@ const nameIn = (name: string, narration: string) => {
   return found.length / wanted.length;
 };
 
-const DAY_MS = 86_400_000;
 const dayNumber = (day: string) =>
   Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10))) / DAY_MS;
 const daysBetween = (from: string, to: string) => dayNumber(to) - dayNumber(from);
@@ -139,6 +139,7 @@ const invoiceCandidate = (
   row: StatementRow,
   invoice: InvoiceCandidate,
   currency: string,
+  withholdsAtSource: boolean,
 ): Candidate | undefined => {
   // Money for an invoice in another currency is proved only by that amount in the narration.
   const foreign = invoice.currency !== currency;
@@ -161,7 +162,9 @@ const invoiceCandidate = (
     fit = "exact";
     score += 50;
     why.push("same amount");
-  } else if (invoice.paidMinor === 0 && row.amountMinor < balance) {
+  } else if (withholdsAtSource && invoice.paidMinor === 0 && row.amountMinor < balance) {
+    // Withheld tax is rounded to the currency's whole unit, so a payment within one is the same.
+    const slack = 10 ** currencyDigits(currency);
     const bases = [
       invoice.amountMinor,
       ...(invoice.taxMinor === null ? [] : [invoice.amountMinor - invoice.taxMinor]),
@@ -169,10 +172,7 @@ const invoiceCandidate = (
     for (const base of bases)
       for (const rate of TDS_RATES) {
         const tds = Math.round((base * rate) / 100);
-        if (
-          tdsMinor === undefined &&
-          Math.abs(balance - tds - row.amountMinor) <= TDS_SLACK_MINOR
-        ) {
+        if (tdsMinor === undefined && Math.abs(balance - tds - row.amountMinor) <= slack) {
           tdsMinor = balance - row.amountMinor;
           fit = "tds";
           score += 40;
@@ -359,6 +359,8 @@ const payee = (text: string) => {
   }
   return rest;
 };
+/** The bank's own prose, such as "BEING AMOUNT PAID TOWARDS …": it names nobody. */
+const BANK_PROSE = /^(?:being|towards|chq|cheque)\b/i;
 export const vendorOf = (narration: string): string | undefined => {
   const said = narration.replace(/\s+/g, " ").trim();
   const parts = (text: string) =>
@@ -377,7 +379,9 @@ export const vendorOf = (narration: string): string | undefined => {
   else if (/^ACH\s?D?[-\s]/i.test(said)) found = said.replace(/^ACH\s?D?[-\s]+/i, "").split("-")[0];
   else if (/^POS\b/i.test(said)) found = said.replace(/^POS\s+\S*\d{4}\S*\s+/i, "");
   else found = said;
-  const cleaned = payee(found ?? "")
+  const named = payee(found ?? "");
+  if (BANK_PROSE.test(named)) return undefined;
+  const cleaned = named
     .replace(/\b(USD|EUR|GBP|SGD|AED|AUD|CAD)\s?[\d,.]+/gi, "")
     .replace(/\*.*$/, "")
     .replace(/\.(com|in|io|co)\b.*$/i, "")
@@ -387,7 +391,7 @@ export const vendorOf = (narration: string): string | undefined => {
     .split(/\s+/)
     .slice(0, 3)
     .join(" ");
-  if (cleaned.length < 2) return undefined;
+  if (cleaned.length < 2 || notAVendor(cleaned)) return undefined;
   return cleaned
     .toLowerCase()
     .replace(/\b[a-z]/g, (letter) => letter.toUpperCase())
@@ -439,6 +443,7 @@ export const suggest = (
       why: "A salary",
     };
   const known = input.known
+    .filter((one) => !notAVendor(one.vendor))
     .map((one) => ({ one, fit: nameIn(one.vendor, text) }))
     .filter((one) => one.fit >= 0.5)
     .toSorted((left, right) => right.fit - left.fit)[0]?.one;
@@ -493,6 +498,8 @@ export const matchRows = (
   rows: ReadonlyArray<StatementRow>,
   input: {
     readonly currency: string;
+    /** The company's country withholds tax at source: a short credit may be a TDS cut. */
+    readonly withholdsAtSource: boolean;
     readonly invoices: ReadonlyArray<InvoiceCandidate>;
     readonly payments?: ReadonlyArray<PaymentCandidate>;
     readonly expenses: ReadonlyArray<ExpenseCandidate>;
@@ -506,7 +513,9 @@ export const matchRows = (
     const candidates = (
       row.direction === "credit"
         ? [
-            ...input.invoices.map((invoice) => invoiceCandidate(row, invoice, input.currency)),
+            ...input.invoices.map((invoice) =>
+              invoiceCandidate(row, invoice, input.currency, input.withholdsAtSource),
+            ),
             ...(input.payments ?? []).map((payment) =>
               paymentCandidate(row, payment, input.currency),
             ),

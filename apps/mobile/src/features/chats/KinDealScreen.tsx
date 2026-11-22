@@ -10,7 +10,9 @@ import {
   kinDealQuoteChoices,
   kinDealStageName,
   kinDealStrip,
+  kinDealWithoutConcern,
   kinDealWhen,
+  kinDealChangeWhen,
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
 import {
@@ -38,6 +40,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { IconButton } from "../../components/ui/IconButton";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
@@ -46,6 +49,7 @@ import { Notice } from "../../components/ui/Notice";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
+import { KinAsideNote } from "./KinAttention";
 import { KinDayField } from "./components/KinDayField";
 import { KinDealOwnerRow, KinDealQuoteRow } from "./components/KinDealPicks";
 import { KinLoadFailed } from "./components/KinLoadFailed";
@@ -62,6 +66,7 @@ import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinDealPage, useKinDealSend } from "./state/useKinDeals";
 import { useKinInvoiceFromQuote } from "./state/useKinMoneyAnswers";
 import { useKinWorkDirectory, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import { KinWatchLine } from "./KinWatchLine";
 
 export type KinDealParams = {
   readonly environmentId: string;
@@ -235,6 +240,8 @@ function KinDealBody(
           </View>
         )}
       </View>
+      <KinAsideNote {...target} record={deal.key} names={names} />
+      <KinWatchLine {...target} recordKey={deal.key} />
 
       {deal.state !== "open" ? null : <DealStrip deal={deal} stages={stages} />}
 
@@ -412,6 +419,30 @@ function KinDealBody(
         </ListSection>
       )}
 
+      {deal.concerns === undefined ? null : (
+        <ListSection title={KIN_DEALS.concernsRaised}>
+          {deal.concerns.map((concern) => (
+            <ListRowLayout
+              key={concern.label}
+              label={concern.label}
+              {...(concern.heard === undefined
+                ? {}
+                : { description: KIN_DEALS.heard(concern.heard) })}
+              accessory={
+                deal.can.edit ? (
+                  <IconButton
+                    icon="xmark"
+                    accessibilityLabel={KIN_DEALS.removeConcern(concern.label)}
+                    disabled={busy}
+                    onPress={() => void change(kinDealWithoutConcern(deal, concern.label))}
+                  />
+                ) : null
+              }
+            />
+          ))}
+        </ListSection>
+      )}
+
       <ListSection title={KIN_DEALS.details}>
         <ListRow
           label={KIN_DEALS.clientField}
@@ -429,7 +460,7 @@ function KinDealBody(
           <ListRowLayout label={KIN_DEALS.lookedAfterBy} detail={kinWorkName(deal.owner, names)} />
         )}
         {deal.state !== "open" ? null : deal.next === null ? (
-          <ListRowLayout label={KIN_DEALS.nextStep} detail={KIN_DEALS.noNextStep} />
+          <ListRowLayout label={KIN_DEALS.nextStep} detail={next?.text ?? KIN_DEALS.noNextStep} />
         ) : (
           <ListRow
             label={KIN_DEALS.nextStep}
@@ -470,7 +501,7 @@ function KinDealBody(
       </ListSection>
 
       {page.notes === "" ? null : (
-        <ListSection>
+        <ListSection title={KIN_DEALS.notes}>
           <View className="bg-grouped-card px-4 py-3">
             <Text textRole="body" selectable className="text-foreground">
               {page.notes}
@@ -488,7 +519,7 @@ function KinDealBody(
                   {kinDealChangeText(change, names, now)}
                 </Text>
                 <Text textRole="footnote" className="shrink-0 text-foreground-muted">
-                  {kinWorkDueText({ dueAt: change.at, dueAllDay: false }, names, now)}
+                  {kinDealChangeWhen(change, now)}
                 </Text>
               </View>
             ))}
@@ -575,7 +606,7 @@ function AddStep(
       <KinDayField
         label={KIN_WORK_NEW_COPY.dueLabel}
         day={day}
-        names={props.names}
+        zone={props.names.zone}
         now={props.now}
         disabled={busy}
         onPick={setDay}

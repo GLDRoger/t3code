@@ -1,4 +1,5 @@
 import {
+  KIN_MORE_FAILED,
   KIN_CHECK_CONNECTION,
   KIN_RETRY,
   kinFailure,
@@ -32,6 +33,8 @@ import {
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
+import { kinListSettingsOnPhone } from "@t3tools/client-runtime/kin/kinMoney";
+import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
@@ -54,13 +57,17 @@ import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { KinMonthGrid } from "./components/KinMonthGrid";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
-import { KinWorkFrame, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
+import {
+  KinWorkFrame,
+  KinWorkLoading,
+  KinWorkStaleNotice,
+  KinWorkToggleRow,
+} from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import { KinDateRowLine } from "./KinWorkMoney";
 import { kinClient } from "./state/kinClient";
@@ -386,6 +393,8 @@ function KinListEntries(
   const { def, environmentId, orgId } = props;
   const context = useKinListContext(props, props.directory);
   const canEdit = useAtomValue(kinClient.workListUpdate.permissionAtom(environmentId));
+  const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
+  const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(environmentId));
   const { state, entries, totals } = useKinListEntries(
     props,
     def.list,
@@ -418,6 +427,47 @@ function KinListEntries(
     refreshKinWorkLive(props);
     entries.refresh();
   };
+  const target = { environmentId: String(environmentId), orgId: String(orgId) };
+  // Invoices and Expenses take a new one typed by hand; no other list has a form of its own.
+  const add =
+    def.archivedAt !== null
+      ? null
+      : def.list === "invoices" && canInvoice
+        ? {
+            accessibilityLabel: KIN_MONEY_FORMS.invoice.title,
+            icon: "plus" as const,
+            onPress: () =>
+              navigation.navigate("KinInvoiceNew", {
+                ...target,
+                ...(filter.party === null
+                  ? {}
+                  : { party: filter.party.key, partyName: filter.party.title }),
+              }),
+          }
+        : def.list === "expenses" && canExpense
+          ? {
+              accessibilityLabel: KIN_MONEY_FORMS.expense.title,
+              icon: "plus" as const,
+              onPress: () => navigation.navigate("KinExpenseNew", target),
+            }
+          : null;
+  const actions = [
+    ...(add === null ? [] : [add]),
+    ...(canEdit && kinListSettingsOnPhone(def)
+      ? [
+          {
+            accessibilityLabel: KIN_LISTS.edit.title,
+            icon: "slider.horizontal.3" as const,
+            onPress: () =>
+              navigation.navigate("KinListSettings", {
+                environmentId,
+                orgId,
+                list: def.list,
+              }),
+          },
+        ]
+      : []),
+  ];
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
@@ -434,22 +484,7 @@ function KinListEntries(
             onChange: entries.setFilter,
           }),
         ]}
-        {...(canEdit && !def.builtIn
-          ? {
-              actions: [
-                {
-                  accessibilityLabel: KIN_LISTS.edit.title,
-                  icon: "slider.horizontal.3" as const,
-                  onPress: () =>
-                    navigation.navigate("KinListSettings", {
-                      environmentId,
-                      orgId,
-                      list: def.list,
-                    }),
-                },
-              ],
-            }
-          : {})}
+        {...(actions.length === 0 ? {} : { actions })}
         search={{
           value: filter.text,
           onChangeText: (text) => entries.setFilter({ ...filter, text }),
@@ -637,7 +672,7 @@ function KinListEntries(
             footer === null ? null : (
               <View className="items-start gap-2 px-5 py-4">
                 <Text textRole="footnote" className="text-foreground-muted">
-                  {state.moreFailed ? "Couldn't load more." : footer}
+                  {state.moreFailed ? KIN_MORE_FAILED : footer}
                 </Text>
                 {state.more ? (
                   <Button
@@ -793,7 +828,11 @@ function KinDatesBody(props: KinWorkTarget) {
       <KinWorkFrame {...frame}>
         {modes}
         <ListSection>
-          <ListToggleRow label={KIN_DATES.openOnly} value={openOnly} onValueChange={setOpenOnly} />
+          <KinWorkToggleRow
+            label={KIN_DATES.openOnly}
+            value={openOnly}
+            onValueChange={setOpenOnly}
+          />
         </ListSection>
         <KinMonthGrid
           label={grid.label}
@@ -845,7 +884,7 @@ function KinDatesBody(props: KinWorkTarget) {
     <KinWorkFrame {...frame}>
       {modes}
       <ListSection>
-        <ListToggleRow label={KIN_DATES.openOnly} value={openOnly} onValueChange={setOpenOnly} />
+        <KinWorkToggleRow label={KIN_DATES.openOnly} value={openOnly} onValueChange={setOpenOnly} />
       </ListSection>
       {days.length === 0 ? (
         <EmptyState variant="plain" {...KIN_DATES.none} />

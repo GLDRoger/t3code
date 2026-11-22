@@ -1,6 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 import {
+  KIN_CODING_AGENT_UNNAMED,
   KIN_RECORD_COMMENTS_PAGE,
   KinAgentId,
   KinAttachment,
@@ -127,7 +128,7 @@ export const keyNamedFor = <A extends Pick<KinRecordChange, "by" | "codingAgent"
   !viewer.teammate ||
   (row.by._tag === "person" && row.by.personId === viewer.person.personId)
     ? row
-    : { ...row, codingAgent: "a coding agent" };
+    : { ...row, codingAgent: KIN_CODING_AGENT_UNNAMED };
 
 /** Whether this viewer may take a comment back: its author, or the owner level any. */
 export const withCanRemove = (
@@ -149,6 +150,17 @@ export const personSeesRecord = Effect.fn("KinRecordComments.personSees")(functi
 ) {
   if (yield* ownerLevel(orgId, personId)) return true;
   return (yield* teamVisible(orgId, personId, [recordId])).has(recordId);
+});
+
+export const canHearRecord = Effect.fn("KinRecordComments.canHear")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const here = yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId}
+    AND person_id = ${personId} AND removed_at IS NULL`;
+  return here.length > 0 && (yield* personSeesRecord(orgId, personId, recordId));
 });
 
 /** The newest page of an entry's comments before `beforeSeq` (all with none), oldest first. */

@@ -64,6 +64,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
+import { madeUnderApproval } from "../questions/approval.ts";
 import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
@@ -75,7 +76,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { markOutside, outsideRead, outsideStamp, OUTSIDE_REFUSAL } from "../lead/OutsideContent.ts";
 import { sensitiveShown } from "../work/sensitiveReads.ts";
-import { quote } from "../lead/LeadPrompt.ts";
+import { quote } from "../lead/quote.ts";
 import {
   callable,
   changed,
@@ -105,6 +106,7 @@ import {
   MAIL_SEND_TOOL_NAMES,
   MAIL_TOOL,
   type Mailbox,
+  type MailMessage,
   type MailProvider,
 } from "./MailProvider.ts";
 import { MAIL_PRESETS, mailProviderOf } from "./mailProviders.ts";
@@ -340,21 +342,6 @@ export type KinConnectionActivity =
         readonly start: string | null;
         readonly status: string | null;
         readonly updated: string | null;
-      }>;
-    }
-  | {
-      readonly _tag: "github";
-      readonly connectionId: KinConnectionId;
-      readonly since: number;
-      readonly until: number;
-      readonly deliveries: ReadonlyArray<{
-        readonly fireId: string;
-        readonly repo: string | null;
-        readonly deliveryId: string | null;
-        readonly receivedAt: number;
-        /** From the wake-up Kin queued for it, when GitHub's event was one it acts on. */
-        readonly eventName: string | null;
-        readonly summary: string | null;
       }>;
     }
   | { readonly _tag: "unsupported"; readonly connectionId: KinConnectionId };
@@ -595,6 +582,16 @@ export class KinConnections extends Context.Service<
       until: number,
       cursor?: string | null,
     ) => Effect.Effect<void, KinChatError>;
+    /**
+     * Server use only (a pulse, never an agent tool): one mail thread's messages with their text,
+     * with the connection's own sign-in, and only while the owner has Read a thread on Read. None
+     * for a paused account or one that isn't mail.
+     */
+    readonly readThread: (
+      orgId: KinOrgId,
+      connectionId: string,
+      threadId: string,
+    ) => Effect.Effect<ReadonlyArray<MailMessage>, KinChatError>;
     readonly tools: Lead<typeof KinConnectionToolsInput.Type, typeof KinConnectionToolsResult.Type>;
     readonly call: Lead<typeof KinConnectionCallInput.Type, typeof KinConnectionCallResult.Type>;
     readonly offer: Lead<typeof KinConnectionOfferInput.Type, typeof KinConnectionOfferResult.Type>;
@@ -1783,39 +1780,34 @@ const make = Effect.gen(function* () {
                     mailboxOf(row),
                     since,
                     cursor?.calendarCursor ?? null,
+                    until,
                   ),
                 ),
               ),
             )
           : { mail: [], calendar: [], cursor: cursor?.calendarCursor ?? null };
+      // A read that stopped at its bound moves the cursor only as far as it read.
+      const cut = "until" in found ? found.until : undefined;
+      const readUntil = cut === undefined ? until : Math.max(since + 1, Math.min(until, cut));
+      if (readUntil < until)
+        yield* Effect.logInfo(
+          "Kin read a connection's activity up to its bound; the rest comes next",
+          {
+            orgId,
+            connectionId: row.connectionId,
+            readUntil,
+          },
+        );
       return {
         _tag: "mail",
         connectionId: row.connectionId,
         since,
-        until,
+        until: readUntil,
         account: row.accountLabel,
         cursor: found.cursor,
         mail: mail ? found.mail : [],
         calendar: calendar ? found.calendar : [],
       } as const;
-    }
-    if (row.preset === "github") {
-      // What GitHub woke Kin's agents for, as the owner's login watch recorded it.
-      const deliveries = yield* sql<{
-        fireId: string;
-        repo: string | null;
-        deliveryId: string | null;
-        receivedAt: number;
-        eventName: string | null;
-        summary: string | null;
-      }>`SELECT event_id AS "fireId", json_extract(json, '$.repo') AS repo,
-            json_extract(json, '$.deliveryId') AS "deliveryId", received_at AS "receivedAt",
-            json_extract(json, '$.eventName') AS "eventName", json_extract(json, '$.summary') AS summary
-          FROM kin_events
-          WHERE org_id = ${orgId} AND tag = 'github' AND received_at > ${since}
-            AND received_at <= ${until}
-          ORDER BY received_at, event_id LIMIT 200`;
-      return { _tag: "github", connectionId: row.connectionId, since, until, deliveries } as const;
     }
     return { _tag: "unsupported", connectionId: row.connectionId } as const;
   }, settle);
@@ -1836,6 +1828,26 @@ const make = Effect.gen(function* () {
           checked_until = MAX(checked_until, excluded.checked_until), updated_at = excluded.updated_at,
           calendar_cursor = CASE WHEN excluded.checked_until >= checked_until
             THEN COALESCE(excluded.calendar_cursor, calendar_cursor) ELSE calendar_cursor END`;
+  }, settle);
+
+  const readThread = Effect.fn("KinConnections.readThread")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+    threadId: string,
+  ) {
+    const row = yield* live(orgId, connectionId);
+    const provider = mailProviderOf(row);
+    if (provider === undefined || row.pausedAt !== null) return [];
+    // The server reads no more than an agent may: the owner's own Read setting for the tool.
+    const readable = (yield* toolsOf(orgId, row.connectionId).pipe(provideSql)).some(
+      (tool) => tool.name === MAIL_TOOL.read && tool.mode === "read" && tool.removedAt === null,
+    );
+    if (!readable) return [];
+    return yield* withSignIn(orgId, row, (force) =>
+      tokenOf(orgId, row, force).pipe(
+        Effect.flatMap((token) => provider.messages(http, token, mailboxOf(row), threadId)),
+      ),
+    );
   }, settle);
 
   type Turn = Effect.Success<ReturnType<typeof resolveLead>>;
@@ -2561,6 +2573,7 @@ const make = Effect.gen(function* () {
         : null;
     const now = yield* Clock.currentTimeMillis;
     const replaced: Array<string> = [];
+    let newer: KinWidgetId | undefined;
     const savedOver: Array<{ readonly name: string; readonly quoted: string }> = [];
     // Every older card for the mail goes, so one card can send. A person's saved words stay on it,
     // and are read to this call only when this agent drew it in this chat.
@@ -2620,6 +2633,9 @@ const make = Effect.gen(function* () {
             ${row.accountLabel}, ${row.signInGen}, ${outside ?? null})
           ON CONFLICT (org_id, ask_id) DO NOTHING`;
         const own = yield* persisted(askId);
+        // A mail made under the owner's Approve: its Confirm card is that approval's one result.
+        if (own !== undefined && MAIL_SEND_TOOL_NAMES.has(tool.name) && row.kind === "builtin")
+          yield* madeUnderApproval(turn, { kind: "mail", askId }).pipe(provideSql);
         return done(own === undefined ? undefined : yield* toldFor(own));
       }),
     );
@@ -2679,9 +2695,10 @@ const make = Effect.gen(function* () {
         sql`UPDATE kin_connection_asks SET widget_id = ${widget.widgetId}
           WHERE org_id = ${turn.orgId} AND ask_id = ${askId} AND widget_id IS NULL`.pipe(
           Effect.andThen(replaceOlder()),
+          Effect.tap(() => Effect.sync(() => (newer = widget.widgetId))),
         ),
     );
-    if (replaced.length > 0) yield* levelGate.closeReplaced(turn, replaced);
+    if (replaced.length > 0) yield* levelGate.closeReplaced(turn, replaced, newer);
     // A mail filed under an entry shows on its Tasks row, in place of any card this replaced.
     if (entryRecordId !== null)
       yield* sql.afterCommit(
@@ -3988,6 +4005,7 @@ const make = Effect.gen(function* () {
     setSendFrom,
     activity,
     activitySeen,
+    readThread,
     tools,
     call,
     offer,

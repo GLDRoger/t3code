@@ -3,6 +3,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { ownerLevelPeople, ownerLevelSql } from "../people/KinAccess.ts";
+import { outsideReview } from "./outsideReview.ts";
 
 /**
  * Who can read a lead turn's reply. Invariant: only an `owner_only` turn sees or changes the
@@ -14,7 +15,7 @@ export type TurnAudience = "owner_only" | "shared";
 
 /**
  * Events that answer in the chat they name: a finished task names the chat its work was asked in,
- * and a teammate's task their direct chat with the lead.
+ * a teammate's task their direct chat with the lead, and an answer the chat that asked for it.
  */
 export const CHAT_ANSWER_TAGS = [
   "chat.message",
@@ -22,6 +23,7 @@ export const CHAT_ANSWER_TAGS = [
   "chat.reaction",
   "record.changed",
   "task.finished",
+  "deferral.due",
 ];
 
 /**
@@ -55,6 +57,8 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
     readonly wakeupId: string;
   }) {
     const sql = yield* SqlClient.SqlClient;
+    // A stranger's pull request is reviewed as the team would read it.
+    if ((yield* outsideReview(input)) !== undefined) return "shared" as const;
     const [lead] = yield* sql<{ owner: string; ownerChatId: string }>`
       SELECT a.owner_person_id AS owner, l.owner_chat_id AS "ownerChatId" FROM kin_leads l
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
@@ -105,10 +109,12 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
           return "shared" as const;
         chats.add(event.chatId);
       } else if (
-        (event.tag === "record.changed" || event.tag === "task.finished") &&
+        (event.tag === "record.changed" ||
+          event.tag === "task.finished" ||
+          event.tag === "deferral.due") &&
         event.chatId !== null
       ) {
-        // A finished task answers in the chat it was asked for in, read by everyone there.
+        // A finished task, or an answer, answers where it was asked for, read by everyone there.
         answersChat = true;
         chats.add(event.chatId);
       }
@@ -347,6 +353,16 @@ export const askersDirectChat = Effect.fn("KinAudience.askersDirectChat")(functi
   return rows.length > 0;
 });
 
+/** Whether the turn may read `chatId`, by the rule its chat reads use (`KinLevelGate.read`). */
+export const mayReadChat = Effect.fn("KinAudience.mayReadChat")(function* (
+  turn: Turn,
+  chatId: string,
+) {
+  if (yield* aborted(turn)) return false;
+  if ((yield* effectiveAudience(turn)) === "shared") return yield* askedIn(turn, chatId);
+  return (yield* ownerAlone(turn)) || (yield* behindAllIn(turn, chatId));
+});
+
 /**
  * Everyone who is or ever was in the chat is owner-level; none is, in a chat that isn't this
  * org's. A chat someone else could once read stays out of owner-tier reach.
@@ -466,6 +482,8 @@ export const SESSION_REFUSAL = {
   outside:
     "Blocked: this turn read outside content, so it has no shell now. Ask the owner to start it in a fresh turn.",
   none: "Blocked: no owner's turn backs this session, so it has no shell. Ask the owner in their own chat.",
+  approved:
+    "Blocked: this turn only makes the draft the owner approved, so it has no shell, file edits, web fetch or sub-agents.",
 } as const;
 export const SHARED_ELSEWHERE =
   "In a chat with other people you post only in the chat you were asked in. Nothing was sent.";

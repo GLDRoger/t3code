@@ -23,11 +23,10 @@ export const KIN_BRAND = {
     "New invoices and receipts are made without it. Send it to an agent again to add it back.",
   primary: "Main colour",
   secondary: "Second colour",
-  colorPlaceholder: "#1F4E79",
+  colorPlaceholder: "#RRGGBB",
   font: "Font",
   defaultFont: "The template's own",
   footer: "Footer line",
-  footerPlaceholder: "Thank you for your business",
   sample: "Sample",
   edit: "Edit brand",
   save: "Save",
@@ -36,17 +35,20 @@ export const KIN_BRAND = {
   badColor: "Use a colour like #1F4E79.",
 };
 
-/** Colours a phone offers as taps beside the hex field; the field takes any. */
-export const KIN_BRAND_SWATCHES = [
-  "#1F4E79",
-  "#0F766E",
-  "#166534",
-  "#7C2D12",
-  "#B4532A",
-  "#9F1239",
-  "#5B21B6",
-  "#1F2937",
-] as const;
+/** Web Settings: the brand as rows, each opening one form. */
+export const KIN_BRAND_SETTINGS = {
+  detail: "How your invoices and receipts look.",
+  logoNone: "Send the image to an agent in a chat",
+  sendNew: "Send a new one",
+  colours: "Colours",
+  /** "#1F4E79 and #0F766E"; the template's own where none is set. */
+  coloursLine: (main: string | null, second: string | null) =>
+    main === null && second === null
+      ? KIN_BRAND.defaultFont
+      : [main, second].map((one) => one ?? "the template's own").join(" and "),
+  none: "None",
+  save: "Save brand",
+};
 
 export const KIN_BRAND_FONTS: ReadonlyArray<KinCompanyBrand["font"] & string> = KIN_RECIPE_FONTS;
 

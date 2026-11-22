@@ -13,16 +13,18 @@ export interface Observed {
   readonly changed: boolean;
   /** The system prompt the model gets; undefined leaves the provider's own. */
   readonly instructions: string | undefined;
-  /** Kin's tools are listed up front, not each looked up before use. */
+  /** Kin's tools, or at least its core (`KIN_ALWAYS_LOADED`), are listed up front. */
   readonly kinToolsUpFront: boolean;
-  /** Kin tools the session doesn't list up front. */
-  readonly heldBack: ReadonlyArray<string>;
+  /** Kin tools beyond the core aren't listed up front. */
+  readonly holdsBack: boolean;
   /** The held-back tools are ones the model in use can find and call. */
   readonly deferredFindable: boolean;
   /** Any of the user's own skills, settings, plugins or MCP servers can reach the session. */
   readonly personalConfig: boolean;
-  /** The provider's own shell, file and web tools exist in the session at all. */
+  /** The provider's own shell, file and web-fetch tools exist in the session at all. */
   readonly builtins: boolean;
+  /** The provider's own web search, which runs at its vendor, is in the session. */
+  readonly webSearch: boolean;
   readonly shell:
     | {
         readonly path: string | undefined;

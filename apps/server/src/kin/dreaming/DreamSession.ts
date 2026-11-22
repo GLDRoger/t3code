@@ -7,6 +7,7 @@ import {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -19,6 +20,9 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+import { withArticle } from "../article.ts";
+import { bootstrapKinProject } from "../lead/leadProject.ts";
+import { activityAt, waitWhileActive } from "../lead/runSilence.ts";
 import { permissionFlag, threadPrefix } from "./DreamIsolation.ts";
 
 export { threadPrefix } from "./DreamIsolation.ts";
@@ -68,7 +72,6 @@ export class DreamSession extends Context.Service<
 export const dreamThreadId = (dreamId: string, turn: DreamTurn["turn"]) =>
   ThreadId.make(`${threadPrefix}${dreamId}:${turn}`);
 
-const timeoutMs = 900_000;
 const isRefused = Schema.is(DreamRefused);
 
 export const layer = Layer.effect(
@@ -82,7 +85,7 @@ export const layer = Layer.effect(
       const { instanceId } = turn.model;
       const entry = deriveProviderInstanceConfigMap(yield* settings.getSettings)[instanceId];
       if (entry?.driver !== "claudeAgent")
-        return `Dreams run only on Claude, and ${instanceId} is ${entry === undefined ? "not a configured provider" : `a ${entry.driver} instance`}.`;
+        return `Dreams run only on Claude, and ${instanceId} is ${entry === undefined ? "not a configured provider" : `${withArticle(entry.driver)} instance`}.`;
       const config: { readonly launchArgs?: unknown } = entry.config ?? {};
       const flags = Object.keys(
         parseCliArgs(typeof config.launchArgs === "string" ? config.launchArgs : "").flags,
@@ -98,7 +101,7 @@ export const layer = Layer.effect(
           return yield* new DreamRefused({ orgId: turn.orgId, reason: refused });
         const key = `${turn.dreamId}:${turn.turn}`;
         const bootstrap = (suffix: string) =>
-          projects.bootstrap({
+          bootstrapKinProject(projects, {
             commandId: CommandId.make(`kin-dream-project:${turn.orgId}${suffix}`),
             projectId: ProjectId.make(`kin-dream:${turn.orgId}${suffix}`),
             workspaceRoot: turn.workspaceRoot,
@@ -171,27 +174,33 @@ export const layer = Layer.effect(
               ),
             );
         });
-        const declineRequests = threads
-          .streamStoredEventsFrom({ threadId, eventType: "runtime-request.updated" })
-          .pipe(
-            Stream.runForEach((stored) =>
-              stored.event.type === "runtime-request.updated" &&
-              stored.event.payload.status === "pending"
-                ? decline(stored.event.payload)
-                : Effect.void,
-            ),
-            Effect.catchCause((cause) =>
-              interrupt("unwatched").pipe(
-                Effect.andThen(
-                  Effect.logError("Kin dream request watch failed", { threadId, cause }),
-                ),
+        // One watch of the dream's thread declines its requests and hears it work.
+        let lastActivity = yield* Clock.currentTimeMillis;
+        const watch = threads.streamStoredEventsFrom({ threadId }).pipe(
+          Stream.runForEach(({ event }) => {
+            const at = activityAt(event);
+            if (at !== undefined) lastActivity = Math.max(lastActivity, at);
+            return event.type === "runtime-request.updated" && event.payload.status === "pending"
+              ? decline(event.payload)
+              : Effect.void;
+          }),
+          Effect.catchCause((cause) =>
+            interrupt("unwatched").pipe(
+              Effect.andThen(
+                Effect.logError("Kin dream request watch failed", { threadId, cause }),
               ),
             ),
-            Effect.andThen(Effect.never),
-          );
+          ),
+          Effect.andThen(Effect.never),
+        );
         const result = yield* Effect.raceFirst(
-          threads.waitForThread({ projectId: project.id, threadId, runId, timeoutMs }),
-          declineRequests,
+          waitWhileActive(
+            threads,
+            { projectId: project.id, threadId, runId },
+            () => lastActivity,
+            Effect.void,
+          ),
+          watch,
         ).pipe(Effect.onInterrupt(() => interrupt("cancel")));
         if (result.timedOut) {
           yield* interrupt("timeout");

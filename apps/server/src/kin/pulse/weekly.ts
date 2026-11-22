@@ -5,8 +5,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail } from "../connections/Sending.ts";
 import { goalLine, goalsNow } from "../work/goals.ts";
-import { homeCurrency } from "../work/companyProfile.ts";
-import { addUp, dayIn, formatMoney } from "../work/money.ts";
+import { homeCurrency, readProfile } from "../work/companyProfile.ts";
+import { projectHealths } from "../work/crm.ts";
+import { weeklyPipelineOf } from "../work/dealStages.ts";
+import { mondayCounts } from "../work/deals.ts";
+import { aboutTotal, addUp, dayIn, formatMoney, formatMoneyPlain } from "../work/money.ts";
 import { playbookThreshold } from "../work/playbooks.ts";
 import {
   countedEntry,
@@ -16,9 +19,10 @@ import {
   overdueFor,
   owedInvoices,
   ownerZone,
+  recordName,
 } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
-import { DAY_MS } from "./thresholds.ts";
+import { DAY_MS, WEEK_MS } from "../durations.ts";
 
 export const WEEKLY_RULE =
   "This is the weekly brief, the owner's one post this morning. Kin writes the week's figures into the page as its own section: goals, money, overdue invoices, open quotes, renewals, cold and quiet clients, projects behind and meetings. Below is the rest of the week, for your judgement: how projects moved, last week's meetings, who is overloaded or free, and what falls due next week. In a few short lines: what matters most this week and why, and each decision as what you did or will do and how to stop it. A meeting that already happened is not coming up; a follow-up you set is not a meeting. An overdue invoice's fact says what mail went and what waits on a Confirm, as recorded now: never call something sent a draft.";
@@ -40,7 +44,6 @@ export const isMorningCheckIn = (event: KinEvent) =>
 const EVENING_CHECK_IN = "checkin-evening";
 export const isEveningCheckIn = (event: KinEvent) =>
   event._tag === "pulse" && event.checkIn?.scheduleId === EVENING_CHECK_IN;
-const WEEK_MS = 7 * DAY_MS;
 const FREE_HORIZON_MS = 3 * DAY_MS;
 const LATE_OVERLOAD = 3;
 const CAP = 20;
@@ -70,6 +73,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
   );
 
   const projects = yield* sql<{
+    recordId: string;
     key: string;
     title: string;
     state: string;
@@ -79,7 +83,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     late: number;
     done: number;
     changes: number;
-  }>`SELECT p.key, p.title, p.state, p.due_at AS "dueAt", c.title AS client,
+  }>`SELECT p.record_id AS "recordId", p.key, p.title, p.state, p.due_at AS "dueAt", c.title AS client,
       (SELECT COUNT(*) FROM kin_records t WHERE t.org_id = p.org_id
         AND t.project_id = p.record_id AND t.register_id = 'work'
         AND t.state IN ${sql.in(OPEN)}) AS open,
@@ -99,6 +103,11 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
       AND (p.state = 'open' OR (p.state = 'done' AND p.closed_at >= ${weekAgo}))
     ORDER BY p.due_at IS NULL, p.due_at, p.key
     LIMIT ${CAP}`;
+  const health = yield* projectHealths(
+    orgId,
+    now,
+    projects.map((project) => project.recordId),
+  );
   const byStatus: Record<"behind" | "moving" | "quiet" | "done", Array<string>> = {
     behind: [],
     moving: [],
@@ -106,10 +115,13 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     done: [],
   };
   for (const project of projects) {
+    // Off track, less an overdue invoice or a quiet client: Overdue and Quiet clients list those.
+    const because = health.get(project.recordId)?.because;
+    const waiting = because?.waitingOverAWeek ?? 0;
     const status =
       project.state === "done"
         ? "done"
-        : project.late > 0 || (project.dueAt !== null && project.dueAt < now)
+        : because !== undefined && (because.targetPassed || because.late > 0 || waiting > 0)
           ? "behind"
           : project.changes === 0
             ? "quiet"
@@ -120,6 +132,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
         project.done > 0 ? `${project.done} done this week` : null,
         project.state === "done" ? null : `${project.open} open`,
         project.late > 0 ? `${project.late} late` : null,
+        waiting > 0 ? `${waiting} waiting over a week` : null,
         project.dueAt === null ? null : `target ${dayIn(project.dueAt, zone)}`,
       ]
         .filter((part) => part !== null)
@@ -169,7 +182,9 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     minor: number | null;
     currency: string | null;
     state: string;
-  }>`SELECT r.key, c.title AS client, r.amount_minor AS minor, r.currency, r.state
+    number: unknown;
+  }>`SELECT r.key, c.title AS client, r.amount_minor AS minor, r.currency, r.state,
+      json_extract(r.fields_json, '$.number') AS number
     FROM kin_records r
     LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
     WHERE r.org_id = ${orgId} AND r.register_id = 'quotes' AND r.state IN ('open', 'waiting')
@@ -251,7 +266,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
   })).facts.filter((fact) => fact.sense === "client_cold" || fact.sense === "client_quiet");
 
   const unpaidLine = (one: (typeof owed)[number]) =>
-    `${one.key}${one.partyTitle === null ? "" : ` ${one.partyTitle}`}: ${formatMoney(one.balance)} ${
+    `${recordName(one.key, one.number)}${one.partyTitle === null ? "" : ` ${one.partyTitle}`}: ${formatMoney(one.balance)} ${
       one.dueAt === null
         ? "unpaid, no due date"
         : isOverdue(one)
@@ -269,7 +284,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
       unpaid: owed.map(unpaidLine),
       openQuotes: quotes.map(
         (one) =>
-          `${one.key}${one.client === null ? "" : ` ${one.client}`}${one.minor === null || one.currency === null ? "" : `: ${formatMoney({ minor: one.minor, currency: one.currency })}`}, ${one.state === "open" ? "draft, not sent" : "sent, no answer yet"}`,
+          `${recordName(one.key, one.number)}${one.client === null ? "" : ` ${one.client}`}${one.minor === null || one.currency === null ? "" : `: ${formatMoney({ minor: one.minor, currency: one.currency })}`}, ${one.state === "open" ? "draft, not sent" : "sent, no answer yet"}`,
       ),
       renewalsThisMonth: [
         ...renewals.map((one) => `${one.on} ${one.key} ${one.title} renews`),
@@ -325,6 +340,93 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
   };
 });
 
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+/** "a, b and c", or "a, and b" for two parts led by a clause of their own. */
+const listed = (parts: ReadonlyArray<string>) =>
+  parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+
+/**
+ * The pipeline's three lines on Monday's page (Settings → Check-ins, the weekly brief's switch),
+ * at the owner level, over [from, now): each amount in its own currency; beside a foreign one,
+ * only when the line has a second currency, its estimate at the owner's rate and that rate's day.
+ */
+export const pipelineLines = Effect.fn("KinWeekly.pipeline")(function* (
+  orgId: KinOrgId,
+  from: number,
+  now: number,
+) {
+  const counts = yield* mondayCounts(orgId, from, now);
+  const home = yield* homeCurrency(orgId);
+  const { rates } = yield* readProfile(orgId);
+  const valued = (rows: typeof counts.open) =>
+    rows
+      .flatMap((row) =>
+        row.currency === null || row.minor === null
+          ? []
+          : [{ money: { minor: row.minor, currency: row.currency }, count: row.count }],
+      )
+      .toSorted((a, b) =>
+        a.money.currency === b.money.currency
+          ? 0
+          : a.money.currency === home
+            ? -1
+            : b.money.currency === home
+              ? 1
+              : a.money.currency.localeCompare(b.money.currency),
+      );
+  /** " (about €20,300 at your rate of 17 Nov)" beside a foreign amount that has a rate. */
+  const about = (money: KinMoney, several: boolean) => {
+    const rate = rates.find((one) => one.currency === money.currency);
+    const estimate =
+      !several || money.currency === home || rate === undefined
+        ? undefined
+        : aboutTotal([{ minor: 0, currency: home }, money], home, rates);
+    return estimate === undefined || estimate.missing.length > 0
+      ? ""
+      : ` (about ${formatMoneyPlain(estimate.total)} at your rate of ${formatKinWhen(
+          Date.parse(`${rate!.asOf}T12:00:00Z`),
+          "date",
+          { zone: "UTC", locale: KIN_TEXT_LOCALE },
+        )})`;
+  };
+  const total = (rows: typeof counts.open) => rows.reduce((sum, row) => sum + row.count, 0);
+
+  const open = valued(counts.open);
+  const unvalued = total(counts.open) - open.reduce((sum, one) => sum + one.count, 0);
+  const several = open.length > 1;
+  const openParts = open.map((one, index) =>
+    index === 0
+      ? `${formatMoneyPlain(one.money)} open in ${plural(one.count, "deal", "deals")}${about(one.money, several)}`
+      : `${formatMoneyPlain(one.money)} in ${one.count}${about(one.money, several)}`,
+  );
+  const pipeline =
+    total(counts.open) === 0
+      ? "no open deals"
+      : open.length === 0
+        ? `${plural(unvalued, "open deal", "open deals")}, none with a value yet`
+        : `${openParts.length < 2 ? openParts.join("") : `${openParts.slice(0, -1).join(", ")}, and ${openParts.at(-1)}`}${
+            unvalued === 0 ? "" : `; ${unvalued} more with no value yet`
+          }`;
+  const closed = (verb: string, rows: typeof counts.open) => {
+    const values = valued(rows);
+    return `${verb} ${total(rows)}${
+      values.length === 0
+        ? ""
+        : ` for ${listed(values.map((one) => `${formatMoneyPlain(one.money)}${about(one.money, values.length > 1)}`))}`
+    }`;
+  };
+  const lateCount = counts.late.reduce((sum, one) => sum + one.count, 0);
+  return [
+    `Pipeline: ${pipeline}.`,
+    `Last week: ${closed("won", counts.won)}, ${closed("lost", counts.lost)}; ${plural(counts.added, "new deal", "new deals")}.`,
+    `Follow-ups late: ${
+      lateCount === 0
+        ? "none"
+        : `${lateCount} (${counts.late.map((one) => `${one.name} ${one.count}`).join(", ")})`
+    }.`,
+  ];
+});
+
 export const WEEK_FIGURES_TITLE = "The week, from Kin's records";
 
 /**
@@ -358,6 +460,9 @@ export const weeklyFigures = Effect.fn("KinWeekly.figures")(function* (input: {
     block("Invoices not yet due", notYetDue),
     block("Open quotes", week.money.openQuotes, "none"),
     block("Renewals this month", week.money.renewalsThisMonth, "none"),
+    (yield* weeklyPipelineOf(input.orgId))
+      ? yield* pipelineLines(input.orgId, input.now - WEEK_MS, input.now)
+      : [],
     block("Cold clients", week.clients.cold),
     block("Quiet clients", week.clients.quiet),
     block("Behind", week.projects.behind ?? []),

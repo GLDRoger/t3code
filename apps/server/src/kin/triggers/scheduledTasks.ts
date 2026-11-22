@@ -51,10 +51,13 @@ import { queueCheckIn } from "../pulse/checkIn.ts";
 import { missedCheckIns } from "../pulse/checkInCatchUp.ts";
 import { followOwnerZone, seedCheckIns } from "../pulse/checkInSeeds.ts";
 import { fromConnections, noOutside } from "../pulse/outside.ts";
+import { alertsOnMail } from "../work/statements/alertMail.ts";
 import { cardChatFor, firingOrigin } from "./deferralOrigin.ts";
 import { hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinSchedules from "./kinSchedules.ts";
+import { pauseTriggers } from "./KinTriggerStore.ts";
+import { MINUTE_MS } from "../durations.ts";
 
 /** A run more than this late (the host was off) is skipped; the next slot runs as usual. */
 const SCHEDULED_RUN_LATE_MS = 2 * 60 * 60_000;
@@ -169,9 +172,7 @@ export const syncScheduledTasks = Effect.fn("KinScheduledTasks.sync")(function* 
     yield* sql`UPDATE kin_scheduled_tasks SET state = 'disarmed', run_now_at = NULL,
           updated_at = ${now}
         WHERE org_id = ${orgId} AND item_id = ${itemId} AND state <> 'disarmed'`;
-    yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
-          updated_at = max(updated_at, ${now})
-        WHERE org_id = ${orgId} AND trigger_id = ${scheduledTaskTriggerId(itemId)}`;
+    yield* pauseTriggers(orgId, [scheduledTaskTriggerId(itemId)], now);
     const widget = yield* repo.getWidget({ orgId, widgetId: scheduledTaskWidgetId(orgId, itemId) });
     if (Option.isSome(widget) && widget.value.closedAt === null) {
       const card = yield* decodeCard(widget.value.state);
@@ -314,10 +315,10 @@ const make = Effect.gen(function* () {
       Effect.provideService(SqlClient.SqlClient, sql),
     );
   const routineContent = yield* Effect.serviceOption(RoutineContent.KinRoutineContent);
-  const outsideSource = Option.match(yield* Effect.serviceOption(KinConnections), {
-    onNone: () => noOutside,
-    onSome: (connections) => fromConnections(connections, sql),
-  });
+  const connections = yield* Effect.serviceOption(KinConnections);
+  const outsideSource = Option.isNone(connections)
+    ? noOutside
+    : fromConnections(connections.value, sql, yield* alertsOnMail(connections.value));
 
   const notice = (orgId: KinOrgId, chatId: KinChatId, runId: string, body: string, now: number) =>
     repo
@@ -604,27 +605,33 @@ const make = Effect.gen(function* () {
       }
       const every = KinSchedules.everyOf(task, row.looseAt) ?? card?.every;
       if (every === undefined) continue;
-      const lead = yield* scheduleLead(orgId, row.agentId);
-      const chatId = yield* cardChatFor(sql, orgId, row.chatId, lead?.ownerChatId ?? null);
+      // A check-in has no card to post (`writeCard`).
+      if (Option.isNone(widget) && row.checkIn === 1) continue;
       const enabled = row.pendingEnabled === null ? task.enabled === 1 : row.pendingEnabled === 1;
+      const state = {
+        itemId: row.scheduleId,
+        title: task.title,
+        every,
+        timeZone: KinSchedules.hostTimeZone(),
+        status: enabled ? ("active" as const) : ("paused" as const),
+        nextRunAt: enabled ? task.nextRunAt : null,
+        around: KinSchedules.isAround(task, row.looseAt),
+        lastRun: card?.lastRun ?? null,
+      };
+      // Most passes change nothing: an open card that already reads so is left without a write.
+      if (
+        card !== undefined &&
+        Option.isSome(widget) &&
+        widget.value.closedAt === null &&
+        (yield* cardJson(card)) === (yield* cardJson(state))
+      )
+        continue;
+      const lead = Option.isSome(widget) ? undefined : yield* scheduleLead(orgId, row.agentId);
+      const chatId = Option.isSome(widget)
+        ? null
+        : yield* cardChatFor(sql, orgId, row.chatId, lead?.ownerChatId ?? null);
       yield* sql.withTransaction(
-        write({
-          orgId,
-          itemId: row.scheduleId,
-          chatId,
-          state: {
-            itemId: row.scheduleId,
-            title: task.title,
-            every,
-            timeZone: KinSchedules.hostTimeZone(),
-            status: enabled ? "active" : "paused",
-            nextRunAt: enabled ? task.nextRunAt : null,
-            around: KinSchedules.isAround(task, row.looseAt),
-            lastRun: card?.lastRun ?? null,
-          },
-          closed: false,
-          now,
-        }),
+        write({ orgId, itemId: row.scheduleId, chatId, state, closed: false, now }),
       );
     }
   });
@@ -886,6 +893,7 @@ const make = Effect.gen(function* () {
 
   yield* KinSchedules.watchStrayTasks().pipe(Effect.forkScoped);
   const seeded = new Set<string>();
+  const lastMinutely = new Map<string, number>();
   yield* ticks.register(
     "kin-scheduled-tasks",
     Effect.gen(function* () {
@@ -893,11 +901,16 @@ const make = Effect.gen(function* () {
         orgId: string;
       }>`SELECT org_id AS "orgId" FROM kin_orgs ORDER BY org_id`;
       for (const { orgId } of orgs) {
-        yield* ensureLeadProjects(KinOrgId.make(orgId)).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("Kin lead projects scan failed", { orgId, cause }),
-          ),
-        );
+        const now = yield* Clock.currentTimeMillis;
+        // Lead projects and the owner's zone change rarely and matter at minute grain.
+        const minutely = now - (lastMinutely.get(orgId) ?? -Infinity) >= MINUTE_MS;
+        if (minutely) lastMinutely.set(orgId, now);
+        if (minutely)
+          yield* ensureLeadProjects(KinOrgId.make(orgId)).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Kin lead projects scan failed", { orgId, cause }),
+            ),
+          );
         if (!seeded.has(orgId))
           yield* seedCheckIns(KinOrgId.make(orgId), schedules).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
@@ -910,7 +923,7 @@ const make = Effect.gen(function* () {
               Effect.logWarning("Kin default check-ins not written", { orgId, cause }),
             ),
           );
-        else
+        else if (minutely)
           yield* followOwnerZone(KinOrgId.make(orgId), schedules).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.catch((cause) =>

@@ -59,6 +59,7 @@ export const askedByTeammate = (event: KinEvent, ownerLevel: ReadonlySet<string>
   ("origin" in event &&
     event.origin?.personId !== undefined &&
     !ownerLevel.has(event.origin.personId)) ||
+  (event._tag === "github" && event.askedBy !== undefined && !ownerLevel.has(event.askedBy)) ||
   (event.provenance._tag === "human" && !ownerLevel.has(event.provenance.personId));
 type Charge = {
   readonly orgId: KinOrgId;
@@ -184,6 +185,12 @@ export class KinBudget extends Context.Service<
       readonly usage: ReadonlyArray<Usage>;
     }) => Effect.Effect<Charge, BudgetError>;
     /** A delegated task's thread bills `workerUnits` only, on the day it was first charged. */
+    /** A nightly dream turn's usage, against the agents' limit as the owner's own work. */
+    readonly chargeDream: (input: {
+      readonly orgId: KinOrgId;
+      readonly threadId: ThreadId;
+      readonly usage: ReadonlyArray<Usage>;
+    }) => Effect.Effect<{ readonly day: string; readonly units: number }, BudgetError>;
     readonly chargeTask: (input: {
       readonly orgId: KinOrgId;
       readonly threadId: ThreadId;
@@ -241,7 +248,9 @@ const make = Effect.gen(function* () {
             AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.origin.personId')"))})
           OR (json_extract(e.json, '$.provenance._tag') = 'human'
             AND json_extract(e.json, '$.provenance.personId') <> a.owner_person_id
-            AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.provenance.personId')"))})))`;
+            AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.provenance.personId')"))})
+          OR (e.tag = 'github' AND json_extract(e.json, '$.askedBy') <> a.owner_person_id
+            AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.askedBy')"))})))`;
   const waiting = (orgId: KinOrgId) =>
     heldWork(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const limitsOf = Effect.fn("KinBudget.limitsOf")(function* (stored: string | null) {
@@ -268,6 +277,16 @@ const make = Effect.gen(function* () {
       WHERE b.org_id = ${orgId} AND b.day = ${day}`;
     if (row === undefined) return yield* notFound;
     const teammates = row.teammates;
+    // Whether turns found their fixed prefix cached: the day's input against its cached part.
+    const [input] = full
+      ? yield* sql<{ inputTokens: number; cachedInputTokens: number }>`
+          SELECT COALESCE(SUM(json_extract(u.value, '$.turnTokenUsage.inputTokens')), 0)
+              AS "inputTokens",
+            COALESCE(SUM(json_extract(u.value, '$.turnTokenUsage.cachedInputTokens')), 0)
+              AS "cachedInputTokens"
+          FROM kin_budget_charges c, json_each(c.tokens_json) u
+          WHERE c.org_id = ${orgId} AND c.day = ${day}`
+      : [];
     return {
       orgId,
       day,
@@ -278,6 +297,8 @@ const make = Effect.gen(function* () {
       ...(full
         ? {
             ownerUnits: Math.max(0, row.leadUnits - teammates),
+            inputTokens: input?.inputTokens ?? 0,
+            cachedInputTokens: input?.cachedInputTokens ?? 0,
             teammateUnits: teammates,
             usual: USUAL_LIMITS,
             waiting: yield* waiting(orgId),
@@ -678,6 +699,37 @@ const make = Effect.gen(function* () {
             units: chargedUnits,
             tokensJson,
           };
+        }),
+      );
+    }, Effect.mapError(mapError)),
+    chargeDream: Effect.fn("KinBudget.chargeDream")(function* (input) {
+      const units = yield* measure(input.usage, { orgId: input.orgId, threadId: input.threadId });
+      const tokensJson = yield* encodeJson(usageJsonValue(input.usage));
+      const { day } = yield* period(input.orgId);
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const [stored] = yield* sql<{
+            day: string;
+            units: number;
+            tokensJson: string;
+          }>`SELECT day, units, tokens_json AS "tokensJson" FROM kin_dream_charges WHERE org_id = ${input.orgId} AND thread_id = ${input.threadId} ORDER BY thread_id`;
+          if (stored !== undefined && (stored.tokensJson === tokensJson || units <= stored.units))
+            return { day: stored.day, units: stored.units };
+          const delta = Math.max(0, units - (stored?.units ?? 0));
+          const charged = stored?.day ?? day;
+          yield* ensure(input.orgId, charged);
+          const before = yield* snapshot(input.orgId, charged);
+          if (!Number.isFinite(before.leadUnits + delta)) return yield* invalid;
+          yield* sql`INSERT INTO kin_dream_charges (org_id, thread_id, day, units, tokens_json)
+            VALUES (${input.orgId}, ${input.threadId}, ${charged}, ${units}, ${tokensJson})
+            ON CONFLICT (org_id, thread_id) DO UPDATE SET units = excluded.units,
+              tokens_json = excluded.tokens_json`;
+          yield* sql`UPDATE kin_budget SET lead_units = lead_units + ${delta} WHERE org_id = ${input.orgId} AND day = ${charged}`;
+          const limit = before.limits.leadUnits;
+          const ownerSpent = Math.max(0, before.leadUnits - before.teammates) + delta;
+          if (limit !== null && limit > 0 && ownerSpent >= WARN_AT * limit)
+            yield* ownerNotice(input.orgId, "warning");
+          return { day: charged, units };
         }),
       );
     }, Effect.mapError(mapError)),

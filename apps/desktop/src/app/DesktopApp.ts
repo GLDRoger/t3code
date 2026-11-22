@@ -41,6 +41,7 @@ import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopSnapShot from "../snapShot/DesktopSnapShot.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
+import * as KinShell from "../kin/KinShell.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { msg } from "gt-i18n";
 import { m } from "../i18n/messages.ts";
@@ -179,6 +180,8 @@ const startLocalBackend = Effect.gen(function* () {
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   yield* logBootstrapInfo("bootstrap start");
+  const kinShell = yield* Effect.serviceOption(KinShell.KinShell);
+  if (Option.isSome(kinShell)) return yield* kinShell.value.start;
 
   const settings = yield* desktopSettings.get;
   const electronProtocol = yield* ElectronProtocol.ElectronProtocol;
@@ -284,6 +287,10 @@ const bootstrap = Effect.fn("desktop.bootstrap")(function* (backendStarted: bool
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   const snapShot = yield* DesktopSnapShot.DesktopSnapShot;
   const appActivation = yield* DesktopAppActivation.DesktopAppActivation;
+  // Kin's window is the team's host: no local server, command, snap shot or activation socket.
+  if (Option.isSome(yield* Effect.serviceOption(KinShell.KinShell))) {
+    return yield* desktopWindow.createMainIfBackendReady;
+  }
   const settings = yield* desktopSettings.get;
   const startAppActivation = appActivation.start.pipe(
     Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),

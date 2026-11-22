@@ -51,6 +51,7 @@ import {
   stampEvent,
 } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { readProfile } from "../work/companyProfile.ts";
 import { presetDefinition } from "../work/registers.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
 import {
@@ -66,7 +67,7 @@ import { guarded } from "./EgressGuard.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
 import * as McpGateway from "./McpGateway.ts";
 import { KinConnectionsToolkit } from "./mcp.ts";
-import { GOOGLE_SCOPES } from "./Google.ts";
+import { GOOGLE_SCOPES, googleGrant, googleMail } from "./Google.ts";
 import { challengeOf } from "./OAuth.ts";
 import { promptLine } from "./ConnectionRows.ts";
 import { staleAsksStranded } from "./strandedAsks.ts";
@@ -568,44 +569,6 @@ describe("KinConnections", () => {
     ),
   );
 
-  it.effect("reports GitHub activity from the events the owner's watch queued", () =>
-    withFake(BASE, () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
-            auth, reach, state, created_at, updated_at)
-          VALUES (${orgId}, 'gh', 'github', 'GitHub', 'remote', 'api.githubcopilot.com', 'none',
-            'open', 'active', 1, 1)`;
-        const github = (id: string, at: number) =>
-          sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
-              queued_at, state)
-            VALUES (${id}, ${orgId}, ${lead}, 'github', 'P2', ${JSON.stringify({
-              repo: "acme/app",
-              deliveryId: `poll:${id}`,
-              eventName: "mention",
-              summary: `mention on acme/app#7 by alice`,
-            })}, ${at}, ${at}, 'done')`;
-        yield* github("seen", 0);
-        yield* TestClock.adjust("1 hour");
-        yield* github("new", 60_000);
-        const activity = yield* (yield* KinConnections).activity(orgId, "gh");
-        assert.strictEqual(activity._tag, "github");
-        if (activity._tag !== "github") return;
-        // The chat event the seed queued and the one at the cursor's start are not GitHub news.
-        assert.deepStrictEqual(activity.deliveries, [
-          {
-            fireId: "new",
-            repo: "acme/app",
-            deliveryId: "poll:new",
-            receivedAt: 60_000,
-            eventName: "mention",
-            summary: "mention on acme/app#7 by alice",
-          },
-        ]);
-      }),
-    ),
-  );
-
   it.effect("keeps the key only in the secret store", () =>
     withFake(BASE, () =>
       Effect.gen(function* () {
@@ -938,11 +901,13 @@ describe("KinConnections", () => {
           yield* markRead(custom.connection.connectionId, ["query"]);
 
           assert.isTrue(yield* outsideToolAllowed(turn, "delegate_task", {}));
+          assert.isTrue(yield* outsideToolAllowed(turn, "payment_record", {}));
           // Before any outside text, an open-world tool marked Read runs as the owner set it.
           assert.include((yield* call(posthog, "search_web")).quoted ?? "", "found");
           assert.isTrue(yield* outsideRead(turn));
           assert.isFalse(yield* outsideToolAllowed(turn, "delegate_task", {}));
           assert.isFalse(yield* outsideToolAllowed(turn, "t3_thread_send", {}));
+          assert.isFalse(yield* outsideToolAllowed(turn, "payment_record", {}));
           assert.isFalse(yield* outsideToolAllowed(turn, "not_a_listed_tool", {}));
           assert.isTrue(yield* outsideToolAllowed(turn, "kin_chat_post", {}));
           assert.isTrue(yield* outsideToolAllowed(turn, "kin_document", { recipe: "invoice" }));
@@ -1733,6 +1698,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
     refreshes: 0,
     revoked: false,
     googleRequests: [] as Array<URL>,
+    /** A Web app's secret at Microsoft; null for a public client, which redeems with PKCE alone. */
+    microsoftSecret: null as string | null,
     /** The scopes Google says it granted; none, as from a sign-in before Kin could send. */
     scope: undefined as string | undefined,
     sent: [] as Array<{
@@ -1898,8 +1865,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
       }
       if (url.origin === "https://login.microsoftonline.com") {
         const form = new URLSearchParams(await request.clone().text());
-        // A public client: the code is redeemed with PKCE alone.
-        if (form.has("client_secret")) return json({ error: "invalid_request" }, 400);
+        if (form.get("client_secret") !== vendor.microsoftSecret)
+          return json({ error: "invalid_client" }, 401);
         return token(request);
       }
       if (url.host === "graph.microsoft.com") {
@@ -2309,8 +2276,11 @@ describe("KinConnections sign-in", () => {
         assert.strictEqual(url.host, "accounts.google.com");
         assert.strictEqual(url.searchParams.get("client_id"), GOOGLE_CLIENT);
         assert.strictEqual(url.searchParams.get("access_type"), "offline");
-        assert.include(url.searchParams.get("scope") ?? "", "gmail.readonly");
-        assert.include(url.searchParams.get("scope") ?? "", "gmail.send");
+        assert.deepStrictEqual(url.searchParams.get("scope")?.split(" "), [
+          "https://www.googleapis.com/auth/gmail.modify",
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.readonly",
+        ]);
         const done = yield* connections.signInFinish(owner, {
           orgId,
           response: vendor.approve(started.authorizationUrl, null),
@@ -2548,6 +2518,8 @@ describe("KinConnections sending", () => {
               name: "INV-26-27-001.pdf",
               label: "Invoice INV/26-27/001 · ₹1,18,000.00",
               bytes: PDF(1).length,
+              // The company has no bank details: the card says the invoice can't say how to pay.
+              bankMissing: true,
             },
           ],
           outcome: null,
@@ -2602,6 +2574,20 @@ describe("KinConnections sending", () => {
             json_extract(result_json, '$.threadId') AS "threadId"
           FROM kin_connection_asks WHERE entry_record_id = 'rec_inv' AND state = 'sent'`;
         assert.deepStrictEqual(onInvoice, [{ to: '["ana@client.example"]', threadId: "t-sent" }]);
+
+        // With a UPI id or an account to be paid to, an invoice card carries no such line.
+        const { rev: _rev, updatedAt: _at, ...company } = yield* readProfile(orgId);
+        yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+            updated_by_kind, updated_by_id)
+          VALUES (${orgId}, ${JSON.stringify({ ...company, bank: { ...company.bank, upi: "invented@bank" } })},
+            1, 1, 'person', ${ownerId})`;
+        yield* sendCall("mail_send", {
+          to: ["ana@client.example"],
+          subject: "Invoice INV/26-27/001, again",
+          body,
+          attachments: ["INV-1"],
+        });
+        assert.notProperty(cards.at(-1)!.send!.attachments[0], "bankMissing");
       }),
     ),
   );
@@ -2952,6 +2938,78 @@ describe("KinConnections sending", () => {
     ),
   );
 
+  it.effect(
+    "deleting a doc closes the open send card carrying it: it can't be confirmed, and bringing the doc back doesn't reopen it",
+    () =>
+      withGoogle((vendor, cards) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* connectGoogle(vendor);
+          const mail = { to: ["ana@client.example"], subject: "Invoice", attachments: ["DOC-1"] };
+          yield* sendCall("mail_send", { ...mail, body: "Attached." });
+          const open = cards.at(-1)!.widgetId;
+          const closed: Array<{
+            readonly widgetId: string;
+            readonly title?: string;
+            readonly text?: string;
+          }> = [];
+          yield* sql.withTransaction(
+            Effect.andThen(
+              sql`UPDATE kin_records SET state = 'dropped'
+                WHERE org_id = ${orgId} AND record_id = 'rec_doc'`,
+              closeSubject(
+                {
+                  orgId,
+                  recordId: "rec_doc",
+                  key: "DOC-1",
+                  registerId: "docs",
+                  state: "dropped",
+                  sparing: [],
+                  now: 2,
+                },
+                {
+                  closeReplaced: (input) =>
+                    Effect.sync(
+                      () =>
+                        void closed.push({
+                          widgetId: input.widgetId,
+                          ...(input.outcome?.title === undefined
+                            ? {}
+                            : { title: input.outcome.title }),
+                          ...(input.outcome?.text === undefined
+                            ? {}
+                            : { text: input.outcome.text }),
+                        }),
+                    ),
+                },
+              ),
+            ),
+          );
+          assert.deepStrictEqual(closed, [
+            {
+              widgetId: open,
+              title: "Deleted with its draft",
+              text: "Deleted with its draft: DOC-1 was deleted.",
+            },
+          ]);
+          assert.deepStrictEqual(
+            yield* sql`SELECT state, reason FROM kin_connection_asks WHERE widget_id = ${open}`,
+            [{ state: "stale", reason: "DOC-1 was deleted, so nothing was sent." }],
+          );
+          assert.include(yield* answer(open, ownerId, true).pipe(Effect.flip), {
+            reason: "widget_changed",
+          });
+          // Brought back, the card stays closed and the same call is told why.
+          yield* sql`UPDATE kin_records SET state = 'open'
+            WHERE org_id = ${orgId} AND record_id = 'rec_doc'`;
+          assert.deepInclude(yield* sendCall("mail_send", { ...mail, body: "Attached." }), {
+            note: "The card for this exact action was closed: DOC-1 was deleted, so nothing was sent.",
+          });
+          assert.lengthOf(vendor.vendor.sent, 0);
+        }),
+      ),
+  );
+
   it.effect("a co-owner made a member strands no card in a chat that is no longer owner-only", () =>
     withGoogle((vendor, cards) =>
       Effect.gen(function* () {
@@ -3035,6 +3093,36 @@ describe("KinConnections sending", () => {
       }),
     ),
   );
+
+  it("reads what a Google grant allows from either family of scopes", () => {
+    const auth = (...names: ReadonlyArray<string>) =>
+      names.map((name) => `https://www.googleapis.com/auth/${name}`).join(" ");
+    const cases = [
+      { granted: GOOGLE_SCOPES, allows: [true, true, true, true], sends: true },
+      {
+        granted: auth(
+          "gmail.readonly",
+          "gmail.send",
+          "calendar.events.readonly",
+          "calendar.events",
+        ),
+        allows: [true, true, true, true],
+        sends: true,
+      },
+      { granted: auth("gmail.readonly"), allows: [true, false, false, false], sends: false },
+      { granted: auth("calendar.readonly"), allows: [false, false, true, false], sends: false },
+      { granted: undefined, allows: [false, false, false, false], sends: false },
+    ];
+    for (const { granted, allows, sends } of cases) {
+      const grant = googleGrant(granted);
+      assert.deepStrictEqual(
+        [grant.readsMail, grant.sendsMail, grant.readsCalendar, grant.writesCalendar],
+        allows,
+        granted,
+      );
+      assert.strictEqual(googleMail.canSend(granted), sends, granted);
+    }
+  });
 });
 
 /** A second Google account, signed in with the same client, its send tools marked Ask me. */
@@ -3227,6 +3315,33 @@ describe("KinConnections accounts", () => {
             : [],
           [WORK_MAIL, ["billing@work.example"]],
         );
+        // The server's own thread read, for bank alerts, goes as far as the owner's Read does.
+        const readThread = () =>
+          connections
+            .readThread(orgId, work.connectionId, "t2")
+            .pipe(Effect.map((messages) => messages.map((one) => one.messageId)));
+        const setRead = (mode: "read" | "off") =>
+          Effect.gen(function* () {
+            const shown = yield* connections.get(owner, {
+              orgId,
+              connectionId: work.connectionId,
+            });
+            yield* connections.setToolModes(owner, {
+              orgId,
+              connectionId: work.connectionId,
+              modes: [
+                {
+                  tool: "mail_read_thread",
+                  mode,
+                  digest: shown.tools.find((one) => one.name === "mail_read_thread")?.pinDigest,
+                },
+              ],
+            });
+          });
+        yield* setRead("off");
+        assert.deepStrictEqual(yield* readThread(), []);
+        yield* setRead("read");
+        assert.deepStrictEqual(yield* readThread(), ["<m2@client2.example>"]);
 
         // A reply: only in its own account, from the alias it reached, quoted as Gmail does.
         const unknown = yield* sendCall("mail_reply", { threadId: "t9", body: "Resent." }).pipe(
@@ -3287,14 +3402,23 @@ describe("KinConnections accounts", () => {
           VALUES (${orgId}, 'rec_client', 'clients', 'C-1', 'Invented Two', 'person', ${ownerId},
             'person', 'c1', 0, 0, NULL, '{}'),
             (${orgId}, 'rec_raj', 'contacts', 'CT-1', 'Raj', 'person', ${ownerId}, 'person',
-            'ct1', 0, 0, 'rec_client', '{"email":"Raj@Client2.example"}')`;
+            'ct1', 0, 0, 'rec_client', '{"email":"Raj@Client2.example"}'),
+            (${orgId}, 'rec_client3', 'clients', 'C-2', 'Invented Three', 'person', ${ownerId},
+            'person', 'c2', 0, 0, NULL, '{}'),
+            (${orgId}, 'rec_raj3', 'contacts', 'CT-2', 'Raj', 'person', ${ownerId}, 'person',
+            'ct2', 0, 0, 'rec_client3',
+            '{"email":"raj@three.example","emails":["raj@three.example","RAJ@client2.example"]}')`;
         const replied = yield* answer(reply.widgetId, ownerId, true);
         yield* connections.sendAsk(orgId, replied!.askId);
         yield* connections.sendAsk(orgId, replied!.askId);
+        // Each client whose contact holds the address, as its main email or another one.
         assert.deepStrictEqual(
           yield* sql`SELECT party_id AS "partyId", kind, note, person_id AS "personId"
-            FROM kin_client_touches ORDER BY touch_id`,
-          [{ partyId: "rec_client", kind: "email", note: "Re: PO 77", personId: ownerId }],
+            FROM kin_client_touches ORDER BY party_id`,
+          [
+            { partyId: "rec_client", kind: "email", note: "Re: PO 77", personId: ownerId },
+            { partyId: "rec_client3", kind: "email", note: "Re: PO 77", personId: ownerId },
+          ],
         );
         const sentReply = vendor.vendor.sent.at(-1)!;
         assert.strictEqual(sentReply.account, WORK_MAIL);
@@ -3460,6 +3584,26 @@ describe("KinConnections Microsoft", () => {
 
         const activity = yield* connections.activity(orgId, id);
         assert.strictEqual(activity._tag, "mail");
+
+        // A Web app the company already had: its secret goes with the code, PKCE as before.
+        vendor.vendor.microsoftSecret = "invented-web-secret";
+        yield* connections.setSignInClient(owner, {
+          orgId,
+          service: "microsoft",
+          client: { clientId: MICROSOFT_APP, clientSecret: Redacted.make("invented-web-secret") },
+        });
+        const again = yield* connections.signInStart(owner, {
+          orgId,
+          connectionId: id,
+          returnTo: "web",
+        });
+        yield* connections.signInFinish(owner, {
+          orgId,
+          response: vendor.approve(again.authorizationUrl, null),
+        });
+        const form = vendor.vendor.tokenForms.at(-1)!;
+        assert.strictEqual(form.get("client_secret"), "invented-web-secret");
+        assert.isTrue(form.has("code_verifier"));
       }),
     ),
   );

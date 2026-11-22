@@ -75,7 +75,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--say "<text>"] [--reply "<text>"] [--hold <s>] [--fail] [--raw]
                                           one real turn, no model: the agent calls the tool
   tool <agent> --script <file.json>       the same with several calls (and "shell"/"sleep" steps)
-  mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id]
+  mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id] [--auth results]
   mail expire <address> [--back]          the account's sign-in stops working (or works again)
   mail signin <address>                   the owner signs that fake account in again, as Settings'
                                           Sign in again does once the vendor approves (fake mailbox only)
@@ -796,7 +796,7 @@ async function main() {
       if (action === "expire") return console.log(mailExpire(instance, rest.slice(1)));
       if (action === "signin") return console.log(await mailSignIn(instance, args.positional[1]));
       throw new VerifyError(
-        "mail sent | mail deliver --to --from --subject --body [--thread] | mail expire <address> [--back] | mail signin <address>",
+        "mail sent | mail deliver --to --from --subject --body [--thread] [--auth] | mail expire <address> [--back] | mail signin <address>",
       );
     }
     case "social":

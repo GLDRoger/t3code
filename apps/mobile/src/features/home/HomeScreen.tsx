@@ -48,7 +48,6 @@ import {
   deriveCenteredContentHorizontalPadding,
 } from "../../lib/layout";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { Button } from "../../components/ui/Button";
 import { FloatingActionButton } from "../../components/ui/FloatingActionButton";
 import type { WorkspaceEnvironment, WorkspaceState } from "../../state/workspaceModel";
 import type { SavedRemoteConnection } from "../../lib/connection";
@@ -126,7 +125,6 @@ interface HomeScreenProps {
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;
   readonly onAddConnection: () => void;
-  readonly onJoinKin: () => void;
   readonly onOpenSettings: () => void;
   readonly onStartNewTask: () => void;
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
@@ -656,18 +654,7 @@ export function HomeScreen(props: HomeScreenProps) {
                 actionLabel={emptyState.showsAddEnvironment ? gt("Add environment") : undefined}
                 onAction={emptyState.showsAddEnvironment ? props.onAddConnection : undefined}
                 action={
-                  !props.catalogState.isLoadingConnections && !props.catalogState.hasConnections ? (
-                    <View className="items-center gap-3">
-                      {/* oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated */}
-                      <Button tone="primary" label="I have a join link" onPress={props.onJoinKin} />
-                      <Button
-                        tone="secondary"
-                        // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-                        label="Set up my own Kin"
-                        onPress={props.onAddConnection}
-                      />
-                    </View>
-                  ) : Platform.OS === "android" && emptyState.showsAddEnvironment ? (
+                  Platform.OS === "android" && emptyState.showsAddEnvironment ? (
                     <FloatingActionButton
                       label={gt("Add environment")}
                       icon="plus"

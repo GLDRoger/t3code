@@ -30,7 +30,7 @@ export const kinAgentModels = (providers: ReadonlyArray<ServerProvider>, otherPr
       provider.models.map((model) => ({ instanceId: provider.instanceId, model })),
     );
 
-const driverOf = (settings: ServerSettings, model: ModelSelection) =>
+export const driverOf = (settings: ServerSettings, model: ModelSelection) =>
   deriveProviderInstanceConfigMap(settings)[model.instanceId]?.driver;
 
 /** An agent runs only on a provider Kin plans its sessions for (`lead/turn/providers.ts`). */

@@ -9,6 +9,8 @@ import {
   KinRecordChange,
   KinRecordId,
   KinRecordKey,
+  KinPartyCreateInput,
+  KinPartyDetail,
   KinRecordRef,
   KinWorkPrincipal,
 } from "./kinWork.ts";
@@ -58,6 +60,22 @@ export const KinDealCan = Schema.Struct({
 });
 export type KinDealCan = typeof KinDealCan.Type;
 
+/** A worry raised on a deal: a short label in the company's own words, and what was said. */
+export const KinDealConcern = Schema.Struct({
+  label: KinTrimmedText.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
+  heard: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(200))),
+});
+export type KinDealConcern = typeof KinDealConcern.Type;
+/** One concern across the deals the reader sees: how many raised it, and how those stand. */
+export const KinDealConcernCount = Schema.Struct({
+  label: KinDealConcern.fields.label,
+  deals: NonNegativeInt,
+  open: NonNegativeInt,
+  won: NonNegativeInt,
+  lost: NonNegativeInt,
+});
+export type KinDealConcernCount = typeof KinDealConcernCount.Type;
+
 export const KinDealRow = Schema.Struct({
   recordId: KinRecordId,
   key: KinRecordKey,
@@ -80,7 +98,11 @@ export const KinDealRow = Schema.Struct({
   /** Private, by its own label or its client's. */
   sensitive: Schema.Boolean,
   next: Schema.NullOr(KinDealNext),
+  /** With `next` null: it has an open follow-up this reader isn't shown. Absent from older hosts. */
+  nextHidden: Schema.optional(Schema.Boolean),
   quote: Schema.optional(KinDealQuote),
+  /** The worries raised on it, in the order they were put; absent from older hosts and when none. */
+  concerns: Schema.optional(Schema.Array(KinDealConcern)),
   can: KinDealCan,
   rev: NonNegativeInt,
   createdAt: IsoDateTime,
@@ -96,14 +118,83 @@ export const KinDealTotals = Schema.Struct({
 });
 export type KinDealTotals = typeof KinDealTotals.Type;
 
+/** A deal as "This week in deals" lists it; `from` and `to` are a move's stage names. */
+export const KinDealWeekRow = Schema.Struct({
+  key: KinRecordKey,
+  title: KinTrimmedText,
+  party: KinTrimmedText,
+  owner: KinWorkPrincipal,
+  value: Schema.optional(KinMoney),
+  from: Schema.optional(Schema.String),
+  to: Schema.optional(Schema.String),
+});
+export type KinDealWeekRow = typeof KinDealWeekRow.Type;
+/** One person's (or agent's) deals by who looks after them. */
+export const KinDealPersonNumbers = Schema.Struct({
+  owner: KinWorkPrincipal,
+  open: KinDealTotals,
+  wonThisMonth: KinDealTotals,
+  /** Open deals whose next step's day is behind today. */
+  late: NonNegativeInt,
+});
+export type KinDealPersonNumbers = typeof KinDealPersonNumbers.Type;
+/**
+ * The Deals tab's figures, counted by the host over the deals the reader sees, each per currency.
+ * Months, the week (from Monday) and today are the company's, in its zone.
+ */
+export const KinDealNumbers = Schema.Struct({
+  /** `2026-11`, and the month before. */
+  month: Schema.String,
+  lastMonth: Schema.String,
+  /** The week's first day, `YYYY-MM-DD`. */
+  weekStart: KinDay,
+  open: KinDealTotals,
+  stages: Schema.Array(Schema.Struct({ name: Schema.String, ...KinDealTotals.fields })),
+  wonThisMonth: KinDealTotals,
+  /** The owner level only, from here on to `late`. */
+  wonLastMonth: Schema.optional(KinDealTotals),
+  lostThisMonth: Schema.optional(KinDealTotals),
+  lostLastMonth: Schema.optional(KinDealTotals),
+  /** Deals decided in the last 90 days, and how many of those were won. */
+  winRate: Schema.optional(Schema.Struct({ won: NonNegativeInt, decided: NonNegativeInt })),
+  /** Prospects added this month, by where they came from (`null`: not said). */
+  sources: Schema.optional(
+    Schema.Array(Schema.Struct({ source: Schema.NullOr(Schema.String), count: NonNegativeInt })),
+  ),
+  late: Schema.optional(NonNegativeInt),
+  /** This week: the owner level's of every deal, a sales person's of their own; absent otherwise. */
+  week: Schema.optional(
+    Schema.Struct({
+      won: Schema.Array(KinDealWeekRow),
+      lost: Schema.Array(KinDealWeekRow),
+      new: Schema.Array(KinDealWeekRow),
+      moved: Schema.Array(KinDealWeekRow),
+      /** Each group's whole count, past the 50 listed. */
+      counts: Schema.Struct({
+        won: NonNegativeInt,
+        lost: NonNegativeInt,
+        new: NonNegativeInt,
+        moved: NonNegativeInt,
+      }),
+    }),
+  ),
+  /** Everyone's for the owner level; a sales person's own only. */
+  people: Schema.Array(KinDealPersonNumbers),
+});
+export type KinDealNumbers = typeof KinDealNumbers.Type;
+
 export const KIN_DEALS_CAP = 1_000;
 export const KinDealsInput = Schema.Struct({
   orgId: KinOrgId,
   /** One client's or prospect's deals, open first. */
   party: Schema.optional(KinRecordKey),
   owner: Schema.optional(KinWorkPrincipal),
-  /** Default every state with `party`, open without it. */
+  /** Only the deals that raised this concern, by its label as What we hear counts it. */
+  concern: Schema.optional(KinDealConcern.fields.label),
+  /** Default every state with `party` or `concern`, open without them. */
   state: Schema.optional(KinDealState),
+  /** The deals a campaign's results count: those at clients and prospects that came from it. */
+  campaign: Schema.optional(KinRecordKey),
 });
 export type KinDealsInput = typeof KinDealsInput.Type;
 export const KinDealsResult = Schema.Struct({
@@ -116,6 +207,16 @@ export const KinDealsResult = Schema.Struct({
   open: KinDealTotals,
   /** Whether the reader may add a deal (on `party`, when given). */
   canCreate: Schema.Boolean,
+  /**
+   * The concerns raised on the deals the reader sees under these filters, whatever their state,
+   * most deals first; absent from older hosts.
+   */
+  concerns: Schema.optional(Schema.Array(KinDealConcernCount)),
+  /**
+   * The figures, whatever the filters: only without `party`, and only once the reader sees a deal;
+   * absent from older hosts.
+   */
+  numbers: Schema.optional(KinDealNumbers),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
 });
@@ -182,6 +283,8 @@ export const KinDealUpdateInput = Schema.Struct({
   owner: Schema.optional(KinWorkPrincipal),
   sensitive: Schema.optional(Schema.Boolean),
   quote: Schema.optional(Schema.NullOr(KinRecordKey)),
+  /** The whole list as it should stand, such as one taken off; empty or null clears them. */
+  concerns: Schema.optional(Schema.NullOr(Schema.Array(KinDealConcern))),
 });
 export type KinDealUpdateInput = typeof KinDealUpdateInput.Type;
 
@@ -208,6 +311,25 @@ export const KinDealResult = Schema.Struct({
 });
 export type KinDealResult = typeof KinDealResult.Type;
 
+/** A new client's first deal, made with it: what it is and about how much. */
+export const KinPartyFirstDeal = Schema.Struct({
+  title: Title,
+  value: KinMoney,
+  /** Default the first stage. */
+  stage: Schema.optional(KinDealStageId),
+  expectedOn: Schema.optional(KinDay),
+  next: Schema.optional(KinDealStepInput),
+});
+export type KinPartyFirstDeal = typeof KinPartyFirstDeal.Type;
+/** A new client and its deal in one step: neither is ever kept without the other. */
+export const KinPartyWithDealCreateInput = Schema.Struct({
+  ...KinPartyCreateInput.fields,
+  deal: KinPartyFirstDeal,
+});
+export type KinPartyWithDealCreateInput = typeof KinPartyWithDealCreateInput.Type;
+export const KinPartyWithDealResult = Schema.Struct({ party: KinPartyDetail, deal: KinDealRow });
+export type KinPartyWithDealResult = typeof KinPartyWithDealResult.Type;
+
 export const KinDealAddStepInput = Schema.Struct({
   orgId: KinOrgId,
   key: KinRecordKey,
@@ -226,8 +348,18 @@ export const KinDealStagesResult = Schema.Struct({
   can: Schema.Boolean,
   /** Open deals in each stage, by stage id, of every deal in the company. */
   open: Schema.Record(Schema.String, NonNegativeInt),
+  /** Days with no contact, note, stage move or next-step change before a deal is quiet; absent from older hosts. */
+  quietDays: Schema.optional(NonNegativeInt),
 });
 export type KinDealStagesResult = typeof KinDealStagesResult.Type;
+
+export const KIN_DEAL_QUIET_DAYS_MAX = 365;
+/** "A deal goes quiet after N days": written to the playbook that sets it. Owner and co-owners. */
+export const KinDealQuietDaysSetInput = Schema.Struct({
+  orgId: KinOrgId,
+  days: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: KIN_DEAL_QUIET_DAYS_MAX })),
+});
+export type KinDealQuietDaysSetInput = typeof KinDealQuietDaysSetInput.Type;
 /**
  * The whole list in its new order: a stage without an id is new. A stage left out is removed, and
  * its open deals move to `moveTo[id]`, each logged.
@@ -246,11 +378,13 @@ const KIN_DEAL_WS_METHODS = {
   deals: "kin.work.deals",
   deal: "kin.work.deal",
   createDeal: "kin.work.createDeal",
+  createPartyWithDeal: "kin.work.createPartyWithDeal",
   updateDeal: "kin.work.updateDeal",
   moveDeal: "kin.work.moveDeal",
   dealStep: "kin.work.dealStep",
   dealStages: "kin.work.dealStages",
   setDealStages: "kin.work.setDealStages",
+  setDealQuietDays: "kin.work.setDealQuietDays",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -260,6 +394,11 @@ export const KinDealRpcs = [
   Rpc.make(KIN_DEAL_WS_METHODS.createDeal, {
     payload: KinDealCreateInput,
     success: KinDealResult,
+    error,
+  }),
+  Rpc.make(KIN_DEAL_WS_METHODS.createPartyWithDeal, {
+    payload: KinPartyWithDealCreateInput,
+    success: KinPartyWithDealResult,
     error,
   }),
   Rpc.make(KIN_DEAL_WS_METHODS.updateDeal, {
@@ -287,6 +426,11 @@ export const KinDealRpcs = [
     success: KinDealStagesResult,
     error,
   }),
+  Rpc.make(KIN_DEAL_WS_METHODS.setDealQuietDays, {
+    payload: KinDealQuietDaysSetInput,
+    success: KinDealStagesResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_DEAL_RPC_SCOPES = {
@@ -294,9 +438,11 @@ export const KIN_DEAL_RPC_SCOPES = {
   [KIN_DEAL_WS_METHODS.deals]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.deal]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.createDeal]: AuthKinChatScope,
+  [KIN_DEAL_WS_METHODS.createPartyWithDeal]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.updateDeal]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.moveDeal]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.dealStep]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.dealStages]: AuthKinChatScope,
   [KIN_DEAL_WS_METHODS.setDealStages]: AuthKinChatScope,
+  [KIN_DEAL_WS_METHODS.setDealQuietDays]: AuthKinChatScope,
 } as const;

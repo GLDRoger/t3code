@@ -47,11 +47,17 @@ text:
     from: com.t3tools.t3code.preview
     to: com.gldroger.kin.preview
     exact: true
-  - files: [apps/mobile/app.config.ts, apps/desktop/src/electron/ElectronProtocol.ts]
+  - files:
+      - apps/mobile/app.config.ts
+      - apps/desktop/src/electron/ElectronProtocol.ts
+      - apps/desktop/src/kin/appPage.ts
     from: t3code
     to: kin
     exact: true
-  - files: [apps/mobile/app.config.ts, apps/desktop/src/electron/ElectronProtocol.ts]
+  - files:
+      - apps/mobile/app.config.ts
+      - apps/desktop/src/electron/ElectronProtocol.ts
+      - apps/desktop/src/kin/appPage.ts
     from: t3code-dev
     to: kin-dev
     exact: true
@@ -61,7 +67,7 @@ text:
     exact: true
   # Kin's mobile app is Kin and nothing else: no coding threads, tabs or settings. Coding lives in
   # the T3 Code app. See KIN_ONLY in apps/mobile/src/lib/kinOnly.ts.
-  - files: [apps/mobile/app.config.ts, apps/mobile/src/lib/kinOnly.ts]
+  - files: [apps/mobile/src/lib/kinOnly.ts]
     from: "kin-only:off"
     to: "kin-only:on"
     exact: true
@@ -300,9 +306,18 @@ text:
     to: "'.kin', 'device'"
 
   # Desktop: product name, app id, URL schemes, data folders.
+  # Named Kin, never "Kin (Beta)": the bundle name comes from productName (see the guard on
+  # DesktopEnvironment.ts in scripts/lib/kinBrandGuards.ts for the window and menu name).
   - files: [apps/desktop/package.json]
-    from: T3 Code
+    from: T3 Code (Beta)
     to: Kin
+    exact: true
+  # Kin's desktop app is a window on the team's own Kin host, joined with a link: no bundled
+  # server, projects or provider set-up. See apps/desktop/src/kin/KinDesktopOnly.ts.
+  - files: [apps/desktop/src/kin/KinDesktopOnly.ts, scripts/lib/kinDesktopBuild.ts]
+    from: "kin-desktop:off"
+    to: "kin-desktop:on"
+    exact: true
   - files: [apps/desktop/src/app/DesktopEnvironment.ts]
     from: T3 Code
     to: Kin
@@ -423,7 +438,24 @@ text:
       Kin is an open-source desktop app for coding agents. Work with your existing agent subscriptions,
       review code changes, and run commands in your projects. Connect from desktop, web, or mobile to
       continue working remotely.
-    to: "Kin: AI team leads in chat, built on T3 Code."
+    to: "Kin: AI team leads in chat."
+  # Windows' file properties (CompanyName, copyright) and the uninstall entry's publisher; Kin's
+  # name, as the .deb maintainer above.
+  - files: [scripts/build-desktop-artifact.ts]
+    from: T3 Tools
+    to: Kin
+    exact: true
+  # The launcher's StartupWMClass, read from the running Linux app's window (WM_CLASS
+  # "com.gldroger.kin", "com.gldroger.Kin"), so docks match the window to Kin's launcher.
+  - files: [scripts/build-desktop-artifact.ts]
+    from: com.t3tools.T3Code
+    to: com.gldroger.Kin
+    exact: true
+  # Windows' uninstall entry shows this as its support and "more info" links; Kin's source.
+  - files: [scripts/build-desktop-artifact.ts]
+    from: https://t3.codes
+    to: https://github.com/GLDRoger/t3code
+    exact: true
   - files: [scripts/build-desktop-artifact.ts]
     from: T3-Code-
     to: Kin-
@@ -694,6 +726,7 @@ leaks:
         - ops/kin/host/kin
         - ops/kin/host/kin-server.service
         - ops/kin/host/retire-workers.sh
+        - ops/kin/host/setup.sh
         - ops/kin/host/update.sh
     - reason: >-
         kin-verify drives the unbranded dev client from a source checkout (T3's dev scheme and

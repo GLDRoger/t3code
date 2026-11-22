@@ -6,13 +6,13 @@ import { sectionsOf } from "./docBody.ts";
 import { latestOf } from "./docs.ts";
 import { listOf } from "./lists.ts";
 import { inheritedSensitive, sensitiveNow } from "./recordRows.ts";
-import { searchIndexed } from "./searchIndex.ts";
+import { docKindWords, searchIndexed } from "./searchIndex.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 
 /**
  * One search over entries and docs. `team` is what a teammate may find (design 9.1): nothing of
  * a sensitive entry, its own label or inherited, and no field that is sensitive whatever the
- * label. Only owner-only callers exist yet; the teammate view will pass `team`.
+ * label. Teammates' searches (`ownerDocs.search`, `leadDocs`) pass it today.
  */
 export type Viewer = "owner" | "team";
 
@@ -23,6 +23,8 @@ export type Hit = {
   readonly title: string;
   readonly snippet: string;
   readonly section?: { readonly id: string; readonly title: string };
+  /** A contact's client. */
+  readonly client?: string;
   readonly sensitive: boolean;
   readonly closed: boolean;
   readonly updatedAt: number;
@@ -36,6 +38,7 @@ type Row = {
   readonly state: string;
   readonly updatedAt: number;
   readonly sensitive: number;
+  readonly clientKey: string | null;
   readonly part: "public" | "sensitive";
   readonly snippet: string;
 };
@@ -64,10 +67,9 @@ const ftsQuery = (words: ReadonlyArray<string>, any: boolean) =>
 
 const around = (text: string, words: ReadonlyArray<string>) => {
   const lower = text.toLowerCase();
-  const at = Math.max(
-    0,
-    Math.min(...words.map((word) => lower.indexOf(word)).filter((i) => i >= 0)),
-  );
+  const found = words.map((word) => lower.indexOf(word)).filter((i) => i >= 0);
+  // Only a doc's kind may have matched: then the text from its start.
+  const at = found.length === 0 ? 0 : Math.min(...found);
   const start = Math.max(0, lower.lastIndexOf(" ", Math.max(0, at - 60)) + 1);
   const shown = text
     .slice(start, start + 160)
@@ -88,7 +90,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
     readonly scope: KinViewer;
     /** With nothing that has every word, look again for any of them (`widened`). */
     readonly widen?: boolean;
-    /** Deals among `work`, and a deal by its exact key: a person's own search box asks. */
+    /** Deals too, and a deal by its exact key: a person's own search box asks. */
     readonly deals?: boolean;
   },
 ) {
@@ -97,8 +99,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
   const indexed = yield* searchIndexed();
   if (words.length === 0) return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
   const kinds = input.kinds === undefined || input.kinds.length === 0 ? KINDS : input.kinds;
-  const registers: ReadonlyArray<string> =
-    input.deals === true && kinds.includes("work") ? [...kinds, "deals"] : kinds;
+  const registers: ReadonlyArray<string> = input.deals === true ? [...kinds, "deals"] : kinds;
   const where = [
     sql`r.org_id = ${orgId}`,
     sql`r.register_id IN ${sql.in(registers)}`,
@@ -110,7 +111,11 @@ export const search = Effect.fn("KinSearch.search")(function* (
     seenBy(sql, input.scope),
   ];
   const columns = sql`r.record_id AS "recordId", r.register_id AS "registerId", r.key, r.title,
-    r.state, r.updated_at AS "updatedAt", CASE WHEN r.register_id IN ${sql.in([...MONEY])}
+    r.state, r.updated_at AS "updatedAt", CASE WHEN r.register_id = 'contacts'
+      THEN (SELECT p.key FROM kin_records p WHERE p.org_id = r.org_id
+        AND p.record_id = r.party_id AND EXISTS (SELECT 1 FROM kin_records r
+          WHERE r.org_id = p.org_id AND r.record_id = p.record_id
+            AND ${seenBy(sql, input.scope)})) END AS "clientKey", CASE WHEN r.register_id IN ${sql.in([...MONEY])}
       THEN ${inheritedSensitive(sql)} ELSE ${sensitiveNow(sql)} END AS sensitive`;
   const find = (any: boolean) =>
     indexed
@@ -120,7 +125,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
         JOIN kin_records r ON r.org_id = m.org_id AND r.record_id = m.record_id
         WHERE kin_search MATCH ${ftsQuery(words, any)} AND m.org_id = ${orgId}
           AND ${sql.and([...where, ...(input.viewer === "team" ? [sql`m.part = 'public'`] : [])])}
-        ORDER BY bm25(kin_search, 4.0, 1.0), r.updated_at DESC, r.record_id
+        ORDER BY bm25(kin_search, 4.0, 1.0, 2.0), r.updated_at DESC, r.record_id
         LIMIT ${input.limit * 2}`
       : scan(sql, words, any, where, columns, input.viewer, input.limit * 2);
   // No index holds a key; a deal's, typed whole, finds that deal first.
@@ -169,6 +174,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
       ...(section === undefined || section.id === "top"
         ? {}
         : { section: { id: section.id, title: section.title } }),
+      ...(row.clientKey === null ? {} : { client: row.clientKey }),
       sensitive: row.sensitive === 1 || row.part === "sensitive",
       closed: row.state === "done" || row.state === "dropped",
       updatedAt: row.updatedAt,
@@ -197,10 +203,9 @@ const scan = Effect.fnUntraced(function* (
   const body = sql`COALESCE((SELECT v.body FROM kin_doc_versions v WHERE v.org_id = r.org_id
     AND v.record_id = r.record_id ORDER BY v.version DESC LIMIT 1), '')`;
   // The scan reads fields only for the owner: which are sensitive is the index's job.
-  const text =
-    viewer === "owner"
-      ? sql`lower(r.title || ' ' || r.notes || ' ' || r.fields_json || ' ' || ${body})`
-      : sql`lower(r.title || ' ' || r.notes || ' ' || ${body})`;
+  const fields = viewer === "owner" ? sql`r.fields_json || ' ' ||` : sql``;
+  const text = sql`lower(r.title || ' ' || r.notes || ' ' || ${fields} ${body} || ' '
+    || ${docKindWords(sql)})`;
   const rows = yield* sql<Omit<Row, "part" | "snippet"> & { readonly text: string }>`
     SELECT ${columns}, r.title || ' ' || r.notes || ' ' || ${body} AS text
     FROM kin_records r

@@ -45,8 +45,8 @@ Init ==
   /\ handedBack = "none"
   /\ pingpong = FALSE /\ told = 0 /\ owed = FALSE /\ moves = 0 /\ edits = 0
 
-\* Each hand-off tells its receiver once: a person from the agent or the team agent
-\* (assignNotices.ts tellPeople), an agent by a wake-up (KinRecords.wakeLead).
+\* Each hand-off tells its receiver once: a person by the agent's line (assignNotices.ts
+\* tellPeople) or, moved by a person, one banner (tellOnTasks); an agent by a wake-up.
 Tell(to, actor, n) == /\ owed' = (to # actor) /\ told' = IF to # actor THEN n ELSE 0
 
 (* KinRecords.update with an owner patch. The owner on his screen (ownerWork.ts assign; "take

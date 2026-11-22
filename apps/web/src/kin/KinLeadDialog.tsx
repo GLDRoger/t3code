@@ -17,6 +17,7 @@ import {
   kinLeadStartingModel,
   KIN_AGENTS_COPY,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { ModelSelection } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useNavigate } from "@tanstack/react-router";
@@ -42,6 +43,7 @@ import { Textarea } from "../components/ui/textarea";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient, refreshKinAgents } from "./kinClient";
+import { useKinFormDiscard } from "./KinFormDiscard";
 import { KinAgentModelPicker, useKinAgentModels } from "./KinAgentModelPicker";
 import { prefillKinDraft } from "./kinDraft";
 import { kinLeadFormAtom, type KinLeadFormTarget } from "./kinLeadForm";
@@ -97,6 +99,13 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
   const characterId = useId();
 
   const checked = kinLeadDraftCheck({ name, area, charter, intro });
+  const discard = useKinFormDiscard(
+    kinFormTyped(initial, { name, area, charter, intro }) ||
+      character.trim() !== "" ||
+      writeForMe ||
+      pickedModel !== null,
+    closeLeadForm,
+  );
   const areaInvalid = area.trim() !== "" && kinDomainSlug(area) === null;
   const canSave = checked.ok && !busy && !(firstAgent && model === null);
 
@@ -173,7 +182,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open && !busy) closeLeadForm();
+        if (!open && !busy) discard.close();
       }}
     >
       <DialogPopup className="max-w-lg">
@@ -200,7 +209,6 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                   id={nameId}
                   value={name}
                   maxLength={KIN_LEAD_NAME_MAX}
-                  placeholder="Growth lead"
                   autoFocus
                   onChange={(event) => setName(event.target.value)}
                 />
@@ -210,7 +218,6 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                 <Input
                   id={areaId}
                   value={area}
-                  placeholder="Growth"
                   aria-invalid={areaInvalid}
                   onChange={(event) => setArea(event.target.value)}
                 />
@@ -233,7 +240,6 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                   rows={5}
                   value={charter}
                   aria-invalid={charter.length > KIN_LEAD_CHARTER_MAX}
-                  placeholder="Owns growth: acquisition experiments, funnel numbers and a weekly note on what moved."
                   onChange={(event) => setCharter(event.target.value)}
                 />
                 <p
@@ -270,7 +276,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                 </fieldset>
               ) : null}
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor={introId}>What teammates see</Label>
+                <Label htmlFor={introId}>{KIN_AGENTS_COPY.introLabel}</Label>
                 <Textarea
                   id={introId}
                   rows={2}
@@ -325,7 +331,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
             </div>
           </DialogPanel>
           <DialogFooter>
-            <Button type="button" variant="outline" disabled={busy} onClick={closeLeadForm}>
+            <Button type="button" variant="outline" disabled={busy} onClick={discard.close}>
               Cancel
             </Button>
             <Button type="submit" disabled={!canSave} aria-busy={busy}>
@@ -333,6 +339,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
             </Button>
           </DialogFooter>
         </form>
+        {discard.ask}
       </DialogPopup>
     </Dialog>
   );

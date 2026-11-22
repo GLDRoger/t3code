@@ -10,6 +10,8 @@ import { KinRecords } from "./KinRecords.ts";
 import {
   askedBy,
   Client,
+  ClientOnRecord,
+  clientOnRecord,
   type Lead,
   leadTool,
   ownerTurn,
@@ -17,7 +19,7 @@ import {
   retryKey,
   sourceOf,
 } from "./leadWork.ts";
-import { endOfDay, iso, ownerZone } from "./recordRows.ts";
+import { endOfDay, iso, ownerZone, recordName } from "./recordRows.ts";
 import * as Touches from "./touches.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
@@ -47,7 +49,14 @@ export const Touch = Schema.Struct({
   who: Schema.optional(Schema.String),
   from: Schema.optional(Schema.String),
 });
-export const TouchResult = Schema.Struct({ client: Schema.String, touch: Touch });
+export const TouchResult = Schema.Struct({
+  client: Schema.String,
+  touch: Touch,
+  onRecord: ClientOnRecord.annotate({
+    description:
+      "What the client's record holds now: its open deals (none is no deal yet) and its contacts (none is no one).",
+  }),
+});
 export const ContactInput = Schema.Struct({ key: KinRecordKey });
 export const ContactResult = Schema.Struct({
   lastContact: Schema.NullOr(Schema.Struct({ at: Schema.String, days: Schema.Number })),
@@ -61,7 +70,7 @@ const toShown = (touch: Effect.Success<ReturnType<typeof Touches.touchesOf>>[num
   kind: touch.kind,
   note: touch.note,
   ...(touch.who === null ? {} : { who: touch.who }),
-  ...(touch.record === null ? {} : { from: touch.record.key }),
+  ...(touch.record === null ? {} : { from: recordName(touch.record.key, touch.number) }),
 });
 
 /** The person on our side: named, else the one teammate or the owner whose message this answers. */
@@ -110,8 +119,12 @@ const runLog = Effect.fnUntraced(function* (lead: Lead, input: typeof TouchInput
     )}`,
     now,
   });
-  yield* (yield* KinRecords).announce(lead.orgId);
-  return { client: `${client.name} (${client.key})`, touch: toShown(touch) };
+  yield* (yield* KinRecords).announce(lead.orgId, [partyId]);
+  return {
+    client: `${client.name} (${client.key})`,
+    touch: toShown(touch),
+    onRecord: yield* clientOnRecord(lead, partyId),
+  };
 });
 export const logTouch = leadTool("KinClientTools.logTouch", runLog);
 

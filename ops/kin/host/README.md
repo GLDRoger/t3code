@@ -2,14 +2,15 @@
 
 Runs the Kin server from a source build on the always-on Linux machine, as the dedicated `kin` user. Design and reasons: [triggers spec, "Running on the Kin host"](../../../docs/kin/specs/triggers.md#running-on-the-kin-host).
 
-| File                                      | What it does                                                                                                                                                                      |
-| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `setup.sh`                                | As root, from `/root/kin-ops`: creates `kin`, turns on linger, masks sleep, installs and enables the units, installs T3's policy (`/etc/t3code/policy.json`), prints a checklist. |
-| `kin-server.service`                      | The server, as a systemd user unit for `kin`.                                                                                                                                     |
-| `backup.sh`, `kin-backup.{service,timer}` | Nightly backup of `~/.t3/userdata` and `service.env` to an encrypted volume, keeping 14 days.                                                                                     |
-| `update.sh`                               | As `kin`: builds `kin` in its own worktree, runs the contract tests, then switches `~/kin-current` to it and restarts. Also does the first build.                                 |
-| `restore.md`                              | The restore drill.                                                                                                                                                                |
-| `retire-workers.sh`                       | As root, once: removes what the retired workers installed and lists what they left in kin's files; keeps the GitHub App.                                                          |
+| File                                              | What it does                                                                                                                                                                      |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `setup.sh`                                        | As root, from `/root/kin-ops`: creates `kin`, turns on linger, masks sleep, installs and enables the units, installs T3's policy (`/etc/t3code/policy.json`), prints a checklist. |
+| `kin-server.service`                              | The server, as a systemd user unit for `kin`.                                                                                                                                     |
+| `backup.sh`, `kin-backup.{service,timer}`         | Nightly backup of `~/.t3/userdata` and `service.env` to an encrypted volume, keeping 14 days.                                                                                     |
+| `update.sh`                                       | As `kin`: builds `kin` in its own worktree, runs the contract tests, then switches `~/kin-current` to it and restarts. Also does the first build.                                 |
+| `restore.md`                                      | The restore drill.                                                                                                                                                                |
+| `retire-workers.sh`                               | As root, once: removes what the retired workers installed and lists what they left in kin's files; keeps the GitHub App.                                                          |
+| `clean-temp.sh`, `kin-temp-clean.{service,timer}` | Hourly: removes kin's old temporary files (see Storage).                                                                                                                          |
 
 ## A kin shell
 
@@ -32,14 +33,14 @@ Root runs only scripts from a **root-owned clone**, `/root/kin-ops`. A clone `ki
    - mise: `curl https://mise.run | sh` (it lands in `~/.local/bin`), then `mise use -g node@<engines.node from package.json>`. The global default puts npm-installed CLIs such as `codex` on mise's shims, which the unit's `PATH` includes. A Node bump in the repo installs the new Node, but globals installed under the old one don't move: rerun `mise use -g node@<new>` and reinstall them.
    - `vp` ([Vite+](https://viteplus.dev/guide/)), Claude Code and Codex. Sign the two CLIs in to the owner's plans.
    - `git`, `gh`, `git-filter-repo`, `gitleaks`, `sqlite3`, `pkg-config`, `libsecret-1-dev` and `gcc` come from the distribution, system-wide. `update.sh` builds the desktop bundle, which compiles a small native helper against libsecret.
-3. In a kin shell: `git clone https://github.com/GLDRoger/t3code ~/t3code && cd ~/t3code && git switch kin && cp .env.example .env && ops/kin/host/update.sh`. That builds the first release into `~/kin-builds/<sha>`, points `~/kin-current` at it and starts the server.
+3. In a kin shell: `git clone https://github.com/GLDRoger/t3code ~/t3code && cd ~/t3code && git switch kin && cp .env.example .env && ops/kin/host/update.sh <commit>`, with the commit the release check passed (`--tip` takes `kin`'s tip unchecked). That builds the first release into `~/kin-builds/<sha>`, points `~/kin-current` at it and starts the server.
 4. As the owner: `sudo git -C /root/kin-ops pull --ff-only && sudo /root/kin-ops/ops/kin/host/setup.sh` again. Every check should pass. Never run root scripts from `~kin/t3code`: kin owns it.
 
 `~/t3code` is only the clone `update.sh` fetches into. The server runs from `~/kin-current`, a link to a finished build.
 
 ### How the unit finds Node
 
-`ExecStart` runs `/usr/bin/env mise exec node@${KIN_NODE_VERSION} -- node …`. systemd doesn't expand variables in the executable path, so `env` finds `mise` on the unit's `PATH` (`~/.local/bin` first, then mise's shims, then the system directories). `setup.sh` and `update.sh` write `PATH`, `KIN_ENABLED=true`, `KIN_CHECKOUT=~/kin-current` and `KIN_NODE_VERSION` (the build's `engines.node`) into `~/.config/kin/kin-server.env`, so a Node bump in the repo moves the server with it.
+`ExecStart` runs `/usr/bin/env mise exec node@${KIN_NODE_VERSION} -- node …`. systemd doesn't expand variables in the executable path, so `env` finds `mise` on the unit's `PATH` (`~/.local/bin` first, then mise's shims, then the system directories). `setup.sh` and `update.sh` write `PATH`, `KIN_ENABLED=true`, `KIN_CHECKOUT=~/kin-current`, `KIN_NODE_VERSION` (the build's `engines.node`) and `TMPDIR` (see Storage) into `~/.config/kin/kin-server.env`, so a Node bump in the repo moves the server with it.
 
 Owner overrides such as `T3CODE_LAN=true` go in `~/.t3/service.env`, which the unit reads and the backup copies. The unit reads it before `kin-server.env`, so it can't change `PATH`, the build or the Node version.
 
@@ -120,6 +121,13 @@ Level raises need your signature from a phone's approval key. Any phone paired a
 
 The host must recognise the Kin app: set `KIN_IOS_APP_ID` (`<teamId>.<bundleId>`) and, for Android, `KIN_ANDROID_PACKAGE` and `KIN_ANDROID_SIGNING_CERT_SHA256` in `~/.t3/service.env`. Without them every phone is refused. `KIN_IOS_APP_ATTEST_DEVELOPMENT=true` also accepts development builds of the iPhone app; leave it unset on a real host. Simulators are always refused.
 
+## Phone notifications
+
+iPhones are notified through Apple (the `KIN_APNS_*` lines in `~/.t3/service.env`; see [the mobile spec](../../../docs/kin/specs/mobile.md)). Android phones are notified through Firebase Cloud Messaging:
+
+1. Download a service-account key (JSON) for the Firebase project the Android app is registered in (Project settings, Service accounts), copy it to the host as `~/.config/kin/fcm-service-account.json`, owned by kin with `chmod 600`, outside any checkout. The nightly backup doesn't copy it; a lost key is replaced by downloading a new one.
+2. Add `KIN_FCM_SERVICE_ACCOUNT_FILE=/home/kin/.config/kin/fcm-service-account.json` (its full path) to `~/.t3/service.env`, then `systemctl --user restart kin-server`. The log says `Kin push to Android is on.`; without the line it says Android push is off once, and Android phones get nothing.
+
 ## Reply latency
 
 Each wake-up logs one `Kin wake-up latency` line with every stage's ms since its first message was queued: claimed, memory prepared, provider launched, first token, reply posted. Wake-ups from before warm sessions were removed still group as `warm`. For p50 and p90 over the last 20 owner-message wake-ups, read the database without writing to it:
@@ -190,15 +198,15 @@ Files an agent asks for (`kin_document`: invoices, the accountant's pack, report
 
 ## Update
 
-In a kin shell: `~/t3code/ops/kin/host/update.sh`. It fetches `kin` and builds it in a fresh worktree, `~/kin-builds/<sha>`: `vp i`, then `(cd apps/server && vp test run kin-contract)`, then `node scripts/kin-brand.ts --scope web --in-place` (the web app it serves is named Kin, with Kin's icons; the server itself stays unbranded), then `vp run build:desktop`, then `node scripts/kin-served-brand.ts apps/server/dist/client` (the packaged web app the server serves has Kin's title, manifest names and icons). The running build is never touched. A failed step deletes the half-built worktree and the server keeps running the old build.
+In a kin shell: `~/t3code/ops/kin/host/update.sh <commit>`, with the commit the release check passed. It fetches `kin` and builds that commit in a fresh worktree, even when `kin` has moved on since the check. Without a commit it refuses and names `kin`'s tip; `--tip` deploys the tip unchecked. The worktree is `~/kin-builds/<sha>`, and the steps are `vp i`, then `(cd apps/server && vp test run kin-contract)`, then `node scripts/kin-brand.ts --scope web --in-place` (the web app it serves is named Kin, with Kin's icons; the server itself stays unbranded), then `vp run build:desktop`, then `node scripts/kin-served-brand.ts apps/server/dist/client` (the packaged web app the server serves has Kin's title, manifest names and icons). The running build is never touched. A failed step deletes the half-built worktree and the server keeps running the old build.
 
-Only after every step passes does it stop `kin-server`, back the database up into `~/kin-update-backups` (or `$KIN_UPDATE_BACKUPS`; the 10 newest are kept), refresh the units and the Node version, switch `~/kin-current` and start the server. It then checks that the service stays up with no restarts, answers on its port (`T3CODE_PORT` from `~/.t3/service.env`, else 3773), and that the database reached the build's highest T3 and Kin migrations. If not, it switches `~/kin-current` and the Node version back to the previous build, restores the backup when the failed build had migrated the database (keeping that copy as `statev2.sqlite.failed-<sha>`), restarts it and exits non-zero. On a first install there is nothing to go back to, so it leaves `kin-server` stopped and removes `~/kin-current`; the next run rebuilds. A failed build stays in `~/kin-builds` for inspection until the next good update. It keeps the 3 newest builds. Unit files are not rolled back; if a failed build changed one, re-run `sudo /root/kin-ops/ops/kin/host/setup.sh` after the rollback (refresh `/root/kin-ops` to the build you rolled back to first).
+Before building, and again before stopping anything, it checks that each disk it writes to has room for the build, the database backup and twice the database beside it, with 1 GiB to spare, and stops with a sentence naming the short disk if not. Only after every step passes does it wait for agents' running turns and a running nightly dream to end, up to 2 minutes, saying how many it waits for; past that it stops the server anyway, and a stopped turn saves what it had noted to memory as it stops. Then it stops `kin-server`, backs the database up into `~/kin-update-backups` (or `$KIN_UPDATE_BACKUPS`; the 10 newest are kept, or 3 while the nightly backup last succeeded within 36 hours), refreshes the units and the Node version, switches `~/kin-current` and starts the server. It then checks that the service stays up with no restarts, answers on its port (`T3CODE_PORT` from `~/.t3/service.env`, else 3773), and that the database reached the build's highest T3 and Kin migrations. If not, it switches `~/kin-current` and the Node version back to the previous build, restores the backup when the failed build had migrated the database (keeping that copy as `statev2.sqlite.failed-<sha>`), restarts it and exits non-zero. On a first install there is nothing to go back to, so it leaves `kin-server` stopped and removes `~/kin-current`; the next run rebuilds. A failed build stays in `~/kin-builds` for inspection until the next good update. It keeps the 3 newest builds. Unit files are not rolled back; if a failed build changed one, re-run `sudo /root/kin-ops/ops/kin/host/setup.sh` after the rollback (refresh `/root/kin-ops` to the build you rolled back to first).
 
 `update.sh` builds with the steps of the copy you run, and it hands over to the fetched copy only when the copy you run already knows how. An older copy builds the new commit its own way, without Kin's name and without the check. So before the first update that brings the Kin name and its check:
 
 1. Fast-forward the clone the script lives in: `git -C ~/t3code fetch origin +refs/heads/kin:refs/remotes/origin/kin && git -C ~/t3code merge --ff-only origin/kin` (if `~/.config/kin/kin-server.env` sets `KIN_REPO`, do steps 1 to 3 in that clone instead).
 2. Confirm the script now has the hand-over: `grep -n 'hand_over' ~/t3code/ops/kin/host/update.sh` shows it.
-3. Then run `~/t3code/ops/kin/host/update.sh`.
+3. Then run `~/t3code/ops/kin/host/update.sh <commit>`.
 
 If a host already runs the right commit built without the name (the tab says T3 Code, and `update.sh` says `already running <sha>`), running it again does not repair that build. Deploy a newer commit of `kin`. Don't delete files inside the running build to force a rebuild: the server runs from that directory.
 
@@ -218,7 +226,15 @@ KIN_BACKUP_DEST=/mnt/backup/kin
 
 The destination must be a mounted volume of its own: `backup.sh` refuses one on the same filesystem as `~/.t3`, or on `/`, which is what an unmounted mountpoint looks like. The encryption override doesn't skip that check.
 
-The timer does nothing until that file exists. Run one by hand with `systemctl --user start kin-backup` and read the result with `journalctl --user -u kin-backup`.
+The timer does nothing until that file exists. Each run records its outcome in `~/.t3/userdata/kin-backup-status.json`; when the last good backup is over 36 hours old, or there is none, Kin tells the owner in their Chief of staff chat, once a day. Run one by hand with `systemctl --user start kin-backup` and read the details with `journalctl --user -u kin-backup`.
+
+## Storage
+
+Kin's temporary files live on the main disk in `~/.cache/kin-tmp`, not in `/tmp`, which on many hosts is a small part of memory with a per-user limit. `setup.sh` and `update.sh` create the folder and set `TMPDIR` to it in `~/.config/kin/kin-server.env`, so the server, its agents and `update.sh`'s own build all use it. For another folder, set `TMPDIR=<absolute path>` in `~/.t3/service.env`: the next `update.sh` or `setup.sh` copies it into `kin-server.env`, which the unit reads last, and the restart applies it.
+
+Every hour `kin-temp-clean.timer` runs `clean-temp.sh`. It removes kin's own top-level files and folders in `/tmp` and in Kin's temp folder that nothing inside has changed for 24 hours, or for 2 hours while that disk, or kin's quota on it, has less than 20% left (a git checkout always gets the full 24 hours, since an agent may have unpushed work in it). It never removes what a running kin process is working in, has open or listens on, anything another user owns, or anything outside those two folders. Run it by hand with `systemctl --user start kin-temp-clean`; `journalctl --user -u kin-temp-clean` shows one line a run saying how many items it removed and how much space came back.
+
+Each wake-up also checks the free space on the disks holding Kin's temp folder, `/tmp` and `~/.t3`. When one has less than 20% free, the log gets a `Kin host is low on space` warning with the figures, and Kin tells the owner in their Chief of staff chat, once a day, that Kin's computer is running low on space. If a wake-up fails because the disk or quota is full, Kin tells the owner, once a day, that Kin's computer has run out of temporary space and agents can't run until some is freed. The free-space check sees the whole disk, not kin's quota on it; only the hourly clean reads the quota. To free space at once, run the clean by hand, then see what is left with `du -sh /tmp/* ~/.cache/kin-tmp/* 2>/dev/null | sort -h | tail` and remove what you know is no longer needed. `update.sh` prunes old builds and update backups itself.
 
 ## Operating
 

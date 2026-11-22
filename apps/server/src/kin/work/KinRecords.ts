@@ -4,6 +4,7 @@ import { stableStringify } from "@t3tools/shared/relaySigning";
 import {
   KIN_RECORDS_PAGE_CAP,
   KIN_TEXT_LOCALE,
+  KIN_WORK_ALSO_ON_MAX,
   KinChatError,
   KinAgentId,
   KinChatId,
@@ -43,10 +44,17 @@ import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { teammatesLimited } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
-import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
+import { approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
+import { codingAgentSource, outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
-import { commentsPage } from "./recordComments.ts";
+import {
+  commentIdFor,
+  commentsPage,
+  insertComment,
+  requestHashOf as commentHashOf,
+} from "./recordComments.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
 import {
@@ -60,7 +68,15 @@ import {
   parseFields,
   shownField,
 } from "./lists.ts";
-import { addUp, dayIn, financialYearOf, formatMoney, isCurrency, monthOf } from "./money.ts";
+import {
+  addUp,
+  askSlip,
+  dayIn,
+  financialYearOf,
+  formatMoney,
+  isCurrency,
+  monthOf,
+} from "./money.ts";
 import {
   amountOf,
   byId,
@@ -89,12 +105,17 @@ import {
   repeatOf,
   samePrincipal,
   selectRecords,
+  storedPrincipal,
+  encodeSteps,
+  shownSteps,
+  stepsOf,
   keySensitive,
   sensitiveNow,
   type StoredRepeat,
   toDetail,
   toRecord,
   unavailable,
+  wordsOf,
 } from "./recordRows.ts";
 import {
   checkFields,
@@ -110,8 +131,14 @@ import {
   verifyRefs,
 } from "./registers.ts";
 import { contactFields } from "./contactDetails.ts";
+import { directionOf, findBankList } from "./statements/bankList.ts";
+import { cleanTags } from "./tags.ts";
+import { notAVendor } from "./vendorName.ts";
+import { withArticle } from "../article.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
+import { dismissedHold, dismissedHoldText, personInTurn } from "./dismissedHold.ts";
 import {
+  alsoOnIt,
   bumpTeamSeqs,
   dependents,
   teamGuard,
@@ -121,11 +148,14 @@ import {
   ROOM_LISTS,
   teamSeesField,
   teamSeq,
+  teamVisible,
   viewGuard,
   viewReadsWhole,
   viewSees,
 } from "./teamView.ts";
 
+/** A follow-up's title: the leftover's first line, this long at most; the rest goes in its notes. */
+const LEFTOVER_TITLE = 160;
 /** Who is writing and how: a lead in its turn, the owner from a client, or Kin from an event. */
 export type Writer = {
   readonly actor:
@@ -175,21 +205,22 @@ export type Writer = {
     readonly tappedBy?: KinPersonId;
   };
 };
-/** A Work task this writer, a person, holds now and nobody dropped. */
+/** A Work task this writer, a person, holds or is on now, and nobody dropped. */
 const heldBy = (
   row: {
     readonly registerId: string;
     readonly ownerKind: string;
     readonly ownerId: string;
     readonly state: KinRecordState;
+    readonly fieldsJson: string;
   },
   writer: Writer,
 ) =>
   row.registerId === "work" &&
   row.state !== "dropped" &&
-  row.ownerKind === "person" &&
   writer.actor._tag === "person" &&
-  row.ownerId === writer.actor.personId;
+  ((row.ownerKind === "person" && row.ownerId === writer.actor.personId) ||
+    fieldList(parseFields(row.fieldsJson), "alsoOn").includes(`person:${writer.actor.personId}`));
 
 /** What closes the open things about an entry that closed, in its move's transaction. */
 export type Closing = (subject: ClosedSubject) => Effect.Effect<void, { readonly _tag: string }>;
@@ -225,12 +256,18 @@ export type Fields = {
   readonly fields?: Readonly<Record<string, FieldValue | null>>;
   /** Integer minor units in an ISO currency; only lists with an amount, and Work. */
   readonly amount?: KinMoney | null;
+  /** A person's form that asks: a new amount far above its list is refused (`askSlip`). */
+  readonly askSlip?: boolean;
   /** When it happened, was issued or starts; only defined lists. */
   readonly dateAt?: number | null;
   readonly dateAllDay?: boolean;
   /** Needs a due date or a date to repeat from; not on clients, contacts or projects. */
   readonly repeat?: KinRepeatRule | null;
+  /** A task's whole checklist, in order; only Work. */
+  readonly steps?: ReadonlyArray<Step>;
+  readonly urgent?: boolean;
 };
+type Step = { readonly title: string; readonly done: boolean };
 export type CreateInput = Fields & {
   /** Default `work`; a built-in list or one defined in this org. */
   readonly list?: string;
@@ -250,8 +287,18 @@ export type Patch = Partial<Omit<Fields, "owner">> & {
   readonly owner?: KinWorkPrincipal;
   /** The holder gives it back to `owner`, whoever gave it to them, in their own words. */
   readonly handedBack?: { readonly note: string | null };
+  /**
+   * What is left of a task this change closes done: Kin files it as a follow-up for the same
+   * holder, client and project, linked to this one, in the same write.
+   */
+  readonly leftover?: string;
   /** What a field's old and new ids read as now, kept on its history line (`FieldChange.names`). */
   readonly names?: Readonly<Record<string, NonNullable<FieldChange["names"]>>>;
+  /**
+   * Ticks or unticks one step against the checklist as stored now; a step at `index` with other
+   * words means the steps changed since the screen read them.
+   */
+  readonly tick?: { readonly index: number; readonly title: string; readonly done: boolean };
 };
 export type LinkInput = {
   readonly kind: KinRecordLinkKind;
@@ -276,6 +323,12 @@ export type MoveRow = {
   readonly assignedBy: string | null;
   readonly assignedByAgent: string | null;
   readonly createdAt: number;
+  readonly updatedAt: number;
+  /** Handed back to its holder, when (`kinWorkHandedBackOpen`). */
+  readonly handedBackAt: number | null;
+  readonly urgent: number | null;
+  /** Who is on it besides its holder, as stored (`fields.alsoOn`); null with none. */
+  readonly alsoOn: string | null;
 };
 const MOVE_ROWS_CAP = 5_000;
 
@@ -287,6 +340,8 @@ export type QueryInput = {
   readonly projectId?: string;
   readonly repo?: string;
   readonly owner?: KinWorkPrincipal;
+  /** With `owner` a person: also the tasks they are on besides its holder, as Tasks' Mine reads. */
+  readonly orAlsoOn?: boolean;
   readonly states?: ReadonlyArray<KinRecordState>;
   readonly open?: boolean;
   readonly late?: boolean;
@@ -374,6 +429,10 @@ type Sums = {
   /** Quotes sent and waiting, and accepted. */
   readonly sent?: ReadonlyArray<KinMoney>;
   readonly accepted?: ReadonlyArray<KinMoney>;
+  /** The bank list's money in, money out, and in less out; `total` stays the plain sum. */
+  readonly moneyIn?: ReadonlyArray<KinMoney>;
+  readonly moneyOut?: ReadonlyArray<KinMoney>;
+  readonly net?: ReadonlyArray<KinMoney>;
 };
 export type Totals = Sums & {
   readonly counted: number;
@@ -443,6 +502,8 @@ const asSet = (field: string) =>
 const FIELD_NAMES: Readonly<Record<string, string>> = {
   owner: "its holder",
   waitingOn: "who it waits on",
+  steps: "its steps",
+  urgent: "its urgent mark",
   due: "its due date",
   party: "its client",
 };
@@ -487,14 +548,20 @@ const checkInput = (
     readonly amount?: KinMoney | null | undefined;
     readonly dateAt?: number | null | undefined;
     readonly repeat?: KinRepeatRule | null | undefined;
+    readonly steps?: boolean;
   },
 ): KinChatError | undefined => {
+  if (input.steps === true && def.id !== "work")
+    return invalid(
+      `Only a task has steps or an urgent mark; ${withArticle(def.noun)} has neither.`,
+    );
   if (input.title !== undefined && mentionsKinMoney(input.title))
     return invalid(
       "A title never holds an amount: give the amount on its own and keep the title to what it was for.",
     );
   if (input.amount !== undefined && input.amount !== null) {
-    if (!def.amount && def.builtIn !== "work") return invalid(`A ${def.noun} has no amount.`);
+    if (!def.amount && def.builtIn !== "work")
+      return invalid(`${withArticle(def.noun, "A")} has no amount.`);
     if (!isCurrency(input.amount.currency))
       return invalid(`${input.amount.currency} is not a currency code.`);
     if (input.amount.minor < 0) return invalid("An amount never goes below zero; give 0 or more.");
@@ -506,14 +573,14 @@ const checkInput = (
     def.builtIn !== null &&
     def.builtIn !== "work"
   )
-    return invalid(`A ${def.noun} has no date of its own; use due.`);
+    return invalid(`${withArticle(def.noun, "A")} has no date of its own; use due.`);
   if (
     input.repeat !== undefined &&
     input.repeat !== null &&
     def.builtIn !== null &&
     def.builtIn !== "work"
   )
-    return invalid(`A ${def.noun} doesn't repeat.`);
+    return invalid(`${withArticle(def.noun, "A")} doesn't repeat.`);
   if (def.builtIn !== null) return checkFor(def.builtIn, input);
   if (input.state !== undefined && !def.states.includes(input.state))
     return invalid(
@@ -529,20 +596,35 @@ const checkInput = (
         ? `${def.name} has no categories.`
         : `${def.name}'s categories are ${def.categories.join(", ")}.`,
     );
+  const vendor = input.fields?.vendor;
+  if (def.id === "expenses" && typeof vendor === "string" && notAVendor(vendor))
+    return invalid(
+      `"${vendor.slice(0, 60)}" is not a vendor: give who was paid, as the receipt or bill names them, or leave vendor off.`,
+    );
   return input.fields === undefined ? undefined : checkFields(def, input.fields);
 };
 
-/** An invoice, or a renewal on Dates, for nothing: it isn't owed, so it isn't kept as owed. */
+/**
+ * An invoice, or a renewal on Dates, for nothing: it isn't owed, so it isn't kept as owed. An
+ * agent's expense for nothing is a free plan's bill or a misread one; only the owner keeps those.
+ */
 const zeroOwed = (
   def: ListDef,
   amount: KinMoney | null | undefined,
   category: string | null | undefined,
+  writer: Writer,
 ) =>
-  amount?.minor === 0 && (def.id === "invoices" || (def.id === "dates" && category === "renewal"))
-    ? invalid(
-        `${def.id === "invoices" ? "An invoice" : "A renewal"} for 0 isn't owed; leave the amount off or drop it.`,
-      )
-    : undefined;
+  amount?.minor !== 0
+    ? undefined
+    : def.id === "invoices" || (def.id === "dates" && category === "renewal")
+      ? invalid(
+          `${def.id === "invoices" ? "An invoice" : "A renewal"} for 0 isn't owed; leave the amount off or drop it.`,
+        )
+      : def.id === "expenses" && writer.actor._tag !== "person"
+        ? invalid(
+            "An expense for 0 cost nothing, so it isn't recorded: skip a receipt or bill for 0, such as a free plan's, and say so. If you couldn't read the amount, leave it off and set suggested true.",
+          )
+        : undefined;
 
 export class KinRecords extends Context.Service<
   KinRecords,
@@ -675,8 +757,14 @@ export class KinRecords extends Context.Service<
      * list, and the people besides the owner who may see it after that change (`teamView.ts`).
      */
     readonly changes: (orgId: KinOrgId) => Stream.Stream<Tick, KinChatError>;
-    /** Tells `changes` an org's entries moved with no change logged here: an undo, another process. */
-    readonly announce: (orgId: KinOrgId) => Effect.Effect<void, KinChatError>;
+    /**
+     * Tells `changes` an org's entries moved with no change logged here: an undo, another process.
+     * Given the entries that moved, as a contact logged on a client, only those are read again.
+     */
+    readonly announce: (
+      orgId: KinOrgId,
+      recordIds?: ReadonlyArray<string>,
+    ) => Effect.Effect<void, KinChatError>;
     /** Kin's layer attaches `closeSubject`, which sits above chat, for as long as its scope. */
     readonly attachClosing: (closing: Closing) => Effect.Effect<void, never, Scope.Scope>;
     /**
@@ -722,15 +810,18 @@ const make = Effect.gen(function* () {
     def: ListDef,
     now: number,
   ) {
-    // A defined list's register is written when it is defined; a built-in one on first use.
-    if (def.builtIn !== null)
-      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
-        VALUES (${orgId}, ${def.id}, ${def.name}, ${def.prefix}, 1, ${now})
-        ON CONFLICT DO NOTHING`;
-    const [register] = yield* sql<{ next: number; prefix: string }>`
+    const take = sql<{ next: number; prefix: string }>`
       UPDATE kin_registers SET next_number = next_number + 1
       WHERE org_id = ${orgId} AND register_id = ${def.id}
       RETURNING next_number - 1 AS next, key_prefix AS prefix`;
+    let [register] = yield* take;
+    // A defined list's register is written when it is defined; a built-in one on first use.
+    if (register === undefined && def.builtIn !== null) {
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, ${def.id}, ${def.name}, ${def.prefix}, 1, ${now})
+        ON CONFLICT DO NOTHING`;
+      [register] = yield* take;
+    }
     if (register === undefined) return yield* unavailable;
     return `${register.prefix}-${register.next}`;
   });
@@ -832,8 +923,8 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Where a teammate's assignment wakes a lead: their direct chat with it, while its owner lets
-   * them message it and they have turns left today, as `ChatWake` admits their messages. Asked
+   * Where a teammate's assignment wakes a lead: their direct chat with it, while they may message
+   * it (`Reach`) and they have turns left today, as `ChatWake` admits their messages. Asked
    * from their own app, a refusal fails the write, so nothing is given away that won't be done.
    */
   const teammateWake = Effect.fn("KinRecords.teammateWake")(function* (
@@ -845,9 +936,11 @@ const make = Effect.gen(function* () {
   ) {
     const own = writer.actor._tag === "person" && writer.actor.personId === personId;
     const refuse = (error: KinChatError) => (own ? Effect.fail(error) : Effect.void);
-    // A co-owner messages every lead and has no daily cap, as the owner does.
+    // A co-owner has no daily cap, as the owner does.
     const level = yield* ownerLevel(orgId, personId).pipe(provideSql);
-    if (!level && !(yield* LeadAccess.allowed({ orgId, agentId, personId }).pipe(provideSql)))
+    if (
+      !(yield* Reach.reaches(orgId, Reach.person(personId), Reach.agent(agentId)).pipe(provideSql))
+    )
       return yield* refuse(
         new KinChatError({
           reason: "not_found",
@@ -955,14 +1048,22 @@ const make = Effect.gen(function* () {
             }),
       })
       .pipe(
-        // Given out after an outside read: the receiving lead's turn starts outside-read too.
+        // Given out after an outside read, or by a coding agent: the receiving turn starts marked.
         Effect.tap(({ event }) =>
-          writer.wakeupId === undefined
-            ? Effect.void
-            : outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
-                Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
+          writer.codingAgentKey !== undefined
+            ? sql<{ label: string }>`SELECT label FROM kin_tasks_keys
+                WHERE org_id = ${orgId} AND session_id = ${writer.codingAgentKey}`.pipe(
+                Effect.flatMap(([key]) =>
+                  stampEvent(orgId, event.eventId, codingAgentSource(key?.label ?? "Coding agent")),
+                ),
                 Effect.provideService(SqlClient.SqlClient, sql),
-              ),
+              )
+            : writer.wakeupId === undefined
+              ? Effect.void
+              : outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
+                  Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                ),
         ),
         Effect.as(true),
         Effect.catchTags({
@@ -970,6 +1071,28 @@ const make = Effect.gen(function* () {
           KinEventQueueUnknownAgent: () => Effect.succeed(false),
         }),
       );
+  });
+
+  /**
+   * Whether this agent was given this entry before, or has worked on it: then keeping it starts
+   * nothing new (a hand-off or an earlier build already did).
+   */
+  const alreadyGiven = Effect.fn("KinRecords.alreadyGiven")(function* (
+    orgId: KinOrgId,
+    recordId: string,
+    agentId: KinAgentId,
+  ) {
+    const [woken] = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_events
+      WHERE org_id = ${orgId} AND agent_id = ${agentId} AND tag = 'record.changed'
+        AND json_extract(json, '$.recordId') = ${recordId}
+        AND json_extract(json, '$.reason') = 'assigned'
+      LIMIT 1`;
+    if (woken !== undefined) return true;
+    const [worked] = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_record_changes
+      WHERE org_id = ${orgId} AND record_id = ${recordId} AND actor_kind = 'agent'
+        AND actor_id = ${agentId} AND kind <> 'created'
+      LIMIT 1`;
+    return worked !== undefined;
   });
 
   /**
@@ -1107,6 +1230,37 @@ const make = Effect.gen(function* () {
       });
   });
 
+  /**
+   * Who a write leaves on a task besides its holder (`fields.alsoOn`): someone here, each once, at
+   * most `KIN_WORK_ALSO_ON_MAX`, never the holder. Given to someone on it, they come off it; an
+   * agent with no person behind its turn changes nothing else of it.
+   */
+  const alsoOnFor = Effect.fn("KinRecords.alsoOnFor")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    asked: FieldValue | null | undefined,
+    stored: ReadonlyArray<string>,
+    holder: KinWorkPrincipal,
+  ) {
+    const held = shownPrincipal(holder);
+    if (asked === undefined || (writer.actor._tag === "agent" && writer.askedBy == null))
+      return stored.filter((text) => text !== held);
+    const list = asked ?? [];
+    if (typeof list === "string" || isMoney(list) || list.some((text) => !storedPrincipal(text)))
+      return yield* invalid("Who is on a task is a list of person:<id> and agent:<id>.");
+    if (new Set(list).size !== list.length)
+      return yield* invalid("Name each person on a task once.");
+    if (list.length > KIN_WORK_ALSO_ON_MAX)
+      return yield* invalid(
+        `A task has at most ${KIN_WORK_ALSO_ON_MAX} people on it besides whoever holds it.`,
+      );
+    if (list.some((text) => text === held))
+      return yield* invalid("Whoever holds a task isn't also on it: leave them off the list.");
+    for (const text of list)
+      if (!stored.includes(text)) yield* ownerExists(orgId, storedPrincipal(text)!, "to be on it");
+    return list;
+  });
+
   const insertLink = Effect.fn("KinRecords.insertLink")(function* (
     orgId: KinOrgId,
     recordId: string,
@@ -1162,7 +1316,7 @@ const make = Effect.gen(function* () {
           : list !== "work" && list !== "docs" && list !== "milestones" && projectId !== null
             ? new KinChatError({
                 reason: "invalid_state",
-                message: `A ${LISTS[list].noun} has no project.`,
+                message: `${withArticle(LISTS[list].noun, "A")} has no project.`,
               })
             : undefined;
 
@@ -1180,18 +1334,21 @@ const make = Effect.gen(function* () {
     seenBy: KinPersonId | undefined,
   ) {
     if (list === "work" || list === "docs" || list === "milestones" || !isBuiltIn(list)) return;
+    // `+key` keeps SQLite off the key index, which walks every key in the company for each name;
+    // it reads the title index instead.
     const [row] = yield* sql<{ key: string; sensitive: number }>`SELECT r.key,
         ${sensitiveNow(sql)} AS sensitive FROM kin_records r
-      WHERE r.org_id = ${orgId} AND r.register_id = ${list} AND r.state NOT IN ${sql.in(CLOSED)}
+      WHERE r.org_id = ${orgId} AND r.register_id = ${list}
+        AND ${list === "contacts" ? sql`r.party_id IS ${partyId}` : sql`1 = 1`}
+        AND r.state NOT IN ${sql.in(CLOSED)}
         AND lower(r.title) = lower(${title}) AND r.record_id IS NOT ${except}
-        AND (${list} != 'contacts' OR r.party_id IS ${partyId})
         AND (${list} != 'clients' OR ${clientFamily(sql, sql`r.category`)} = ${clientFamily(sql, sql`${category ?? "client"}`)})
         AND ${seenBy === undefined ? sql`1 = 1` : crmSees(sql, seenBy)}
-      ORDER BY r.key LIMIT 1`;
+      ORDER BY +r.key LIMIT 1`;
     if (row !== undefined) {
       const error = {
         reason: "conflict" as const,
-        message: `There is already a ${LISTS[list].noun} named ${title.slice(0, 80)}: ${row.key}.`,
+        message: `There is already ${withArticle(LISTS[list].noun)} named ${title.slice(0, 80)}: ${row.key}.`,
       };
       return yield* row.sensitive === 1 ? new SensitiveRefusal(error) : new KinChatError(error);
     }
@@ -1234,8 +1391,8 @@ const make = Effect.gen(function* () {
   /**
    * Whether a new entry starts kept, from who makes it, in the write's transaction. Made from a
    * suggestion, or asked to be one, it is one. A quote or invoice is real only on an owner-level
-   * person's word: theirs, or their ask in person of an agent. Anything else starts kept as it
-   * always did, unless its caller asks for less.
+   * person's word: theirs, or their ask in person of an agent (an approved draft's one entry is
+   * `approvalKeeps`'). Anything else starts kept, unless its caller asks for less.
    */
   const startsKept = Effect.fn("KinRecords.startsKept")(function* (
     orgId: KinOrgId,
@@ -1251,6 +1408,33 @@ const make = Effect.gen(function* () {
     }
     if (!ISSUED_LISTS.has(list) || writer.actor._tag === "system") return true;
     return yield* mayKeep(orgId, writer);
+  });
+
+  /**
+   * An entry made under the owner's Approve of a sent-up quote or invoice (`approval.ts`): it
+   * starts kept, as his Draft, only on the approved kind's list, for the approved party when the
+   * draft named one, and only as the first entry made under that approval. Undefined when the
+   * writer's wake runs for no approval; then the entry starts as on any other turn.
+   */
+  const approvalKeeps = Effect.fn("KinRecords.approvalKeeps")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    list: string,
+    partyId: string | null,
+  ) {
+    if (writer.actor._tag !== "agent" || writer.wakeupId === undefined) return undefined;
+    const approval = yield* approvedFor({
+      orgId,
+      agentId: writer.actor.agentId,
+      wakeupId: writer.wakeupId,
+    }).pipe(provideSql);
+    if (approval === undefined) return undefined;
+    const { draft } = approval;
+    const keeps =
+      approval.made === null &&
+      DRAFT_LIST[draft.kind] === list &&
+      (draft.for === null || draft.for.partyId === partyId);
+    return { questionId: approval.questionId, keeps };
   });
 
   /**
@@ -1278,10 +1462,17 @@ const make = Effect.gen(function* () {
         changes: false,
         input,
       }).pipe(provideSql);
-    if (writer.view !== undefined)
-      yield* viewGuard(orgId, writer.view, { row: existing, changes: false, input }).pipe(
-        provideSql,
-      );
+    const guarded =
+      writer.view === undefined
+        ? undefined
+        : yield* viewGuard(
+            orgId,
+            writer.view,
+            { row: existing, changes: false, input },
+            writer.actor._tag === "agent" && writer.wakeupId !== undefined
+              ? { agentId: writer.actor.agentId, wakeupId: writer.wakeupId }
+              : undefined,
+          ).pipe(provideSql);
     if (existing !== undefined) {
       const [stored] = yield* sql<{ hash: string | null }>`SELECT request_hash AS hash
         FROM kin_records WHERE org_id = ${orgId} AND record_id = ${recordId}`;
@@ -1306,8 +1497,9 @@ const make = Effect.gen(function* () {
     if (list === "deals" && writer.deal !== true) return yield* dealsOnly;
     const contact = list === "contacts" ? contactFields({}, input.fields ?? {}) : input.fields;
     if (isChatError(contact)) return yield* contact;
+    const tagged = yield* cleanTags(orgId, list, contact).pipe(provideSql);
     const fields = Object.fromEntries(
-      Object.entries(contact ?? {}).filter(
+      Object.entries(tagged ?? {}).filter(
         (entry): entry is [string, FieldValue] => entry[1] !== null,
       ),
     );
@@ -1319,10 +1511,13 @@ const make = Effect.gen(function* () {
       amount: input.amount,
       dateAt: input.dateAt,
       repeat: input.repeat,
+      steps: (input.steps?.length ?? 0) > 0 || input.urgent === true,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
-    const zero = zeroOwed(def, input.amount, input.category);
+    const zero = zeroOwed(def, input.amount, input.category, writer);
     if (zero !== undefined) return yield* zero;
+    if (input.askSlip === true && input.amount != null)
+      yield* askSlip(orgId, def, input.amount).pipe(provideSql);
     if (list === "receipts" && RECEIPT_TIES.some((field) => field in fields))
       return yield* invalid(RECEIPT_TIES_ARE_KINS);
     if (writer.actor._tag !== "person" && numberingOf(def) !== undefined && "number" in fields)
@@ -1330,13 +1525,31 @@ const make = Effect.gen(function* () {
     if (def.builtIn === null) yield* verifyRefs(orgId, def, fields).pipe(provideSql);
     const projectId = input.projectId ?? null;
     const project = projectId === null ? undefined : yield* target(orgId, projectId, "projects");
-    // An entry in a client's project is part of that client's record unless it names another.
-    const partyId = input.partyId !== undefined ? input.partyId : (project?.partyId ?? null);
+    // An entry in a client's project is part of that client's record unless it names another;
+    // a teammate's draft only when they see that client (`draftDoc`).
+    const inherited = project?.partyId ?? null;
+    const partyId =
+      input.partyId !== undefined
+        ? input.partyId
+        : guarded !== undefined &&
+            inherited !== null &&
+            !(yield* teamVisible(orgId, guarded.draftFor, [inherited]).pipe(provideSql)).has(
+              inherited,
+            )
+          ? null
+          : inherited;
     const invalidRefs = checkRefs(def, partyId, projectId);
     if (invalidRefs !== undefined) return yield* invalidRefs;
     const party = partyId === null ? undefined : yield* target(orgId, partyId, "clients");
     yield* sameName(orgId, list, input.title, partyId, null, input.category, writer.namesSeenBy);
     yield* ownerExists(orgId, input.owner);
+    if (list === "work") {
+      // Kin's own copy, such as a repeat's next one, keeps whoever was on the one before.
+      const copied = writer.actor._tag === "system" ? fieldList(fields, "alsoOn") : [];
+      const alsoOn = yield* alsoOnFor(orgId, writer, fields.alsoOn, copied, input.owner);
+      if (alsoOn.length === 0) delete fields.alsoOn;
+      else fields.alsoOn = alsoOn;
+    }
     const repeat =
       options.repeat ??
       (input.repeat === undefined || input.repeat === null
@@ -1344,17 +1557,28 @@ const make = Effect.gen(function* () {
         : yield* storedRepeat(orgId, input.repeat, input.dueAt ?? null, input.dateAt ?? null));
     const now = yield* Clock.currentTimeMillis;
     const key = yield* ensureRegister(orgId, def, now);
-    const kept = options.kept ?? (yield* startsKept(orgId, writer, list, input));
+    const approved =
+      options.kept === undefined ? yield* approvalKeeps(orgId, writer, list, partyId) : undefined;
+    const kept =
+      options.kept ??
+      (approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps);
     // Nobody issued, sent or was paid for what nobody kept: it waits as a draft on its own day.
+    // Only Issue makes an invoice owed, with its number; an agent sets none, so it starts a draft.
+    // An approval's entry is the owner's Draft whatever state it was given.
     const state =
-      !kept && ISSUED_LISTS.has(list)
+      (!kept && ISSUED_LISTS.has(list)) ||
+      (writer.actor._tag === "agent" && list === "invoices") ||
+      approved?.keeps === true
         ? "open"
         : (input.state ??
           startState(def, {
             dateAt: input.dateAt ?? null,
             numbered: "number" in fields,
             now,
-            zone: def.id === "expenses" ? yield* ownerZone(orgId).pipe(provideSql) : "UTC",
+            zone:
+              def.id === "expenses" || def.id === "invoices"
+                ? yield* ownerZone(orgId).pipe(provideSql)
+                : "UTC",
           }));
     const waitingOn = state === "waiting" ? (input.waitingOn ?? null) : null;
     const givenAway =
@@ -1364,13 +1588,14 @@ const make = Effect.gen(function* () {
     const amount = input.amount ?? null;
     const notes = input.notes ?? "";
     const author = textBy(writer);
+    const steps = input.steps ?? [];
     yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
         waiting_on_kind, waiting_on_id, owner_kind, owner_id, side, category, due_at, due_all_day,
         sensitive, confirmed, notes, rev, source_chat_id, source_message_id, created_by_kind,
         created_by_id, assigned_by_person_id, assigned_at, origin_key, created_at, updated_at,
         closed_at, party_id, project_id, repo, fields_json, amount_minor, currency, date_at,
         date_all_day, repeat_json, request_hash, team_shared, title_by, notes_by,
-        assigned_by_agent_id, marked_by_person_id, asked_by_person_id)
+        assigned_by_agent_id, marked_by_person_id, asked_by_person_id, steps_json, urgent)
       VALUES (${orgId}, ${recordId}, ${list}, ${key}, ${input.title}, ${state},
         ${waitingOn?._tag ?? null}, ${waitingOn === null ? null : principalId(waitingOn)},
         ${input.owner._tag}, ${principalId(input.owner)}, ${input.side ?? "ours"},
@@ -1382,14 +1607,20 @@ const make = Effect.gen(function* () {
         ${assignedBy}, ${assignedBy === null ? null : now}, ${input.originKey},
         ${input.createdAt ?? now}, ${now}, ${isClosed(state) ? (input.closedAt ?? now) : null},
         ${partyId}, ${projectId}, ${input.repo ?? null},
-        ${yield* encodeFieldValues(fields)}, ${amount?.minor ?? null}, ${amount?.currency ?? null},
+        ${yield* encodeFieldValues(guarded === undefined ? fields : { ...fields, draftFor: guarded.draftFor })},
+        ${amount?.minor ?? null}, ${amount?.currency ?? null},
         ${input.dateAt ?? null}, ${input.dateAllDay === true ? 1 : 0},
         ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null},
         ${input.team === true || writer.teammate === true || writer.teamShared === true || (writer.view !== undefined && (ROOM_LISTS as ReadonlyArray<string>).includes(list)) ? 1 : 0},
         ${options.authors === undefined ? author : options.authors.title},
         ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes},
         ${givenAway && writer.actor._tag === "agent" && writer.askedBy == null ? writer.actor.agentId : null},
-        ${input.sensitive === true ? textBy(writer) : null}, ${textBy(writer)})`;
+        ${input.sensitive === true ? textBy(writer) : null}, ${textBy(writer)},
+        ${steps.length === 0 ? null : yield* encodeSteps(steps)}, ${input.urgent === true ? 1 : null})`;
+    if (approved?.keeps === true)
+      yield* recordMade(orgId, approved.questionId, { kind: "entry", recordId, key, list }).pipe(
+        provideSql,
+      );
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
       { field: "state", from: null, to: state },
@@ -1413,6 +1644,8 @@ const make = Effect.gen(function* () {
       ...(input.repo === undefined || input.repo === null
         ? []
         : [{ field: "repo", from: null, to: input.repo }]),
+      ...(steps.length === 0 ? [] : [{ field: "steps", from: null, to: shownSteps(steps) }]),
+      ...(input.urgent === true ? [{ field: "urgent", from: null, to: "true" }] : []),
       ...Object.entries(fields).map(([field, value]) => ({
         field,
         from: null,
@@ -1435,7 +1668,8 @@ const make = Effect.gen(function* () {
       );
     for (const link of input.links ?? []) yield* insertLink(orgId, recordId, link, now);
     yield* indexRecord(orgId, recordId).pipe(provideSql);
-    if (givenAway && options.wake)
+    // A suggestion is nobody's instruction until a person keeps it (`update`, `keeping`).
+    if (givenAway && options.wake && kept)
       yield* wakeLead(
         orgId,
         writer,
@@ -1479,9 +1713,13 @@ const make = Effect.gen(function* () {
     );
     const owner = principal(row.ownerKind, row.ownerId);
     if (owner === null) return;
-    const files = new Set(def.fields.filter((one) => one.type === "file").map((one) => one.key));
+    // The next one takes its own number when it is issued.
+    const dropped = new Set([
+      ...def.fields.filter((one) => one.type === "file").map((one) => one.key),
+      ...(numberingOf(def) === undefined ? [] : ["number"]),
+    ]);
     const kept = Object.fromEntries(
-      Object.entries(parseFields(row.fieldsJson)).filter(([key]) => !files.has(key)),
+      Object.entries(parseFields(row.fieldsJson)).filter(([key]) => !dropped.has(key)),
     );
     const amount = amountOf(row);
     // The next one is whoever closed this one's to keep, and a suggestion if this one is.
@@ -1515,6 +1753,8 @@ const make = Effect.gen(function* () {
         repo: row.repo,
         fields: kept,
         ...(amount === undefined ? {} : { amount }),
+        // The next one's checklist starts unticked; urgent was about this one.
+        steps: stepsOf(row).map((step) => ({ title: step.title, done: false })),
         links: [{ kind: "record", target: row.recordId, relation: "relates", label: row.key }],
       },
       {
@@ -1544,6 +1784,21 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /**
+   * Whether an entry's notes were last written by a person (a coding agent's write is not), back
+   * through a repeat's earlier occurrences (`wordsOf`).
+   */
+  const notesByPerson = Effect.fn("KinRecords.notesByPerson")(function* (
+    orgId: KinOrgId,
+    recordId: string,
+  ) {
+    const { writers, madeBy } = yield* wordsOf(orgId, recordId).pipe(provideSql);
+    const last = writers.find((one) => one.notes === 1);
+    return last === undefined
+      ? madeBy?.kind === "person"
+      : last.actorKind === "person" && last.coding === 0;
+  });
+
   const update = Effect.fn("KinRecords.update")(function* (
     orgId: KinOrgId,
     writer: Writer,
@@ -1561,7 +1816,14 @@ const make = Effect.gen(function* () {
             ? contactFields(parseFields(row.fieldsJson), asked.fields)
             : undefined;
         if (isChatError(contact)) return yield* contact;
-        const patch = contact === undefined ? asked : { ...asked, fields: contact };
+        const given = contact === undefined ? asked : { ...asked, fields: contact };
+        const patch =
+          given.fields === undefined
+            ? given
+            : {
+                ...given,
+                fields: yield* cleanTags(orgId, row.registerId, given.fields).pipe(provideSql),
+              };
         if (writer.codingAgentKey !== undefined && !heldBy(row, writer))
           return yield* notFound(key);
         if (writer.teammate === true && writer.actor._tag === "person")
@@ -1587,12 +1849,20 @@ const make = Effect.gen(function* () {
           amount: patch.amount,
           dateAt: patch.dateAt,
           repeat: patch.repeat,
+          steps:
+            patch.steps !== undefined || patch.urgent !== undefined || patch.tick !== undefined,
         });
         if (invalidFor !== undefined) return yield* invalidFor;
         if (recordsMoney(patch.amount, patch.fields))
           yield* countryFirst(orgId, { saved: true }).pipe(provideSql);
-        const zero = zeroOwed(def, patch.amount, patch.category ?? row.category);
+        const zero = zeroOwed(def, patch.amount, patch.category ?? row.category, writer);
         if (zero !== undefined) return yield* zero;
+        if (
+          patch.askSlip === true &&
+          patch.amount != null &&
+          (patch.amount.minor !== row.amountMinor || patch.amount.currency !== row.currency)
+        )
+          yield* askSlip(orgId, def, patch.amount, row.recordId).pipe(provideSql);
         if (list === "receipts") {
           if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
             return yield* invalid(RECEIPT_TIES_ARE_KINS);
@@ -1697,9 +1967,22 @@ const make = Effect.gen(function* () {
             writer.namesSeenBy,
           );
         const stored = parseFields(row.fieldsJson);
+        const alsoOn =
+          list === "work"
+            ? yield* alsoOnFor(
+                orgId,
+                writer,
+                patch.fields?.alsoOn,
+                fieldList(stored, "alsoOn"),
+                patch.owner ?? before.owner,
+              )
+            : undefined;
         const merged: Record<string, FieldValue> = { ...stored };
         let fieldsChanged = false;
-        for (const [field, value] of Object.entries(patch.fields ?? {})) {
+        for (const [field, value] of Object.entries({
+          ...patch.fields,
+          ...(alsoOn === undefined ? {} : { alsoOn: alsoOn.length === 0 ? null : alsoOn }),
+        })) {
           const from = shownField(stored[field]);
           const to = shownField(value);
           if (from === to) continue;
@@ -1776,7 +2059,32 @@ const make = Effect.gen(function* () {
                 ? (owing ?? row.state)
                 : row.state
             : undefined;
-        const state = patch.state ?? settled ?? row.state;
+        const wanted = patch.state ?? settled ?? row.state;
+        // An agent never issues or settles an invoice by its state: Issue gives it its number.
+        const unissued =
+          writer.actor._tag === "agent" &&
+          list === "invoices" &&
+          !isSuggestion(row) &&
+          (wanted === "waiting" || wanted === "done") &&
+          wanted !== row.state &&
+          (yield* sql`SELECT 1 FROM kin_issued_numbers
+            WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`).length === 0;
+        // An agent's done on a task with an open card about it waits on that card's person; a
+        // card this very write settles (`answering`) is no longer open.
+        const spared = writer.answering?.length ? writer.answering : [""];
+        const [carded] =
+          list === "work" &&
+          wanted === "done" &&
+          !isClosed(row.state) &&
+          (writer.actor._tag === "agent" || writer.codingAgentKey !== undefined)
+            ? yield* sql<{ personId: string }>`SELECT person_id AS "personId" FROM kin_questions
+                WHERE org_id = ${orgId} AND state = 'open'
+                  AND (' ' || about || ' ') LIKE ${`% ${row.key} %`}
+                  AND (widget_id IS NULL OR widget_id NOT IN ${sql.in(spared)})
+                  AND (raise_widget_id IS NULL OR raise_widget_id NOT IN ${sql.in(spared)})
+                ORDER BY asked_at, question_id LIMIT 1`
+            : [];
+        const state = unissued ? row.state : carded !== undefined ? "waiting" : wanted;
         // Only who may keep one keeps a suggestion, and only an owner-level person takes it back;
         // anyone else's `confirmed` changes nothing, so an agent's slip ack stays only that.
         const keeping =
@@ -1835,20 +2143,39 @@ const make = Effect.gen(function* () {
           set("state", state);
           if (isClosed(state) !== isClosed(row.state))
             set("closed_at", isClosed(state) ? now : null);
-          if (isClosed(state) && row.handedBackAt !== null) {
-            set("handed_back_kind", null);
-            set("handed_back_id", null);
-            set("handed_back_at", null);
-          }
         }
         const waitingOn =
           state !== "waiting"
             ? null
-            : patch.waitingOn !== undefined
-              ? patch.waitingOn
-              : before.waitingOn;
+            : carded !== undefined
+              ? ({ _tag: "person", personId: KinPersonId.make(carded.personId) } as const)
+              : patch.waitingOn !== undefined
+                ? patch.waitingOn
+                : before.waitingOn;
         if (waitingOn !== null && !samePrincipal(waitingOn, before.waitingOn))
           yield* ownerExists(orgId, waitingOn, "to wait on");
+        // A dismissed question released this task; only Undo or that person's own word re-waits it.
+        if (
+          waitingOn?._tag === "person" &&
+          carded === undefined &&
+          writer.actor._tag === "agent" &&
+          !samePrincipal(waitingOn, before.waitingOn)
+        ) {
+          const dismisser = yield* dismissedHold(orgId, row.recordId, waitingOn.personId).pipe(
+            provideSql,
+          );
+          if (
+            dismisser !== undefined &&
+            (writer.wakeupId === undefined ||
+              !(yield* personInTurn(
+                orgId,
+                writer.actor.agentId,
+                writer.wakeupId,
+                waitingOn.personId,
+              ).pipe(provideSql)))
+          )
+            return yield* invalid(dismissedHoldText(dismisser, row.key));
+        }
         if (
           !samePrincipal(waitingOn, before.waitingOn) ||
           (state !== "waiting" && row.waitingOnId !== null)
@@ -1884,7 +2211,7 @@ const make = Effect.gen(function* () {
           set("owner_id", principalId(patch.owner));
           // Reassigning never launders authority: the assigner is whoever asked for this change.
           // Handed back, it keeps the authority it was given with; the holder's words go with it.
-          // Handed back, it says so on the giver's row until it is given again or closed.
+          // Handed back, it says so on the giver's row until it is given again; never while closed.
           set("handed_back_kind", patch.handedBack === undefined ? null : before.owner._tag);
           set("handed_back_id", patch.handedBack === undefined ? null : principalId(before.owner));
           set("handed_back_at", patch.handedBack === undefined ? null : now);
@@ -1991,10 +2318,76 @@ const make = Effect.gen(function* () {
           );
           set("repeat_json", yield* encodeRepeat(stored));
         }
+        const storedSteps = stepsOf(row);
+        const ticked = patch.tick === undefined ? undefined : storedSteps[patch.tick.index];
+        if (patch.tick !== undefined && ticked?.title !== patch.tick.title)
+          return yield* conflict(row.key, row.rev);
+        const steps =
+          patch.tick === undefined
+            ? patch.steps
+            : storedSteps.map((step, index) =>
+                index === patch.tick?.index ? { title: step.title, done: patch.tick.done } : step,
+              );
+        const same = (a: ReadonlyArray<Step>, b: ReadonlyArray<Step>) =>
+          a.length === b.length &&
+          a.every((step, index) => step.title === b[index]?.title && step.done === b[index]?.done);
+        if (steps !== undefined && !same(steps, storedSteps)) {
+          changes.push({ field: "steps", from: shownSteps(storedSteps), to: shownSteps(steps) });
+          set("steps_json", steps.length === 0 ? null : yield* encodeSteps(steps));
+        }
+        if (patch.urgent !== undefined && patch.urgent !== (row.urgent === 1)) {
+          changes.push({ field: "urgent", from: shown(row.urgent === 1), to: shown(patch.urgent) });
+          set("urgent", patch.urgent ? 1 : null);
+        }
         if (patch.notes !== undefined && patch.notes !== row.notes) {
-          changes.push({ field: "notes", from: row.notes, to: patch.notes });
-          set("notes", patch.notes);
-          set("notes_by", patch.notes === "" ? null : (author ?? row.notesBy));
+          // A person's notes on a task stay theirs: an agent's text goes on its activity instead.
+          if (
+            writer.actor._tag === "agent" &&
+            list === "work" &&
+            row.notes !== "" &&
+            (yield* notesByPerson(orgId, row.recordId))
+          ) {
+            if (patch.notes.trim() !== "") {
+              const requestHash = commentHashOf(patch.notes, []);
+              // Keyed by the one event the turn answers, which a stopped and resumed turn keeps.
+              const events =
+                writer.wakeupId === undefined
+                  ? []
+                  : yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+                      WHERE org_id = ${orgId} AND agent_id = ${writer.actor.agentId}
+                        AND wakeup_id = ${writer.wakeupId}
+                      ORDER BY event_id LIMIT 2`;
+              const source = events.length === 1 ? `${events[0]!.eventId}:` : "";
+              const noter = {
+                _tag: "agent" as const,
+                agentId: writer.actor.agentId,
+                askedBy: writer.askedBy ?? null,
+              };
+              const requestId = `notes:${source}${requestHash}`;
+              // A stale revision writes no new note; a retry of one already written still lands.
+              if (expectedRev !== undefined && expectedRev !== row.rev) {
+                const [noted] = yield* sql`SELECT 1 FROM kin_record_comments
+                  WHERE org_id = ${orgId}
+                    AND comment_id = ${commentIdFor(orgId, row.recordId, noter, requestId)}`;
+                if (noted === undefined) return yield* conflict(row.key, row.rev);
+              }
+              yield* insertComment({
+                orgId,
+                key: row.key,
+                author: noter,
+                requestId,
+                requestHash,
+                body: patch.notes,
+                files: [],
+                now,
+                sees: () => Effect.succeed(true),
+              }).pipe(provideSql);
+            }
+          } else {
+            changes.push({ field: "notes", from: row.notes, to: patch.notes });
+            set("notes", patch.notes);
+            set("notes_by", patch.notes === "" ? null : (author ?? row.notesBy));
+          }
         }
         if (patch.category !== undefined && patch.category !== row.category) {
           changes.push({ field: "category", from: row.category, to: patch.category });
@@ -2113,6 +2506,23 @@ const make = Effect.gen(function* () {
             team,
           );
         }
+        // Kept, a suggestion given to an agent is given now, once: not if its work already began.
+        if (
+          keeping &&
+          reassigned === undefined &&
+          !isClosed(state) &&
+          before.owner._tag === "agent"
+        )
+          if (!(yield* alreadyGiven(orgId, row.recordId, before.owner.agentId)))
+            yield* wakeLead(
+              orgId,
+              writer,
+              row,
+              before.owner,
+              row.assignedBy === null ? textBy(writer) : KinPersonId.make(row.assignedBy),
+              seq,
+              now,
+            );
         if (reassigned !== undefined && patch.handedBack !== undefined)
           yield* wakeLead(
             orgId,
@@ -2131,9 +2541,12 @@ const make = Effect.gen(function* () {
           yield* wakeLead(orgId, writer, row, reassigned, writer.askedBy ?? null, seq, now);
         if (reopened || undoneFor)
           yield* wakeLead(orgId, writer, row, before.owner, writer.askedBy ?? null, seq, now);
-        // A lead never keeps working an open entry a person closed or took from it.
+        // A lead never keeps working an open entry a person closed or took from it; a suggestion
+        // nobody kept was never its work.
         const withdrawnFrom: Principal | undefined =
-          !isClosed(row.state) && (isClosed(state) || reassigned !== undefined)
+          !isSuggestion(row) &&
+          !isClosed(row.state) &&
+          (isClosed(state) || reassigned !== undefined)
             ? before.owner
             : undefined;
         // Told only when the person is the lead's owner.
@@ -2152,6 +2565,25 @@ const make = Effect.gen(function* () {
         if (updated === undefined) return yield* unavailable;
         if (!isClosed(row.state) && isClosed(updated.state))
           yield* spawnNext(orgId, writer, updated);
+        const left = patch.leftover?.trim() ?? "";
+        if (list === "work" && left !== "" && updated.state === "done" && row.state !== "done")
+          yield* insert(
+            orgId,
+            writer,
+            {
+              originKey: `leftover:${row.recordId}:${rev}`,
+              title: left.split("\n")[0]!.slice(0, LEFTOVER_TITLE),
+              ...(left.length > LEFTOVER_TITLE || left.includes("\n") ? { notes: left } : {}),
+              owner: before.owner,
+              partyId: row.partyId,
+              projectId: row.projectId,
+              ...(isSuggestion(row) ? { confirmed: false } : {}),
+              links: [
+                { kind: "record", target: row.recordId, relation: "relates", label: row.key },
+              ],
+            },
+            { wake: true },
+          );
         return updated;
       }),
     );
@@ -2479,23 +2911,47 @@ const make = Effect.gen(function* () {
           at: number;
           paid: number;
           received: number;
+          fields: string;
         }>`SELECT r.amount_minor AS minor, r.currency, r.category, r.party_id AS party,
             r.project_id AS project, r.side, r.state, r.owner_kind || ':' || r.owner_id AS owner,
             ${moneyDay(sql)} AS at,
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}) AS paid,
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live} AND p.withheld = 0
               AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
-              AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received
+              AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received,
+            r.fields_json AS fields
           FROM kin_records r WHERE ${filter} AND ${countedEntry(sql, asked)}
           ORDER BY r.record_id`;
         const listDef = yield* resolveList(orgId, input.list ?? "work");
         const paidOverTime = listDef.payments === true;
+        const directed = (yield* findBankList(orgId).pipe(provideSql))?.id === listDef.id;
         const amounts = (members: typeof rows): Sums => {
           const priced = members.flatMap((row) =>
             row.minor === null ? [] : [{ ...row, minor: row.minor }],
           );
+          // Money in and out never add up to one figure; an entry with no direction is in neither.
+          const way = directed ? priced.map((row) => directionOf(parseFields(row.fields))) : [];
+          const side = (direction: "credit" | "debit") =>
+            addUp(
+              priced.filter((_, at) => way[at] === direction),
+              home,
+            );
           return {
             total: addUp(priced, home),
+            ...(directed
+              ? {
+                  moneyIn: side("credit"),
+                  moneyOut: side("debit"),
+                  net: addUp(
+                    priced.flatMap((row, at) =>
+                      way[at] === null
+                        ? []
+                        : [way[at] === "debit" ? { ...row, minor: -row.minor } : row],
+                    ),
+                    home,
+                  ),
+                }
+              : {}),
             ...(paidOverTime
               ? {
                   owed: addUp(
@@ -2590,7 +3046,10 @@ const make = Effect.gen(function* () {
     if (input.repo !== undefined) where.push(sql`lower(r.repo) = lower(${input.repo})`);
     if (input.owner !== undefined)
       where.push(
-        sql`r.owner_kind = ${input.owner._tag} AND r.owner_id = ${principalId(input.owner)}`,
+        input.orAlsoOn === true && input.owner._tag === "person"
+          ? sql`((r.owner_kind = 'person' AND r.owner_id = ${input.owner.personId})
+              OR ${alsoOnIt(sql, input.owner.personId)})`
+          : sql`r.owner_kind = ${input.owner._tag} AND r.owner_id = ${principalId(input.owner)}`,
       );
     if (input.states !== undefined && input.states.length > 0)
       where.push(sql`r.state IN ${sql.in(input.states)}`);
@@ -2671,7 +3130,11 @@ const make = Effect.gen(function* () {
               CASE WHEN r.created_by_kind = 'person' THEN r.created_by_id END,
               r.assigned_by_person_id) AS "askedBy",
             r.assigned_by_person_id AS "assignedBy", r.assigned_by_agent_id AS "assignedByAgent",
-            r.created_at AS "createdAt"
+            r.created_at AS "createdAt", r.updated_at AS "updatedAt",
+            CASE WHEN r.state IN ('done', 'dropped') THEN NULL ELSE r.handed_back_at END
+              AS "handedBackAt", r.urgent,
+            CASE WHEN r.register_id = 'work' THEN json_extract(r.fields_json, '$.alsoOn') END
+              AS "alsoOn"
           FROM kin_records r WHERE ${filterOf(orgId, input, now)}
           ORDER BY r.record_id LIMIT ${MOVE_ROWS_CAP}`;
       }),
@@ -2825,7 +3288,21 @@ const make = Effect.gen(function* () {
           }),
       );
     }),
-    announce: Effect.fn("KinRecords.announce")(function* (orgId) {
+    // Nested in the caller's transaction when there is one, so every tick waits for the outermost
+    // commit (screens read on readers) and a rollback tells no one.
+    announce: Effect.fn("KinRecords.announce")(function* (orgId, recordIds) {
+      const moved =
+        recordIds === undefined
+          ? undefined
+          : recordIds.length === 0
+            ? []
+            : yield* failed(
+                sql<{ recordId: string; key: string; registerId: string }>`SELECT
+                    record_id AS "recordId", key, register_id AS "registerId" FROM kin_records
+                  WHERE org_id = ${orgId} AND record_id IN ${sql.in([...new Set(recordIds)])}
+                  ORDER BY key`,
+              );
+      if (moved?.length === 0) return;
       // A number no change will take, past every one a client heard: an undo's entries took their
       // changes with them, and clients read again only past what they already hold.
       const [taken] = yield* failed(
@@ -2833,6 +3310,30 @@ const make = Effect.gen(function* () {
           WHERE name = 'kin_record_changes' RETURNING seq`,
       );
       const seq = taken?.seq ?? (yield* failed(latestSeq(orgId).pipe(provideSql)));
+      if (moved !== undefined) {
+        // Only who sees these entries hears of them, each at their own next number.
+        const pairs = yield* failed(
+          teamPairs(
+            orgId,
+            moved.map((one) => one.recordId),
+          ).pipe(provideSql),
+        );
+        const numbers = yield* failed(
+          bumpTeamSeqs(orgId, [...new Set(pairs.map((pair) => pair.personId))]).pipe(provideSql),
+        );
+        for (const one of moved) {
+          const team = new Map<string, number>();
+          for (const pair of pairs) {
+            const number = numbers.get(pair.personId);
+            if (pair.recordId === one.recordId && number !== undefined)
+              team.set(pair.personId, number);
+          }
+          yield* sql.afterCommit(
+            PubSub.publish(ticks, { orgId, seq, key: one.key, registerId: one.registerId, team }),
+          );
+        }
+        return;
+      }
       // Anyone's view may have moved, so every teammate's own number moves too: one who resumes
       // later is behind, not told nothing changed.
       const everyone = yield* failed(
@@ -2845,8 +3346,8 @@ const make = Effect.gen(function* () {
           everyone.map((one) => one.personId),
         ).pipe(provideSql),
       );
-      yield* PubSub.publish(ticks, { orgId, seq, team });
-    }),
+      yield* sql.afterCommit(PubSub.publish(ticks, { orgId, seq, team }));
+    }, transaction),
     peopleMoved: Effect.fn("KinRecords.peopleMoved")(function* (orgId, personIds) {
       if (personIds.length === 0) return;
       const team = yield* failed(bumpTeamSeqs(orgId, personIds).pipe(provideSql));

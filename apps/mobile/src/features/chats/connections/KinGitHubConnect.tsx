@@ -7,12 +7,14 @@ import {
   createKinGitHubAppRepoActions,
   createKinGitHubAppSetupActions,
   createKinGitHubGuardActions,
+  createKinGitHubLookActions,
   KIN_GITHUB_APP_SETUP_COPY as SETUP,
   kinGitHubAppCreatePath,
   KIN_GITHUB_AGENTS_COPY as AGENTS,
   KIN_GITHUB_APP_REPOS_COPY as PICK,
   KIN_GITHUB_COPY as COPY,
   KIN_GITHUB_GUARD_COPY as GUARD,
+  KIN_GITHUB_INSTANT_COPY as INSTANT,
   type KinGitHubGuardOutcome,
   KIN_GITHUB_WATCH_COPY as WATCH,
   kinGitHubAccountRepos,
@@ -21,6 +23,7 @@ import {
   kinGitHubAgentsView,
   kinGitHubGuardAction,
   kinGitHubGuardLine,
+  kinGitHubInstantRow,
   kinGitHubRow,
   kinGitHubSheet,
   kinGitHubWatchLine,
@@ -47,7 +50,6 @@ import { ListActionRow } from "../../../components/ui/ListActionRow";
 import { ListRow } from "../../../components/ui/ListRow";
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { ListSection } from "../../../components/ui/ListSection";
-import { ListToggleRow } from "../../../components/ui/ListToggleRow";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
@@ -64,6 +66,7 @@ import {
   type KinConnectionsParams,
   type KinConnectionsTarget,
 } from "./kinConnectionTarget";
+import { KinWorkToggleRow } from "../components/KinWorkPieces";
 
 function useGitHub(environmentId: EnvironmentId, orgId: KinOrgId) {
   const statusAtom = kinClient.github({ environmentId, input: { orgId } });
@@ -124,7 +127,7 @@ export function KinGitHubSection(props: {
   return (
     <View className="gap-2">
       {problem === null ? null : <ErrorBanner message={problem} />}
-      <ListSection title={COPY.title} footer={row.action === "connect" ? undefined : COPY.intro}>
+      <ListSection title={COPY.title} footer={row.action === "connect" ? row.detail : COPY.intro}>
         <ListRow
           icon={
             row.tone === "error"
@@ -134,7 +137,7 @@ export function KinGitHubSection(props: {
                 : "link"
           }
           label={row.title}
-          description={row.detail}
+          description={row.action === "connect" ? undefined : row.detail}
           detail={row.label}
           onPress={() =>
             row.action === "disconnect"
@@ -174,9 +177,12 @@ function AgentIdentity(props: {
   readonly login: string | null;
   readonly target: KinConnectionsTarget;
 }) {
-  const view = kinGitHubAgentsView(props.agents, props.login, useNowMinuteMs());
+  const now = useNowMinuteMs();
+  const view = kinGitHubAgentsView(props.agents, props.login, now);
   const installUrl = view.installUrl;
   const rows = kinGitHubAccountRows(props.agents);
+  const instant = kinGitHubInstantRow(props.agents, now);
+  const instantAction = instant?.action ?? null;
   const hint = kinGitHubAccountsHint(rows);
   const [picking, setPicking] = useState<string | null>(null);
   return (
@@ -215,6 +221,7 @@ function AgentIdentity(props: {
                     onPress={() => void Linking.openURL(action.url)}
                   />
                 )}
+                {row.checkAgain === true ? <CheckAgain target={props.target} /> : null}
                 {picking === row.key ? (
                   <AccountRepos
                     target={props.target}
@@ -225,6 +232,21 @@ function AgentIdentity(props: {
               </View>
             );
           })}
+        </ListSection>
+      )}
+      {instant === null ? null : (
+        <ListSection {...(instant.offer === true ? { footer: INSTANT.onComputer } : {})}>
+          <ListRowLayout
+            label={instant.title}
+            detail={instant.label}
+            description={instant.detail}
+          />
+          {instantAction === null ? null : (
+            <ListActionRow
+              label={instantAction.label}
+              onPress={() => void Linking.openURL(instantAction.url)}
+            />
+          )}
         </ListSection>
       )}
       {view.uses.length === 0 ? null : (
@@ -244,6 +266,33 @@ function AgentIdentity(props: {
 }
 
 /** Makes Kin's own GitHub App on GitHub, or forgets the one made here. */
+/** Asks Kin to look at its App on GitHub now; every open screen redraws from what it sees. */
+function CheckAgain(props: { readonly target: KinConnectionsTarget }) {
+  const { environmentId, orgId } = props.target;
+  const allowed = useAtomValue(kinClient.githubAppLook.permissionAtom(environmentId));
+  const reload = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const look = useAtomCommand(kinClient.githubAppLook, { reportFailure: false });
+  const actions = createKinGitHubLookActions({
+    orgId,
+    look: (input) => look({ environmentId, input }),
+    refresh: reload,
+  });
+  const [said, setSaid] = useState<string | null>(null);
+  if (!allowed) return null;
+  return (
+    <>
+      <ListActionRow
+        label={AGENTS.checkAgain}
+        onPress={() => {
+          setSaid(null);
+          void actions.look().then(setSaid);
+        }}
+      />
+      {said === null ? null : <Notice message={said} />}
+    </>
+  );
+}
+
 function AppSetUp(props: {
   readonly target: KinConnectionsTarget;
   readonly view: ReturnType<typeof kinGitHubAgentsView>;
@@ -435,7 +484,7 @@ function AccountRepos(props: {
         </View>
       ) : (
         shown.map((repo) => (
-          <ListToggleRow
+          <KinWorkToggleRow
             key={repo.repo}
             label={repo.repo}
             description={repo.agentsAs === "app" ? WATCH.asApp : WATCH.asYou}
@@ -573,7 +622,7 @@ function RepoRows(props: {
         const action = kinGitHubGuardAction(repo.guard);
         return (
           <View key={repo.repo}>
-            <ListToggleRow
+            <KinWorkToggleRow
               label={repo.repo}
               description={repoNote(repo)}
               value={repo.watched}

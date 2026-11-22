@@ -6,8 +6,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail } from "../connections/Sending.ts";
 import { formatMoney } from "../work/money.ts";
-import { countedPayment } from "../work/recordRows.ts";
+import { countedPayment, recordName } from "../work/recordRows.ts";
 import { seenBy, type KinViewer } from "../work/teamView.ts";
+import { leadNamer, toolNameOfText } from "../work/toolNames.ts";
 
 /**
  * What happened in Kin's records between `from` and `until` (the company's day), for the evening
@@ -86,26 +87,16 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
   readonly from: number;
   readonly until: number;
   readonly viewer: KinViewer;
+  /** The lead the day is read to. */
+  readonly agentId: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, from, until, viewer } = input;
-  const people = yield* sql<{ id: string; name: string }>`SELECT person_id AS id,
-      display_name AS name FROM kin_people WHERE org_id = ${orgId} ORDER BY person_id`;
-  const agents = yield* sql<{ id: string; name: string }>`SELECT agent_id AS id,
-      display_name AS name FROM kin_agents WHERE org_id = ${orgId} ORDER BY agent_id`;
-  const personName = new Map(people.map((one) => [one.id, one.name]));
-  const agentName = new Map(agents.map((one) => [one.id, one.name]));
+  const name = yield* leadNamer(orgId, input.agentId);
+  const principalName = (shown: string | null) =>
+    shown === null ? "nobody" : toolNameOfText(shown, name);
   const nameOf = (kind: string, id: string | null) =>
-    kind === "person"
-      ? (personName.get(id ?? "") ?? "a person")
-      : kind === "agent"
-        ? (agentName.get(id ?? "") ?? "an agent")
-        : "Kin";
-  const principalName = (shown: string | null) => {
-    if (shown === null) return "nobody";
-    const at = shown.indexOf(":");
-    return at < 0 ? shown : nameOf(shown.slice(0, at), shown.slice(at + 1));
-  };
+    id === null || (kind !== "person" && kind !== "agent") ? "Kin" : principalName(`${kind}:${id}`);
 
   const changes = yield* sql<{
     recordId: string;
@@ -149,17 +140,17 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
         if (!(WORK_LISTS as ReadonlyArray<string>).includes(first.list)) continue;
         if (field.field === "state" && field.to === "done") doneBy = who;
         else if (field.field === "state")
-          moves.push(`now ${STATE_WORDS[field.to ?? ""] ?? field.to} (${who})`);
+          moves.push(`now ${STATE_WORDS[field.to ?? ""] ?? field.to} by ${who}`);
         else if (field.field === "owner")
-          moves.push(`given to ${principalName(field.to)} (${who})`);
+          moves.push(`given to ${principalName(field.to)} by ${who}`);
         else if (field.field === "waitingOn" && field.to !== null)
-          moves.push(`waiting on ${principalName(field.to)} (${who})`);
+          moves.push(`marked waiting on ${principalName(field.to)} by ${who}`);
       }
     }
     // Finished and still done now; one reopened since reads as a change.
     if (doneBy !== undefined && first.state === "done")
       finished.push(`${named}, done by ${doneBy}`);
-    else if (doneBy !== undefined) moves.push(`was done (${doneBy})`);
+    else if (doneBy !== undefined) moves.push(`was done by ${doneBy}`);
     if (moves.length > 0) changed.push(`${named}: ${moves.join(", ")}`);
   }
 
@@ -187,15 +178,17 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
     currency: string;
     byKind: string;
     byId: string | null;
+    number: unknown;
   }>`SELECT r.key, r.title, r.register_id AS list, p.amount_minor AS minor, p.currency,
-      p.created_by_kind AS "byKind", p.created_by_id AS "byId"
+      p.created_by_kind AS "byKind", p.created_by_id AS "byId",
+      json_extract(r.fields_json, '$.number') AS number
     FROM kin_record_payments p JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND p.created_at >= ${from} AND p.created_at < ${until}
       AND ${countedPayment(sql)} AND ${seenBy(sql, viewer)}
     ORDER BY p.created_at, p.payment_id`;
   const money = payments.map(
     (one) =>
-      `${formatMoney({ minor: one.minor, currency: one.currency })} ${one.list === "invoices" || one.list === "receipts" ? "in on" : "out on"} ${one.key} ${one.title}, recorded by ${nameOf(one.byKind, one.byId)}`,
+      `${formatMoney({ minor: one.minor, currency: one.currency })} ${one.list === "invoices" || one.list === "receipts" ? "in on" : "out on"} ${recordName(one.key, one.number)} ${one.title}, recorded by ${nameOf(one.byKind, one.byId)}`,
   );
 
   // Mail is the owner's: a narrower reader sees none of it here.

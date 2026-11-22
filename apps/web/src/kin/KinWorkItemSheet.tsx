@@ -1,6 +1,9 @@
 import { useKinOpensClients } from "./useKinOwnerLevel";
+import { KIN_DOCS } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_RETIRED_LABEL } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { useAtomValue } from "@effect/atom-react";
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinTaskProjectsAllowed } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KIN_WORK_ASSIGN,
   KIN_WORK_GONE,
@@ -10,7 +13,10 @@ import {
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
   KIN_WORK_REPEAT,
+  KIN_WORK_STEPS,
+  KIN_WORK_URGENT,
   kinSameRepeat,
+  kinWorkStepProblem,
   kinWorkAssignees,
   kinWorkClientStays,
   kinWorkDayOf,
@@ -23,14 +29,15 @@ import {
   type KinWorkItemView,
   type KinWorkLinkView,
   type KinWorkRef,
+  type KinWorkStepsView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_LINKED,
   kinLinked,
   kinLinkedRest,
   type KinLinkedGroupName,
-  type KinLinkedItem,
 } from "@t3tools/client-runtime/kin/kinLinked";
+import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import {
   KIN_TASK_RECORD,
   kinBriefBy,
@@ -47,6 +54,7 @@ import {
   kinWorkApplied,
   kinWorkStatusOffer,
   kinWorkEditMoved,
+  kinWorkTakeLabel,
   type KinWorkAction,
   type KinWorkEdit,
   type KinWorkNotice,
@@ -84,14 +92,17 @@ import {
   PlayIcon,
   RepeatIcon,
   RotateCcwIcon,
+  FlagIcon,
   XIcon,
 } from "lucide-react";
 import { useId, useState, type ComponentProps } from "react";
 
+import { connectionAtomRuntime } from "../connection/runtime";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Calendar } from "../components/ui/calendar";
+import { Checkbox } from "../components/ui/checkbox";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import {
@@ -115,6 +126,8 @@ import {
   SheetTitle,
 } from "../components/ui/sheet";
 import { Skeleton } from "../components/ui/skeleton";
+import { Switch } from "../components/ui/switch";
+import { cn } from "../lib/utils";
 import { Textarea } from "../components/ui/textarea";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -136,6 +149,7 @@ import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { KinAskRecord } from "./KinAskRecord";
 import { kinClient } from "./kinClient";
 import { openDestination } from "./KinNotifications";
+import { KinWatchLine } from "./KinWatchLine";
 import { useNowMinuteMs } from "./useKinClock";
 import {
   useKinPickerSearch,
@@ -377,7 +391,6 @@ function KinWorkHandBack(
             id={noteId}
             value={note}
             maxLength={280}
-            placeholder={KIN_WORK_HAND_BACK.reasonPlaceholder}
             onChange={(event) => setNote(event.target.value)}
           />
           {failed ? (
@@ -449,6 +462,103 @@ function KinWorkNoticeLine(props: {
   );
 }
 
+/**
+ * A task's checklist: a box ticks a step, the field at the foot adds one (Enter), the cross takes
+ * one off. Ticking every step leaves the task open: done is still the top card's to say.
+ */
+function KinTaskSteps(props: {
+  readonly steps: KinWorkStepsView;
+  readonly saving: boolean;
+  readonly onAct: ((action: KinWorkAction) => void) | null;
+}) {
+  const { steps, onAct } = props;
+  const [draft, setDraft] = useState("");
+  const fieldId = useId();
+  const held = steps.items.map((item) => ({ title: item.title, done: item.done }));
+  const problem = draft.trim() === "" ? null : kinWorkStepProblem(draft, held.length);
+  const add = () => {
+    const title = draft.trim();
+    if (onAct === null || title === "" || problem !== null) return;
+    onAct({ type: "steps", steps: [...held, { title, done: false }], said: "added" });
+    setDraft("");
+  };
+  return (
+    <Section
+      title={
+        steps.count === null ? KIN_WORK_STEPS.title : `${KIN_WORK_STEPS.title} · ${steps.count}`
+      }
+    >
+      <ul className="flex flex-col">
+        {steps.items.map((item) => (
+          <li key={`${item.index}:${item.title}`} className="group flex min-h-8 items-center gap-2">
+            <Checkbox
+              checked={item.done}
+              disabled={onAct === null || props.saving}
+              aria-label={onAct === null ? item.title : item.label}
+              onCheckedChange={(checked) =>
+                onAct?.({ type: "tick", index: item.index, title: item.title, done: checked })
+              }
+            />
+            <span
+              className={cn(
+                "min-w-0 flex-1 text-sm wrap-break-word",
+                item.done ? "text-muted-foreground line-through" : "text-foreground",
+              )}
+            >
+              {item.title}
+            </span>
+            {onAct === null ? null : (
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                disabled={props.saving}
+                aria-label={`${KIN_WORK_STEPS.remove}: ${item.title}`}
+                title={KIN_WORK_STEPS.remove}
+                onClick={() =>
+                  onAct({
+                    type: "steps",
+                    steps: held.filter((_, index) => index !== item.index),
+                    said: "removed",
+                  })
+                }
+              >
+                <XIcon />
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {onAct === null ? null : (
+        <div className="flex flex-col gap-1">
+          <Input
+            id={fieldId}
+            value={draft}
+            disabled={props.saving}
+            placeholder={KIN_WORK_STEPS.placeholder}
+            aria-label={KIN_WORK_STEPS.add}
+            aria-invalid={problem !== null}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                add();
+              }
+            }}
+          />
+          {problem === null ? null : (
+            <p role="alert" className="text-xs text-destructive-foreground">
+              {problem}
+            </p>
+          )}
+        </div>
+      )}
+      {steps.allDone === null ? null : (
+        <p className="text-xs text-muted-foreground">{steps.allDone}</p>
+      )}
+    </Section>
+  );
+}
+
 /** A person or agent in Details, with their picture so an agent reads as one at a glance. */
 function DetailPerson(props: {
   readonly label: string;
@@ -506,6 +616,10 @@ function KinWorkItem(
   const canAddLink = useAtomValue(kinClient.workLinkAdd.permissionAtom(environmentId));
   const { orgs, people, joined, invited, names } = props.directory;
   const opensClients = useKinOpensClients(environmentId);
+  // A teammate moves a task only into a project they lead, as the host takes it.
+  const projectsAllowed = kinTaskProjectsAllowed(
+    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)),
+  );
   const [handingBack, setHandingBack] = useState(false);
   // Each control shows only where the host said it takes it (`view.can`).
   const change = props.canChange ? props.onAct : null;
@@ -569,6 +683,12 @@ function KinWorkItem(
         <div className="flex flex-col gap-2 pe-8 wrap-break-word">
           <div className="flex flex-wrap items-center gap-2">
             <KinRecordChip tone={chip.tone} label={chip.label} />
+            {view.urgent && !view.closed ? (
+              <span className="flex items-center gap-1 text-xs font-medium text-warning-foreground">
+                <FlagIcon aria-hidden className="size-3 fill-current" />
+                {KIN_WORK_URGENT.label}
+              </span>
+            ) : null}
             <Frame.Description>
               {view.heading === "Task" ? view.key : `${view.key} · ${view.heading}`}
             </Frame.Description>
@@ -583,7 +703,6 @@ function KinWorkItem(
                 orgId={orgId}
                 record={{ key: view.key, title: view.title }}
                 disabled={saving}
-                onOpen={props.onClose}
               />
               {!more ? null : (
                 <Menu>
@@ -615,7 +734,7 @@ function KinWorkItem(
                     )}
                     {!controls.menu.takeBack || give === null ? null : (
                       <MenuItem onClick={() => give({ type: "takeBack" })}>
-                        {KIN_WORK_COPY.takeBack}
+                        {kinWorkTakeLabel(props.item, names)}
                       </MenuItem>
                     )}
                     {!controls.menu.handBack ? null : (
@@ -649,6 +768,7 @@ function KinWorkItem(
               {remark}
             </p>
           ))}
+          <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={view.key} />
         </div>
       </Frame.Header>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
@@ -684,7 +804,9 @@ function KinWorkItem(
                 </p>
               )}
               {moved?.title == null ? null : (
-                <p className="text-xs text-muted-foreground">It now says: {moved.title}</p>
+                <p className="text-xs text-muted-foreground">
+                  {KIN_WORK_COPY.nowSays(moved.title)}
+                </p>
               )}
             </div>
             <div className="flex flex-col gap-1.5">
@@ -740,7 +862,6 @@ function KinWorkItem(
                         key={act.id}
                         size="sm"
                         variant={variant}
-                        onClick={props.onClose}
                         render={
                           <Link
                             to="/kin/$environmentId/$orgId/$chatId"
@@ -790,7 +911,12 @@ function KinWorkItem(
                       variant={variant}
                       disabled={saving}
                       aria-busy={saving && index === 0}
-                      onClick={() => stepAct(act.id)}
+                      // A double click's second click would land on Reopen once Mark done lands.
+                      onClick={(event) =>
+                        event.detail > 1 && (act.id === "done" || act.id === "reopen")
+                          ? undefined
+                          : stepAct(act.id)
+                      }
                     >
                       {act.id === "keep" || act.id === "done" ? <CheckIcon /> : null}
                       {act.id === "reopen" ? <RotateCcwIcon /> : null}
@@ -832,6 +958,13 @@ function KinWorkItem(
             <KinWorkNoticeLine notice={props.notice} saving={saving} onUndo={props.onUndo} />
           )}
         </div>
+        {view.steps === null ? null : (
+          <KinTaskSteps
+            steps={view.steps}
+            saving={saving}
+            onAct={change !== null && view.steps.editable ? change : null}
+          />
+        )}
         <Section title={KIN_TASK_RECORD.details}>
           <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 text-sm">
             {askedBy === null ? null : (
@@ -859,7 +992,6 @@ function KinWorkItem(
                   orgId={orgId}
                   agentId={view.owner.principal.agentId}
                   name={view.owner.name}
-                  onOpen={props.onClose}
                 />
               </dd>
             ) : null}
@@ -896,6 +1028,7 @@ function KinWorkItem(
                     value={view.project}
                     choices={choices.projects}
                     done={choices.doneProjects}
+                    only={projectsAllowed}
                     saving={saving}
                     clearable={view.can.clearProject}
                     onPick={
@@ -969,6 +1102,19 @@ function KinWorkItem(
                 </dd>
               </>
             )}
+            {change === null || view.steps?.editable !== true || view.closed ? null : (
+              <>
+                <dt className="text-muted-foreground">{KIN_WORK_URGENT.label}</dt>
+                <dd className="flex min-w-0 items-center gap-2 text-foreground">
+                  <Switch
+                    checked={view.urgent}
+                    disabled={saving}
+                    onCheckedChange={(checked) => change({ type: "urgent", urgent: checked })}
+                    aria-label={KIN_WORK_URGENT.label}
+                  />
+                </dd>
+              </>
+            )}
             {view.repeat === null && !(change !== null && view.can.repeat === true) ? null : (
               <>
                 <dt className="text-muted-foreground">{KIN_WORK_REPEAT.label}</dt>
@@ -1021,7 +1167,7 @@ function KinWorkItem(
                   size="xs"
                   variant="ghost"
                   disabled={saving}
-                  aria-label="Edit the brief"
+                  aria-label={KIN_TASK_RECORD.editBrief}
                   onClick={props.onStartEdit}
                 >
                   <PencilIcon />
@@ -1108,7 +1254,6 @@ export function KinWorkLinks(
     readonly itemKey?: KinRecordKey;
     readonly addLink?: boolean;
     readonly onOpenKey: (key: KinRecordKey) => void;
-    readonly onClose: () => void;
   },
 ) {
   const navigate = useNavigate();
@@ -1120,10 +1265,10 @@ export function KinWorkLinks(
       // Both panels show the entry's client, project and milestone in their rows already.
       parentsShown
       // A task or list entry opens on this panel; a doc, client or project has its own page.
-      onOpen={(item) =>
-        item.open._tag === "record" && (item.open.kind === "task" || item.open.kind === "entry")
-          ? props.onOpenKey(item.open.key)
-          : void openDestination(navigate, props, item.open)
+      onOpen={(to) =>
+        to._tag === "record" && (to.kind === "task" || to.kind === "entry")
+          ? props.onOpenKey(to.key)
+          : void openDestination(navigate, props, to)
       }
     >
       {rest.length === 0 && props.addLink !== true ? null : (
@@ -1137,7 +1282,6 @@ export function KinWorkLinks(
                     environmentId={props.environmentId}
                     orgId={props.orgId}
                     {...(props.itemKey === undefined ? {} : { itemKey: props.itemKey })}
-                    onOpen={props.onClose}
                     onOpenKey={props.onOpenKey}
                   />
                 </li>
@@ -1162,7 +1306,7 @@ export function KinLinkedGroups(props: {
   readonly item: Parameters<typeof kinLinked>[0];
   readonly title: string;
   readonly parentsShown: boolean;
-  readonly onOpen: (item: KinLinkedItem) => void;
+  readonly onOpen: (to: KinNotificationDestination) => void;
   readonly children?: React.ReactNode;
 }) {
   const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
@@ -1175,22 +1319,39 @@ export function KinLinkedGroups(props: {
         <div key={group.group} className="flex flex-col">
           <h4 className="px-1 text-xs text-muted-foreground">{KIN_LINKED.group[group.group]}</h4>
           <ul className="flex flex-col">
-            {group.items.map((item) => (
-              <li key={item.key}>
-                <button
-                  type="button"
-                  onClick={() => props.onOpen(item)}
-                  className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
-                >
+            {group.items.map((item) => {
+              const { open } = item;
+              const content = (
+                <>
                   {item.kind === "message" ? null : (
-                    <span className="shrink-0 text-xs text-muted-foreground">{item.key}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">{item.name}</span>
                   )}
                   <span className="min-w-0 flex-1 truncate text-foreground">
                     {item.title ?? KIN_LINKED.message}
                   </span>
-                </button>
-              </li>
-            ))}
+                  {item.deleted === true ? (
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {KIN_DOCS.archived}
+                    </span>
+                  ) : null}
+                </>
+              );
+              return (
+                <li key={item.key}>
+                  {open === null ? (
+                    <div className={LINK_ROW}>{content}</div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => props.onOpen(open)}
+                      className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
+                    >
+                      {content}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
           </ul>
           {group.more === 0 ? null : (
             <div>
@@ -1227,6 +1388,8 @@ export function KinTaskPlaceMenu(props: {
   readonly choices: ReadonlyArray<KinWorkRef>;
   /** Done projects, under their own heading after the open ones. */
   readonly done?: ReadonlyArray<KinWorkRef>;
+  /** The only keys this viewer may pick (`kinTaskProjectsAllowed`); null or absent for any. */
+  readonly only?: ReadonlySet<string> | null;
   readonly saving: boolean;
   /** Null where the task can't be changed, which leaves only opening it. */
   readonly onPick: ((value: KinWorkRef | null) => void) | null;
@@ -1252,6 +1415,7 @@ export function KinTaskPlaceMenu(props: {
     search: search.state,
     loaded: { open: props.choices, done: props.done ?? [] },
     held: value,
+    only: props.only ?? null,
   });
   const groups = kinTaskProjectMenu({ projects: view.open, doneProjects: view.done });
   const first = groups
@@ -1582,12 +1746,15 @@ export function GiveItems(props: {
   );
 }
 
-/** The owner's chat with the lead that has the task, which is where it reports back. */
+/**
+ * The owner's chat with the lead that has the task, which is where it reports back. This and the
+ * other ways from a task to a chat push over the task without closing it: closing is a history
+ * step back that can land after the push and leave the person in Tasks.
+ */
 function KinWorkLeadChat(
   props: KinWorkTarget & {
     readonly agentId: string;
     readonly name: string;
-    readonly onOpen: () => void;
   },
 ) {
   const { environmentId, orgId } = props;
@@ -1606,7 +1773,6 @@ function KinWorkLeadChat(
     <Button
       size="sm"
       variant="ghost"
-      onClick={props.onOpen}
       render={
         <Link
           to="/kin/$environmentId/$orgId/$chatId"
@@ -1628,7 +1794,6 @@ function KinWorkLink(
   props: KinWorkTarget & {
     readonly link: KinWorkLinkView;
     readonly itemKey?: KinRecordKey;
-    readonly onOpen: () => void;
     readonly onOpenKey: (key: KinRecordKey) => void;
   },
 ) {
@@ -1650,7 +1815,6 @@ function KinWorkLink(
       <Button
         size="xs"
         variant="ghost"
-        onClick={props.onOpen}
         render={<Link to="/$environmentId/$threadId" params={link.thread} />}
       >
         {KIN_WORK_COPY.openThread}
@@ -1663,7 +1827,6 @@ function KinWorkLink(
       <Link
         to="/kin/$environmentId/$orgId/$chatId"
         params={{ environmentId: props.environmentId, orgId: props.orgId, chatId: open.chatId }}
-        onClick={props.onOpen}
         className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
       >
         {content}

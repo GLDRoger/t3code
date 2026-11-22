@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Fixtures read days relative to a fixed local date.
 import {
   KinAgentId,
+  KinChatId,
   KinPersonId,
   KinRecordId,
   type KinGoal,
@@ -11,8 +12,10 @@ import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  kinAsideOf,
   kinAttention,
   kinAttentionCount,
+  kinGoalDraft,
   kinGoalView,
   kinNeedsYouBeside,
   kinPlainDates,
@@ -53,6 +56,71 @@ const now = new Date(2026, 10, 15);
 const names = new Map([["owner", "Arjun"]]);
 
 describe("kinAttention", () => {
+  it("shows a record set aside as one Handled row, by whom and on whose word, on its own page too", () => {
+    const aside = {
+      record: { key: "C-1" as never, title: "Lumen" },
+      covers: "all" as const,
+      until: DateTime.makeUnsafe(new Date(2026, 11, 17).getTime()),
+      by: { _tag: "agent" as const, agentId: KinAgentId.make("fin") },
+      onWordOf: KinPersonId.make("owner"),
+      mine: false,
+      at,
+      note: null,
+      liftable: true,
+      byYou: false,
+      yourWord: true,
+    };
+    const held = {
+      ...fact("invoice_overdue", "INV-4"),
+      aside,
+      handled: {
+        by: aside.by,
+        at,
+        until: aside.until,
+        note: null,
+      },
+    };
+    const facts = [held, { ...fact("task_late", "W-4"), aside, handled: held.handled }];
+    const named = new Map([...names, ["fin", "Finance"]]);
+    const all = kinAttention(
+      { ...read(facts), setAside: [aside] },
+      {
+        scope: { type: "all" },
+        names: named,
+        now,
+      },
+    );
+    expect(all.handled).toEqual([]);
+    expect(all.asides.map((row) => [row.record, row.detail, row.liftable])).toEqual([
+      ["C-1", "Set aside until Dec 17 · by Finance, on your word", true],
+    ]);
+    // Its tasks stay answered in Needs you rather than coming back as plain rows.
+    expect(all.held.map((row) => row.record)).toEqual(["INV-4", "W-4"]);
+    expect(
+      kinAsideOf(
+        {
+          ...read(facts),
+          setAside: [
+            {
+              ...aside,
+              until: null,
+              by: { _tag: "person" as const, personId: KinPersonId.make("owner") },
+              onWordOf: null,
+              byYou: true,
+              yourWord: false,
+            },
+          ],
+        },
+        "C-1" as never,
+        { names: named, now },
+      )?.detail,
+    ).toBe("Set aside until lifted · by you");
+    // From an older host, which sends no list of holds, its facts are handled rows as before.
+    expect(
+      kinAttention(read(facts), { scope: { type: "all" }, names: named, now }).handled,
+    ).toHaveLength(2);
+  });
+
   it("shows a screen only its own facts, the late ones first, and keeps handled ones apart", () => {
     const facts = [
       fact("task_due_soon", "W-1"),
@@ -74,6 +142,25 @@ describe("kinAttention", () => {
     });
     expect(project.open.map((row) => row.factKey)).toEqual(["task_late:W-2", "task_due_soon:W-1"]);
     expect(project.open[0]!.about).toBe("W-2");
+    // An issued invoice is named by its number; one without a number yet by its key.
+    const numbered = kinAttention(
+      read([
+        fact("invoice_overdue", "INV-7", {
+          subject: { kind: "record", key: "INV-7", title: "Retainer", number: "AM/26-27/004" },
+        }),
+        fact("invoice_overdue", "INV-8"),
+      ]),
+      { scope: { type: "money" }, names, now },
+    );
+    expect(numbered.open.map((row) => row.about)).toEqual([
+      "AM/26-27/004 · Atlas · Lumen",
+      "INV-8 · Atlas · Lumen",
+    ]);
+    // Asked about, the agent hears the number the person sees and the key its tools take.
+    expect(numbered.open.map((row) => row.askDraft.split(":")[0])).toEqual([
+      "About AM/26-27/004 (INV-7) Retainer",
+      "About INV-8 Invented INV-8",
+    ]);
     expect(project.handled.map((row) => row.handled)).toEqual([
       expect.stringMatching(/^Arjun has it until /),
     ]);
@@ -134,6 +221,35 @@ describe("kinAttention", () => {
       kinTasksBadgeCount({ ownerLevel: true, attention: twoOwed, mineDue: null }),
     );
     expect(onMe?.onMe).toBe(1);
+    // What waits on you is never behind "See all": the sidebar's "Waiting on you" lists it.
+    const waitingRow: KinNeedsYouRow = {
+      id: "waiting:w-1",
+      kind: "waiting",
+      title: "Draft to approve · Chief of staff",
+      detail: "Approve it to go as a proposal?",
+      late: false,
+      open: { type: "chat", chatId: KinChatId.make("chat-1"), messageId: null },
+    };
+    const lateTask: KinNeedsYouRow = {
+      id: "task:W-9",
+      kind: "task",
+      title: "Send the deck",
+      detail: "W-9 · Late",
+      late: true,
+      open: { type: "task", key: "W-9" },
+    };
+    const full = kinTasksBlock({
+      ownerLevel: true,
+      onMe: new Set(),
+      attention: owing.rows,
+      needs: [...(owing.moneyRow === null ? [] : [owing.moneyRow]), lateTask, waitingRow],
+      hidden: 0,
+      handled: 0,
+      expanded: false,
+    });
+    expect(full?.needs.map((row) => row.id)).toEqual(["attention:money", waitingRow.id]);
+    expect(full?.attention).toHaveLength(2);
+    expect(full?.more).toBe(true);
     // A project or client fact does not repeat its own name after its key.
     const own = kinAttention(
       read([
@@ -247,5 +363,18 @@ describe("kinAttention", () => {
     expect(
       kinGoalView({ ...goal, currency: "KWD", target: 2_000_000, current: 1_234_567 }, now).figure,
     ).toBe("KWD\u00a01,235 of KWD\u00a02,000");
+  });
+
+  it("starts a new goal on today in the company's zone, wherever the device is", () => {
+    // 20:00 UTC on 20 Nov is still the 20th in Los Angeles and already the 21st in Auckland.
+    const at = new Date("2026-11-20T20:00:00.000Z");
+    expect(kinGoalDraft(null, at, "America/Los_Angeles")).toMatchObject({
+      startsOn: "2026-11-20",
+      dueOn: "2027-02-20",
+    });
+    expect(kinGoalDraft(null, at, "Pacific/Auckland")).toMatchObject({
+      startsOn: "2026-11-21",
+      dueOn: "2027-02-21",
+    });
   });
 });

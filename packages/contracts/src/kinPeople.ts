@@ -69,6 +69,16 @@ export const KinPeopleListResult = Schema.Struct({
   joined: Schema.Array(KinPersonId),
   // Absent from a host older than places.
   places: Schema.optional(Schema.Array(KinPersonPlaces)),
+  // Whose access was removed, for the owner and co-owners; `access`, the owner's alone, is the
+  // level a new link brings them back at. Absent from an older host.
+  removed: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        personId: KinPersonId,
+        access: Schema.optional(Schema.Literals(["co_owner", "member"])),
+      }),
+    ),
+  ),
 });
 export type KinPeopleListResult = typeof KinPeopleListResult.Type;
 
@@ -81,6 +91,8 @@ export const KinPeopleCreateInviteInput = Schema.Struct({
   personId: Schema.optional(KinPersonId),
   // Someone else who shares a removed person's name: a new person instead of the bring-back offer.
   newPerson: Schema.optional(Schema.Literal(true)),
+  // What a new person sees once they join, chosen by the owner level; absent, the usual start.
+  sees: Schema.optional(KinPersonPlaceSwitches),
   ttlHours: Schema.optional(
     PositiveInt.check(Schema.isLessThanOrEqualTo(KIN_INVITE_MAX_TTL_HOURS)),
   ),
@@ -213,6 +225,11 @@ export const KinAccessMeResult = Schema.Struct({
   // Absent from a host older than places; an owner-level person's are all on.
   places: Schema.optional(KinPersonPlaceSwitches),
   leads: Schema.optional(Schema.Array(KinRecordRef)),
+  /**
+   * The places this host refuses the caller, by the check Money and Docs refuse with. Work is never
+   * refused to a caller this answers. Absent from an older host.
+   */
+  refused: Schema.optional(Schema.Struct({ money: Schema.Boolean, docs: Schema.Boolean })),
   /** The company's home currency, which every member's forms start amounts in; absent from an older host. */
   homeCurrency: Schema.optional(KinCurrency),
   /** The company's country, ISO 3166 alpha-2, null for none; absent from an older host. */
@@ -271,6 +288,8 @@ export const KinPersonProfile = Schema.Struct({
   load: Schema.optional(Schema.Struct({ open: NonNegativeInt, late: NonNegativeInt })),
   /** The reader may change this profile (the check `kin.people.updateProfile` runs); absent from older hosts. */
   canEdit: Schema.optional(Schema.Boolean),
+  /** Their GitHub username, null when none; only on a profile the reader may change. */
+  githubLogin: Schema.optional(Schema.NullOr(KinTrimmedText)),
 });
 export type KinPersonProfile = typeof KinPersonProfile.Type;
 export const KinPeopleProfilesResult = Schema.Struct({

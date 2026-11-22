@@ -23,6 +23,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ChatWake from "../lead/ChatWake.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
+import * as Reach from "../lead/Reach.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as Hub from "./KinChatHub.ts";
@@ -315,6 +316,25 @@ it.effect("anyone messages a teammate in one chat only the two of them read, wit
     assert.strictEqual(
       yield* reason(groups.withPerson([priya], { orgId, personId: KinPersonId.make("nobody") })),
       "not_found",
+    );
+    // A pair the owner restricted opens it from neither side, until it is lifted.
+    const limit = (restricted: boolean) =>
+      Reach.setLimit({
+        orgId,
+        by: owner.personId,
+        a: Reach.person(priya.personId),
+        b: Reach.person(sam.personId),
+        restricted,
+      });
+    yield* limit(true);
+    assert.deepInclude(
+      yield* Effect.flip(groups.withPerson([sam], { orgId, personId: priya.personId })),
+      { reason: "not_allowed", message: "You and Priya can't message each other here." },
+    );
+    yield* limit(false);
+    assert.strictEqual(
+      (yield* groups.withPerson([priya], { orgId, personId: sam.personId })).chatId,
+      chatId,
     );
   }).pipe(Effect.provide(layer)),
 );
@@ -1044,5 +1064,65 @@ it.effect(
         "Priya",
         "Sam",
       ]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a chat's hand-offs show while queued or running, linked for those in the other chat",
+  () =>
+    Effect.gen(function* () {
+      const { groups, sql, owner, orgId, tech, growth, priya, sam, say } = yield* seed;
+      const { chatId } = yield* groups.create([owner], {
+        orgId,
+        title: "Launch",
+        agentIds: [tech, growth],
+        personIds: [priya.personId],
+      });
+      assert.deepStrictEqual(yield* groups.working([priya], { chatId }), { handoffs: [] });
+      const asked = yield* say(priya, chatId, "Please   chase the Ambermill invoice\nby Friday");
+      const [growthChat] = yield* sql<{ chatId: string }>`SELECT owner_chat_id AS "chatId"
+      FROM kin_leads WHERE agent_id = ${growth}`;
+      yield* sql`INSERT INTO kin_handoffs (org_id, message_id, from_agent_id, to_agent_id, event_id,
+        created_at, to_chat_id, wants_answer)
+      VALUES (${orgId}, ${asked.messageId}, ${tech}, ${growth}, 'handoff-test', 1000,
+        ${growthChat!.chatId}, 0)`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+        queued_at, state)
+      VALUES ('handoff-test', ${orgId}, ${growth}, 'chat.message', 'P0', '{}', 1000, 2000, 'queued')`;
+      assert.deepStrictEqual((yield* groups.working([owner], { chatId })).handoffs, [
+        {
+          agentId: growth,
+          chatId: KinChatId.make(growthChat!.chatId),
+          wakeupId: null,
+          state: "queued",
+          asked: "Please chase the Ambermill invoice by Friday",
+          since: "1970-01-01T00:00:02.000Z",
+        },
+      ]);
+      // Priya isn't in the owner's chat with Growth lead: she sees the work, not the way in.
+      assert.strictEqual((yield* groups.working([priya], { chatId })).handoffs[0]?.chatId, null);
+      assert.strictEqual(yield* reason(groups.working([sam], { chatId })), "not_found");
+      // Growth lead's own chat doesn't list the hand-off it is working on.
+      assert.deepStrictEqual(
+        yield* groups.working([owner], { chatId: KinChatId.make(growthChat!.chatId) }),
+        { handoffs: [] },
+      );
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
+        event_ids)
+      VALUES ('wakeup-growth', ${orgId}, ${growth}, 'test', 3000, 'running', '["handoff-test"]')`;
+      yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'wakeup-growth'
+      WHERE event_id = 'handoff-test'`;
+      assert.deepStrictEqual(
+        (yield* groups.working([owner], { chatId })).handoffs.map((handoff) => [
+          handoff.state,
+          handoff.wakeupId,
+          handoff.since,
+        ]),
+        [["running", "wakeup-growth", "1970-01-01T00:00:03.000Z"]],
+      );
+      yield* sql`UPDATE kin_wakeups SET status = 'completed', ended_at = 4000
+      WHERE wakeup_id = 'wakeup-growth'`;
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE event_id = 'handoff-test'`;
+      assert.deepStrictEqual(yield* groups.working([owner], { chatId }), { handoffs: [] });
     }).pipe(Effect.provide(layer)),
 );

@@ -15,6 +15,9 @@ const KIN = NodePath.resolve(import.meta.dirname, "..");
 const OWN_READS: Readonly<Record<string, number>> = {
   // The one entry an email attaches, for the card's label.
   "connections/Sending.ts": 1,
+  // Drafts with no amount yet, each priced from its own documents; nothing summed
+  // (`documents.test.ts` pins that only unissued drafts are touched).
+  "gendocs/amounts.ts": 1,
   // A receipt's payment; one entry's payments on its document.
   "gendocs/facts.ts": 2,
   // A receipt's payment; the receipts list a screen shows, void ones marked.
@@ -35,11 +38,17 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "work/exportBundle.ts": 2,
   // One settlement's parts, read to check a retry.
   "work/leadMoney.ts": 1,
-  // A new entry's repeats: entries of its exact amount, compared one by one, nothing summed.
-  "work/leadWork.ts": 1,
+  // A new entry's repeats, and the expense it pairs with: entries of its exact amount, compared
+  // one by one, nothing summed.
+  "work/leadWork.ts": 2,
   // A statement's own rows, and the entries and recorded payments one row may match.
   "work/statements/bankList.ts": 1,
+  // The entries one bank alert may already be, and a statement's alert entries listed one by
+  // one against its rows: amounts matched and named, nothing summed.
+  "work/statements/bankAlerts.ts": 2,
   "work/statements/statementReview.ts": 4,
+  // One invoice's own amount and payments: whether it is paid in full, so its watch closes.
+  "watches/kinds/invoicePaid.ts": 1,
   // Whether a figure in a message is the sum on some entry or payment its reader can't see.
   "work/teamView.ts": 3,
 };

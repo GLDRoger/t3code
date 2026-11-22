@@ -1,6 +1,7 @@
 import {
   formatKinMoney,
   KIN_CURRENCY_CODES,
+  KinChatError,
   KinListId,
   KinOrgId,
   KinRecordId,
@@ -16,7 +17,10 @@ import {
   kinListColumns,
   kinListEditDraftOf,
   kinListEditInput,
+  kinAmountAsking,
   kinAmountCheck,
+  kinAmountConfirmed,
+  kinAmountSlipLine,
   kinFieldCheck,
   kinListEntryView,
   kinListFilterParam,
@@ -27,6 +31,7 @@ import {
   kinMoneyDraft,
   kinParseMoney,
   kinPrincipalValue,
+  kinListChips,
   kinListQuery,
   kinListRow,
   kinSuggestionKeep,
@@ -138,6 +143,29 @@ describe("money", () => {
     expect(kinParseMoney("4.2 lakh", "INR")).toEqual({ minor: 42_000_000, currency: "INR" });
     for (const wrong of ["", "0", "12.345", "-5", "1.5"])
       expect(kinParseMoney(wrong, wrong === "1.5" ? "JPY" : "INR")).toBeNull();
+  });
+
+  // A rough figure as a person says it in talks reads in the home currency, or the one named.
+  it.each([
+    ["90k", "INR", 9_000_000, "INR"],
+    ["90K", "USD", 9_000_000, "USD"],
+    ["1.2m", "USD", 120_000_000, "USD"],
+    ["9 lakh", "USD", 90_000_000, "USD"],
+    ["9L", "INR", 90_000_000, "INR"],
+    ["1.5 cr", "INR", 1_500_000_000, "INR"],
+    ["1.5 crore", "INR", 1_500_000_000, "INR"],
+    ["~90k", "INR", 9_000_000, "INR"],
+    ["about 90k", "INR", 9_000_000, "INR"],
+    ["90,000", "INR", 9_000_000, "INR"],
+    ["₹90k", "USD", 9_000_000, "INR"],
+    ["~ $1.2M", "INR", 120_000_000, "USD"],
+    ["around EUR 90k", "INR", 9_000_000, "EUR"],
+    ["about Rs 9 lakh", "USD", 90_000_000, "INR"],
+  ] as const)("reads %s as an amount", (text, home, minor, currency) => {
+    expect(kinParseMoney(text, home)).toEqual({ minor, currency });
+  });
+  it.each(["k", "90kk", "nine", "-90k", "0", "about", "~", "0k"])("refuses %s", (text) => {
+    expect(kinParseMoney(text, "INR")).toBeNull();
   });
 
   it("refuses a payment over what is owed", () => {
@@ -355,6 +383,38 @@ describe("a list by its definition", () => {
     ]);
     expect(entry.payments[0]).toMatchObject({ amount: "₹40,000.00", note: null, voided: false });
     expect(kinListRow(detail, invoices, context).owed).toBe("₹60,000 still owed");
+    // An Invoices draft nothing came in on leaves Left empty, and Mark paid still pays its amount;
+    // issued or paid, Left is as it was, and another list's open entry owes as before.
+    const amount = { minor: 10_000_000, currency: "INR" };
+    const billed = { ...detail, list: KinListId.make("invoices"), payments: [] };
+    const drafted = { ...billed, state: "open" as const, balance: amount };
+    expect(kinListRow(drafted, invoices, context).cells.owed).toBeUndefined();
+    expect(kinListEntryView(drafted, invoices, context).finish?.pays).toEqual(amount);
+    // A list of nothing but such drafts has no Left column; one issued invoice brings it back.
+    const columnIds = (rows: ReadonlyArray<KinRecord>) =>
+      kinListColumns(invoices, rows).map((column) => column.id);
+    expect(columnIds([drafted])).not.toContain("owed");
+    expect(columnIds([drafted, billed])).toContain("owed");
+    expect(kinListRow(billed, invoices, context).cells.owed).toBe("₹60,000.00");
+    expect(
+      kinListRow(
+        { ...billed, state: "done", balance: { minor: 0, currency: "INR" } },
+        invoices,
+        context,
+      ).cells.owed,
+    ).toBe("₹0.00");
+    expect(kinListRow({ ...drafted, list: undefined }, invoices, context).cells.owed).toBe(
+      "₹1,00,000.00",
+    );
+    // Named by its key until it is issued, then by its number.
+    expect(kinListRow(detail, invoices, context).line).toMatch(/^EQ-1 · /);
+    // Its due day wraps as one piece, the state before it staying on the first line.
+    const due = kinListRow({ ...detail, dueAt: "2026-12-06", dueAllDay: true }, invoices, context);
+    expect(due.line.split(" · ").at(-1)).toBe("Due\u00a0Sun,\u00a0Dec\u00a06");
+    expect(due.accessibilityLabel).toContain("Due ");
+    const numbered = { ...detail, fields: { number: "AM/26-27/004" } };
+    expect(kinListRow(numbered, invoices, context).line).toMatch(/^AM\/26-27\/004 · /);
+    expect(kinListEntryView(numbered, invoices, context).heading).toBe("AM/26-27/004 · Equipment");
     // A suggestion says so before its state, and is paid by nobody until it is kept; as a
     // deadline it is never overdue in a money list. Stored issued, it reads Suggested alone, and
     // its day is no issue day.
@@ -411,6 +471,14 @@ describe("a list by its definition", () => {
       dateLabel: "Issued",
     });
     expect(kinListColumns(issued, [kept]).find((one) => one.id === "date")?.label).toBe("Issued");
+    // A kept draft hasn't gone out: its day is no issue day either.
+    expect(kinListEntryView({ ...kept, state: "open" }, issued, context)).toMatchObject({
+      stateLabel: "Draft",
+      dateLabel: "Date",
+    });
+    expect(
+      kinListColumns(issued, [{ ...kept, state: "open" }]).find((one) => one.id === "date")?.label,
+    ).toBe("Date");
     // Its page notes Money only where Money would count it, a draft that it is owed only once
     // issued, and offers Not needed only where it can drop it.
     expect(kinSuggestionKeep(suggested, issued)).toEqual({
@@ -431,6 +499,24 @@ describe("a list by its definition", () => {
     expect(kinListNarrowings(counted)).toEqual([
       { id: "kept", label: "Counted in Money", cleared: { ...counted, kept: null } },
     ]);
+    // Each status pill asks for that status alone and is the one selected; All asks for all.
+    const cleared = { ...counted, kept: null };
+    for (const [id, states] of [
+      ["open", ["open"]],
+      ["waiting", ["waiting"]],
+      ["done", ["done"]],
+      ["dropped", ["dropped"]],
+      ["all", undefined],
+    ] as const) {
+      const picked = kinListChips(issued, cleared).find((chip) => chip.id === id)!.filter;
+      expect(kinListQuery(orgId, issued.list, picked).states, id).toEqual(states);
+      expect(
+        kinListChips(issued, picked)
+          .filter((chip) => chip.selected)
+          .map((chip) => chip.id),
+        id,
+      ).toEqual([id]);
+    }
   });
 
   it("sends only the names that changed when a list is renamed", () => {
@@ -548,6 +634,38 @@ describe("a list by its definition", () => {
     );
     expect(quotes.totals).toEqual([]);
     expect(quotes.summary).toBe("Sent, waiting: ₹1 · Accepted: ₹2");
+    // Bank rows add money in and out apart, then their net, which may go below zero; `total`
+    // stays the plain sum older phone builds show. A side with nothing in it goes unsaid.
+    const out = { moneyIn: inr(100), moneyOut: inr(300), net: inr(-200), total: inr(400) };
+    const outOnly = { moneyIn: [], moneyOut: inr(300), net: inr(-300), total: inr(300) };
+    const inOnly = { moneyIn: inr(100), moneyOut: [], net: inr(100), total: inr(100) };
+    const bank = kinListHeader(
+      list({ amount: true }),
+      { ...KIN_LIST_DEFAULT_FILTER, groupBy: "month" },
+      {
+        ...out,
+        groups: [
+          { group: "2026-09", count: 1, ...inOnly },
+          { group: "2026-10", count: 1, ...outOnly },
+          { group: "2026-11", count: 2, ...out },
+        ],
+      },
+      4,
+    );
+    expect([bank.figures, bank.totals, bank.summary]).toEqual([
+      [
+        { id: "moneyIn", label: "Money in", lines: ["₹1"] },
+        { id: "moneyOut", label: "Money out", lines: ["₹3"] },
+        { id: "net", label: "Net", lines: ["−₹2"] },
+      ],
+      [],
+      "Money in: ₹1 · Money out: ₹3 · Net: −₹2",
+    ]);
+    expect(bank.groups.map((group) => [group.totals, group.billed])).toEqual([
+      [["−₹2"], "₹1 in · ₹3 out"],
+      [["−₹3"], "₹3 out"],
+      [["₹1"], "₹1 in"],
+    ]);
     expect(kinListFilterParam(JSON.stringify({ noParty: true, noCategory: true }))).toMatchObject({
       noParty: true,
       noCategory: true,
@@ -594,6 +712,33 @@ describe("a list by its definition", () => {
         "₹40,000.00 has already been received, so the amount can't be less. Take a payment back first.",
     });
     expect(kinAmountCheck("40000", "INR", received)).toEqual({ ok: true, value: received });
+    // The host's slip refusal is one line in a person's words; any other error is not one.
+    const slip = (largest: { minor: number; currency: string } | null) =>
+      new KinChatError({
+        reason: "invalid_state",
+        message: "Check the amount.",
+        farAbove: { list: "Expenses", largest },
+      });
+    expect(kinAmountSlipLine(slip({ minor: 4_800_000, currency: "INR" }))).toBe(
+      "That is far above anything in Expenses so far (the largest is ₹48,000). Save it anyway?",
+    );
+    expect(kinAmountSlipLine(slip({ minor: 1_250, currency: "USD" }))).toBe(
+      "That is far above anything in Expenses so far (the largest is $12.50). Save it anyway?",
+    );
+    expect(kinAmountSlipLine(slip(null))).toBe(
+      "That is far above what Expenses holds so far. Save it anyway?",
+    );
+    expect(
+      kinAmountSlipLine(
+        new KinChatError({ reason: "invalid_state", message: "Check the amount." }),
+      ),
+    ).toBeNull();
+    // The first save asks the host to check; the same amount again keeps it; a changed one asks.
+    const asked = { line: "Save it anyway?", about: "4,80,00,000" };
+    expect(kinAmountConfirmed(null, "4,80,00,000")).toEqual({ amountConfirmed: false });
+    expect(kinAmountConfirmed(asked, "4,80,00,000")).toEqual({ amountConfirmed: true });
+    expect(kinAmountConfirmed(asked, "48,000")).toEqual({ amountConfirmed: false });
+    expect(kinAmountAsking(asked, "48,000")).toBeNull();
     // What an edit starts with reads back as the same amount.
     for (const money of [
       { minor: 5_000_050, currency: "INR" },

@@ -28,7 +28,7 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useRef, useState } from "react";
+import { useRef, useState, type ComponentRef } from "react";
 import { TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -46,6 +46,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
 import { kinClient } from "./state/kinClient";
 import { useKinHostAt } from "./state/useKinHost";
+import { KinWorkFieldBox } from "./components/KinWorkPieces";
 import { useKinReinvited } from "./state/useKinWork";
 
 export type KinGroupFormParams = {
@@ -97,6 +98,7 @@ function GroupForm(props: {
   readonly orgId: KinOrgId;
   readonly chatId: KinChatId | null;
 }) {
+  const nameField = useRef<ComponentRef<typeof TextInput>>(null);
   const navigation = useNavigation();
   const { environmentId, orgId, chatId } = props;
   const creating = chatId === null;
@@ -234,7 +236,7 @@ function GroupForm(props: {
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
-        title={creating ? "New group" : "Add to group"}
+        title={creating ? KIN_GROUP_FORM.newGroup : KIN_GROUP_FORM.addTo}
         onClose={() => navigation.goBack()}
         confirm={{
           label: creating ? "Create" : "Add",
@@ -260,9 +262,9 @@ function GroupForm(props: {
           {creating ? (
             <View className="gap-2">
               <ListSection>
-                <View className="gap-2 px-4 py-3">
-                  <Text className="text-sm text-foreground-muted">Name</Text>
+                <KinWorkFieldBox label={"Name"} input={nameField}>
                   <TextInput
+                    ref={nameField}
                     accessibilityLabel="Group name"
                     value={name}
                     editable={allowed && !saving}
@@ -274,11 +276,10 @@ function GroupForm(props: {
                       setProblem(null);
                     }}
                     textAlignVertical="center"
-                    placeholder="Launch week"
                     placeholderTextColorClassName="accent-placeholder"
                     className="min-h-8 font-sans text-base text-foreground"
                   />
-                </View>
+                </KinWorkFieldBox>
               </ListSection>
               {problem?.field === "name" ? (
                 <Text

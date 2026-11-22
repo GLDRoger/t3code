@@ -4,13 +4,13 @@ import {
   KIN_BRIEFS,
   KIN_CHECK_INS,
   KIN_WEEKDAYS,
-  kinBriefHasDays,
   kinBriefLine,
+  kinBriefSheetFields,
+  kinBriefTitle,
   kinCoveredLine,
   kinBriefProblem,
   kinBriefSave,
-  kinBriefScheduleId,
-  kinCheckInsBeyondBriefs,
+  kinWeeklyBrief,
 } from "@t3tools/client-runtime/kin/kinCheckIns";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -19,15 +19,13 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 
-import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
-import { KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
-import { KinCheckInRows, useCheckIns } from "./KinCheckIns";
+import { KinWorkLoading, KinWorkToggleRow } from "./components/KinWorkPieces";
+import { KinCheckInRows, KinClockRow, useCheckIns } from "./KinCheckIns";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { kinClient, refreshKinBriefs } from "./state/kinClient";
 
@@ -50,8 +48,8 @@ function useBriefs(target: Target) {
 }
 
 /**
- * The briefs this person receives, under You, each opening its sheet; for the owner level the
- * company's other check-ins follow, so no check-in is listed twice. None for who has neither.
+ * The briefs this person receives, each opening its sheet; for the owner level the weekly brief
+ * follows. An agent's other check-ins are on its page. None for who has neither.
  */
 export function KinBriefsSection(props: Target & { readonly checkIns: boolean }) {
   return props.checkIns ? <BriefsWithCheckIns {...props} /> : <Briefs {...props} checkIns={null} />;
@@ -75,15 +73,10 @@ function Briefs(props: Target & { readonly checkIns: KinCheckInsResult | null | 
   const { result, value } = useBriefs(props);
   const briefs = value?.briefs ?? [];
   const checkIns = props.checkIns ?? null;
-  const beyond = checkIns === null ? [] : kinCheckInsBeyondBriefs(checkIns.checkIns, briefs);
+  const weekly = checkIns === null ? null : kinWeeklyBrief(checkIns.checkIns);
   const loading =
     (value === null && !AsyncResult.isFailure(result)) || props.checkIns === undefined;
-  if (
-    !loading &&
-    briefs.length === 0 &&
-    (checkIns === null || (beyond.length === 0 && checkIns.agents.length === 0))
-  )
-    return null;
+  if (!loading && briefs.length === 0 && weekly === null) return null;
   const zone = value?.zone ?? checkIns?.zone ?? null;
   const detail =
     briefs.length === 0 && checkIns !== null ? KIN_CHECK_INS.detail : KIN_BRIEFS.detail;
@@ -93,14 +86,21 @@ function Briefs(props: Target & { readonly checkIns: KinCheckInsResult | null | 
       footer={zone === null ? detail : `${detail} ${KIN_CHECK_INS.zone(zone)}`}
     >
       {loading ? (
-        <SettingsRow icon="clock" label={KIN_BRIEFS.title} value="…" valuePosition="trailing" />
+        <SettingsRow
+          labelWholeWords
+          icon="clock"
+          label={KIN_BRIEFS.title}
+          value="…"
+          valuePosition="trailing"
+        />
       ) : (
         <>
           {briefs.map((brief) => (
             <SettingsRow
+              labelWholeWords
               key={brief.kind}
               icon={brief.on ? "clock" : "moon"}
-              label={KIN_BRIEFS.titles[brief.kind]}
+              label={kinBriefTitle(brief)}
               valuePosition="below"
               value={[kinBriefLine(brief), kinCoveredLine(brief)]
                 .filter((line) => line !== null)
@@ -114,9 +114,7 @@ function Briefs(props: Target & { readonly checkIns: KinCheckInsResult | null | 
               }
             />
           ))}
-          {checkIns === null ? null : (
-            <KinCheckInRows {...props} result={checkIns} beyond={beyond} />
-          )}
+          {weekly === null ? null : <KinCheckInRows {...props} beyond={[weekly]} />}
         </>
       )}
     </SettingsSection>
@@ -129,7 +127,7 @@ export type KinBriefFormParams = {
   readonly kind: string;
 };
 
-/** One brief's time, its days for the morning one, and on or off for the others. */
+/** One brief's time, its days for the morning one, and on or off for the others and a page. */
 export function KinBriefFormScreen({ route }: StaticScreenProps<KinBriefFormParams>) {
   const target = targetOf(route.params);
   if (target === null) return <FormMessage title={KIN_BRIEFS.title}>{NO_LINK}</FormMessage>;
@@ -158,14 +156,13 @@ function BriefForm(
 ) {
   const navigation = useNavigation();
   const save = useAtomCommand(kinClient.briefSave, { reportFailure: false });
-  // The owner level also runs, removes or rewords it, on the check-in's own sheet.
-  const ownerLevel = useAtomValue(kinClient.checkInSave.permissionAtom(props.environmentId));
   // As the form opened: a refresh while it is open must not count as the person's change.
   const [opened] = useState(props.brief);
   const [draft, setDraft] = useState(props.brief);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const invalid = kinBriefProblem(draft);
+  const fields = kinBriefSheetFields({ brief: draft });
   const send = async () => {
     if (saving || invalid !== null) return;
     setSaving(true);
@@ -182,7 +179,7 @@ function BriefForm(
   };
   return (
     <FormShell
-      title={KIN_BRIEFS.titles[draft.kind]}
+      title={kinBriefTitle(draft)}
       submit={KIN_BRIEFS.save}
       saving={saving}
       canSave={invalid === null}
@@ -194,26 +191,22 @@ function BriefForm(
           .filter((line) => line !== null)
           .join(" ")}
       >
-        {kinBriefHasDays(draft.kind) ? null : (
-          <ListToggleRow
+        {fields.includes("on") ? (
+          <KinWorkToggleRow
             label={KIN_BRIEFS.on}
             value={draft.on}
             disabled={saving}
             onValueChange={(on) => setDraft({ ...draft, on })}
           />
-        )}
-        <KinWorkTextField
+        ) : null}
+        <KinClockRow
           label={KIN_BRIEFS.time}
-          value={draft.at}
-          keyboard="numbers"
+          at={draft.at}
           disabled={saving}
-          maxLength={5}
-          placeholder="09:30"
-          hint={invalid === "Set a time such as 09:30." ? invalid : undefined}
-          onChangeText={(at) => setDraft({ ...draft, at: at.trim() })}
+          onPick={(at) => setDraft({ ...draft, at })}
         />
       </ListSection>
-      {kinBriefHasDays(draft.kind) ? (
+      {fields.includes("days") ? (
         <ListSection title={KIN_BRIEFS.days}>
           {KIN_WEEKDAYS.map(({ day, short }) => (
             <ListChoiceRow
@@ -231,22 +224,6 @@ function BriefForm(
               }
             />
           ))}
-        </ListSection>
-      ) : null}
-      {ownerLevel ? (
-        <ListSection>
-          <ListActionRow
-            icon="slider.horizontal.3"
-            label={KIN_CHECK_INS.edit}
-            disabled={saving}
-            onPress={() =>
-              navigation.navigate("KinCheckInForm", {
-                environmentId: props.environmentId,
-                orgId: props.orgId,
-                checkIn: kinBriefScheduleId(draft.kind),
-              })
-            }
-          />
         </ListSection>
       ) : null}
     </FormShell>

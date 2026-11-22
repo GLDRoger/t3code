@@ -25,7 +25,10 @@ describe("kinZoneLabel", () => {
     ["Asia/Calcutta", "India Standard Time"],
     ["America/Los_Angeles", "Pacific Time"],
     ["Pacific/Auckland", "New Zealand Time"],
-    ["UTC", "Coordinated Universal Time"],
+    ["UTC", "UTC"],
+    ["Etc/UTC", "UTC"],
+    ["Etc/GMT-13", "GMT+13"],
+    ["Etc/GMT+5", "GMT-5"],
   ])("names %s as %s, never by its id", (zone, label) => {
     expect(kinZoneLabel(zone, "en", january)).toBe(label);
   });

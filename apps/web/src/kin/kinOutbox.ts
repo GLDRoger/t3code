@@ -1,15 +1,18 @@
 import {
   classifyKinSendFailure,
   createKinOutbox,
+  kinOutboxIdentity,
   type KinOutboxStorage,
 } from "@t3tools/client-runtime/kin/kinOutbox";
 import { createKinLocalPreviews } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinDocRefInput } from "@t3tools/client-runtime/kin/kinDocs";
 import { createKinOutboxRetry } from "@t3tools/client-runtime/kin/kinOutboxRetry";
 import { environmentSessionGenerationAtom } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import { Atom } from "effect/reactivity";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import { AsyncResult, Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { randomUUID } from "../lib/utils";
@@ -18,6 +21,11 @@ import { environmentPresentations } from "../state/presentation";
 import { kinClient } from "./kinClient";
 
 const OUTBOX_KEY = "t3code:kin:outbox";
+/** Who each host last said this browser's session is, so a change of person is noticed. */
+const PEOPLE_KEY = "t3code:kin:outbox:people";
+const People = Schema.fromJsonString(Schema.Record(EnvironmentId, Schema.NullOr(Schema.String)));
+const decodePeople = Schema.decodeUnknownOption(People);
+const encodePeople = Schema.encodeSync(People);
 
 // Unsent messages survive a reload; the host dedupes a resend by `clientMessageId`.
 const localStorageOutbox: KinOutboxStorage = {
@@ -36,10 +44,18 @@ const localStorageOutbox: KinOutboxStorage = {
 /** Blob copies of the images this tab sent, until their posted message's own copies load. */
 export const kinLocalPreviews = createKinLocalPreviews((url) => URL.revokeObjectURL(url));
 
+// The directory query drops the last person's answer when the host is paired as someone else.
+const sessionOrgsAtom = (environmentId: EnvironmentId) =>
+  kinClient.orgs({ environmentId, input: {} });
+
 export const kinOutbox = createKinOutbox({
   registry: appAtomRegistry,
   storage: localStorageOutbox,
   makeId: randomUUID,
+  identity: (environmentId) =>
+    kinOutboxIdentity(
+      AsyncResult.getOrElse(appAtomRegistry.get(sessionOrgsAtom(environmentId)), () => null),
+    ),
   send: async (record) => {
     const result = await kinClient.send.run(appAtomRegistry, {
       environmentId: record.environmentId,
@@ -68,13 +84,17 @@ const connectedEnvironments = (): ReadonlySet<EnvironmentId> => {
   return connected;
 };
 
-// One key per connected environment and session, so a reconnect reads as new.
+// One key per connected environment and session, so a reconnect reads as new; with who the
+// session is while a send waits on that.
 const connectedSessionsAtom = Atom.make((get): string => {
   const keys: string[] = [];
   for (const [environmentId, presentation] of get(environmentPresentations.presentationsAtom)) {
     if (presentation.connection.phase !== "connected") continue;
     const generation = get(environmentSessionGenerationAtom(connectionAtomRuntime, environmentId));
-    keys.push(`${environmentId}\u0000${generation}`);
+    const identity = get(kinOutbox.waitingAtom(environmentId))
+      ? kinOutboxIdentity(AsyncResult.getOrElse(get(sessionOrgsAtom(environmentId)), () => null))
+      : undefined;
+    keys.push(`${environmentId}\u0000${generation}\u0000${JSON.stringify(identity ?? "")}`);
   }
   return keys.join("\n");
 }).pipe(Atom.withLabel("kin:outbox:sessions"));
@@ -86,6 +106,35 @@ const retry = createKinOutboxRetry({
 
 /** Delivers waiting sends for every connected environment, retrying with backoff. */
 export const deliverKinOutbox = (): Promise<void> => retry.run();
+
+/** The host said who this session is: unsent messages another person wrote here go unsent. */
+export async function syncKinOutboxIdentity(
+  environmentId: EnvironmentId,
+  identity: string | null,
+): Promise<void> {
+  let people: Record<EnvironmentId, string | null> = {};
+  try {
+    people = Option.getOrElse(
+      decodePeople(window.localStorage.getItem(PEOPLE_KEY) ?? "{}"),
+      () => ({}),
+    );
+  } catch {}
+  const previous = people[environmentId];
+  if (previous !== identity) {
+    try {
+      window.localStorage.setItem(
+        PEOPLE_KEY,
+        encodePeople({ ...people, [environmentId]: identity }),
+      );
+    } catch {}
+  }
+  // A browser that never noted a person here held only that session's messages.
+  await kinOutbox.syncIdentity(
+    environmentId,
+    identity,
+    previous !== undefined && previous !== identity,
+  );
+}
 
 let started = false;
 

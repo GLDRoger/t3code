@@ -6,15 +6,19 @@ import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
+import * as McpToolPolicy from "./toolPolicy.ts";
 import { McpInvocationContext, type McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { KinServer, type Services } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { SHARED_REFUSAL } from "../lead/Audience.ts";
 import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
+import { REVIEW_REFUSAL, reviewToolAllowed } from "../lead/outsideReview.ts";
+import { APPROVED_REFUSAL, approvedToolAllowed } from "../lead/approvedDraft.ts";
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
+import * as ReadTools from "./readTools.ts";
 
 type Check = (
   turn: Parameters<typeof toolAdmitted>[0],
@@ -89,7 +93,7 @@ const gate = (name: string, check: Check) =>
  * message or tap, else its first event; a message id becomes its event. Anything else stays, and
  * the tool refuses it as before, except where the event only names the turn (`TURN_ONLY_EVENT_TOOLS`). The call's arguments are filled in before they are decoded.
  */
-const turnEvents = McpHttpServer.toolCallPrepare(
+const turnEvents = McpToolPolicy.toolCallPrepare(
   Effect.fn("KinToolGate.turnEvents")(
     function* (name: string, args: Record<string, unknown>) {
       if (!TURN_EVENT_TOOLS.has(name)) return;
@@ -123,7 +127,35 @@ const turnEvents = McpHttpServer.toolCallPrepare(
   ),
 );
 
+/** An outside review's turn refuses what it may not call with the review's own refusal. */
+const reviewOnly: Check = (turn, tool, args) =>
+  reviewToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
+/** An approved draft's turn refuses what it may not call with its own refusal. */
+const approvedOnly: Check = (turn, tool, args) =>
+  approvedToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
+/** A confined turn (an outside review, an approved draft) is decided by its own gate alone. */
+const confinedDecides = (turn: Parameters<Check>[0], tool: string, args: unknown) =>
+  reviewToolAllowed(turn, tool, args).pipe(
+    Effect.flatMap((review) =>
+      review !== undefined
+        ? Effect.succeed(true)
+        : approvedToolAllowed(turn, tool, args).pipe(
+            Effect.map((approved) => approved !== undefined),
+          ),
+    ),
+  );
+const besideReview =
+  (check: Check): Check =>
+  (turn, tool, args) =>
+    confinedDecides(turn, tool, args).pipe(
+      Effect.flatMap((confined) => (confined ? Effect.succeed(true) : check(turn, tool, args))),
+    );
+const admitted = besideReview(toolAdmitted);
+const outside = besideReview(outsideToolAllowed);
+
 const kinChecks = [
+  [reviewOnly, REVIEW_REFUSAL],
+  [approvedOnly, APPROVED_REFUSAL],
   [toolAdmitted, SHARED_REFUSAL],
   [outsideToolAllowed, OUTSIDE_REFUSAL],
   [taskAdmitted, TASK_LIMIT_REFUSAL],
@@ -178,17 +210,48 @@ export const workerPolicy = (services: Context.Context<Services>) => {
 };
 
 /**
- * Every Kin MCP call passes here first, whatever registered it: nothing to another machine, where
- * none of these checks follow; nothing reaches the owner's context in a turn others read
- * (`SharedTools`); no run outside text could steer (`OutsideContent`); no task past the limit.
+ * How often agents call each Kin tool, to decide what loads up front: counted in memory and
+ * logged as one line an hour, and once more when the server stops; never stored.
  */
-export const layer = Layer.mergeAll(
-  turnEvents,
-  McpHttpServer.toolCallGate(
-    (_tool, args) => Effect.map(namesOtherMachine(args), (other) => !other),
-    REMOTE_REFUSAL,
+export const callCounts = Layer.unwrap(
+  Effect.gen(function* () {
+    const counts = new Map<string, number>();
+    const flush = Effect.suspend(() => {
+      if (counts.size === 0) return Effect.void;
+      const calls = Object.fromEntries(counts);
+      counts.clear();
+      return Effect.logInfo("Kin tool calls", { calls });
+    });
+    yield* Effect.addFinalizer(() => flush);
+    yield* Effect.forkScoped(Effect.forever(Effect.delay(flush, "1 hour")));
+    return McpHttpServer.toolCallAround((effect, { target }) => {
+      counts.set(target, (counts.get(target) ?? 0) + 1);
+      return effect;
+    });
+  }),
+);
+
+/**
+ * Every Kin MCP call passes here first, whatever registered it: nothing to another machine, where
+ * none of these checks follow; only the review in a stranger's pull request's turn
+ * (`outsideReview`), only the one approved make in an approved draft's (`approvedDraft`); nothing reaches the owner's context in a turn others read (`SharedTools`); no
+ * run outside text could steer (`OutsideContent`); no task past the limit.
+ */
+export const layer = ReadTools.layer.pipe(
+  // Built last, so outermost: a read tool's gates read on the reader too.
+  Layer.provideMerge(
+    Layer.mergeAll(
+      callCounts,
+      turnEvents,
+      McpToolPolicy.toolCallGate(
+        (_tool, args) => Effect.map(namesOtherMachine(args), (other) => !other),
+        REMOTE_REFUSAL,
+      ),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.review", reviewOnly), REVIEW_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.approved", approvedOnly), APPROVED_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", admitted), SHARED_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outside), OUTSIDE_REFUSAL),
+      McpToolPolicy.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
+    ),
   ),
-  McpHttpServer.toolCallGate(gate("KinToolGate.admitted", toolAdmitted), SHARED_REFUSAL),
-  McpHttpServer.toolCallGate(gate("KinToolGate.outside", outsideToolAllowed), OUTSIDE_REFUSAL),
-  McpHttpServer.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
 );

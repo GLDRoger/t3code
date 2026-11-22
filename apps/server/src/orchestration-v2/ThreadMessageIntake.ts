@@ -247,9 +247,9 @@ export const sendToThread = Effect.fn("ThreadMessageIntake.sendToThread")(functi
 });
 
 export const launchThread = Effect.fn("ThreadMessageIntake.launchThread")(function* (
-  input: ThreadLaunch.ThreadLaunchInput,
-  owner: PendingUploadOwner,
+  request: ThreadLaunch.ThreadLaunchInput & { readonly uploadOwner: PendingUploadOwner },
 ) {
+  const { uploadOwner: owner, ...input } = request;
   const launches = yield* ThreadLaunch.ThreadLaunchService;
   yield* AttachmentClaims.validateAttachmentLimits(input.initialMessage?.attachments ?? []);
   yield* AttachmentClaims.refuseKinAttachments(input.initialMessage?.attachments ?? []);

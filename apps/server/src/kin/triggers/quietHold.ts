@@ -17,6 +17,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { WriteAudience } from "../chat/KinChatRepository.ts";
+import { turnChat } from "../lead/Audience.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import {
   freeAt,
@@ -26,10 +27,10 @@ import {
   type KinHoldRule,
   storedWorkHours,
 } from "./quietHours.ts";
+import { MINUTE_MS } from "../durations.ts";
 
-const MINUTE = 60_000;
 /** A message they sent this recently is one a line to them answers, whatever the hour. */
-const ANSWERS_WITHIN_MS = 10 * MINUTE;
+export const ANSWERS_WITHIN_MS = 10 * MINUTE_MS;
 const decodeJsonQuiet = Schema.decodeUnknownOption(Schema.fromJsonString(KinPersonQuietHours));
 const encodeRelay = Schema.encodeEffect(Schema.fromJsonString(KinMessageRelay));
 
@@ -228,7 +229,8 @@ export const heldUntil = (
 export const holdFor = Effect.fn("KinQuiet.holdFor")(function* (input: {
   readonly orgId: KinOrgId;
   readonly personId: KinPersonId;
-  readonly chatId: KinChatId;
+  /** None for a banner told outside any chat: nothing they wrote answers it. */
+  readonly chatId: KinChatId | undefined;
   readonly notBefore?: number | undefined;
   /** Nothing they said asks for it (a task handed to them): while they are away it waits anyway. */
   readonly unasked?: boolean;
@@ -238,8 +240,8 @@ export const holdFor = Effect.fn("KinQuiet.holdFor")(function* (input: {
   const quiet = yield* personQuiet(input.orgId, input.personId, now);
   const at = Math.max(quiet.endsAt, input.notBefore ?? now);
   if (at <= now) return undefined;
-  if (input.unasked === true && quiet.why === "away")
-    return { at, zone: quiet.zone, why: quiet.why };
+  if ((input.unasked === true && quiet.why === "away") || input.chatId === undefined)
+    return { at, zone: quiet.zone, why: quiet.why ?? ("off" as const) };
   const [answers] = yield* sql`SELECT 1 FROM kin_messages
     WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
       AND author_person_id = ${input.personId} AND origin_json IS NULL
@@ -282,16 +284,59 @@ export const holdLine = Effect.fn("KinQuiet.holdLine")(function* (input: {
   return input.at;
 });
 
-/** The escape from someone's quiet hours: the agent's stated reason, logged, and it rings them. */
+/** The turn a relay's key names (`relayPrefix`), or undefined for any other key. */
+export const relayWakeup = (key: string) => /^kin-relay:([^:]+):/.exec(key)?.[1];
+
+/** Whether the relays of turns `a` and `b` were raised from the same chat (`turnChat`). */
+export const sameAsk = Effect.fn("KinQuiet.sameAsk")(function* (
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  a: string,
+  b: string,
+) {
+  if (a === b) return true;
+  const [one, two] = [
+    yield* turnChat({ orgId, agentId, wakeupId: a }),
+    yield* turnChat({ orgId, agentId, wakeupId: b }),
+  ];
+  return one !== undefined && one.chatId === two?.chatId;
+});
+
+/**
+ * The escape from someone's quiet hours: the agent's stated reason, logged, and it rings them.
+ * It replaces the relays `agentId` holds for them in `chatId` raised from the chat this turn
+ * answers: those are withdrawn, and their count returned.
+ */
 export const urgentNow = Effect.fn("KinQuiet.urgent")(function* (input: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly personId: KinPersonId;
+  readonly chatId: KinChatId;
+  readonly wakeupId: string | undefined;
   readonly reason: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   yield* Effect.logInfo("Kin urgent message", input);
   yield* sql`DELETE FROM kin_push_rings WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`;
+  if (input.wakeupId === undefined) return 0;
+  const held = yield* sql<{ holdId: string; kind: string }>`SELECT hold_id AS "holdId", kind
+    FROM kin_held_posts WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
+      AND person_id = ${input.personId} AND agent_id = ${input.agentId}
+      AND delivered_at IS NULL AND substr(kind, 1, 10) = 'kin-relay:'
+    ORDER BY held_at, rowid`;
+  const replaced: Array<string> = [];
+  for (const row of held) {
+    const wakeupId = relayWakeup(row.kind);
+    if (
+      wakeupId !== undefined &&
+      (yield* sameAsk(input.orgId, input.agentId, wakeupId, input.wakeupId))
+    )
+      replaced.push(row.holdId);
+  }
+  if (replaced.length > 0)
+    yield* sql`DELETE FROM kin_held_posts
+      WHERE org_id = ${input.orgId} AND hold_id IN ${sql.in(replaced)}`;
+  return replaced.length;
 });
 
 /**

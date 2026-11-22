@@ -68,6 +68,7 @@
         "scripts/kin-fake-social.ts",
         "scripts/kin-feature-map.ts",
         "scripts/kin-push-test.ts",
+        "scripts/kin-wire-scaled.ts",
         "scripts/probe-claude-fork-local-rollback-replay.ts",
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
@@ -109,6 +110,7 @@
         "src/preview-pick-preload.ts!",
         "src/preview-pip-preload.ts!",
         "src/mac-permission-preload.ts!",
+        "src/kin/kin-shell-preload.ts!",
         "src/preview/Annotation.css!",
       ],
       // The injected runtime resolves Playwright by string; release tooling runs

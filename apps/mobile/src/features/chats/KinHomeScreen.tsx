@@ -1,7 +1,6 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import { KIN_TEAMMATE_WELCOME } from "@t3tools/client-runtime/kin/kinChatListRows";
-import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinDockSelection, kinDockShown } from "@t3tools/client-runtime/kin/kinNavigation";
 import { kinAttentionBadge } from "@t3tools/client-runtime/kin/kinAttention";
 import { kinBadgeCount } from "@t3tools/client-runtime/kin/kinInboxModel";
@@ -10,10 +9,9 @@ import {
   kinDockTabs,
   type KinDockTab,
 } from "@t3tools/client-runtime/kin/kinJoin";
-import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
 import type { SessionGrantInput } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -30,23 +28,15 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentSession } from "../../state/session";
 import { KinChatsList } from "./KinChatsScreen";
 import { KinDock, kinDockClearance, type KinDockProps } from "./components/KinDock";
-import { useKinTasksBadge } from "./state/useKinTasksBadge";
-import { connectionAtomRuntime } from "../../connection/runtime";
+import { useKinTasksNeedsYou } from "./state/useKinAttention";
 import { KinPlace } from "./KinWorkScreen";
 import { KinTabContext, kinTabFoot } from "./components/KinTab";
 import { kinHomeTabAtom } from "./state/kinHomeTab";
-import {
-  useKinAccessEnded,
-  useKinAppShell,
-  useKinOwnerLevel,
-  useKinPlaceReach,
-} from "./state/kinChatOnly";
+import { kinPlacesAtom, useKinAccessEnded, useKinAppShell } from "./state/kinChatOnly";
 import { kinCachedDockAtom, saveKinDockAtom } from "./state/kinClient";
-import { useKinDocsLive } from "./state/useKinDocs";
 import { useKinHost } from "./state/useKinHost";
 import { useKinInbox } from "./state/useKinInbox";
-import { useKinMoneySummary } from "./state/useKinMoney";
-import { useKinWork, type KinWorkTarget } from "./state/useKinWork";
+import type { KinWorkTarget } from "./state/useKinWork";
 
 const ACCESS_ENDED = kinAccessEndedCopy("phone");
 
@@ -90,27 +80,9 @@ function KinHomeWithWork(props: {
   readonly session: SessionGrantInput | null;
   readonly workTarget: KinWorkTarget;
 }) {
-  const work = useKinWork(props.workTarget);
-  const money = useKinMoneySummary(props.workTarget, { enabled: true }).state;
-  const docs = useKinDocsLive(props.workTarget);
-  const ownerLevel = useKinOwnerLevel(props.workTarget.environmentId, props.session);
   const { environmentId } = props.workTarget;
-  const reach = useKinPlaceReach(environmentId);
-  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
-  const live =
-    props.session === null || me === null
-      ? null
-      : kinDockTabs(
-          props.session,
-          ownerLevel,
-          {
-            money: money._tag === "refused",
-            // Only an answer from an older host takes Clients away, never one still on its way.
-            clients: work._tag === "ready" && !kinWorkHostClients(work.live.summary),
-            docs: docs.refused,
-          },
-          reach,
-        );
+  const places = useAtomValue(kinPlacesAtom(props.workTarget));
+  const live = props.session === null || !places.answered ? null : places.destinations;
   const cachedResult = useAtomValue(kinCachedDockAtom(environmentId));
   const cached = AsyncResult.getOrElse(cachedResult, () => null);
   const dock = kinDockShown({ live, cached });
@@ -221,10 +193,10 @@ function KinHomeTabs(props: {
 
 /**
  * The dock, with unread messages counted on Chats, and on Tasks what Needs you holds: the same
- * number as that heading (`useKinTasksBadge`).
+ * number as that heading (`useKinTasksNeedsYou`).
  */
 function KinBadgedDock(props: KinWorkTarget & KinDockProps) {
-  const count = useKinTasksBadge({ environmentId: props.environmentId, orgId: props.orgId });
+  const count = useKinTasksNeedsYou({ environmentId: props.environmentId, orgId: props.orgId });
   const badge = count === null ? null : kinAttentionBadge(count);
   return (
     <KinDock
@@ -238,8 +210,14 @@ function KinBadgedDock(props: KinWorkTarget & KinDockProps) {
 
 /** The Chats list's unread total, the same count as the app icon's badge. */
 function useKinUnreadBadge() {
-  const { state } = useKinInbox();
-  return state._tag === "ready" ? kinAttentionBadge(kinBadgeCount(state.inbox.value)) : null;
+  const { host, state } = useKinInbox();
+  const known = state._tag === "ready" ? kinBadgeCount(state.inbox.value) : null;
+  // Offline before the inbox is read again, the badge keeps the last number it showed.
+  const key = host._tag === "host" ? host.environmentId : null;
+  const [last, setLast] = useState({ key, count: known });
+  if (known !== null && (known !== last.count || key !== last.key)) setLast({ key, count: known });
+  const count = known ?? (last.key === key ? last.count : null);
+  return count === null ? null : kinAttentionBadge(count);
 }
 
 /** A tab's state that isn't its list, inside the scroll view that clears the floating bar. */

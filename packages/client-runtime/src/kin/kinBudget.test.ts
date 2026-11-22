@@ -32,6 +32,14 @@ describe("the daily limit", () => {
       usual: { leadUnits: 500_000, workerUnits: 2_000_000 },
     };
     expect(kinDailyLimitChoices(scaled).current).toBe("2");
+    // Each choice names its amount, so "the usual" is never left unexplained.
+    expect(kinDailyLimitChoices(scaled).choices.map((choice) => choice.label)).toEqual([
+      "No limit",
+      "Half the usual (250k units a day)",
+      "The usual (500k units a day)",
+      "Twice the usual (1M units a day)",
+      "Five times the usual (2.5M units a day)",
+    ]);
   });
 
   it("says what today used against each limit, or in units where there is none", () => {

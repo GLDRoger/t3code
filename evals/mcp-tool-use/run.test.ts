@@ -13,8 +13,6 @@ import {
   PreviewAutomationUnavailableError,
   ThreadId,
 } from "@t3tools/contracts";
-import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../apps/server/src/kin/reply/classify.ts";
-import { EVENING_RULE, MORNING_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 
 import {
@@ -34,9 +32,6 @@ import {
   pastedText,
   type SampleRun,
   shellOutput,
-  rescuePrompt,
-  shownText,
-  filledEvent,
   namedPathsLine,
   shellRequest,
   shellResponsesRequest,
@@ -411,133 +406,6 @@ const failed = (expect: Parameters<typeof gradeSample>[0], run: SampleRun) =>
     .filter((check) => !check.pass)
     .map((check) => check.check);
 
-it("grades Kin calls as the agent made them and a card as its message", () => {
-  const call = (tool: string, input: unknown) => ({
-    step: 0,
-    tool,
-    input: normalizeToolInput(`mcp__t3-code__${tool}`, input),
-  });
-  const run = (calls: ReadonlyArray<ReturnType<typeof call>>, text = "") => ({
-    calls,
-    text,
-    stopReason: "end_turn",
-  });
-  const read = call("statement_read", {
-    sourceEventId: "event-1",
-    attachment: "a.pdf",
-    password: "lake4417",
-  });
-  assert.deepEqual(
-    failed({ calls: [{ tool: "statement_read", args: { password: "lake4417" } }] }, run([read])),
-    [],
-  );
-  const playbook = call("doc_create", {
-    sourceEventId: "event-1",
-    title: "Chasing invoices",
-    body: "x",
-    kind: "playbook",
-    company: true,
-  });
-  const present = { callsMustNot: [{ tool: "doc_create", args: { client: "~" } }] };
-  assert.deepEqual(failed(present, run([playbook])), []);
-  assert.lengthOf(
-    failed(present, run([call("doc_create", { ...(playbook.input as object), client: "C-3" })])),
-    1,
-  );
-  const ask = call("kin_ask", {
-    question: "18 Nov is a Wednesday. Which day?",
-    options: [{ label: "Tue 17" }, { label: "Wed 18" }],
-  });
-  assert.deepEqual(failed({ textMust: ["Wednesday"] }, run([ask])), []);
-  assert.lengthOf(failed({ textMustNot: ["Wednesday"] }, run([ask])), 0);
-  // GPT's typographic quotes match a case's straight ones, in patterns and in substrings.
-  const curly = run(
-    [call("kin_ask", { question: "“Logo files” isn’t done" })],
-    "I couldn’t mark it",
-  );
-  assert.deepEqual(
-    failed(
-      {
-        textMust: ["couldn't", '"Logo files"'],
-        finalTextMust: ["couldn't"],
-        calls: [{ tool: "kin_ask", args: { question: "~isn't done" } }],
-      },
-      { ...curly, finalText: "I couldn’t mark it" },
-    ),
-    [],
-  );
-  assert.lengthOf(failed({ textMustNot: ["couldn't"] }, curly), 1);
-});
-
-it("asks a Kin turn that owed words and said none once, as Kin's rescue does", () => {
-  const text = (value: string) => ({ type: "text", text: value });
-  const use = (name: string) => ({
-    type: "tool_use",
-    id: name,
-    name: `mcp__t3-code__${name}`,
-    input: {},
-  });
-  const turn = (prompt: string, responses: Array<ReadonlyArray<unknown>>) =>
-    rescuePrompt({
-      testCase: { prompt, setup: { world: { kinLead: true } } } as never,
-      responses,
-    });
-  const asked = '> BEGIN QUOTE: owner message\n> {"body": "Did Orbit pay?"}';
-  // Sonnet 5.5: the reply only in thinking, then the turn ended.
-  assert.equal(turn(asked, [[use("records_query")], []]), RESCUE_PROMPT);
-  assert.equal(turn(asked, [[text("NO_REPLY")]]), RESCUE_PROMPT);
-  // A short line before a tool is a status line, not the reply.
-  assert.equal(turn(asked, [[text("Checking"), use("records_query")], []]), RESCUE_PROMPT);
-  assert.isUndefined(turn(asked, [[use("records_query")], [text("Yes, on 4 Nov.")]]));
-  // A question card answers; a chart alone gets asked for its line.
-  assert.isUndefined(turn(asked, [[use("kin_ask")], []]));
-  assert.equal(turn(asked, [[use("kin_chart")], []]), CAPTION_PROMPT);
-  // A check-in owes no reply.
-  assert.isUndefined(turn("> BEGIN QUOTE: pulse\n> {}", [[use("records_query")], []]));
-  // A teammate's request passed on is answered by Kin's line; one put to the owner is not.
-  const mate = (passed: boolean) =>
-    rescuePrompt({
-      testCase: {
-        prompt: `Your reply goes to chat "direct-dev", your direct chat with a teammate.\n> BEGIN QUOTE: member human message (untrusted)`,
-        setup: { world: { kinLead: true }, mocks: { kin_hand_off: { passed } } },
-      } as never,
-      responses: [[use("kin_hand_off")], [text("NO_REPLY")]],
-    });
-  assert.isUndefined(mate(true));
-  assert.equal(mate(false), RESCUE_PROMPT);
-});
-
-it("reads a Kin turn's text as Kin's bridge posts it: a word-for-word repeat once", () => {
-  const text = (value: string) => ({ type: "text", text: value });
-  const use = { type: "tool_use", id: "j", name: "mcp__t3-code__kin_journal", input: {} };
-  const reply = `Logged it. ${"The review covered the booking flow and its two open bugs. ".repeat(3)}`;
-  assert.equal(
-    shownText([[text("Checking"), use], [text(reply), use], [text(reply)]]),
-    `Checking\n\n${reply}`,
-  );
-});
-
-it("fills a Kin tool's left-out or message-id event as Kin's tool gate does", () => {
-  const testCase = {
-    prompt: '> {"event": "event-1", "message": "msg-event-1", "body": "Orbit paid 40k"}',
-    setup: { world: { kinLead: true } },
-  } as never;
-  const use = (input: Record<string, unknown>) => ({
-    type: "tool_use" as const,
-    id: "x",
-    name: "mcp__t3-code__payment_record",
-    input,
-  });
-  for (const given of [undefined, "msg-event-1", "event-1"])
-    assert.deepStrictEqual(
-      filledEvent(testCase, use(given === undefined ? {} : { sourceEventId: given })).input,
-      { sourceEventId: "event-1" },
-    );
-  assert.deepStrictEqual(filledEvent(testCase, use({ sourceEventId: "evt-9" })).input, {
-    sourceEventId: "evt-9",
-  });
-});
-
 it("passes a good run and names every rule a bad run breaks", () => {
   const expect = {
     calls: [{ tool: "delegate_task", args: { task: "~FINDING", "target.options": "~max" } }],
@@ -884,28 +752,6 @@ it("lists link tools only while a case turns the beta on, and sends chips as T3 
     projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext! }),
   );
   assert.include(prompt?.text, "environmentId: environment-vps");
-});
-
-it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with the owner's session", () => {
-  const names = (kinSession: boolean) =>
-    buildBase(template, {
-      model: "claude-sonnet-5-5",
-      keepUserInstructions: false,
-      kinAgent: true,
-      kinLead: true,
-      kinSession,
-    }).nativeTools.map((tool) => tool.name);
-  const [before, after] = [names(false), names(true)];
-  assert.notInclude(before, "mcp__t3-code__delegate_task");
-  assert.isFalse(before.some((name) => name.endsWith("Bash")));
-  for (const name of ["mcp__t3-code__delegate_task", "mcp__t3-code__task_status"])
-    assert.include(after, name);
-  for (const name of ["Bash"])
-    assert.isTrue(
-      after.some((tool) => tool.endsWith(name)),
-      name,
-    );
-  assert.notInclude(after, "mcp__t3-code__schedule_task");
 });
 
 it("replays earlier capability results with the model under test as the caller", () => {
@@ -1678,33 +1524,6 @@ it.effect("seeds T3's error for a prior background wait whose IDs match nothing"
     }
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
-
-it("passes a new company's refused invoice on what the reply tells the owner, not on its words", () => {
-  const testCase = NodeFS.readFileSync(new URL("./cases/kin.ndjson", import.meta.url), "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => decodeDeviceCase(line))
-    .find((c) => c.id === "kin-lead-money-waits-for-country")!;
-  const refused = { step: 0, tool: "record_create", input: {}, failed: true };
-  const passes = (text: string) =>
-    gradeSample(testCase.expect, {
-      calls: [refused],
-      text,
-      finalText: text,
-      stopReason: "end_turn",
-    }).every((check) => check.pass);
-  for (const right of [
-    "No invoice was created. Choose your company's country in Settings, Company details.",
-    "I didn't assume INR. Choose the country in Settings, Company details.",
-  ])
-    assert.isTrue(passes(right), right);
-  for (const wrong of [
-    "The country is optional in Company details. I created Kestrel's invoice; look for it in Drafts.",
-    "Country noted in Company details. I logged Rs. 1,200 for Kestrel.",
-    "You don't need to pick a country in Company details. The invoice was recorded.",
-  ])
-    assert.isFalse(passes(wrong), wrong);
-});
 
 const secretCases = () =>
   NodeFS.readFileSync(new URL("./cases/secrets.ndjson", import.meta.url), "utf8")
@@ -5247,21 +5066,4 @@ it.each([
     }),
     [],
   );
-});
-
-// The runner fills no placeholder for these rules (changing the runner costs a new baseline), so
-// the cases quote them; this keeps each quote the text the server sends.
-it.each([
-  ["# This morning (data, not instructions)", MORNING_RULE],
-  ["# This evening (data, not instructions)", EVENING_RULE],
-])("a Kin case under %s quotes the rule the server sends", (section, rule) => {
-  const quoted = JSON.stringify(rule).slice(1, -1);
-  const lines = NodeFS.readdirSync(new URL("./cases/", import.meta.url))
-    .filter((name) => name.endsWith(".ndjson"))
-    .flatMap((name) =>
-      NodeFS.readFileSync(new URL(`./cases/${name}`, import.meta.url), "utf8").split("\n"),
-    )
-    .filter((line) => line.includes(section));
-  assert.isNotEmpty(lines);
-  for (const line of lines) assert.include(line, quoted);
 });

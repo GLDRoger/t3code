@@ -113,8 +113,13 @@ export function KinWorkSection(props: {
 export function KinWorkStaleLine(props: {
   readonly environmentId: EnvironmentId;
   readonly onRetry?: () => void;
+  /** When the rows shown were last read, said while offline. */
+  readonly readAt?: number | null;
 }) {
-  const notice = kinWorkStaleNotice(kinHostLink(useKinHostAt(props.environmentId)));
+  const notice = kinWorkStaleNotice(
+    kinHostLink(useKinHostAt(props.environmentId)),
+    props.readAt ?? null,
+  );
   if (notice === null) return null;
   return (
     <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -388,7 +393,7 @@ export function KinFilter(props: {
           variant="secondary"
           aria-label={`${props.grouped.label}. Clear grouping`}
           onClick={props.grouped.onClear}
-          className="min-w-0"
+          className="min-w-0 shrink"
         >
           <span className="truncate">{props.grouped.label}</span>
           <XIcon aria-hidden />
@@ -400,7 +405,7 @@ export function KinFilter(props: {
           variant="secondary"
           aria-label={`Filtered to ${props.chip}. Clear filter`}
           onClick={props.onClear}
-          className="min-w-0"
+          className="min-w-0 shrink"
         >
           <span className="truncate">{props.chip}</span>
           <XIcon aria-hidden />

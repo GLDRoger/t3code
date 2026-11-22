@@ -32,6 +32,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
+import { madeUnderApproval } from "../questions/approval.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { resolveAttachmentPathById } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -84,6 +85,7 @@ import {
   type SocialProvider,
 } from "./SocialProvider.ts";
 import { zernio } from "./Zernio.ts";
+import { DAY_MS } from "../durations.ts";
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const notAllowed = (message: string) => new KinChatError({ reason: "not_allowed", message });
@@ -94,7 +96,6 @@ const isProviderError = Schema.is(SocialProviderError);
 const asKinError = (cause: unknown) =>
   isKinError(cause) ? cause : unavailable("Kin couldn't do that just now. Try again in a minute.");
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
-const DAY_MS = 86_400_000;
 /** A key waits this long between Kin showing what it reaches and the owner's Confirm. */
 const CHECK_TTL_MS = 10 * 60_000;
 /** Reads are kept this long: a week's numbers don't move by the minute, and X charges per read. */
@@ -912,6 +913,8 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       drafts,
       title,
     }).pipe(
+      // A post made under the owner's Approve: its week card is that approval's one result.
+      Effect.tap((card) => madeUnderApproval(lead, { kind: "post", cardId: card.cardId })),
       sql.withTransaction,
       Effect.provide(context),
       Effect.tapError((error) =>

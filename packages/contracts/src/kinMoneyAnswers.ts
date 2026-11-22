@@ -5,7 +5,14 @@ import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId, KinTrimmedText } from "./kinChat.ts";
 import { KinSacCode } from "./kinFinance.ts";
-import { KinCurrency, KinDay, KinMoney, KinMoneyTotals, KinSignedMoney } from "./kinMoney.ts";
+import {
+  KinBankKnown,
+  KinCurrency,
+  KinDay,
+  KinMoney,
+  KinMoneyTotals,
+  KinSignedMoney,
+} from "./kinMoney.ts";
 import { KinRecordKey } from "./kinWork.ts";
 
 /**
@@ -22,6 +29,9 @@ export const KinStatementStanding = Schema.Literals([
 export type KinStatementStanding = typeof KinStatementStanding.Type;
 
 const AccountKind = Schema.Literals(["account", "card"]);
+/** The available balance a bank alert mail printed, and when it was sent: the bank's figure then. */
+export const KinCashAlert = Schema.Struct({ balance: KinSignedMoney, at: IsoDateTime });
+export type KinCashAlert = typeof KinCashAlert.Type;
 export const KinCashAccount = Schema.Struct({
   /** "HDFC Account ••1234". */
   label: Schema.String,
@@ -37,6 +47,8 @@ export const KinCashAccount = Schema.Struct({
   newerRead: Schema.NullOr(
     Schema.Struct({ balance: KinSignedMoney, on: KinDay, standing: KinStatementStanding }),
   ),
+  /** A bank alert from after `on`: the balance shown. Absent from older hosts. */
+  alert: Schema.optional(KinCashAlert),
 });
 export type KinCashAccount = typeof KinCashAccount.Type;
 
@@ -74,6 +86,12 @@ export const KinCash = Schema.Struct({
     }),
   ),
   byCurrency: Schema.Array(KinCashCurrency),
+  /** Absent from older hosts. */
+  bankKnown: Schema.optional(KinBankKnown),
+  /** Accounts known only from bank alerts: "HDFC Bank ••4821". Absent from older hosts. */
+  alertAccounts: Schema.optional(
+    Schema.Array(Schema.Struct({ label: Schema.String, alert: KinCashAlert })),
+  ),
 });
 export type KinCash = typeof KinCash.Type;
 export const KinCashInput = Schema.Struct({ orgId: KinOrgId });
@@ -214,6 +232,59 @@ export const KinInvoiceFromQuoteResult = Schema.Struct({
 });
 export type KinInvoiceFromQuoteResult = typeof KinInvoiceFromQuoteResult.Type;
 
+/**
+ * An invoice typed by hand: a draft for the client, never numbered or owed until it is issued,
+ * and its document made with these lines, which set its amount and tax.
+ */
+export const KinNewInvoiceInput = Schema.Struct({
+  orgId: KinOrgId,
+  client: KinRecordKey,
+  title: KinTrimmedText.check(Schema.isMaxLength(280)),
+  lines: Schema.Array(KinDocumentLine).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
+  /** GST percent, in India only; elsewhere the company's own tax applies. */
+  gstRate: Schema.optional(
+    Schema.String.check(Schema.isPattern(/^(?:100|\d{1,2}(?:\.\d{1,3})?)$/)),
+  ),
+  dueOn: Schema.optional(KinDay),
+  notes: Schema.optional(Schema.String.check(Schema.isMaxLength(4_000))),
+  project: Schema.optional(KinRecordKey),
+  /**
+   * A form that can ask sends false: an amount far above its list is refused with the error's
+   * `farAbove` for the person to confirm, and true saves it. Left out, nothing is asked.
+   */
+  amountConfirmed: Schema.optional(Schema.Boolean),
+  /** The same id with the same details returns what that request made. */
+  clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+});
+export type KinNewInvoiceInput = typeof KinNewInvoiceInput.Type;
+
+/** An expense typed by hand; the company's Expenses list is made the first time. */
+export const KinNewExpenseInput = Schema.Struct({
+  orgId: KinOrgId,
+  title: KinTrimmedText.check(Schema.isMaxLength(280)),
+  amount: KinMoney,
+  paidOn: KinDay,
+  /** Who was paid, as said. */
+  vendor: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(200))),
+  /** One of the Expenses list's own categories. */
+  category: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(60))),
+  /** One of its "Paid with" choices. */
+  paidWith: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(60))),
+  /** Files already in the person's chats (`kin.work.files`). */
+  receipt: Schema.optional(
+    Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(128))).check(Schema.isMaxLength(5)),
+  ),
+  /**
+   * A form that can ask sends false: an amount far above its list is refused with the error's
+   * `farAbove` for the person to confirm, and true saves it. Left out, nothing is asked.
+   */
+  amountConfirmed: Schema.optional(Schema.Boolean),
+  clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+});
+export type KinNewExpenseInput = typeof KinNewExpenseInput.Type;
+export const KinNewExpenseResult = Schema.Struct({ expense: KinRecordKey });
+export type KinNewExpenseResult = typeof KinNewExpenseResult.Type;
+
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 export const KinMoneyAnswerRpcs = [
   Rpc.make("kin.work.cash", { payload: KinCashInput, success: KinCash, error }),
@@ -234,6 +305,16 @@ export const KinMoneyAnswerRpcs = [
     success: KinInvoiceFromQuoteResult,
     error,
   }),
+  Rpc.make("kin.work.newInvoice", {
+    payload: KinNewInvoiceInput,
+    success: KinInvoiceFromQuoteResult,
+    error,
+  }),
+  Rpc.make("kin.work.newExpense", {
+    payload: KinNewExpenseInput,
+    success: KinNewExpenseResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_MONEY_ANSWER_RPC_SCOPES = {
@@ -243,4 +324,6 @@ export const KIN_MONEY_ANSWER_RPC_SCOPES = {
   "kin.work.setBudget": AuthKinChatScope,
   "kin.work.entryLines": AuthKinChatScope,
   "kin.work.invoiceFromQuote": AuthKinChatScope,
+  "kin.work.newInvoice": AuthKinChatScope,
+  "kin.work.newExpense": AuthKinChatScope,
 } as const;

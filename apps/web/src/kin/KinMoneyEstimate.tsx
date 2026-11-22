@@ -273,7 +273,6 @@ function KinRatesForm(
                   id={ids.rate}
                   value={draft.rate}
                   inputMode="decimal"
-                  placeholder="84.25"
                   autoComplete="off"
                   onChange={(event) => setDraft({ ...draft, rate: event.target.value })}
                 />

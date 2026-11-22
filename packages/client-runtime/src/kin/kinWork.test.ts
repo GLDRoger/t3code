@@ -12,6 +12,7 @@ import {
   ThreadId,
   type KinWorkAssignInput,
   type KinWorkSummary,
+  KIN_LEFT_FIELD,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -32,6 +33,7 @@ import {
   kinWorkHostClients,
   kinWorkAssignees,
   kinWorkAudience,
+  kinWorkNameOfText,
   kinWorkAudienceMove,
   kinWorkHostEdits,
   kinWorkClientStays,
@@ -106,6 +108,30 @@ const detail = (patch: Partial<KinRecordDetail> = {}): KinRecordDetail => ({
   links: [],
   changes: [],
   ...patch,
+});
+
+describe("kinWorkName", () => {
+  const names = {
+    people: new Map([
+      ["p-me", "Rhea"],
+      ["p-zoya", "Zoya"],
+    ]),
+    agents: new Map([["a-fin", "Finance"]]),
+    me: KinPersonId.make("p-me"),
+  };
+  it.each([
+    ["yourself", "person:p-me", "You"],
+    ["a teammate", "person:p-zoya", "Zoya"],
+    ["an agent, by name", "agent:a-fin", "Finance"],
+    ["an unlisted teammate", "person:p-gone", "A teammate"],
+    ["an unlisted agent, never by id", "agent:a-gone", "An agent"],
+  ])("names %s", (_, text, expected) => {
+    expect(kinWorkNameOfText(text, names)).toBe(expected);
+  });
+
+  it("leaves text that names nobody", () => {
+    expect(kinWorkNameOfText("next week", names)).toBeNull();
+  });
 });
 
 describe("kinWorkListQuery", () => {
@@ -296,6 +322,14 @@ describe("kinWorkStaleNotice", () => {
   ] as const)("on a held page that is behind, with the link %s, says %j", (link, notice) => {
     expect(kinWorkStaleNotice(link)).toEqual(notice);
   });
+
+  it("offline, says when the rows shown were last read, as a chat's offline line does", () => {
+    const readAt = Date.parse("2026-11-11T08:00:00.000Z");
+    expect(kinWorkStaleNotice("offline", readAt, (date) => date.toISOString())).toEqual({
+      message: "Offline. Last updated 2026-11-11T08:00:00.000Z.",
+      retry: false,
+    });
+  });
 });
 
 describe("kinWorkOnlyOwner", () => {
@@ -447,6 +481,17 @@ describe("kinWorkItemView", () => {
             kind: "updated",
             fields: [{ field: "owner", from: null, to: `person:${me.personId}` }],
           },
+          {
+            seq: 0.5,
+            at,
+            by: lead,
+            via: "lead",
+            kind: "updated",
+            fields: [
+              { field: "owner", from: `person:${priya.personId}`, to: `person:${me.personId}` },
+              { field: KIN_LEFT_FIELD, from: `person:${priya.personId}`, to: null },
+            ],
+          },
         ],
       }),
       names,
@@ -459,6 +504,7 @@ describe("kinWorkItemView", () => {
       "Priya came back; it's theirs again",
       "You removed Priya's access; it stays with them",
     ]);
+    expect(view.history.at(-1)?.text).toBe("Tech lead gave it to you (Priya left)");
   });
 
   it("says an invoice was issued, paid or voided, not marked waiting, finished or dropped", () => {
@@ -487,6 +533,75 @@ describe("kinWorkItemView", () => {
       "Tech lead marked it paid",
       "Tech lead issued it",
     ]);
+  });
+
+  it("lists a task's steps in order, and says all ticked without marking it done", () => {
+    const can = {
+      states: ["done" as const],
+      edit: true,
+      party: true,
+      project: true,
+      clearProject: true,
+      give: true,
+      takeBack: false,
+      mark: true,
+      unmark: true,
+      share: false,
+      confirm: false,
+    };
+    const checklist = [
+      { title: "Fields and states", done: true },
+      { title: "Wireframe", done: true },
+    ];
+    const changed = (seq: number, field: string, to: string) =>
+      ({
+        seq,
+        at: "2026-11-10T09:00:00.000Z",
+        by: lead,
+        via: "lead",
+        kind: "updated",
+        fields: [{ field, from: null, to }],
+      }) as const;
+    const view = kinWorkItemView(
+      detail({
+        can,
+        checklist,
+        steps: { done: 2, of: 2 },
+        urgent: true,
+        changes: [changed(2, "urgent", "true"), changed(1, "steps", "Wireframe (done)")],
+      }),
+      names,
+      now,
+      50,
+      place,
+    );
+    expect(view.urgent).toBe(true);
+    expect(view.history.map((line) => line.text)).toEqual([
+      "Tech lead marked it urgent",
+      "Tech lead changed its steps",
+    ]);
+    expect(view.steps).toMatchObject({
+      count: "2 of 2",
+      editable: true,
+      allDone: "Every step is ticked. Mark the task done when it's finished.",
+    });
+    expect(view.steps?.items.map((item) => [item.title, item.label])).toEqual([
+      ["Fields and states", "Untick: Fields and states"],
+      ["Wireframe", "Untick: Wireframe"],
+    ]);
+    expect(view.state).not.toBe("done");
+    // One that may not change it reads them and ticks none; with none, it has no Steps.
+    const reader = { ...can, edit: false };
+    expect(
+      kinWorkItemView(detail({ can: reader, checklist }), names, now, 50, place).steps,
+    ).toMatchObject({ editable: false });
+    expect(
+      kinWorkItemView(detail({ can: reader, checklist: [] }), names, now, 50, place).steps,
+    ).toBeNull();
+    // One who may change it can add the first step.
+    expect(
+      kinWorkItemView(detail({ can, checklist: [] }), names, now, 50, place).steps,
+    ).toMatchObject({ count: null, items: [], editable: true });
   });
 
   it("opens web links and source chats only, and keeps the latest word on a pull request", () => {
@@ -623,6 +738,10 @@ describe("a task on an older host", () => {
     const view = kinWorkItemView(suggested, names, now, 50, place);
     expect(view).toMatchObject({ editable: false, suggestion: "Tech lead suggested this task." });
     expect(view.remarks.join(" ")).toContain("Tell it in chat");
+  });
+
+  it("shows no Steps to add where the host doesn't say it keeps them", () => {
+    expect(kinWorkItemView({ ...suggested, seq: 9 }, names, now, 50, place).steps).toBeNull();
   });
 
   it("offers them on a host that sends a task's own change number", () => {

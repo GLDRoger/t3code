@@ -1,20 +1,29 @@
-import type { KinAgentId, KinOrgId, KinPulseActor, KinPulseFact } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  type KinOrgId,
+  KinPersonId,
+  type KinPulseActor,
+  type KinPulseFact,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail, type SentMail } from "../connections/Sending.ts";
-import { timeIn } from "../work/money.ts";
-import { ownerZone } from "../work/recordRows.ts";
+import { dayIn, timeIn } from "../work/money.ts";
+import { ownerZone, recordName } from "../work/recordRows.ts";
+import { leadNamer } from "../work/toolNames.ts";
 import { clientHistory } from "./clientHistory.ts";
 import { headStarts } from "./headStart.ts";
+import { covers, endedHolds } from "./holds.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { teamHoursNow } from "./nudge.ts";
+import { DEAL_SENSES } from "./senses/deals.ts";
 
 export const PULSE_RULE =
-  "What needs attention, as Kin computed it from its own records just now. Nobody asked for these facts, so each one you raise arrives one tap from done: do what you may do alone and say it in a line; draft what leaves the company (mail to its writeTo, its document attached, from an account in mailFrom) so its card waits on him; or put one kin_ask with the real options and a default. When the head start can't be made, say once what is missing, such as no contact with an email; never ask whether to start. Leave a fact that needs nothing or is already in hand. Call pulse_handle once one is in hand or is not a problem. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
+  "What needs attention, as Kin computed it from its own records just now. Nobody asked for these facts, so each one you raise arrives one tap from done: do what you may do alone and say it in a line; draft what leaves the company (mail to its writeTo, its document attached, from an account in mailFrom) so its card waits on him; or put one kin_ask with the real options and a default. When the head start can't be made, say once what is missing, such as no contact with an email; never ask whether to start. Leave a fact that needs nothing or is already in hand. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
 export const CHECK_IN_PULSE_RULE =
-  "Check-in: below are only facts the owner hasn't been told as they stand now (new, changed or due today). Tell him each in your reply, once, leading with what you did or what waits on his tap; one in hand (inHand) with who and until when. What he was told and hasn't changed is left out: don't recall it.";
+  "Tell him each fact below once. When a fact's setAsideEnded says it had been set aside, first say so in a few words, with whose word it was, then what is open about it. What he was told and hasn't changed is left out: don't recall it.";
 /** The morning check-in, which took over the morning brief's sections; the app greets above it. */
 export const MORNING_RULE =
   "This is the morning check-in. Besides the pulse: what is due today, overdue promises, what waits on the owner, reviews and red checks, objectives this week and stuck tasks. The owner reads it as a page under a greeting the app writes, so write no greeting and put everything under headings, each on its own line: `## Needs you`, `## Money`, `## Clients`, `## Work`, `## Coming up`. Use only the ones you have something for, Needs you first, a few short lines under each, and tell every pulse fact under the heading it belongs to, as the pulse rule says. It is sent on a quiet morning too: when nothing here needs them, say so in a line under `## Needs you`, then `## Coming up` only if something is.";
@@ -34,10 +43,11 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   readonly agentId: KinAgentId;
   readonly now: number;
   readonly wokeFor: ReadonlyArray<string>;
-  /** A check-in: the facts it was given to tell (`kin_pulse_told`), held ones too. */
+  /** A check-in: the facts it was given to tell (`kin_pulse_told`). */
   readonly checkIn?: ReadonlySet<string> | undefined;
+  /** The check-in events, so a fact first told since its hold ended says it was set aside. */
+  readonly checkInEvents?: ReadonlyArray<string> | undefined;
 }) {
-  const sql = yield* SqlClient.SqlClient;
   const tell = input.checkIn;
   const checkIn = tell !== undefined;
   const read = yield* KinPulse.read({
@@ -45,7 +55,6 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     at: input.now,
     viewer: { _tag: "owner" },
     limit: 200,
-    includeHandled: checkIn,
   });
   const all =
     tell === undefined ? read : { ...read, facts: read.facts.filter((fact) => tell.has(fact.key)) };
@@ -67,21 +76,10 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
       });
       if (sent !== undefined) mailed.set(fact.key, sent);
     }
-  const names = new Map(
-    (yield* sql<{ id: string; name: string }>`SELECT agent_id AS id, display_name AS name
-      FROM kin_agents WHERE org_id = ${input.orgId}
-      UNION ALL SELECT person_id AS id, display_name AS name
-      FROM kin_people WHERE org_id = ${input.orgId}
-      ORDER BY id`).map((row) => [row.id, row.name]),
-  );
+  const name = yield* leadNamer(input.orgId, input.agentId);
+  // "owner" is the role, not a person: whoever holds owner-level access acts.
   const who = (actor: KinPulseActor | NonNullable<KinPulseFact["handled"]>["by"]) =>
-    actor._tag === "owner"
-      ? "the owner"
-      : actor._tag === "agent"
-        ? actor.agentId === input.agentId
-          ? "you"
-          : (names.get(actor.agentId) ?? "another agent")
-        : (names.get(actor.personId) ?? "a teammate");
+    actor._tag === "owner" ? "the owner" : name(actor);
   // A client gone quiet or cold comes with what we did for them, so a suggestion has substance.
   const histories = new Map<string, Effect.Success<ReturnType<typeof clientHistory>>>();
   for (const fact of shown)
@@ -96,11 +94,19 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
       );
   const starts = yield* headStarts(input.orgId, shown);
   const zone = yield* ownerZone(input.orgId);
+  const ended = checkIn
+    ? yield* asideEnded(input.orgId, input.agentId, input.now, shown, input.checkInEvents ?? [])
+    : new Map<string, string>();
   const row = (fact: KinPulseFact) => ({
     key: fact.key,
-    about: `${fact.subject.key === fact.subject.title ? fact.subject.title : `${fact.subject.key} ${fact.subject.title}`}`,
+    about:
+      fact.subject.key === fact.subject.title
+        ? fact.subject.title
+        : `${recordName(fact.subject.key, fact.subject.number)} ${fact.subject.title}`,
     consequence: fact.consequence,
-    acts: who(fact.actor),
+    // A renewal's heads-up only mentions it; who drafts it acts from the draft day.
+    ...(fact.stage === "heads_up" ? {} : { acts: who(fact.actor) }),
+    ...(DEAL_SENSES.has(fact.sense) ? { heading: "Clients" } : {}),
     ...(fact.measure?.from._tag === "playbook"
       ? { playbook: `${fact.measure.from.title} (${fact.measure.from.key})` }
       : {}),
@@ -123,11 +129,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         ? { sentIn: "no mail with it on record" }
         : {}),
     ...starts.byFact.get(fact.key),
-    ...(fact.handled === null
-      ? {}
-      : {
-          inHand: `${who(fact.handled.by)}${fact.handled.until === null ? ", not a problem" : ` until ${timeIn(DateTime.toEpochMillis(fact.handled.until), zone)}`}${fact.handled.note === null ? "" : `: ${fact.handled.note}`}`,
-        }),
+    ...(ended.has(fact.key) ? { setAsideEnded: ended.get(fact.key) } : {}),
     ...(fact.sensitive ? { sensitive: true } : {}),
     ...(woke.has(fact.key) ? { wokeYou: true } : {}),
     ...(fact.subject.recordId !== undefined && histories.has(fact.subject.recordId)
@@ -154,6 +156,60 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     byProject: [...groups].map(([project, facts]) => ({ project, facts })),
     ...(gone.length === 0 ? {} : { wokeForButHandledOrNoLongerTrue: gone }),
   };
+});
+
+/** How far back a hold's end still explains a fact told now. */
+const ENDED_WITHIN_MS = 60 * 24 * 60 * 60_000;
+
+/**
+ * For facts a check-in tells for the first time since a hold on them ended: "set aside by Finance
+ * on the owner's word on 2026-11-20 until 2026-12-17; that day came" (or "lifted by Meera on …").
+ * The reading agent's own owner is "the owner", as `acts` has it.
+ */
+const asideEnded = Effect.fn("KinLeadPrompt.asideEnded")(function* (
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  now: number,
+  facts: ReadonlyArray<KinPulseFact>,
+  events: ReadonlyArray<string>,
+) {
+  const lines = new Map<string, string>();
+  if (facts.length === 0) return lines;
+  const holds = yield* endedHolds(orgId, now - ENDED_WITHIN_MS, now);
+  if (holds.length === 0) return lines;
+  const sql = yield* SqlClient.SqlClient;
+  const [agent] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner FROM kin_agents
+    WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+  const named = yield* leadNamer(orgId, agentId);
+  const zone = yield* ownerZone(orgId);
+  const name = (kind: "person" | "agent", id: string) =>
+    kind === "person" && id === agent?.owner
+      ? "the owner"
+      : named(
+          kind === "agent"
+            ? { _tag: "agent", agentId: KinAgentId.make(id) }
+            : { _tag: "person", personId: KinPersonId.make(id) },
+        );
+  for (const fact of facts) {
+    const hold = holds.find((one) => covers(one, fact));
+    if (hold === undefined || hold.endedAt === null || agent === undefined) continue;
+    const since = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_pulse_told
+      WHERE org_id = ${orgId} AND person_id = ${agent.owner} AND fact_key = ${fact.key}
+        AND told_at >= ${hold.endedAt}
+        ${events.length === 0 ? sql`` : sql`AND event_id NOT IN ${sql.in(events)}`}
+      LIMIT 1`;
+    if (since.length > 0) continue;
+    const word = hold.onWordOf === null ? "" : ` on ${name("person", hold.onWordOf)}'s word`;
+    const end =
+      hold.liftedById === null || hold.liftedByKind === null
+        ? "that day came"
+        : `lifted by ${name(hold.liftedByKind, hold.liftedById)} on ${dayIn(hold.endedAt, zone)}`;
+    lines.set(
+      fact.key,
+      `set aside by ${name(hold.byKind, hold.byId)}${word} on ${dayIn(hold.setAt, zone)}${hold.until === null ? "" : ` until ${dayIn(hold.until, zone)}`}; ${end}`,
+    );
+  }
+  return lines;
 });
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

@@ -165,6 +165,8 @@ export const KinDateRow = Schema.Struct({
   allDay: Schema.Boolean,
 });
 export type KinDateRow = typeof KinDateRow.Type;
+/** Only a due day can be late; an entry's own day, such as an invoice's issue day, never is. */
+export const kinDateRowLate = (row: KinDateRow) => row.kind === "due" && row.record.late;
 
 /** Everything with a date in `[from, to)`, across lists, soonest first. A calendar or agenda. */
 export const KinDatesInput = Schema.Struct({
@@ -229,6 +231,8 @@ export const KinMoneySummary = Schema.Struct({
         oldestOverdueDays: Schema.NullOr(NonNegativeInt),
       }),
     ),
+    /** Owing clients past the first 20 a screen is sent, when there are more; absent otherwise. */
+    byClientMore: Schema.optional(NonNegativeInt),
   }),
   /** Money paid in: tax a client deducted at source settles an invoice but isn't counted here. */
   received: Schema.Struct({ thisMonth: KinMoneyTotals, lastMonth: KinMoneyTotals }),
@@ -275,6 +279,8 @@ export const KinMoneySummaryInput = Schema.Struct({
   upcomingRows: Schema.optional(Schema.Boolean),
   /** One client's page: what is owed is that client's alone, and none to a teammate without Money. */
   party: Schema.optional(KinRecordKey),
+  /** Every owing client in `owed.byClient`, not the first 20 and a count of the rest. */
+  allClients: Schema.optional(Schema.Boolean),
 });
 export type KinMoneySummaryInput = typeof KinMoneySummaryInput.Type;
 
@@ -530,6 +536,11 @@ const KinCompanyProfileFields = {
   financialYearStartMonth: Schema.optional(KinMonthNumber),
   /** Null charges no tax; India's GST is worked out by the invoice recipe instead. */
   tax: Schema.optional(Schema.NullOr(KinCompanyTax)),
+  /**
+   * False when an owner said the company is not registered for its country's tax: its documents
+   * charge none and print no client's tax number. Absent or null when not said.
+   */
+  taxRegistered: Schema.optional(Schema.NullOr(Schema.Literal(false))),
 };
 export const KinCompanyProfileData = Schema.Struct(KinCompanyProfileFields);
 export type KinCompanyProfileData = typeof KinCompanyProfileData.Type;
@@ -547,7 +558,7 @@ export type KinCompanyProfileInput = typeof KinCompanyProfileInput.Type;
 export const KIN_EXPORT_ROUTE = "/api/kin/export";
 /** What that zip holds and leaves out: Settings, the zip's README and the user guide say it in these words. */
 export const KIN_EXPORT_HOLDS =
-  "Your clients, contacts, projects, every list with its entries and their payments, each doc as it reads now, and the files entries and docs hold, in one zip. Kin's import makes the clients, contacts, projects and entries again; the docs and files are there to keep.";
+  "Your clients, contacts, projects, every list with its entries and their payments, each entry's comments, the contact logged with each client, each doc as it reads now, and the files entries, comments and docs hold, in one zip. Kin's import makes the clients, contacts, projects and entries again; the comments, logged contact, docs and files are there to keep.";
 export const KIN_EXPORT_LEAVES =
   "It is not a full backup. Not in it: memory, which stays in your memory repository; chats; people and their access; agents and their characters; check-ins and reminders; connections, social accounts and their posts; budgets, bank statements and company details; settings; project repos and members; and who holds each entry, how it repeats and its history. Keys, tokens, sign-in sessions, pairing codes and bank details never leave.";
 export const KinExportLinkInput = Schema.Struct({ orgId: KinOrgId });
@@ -599,6 +610,8 @@ export const KinCompanyProfileSetInput = Schema.Struct({
   country: Schema.optional(Schema.NullOr(KinCountryCode)),
   financialYearStartMonth: Schema.optional(KinMonthNumber),
   tax: Schema.optional(Schema.NullOr(KinCompanyTax)),
+  /** False says the company is not registered for its tax, and clears its tax number; null unsays it. */
+  taxRegistered: Schema.optional(Schema.NullOr(Schema.Literal(false))),
 });
 export type KinCompanyProfileSetInput = typeof KinCompanyProfileSetInput.Type;
 

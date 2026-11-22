@@ -14,15 +14,21 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../../../../config.ts";
 import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { hookAllows, kinSecretVariables } from "../../../claudeConfinement.testkit.ts";
 import * as DreamIsolation from "../../../dreaming/DreamIsolation.ts";
-import { builtinTools, claude } from "./claude.ts";
-import { kinInstructions } from "../session.ts";
+import { builtinTools, claude, OWNER_SEAT_OFF } from "./claude.ts";
+import { kinInstructions, REVIEW_SEAT_INSTRUCTIONS } from "../session.ts";
 import { ownerOnlyWakeup, wakeupRun } from "../../Audience.testkit.ts";
-import { delegatedFromLead, leadNameOf, fullSessionRefusal } from "../../AgentSession.ts";
+import {
+  delegatedFromLead,
+  fullSessionRefusal,
+  leadNameOf,
+  webSearchRefusal,
+} from "../../AgentSession.ts";
 import { SESSION_REFUSAL } from "../../Audience.ts";
 import { KinAgentSessionPolicy } from "../../sessionPolicy.ts";
 import { KinServer, type Services as KinServices } from "../../../KinServer.ts";
@@ -48,7 +54,7 @@ it.effect.each([
   [true, false],
   [false, true],
 ])(
-  "a confined Kin session loads no settings file, Kin tools up front and none of Claude Code's own (KIN_ENABLED=%s, lead wrapper outside=%s)",
+  "a confined Kin session loads no settings file, Kin's core up front and none of Claude Code's own (KIN_ENABLED=%s, lead wrapper outside=%s)",
   ([enabled, leadOutside]) =>
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -98,6 +104,7 @@ it.effect.each([
           ["thread-1", other],
           ["kin-dream:fixture:extract", dream],
           ["kin-shared:lead", lead],
+          ["kin-shared:review:lead", lead],
         ] as const)
           yield* runner
             .open({
@@ -118,7 +125,7 @@ it.effect.each([
           ),
         ),
       );
-      const [leadOpened, otherOpened, dreamOpened, sharedOpened] = opened;
+      const [leadOpened, otherOpened, dreamOpened, sharedOpened, reviewOpened] = opened;
       assert.strictEqual(otherOpened, other);
       assert.deepStrictEqual(dreamOpened?.settingSources, []);
       if (!enabled) {
@@ -137,11 +144,15 @@ it.effect.each([
         },
         // No settings file: user settings carry hooks, plugins and env a lead must not inherit.
         settingSources: [],
-        disallowedTools: [...(lead.disallowedTools ?? []), ...builtinTools],
+        // Every built-in but the provider's own web search, which the hook asks the turn about.
+        disallowedTools: [
+          ...(lead.disallowedTools ?? []),
+          ...builtinTools.filter((tool) => tool !== "WebSearch"),
+        ],
         strictMcpConfig: true,
-        // Kin's tools load upfront; only those marked deferred wait for ToolSearch.
-        tools: ["ToolSearch"],
-        mcpServers: { kin: { type: "http", url: "http://127.0.0.1/kin", alwaysLoad: true } },
+        // Kin's core loads up front by its own marks; every other tool waits for ToolSearch.
+        tools: ["ToolSearch", "WebSearch"],
+        mcpServers: { kin: { type: "http", url: "http://127.0.0.1/kin" } },
         // Only the owner's model credentials come from their settings.
         settings: {
           apiKeyHelper: "gateway-token",
@@ -158,6 +169,7 @@ it.effect.each([
           CLAUDE_CONFIG_DIR: configDir,
           ENABLE_TOOL_SEARCH: "true",
           CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+          MCP_CONNECTION_NONBLOCKING: "0",
         },
       });
       assert.deepStrictEqual(leadHooks?.PreToolUse?.length, 1);
@@ -201,12 +213,30 @@ it.effect.each([
       assert.isFalse((dreamOpened?.disallowedTools ?? []).includes("Edit"));
       assert.isDefined(leadOpened?.mcpServers?.kin);
       // A turn someone besides the owner reads can't open the memory checkout it runs in.
-      assert.deepStrictEqual(sharedOpened?.tools, ["ToolSearch"]);
+      assert.deepStrictEqual(sharedOpened?.tools, ["ToolSearch", "WebSearch"]);
       assert.isTrue(
         yield* Effect.promise(() => hookAllows(sharedOpened, "ToolSearch", { query: "chart" })),
       );
-      for (const tool of builtinTools) assert.include(sharedOpened?.disallowedTools ?? [], tool);
+      for (const tool of builtinTools.filter((name) => name !== "WebSearch"))
+        assert.include(sharedOpened?.disallowedTools ?? [], tool);
+      // No Kin turn behind the session to mark: its web search is refused too.
+      assert.strictEqual(
+        yield* Effect.promise(() => hookDenial(sharedOpened, "WebSearch", { query: "tiles" })),
+        SESSION_REFUSAL.none,
+      );
       assert.isDefined(sharedOpened?.mcpServers?.kin);
+      // An outsider's pull request's review: its own short system prompt, and no web search.
+      assert.deepStrictEqual(reviewOpened?.systemPrompt, {
+        type: "custom",
+        prompt: REVIEW_SEAT_INSTRUCTIONS,
+        snapshot: false,
+      });
+      assert.deepStrictEqual(reviewOpened?.tools, ["ToolSearch"]);
+      for (const tool of builtinTools) assert.include(reviewOpened?.disallowedTools ?? [], tool);
+      assert.strictEqual(
+        yield* Effect.promise(() => hookDenial(reviewOpened, "WebSearch", { query: "tiles" })),
+        "This review has no web search.",
+      );
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -236,6 +266,8 @@ it.effect(
         KinAgentSessionPolicy.of({
           refusal: (threadId) =>
             fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          webSearch: (threadId) =>
+            webSearchRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           delegated: (threadId) =>
             delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
@@ -287,9 +319,13 @@ it.effect(
           ),
         );
       const full = yield* open("kin:tech");
-      // Claude Code's own tools, no deny rules, the pinned gh first on PATH.
+      // Claude Code's own tools but those that wait on someone at the screen, the pinned gh first.
       assert.strictEqual(full?.tools, lead.tools);
-      assert.deepStrictEqual(full?.disallowedTools ?? [], lead.disallowedTools ?? []);
+      assert.deepStrictEqual(full?.disallowedTools, [
+        ...new Set([...(lead.disallowedTools ?? []), ...OWNER_SEAT_OFF]),
+      ]);
+      for (const kept of ["Bash", "Read", "Edit", "Write", "WebFetch", "Agent", "TaskStop"])
+        assert.notInclude(full?.disallowedTools ?? [], kept);
       // The signing gh first, then the pinned one; Claude Code's own PR footer and trailer off.
       const signing = `${stateDir}/kin/gh-sign`;
       assert.strictEqual(full?.env?.PATH, `${signing}:/kin-home/kin-tools/gh-pinned:/usr/bin`);
@@ -350,12 +386,180 @@ it.effect(
       assert.isFalse(yield* allows("Bash", shell));
       // A turn others read never gets the full session.
       const shared = yield* open("kin-shared:tech");
-      assert.deepStrictEqual(shared?.tools, ["ToolSearch"]);
+      assert.deepStrictEqual(shared?.tools, ["ToolSearch", "WebSearch"]);
+      // Its web search runs at Anthropic; the turn reads as outside-read before results arrive.
+      yield* sql`UPDATE kin_wakeups SET thread_id = 'kin-shared:tech' WHERE wakeup_id = 'wake-full'`;
+      const sharedAllows = (tool: string, input: unknown) =>
+        Effect.promise(() => hookAllows(shared, tool, input));
+      assert.isFalse(yield* sharedAllows("WebFetch", { url: "https://example.com" }));
+      assert.isFalse(yield* sharedAllows("Bash", shell));
+      assert.isTrue(yield* sharedAllows("WebSearch", { query: "tile distributors" }));
+      assert.deepStrictEqual(
+        yield* sql`SELECT source FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-full'`,
+        [{ source: "web search" }],
+      );
+      // A turn stopped because someone joined searches nothing more.
+      yield* sql`UPDATE kin_wakeups SET aborted_at = 1 WHERE wakeup_id = 'wake-full'`;
+      assert.isFalse(yield* sharedAllows("WebSearch", { query: "tile distributors" }));
     }).pipe(
       Effect.scoped,
       Effect.provide(
         Layer.mergeAll(
           ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-full-" }),
+          KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+);
+
+it.effect(
+  "two wake-ups of one agent open the same system prompt, tools and servers: the prompt cache's prefix",
+  () =>
+    Effect.gen(function* () {
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const sql = yield* SqlClient.SqlClient;
+      const memory = `${stateDir}/kin/demo-a/memory-read`;
+      yield* fs.makeDirectory(memory, { recursive: true });
+      const orgId = KinOrgId.make("org-prefix");
+      const agentId = KinAgentId.make("tech");
+      const services = Context.make(
+        KinAgentSessionPolicy,
+        KinAgentSessionPolicy.of({
+          refusal: (threadId) =>
+            fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          webSearch: (threadId) =>
+            webSearchRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          delegated: (threadId) =>
+            delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
+          agentName: (threadId) =>
+            leadNameOf(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        }),
+      ) as Context.Context<KinServices>;
+      const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
+      const base = Layer.succeed(
+        ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
+        ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
+          allocateSessionId: Effect.succeed("session"),
+          open: (input) =>
+            Effect.sync(() => opened.push(input.options)).pipe(
+              Effect.andThen(Effect.die("unused session")),
+            ),
+          forkSession: () => Effect.die("unused fork"),
+          subagentLaunchToolUseId: () => Effect.die("unused lookup"),
+          subagentModel: () => Effect.succeed(null),
+          assertComplete: Effect.void,
+        }),
+      );
+      // One wake-up: its own provider session, MCP address and token, at the clock's now.
+      const wakeUp = (threadId: string, wakeup: string) =>
+        Effect.gen(function* () {
+          const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
+          yield* runner
+            .open({
+              threadId: ThreadId.make(threadId),
+              providerSessionId: ProviderSessionId.make(`session-${wakeup}`),
+              options: ClaudeAdapterV2.makeClaudeQueryOptions({
+                modelSelection: {
+                  instanceId: ProviderInstanceId.make("claudeAgent"),
+                  model: "claude-sonnet-4-6",
+                },
+                nativeThreadId: `native-${wakeup}`,
+                resume: false,
+                cwd: memory,
+                attachmentsDir: "/attachments",
+                environment: { PATH: "/usr/bin", HOME: "/home/kin" },
+                mcpServers: {
+                  kin: {
+                    type: "http",
+                    url: `http://127.0.0.1:${wakeup.length}/kin/mcp?session=${wakeup}`,
+                    headers: { Authorization: `Bearer token-${wakeup}` },
+                  },
+                },
+              }),
+            })
+            .pipe(Effect.exit);
+          return opened.at(-1);
+        }).pipe(
+          Effect.provide(
+            claude.install(base).pipe(
+              Layer.provide(
+                Layer.succeed(KinServer, {
+                  taskCardUpdater: Layer.empty,
+                  services: Option.some(services),
+                  subscribeForViewer: Option.none(),
+                }),
+              ),
+              Layer.provide(
+                ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true })),
+              ),
+            ),
+          ),
+        );
+      const prefix = (options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions | undefined) =>
+        JSON.stringify({
+          systemPrompt: options?.systemPrompt,
+          tools: options?.tools,
+          disallowedTools: options?.disallowedTools,
+          mcpServers: Object.entries(options?.mcpServers ?? {}).map(([name, server]) => {
+            const {
+              url: _url,
+              headers: _headers,
+              ...rest
+            } = server as {
+              url?: string;
+              headers?: Record<string, string>;
+            };
+            return [name, rest];
+          }),
+        });
+      const prompts: Array<string> = [];
+      for (const threadId of [`kin:${agentId}`, `kin-shared:${agentId}`]) {
+        yield* ownerOnlyWakeup({ orgId, agentId, wakeupId: `${threadId}:first` });
+        yield* fs.writeFileString(`${memory}/notes.md`, "Ambermill invoices go out on the 1st.");
+        const first = yield* wakeUp(threadId, `first-${threadId}`);
+        // Minutes later, with new memory and new events between them.
+        yield* TestClock.adjust("3 minutes");
+        yield* fs.writeFileString(`${memory}/notes.md`, "Rhea moved invoicing to the 5th.");
+        yield* fs.writeFileString(`${memory}/clients.md`, "Orbit Dental pays late.");
+        yield* ownerOnlyWakeup({ orgId, agentId, wakeupId: `${threadId}:second` });
+        const second = yield* wakeUp(threadId, `second-${threadId}`);
+        assert.isDefined(first?.systemPrompt, threadId);
+        assert.strictEqual(prefix(second), prefix(first), threadId);
+        // Kin's tools are listed before the first request goes out (ClaudeAdapterV2 does this for
+        // resumed sessions only).
+        assert.strictEqual(first?.env?.MCP_CONNECTION_NONBLOCKING, "0", threadId);
+        const system = first?.systemPrompt;
+        prompts.push(
+          typeof system === "object" && "prompt" in system ? [system.prompt].flat().join("") : "",
+        );
+      }
+      assert.deepStrictEqual(prompts, [
+        kinInstructions("owner", "claudeAgent"),
+        kinInstructions("confined", "claudeAgent"),
+      ]);
+      // The instructions name no time, id or path: they are the same for every agent and wake-up.
+      for (const [index, text] of prompts.entries()) {
+        const seat = index === 0 ? "owner" : "confined";
+        for (const pattern of [
+          /\d{4}-\d{2}-\d{2}/,
+          /T\d{2}:\d{2}/,
+          /\d{9,}/,
+          /[0-9a-f]{8}-[0-9a-f]{4}-/i,
+          /\b[0-9A-HJKMNP-TV-Z]{26}\b/,
+          /\b[0-9a-f]{12,}\b/,
+          /(?:^|[\s"'`(])~?\/[\w.-]+\//m,
+        ])
+          assert.notMatch(text, pattern, seat);
+        for (const fact of [agentId, orgId, stateDir, memory, "session-", "native-", "token-"])
+          assert.notInclude(text, fact, seat);
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-prefix-" }),
           KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
         ).pipe(Layer.provideMerge(NodeServices.layer)),
       ),
@@ -436,6 +640,8 @@ it.effect(
         KinAgentSessionPolicy.of({
           refusal: (threadId) =>
             fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          webSearch: (threadId) =>
+            webSearchRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           delegated: (threadId) =>
             delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           toolDirectories: ["/kin-home/kin-tools/gh-pinned"],

@@ -6,7 +6,7 @@ import type {
   KinOrgId,
   KinRecordRef,
 } from "@t3tools/contracts";
-import { KinRecordId } from "@t3tools/contracts";
+import { kinDateRowLate, KinRecordId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -28,6 +28,7 @@ import {
   fieldDateAt,
   countedPayment,
   isSuggestion,
+  issuedNumber,
   iso,
   keptEntry,
   moneyDay,
@@ -38,15 +39,17 @@ import {
   toRecord,
 } from "./recordRows.ts";
 import { LISTS, parseFields } from "./lists.ts";
+import { findBankList } from "./statements/bankList.ts";
 import { allLists, isBuiltIn, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
+import { DAY_MS } from "../durations.ts";
+import type { SetAsideInvoice } from "../pulse/invoiceAsides.ts";
 
 /**
  * Read views over every list: the dates view and the Money summary, computed from stored
  * integer amounts by code. Whole for the owner; for anyone else, of what `personSees` gives them.
  */
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const DATES_CAP = 200;
 
 type DateHit = {
@@ -62,6 +65,24 @@ const order = (a: DateHit, b: DateHit) =>
   (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0) ||
   (a.field?.key ?? "").localeCompare(b.field?.key ?? "");
 
+/** An invoice nobody has issued: no money is due on it, whatever day it carries. */
+const draftInvoice = (sql: SqlClient.SqlClient) =>
+  sql`(r.register_id = 'invoices' AND r.state = 'open')`;
+
+/** The lists whose entries keep an amount, of those `asked` (all with none); never deals. */
+const moneyLists = (
+  lists: ReadonlyMap<string, ListDef>,
+  asked: ReadonlyArray<string> | undefined,
+) =>
+  [...lists.values()]
+    .filter(
+      (def) =>
+        def.amount &&
+        def.id !== "deals" &&
+        (asked === undefined || asked.length === 0 || asked.includes(def.id)),
+    )
+    .map((def) => def.id);
+
 /** The lists' own date fields with a value in `[from, to)`, read from each entry's fields. */
 const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
   orgId: KinOrgId,
@@ -72,6 +93,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
     readonly lists?: ReadonlyArray<string> | undefined;
     readonly open?: boolean | undefined;
     readonly kept?: boolean | undefined;
+    readonly money?: boolean | undefined;
     readonly viewer: KinViewer;
   },
 ) {
@@ -91,6 +113,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
       WHERE r.org_id = ${orgId} AND r.register_id = ${def.id}
         ${input.open === true ? sql`AND r.state NOT IN ('done', 'dropped')` : sql``}
         ${input.kept === true ? sql`AND ${keptEntry(sql)}` : sql``}
+        ${input.money === true ? sql`AND NOT ${draftInvoice(sql)}` : sql``}
         AND ${seenBy(sql, input.viewer)}
         AND (${sql.or(
           fields.map(
@@ -130,6 +153,8 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
     readonly open?: boolean | undefined;
     /** Only entries someone kept, as a figure counts them. */
     readonly kept?: boolean | undefined;
+    /** Only money's dates, for people's Money: lists that keep amounts, and no draft invoice. */
+    readonly money?: boolean | undefined;
     readonly offset?: number | undefined;
     readonly limit?: number | undefined;
     readonly viewer: KinViewer;
@@ -137,6 +162,9 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   now: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const lists = yield* allLists(orgId);
+  const asked = input.money === true ? moneyLists(lists, input.lists) : input.lists;
+  if (input.money === true && asked?.length === 0) return { total: 0, rows: [] };
   const where = (column: "due_at" | "date_at") =>
     sql.and([
       sql`r.org_id = ${orgId}`,
@@ -144,11 +172,12 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
       sql`r.register_id <> 'deals'`,
       sql`${sql("r")}.${sql(column)} >= ${input.from}`,
       sql`${sql("r")}.${sql(column)} < ${input.to}`,
-      ...(input.lists === undefined || input.lists.length === 0
+      ...(asked === undefined || asked.length === 0
         ? []
-        : [sql`r.register_id IN ${sql.in(input.lists)}`]),
+        : [sql`r.register_id IN ${sql.in(asked)}`]),
       ...(input.open === true ? [sql`r.state NOT IN ('done', 'dropped')`] : []),
       ...(input.kept === true ? [keptEntry(sql)] : []),
+      ...(input.money === true ? [sql`NOT ${draftInvoice(sql)}`] : []),
       seenBy(sql, input.viewer),
     ]);
   const hits = sql`SELECT r.record_id AS id, 'due' AS kind, r.due_at AS at, r.key FROM kin_records r
@@ -159,8 +188,7 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM (${hits})`;
   const limit = Math.min(Math.max(input.limit ?? 100, 1), DATES_CAP);
   const offset = Math.max(input.offset ?? 0, 0);
-  const lists = yield* allLists(orgId);
-  const fielded = yield* fieldHits(orgId, lists, input);
+  const fielded = yield* fieldHits(orgId, lists, { ...input, lists: asked });
   const page = [
     ...(yield* sql<DateHit>`SELECT id, key, kind, at FROM (${hits})
       ORDER BY at, key, kind LIMIT ${offset + limit}`),
@@ -185,10 +213,11 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   };
 });
 
-/** A suggestion's own day is no issue day: where its list names the day after a state, "Date". */
+/** A suggestion's or draft's day is no issue day: where its list names the day after a state, "Date". */
 const dayLabel = (def: ListDef, row: RecordRow) =>
   def.dateLabel === undefined ||
-  (isSuggestion(row) && def.states.some((state) => stateLabel(def, state) === def.dateLabel))
+  ((isSuggestion(row) || row.state === "open") &&
+    def.states.some((state) => stateLabel(def, state) === def.dateLabel))
     ? "Date"
     : def.dateLabel;
 
@@ -201,6 +230,98 @@ const dateRow = (row: RecordRow, def: ListDef, hit: DateHit, now: number): KinDa
   ...(hit.field === undefined ? {} : { field: hit.field.key }),
   at: iso(hit.at),
   allDay: hit.field?.allDay ?? (hit.kind === "due" ? row.dueAllDay : row.dateAllDay) === 1,
+});
+
+/**
+ * Date rows as an agent reads them: an invoice's issue and due day as one entry, at its due day
+ * when that is listed. Every other row is an entry of its own. Screens keep a row per day.
+ */
+export const datesOnce = (rows: ReadonlyArray<KinDateRow>) => {
+  const invoices = new Map<string, Array<KinDateRow>>();
+  const entries: Array<Array<KinDateRow>> = [];
+  for (const row of rows) {
+    const held = invoices.get(row.record.recordId);
+    if (row.record.list !== "invoices" || row.field !== undefined) entries.push([row]);
+    else if (held !== undefined) held.push(row);
+    else {
+      const entry = [row];
+      invoices.set(row.record.recordId, entry);
+      entries.push(entry);
+    }
+  }
+  const at = (entry: ReadonlyArray<KinDateRow>) =>
+    Date.parse((entry.find((row) => row.kind === "due") ?? entry[0]!).at);
+  return entries.toSorted((a, b) => at(a) - at(b));
+};
+
+/** An invoice entry's days: issued (a suggestion's plain "date") and due, late only once due. */
+export const invoiceDays = (
+  entry: ReadonlyArray<KinDateRow>,
+  day: (row: KinDateRow) => string,
+): {
+  readonly issued?: string;
+  readonly date?: string;
+  readonly due?: string;
+  readonly late?: true;
+} => {
+  const own = entry.find((row) => row.kind === "date");
+  const due = entry.find((row) => row.kind === "due");
+  return {
+    ...(own === undefined ? {} : own.label === "Date" ? { date: day(own) } : { issued: day(own) }),
+    ...(due === undefined ? {} : { due: day(due) }),
+    ...(due !== undefined && kinDateRowLate(due) ? { late: true as const } : {}),
+  };
+};
+export const isInvoice = (entry: ReadonlyArray<KinDateRow>) =>
+  entry[0]!.record.list === "invoices" && entry[0]!.field === undefined;
+
+/**
+ * What the bank took in `home` for each foreign expense a confirmed statement matched to one debit
+ * line, while the line's foreign amount still equals the expense's and the expense still links it as
+ * evidence: an edited expense, a removed link or an undone statement falls back to the rates. One
+ * line to one expense, both ways. `seen` filters lines as `r`.
+ */
+const chargedAtBank = Effect.fn("KinMoneyViews.chargedAtBank")(function* (
+  orgId: KinOrgId,
+  expenseIds: ReadonlyArray<string>,
+  home: string,
+  seen: ReturnType<typeof seenBy>,
+) {
+  if (expenseIds.length === 0) return new Map<string, number>();
+  const sql = yield* SqlClient.SqlClient;
+  const bank = yield* findBankList(orgId);
+  if (bank === undefined) return new Map<string, number>();
+  const rows = yield* sql<{ id: string; minor: number }>`
+    WITH m AS (
+      SELECT e.target_record_id AS id, e.bank_record_id AS bank, e.row_index AS row,
+        s.review_json AS json
+      FROM kin_bank_statement_entries e
+      JOIN kin_bank_statements s ON s.org_id = e.org_id AND s.statement_id = e.statement_id
+      WHERE e.org_id = ${orgId} AND e.action IN ('expense_paid', 'expense_linked')
+        AND s.applied_at IS NOT NULL AND s.undone_at IS NULL
+        AND (e.target_record_id IN ${sql.in(expenseIds)} OR e.bank_record_id IN (
+          SELECT o.bank_record_id FROM kin_bank_statement_entries o
+          WHERE o.org_id = ${orgId} AND o.target_record_id IN ${sql.in(expenseIds)}))
+    )
+    SELECT m.id, MAX(r.amount_minor) AS minor
+    FROM m
+    JOIN kin_records x ON x.org_id = ${orgId} AND x.record_id = m.id
+    JOIN kin_records r ON r.org_id = ${orgId} AND r.record_id = m.bank
+    WHERE m.id IN ${sql.in(expenseIds)}
+      AND (SELECT COUNT(DISTINCT o.bank) FROM m o WHERE o.id = m.id) = 1
+      AND (SELECT COUNT(DISTINCT o.id) FROM m o WHERE o.bank = m.bank) = 1
+      AND EXISTS (SELECT 1 FROM kin_record_links l WHERE l.org_id = ${orgId}
+        AND l.record_id = m.id AND l.kind = 'record' AND l.relation = 'evidence'
+        AND l.target = m.bank)
+      AND EXISTS (SELECT 1 FROM json_each(m.json, '$.statement.rows') w
+        WHERE json_extract(w.value, '$.index') = m.row
+          AND json_extract(w.value, '$.direction') = 'debit'
+          AND json_extract(w.value, '$.foreign.currency') = x.currency
+          AND json_extract(w.value, '$.foreign.amountMinor') = x.amount_minor)
+      AND r.register_id = ${bank.id} AND ${countedEntry(sql)}
+      AND r.currency = ${home} AND r.amount_minor IS NOT NULL AND ${seen}
+    GROUP BY m.id`;
+  return new Map(rows.map((one) => [one.id, Math.abs(one.minor)]));
 });
 
 /** The first instant of a month (`2026-11`) in `zone`. */
@@ -226,6 +347,8 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   now: number,
   /** For people, figures of only what all of them see, never the company's. */
   viewer: KinViewer,
+  /** People's Money lists money's dates alone ahead; an agent's read keeps every date. */
+  options: { readonly moneyDates?: boolean } = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
   const seen = seenBy(sql, viewer);
@@ -314,22 +437,38 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
 
   // Spent: paid expenses by their date, in the owner's zone.
   const expenses = yield* sql<{
+    id: string;
     minor: number;
     currency: string;
     category: string | null;
     at: number;
-  }>`SELECT r.amount_minor AS minor, r.currency, r.category, ${moneyDay(sql)} AS at
+  }>`SELECT r.record_id AS id, r.amount_minor AS minor, r.currency, r.category,
+      ${moneyDay(sql)} AS at
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND ${countedEntry(sql)} AND ${seen}
       AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${monthStart(monthOf(since), zone)}
     ORDER BY at, category`;
-  const spentRows = expenses.map((one) => ({ ...one, day: dayIn(one.at, zone) }));
+  const charged = yield* chargedAtBank(
+    orgId,
+    expenses.filter((one) => one.currency !== home).map((one) => one.id),
+    home,
+    seen,
+  );
+  const spentRows = expenses.map((one) => {
+    const bank = charged.get(one.id);
+    return {
+      ...one,
+      day: dayIn(one.at, zone),
+      ...(bank === undefined ? {} : { charged: { minor: bank, currency: home } }),
+    };
+  });
   const spentIn = (month: string) => {
     const members = spentRows.filter((one) => monthOf(one.day) === month);
     const categories = new Map<string | null, Array<KinMoney>>();
     for (const one of members)
       categories.set(one.category, [...(categories.get(one.category) ?? []), one]);
     return {
+      members,
       total: addUp(members, home),
       byCategory: [...categories]
         .map(([category, amounts]) => ({
@@ -348,7 +487,15 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
 
   const upcoming = yield* dates(
     orgId,
-    { from: now, to: now + 30 * DAY_MS, open: true, kept: true, limit: 50, viewer },
+    {
+      from: now,
+      to: now + 30 * DAY_MS,
+      open: true,
+      kept: true,
+      money: options.moneyDates,
+      limit: 50,
+      viewer,
+    },
     now,
   );
   // Suggestions in money lists, and any other with an amount: what Money's figures leave out.
@@ -382,8 +529,10 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     home,
   );
   const received = { thisMonth: receivedIn(thisMonth), lastMonth: receivedIn(lastMonth) };
-  const spent = { thisMonth: spentIn(thisMonth), lastMonth: spentIn(lastMonth) };
-  const about = (totals: ReadonlyArray<KinMoney>) => aboutTotal(totals, home, rates);
+  const { members: thisMonthSpent, ...spentThisMonth } = spentIn(thisMonth);
+  const { members: lastMonthSpent, ...spentLastMonth } = spentIn(lastMonth);
+  const spent = { thisMonth: spentThisMonth, lastMonth: spentLastMonth };
+  const about = (totals: Parameters<typeof aboutTotal>[0]) => aboutTotal(totals, home, rates);
   return {
     asOf: iso(now),
     timeZone: zone,
@@ -443,8 +592,8 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
       overdue: about(overdueTotal),
       receivedThisMonth: about(received.thisMonth),
       receivedLastMonth: about(received.lastMonth),
-      spentThisMonth: about(spent.thisMonth.total),
-      spentLastMonth: about(spent.lastMonth.total),
+      spentThisMonth: about(thisMonthSpent),
+      spentLastMonth: about(lastMonthSpent),
     },
   } satisfies KinMoneySummary;
 });
@@ -477,6 +626,14 @@ const aboutSection = (summary: KinMoneySummary) => {
   return Object.values(section).every((one) => one === undefined) ? {} : { about: section };
 };
 const SECTION_DATES = 10;
+/** A day ahead in the section: its days keyed by what its list calls each, such as `due`. */
+type SectionDate = {
+  readonly key: string;
+  readonly number?: string;
+  readonly title: string;
+  readonly list: string;
+  readonly [day: string]: string | true | undefined;
+};
 /** What the section says of its suggestions: only what the server guarantees about them. */
 const SUGGESTED_NOTE =
   "Entries an agent suggested that the owner or a co-owner hasn't kept. No figure here counts them or any payment recorded on them: none is owed, due, received or spent until it is kept.";
@@ -484,8 +641,13 @@ const SUGGESTED_NOTE =
 /**
  * The Money summary as a short block for an owner-only prompt, built by code: figures already
  * added up, so an agent quotes them and never sums. `undefined` when there is nothing to say.
+ * `setAside`: overdue invoices someone set aside until a day (`setAsideOverdue`), marked as such.
  */
-export const moneySection = (summary: KinMoneySummary, zone: string) => {
+export const moneySection = (
+  summary: KinMoneySummary,
+  zone: string,
+  setAside: ReadonlyArray<SetAsideInvoice> = [],
+) => {
   const nothing =
     summary.owed.invoices === 0 &&
     summary.received.thisMonth.length === 0 &&
@@ -496,10 +658,16 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
     (summary.suggested ?? []).length === 0;
   if (nothing) return undefined;
   const suggested = summary.suggested ?? [];
+  const upcoming = datesOnce(summary.upcoming);
+  // The total counts an invoice's two days twice wherever both are listed.
+  const entries = summary.upcomingTotal - (summary.upcoming.length - upcoming.length);
   return {
     asOf: summary.asOf,
     owedToUs: shown(summary.owed.total),
     overdue: shown(summary.owed.overdue),
+    ...(setAside.length === 0
+      ? {}
+      : { overdueSetAside: setAside.map((one) => ({ ...one, owed: shown([one.owed]) })) }),
     byClient: summary.owed.byClient.slice(0, SECTION_CLIENTS).map((client) => ({
       client: client.party === null ? "no client" : `${client.party.title} (${client.party.key})`,
       owed: shown(client.owed),
@@ -529,16 +697,21 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
       category: one.category ?? "uncategorised",
       spent: shown(one.total),
     })),
-    next30Days: summary.upcoming.slice(0, SECTION_DATES).map((row) => ({
-      key: row.record.key,
-      title: row.record.title,
-      list: row.listName,
-      [row.label.toLowerCase()]: row.allDay ? dayIn(Date.parse(row.at), zone) : row.at,
-      ...(row.record.late ? { late: true } : {}),
-    })),
-    ...(summary.upcomingTotal > SECTION_DATES
-      ? { moreDates: summary.upcomingTotal - SECTION_DATES }
-      : {}),
+    next30Days: upcoming.slice(0, SECTION_DATES).map((entry): SectionDate => {
+      const row = entry[0]!;
+      const day = (one: KinDateRow) => (one.allDay ? dayIn(Date.parse(one.at), zone) : one.at);
+      const days: Readonly<Record<string, string | true>> = isInvoice(entry)
+        ? invoiceDays(entry, day)
+        : { [row.label.toLowerCase()]: day(row), ...(kinDateRowLate(row) ? { late: true } : {}) };
+      return {
+        key: row.record.key,
+        ...issuedNumber(row.record.fields?.number),
+        title: row.record.title,
+        list: row.listName,
+        ...days,
+      };
+    }),
+    ...(entries > SECTION_DATES ? { moreDates: entries - SECTION_DATES } : {}),
     ...(suggested.length === 0
       ? {}
       : {
