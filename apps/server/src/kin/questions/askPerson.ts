@@ -49,7 +49,6 @@ import {
   DRAFT_KINDS,
   answeredEventId,
   approvalOf,
-  CHANGES_FIRST,
   decodeStoredDraft,
   DRAFT_OPTIONS,
   DRAFT_WORDS,
@@ -65,6 +64,8 @@ import {
   openFor,
   personClock,
   readQuestion,
+  redoId,
+  waitingRedrafts,
 } from "./openQuestions.ts";
 import { defaultDue, namedDue, normaliseAbout, normaliseIntent, raiseAt } from "./rules.ts";
 
@@ -124,9 +125,6 @@ const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).dige
 const CARD_KINDS: ReadonlyArray<StoredDraft["kind"]> = ["mail", "post"];
 const flat = (text: string) => text.replace(/\s+/g, " ").trim();
 const cardHolds = Schema.is(KinChoiceCardState.fields.detail);
-/** One redo of an answered draft per turn: a retry finds it. */
-const redoId = (questionId: string, wakeupId: string) =>
-  `q-${hash(`for:redo:${questionId}:${wakeupId}`).slice(0, 12)}`;
 
 /** The same thing asked of the same person: one intent, and a record in common unless one names none. */
 const askedAgain = (
@@ -316,45 +314,11 @@ export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
     (yield* ownMessages(turn, lane.value.chatId, agent.owner)).length === 0
   )
     return undefined;
-  const rows = yield* sql<{
-    questionId: string;
-    question: string;
-    about: string;
-    intent: string;
-    forChatId: KinChatId;
-    forPersonId: KinPersonId;
-    draft: string;
-  }>`SELECT q.question_id AS "questionId", q.question, q.about, q.intent,
-      q.for_chat_id AS "forChatId", q.for_person_id AS "forPersonId", q.draft_json AS draft
-    FROM kin_questions q
-    JOIN kin_agents a ON a.org_id = q.org_id AND a.agent_id = q.agent_id AND a.retired_at IS NULL
-    WHERE q.org_id = ${turn.orgId} AND q.agent_id = ${turn.agentId}
-      AND q.chat_id = ${lane.value.chatId} AND q.person_id = a.owner_person_id
-      AND q.draft_json IS NOT NULL AND q.state = 'answered' AND q.answer = ${CHANGES_FIRST}
-      AND q.approved_at IS NULL AND q.for_chat_id IS NOT NULL AND q.for_person_id IS NOT NULL
-    ORDER BY q.question_id`;
-  // A later round of the same draft replaced it, unless it is this turn's own redo of it.
-  const later = (row: (typeof rows)[number]) =>
-    sql<{ questionId: string }>`SELECT n.question_id AS "questionId" FROM kin_questions n
-      JOIN kin_questions q ON q.org_id = n.org_id AND q.question_id = ${row.questionId}
-      WHERE n.org_id = ${turn.orgId} AND n.agent_id = q.agent_id
-        AND n.for_chat_id = q.for_chat_id AND n.draft_json IS NOT NULL AND n.intent = q.intent
-        AND n.about = q.about AND n.question_id <> q.question_id AND n.asked_at >= q.closed_at
-      ORDER BY n.question_id`.pipe(
-      Effect.map((newer) =>
-        newer.some((one) => one.questionId !== redoId(row.questionId, turn.wakeupId)),
-      ),
-    );
-  const current = yield* Effect.filter(rows, (row) => Effect.map(later(row), (one) => !one));
-  const found = current.flatMap((row) =>
-    Option.toArray(decodeStoredDraft(row.draft)).flatMap((draft) => {
-      const about = row.about === "" ? [] : row.about.split(" ");
-      const same =
-        "docKey" in redraft
-          ? about.includes(redraft.docKey)
-          : draft.kind === redraft.kind && (draft.for?.partyId ?? null) === redraft.partyId;
-      return same ? [{ ...row, about, draft }] : [];
-    }),
+  const current = yield* waitingRedrafts(turn, lane.value.chatId);
+  const found = current.filter((row) =>
+    "docKey" in redraft
+      ? row.about.includes(redraft.docKey)
+      : row.draft.kind === redraft.kind && (row.draft.for?.partyId ?? null) === redraft.partyId,
   );
   return found.length === 1 ? found[0] : undefined;
 });

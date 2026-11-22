@@ -2490,7 +2490,8 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         return { wakeupId, eventId: event!.eventId };
       });
       // Rhea's redraft: a total the agent worked out, her price in lakh, and travel at INV-4's sum.
-      const REDRAFT = "Harbourline proposal: four shoots, 3 lakh a month, ₹12,00,000 in all, travel 45000";
+      const REDRAFT =
+        "Harbourline proposal: four shoots, 3 lakh a month, ₹12,00,000 in all, travel 45000";
       const proposal = (
         at: { readonly eventId: string },
         input: Partial<typeof LeadDocs.CreateInput.Type> = {},
@@ -2558,6 +2559,10 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       // While it waits on her, no draft is hers to redo: a draft put to herself is refused as ever.
       const early = yield* turnOn("rhea", chatOf("chief"), "Make it four shoots.");
       const notYet = yield* Effect.flip(askHerself(early, "Harbourline proposal: four shoots"));
+      // Her turns are told of a draft waiting on her redraft only while one does.
+      const WAITING = "# Drafts back from Changes first (not redrafted yet)";
+      const waitsOnHer = `${WAITING}\n\n- Zoya Sheikh's proposal for Harbourline Hotels (C-7): its new draft goes up with kin_ask_person and draft, or doc_create with draft; Kin puts it back on Rhea Rao's Approve card.`;
+      assert.notInclude(yield* team.promptOf(early.wakeupId, chatOf("chief")), WAITING);
       assert.strictEqual(
         notYet.message,
         "Rhea Rao is in this chat: ask them here with kin_ask. Nothing was asked.",
@@ -2581,6 +2586,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.lengthOf(yield* drafts, 1);
       yield* TestClock.adjust("1 minute");
       const words = yield* turnOn("rhea", chatOf("chief"), "Make it four shoots, 3 lakh a month.");
+      assert.include(yield* team.promptOf(words.wakeupId, chatOf("chief")), waitsOnHer);
       // Another client's proposal is another draft: today's plain card, nothing raised.
       const other = yield* proposal(words, {
         title: "Tidewater proposal",
@@ -2649,6 +2655,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       for (const bit of redrafted) assert.notInclude(herPrompt, bit);
       // A redraft in a later turn, while that one waits, matches nothing: today's plain card.
       const later = yield* turnOn("rhea", chatOf("chief"), "And add a reel.");
+      assert.notInclude(yield* team.promptOf(later.wakeupId, chatOf("chief")), WAITING);
       const plain = yield* proposal(later, {
         body: "Harbourline proposal: four shoots and a reel",
       });
@@ -2660,6 +2667,10 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       // put to Rhea herself, as the agent's instructions send a draft up.
       yield* tap(owner, redone!.questionId, "option-2", "rhea-changes-2");
       const third = yield* turnOn("rhea", chatOf("chief"), "Add a reel.");
+      assert.include(yield* team.promptOf(third.wakeupId, chatOf("chief")), waitsOnHer);
+      // Never in Zoya's own turn, while it waits on Rhea.
+      const zoyaWaits = yield* turnOn("zoya", zoyaChat, "Is the proposal done?");
+      assert.notInclude(yield* team.promptOf(zoyaWaits.wakeupId, zoyaChat), WAITING);
       const byAsk = yield* askHerself(third, "Four shoots and a reel");
       assert.strictEqual(byAsk.note, `This is ${told.slice("Not filed: this is ".length)}`);
       const [, , thirdUp] = yield* drafts;
@@ -2675,10 +2686,10 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       // Then by doc_create with draft, after her Changes first on that one.
       yield* tap(owner, byAsk.questionId, "option-2", "rhea-changes-3");
       const fourth = yield* turnOn("rhea", chatOf("chief"), "Two reels.");
-      assert.deepInclude(
-        yield* proposal(fourth, { body: "Four shoots and two reels" }),
-        { key: "", note: told },
-      );
+      assert.deepInclude(yield* proposal(fourth, { body: "Four shoots and two reels" }), {
+        key: "",
+        note: told,
+      });
       const [, , , latest] = yield* drafts;
       assert.deepInclude(latest, { state: "open", forChatId: zoyaChat, forPersonId: "zoya" });
 

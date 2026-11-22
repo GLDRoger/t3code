@@ -91,6 +91,7 @@ import {
   askedForSection,
   dueTurnText,
   openQuestionsSection,
+  redraftsSection,
   undoneTurnText,
 } from "../questions/openQuestions.ts";
 import { approvedTurnText } from "../questions/sentUpDraft.ts";
@@ -1539,6 +1540,21 @@ export class KinLeadPrompt extends Context.Service<
                   ),
                 ),
               );
+        // Only the owner's own chat with the agent holds drafts she sent back (`redoOf`).
+        const redrafts =
+          !ownerOnly || input.lane === undefined || laneChat?.kind !== "direct"
+            ? undefined
+            : yield* redraftsSection(
+                { orgId, agentId, wakeupId: input.wakeupId },
+                input.lane.chatId,
+              ).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.catch((cause) =>
+                  Effect.logWarning("Kin drafts back from Changes first unavailable", cause).pipe(
+                    Effect.as(undefined),
+                  ),
+                ),
+              );
         // The agent's own earlier lines here may say these wait; Kin's record says they don't.
         const declined =
           ownerOnly || input.lane === undefined || laneChat?.kind !== "direct"
@@ -1696,6 +1712,9 @@ export class KinLeadPrompt extends Context.Service<
           ...(askedFor === undefined
             ? []
             : [sharedPart(askedFor.heading), sharedPart(askedFor.body)]),
+          ...(redrafts === undefined
+            ? []
+            : [ownerPart(redrafts.heading), ownerPart(redrafts.body)]),
           ...(declined.length === 0
             ? []
             : [

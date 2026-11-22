@@ -549,6 +549,58 @@ export const draftCardsAbout = Effect.fn("KinQuestions.draftCardsAbout")(functio
     ORDER BY widget_id`;
 });
 
+/** One redo of an answered draft per turn: a retry finds it. */
+export const redoId = (questionId: string, wakeupId: string) =>
+  `q-${hash(`for:redo:${questionId}:${wakeupId}`).slice(0, 12)}`;
+
+/**
+ * The teammates' drafts the agent's owner answered Changes first on in this chat that no later
+ * round replaced: each waits on her redraft (`redo`). A later round is this turn's own redo of it
+ * only on a retry, so that one still waits.
+ */
+export const waitingRedrafts = Effect.fn("KinQuestions.waitingRedrafts")(function* (
+  turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
+  chatId: KinChatId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    questionId: string;
+    question: string;
+    about: string;
+    intent: string;
+    forChatId: KinChatId;
+    forPersonId: KinPersonId;
+    draft: string;
+  }>`SELECT q.question_id AS "questionId", q.question, q.about, q.intent,
+      q.for_chat_id AS "forChatId", q.for_person_id AS "forPersonId", q.draft_json AS draft
+    FROM kin_questions q
+    JOIN kin_agents a ON a.org_id = q.org_id AND a.agent_id = q.agent_id AND a.retired_at IS NULL
+    WHERE q.org_id = ${turn.orgId} AND q.agent_id = ${turn.agentId}
+      AND q.chat_id = ${chatId} AND q.person_id = a.owner_person_id
+      AND q.draft_json IS NOT NULL AND q.state = 'answered' AND q.answer = ${CHANGES_FIRST}
+      AND q.approved_at IS NULL AND q.for_chat_id IS NOT NULL AND q.for_person_id IS NOT NULL
+    ORDER BY q.question_id`;
+  const later = (row: (typeof rows)[number]) =>
+    sql<{ questionId: string }>`SELECT n.question_id AS "questionId" FROM kin_questions n
+      JOIN kin_questions q ON q.org_id = n.org_id AND q.question_id = ${row.questionId}
+      WHERE n.org_id = ${turn.orgId} AND n.agent_id = q.agent_id
+        AND n.for_chat_id = q.for_chat_id AND n.draft_json IS NOT NULL AND n.intent = q.intent
+        AND n.about = q.about AND n.question_id <> q.question_id AND n.asked_at >= q.closed_at
+      ORDER BY n.question_id`.pipe(
+      Effect.map((newer) =>
+        newer.some((one) => one.questionId !== redoId(row.questionId, turn.wakeupId)),
+      ),
+    );
+  const current = yield* Effect.filter(rows, (row) => Effect.map(later(row), (one) => !one));
+  return current.flatMap((row) =>
+    Option.toArray(decodeStoredDraft(row.draft)).map((draft) => ({
+      ...row,
+      about: row.about === "" ? [] : row.about.split(" "),
+      draft,
+    })),
+  );
+});
+
 /** Whether a card asks a question for another chat: its tap answers there, not here. */
 export const askedForCard = Effect.fn("KinQuestions.askedForCard")(function* (
   orgId: KinOrgId,
@@ -1846,6 +1898,27 @@ export const askedForSection = Effect.fn("KinQuestions.askedForSection")(functio
       "Each waits on its person, with no default. When one answers, Kin says so here and wakes you to carry on; until then say it is with them, and don't ask again. Withdraw one with kin_ask_close when it no longer stands.",
       ...lines,
     ].join("\n"),
+  };
+});
+
+/**
+ * In the owner's own turn in her chat with the agent, the drafts there that wait on her redraft
+ * (`waitingRedrafts`), so a fresh turn knows the redo's way back up.
+ */
+export const redraftsSection = Effect.fn("KinQuestions.redraftsSection")(function* (
+  turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
+  chatId: KinChatId,
+) {
+  const waiting = yield* waitingRedrafts(turn, chatId);
+  if (waiting.length === 0) return undefined;
+  return {
+    heading: "# Drafts back from Changes first (not redrafted yet)",
+    body: waiting
+      .map(({ draft }) => {
+        const party = draft.for === null ? "" : ` for ${draft.for.title} (${draft.for.key})`;
+        return `- ${draft.names.asker}'s ${DRAFT_WORDS[draft.kind]}${party}: its new draft goes up with kin_ask_person and draft, or doc_create with draft; Kin puts it back on ${draft.names.owner}'s Approve card.`;
+      })
+      .join("\n"),
   };
 });
 
