@@ -1,5 +1,6 @@
 import type { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { seenBy, type KinViewer } from "../work/teamView.ts";
 
@@ -271,6 +272,8 @@ export const looksLikeRecordReference = (value: string) =>
 export const sectionOfBuiltInKey = (key: string) =>
   /^(?:C|CT|P|M|DL)-/.test(key.trim().toUpperCase()) ? sectionOfKey(key) : null;
 
+const encodeReferences = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+
 // Exactly the key or the unambiguous displayed number; a row outside the viewer looks absent.
 export const resolveSections = Effect.fn("KinShell.resolveSections")(function* (
   orgId: KinOrgId,
@@ -287,7 +290,7 @@ export const resolveSections = Effect.fn("KinShell.resolveSections")(function* (
     references.size === 0
       ? []
       : yield* sql<Row>`
-    WITH wanted AS (SELECT value FROM json_each(${JSON.stringify([...references])}))
+    WITH wanted AS (SELECT value FROM json_each(${yield* encodeReferences([...references])}))
     SELECT r.key, json_extract(r.fields_json, '$.number') AS number, ${registerSectionColumns(sql)},
       ${seenBy(sql, viewer)} AS visible
     FROM kin_records r

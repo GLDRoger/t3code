@@ -1,5 +1,4 @@
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
-import { viewOf } from "../work/leadWork.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -13,7 +12,7 @@ import * as McpToolPolicy from "./toolPolicy.ts";
 import { McpInvocationContext, type McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { KinServer, type Services } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { SHARED_REFUSAL } from "../lead/Audience.ts";
+import { effectiveAudience, SHARED_REFUSAL, turnPeople } from "../lead/Audience.ts";
 import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { REVIEW_REFUSAL, reviewToolAllowed } from "../lead/outsideReview.ts";
@@ -243,12 +242,11 @@ const sectionAdmitted = McpToolPolicy.toolCallRefusal((name, args) => {
       Effect.gen(function* () {
         const shell = yield* KinShell.get(turn.orgId);
         if (shell.sections.every(({ on }) => on)) return undefined;
-        const team = references.size === 0 ? undefined : yield* viewOf(turn);
-        const sectionOfReference = yield* resolveSections(
-          turn.orgId,
-          references,
-          team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
-        );
+        const viewer =
+          references.size === 0 || (yield* effectiveAudience(turn)) === "owner_only"
+            ? KIN_OWNER_LEVEL
+            : viewerOfPeople((yield* turnPeople(turn))?.people ?? []);
+        const sectionOfReference = yield* resolveSections(turn.orgId, references, viewer);
         const off =
           tool !== null && !KinShell.sectionOn(shell, tool)
             ? tool
