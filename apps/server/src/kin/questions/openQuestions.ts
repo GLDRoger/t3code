@@ -1096,6 +1096,7 @@ const withdraw = Effect.fn("KinQuestions.withdraw")(function* (
   closedAt: number,
   chat: Pick<KinChatService["Service"], "closeReplaced"> &
     Partial<Pick<KinChatService["Service"], "notice">>,
+  title = "Closed",
 ) {
   const sql = yield* SqlClient.SqlClient;
   for (const row of rows) {
@@ -1107,7 +1108,7 @@ const withdraw = Effect.fn("KinQuestions.withdraw")(function* (
       yield* chat.closeReplaced({
         orgId,
         widgetId: KinWidgetId.make(widgetId),
-        outcome: { title: "Closed", text: reason(row) },
+        outcome: { title, text: reason(row) },
       });
     // The chat it was asked for hears once that no answer is coming.
     if (row.forChatId !== null && chat.notice !== undefined)
@@ -1180,6 +1181,8 @@ export const closeQuestionsAbout = Effect.fn("KinQuestions.closeAbout")(function
     readonly sparing: ReadonlyArray<string>;
     readonly text: string;
     readonly closedAt: number;
+    /** The card's outcome title: a task's says it closed with its task. */
+    readonly title?: string;
   },
   chat: Pick<KinChatService["Service"], "closeReplaced"> &
     Partial<Pick<KinChatService["Service"], "notice">>,
@@ -1195,7 +1198,7 @@ export const closeQuestionsAbout = Effect.fn("KinQuestions.closeAbout")(function
     ORDER BY q.asked_at, q.question_id`)
     .map(toRow)
     .filter((row) => !input.sparing.some((id) => id === row.widgetId || id === row.raiseWidgetId));
-  yield* withdraw(input.orgId, rows, () => input.text, input.closedAt, chat);
+  yield* withdraw(input.orgId, rows, () => input.text, input.closedAt, chat, input.title);
   return rows.length;
 });
 

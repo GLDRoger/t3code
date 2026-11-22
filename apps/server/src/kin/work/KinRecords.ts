@@ -144,6 +144,8 @@ import {
   viewSees,
 } from "./teamView.ts";
 
+/** A follow-up's title: the leftover's first line, this long at most; the rest goes in its notes. */
+const LEFTOVER_TITLE = 160;
 /** Who is writing and how: a lead in its turn, the owner from a client, or Kin from an event. */
 export type Writer = {
   readonly actor:
@@ -274,6 +276,11 @@ export type Patch = Partial<Omit<Fields, "owner">> & {
   readonly owner?: KinWorkPrincipal;
   /** The holder gives it back to `owner`, whoever gave it to them, in their own words. */
   readonly handedBack?: { readonly note: string | null };
+  /**
+   * What is left of a task this change closes done: Kin files it as a follow-up for the same
+   * holder, client and project, linked to this one, in the same write.
+   */
+  readonly leftover?: string;
   /** What a field's old and new ids read as now, kept on its history line (`FieldChange.names`). */
   readonly names?: Readonly<Record<string, NonNullable<FieldChange["names"]>>>;
   /**
@@ -1995,7 +2002,22 @@ const make = Effect.gen(function* () {
           wanted !== row.state &&
           (yield* sql`SELECT 1 FROM kin_issued_numbers
             WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`).length === 0;
-        const state = unissued ? row.state : wanted;
+        // An agent's done on a task with an open card about it waits on that card's person; a
+        // card this very write settles (`answering`) is no longer open.
+        const spared = writer.answering?.length ? writer.answering : [""];
+        const [carded] =
+          list === "work" &&
+          wanted === "done" &&
+          !isClosed(row.state) &&
+          (writer.actor._tag === "agent" || writer.codingAgentKey !== undefined)
+            ? yield* sql<{ personId: string }>`SELECT person_id AS "personId" FROM kin_questions
+                WHERE org_id = ${orgId} AND state = 'open'
+                  AND (' ' || about || ' ') LIKE ${`% ${row.key} %`}
+                  AND (widget_id IS NULL OR widget_id NOT IN ${sql.in(spared)})
+                  AND (raise_widget_id IS NULL OR raise_widget_id NOT IN ${sql.in(spared)})
+                ORDER BY asked_at, question_id LIMIT 1`
+            : [];
+        const state = unissued ? row.state : carded !== undefined ? "waiting" : wanted;
         // Only who may keep one keeps a suggestion, and only an owner-level person takes it back;
         // anyone else's `confirmed` changes nothing, so an agent's slip ack stays only that.
         const keeping =
@@ -2058,9 +2080,11 @@ const make = Effect.gen(function* () {
         const waitingOn =
           state !== "waiting"
             ? null
-            : patch.waitingOn !== undefined
-              ? patch.waitingOn
-              : before.waitingOn;
+            : carded !== undefined
+              ? ({ _tag: "person", personId: KinPersonId.make(carded.personId) } as const)
+              : patch.waitingOn !== undefined
+                ? patch.waitingOn
+                : before.waitingOn;
         if (waitingOn !== null && !samePrincipal(waitingOn, before.waitingOn))
           yield* ownerExists(orgId, waitingOn, "to wait on");
         if (
@@ -2376,7 +2400,12 @@ const make = Effect.gen(function* () {
           );
         }
         // Kept, a suggestion given to an agent is given now, once: not if its work already began.
-        if (keeping && reassigned === undefined && !isClosed(state) && before.owner._tag === "agent")
+        if (
+          keeping &&
+          reassigned === undefined &&
+          !isClosed(state) &&
+          before.owner._tag === "agent"
+        )
           if (!(yield* alreadyGiven(orgId, row.recordId, before.owner.agentId)))
             yield* wakeLead(
               orgId,
@@ -2408,7 +2437,9 @@ const make = Effect.gen(function* () {
         // A lead never keeps working an open entry a person closed or took from it; a suggestion
         // nobody kept was never its work.
         const withdrawnFrom: Principal | undefined =
-          !isSuggestion(row) && !isClosed(row.state) && (isClosed(state) || reassigned !== undefined)
+          !isSuggestion(row) &&
+          !isClosed(row.state) &&
+          (isClosed(state) || reassigned !== undefined)
             ? before.owner
             : undefined;
         // Told only when the person is the lead's owner.
@@ -2427,6 +2458,25 @@ const make = Effect.gen(function* () {
         if (updated === undefined) return yield* unavailable;
         if (!isClosed(row.state) && isClosed(updated.state))
           yield* spawnNext(orgId, writer, updated);
+        const left = patch.leftover?.trim() ?? "";
+        if (list === "work" && left !== "" && updated.state === "done" && row.state !== "done")
+          yield* insert(
+            orgId,
+            writer,
+            {
+              originKey: `leftover:${row.recordId}:${rev}`,
+              title: left.split("\n")[0]!.slice(0, LEFTOVER_TITLE),
+              ...(left.length > LEFTOVER_TITLE || left.includes("\n") ? { notes: left } : {}),
+              owner: before.owner,
+              partyId: row.partyId,
+              projectId: row.projectId,
+              ...(isSuggestion(row) ? { confirmed: false } : {}),
+              links: [
+                { kind: "record", target: row.recordId, relation: "relates", label: row.key },
+              ],
+            },
+            { wake: true },
+          );
         return updated;
       }),
     );

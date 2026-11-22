@@ -1873,6 +1873,51 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect("closing a task with work left files that work as a linked follow-up, once", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
+    const client = (yield* records.create(orgId, ownerWrites, {
+      list: "clients",
+      originKey: "client",
+      title: "Invented Foundry",
+      owner: { _tag: "person", personId: ownerId },
+    })).row;
+    const task = (yield* records.create(orgId, ownerWrites, {
+      originKey: "invoices",
+      title: "Invented: link the old invoices",
+      owner: toLead,
+      partyId: client.recordId,
+    })).row;
+    const asLead = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
+    const closed = yield* records.update(orgId, asLead, task.key, {
+      state: "done",
+      leftover: "Link the two December invoices by hand",
+    });
+    assert.strictEqual(closed.state, "done");
+    const follow = () =>
+      sql<{ key: string; owner: string; party: string | null; state: string; link: string }>`
+        SELECT r.key, r.owner_id AS owner, r.party_id AS party, r.state, l.target AS link
+        FROM kin_records r JOIN kin_record_links l ON l.org_id = r.org_id AND l.record_id = r.record_id
+        WHERE r.org_id = ${orgId} AND r.title = 'Link the two December invoices by hand'
+        ORDER BY r.key`;
+    const [made] = yield* follow();
+    assert.deepInclude(made, {
+      owner: lead,
+      party: client.recordId,
+      state: "open",
+      link: task.recordId,
+    });
+    // Closed again after a reopen with nothing left, or retried: no second follow-up.
+    yield* records.update(orgId, asLead, task.key, {
+      state: "done",
+      leftover: "Link the two December invoices by hand",
+    });
+    assert.lengthOf(yield* follow(), 1);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "the list filters on not late, due after, category and side, and pages keep their time",
   () =>

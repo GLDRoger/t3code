@@ -68,11 +68,12 @@ export const closeSubject = Effect.fn("KinOpen.closeSubject")(function* (
       ...receipts.map((one) => one.widgetId),
     ]),
   ].filter((widgetId) => !input.sparing.includes(widgetId));
+  const title = input.registerId === "work" ? "Closed with its task" : "Closed";
   yield* closeQuestionsAbout(
-    { orgId, key, cards, sparing: input.sparing, text, closedAt: now },
+    { orgId, key, cards, sparing: input.sparing, text, closedAt: now, title },
     chat,
   );
-  const outcome = { title: "Closed", text };
+  const outcome = { title, text };
   for (const widgetId of new Set([...asks, ...cards]))
     yield* chat.closeReplaced({ orgId, widgetId: KinWidgetId.make(widgetId), outcome });
 });

@@ -1,4 +1,10 @@
-import { KinChatError, type KinOrgId, type KinPersonId, KinWidgetId } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinChatError,
+  type KinOrgId,
+  type KinPersonId,
+  KinWidgetId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -63,6 +69,8 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
     },
     yield* KinChatService,
   );
+  if (input.plan === undefined && input.via === "tap" && input.option.kind === "yes")
+    yield* chosenWork(input);
   const currency = yield* answerCurrencyCard({
     orgId: input.orgId,
     widgetId: input.widget.widgetId,
@@ -153,6 +161,62 @@ const tasksReread = (orgId: KinOrgId) =>
       Effect.logWarning("Kin couldn't tell Tasks to read again", { cause }),
     ),
   );
+
+/** A task's title from a card's question and the chosen option: at most this long. */
+const CHOSEN_TITLE = 160;
+
+/**
+ * Work an owner-level person chose on an agent's card is tracked, in the tap's transaction: a task
+ * of that agent's the card is about stops waiting on them (back open if it was closed); with none,
+ * Kin makes one for the agent from the card's question and the option. The tap itself wakes the agent, so this
+ * write wakes nobody. Only an option marked yes starts work; a draft's Approve or an option with
+ * its own action makes nothing here.
+ */
+const chosenWork = Effect.fn("KinCardAnswers.chosenWork")(function* (
+  input: Parameters<ChoiceAnswerHandler>[0],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [question] = yield* sql<{
+    questionId: string;
+    agentId: string;
+    question: string;
+    intent: string;
+    about: string;
+  }>`SELECT question_id AS "questionId", agent_id AS "agentId", question, intent, about
+    FROM kin_questions
+    WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND state = 'answered'
+      AND (widget_id = ${input.widget.widgetId} OR raise_widget_id = ${input.widget.widgetId})
+      AND answer = ${input.option.label} AND closed_at = ${input.now} AND draft_json IS NULL
+    ORDER BY question_id LIMIT 1`;
+  if (question === undefined || question.intent.trim() === "") return;
+  if (!(yield* ownerLevel(input.orgId, input.personId))) return;
+  const records = yield* KinRecords;
+  const writer = { actor: { _tag: "person", personId: input.personId }, via: "owner" } as const;
+  const keys = question.about === "" ? [] : question.about.split(" ");
+  const held =
+    keys.length === 0
+      ? []
+      : yield* sql<{ key: string; state: string; waitingOnId: string | null }>`SELECT key, state,
+            waiting_on_id AS "waitingOnId" FROM kin_records
+          WHERE org_id = ${input.orgId} AND register_id = 'work' AND key IN ${sql.in(keys)}
+            AND owner_kind = 'agent' AND owner_id = ${question.agentId} AND state <> 'dropped'
+          ORDER BY key`;
+  if (held.length > 0) {
+    for (const task of held)
+      if (
+        task.state === "done" ||
+        (task.state === "waiting" && task.waitingOnId === input.personId)
+      )
+        yield* records.update(input.orgId, writer, task.key, { state: "open" });
+    return;
+  }
+  const asked = question.question.trim().replace(/[?？]+$/u, "");
+  yield* records.create(input.orgId, writer, {
+    originKey: `chosen:${question.questionId}`,
+    title: `${asked}: ${input.option.label}`.slice(0, CHOSEN_TITLE),
+    owner: { _tag: "agent", agentId: KinAgentId.make(question.agentId) },
+  });
+});
 
 /** Saves the answer to memory once the tap commits, when the owner or a co-owner gave it. */
 const saveDecision = Effect.fn("KinCardAnswers.saveDecision")(function* (
