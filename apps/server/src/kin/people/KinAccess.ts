@@ -61,6 +61,8 @@ export const ownerLevelAsked = Effect.fn("KinAccess.ownerLevelAsked")(function* 
   const rows = yield* sql<{ direct: number }>`SELECT COALESCE(
       (e.tag IN ('chat.message', 'widget.action') AND json_extract(e.json, '$.origin') IS NULL
         AND m.author_kind = 'human' AND m.chat_id = json_extract(e.json, '$.chatId')
+        -- Kin's copy of group words (KinHandoff.takePrivate) was asked among others, not here.
+        AND COALESCE(m.client_message_id, '') NOT LIKE 'send:private:%'
         AND ${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))})
       OR (e.tag = 'record.changed' AND ${sql.literal(OWN_TASK_ACT)}), 0) AS direct
     FROM kin_events e
