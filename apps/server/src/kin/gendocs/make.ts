@@ -243,14 +243,15 @@ const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, reci
   if ("error" in assembled) return yield* assembled.error;
   // The logo's bytes are part of what was rendered, though the template sees only its path.
   // India's GST leaves the hash as it was before other taxes, so its documents read as unchanged.
+  const plainGst = gathered.tax._tag === "gst" && gathered.tax.notRegistered === undefined;
   const inputsHash = sha256(
     canonical(
-      gathered.logo === null && gathered.tax._tag === "gst"
+      gathered.logo === null && plainGst
         ? assembled.inputs
         : {
             inputs: assembled.inputs,
             ...(gathered.logo === null ? {} : { logo: gathered.logo.sha256 }),
-            ...(gathered.tax._tag === "gst" ? {} : { tax: gathered.tax }),
+            ...(plainGst ? {} : { tax: gathered.tax }),
           },
     ),
   );

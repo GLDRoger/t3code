@@ -50,7 +50,14 @@ import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { heldUntil } from "../triggers/quietHold.ts";
 import { ownerLevelAsked, ownerLevelPeople } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
-import { countryFirst, countryRefusal, homeCurrency, isCountryFirst } from "./companyProfile.ts";
+import {
+  countryFirst,
+  countryRefusal,
+  homeCurrency,
+  isCountryFirst,
+  notRegisteredFact,
+  readProfile,
+} from "./companyProfile.ts";
 import { campaignsNamed, partyPage, projectDetail, sourceShown } from "./crm.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { fold, matchName } from "./nameMatch.ts";
@@ -432,6 +439,8 @@ export const GetResult = Schema.Struct({
   ),
   /** An invoice's or client's: how far Kin sees the bank, for whether money arrived. */
   bank: Schema.optional(BankAnswer),
+  /** An invoice, quote or client read by the owner's agent: the company isn't registered for its tax. */
+  taxNote: Schema.optional(Schema.String),
   /**
    * A client's: open Work entries each side owes (counts), and the money it owes on issued
    * invoices, by the rule Money and the pulse use (overdue is past its due day).
@@ -2276,6 +2285,10 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   );
   const page = list === "clients" ? yield* partyPage(row, now, 0, viewer) : undefined;
   const project = list === "projects" ? yield* projectDetail(row, now, viewer) : undefined;
+  const taxNote =
+    team === undefined && (list === "invoices" || list === "quotes" || list === "clients")
+      ? notRegisteredFact(yield* readProfile(lead.orgId))
+      : undefined;
   const specChanged = list === "work" && (yield* taskSpecChanged(row, viewer));
   const goal =
     list === "goals"
@@ -2347,6 +2360,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     ...(list === "invoices" || page !== undefined
       ? { bank: bankAnswer(yield* bankKnown(lead.orgId)) }
       : {}),
+    ...(taxNote === undefined ? {} : { taxNote }),
     notes: detail.notes,
     ...(assignedBy === undefined ? {} : { assignedBy }),
     links: (team === undefined
