@@ -884,6 +884,25 @@ export const KinChatMembersResult = Schema.Struct({
   members: Schema.Array(Schema.Struct({ ...KinChatMember.fields, displayName: KinTrimmedText })),
 });
 export type KinChatMembersResult = typeof KinChatMembersResult.Type;
+/**
+ * Other agents a chat's messages were handed to, while that work is queued or running. Each
+ * names its agent and the chat it runs in (null when the caller isn't in that chat).
+ */
+export const KinChatWorkingResult = Schema.Struct({
+  handoffs: Schema.Array(
+    Schema.Struct({
+      agentId: KinAgentId,
+      chatId: Schema.NullOr(KinChatId),
+      // Null while queued; a running one can be stopped by its wake-up.
+      wakeupId: Schema.NullOr(KinWakeupId),
+      state: Schema.Literals(["queued", "running"]),
+      // The asking message's opening words, which the caller can already read in this chat.
+      asked: KinText.check(Schema.isMaxLength(80)),
+      since: IsoDateTime,
+    }),
+  ),
+});
+export type KinChatWorkingResult = typeof KinChatWorkingResult.Type;
 export const KinGroupAddMemberInput = Schema.Struct({ chatId: KinChatId, principal: KinPrincipal });
 export type KinGroupAddMemberInput = typeof KinGroupAddMemberInput.Type;
 export const KinGroupRemoveMemberInput = Schema.Struct({
@@ -1068,6 +1087,7 @@ export const KIN_CHAT_WS_METHODS = {
   chatsPin: "kin.chats.pin",
   chatsClear: "kin.chats.clear",
   chatMembers: "kin.chat.members",
+  chatWorking: "kin.chat.working",
   chatSubscribe: "kin.chat.subscribe",
   chatHistory: "kin.chat.history",
   messagesSend: "kin.messages.send",
@@ -1118,6 +1138,11 @@ export const KinChatRpcs = [
     success: KinChatMembersResult,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatWorking, {
+    payload: KinChatMembersInput,
+    success: KinChatWorkingResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
   Rpc.make(KIN_CHAT_WS_METHODS.chatSubscribe, {
     payload: KinChatSubscribeInput,
     success: KinChatStreamEvent,
@@ -1166,6 +1191,8 @@ export const KIN_CHAT_RPC_SCOPES = {
   [KIN_CHAT_WS_METHODS.chatsClear]: AuthKinChatScope,
   // Names of the people and leads in a chat the caller is in.
   [KIN_CHAT_WS_METHODS.chatMembers]: AuthKinChatScope,
+  // What a chat the caller is in handed to other agents; membership is checked per chat.
+  [KIN_CHAT_WS_METHODS.chatWorking]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatSubscribe]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatHistory]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.messagesSend]: AuthKinChatScope,
