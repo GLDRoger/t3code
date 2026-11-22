@@ -2676,6 +2676,10 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       // Then by doc_create with draft, from her words alone while that card still waits on her:
       // her redraft is her Changes first said in words, as closing it so is. No turn in Zoya's chat.
       const fourth = yield* turnOn("rhea", chatOf("chief"), "Two reels.");
+      assert.include(
+        yield* team.promptOf(fourth.wakeupId, chatOf("chief")),
+        "Zoya Sheikh's proposal: a change they ask for to it is its redraft, which Kin puts back on their card",
+      );
       assert.deepInclude(yield* proposal(fourth, { body: "Four shoots and two reels" }), {
         key: "",
         note: told,
