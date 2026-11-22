@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   type KinCheckIn,
@@ -41,7 +42,11 @@ import * as KinSchedules from "./kinSchedules.ts";
 import { nativeScheduler } from "./kinSchedules.testkit.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
-import { KinAgentId, KinMemoryItemId } from "@t3tools/contracts";
+import * as HostCare from "../host/KinHostCare.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
+import * as ProcessRunner from "../../processRunner.ts";
+import * as ServerConfig from "../../config.ts";
+import { KinAgentId, KinEventId, KinMemoryItemId } from "@t3tools/contracts";
 
 const decodeCard = Schema.decodeUnknownSync(KinScheduledTaskCard);
 const task: MemoryItemHead = item("sch-prs", {
@@ -67,7 +72,10 @@ const identity = Layer.mock(KinIdentity)({
 /** Kin's consumer over the real native scheduler; `recorded` holds what would be bare threads. */
 const harness = (
   projects?: Set<string>,
-  routine: Layer.Layer<never> | Layer.Layer<RoutineContent.KinRoutineContent> = Layer.empty,
+  routine:
+    | Layer.Layer<never>
+    | Layer.Layer<RoutineContent.KinRoutineContent>
+    | Layer.Layer<KinHostCare> = Layer.empty,
 ) => {
   const recorded = {
     launches: [] as ThreadLaunchService.ThreadLaunchInput[],
@@ -177,6 +185,80 @@ it.effect("a scheduled task wakes the lead at its time and its card records the 
       ["Three PRs are open on acme/api. #41 waits on Bob's review."],
     );
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a run whose time passes while Kin's computer is in trouble says why once, ringing no one again",
+  () => {
+    const refreshed: Array<string> = [];
+    const care = Layer.mock(KinHostCare)({
+      host: true,
+      causeFor: () => Effect.succeed({ cause: "signin" as const, told: true }),
+      refresh: (org) => Effect.sync(() => void refreshed.push(org)),
+    });
+    return Effect.gen(function* () {
+      yield* setup();
+      yield* tick(tuesday);
+      assert.lengthOf(yield* runs(), 1);
+      // Signed out the whole time: the run's wait passes before any turn could start.
+      yield* TestClock.setTime(tuesday + LeadDelivery.DELIVERY_DEADLINE_MS.scheduled_task + 1);
+      yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+      const sql = yield* SqlClient.SqlClient;
+      const said = yield* sql<{
+        body: string;
+        silent: number;
+      }>`SELECT body, silent FROM kin_messages
+      WHERE org_id = ${orgId} AND chat_id = 'chat-a' AND message_id LIKE 'kin-run-failed:%'`;
+      assert.deepStrictEqual(said, [
+        {
+          body: '"Open PRs digest" didn\'t run: its AI account is signed out.',
+          silent: 1,
+        },
+      ]);
+      assert.deepStrictEqual(refreshed, [orgId]);
+      yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_messages WHERE message_id LIKE 'kin-run-failed:%'`,
+        1,
+      );
+    }).pipe(Effect.provide(harness(undefined, care).layer));
+  },
+);
+
+it.effect(
+  "a run held by a trouble says on its card that it waits, and why, until it is let go",
+  () => {
+    // Nothing on this computer runs a command: it isn't a Kin host.
+    const runner = Layer.succeed(
+      ProcessRunner.ProcessRunner,
+      ProcessRunner.ProcessRunner.of({ run: () => Effect.die("no commands here") }),
+    );
+    const care = HostCare.layerWithoutRunner.pipe(
+      Layer.provide(runner),
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-scheduled-held-" })),
+      Layer.provide(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      yield* setup();
+      yield* tick(tuesday);
+      const [run] = yield* runs();
+      assert.include((yield* card()).state.lastRun, { status: "running" });
+      const hostCare = yield* KinHostCare;
+      yield* hostCare.failed({
+        orgId,
+        agentId: KinAgentId.make(run!.agentId),
+        cause: "signin",
+        eventIds: [KinEventId.make(run!.eventId)],
+      });
+      assert.deepInclude((yield* card()).state.lastRun, {
+        status: "running",
+        note: "its AI account is signed out",
+      });
+      // The agent works again: its held run is let go, and the card no longer says it waits.
+      yield* hostCare.succeeded(orgId, KinAgentId.make(run!.agentId));
+      assert.notProperty((yield* card()).state.lastRun, "note");
+    }).pipe(Effect.provide(care.pipe(Layer.provideMerge(harness().layer))));
+  },
 );
 
 it.effect("Pause stops scheduled runs until Resume", () =>
