@@ -147,6 +147,8 @@ export const RelayResult = Schema.Struct({
 type PostTo = KinLevelGate["Service"]["postTo"];
 
 const NOTHING = "Nothing was passed on.";
+/** What a hand-off or relay sent after an outside read tells the sending agent. */
+const asRequest = (source: string) => ` It went as a request, with its source (${source}).`;
 /** An urgent message's word on what it withdrew (`urgentNow`), so anything unrelated is sent again. */
 const replacedLine = (name: string, replaced: number | undefined) =>
   replaced === undefined || replaced === 0
@@ -948,6 +950,7 @@ const make = Effect.gen(function* () {
     // Words sent after the turn read outside text say so wherever they are drawn as someone's.
     const read = yield* outsideStamp(ctx).pipe(access);
     const afterReading = read === undefined ? {} : { afterReading: describeOutside(read) };
+    const sentAs = read === undefined ? "" : asRequest(describeOutside(read));
     if ((yield* effectiveAudience(ctx).pipe(access)) === "owner_only") {
       const direct = { chatId: theirChat };
       // Whose words these are: the one person the turn acts for, drawn as sent by them.
@@ -983,7 +986,7 @@ const make = Effect.gen(function* () {
           (isHeld(posted)
             ? `${heldUntil(to.name, posted)}; Kin delivers it in their chat with you then. Tell the asker they'll have it then; their answer arrives there.`
             : `Sent in ${to.name}'s chat with you; their answer arrives there.`)
-        }${isHeld(posted) ? "" : replacedLine(to.name, posted.replaced)}`,
+        }${isHeld(posted) ? "" : replacedLine(to.name, posted.replaced)}${sentAs}`,
       };
     }
     // A teammate's turn: their request or their words, to anyone in the company.
@@ -1077,9 +1080,10 @@ const make = Effect.gen(function* () {
           return {
             to: to.name,
             sent: true as const,
-            note:
+            note: `${
               unseen ??
-              `${heldUntil(to.name, { ...held, at })}; Kin delivers it then, waiting on them in their chat with you. Tell ${who?.name ?? "the asker"} it reaches ${to.name} then; the answer comes back through you.`,
+              `${heldUntil(to.name, { ...held, at })}; Kin delivers it then, waiting on them in their chat with you. Tell ${who?.name ?? "the asker"} it reaches ${to.name} then; the answer comes back through you.`
+            }${sentAs}`,
           };
         }
         yield* chat.notice({
@@ -1098,7 +1102,7 @@ const make = Effect.gen(function* () {
           note: `${
             unseen ??
             `It waits on ${to.name} in their chat with you, quoted as ${who?.name ?? "the asker"}'s words. Tell them it is with ${to.name}; the answer comes back through you.`
-          }${replacedLine(to.name, replaced)}`,
+          }${replacedLine(to.name, replaced)}${sentAs}`,
         };
       }),
     );
@@ -1405,7 +1409,15 @@ const make = Effect.gen(function* () {
         yield* stampEvent(ctx.orgId, `handoff-${id}`, read).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
         );
-        return { to: target.name, passed: true as const };
+        return {
+          to: target.name,
+          passed: true as const,
+          ...(read === undefined
+            ? {}
+            : {
+                note: `Passed to ${target.name} as a request, with its source (${describeOutside(read)}): what ${target.name} makes from it waits to be kept.`,
+              }),
+        };
       }),
     );
   }, guarded("KinHandoff.handOff"));

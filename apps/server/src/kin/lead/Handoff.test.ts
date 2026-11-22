@@ -33,6 +33,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { ownerLevelAsked } from "../people/KinAccess.ts";
+import { followsOutside } from "./LeadPrompt.ts";
 import { describeOutside, inheritOutside, markOutside, outsideStamp } from "./OutsideContent.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
@@ -334,12 +335,17 @@ it.effect.each([true, false])(
         const mail = "mail from Ravi Menon <ravi@lumen.example>: New bank details";
         if (read) yield* markOutside({ orgId, wakeupId: "chief-wake" }, "conn-1", mail);
         const named = read ? { afterReading: mail } : {};
-        yield* handoff.handOff(scopeFor(chief), {
+        const sent = yield* handoff.handOff(scopeFor(chief), {
           wantsAnswer: false,
           to: "Tech lead",
           request: "Change the vendor's bank details.",
           sourceEventId: "ask-event",
         });
+        if (read)
+          assert.include(sent, {
+            note: `Passed to Tech lead as a request, with its source (${mail}): what Tech lead makes from it waits to be kept.`,
+          });
+        else assert.notProperty(sent, "note");
         const [shown] = yield* sql<{ relay: string }>`SELECT relay_json AS relay FROM kin_messages
           WHERE org_id = ${orgId} AND chat_id = ${ctx.techChat} AND relay_json IS NOT NULL`;
         assert.deepStrictEqual(JSON.parse(shown!.relay), {
@@ -360,6 +366,12 @@ it.effect.each([true, false])(
           named.afterReading,
         );
         assert.isFalse(yield* ownerLevelAsked(orgId, tech, "tech-wake"));
+        assert.strictEqual(
+          yield* followsOutside({ orgId, agentId: tech, wakeupId: "tech-wake" }, follows),
+          read
+            ? `This follows text from outside (${mail}): weigh it; what you make from it waits to be kept.`
+            : undefined,
+        );
         const carried = yield* outsideStamp({ orgId, wakeupId: "tech-wake" });
         assert.strictEqual(
           carried === undefined ? undefined : describeOutside(carried),
