@@ -2816,6 +2816,48 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
           AND chat_id = ${chatOf("chief")} AND type = 'doc'`,
         cardsBefore,
       );
+
+      // Zoya is removed after Rhea's Changes first: Rhea's edit is today's, and nothing reaches her.
+      const [lastUp] = (yield* drafts).slice(-1);
+      yield* tap(owner, lastUp!.questionId, "option-2", "rhea-changes-mail-last");
+      const people = yield* People.KinPeople.pipe(
+        Effect.provide(
+          People.layer.pipe(
+            Layer.provide(
+              Layer.mock(SessionStore)({
+                cookieName: "kin",
+                legacyCookieName: undefined,
+                revoke: () => Effect.succeed(true),
+              }),
+            ),
+            Layer.provide(Layer.succeedContext(services)),
+          ),
+        ),
+      );
+      yield* people.removeAccess(
+        {
+          sessionId: AuthSessionId.make("owner"),
+          subject: "browser",
+          method: "browser-session-cookie",
+          scopes: AuthStandardClientScopes,
+        },
+        { orgId, personId: KinPersonId.make("zoya") },
+      );
+      const leftWith = yield* herMessages;
+      const roundsLeft = (yield* drafts).length;
+      const gone = yield* turnOn("rhea", chatOf("chief"), "Make it 4 December.");
+      const after = yield* LeadDocs.edit(scopeOf("chief"), {
+        key: mail.key,
+        sourceEventId: gone.eventId,
+        summary: "Moved to 4 December",
+        operations: [{ op: "replace_phrase", find: "3 December", replace: "4 December" }],
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.include(
+        after.note,
+        "This is Zoya Sheikh's mail back from Rhea Rao's Changes first, but Kin couldn't put it to Rhea Rao again: Zoya Sheikh is no longer here. Nothing was asked.",
+      );
+      assert.lengthOf(yield* drafts, roundsLeft);
+      assert.deepStrictEqual(yield* herMessages, leftWith);
     }).pipe(Effect.provide(layer)),
   ),
 );

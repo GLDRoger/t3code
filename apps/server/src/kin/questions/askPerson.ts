@@ -160,7 +160,7 @@ export const sendUpFromCard = Effect.fn("KinQuestions.sendUpFromCard")(function*
   press: Omit<Press, "_tag" | "mayPost">,
   input: typeof AskPersonInput.Type,
   deps: {
-    readonly chat: AskDeps["chat"] & Pick<KinChatService["Service"], "mayPost">;
+    readonly chat: AskDeps["chat"];
     readonly gate: Pick<KinLevelGate["Service"], "askToOnPress">;
   },
 ) {
@@ -172,7 +172,10 @@ export const sendUpFromCard = Effect.fn("KinQuestions.sendUpFromCard")(function*
 });
 
 type AskDeps = {
-  readonly chat: Pick<KinChatService["Service"], "createDirect" | "notice" | "setDocCardSent">;
+  readonly chat: Pick<
+    KinChatService["Service"],
+    "createDirect" | "notice" | "setDocCardSent" | "mayPost"
+  >;
   readonly gate: Pick<KinLevelGate["Service"], "askTo">;
 };
 type Press = {
@@ -238,9 +241,9 @@ export const redo = Effect.fn("KinQuestions.redo")(function* (
 });
 
 /**
- * In the owner's own turn on her words in her chat with the agent, the one teammate's draft she answered
- * Changes first on there and that no later round replaced, which this redraft is: the same kind
- * for the same client, or an edit of a doc it was about. Undefined unless exactly one.
+ * In the owner's own turn on her words in her chat with the agent, the one teammate's draft she
+ * answered Changes first on there and that no later round replaced, which this redraft is: the
+ * same kind for the same client, or an edit of a doc it was about. Undefined unless exactly one.
  */
 export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
   turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: KinWakeupId },
@@ -319,6 +322,17 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
       const press = from._tag === "press" ? from : null;
       const redone = from._tag === "redo" ? { ...from.of, wakeupId: from.lead.wakeupId } : null;
       if (press !== null) yield* press.mayPost;
+      // A redraft goes to her chat only while she is still a member who may write there.
+      if (redone !== null) {
+        const her = { _tag: "person" as const, orgId, personId: redone.forPersonId };
+        const stays =
+          (yield* Reach.reaches(orgId, Reach.person(her.personId), Reach.agent(agentId))) &&
+          (yield* chat.mayPost(her, redone.forChatId).pipe(
+            Effect.as(true),
+            Effect.catchTag("KinChatError", () => Effect.succeed(false)),
+          ));
+        if (!stays) return yield* refuse(`${redone.draft.names.asker} is no longer here.`);
+      }
       if (turn !== null && (yield* aborted(turn)))
         return yield* refuse("Someone else joined this chat while you were working.");
       if (turn !== null && (yield* passedOn(turn)))
