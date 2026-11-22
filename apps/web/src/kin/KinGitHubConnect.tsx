@@ -38,7 +38,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { useId, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
@@ -75,6 +75,32 @@ function ToneStatus(props: { readonly tone: KinConnectionTone; readonly label: s
     <KinSettingsStatus tone={props.tone === "muted" ? "quiet" : props.tone}>
       {props.label}
     </KinSettingsStatus>
+  );
+}
+
+/** A row's name with its state beside it, so a narrow window keeps room for the text. */
+function TitleWithStatus(props: {
+  readonly title: string;
+  readonly tone: KinConnectionTone;
+  readonly label: string;
+}) {
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      {props.title}
+      <ToneStatus tone={props.tone} label={props.label} />
+    </span>
+  );
+}
+
+/** A row's line, then its buttons under it: several buttons don't fit beside text on a phone. */
+function DetailWithActions(props: { readonly detail: ReactNode; readonly actions: ReactNode }) {
+  return (
+    <>
+      {props.detail}
+      {props.actions === null ? null : (
+        <span className="mt-2 flex flex-wrap gap-2">{props.actions}</span>
+      )}
+    </>
   );
 }
 
@@ -183,14 +209,12 @@ function GitHubSection(props: {
             </KinSettingsSection>
           ) : null}
           {status?.agents === undefined ? null : (
-            <KinSettingsSection title={AGENTS.title}>
-              <AgentIdentity
-                environmentId={environmentId}
-                orgId={orgId}
-                status={status}
-                agents={status.agents}
-              />
-            </KinSettingsSection>
+            <AgentIdentity
+              environmentId={environmentId}
+              orgId={orgId}
+              status={status}
+              agents={status.agents}
+            />
           )}
           {status?.account == null ? null : (
             <KinSettingsSection title={COPY.disconnect}>
@@ -255,101 +279,104 @@ function AgentIdentity(props: {
   const hint = kinGitHubAccountsHint(rows);
   const [picking, setPicking] = useState<string | null>(null);
   return (
-    <div className="flex flex-col gap-3 px-4 py-3">
-      <div className="flex flex-col gap-1">
-        <p className="text-pretty text-sm font-medium">{view.headline}</p>
-        <p className="text-pretty text-xs text-muted-foreground">{view.detail}</p>
-      </div>
-      <AppSetUp environmentId={props.environmentId} orgId={props.orgId} view={view} />
-      {rows.length === 0 ? null : (
-        <div className="flex flex-col gap-1">
-          <p className="text-xs font-medium text-muted-foreground">{AGENTS.accountsTitle}</p>
-          <ul className="flex flex-col divide-y rounded-md border">
-            {rows.map((row) => (
-              <li
-                key={row.key}
-                className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-4"
+    <>
+      <KinSettingsSection title={AGENTS.title}>
+        <AppSetUp
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          view={view}
+          install={
+            view.installUrl === null ? null : (
+              <Button
+                size="xs"
+                variant="outline"
+                render={<a href={view.installUrl} target="_blank" rel="noreferrer noopener" />}
               >
-                <div className="flex min-w-0 flex-col gap-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="truncate text-sm font-medium">{row.account}</span>
-                    <ToneStatus tone={row.tone} label={row.label} />
-                  </div>
-                  <p className="text-xs text-muted-foreground">{row.detail}</p>
-                </div>
-                {row.action === null && !row.pickable && row.checkAgain !== true ? null : (
-                  <div className="flex shrink-0 flex-wrap gap-2">
-                    {row.pickable ? (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        aria-expanded={picking === row.key}
-                        onClick={() => setPicking(picking === row.key ? null : row.key)}
-                      >
-                        {picking === row.key ? PICK.hide : PICK.choose(row.watched)}
-                      </Button>
-                    ) : null}
-                    {row.action === null ? null : (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        render={
-                          <a href={row.action.url} target="_blank" rel="noreferrer noopener" />
-                        }
-                      >
-                        {row.action.label}
-                      </Button>
-                    )}
-                    {row.checkAgain === true ? (
-                      <CheckAgain environmentId={props.environmentId} orgId={props.orgId} />
-                    ) : null}
-                  </div>
-                )}
-                {picking === row.key ? (
+                {AGENTS.install}
+              </Button>
+            )
+          }
+        />
+        <KinGitHubInstantLine
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          agents={props.agents}
+          now={now}
+        />
+      </KinSettingsSection>
+      {rows.length === 0 ? null : (
+        <KinSettingsSection title={AGENTS.accountsTitle} description={hint ?? undefined}>
+          {rows.map((row) => (
+            <div key={row.key}>
+              <KinSettingsRow
+                title={<TitleWithStatus title={row.account} tone={row.tone} label={row.label} />}
+                wrap
+                detail={
+                  <DetailWithActions
+                    detail={row.detail}
+                    actions={
+                      row.action === null && !row.pickable && row.checkAgain !== true ? null : (
+                        <>
+                          {row.pickable ? (
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              aria-expanded={picking === row.key}
+                              onClick={() => setPicking(picking === row.key ? null : row.key)}
+                            >
+                              {picking === row.key ? PICK.hide : PICK.choose(row.watched)}
+                            </Button>
+                          ) : null}
+                          {row.action === null ? null : (
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              render={
+                                <a
+                                  href={row.action.url}
+                                  target="_blank"
+                                  rel="noreferrer noopener"
+                                />
+                              }
+                            >
+                              {row.action.label}
+                            </Button>
+                          )}
+                          {row.checkAgain === true ? (
+                            <CheckAgain environmentId={props.environmentId} orgId={props.orgId} />
+                          ) : null}
+                        </>
+                      )
+                    }
+                  />
+                }
+              />
+              {picking === row.key ? (
+                <div className="px-4 pb-3">
                   <AccountRepos
                     environmentId={props.environmentId}
                     orgId={props.orgId}
                     account={row.account}
                     settingsUrl={row.settingsUrl}
                   />
-                ) : null}
-              </li>
-            ))}
-          </ul>
-          {hint === null ? null : <p className="text-xs text-muted-foreground">{hint}</p>}
-        </div>
-      )}
-      <KinGitHubInstantLine
-        environmentId={props.environmentId}
-        orgId={props.orgId}
-        agents={props.agents}
-        now={now}
-      />
-      {view.installUrl === null ? null : (
-        <div>
-          <Button
-            size="xs"
-            variant="outline"
-            render={<a href={view.installUrl} target="_blank" rel="noreferrer noopener" />}
-          >
-            {AGENTS.install}
-          </Button>
-        </div>
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </KinSettingsSection>
       )}
       {view.uses.length === 0 ? null : (
-        <div className="flex flex-col gap-1">
-          <p className="text-xs font-medium text-muted-foreground">{AGENTS.usesTitle}</p>
-          <ul className="flex flex-col divide-y rounded-md border">
-            {view.uses.map((use) => (
-              <li key={use.key} className="flex min-w-0 flex-col gap-0.5 px-3 py-2">
-                <span className="text-xs text-muted-foreground">{use.line}</span>
-                <code className="truncate font-mono text-xs">{use.command}</code>
-              </li>
-            ))}
-          </ul>
-        </div>
+        <KinSettingsSection title={AGENTS.usesTitle}>
+          {view.uses.map((use) => (
+            <KinSettingsRow
+              key={use.key}
+              title={use.line}
+              detail={<code className="font-mono">{use.command}</code>}
+            />
+          ))}
+        </KinSettingsSection>
       )}
-    </div>
+    </>
   );
 }
 
@@ -362,31 +389,33 @@ export function KinGitHubInstantLine(props: {
   const row = kinGitHubInstantRow(props.agents, props.now);
   if (row === null) return null;
   return (
-    <ul className="flex flex-col divide-y rounded-md border">
-      <li className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-4">
-        <div className="flex min-w-0 flex-col gap-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="truncate text-sm font-medium">{row.title}</span>
-            <ToneStatus tone={row.tone} label={row.label} />
-          </div>
-          <p className="text-xs text-muted-foreground">{row.detail}</p>
-        </div>
-        {row.action === null ? null : (
-          <div className="flex shrink-0 flex-wrap gap-2">
-            <Button
-              size="xs"
-              variant="outline"
-              render={<a href={row.action.url} target="_blank" rel="noreferrer noopener" />}
-            >
-              {row.action.label}
-            </Button>
-          </div>
-        )}
-        {row.offer === true ? (
-          <AllowHook environmentId={props.environmentId} orgId={props.orgId} />
-        ) : null}
-      </li>
-    </ul>
+    <KinSettingsRow
+      title={<TitleWithStatus title={row.title} tone={row.tone} label={row.label} />}
+      wrap
+      detail={
+        <DetailWithActions
+          detail={row.detail}
+          actions={
+            row.action === null && row.offer !== true ? null : (
+              <>
+                {row.action === null ? null : (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    render={<a href={row.action.url} target="_blank" rel="noreferrer noopener" />}
+                  >
+                    {row.action.label}
+                  </Button>
+                )}
+                {row.offer === true ? (
+                  <AllowHook environmentId={props.environmentId} orgId={props.orgId} />
+                ) : null}
+              </>
+            )
+          }
+        />
+      }
+    />
   );
 }
 
@@ -470,6 +499,8 @@ function AppSetUp(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly view: ReturnType<typeof kinGitHubAgentsView>;
+  /** Install on more repos, beside the App's own buttons. */
+  readonly install: ReactNode;
 }) {
   const { environmentId, orgId, view } = props;
   const reload = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
@@ -493,62 +524,79 @@ function AppSetUp(props: {
   const forgetting = view.disconnect;
   return (
     <>
-      {view.setUpLine === null ? null : (
-        <p className="text-xs text-muted-foreground">{view.setUpLine}</p>
-      )}
-      {view.canCreate || forgetting !== null ? (
-        <div className="flex flex-wrap gap-2">
-          {view.canCreate ? (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setCreating({ started: null, problem: null });
-                void actions
-                  .start()
-                  .then((outcome) =>
-                    setCreating((open) =>
-                      open === null
-                        ? null
-                        : outcome.ok
-                          ? { started: outcome.value, problem: null }
-                          : { started: null, problem: outcome.problem },
-                    ),
-                  );
-              }}
-            >
-              {SETUP.create}
-            </Button>
-          ) : null}
-          {forgetting === null ? null : (
-            <Button size="xs" variant="outline" onClick={() => setConfirming(true)}>
-              {SETUP.disconnect}
-            </Button>
-          )}
-        </div>
-      ) : null}
+      <KinSettingsRow
+        title={view.headline}
+        wrap
+        detail={
+          <DetailWithActions
+            detail={
+              <>
+                {view.detail}
+                {view.setUpLine === null ? null : (
+                  <span className="mt-1 block">{view.setUpLine}</span>
+                )}
+              </>
+            }
+            actions={
+              view.canCreate || forgetting !== null || props.install !== null ? (
+                <>
+                  {view.canCreate ? (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => {
+                        setCreating({ started: null, problem: null });
+                        void actions
+                          .start()
+                          .then((outcome) =>
+                            setCreating((open) =>
+                              open === null
+                                ? null
+                                : outcome.ok
+                                  ? { started: outcome.value, problem: null }
+                                  : { started: null, problem: outcome.problem },
+                            ),
+                          );
+                      }}
+                    >
+                      {SETUP.create}
+                    </Button>
+                  ) : null}
+                  {props.install}
+                  {forgetting === null ? null : (
+                    <Button size="xs" variant="outline" onClick={() => setConfirming(true)}>
+                      {SETUP.disconnect}
+                    </Button>
+                  )}
+                </>
+              ) : null
+            }
+          />
+        }
+      />
       {left === null ? null : (
-        <Alert variant="info">
-          <AlertDescription>
-            <span>{SETUP.disconnected(left.name)}</span>
-            {left.url === null ? null : (
-              <span className="mt-2 block">
-                <Button
-                  size="xs"
-                  variant="outline"
-                  render={<a href={left.url} target="_blank" rel="noreferrer noopener" />}
-                >
-                  {SETUP.appOnGitHub}
-                </Button>
-              </span>
-            )}
-          </AlertDescription>
-        </Alert>
+        <KinSettingsRow
+          title={SETUP.disconnected(left.name)}
+          wrap
+          control={
+            left.url === null ? null : (
+              <Button
+                size="xs"
+                variant="outline"
+                render={<a href={left.url} target="_blank" rel="noreferrer noopener" />}
+              >
+                {SETUP.appOnGitHub}
+              </Button>
+            )
+          }
+        />
       )}
       {problem === null ? null : (
-        <Alert variant="error">
-          <AlertDescription>{problem}</AlertDescription>
-        </Alert>
+        <div className="px-4 pb-3">
+          <Alert variant="error">
+            <AlertDescription>{problem}</AlertDescription>
+          </Alert>
+        </div>
       )}
       {creating === null ? null : (
         <CreateAppDialog

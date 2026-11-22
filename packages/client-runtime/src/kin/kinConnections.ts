@@ -412,6 +412,18 @@ export const kinConnectionDraft = (
   clientSecret: "",
 });
 
+/** Something was typed into the Add sheet, so closing it asks first. */
+export const kinConnectionDraftTyped = (draft: KinConnectionDraft): boolean =>
+  [
+    draft.label,
+    draft.url,
+    draft.key,
+    draft.org,
+    draft.secretUrl,
+    draft.clientId,
+    draft.clientSecret,
+  ].some((field) => field.trim() !== "");
+
 /** The service's line in the Add sheet's list: Google waits for its one-time setup. */
 export const kinServiceNote = (service: KinConnectionService) =>
   !service.available
