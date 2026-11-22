@@ -217,7 +217,8 @@ export function kinMoneyView(
   summary: KinMoneySummary,
   lists: ReadonlyArray<KinListDefinition>,
 ): KinMoneyView {
-  const has = (id: string) => lists.find((def) => def.list === id && def.archivedAt === null);
+  // An archived list's entries still count, so its figures still open it, marked archived.
+  const has = (id: string) => lists.find((def) => def.list === id);
   const invoices = has(INVOICES);
   const expenses = has(EXPENSES);
   const open = (
