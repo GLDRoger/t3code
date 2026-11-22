@@ -47,7 +47,7 @@ import {
   type KinWorkRowView,
 } from "./kinWork.ts";
 import { kinCount } from "./kinCount.ts";
-import { kinSectionOn } from "./kinShell.ts";
+import { kinSectionNamed, kinSectionOn } from "./kinShell.ts";
 import { Atom } from "effect/reactivity";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -943,6 +943,8 @@ export function kinClientPageView(
   now: Date,
   /** A host before prospects sends no `can`: there only the owner level changes a client. */
   ownerLevel: boolean,
+  /** The company's sections: a renamed Clients names the kind line too. */
+  shell?: KinShell | null,
 ): KinClientPageView {
   const { party } = page;
   const ref = { key: party.key, title: party.name };
@@ -978,7 +980,7 @@ export function kinClientPageView(
         ? KIN_CLIENTS.kindVendor
         : prospect
           ? KIN_CLIENTS.kindProspect
-          : KIN_CLIENTS.kindClient,
+          : kinSectionNamed(shell, KIN_CLIENTS.kindClient),
       party.active ? null : KIN_CLIENTS.closed,
       source === null ? null : `from ${source}`,
     ]

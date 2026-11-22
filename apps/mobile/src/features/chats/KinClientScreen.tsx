@@ -246,6 +246,7 @@ function KinClientBody(
     names,
     now,
     ownerLevel,
+    shell,
   );
   const { can } = view;
   // Clients on, or the owner level: what's owed, the contact log, notes and history show.

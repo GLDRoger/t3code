@@ -75,7 +75,8 @@ function KinSectionRow(props: {
   const detail = kinSectionNamed(
     props.shell,
     heldOff ??
-      `${words.detail}${props.id === "clients" ? ` ${KIN_SECTIONS_PAGE.projectsFollow}` : ""} ${words.kept}`,
+      // Its own page says nothing is deleted; Sections says it once, above every row.
+      (props.titled === "sentence" ? `${words.detail} ${words.kept}` : words.detail),
   );
   return (
     <KinSettingsSection problem={problem}>

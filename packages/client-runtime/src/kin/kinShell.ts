@@ -195,6 +195,12 @@ export function kinSectionOf(of: { readonly list: string } | { readonly key: str
   return id ?? null;
 }
 
+/** Whether a list shows while its section is off: a list that belongs to none always does. */
+export function kinSectionListed(shell: KinShell | null | undefined, list: string) {
+  const id = kinSectionOf({ list });
+  return id === null || kinSectionOn(shell, id);
+}
+
 /** A change to one section from Settings: its switch, or its name (blank for Kin's own). */
 export type KinSectionChange =
   | { readonly id: KinSectionId; readonly on: boolean }
@@ -288,8 +294,7 @@ export const KIN_SECTION_SWITCHES: Readonly<Record<KinSwitchableSection, KinSect
 export const KIN_SECTIONS_PAGE = {
   title: "Sections",
   intro:
-    "The parts of Kin your company uses. A section you turn off leaves everyone's sidebar, phone, search and forms. Docs, Tasks and Chats are always on.",
-  projectsFollow: "Projects go with Clients.",
+    "The parts of Kin your company uses. A section you turn off leaves everyone's sidebar, phone, search and forms; nothing is deleted, and you can turn it back on at any time. Chats, Tasks and Docs are always on.",
   olderPhones:
     "Teammates on an older version of the phone app keep seeing a section that is off, with its client and project pickers, until they update.",
   rename: {

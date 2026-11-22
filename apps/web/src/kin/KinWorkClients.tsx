@@ -105,13 +105,8 @@ import {
 import { KinWorkRow } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { KinClientDeals } from "./KinDeals";
-import { kinSectionNamedWords } from "@t3tools/client-runtime/kin/kinShell";
-import {
-  useKinSectionNamed,
-  useKinSectionOn,
-  useKinSectionWords,
-  useKinShell,
-} from "./useKinShell";
+import { kinSectionNamedWords, kinSectionOn } from "@t3tools/client-runtime/kin/kinShell";
+import { useKinSectionNamed, useKinSectionWords, useKinShell } from "./useKinShell";
 import { KinConfirm } from "./KinConfirm";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinHostConnected, useKinHostAt } from "./useKinHost";
@@ -715,8 +710,9 @@ function ClientPage(
   const ownerLevel = useKinOwnerLevel(environmentId);
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
   const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
-  const dealsOn = useKinSectionOn(environmentId, "deals");
-  const invoicesOn = useKinSectionOn(environmentId, "invoices");
+  const shell = useKinShell(environmentId);
+  const dealsOn = kinSectionOn(shell, "deals");
+  const invoicesOn = kinSectionOn(shell, "invoices");
   const now = new Date(useNowMinuteMs());
   const [dialog, setDialog] = useState<ClientDialog>(null);
   const [tagList, setTagList] = useState<string | null>(null);
@@ -737,6 +733,7 @@ function ClientPage(
     names,
     now,
     ownerLevel,
+    shell,
   );
   const { can } = view;
   // Clients on, or the owner level: what's owed, the contact log, notes and history show.

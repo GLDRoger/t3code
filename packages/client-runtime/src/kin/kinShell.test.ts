@@ -8,6 +8,7 @@ import {
   kinSectionNamed,
   kinSectionNamedWords,
   kinSectionNameProblem,
+  kinSectionListed,
   kinSectionOf,
   kinSectionOffLine,
   kinSectionOn,
@@ -235,6 +236,16 @@ describe("kinSectionOf", () => {
         { key: "constructor-1" },
       ].map(kinSectionOf),
     ).toEqual(["clients", "invoices", "money", null, "invoices", "clients", "money", null, null]);
+  });
+
+  it("keeps a page's lists only while their section is on", () => {
+    const lists = ["quotes", "expenses", "leads"];
+    expect(lists.filter((list) => kinSectionListed(off("money"), list))).toEqual(["leads"]);
+    expect(lists.filter((list) => kinSectionListed(off("invoices"), list))).toEqual([
+      "expenses",
+      "leads",
+    ]);
+    expect(lists.filter((list) => kinSectionListed(defaults, list))).toEqual(lists);
   });
 });
 

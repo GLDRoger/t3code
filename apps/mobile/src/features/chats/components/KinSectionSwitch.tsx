@@ -68,11 +68,7 @@ function KinSectionRow(props: {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const heldOff = kinSectionHeldOffLine(props.shell, props.id);
-  const detail = kinSectionNamed(
-    props.shell,
-    heldOff ??
-      `${words.detail}${props.id === "clients" ? ` ${KIN_SECTIONS_PAGE.projectsFollow}` : ""}`,
-  );
+  const detail = kinSectionNamed(props.shell, heldOff ?? words.detail);
   return (
     <>
       {problem === null ? null : (
