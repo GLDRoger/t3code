@@ -46,6 +46,9 @@ import {
   kinRecordChip,
   kinRecordWho,
   kinTaskControls,
+  kinTaskWith,
+  kinTaskWithChoices,
+  kinTaskWithout,
   type KinNextStepAct,
   type KinRecordWho,
 } from "@t3tools/client-runtime/kin/kinTaskRecord";
@@ -63,6 +66,7 @@ import {
   KIN_RECORD_CHANGES_CAP,
   type KinRecordDetail,
   type KinRecordKey,
+  type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import { kinTaskProjectMenu } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { KIN_PICKER_COPY, kinPickerSearchView } from "@t3tools/client-runtime/kin/kinWorkList";
@@ -140,6 +144,7 @@ import {
   KinTaskLinkAdd,
   KinTaskLinkRemove,
   KinTaskNoteComposer,
+  KinTaskWithLine,
 } from "./KinTaskRecord";
 import { KinListEntry } from "./KinWorkEntry";
 import { KinWorkAudienceRow } from "./KinWorkShareRow";
@@ -280,6 +285,12 @@ export function KinWorkItemSheet(
         canGive={canGive}
         canComment={canComment}
         onAct={(action) => void changes.run(state.item, action, names)}
+        onLeave={(action) =>
+          void changes.run(state.item, action, names).then((left) => {
+            // They may no longer see it: the list says so, with its Undo.
+            if (left) props.onClose();
+          })
+        }
         onUndo={() => void changes.undo(names, state.item)}
         onStartEdit={() => changes.startEdit(state.item)}
         onEdit={changes.setEdit}
@@ -600,6 +611,7 @@ function KinWorkItem(
     readonly canGive: boolean;
     readonly canComment: boolean;
     readonly onAct: (action: KinWorkAction) => void;
+    readonly onLeave: (action: KinWorkAction) => void;
     readonly onUndo: () => void;
     readonly onStartEdit: () => void;
     readonly onEdit: (patch: Partial<Pick<KinWorkEdit, "title" | "notes">>) => void;
@@ -644,6 +656,28 @@ function KinWorkItem(
     names,
     current: view.waitingOn,
   });
+  const withView = kinTaskWith({
+    item: shown,
+    names,
+    edit: view.can.edit,
+    change: change !== null,
+    joined,
+    invited,
+  });
+  const withChoices = kinTaskWithChoices(
+    kinWorkAssignees({ orgs, orgId, people, joined, invited, names, current: null }),
+    shown,
+  );
+  const setWith = (said: "added" | "removed" | "left", who: KinWorkPrincipal) => {
+    const action = {
+      type: "alsoOn" as const,
+      alsoOn: said === "added" ? [...(shown.alsoOn ?? []), who] : kinTaskWithout(shown, who),
+      who,
+      said,
+    };
+    if (said === "left") props.onLeave(action);
+    else change?.(action);
+  };
   const moved = edit === null ? null : kinWorkEditMoved(edit, props.item);
   const titleId = useId();
   const titleCountId = useId();
@@ -995,6 +1029,27 @@ function KinWorkItem(
                 />
               </dd>
             ) : null}
+            {withView.people.length === 0 && !withView.add ? null : (
+              <KinTaskWithLine
+                with={withView}
+                saving={saving}
+                picker={
+                  <GiveItems
+                    assignees={withChoices}
+                    leadsHint={null}
+                    onGive={(to) => setWith("added", to.principal)}
+                  />
+                }
+                onRemove={(key) => {
+                  const who = withView.people.find((one) => one.key === key);
+                  if (who !== undefined) setWith("removed", who.principal);
+                }}
+                onLeave={() => {
+                  const me = withView.people.find((one) => one.act === "leave");
+                  if (me !== undefined) setWith("left", me.principal);
+                }}
+              />
+            )}
             <dt className="text-muted-foreground">{KIN_TASK_RECORD.due}</dt>
             <dd className="flex min-w-0 items-center gap-2 text-foreground">
               {reword === null || view.closed ? (

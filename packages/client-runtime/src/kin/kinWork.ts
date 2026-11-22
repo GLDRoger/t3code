@@ -413,15 +413,32 @@ export function kinWorkOverview(
   summary: KinWorkSummary | null,
   filter: KinWorkFilter,
   names: KinWorkNames,
+  /**
+   * Open tasks in hand the reader is on but doesn't hold (`kinTasksOnCount`). The host counts
+   * each task under its holder; the reader's own row counts these too, as their filter lists them.
+   */
+  onMine = 0,
 ): KinWorkOverview {
   const { owner } = filter;
+  const me: KinWorkPrincipal | null =
+    names.me === null ? null : { _tag: "person", personId: names.me };
+  const held = summary?.owners ?? [];
+  const withMine = (row: Counts): Counts => ({ ...row, open: row.open + onMine });
+  const owners =
+    onMine === 0 || me === null
+      ? held
+      : held.some((row) => kinWorkSamePrincipal(row.owner, me))
+        ? held.map((row) =>
+            kinWorkSamePrincipal(row.owner, me) ? { ...row, ...withMine(row) } : row,
+          )
+        : [{ owner: me, ...withMine(NO_COUNTS) }, ...held];
   // The host counts by owner, not by client or project, so a narrowed list shows no counts.
   const counts: Counts | null =
     summary === null || filter.party !== null || filter.project !== null
       ? null
       : owner === null
         ? summary
-        : (summary.owners.find((row) => kinWorkSamePrincipal(row.owner, owner)) ?? NO_COUNTS);
+        : (owners.find((row) => kinWorkSamePrincipal(row.owner, owner)) ?? NO_COUNTS);
   return {
     chips: VIEWS.map((view) => {
       const count = counts === null ? null : countFor(counts, view.id);
@@ -433,7 +450,7 @@ export function kinWorkOverview(
         accessibilityLabel: count === null ? view.label : `${view.label}, ${count}`,
       };
     }),
-    owners: (summary?.owners ?? []).map((row) => ({
+    owners: (summary === null ? [] : owners).map((row) => ({
       key: kinWorkPrincipalKey(row.owner),
       owner: row.owner,
       name: kinWorkName(row.owner, names),
@@ -1260,6 +1277,17 @@ const principalFromText = (text: string | null): KinWorkPrincipal | null => {
       : null;
 };
 
+/** A stored list of principals, ", "-joined as the host writes a list into the history. */
+const principalsFromText = (text: string | null): ReadonlyArray<KinWorkPrincipal> =>
+  (text ?? "").split(",").flatMap((one) => {
+    const who = principalFromText(one.trim());
+    return who === null ? [] : [who];
+  });
+
+/** "Asha", "Asha and Finance", "Asha, Dev and Finance". */
+const kinWorkNameList = (shown: ReadonlyArray<string>): string =>
+  shown.length < 2 ? (shown[0] ?? "") : `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}`;
+
 /** "today", "yesterday" or "15 Nov" for an ISO time, on this device's calendar. */
 export const kinWorkDayOfTime = (iso: string, now: Date) => dayFromText(iso, now, null);
 
@@ -1339,6 +1367,27 @@ export function kinWorkChangeText(
           ? "took it on"
           : `gave it to ${kinWorkName(to, names, "you")}${left === null ? "" : ` (${kinWorkName(left, names)} left)`}`,
     );
+  }
+  const on = field("alsoOn");
+  if (on !== undefined) {
+    const before = principalsFromText(on.from);
+    const after = principalsFromText(on.to);
+    const missing = (
+      from: ReadonlyArray<KinWorkPrincipal>,
+      held: ReadonlyArray<KinWorkPrincipal>,
+    ) => from.filter((who) => !held.some((one) => kinWorkSamePrincipal(one, who)));
+    const self = change.by._tag === "system" ? null : change.by;
+    const isSelf = (who: KinWorkPrincipal) => kinWorkSamePrincipal(who, self);
+    const added = missing(after, before);
+    // Given the task, they hold it now, which "gave it to" already says.
+    const gone = missing(before, after).filter((who) => !kinWorkSamePrincipal(who, to));
+    const said = (list: ReadonlyArray<KinWorkPrincipal>) =>
+      kinWorkNameList(list.map((who) => kinWorkName(who, names, "you")));
+    if (added.some(isSelf)) clauses.push("joined it");
+    const others = added.filter((who) => !isSelf(who));
+    if (others.length > 0) clauses.push(`put ${said(others)} on it`);
+    if (added.length === 0 && gone.length === 1 && isSelf(gone[0]!)) clauses.push("left it");
+    else if (gone.length > 0) clauses.push(`took ${said(gone)} off it`);
   }
   // A held notice: `untold` names the holder not told yet, and clears once they are.
   const untold = field("untold");
@@ -1885,6 +1934,26 @@ export interface KinWorkDraft {
   readonly side: KinRecordSide | null;
   /** How it comes back once closed; null when it doesn't. */
   readonly repeat: KinRepeatRule | null;
+  /** Who else is on it besides its holder; absent or empty for nobody. */
+  readonly alsoOn?: ReadonlyArray<KinWorkPrincipal>;
+}
+
+/**
+ * The form's holder set to `owner` (null keeps it with the reader, `me`): whoever now holds it
+ * leaves the list of who else is on it, as the host would refuse them there.
+ */
+export function kinWorkDraftHolder(
+  draft: KinWorkDraft,
+  owner: KinWorkPrincipal | null,
+  me: KinPersonId | null,
+): KinWorkDraft {
+  const holder: KinWorkPrincipal | null =
+    owner ?? (me === null ? null : { _tag: "person", personId: me });
+  return {
+    ...draft,
+    owner,
+    alsoOn: (draft.alsoOn ?? []).filter((who) => !kinWorkSamePrincipal(who, holder)),
+  };
 }
 
 export const KIN_WORK_NO_DRAFT: KinWorkDraft = {
@@ -2023,6 +2092,7 @@ export function kinWorkDraftCheck(draft: KinWorkDraft): KinWorkDraftCheck {
             ...(draft.side === "theirs" ? { side: "theirs" as const } : {}),
           }),
       ...(draft.repeat === null ? {} : { repeat: draft.repeat }),
+      ...(draft.alsoOn === undefined || draft.alsoOn.length === 0 ? {} : { alsoOn: draft.alsoOn }),
     },
   };
 }
