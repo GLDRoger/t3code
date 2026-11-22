@@ -679,6 +679,11 @@ it.effect("a group's own routine runs in the group, and pauses once its agent le
     yield* TestClock.setTime(start);
     // Set in the group by a turn its people read: it is the group's, shown there with who asked.
     yield* nativeSetupInGroup("shared", true);
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+        author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+      VALUES ('set-message', ${orgId}, 'group-a', 50, 'human', 'owner-a', 'group-owner', 'owner',
+        'text', 'every morning post the stuck PRs here', '[]', 'posted', '2026-11-09T09:00:00.000Z')`;
+    yield* sql`UPDATE kin_chats SET last_seq = 50 WHERE chat_id = 'group-a'`;
     const shown = yield* nativeCard();
     assert.equal(shown.widget.chatId, "group-a");
     assert.equal(shown.state.askedBy?.personId, "owner-a");
@@ -689,11 +694,27 @@ it.effect("a group's own routine runs in the group, and pauses once its agent le
       WHERE e.org_id = ${orgId} AND json_extract(e.json, '$.subject.itemId') = ${scheduleId}
       ORDER BY e.received_at`;
     assert.deepStrictEqual(runIn, [{ chatId: "group-a", lane: "group-a" }]);
+    const withheld = sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE org_id = ${orgId} AND body LIKE '%without its wording%' ORDER BY seq`;
+    assert.lengthOf(yield* withheld, 0);
+    // A teammate joined after it was set: the run goes on, its words only to whoever set it.
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('latecomer', ${orgId}, 'latecomer', 'Latecomer', '2026-11-09T00:00:00.000Z')`;
+    yield* sql`UPDATE kin_chats SET shared_at = 1, shared_from_seq = 51 WHERE chat_id = 'group-a'`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+        role, joined_at, joined_seq)
+      VALUES ('group-latecomer', ${orgId}, 'group-a', 'person', 'latecomer', 'member',
+        '2026-11-10T00:00:00.000Z', 51)`;
+    yield* runNow();
+    assert.lengthOf(yield* nativeRuns(), 2);
+    const [note] = yield* withheld;
+    assert.include(note?.body, `"Stuck PRs" ran in Plans without its wording`);
+    assert.include(note?.body, prompt);
 
     yield* sql`UPDATE kin_chat_members SET left_at = '2026-11-10T00:00:00.000Z'
       WHERE org_id = ${orgId} AND member_id = 'group-lead'`;
     yield* runNow();
-    assert.lengthOf(yield* nativeRuns(), 1);
+    assert.lengthOf(yield* nativeRuns(), 2);
     const told = yield* sql<{ body: string }>`SELECT body FROM kin_messages
       WHERE org_id = ${orgId} AND kind = 'system' AND body LIKE 'Paused %' ORDER BY seq`;
     assert.lengthOf(told, 1);

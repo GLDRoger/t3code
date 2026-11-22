@@ -45,6 +45,7 @@ import {
   cardChatFor,
   directChatWith,
   sharedChatOf,
+  wordsReadable,
 } from "./deferralOrigin.ts";
 import {
   DeferralSnapshot,
@@ -198,6 +199,10 @@ const make = Effect.gen(function* () {
           readonly chatId: KinChatId;
           readonly askedBy: KinCardAsker | undefined;
           readonly moved: { readonly to: KinChatId; readonly why: string } | undefined;
+          /** The chat's bare line, when someone there now couldn't read where it was set. */
+          readonly bare: string | undefined;
+          /** One bare line for the owner, when neither the chat nor the asker can be reached. */
+          readonly owner: { readonly to: KinChatId; readonly body: string } | undefined;
         }
       | undefined;
   }) {
@@ -212,9 +217,26 @@ const make = Effect.gen(function* () {
     const reminder = `Reminder: ${title}.${lateNote(fireAt, now, input.clock)}`;
     const fallbackBody = `${reminder} (${input.leadName ?? "Your agent"} couldn't write this one, so Kin sent it.)`;
     if (input.inChat !== undefined) {
-      const { chatId, askedBy, moved } = input.inChat;
+      const { chatId, askedBy, moved, bare, owner } = input.inChat;
       const state = { ...card, ...(askedBy === undefined ? {} : { askedBy }) };
-      if (moved !== undefined) {
+      if (bare !== undefined)
+        yield* chat.notice({
+          orgId,
+          chatId,
+          messageId: KinMessageId.make(`reminder-bare-${fire.fireId}`),
+          audience: "chat",
+          body: bare,
+        });
+      if (owner !== undefined)
+        yield* chat.notice({
+          orgId,
+          chatId: owner.to,
+          messageId: KinMessageId.make(`reminder-unreached-${fire.fireId}`),
+          audience: "owner",
+          body: owner.body,
+        });
+      if (bare !== undefined || owner !== undefined || moved !== undefined) {
+        if (moved === undefined) return;
         yield* deliveries.fallback({
           orgId,
           eventId: KinEventId.make(`reminder-moved-${fire.fireId}`),
@@ -374,31 +396,69 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Where a shared chat's own reminder goes and who asked. Gone, archived or left by its agent:
-   * to whoever asked, in their own chat with that agent, else the owner chat it fires with.
+   * Where a shared chat's own reminder goes and who asked. Its words go to the chat only while
+   * everyone reading it now could read where it was set (`wordsReadable`); else the chat gets a
+   * bare line and the asker the reminder, in their own chat with a live agent. Gone, archived or
+   * left by its agent: the asker alone; with no chat of theirs, the owner one bare line.
    */
   const inChatReminder = Effect.fn("KinDeferralFlow.inChatReminder")(function* (
     orgId: KinOrgId,
     item: MemoryItemHead | undefined,
     chat: NonNullable<Effect.Success<ReturnType<typeof sharedChatOf>>>,
+    clock: TextClock,
   ) {
     const askedBy = item === undefined ? undefined : yield* askerOf(sql, orgId, item.said_by);
-    if (chat.open) return { chatId: chat.chatId, askedBy, moved: undefined };
-    const theirs =
-      askedBy === undefined || askedBy.left === true
-        ? undefined
-        : yield* directChatWith(sql, orgId, askedBy.personId, chat.agentId);
-    const to =
-      theirs ??
-      chat.lead?.ownerChatId ??
-      (yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN }))?.ownerChatId;
-    if (to === undefined) return { chatId: chat.chatId, askedBy, moved: undefined };
-    return {
+    const readable =
+      item?.source_event !== undefined && (yield* wordsReadable(sql, orgId, item.source_event));
+    const base = {
       chatId: chat.chatId,
       askedBy,
-      moved: {
-        to,
-        why: `It was for ${chat.name}, which ${chat.lead?.name ?? "its agent"} can no longer post in.`,
+      moved: undefined,
+      bare: undefined,
+      owner: undefined,
+    };
+    if (chat.open && readable) return base;
+    const agent =
+      chat.lead === undefined
+        ? (yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN }))?.agentId
+        : chat.agentId;
+    const theirs =
+      askedBy === undefined || askedBy.left === true || agent === undefined
+        ? undefined
+        : yield* directChatWith(sql, orgId, askedBy.personId, agent);
+    const name = askedBy?.left === true ? "Someone who has left" : (askedBy?.name ?? "Someone");
+    const set =
+      item === undefined ? "" : ` on ${ownerDateTime(Date.parse(item.recorded_at), clock)}`;
+    if (chat.open)
+      return {
+        ...base,
+        bare: `A reminder ${name} set${set} is due.`,
+        moved:
+          theirs === undefined
+            ? undefined
+            : {
+                to: theirs,
+                why: `${chat.name} got only that it is due: someone there now couldn't read where you set it.`,
+              },
+      };
+    if (theirs !== undefined)
+      return {
+        ...base,
+        moved: {
+          to: theirs,
+          why: `It was for ${chat.name}, which ${chat.lead?.name ?? "its agent"} can no longer post in.`,
+        },
+      };
+    const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
+    if (lead === undefined) return base;
+    const [inRoom] = yield* sql`SELECT 1 FROM kin_chat_members WHERE org_id = ${orgId}
+      AND chat_id = ${chat.chatId} AND principal_kind = 'person'
+      AND person_id = ${lead.ownerPersonId} AND left_at IS NULL LIMIT 1`;
+    return {
+      ...base,
+      owner: {
+        to: lead.ownerChatId,
+        body: `A reminder ${name} set${set}${inRoom === undefined ? "" : ` for ${chat.name}`} is due, but it couldn't reach them or that chat.`,
       },
     };
   });
@@ -471,14 +531,18 @@ const make = Effect.gen(function* () {
     }
     // A reminder is the lead's to write when a wake-up can run; budget is read outside the writer.
     const chatOwn = onDue === "remind" ? yield* sharedChatOf(sql, orgId, item) : undefined;
-    const inChat = chatOwn === undefined ? undefined : yield* inChatReminder(orgId, item, chatOwn);
+    const inChat =
+      chatOwn === undefined ? undefined : yield* inChatReminder(orgId, item, chatOwn, clock);
     const ownChat =
       onDue === "remind" && chatOwn === undefined ? yield* askersChat(sql, orgId, item) : undefined;
     const reminderLead =
       onDue === "remind" && ownChat === undefined
         ? chatOwn === undefined
           ? yield* deferralLead(sql, orgId, item)
-          : inChat?.moved === undefined && chatOwn.lead !== undefined
+          : inChat?.moved === undefined &&
+              inChat?.bare === undefined &&
+              inChat?.owner === undefined &&
+              chatOwn.lead !== undefined
             ? { agentId: chatOwn.agentId, ...chatOwn.lead, origin: undefined }
             : undefined
         : undefined;

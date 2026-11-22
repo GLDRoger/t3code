@@ -93,7 +93,7 @@ import { promptLine as connectionsLine } from "../connections/ConnectionRows.ts"
 import { companyAccounts } from "../github/githubWatchStore.ts";
 import { inheritOutside, itemSource, renderSource, storedStamp } from "./OutsideContent.ts";
 import { outsideReview } from "./outsideReview.ts";
-import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
+import { askedWhereOthersRead, wordsReadable } from "../triggers/deferralOrigin.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules, teamRules } from "./instructions.ts";
 import { socialRules } from "../social/instructions.ts";
@@ -477,15 +477,19 @@ export class KinLeadPrompt extends Context.Service<
                 ? undefined
                 : yield* askedWords(orgId, event.subject.itemId);
             // One fired into the chat it was set in (`chatId`): its title is that chat's, on its card.
-            const chatTitle =
+            // A room's own: its title, only while everyone there now could read where it was set.
+            const due =
               ownerOnly || Option.isSome(item) || asked !== undefined || event.chatId === undefined
                 ? undefined
-                : Option.getOrUndefined(
-                    Option.map(
-                      yield* dueItem(orgId, event.subject.itemId),
-                      (due) => due.head.title,
-                    ),
-                  );
+                : Option.getOrUndefined(yield* dueItem(orgId, event.subject.itemId));
+            const chatTitle =
+              due?.head.for_chat === true &&
+              due.head.source_event !== undefined &&
+              (yield* wordsReadable(sql, orgId, due.head.source_event).pipe(
+                Effect.orElseSucceed(() => false),
+              ))
+                ? due.head.title
+                : undefined;
             if (
               !ownerOnly &&
               Option.isNone(item) &&
@@ -521,8 +525,18 @@ export class KinLeadPrompt extends Context.Service<
             fromOwner = false;
             const native = yield* nativeRun(orgId, event.subject.itemId);
             if (native !== undefined) {
+              const eventData = quote(QUOTE_LABELS.eventData, { event: event.eventId });
               // A routine fired into the chat it was set up in (`chatId`) is that chat's own.
               const inChat = !ownerOnly && event.chatId !== undefined && native.confirmed;
+              if (
+                inChat &&
+                !(yield* wordsReadable(sql, orgId, native.sourceEvent).pipe(
+                  Effect.orElseSucceed(() => false),
+                ))
+              ) {
+                events.push(`${eventData}\n\n${ROUTINE_WITHHELD}`);
+                continue;
+              }
               if (!ownerOnly && !inChat) {
                 events.push(
                   `${quote(QUOTE_LABELS.eventData, { event: event.eventId })}\n\n${WITHHELD_DUE}`,
@@ -2501,6 +2515,7 @@ const sharedReminderFacts = (item: MemoryCache.MemoryItem) => {
   };
 };
 
+const ROUTINE_WITHHELD = `A routine set up in this chat is due, but someone here now could not read where it was set, so its instruction is withheld. In one line, say that part of what it was asked needs people who are no longer the only readers here, and nothing else.`;
 const WITHHELD_DUE = `Something the owner set up is due, but other people can read this turn and only the owner can read what it says. Write exactly ${SILENT_REPLY} and nothing else.`;
 
 /** The memory items an event names. */

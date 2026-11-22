@@ -59,6 +59,7 @@ import {
   firingOrigin,
   sharedChatOf,
   theirDirectChat,
+  wordsReadable,
 } from "./deferralOrigin.ts";
 import { hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
@@ -413,6 +414,9 @@ const make = Effect.gen(function* () {
         ? undefined
         : yield* theirDirectChat(sql, orgId, schedule.chatId, lead.agentId);
     const lane = chatOwn?.open === true ? chatOwn.chatId : theirs;
+    // Words set before someone now reading the room joined: the room's turn gets none of them.
+    const withheld =
+      chatOwn?.open === true && !(yield* wordsReadable(sql, orgId, schedule.sourceEvent));
     // An unconfirmed wording is asked about in the owner's chat, as an owner-only turn.
     const origin =
       lead === undefined || !confirmed
@@ -585,6 +589,22 @@ const make = Effect.gen(function* () {
           }
           yield* sql`UPDATE kin_schedules SET asked_sha256 = ${hash}, updated_at = ${now}
             WHERE task_id = ${row.taskId}`;
+        }
+        if (withheld) {
+          const setter = yield* askerOf(sql, orgId, row.saidBy);
+          const to =
+            setter === undefined || setter.left === true
+              ? undefined
+              : yield* directChatWith(sql, orgId, setter.personId, lead.agentId);
+          if (to !== undefined)
+            yield* notice(
+              orgId,
+              to,
+              `${fire.fireId}:withheld`,
+              `"${title}" ran in ${chatOwn?.name ?? "its chat"} without its wording: someone there now couldn't read where you set it. It asked: ${task.prompt}`,
+              now,
+              "chat",
+            );
         }
         const runId = fire.fireId;
         const dedupeKey = `scheduled:${runId}`;

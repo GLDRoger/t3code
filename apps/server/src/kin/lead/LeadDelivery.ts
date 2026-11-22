@@ -5,6 +5,8 @@ import {
   KinEventId,
   KinMessageId,
   KinOrgId,
+  KinCardAsker,
+  KinReminderCard,
   KinScheduledTaskCard,
   KinWidgetId,
   type KinWidget,
@@ -26,6 +28,7 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import { directChatWith } from "../triggers/deferralOrigin.ts";
 
 export type DeliveryKind = "reminder" | "routine" | "scheduled_task";
 
@@ -98,6 +101,11 @@ const excerpt = (body: string) => {
     ? `${chars.slice(0, EXCERPT_MAX - 1).join("")}…`
     : chars.join("");
 };
+
+const decodeAsker = Schema.decodeUnknownOption(Schema.Struct({ askedBy: KinCardAsker }));
+const decodeReminder = Schema.decodeUnknownOption(KinReminderCard);
+/** Who asked for a shared chat's own card, from its state. */
+const askedByOf = (state: unknown) => Option.getOrUndefined(decodeAsker(state))?.askedBy;
 
 /** A shared chat's own card (`askedBy`) is written for everyone there; any other, for the owner. */
 export const cardAudience = (
@@ -274,12 +282,16 @@ const make = Effect.gen(function* () {
         ? yield* care.value.causeFor(orgId, delivery.agentId)
         : undefined;
       const title = /"(.*)"/.exec(delivery.fallbackBody)?.[1];
+      const asker = askedByOf(delivery.widget.state);
+      // A room's own routine: its title stays out of the room, whoever reads it now.
       const body =
-        why === undefined
-          ? delivery.fallbackBody
-          : title === undefined
-            ? `${delivery.fallbackBody.replace(/\.$/, "")}: ${KIN_TROUBLE_WHY[why.cause]}.`
-            : `"${title}" didn't run: ${KIN_TROUBLE_WHY[why.cause]}.`;
+        asker !== undefined
+          ? `A routine ${asker.left === true ? "someone who has left" : asker.name} set didn't run this time.`
+          : why === undefined
+            ? delivery.fallbackBody
+            : title === undefined
+              ? `${delivery.fallbackBody.replace(/\.$/, "")}: ${KIN_TROUBLE_WHY[why.cause]}.`
+              : `"${title}" didn't run: ${KIN_TROUBLE_WHY[why.cause]}.`;
       yield* repo
         .insertMessage({
           orgId,
@@ -325,6 +337,9 @@ const make = Effect.gen(function* () {
       return;
     }
     const { widget } = delivery;
+    const asker = askedByOf(widget.state);
+    if (delivery.kind === "reminder" && delivery.forChat === undefined && asker !== undefined)
+      return yield* roomReminder(delivery, asker, now);
     const marked =
       delivery.kind === "reminder" &&
       delivery.forChat === undefined &&
@@ -341,6 +356,86 @@ const make = Effect.gen(function* () {
       now,
       delivery.forChat === undefined ? "owner" : "chat",
     );
+  });
+  /**
+   * A room's own reminder its lead didn't write, re-resolved now: the room gets only that it is
+   * due, while its agent still posts there; the asker the reminder, in their own chat with that
+   * agent; with neither, the owner one bare line. Nothing goes to anyone else's chat.
+   */
+  const roomReminder = Effect.fn("KinLeadDelivery.roomReminder")(function* (
+    delivery: Delivery,
+    asker: KinCardAsker,
+    now: number,
+  ) {
+    const { orgId, widget } = delivery;
+    const name = asker.left === true ? "Someone who has left" : asker.name;
+    const [room] = yield* sql<{ title: string | null }>`SELECT c.title FROM kin_chats c
+      WHERE c.org_id = ${orgId} AND c.chat_id = ${delivery.chatId} AND c.archived_at IS NULL
+        AND EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id
+          AND m.chat_id = c.chat_id AND m.principal_kind = 'agent'
+          AND m.agent_id = ${delivery.agentId} AND m.left_at IS NULL)`;
+    const line = (
+      chatId: KinChatId,
+      id: string,
+      body: string,
+      audience: Repository.WriteAudience,
+    ) =>
+      repo
+        .insertMessage({
+          orgId,
+          chatId,
+          audience,
+          messageId: KinMessageId.make(`${widget.widgetId}:${id}`),
+          author: { _tag: "system" },
+          kind: "system",
+          body,
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          clientMessageId: null,
+          createdAt: iso(now),
+          editedAt: null,
+        })
+        .pipe(
+          Effect.tap((message) =>
+            Option.isSome(hub)
+              ? sql.afterCommit(hub.value.publish({ type: "message.posted", orgId, message }))
+              : Effect.void,
+          ),
+        );
+    if (room !== undefined)
+      yield* line(delivery.chatId, "bare", `A reminder ${name} set is due.`, "chat");
+    const theirs =
+      asker.left === true
+        ? undefined
+        : yield* directChatWith(sql, orgId, asker.personId, delivery.agentId);
+    const card = Option.getOrUndefined(decodeReminder(widget.state));
+    if (theirs !== undefined && card !== undefined) {
+      const { askedBy: _askedBy, ...state } = card;
+      return yield* cards.post(
+        orgId,
+        theirs,
+        KinMessageId.make(widget.widgetId),
+        delivery.fallbackBody,
+        { ...widget, state: { ...state, fallback: true } },
+        now,
+        "chat",
+      );
+    }
+    if (room !== undefined) return;
+    const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
+      FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${delivery.agentId}`;
+    if (lead !== undefined)
+      yield* line(
+        KinChatId.make(lead.ownerChatId),
+        "unreached",
+        `A reminder ${name} set is due, but it couldn't reach them or that chat.`,
+        "owner",
+      );
   });
   const settleOne = Effect.fn("KinLeadDelivery.settleOne")(function* (
     orgId: KinOrgId,

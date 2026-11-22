@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { historyFloor } from "../chat/sharing.ts";
 import { ownerOnlyChat } from "../lead/Audience.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { directKey } from "../lead/LeadAccess.ts";
@@ -263,7 +264,15 @@ export const directChatWith = Effect.fn("Deferrals.directChatWith")(function* (
     WHERE c.org_id = ${orgId} AND c.kind = 'direct' AND c.archived_at IS NULL
       AND c.direct_key = ${directKey(KinPersonId.make(personId), KinAgentId.make(agentId))}
     ORDER BY c.chat_id LIMIT 1`;
-  return row === undefined ? undefined : KinChatId.make(row.chatId);
+  if (row !== undefined) return KinChatId.make(row.chatId);
+  // The lead's owner chat is its owner's own chat with it.
+  const [owners] = yield* sql<{ chatId: string }>`SELECT l.owner_chat_id AS "chatId"
+    FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+    JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = l.owner_chat_id
+      AND c.archived_at IS NULL
+    WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId} AND a.owner_person_id = ${personId}
+    ORDER BY l.agent_id`;
+  return owners === undefined ? undefined : KinChatId.make(owners.chatId);
 });
 
 /**
@@ -288,4 +297,28 @@ export const theirDirectChat = Effect.fn("Deferrals.theirDirectChat")(function* 
         AND l.agent_id = ${agentId} AND l.owner_chat_id = c.chat_id)
     LIMIT 1`;
   return row === undefined ? undefined : KinChatId.make(chatId);
+});
+
+/**
+ * Whether everyone reading the chat now could read the message that set an item there: it is at
+ * or after the chat's history floor (`historyFloor`), or the chat was never shared. False when
+ * that message can't be found. Its stored words fire there only then.
+ */
+export const wordsReadable = Effect.fn("Deferrals.wordsReadable")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  sourceEvent: string,
+) {
+  const [row] = yield* sql<{ seq: number; chatId: string }>`SELECT m.seq, m.chat_id AS "chatId"
+    FROM kin_events e JOIN kin_messages m ON m.org_id = e.org_id
+      AND m.message_id = json_extract(e.json, '$.messageId')
+      AND m.chat_id = json_extract(e.json, '$.chatId')
+    WHERE e.org_id = ${orgId} AND e.event_id = ${sourceEvent} ORDER BY e.event_id`;
+  if (row === undefined) return false;
+  const [chat] = yield* sql<{ floor: number | null; shared: number }>`SELECT
+      ${historyFloor(sql, orgId, row.chatId)} AS floor,
+      (SELECT shared_at IS NOT NULL FROM kin_chats WHERE org_id = ${orgId}
+        AND chat_id = ${row.chatId}) AS shared`;
+  if (chat === undefined) return false;
+  return chat.floor === null ? chat.shared !== 1 : row.seq >= chat.floor;
 });
