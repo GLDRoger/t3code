@@ -1402,6 +1402,21 @@ it.effect("one search finds entries and docs, and the team view hides what label
       partyId: secret.row.recordId,
       sensitive: true,
     });
+    const checklist = yield* records.create(orgId, writer, {
+      originKey: "checklist-work",
+      title: "Invented release task",
+      owner: me,
+      steps: [{ title: "Verify cobalt packaging", done: false }],
+    });
+    assert.deepStrictEqual(
+      (yield* search(orgId, {
+        text: "cobalt packaging",
+        limit: 20,
+        viewer: "team",
+        scope: KIN_OWNER_LEVEL,
+      })).hits.map((hit) => hit.recordId),
+      [checklist.row.recordId],
+    );
     const found = (viewer: "owner" | "team") =>
       search(orgId, { text: "pricing", limit: 20, viewer, scope: KIN_OWNER_LEVEL }).pipe(
         Effect.map(({ hits, indexed }) => ({

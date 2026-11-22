@@ -268,6 +268,12 @@ describe("Download everything", () => {
       // What was said on an entry and the contact logged with a client; a removed comment stays out.
       const [task] = yield* sql<{ id: string; key: string }>`SELECT record_id AS id, key
         FROM kin_records WHERE org_id = ${from} AND register_id = 'work' ORDER BY key LIMIT 1`;
+      const steps = [
+        { title: "Proofread", done: true },
+        { title: "Pack", done: false },
+      ];
+      yield* sql`UPDATE kin_records SET steps_json = ${JSON.stringify(steps)}, urgent = 1
+        WHERE org_id = ${from} AND record_id = ${task!.id}`;
       const [client] = yield* sql<{ id: string; key: string }>`SELECT record_id AS id, key
         FROM kin_records WHERE org_id = ${from} AND register_id = 'clients' ORDER BY key LIMIT 1`;
       yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
@@ -356,6 +362,10 @@ describe("Download everything", () => {
       // Restore is kin import, into a company that has nothing yet.
       const lines = zip.get("kin.jsonl")!.toString().trimEnd().split("\n");
       assert.isTrue(lines.some((line) => line.includes('"amount":"-0.05"')));
+      assert.deepInclude(
+        JSON.parse(lines.find((line) => line.includes('"title":"Send the welcome pack"'))!).entry,
+        { steps, urgent: true },
+      );
       const restored = yield* imports.apply(into, ownerInto, Stream.fromIterable(lines));
       assert.deepStrictEqual(restored.problems, []);
       assert.deepStrictEqual(

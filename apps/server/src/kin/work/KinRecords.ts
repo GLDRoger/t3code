@@ -319,6 +319,8 @@ export type PlainImportInput = Pick<
   | "dateAllDay"
   | "createdAt"
   | "closedAt"
+  | "steps"
+  | "urgent"
 > & { readonly state: KinRecordState };
 
 export type Patch = Partial<Omit<Fields, "owner">> & {

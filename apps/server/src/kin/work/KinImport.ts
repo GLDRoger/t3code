@@ -960,6 +960,8 @@ const make = Effect.gen(function* () {
         ...(dateAt === undefined ? {} : { dateAt, dateAllDay: DAY.test(spec.date ?? "") }),
         ...(amount === undefined ? {} : { amount }),
         ...(notes === "" ? {} : { notes }),
+        ...(spec.steps === undefined ? {} : { steps: spec.steps }),
+        ...(spec.urgent === undefined ? {} : { urgent: spec.urgent }),
         ...(spec.sensitive === undefined ? {} : { sensitive: spec.sensitive }),
         ...(createdAt === undefined ? {} : { createdAt }),
         closedAt:
