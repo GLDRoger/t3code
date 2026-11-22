@@ -573,6 +573,13 @@ describe("recipe documents", () => {
         0,
         null,
       ]);
+      // The agent is told once, and no longer asked to collect a GSTIN the company doesn't have.
+      const note =
+        "The company is not registered for GST: its invoices charge no GST and never show a client's GSTIN. Don't ask for or collect clients' GSTINs for invoices.";
+      const told = yield* LeadDocuments.onRecord(orgId, "INV-1");
+      assert.deepStrictEqual([told?.missing, told?.taxNote], [undefined, note]);
+      assert.strictEqual((yield* LeadMoney.money(scope, {})).taxNote, note);
+      assert.strictEqual((yield* LeadWork.get(scope, { key: "INV-1" })).taxNote, note);
       // Saying nothing with no GSTIN still prints no client's GSTIN, and no line either.
       yield* OwnerMoney.setCompanyProfile(people, {
         orgId,
