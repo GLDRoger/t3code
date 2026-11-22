@@ -237,8 +237,9 @@ const throttledSave = Effect.fnUntraced(function* <A, R>(
 
 /**
  * Tells `reread` when the direct chats or the viewer's place in them change: being let message
- * a lead adds its chat, and losing that leaves the chat read-only. The first snapshot is the
- * starting point and says nothing.
+ * a lead adds its chat, and losing that leaves the chat read-only. Also when a row that names no
+ * agent (a group, the Team room) starts or stops working, so the leads list's `working` is fresh
+ * for `kinWorkingAgents`. The first snapshot is the starting point and says nothing.
  */
 export const onKinDirectChatsChange =
   (reread: (environmentId: EnvironmentId, orgIds: ReadonlyArray<KinOrgId>) => void) =>
@@ -251,11 +252,19 @@ export const onKinDirectChatsChange =
           Stream.tap((view) =>
             Effect.sync(() => {
               const direct = view.value.chats.filter((chat) => chat.kind === "direct");
-              const key = direct
-                .map((chat) => `${chat.chatId}:${chat.members.map((m) => m.role).join(",")}`)
-                .join("|");
+              const unnamed = view.value.chats.filter(
+                (chat) =>
+                  chat.working === true &&
+                  !chat.members.some((member) => member.principal._tag === "agent"),
+              );
+              const key = [
+                ...direct.map(
+                  (chat) => `${chat.chatId}:${chat.members.map((m) => m.role).join(",")}`,
+                ),
+                ...unnamed.map((chat) => `working:${chat.chatId}`),
+              ].join("|");
               if (seen !== null && seen !== key)
-                reread(environmentId, [...new Set(direct.map((chat) => chat.orgId))]);
+                reread(environmentId, [...new Set(view.value.chats.map((chat) => chat.orgId))]);
               seen = key;
             }),
           ),

@@ -76,7 +76,7 @@ export const KIN_MONEY = {
   createChief: "Create Chief of staff",
   askMessage: "Start tracking our expenses and invoices.",
   onlyOwner: {
-    title: "Not available",
+    title: "Money isn't open to you",
     detail: "Money is kept by whoever runs this Kin.",
   },
   /** A company made new records no money until its country is chosen (`countryNeeded`). */
