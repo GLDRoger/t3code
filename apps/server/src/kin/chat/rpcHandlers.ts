@@ -2,6 +2,7 @@ import { sessionUploadOwner } from "../../assets/AttachmentUpload.ts";
 import { KinChatAndBudgetRpcs, KinChatError, type KinLeadRetireInput } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
@@ -33,12 +34,6 @@ const disabled = new KinChatError({
   message: "Kin is not running on this host.",
 });
 const isKinChatError = Schema.is(KinChatError);
-/** Open chats per connection: an owner keeps a few dozen open at most; this is several times that. */
-export const KIN_OPEN_CHATS_PER_CONNECTION = 200;
-const tooManyChats = new KinChatError({
-  reason: "limit",
-  message: "Too many chats are open on this device. Close some and try again.",
-});
 const leadRefusal = Schema.is(LeadProvision.KinLeadProvisionError);
 const leadReasons = {
   not_owner: "not_allowed",
@@ -139,7 +134,10 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       Effect.mapError(mapError),
       Effect.catchDefect(defect),
     );
-  let openChats = 0;
+  const chatSubscriptions = new Map<
+    string,
+    { readonly replaced: Deferred.Deferred<void>; readonly closed: Deferred.Deferred<void> }
+  >();
   return rpcs.of({
     "kin.budget.get": (input) =>
       services.pipe(
@@ -239,17 +237,35 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     "kin.chat.subscribe": (input) =>
       Stream.unwrap(
         Effect.gen(function* () {
-          // Held for as long as the stream runs: `unwrap` scopes the effect to it.
-          yield* Effect.acquireRelease(
-            Effect.suspend(() =>
-              openChats >= KIN_OPEN_CHATS_PER_CONNECTION
-                ? Effect.fail(tooManyChats)
-                : Effect.sync(() => void (openChats += 1)),
-            ),
-            () => Effect.sync(() => void (openChats -= 1)),
-          );
           const { chat, people } = yield* viewer;
-          return chat.subscribe(people, input);
+          const key = input.chatId;
+          const current = {
+            replaced: yield* Deferred.make<void>(),
+            closed: yield* Deferred.make<void>(),
+          };
+          const previous = yield* Effect.acquireRelease(
+            Effect.sync(() => {
+              const previous = chatSubscriptions.get(key);
+              chatSubscriptions.set(key, current);
+              if (previous !== undefined) Deferred.doneUnsafe(previous.replaced, Effect.void);
+              return previous;
+            }),
+            (previous) =>
+              // A replacement can itself be cancelled before its predecessor frees the queue.
+              (previous === undefined ? Effect.void : Deferred.await(previous.closed)).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    if (chatSubscriptions.get(key) === current) chatSubscriptions.delete(key);
+                    Deferred.doneUnsafe(current.closed, Effect.void);
+                  }),
+                ),
+              ),
+          );
+          return Stream.unwrap(
+            (previous === undefined ? Effect.void : Deferred.await(previous.closed)).pipe(
+              Effect.as(chat.subscribe(people, input)),
+            ),
+          ).pipe(Stream.interruptWhen(Deferred.await(current.replaced)));
         }),
       ).pipe(
         Stream.tapError(logInfra),
