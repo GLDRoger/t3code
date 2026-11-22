@@ -14,6 +14,7 @@ import {
   KinOrgId,
   type KinWakeupId,
   KinPersonId,
+  KinRecordKey,
   KinWidgetId,
   ProviderInstanceId,
   ThreadId,
@@ -75,6 +76,8 @@ import * as AskPerson from "./askPerson.ts";
 import * as DraftCards from "../work/draftCards.ts";
 import * as LeadDocs from "../work/leadDocs.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
+import * as OwnerWork from "../work/ownerWork.ts";
+import { DRAFT_OWN_CHAT_ONLY } from "../work/teamView.ts";
 import * as Questions from "./openQuestions.ts";
 import { approvalOf, madeUnderApproval } from "./approval.ts";
 import { APPROVED_TURN_TEXT, approvedTurnText, tellDraftMade } from "./sentUpDraft.ts";
@@ -1677,6 +1680,11 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
         for: "Harbourline Hotels (C-7)",
       });
       assert.strictEqual(yield* marked, 1);
+      // Kin showed her the draft, so the agent only says where it is.
+      assert.strictEqual(
+        zoya.note,
+        "Posted in Rhea Rao's chat with you, waiting on them. Their answer comes back here. Kin showed Zoya Sheikh the draft here; say in one line it is with Rhea Rao.",
+      );
       // Her own turn runs for no approval: the resolver says so, and nothing is shown as one.
       const zoyaWake = { orgId: org, agentId: chief, wakeupId: zoya.turn };
       assert.deepStrictEqual(yield* approvalOf(zoyaWake), { _tag: "none" });
@@ -1854,42 +1862,28 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       yield* tellDraftMade({ ...turn, orgId: other }, chats);
       assert.lengthOf(yield* team.kinLines(zoya.chatId), 2);
 
-      // Arjun's draft, for his own project: Changes first is an answer as before, his turn.
+      // Arjun's draft: her Changes first starts no turn in his chat, where nothing knows what to
+      // change; Kin's line there says the new one comes back to her.
       const arjun = yield* sendUp("arjun", "Monsoon shoot quote: price: ____");
       yield* tap(owner, arjun.questionId, "option-2", "rhea-changes");
       assert.isNull(yield* approvedAt(arjun.questionId));
-      // The turn carrying Rhea's Changes first, in Arjun's chat, may send the revised draft up.
+      assert.deepStrictEqual(yield* team.kinLines(arjun.chatId), [
+        "Rhea Rao wants changes first; the new proposal goes back to Rhea Rao to approve.",
+      ]);
+      // Her card tells her the decision is still hers.
+      assert.deepInclude(
+        (yield* team.widgetOf((yield* team.cardOf(arjun.questionId)).widgetId!)).state,
+        {
+          outcome: {
+            title: "Answered",
+            text: "Say here what to change; the new draft comes back to you to approve.",
+          },
+        },
+      );
+      assert.deepStrictEqual((yield* draftWakes).slice(1), []);
       const drainedBut = (keep: string) => sql`UPDATE kin_events SET state = 'done'
         WHERE org_id = ${orgId} AND state = 'queued' AND dedupe_key IS NOT ${keep}`;
       const drained = drainedBut("");
-      yield* drainedBut(`question-answered:${arjun.questionId}`);
-      const revising = yield* startAgentWakeup({
-        orgId,
-        agentId: chief,
-        threadId: ThreadId.make("chief-thread"),
-        queued: true,
-      });
-      const revised = yield* askFor("chief", revising, {
-        ...upInput("arjun", "Monsoon shoot quote, revised: price: ____"),
-        intent: "revised shoot quote",
-      });
-      assert.strictEqual(revised.state, "posted");
-      // So may a redone mail: after Changes first it goes up again whichever way it first went.
-      const redone = yield* askFor("chief", revising, {
-        ...upInput("arjun", "Monsoon shoot mail, revised"),
-        intent: "revised shoot mail",
-        draft: { kind: "mail" },
-      });
-      assert.strictEqual(redone.state, "posted");
-      yield* sql`UPDATE kin_questions SET state = 'withdrawn'
-        WHERE question_id IN (${revised.questionId}, ${redone.questionId})`;
-      assert.deepStrictEqual((yield* draftWakes).slice(1), [
-        {
-          key: `question-answered:${arjun.questionId}`,
-          origin: JSON.stringify({ agentId: "chief", chatId: arjun.chatId, personId: "arjun" }),
-          chatId: arjun.chatId,
-        },
-      ]);
       // Dev's: Rhea's own words "approve it" answer it, an answer, never the Approve.
       const dev = yield* sendUp("dev", "Shoot terms: ____");
       const words = yield* wakeOn("chief", "rhea", chatOf("chief"), "approve it");
@@ -1909,11 +1903,7 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       assert.isNull(yield* approvedAt(dev.questionId));
       assert.deepStrictEqual(
         (yield* draftWakes).map((one) => one.key),
-        [
-          `question-approved:${zoya.questionId}`,
-          `question-answered:${arjun.questionId}`,
-          `question-answered:${dev.questionId}`,
-        ],
+        [`question-approved:${zoya.questionId}`, `question-answered:${dev.questionId}`],
       );
 
       // What earlier turns left queued is not this story's: each ask below is woken alone.
@@ -1938,7 +1928,7 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
           ...upInput("dev", "Shoot terms: ____"),
           intent: "dev terms after answer",
         }),
-        "A draft goes up only from Dev Malhotra's own message here, or after the owner's Changes first on one of theirs.",
+        "A draft goes up only from Dev Malhotra's own message here, or after the owner answers one of theirs in words.",
       );
       // Two approvals while the lane is busy, and a routine owner-lane turn beside them: three
       // wakes, each approval alone, each teammate told of her own result.
@@ -2210,7 +2200,7 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       );
       assert.strictEqual(
         posts[0]!.note,
-        `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it; say in one line it is filed as ${posts[0]!.key} and that Send to Rhea Rao asks Rhea Rao to approve it. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
+        `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it; say in one line it is filed as ${posts[0]!.key}; Rhea Rao hasn't seen it, and it reaches Rhea Rao only when the person in this chat presses Send to Rhea Rao. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
       );
       // A blank draft, or one whose Approve card would be too long to carry, files nothing.
       const docCount = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
@@ -2265,6 +2255,203 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
         }).pipe(Effect.provideService(KinIdentity, identity));
       const hers = yield* mail("Retainer", "Our retainer is ₹2,50,000 a month.");
       const others = yield* mail("Setup", "Setup is ₹2,50,000 once, plus ₹40,000 travel.");
+
+      // A task she gives the agent herself is her own ask in her chat too: its turn files her
+      // mail as her card there, with her Send to; given by anyone else's hand, it files nothing.
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'`;
+      yield* OwnerWork.create([person("zoya")], {
+        orgId,
+        title: "Send them what we built for Tidewater",
+        notes: "Mail them now",
+        owner: { _tag: "agent", agentId: KinAgentId.make("chief") },
+        party: "C-7",
+        clientRequestId: "zoya-next-step",
+      });
+      const taskTurn = yield* startAgentWakeup({
+        orgId,
+        agentId: KinAgentId.make("chief"),
+        threadId: ThreadId.make("chief-thread"),
+        queued: true,
+      });
+      const [given] = yield* sql<{ eventId: string; seq: number }>`SELECT event_id AS "eventId",
+          json_extract(json, '$.seq') AS seq FROM kin_events
+        WHERE org_id = ${orgId} AND wakeup_id = ${taskTurn} AND tag = 'record.changed'`;
+      const fromTask = (title: string) =>
+        LeadDocs.create(scopeOf("chief"), {
+          sourceEventId: given!.eventId,
+          title,
+          body: "Here is what we built for Tidewater.",
+          client: "C-7",
+          draft: { kind: "mail" },
+        }).pipe(Effect.provideService(KinIdentity, identity));
+      const taskMail = yield* fromTask("What we built");
+      assert.include(taskMail.note ?? "", "Send to Rhea Rao");
+      const [taskCard] = yield* sql<{ state: string }>`SELECT state_json AS state
+        FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${zoyaChat} AND type = 'doc'
+          AND json_extract(state_json, '$.key') = ${taskMail.key}`;
+      assert.deepInclude(JSON.parse(taskCard!.state).draft, {
+        sendTo: { personId: team.owner.personId, name: "Rhea Rao" },
+      });
+      yield* sql`UPDATE kin_record_changes SET actor_kind = 'agent', actor_id = 'finance'
+        WHERE org_id = ${orgId} AND seq = ${given!.seq}`;
+      assert.strictEqual(
+        (yield* Effect.flip(fromTask("What we built, again"))).message,
+        "A teammate's doc is filed only at their own word in their own chat with you. Nothing was written.",
+      );
+      // Her task is her ask only in her own words, given anew by her: not words someone else
+      // wrote or edited, not a reopen, and not with someone else's task in the same turn.
+      const records = Context.get(services, KinRecords);
+      const zoya = [person("zoya")];
+      const zoyaHeld = { _tag: "person" as const, personId: KinPersonId.make("zoya") };
+      const toChief = { _tag: "agent" as const, agentId: KinAgentId.make("chief") };
+      const settle = sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId}
+        AND state = 'queued'`;
+      const giveToChief = (key: KinRecordKey) =>
+        Effect.flatMap(records.get(orgId, key), (row) =>
+          OwnerWork.assign(zoya, { orgId, key, to: toChief, rev: row!.rev }),
+        );
+      const refusedTurn = Effect.gen(function* () {
+        const turn = yield* startAgentWakeup({
+          orgId,
+          agentId: KinAgentId.make("chief"),
+          threadId: ThreadId.make("chief-thread"),
+          queued: true,
+        });
+        const [woke] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+          FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${turn}
+            AND tag = 'record.changed' ORDER BY rowid LIMIT 1`;
+        return yield* Effect.match(
+          LeadDocs.create(scopeOf("chief"), {
+            sourceEventId: woke!.eventId,
+            title: "From her task",
+            body: "Here is what we built.",
+            client: "C-7",
+            draft: { kind: "mail" },
+          }).pipe(Effect.provideService(KinIdentity, identity)),
+          { onSuccess: () => "filed", onFailure: (error) => error.message },
+        );
+      });
+      const outcomes: Array<[string, string]> = [];
+      // The owner's words, given to her, then by her to the agent.
+      yield* settle;
+      const ownersTask = yield* OwnerWork.create([team.owner], {
+        orgId,
+        title: "Send them the owner's launch note",
+        notes: "The owner's words",
+        owner: zoyaHeld,
+        party: "C-7",
+        clientRequestId: "owners-words",
+      });
+      yield* giveToChief(ownersTask.key);
+      outcomes.push(["the owner's words", yield* refusedTurn]);
+      // An agent's words, on a task she holds.
+      yield* settle;
+      const { row: agentsTask } = yield* records.create(
+        orgId,
+        {
+          actor: { _tag: "agent", agentId: KinAgentId.make("finance") },
+          via: "lead",
+          askedBy: zoyaHeld.personId,
+        },
+        {
+          originKey: "agents-words",
+          title: "Send them the agent's summary",
+          notes: "The agent's words",
+          owner: zoyaHeld,
+          partyId: "rec_harbourline",
+          team: true,
+        },
+      );
+      yield* giveToChief(KinRecordKey.make(agentsTask.key));
+      outcomes.push(["an agent's words", yield* refusedTurn]);
+      // Her own task, whose notes the owner edited before she gave it.
+      yield* settle;
+      const edited = yield* OwnerWork.create(zoya, {
+        orgId,
+        title: "Send them our price list",
+        notes: "Her words",
+        party: "C-7",
+        clientRequestId: "edited-words",
+      });
+      yield* OwnerWork.update([team.owner], {
+        orgId,
+        key: edited.key,
+        rev: edited.rev,
+        notes: "Her words, and the owner's",
+      });
+      yield* giveToChief(edited.key);
+      outcomes.push(["notes the owner edited", yield* refusedTurn]);
+      // Her own task, closed and reopened: nothing is given anew.
+      yield* settle;
+      const reopened = yield* OwnerWork.create(zoya, {
+        orgId,
+        title: "Send them the brochure",
+        notes: "Her words",
+        owner: toChief,
+        party: "C-7",
+        clientRequestId: "reopened",
+      });
+      for (const state of ["done", "open"] as const) {
+        yield* settle;
+        const row = yield* records.get(orgId, reopened.key);
+        yield* OwnerWork.update(zoya, { orgId, key: reopened.key, rev: row!.rev, state });
+      }
+      outcomes.push(["a reopen", yield* refusedTurn]);
+      // Her own words given by her, in a turn another task's change woke too: someone else's,
+      // or one with no ask of hers behind it.
+      for (const [why, origin] of [
+        ["someone else's task too", { personId: "arjun" }],
+        ["a change with no ask of hers too", undefined],
+      ] as const) {
+        yield* settle;
+        const mixed = yield* OwnerWork.create(zoya, {
+          orgId,
+          title: "Send them the case study",
+          notes: "Her words",
+          owner: toChief,
+          party: "C-7",
+          clientRequestId: `mixed-${why}`,
+        });
+        const [last] = yield* sql<{ seq: number }>`SELECT MAX(seq) AS seq FROM kin_record_changes
+          WHERE org_id = ${orgId}`;
+        yield* Context.get(services, KinEventQueue.KinEventQueue).enqueue(
+          decodeEvent({
+            _tag: "record.changed",
+            orgId,
+            agentId: "chief",
+            eventId: `other-task-event-${why}`,
+            receivedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+            dedupeKey: null,
+            provenance: {
+              _tag: "human",
+              personId: origin?.personId ?? "zoya",
+              memberId: "other-member",
+            },
+            recordId: mixed.recordId,
+            key: mixed.key,
+            seq: last!.seq,
+            reason: "assigned",
+            chatId: zoyaChat,
+            ...(origin === undefined
+              ? {}
+              : { origin: { agentId: "chief", chatId: zoyaChat, personId: origin.personId } }),
+          }),
+        );
+        outcomes.push([why, yield* refusedTurn]);
+      }
+      const notHers = DRAFT_OWN_CHAT_ONLY.message;
+      assert.deepStrictEqual(outcomes, [
+        ["the owner's words", notHers],
+        ["an agent's words", notHers],
+        ["notes the owner edited", notHers],
+        ["a reopen", notHers],
+        // Two people behind the turn: refused as a shared turn, before any ask is read.
+        [
+          "someone else's task too",
+          "No client called C-7 that everyone in this chat may see. Leave it off here, or ask the owner in his own chat; don't add it again.",
+        ],
+        ["a change with no ask of hers too", notHers],
+      ]);
 
       // The owner's own drafts, in her own turn, have nothing to send up: Copy text only.
       const own = yield* wakeOn("chief", "rhea", chatOf("chief"), "A post for our own page?");
@@ -2450,6 +2637,519 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       assert.strictEqual(
         (yield* Effect.flip(press("zoya", mailCards[1]!.widgetId))).message,
         "This draft couldn't go to Rhea Rao from here. Ask in this chat instead.",
+      );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// Changes first on a teammate's draft: the owner says what to change in her own chat, and the
+// redraft goes back to her on a new Approve card, asked for the teammate's chat as the first was.
+// Exactly one waiting draft matches, or nothing is raised; a raise the server refuses files it.
+// A figure the owner herself wrote this turn is hers to give the teammate; any other is held.
+it.effect("after the owner's Changes first, her redraft comes back to her to approve", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const team = yield* askingTeam;
+      const { sql, chats, orgId, owner, chatOf, chiefChat, wakeOn, askFor, tap, services } = team;
+      const identity = Context.get(services, KinIdentity);
+      const org = KinOrgId.make(orgId);
+      const chief = KinAgentId.make("chief");
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'clients', 'Clients', 'C', 1, 0) ON CONFLICT DO NOTHING`;
+      for (const [id, key, title] of [
+        ["rec_harbourline", "C-7", "Harbourline Hotels"],
+        ["rec_tidewater", "C-8", "Tidewater Freight"],
+      ] as const)
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at)
+          VALUES (${orgId}, ${id}, 'clients', ${key}, ${title}, 'person', ${owner.personId},
+            'person', ${id}, 0, 0)`;
+      // An invoice of ₹45,000 only Rhea sees.
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 1, 0) ON CONFLICT DO NOTHING`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at, amount_minor, currency)
+        VALUES (${orgId}, 'rec_inv', 'invoices', 'INV-4', 'Bramble shoot', 'person',
+          ${owner.personId}, 'person', 'rec_inv', 0, 0, 4500000, 'INR')`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id IN ('zoya', 'arjun')`;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-zoya', ${orgId}, 'zoya', 0)`;
+      const zoyaChat = yield* chiefChat("zoya");
+      /** A turn on someone's words, the only one of the agent's running, and its event. */
+      const turnOn = Effect.fn("test.turnOn")(function* (
+        who: string,
+        chatId: KinChatId,
+        body: string,
+      ) {
+        yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'`;
+        yield* TestClock.adjust("1 minute");
+        const wakeupId = yield* wakeOn("chief", who, chatId, body);
+        const [event] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+          FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} ORDER BY rowid`;
+        return { wakeupId, eventId: event!.eventId };
+      });
+      // Rhea's redraft: a total the agent worked out, her price in lakh, and travel at INV-4's sum.
+      const REDRAFT =
+        "Harbourline proposal: four shoots, 3 lakh a month, ₹12,00,000 in all, travel 45000";
+      const proposal = (
+        at: { readonly eventId: string },
+        input: Partial<typeof LeadDocs.CreateInput.Type> = {},
+      ) =>
+        LeadDocs.create(scopeOf("chief"), {
+          sourceEventId: at.eventId,
+          title: "Harbourline proposal",
+          body: REDRAFT,
+          kind: "proposal",
+          client: "C-7",
+          draft: { kind: "proposal" },
+          ...input,
+        }).pipe(Effect.provideService(KinIdentity, identity));
+      const drafts = sql<{
+        questionId: string;
+        state: string;
+        chatId: string;
+        forChatId: string;
+        forPersonId: string;
+        intent: string;
+        text: string;
+      }>`SELECT question_id AS "questionId", state, chat_id AS "chatId",
+          for_chat_id AS "forChatId", for_person_id AS "forPersonId", intent,
+          json_extract(draft_json, '$.text') AS text
+        FROM kin_questions WHERE org_id = ${orgId} AND draft_json IS NOT NULL
+        ORDER BY asked_at, question_id`;
+      const docCount = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'docs'`.pipe(Effect.map((rows) => rows[0]!.n));
+      /** The drafts Kin showed in a chat as they went up. */
+      const shownUp = (chatId: KinChatId) =>
+        sql<{ body: string; author: string }>`SELECT body, author_kind AS author FROM kin_messages
+          WHERE org_id = ${orgId} AND chat_id = ${chatId} AND message_id LIKE 'kin-draft-up:%'
+          ORDER BY seq`;
+      const sendUp = Effect.fn("test.sendUp")(function* (
+        who: string,
+        client: string,
+        intent: string,
+      ) {
+        const chatId = yield* chiefChat(who);
+        const text = `Proposal: three shoots, price: ____`;
+        const asking = yield* turnOn(who, chatId, `Can you draft this? ${text}`);
+        return yield* askFor("chief", asking.wakeupId, {
+          to: "Rhea",
+          question: "Approve the proposal?",
+          options: undefined,
+          detail: text,
+          intent,
+          draft: { kind: "proposal", for: client },
+        });
+      });
+
+      /** Rhea's turn puts a draft to herself, as the agent's instructions send a teammate's up. */
+      const askHerself = (at: { readonly wakeupId: KinWakeupId }, detail: string, client = "C-7") =>
+        askFor("chief", at.wakeupId, {
+          to: "Rhea",
+          question: "Approve the proposal?",
+          options: undefined,
+          about: undefined,
+          intent: undefined,
+          detail,
+          draft: { kind: "proposal", for: client },
+        });
+      // Zoya's proposal goes up; Rhea answers Changes first and says what to change in her chat.
+      const first = yield* sendUp("zoya", "C-7", "harbourline proposal");
+      // While it waits on her, another client's draft put to herself is refused as ever.
+      const early = yield* turnOn("rhea", chatOf("chief"), "Draft Tidewater one survey day.");
+      const notYet = yield* Effect.flip(askHerself(early, "Tidewater: one survey day", "C-8"));
+      // Her turns are told of a draft waiting on her redraft only while one does.
+      const WAITING = "# Drafts back from Changes first (not redrafted yet)";
+      const waitsOnHer = `${WAITING}\n\n- Zoya Sheikh's proposal for Harbourline Hotels (C-7): its new draft goes up with kin_ask_person and draft, or doc_create with draft; Kin puts it back on Rhea Rao's Approve card.`;
+      assert.notInclude(yield* team.promptOf(early.wakeupId, chatOf("chief")), WAITING);
+      assert.strictEqual(
+        notYet.message,
+        "Rhea Rao is in this chat: ask them here with kin_ask. Nothing was asked.",
+      );
+      yield* tap(owner, first.questionId, "option-2", "rhea-changes");
+      // No turn in Zoya's chat: it would know nothing of the change. Kin tells her what is true.
+      assert.deepStrictEqual(yield* team.answeredWakes, []);
+      assert.strictEqual(
+        (yield* team.kinLines(zoyaChat)).at(-1),
+        "Rhea Rao wants changes first; the new proposal goes back to Rhea Rao to approve.",
+      );
+      // A routine in Rhea's chat, with no word of hers, redoes nothing: filed as today.
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'`;
+      const routine = yield* team.wake("chief");
+      const unasked = yield* proposal(
+        { eventId: `event:${routine}` },
+        { title: "Morning draft", body: "Four shoots for the hotels" },
+      );
+      assert.notStrictEqual(unasked.key, "");
+      assert.notInclude(unasked.note ?? "", "Changes first");
+      assert.lengthOf(yield* drafts, 1);
+      yield* TestClock.adjust("1 minute");
+      const words = yield* turnOn("rhea", chatOf("chief"), "Make it four shoots, 3 lakh a month.");
+      assert.include(yield* team.promptOf(words.wakeupId, chatOf("chief")), waitsOnHer);
+      // Another client's proposal is another draft: today's plain card, nothing raised.
+      const other = yield* proposal(words, {
+        title: "Tidewater proposal",
+        body: "Tidewater: one survey day",
+        client: "C-8",
+      });
+      assert.notInclude(other.note ?? "", "Changes first");
+      assert.lengthOf(yield* drafts, 1);
+      // The redraft goes back to her with every figure in it, Zoya's read check or not, marked
+      // sensitive as an agent may mark a priced one: nothing filed, one new card asked for Zoya's
+      // chat, which holds the redraft only on Rhea's card.
+      const filed = yield* docCount;
+      const back = yield* proposal(words, { sensitive: true });
+      const told =
+        "Not filed: this is Zoya Sheikh's proposal back from Rhea Rao's Changes first, so Kin put it to Rhea Rao again with Approve and Changes first and told Zoya Sheikh. Say in one line that it is back with Rhea Rao to approve; don't repeat the draft.";
+      assert.deepInclude(back, { key: "", changed: false, note: told });
+      assert.strictEqual(yield* docCount, filed);
+      const [, redone] = yield* drafts;
+      assert.deepInclude(redone, {
+        state: "open",
+        chatId: chatOf("chief"),
+        forChatId: zoyaChat,
+        forPersonId: "zoya",
+        intent: "harbourline proposal",
+        text: REDRAFT,
+      });
+      const card = yield* team.cardOf(redone!.questionId);
+      assert.include((yield* team.widgetOf(card.widgetId!)).state, {
+        detail: `Zoya Sheikh asks, through Chief of staff.\n\n${REDRAFT}\n\nProposal for Harbourline Hotels`,
+      });
+      // Her waiting list shows it again as a draft to approve, and Meera's read-only row returns.
+      for (const who of [owner, team.person("meera")])
+        assert.isTrue(
+          (yield* waitingFor(who, { others: true }).pipe(
+            Effect.provideService(KinChatRepository, Context.get(services, KinChatRepository)),
+          )).some((item) => item.widgetId === card.widgetId && item.card === "draft"),
+        );
+      // The same call again in this turn finds that card; another text here is refused, so filed.
+      assert.deepInclude(yield* proposal(words, { sensitive: true }), { key: "", note: told });
+      assert.lengthOf(yield* drafts, 2);
+      // Kin showed Zoya her own draft as it went up; of Rhea's, once, the retry included, only
+      // Kin's line that it changed. Nothing in her chat holds the redraft or a figure of it.
+      assert.deepStrictEqual(yield* shownUp(zoyaChat), [
+        {
+          body: "With Rhea Rao to approve:\n\nProposal: three shoots, price: ____",
+          author: "agent",
+        },
+        {
+          body: "Rhea Rao changed the proposal; the new one is with Rhea Rao to approve.",
+          author: "system",
+        },
+      ]);
+      const herChat = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = ${zoyaChat} ORDER BY seq`;
+      const redrafted = ["four shoots", "lakh", "12,00,000", "45000"];
+      for (const { body } of herChat) for (const bit of redrafted) assert.notInclude(body, bit);
+      // Nor does her agent's next turn there read any of it.
+      const asksZoya = yield* turnOn("zoya", zoyaChat, "Any news on Harbourline?");
+      const herPrompt = yield* team.promptOf(asksZoya.wakeupId, zoyaChat);
+      assert.include(herPrompt, "Approve the proposal?");
+      for (const bit of redrafted) assert.notInclude(herPrompt, bit);
+      // While that one waits on her card, a later turn of hers is told of no draft to redo.
+      const later = yield* turnOn("rhea", chatOf("chief"), "Any news from Zoya?");
+      assert.notInclude(yield* team.promptOf(later.wakeupId, chatOf("chief")), WAITING);
+      assert.lengthOf(yield* drafts, 2);
+
+      // Changes first again: the next round goes back up by either call. First by kin_ask_person
+      // put to Rhea herself, as the agent's instructions send a draft up.
+      yield* tap(owner, redone!.questionId, "option-2", "rhea-changes-2");
+      const third = yield* turnOn("rhea", chatOf("chief"), "Add a reel.");
+      assert.include(yield* team.promptOf(third.wakeupId, chatOf("chief")), waitsOnHer);
+      // Never in Zoya's own turn, while it waits on Rhea.
+      const zoyaWaits = yield* turnOn("zoya", zoyaChat, "Is the proposal done?");
+      assert.notInclude(yield* team.promptOf(zoyaWaits.wakeupId, zoyaChat), WAITING);
+      // Its for naming no client or deal, as an agent may name the teammate there, it is still hers.
+      const byAsk = yield* askHerself(third, "Four shoots and a reel", "Zoya Sheikh");
+      assert.strictEqual(byAsk.note, `This is ${told.slice("Not filed: this is ".length)}`);
+      const [, , thirdUp] = yield* drafts;
+      assert.deepInclude(thirdUp, {
+        questionId: byAsk.questionId,
+        state: "open",
+        chatId: chatOf("chief"),
+        forChatId: zoyaChat,
+        forPersonId: "zoya",
+        intent: "harbourline proposal",
+        text: "Four shoots and a reel",
+      });
+      // Then by doc_create with draft, from her words alone while that card still waits on her:
+      // her redraft is her Changes first said in words, as closing it so is. No turn in Zoya's chat.
+      const fourth = yield* turnOn("rhea", chatOf("chief"), "Two reels.");
+      assert.deepInclude(yield* proposal(fourth, { body: "Four shoots and two reels" }), {
+        key: "",
+        note: told,
+      });
+      const [, , saidFirst, latest] = yield* drafts;
+      assert.deepInclude(saidFirst, { questionId: byAsk.questionId, state: "answered" });
+      assert.deepInclude(
+        (yield* team.widgetOf((yield* team.cardOf(byAsk.questionId)).widgetId!)).state,
+        {
+          outcome: { title: "Answered", text: "The new draft comes back to you to approve." },
+        },
+      );
+      assert.deepInclude(latest, { state: "open", forChatId: zoyaChat, forPersonId: "zoya" });
+      assert.deepStrictEqual(yield* team.answeredWakes, []);
+      assert.deepStrictEqual((yield* team.kinLines(zoyaChat)).slice(-2), [
+        "Rhea Rao wants changes first; the new proposal goes back to Rhea Rao to approve.",
+        "Rhea Rao changed the proposal; the new one is with Rhea Rao to approve.",
+      ]);
+
+      // Approve on the redraft has it made, and Zoya hears so, as on the first card.
+      yield* tap(owner, latest!.questionId, "option-1", "rhea-approve");
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'
+        AND dedupe_key IS NOT ${`question-approved:${latest!.questionId}`}`;
+      const approved = yield* startAgentWakeup({
+        orgId,
+        agentId: chief,
+        threadId: ThreadId.make("chief-thread"),
+        queued: true,
+      });
+      const turn = { orgId: org, agentId: chief, wakeupId: approved };
+      const of = yield* approvalOf(turn);
+      assert.strictEqual(of._tag === "approved" ? of.approval.draft.text : undefined, latest!.text);
+      const [approvedEvent] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+        FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${approved}`;
+      // What his Approve makes shows as its card in his chat, which no message of his woke.
+      const made = yield* LeadDocs.create(scopeOf("chief"), {
+        sourceEventId: approvedEvent!.eventId,
+        title: "Harbourline proposal",
+        body: latest!.text,
+        kind: "proposal",
+        client: "C-7",
+        draft: { kind: "proposal" },
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.notInclude(made.note ?? "", "couldn't be shown");
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")}
+          AND type = 'doc' AND json_extract(state_json, '$.key') = ${made.key}`,
+        1,
+      );
+      const [started] = yield* sql<{ at: number }>`SELECT started_at AS at FROM kin_wakeups
+        WHERE wakeup_id = ${approved}`;
+      yield* tellDraftMade({ ...turn, startedAt: started!.at }, chats);
+      assert.match(
+        (yield* team.kinLines(zoyaChat)).at(-1)!,
+        /^Rhea Rao approved; the proposal is in Docs/,
+      );
+
+      // Two drafts waiting on her Changes first that this redraft could be: neither is raised.
+      const zoyaTide = yield* sendUp("zoya", "C-8", "tidewater proposal");
+      const arjunTide = yield* sendUp("arjun", "C-8", "tidewater proposal for arjun");
+      yield* tap(owner, zoyaTide.questionId, "option-2", "rhea-changes-zoya");
+      yield* tap(owner, arjunTide.questionId, "option-2", "rhea-changes-arjun");
+      const both = yield* turnOn("rhea", chatOf("chief"), "Tidewater: make it four shoots.");
+      const asked = (yield* drafts).length;
+      const neither = yield* proposal(both, { title: "Tidewater proposal", client: "C-8" });
+      assert.notStrictEqual(neither.key, "");
+      assert.notInclude(neither.note ?? "", "Changes first");
+      assert.lengthOf(yield* drafts, asked);
+
+      // Her own mail card, sent up and answered Changes first: Rhea's edit of it goes back up.
+      const zoyaTurn = yield* turnOn("zoya", zoyaChat, "Mail Harbourline our launch date.");
+      const mail = yield* LeadDocs.create(scopeOf("chief"), {
+        sourceEventId: zoyaTurn.eventId,
+        title: "Launch date",
+        body: "We launch on 2 December.",
+        client: "C-7",
+        draft: { kind: "mail" },
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      const [mailCard] = yield* sql<{ widgetId: string }>`SELECT widget_id AS "widgetId"
+        FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${zoyaChat} AND type = 'doc'
+          AND json_extract(state_json, '$.key') = ${mail.key}`;
+      yield* DraftCards.sendUp([team.person("zoya")], {
+        orgId,
+        chatId: zoyaChat,
+        widgetId: KinWidgetId.make(mailCard!.widgetId),
+      });
+      const draftOf = Effect.fn("test.draftOf")(function* () {
+        const state = (yield* team.widgetOf(mailCard!.widgetId)).state as {
+          readonly draft: { readonly sent?: { name: string }; readonly changesFirst?: object };
+        };
+        return state.draft;
+      });
+      const [mailUp] = (yield* drafts).slice(-1);
+      yield* tap(owner, mailUp!.questionId, "option-2", "rhea-changes-mail");
+      // Her card stops saying it went up: it says Rhea asked for changes first, and sends again.
+      assert.notProperty(yield* draftOf(), "sent");
+      assert.deepInclude((yield* draftOf()).changesFirst, { name: "Rhea Rao" });
+      yield* TestClock.adjust("1 minute");
+      assert.deepStrictEqual(
+        yield* DraftCards.sendUp([team.person("zoya")], {
+          orgId,
+          chatId: zoyaChat,
+          widgetId: KinWidgetId.make(mailCard!.widgetId),
+        }),
+        { to: "Rhea Rao", held: false },
+      );
+      const [again] = (yield* drafts).slice(-1);
+      assert.notStrictEqual(again!.questionId, mailUp!.questionId);
+      assert.deepInclude((yield* draftOf()).sent, { name: "Rhea Rao" });
+      const shownBefore = yield* shownUp(zoyaChat);
+      // This round Rhea answers in words, and the agent closes it as Changes first: the same as
+      // her tap. No turn in Zoya's chat, Kin's line there, her card sendable, and Rhea's card
+      // doesn't ask her to say again what she just said.
+      const edit = yield* turnOn("rhea", chatOf("chief"), "Say 3 December, fee 300000.");
+      yield* Questions.closeQuestion(
+        {
+          orgId: org,
+          agentId: chief,
+          wakeupId: edit.wakeupId,
+          questionId: again!.questionId,
+          outcome: "answered",
+          answer: "Changes first",
+          now: yield* Clock.currentTimeMillis,
+        },
+        chats,
+        Context.get(services, KinEventQueue.KinEventQueue),
+      );
+      assert.deepStrictEqual(yield* team.answeredWakes, []);
+      assert.strictEqual(
+        (yield* team.kinLines(zoyaChat)).at(-1),
+        "Rhea Rao wants changes first; the new mail goes back to Rhea Rao to approve.",
+      );
+      assert.notProperty(yield* draftOf(), "sent");
+      assert.deepInclude(
+        (yield* team.widgetOf((yield* team.cardOf(again!.questionId)).widgetId!)).state,
+        {
+          outcome: { title: "Answered", text: "The new draft comes back to you to approve." },
+        },
+      );
+      // While Zoya can't see the mail, Rhea's edit of it is today's edit: nothing goes to her chat.
+      const herMessages = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = ${zoyaChat}`;
+      const herBefore = yield* herMessages;
+      const roundsBefore = (yield* drafts).length;
+      yield* sql`UPDATE kin_records SET fields_json = json_remove(fields_json, '$.draftFor')
+        WHERE org_id = ${orgId} AND key = ${mail.key}`;
+      const unseen = yield* LeadDocs.edit(scopeOf("chief"), {
+        key: mail.key,
+        sourceEventId: edit.eventId,
+        summary: "Reworded",
+        operations: [{ op: "replace_phrase", find: "We launch", replace: "We start" }],
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.notInclude(unseen.note ?? "", "Changes first");
+      assert.lengthOf(yield* drafts, roundsBefore);
+      assert.notProperty(yield* draftOf(), "sent");
+      assert.deepStrictEqual(yield* herMessages, herBefore);
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.draftFor', 'zoya')
+        WHERE org_id = ${orgId} AND key = ${mail.key}`;
+      // Her edit of Zoya's own mail, a doc Zoya opens, goes up with it.
+      const cardsBefore = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
+        WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'`;
+      const edited = yield* LeadDocs.edit(scopeOf("chief"), {
+        key: mail.key,
+        sourceEventId: edit.eventId,
+        summary: "Moved to 3 December",
+        operations: [
+          { op: "replace_phrase", find: "2 December", replace: "3 December, for ₹3,00,000" },
+        ],
+        card: true,
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.strictEqual(
+        edited.note,
+        "This is Zoya Sheikh's mail back from Rhea Rao's Changes first, so Kin put it to Rhea Rao again with Approve and Changes first and told Zoya Sheikh. Say in one line that it is back with Rhea Rao to approve; don't repeat the draft.",
+      );
+      assert.deepInclude((yield* drafts).at(-1), {
+        state: "open",
+        forChatId: zoyaChat,
+        text: "We start on 3 December, for ₹3,00,000.\n",
+      });
+      // Her card reads sent again with the redraft's text: Kin posts it nowhere else.
+      assert.deepInclude((yield* draftOf()).sent, { name: "Rhea Rao" });
+      assert.deepStrictEqual(yield* shownUp(zoyaChat), shownBefore);
+      // Its Approve card carries it: no doc card of it in her chat as well.
+      assert.deepStrictEqual(
+        yield* sql`SELECT COUNT(*) AS n FROM kin_widgets WHERE org_id = ${orgId}
+          AND chat_id = ${chatOf("chief")} AND type = 'doc'`,
+        cardsBefore,
+      );
+
+      // Zoya is removed after Rhea's Changes first: Rhea's edit is today's, and nothing reaches her.
+      const [lastUp] = (yield* drafts).slice(-1);
+      yield* tap(owner, lastUp!.questionId, "option-2", "rhea-changes-mail-last");
+      const people = yield* People.KinPeople.pipe(
+        Effect.provide(
+          People.layer.pipe(
+            Layer.provide(
+              Layer.mock(SessionStore)({
+                cookieName: "kin",
+                legacyCookieName: undefined,
+                revoke: () => Effect.succeed(true),
+              }),
+            ),
+            Layer.provide(Layer.succeedContext(services)),
+          ),
+        ),
+      );
+      yield* people.removeAccess(
+        {
+          sessionId: AuthSessionId.make("owner"),
+          subject: "browser",
+          method: "browser-session-cookie",
+          scopes: AuthStandardClientScopes,
+        },
+        { orgId, personId: KinPersonId.make("zoya") },
+      );
+      const leftWith = yield* herMessages;
+      const roundsLeft = (yield* drafts).length;
+      const gone = yield* turnOn("rhea", chatOf("chief"), "Make it 4 December.");
+      const after = yield* LeadDocs.edit(scopeOf("chief"), {
+        key: mail.key,
+        sourceEventId: gone.eventId,
+        summary: "Moved to 4 December",
+        operations: [{ op: "replace_phrase", find: "3 December", replace: "4 December" }],
+      }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.include(
+        after.note,
+        "This is Zoya Sheikh's mail back from Rhea Rao's Changes first, but Kin couldn't put it to Rhea Rao again: Zoya Sheikh is no longer here. Nothing was asked.",
+      );
+      assert.lengthOf(yield* drafts, roundsLeft);
+      assert.deepStrictEqual(yield* herMessages, leftWith);
+
+      // Rhea answers Arjun's redraft in words: the turn in his chat may send up a new draft, but
+      // no figure of hers is his, since it never was held to him.
+      const arjunUp = yield* sendUp("arjun", "C-7", "harbourline proposal for arjun");
+      yield* tap(owner, arjunUp.questionId, "option-2", "rhea-changes-arjun-7");
+      const priced = yield* turnOn("rhea", chatOf("chief"), "Make it 3 lakh a month.");
+      assert.deepInclude(yield* proposal(priced), { key: "" });
+      const [arjunRedo] = (yield* drafts).slice(-1);
+      const holds = yield* turnOn("rhea", chatOf("chief"), "Hold it until January.");
+      yield* Questions.closeQuestion(
+        {
+          orgId: org,
+          agentId: chief,
+          wakeupId: holds.wakeupId,
+          questionId: arjunRedo!.questionId,
+          outcome: "answered",
+          answer: "Hold it until January",
+          now: yield* Clock.currentTimeMillis,
+        },
+        chats,
+        Context.get(services, KinEventQueue.KinEventQueue),
+      );
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'
+        AND dedupe_key IS NOT ${`question-answered:${arjunRedo!.questionId}`}`;
+      const inArjuns = yield* startAgentWakeup({
+        orgId,
+        agentId: chief,
+        threadId: ThreadId.make("chief-thread"),
+        queued: true,
+      });
+      const refused = yield* Effect.flip(
+        askFor("chief", inArjuns, {
+          to: "Rhea",
+          question: "Approve the proposal?",
+          options: undefined,
+          detail: "Proposal: four shoots from January, ₹12,00,000 in all",
+          intent: "harbourline proposal for arjun",
+          draft: { kind: "proposal", for: "C-7" },
+        }),
+      );
+      assert.strictEqual(
+        refused.message,
+        "Not for Arjun Nair: “₹12,00,000” reads as an amount of money, which they may not see. Nothing was asked.",
       );
     }).pipe(Effect.provide(layer)),
   ),

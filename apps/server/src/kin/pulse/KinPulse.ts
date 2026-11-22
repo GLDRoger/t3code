@@ -95,7 +95,7 @@ export type Viewer =
   | { readonly _tag: "owner" }
   | { readonly _tag: "people"; readonly people: ReadonlyArray<KinPersonId> };
 
-const context = Effect.fn("KinPulse.context")(function* (orgId: KinOrgId, at: number) {
+export const context = Effect.fn("KinPulse.context")(function* (orgId: KinOrgId, at: number) {
   const sql = yield* SqlClient.SqlClient;
   const chief = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
   const leads = yield* sql<{ agentId: string; domain: string }>`SELECT l.agent_id AS "agentId",

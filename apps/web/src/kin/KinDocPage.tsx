@@ -90,6 +90,7 @@ import { KinDocFileDialog } from "./KinDocFileDialog";
 import { KinDocReader } from "./KinDocReader";
 import { openDestination } from "./KinNotifications";
 import { KinLinkedGroups } from "./KinWorkItemSheet";
+import { KinWatchLine } from "./KinWatchLine";
 import { KinWorkShareRow } from "./KinWorkShareRow";
 import { KinWorkNotice, KinLoadFailed } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
@@ -299,6 +300,14 @@ export function KinDocPage(
       )}
       {doc === null || comparing !== undefined ? null : (
         <KinDocFiling doc={doc} canFile={canFile} onFile={() => setFiling(true)} />
+      )}
+      {doc === null || comparing !== undefined ? null : (
+        <KinWatchLine
+          environmentId={environmentId}
+          orgId={orgId}
+          recordKey={doc.key}
+          className="mx-auto w-full max-w-3xl px-6 pt-3"
+        />
       )}
       {doc === null ||
       comparing !== undefined ||

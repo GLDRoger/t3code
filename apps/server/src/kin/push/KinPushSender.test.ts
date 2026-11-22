@@ -480,7 +480,7 @@ describe("KinPushSender", () => {
       assert.deepStrictEqual(alerts(apns.sent), [
         { title: "Payments team", body: "Confirm receipt R-12 from Harbourline?" },
       ]);
-      // It stacks under the chat like its messages do.
+      // It carries an id of its own, as its messages do.
       assert.match(apns.sent[0]?.collapseId ?? "", /^kin:/);
 
       // An agent's open question with two plain answers carries them as the notice's buttons.
@@ -928,6 +928,7 @@ describe("KinPushSender", () => {
           [ownerPhone, ownerTablet],
         ],
       ] as const;
+      const earlier = new Set<string | undefined>();
       for (const [name, author, options, expected] of cases) {
         apns.sent.length = 0;
         const messageId = yield* postMessage(sql, author, "posted", options);
@@ -937,6 +938,7 @@ describe("KinPushSender", () => {
           [...expected],
           name,
         );
+        for (const push of apns.sent) earlier.add(push.collapseId);
       }
 
       // Another unprompted line for Priya inside half an hour lands without ringing; after it, rings.
@@ -960,6 +962,8 @@ describe("KinPushSender", () => {
         JSON.stringify(apns.sent[0]?.payload),
         '"deepLink":"/kin/env_kin/org_01/chats/chat_team"',
       );
+      // Each message is its own notification: a phone tells taps apart by this id.
+      assert.isFalse(earlier.has(apns.sent[0]?.collapseId));
 
       apns.sent.length = 0;
       const dm = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {

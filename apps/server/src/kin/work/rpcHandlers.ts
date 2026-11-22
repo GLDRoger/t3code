@@ -31,6 +31,7 @@ import * as CheckIns from "../pulse/checkIns.ts";
 import * as Pulse from "../pulse/people.ts";
 import * as Open from "../open/people.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { withWatch } from "../watches/readRpcs.ts";
 import * as Goals from "./goals.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Deals from "./deals.ts";
@@ -110,7 +111,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
         return yield* call((people) => Work.list(people, input));
       }),
       "kin.work.get": Effect.fn("KinWork.rpc.get")(function* (input) {
-        return yield* call((people) => Work.get(people, input));
+        return yield* call((people) =>
+          Work.get(people, input).pipe(Effect.flatMap((detail) => withWatch(people, detail))),
+        );
       }),
       // Rows only for a client that asks: an older phone keeps getting `changed`.
       "kin.work.subscribe": (input) =>

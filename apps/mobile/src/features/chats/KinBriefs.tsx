@@ -21,11 +21,10 @@ import { useState } from "react";
 
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
-import { KinWorkLoading } from "./components/KinWorkPieces";
+import { KinWorkLoading, KinWorkToggleRow } from "./components/KinWorkPieces";
 import { KinCheckInRows, KinClockRow, useCheckIns } from "./KinCheckIns";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { kinClient, refreshKinBriefs } from "./state/kinClient";
@@ -193,7 +192,7 @@ function BriefForm(
           .join(" ")}
       >
         {fields.includes("on") ? (
-          <ListToggleRow
+          <KinWorkToggleRow
             label={KIN_BRIEFS.on}
             value={draft.on}
             disabled={saving}

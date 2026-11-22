@@ -140,6 +140,7 @@ describe("KinRefreshHub", () => {
           pulse: 0,
           workLists: 0,
           stop: 0,
+          watches: 0,
           company: 0,
           boot,
           streams: KIN_STREAMS,
@@ -190,6 +191,7 @@ describe("KinRefreshHub", () => {
           pulse: 0,
           workLists: 0,
           stop: 0,
+          watches: 0,
           company: 0,
           boot,
           streams: KIN_STREAMS,
@@ -476,7 +478,10 @@ describe("KinRefreshHub", () => {
         "chat/KinChatRepository.ts",
         "recommend/KinRecommend.ts",
         "recommend/card.ts",
-      ],
+      ], // The watch list and its log: written only by the watch service, every write moving `watches`.
+      // The round, the watch RPCs and retention reach it (pinned below), nothing else.
+      kin_watches: ["watches/KinWatches.ts"],
+      kin_watch_looks: ["watches/KinWatches.ts"],
     };
     const write = new RegExp(
       `(?:INSERT INTO|UPDATE|DELETE FROM)\\s+(${Object.keys(writers).join("|")})\\b`,
@@ -489,6 +494,22 @@ describe("KinRefreshHub", () => {
         if (!writers[match[1]!]!.includes(file)) found.push(`${file}: ${match[1]}`);
     }
     assert.deepStrictEqual(found, []);
+    const watchWriters = NodeFS.readdirSync(root, { recursive: true, encoding: "utf8" }).filter(
+      (file) =>
+        file.endsWith(".ts") &&
+        !/\.test\.ts$/.test(file) &&
+        /from "(?:\.\.?\/)+(?:watches\/)?KinWatches\.ts"/.test(
+          NodeFS.readFileSync(NodePath.join(root, file), "utf8"),
+        ),
+    );
+    assert.deepStrictEqual(watchWriters.toSorted(), [
+      "persistence/KinRetention.ts",
+      "watches/KinWatchRounds.ts",
+      "watches/rpcHandlers.ts",
+    ]);
+    const watches = NodeFS.readFileSync(NodePath.join(root, "watches/KinWatches.ts"), "utf8");
+    // Each writer but retention's prune moves the topic: upsert, the clock, a round, and the buttons.
+    assert.strictEqual(watches.match(/touch\(orgId, "watches"\)/g)?.length, 6);
     const routines = NodeFS.readFileSync(NodePath.join(root, "triggers/routines.ts"), "utf8");
     assert.include(routines, "keepAllDayDays(settings.orgId, before, settings.timeZone)");
     for (const topic of ["pulse", "moneyStatements"])

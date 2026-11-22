@@ -156,6 +156,7 @@ export const KIN_DOCS = {
   sending: "Sending…",
   sentTo: (name: string) => `Sent to ${name} to approve.`,
   sentHeld: (name: string) => `Sent. ${name} gets it to approve when they're back.`,
+  changesFirst: (name: string) => `${name} asked for changes first.`,
   sendFailed: "Couldn't send it.",
   sendOffline: "You're offline. Send it when the connection is back.",
   noAccount: (service: string, by: string | null) =>
@@ -1193,7 +1194,7 @@ export interface KinDocCardDraftView {
   readonly copyText: string;
   /** The "Send to" button's label, or null when this reader has nothing to send up. */
   readonly sendTo: string | null;
-  /** That it went up, and to whom, once sent. */
+  /** That it went up, and to whom, once sent; or that its owner asked for changes first. */
   readonly sent: string | null;
   /** Why Kin can't post it, and who can fix that. */
   readonly noAccount: string | null;
@@ -1219,7 +1220,9 @@ export function kinDocCardDraft(
         : KIN_DOCS.sendTo(draft.sendTo.name),
     sent:
       draft.sent === undefined
-        ? null
+        ? draft.changesFirst === undefined
+          ? null
+          : KIN_DOCS.changesFirst(draft.changesFirst.name)
         : draft.sent.held === true
           ? KIN_DOCS.sentHeld(draft.sent.name)
           : KIN_DOCS.sentTo(draft.sent.name),

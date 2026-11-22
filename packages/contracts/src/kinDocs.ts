@@ -598,6 +598,8 @@ export const KinDocCardDraft = Schema.Struct({
       held: Schema.optional(Schema.Literal(true)),
     }),
   ),
+  /** Its owner answered Changes first on what went up, and when: it may go up again. */
+  changesFirst: Schema.optional(Schema.Struct({ name: KinTrimmedText, at: IsoDateTime })),
   /** Kin can't post it: no account on this service is connected, and who can connect one. */
   noAccount: Schema.optional(Schema.Struct({ service: KinTrimmedText, by: KinNamedPerson })),
 });

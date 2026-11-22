@@ -460,6 +460,16 @@ describe("kinDocCopyText", () => {
     expect(kinDocCardDraft({ draft: held }, false, false)?.sent).toBe(
       "Sent. Rhea gets it to approve when they're back.",
     );
+    // The owner asked for changes first: sendable again, and it says why; sent again, it says so.
+    const changesFirst = { name: "Rhea", at: "2026-11-16T07:00:00.000Z" };
+    expect(kinDocCardDraft({ draft: { ...draft, changesFirst } }, false, false)).toMatchObject({
+      sendTo: "Send to Rhea",
+      sent: "Rhea asked for changes first.",
+    });
+    expect(kinDocCardDraft({ draft: { ...sent, changesFirst } }, false, false)).toMatchObject({
+      sendTo: null,
+      sent: "Sent to Rhea to approve.",
+    });
     expect(kinDocCardDraft({ draft: null }, false, false)).toBeNull();
   });
 });

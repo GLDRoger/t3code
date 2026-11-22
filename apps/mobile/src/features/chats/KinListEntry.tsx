@@ -65,7 +65,6 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -90,6 +89,7 @@ import {
   KinWorkLoading,
   KinWorkPrivateMark,
   KinWorkTextField,
+  KinWorkToggleRow,
   useKinAskBeforeDiscard,
 } from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
@@ -116,6 +116,7 @@ import {
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
+import { KinWatchLine } from "./KinWatchLine";
 
 const NO_PLAYBACK = () => {};
 const DAY = "day:";
@@ -480,6 +481,7 @@ export function KinListEntryBody(
         <Notice message={changes.problem} tone="danger" onDismiss={changes.dismiss} />
       )}
       <KinAsideNote environmentId={environmentId} orgId={orgId} record={item.key} names={names} />
+      <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={item.key} />
       <ListSection>
         {!canChange || quote !== null ? null : (
           <Menu
@@ -1236,7 +1238,7 @@ function KinListSettingsForm(props: KinWorkTarget & { readonly def: KinListDefin
       )}
       {!kinListCanTogglePayments(def) ? null : (
         <ListSection footer={KIN_LISTS.edit.paymentsDetail}>
-          <ListToggleRow
+          <KinWorkToggleRow
             label={KIN_LISTS.edit.payments}
             value={draft.payments}
             disabled={changes.busy}

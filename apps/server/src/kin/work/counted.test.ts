@@ -47,6 +47,8 @@ const OWN_READS: Readonly<Record<string, number>> = {
   // one against its rows: amounts matched and named, nothing summed.
   "work/statements/bankAlerts.ts": 2,
   "work/statements/statementReview.ts": 4,
+  // One invoice's own amount and payments: whether it is paid in full, so its watch closes.
+  "watches/kinds/invoicePaid.ts": 1,
   // Whether a figure in a message is the sum on some entry or payment its reader can't see.
   "work/teamView.ts": 3,
 };

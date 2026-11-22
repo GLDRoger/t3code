@@ -56,7 +56,6 @@ import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Menu } from "../../components/ui/Menu";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
@@ -66,6 +65,7 @@ import { SettingsRow } from "../settings/components/SettingsRow";
 import { KinAvatar } from "./components/KinAvatar";
 import { kinClient } from "./state/kinClient";
 import { useKinHostAt } from "./state/useKinHost";
+import { KinWorkToggleRow } from "./components/KinWorkPieces";
 
 export type KinGroupParams = {
   readonly environmentId: string;
@@ -415,7 +415,7 @@ function KinGroupDetails(props: {
       ) : null}
       {canMute && personId !== null ? (
         <ListSection title="Notifications">
-          <ListToggleRow
+          <KinWorkToggleRow
             label="Mute notifications"
             value={muted}
             onValueChange={(next) =>
@@ -423,7 +423,7 @@ function KinGroupDetails(props: {
             }
           />
           {canPin ? (
-            <ListToggleRow
+            <KinWorkToggleRow
               label={KIN_CHATS_PIN.setting}
               description={KIN_CHATS_PIN.settingDetail}
               value={kinChatPinned(group, new Set([personId]))}

@@ -1,7 +1,11 @@
 import {
+  type KinAgentId,
   KinChatError,
   type KinChatId,
+  KinChoiceCardState,
   KinChoiceOption,
+  KinMessageId,
+  type KinOrgId,
   type KinPersonId,
   KinText,
   KinTrimmedText,
@@ -9,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -18,7 +23,7 @@ import * as NodeCrypto from "node:crypto";
 
 import { storedClientId } from "../chat/KinChatRepository.ts";
 import { keysIn } from "../chat/messageLinks.ts";
-import type { KinChatService } from "../chat/KinChatService.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
 import {
   aborted,
@@ -29,6 +34,7 @@ import {
   turnPeople,
 } from "../lead/Audience.ts";
 import { arrivesNote } from "../lead/Handoff.ts";
+import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import type { KinLevelGate } from "../lead/LevelGate.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
@@ -39,18 +45,32 @@ import { heldUntil } from "../triggers/quietHold.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
-import { personSees, unreadableBy, withoutOwnFigures } from "../work/teamView.ts";
+import { personSees, unreadableBy, viewVisible } from "../work/teamView.ts";
 import {
   DRAFT_KINDS,
   answeredEventId,
+  approvalOf,
+  CHANGES_FIRST,
   decodeStoredDraft,
   DRAFT_OPTIONS,
+  DRAFT_WORDS,
   draftDetail,
   draftLine,
   encodeStoredDraft,
   type StoredDraft,
 } from "./approval.ts";
-import { askedBy, encodeHeldCard, openFor, personClock, readQuestion } from "./openQuestions.ts";
+import {
+  askedBy,
+  closeQuestion,
+  draftCardsAbout,
+  draftsOnHerCard,
+  encodeHeldCard,
+  openFor,
+  personClock,
+  readQuestion,
+  redoId,
+  waitingRedrafts,
+} from "./openQuestions.ts";
 import { defaultDue, namedDue, normaliseAbout, normaliseIntent, raiseAt } from "./rules.ts";
 
 /** What an agent asks someone outside the chat: `kin_ask`'s card, with no default or actions. */
@@ -108,6 +128,7 @@ const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).dige
 /** Draft kinds a teammate files as her own card, which she sends up herself. */
 const CARD_KINDS: ReadonlyArray<StoredDraft["kind"]> = ["mail", "post"];
 const flat = (text: string) => text.replace(/\s+/g, " ").trim();
+const cardHolds = Schema.is(KinChoiceCardState.fields.detail);
 
 /** The same thing asked of the same person: one intent, and a record in common unless one names none. */
 const askedAgain = (
@@ -131,8 +152,62 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
   input: typeof AskPersonInput.Type,
   deps: AskDeps,
 ) {
+  const of = input.draft === undefined ? undefined : yield* sentBack(lead, input.to, input.draft);
+  if (of !== undefined)
+    return yield* redo(lead, of, input.detail ?? "", deps).pipe(
+      Effect.map((asked) => ({ ...asked, note: `This is ${redoRaised(of, asked.state)}` })),
+      Effect.catchTags({
+        KinChatError: (error) =>
+          Effect.fail(new KinChatError({ reason: error.reason, message: redoRefused(of, error) })),
+      }),
+    );
   return yield* ask({ _tag: "turn", lead }, input, deps.chat, deps.gate.askTo);
 });
+
+/**
+ * A draft put to the agent's owner in her own turn that is her redraft of one waiting on her
+ * Changes first (`redoOf`): the same kind, for the client or deal it names, or for any when it
+ * names none, since a draft put to her is never anything but a redraft.
+ */
+const sentBack = Effect.fn("KinQuestions.sentBack")(function* (
+  lead: TurnLead,
+  to: string,
+  draft: NonNullable<typeof AskPersonInput.Type.draft>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [agent] = yield* sql<{ owner: KinPersonId }>`SELECT owner_person_id AS owner
+    FROM kin_agents WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}
+      AND retired_at IS NULL`;
+  const found = yield* personNamed(lead.orgId, to);
+  if (agent === undefined || found._tag !== "found" || found.item.id !== agent.owner)
+    return undefined;
+  const named = draft.for === undefined ? [] : keysIn(draft.for);
+  const parties =
+    named.length === 0
+      ? []
+      : yield* sql<{ partyId: string | null }>`SELECT
+            CASE WHEN r.register_id = 'clients' THEN r.record_id ELSE r.party_id END AS "partyId"
+          FROM kin_records r
+          WHERE r.org_id = ${lead.orgId} AND r.key IN ${sql.in(named)}
+            AND r.register_id IN ('clients', 'deals')
+          ORDER BY r.key`;
+  if (named.length > 0 && parties.length !== 1) return undefined;
+  return yield* redoOf(
+    { orgId: lead.orgId, agentId: lead.agentId, wakeupId: lead.wakeupId },
+    named.length === 0 ? { kind: draft.kind } : { kind: draft.kind, partyId: parties[0]!.partyId },
+  );
+});
+
+const backFrom = (of: Redraft) =>
+  `${of.draft.names.asker}'s ${DRAFT_WORDS[of.draft.kind]} back from ${of.draft.names.owner}'s Changes first`;
+/** What the agent is told of its redraft that went back up (`redo`). */
+export const redoRaised = (of: Redraft, state: "posted" | "held") => {
+  const { owner, asker } = of.draft.names;
+  return `${backFrom(of)}, so Kin put it to ${owner} again with Approve and Changes first and told ${asker}.${state === "held" ? ` It reaches ${owner} once their quiet hours or time away end.` : ""} Say in one line that it is back with ${owner} to approve; don't repeat the draft.`;
+};
+/** What the agent is told when its redraft couldn't go back up, and why. */
+export const redoRefused = (of: Redraft, error: KinChatError) =>
+  `This is ${backFrom(of)}, but Kin couldn't put it to ${of.draft.names.owner} again: ${error.message}`;
 
 /**
  * A teammate's own "Send to" on a draft card in their direct chat with the agent: the same ask,
@@ -142,7 +217,7 @@ export const sendUpFromCard = Effect.fn("KinQuestions.sendUpFromCard")(function*
   press: Omit<Press, "_tag" | "mayPost">,
   input: typeof AskPersonInput.Type,
   deps: {
-    readonly chat: AskDeps["chat"] & Pick<KinChatService["Service"], "mayPost">;
+    readonly chat: AskDeps["chat"];
     readonly gate: Pick<KinLevelGate["Service"], "askToOnPress">;
   },
 ) {
@@ -154,7 +229,10 @@ export const sendUpFromCard = Effect.fn("KinQuestions.sendUpFromCard")(function*
 });
 
 type AskDeps = {
-  readonly chat: Pick<KinChatService["Service"], "createDirect" | "notice">;
+  readonly chat: Pick<
+    KinChatService["Service"],
+    "createDirect" | "notice" | "setDocCardSent" | "mayPost"
+  >;
   readonly gate: Pick<KinLevelGate["Service"], "askTo">;
 };
 type Press = {
@@ -163,6 +241,8 @@ type Press = {
   readonly personId: KinPersonId;
   readonly chatId: KinChatId;
   readonly widgetId: string;
+  /** Since the owner's last Changes first on what it sent, if any: a new round asks anew. */
+  readonly round?: string | undefined;
   /** A post's service, by name, as the draft's card holds it. */
   readonly on?: string;
   /** The turn that wrote the card: what she wrote it from is hers here too (`draftSource`). */
@@ -170,9 +250,118 @@ type Press = {
   /** Checks the press as a message of theirs in that chat would be checked (`send`). */
   readonly mayPost: ReturnType<KinChatService["Service"]["mayPost"]>;
 };
+type TurnLead = AgentIdentity & { readonly wakeupId: KinWakeupId };
+/** A draft still waiting on the owner's Changes first, as `redoOf` found it. */
+export type Redraft = {
+  readonly questionId: string;
+  readonly question: string;
+  readonly about: ReadonlyArray<string>;
+  readonly intent: string;
+  readonly forChatId: KinChatId;
+  readonly forPersonId: KinPersonId;
+  readonly draft: StoredDraft;
+};
 type AskFrom =
-  | { readonly _tag: "turn"; readonly lead: AgentIdentity & { readonly wakeupId: KinWakeupId } }
-  | Press;
+  | { readonly _tag: "turn"; readonly lead: TurnLead }
+  | Press
+  /** The owner's turn redrafting one that waits on her Changes first: asked for its chat again. */
+  | { readonly _tag: "redo"; readonly lead: TurnLead; readonly of: Redraft };
+
+/**
+ * The owner's redraft of a teammate's draft she answered Changes first on goes to her again as
+ * the first one did: the same ask, for the teammate's chat, from the answered question.
+ */
+export const redo = Effect.fn("KinQuestions.redo")(function* (
+  lead: TurnLead,
+  of: Redraft,
+  text: string,
+  deps: AskDeps,
+) {
+  return yield* ask(
+    { _tag: "redo", lead, of },
+    {
+      to: lead.ownerPersonId,
+      question: of.question,
+      detail: text,
+      draft: {
+        kind: of.draft.kind,
+        ...(of.draft.for === null ? {} : { for: of.draft.for.key }),
+      },
+      ...(of.about.length === 0 ? {} : { about: of.about }),
+      ...(of.intent === "" ? {} : { intent: of.intent }),
+    },
+    deps.chat,
+    deps.gate.askTo,
+  );
+});
+
+/**
+ * In the owner's turn on her words, the one teammate's draft waiting on her redraft that this is
+ * (same kind and client, any client if none given, or an edit of its doc); else the one whose card
+ * still waits on her, closed as her Changes first in words. `seen`: records the teammate must see.
+ */
+export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
+  turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: KinWakeupId },
+  redraft:
+    | { readonly kind: StoredDraft["kind"]; readonly partyId?: string | null }
+    | { readonly docKey: string },
+  seen: ReadonlyArray<string> = [],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if ((yield* effectiveAudience(turn)) !== "owner_only") return undefined;
+  if ((yield* approvalOf(turn))._tag !== "none") return undefined;
+  const lane = yield* laneFor(turn);
+  if (Option.isNone(lane) || lane.value.team === true) return undefined;
+  // Only a turn answering the owner's own words there redoes: never a routine or a check-in.
+  const [agent] = yield* sql<{ owner: KinPersonId }>`SELECT owner_person_id AS owner
+    FROM kin_agents WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId}`;
+  if (
+    agent === undefined ||
+    (yield* ownMessages(turn, lane.value.chatId, agent.owner)).length === 0
+  )
+    return undefined;
+  const chatId = lane.value.chatId;
+  type Row = {
+    readonly about: ReadonlyArray<string>;
+    readonly forPersonId: KinPersonId;
+    readonly draft: StoredDraft;
+  };
+  const isIt = (row: Row) =>
+    "docKey" in redraft
+      ? row.about.includes(redraft.docKey)
+      : row.draft.kind === redraft.kind &&
+        (redraft.partyId === undefined || (row.draft.for?.partyId ?? null) === redraft.partyId);
+  const matching = <A extends Row>(rows: ReadonlyArray<A>) =>
+    Effect.filter(rows.filter(isIt), (row) =>
+      Effect.forEach(seen, (id) => viewVisible(turn.orgId, [row.forPersonId], id)).pipe(
+        Effect.map((each) => each.every(Boolean)),
+      ),
+    );
+  const found = yield* matching(yield* waitingRedrafts(turn, chatId));
+  if (found.length > 0) return found.length === 1 ? found[0] : undefined;
+  const onCard = yield* matching(yield* draftsOnHerCard(turn, chatId));
+  const chat = yield* Effect.serviceOption(KinChatService);
+  const queue = yield* Effect.serviceOption(KinEventQueue);
+  if (onCard.length !== 1 || Option.isNone(chat) || Option.isNone(queue)) return undefined;
+  // Whatever closed it first, her tap or this, the card now waits on a redraft or on nothing.
+  yield* sql
+    .withTransaction(
+      closeQuestion(
+        {
+          ...turn,
+          questionId: onCard[0]!.questionId,
+          outcome: "answered",
+          answer: CHANGES_FIRST,
+          now: yield* Clock.currentTimeMillis,
+        },
+        chat.value,
+        queue.value,
+      ),
+    )
+    .pipe(Effect.catchTags({ KinChatError: () => Effect.void }));
+  const now = yield* matching(yield* waitingRedrafts(turn, chatId));
+  return now.length === 1 ? now[0] : undefined;
+});
 
 const ask = Effect.fn("KinQuestions.ask")(function* (
   from: AskFrom,
@@ -181,25 +370,42 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
   askTo: KinLevelGate["Service"]["askTo"],
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const lead = from._tag === "turn" ? from.lead : from.agent;
+  const lead = from._tag === "press" ? from.agent : from.lead;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const { orgId, agentId } = lead;
-      const turn = from._tag === "turn" ? { orgId, agentId, wakeupId: from.lead.wakeupId } : null;
+      const turn = from._tag === "press" ? null : { orgId, agentId, wakeupId: from.lead.wakeupId };
       const press = from._tag === "press" ? from : null;
+      const redone = from._tag === "redo" ? { ...from.of, wakeupId: from.lead.wakeupId } : null;
       if (press !== null) yield* press.mayPost;
+      // A redraft goes to her chat only while she is still a member who may write there.
+      if (redone !== null) {
+        const her = { _tag: "person" as const, orgId, personId: redone.forPersonId };
+        const stays =
+          (yield* Reach.reaches(orgId, Reach.person(her.personId), Reach.agent(agentId))) &&
+          (yield* chat
+            .mayPost(her, redone.forChatId)
+            .pipe(
+              Effect.as(true),
+              Effect.catchTags({ KinChatError: () => Effect.succeed(false) }),
+            ));
+        if (!stays) return yield* refuse(`${redone.draft.names.asker} is no longer here.`);
+      }
       if (turn !== null && (yield* aborted(turn)))
         return yield* refuse("Someone else joined this chat while you were working.");
       if (turn !== null && (yield* passedOn(turn)))
         return yield* refuse(
           "This was passed on to you by another agent, so it stops with you: ask nobody further from here.",
         );
-      const lane = turn === null ? null : yield* laneFor(turn);
+      const lane = turn === null || redone !== null ? null : yield* laneFor(turn);
+      const own =
+        press ??
+        (redone === null ? null : { chatId: redone.forChatId, personId: redone.forPersonId });
       const [here] =
-        press !== null
+        own !== null
           ? yield* sql<{ chatId: KinChatId }>`SELECT chat_id AS "chatId" FROM kin_chats
-              WHERE org_id = ${orgId} AND chat_id = ${press.chatId} AND kind = 'direct'
-                AND archived_at IS NULL AND direct_key = ${directKey(press.personId, agentId)}`
+              WHERE org_id = ${orgId} AND chat_id = ${own.chatId} AND kind = 'direct'
+                AND archived_at IS NULL AND direct_key = ${directKey(own.personId, agentId)}`
           : lane === null || lane._tag === "None" || lane.value.team === true
             ? []
             : yield* sql<{ chatId: KinChatId }>`SELECT chat_id AS "chatId" FROM kin_chats
@@ -217,9 +423,9 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
         JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
         WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId} AND a.retired_at IS NULL`;
       if (self === undefined) return yield* refuse("You are no longer here.");
-      const asker = turn === null ? (press?.personId ?? null) : yield* turnAsker(turn);
+      const asker = own !== null ? own.personId : turn === null ? null : yield* turnAsker(turn);
       const ownerTurn =
-        turn === null
+        turn === null || redone !== null
           ? asker === null || (yield* ownerLevel(orgId, asker))
           : (yield* effectiveAudience(turn)) === "owner_only";
       const chatPerson = yield* sql<{ personId: KinPersonId }>`SELECT person_id AS "personId"
@@ -229,7 +435,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
         return yield* refuse(`${target.name} is in this chat: ask them here with kin_ask.`);
       const targetOwnerSide = target.id === self.owner || (yield* ownerLevel(orgId, target.id));
       // A teammate's own request, from their own direct chat: only to someone who decides for them.
-      if (!ownerTurn && turn !== null) {
+      if (!ownerTurn && turn !== null && redone === null) {
         const askers = (yield* turnPeople(turn))?.askers ?? [];
         if (
           askers.length !== 1 ||
@@ -264,19 +470,17 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
             "Kin writes this card's buttons, Approve and Changes first: leave out options when you send a draft up.",
           );
         const source =
-          turn ?? (press?.madeIn === undefined ? null : { orgId, agentId, wakeupId: press.madeIn });
-        const from = source === null ? undefined : yield* draftSource(source, here.chatId, asker);
-        hers = from?.texts;
-        if (turn !== null && from === undefined)
+          redone !== null
+            ? null
+            : (turn ??
+              (press?.madeIn === undefined ? null : { orgId, agentId, wakeupId: press.madeIn }));
+        hers = source === null ? undefined : yield* draftSource(source, here.chatId, asker);
+        if (turn !== null && redone === null && hers === undefined)
           return yield* refuse(
-            `A draft goes up only from ${askerName ?? "the teammate"}'s own message here, or after the owner's Changes first on one of theirs.`,
+            `A draft goes up only from ${askerName ?? "the teammate"}'s own message here, or after the owner answers one of theirs in words.`,
           );
-        // Her mail or post is her draft card's to send up (`draftCards.sendUp`), unless it is redone.
-        if (
-          turn !== null &&
-          from?.changesFirst === false &&
-          CARD_KINDS.includes(input.draft.kind)
-        ) {
+        // In her turn, her mail or post is her draft card's to send up (`draftCards.sendUp`).
+        if (from._tag === "turn" && CARD_KINDS.includes(input.draft.kind)) {
           const [owner] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
             WHERE org_id = ${orgId} AND person_id = ${self.owner}`;
           return yield* refuse(
@@ -314,12 +518,14 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
         const [party] = parties;
         const [owner] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
           WHERE org_id = ${orgId} AND person_id = ${self.owner}`;
+        const on = press?.on ?? redone?.draft.on;
         sentUp = {
           kind: input.draft.kind,
           for: party ?? null,
           text: input.detail,
-          line: draftLine(input.draft.kind, press?.on, party?.title),
-          ...(press?.on === undefined ? {} : { on: press.on }),
+          line: draftLine(input.draft.kind, on, party?.title),
+          ...(on === undefined ? {} : { on }),
+          ...(redone === null ? {} : { redo: true as const }),
           names: {
             owner: owner?.name ?? "the owner",
             asker: askerName ?? "them",
@@ -360,11 +566,14 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
         return yield* refuse(
           "Say what it is for (intent) or which records it is about (about), so Kin can tell it from any other question.",
         );
-      const questionId = `q-${hash(
-        press !== null
-          ? `for:card:${press.widgetId}`
-          : `for:${lead.wakeupId}:${stableStringify(input)}`,
-      ).slice(0, 12)}`;
+      const questionId =
+        redone !== null
+          ? redoId(redone.questionId, redone.wakeupId)
+          : `q-${hash(
+              press !== null
+                ? `for:card:${press.widgetId}${press.round === undefined ? "" : `:${press.round}`}`
+                : `for:${lead.wakeupId}:${stableStringify(input)}`,
+            ).slice(0, 12)}`;
       const seen = yield* readQuestion(orgId, questionId);
       if (seen !== undefined) {
         // A retry returns what it stored; the same id with other people behind it is no retry.
@@ -378,6 +587,10 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
             reason: "not_allowed",
             message: "Chat operation not allowed.",
           });
+        if (redone !== null && seen.draft?.text !== input.detail)
+          return yield* refuse(
+            `This turn already put a redraft of it to ${target.name}, which waits on them.`,
+          );
         return {
           questionId,
           to: target.name,
@@ -439,13 +652,10 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
             `Not for ${target.name}: ${why}. Ask without that, or ask the owner to share it with ${target.name}.`,
           );
       }
-      if (!ownerTurn && asker !== null) {
+      // A redraft is the owner's to read: its body goes only on her card, never to the teammate.
+      if (!ownerTurn && asker !== null && redone === null) {
         // A figure she wrote herself is no secret from her: only the company's others are held.
-        const why = yield* unreadableBy(
-          orgId,
-          asker,
-          hers === undefined ? words : withoutOwnFigures(words, hers.join("\n")),
-        );
+        const why = yield* unreadableBy(orgId, asker, words, undefined, hers?.join("\n"));
         if (why !== undefined) return yield* refuse(`Not for ${askerName ?? "the asker"}: ${why}.`);
       }
       const now = yield* Clock.currentTimeMillis;
@@ -455,6 +665,10 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
       if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
       const dueAt = named?.at ?? defaultDue(now, clock.zone, clock.work);
       const by = askedBy(askerName, self.name);
+      if (redone !== null && sentUp !== undefined && !cardHolds(draftDetail(by, sentUp)))
+        return yield* refuse(
+          "With who asks and who it is for, this draft is too long for its card.",
+        );
       // A sent-up draft's card is Kin's from its stored payload: its line and its two buttons.
       const detail =
         sentUp !== undefined
@@ -503,9 +717,54 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
       );
       // Asked after an outside read, its answer wakes a turn that has read outside text too.
       if (turn !== null) yield* stampEvent(orgId, questionId, yield* outsideStamp(turn));
+      // Her card that sent the first one up reads sent again.
+      const herCards =
+        redone === null ? [] : yield* draftCardsAbout(orgId, here.chatId, about, "changesFirst");
+      for (const { widgetId } of herCards)
+        yield* chat.setDocCardSent({
+          orgId,
+          widgetId,
+          sent: {
+            name: target.name,
+            at: DateTime.formatIso(DateTime.makeUnsafe(now)),
+            ...("_tag" in posted ? { held: true as const } : {}),
+          },
+        });
+      // Kin shows her the draft she sent up, unless her own card already holds that text, as the
+      // agent's own bubble, which draws its markdown; of a redraft, only Kin's line that it changed.
+      if (
+        turn !== null &&
+        sentUp !== undefined &&
+        !herCards.some((one) => flat(one.text) === flat(sentUp.text))
+      )
+        yield* chat
+          .notice({
+            orgId,
+            chatId: here.chatId,
+            messageId: KinMessageId.make(`kin-draft-up:${questionId}`),
+            audience: "chat",
+            ...(redone === null
+              ? {
+                  from: agentId,
+                  body: `With ${target.name} to approve:\n\n${sentUp.text}`,
+                  silent: true,
+                }
+              : {
+                  body: `${target.name} changed the ${DRAFT_WORDS[sentUp.kind]}; the new one is with ${target.name} to approve.`,
+                }),
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin couldn't show a sent-up draft in its chat", cause),
+            ),
+          );
       const joined = yield* signedIn(orgId, target.id);
+      const showed =
+        redone === null && turn !== null && sentUp !== undefined
+          ? ` Kin showed ${askerName ?? "them"} the draft here; say in one line it is with ${target.name}.`
+          : "";
       if ("_tag" in posted) {
-        if (turn !== null)
+        if (turn !== null && redone === null)
           yield* arrivesNote(
             chat,
             turn,
@@ -522,9 +781,11 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           dueAt,
           retry: false,
           signedIn: joined,
-          note: joined
-            ? `${heldUntil(target.name, posted)}: Kin posts it in their chat with you then, and this chat has been told. Their answer comes back here.`
-            : notSignedIn(target.name),
+          note: `${
+            joined
+              ? `${heldUntil(target.name, posted)}: Kin posts it in their chat with you then, and this chat has been told. Their answer comes back here.`
+              : notSignedIn(target.name)
+          }${showed}`,
         };
       }
       return {
@@ -534,9 +795,11 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
         dueAt,
         retry: false,
         signedIn: joined,
-        note: joined
-          ? `Posted in ${target.name}'s chat with you, waiting on them. Their answer comes back here.`
-          : notSignedIn(target.name),
+        note: `${
+          joined
+            ? `Posted in ${target.name}'s chat with you, waiting on them. Their answer comes back here.`
+            : notSignedIn(target.name)
+        }${showed}`,
       };
     }),
   );
@@ -563,9 +826,9 @@ const passedOn = Effect.fn("KinQuestions.passedOn")(function* (turn: {
 
 /**
  * Where a sent-up draft may start: her own message in her direct chat with this agent, or the turn
- * carrying the owner's Changes first on one she sent up through it (`sendBack`, `changesFirst`),
- * never a turn that merely carries her as its origin. Its words are hers to read: her message, or
- * the draft she sent up, which was held to her then.
+ * carrying the owner's answer on one she sent up through it (`sendBack`), never a turn that
+ * merely carries her as its origin. Its words are hers to read: her message, or the draft she
+ * sent up, which was held to her then.
  */
 const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
   turn: { readonly orgId: string; readonly agentId: string; readonly wakeupId: string },
@@ -573,14 +836,7 @@ const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
   asker: KinPersonId,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const own = yield* sql<{ body: string }>`SELECT m.body FROM kin_events e
-    JOIN kin_messages m ON m.org_id = e.org_id
-      AND m.message_id = json_extract(e.json, '$.messageId')
-    WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId}
-      AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message'
-      AND json_extract(e.json, '$.origin') IS NULL AND m.chat_id = ${chatId}
-      AND m.author_kind = 'human' AND m.author_person_id = ${asker} AND m.origin_json IS NULL
-    ORDER BY e.event_id`;
+  const own = yield* ownMessages(turn, chatId, asker);
   const answered = yield* sql<{ eventId: string; questionId: string; draft: string }>`SELECT
       e.event_id AS "eventId", q.question_id AS "questionId", q.draft_json AS draft
     FROM kin_events e
@@ -603,11 +859,28 @@ const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
     (one) => one.eventId === answeredEventId(turn.orgId, one.questionId),
   );
   if (own.length === 0 && earlier.length === 0) return undefined;
-  return {
-    texts:
-      own.length > 0
-        ? own.map((one) => one.body)
-        : earlier.flatMap((one) => Option.toArray(decodeStoredDraft(one.draft)).map((d) => d.text)),
-    changesFirst: earlier.length > 0,
-  };
+  // The owner's redraft was never held to her, so none of it is hers.
+  return own.length > 0
+    ? own
+    : earlier.flatMap((one) =>
+        Option.toArray(decodeStoredDraft(one.draft)).flatMap((d) => (d.redo ? [] : [d.text])),
+      );
+});
+
+/** What this person wrote themselves in that chat, in the messages this turn answers. */
+const ownMessages = Effect.fn("KinQuestions.ownMessages")(function* (
+  turn: { readonly orgId: string; readonly agentId: string; readonly wakeupId: string },
+  chatId: string,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ body: string }>`SELECT m.body FROM kin_events e
+    JOIN kin_messages m ON m.org_id = e.org_id
+      AND m.message_id = json_extract(e.json, '$.messageId')
+    WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId}
+      AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message'
+      AND json_extract(e.json, '$.origin') IS NULL AND m.chat_id = ${chatId}
+      AND m.author_kind = 'human' AND m.author_person_id = ${personId} AND m.origin_json IS NULL
+    ORDER BY e.event_id`;
+  return rows.map((one) => one.body);
 });

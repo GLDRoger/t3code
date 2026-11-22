@@ -29,6 +29,7 @@ import {
   notFound,
   samePrincipal,
   sensitiveNow,
+  wordsOf,
 } from "./recordRows.ts";
 
 /** Lists a project's lead writes in, inside that project; quotes and invoices only as drafts. */
@@ -426,8 +427,9 @@ export const DRAFT_OWN_CHAT_ONLY = new KinChatError({
 });
 
 /**
- * The turn answers this person's own message in their own direct chat with the agent, and
- * nothing in it was carried from another chat or agent.
+ * The turn answers this person's own message in their own direct chat with the agent, or a task
+ * they gave it there by their own hand in words only they wrote, and nothing in it was carried
+ * from another chat, person or agent.
  */
 const ownDirectAsk = Effect.fn("KinTeamView.ownDirectAsk")(function* (
   orgId: KinOrgId,
@@ -435,18 +437,48 @@ const ownDirectAsk = Effect.fn("KinTeamView.ownDirectAsk")(function* (
   turn: { readonly agentId: KinAgentId; readonly wakeupId: string },
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const asks = yield* sql<{ own: number }>`SELECT (m.author_kind = 'human'
-      AND m.author_person_id = ${personId} AND m.origin_json IS NULL
-      AND json_extract(e.json, '$.origin') IS NULL AND c.kind = 'direct'
-      AND c.archived_at IS NULL AND c.direct_key = ${directKey(personId, turn.agentId)}) AS own
+  const key = directKey(personId, turn.agentId);
+  const toAgent = `agent:${turn.agentId}`;
+  const asks = yield* sql<{
+    own: number | null;
+    recordId: string | null;
+    seq: number | null;
+  }>`SELECT CASE e.tag WHEN 'chat.message' THEN
+        (m.author_kind = 'human' AND m.author_person_id = ${personId} AND m.origin_json IS NULL
+          AND json_extract(e.json, '$.origin') IS NULL AND c.kind = 'direct'
+          AND c.archived_at IS NULL AND c.direct_key = ${key})
+      ELSE (json_extract(e.json, '$.origin.personId') = ${personId}
+        AND json_extract(e.json, '$.reason') = 'assigned' AND t.kind = 'direct'
+        AND t.archived_at IS NULL AND t.direct_key = ${key}
+        AND EXISTS (SELECT 1 FROM kin_record_changes rc, json_each(rc.fields_json) f
+          WHERE rc.org_id = e.org_id AND rc.record_id = json_extract(e.json, '$.recordId')
+          AND rc.seq = json_extract(e.json, '$.seq') AND rc.actor_kind = 'person'
+          AND rc.actor_id = ${personId} AND rc.coding_agent_key IS NULL
+          AND json_extract(f.value, '$.field') = 'owner'
+          AND json_extract(f.value, '$.to') = ${toAgent}
+          AND json_extract(f.value, '$.from') IS NOT ${toAgent})) END AS own,
+      json_extract(e.json, '$.recordId') AS "recordId", json_extract(e.json, '$.seq') AS seq
     FROM kin_events e
     LEFT JOIN kin_messages m ON m.org_id = e.org_id
       AND m.message_id = json_extract(e.json, '$.messageId')
     LEFT JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+    LEFT JOIN kin_chats t ON t.org_id = e.org_id AND t.chat_id = json_extract(e.json, '$.origin.chatId')
     WHERE e.org_id = ${orgId} AND e.agent_id = ${turn.agentId} AND e.wakeup_id = ${turn.wakeupId}
-      AND e.tag = 'chat.message'
+      AND e.tag IN ('chat.message', 'record.changed')
     ORDER BY e.event_id`;
-  return asks.length > 0 && asks.every((ask) => ask.own === 1);
+  if (asks.length === 0 || asks.some((ask) => ask.own !== 1)) return false;
+  for (const ask of asks) {
+    if (ask.recordId === null || ask.seq === null) continue;
+    const { writers, madeBy } = yield* wordsOf(orgId, ask.recordId, ask.seq);
+    const hers = (kind: string, id: string | null) => kind === "person" && id === personId;
+    if (
+      madeBy === undefined ||
+      !hers(madeBy.kind, madeBy.id) ||
+      !writers.every((one) => hers(one.actorKind, one.actorId) && one.coding === 0)
+    )
+      return false;
+  }
+  return true;
 });
 
 /** Whether the write is team-visible work everyone behind the turn sees, before and after. */
@@ -1206,27 +1238,31 @@ const fold = (text: string) => text.toLowerCase().replace(/\s+/g, " ");
  * Why `text` can't go to this person, or undefined: no amount, money document number, client's
  * terms, or key or title of an entry they don't see. `askedBy`, a teammate whose own words these
  * are, is held only to what they see, so a refusal never says a guess matches something hidden.
+ * `own`: words whose figures are theirs to read, exempt from the amount checks only.
  */
 export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   text: string,
   askedBy?: KinPersonId,
+  own?: string,
 ) {
+  // Keys, titles and terms are matched as written: an exempt figure never hides one.
+  const sums = own === undefined ? text : withoutOwnFigures(text, own);
   // The agent is told which words read as a sum, so it can send the rest or ask the owner.
   const figure = (said: string) =>
     `“${said.trim()}” reads as an amount of money, which they may not see`;
   const written =
-    AMOUNT.exec(text) ??
-    AMOUNT_WORDS.exec(text) ??
-    MONEY_NUMBER.exec(text) ??
-    EURO_FIGURE.exec(text) ??
-    (MONEY_CONTEXT.test(text) ? THOUSANDS.exec(text) : null);
+    AMOUNT.exec(sums) ??
+    AMOUNT_WORDS.exec(sums) ??
+    MONEY_NUMBER.exec(sums) ??
+    EURO_FIGURE.exec(sums) ??
+    (MONEY_CONTEXT.test(sums) ? THOUSANDS.exec(sums) : null);
   if (written !== null) return figure(written[0]);
   const sql = yield* SqlClient.SqlClient;
   const known = askedBy === undefined ? sql`1 = 1` : personSees(sql, askedBy);
   // A bare figure that is the sum on something they can't see, however it is written.
-  const figures = figuresIn(text);
+  const figures = figuresIn(sums);
   if (figures.length > 0) {
     // The sum in whole units of its own currency, as a person writes it: yen have no minor unit.
     const same = (column: Statement.Fragment, currency: Statement.Fragment) =>

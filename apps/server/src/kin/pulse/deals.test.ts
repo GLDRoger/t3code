@@ -807,15 +807,19 @@ describe("the morning page's Money lines", () => {
     readonly currency: string;
     readonly dueAt?: number;
     readonly sentAt: number;
+    /** Its own number, as the client reads it on the invoice or quote. */
+    readonly number?: string;
+    readonly client?: string;
   }) {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
         owner_kind, owner_id, side, party_id, due_at, amount_minor, currency, created_by_kind,
         created_by_id, origin_key, created_at, updated_at, fields_json)
       VALUES (${orgId}, ${`r-${entry.id}`}, ${entry.list}, ${entry.id}, ${`Work for ${entry.id}`},
-        'waiting', 'person', ${rhea}, 'ours', 'r-C-1', ${entry.dueAt ?? null}, ${entry.minor},
-        ${entry.currency}, 'person', ${rhea}, ${`origin-${entry.id}`}, ${entry.sentAt},
-        ${entry.sentAt}, '{}')`;
+        'waiting', 'person', ${rhea}, 'ours', ${`r-${entry.client ?? "C-1"}`},
+        ${entry.dueAt ?? null}, ${entry.minor}, ${entry.currency}, 'person', ${rhea},
+        ${`origin-${entry.id}`}, ${entry.sentAt}, ${entry.sentAt},
+        ${JSON.stringify(entry.number === undefined ? {} : { number: entry.number })})`;
   });
   const lists = Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -829,8 +833,11 @@ describe("the morning page's Money lines", () => {
   });
   // Noon UTC is the next morning in Auckland: the calendar days between them stay the same.
   const NOW = B + 20 * DAY + 12 * HOUR;
-  const lines = (viewer: Parameters<typeof morningMoneyLines>[0]["viewer"] = KIN_OWNER_LEVEL) =>
-    morningMoneyLines({ orgId, now: NOW, viewer });
+  const lines = (
+    viewer: Parameters<typeof morningMoneyLines>[0]["viewer"] = KIN_OWNER_LEVEL,
+    said?: string,
+    now = NOW,
+  ) => morningMoneyLines({ orgId, now, viewer, said });
 
   it.effect("tells each overdue invoice and unanswered quote, until settled, in its currency", () =>
     Effect.gen(function* () {
@@ -845,6 +852,7 @@ describe("the morning page's Money lines", () => {
         currency: "NZD",
         dueAt: B + 6 * DAY + 12 * HOUR,
         sentAt: B,
+        number: "CT/101",
       });
       // Due tomorrow, and a quote sent four days ago: neither is late yet.
       yield* money({
@@ -861,6 +869,7 @@ describe("the morning page's Money lines", () => {
         minor: 354000,
         currency: "NZD",
         sentAt: NOW - 6 * DAY - HOUR,
+        number: "CQ/7",
       });
       yield* money({
         id: "QT-2",
@@ -870,11 +879,26 @@ describe("the morning page's Money lines", () => {
         sentAt: NOW - 4 * DAY,
       });
       assert.deepStrictEqual(yield* lines(), [
-        "Corran Tiles owes NZ$1,200 on INV-1, 14 days overdue.",
-        "Corran Tiles hasn't answered quote QT-1 for NZ$3,540 in 6 days.",
+        // People read the numbers on the papers, never Kin's own keys.
+        "Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue.",
+        "Corran Tiles hasn't answered quote CQ/7 for NZ$3,540 in 6 days.",
       ]);
       // A teammate who may not see Money hears none of it; one who may, the same lines.
       yield* sql`UPDATE kin_records SET team_shared = 1 WHERE register_id IN ('invoices', 'quotes')`;
+      // The agent named the quote by its title, as an unnumbered one shows: Kin says it once.
+      assert.deepStrictEqual(
+        yield* lines(KIN_OWNER_LEVEL, "Still chasing the Work for QT-1 quote."),
+        [
+          "Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue.",
+          "Corran Tiles hasn't answered quote CQ/7 for NZ$3,540 in 6 days.",
+        ],
+      );
+      yield* sql`UPDATE kin_records SET fields_json = '{}' WHERE record_id = 'r-QT-1'`;
+      assert.deepStrictEqual(
+        yield* lines(KIN_OWNER_LEVEL, "Still chasing the Work for QT-1 quote."),
+        ["Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue."],
+      );
+      yield* sql`UPDATE kin_records SET fields_json = '{"number":"CQ/7"}' WHERE record_id = 'r-QT-1'`;
       assert.deepStrictEqual(yield* lines(viewerOfPeople([zoya])), []);
       yield* sql`UPDATE kin_people SET sees_money = 1 WHERE person_id = ${zoya}`;
       assert.lengthOf(yield* lines(viewerOfPeople([zoya])), 2);
@@ -888,11 +912,11 @@ describe("the morning page's Money lines", () => {
     }).pipe(Effect.provide(chatLayer)),
   );
 
-  it.effect("shows three of each, then how many more", () =>
+  it.effect("shows eight of each, longest overdue first, then how many more and how much", () =>
     Effect.gen(function* () {
       yield* seed;
       yield* lists;
-      for (let n = 1; n <= 5; n++)
+      for (let n = 1; n <= 10; n++)
         yield* money({
           id: `INV-${n}`,
           list: "invoices",
@@ -900,11 +924,84 @@ describe("the morning page's Money lines", () => {
           currency: "COP",
           dueAt: NOW - n * DAY,
           sentAt: B,
+          number: `CT/${n}`,
         });
       const told = yield* lines();
-      assert.lengthOf(told, 4);
-      assert.match(told[0] ?? "", /^Corran Tiles owes COP\s500,000 on INV-5, 5 days overdue\.$/);
-      assert.strictEqual(told[3], "and 2 more");
+      assert.lengthOf(told, 9);
+      assert.match(
+        told[0] ?? "",
+        /^Corran Tiles owes COP\s1,000,000 on CT\/10, 10 days overdue\.$/,
+      );
+      // What is cut is the least overdue, and the cut says what it holds.
+      assert.match(told[8] ?? "", /^and 2 more overdue invoices, COP\s300,000 in all\.$/);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("leaves out what is set aside until its day, and what the agent already said", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* lists;
+      yield* insert({
+        id: "C-2",
+        list: "clients",
+        title: "Harbor Foundry LLP",
+        category: "client",
+      });
+      const due = NOW - 14 * DAY;
+      for (const [id, number, client] of [
+        ["INV-1", "CT/101", "C-1"],
+        ["INV-2", "CT/102", "C-1"],
+        ["INV-3", "HF/9", "C-2"],
+      ] as const)
+        yield* money({
+          id,
+          list: "invoices",
+          minor: 120000,
+          currency: "EUR",
+          dueAt: due,
+          sentAt: B,
+          number,
+          client,
+        });
+      // "Don't remind me till then": the Chief of staff takes CT/101 in hand for ten days on
+      // Rhea's word, and Rhea sets CT/102 aside for three.
+      yield* KinPulse.handle({
+        orgId,
+        at: NOW,
+        viewer: { _tag: "owner" },
+        by: { _tag: "agent", agentId: chief },
+        factKey: `invoice_overdue:INV-1:base=${due}`,
+        action: "got_it",
+        until: NOW + 10 * DAY,
+      });
+      yield* KinPulse.aside({
+        orgId,
+        at: NOW,
+        viewer: { _tag: "owner" },
+        by: { _tag: "person", personId: rhea },
+        recordKey: "INV-2",
+        action: "set",
+        until: NOW + 3 * DAY,
+        note: null,
+        holding: { _tag: "may", forPersonId: null, onWordOf: null },
+      });
+      const harbor = "Harbor Foundry LLP owes €1,200 on HF/9, 14 days overdue.";
+      assert.deepStrictEqual(yield* lines(), [harbor]);
+      // The agent's own Money section names a debt, by its client or its number: Kin adds none.
+      assert.deepStrictEqual(
+        yield* lines(KIN_OWNER_LEVEL, "- Harbor Foundry: €1,200, 14 days."),
+        [],
+      );
+      assert.deepStrictEqual(yield* lines(KIN_OWNER_LEVEL, "- HF/9 is still open."), []);
+      assert.deepStrictEqual(yield* lines(KIN_OWNER_LEVEL, "- Harbor Foundryworks paid."), [
+        harbor,
+      ]);
+      // Each comes back by itself when its day passes.
+      assert.deepStrictEqual(yield* lines(KIN_OWNER_LEVEL, undefined, NOW + 3 * DAY), [
+        "Corran Tiles owes €1,200 on CT/102, 17 days overdue.",
+        "Harbor Foundry LLP owes €1,200 on HF/9, 17 days overdue.",
+      ]);
+      assert.lengthOf(yield* lines(KIN_OWNER_LEVEL, undefined, NOW + 10 * DAY), 3);
     }).pipe(Effect.provide(chatLayer)),
   );
 
@@ -929,7 +1026,7 @@ describe("the morning page's Money lines", () => {
       const pages = (yield* pagesTo(zoya)).map((page) => page.body);
       assert.lengthOf(pages, 2);
       for (const page of pages)
-        assert.include(page, "Money:\n- Corran Tiles owes €1,200 on INV-1,");
+        assert.include(page, 'Money:\n- Corran Tiles owes €1,200 on "Work for INV-1",');
       // Arjun may not see Money: his page, if any, has none.
       for (const page of yield* pagesTo(arjun)) assert.notInclude(page.body, "Money:");
     }).pipe(Effect.provide(chatLayer)),

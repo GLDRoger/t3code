@@ -1,4 +1,5 @@
 import {
+  KIN_DOC_CARD,
   KinAgentId,
   KinChatError,
   KinChatId,
@@ -62,9 +63,11 @@ import {
   answeredEventId,
   approvalDedupeKey,
   approvalEventId,
+  CHANGES_FIRST,
   decodeStoredDraft,
   DRAFT_OPTIONS,
   draftDetail,
+  DRAFT_WORDS,
   type StoredDraft,
 } from "./approval.ts";
 
@@ -407,7 +410,7 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
     readonly approves?: boolean;
     readonly now: number;
   },
-  chat: Pick<KinChatService["Service"], "notice">,
+  chat: Pick<KinChatService["Service"], "notice" | "setDocCardChangesFirst">,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const moved = yield* sql<{ questionId: string }>`UPDATE kin_questions SET state = 'answered',
@@ -434,12 +437,45 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
     queue,
     approved,
   );
-  return approved
-    ? ({
-        title: "Approved",
-        text: `Sent to ${asker}. ${row.agentName} is making it now.`,
-      } satisfies KinChoiceOutcome)
-    : ({ title: "Answered", text: `Sent to ${asker}.` } satisfies KinChoiceOutcome);
+  if (approved)
+    return {
+      title: "Approved",
+      text: `Sent to ${asker}. ${row.agentName} is making it now.`,
+    } satisfies KinChoiceOutcome;
+  if (isChangesFirst(row, input.label))
+    return yield* changesFirst(input.orgId, row, row.forChatId, input.now, chat, "tap");
+  return { title: "Answered", text: `Sent to ${asker}.` } satisfies KinChoiceOutcome;
+});
+
+/** A sent-up draft answered Changes first: by the owner's tap, or taken from her words. */
+const isChangesFirst = (row: QuestionRow, said: string | null) =>
+  row.draft !== null && said === CHANGES_FIRST;
+
+/**
+ * The one path of a draft answered Changes first, tapped or from words: her own cards that sent
+ * it up may send it again, as they now say; `sendBack` told her chat and woke no turn there.
+ */
+const changesFirst = Effect.fn("KinQuestions.changesFirst")(function* (
+  orgId: KinOrgId,
+  row: QuestionRow,
+  forChatId: KinChatId,
+  now: number,
+  chat: Pick<KinChatService["Service"], "setDocCardChangesFirst">,
+  how: "tap" | "words",
+) {
+  for (const { widgetId } of yield* draftCardsAbout(orgId, forChatId, row.about, "sent"))
+    yield* chat.setDocCardChangesFirst({
+      orgId,
+      widgetId,
+      changesFirst: { name: yield* personName(orgId, row.personId), at: iso(now) },
+    });
+  return {
+    title: "Answered",
+    text:
+      how === "tap"
+        ? "Say here what to change; the new draft comes back to you to approve."
+        : "The new draft comes back to you to approve.",
+  } satisfies KinChoiceOutcome;
 });
 
 /**
@@ -487,6 +523,112 @@ const approveDraft = Effect.fn("KinQuestions.approveDraft")(function* (
   return true;
 });
 
+/**
+ * A teammate's own draft cards in her chat for the docs a sent-up draft is about: those that read
+ * sent, or those the owner's Changes first made sendable again.
+ */
+export const draftCardsAbout = Effect.fn("KinQuestions.draftCardsAbout")(function* (
+  orgId: KinOrgId,
+  chatId: string,
+  about: ReadonlyArray<string>,
+  state: "sent" | "changesFirst",
+) {
+  if (about.length === 0) return [];
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ widgetId: KinWidgetId; text: string }>`SELECT widget_id AS "widgetId",
+      json_extract(state_json, '$.draft.text') AS text
+    FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${chatId} AND type = ${KIN_DOC_CARD}
+      AND json_extract(state_json, '$.key') IN ${sql.in(about)}
+      AND json_extract(state_json, '$.draft.sendTo') IS NOT NULL
+      AND ${
+        state === "sent"
+          ? sql`json_extract(state_json, '$.draft.sent') IS NOT NULL`
+          : sql`json_extract(state_json, '$.draft.sent') IS NULL
+              AND json_extract(state_json, '$.draft.changesFirst') IS NOT NULL`
+      }
+    ORDER BY widget_id`;
+});
+
+/** One redo of an answered draft per turn: a retry finds it. */
+export const redoId = (questionId: string, wakeupId: string) =>
+  `q-${hash(`for:redo:${questionId}:${wakeupId}`).slice(0, 12)}`;
+
+/**
+ * The teammates' drafts the agent's owner answered Changes first on in this chat that no later
+ * round replaced: each waits on her redraft (`redo`). A later round is this turn's own redo of it
+ * only on a retry, so that one still waits.
+ */
+export const waitingRedrafts = Effect.fn("KinQuestions.waitingRedrafts")(function* (
+  turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
+  chatId: KinChatId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    questionId: string;
+    question: string;
+    about: string;
+    intent: string;
+    forChatId: KinChatId;
+    forPersonId: KinPersonId;
+    draft: string;
+  }>`SELECT q.question_id AS "questionId", q.question, q.about, q.intent,
+      q.for_chat_id AS "forChatId", q.for_person_id AS "forPersonId", q.draft_json AS draft
+    FROM kin_questions q
+    JOIN kin_agents a ON a.org_id = q.org_id AND a.agent_id = q.agent_id AND a.retired_at IS NULL
+    WHERE q.org_id = ${turn.orgId} AND q.agent_id = ${turn.agentId}
+      AND q.chat_id = ${chatId} AND q.person_id = a.owner_person_id
+      AND q.draft_json IS NOT NULL AND q.state = 'answered' AND q.answer = ${CHANGES_FIRST}
+      AND q.approved_at IS NULL AND q.for_chat_id IS NOT NULL AND q.for_person_id IS NOT NULL
+    ORDER BY q.question_id`;
+  const later = (row: (typeof rows)[number]) =>
+    sql<{ questionId: string }>`SELECT n.question_id AS "questionId" FROM kin_questions n
+      JOIN kin_questions q ON q.org_id = n.org_id AND q.question_id = ${row.questionId}
+      WHERE n.org_id = ${turn.orgId} AND n.agent_id = q.agent_id
+        AND n.for_chat_id = q.for_chat_id AND n.draft_json IS NOT NULL AND n.intent = q.intent
+        AND n.about = q.about AND n.question_id <> q.question_id AND n.asked_at >= q.closed_at
+      ORDER BY n.question_id`.pipe(
+      Effect.map((newer) =>
+        newer.some((one) => one.questionId !== redoId(row.questionId, turn.wakeupId)),
+      ),
+    );
+  const current = yield* Effect.filter(rows, (row) => Effect.map(later(row), (one) => !one));
+  return current.flatMap((row) =>
+    Option.toArray(decodeStoredDraft(row.draft)).map((draft) => ({
+      ...row,
+      about: row.about === "" ? [] : row.about.split(" "),
+      draft,
+    })),
+  );
+});
+
+/** The teammates' drafts whose cards in this chat still wait on the agent's owner. */
+export const draftsOnHerCard = Effect.fn("KinQuestions.draftsOnHerCard")(function* (
+  turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId },
+  chatId: KinChatId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    questionId: string;
+    about: string;
+    forPersonId: KinPersonId;
+    draft: string;
+  }>`SELECT q.question_id AS "questionId", q.about, q.for_person_id AS "forPersonId",
+      q.draft_json AS draft
+    FROM kin_questions q
+    JOIN kin_agents a ON a.org_id = q.org_id AND a.agent_id = q.agent_id AND a.retired_at IS NULL
+    WHERE q.org_id = ${turn.orgId} AND q.agent_id = ${turn.agentId}
+      AND q.chat_id = ${chatId} AND q.person_id = a.owner_person_id AND q.state = 'open'
+      AND q.draft_json IS NOT NULL AND q.for_chat_id IS NOT NULL AND q.for_person_id IS NOT NULL
+    ORDER BY q.question_id`;
+  return rows.flatMap((row) =>
+    Option.toArray(decodeStoredDraft(row.draft)).map((draft) => ({
+      ...row,
+      about: row.about === "" ? [] : row.about.split(" "),
+      draft,
+    })),
+  );
+});
+
 /** Whether a card asks a question for another chat: its tap answers there, not here. */
 export const askedForCard = Effect.fn("KinQuestions.askedForCard")(function* (
   orgId: KinOrgId,
@@ -504,10 +646,9 @@ export const askedBy = (askerName: string | null, agentName: string) =>
   askerName === null ? `${agentName} asks.` : `${askerName} asks, through ${agentName}.`;
 
 /**
- * An answer to a question asked for another chat goes back there, in the answer's transaction:
- * Kin's line in that chat, and one turn of the asker answering there (`question-answered:<id>`),
- * at that chat's access; none when its asker no longer writes there. Returns the name of the
- * person that chat is with.
+ * An answer to a question asked for another chat goes back there: Kin's line, and one turn there
+ * (`question-answered:<id>`) unless its asker no longer writes there or it is a draft's Changes
+ * first, whose redraft comes from the owner's chat (`redo`). Returns who that chat is with.
  */
 const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
   orgId: KinOrgId,
@@ -523,10 +664,13 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
   const sql = yield* SqlClient.SqlClient;
   const who = yield* personName(orgId, row.personId);
   const asker = yield* personOfChat(orgId, forChatId);
+  const changesFirst = !approved && isChangesFirst(row, said);
   const body =
-    said === null
-      ? `${who} answered “${row.question}” in the chat with ${row.agentName}.`
-      : `${who} answered “${said}” to “${row.question}”`;
+    changesFirst && row.draft !== null
+      ? `${who} wants changes first; the new ${DRAFT_WORDS[row.draft.kind]} goes back to ${who} to approve.`
+      : said === null
+        ? `${who} answered “${row.question}” in the chat with ${row.agentName}.`
+        : `${who} answered “${said}” to “${row.question}”`;
   // Its answer is told even when that chat can't take a line now; the turn still carries it.
   yield* chat
     .notice({
@@ -551,7 +695,7 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
   const ownerAsked = lead === undefined || lead.ownerChatId === forChatId;
   const named = asker === undefined ? "the chat that asked" : yield* personName(orgId, asker);
   // An approved draft's turn is the owner's own (`approveDraft`): none in the chat that asked.
-  if (approved) return named;
+  if (approved || changesFirst) return named;
   // Its turn answers in the chat that asked, so only while its asker still writes there.
   if (
     !ownerAsked &&
@@ -735,7 +879,10 @@ export const closeQuestion = Effect.fn("KinQuestions.close")(function* (
     readonly answer?: string | undefined;
     readonly now: number;
   },
-  chat: Pick<KinChatService["Service"], "closeReplaced" | "ask" | "notice">,
+  chat: Pick<
+    KinChatService["Service"],
+    "closeReplaced" | "ask" | "notice" | "setDocCardChangesFirst"
+  >,
   queue: Pick<KinEventQueue.KinEventQueue["Service"], "enqueue">,
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -755,8 +902,14 @@ export const closeQuestion = Effect.fn("KinQuestions.close")(function* (
     const asker = yield* turnAsker(turn);
     if (asker !== null) withdrewBy = yield* personName(input.orgId, asker);
   }
-  const answer = input.answer === undefined ? null : oneLine(input.answer, 200);
+  const said = input.answer === undefined ? null : oneLine(input.answer, 200);
+  // A draft's Changes first taken from the owner's words is her tap's answer, stored as the tap's.
+  const answer =
+    row.draft !== null && said?.replace(/\.$/, "").toLowerCase() === CHANGES_FIRST.toLowerCase()
+      ? CHANGES_FIRST
+      : said;
   let backTo: string | undefined;
+  let changed: KinChoiceOutcome | undefined;
   if (input.outcome === "answered") {
     if (row.agentId !== input.agentId) return yield* refuse(notTheAsker(row, who));
     if (!(yield* wokenByTheirWords(input.orgId, input.agentId, input.wakeupId, row)))
@@ -775,7 +928,7 @@ export const closeQuestion = Effect.fn("KinQuestions.close")(function* (
   yield* sql`UPDATE kin_questions SET state = ${input.outcome}, answer = ${answer},
       closed_at = ${input.now}
     WHERE org_id = ${input.orgId} AND question_id = ${row.questionId} AND state = 'open'`;
-  if (input.outcome === "answered" && row.forChatId !== null)
+  if (input.outcome === "answered" && row.forChatId !== null) {
     backTo = yield* sendBack(
       input.orgId,
       row,
@@ -786,18 +939,23 @@ export const closeQuestion = Effect.fn("KinQuestions.close")(function* (
       chat,
       queue,
     );
+    if (isChangesFirst(row, answer))
+      changed = yield* changesFirst(input.orgId, row, row.forChatId, input.now, chat, "words");
+  }
   const cards = cardIds(row);
   for (const widgetId of cards)
     yield* chat.closeReplaced({
       orgId: input.orgId,
       widgetId: KinWidgetId.make(widgetId),
       outcome:
-        input.outcome === "answered"
-          ? {
-              title: "Answered",
-              text: `${tookFromWords(row.agentName, answer)}${backTo === undefined ? "" : `${answer === null ? "" : "."} Sent to ${backTo}.`}`,
-            }
-          : { title: "Withdrawn", text: `${withdrewBy} withdrew this question.` },
+        changed !== undefined
+          ? changed
+          : input.outcome === "answered"
+            ? {
+                title: "Answered",
+                text: `${tookFromWords(row.agentName, answer)}${backTo === undefined ? "" : `${answer === null ? "" : "."} Sent to ${backTo}.`}`,
+              }
+            : { title: "Withdrawn", text: `${withdrewBy} withdrew this question.` },
     });
   // Sent on already, her answer has no Undo here: she says so in the chat if it was wrong.
   if (input.outcome === "answered" && cards.length > 0 && backTo === undefined)
@@ -1768,6 +1926,27 @@ export const askedForSection = Effect.fn("KinQuestions.askedForSection")(functio
       "Each waits on its person, with no default. When one answers, Kin says so here and wakes you to carry on; until then say it is with them, and don't ask again. Withdraw one with kin_ask_close when it no longer stands.",
       ...lines,
     ].join("\n"),
+  };
+});
+
+/**
+ * In the owner's own turn in her chat with the agent, the drafts there that wait on her redraft
+ * (`waitingRedrafts`), so a fresh turn knows the redo's way back up.
+ */
+export const redraftsSection = Effect.fn("KinQuestions.redraftsSection")(function* (
+  turn: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
+  chatId: KinChatId,
+) {
+  const waiting = yield* waitingRedrafts(turn, chatId);
+  if (waiting.length === 0) return undefined;
+  return {
+    heading: "# Drafts back from Changes first (not redrafted yet)",
+    body: waiting
+      .map(({ draft }) => {
+        const party = draft.for === null ? "" : ` for ${draft.for.title} (${draft.for.key})`;
+        return `- ${draft.names.asker}'s ${DRAFT_WORDS[draft.kind]}${party}: its new draft goes up with kin_ask_person and draft, or doc_create with draft; Kin puts it back on ${draft.names.owner}'s Approve card.`;
+      })
+      .join("\n"),
   };
 });
 

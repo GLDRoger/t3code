@@ -55,7 +55,6 @@ const tableNames = [
   "kin_auth_key_repairs",
   "kin_auth_paired_sessions",
   "kin_auth_session_keys",
-  "kin_bank_alerts",
   "kin_bank_statement_entries",
   "kin_bank_statements",
   "kin_budget",
@@ -186,6 +185,8 @@ const tableNames = [
   "kin_wakeup_outside_reads",
   "kin_wakeup_sensitive_reads",
   "kin_wakeups",
+  "kin_watch_looks",
+  "kin_watches",
   "kin_widgets",
   "kin_worker_attempts",
   "kin_worker_charges",
@@ -639,6 +640,10 @@ describe("Kin migrations", () => {
           { name: "idx_kin_wakeups_running_lead" },
           { name: "idx_kin_wakeups_started" },
           { name: "idx_kin_wakeups_unretired_agent" },
+          { name: "idx_kin_watch_looks_at" },
+          { name: "idx_kin_watch_looks_watch" },
+          { name: "idx_kin_watches_due" },
+          { name: "idx_kin_watches_record" },
           { name: "idx_kin_widgets_chat_message" },
           { name: "idx_kin_widgets_type_closed_at" },
           { name: "idx_kin_worker_attempts_ready" },
@@ -1930,7 +1935,7 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("a host on K196 migrates through 197, 198, 199, 200, 201, 202 and 203, and again", () =>
+  it.effect("a host on K196 migrates through 197 to 203, and again", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const added = sql<{ name: string }>`
@@ -2102,23 +2107,44 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("K203 gives a host on K202 the bank alert log, and runs again harmlessly", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const shape = sql`SELECT name, sql FROM sqlite_master
-        WHERE tbl_name = 'kin_bank_alerts' ORDER BY name`;
-      yield* runKinMigrations();
-      const made = yield* shape;
-      // The table, its key's own index, and the two it reads by.
-      assert.lengthOf(made, 4);
-      yield* sql`DROP TABLE kin_bank_alerts`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 203`;
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(203));
-      assert.deepStrictEqual(yield* shape, made);
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 203`;
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(203));
-      assert.deepStrictEqual(yield* shape, made);
-    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  it.effect(
+    "K203 gives a host on K202 the watch tables and the background model, keeps its defaults, and reruns",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const tables = sql<{ name: string }>`SELECT name FROM sqlite_master
+          WHERE type = 'table' AND name IN ('kin_watches', 'kin_watch_looks') ORDER BY name`;
+        const defaults = sql`SELECT * FROM kin_agent_defaults ORDER BY org_id`;
+        yield* runKinMigrations();
+        // A host on K202: no watch tables, a company default model and no background one.
+        yield* sql`DROP TABLE kin_watch_looks`;
+        yield* sql`DROP TABLE kin_watches`;
+        yield* sql`ALTER TABLE kin_agent_defaults DROP COLUMN scout_model_json`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 203`;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+        yield* sql`INSERT INTO kin_agent_defaults (org_id, models_json)
+          VALUES ('org', '{"default":"invented-model"}')`;
+        assert.deepStrictEqual(yield* tables, []);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(203));
+        assert.deepStrictEqual(
+          (yield* tables).map(({ name }) => name),
+          ["kin_watch_looks", "kin_watches"],
+        );
+        assert.deepStrictEqual(yield* defaults, [
+          { org_id: "org", models_json: '{"default":"invented-model"}', scout_model_json: null },
+        ]);
+        // A look must name its watch, and only a round's summary row has no watch.
+        const look = (watch: string | null, counts: string | null) =>
+          sql`INSERT INTO kin_watch_looks (org_id, look_id, round_id, watch_id, at, counts_json)
+            VALUES ('org', ${`l-${watch ?? "round"}-${counts ?? "none"}`}, 'r', ${watch}, 1, ${counts})`;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(look(null, null))));
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(look("w", "{}"))));
+        yield* look(null, "{}");
+        yield* look("w", null);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 203`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(203));
+        assert.lengthOf(yield* defaults, 1);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
