@@ -62,9 +62,11 @@ import {
   answeredEventId,
   approvalDedupeKey,
   approvalEventId,
+  CHANGES_FIRST,
   decodeStoredDraft,
   DRAFT_OPTIONS,
   draftDetail,
+  DRAFT_WORDS,
   type StoredDraft,
 } from "./approval.ts";
 
@@ -506,8 +508,9 @@ export const askedBy = (askerName: string | null, agentName: string) =>
 /**
  * An answer to a question asked for another chat goes back there, in the answer's transaction:
  * Kin's line in that chat, and one turn of the asker answering there (`question-answered:<id>`),
- * at that chat's access; none when its asker no longer writes there. Returns the name of the
- * person that chat is with.
+ * at that chat's access; none when its asker no longer writes there, and none for a draft's
+ * Changes first, whose redraft comes from the owner's own chat (`redo`). Returns the name of
+ * the person that chat is with.
  */
 const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
   orgId: KinOrgId,
@@ -523,10 +526,13 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
   const sql = yield* SqlClient.SqlClient;
   const who = yield* personName(orgId, row.personId);
   const asker = yield* personOfChat(orgId, forChatId);
+  const changesFirst = !approved && how === "tap" && row.draft !== null && said === CHANGES_FIRST;
   const body =
-    said === null
-      ? `${who} answered “${row.question}” in the chat with ${row.agentName}.`
-      : `${who} answered “${said}” to “${row.question}”`;
+    changesFirst && row.draft !== null
+      ? `${who} wants changes first; the new ${DRAFT_WORDS[row.draft.kind]} goes back to ${who} to approve.`
+      : said === null
+        ? `${who} answered “${row.question}” in the chat with ${row.agentName}.`
+        : `${who} answered “${said}” to “${row.question}”`;
   // Its answer is told even when that chat can't take a line now; the turn still carries it.
   yield* chat
     .notice({
@@ -551,7 +557,7 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
   const ownerAsked = lead === undefined || lead.ownerChatId === forChatId;
   const named = asker === undefined ? "the chat that asked" : yield* personName(orgId, asker);
   // An approved draft's turn is the owner's own (`approveDraft`): none in the chat that asked.
-  if (approved) return named;
+  if (approved || changesFirst) return named;
   // Its turn answers in the chat that asked, so only while its asker still writes there.
   if (
     !ownerAsked &&

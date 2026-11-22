@@ -1854,42 +1854,18 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       yield* tellDraftMade({ ...turn, orgId: other }, chats);
       assert.lengthOf(yield* team.kinLines(zoya.chatId), 2);
 
-      // Arjun's draft, for his own project: Changes first is an answer as before, his turn.
+      // Arjun's draft: her Changes first starts no turn in his chat, where nothing knows what to
+      // change; Kin's line there says the new one comes back to her.
       const arjun = yield* sendUp("arjun", "Monsoon shoot quote: price: ____");
       yield* tap(owner, arjun.questionId, "option-2", "rhea-changes");
       assert.isNull(yield* approvedAt(arjun.questionId));
-      // The turn carrying Rhea's Changes first, in Arjun's chat, may send the revised draft up.
+      assert.deepStrictEqual(yield* team.kinLines(arjun.chatId), [
+        "Rhea Rao wants changes first; the new proposal goes back to Rhea Rao to approve.",
+      ]);
+      assert.deepStrictEqual((yield* draftWakes).slice(1), []);
       const drainedBut = (keep: string) => sql`UPDATE kin_events SET state = 'done'
         WHERE org_id = ${orgId} AND state = 'queued' AND dedupe_key IS NOT ${keep}`;
       const drained = drainedBut("");
-      yield* drainedBut(`question-answered:${arjun.questionId}`);
-      const revising = yield* startAgentWakeup({
-        orgId,
-        agentId: chief,
-        threadId: ThreadId.make("chief-thread"),
-        queued: true,
-      });
-      const revised = yield* askFor("chief", revising, {
-        ...upInput("arjun", "Monsoon shoot quote, revised: price: ____"),
-        intent: "revised shoot quote",
-      });
-      assert.strictEqual(revised.state, "posted");
-      // So may a redone mail: after Changes first it goes up again whichever way it first went.
-      const redone = yield* askFor("chief", revising, {
-        ...upInput("arjun", "Monsoon shoot mail, revised"),
-        intent: "revised shoot mail",
-        draft: { kind: "mail" },
-      });
-      assert.strictEqual(redone.state, "posted");
-      yield* sql`UPDATE kin_questions SET state = 'withdrawn'
-        WHERE question_id IN (${revised.questionId}, ${redone.questionId})`;
-      assert.deepStrictEqual((yield* draftWakes).slice(1), [
-        {
-          key: `question-answered:${arjun.questionId}`,
-          origin: JSON.stringify({ agentId: "chief", chatId: arjun.chatId, personId: "arjun" }),
-          chatId: arjun.chatId,
-        },
-      ]);
       // Dev's: Rhea's own words "approve it" answer it, an answer, never the Approve.
       const dev = yield* sendUp("dev", "Shoot terms: ____");
       const words = yield* wakeOn("chief", "rhea", chatOf("chief"), "approve it");
@@ -1909,11 +1885,7 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       assert.isNull(yield* approvedAt(dev.questionId));
       assert.deepStrictEqual(
         (yield* draftWakes).map((one) => one.key),
-        [
-          `question-approved:${zoya.questionId}`,
-          `question-answered:${arjun.questionId}`,
-          `question-answered:${dev.questionId}`,
-        ],
+        [`question-approved:${zoya.questionId}`, `question-answered:${dev.questionId}`],
       );
 
       // What earlier turns left queued is not this story's: each ask below is woken alone.
@@ -2543,6 +2515,12 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       // Zoya's proposal goes up; Rhea answers Changes first and says what to change in her chat.
       const first = yield* sendUp("zoya", "C-7", "harbourline proposal");
       yield* tap(owner, first.questionId, "option-2", "rhea-changes");
+      // No turn in Zoya's chat: it would know nothing of the change. Kin tells her what is true.
+      assert.deepStrictEqual(yield* team.answeredWakes, []);
+      assert.strictEqual(
+        (yield* team.kinLines(zoyaChat)).at(-1),
+        "Rhea Rao wants changes first; the new proposal goes back to Rhea Rao to approve.",
+      );
       yield* TestClock.adjust("1 minute");
       const words = yield* turnOn("rhea", chatOf("chief"), "Make it four shoots.");
       // Another client's proposal is another draft: today's plain card, nothing raised.

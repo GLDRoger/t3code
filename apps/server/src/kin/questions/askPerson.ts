@@ -382,23 +382,18 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
             ? null
             : (turn ??
               (press?.madeIn === undefined ? null : { orgId, agentId, wakeupId: press.madeIn }));
-        const from =
+        hers =
           redone !== null
-            ? { texts: [redone.draft.text], changesFirst: true }
+            ? [redone.draft.text]
             : source === null
               ? undefined
               : yield* draftSource(source, here.chatId, asker);
-        hers = from?.texts;
-        if (turn !== null && from === undefined)
+        if (turn !== null && hers === undefined)
           return yield* refuse(
             `A draft goes up only from ${askerName ?? "the teammate"}'s own message here, or after the owner's Changes first on one of theirs.`,
           );
-        // Her mail or post is her draft card's to send up (`draftCards.sendUp`), unless it is redone.
-        if (
-          turn !== null &&
-          from?.changesFirst === false &&
-          CARD_KINDS.includes(input.draft.kind)
-        ) {
+        // In her turn, her mail or post is her draft card's to send up (`draftCards.sendUp`).
+        if (from._tag === "turn" && CARD_KINDS.includes(input.draft.kind)) {
           const [owner] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
             WHERE org_id = ${orgId} AND person_id = ${self.owner}`;
           return yield* refuse(
@@ -697,9 +692,9 @@ const passedOn = Effect.fn("KinQuestions.passedOn")(function* (turn: {
 
 /**
  * Where a sent-up draft may start: her own message in her direct chat with this agent, or the turn
- * carrying the owner's Changes first on one she sent up through it (`sendBack`, `changesFirst`),
- * never a turn that merely carries her as its origin. Its words are hers to read: her message, or
- * the draft she sent up, which was held to her then.
+ * carrying the owner's answer on one she sent up through it (`sendBack`), never a turn that
+ * merely carries her as its origin. Its words are hers to read: her message, or the draft she
+ * sent up, which was held to her then.
  */
 const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
   turn: { readonly orgId: string; readonly agentId: string; readonly wakeupId: string },
@@ -737,11 +732,7 @@ const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
     (one) => one.eventId === answeredEventId(turn.orgId, one.questionId),
   );
   if (own.length === 0 && earlier.length === 0) return undefined;
-  return {
-    texts:
-      own.length > 0
-        ? own.map((one) => one.body)
-        : earlier.flatMap((one) => Option.toArray(decodeStoredDraft(one.draft)).map((d) => d.text)),
-    changesFirst: earlier.length > 0,
-  };
+  return own.length > 0
+    ? own.map((one) => one.body)
+    : earlier.flatMap((one) => Option.toArray(decodeStoredDraft(one.draft)).map((d) => d.text));
 });
