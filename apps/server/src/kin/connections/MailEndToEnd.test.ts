@@ -376,6 +376,7 @@ const setUp = <E>(body: (fake: FakeMail, cards: Array<Card>) => Effect.Effect<vo
   });
 type Env =
   | KinConnections
+  | KinRecords.KinRecords
   | KinEventQueue.KinEventQueue
   | SqlClient.SqlClient
   | FileSystem.FileSystem
