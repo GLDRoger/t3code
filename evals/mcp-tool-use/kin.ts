@@ -33,6 +33,7 @@ import {
 } from "../../apps/server/src/kin/lead/instructions.ts";
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
+import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
@@ -391,7 +392,37 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{DECLINED_RULE}}", DECLINED_RULE)
     .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
     .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK)
+    .replaceAll("{{PEOPLE_LABEL}}", PEOPLE_LABEL)
     .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names));
+
+/**
+ * A Kin mock's answer as the agent reads it: `{{ARG:<field>}}` is that field of the call's input,
+ * which the tool echoes back, and other placeholders are filled from Kin's code as a prompt's are.
+ */
+export const fillKinMock = (
+  value: unknown,
+  input: unknown,
+  world?: McpToolUseCase["setup"]["world"],
+): unknown => {
+  if (typeof value === "string") {
+    const args = isRecord(input) ? input : {};
+    const whole = /^\{\{ARG:(\w+)\}\}$/.exec(value);
+    if (whole !== null) return args[whole[1]!];
+    return fillKinRules(
+      value.replace(/\{\{ARG:(\w+)\}\}/g, (_, key: string) => {
+        const arg = args[key];
+        return typeof arg === "string" ? arg : (JSON.stringify(arg) ?? "");
+      }),
+      world,
+    );
+  }
+  if (Array.isArray(value)) return value.map((one) => fillKinMock(one, input, world));
+  if (isRecord(value))
+    return Object.fromEntries(
+      Object.entries(value).map(([key, one]) => [key, fillKinMock(one, input, world)]),
+    );
+  return value;
+};
 
 // Tools whose card or reaction answers the person in the chat, as Kin's own message would.
 const ANSWERS_IN_CHAT = new Set([
@@ -654,6 +685,7 @@ export const kinTurnBlocks = (files: KinTurnFiles | undefined, prompt: string, c
 
 /** Kin's tools, by bare name. */
 const KIN_TOOLS = names(...KIN_TOOLKITS);
+export const isKinTool = (tool: string) => KIN_TOOLS.has(tool);
 const unmocked = (testCase: McpToolUseCase, tool: string) => {
   const mock = testCase.setup.mocks?.[tool];
   return KIN_TOOLS.has(tool) && (mock === undefined || mock === "default");

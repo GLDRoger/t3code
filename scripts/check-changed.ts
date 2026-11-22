@@ -382,6 +382,13 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     tests.add("apps/server/src/kin/work/counted.test.ts");
     tests.add("apps/server/src/kin/featureMap/featureMap.test.ts");
   }
+  // It checks every Kin case's mocks against Kin's tool schemas, so a case or a Kin tool moves it.
+  if (
+    files.some(
+      (file) => KIN_WIRE.test(file) || /^evals\/mcp-tool-use\/cases\/kin[^/]*\.ndjson$/.test(file),
+    )
+  )
+    tests.add("evals/mcp-tool-use/kin-checks.test.ts");
   // `modelsFor`, which says which Kin model a change checks, is tested there.
   if (files.includes("scripts/kin-model.ts")) tests.add("scripts/check-changed.test.ts");
   const { vitestTests, nodeTests } = splitTests(tests);

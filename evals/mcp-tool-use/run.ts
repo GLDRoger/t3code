@@ -65,12 +65,15 @@ import {
 } from "./margin.ts";
 import { needsTopUp, refusals, RunManifest, tallies, tally } from "./gate.ts";
 import { casePattern } from "./pattern.ts";
+import { kinMockProblems } from "./kin-checks.ts";
 import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import { type AppServer, openAppServer } from "./appServer.ts";
 import {
+  fillKinMock,
   fillKinRules,
   filledEvent,
   isKinCase,
+  isKinTool,
   KinCaseAttachment,
   KIN_TOOLKITS,
   kinDated,
@@ -2166,7 +2169,8 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   if (isPageTool(name) && typeof input.path === "string" && !input.path.startsWith("/")) {
     return failed(`${input.path} is not a readable HTML document. Pass an absolute path.`);
   }
-  const mock = nextMock(sample, name, testCase.setup.mocks?.[name], input);
+  const picked = nextMock(sample, name, testCase.setup.mocks?.[name], input);
+  const mock = isKinTool(name) ? fillKinMock(picked, input, testCase.setup.world) : picked;
   if (isRecord(mock) && mock.$error !== undefined) return failed(valueText(mock.$error));
   if (isT3Name(call.name) && PREVIEW_TOOLS.has(name)) {
     if (testCase.setup.world?.browserAgentAccess === false)
@@ -3127,6 +3131,7 @@ const NOT_GRADER = new Set([
   "regrade.ts",
   "trim-capture.ts",
   "estimate.ts",
+  "kin-checks.ts",
 ]);
 const string = { type: "string" } as const;
 
@@ -3388,7 +3393,13 @@ const main = Effect.gen(function* () {
         (placeholder) => `placeholder left unfilled: ${placeholder}`,
       );
       // Codex lists its tools differently; only Claude requests are checked for tool names.
-      const found = [...(sample.base.codex ? [] : caseProblems(testCase, tools)), ...unfilled];
+      const found = [
+        ...(sample.base.codex ? [] : caseProblems(testCase, tools)),
+        ...unfilled,
+        ...(isKinCase(testCase)
+          ? kinMockProblems(testCase.setup.mocks, tools, testCase.setup.world)
+          : []),
+      ];
       problems.push(...found.map((problem) => `${testCase.id}: ${problem}`));
       sizes.push({
         prefixChars: (yield* encodeJson([sample.base.system, sample.tools])).length,
