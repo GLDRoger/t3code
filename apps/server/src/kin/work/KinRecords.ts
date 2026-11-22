@@ -1052,6 +1052,28 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Whether this agent was given this entry before, or has worked on it: then keeping it starts
+   * nothing new (a hand-off or an earlier build already did).
+   */
+  const alreadyGiven = Effect.fn("KinRecords.alreadyGiven")(function* (
+    orgId: KinOrgId,
+    recordId: string,
+    agentId: KinAgentId,
+  ) {
+    const [woken] = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_events
+      WHERE org_id = ${orgId} AND agent_id = ${agentId} AND tag = 'record.changed'
+        AND json_extract(json, '$.recordId') = ${recordId}
+        AND json_extract(json, '$.reason') = 'assigned'
+      LIMIT 1`;
+    if (woken !== undefined) return true;
+    const [worked] = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_record_changes
+      WHERE org_id = ${orgId} AND record_id = ${recordId} AND actor_kind = 'agent'
+        AND actor_id = ${agentId} AND kind <> 'created'
+      LIMIT 1`;
+    return worked !== undefined;
+  });
+
+  /**
    * In the write's own transaction: an agent's write that would change a field a person changed
    * since a person last addressed its turn is refused, whatever revision it passes.
    */
@@ -1586,7 +1608,8 @@ const make = Effect.gen(function* () {
       );
     for (const link of input.links ?? []) yield* insertLink(orgId, recordId, link, now);
     yield* indexRecord(orgId, recordId).pipe(provideSql);
-    if (givenAway && options.wake)
+    // A suggestion is nobody's instruction until a person keeps it (`update`, `keeping`).
+    if (givenAway && options.wake && kept)
       yield* wakeLead(
         orgId,
         writer,
@@ -2352,6 +2375,18 @@ const make = Effect.gen(function* () {
             team,
           );
         }
+        // Kept, a suggestion given to an agent is given now, once: not if its work already began.
+        if (keeping && reassigned === undefined && !isClosed(state) && before.owner._tag === "agent")
+          if (!(yield* alreadyGiven(orgId, row.recordId, before.owner.agentId)))
+            yield* wakeLead(
+              orgId,
+              writer,
+              row,
+              before.owner,
+              row.assignedBy === null ? textBy(writer) : KinPersonId.make(row.assignedBy),
+              seq,
+              now,
+            );
         if (reassigned !== undefined && patch.handedBack !== undefined)
           yield* wakeLead(
             orgId,
@@ -2370,9 +2405,10 @@ const make = Effect.gen(function* () {
           yield* wakeLead(orgId, writer, row, reassigned, writer.askedBy ?? null, seq, now);
         if (reopened || undoneFor)
           yield* wakeLead(orgId, writer, row, before.owner, writer.askedBy ?? null, seq, now);
-        // A lead never keeps working an open entry a person closed or took from it.
+        // A lead never keeps working an open entry a person closed or took from it; a suggestion
+        // nobody kept was never its work.
         const withdrawnFrom: Principal | undefined =
-          !isClosed(row.state) && (isClosed(state) || reassigned !== undefined)
+          !isSuggestion(row) && !isClosed(row.state) && (isClosed(state) || reassigned !== undefined)
             ? before.owner
             : undefined;
         // Told only when the person is the lead's owner.

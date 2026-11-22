@@ -1673,8 +1673,90 @@ it.effect(
         yield* OwnerWork.decline([owner], { orgId, key: declined.key, rev: declined.rev }),
         { rev: 2 },
       );
-      // The lead held it open, so it is told once.
-      assert.deepStrictEqual(yield* wakes, [[lead, "withdrawn", declined.key, ownerId]]);
+      // Kept, its own suggestion starts once; one never kept was never its work, so declining
+      // it wakes nobody.
+      const keptWake = [lead, "assigned", kept.key, ownerId];
+      assert.deepStrictEqual(yield* wakes, [keptWake]);
+      // Suggested for another agent, it wakes nobody until kept; kept, it is given once.
+      const forOther = (id: string) =>
+        records.create(
+          orgId,
+          { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: ownerId },
+          {
+            originKey: id,
+            title: `Invented: ${id}`,
+            owner: { _tag: "agent", agentId: other },
+            confirmed: false,
+          },
+        );
+      const build = (yield* forOther("build")).row;
+      const dismissed = (yield* forOther("dismissed")).row;
+      assert.deepStrictEqual(yield* wakes, [keptWake]);
+      yield* OwnerWork.decline([owner], { orgId, key: dismissed.key, rev: dismissed.rev });
+      assert.deepStrictEqual(yield* wakes, [keptWake]);
+      yield* OwnerWork.confirm([owner], { orgId, key: build.key, rev: build.rev });
+      yield* OwnerWork.confirm([owner], { orgId, key: build.key, rev: build.rev });
+      const buildWake = [other, "assigned", build.key, ownerId];
+      assert.deepStrictEqual(yield* wakes, [keptWake, buildWake]);
+      // Already started (a hand-off did it): keeping it later starts nothing a second time.
+      const started = (yield* forOther("started")).row;
+      const moved = yield* records.update(
+        orgId,
+        { actor: { _tag: "agent", agentId: other }, via: "lead" },
+        started.key,
+        { state: "doing" },
+      );
+      yield* OwnerWork.confirm([owner], { orgId, key: started.key, rev: moved.rev });
+      assert.deepStrictEqual(yield* wakes, [keptWake, buildWake]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a task made on the owner's own comment is kept and given at once; through a coding agent it is a suggestion",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const held = (yield* records.create(orgId, ownerWrites, {
+        originKey: "reimburse",
+        title: "Invented: tally partner reimbursements",
+        owner: toLead,
+      })).row;
+      // His comment on it, by his own hand or through his coding agent, wakes its holder.
+      const commentTurn = (seq: number, codingAgentKey: string | null) =>
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq,
+              author_kind, author_id, body, request_hash, created_at, coding_agent_key)
+            VALUES (${orgId}, ${`c-${seq}`}, ${held.recordId}, ${seq}, 'person', ${ownerId},
+              'Get the other lead to build it if it is not possible today', ${`h-${seq}`}, 0,
+              ${codingAgentKey})`;
+          yield* records.commented(orgId, ownerId, held, seq, "Build it");
+          const wakeupId = `wake-${seq}`;
+          yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+          yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+              started_at, status, event_ids, audience)
+            VALUES (${wakeupId}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '[]',
+              'owner_only')`;
+          yield* sql`UPDATE kin_events SET wakeup_id = ${wakeupId}, state = 'claimed'
+            WHERE wakeup_id IS NULL AND agent_id = ${lead}
+              AND json_extract(json, '$.reason') = 'commented'`;
+          const [event] = yield* sql<{ id: string }>`SELECT event_id AS id FROM kin_events
+            WHERE wakeup_id = ${wakeupId} ORDER BY event_id`;
+          return LeadWork.create(scopeOf(lead), {
+            sourceEventId: event!.id,
+            records: [{ title: `Invented: build the reimbursement tag ${seq}`, owner: other }],
+          });
+        });
+      const own = yield* yield* commentTurn(1, null);
+      assert.notProperty(own.records[0], "suggested");
+      const viaKey = yield* yield* commentTurn(2, "invented-key");
+      assert.include(viaKey.records[0], { suggested: true });
+      // Only the kept one starts the other lead, once.
+      assert.deepStrictEqual(
+        (yield* wakes).filter((wake) => wake[0] === other),
+        [[other, "assigned", own.records[0]!.key, ownerId]],
+      );
     }).pipe(Effect.provide(layer)),
 );
 
