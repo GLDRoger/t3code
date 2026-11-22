@@ -96,6 +96,7 @@ import { KinCountryFirstField } from "./components/KinCountryFirst";
 import { KinDayField } from "./components/KinDayField";
 import { KinPageFold } from "./components/KinPageFold";
 import { useKinCompanyCountry, useKinHomeCurrency } from "./state/useKinMoney.ts";
+import { useKinSectionOn } from "./state/useKinShell";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
 import { KinCameFromFields, KinTagFields, useKinMarketing } from "./KinMarketing";
@@ -363,13 +364,14 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
   };
   const newProspect = editing === null && draft.kind === "prospect";
   const keepsContacts = props.can?.contacts ?? props.can?.edit ?? !member;
+  const dealsOn = useKinSectionOn(environmentId, "deals");
   const india = kinIndiaFields(useKinCompanyCountry(props));
   const gstinNote = kinClientGstinNote(draft);
   const placeId = draft.abroad ? ABROAD : draft.placeOfSupply || NO_PLACE;
   const placeLabel = draft.abroad
     ? COPY.party.placeAbroad
     : draft.placeOfSupply || COPY.party.placeNone;
-  const takesDeal = editing === null && draft.kind !== "vendor";
+  const takesDeal = editing === null && draft.kind !== "vendor" && dealsOn;
   const amountBad = takesDeal && amount.trim() !== "" && money === null;
   const openClient = (to: KinRecordKey) => {
     leave();

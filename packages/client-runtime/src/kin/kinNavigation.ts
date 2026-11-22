@@ -208,6 +208,7 @@ export type KinPhoneSettingsRow =
   | "team"
   | "agents"
   | "company"
+  | "deals"
   | "watches"
   | "stop";
 
@@ -221,7 +222,9 @@ export function kinPhoneSettingsRows(input: { readonly ownerLevel: boolean }): {
 } {
   return {
     you: ["profile", "notifications", "appearance"],
-    company: input.ownerLevel ? ["team", "agents", "company", "watches", "stop"] : ["watches"],
+    company: input.ownerLevel
+      ? ["team", "agents", "company", "deals", "watches", "stop"]
+      : ["watches"],
   };
 }
 

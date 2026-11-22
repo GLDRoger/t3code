@@ -11,8 +11,11 @@ it("finds Kin's own Profile settings only where a host runs Kin", () => {
     isWslSettingsRowVisible: false,
     hasThreadAutoSettlement: false,
   };
-  const first = (query: string, hasKinHost: boolean) =>
-    searchSettings(query, filterAvailableSettingsSearchItems({ ...availability, hasKinHost }))[0];
+  const first = (query: string, hasKinHost: boolean, kinSectionsOff: ReadonlyArray<string> = []) =>
+    searchSettings(
+      query,
+      filterAvailableSettingsSearchItems({ ...availability, hasKinHost, kinSectionsOff }),
+    )[0];
   expect(first("quiet", true)).toMatchObject({
     id: "kin-quiet-hours",
     to: "/settings/kin-profile",
@@ -22,4 +25,7 @@ it("finds Kin's own Profile settings only where a host runs Kin", () => {
   expect(first("quiet", false)?.id).not.toBe("kin-quiet-hours");
   expect(first("legal name", true)?.id).toBe("company-details");
   expect(first("legal name", false)?.id).not.toBe("company-details");
+  // Deal stages go with Deals.
+  expect(first("deal stages", true)?.id).toBe("kin-deals");
+  expect(first("deal stages", true, ["deals"])?.id).not.toBe("kin-deals");
 });

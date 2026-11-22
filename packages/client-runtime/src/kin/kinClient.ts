@@ -1956,6 +1956,12 @@ export function makeKinClient<R, ER>(
       label: "kin:work:contacts:export",
       tag: "kin.work.exportContacts",
     }),
+    /** Switches the company's sections: the owner and co-owners only. */
+    shellSet: createKinRpcCommand(runtime, {
+      label: "kin:shell:set",
+      tag: "kin.shell.set",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
     companyProfileSet: createKinRpcCommand(runtime, {
       label: "kin:company:set",
       tag: "kin.work.setCompanyProfile",
