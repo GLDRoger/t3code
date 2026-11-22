@@ -562,11 +562,10 @@ const passedOn = Effect.fn("KinQuestions.passedOn")(function* (turn: {
 });
 
 /**
- * Where a sent-up draft may start: the teammate's own message in her direct chat with this agent,
- * or the turn carrying the owner's answer to a draft she sent up through this agent before (his
- * Changes first, from `sendBack`). No other turn that merely carries her as its origin. Its words
- * are hers to read: her message, or the draft she sent up, which was held to her then;
- * `changesFirst` says the turn carries that answer.
+ * Where a sent-up draft may start: her own message in her direct chat with this agent, or the turn
+ * carrying the owner's Changes first on one she sent up through it (`sendBack`, `changesFirst`),
+ * never a turn that merely carries her as its origin. Its words are hers to read: her message, or
+ * the draft she sent up, which was held to her then.
  */
 const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
   turn: { readonly orgId: string; readonly agentId: string; readonly wakeupId: string },
