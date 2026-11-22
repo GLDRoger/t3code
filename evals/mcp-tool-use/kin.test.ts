@@ -14,6 +14,7 @@ import { EVENING_RULE, MORNING_RULE } from "../../apps/server/src/kin/pulse/prom
 import {
   filledEvent,
   JUDGED_CALL_BYTES,
+  kinDated,
   kinSessionOf,
   kinTurnBlocks,
   kinTurnFiles,
@@ -32,6 +33,7 @@ import {
   normalizeToolName,
   runSample,
   type SampleRun,
+  shellRequest,
   summarize,
 } from "./run.ts";
 
@@ -268,6 +270,10 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
       name,
     );
   assert.notInclude(after, "mcp__t3-code__schedule_task");
+  // Claude Code's own deferred tools wait behind ToolSearch, named in the list, as a real turn sends them.
+  assert.isFalse(base(true).nativeTools.some((tool) => tool.name === "Monitor"));
+  assert.include(after, "Monitor");
+  assert.include(String(base(true).reminders[0]?.text), "\nMonitor\n");
   // A lead case has the owner's seat, as production gives a thread nobody else reads, unless it says not.
   const lead = (prompt: string, kinSession?: boolean) =>
     kinSessionOf({
@@ -287,6 +293,57 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
   assert.isFalse(lead("{{SHARED_TURN}}\n# Messages"));
   assert.isFalse(lead("{{GROUP_RULES}}\n# Messages"));
   assert.isFalse(kinSessionOf(childCase));
+});
+
+it("dates a Kin case's request on its owner's day, and leaves T3's cases on the template's", () => {
+  const dated = {
+    ...template,
+    messages: template.messages.map((message, index) =>
+      index === 0 && Array.isArray(message.content)
+        ? {
+            ...message,
+            content: message.content.map((block) =>
+              block.text.includes("# currentDate")
+                ? {
+                    ...block,
+                    text: "<system-reminder>\n# currentDate\nToday's date is 2026-10-24.\n</system-reminder>",
+                  }
+                : block,
+            ),
+          }
+        : message,
+    ),
+  };
+  const owned = (kinLead: boolean): McpToolUseCase => ({
+    ...childCase,
+    setup: { role: "top", world: { kinAgent: true, kinLead } },
+    prompt:
+      'Owner time: 2026-11-10T19:36:48+05:30 Tue ("Asia/Kolkata")\n\n# Events\n\n> renew acme.dev by the 20th',
+  });
+  for (const kinLead of [true, false]) {
+    const testCase = owned(kinLead);
+    const base = kinDated(
+      testCase,
+      buildBase(dated, {
+        model: "claude-sonnet-5-5",
+        keepUserInstructions: false,
+        kinAgent: true,
+        kinLead,
+      }),
+    );
+    const sample = makeSample(testCase, base);
+    const request = JSON.stringify(buildMessages(sample));
+    assert.deepEqual(request.match(/Today's date is [\d-]+/g), ["Today's date is 2026-11-10"]);
+    assert.notInclude(request, "2026-10-24");
+    const shell = JSON.stringify(
+      shellRequest(sample, { tool: "Bash", input: { command: "date" } }, "m"),
+    );
+    assert.include(shell, "Today is 2026-11-10.");
+    assert.notInclude(shell, "2026-10-24");
+  }
+  const t3 = buildBase(dated, { model: "claude-sonnet-5-5", keepUserInstructions: false });
+  assert.strictEqual(kinDated(childCase, t3), t3);
+  assert.equal(t3.environment.date, "2026-10-24");
 });
 
 it("passes a new company's refused invoice on what the reply tells the owner, not on its words", () => {

@@ -196,30 +196,78 @@ export const kinLeadBase = <M, E>(input: {
     (tool) => !KIN_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
   );
   const toolSearch = input.templateTools.filter((tool) => tool.name.endsWith("ToolSearch"));
+  // As a real owner-seat Kin turn sends them: Claude Code's own deferred tools are only named.
+  const deferredNative = ownerSeat
+    ? input.nativeDeferred.map((name): ApiTool => ({ name, ...input.nativeSchema(name) }))
+    : [];
+  const deferred = [...deferredNative, ...deferredKin];
   return {
     model: input.model,
     system: [text(kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"))],
     reminders:
-      deferredKin.length > 0 && input.deferredHeader !== undefined
-        ? [text(`${input.deferredHeader}${deferredKin.map((tool) => tool.name).join("\n")}\n`)]
+      deferred.length > 0 && input.deferredHeader !== undefined
+        ? [text(`${input.deferredHeader}${deferred.map((tool) => tool.name).join("\n")}\n`)]
         : [],
     gitStatusAt: undefined,
     environment: input.environment,
     nativeTools: [
       ...(ownerSeat
-        ? [
-            ...input.templateTools.filter(
-              (tool) => !input.isT3Name(tool.name) && !tool.name.endsWith("ToolSearch"),
-            ),
-            ...input.nativeDeferred.map((name): ApiTool => ({ name, ...input.nativeSchema(name) })),
-          ]
+        ? input.templateTools.filter(
+            (tool) => !input.isT3Name(tool.name) && !tool.name.endsWith("ToolSearch"),
+          )
         : // A confined Claude session keeps the provider's own web search (`claude.ts`).
           [{ name: "WebSearch", ...input.nativeSchema("WebSearch") }]),
-      ...(deferredKin.length > 0 ? toolSearch : []),
+      ...(deferred.length > 0 ? toolSearch : []),
       ...t3.filter((tool) => !deferredKin.includes(tool)),
     ],
     t3,
-    deferred: deferredKin,
+    deferred,
+  };
+};
+
+const OWNER_DAY = /Owner time: (\d{4}-\d{2}-\d{2})/;
+/** The owner's day of a Kin case: its turn's Owner time line, else the latest earlier one. */
+export const kinOwnerDay = ({ prompt, setup }: McpToolUseCase) =>
+  [
+    prompt,
+    setup.context ?? "",
+    ...(setup.priorTurns ?? []).map((turn) => turn.text ?? "").toReversed(),
+  ]
+    .map((value) => OWNER_DAY.exec(value)?.[1])
+    .find((day) => day !== undefined);
+
+const DATE_LINE = /Today's date is [\d-]+/;
+/**
+ * A real Kin turn's date line is its owner's day; the captured template's is the day of the
+ * capture. A Kin case with an owner day gets that day in its date line, the shell and the clock.
+ */
+export const kinDated = <
+  B extends {
+    readonly reminders: ReadonlyArray<Block>;
+    readonly environment: { readonly date: string | undefined };
+    readonly codex?: unknown;
+  },
+>(
+  testCase: McpToolUseCase,
+  base: B,
+): B => {
+  const day = isKinCase(testCase) ? kinOwnerDay(testCase) : undefined;
+  if (day === undefined) return base;
+  const line = `Today's date is ${day}`;
+  const dated = (block: Block) =>
+    typeof block.text === "string"
+      ? { ...block, text: block.text.replace(DATE_LINE, line) }
+      : block;
+  const hasLine = base.reminders.some((block) => DATE_LINE.test(String(block.text ?? "")));
+  return {
+    ...base,
+    environment: { ...base.environment, date: day },
+    // A lead's request carries no captured reminders; Claude Code sends the date after its list.
+    reminders: hasLine
+      ? base.reminders.map(dated)
+      : base.codex === undefined
+        ? [...base.reminders, text(`${line}.`)]
+        : base.reminders,
   };
 };
 

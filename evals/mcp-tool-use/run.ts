@@ -72,6 +72,7 @@ import {
   isKinCase,
   KinCaseAttachment,
   KIN_TOOLKITS,
+  kinDated,
   kinJudgedCall,
   kinLeadBase,
   kinLeadInstructions,
@@ -3348,7 +3349,8 @@ const main = Effect.gen(function* () {
       ),
     );
   }
-  const baseFor = (testCase: McpToolUseCase) => bases.get(baseKey(testCase)) ?? base;
+  const baseFor = (testCase: McpToolUseCase) =>
+    kinDated(testCase, bases.get(baseKey(testCase)) ?? base);
   const effort = flags.effort ?? base.codex?.reasoning.effort ?? "high";
   // The first request of a sample, as the dry run prints it.
   const firstRequest = Effect.fnUntraced(function* (testCase: McpToolUseCase) {
