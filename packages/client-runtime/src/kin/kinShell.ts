@@ -50,9 +50,9 @@ export const KIN_SECTION_SWITCHES: Readonly<Partial<Record<KinSectionId, KinSect
       olderPhones:
         "Teammates on an older version of the phone app keep seeing Deals until they update.",
       inactive: "Deals is off, so these settings aren't used until you turn it back on.",
-      off: "Deals is turned off.",
+      off: "Deals is turned off for this company.",
       offOwner: "You can turn it on in Settings › Deals.",
-      offMember: "The owner can turn it on in Settings › Deals.",
+      offMember: "An owner can turn it on in Settings › Deals.",
     },
   };
 

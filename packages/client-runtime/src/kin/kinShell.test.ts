@@ -62,10 +62,10 @@ describe("kinSectionOffLine", () => {
     expect(kinSectionOffLine(defaults, "deals", true)).toBeNull();
     expect(kinSectionOffLine(undefined, "deals", false)).toBeNull();
     expect(kinSectionOffLine(dealsOff, "deals", true)).toBe(
-      "Deals is turned off. You can turn it on in Settings › Deals.",
+      "Deals is turned off for this company. You can turn it on in Settings › Deals.",
     );
     expect(kinSectionOffLine(dealsOff, "deals", false)).toBe(
-      "Deals is turned off. The owner can turn it on in Settings › Deals.",
+      "Deals is turned off for this company. An owner can turn it on in Settings › Deals.",
     );
   });
 });
