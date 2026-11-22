@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   type KinCheckIn,
@@ -41,8 +42,11 @@ import * as KinSchedules from "./kinSchedules.ts";
 import { nativeScheduler } from "./kinSchedules.testkit.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
+import * as HostCare from "../host/KinHostCare.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
-import { KinAgentId, KinMemoryItemId } from "@t3tools/contracts";
+import * as ProcessRunner from "../../processRunner.ts";
+import * as ServerConfig from "../../config.ts";
+import { KinAgentId, KinEventId, KinMemoryItemId } from "@t3tools/contracts";
 
 const decodeCard = Schema.decodeUnknownSync(KinScheduledTaskCard);
 const task: MemoryItemHead = item("sch-prs", {
@@ -218,6 +222,42 @@ it.effect(
         1,
       );
     }).pipe(Effect.provide(harness(undefined, care).layer));
+  },
+);
+
+it.effect(
+  "a run held by a trouble says on its card that it waits, and why, until it is let go",
+  () => {
+    // Nothing on this computer runs a command: it isn't a Kin host.
+    const runner = Layer.succeed(
+      ProcessRunner.ProcessRunner,
+      ProcessRunner.ProcessRunner.of({ run: () => Effect.die("no commands here") }),
+    );
+    const care = HostCare.layerWithoutRunner.pipe(
+      Layer.provide(runner),
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-scheduled-held-" })),
+      Layer.provide(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      yield* setup();
+      yield* tick(tuesday);
+      const [run] = yield* runs();
+      assert.include((yield* card()).state.lastRun, { status: "running" });
+      const hostCare = yield* KinHostCare;
+      yield* hostCare.failed({
+        orgId,
+        agentId: KinAgentId.make(run!.agentId),
+        cause: "signin",
+        eventIds: [KinEventId.make(run!.eventId)],
+      });
+      assert.deepInclude((yield* card()).state.lastRun, {
+        status: "running",
+        note: "its AI account is signed out",
+      });
+      // The agent works again: its held run is let go, and the card no longer says it waits.
+      yield* hostCare.succeeded(orgId, KinAgentId.make(run!.agentId));
+      assert.notProperty((yield* card()).state.lastRun, "note");
+    }).pipe(Effect.provide(care.pipe(Layer.provideMerge(harness().layer))));
   },
 );
 

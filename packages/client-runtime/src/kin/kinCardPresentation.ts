@@ -369,7 +369,8 @@ function lastRunLine(run: NonNullable<KinScheduledTaskCard["lastRun"]>, timeZone
   const note = run.note === undefined ? "" : clamp(run.note, 280);
   switch (run.status) {
     case "running":
-      return "Running now.";
+      // Held by a trouble on Kin's computer: the note is why, as the trouble's own card says it.
+      return note === "" ? "Running now." : `Waiting to run: ${note.replace(/\.$/, "")}.`;
     case "posted":
       return note === "" ? `Last run ${at}.` : `Last run ${at}: ${note}`;
     case "failed":

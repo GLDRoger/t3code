@@ -7,6 +7,8 @@ import {
   KinEventId,
   KinHostTroubleCard,
   KinMessageId,
+  KinScheduledTaskCard,
+  KIN_TROUBLE_WHY,
   KinWidgetId,
   kinTroubleWords,
   type KinAgentId,
@@ -64,6 +66,8 @@ const OUT_BYTES = 64 * 1024 * 1024;
 
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const decodeCardValue = Schema.decodeUnknownOption(KinHostTroubleCard);
+const decodeRunCard = Schema.decodeUnknownOption(KinScheduledTaskCard);
+const encodeRunCard = Schema.encodeSync(KinScheduledTaskCard);
 const encodeCard = Schema.encodeSync(KinHostTroubleCard);
 const encodeCardJson = Schema.encodeSync(Schema.fromJsonString(KinHostTroubleCard));
 const encodeIds = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
@@ -417,6 +421,45 @@ const make = Effect.gen(function* () {
       Effect.map((rows) => rows.map((row) => KinEventId.make(row.eventId))),
     );
 
+  /**
+   * A scheduled run's card says it waits, and why, while a trouble holds its turn (`why`), and
+   * stops saying so once the turn is let go (`why` undefined). Its result settles the card later.
+   */
+  const noteRuns = Effect.fn("KinHostCare.noteRuns")(
+    function* (orgId: KinOrgId, eventIds: ReadonlyArray<KinEventId>, why: string | undefined) {
+      if (eventIds.length === 0) return;
+      const cards = yield* sql<{ widgetId: string }>`SELECT DISTINCT widget_id AS "widgetId"
+        FROM kin_lead_deliveries WHERE org_id = ${orgId} AND kind = 'scheduled_task'
+          AND status = 'pending' AND widget_id IS NOT NULL
+          AND event_id IN (SELECT value FROM json_each(${yield* encodeIds(eventIds)}))
+        ORDER BY widget_id`;
+      for (const { widgetId } of cards) {
+        const existing = yield* repo
+          .getWidget({ orgId, widgetId: KinWidgetId.make(widgetId) })
+          .pipe(Effect.map(Option.getOrUndefined));
+        if (existing === undefined) continue;
+        const card = decodeRunCard(existing.state);
+        if (Option.isNone(card)) continue;
+        const run = card.value.lastRun;
+        if (run === null || run.status !== "running" || run.note === why) continue;
+        const { note: _note, ...rest } = run;
+        const state = encodeRunCard({
+          ...card.value,
+          lastRun: why === undefined ? rest : { ...rest, note: why },
+        });
+        const widget = yield* repo.updateWidget({
+          ...existing,
+          audience: "owner",
+          expectedRevision: existing.revision,
+          state,
+          updatedAt: iso(yield* Clock.currentTimeMillis),
+        });
+        yield* publish({ type: "widget.updated", orgId, widget });
+      }
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin run card not noted", { cause })),
+  );
+
   /** The notice's facts, read from the trouble and its turns' own rows. */
   const cardOf = Effect.fn("KinHostCare.cardOf")(function* (orgId: KinOrgId, trouble: Trouble) {
     const agents = yield* sql<{
@@ -699,6 +742,7 @@ const make = Effect.gen(function* () {
         ),
       );
       yield* projectQuietly(orgId, troubleId, true);
+      yield* noteRuns(orgId, input.eventIds, KIN_TROUBLE_WHY[input.cause]);
       const trouble = yield* troubleById(orgId, troubleId);
       return trouble?.toldAt != null;
     },
@@ -716,7 +760,9 @@ const make = Effect.gen(function* () {
           WHERE org_id = ${orgId} AND trouble_id = ${troubleId} AND closed_at IS NULL
           RETURNING trouble_id`;
         if (rows.length === 0) return false;
-        yield* queue.wake(orgId, yield* heldIds(orgId, troubleId));
+        const held = yield* heldIds(orgId, troubleId);
+        yield* queue.wake(orgId, held);
+        yield* noteRuns(orgId, held, undefined);
         return true;
       }),
     );
@@ -744,10 +790,9 @@ const make = Effect.gen(function* () {
             const own = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
               WHERE org_id = ${orgId} AND held_by = ${trouble.troubleId} AND agent_id = ${agentId}
                 AND state IN ('queued', 'failed') ORDER BY event_id`;
-            yield* queue.wake(
-              orgId,
-              own.map((row) => KinEventId.make(row.eventId)),
-            );
+            const released = own.map((row) => KinEventId.make(row.eventId));
+            yield* queue.wake(orgId, released);
+            yield* noteRuns(orgId, released, undefined);
           }),
         );
         // Over when no stopped agent is left with a held turn.
@@ -898,8 +943,11 @@ const make = Effect.gen(function* () {
     function* (orgId: KinOrgId) {
       let requeued = 0;
       for (const trouble of yield* openTroubles(orgId))
-        if (trouble.cause !== "backup")
-          requeued += yield* queue.wake(orgId, yield* heldIds(orgId, trouble.troubleId));
+        if (trouble.cause !== "backup") {
+          const held = yield* heldIds(orgId, trouble.troubleId);
+          requeued += yield* queue.wake(orgId, held);
+          yield* noteRuns(orgId, held, undefined);
+        }
       return { requeued };
     },
     Effect.mapError(() => unavailable),
