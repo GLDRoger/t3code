@@ -27,6 +27,9 @@ import {
   kinChoiceFailureNotice,
   kinChoicePhase,
   kinChoiceDecidedLine,
+  kinChoiceDismissedLine,
+  kinChoiceDismissible,
+  kinChoiceDismissInput,
   kinChoiceUndoneLine,
   createKinHeldPress,
   kinMailCancels,
@@ -420,6 +423,54 @@ describe("choice cards", () => {
       "expired",
       "Replaced by a newer one.",
     ]);
+    // Dismissed by the person it asked: "Dismissed" with Undo for them, who did it for others.
+    const rhea = KinPersonId.make("rhea");
+    const meera = KinPersonId.make("meera");
+    const dismissed = choice({
+      closedAt: "2026-11-08T10:00:00.000Z",
+      state: {
+        ...choiceState(),
+        dismissed: { personId: "rhea", name: "Rhea Rao", at: "2026-11-08T10:00:00.000Z" },
+      },
+    });
+    expect(kinChoicePhase(dismissed, posted)).toBe("dismissed");
+    expect(kinChoiceDismissedLine(dismissed, rhea)).toEqual({ text: "Dismissed", undo: true });
+    expect(kinChoiceDismissedLine(dismissed, meera)).toEqual({
+      text: "Dismissed by Rhea Rao",
+      undo: false,
+    });
+    expect(kinChoiceDismissedLine(open, rhea)).toBeNull();
+    // Offered only on an open card that asks the viewer; a Confirm card keeps its own Cancel.
+    const asks = choice({ awaiting: [rhea] });
+    const confirm = choice({
+      awaiting: [rhea],
+      state: {
+        ...choiceState(),
+        send: {
+          service: "Gmail",
+          action: "email",
+          from: "rhea@ambermill.example",
+          to: ["anita@orbitdental.example"],
+          cc: [],
+          subject: "Invoice",
+          body: "Attached.",
+          attachments: [],
+          outcome: null,
+        },
+      },
+    });
+    expect([
+      kinChoiceDismissible(asks, "open", rhea),
+      kinChoiceDismissible(asks, "open", meera),
+      kinChoiceDismissible(asks, "expired", rhea),
+      kinChoiceDismissible(confirm, "open", rhea),
+    ]).toEqual([true, false, false, false]);
+    expect(kinChoiceDismissInput(asks, true, "undo-1")).toEqual({
+      widgetId: asks.widgetId,
+      revision: asks.revision,
+      actionId: "undismiss",
+      clientActionId: "undo-1",
+    });
     // Once the newer card is answered, the one it replaced says who chose what on it.
     const told = choice({
       closedAt: "2026-11-08T10:00:00.000Z",

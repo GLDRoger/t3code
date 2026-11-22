@@ -6,6 +6,8 @@ import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as TaskCard from "../widgets/taskCard.ts";
 import {
   KIN_CHOICE_CARD_ACTION,
+  KIN_CHOICE_DISMISS_ACTION,
+  KIN_CHOICE_UNDISMISS_ACTION,
   KIN_MESSAGE_FIGURES_MAX,
   KIN_MESSAGE_PAGES_MAX,
   KIN_FIGURE_SCHEME,
@@ -182,6 +184,22 @@ export type ChoiceAnswerHandler = (input: {
   KinChoiceOutcome | undefined,
   KinChatError | Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError
 >;
+/**
+ * Server work a person's Dismiss on a choice card, or their Undo of it, carries out in its own
+ * transaction: the open question it asks closes as dismissed or opens again (`dismissed.ts`).
+ */
+export type ChoiceDismissHandler = (input: {
+  readonly orgId: KinOrgId;
+  readonly widget: KinWidget;
+  readonly personId: KinPersonId;
+  readonly undo: boolean;
+  /** When the dismissal being made, or undone, closed the card. */
+  readonly dismissedAt: number;
+  readonly now: number;
+}) => Effect.Effect<
+  void,
+  KinChatError | Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError
+>;
 type WaitingInput = Pick<
   KinWaitingItem,
   "chatId" | "personId" | "messageId" | "widgetId" | "reason"
@@ -194,6 +212,7 @@ export class KinChatService extends Context.Service<
     readonly attachChoiceAnswers: (
       handler: ChoiceAnswerHandler,
       refused?: ChoiceRefusedHandler,
+      dismissed?: ChoiceDismissHandler,
     ) => Effect.Effect<void, never, Scope.Scope>;
     readonly notice: (input: {
       readonly messageId: KinMessageId;
@@ -519,6 +538,9 @@ const REACTABLE_WIDGETS = new Set(["choice", "task", "routine"]);
 const SOFT_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const encodeAction = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const invalidState = new KinChatError({ reason: "invalid_state", message: "Invalid chat input." });
+const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+/** How a dismissed card's waiting rows read as resolved. */
+const DISMISSED = "dismissed";
 const notFound = new KinChatError({ reason: "not_found", message: "Kin record not found." });
 const isKinChatError = Schema.is(KinChatError);
 // Live inserts also advance change_seq, so refresh the client's frozen change cursor well under
@@ -554,6 +576,10 @@ const cardTapError = (cause: KinChatError | SqlError.SqlError | Schema.SchemaErr
     : SqlError.isSqlError(cause)
       ? toPersistenceSqlError("KinChatService.cardTap")(cause)
       : new KinChatError({ reason: "invalid_state", message: "Invalid widget state." });
+
+const dismissError = (
+  cause: KinChatError | Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError,
+) => (SqlError.isSqlError(cause) || Schema.isSchemaError(cause) ? cardTapError(cause) : cause);
 
 const taskCardWidgetId = (input: { readonly chatId: KinChatId; readonly threadId: ThreadId }) =>
   encodeAction([input.chatId, input.threadId]).pipe(
@@ -622,6 +648,7 @@ const make = Effect.gen(function* () {
   const refreshes = yield* Effect.serviceOption(KinRefreshHub);
   let onChoice: ChoiceAnswerHandler | undefined;
   let onRefused: ChoiceRefusedHandler | undefined;
+  let onDismiss: ChoiceDismissHandler | undefined;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql
       .withTransaction(effect)
@@ -1388,6 +1415,135 @@ const make = Effect.gen(function* () {
       yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId: newer.orgId, widget }));
     }
   });
+  /**
+   * A person's Dismiss on an open choice card that asks them, or their Undo of it: the card closes
+   * without an answer and leaves what waits on them, or opens again as it was. Posts nothing, so
+   * no turn is woken by the chat; what the question asked is the handler's (`onDismiss`).
+   */
+  const dismissOn = Effect.fn("KinChatService.dismissOn")(function* (
+    identity: PersonIdentity,
+    widget: KinWidget,
+    request: KinWidgetsActInput,
+  ) {
+    const card = yield* decodeChoiceCard(widget.state).pipe(Effect.mapError(() => invalidState));
+    const undo = request.actionId === KIN_CHOICE_UNDISMISS_ACTION;
+    const mine = card.dismissed?.personId === identity.personId;
+    const message = () =>
+      requireRecord(repo.getMessage({ orgId: identity.orgId, messageId: widget.messageId }));
+    // A repeat from another device or a retry finds it already as asked: nothing more happens.
+    if (undo ? card.dismissed === undefined && widget.closedAt === null : mine)
+      return yield* message();
+    if (widget.revision !== request.revision)
+      return yield* new KinChatError({
+        reason: "widget_changed",
+        message: "This card changed or was answered. Look at it again.",
+      });
+    if (card.send !== undefined) return yield* notAllowed;
+    if (onDismiss === undefined)
+      return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+    const nowMs = yield* Clock.currentTimeMillis;
+    // Unanswered cards are never rewritten in time: `updatedAt` stays when it was posted.
+    if (!undo) {
+      if (card.answer !== null || card.dismissed !== undefined || widget.closedAt !== null)
+        return yield* new KinChatError({
+          reason: "widget_changed",
+          message: "This question was already settled.",
+        });
+      if (!widget.awaiting.includes(identity.personId)) return yield* notAllowed;
+      if (ChoiceCard.choiceExpired(widget, nowMs)) return yield* invalid("This question expired.");
+      const at = DateTime.formatIso(DateTime.makeUnsafe(nowMs));
+      yield* onDismiss({
+        orgId: identity.orgId,
+        widget,
+        personId: identity.personId,
+        undo: false,
+        dismissedAt: nowMs,
+        now: nowMs,
+      }).pipe(Effect.mapError(dismissError));
+      const name = (yield* requireRecord(repo.getPerson(identity))).displayName;
+      const closed = yield* repo.updateWidget({
+        ...widget,
+        audience: "chat",
+        state: {
+          ...card,
+          dismissed: { personId: identity.personId, name: name.slice(0, 200), at },
+        },
+        awaiting: [],
+        expectedRevision: widget.revision,
+        closedAt: at,
+      });
+      for (const item of yield* repo.waitingForWidget(closed))
+        if (yield* repo.resolveWaiting({ ...item, resolution: DISMISSED, resolvedAt: at }))
+          yield* sql.afterCommit(
+            hub.publish({
+              type: "waiting.updated",
+              orgId: identity.orgId,
+              item: { ...item, resolution: DISMISSED, resolvedAt: at },
+            }),
+          );
+      yield* sql.afterCommit(
+        hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: closed }),
+      );
+      return yield* message();
+    }
+    if (card.dismissed === undefined || card.answer !== null || widget.closedAt === null)
+      return yield* invalid("This card isn't dismissed, so there is nothing to undo.");
+    if (!mine)
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: "Only the person who dismissed it can undo that.",
+      });
+    if (ChoiceCard.choiceExpired(widget, nowMs))
+      return yield* invalid("This question expired, so it can't be opened again.");
+    yield* onDismiss({
+      orgId: identity.orgId,
+      widget,
+      personId: identity.personId,
+      undo: true,
+      dismissedAt: Date.parse(card.dismissed.at),
+      now: nowMs,
+    }).pipe(Effect.mapError(dismissError));
+    // It waits again on whoever it waited on when it was dismissed.
+    const before = yield* sql<{ personId: KinPersonId }>`SELECT DISTINCT person_id AS "personId"
+      FROM kin_waiting WHERE org_id = ${identity.orgId} AND widget_id = ${widget.widgetId}
+        AND resolution = ${DISMISSED} AND resolved_at = ${card.dismissed.at}
+      ORDER BY person_id`.pipe(Effect.mapError(toPersistenceSqlError("KinChatService.dismissOn")));
+    const awaiting = before.length === 0 ? [identity.personId] : before.map((row) => row.personId);
+    const { dismissed: _dismissed, ...asked } = card;
+    const opened = yield* repo.updateWidget({
+      ...widget,
+      audience: "chat",
+      state: asked,
+      awaiting,
+      expectedRevision: widget.revision,
+      closedAt: null,
+    });
+    const at = DateTime.formatIso(DateTime.makeUnsafe(nowMs));
+    for (const personId of awaiting) {
+      const item: KinWaitingItem = {
+        orgId: identity.orgId,
+        chatId: opened.chatId,
+        waitingId: yield* decodeWaitingId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie),
+        personId,
+        messageId: opened.messageId,
+        widgetId: opened.widgetId,
+        reason: "question",
+        createdAt: at,
+        resolvedAt: null,
+        resolution: null,
+      };
+      if (yield* repo.addWaiting(item)) {
+        const added = Option.getOrElse(yield* repo.getWaiting(item), () => item);
+        yield* sql.afterCommit(
+          hub.publish({ type: "waiting.updated", orgId: identity.orgId, item: added }),
+        );
+      }
+    }
+    yield* sql.afterCommit(
+      hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: opened }),
+    );
+    return yield* message();
+  });
   const setChoiceOutcome = Effect.fn("KinChatService.setChoiceOutcome")(function* (
     agent: AgentIdentity,
     input: { chatId: KinChatId; text: string },
@@ -1980,16 +2136,18 @@ const make = Effect.gen(function* () {
       return { message, waiting };
     }, transaction),
     attachChoiceAnswers: Effect.fn("KinChatService.attachChoiceAnswers")(
-      function* (handler, refused) {
+      function* (handler, refused, dismissed) {
         yield* Effect.acquireRelease(
           Effect.sync(() => {
             onChoice = handler;
             onRefused = refused;
+            onDismiss = dismissed;
           }),
           () =>
             Effect.sync(() => {
               if (onChoice === handler) onChoice = undefined;
               if (onRefused === refused) onRefused = undefined;
+              if (onDismiss === dismissed) onDismiss = undefined;
             }),
         );
       },
@@ -3262,6 +3420,12 @@ const make = Effect.gen(function* () {
       identity = yield* personFor(identity, input);
       const request = yield* decodeAct(input).pipe(Effect.mapError(() => invalidState));
       const { widget, member } = yield* tapTarget(identity, request.widgetId);
+      if (
+        widget.type === "choice" &&
+        (request.actionId === KIN_CHOICE_DISMISS_ACTION ||
+          request.actionId === KIN_CHOICE_UNDISMISS_ACTION)
+      )
+        return yield* dismissOn(identity, widget, request);
       if (widget.type === "approval")
         return yield* new KinChatError({
           reason: "use_approvals",

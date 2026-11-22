@@ -30,6 +30,9 @@ import {
   kinChoiceDecidedLine,
   kinChoicePhase,
   kinChoiceUndoneLine,
+  KIN_CHOICE_DISMISS_COPY,
+  kinChoiceDismissedLine,
+  kinChoiceDismissible,
   createKinHeldPress,
   kinDeviceTimers,
   kinMailCancels,
@@ -570,7 +573,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const checked = kinSendTicked(warnedView, ticked) !== null;
   const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
 
-  const { tick, press, pickFrom, sendEdit, saveEdit, discardEdit } = kinChoiceCardActions({
+  const { tick, press, pickFrom, sendEdit, saveEdit, discardEdit, dismiss } = kinChoiceCardActions({
     choice,
     environmentId,
     newId: uuidv4,
@@ -657,6 +660,54 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     choice.send.fromChoices.length > 1
       ? { busy: switching, problem: switchProblem, pick: (id: string) => void pickFrom(id) }
       : null;
+
+  const dismissible = canAct && kinChoiceDismissible(choice, phase, props.viewerPersonId);
+  const dismissed = kinChoiceDismissedLine(choice, props.viewerPersonId);
+  const dismissing = pending !== null && choice.options.every((option) => option.id !== pending);
+  const notice =
+    status?.notice == null ? null : (
+      <Text
+        accessibilityRole="alert"
+        accessibilityLiveRegion="polite"
+        textRole="footnote"
+        className={cn(
+          "font-t3-medium",
+          status.notice.kind === "stale" ? "text-warning-foreground" : "text-danger-foreground",
+        )}
+      >
+        {status.notice.text}
+      </Text>
+    );
+
+  if (phase === "dismissed" && dismissed !== null)
+    return (
+      <View className="gap-1 px-1">
+        <View className="flex-row items-center gap-3">
+          <Text
+            textRole="footnote"
+            numberOfLines={1}
+            accessibilityLabel={`${dismissed.text}. ${choice.question}`}
+            className="min-w-0 flex-1 text-foreground-muted"
+          >
+            <Text textRole="footnote" className="font-t3-medium text-foreground-secondary">
+              {dismissed.text}
+            </Text>
+            {` · ${choice.question}`}
+          </Text>
+          {dismissed.undo && canAct ? (
+            <Button
+              label={KIN_CHOICE_DISMISS_COPY.undo}
+              accessibilityLabel={KIN_CHOICE_DISMISS_COPY.undoName}
+              tone="text"
+              loading={dismissing}
+              disabled={pending !== null}
+              onPress={() => void dismiss(true)}
+            />
+          ) : null}
+        </View>
+        {notice}
+      </View>
+    );
 
   const grouped = fromPicker === null && shownEdit === null;
   return (
@@ -773,21 +824,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         </View>
       ) : (
         <>
-          {status?.notice == null ? null : (
-            <Text
-              accessibilityRole="alert"
-              accessibilityLiveRegion="polite"
-              textRole="footnote"
-              className={cn(
-                "font-t3-medium",
-                status.notice.kind === "stale"
-                  ? "text-warning-foreground"
-                  : "text-danger-foreground",
-              )}
-            >
-              {status.notice.text}
-            </Text>
-          )}
+          {notice}
           <View className="gap-2 pt-1">
             {choice.options.map((option) => (
               <View key={option.id} className="gap-0.5">
@@ -823,6 +860,16 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
                 onPress={() =>
                   setEditing(kinSendEditHeld(heldKey) ?? kinSendEditStart(choice, ack))
                 }
+              />
+            ) : null}
+            {dismissible ? (
+              <Button
+                label={KIN_CHOICE_DISMISS_COPY.dismiss}
+                accessibilityLabel={KIN_CHOICE_DISMISS_COPY.dismissName}
+                tone="text"
+                loading={dismissing}
+                disabled={(pending !== null && !dismissing) || switching}
+                onPress={() => void dismiss()}
               />
             ) : null}
           </View>

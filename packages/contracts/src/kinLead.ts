@@ -819,6 +819,10 @@ export const KinEvent = Schema.Union([
         words: Schema.optional(Schema.Literal(true)),
         answered: Schema.optional(Schema.Literal(true)),
         approved: Schema.optional(Schema.Literal(true)),
+        // The person dismissed it without choosing, at `at`; with `reopened`, they undid that.
+        dismissed: Schema.optional(Schema.Literal(true)),
+        reopened: Schema.optional(Schema.Literal(true)),
+        at: Schema.optional(NonNegativeInt),
       }),
       // One run of a scheduled task; `runId` names the fire or Run now tap that started it.
       Schema.Struct({

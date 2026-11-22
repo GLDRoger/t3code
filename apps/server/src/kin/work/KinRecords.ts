@@ -136,6 +136,7 @@ import { cleanTags } from "./tags.ts";
 import { notAVendor } from "./vendorName.ts";
 import { withArticle } from "../article.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
+import { dismissedHold, dismissedHoldText, personInTurn } from "./dismissedHold.ts";
 import {
   alsoOnIt,
   bumpTeamSeqs,
@@ -2153,6 +2154,28 @@ const make = Effect.gen(function* () {
                 : before.waitingOn;
         if (waitingOn !== null && !samePrincipal(waitingOn, before.waitingOn))
           yield* ownerExists(orgId, waitingOn, "to wait on");
+        // A dismissed question released this task; only Undo or that person's own word re-waits it.
+        if (
+          waitingOn?._tag === "person" &&
+          carded === undefined &&
+          writer.actor._tag === "agent" &&
+          !samePrincipal(waitingOn, before.waitingOn)
+        ) {
+          const dismisser = yield* dismissedHold(orgId, row.recordId, waitingOn.personId).pipe(
+            provideSql,
+          );
+          if (
+            dismisser !== undefined &&
+            (writer.wakeupId === undefined ||
+              !(yield* personInTurn(
+                orgId,
+                writer.actor.agentId,
+                writer.wakeupId,
+                waitingOn.personId,
+              ).pipe(provideSql)))
+          )
+            return yield* invalid(dismissedHoldText(dismisser, row.key));
+        }
         if (
           !samePrincipal(waitingOn, before.waitingOn) ||
           (state !== "waiting" && row.waitingOnId !== null)
