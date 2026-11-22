@@ -440,7 +440,12 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
   const changesFirst = !approved && row.draft !== null && input.label === CHANGES_FIRST;
   // Her own card that sent it up may send it again, as it now says.
   if (changesFirst)
-    for (const widgetId of yield* draftCardsAbout(input.orgId, row.forChatId, row.about, "sent"))
+    for (const { widgetId } of yield* draftCardsAbout(
+      input.orgId,
+      row.forChatId,
+      row.about,
+      "sent",
+    ))
       yield* chat.setDocCardChangesFirst({
         orgId: input.orgId,
         widgetId,
@@ -516,7 +521,8 @@ export const draftCardsAbout = Effect.fn("KinQuestions.draftCardsAbout")(functio
 ) {
   if (about.length === 0) return [];
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ widgetId: KinWidgetId }>`SELECT widget_id AS "widgetId"
+  return yield* sql<{ widgetId: KinWidgetId; text: string }>`SELECT widget_id AS "widgetId",
+      json_extract(state_json, '$.draft.text') AS text
     FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${chatId} AND type = ${KIN_DOC_CARD}
       AND json_extract(state_json, '$.key') IN ${sql.in(about)}
       AND json_extract(state_json, '$.draft.sendTo') IS NOT NULL
@@ -527,7 +533,6 @@ export const draftCardsAbout = Effect.fn("KinQuestions.draftCardsAbout")(functio
               AND json_extract(state_json, '$.draft.changesFirst') IS NOT NULL`
       }
     ORDER BY widget_id`;
-  return rows.map((row) => row.widgetId);
 });
 
 /** Whether a card asks a question for another chat: its tap answers there, not here. */

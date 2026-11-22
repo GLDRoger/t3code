@@ -4,6 +4,7 @@ import {
   type KinChatId,
   KinChoiceCardState,
   KinChoiceOption,
+  KinMessageId,
   type KinOrgId,
   type KinPersonId,
   KinText,
@@ -643,17 +644,40 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
       // Asked after an outside read, its answer wakes a turn that has read outside text too.
       if (turn !== null) yield* stampEvent(orgId, questionId, yield* outsideStamp(turn));
       // Her card that sent the first one up reads sent again.
-      if (redone !== null)
-        for (const widgetId of yield* draftCardsAbout(orgId, here.chatId, about, "changesFirst"))
-          yield* chat.setDocCardSent({
+      const herCards =
+        redone === null ? [] : yield* draftCardsAbout(orgId, here.chatId, about, "changesFirst");
+      for (const { widgetId } of herCards)
+        yield* chat.setDocCardSent({
+          orgId,
+          widgetId,
+          sent: {
+            name: target.name,
+            at: DateTime.formatIso(DateTime.makeUnsafe(now)),
+            ...("_tag" in posted ? { held: true as const } : {}),
+          },
+        });
+      // Kin shows her the draft that went up, unless her own card already holds that text: as
+      // the agent's own bubble, which draws its markdown, as Kin's one-line notices don't.
+      if (
+        turn !== null &&
+        sentUp !== undefined &&
+        !herCards.some((one) => flat(one.text) === flat(sentUp.text))
+      )
+        yield* chat
+          .notice({
             orgId,
-            widgetId,
-            sent: {
-              name: target.name,
-              at: DateTime.formatIso(DateTime.makeUnsafe(now)),
-              ...("_tag" in posted ? { held: true as const } : {}),
-            },
-          });
+            chatId: here.chatId,
+            messageId: KinMessageId.make(`kin-draft-up:${questionId}`),
+            audience: "chat",
+            from: agentId,
+            body: `With ${target.name} to approve:\n\n${sentUp.text}`,
+            ...(redone === null ? { silent: true } : {}),
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin couldn't show a sent-up draft in its chat", cause),
+            ),
+          );
       const joined = yield* signedIn(orgId, target.id);
       if ("_tag" in posted) {
         if (turn !== null && redone === null)

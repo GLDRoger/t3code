@@ -2504,6 +2504,11 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         ORDER BY asked_at, question_id`;
       const docCount = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
         WHERE org_id = ${orgId} AND register_id = 'docs'`.pipe(Effect.map((rows) => rows[0]!.n));
+      /** The drafts Kin showed in a chat as they went up. */
+      const shownUp = (chatId: KinChatId) =>
+        sql<{ body: string; author: string }>`SELECT body, author_kind AS author FROM kin_messages
+          WHERE org_id = ${orgId} AND chat_id = ${chatId} AND message_id LIKE 'kin-draft-up:%'
+          ORDER BY seq`;
       const sendUp = Effect.fn("test.sendUp")(function* (
         who: string,
         client: string,
@@ -2583,6 +2588,17 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       // The same call again in this turn finds that card; another text here is refused, so filed.
       assert.deepInclude(yield* proposal(words), { key: "", note: told });
       assert.lengthOf(yield* drafts, 2);
+      // Kin showed Zoya each draft that went up, once, the retry included, as the agent's bubble.
+      assert.deepStrictEqual(yield* shownUp(zoyaChat), [
+        {
+          body: "With Rhea Rao to approve:\n\nProposal: three shoots, price: ____",
+          author: "agent",
+        },
+        {
+          body: "With Rhea Rao to approve:\n\nHarbourline proposal: four shoots, price: ____",
+          author: "agent",
+        },
+      ]);
       // A redraft in a later turn, while that one waits, matches nothing: today's plain card.
       const later = yield* turnOn("rhea", chatOf("chief"), "And add a reel.");
       const plain = yield* proposal(later, {
@@ -2676,8 +2692,9 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.deepInclude((yield* draftOf()).sent, { name: "Rhea Rao" });
       yield* tap(owner, again!.questionId, "option-2", "rhea-changes-mail-again");
       assert.notProperty(yield* draftOf(), "sent");
+      const shownBefore = yield* shownUp(zoyaChat);
       const edit = yield* turnOn("rhea", chatOf("chief"), "Say 3 December.");
-      const shownBefore = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
+      const cardsBefore = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
         WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'`;
       const edited = yield* LeadDocs.edit(scopeOf("chief"), {
         key: mail.key,
@@ -2695,13 +2712,14 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         forChatId: zoyaChat,
         text: "We launch on 3 December.\n",
       });
-      // Her card reads sent again: the redraft is with Rhea.
+      // Her card reads sent again with the redraft's text: Kin posts it nowhere else.
       assert.deepInclude((yield* draftOf()).sent, { name: "Rhea Rao" });
+      assert.deepStrictEqual(yield* shownUp(zoyaChat), shownBefore);
       // Its Approve card carries it: no doc card of it in her chat as well.
       assert.deepStrictEqual(
         yield* sql`SELECT COUNT(*) AS n FROM kin_widgets WHERE org_id = ${orgId}
           AND chat_id = ${chatOf("chief")} AND type = 'doc'`,
-        shownBefore,
+        cardsBefore,
       );
     }).pipe(Effect.provide(layer)),
   ),
