@@ -6,6 +6,7 @@ import {
   AuthStandardClientScopes,
   KinAgentId,
   KinChatError,
+  KinEventId,
   KinPersonId,
   KinWidgetId,
   KIN_LEFT_FIELD,
@@ -29,6 +30,7 @@ import { SessionStore } from "../../auth/SessionStore.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshHub } from "../chat/KinRefreshHub.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
@@ -295,7 +297,40 @@ it.effect(
           orgId: ctx.orgId,
           agentId: chief,
         });
+        const care = yield* KinHostCare;
+        yield* ctx.sql`INSERT INTO kin_events
+            (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, not_before)
+          VALUES ('zoya-held', ${ctx.orgId}, ${chief}, 'chat.message', 'P1',
+            ${JSON.stringify({ chatId: zoyasChat.chatId })}, 0, 0, 'queued', 72000000),
+            ('zoya-spent', ${ctx.orgId}, ${chief}, 'chat.message', 'P1',
+              ${JSON.stringify({ chatId: zoyasChat.chatId })}, 0, 0, 'failed', 72000000)`;
+        yield* care.failed({
+          orgId: ctx.orgId,
+          agentId: chief,
+          cause: "signin",
+          eventIds: [KinEventId.make("zoya-held"), KinEventId.make("zoya-spent")],
+        });
         yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: zoyaId });
+        const departingEvents = ctx.sql`SELECT state, not_before FROM kin_events
+          WHERE org_id = ${ctx.orgId} AND event_id IN ('zoya-held', 'zoya-spent') ORDER BY event_id`;
+        assert.deepStrictEqual(yield* departingEvents, [
+          { state: "expired", not_before: 72000000 },
+          { state: "expired", not_before: 72000000 },
+        ]);
+        assert.deepStrictEqual(yield* care.retry(ctx.orgId), { requeued: 0 });
+        const { held, troubles } = (yield* care.status(ctx.orgId)).agents;
+        assert.strictEqual(held, 0);
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT json_extract(state_json, '$.count') AS count,
+              json_extract(state_json, '$.stopped') AS stopped
+            FROM kin_widgets WHERE org_id = ${ctx.orgId} AND widget_id = ${troubles[0]!.widgetId}`,
+          [{ count: 0, stopped: null }],
+        );
+        yield* care.succeeded(ctx.orgId, chief);
+        assert.deepStrictEqual(yield* departingEvents, [
+          { state: "expired", not_before: 72000000 },
+          { state: "expired", not_before: 72000000 },
+        ]);
         // A retried removal asks nothing more.
         yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: zoyaId });
         const asked = yield* cards(ctx);
@@ -526,7 +561,7 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_discussions: "ask_agent_id decider_agent_id opened_by_agent_id",
   kin_doc_jobs: "agent_id answered_author_id asked_by_person_id",
   kin_doc_versions: "actor_id answered_author_id",
-  kin_events: "agent_id",
+  kin_events: "agent_id held_by",
   kin_floor_grants: "agent_id",
   kin_floor_notices: "agent_id",
   kin_floor_runs: "opened_by",
@@ -581,6 +616,7 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_team_agents: "agent_id set_by",
   kin_team_memory: "set_by",
   kin_team_seqs: "person_id",
+  kin_trouble_agents: "agent_id",
   kin_turn_figures: "agent_id",
   kin_visual_hosts: "added_by",
   kin_waiting: "person_id",

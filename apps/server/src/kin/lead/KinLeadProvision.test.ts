@@ -3,7 +3,10 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
+  KIN_HOST_TROUBLE_CARD,
   KinAgentId,
+  KinEventId,
+  KinHostTroubleCard,
   type KinAgentPage,
   type KinChatId,
   KinOrgId,
@@ -14,6 +17,8 @@ import {
   ServerProvider,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -31,6 +36,7 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as HostCare from "../host/KinHostCare.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as ArrivalStore from "../arrivals/ArrivalStore.ts";
 import * as KinWatches from "../watches/KinWatches.ts";
@@ -46,6 +52,8 @@ import * as KinRecords from "../work/KinRecords.ts";
 import { KinLevelGate } from "./LevelGate.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import { RETIRED_ACTION_REASON } from "./Retirement.ts";
+
+const decodeTroubleCard = Schema.decodeUnknownSync(Schema.fromJsonString(KinHostTroubleCard));
 
 const layer = Layer.merge(Provision.layer, RetiredActions.hostLayer).pipe(
   Layer.provideMerge(Sqlite.layerMemory),
@@ -338,6 +346,42 @@ describe("KinLeadProvision", () => {
         const arrivalBefore = yield* arrival;
         const refresh = (yield* RefreshHub.KinRefreshHub).changes(orgId).pipe(Stream.runHead);
         const initialRevision = Option.getOrThrow(yield* refresh).watches;
+        const care = yield* HostCare.KinHostCare;
+        yield* sql`UPDATE kin_events SET not_before = 120000 WHERE org_id = ${orgId}
+          AND event_id = 'unanswered'`;
+        yield* sql`INSERT INTO kin_events
+            (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, not_before)
+          VALUES ('growth-spent', ${orgId}, ${agentId}, 'routine', 'P1', '{}', 0, 0, 'failed', 120000),
+            ('ada-held', ${orgId}, ${ada.agentId}, 'routine', 'P1', '{}', 0, 0, 'queued', 120000)`;
+        for (const [cause, troubleAgent, event] of [
+          ["signin", agentId, "unanswered"],
+          ["signin", ada.agentId, "ada-held"],
+          ["model", agentId, "growth-spent"],
+        ] as const) {
+          yield* care.failed({
+            orgId,
+            agentId: troubleAgent,
+            cause,
+            eventIds: [KinEventId.make(event)],
+          });
+        }
+        const troubleCards = sql<{ state: string; closed: string | null }>`SELECT
+            state_json AS state, closed_at AS closed FROM kin_widgets
+          WHERE org_id = ${orgId} AND type = ${KIN_HOST_TROUBLE_CARD} ORDER BY widget_id`.pipe(
+          Effect.map((rows) =>
+            rows.map((row) => ({
+              ...decodeTroubleCard(row.state),
+              open: row.closed === null,
+            })),
+          ),
+        );
+        assert.deepStrictEqual(
+          (yield* troubleCards).map((card) => [card.cause, card.open]),
+          [
+            ["model", true],
+            ["signin", true],
+          ],
+        );
         const retired = yield* Provision.retire({ ...by, agentId });
         assert.strictEqual(retired._tag, "retired");
         assert.strictEqual(Option.getOrThrow(yield* refresh).watches, initialRevision + 1);
@@ -359,8 +403,61 @@ describe("KinLeadProvision", () => {
         assert.deepStrictEqual(
           yield* sql`SELECT state FROM kin_events WHERE org_id = ${orgId} AND agent_id = ${agentId}
             ORDER BY event_id`,
-          [{ state: "expired" }],
+          [{ state: "expired" }, { state: "expired" }],
         );
+        const afterRetirement = yield* care.status(orgId);
+        assert.strictEqual(afterRetirement.agents.held, 1);
+        assert.deepStrictEqual(
+          afterRetirement.agents.troubles.map(({ card }) => [card.cause, card.count]),
+          [["signin", 1]],
+        );
+        assert.deepStrictEqual(
+          (yield* troubleCards).map((card) => [
+            card.cause,
+            card.open,
+            card.count,
+            card.agents.map((agent) => agent.name),
+          ]),
+          [
+            ["model", false, 0, ["Growth"]],
+            ["signin", true, 1, ["Ada"]],
+          ],
+        );
+        assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 1 });
+        yield* sql`UPDATE kin_events SET not_before = 120000 WHERE org_id = ${orgId}
+          AND event_id = 'ada-held'`;
+        yield* care.succeeded(orgId, ada.agentId);
+        assert.isFalse(yield* care.troubleOpen(orgId, "signin"));
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id, state, not_before FROM kin_events WHERE org_id = ${orgId}
+            AND held_by IS NOT NULL ORDER BY event_id`,
+          [
+            { event_id: "ada-held", state: "queued", not_before: 60000 },
+            { event_id: "growth-spent", state: "expired", not_before: 120000 },
+            { event_id: "unanswered", state: "expired", not_before: 120000 },
+          ],
+        );
+        assert.isFalse(
+          yield* care.failed({
+            orgId,
+            agentId,
+            cause: "model",
+            eventIds: [KinEventId.make("growth-spent")],
+          }),
+        );
+        const closedTroubleCards = yield* troubleCards;
+        assert.deepStrictEqual(
+          closedTroubleCards.map((card) => [card.cause, card.open]),
+          [
+            ["model", false],
+            ["signin", false],
+          ],
+        );
+        const troubleMessages = sql`SELECT m.message_id FROM kin_messages m JOIN kin_troubles t
+          ON t.org_id = m.org_id AND t.trouble_id = m.message_id WHERE m.org_id = ${orgId}
+          ORDER BY m.message_id`;
+        const toldOnce = yield* troubleMessages;
+        assert.lengthOf(toldOnce, 2);
         for (const id of ["open-watch", "closed-watch"])
           assert.deepInclude(yield* KinWatches.again(orgId, reader, id).pipe(Effect.flip), {
             reason: "invalid_state",
@@ -485,6 +582,10 @@ describe("KinLeadProvision", () => {
 
         const restored = yield* Provision.restore({ ...by, agentId: growth.agentId });
         assert.strictEqual(restored._tag, "restored");
+        yield* care.refresh(orgId);
+        assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 0 });
+        assert.deepStrictEqual(yield* troubleCards, closedTroubleCards);
+        assert.deepStrictEqual(yield* troubleMessages, toldOnce);
         assert.strictEqual(Option.getOrThrow(yield* refresh).watches, initialRevision + 2);
         assert.deepInclude(yield* WatchReads.one(orgId, reader, "open-watch"), {
           state: "open",
@@ -504,8 +605,23 @@ describe("KinLeadProvision", () => {
         // The host's command retires through the same method, recording no person; a new lead
         // with its name then holds it, so the old one can't come back beside it.
         yield* TestClock.adjust("1 minute");
-        const byHost = yield* Provision.retireOnHost(growth.agentId);
+        yield* care.failed({ orgId, agentId, cause: "model", eventIds: [] });
+        const byHost = yield* Provision.retireOnHost(growth.agentId).pipe(
+          Effect.updateContext((services: Context.Context<Provision.Requirements>) =>
+            Context.omit(HostCare.KinHostCare)(services),
+          ),
+        );
         assert.strictEqual(byHost.lead.retiredByPersonId, null);
+        assert.isFalse(yield* care.troubleOpen(orgId, "model"));
+        assert.lengthOf(
+          (yield* troubleCards).filter((card) => card.open),
+          1,
+        );
+        yield* care.refresh(orgId, { closedOnly: true });
+        assert.lengthOf(
+          (yield* troubleCards).filter((card) => card.open),
+          0,
+        );
         const twin = yield* Provision.create({
           ...input(owner, []),
           name: "Growth",
@@ -513,7 +629,18 @@ describe("KinLeadProvision", () => {
         });
         assert.strictEqual(twin._tag, "created");
         assert.strictEqual(yield* refusal(Provision.restoreOnHost(growth.agentId)), "conflict");
-      }).pipe(Effect.provide(RefreshHub.layer.pipe(Layer.provideMerge(paired)))),
+      }).pipe(
+        Effect.provide(
+          HostCare.layer.pipe(
+            Layer.provideMerge(KinEventQueue.layer),
+            Layer.provideMerge(RefreshHub.layer),
+            Layer.provideMerge(paired),
+            Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-retirement-" })),
+            Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      ),
   );
 
   it.effect(
