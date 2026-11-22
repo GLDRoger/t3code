@@ -2711,6 +2711,7 @@ describe("KinConnections sending", () => {
           assert.strictEqual(event.note, ASKED);
           // Its times read plainly in the owner's zone, UTC here.
           assert.include(JSON.stringify(cards.at(-1)), "When: Fri, 20 Nov, 9:30 am to 10:00 am");
+          assert.include(cards.at(-1)!.send!.body, "In your calendar");
           const booked = yield* answer(cards.at(-1)!.widgetId, ownerId, true);
           yield* connections.sendAsk(orgId, booked!.askId);
           const saved = vendor.vendor.sent.at(-1)!;
@@ -2758,6 +2759,13 @@ describe("KinConnections sending", () => {
           assert.strictEqual(cards.at(-1), change);
           const patches = () => vendor.vendor.sent.filter((one) => one.method === "PATCH").length;
           assert.strictEqual(patches(), 1);
+          yield* sendCall("calendar_save_event", {
+            calendarId: "invented-unknown-calendar",
+            title: "Invented fallback",
+            start: "2026-11-20T16:00:00+05:30",
+            end: "2026-11-20T16:30:00+05:30",
+          });
+          assert.include(cards.at(-1)!.send!.body, "In calendar: invented-unknown-calendar");
           // Someone else edits the event between two identical asks: still one open card.
           const rename = sendCall("calendar_save_event", {
             calendarId: "team@group.calendar.example",
