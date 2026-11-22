@@ -11,9 +11,12 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ServerProvider,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -21,6 +24,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { ServerConfig } from "../../config.ts";
+import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as ChatService from "../chat/KinChatService.ts";
@@ -890,11 +895,56 @@ describe("KinLeadProvision", () => {
         const tech = (yield* Provision.create(input(owner, []))).lead;
         // A custom instance that settings name as Claude.
         const sonnet = { instanceId: ProviderInstanceId.make("work"), model: "claude-sonnet-4-6" };
+        const provider = Schema.decodeUnknownSync(ServerProvider)({
+          instanceId: sonnet.instanceId,
+          driver: "claudeAgent",
+          enabled: true,
+          installed: true,
+          version: null,
+          status: "ready",
+          auth: { status: "unknown" },
+          checkedAt: "1970-01-01T00:00:00.000Z",
+          models: [
+            {
+              slug: sonnet.model,
+              name: "Invented listed model",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        });
+        const listed = Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([provider]) });
+        const unknown = { ...sonnet, model: "invented-unlisted" };
+        const cached = Layer.mergeAll(
+          Layer.mock(ServerConfig)({ providerStatusCacheDir: "/invented-catalog" }),
+          Layer.mock(FileSystem.FileSystem)({
+            exists: (file) => Effect.succeed(file === "/invented-catalog/work.json"),
+            readFileString: () => Effect.succeed(JSON.stringify(provider)),
+          }),
+          Path.layer,
+        );
+        for (const catalog of [listed, cached]) {
+          assert.match(
+            (yield* Provision.create({
+              ...input(owner, []),
+              name: "Invented analyst",
+              model: unknown,
+            }).pipe(Effect.provide(catalog), Effect.flip)).message,
+            /invented-unlisted.*work.*Settings/,
+          );
+        }
         const edit = (
           fields: Parameters<typeof Provision.update>[0]["fields"],
           editor: Provision.LeadCreator = owner,
         ) => Provision.update({ editor, orgId: tech.orgId, agentId: tech.agentId, fields });
-        assert.strictEqual((yield* edit({ model: sonnet })).model, "claude-sonnet-4-6");
+        assert.match(
+          (yield* edit({ model: unknown }).pipe(Effect.provide(listed), Effect.flip)).message,
+          /invented-unlisted.*work.*Settings/,
+        );
+        assert.strictEqual(
+          (yield* edit({ model: sonnet }).pipe(Effect.provide(listed))).model,
+          sonnet.model,
+        );
         // The runner reads this row at each wake-up, so the next turn runs on it.
         const [row] = yield* sql<{ model: string }>`SELECT models_json AS model FROM kin_leads
           WHERE org_id = ${tech.orgId} AND agent_id = ${tech.agentId}`;

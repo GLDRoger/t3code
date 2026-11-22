@@ -1,4 +1,10 @@
-import type { KinOrgId, ModelSelection, ServerProvider, ServerSettings } from "@t3tools/contracts";
+import type {
+  KinOrgId,
+  ModelSelection,
+  ServerProvider,
+  ServerProviderModel,
+  ServerSettings,
+} from "@t3tools/contracts";
 import { kinAgentDriverAllowed, KinLead, kinProviderFacts } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -53,13 +59,15 @@ export const leadProviderProblem = (
   }. Delegated tasks may still use any provider.`;
 };
 
+export const findProviderModel = (models: ReadonlyArray<ServerProviderModel>, slug: string) =>
+  models.find((model) => model.slug === slug || model.aliases?.includes(slug));
+
 /** The model's name as its provider lists it, else the id it was saved with. */
 const modelLabel = (providers: ReadonlyArray<ServerProvider> | null, selection: ModelSelection) =>
-  providers
-    ?.find((provider) => provider.instanceId === selection.instanceId)
-    ?.models.find(
-      (model) => model.slug === selection.model || model.aliases?.includes(selection.model),
-    )?.name ?? selection.model;
+  findProviderModel(
+    providers?.find((provider) => provider.instanceId === selection.instanceId)?.models ?? [],
+    selection.model,
+  )?.name ?? selection.model;
 
 /**
  * Why a turn can't run on this model: not Claude, or (when the host's providers are known) its
@@ -81,9 +89,7 @@ export const leadModelProblem = (
     return `${modelLabel(providers, selection)} isn't available on this server right now.`;
   const listed =
     provider.models.length === 0 ||
-    kinAgentModels([provider], settings.kinNonClaudeAgents).some(
-      ({ model }) => model.slug === selection.model || model.aliases?.includes(selection.model),
-    );
+    findProviderModel(provider.models, selection.model) !== undefined;
   if (!listed)
     return `${selection.model} isn't offered by ${provider.displayName ?? "Claude"} on this server any more.`;
   return undefined;
