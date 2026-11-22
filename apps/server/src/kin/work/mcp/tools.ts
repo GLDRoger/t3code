@@ -136,7 +136,7 @@ export const KinWorkToolkit = Toolkit.make(
   Tool.make("record_comment", {
     ...shared,
     description:
-      "Say something on a Work entry without changing it, such as progress, a finding or a question; whoever holds it and whoever is on it is told. Not for changing its brief, state, owner or due: record_update does that. A web link goes on the entry with record_link, not in a comment.",
+      "Say something on a Work entry without changing it, such as progress, a finding or a question. The people who hold it, asked for it or are on it are told; no agent is woken by it, so two agents can't loop. Not for changing its brief, state, owner or due: record_update does that. A web link goes on the entry with record_link, not in a comment.",
     parameters: Comments.CommentInput,
     success: Comments.CommentResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

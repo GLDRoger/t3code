@@ -2145,6 +2145,19 @@ it.effect(
       assert.deepStrictEqual((yield* wakes).slice(before + 2), [
         [other, "withdrawn", suggested.key, ownerId],
       ]);
+      // A put-on wake still queued is shown only while its agent is on the task and it is open.
+      const joinedText = Effect.fn(function* (agentId: KinAgentId) {
+        const [row] = yield* sql<{ json: string }>`SELECT json FROM kin_events
+          WHERE agent_id = ${agentId} AND json_extract(json, '$.reason') = 'joined'
+            AND json_extract(json, '$.key') = ${suggested.key}`;
+        const event = decodeEvent(JSON.parse(row!.json));
+        if (event._tag !== "record.changed") return assert.fail(event._tag);
+        return yield* workEventText({ orgId, event, ownerOnly: true, wakeupId: "joined-turn" });
+      });
+      assert.include(yield* joinedText(lead), "put you on this");
+      assert.isUndefined(yield* joinedText(other));
+      yield* records.update(orgId, byOwner, suggested.key, { state: "dropped" });
+      assert.isUndefined(yield* joinedText(lead));
     }).pipe(Effect.provide(layer)),
 );
 

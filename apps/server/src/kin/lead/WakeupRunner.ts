@@ -69,7 +69,7 @@ import {
   turnChat,
 } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX, outsideReview } from "./outsideReview.ts";
-import { KinLeadPrompt, STEER_CLOSING } from "./LeadPrompt.ts";
+import { KinLeadPrompt, STEER_CLOSING, stillJoined } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import {
   chooseLeadModel,
@@ -385,12 +385,14 @@ const make = Effect.gen(function* () {
     ),
   );
   /**
-   * A due run of a scheduled task that no longer exists, or a question with nothing left to take:
-   * every prompt answers it with NO_REPLY (`KinLeadPrompt`), so it starts no turn. A failed read
-   * keeps the event for the turn.
+   * A due run of a scheduled task that no longer exists, a question with nothing left to take, or
+   * a task an agent was put on and is off now or closed: no prompt shows it (`KinLeadPrompt`), so
+   * it starts no turn. A failed read keeps the event for the turn.
    */
   const goneBeforeTurn = Effect.fn("WakeupRunner.goneBeforeTurn")(
     function* (orgId: KinOrgId, event: KinEvent) {
+      if (event._tag === "record.changed" && event.reason === "joined")
+        return !(yield* stillJoined(orgId, event.agentId, event.recordId));
       if (event._tag !== "deferral.due") return false;
       const subject = event.subject;
       if (subject.type === "scheduled_task") {

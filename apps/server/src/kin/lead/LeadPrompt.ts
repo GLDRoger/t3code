@@ -2038,6 +2038,13 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
   if (!ownerOnly && teammate === undefined) return undefined;
   const withdrawn = event.reason === "withdrawn";
   const joined = event.reason === "joined";
+  if (
+    joined &&
+    !(yield* stillJoined(orgId, event.agentId, event.recordId).pipe(
+      Effect.orElseSucceed(() => true),
+    ))
+  )
+    return undefined;
   const handedBack = event.reason === "handed_back";
   const commented = event.reason === "commented";
   // The server's own check for this wake-up (what an agent writes stays kept), never re-derived.
@@ -2180,6 +2187,20 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
 });
 
 /** Put on a task someone else holds: the head start, handed to its holder, never the task itself. */
+/** Whether an agent put on a task is still on it and it is open: else its wake is dropped. */
+export const stillJoined = Effect.fn("KinLeadPrompt.stillJoined")(function* (
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_records r, json_each(r.fields_json, '$.alsoOn') j
+    WHERE r.org_id = ${orgId} AND r.record_id = ${recordId}
+      AND r.state NOT IN ('done', 'dropped') AND j.value = ${`agent:${agentId}`}
+    LIMIT 1`;
+  return rows.length > 0;
+});
+
 export const joinedWork = (adder: string, holder: string) =>
   `${adder} put you on this. ${holder} holds it and answers for it. Do what you can ahead of them now: look things up, draft, prepare. Give your work to ${holder} on the task as a comment, a draft or a card. Don't close it or change who holds it or when it is due.`;
 
