@@ -7,7 +7,7 @@ import {
   kinDateRowLate,
   KinDay,
   KinGstin,
-  KinListFieldType,
+  KinWritableListFieldType,
   KinListId,
   type KinMoney,
   KinRecordKey,
@@ -156,7 +156,7 @@ export const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
 const Label = KinToolText(60);
 const FieldInput = Schema.Struct({
   label: Label,
-  type: KinListFieldType,
+  type: KinWritableListFieldType,
   choices: Schema.optional(Schema.Array(Label).check(Schema.isMaxLength(30))),
   link: Schema.optional(Schema.Literals(["clients", "projects"])),
   sensitive: Schema.optional(Schema.Boolean),

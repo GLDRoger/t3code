@@ -890,6 +890,8 @@ export const KinEvent = Schema.Union([
     ),
     // Metadata the server read from connections the owner marked Read: still outside text.
     outside: Schema.optional(Schema.Array(KinPulseOutsideLine).check(Schema.isMaxLength(200))),
+    // The one mail that woke it, as `kin_arrivals` keeps it (`arrivals/ArrivalStore.ts`).
+    arrivalId: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
   }),
   // An entry given to this lead (`assigned`), closed or taken back (`withdrawn`), come back
   // (`handed_back`), commented on (`commented`, `note` their words), or someone else's it is put on
