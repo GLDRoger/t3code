@@ -234,6 +234,7 @@ const runner = Layer.effectDiscard(
         restore: writer.value.restore,
         recordDecision: writer.value.recordDecision,
         items: (orgId) => memory.items(orgId),
+        snapshot: (orgId) => memory.snapshotItems(orgId),
       });
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(routineRuntime);

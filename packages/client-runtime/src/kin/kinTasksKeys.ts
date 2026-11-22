@@ -43,8 +43,9 @@ export const KIN_TASKS_KEYS_COPY = {
   done: "Done",
   madeTitle: (label: string) => `Key made: ${label}`,
   once: "Copy it now. Kin won't show this key again. If you lose it, remove it and make another.",
-  can: "With it, your coding agent can read the tasks you hold, add notes to them, and set them to to-do, in progress or done.",
-  cannot: "It can't reach anyone else's tasks, or any chats, money or files.",
+  can: "With it, your coding agent can read the tasks you hold, add comments to them, and set them to to-do, in progress or done. It can also read the projects, clients and docs you can see in Kin, money if you have Money, and, for owners and co-owners, team memory.",
+  cannot:
+    "It can't change anything else, reach anyone else's tasks or your chats, or read anything you can't see yourself. Anything marked private, and everything under a private client or project, stays in Kin.",
   keyLabel: "Key",
   addressLabel: "Address",
   setupTitle: "Set up your coding agent",

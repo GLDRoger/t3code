@@ -16,7 +16,7 @@ import { McpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinServer, type Services } from "../KinServer.ts";
-import { KinRecords } from "../work/KinRecords.ts";
+import { type CreateInput, KinRecords } from "../work/KinRecords.ts";
 import * as KinTasksKeyMcp from "./mcp.ts";
 import { layer, team } from "./tasksKey.testkit.ts";
 import * as TasksKeys from "./TasksKeys.ts";
@@ -47,7 +47,7 @@ const initialize = {
 };
 
 it.effect(
-  "the endpoint serves four tools to a live key and drops it mid-session once revoked",
+  "the endpoint serves its tools to a live key, money and memory only to whom they open, and drops it mid-session once revoked",
   () =>
     Effect.gen(function* () {
       const { orgId, zoya, rhea } = yield* team;
@@ -166,17 +166,16 @@ it.effect(
       });
       assert.strictEqual(opened.status, 200);
       const session = opened.headers["mcp-session-id"];
-      const listed = yield* call({
-        token: issued.secret,
-        method: "tools/list",
-        params: {},
-        ...(session === undefined ? {} : { session }),
-      });
-      // A person's own terminal client asks before a call by these; a flip shows here.
-      const read = { readOnly: true, destructive: false, idempotent: true, openWorld: false };
-      const write = { readOnly: false, destructive: false, idempotent: true, openWorld: false };
-      assert.deepStrictEqual(
-        Object.fromEntries(
+      const toolsOf = Effect.fn("test.toolsOf")(function* (token: string) {
+        const started = yield* call({ token, method: "initialize", params: initialize });
+        const id = started.headers["mcp-session-id"];
+        const listed = yield* call({
+          token,
+          method: "tools/list",
+          params: {},
+          ...(id === undefined ? {} : { session: id }),
+        });
+        return Object.fromEntries(
           decodeTools(yield* text(listed)).result.tools.map(({ name, annotations }) => [
             name,
             {
@@ -186,14 +185,132 @@ it.effect(
               openWorld: annotations.openWorldHint,
             },
           ]),
-        ),
-        {
-          list_my_tasks: read,
-          get_task: read,
-          comment_on_task: write,
-          set_task_state: write,
-        },
+        );
+      });
+      // A person's own terminal client asks before a call by these; a flip shows here. Only a
+      // task's comment and state are written; every other tool only reads.
+      const read = { readOnly: true, destructive: false, idempotent: true, openWorld: false };
+      const write = { readOnly: false, destructive: false, idempotent: true, openWorld: false };
+      const reads = { find: read, open_project: read, open_client: read, read_doc: read };
+      // Zoya has no Money and no Memory page, so her key lists neither.
+      assert.deepStrictEqual(yield* toolsOf(issued.secret), {
+        list_my_tasks: read,
+        get_task: read,
+        comment_on_task: write,
+        set_task_state: write,
+        ...reads,
+      });
+      const owners = yield* TasksKeys.issue(rhea.app, { orgId });
+      assert.deepStrictEqual(yield* toolsOf(owners.secret), {
+        list_my_tasks: read,
+        get_task: read,
+        comment_on_task: write,
+        set_task_state: write,
+        ...reads,
+        money_summary: read,
+        search_memory: read,
+      });
+      assert.deepStrictEqual(
+        Object.keys(yield* toolsOf(owners.secret)).toSorted(),
+        KinTasksKeyMcp.TASKS_KEY_TOOLS.toSorted(),
       );
+      // And called anyway, they answer as tools that aren't there.
+      for (const name of ["money_summary", "search_memory"]) {
+        const refused = yield* text(
+          yield* call({
+            token: issued.secret,
+            method: "tools/call",
+            params: { name, arguments: name === "money_summary" ? {} : { text: "kiln" } },
+            ...(session === undefined ? {} : { session }),
+          }),
+        );
+        assert.include(refused, `"error"`);
+        assert.notInclude(refused, "owed");
+      }
+      // Rhea's key over the endpoint: a wrong kind, another company's entry and one never there
+      // all answer the same; text a reader can't see is gone; and no read writes business data.
+      const writer = {
+        actor: { _tag: "person" as const, personId: rhea.personId },
+        via: "owner" as const,
+        askedBy: rhea.personId,
+      };
+      const make = (originKey: string, fields: Partial<CreateInput>) =>
+        records
+          .create(orgId, writer, {
+            originKey,
+            title: `Invented ${originKey}`,
+            owner: { _tag: "person", personId: rhea.personId },
+            ...fields,
+          })
+          .pipe(Effect.map(({ row }) => row));
+      const client = yield* make("Lan\u200Bterns", { list: "clients" });
+      const project = yield* make("launch", { list: "projects", partyId: client.recordId });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+        VALUES ('other-company', 'Invented other', '1970-01-01')`;
+      yield* sql`CREATE TEMP TABLE elsewhere AS SELECT * FROM kin_records
+        WHERE record_id = ${client.recordId}`;
+      yield* sql`UPDATE elsewhere SET org_id = 'other-company', record_id = 'elsewhere-1',
+        key = 'C-77', origin_key = 'elsewhere'`;
+      // Another company's row only, without the rest of that company around it.
+      yield* sql`PRAGMA foreign_keys = OFF`;
+      yield* sql`INSERT INTO kin_records SELECT * FROM elsewhere`;
+      yield* sql`PRAGMA foreign_keys = ON`;
+      yield* sql`DROP TABLE elsewhere`;
+      const ownersOpened = yield* call({
+        token: owners.secret,
+        method: "initialize",
+        params: initialize,
+      });
+      const ownersSession = ownersOpened.headers["mcp-session-id"];
+      const tool = Effect.fn("test.tool")(function* (name: string, args: object) {
+        return yield* text(
+          yield* call({
+            token: owners.secret,
+            method: "tools/call",
+            params: { name, arguments: args },
+            ...(ownersSession === undefined ? {} : { session: ownersSession }),
+          }),
+        );
+      });
+      const writes = sql<{ n: number }>`SELECT total_changes() AS n`.pipe(
+        Effect.map(([row]) => row?.n ?? 0),
+      );
+      // Admission's own bookkeeping, `last_used_at` at most once a minute, is the one write.
+      const [used] = yield* sql<{ at: number | null }>`SELECT last_used_at AS at
+        FROM kin_tasks_keys WHERE session_id = ${owners.key.sessionId}`;
+      assert.isNotNull(used?.at ?? null);
+      for (const [name, wrong, never] of [
+        ["open_project", client.key, "P-999"],
+        ["open_client", project.key, "C-999"],
+        ["open_client", "C-77", "C-999"],
+        ["read_doc", client.key, "D-999"],
+        ["read_doc", "C-77", "D-999"],
+      ] as const) {
+        const before = yield* writes;
+        const answered = yield* tool(name, { key: wrong });
+        assert.include(answered, "Not found.");
+        assert.strictEqual(answered, yield* tool(name, { key: never }));
+        assert.strictEqual(yield* writes, before);
+      }
+      for (const [name, args] of [
+        ["open_client", { key: client.key }],
+        ["open_project", { key: project.key }],
+        ["find", { kind: "clients" }],
+        ["find", { kind: "projects" }],
+        ["find", { kind: "docs" }],
+        ["money_summary", {}],
+        ["search_memory", { text: "kiln" }],
+        ["list_my_tasks", {}],
+      ] as const) {
+        const before = yield* writes;
+        const answered = yield* tool(name, args);
+        assert.notInclude(answered, "\u200B");
+        assert.notInclude(answered, "\\u200b");
+        assert.strictEqual(yield* writes, before);
+        if (name === "open_client") assert.include(answered, "Invented Lanterns");
+      }
+
       const checked = verified;
       const mine = yield* call({
         token: issued.secret,
