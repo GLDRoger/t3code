@@ -396,7 +396,7 @@ it.effect(
       assert.isTrue(yield* sharedAllows("WebSearch", { query: "tile distributors" }));
       assert.deepStrictEqual(
         yield* sql`SELECT source FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-full'`,
-        [{ source: "web search" }],
+        [{ source: "web search\ta web search" }],
       );
       // A turn stopped because someone joined searches nothing more.
       yield* sql`UPDATE kin_wakeups SET aborted_at = 1 WHERE wakeup_id = 'wake-full'`;
