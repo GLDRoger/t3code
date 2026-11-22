@@ -330,7 +330,9 @@ function PartnersOwed(
     props.rows.some((one) => one.match !== null) || props.unsaid.length > 0,
   );
   const matching = useKinMatchPartner(props);
-  const [saying, setSaying] = useState<KinOutlookView["unsaid"][number] | null>(null);
+  // The dialog shows the address as Money has it now, so what it sends is what it shows.
+  const [sayingAddress, setSaying] = useState<string | null>(null);
+  const saying = props.unsaid.find((one) => one.address === sayingAddress) ?? null;
   const people = [...directory.names.people].toSorted((a, b) => a[1].localeCompare(b[1]));
   if (props.rows.length + props.unsaid.length === 0) return null;
   return (
@@ -398,7 +400,7 @@ function PartnersOwed(
                     size="sm"
                     variant="outline"
                     disabled={matching.busy}
-                    onClick={() => setSaying(row)}
+                    onClick={() => setSaying(row.address)}
                   >
                     {KIN_OUTLOOK.sayWho}
                   </Button>

@@ -115,6 +115,7 @@ export const KIN_OUTLOOK = {
   nameless: "Marked owed with no partner named",
   whoIsThis: "Who is this?",
   nothingMatched: "Nothing was left to match: Money is up to date.",
+  matchMoved: "New expenses arrived since you opened this. Nothing was changed; look again.",
   unsaid: "Paid personally, not counted as owed yet",
   unsaidNote: (count: number, since: string) =>
     `${count} imported expense${count === 1 ? "" : "s"} since ${since}, counted as the company's own until you say`,

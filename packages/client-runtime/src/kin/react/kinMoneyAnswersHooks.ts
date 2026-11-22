@@ -220,7 +220,7 @@ export function makeKinMoneyAnswersHooks<R, ER>(
         });
         setBusy(false);
         registry.refresh(outlookAtom(target));
-        if (!outcome.ok) setProblem(outcome.problem);
+        if (!outcome.ok) setProblem(outcome.changed ? KIN_OUTLOOK.matchMoved : outcome.problem);
         else if (outcome.value.matched.length === 0) setProblem(KIN_OUTLOOK.nothingMatched);
         return outcome.ok;
       },
