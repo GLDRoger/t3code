@@ -35,6 +35,7 @@ import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts"
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import { UNISSUED_INVOICE } from "../../apps/server/src/kin/work/recordRows.ts";
+import { helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
 import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
 import { ASKED } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
 import { resultText } from "../../apps/server/src/kin/connections/ResultText.ts";
@@ -74,6 +75,7 @@ import {
   HANDED_BACK_WORK,
   REPLY_SHAPE,
   SHARED_TURN_LINE,
+  joinedWork,
   workForText,
 } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
@@ -412,7 +414,10 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{UNISSUED_INVOICE}}", UNISSUED_INVOICE)
     .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
-    .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names));
+    .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names))
+    .replace(/\{\{JOINED_WORK:([^|}]+)\|([^}]+)\}\}/g, (_, adder: string, holder: string) =>
+      joinedWork(adder, holder),
+    );
 
 const decodeMoneySummary = Schema.decodeUnknownSync(KinMoneySummary);
 /**
@@ -449,6 +454,14 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
   // The taxNote line for a company its owner said is not registered for its country's tax.
   notRegisteredFact: (input: { country: string }) =>
     notRegisteredFact({ taxRegistered: false, country: input.country, tax: null }),
+  // An agent on a task it doesn't hold, refused what only its holder or a person's word may do.
+  helperRefusal: (input: { holder: string; key: string }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "not_allowed",
+      message: helperRefusal(input.holder, input.key),
+    },
+  }),
   bankAnswer: (input: { through: string | null }) =>
     bankAnswer({ through: input.through, accounts: [] }),
   cashUnknown: (input: { timeZone: string }) =>

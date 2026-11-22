@@ -77,7 +77,12 @@ export const SpineInputs = {
     description:
       "A project's people and agents besides its owner (its lead), each as owner is named; replaces the list.",
   }),
-  alsoOn: Schema.optional(Schema.Array(Who).check(Schema.isMaxLength(KIN_WORK_ALSO_ON_MAX))),
+  alsoOn: Schema.optional(
+    Schema.Array(Who).check(Schema.isMaxLength(KIN_WORK_ALSO_ON_MAX)),
+  ).annotate({
+    description:
+      "A task's people and agents besides its owner, each as owner is named; replaces the list. They help; its owner answers for it.",
+  }),
 };
 type SpineRow = {
   readonly [K in keyof typeof SpineInputs]?: Schema.Schema.Type<(typeof SpineInputs)[K]>;

@@ -50,7 +50,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("list_my_tasks", {
     ...shared,
     description:
-      "List the open Kin tasks held by the person this key belongs to, soonest due first: key, title, state, due date and project.",
+      "List the open Kin tasks the person this key belongs to holds or is on, soonest due first: key, title, state, due date, project, and holder when someone else holds it.",
     success: Schema.Struct({ tasks: Schema.Array(TaskSummary), more: Schema.Boolean }),
   })
     .annotate(Tool.Readonly, true)
@@ -60,7 +60,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("get_task", {
     ...shared,
     description:
-      "Read one of that person's tasks: title, brief, state, due date, project and the newest comments. A task they don't hold is not found.",
+      "Read one of that person's tasks: title, brief, state, due date, project and the newest comments. A task they neither hold nor are on is not found.",
     parameters: Schema.Struct({ key: TaskKey }),
     success: TaskDetail,
   })

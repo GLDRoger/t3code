@@ -223,7 +223,8 @@ const heldBy = (
     fieldList(parseFields(row.fieldsJson), "alsoOn").includes(`person:${writer.actor.personId}`));
 
 /** What an agent on a task hears when it tries what only its holder, or a person's word, may do. */
-export const helperRefusal = (holder: string, key: string) => `${holder} holds ${key}.`;
+export const helperRefusal = (holder: string, key: string) =>
+  `${holder} holds ${key}: put it to them as a comment or a card.`;
 
 /** What closes the open things about an entry that closed, in its move's transaction. */
 export type Closing = (subject: ClosedSubject) => Effect.Effect<void, { readonly _tag: string }>;
