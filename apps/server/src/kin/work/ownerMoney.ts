@@ -39,7 +39,7 @@ import * as Numbers from "../gendocs/numbering.ts";
 import { listReceipts, makeReceipt as makeReceiptFor } from "../gendocs/receipts.ts";
 import { readProfile, setProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
-import { dates as datesView, keyLeftOut, moneySummary } from "./moneyViews.ts";
+import { dates as datesView, moneySummary } from "./moneyViews.ts";
 import { found, ownerWriter, placeRefusals, theOwner } from "./ownerWork.ts";
 import { chatLinksFor, iso, workFailure } from "./recordRows.ts";
 import {
@@ -53,7 +53,7 @@ import {
   toDefinition,
   unknownList,
 } from "./registers.ts";
-import { KIN_OWNER_LEVEL, placesOf, viewerOfPeople } from "./teamView.ts";
+import { KIN_OWNER_LEVEL, keyedViewer, placesOf, viewerOfPeople } from "./teamView.ts";
 
 /** What the owner's clients read and do with lists, money and the company profile. Owner only. */
 
@@ -265,20 +265,20 @@ const SCREEN_CLIENTS = 20;
 export const money = Effect.fn("KinMoney.summary")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinMoneySummaryInput,
-  /** A coding agent's key reads it: nothing `keyWithheld` covers, and how many were left out. */
+  /** A coding agent's key reads it: every figure and row without what a key never carries. */
   options: { readonly keyed?: boolean } = {},
 ) {
   const team = yield* moneyReader(people, input.orgId);
   // For a client's page, a teammate without the Money switch reads none, whichever project they lead.
   const hidden =
     input.party !== undefined && team !== undefined && !(yield* placesOf(input.orgId, team)).money;
-  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(hidden ? [] : [team]);
-  const summary = yield* moneySummary(input.orgId, yield* Clock.currentTimeMillis, viewer, {
-    moneyDates: true,
-    keyed: options.keyed === true,
-  });
-  const privateLeftOut =
-    options.keyed === true ? yield* keyLeftOut(input.orgId, viewer) : undefined;
+  const base = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(hidden ? [] : [team]);
+  const summary = yield* moneySummary(
+    input.orgId,
+    yield* Clock.currentTimeMillis,
+    options.keyed === true ? keyedViewer(base) : base,
+    { moneyDates: true },
+  );
   const { byClient } = summary.owed;
   const shown =
     input.party !== undefined
@@ -299,8 +299,7 @@ export const money = Effect.fn("KinMoney.summary")(function* (
               byClientMore: byClient.length - SCREEN_CLIENTS,
             },
           };
-  const answered = input.upcomingRows === false ? { ...shown, upcoming: [] } : shown;
-  return privateLeftOut === undefined ? answered : { ...answered, privateLeftOut };
+  return input.upcomingRows === false ? { ...shown, upcoming: [] } : shown;
 }, workFailure);
 
 const noMoney = new KinChatError({

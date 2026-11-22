@@ -111,6 +111,7 @@ vi.mock("../memory/Memory.ts", async (importOriginal) => {
               };
             }),
           items: () => Effect.die("Unused"),
+          snapshotItems: () => Effect.die("Unused"),
           readPromptSnapshot: (_orgId, head) =>
             prepared && head === "fixture-head"
               ? Effect.succeed({

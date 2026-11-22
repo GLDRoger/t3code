@@ -68,6 +68,8 @@ export interface KinMemoryPort {
   readonly items: (
     orgId: KinOrgId,
   ) => Effect.Effect<ReadonlyArray<MemoryItem>, { readonly _tag: string }>;
+  /** The items as last loaded, with no lock, sync or repair (`Memory.snapshotItems`). */
+  readonly snapshot?: (orgId: KinOrgId) => Effect.Effect<ReadonlyArray<MemoryItem> | undefined>;
 }
 
 /**
@@ -130,6 +132,8 @@ export class KinMemoryChanges extends Context.Service<
         readonly text: string;
         readonly limit: number;
         readonly teamOnly?: boolean;
+        /** From the items as last loaded (`KinMemoryPort.snapshot`): no lock, sync or repair. */
+        readonly snapshot?: boolean;
       },
     ) => Effect.Effect<ReadonlyArray<KinMemoryHit>>;
     /** The owner's switch for team memory in chats with teammates; owner level only. */
@@ -147,8 +151,11 @@ export type KinMemoryHit = {
   readonly snippet: string;
   readonly sensitive: boolean;
   readonly recordedAt: number;
-  /** Who said it, as its file records them. */
+  /** Who said it, as its file records them: for naming them, never to show as it is. */
   readonly saidBy: string;
+  readonly trust: MemoryItem["head"]["trust"];
+  /** A teammate's attribution by the names kept when it was said. */
+  readonly from: { readonly name: string; readonly chatName: string } | null;
 };
 const SEARCH_SNIPPET = 160;
 const searchWords = (text: string) =>
@@ -499,12 +506,16 @@ const make = Effect.gen(function* () {
       const words = searchWords(input.text);
       const allowed = yield* ownerOf(people, input.orgId).pipe(Effect.result);
       if (words.length === 0 || allowed._tag === "Failure") return [];
-      const all = yield* allowed.success.port.items(input.orgId).pipe(
-        Effect.tapError((error) =>
-          Effect.logWarning("Kin memory search failed", { errorTag: error._tag }),
-        ),
-        Effect.orElseSucceed((): ReadonlyArray<MemoryItem> => []),
-      );
+      const { port } = allowed.success;
+      const all =
+        input.snapshot === true
+          ? ((yield* port.snapshot?.(input.orgId) ?? Effect.undefined) ?? [])
+          : yield* port.items(input.orgId).pipe(
+              Effect.tapError((error) =>
+                Effect.logWarning("Kin memory search failed", { errorTag: error._tag }),
+              ),
+              Effect.orElseSucceed((): ReadonlyArray<MemoryItem> => []),
+            );
       const now = yield* Clock.currentTimeMillis;
       const labels =
         input.teamOnly === true
@@ -536,6 +547,14 @@ const make = Effect.gen(function* () {
               sensitive: item.head.sensitive !== false,
               recordedAt: Number.isFinite(recordedAt) ? recordedAt : 0,
               saidBy: item.head.said_by,
+              trust: item.head.trust,
+              from:
+                item.head.shared_from === undefined
+                  ? null
+                  : {
+                      name: item.head.shared_from.name,
+                      chatName: item.head.shared_from.chat_name,
+                    },
             },
           ];
         })

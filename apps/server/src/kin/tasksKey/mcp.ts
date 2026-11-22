@@ -23,6 +23,7 @@ import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
+import { clean } from "../connections/ResultText.ts";
 import { KinServer, type Services } from "../KinServer.ts";
 import { toolVisibility } from "../mcp/toolPolicy.ts";
 import {
@@ -88,6 +89,8 @@ const DocRow = Schema.Struct({
   project: Ref,
   updatedAt: Schema.String,
 });
+/** A list's page: `next`, passed back as `cursor`, reads the next page. */
+const Page = { more: Schema.Boolean, next: Schema.NullOr(Schema.String), material: Schema.String };
 const ProjectSheet = Schema.Struct({
   ...ProjectRow.fields,
   target: Schema.NullOr(Schema.String),
@@ -96,7 +99,9 @@ const ProjectSheet = Schema.Struct({
   pinned: Schema.NullOr(Schema.String),
   material: Schema.String,
   myOpenTasks: Schema.Array(TaskSummary),
+  moreTasks: Schema.Boolean,
   docs: Schema.NullOr(Schema.Array(Schema.Struct({ key: Schema.String, title: Schema.String }))),
+  moreDocs: Schema.Boolean,
 });
 const ClientSheet = Schema.Struct({
   ...ClientRow.fields,
@@ -113,9 +118,11 @@ const ClientSheet = Schema.Struct({
       notes: Schema.String,
     }),
   ),
+  moreContacts: Schema.Boolean,
   projects: Schema.Array(
     Schema.Struct({ key: Schema.String, title: Schema.String, state: Schema.String }),
   ),
+  moreProjects: Schema.Boolean,
   deals: Schema.NullOr(
     Schema.Array(
       Schema.Struct({
@@ -127,6 +134,7 @@ const ClientSheet = Schema.Struct({
       }),
     ),
   ),
+  moreDeals: Schema.Boolean,
 });
 const DocPage = Schema.Struct({
   key: Schema.String,
@@ -134,6 +142,7 @@ const DocPage = Schema.Struct({
   client: Ref,
   project: Ref,
   updatedAt: Schema.String,
+  version: Schema.Int,
   page: Schema.Int,
   pages: Schema.Int,
   material: Schema.String,
@@ -141,7 +150,8 @@ const DocPage = Schema.Struct({
 });
 const { owed, received, spent } = KinMoneySummary.fields;
 const MoneySheet = Schema.Struct({
-  privateLeftOut: Schema.Int,
+  privateLeftOut: Schema.Boolean,
+  material: Schema.String,
   asOf: Schema.String,
   thisMonth: Schema.String,
   lastMonth: Schema.String,
@@ -184,10 +194,11 @@ const MemoryLines = Schema.Struct({
     Schema.Struct({
       title: Schema.String,
       text: Schema.String,
-      source: Schema.String,
-      recordedAt: Schema.String,
+      from: Schema.String,
+      day: Schema.String,
     }),
   ),
+  more: Schema.Boolean,
 });
 
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
@@ -198,7 +209,11 @@ const TasksKeyToolkit = Toolkit.make(
     ...shared,
     description:
       "List the open Kin tasks held by the person this key belongs to, soonest due first: key, title, state, due date and project.",
-    success: Schema.Struct({ tasks: Schema.Array(TaskSummary), more: Schema.Boolean }),
+    success: Schema.Struct({
+      tasks: Schema.Array(TaskSummary),
+      more: Schema.Boolean,
+      material: Schema.String,
+    }),
   })
     .annotate(Tool.Readonly, true)
     .annotate(Tool.Destructive, false)
@@ -248,10 +263,12 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("find", {
     ...shared,
     description:
-      "Find projects, clients or docs the person this key belongs to can see in Kin, by words in the name or title; docs also by client or project key. Returns keys and titles; open one with open_project, open_client or read_doc. Clients, projects, deals and docs marked private, and everything under a private client or project, stay in Kin and are not shown here.",
+      "Find projects, clients or docs the person this key belongs to can see in Kin: by words in a name or title (docs: also in their text), and docs or projects by client key, docs by project key. Returns keys and titles a page at a time; pass next back as cursor for the next page. Open one with open_project, open_client or read_doc. Clients, projects, deals and docs marked private, and everything under a private client or project, stay in Kin and are not shown here.",
     parameters: Schema.Struct({
       kind: Schema.Literals(["projects", "clients", "docs"]),
-      text: Schema.optional(Words.annotate({ description: "Words in the name or title." })),
+      text: Schema.optional(
+        Words.annotate({ description: "Words in a name or title; for docs, also in the text." }),
+      ),
       client: Schema.optional(
         KinRecordKey.annotate({ description: "Projects or docs: only this client's, by key." }),
       ),
@@ -261,11 +278,21 @@ const TasksKeyToolkit = Toolkit.make(
       mine: Schema.optional(
         Schema.Boolean.annotate({ description: "Projects: only those the person is on." }),
       ),
+      cursor: Schema.optional(
+        Schema.String.check(Schema.isMaxLength(200)).annotate({
+          description: "The next value of the page before, for the page after it.",
+        }),
+      ),
+      limit: Schema.optional(
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })).annotate({
+          description: "Rows on a page, 50 at most (the default).",
+        }),
+      ),
     }),
     success: Schema.Union([
-      Schema.Struct({ projects: Schema.Array(ProjectRow), more: Schema.Boolean }),
-      Schema.Struct({ clients: Schema.Array(ClientRow), more: Schema.Boolean }),
-      Schema.Struct({ docs: Schema.Array(DocRow), more: Schema.Boolean }),
+      Schema.Struct({ projects: Schema.Array(ProjectRow), ...Page }),
+      Schema.Struct({ clients: Schema.Array(ClientRow), ...Page }),
+      Schema.Struct({ docs: Schema.Array(DocRow), ...Page }),
     ]),
   })
     .annotate(Tool.Readonly, true)
@@ -275,7 +302,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("open_project", {
     ...shared,
     description:
-      "Open one project by its key, such as a task's project: client, state, lead, repositories, notes, the person's own open tasks on it and its docs. One they can't see is not found. Clients, projects, deals and docs marked private, and everything under a private client or project, stay in Kin and are not shown here.",
+      "Open one project by its key, such as a task's project: client, state, lead, repositories, notes, the person's own open tasks on it and its docs. moreTasks or moreDocs is true when a list was cut. One they can't see is not found. Clients, projects, deals and docs marked private, and everything under a private client or project, stay in Kin and are not shown here.",
     parameters: Schema.Struct({
       key: KinRecordKey.annotate({ description: "The project's key, such as P-3." }),
     }),
@@ -288,7 +315,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("open_client", {
     ...shared,
     description:
-      "Open one client by its key: notes, contacts, projects, and deals when the person can see deals. One they can't see is not found. Clients, projects, deals and docs marked private, and everything under a private client or project, stay in Kin and are not shown here.",
+      "Open one client by its key: notes, contacts, projects, and deals when the person can see deals. moreContacts, moreProjects or moreDeals is true when a list was cut. One they can't see is not found. Clients, projects, deals and docs marked private, and everything under a private client or project, stay in Kin and are not shown here.",
     parameters: Schema.Struct({
       key: KinRecordKey.annotate({ description: "The client's key, such as C-4." }),
     }),
@@ -301,13 +328,16 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("read_doc", {
     ...shared,
     description:
-      "Read a doc's latest text by its key, one page at a time: the answer says which page it is and how many there are; ask for the next page to read on. Clients, projects, deals and docs marked private, and everything under a private client or project, stay in Kin and are not shown here.",
+      "Read a text doc by its key, one page at a time: the answer gives page, pages and version. For the next page pass page and that version; if the doc changed meanwhile you are told to start again. A doc that is a file has no text here. Clients, projects, deals and docs marked private, and everything under a private client or project, stay in Kin and are not shown here.",
     parameters: Schema.Struct({
       key: KinRecordKey.annotate({ description: "The doc's key, such as D-7." }),
       page: Schema.optional(
         Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).annotate({
           description: "Which page, from 1 (the default).",
         }),
+      ),
+      version: Schema.optional(
+        Schema.Int.annotate({ description: "After page 1: the version page 1 gave." }),
       ),
     }),
     success: DocPage,
@@ -319,7 +349,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("money_summary", {
     ...shared,
     description:
-      "What the person's Money page shows: what clients owe and what is overdue, money in and out this month, last month and this financial year, and money coming due soon, each entry by key. Listed only for people who have Money. Entries under a client or project marked private stay in Kin: they are left out of every figure and list here, and privateLeftOut says how many.",
+      "What the person's Money page shows: what clients owe and what is overdue (and the first owing clients), money in and out this month, last month and this financial year, and money coming due in the next 30 days, each by its entry's key. Listed only for people who have Money. Entries a person marked private, and entries under a private client or project, stay in Kin: they are in no figure or line here, and privateLeftOut is true when leaving them out changed this answer.",
     success: MoneySheet,
   })
     .annotate(Tool.Readonly, true)
@@ -329,7 +359,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("search_memory", {
     ...shared,
     description:
-      "Search what Kin remembers about the company that the whole team may know, by words. Anything kept to one person stays in Kin and is not shown here. Each line comes with who it came from and when it was recorded.",
+      "For owners and co-owners: search what Kin remembers that the whole team may know, by words. Anything kept to one person stays in Kin and is not shown here. Each line says who it came from and the day it was recorded; more is true when there are more lines than shown.",
     parameters: Schema.Struct({
       text: Words.check(Schema.isMinLength(1)).annotate({ description: "Words to look for." }),
     }),
@@ -351,13 +381,27 @@ const GATED: Partial<
 
 // Read from the request, not declared: tool services are built with the server, and the holder
 // exists only per request. Without `auth` in front there is none, and every call fails.
+// Every answer passes here: text a reader can't see but a model reads is taken out of it.
 const asHolder = Effect.fnUntraced(function* <A, R extends Services>(
   run: (holder: TasksKeyHolder) => Effect.Effect<A, KinChatError, R>,
 ) {
   const caller = yield* Effect.serviceOption(TasksKeyCaller);
   if (Option.isNone(caller)) return yield* unavailable;
-  return yield* run(caller.value.holder).pipe(Effect.provideContext(caller.value.services));
+  return cleaned(
+    yield* run(caller.value.holder).pipe(Effect.provideContext(caller.value.services)),
+  );
 });
+
+/** `value` with every string in it cleaned (`ResultText.ts` `clean`): same shape, same types. */
+const cleaned = <A>(value: A): A => cleanedValue(value) as A;
+const cleanedValue = (value: unknown): unknown =>
+  typeof value === "string"
+    ? clean(value)
+    : Array.isArray(value)
+      ? value.map(cleanedValue)
+      : value !== null && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value).map(([key, one]) => [key, cleanedValue(one)]))
+        : value;
 
 // The key's holder is the only authority here, checked by the service; T3's caller
 // declarations describe threads and clients, which a person's key is neither.

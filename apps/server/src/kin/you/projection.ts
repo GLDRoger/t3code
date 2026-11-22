@@ -1,15 +1,16 @@
-import type {
-  KinDealRow,
-  KinDocDetail,
-  KinDocListRow,
-  KinMoneySummary,
-  KinPartyPage,
-  KinPartyRow,
-  KinProjectPage,
-  KinProjectRow,
-  KinRecord,
-  KinRecordDetail,
-  KinWorkPrincipal,
+import {
+  KIN_RECORDS_PAGE_CAP,
+  type KinDealRow,
+  type KinDocDetail,
+  type KinDocListRow,
+  type KinMoneySummary,
+  type KinPartyPage,
+  type KinPartyRow,
+  type KinProjectPage,
+  type KinProjectRow,
+  type KinRecord,
+  type KinRecordDetail,
+  type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
@@ -19,7 +20,6 @@ import type { CodingAgentConnection } from "../work/codingAgent.ts";
 import { dayIn, dayWords } from "../work/money.ts";
 import { latestComments, personSeesRecord } from "../work/recordComments.ts";
 import { effectivelySensitive, ownerZone } from "../work/recordRows.ts";
-import { iso } from "../work/recordRows.ts";
 import { orgOwner, toolName, toolNamesOf } from "../work/toolNames.ts";
 
 /**
@@ -80,6 +80,7 @@ export const taskRows = Effect.fn("KinYouProjection.taskRows")(function* (
   return {
     tasks: yield* Effect.forEach(tasks, (task) => row(connection, task, zone)),
     more,
+    material: MATERIAL,
   };
 });
 
@@ -111,19 +112,23 @@ export const commentResult = (key: string, posted: boolean) => ({ key, posted })
 const namer = Effect.fn("KinYouProjection.namer")(function* (connection: CodingAgentConnection) {
   const names = yield* toolNamesOf(connection.orgId, yield* orgOwner(connection.orgId));
   const reader = { _tag: "person", personId: connection.personId } as const;
-  return (who: KinWorkPrincipal) => toolName(who, names, reader);
+  return { names, name: (who: KinWorkPrincipal) => toolName(who, names, reader) };
 });
 
 const ref = (one: { readonly key: string; readonly title: string } | null | undefined) =>
   one === null || one === undefined ? null : { key: one.key, title: one.title };
+/** A list's page and how to ask for the next: `next` is passed back as `cursor`. */
+const paged = (next: string | null) => ({ more: next !== null, next });
+/** A sub-list a screen read holds at most a page of: true when it may hold more than shown. */
+const full = (rows: ReadonlyArray<unknown>) => rows.length >= KIN_RECORDS_PAGE_CAP;
 
-/** `list_projects`: the rows the person's Projects list gave them. */
+/** `find` projects: the rows the person's Projects list gave them. */
 export const projectRows = Effect.fn("KinYouProjection.projectRows")(function* (
   connection: CodingAgentConnection,
   rows: ReadonlyArray<KinProjectRow>,
-  more: boolean,
+  next: string | null,
 ) {
-  const name = yield* namer(connection);
+  const { name } = yield* namer(connection);
   return {
     projects: rows.map((one) => ({
       key: one.key,
@@ -132,7 +137,8 @@ export const projectRows = Effect.fn("KinYouProjection.projectRows")(function* (
       state: one.state,
       lead: name(one.owner),
     })),
-    more,
+    ...paged(next),
+    material: MATERIAL,
   };
 });
 
@@ -140,10 +146,10 @@ export const projectRows = Effect.fn("KinYouProjection.projectRows")(function* (
 export const projectSheet = Effect.fn("KinYouProjection.projectSheet")(function* (
   connection: CodingAgentConnection,
   page: KinProjectPage & { readonly note?: { readonly body: string } },
-  tasks: ReadonlyArray<Task>,
-  docs: ReadonlyArray<KinDocListRow> | null,
+  tasks: { readonly tasks: ReadonlyArray<Task>; readonly more: boolean },
+  docs: { readonly rows: ReadonlyArray<KinDocListRow>; readonly more: boolean } | null,
 ) {
-  const name = yield* namer(connection);
+  const { name } = yield* namer(connection);
   const zone = yield* ownerZone(connection.orgId);
   const { project } = page;
   return {
@@ -157,13 +163,15 @@ export const projectSheet = Effect.fn("KinYouProjection.projectSheet")(function*
     notes: project.notes,
     pinned: page.note?.body ?? null,
     material: MATERIAL,
-    myOpenTasks: yield* Effect.forEach(tasks, (task) => row(connection, task, zone)),
-    docs: docs === null ? null : docs.map((doc) => ({ key: doc.key, title: doc.title })),
+    myOpenTasks: yield* Effect.forEach(tasks.tasks, (task) => row(connection, task, zone)),
+    moreTasks: tasks.more,
+    docs: docs === null ? null : docs.rows.map((doc) => ({ key: doc.key, title: doc.title })),
+    moreDocs: docs?.more ?? false,
   };
 });
 
-/** `list_clients`: the rows the person's Clients list gave them. */
-export const clientRows = (rows: ReadonlyArray<KinPartyRow>, more: boolean) => ({
+/** `find` clients: the rows the person's Clients list gave them. */
+export const clientRows = (rows: ReadonlyArray<KinPartyRow>, next: string | null) => ({
   clients: rows.map((one) => ({
     key: one.key,
     name: one.name,
@@ -171,16 +179,17 @@ export const clientRows = (rows: ReadonlyArray<KinPartyRow>, more: boolean) => (
     prospect: one.prospect === true,
     active: one.active,
   })),
-  more,
+  ...paged(next),
+  material: MATERIAL,
 });
 
 /** `open_client`: the client page as their screen gave it, with deals only from the deals read. */
 export const clientSheet = Effect.fn("KinYouProjection.clientSheet")(function* (
   connection: CodingAgentConnection,
   page: KinPartyPage,
-  deals: ReadonlyArray<KinDealRow> | null,
+  deals: { readonly rows: ReadonlyArray<KinDealRow>; readonly more: boolean } | null,
 ) {
-  const name = yield* namer(connection);
+  const { name } = yield* namer(connection);
   const { party } = page;
   return {
     key: party.key,
@@ -199,22 +208,25 @@ export const clientSheet = Effect.fn("KinYouProjection.clientSheet")(function* (
       phone: one.phone,
       notes: one.notes,
     })),
+    moreContacts: full(page.contacts),
     projects: page.projects.map((one) => ({ key: one.key, title: one.name, state: one.state })),
+    moreProjects: full(page.projects),
     deals:
       deals === null
         ? null
-        : deals.map((one) => ({
+        : deals.rows.map((one) => ({
             key: one.key,
             title: one.title,
             state: one.state,
             value: one.value ?? null,
             expected: one.expectedAt,
           })),
+    moreDeals: deals?.more ?? false,
   };
 });
 
-/** `find_docs`: the rows the person's Docs list gave them. */
-export const docRows = (rows: ReadonlyArray<KinDocListRow>, more: boolean) => ({
+/** `find` docs: the rows the person's Docs list gave them. */
+export const docRows = (rows: ReadonlyArray<KinDocListRow>, next: string | null) => ({
   docs: rows.map((one) => ({
     key: one.key,
     title: one.title,
@@ -223,7 +235,8 @@ export const docRows = (rows: ReadonlyArray<KinDocListRow>, more: boolean) => ({
     project: ref(one.project),
     updatedAt: one.updatedAt,
   })),
-  more,
+  ...paged(next),
+  material: MATERIAL,
 });
 
 /** Characters of a doc's text in one `read_doc` page. */
@@ -244,7 +257,7 @@ export const pageOf = (text: string, page: number) => {
   }
 };
 
-/** `read_doc`: one page of the latest text, as the person's Docs reader shows it. */
+/** `read_doc`: one page of the version read, as the person's Docs reader shows it. */
 export const docPage = (doc: KinDocDetail, page: number) => {
   const { text, pages } = pageOf(doc.body, page);
   return {
@@ -253,6 +266,7 @@ export const docPage = (doc: KinDocDetail, page: number) => {
     client: ref(doc.party),
     project: ref(doc.project),
     updatedAt: doc.updatedAt,
+    version: doc.version.version,
     page,
     pages,
     material: MATERIAL,
@@ -261,11 +275,10 @@ export const docPage = (doc: KinDocDetail, page: number) => {
 };
 
 /**
- * `money_summary`: the figures the person's Money screen shows, and its coming money by key, of
- * the entries a key reaches; `privateLeftOut` counts those labelled private and left out.
+ * `money_summary`: the figures the person's Money screen shows, the first owing clients by key,
+ * and its coming money by key, of the entries a key reaches.
  */
-export const moneySheet = (summary: KinMoneySummary & { readonly privateLeftOut?: number }) => ({
-  privateLeftOut: summary.privateLeftOut ?? 0,
+export const moneySheet = (summary: KinMoneySummary) => ({
   asOf: summary.asOf,
   thisMonth: summary.thisMonth,
   lastMonth: summary.lastMonth,
@@ -301,15 +314,41 @@ export const moneySheet = (summary: KinMoneySummary & { readonly privateLeftOut?
     late: one.kind === "due" && one.record.late,
   })),
   moreComing: Math.max(0, summary.upcomingTotal - summary.upcoming.length),
+  material: MATERIAL,
 });
 
-/** `search_memory`: each line Kin remembers that the person may read, with who said it and when. */
-export const memoryLines = (hits: ReadonlyArray<KinMemoryHit>) => ({
-  material: MATERIAL,
-  lines: hits.map((hit) => ({
-    title: hit.title,
-    text: hit.snippet,
-    source: hit.saidBy,
-    recordedAt: iso(hit.recordedAt),
-  })),
+/**
+ * Who a remembered line came from, as the person's Memory page words it: a teammate by the names
+ * kept when they said it, the owner or an agent by name, never an id.
+ */
+const saidBy = (hit: KinMemoryHit, names: Effect.Success<ReturnType<typeof namer>>["names"]) => {
+  if (hit.from !== null) return `${hit.from.name} in ${hit.from.chatName}`;
+  if (hit.trust === "external") return "from outside Kin's chats";
+  if (hit.trust === "agent") {
+    const agent = names.agents.get(hit.saidBy);
+    return agent === undefined ? "an agent" : `${agent} (agent)`;
+  }
+  if (hit.trust === "owner" && names.owner !== null)
+    return `${names.people.get(names.owner) ?? "the owner"} (owner)`;
+  return names.people.get(hit.saidBy) ?? "a teammate";
+};
+
+/** `search_memory`: each line the person may read, who it came from by name, and the day. */
+export const memoryLines = Effect.fn("KinYouProjection.memoryLines")(function* (
+  connection: CodingAgentConnection,
+  hits: ReadonlyArray<KinMemoryHit>,
+  more: boolean,
+) {
+  const { names } = yield* namer(connection);
+  const zone = yield* ownerZone(connection.orgId);
+  return {
+    material: MATERIAL,
+    lines: hits.map((hit) => ({
+      title: hit.title,
+      text: hit.snippet,
+      from: saidBy(hit, names),
+      day: dayIn(hit.recordedAt, zone),
+    })),
+    more,
+  };
 });

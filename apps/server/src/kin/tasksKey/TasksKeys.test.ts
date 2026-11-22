@@ -206,7 +206,11 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
       dueDay: "Tue 1 Dec 2026",
       project: "Invented: launch",
     };
-    assert.deepStrictEqual(yield* listMine(zoyaKey), { tasks: [task], more: false });
+    assert.deepStrictEqual(yield* listMine(zoyaKey), {
+      tasks: [task],
+      more: false,
+      material: MATERIAL,
+    });
     // No money, no client, nobody else's: the narrow view and nothing more.
     assert.deepStrictEqual(yield* getMine(zoyaKey, hers.key), {
       ...task,
@@ -375,6 +379,7 @@ it.effect(
           },
         ],
         more: false,
+        material: MATERIAL,
       });
       for (const hidden of [secret, underProject, underClient, underTheirs]) {
         assert.strictEqual(yield* reason(getMine(key, hidden.key)), "not_found");
@@ -429,6 +434,25 @@ it.effect(
         dateAt: 0,
       });
       assert.strictEqual((yield* records.get(orgId, glaze.key))?.sensitive, 1);
+      // Marked private by a person on purpose: at creation, and on one the default had labelled.
+      const fees = yield* make("legal fees", {
+        list: "expenses",
+        owner: { _tag: "person", personId: rhea.personId },
+        partyId: potters.recordId,
+        amount: { minor: 6_060_600, currency: "INR" },
+        state: "done",
+        dateAt: 0,
+        sensitive: true,
+      });
+      const bonus = yield* make("bonus", {
+        list: "expenses",
+        owner: { _tag: "person", personId: rhea.personId },
+        partyId: potters.recordId,
+        amount: { minor: 7_070_700, currency: "INR" },
+        state: "done",
+        dateAt: 0,
+      });
+      yield* records.update(orgId, writerFor(rhea.personId), bonus.key, { sensitive: true });
       const { row: kilnTerms } = yield* Docs.create(
         orgId,
         writerFor(rhea.personId),
@@ -472,16 +496,19 @@ it.effect(
         restore: () => Effect.die("Unused"),
         recordDecision: () => Effect.die("Unused"),
         relabel: () => Effect.die("Unused"),
-        items: () => Effect.succeed(items),
+        items: () => Effect.die("A key read must not load memory"),
+        snapshot: () => Effect.succeed(items),
       });
       // "Only you": the price. The day the team may know.
       yield* authorise(orgId, "day", fingerprint(items[1]!), "owner_setting");
-      // Rhea's own screen counts both expenses, so the rent is there to leave out.
+      // Rhea's own screen counts every expense, so the rent and the two she marked are there to
+      // leave out; the mark is recorded on the one the default had already labelled.
       assert.deepStrictEqual(
         (yield* money([{ _tag: "person", orgId, personId: rhea.personId }], { orgId })).spent
           .thisMonth.total,
-        [{ minor: 5_959_500, currency: "INR" }],
+        [{ minor: 19_090_800, currency: "INR" }],
       );
+      assert.strictEqual((yield* records.get(orgId, bonus.key))?.markedBy, rhea.personId);
       const labelled = [
         quietClient,
         client,
@@ -492,12 +519,16 @@ it.effect(
         underClient,
         underTheirs,
         rent,
+        fees,
+        bonus,
         kilnTerms,
       ];
       const never = [
         ...labelled.flatMap((one) => [JSON.stringify(one.key), JSON.stringify(one.title)]),
         "Invented kiln price",
         "4242400",
+        "6060600",
+        "7070700",
       ];
       const answer = <A, R>(read: Effect.Effect<A, KinChatError, R>) =>
         Effect.match(read, {
@@ -547,7 +578,7 @@ it.effect(
         assert.deepStrictEqual(figures.spent.thisMonth.total, [
           { minor: 1_717_100, currency: "INR" },
         ]);
-        assert.strictEqual(figures.privateLeftOut, 1);
+        assert.isTrue(figures.privateLeftOut);
       }
       assert.strictEqual((yield* Effect.flip(moneySummary(keys.arjun))).reason, "not_allowed");
       assert.deepStrictEqual(

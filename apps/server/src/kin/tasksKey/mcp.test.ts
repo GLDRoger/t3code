@@ -16,7 +16,7 @@ import { McpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinServer, type Services } from "../KinServer.ts";
-import { KinRecords } from "../work/KinRecords.ts";
+import { type CreateInput, KinRecords } from "../work/KinRecords.ts";
 import * as KinTasksKeyMcp from "./mcp.ts";
 import { layer, team } from "./tasksKey.testkit.ts";
 import * as TasksKeys from "./TasksKeys.ts";
@@ -227,6 +227,90 @@ it.effect(
         assert.include(refused, `"error"`);
         assert.notInclude(refused, "owed");
       }
+      // Rhea's key over the endpoint: a wrong kind, another company's entry and one never there
+      // all answer the same; text a reader can't see is gone; and no read writes business data.
+      const writer = {
+        actor: { _tag: "person" as const, personId: rhea.personId },
+        via: "owner" as const,
+        askedBy: rhea.personId,
+      };
+      const make = (originKey: string, fields: Partial<CreateInput>) =>
+        records
+          .create(orgId, writer, {
+            originKey,
+            title: `Invented ${originKey}`,
+            owner: { _tag: "person", personId: rhea.personId },
+            ...fields,
+          })
+          .pipe(Effect.map(({ row }) => row));
+      const client = yield* make("Lan\u200Bterns", { list: "clients" });
+      const project = yield* make("launch", { list: "projects", partyId: client.recordId });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+        VALUES ('other-company', 'Invented other', '1970-01-01')`;
+      yield* sql`CREATE TEMP TABLE elsewhere AS SELECT * FROM kin_records
+        WHERE record_id = ${client.recordId}`;
+      yield* sql`UPDATE elsewhere SET org_id = 'other-company', record_id = 'elsewhere-1',
+        key = 'C-77', origin_key = 'elsewhere'`;
+      // Another company's row only, without the rest of that company around it.
+      yield* sql`PRAGMA foreign_keys = OFF`;
+      yield* sql`INSERT INTO kin_records SELECT * FROM elsewhere`;
+      yield* sql`PRAGMA foreign_keys = ON`;
+      yield* sql`DROP TABLE elsewhere`;
+      const ownersOpened = yield* call({
+        token: owners.secret,
+        method: "initialize",
+        params: initialize,
+      });
+      const ownersSession = ownersOpened.headers["mcp-session-id"];
+      const tool = Effect.fn("test.tool")(function* (name: string, args: object) {
+        return yield* text(
+          yield* call({
+            token: owners.secret,
+            method: "tools/call",
+            params: { name, arguments: args },
+            ...(ownersSession === undefined ? {} : { session: ownersSession }),
+          }),
+        );
+      });
+      const writes = sql<{ n: number }>`SELECT total_changes() AS n`.pipe(
+        Effect.map(([row]) => row?.n ?? 0),
+      );
+      // Admission's own bookkeeping, `last_used_at` at most once a minute, is the one write.
+      const [used] = yield* sql<{ at: number | null }>`SELECT last_used_at AS at
+        FROM kin_tasks_keys WHERE session_id = ${owners.key.sessionId}`;
+      assert.isNotNull(used?.at ?? null);
+      for (const [name, wrong, never] of [
+        ["open_project", client.key, "P-999"],
+        ["open_client", project.key, "C-999"],
+        ["open_client", "C-77", "C-999"],
+        ["read_doc", client.key, "D-999"],
+        ["read_doc", "C-77", "D-999"],
+      ] as const) {
+        const before = yield* writes;
+        const answered = yield* tool(name, { key: wrong });
+        assert.include(answered, "Not found.");
+        assert.strictEqual(answered, yield* tool(name, { key: never }));
+        assert.strictEqual(yield* writes, before);
+      }
+      for (const [name, args] of [
+        ["open_client", { key: client.key }],
+        ["open_project", { key: project.key }],
+        ["find", { kind: "clients" }],
+        ["find", { kind: "projects" }],
+        ["find", { kind: "docs" }],
+        ["money_summary", {}],
+        ["search_memory", { text: "kiln" }],
+        ["list_my_tasks", {}],
+      ] as const) {
+        const before = yield* writes;
+        const answered = yield* tool(name, args);
+        assert.notInclude(answered, "\u200B");
+        assert.notInclude(answered, "\\u200b");
+        assert.strictEqual(yield* writes, before);
+        if (name === "open_client") assert.include(answered, "Invented Lanterns");
+      }
+
       const checked = verified;
       const mine = yield* call({
         token: issued.secret,

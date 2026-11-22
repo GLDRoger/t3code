@@ -2461,6 +2461,9 @@ const make = Effect.gen(function* () {
           changes.push({ field: "sensitive", from: "false", to: "true" });
           set("sensitive", 1);
           set("marked_by_person_id", textBy(writer));
+        } else if (patch.sensitive === true && row.markedBy === null) {
+          // Labelled only by its list's default until now: whose label it is now is recorded.
+          set("marked_by_person_id", textBy(writer));
         } else if (
           patch.sensitive === false &&
           row.sensitive === 1 &&

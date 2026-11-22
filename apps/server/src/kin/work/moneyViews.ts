@@ -32,7 +32,6 @@ import {
   issuedNumber,
   iso,
   keptEntry,
-  keyWithheld,
   moneyDay,
   owedInvoices,
   ownerZone,
@@ -44,10 +43,6 @@ import { LISTS, parseFields } from "./lists.ts";
 import { findBankList } from "./statements/bankList.ts";
 import { allLists, isBuiltIn, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
-
-/** `seenBy`, and with `keyed` also nothing a coding agent's key never carries (`keyWithheld`). */
-const seenFor = (sql: SqlClient.SqlClient, viewer: KinViewer, keyed: boolean | undefined) =>
-  keyed === true ? sql`(${seenBy(sql, viewer)} AND NOT ${keyWithheld(sql)})` : seenBy(sql, viewer);
 import { DAY_MS } from "../durations.ts";
 import type { SetAsideInvoice } from "../pulse/invoiceAsides.ts";
 
@@ -101,7 +96,6 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
     readonly kept?: boolean | undefined;
     readonly money?: boolean | undefined;
     readonly viewer: KinViewer;
-    readonly keyed?: boolean | undefined;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -121,7 +115,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
         ${input.open === true ? sql`AND r.state NOT IN ('done', 'dropped')` : sql``}
         ${input.kept === true ? sql`AND ${keptEntry(sql)}` : sql``}
         ${input.money === true ? sql`AND NOT ${draftInvoice(sql)}` : sql``}
-        AND ${seenFor(sql, input.viewer, input.keyed)}
+        AND ${seenBy(sql, input.viewer)}
         AND (${sql.or(
           fields.map(
             (one) =>
@@ -165,8 +159,6 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
     readonly offset?: number | undefined;
     readonly limit?: number | undefined;
     readonly viewer: KinViewer;
-    /** Read for a coding agent's key: leave out what `keyWithheld` covers. */
-    readonly keyed?: boolean | undefined;
   },
   now: number,
 ) {
@@ -187,7 +179,7 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
       ...(input.open === true ? [sql`r.state NOT IN ('done', 'dropped')`] : []),
       ...(input.kept === true ? [keptEntry(sql)] : []),
       ...(input.money === true ? [sql`NOT ${draftInvoice(sql)}`] : []),
-      seenFor(sql, input.viewer, input.keyed),
+      seenBy(sql, input.viewer),
     ]);
   const hits = sql`SELECT r.record_id AS id, 'due' AS kind, r.due_at AS at, r.key FROM kin_records r
       WHERE ${where("due_at")}
@@ -356,18 +348,11 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   now: number,
   /** For people, figures of only what all of them see, never the company's. */
   viewer: KinViewer,
-  /**
-   * People's Money lists money's dates alone ahead; an agent's read keeps every date. `keyed`:
-   * for a coding agent's key, every figure and row leaves out what `keyWithheld` covers.
-   */
-  options: {
-    readonly moneyDates?: boolean;
-    readonly omitDeals?: boolean;
-    readonly keyed?: boolean;
-  } = {},
+  /** People's Money lists money's dates alone ahead; an agent's read keeps every date. */
+  options: { readonly moneyDates?: boolean; readonly omitDeals?: boolean } = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const seen = seenFor(sql, viewer, options.keyed);
+  const seen = seenBy(sql, viewer);
   const zone = yield* ownerZone(orgId);
   const { homeCurrency: home, financialYearStartMonth } = yield* companyMoney(orgId);
   const rates = yield* readProfile(orgId).pipe(
@@ -388,7 +373,8 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const owing = yield* owedInvoices({
     orgId,
     now,
-    ...(viewer._tag === "ownerLevel" && options.keyed !== true ? {} : { seen }),
+    // A key's owner-level read is scoped too (`keyedViewer`): it leaves out what a key never carries.
+    ...(viewer._tag === "ownerLevel" && viewer.keyed !== true ? {} : { seen }),
   });
   const clients = new Map<string | null, typeof owing>();
   for (const invoice of owing)
@@ -511,7 +497,6 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
       money: options.moneyDates,
       limit: 50,
       viewer,
-      keyed: options.keyed,
     },
     now,
   );
@@ -842,20 +827,3 @@ const moneyOf = (json: string): KinMoney | undefined => {
     return undefined;
   }
 };
-
-/**
- * Entries with money this viewer's Money counts that a coding agent's key leaves out
- * (`keyWithheld`): a count only, so a key's figures say they are partial without saying by what.
- */
-export const keyLeftOut = Effect.fn("KinMoneyViews.keyLeftOut")(function* (
-  orgId: KinOrgId,
-  viewer: KinViewer,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records r
-    WHERE r.org_id = ${orgId} AND ${countedEntry(sql)}
-      AND (r.register_id IN ${sql.in(MONEY_LISTS)}
-        OR (r.amount_minor IS NOT NULL AND r.register_id NOT IN ('work', 'deals')))
-      AND ${seenBy(sql, viewer)} AND ${keyWithheld(sql)}`;
-  return row?.count ?? 0;
-});

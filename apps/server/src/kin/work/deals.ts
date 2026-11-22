@@ -77,6 +77,7 @@ import {
   crmSeenBy,
   crmVisible,
   KIN_OWNER_LEVEL,
+  keyedViewer,
   placesOf,
   teamClients,
   teamSeesField,
@@ -1357,8 +1358,12 @@ const seqFor = Effect.fn("KinDeals.seq")(function* (orgId: KinOrgId, viewer: Kin
 export const deals = Effect.fn("KinDeals.list")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinDealsInput,
+  /** A coding agent's key reads it: nothing a key never carries (`keyedViewer`). */
+  options: { readonly keyed?: boolean } = {},
 ) {
-  const { actor, viewer } = yield* dealReader(people, input.orgId);
+  const reading = yield* dealReader(people, input.orgId);
+  const { actor } = reading;
+  const viewer = options.keyed === true ? keyedViewer(reading.viewer) : reading.viewer;
   const sql = yield* SqlClient.SqlClient;
   const party =
     input.party === undefined ? undefined : yield* seenParty(actor, input.party).pipe(workFailure);
