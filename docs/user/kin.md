@@ -291,9 +291,13 @@ A coding agent key lets your own coding agent, such as Claude Code, Codex or Cur
 you see in Kin. It reads the tasks you hold, adds notes to them, and sets them to to-do, in progress
 or done; a task's notes and state are the only things it can change. It can also read, never change,
 the projects, clients and docs you can see, your Money figures if you have Money, and, for the owner
-and co-owners, what Kin remembers (a co-owner's agent reads only what the team may know). It can't
-reach anyone else's tasks, a task labelled sensitive or under a client or project labelled
-sensitive, your chats, or anything your own screens don't show you.
+and co-owners, what Kin remembers that the team may know. It can't reach anyone else's tasks, your
+chats, or anything your own screens don't show you.
+
+Anything marked private stays in Kin and is not available through a key, whoever holds it, the
+owner's included. That covers an entry marked **Keep private** and everything under a private client
+or project. Money lists such as invoices and expenses are private by default, so Money figures read
+through a key leave those entries out and say how many were left out.
 
 To make one, open **Settings → Profile** and choose **Make a
 key** under **Coding agent keys**. Name it for the computer or tool it's for. Kin shows the key, its

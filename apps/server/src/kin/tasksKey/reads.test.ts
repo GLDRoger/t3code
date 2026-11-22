@@ -114,7 +114,7 @@ const ambermill = Effect.gen(function* () {
     title: "Invented glaze order",
     clientRequestId: "glaze",
   });
-  yield* Deals.create(as(orgId, rhea.personId), {
+  const buyout = yield* Deals.create(as(orgId, rhea.personId), {
     orgId,
     party: lanterns.key,
     title: "Invented kiln buyout",
@@ -158,6 +158,13 @@ const ambermill = Effect.gen(function* () {
     hall,
     spec,
     auditNotes,
+    // Labelled, or under a labelled client or project: no key gets them, whoever holds it.
+    labelled: new Set<string>([
+      kilns.recordId,
+      audit.recordId,
+      auditNotes.recordId,
+      buyout.deal.recordId,
+    ]),
   };
 });
 
@@ -166,6 +173,9 @@ it.effect("each read gives a key what its person's own screen read gives them, n
     const seeded = yield* ambermill;
     const { orgId, lanterns, launch, spec } = seeded;
     const sql = yield* SqlClient.SqlClient;
+    // Each answer is the person's own screen read with the labelled entries taken out.
+    const unlabelled = <T extends { readonly recordId: string }>(rows: ReadonlyArray<T>) =>
+      rows.filter((row) => !seeded.labelled.has(row.recordId));
     for (const one of [seeded.rhea, seeded.meera, seeded.dev, seeded.zoya]) {
       const screen = as(orgId, one.personId);
       const connection = connectionOf(one.key);
@@ -173,22 +183,27 @@ it.effect("each read gives a key what its person's own screen read gives them, n
       const parties = yield* Clients.parties(screen, { orgId, limit: 50 });
       assert.deepStrictEqual(
         yield* listClients(one.key, {}),
-        clientRows(parties.parties, parties.nextCursor !== null),
+        clientRows(unlabelled(parties.parties), parties.nextCursor !== null),
       );
       const page = yield* Clients.party(screen, { orgId, key: lanterns.key });
       const deals = yield* Deals.deals(screen, { orgId, party: lanterns.key }).pipe(
-        Effect.map((found) => found.deals),
+        Effect.map((found) => unlabelled(found.deals)),
         Effect.orElseSucceed(() => null),
       );
+      const unlabelledPage = {
+        ...page,
+        contacts: unlabelled(page.contacts),
+        projects: unlabelled(page.projects),
+      };
       assert.deepStrictEqual(
         yield* openClient(one.key, lanterns.key),
-        yield* clientSheet(connection, page, deals).pipe(sql.withTransaction),
+        yield* clientSheet(connection, unlabelledPage, deals).pipe(sql.withTransaction),
       );
       // Projects: the Projects list.
       const projects = yield* Clients.projects(screen, { orgId, limit: 50 });
       assert.deepStrictEqual(
         yield* listProjects(one.key, {}),
-        yield* projectRows(connection, projects.projects, projects.nextCursor !== null),
+        yield* projectRows(connection, unlabelled(projects.projects), projects.nextCursor !== null),
       );
       // Docs: the Docs list, and the reader's text, page by page; refused as the screen is.
       const docs = yield* OwnerDocs.list(screen, { orgId, acceptSlimLatest: true, limit: 50 }).pipe(
@@ -201,7 +216,7 @@ it.effect("each read gives a key what its person's own screen read gives them, n
       }
       assert.deepStrictEqual(
         yield* findDocs(one.key, {}),
-        docRows(docs.success.docs, docs.success.nextCursor !== null),
+        docRows(unlabelled(docs.success.docs), docs.success.nextCursor !== null),
       );
       const whole = (yield* OwnerDocs.get(screen, { orgId, key: spec.key })).body;
       const first = yield* readDoc(one.key, { key: spec.key });
@@ -258,12 +273,21 @@ it.effect(
       const never = KinRecordKey.make("C-999");
       const zoya = seeded.zoya.key;
       const arjun = seeded.arjun.key;
-      // The owner reaches them, so they are there to hide.
+      // The owner's own screens show them, so they are there to hide; her key, like any, doesn't.
+      const rhea = as(seeded.orgId, seeded.rhea.personId);
       assert.include(
-        (yield* listClients(seeded.rhea.key, {})).clients.map((one) => one.key),
+        (yield* Clients.parties(rhea, { orgId: seeded.orgId })).parties.map((one) => one.key),
         kilns.key,
       );
       assert.include(
+        (yield* OwnerDocs.list(rhea, { orgId: seeded.orgId })).docs.map((one) => one.key),
+        auditNotes.key,
+      );
+      assert.notInclude(
+        (yield* listClients(seeded.rhea.key, {})).clients.map((one) => one.key),
+        kilns.key,
+      );
+      assert.notInclude(
         (yield* findDocs(seeded.rhea.key, {})).docs.map((one) => one.key),
         auditNotes.key,
       );
@@ -281,6 +305,9 @@ it.effect(
           auditNotes.key,
         );
       const missing = [
+        yield* errorOf(openClient(seeded.rhea.key, kilns.key)),
+        yield* errorOf(openProject(seeded.rhea.key, audit.key)),
+        yield* errorOf(readDoc(seeded.rhea.key, { key: auditNotes.key })),
         yield* errorOf(openClient(zoya, never)),
         yield* errorOf(openClient(zoya, kilns.key)),
         yield* errorOf(openClient(arjun, lanterns.key)),
@@ -301,16 +328,13 @@ it.effect(
           projects: [],
           more: false,
         });
-      // A private deal reaches the owner's key, never Zoya's, though she reads the client's deals.
+      // A private deal reaches no key, the owner's included, though Zoya reads the client's deals.
       const dealsOf = (key: typeof zoya) =>
         openClient(key, lanterns.key).pipe(
           Effect.map((page) => page.deals?.map((one) => one.title) ?? null),
         );
-      assert.sameMembers((yield* dealsOf(seeded.rhea.key)) ?? [], [
-        "Invented glaze order",
-        "Invented kiln buyout",
-      ]);
-      assert.deepStrictEqual(yield* dealsOf(zoya), ["Invented glaze order"]);
+      for (const key of [seeded.rhea.key, zoya])
+        assert.deepStrictEqual(yield* dealsOf(key), ["Invented glaze order"]);
     }).pipe(Effect.provide(layer)),
 );
 
@@ -356,22 +380,23 @@ it.effect("money and memory reach only those whose own screens open them", () =>
       searchMemory(key, "invented kiln").pipe(
         Effect.map(({ lines }) => lines.map((line) => [line.title, line.source])),
       );
-    // The owner reads her own "only you" line; the co-owner only what the team may know.
-    assert.deepStrictEqual(yield* read(seeded.rhea.key), [
-      ["Invented kiln-day", "Meera"],
-      ["Invented kiln-rate", "Rhea"],
-    ]);
-    assert.deepStrictEqual(yield* read(seeded.meera.key), [["Invented kiln-day", "Meera"]]);
+    // Only what the team may know, for every key: the owner's own "only you" line stays in Kin.
+    for (const key of [seeded.rhea.key, seeded.meera.key])
+      assert.deepStrictEqual(yield* read(key), [["Invented kiln-day", "Meera"]]);
     for (const key of [seeded.zoya.key, seeded.arjun.key]) {
       assert.isFalse(yield* readsMemory(key));
       assert.strictEqual((yield* errorOf(searchMemory(key, "kiln"))).reason, "not_allowed");
     }
-    // Money: the same figures the Money page reads, for those it opens to, and nobody else.
+    // Money: with nothing labelled in it, the same figures the Money page reads, for those it
+    // opens to, and nobody else.
     for (const one of [seeded.rhea, seeded.meera, seeded.dev]) {
       assert.isTrue(yield* readsMoney(one.key));
       assert.deepStrictEqual(
         yield* moneySummary(one.key),
-        moneySheet(yield* money(as(orgId, one.personId), { orgId })),
+        moneySheet({
+          ...(yield* money(as(orgId, one.personId), { orgId, allClients: true })),
+          privateLeftOut: 0,
+        }),
       );
     }
     for (const one of [seeded.zoya, seeded.arjun]) {

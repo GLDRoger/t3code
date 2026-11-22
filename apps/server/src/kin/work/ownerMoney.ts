@@ -39,7 +39,7 @@ import * as Numbers from "../gendocs/numbering.ts";
 import { listReceipts, makeReceipt as makeReceiptFor } from "../gendocs/receipts.ts";
 import { readProfile, setProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
-import { dates as datesView, moneySummary } from "./moneyViews.ts";
+import { dates as datesView, keyLeftOut, moneySummary } from "./moneyViews.ts";
 import { found, ownerWriter, placeRefusals, theOwner } from "./ownerWork.ts";
 import { chatLinksFor, iso, workFailure } from "./recordRows.ts";
 import {
@@ -265,17 +265,20 @@ const SCREEN_CLIENTS = 20;
 export const money = Effect.fn("KinMoney.summary")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinMoneySummaryInput,
+  /** A coding agent's key reads it: nothing `keySensitive` covers, and how many were left out. */
+  options: { readonly keyed?: boolean } = {},
 ) {
   const team = yield* moneyReader(people, input.orgId);
   // For a client's page, a teammate without the Money switch reads none, whichever project they lead.
   const hidden =
     input.party !== undefined && team !== undefined && !(yield* placesOf(input.orgId, team)).money;
-  const summary = yield* moneySummary(
-    input.orgId,
-    yield* Clock.currentTimeMillis,
-    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(hidden ? [] : [team]),
-    { moneyDates: true },
-  );
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(hidden ? [] : [team]);
+  const summary = yield* moneySummary(input.orgId, yield* Clock.currentTimeMillis, viewer, {
+    moneyDates: true,
+    keyed: options.keyed === true,
+  });
+  const privateLeftOut =
+    options.keyed === true ? yield* keyLeftOut(input.orgId, viewer) : undefined;
   const { byClient } = summary.owed;
   const shown =
     input.party !== undefined
@@ -296,7 +299,8 @@ export const money = Effect.fn("KinMoney.summary")(function* (
               byClientMore: byClient.length - SCREEN_CLIENTS,
             },
           };
-  return input.upcomingRows === false ? { ...shown, upcoming: [] } : shown;
+  const answered = input.upcomingRows === false ? { ...shown, upcoming: [] } : shown;
+  return privateLeftOut === undefined ? answered : { ...answered, privateLeftOut };
 }, workFailure);
 
 const noMoney = new KinChatError({

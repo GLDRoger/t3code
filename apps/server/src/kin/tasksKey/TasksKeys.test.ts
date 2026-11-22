@@ -1,5 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
+  type KinChatError,
+  MemoryItemHead,
   AuthKinTasksScope,
   type AuthSessionId,
   EnvironmentAuthenticatedAuth,
@@ -19,6 +21,7 @@ import { HttpEffect, HttpRouter, HttpServerRequest, type HttpServerResponse } fr
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Queue from "effect/Queue";
@@ -41,7 +44,24 @@ import * as People from "../people/KinPeople.ts";
 import * as Records from "../work/KinRecords.ts";
 import * as Work from "../work/ownerWork.ts";
 import { TasksKeyAudience } from "./audience.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
+import * as MemoryChanges from "../memory/MemoryChanges.ts";
+import { authorise, fingerprint } from "../memory/sensitivity.ts";
+import * as Docs from "../work/docs.ts";
+import { presetDefinition } from "../work/registers.ts";
+import { money } from "../work/ownerMoney.ts";
 import { MATERIAL } from "../you/projection.ts";
+import {
+  findDocs,
+  listClients,
+  listProjects,
+  moneySummary,
+  openClient,
+  openProject,
+  readDoc,
+  searchMemory,
+  unknownKey,
+} from "./reads.ts";
 import { commentMine, getMine, listMine, setStateMine } from "./tasks.ts";
 import { admitted, layer, layerAt, team } from "./tasksKey.testkit.ts";
 import * as TasksKeys from "./TasksKeys.ts";
@@ -298,6 +318,7 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
   }).pipe(Effect.provide(layer)),
 );
 
+const decodeHead = Schema.decodeUnknownSync(MemoryItemHead);
 const writerFor = (personId: KinPersonId) => ({
   actor: { _tag: "person" as const, personId },
   via: "owner" as const,
@@ -308,7 +329,7 @@ it.effect(
   "nothing labelled sensitive reaches a key, whoever holds it, nor what sits under a labelled client or project",
   () =>
     Effect.gen(function* () {
-      const { orgId, rhea, zoya } = yield* team;
+      const { orgId, rhea, zoya, arjun } = yield* team;
       const records = yield* Records.KinRecords;
       const people = yield* People.KinPeople;
       const sql = yield* SqlClient.SqlClient;
@@ -371,7 +392,149 @@ it.effect(
           0,
         );
       }
-    }).pipe(Effect.provide(layer)),
+
+      // Every other tool too: what its person's screens show, minus anything labelled, for the
+      // owner's key, a co-owner's (Zoya), a lead's (Dev) and a member's (Arjun, with Money).
+      const sessions = yield* SessionStore;
+      const invite = yield* people.createInvite(rhea.app, { orgId, displayName: "Dev Malhotra" });
+      const dev = yield* people.accept({ secret: invite.secret });
+      const devApp = yield* sessions.verify(dev.accessToken);
+      yield* make("glaze line", {
+        list: "projects",
+        owner: { _tag: "person", personId: dev.person.personId },
+      });
+      yield* sql`UPDATE kin_people SET sees_money = 1 WHERE person_id = ${arjun.personId}`;
+      // An expense is labelled by its list; a doc sits under the labelled client.
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0,
+          ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
+      const salary = yield* make("salary", {
+        list: "expenses",
+        owner: { _tag: "person", personId: rhea.personId },
+        amount: { minor: 4_242_400, currency: "INR" },
+        state: "done",
+        dateAt: 0,
+      });
+      const { row: kilnTerms } = yield* Docs.create(
+        orgId,
+        writerFor(rhea.personId),
+        {},
+        {
+          title: "Invented: kiln terms",
+          body: "Invented terms.\n",
+          owner: { _tag: "person", personId: rhea.personId },
+          summary: "Created",
+          partyId: quietClient.recordId,
+          originKey: "kiln terms",
+        },
+      );
+      const head = (id: string) =>
+        decodeHead({
+          id,
+          orgId,
+          path: `claims/${id}.md`,
+          kind: "claim",
+          title: `Invented kiln ${id}`,
+          status: "open",
+          due: null,
+          recorded_at: "1970-01-01T00:00:00.000Z",
+          valid_from: "1970-01-01T00:00:00.000Z",
+          invalid_at: null,
+          superseded_by: null,
+          review_by: null,
+          source: "fixture",
+          said_by: "Rhea",
+          trust: "owner",
+          links: [],
+          sensitive: false,
+        });
+      const items = [
+        { head: head("price"), body: "Invented price.\n" },
+        { head: head("day"), body: "Invented day.\n" },
+      ];
+      yield* (yield* KinMemoryChanges).attachWriter({
+        undo: () => Effect.die("Unused"),
+        retire: () => Effect.die("Unused"),
+        restore: () => Effect.die("Unused"),
+        recordDecision: () => Effect.die("Unused"),
+        relabel: () => Effect.die("Unused"),
+        items: () => Effect.succeed(items),
+      });
+      // "Only you": the price. The day the team may know.
+      yield* authorise(orgId, "day", fingerprint(items[1]!), "owner_setting");
+      // Rhea's own screen counts the expense, so it is there to leave out.
+      assert.deepInclude(
+        (yield* money([{ _tag: "person", orgId, personId: rhea.personId }], { orgId })).spent
+          .thisMonth.total,
+        { minor: 4_242_400, currency: "INR" },
+      );
+      const labelled = [
+        quietClient,
+        client,
+        audit,
+        theirs,
+        secret,
+        underProject,
+        underClient,
+        underTheirs,
+        salary,
+        kilnTerms,
+      ];
+      const never = [
+        ...labelled.flatMap((one) => [JSON.stringify(one.key), JSON.stringify(one.title)]),
+        "Invented kiln price",
+        "4242400",
+      ];
+      const answer = <A, R>(read: Effect.Effect<A, KinChatError, R>) =>
+        Effect.match(read, {
+          onFailure: (error): unknown => error,
+          onSuccess: (value): unknown => value,
+        });
+      const keys = {
+        rhea: yield* admitted((yield* TasksKeys.issue(rhea.app, { orgId })).secret),
+        zoya: key,
+        dev: yield* admitted((yield* TasksKeys.issue(devApp, { orgId })).secret),
+        arjun: yield* admitted((yield* TasksKeys.issue(arjun.app, { orgId })).secret),
+      };
+      for (const holder of Object.values(keys)) {
+        const answers = [
+          yield* answer(listMine(holder)),
+          yield* answer(getMine(holder, secret.key)),
+          yield* answer(listProjects(holder, {})),
+          yield* answer(listProjects(holder, { text: "audit" })),
+          yield* answer(listClients(holder, {})),
+          yield* answer(findDocs(holder, {})),
+          yield* answer(findDocs(holder, { client: quietClient.key })),
+          yield* answer(openProject(holder, audit.key)),
+          yield* answer(openProject(holder, theirs.key)),
+          yield* answer(openClient(holder, quietClient.key)),
+          yield* answer(openClient(holder, client.key)),
+          yield* answer(readDoc(holder, { key: kilnTerms.key })),
+          yield* answer(moneySummary(holder)),
+          yield* answer(searchMemory(holder, "kiln")),
+        ];
+        const said = JSON.stringify(answers);
+        for (const one of never) assert.notInclude(said, one);
+        for (const opened of answers.slice(7, 12))
+          if (opened instanceof Error && "reason" in opened && opened.reason === "not_found")
+            assert.strictEqual(JSON.stringify(opened), JSON.stringify(unknownKey));
+      }
+      // The owner's key opens each labelled one as one never there, and says money was left out.
+      for (const opened of [
+        yield* Effect.flip(openClient(keys.rhea, quietClient.key)),
+        yield* Effect.flip(openProject(keys.rhea, audit.key)),
+        yield* Effect.flip(readDoc(keys.rhea, { key: kilnTerms.key })),
+      ])
+        assert.strictEqual(JSON.stringify(opened), JSON.stringify(unknownKey));
+      const owners = yield* moneySummary(keys.rhea);
+      assert.deepStrictEqual(owners.spent.thisMonth.total, []);
+      assert.isAtLeast(owners.privateLeftOut, 1);
+      assert.deepStrictEqual(
+        (yield* searchMemory(keys.rhea, "kiln")).lines.map((line) => line.title),
+        ["Invented kiln day"],
+      );
+    }).pipe(Effect.provide(MemoryChanges.layer.pipe(Layer.provideMerge(layer)))),
 );
 
 it.effect("a key's list is soonest due first and counts only what it may show", () =>

@@ -260,8 +260,12 @@ export const docPage = (doc: KinDocDetail, page: number) => {
   };
 };
 
-/** `money_summary`: the figures the person's Money screen shows, and its coming money by key. */
-export const moneySheet = (summary: KinMoneySummary) => ({
+/**
+ * `money_summary`: the figures the person's Money screen shows, and its coming money by key, of
+ * the entries a key reaches; `privateLeftOut` counts those labelled private and left out.
+ */
+export const moneySheet = (summary: KinMoneySummary & { readonly privateLeftOut?: number }) => ({
+  privateLeftOut: summary.privateLeftOut ?? 0,
   asOf: summary.asOf,
   thisMonth: summary.thisMonth,
   lastMonth: summary.lastMonth,

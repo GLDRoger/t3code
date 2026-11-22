@@ -100,8 +100,8 @@ describe("kinTasksKeyMade", () => {
     expect(panel.addressNote).toBeNull();
     expect(panel.lines).toEqual([
       "Copy it now. Kin won't show this key again. If you lose it, remove it and make another.",
-      "With it, your coding agent can read the tasks you hold, add notes to them, and set them to to-do, in progress or done. It can also read the projects, clients, docs, money and memory you can see in Kin.",
-      "It can't change anything else, reach anyone else's tasks or your chats, or read anything you can't see yourself.",
+      "With it, your coding agent can read the tasks you hold, add notes to them, and set them to to-do, in progress or done. It can also read the projects, clients, docs, money and team memory you can see in Kin.",
+      "It can't change anything else, reach anyone else's tasks or your chats, or read anything you can't see yourself. Anything marked private stays in Kin.",
       `Expires ${formatKinTime(new Date(key().expiresAt), new Date(key().createdAt))}, in 30 days. Make a new key then to keep going.`,
     ]);
     expect(panel.setups.map((setup) => [setup.agent, setup.text])).toEqual([
