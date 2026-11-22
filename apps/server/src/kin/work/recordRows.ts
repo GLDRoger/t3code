@@ -38,7 +38,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
 import { ownerLevelSql } from "../people/KinAccess.ts";
-import { listNameOf, parseFields } from "./lists.ts";
+import { fieldList, listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
 import { DAY_MS } from "../durations.ts";
@@ -473,7 +473,26 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
     ...listNameOf(row.registerId),
     ...stepsCount(row),
     ...(row.registerId === "work" && row.urgent === 1 ? { urgent: true as const } : {}),
+    ...alsoOnShown(row),
   };
+};
+
+/** `person:<id>` or `agent:<id>`, as a list of people in an entry's fields stores one. */
+export const storedPrincipal = (text: string) => {
+  const at = text.indexOf(":");
+  return at < 1 || at === text.length - 1 ? null : principal(text.slice(0, at), text.slice(at + 1));
+};
+/** Who is on a task besides its holder (`fields.alsoOn`), in the order they were put on it. */
+const alsoOnOf = (row: Pick<RecordRow, "registerId" | "fieldsJson">) => {
+  if (row.registerId !== "work" || !row.fieldsJson.includes('"alsoOn"')) return [];
+  return fieldList(parseFields(row.fieldsJson), "alsoOn").flatMap((text) => {
+    const who = storedPrincipal(text);
+    return who === null ? [] : [who];
+  });
+};
+const alsoOnShown = (row: RecordRow) => {
+  const alsoOn = alsoOnOf(row);
+  return alsoOn.length === 0 ? {} : { alsoOn };
 };
 
 /** A task's steps as stored: in order, each its words and whether it is ticked. */

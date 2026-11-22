@@ -1782,6 +1782,116 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "who else is on a task: someone here, once, at most ten, never its holder, and off it once it is theirs",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* TestClock.setTime(Date.parse("2026-11-11T09:00:00Z"));
+      const sql = yield* SqlClient.SqlClient;
+      const devId = KinPersonId.make("dev");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${devId}, ${orgId}, 'dev', 'Dev', ${at})`;
+      const person = (personId: KinPersonId) => ({ _tag: "person" as const, personId });
+      const made = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: launch plan",
+        clientRequestId: "also-1",
+        alsoOn: [person(mateId), toLead],
+      });
+      assert.deepStrictEqual(made.alsoOn, [person(mateId), toLead]);
+      const records = yield* KinRecords.KinRecords;
+      const byOwner = { actor: person(ownerId), via: "owner", askedBy: ownerId } as const;
+      const set = (alsoOn: ReadonlyArray<string>) =>
+        records.update(orgId, byOwner, made.key, { fields: { alsoOn } });
+      for (const alsoOn of [
+        [`person:${ownerId}`],
+        [`person:${mateId}`, `person:${mateId}`],
+        Array.from({ length: 11 }, (_, i) => `person:invented-${i}`),
+        ["Mate"],
+      ])
+        assert.include(yield* Effect.flip(set(alsoOn)), { reason: "invalid_state" }, `${alsoOn}`);
+      assert.include(yield* Effect.flip(set(["person:nobody"])), { reason: "not_found" });
+      assert.include(
+        yield* Effect.flip(
+          records.create(orgId, byOwner, {
+            list: "projects",
+            originKey: "also-project",
+            title: "Invented: portal",
+            owner: person(ownerId),
+            fields: { alsoOn: [`person:${mateId}`] },
+          }),
+        ),
+        { reason: "invalid_state" },
+      );
+      // An agent with no person behind its turn changes nothing of it.
+      yield* records.update(orgId, { actor: toLead, via: "lead" }, made.key, {
+        fields: { alsoOn: [`person:${devId}`] },
+      });
+      const unchanged = yield* OwnerWork.get([owner], { orgId, key: made.key });
+      assert.deepStrictEqual(unchanged.alsoOn, [person(mateId), toLead]);
+      assert.strictEqual(unchanged.rev, made.rev);
+      // Given to someone on it, they come off it in the same change; the old holder isn't put on.
+      const given = yield* OwnerWork.assign([owner], {
+        orgId,
+        key: made.key,
+        to: person(mateId),
+      });
+      assert.deepStrictEqual(given.alsoOn, [toLead]);
+      assert.deepInclude(given.changes[0]!.fields, {
+        field: "alsoOn",
+        from: `person:${mateId}, agent:${lead}`,
+        to: `agent:${lead}`,
+      });
+      // An agent's change to it, asked by a person, is in its history and Undo puts it back.
+      const asked = { actor: toLead, via: "lead", askedBy: ownerId } as const;
+      yield* records.update(orgId, asked, made.key, {
+        fields: { alsoOn: [`agent:${lead}`, `person:${devId}`] },
+      });
+      const [change] = yield* agentChanges(KIN_OWNER_LEVEL, orgId, lead);
+      assert.deepInclude(change, { key: made.key, undo: true });
+      yield* ownerLevelUndoAgentChange({ orgId, agentId: lead, seq: change!.seq, by: ownerId });
+      assert.deepStrictEqual((yield* OwnerWork.get([owner], { orgId, key: made.key })).alsoOn, [
+        toLead,
+      ]);
+      // Mine is what they hold and what they are on, each once; on time, theirs waits on its holder.
+      const alongside = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: price list",
+        clientRequestId: "also-2",
+        dueAt: "2026-11-12T12:00:00.000Z",
+        alsoOn: [person(mateId), person(devId)],
+      });
+      const mine = yield* OwnerWork.list([mate], { orgId, owner: person(mateId) });
+      assert.deepStrictEqual(mine.records.map((row) => row.key).toSorted(), [
+        made.key,
+        alongside.key,
+      ]);
+      assert.strictEqual(mine.total, 2);
+      const moveOf = Effect.fn(function* () {
+        const page = yield* OwnerWork.list([mate], { orgId, byMove: true });
+        return page.moves?.find((one) => one.key === alongside.key)?.group;
+      });
+      assert.strictEqual(yield* moveOf(), "waiting");
+      yield* TestClock.setTime(Date.parse("2026-11-13T09:00:00Z"));
+      assert.strictEqual(yield* moveOf(), "needsYou");
+      // Someone on it changes it as its holder would, and may take themselves off it.
+      const current = yield* OwnerWork.get([mate], { orgId, key: alongside.key });
+      const left = yield* OwnerWork.update([mate], {
+        orgId,
+        key: alongside.key,
+        rev: current.rev,
+        title: "Invented: price list v2",
+        alsoOn: [person(devId)],
+      });
+      assert.deepInclude(left, { title: "Invented: price list v2", alsoOn: [person(devId)] });
+      // Off it, it is no longer theirs to see.
+      assert.include(yield* Effect.flip(OwnerWork.get([mate], { orgId, key: alongside.key })), {
+        reason: "not_found",
+      });
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("assigning refuses closed entries and records the session's owner as the assigner", () =>
   Effect.gen(function* () {
     yield* seed;

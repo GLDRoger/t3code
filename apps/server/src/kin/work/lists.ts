@@ -41,8 +41,8 @@ export const LISTS: Record<ListName, List> = {
     states: ["open", "doing", "waiting", "done", "dropped"],
     categories: ["task", "issue", "obligation", "meeting"],
     // The project spine: a milestone's key, S/M/L, why its holder was picked, the doc section it
-    // came from with that section's hash then, a meeting's people and place, and the holder not
-    // told yet that it is theirs.
+    // came from with that section's hash then, a meeting's people and place, the holder not
+    // told yet that it is theirs, and who is on it besides its holder (`person:<id>`, `agent:<id>`).
     fields: [
       "milestone",
       "size",
@@ -53,6 +53,7 @@ export const LISTS: Record<ListName, List> = {
       "fromHash",
       "attendees",
       "where",
+      "alsoOn",
     ],
   },
   clients: {

@@ -99,15 +99,20 @@ const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fra
   sql`EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.attendees') a
     WHERE a.value = 'person:' || ${personId})`;
 
+/** `r` is a task this person is on besides its holder (`fields.alsoOn`). */
+export const alsoOnIt = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
+  sql`(r.register_id = 'work' AND EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.alsoOn') o
+    WHERE o.value = 'person:' || ${personId}))`;
+
 /**
- * What a non-owner-level person sees everywhere: a task they hold, attend or marked private; unlabelled,
+ * What a non-owner-level person sees everywhere: a task they hold, are on, attend or marked private; unlabelled,
  * what they made, gave or share, their projects with those projects' entries and docs (never a
  * private task), docs filed as their own drafts (`draftDoc`'s mark), company docs with Docs on, and
  * with Clients on the deals of clients they see.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
-      OR ${attends(sql, personId)} OR r.marked_by_person_id = ${personId}
+      OR ${attends(sql, personId)} OR ${alsoOnIt(sql, personId)} OR r.marked_by_person_id = ${personId}
       OR (r.sensitive = 0 AND ((r.created_by_kind = 'person' AND r.created_by_id = ${personId})
         OR r.assigned_by_person_id = ${personId}))))
   OR (r.register_id IN ('work', 'milestones') AND r.sensitive = 0
@@ -525,12 +530,13 @@ const roomWork = Effect.fn("KinTeamView.roomWork")(function* (
 });
 
 /**
- * A teammate changes only a task they hold, gave to whoever holds it or marked private, never one
- * they only see; a project's lead also anything of the project in `LEAD_LISTS`, quotes and
- * invoices as drafts.
+ * A teammate changes only a task they hold, are on, gave to whoever holds it or marked private,
+ * never one they only see; a project's lead also anything of the project in `LEAD_LISTS`, quotes
+ * and invoices as drafts.
  */
 const teamWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
   sql`(${personSees(sql, personId)} AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
+    OR ${alsoOnIt(sql, personId)}
     OR (r.assigned_by_person_id = ${personId} AND r.register_id <> 'docs')
     OR r.marked_by_person_id = ${personId}
     OR ${leadWrites(sql, personId)}))`;
@@ -743,6 +749,9 @@ type TeamFacts = ReturnType<Effect.Success<ReturnType<typeof teamFactsOf>>>;
  */
 const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined => {
   if (!facts.member) return noLongerTeam;
+  // Who is on a task besides its holder is set by whoever may change the task.
+  if (alsoOnOnly(facts, write))
+    return teamRule(facts, { ...write, input: { ...write.input, fields: undefined } });
   const { row } = write;
   // Whoever marked it "Only me" may take their own mark off again.
   const unmarked =
@@ -810,6 +819,22 @@ const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined 
   if (lead.draft && (row === undefined ? input.state !== "open" : input.state !== undefined))
     return DRAFTS_ONLY;
   return undefined;
+};
+
+/** A write to a task whose only list detail is who is on it (`fields.alsoOn`). */
+const alsoOnOnly = (facts: TeamFacts, write: TeamWrite) => {
+  const { fields } = write.input;
+  const task =
+    write.row === undefined
+      ? (typeof write.input.list === "string" ? write.input.list : "work") === "work"
+      : facts.seen?.registerId === "work";
+  return (
+    task &&
+    typeof fields === "object" &&
+    fields !== null &&
+    Object.keys(fields).length === 1 &&
+    "alsoOn" in fields
+  );
 };
 
 /** A new client that isn't its project's takes a task out of that project (`KinRecords.update`). */
@@ -1079,11 +1104,12 @@ export const teamRecordIn = <
   };
 };
 
-/** History lines a teammate reads: what the task says and who holds it, never money or labels. */
+/** History lines a teammate reads: what the task says and who is on it, never money or labels. */
 const TEAM_FIELDS = new Set([
   "title",
   "state",
   "owner",
+  "alsoOn",
   "due",
   "dueAllDay",
   "waitingOn",
