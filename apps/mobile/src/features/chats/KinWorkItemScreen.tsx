@@ -80,7 +80,7 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { Pressable, TextInput, View } from "react-native";
 
-import { useState, type ReactNode } from "react";
+import { useState, type ReactNode, useRef, type ComponentRef } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { AppBarMenu, AppBarMenuItem } from "../../components/ui/AppBar";
@@ -94,7 +94,6 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { RowPressable } from "../../components/ui/RowPressable";
 import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -119,9 +118,11 @@ import { KinMakeDocumentStep } from "./KinInvoice";
 import type { KinMakeStep } from "./kinMakeStep";
 import {
   KIN_URGENT_SYMBOL,
+  KinWorkFieldBox,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkTaskRow,
+  KinWorkToggleRow,
 } from "./components/KinWorkPieces";
 import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
@@ -257,6 +258,8 @@ function KinWorkItemGate(props: ItemTarget) {
 }
 
 function KinWorkItemBody(props: ItemTarget) {
+  const titleField = useRef<ComponentRef<typeof TextInput>>(null);
+  const briefField = useRef<ComponentRef<typeof TextInput>>(null);
   const navigation = useNavigation();
   const openRecord = useKinWorkLink();
   const openDetail = useOpenWorkspaceDetail();
@@ -654,9 +657,9 @@ function KinWorkItemBody(props: ItemTarget) {
       {edit === null ? null : (
         <View className="gap-3">
           <ListSection>
-            <View className="gap-2 px-4 py-3">
-              <Text className="text-sm text-foreground-muted">Title</Text>
+            <KinWorkFieldBox label={"Title"} input={titleField}>
               <TextInput
+                ref={titleField}
                 accessibilityLabel="Title"
                 value={edit.title}
                 editable={!saving}
@@ -679,10 +682,10 @@ function KinWorkItemBody(props: ItemTarget) {
                   {kinWorkTitleCount(edit.title)}
                 </Text>
               )}
-            </View>
-            <View className="gap-2 px-4 py-3">
-              <Text className="text-sm text-foreground-muted">{KIN_TASK_RECORD.brief}</Text>
+            </KinWorkFieldBox>
+            <KinWorkFieldBox label={KIN_TASK_RECORD.brief} input={briefField}>
               <TextInput
+                ref={briefField}
                 accessibilityLabel={KIN_TASK_RECORD.brief}
                 value={edit.notes}
                 editable={!saving}
@@ -696,7 +699,7 @@ function KinWorkItemBody(props: ItemTarget) {
                 placeholderTextColorClassName="accent-placeholder"
                 className="min-h-24 font-sans text-base text-foreground"
               />
-            </View>
+            </KinWorkFieldBox>
           </ListSection>
           {[
             moved?.title == null ? null : KIN_WORK_COPY.nowSays(moved.title),
@@ -799,7 +802,7 @@ function KinWorkItemBody(props: ItemTarget) {
           />
         )}
         {act === null || view.steps?.editable !== true || view.closed ? null : (
-          <ListToggleRow
+          <KinWorkToggleRow
             icon={KIN_URGENT_SYMBOL}
             label={KIN_WORK_URGENT.label}
             value={view.urgent}

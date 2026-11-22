@@ -65,7 +65,6 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -90,6 +89,7 @@ import {
   KinWorkLoading,
   KinWorkPrivateMark,
   KinWorkTextField,
+  KinWorkToggleRow,
   useKinAskBeforeDiscard,
 } from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
@@ -1236,7 +1236,7 @@ function KinListSettingsForm(props: KinWorkTarget & { readonly def: KinListDefin
       )}
       {!kinListCanTogglePayments(def) ? null : (
         <ListSection footer={KIN_LISTS.edit.paymentsDetail}>
-          <ListToggleRow
+          <KinWorkToggleRow
             label={KIN_LISTS.edit.payments}
             value={draft.payments}
             disabled={changes.busy}

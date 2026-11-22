@@ -161,6 +161,13 @@ export function FormShell(props: {
 const fieldHintId = (id: string) => `${id}-hint`;
 
 /** One labelled field, with what someone else changed it to while the owner was typing. */
+/** A one-paragraph field that wraps as it grows: Return submits the form, as in a one-line field. */
+export function oneParagraph(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+  if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+  event.preventDefault();
+  event.currentTarget.form?.requestSubmit();
+}
+
 export function Field(props: {
   readonly id: string;
   readonly label: string;

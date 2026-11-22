@@ -13,7 +13,7 @@ import {
 import { kinJoinSwitchCopy } from "@t3tools/client-runtime/kin/kinDevice";
 import { useCameraPermissions } from "expo-camera";
 import * as Haptics from "expo-haptics";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ComponentRef } from "react";
 import { Linking, TextInput, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -29,6 +29,7 @@ import { rootNavigationRef } from "../../lib/rootNavigation";
 import { PairingScanCard } from "../connection/ConnectionsNewRouteScreen";
 import { readKinIsHome } from "./state/kinHome";
 import { joinKin, readKinJoinStanding } from "./state/kinJoin";
+import { KinWorkFieldBox } from "./components/KinWorkPieces";
 import { readKinSignedInAs } from "./state/useKinReconnect";
 
 export type KinJoinParams = { readonly link?: string };
@@ -43,6 +44,7 @@ export function KinJoinScreen({ route }: StaticScreenProps<KinJoinParams | undef
 type Standing = Exclude<KinJoinStanding, { readonly _tag: "new" }>;
 
 function KinJoinForm(props: { readonly openedLink: string }) {
+  const linkField = useRef<ComponentRef<typeof TextInput>>(null);
   const navigation = useNavigation();
   const [text, setText] = useState(props.openedLink);
   const [joining, setJoining] = useState(false);
@@ -189,9 +191,9 @@ function KinJoinForm(props: { readonly openedLink: string }) {
               {problem === null ? null : <ErrorBanner message={problem} />}
               <View className="gap-2">
                 <ListSection>
-                  <View className="gap-2 px-4 py-3">
-                    <Text className="text-sm text-foreground-muted">Join link</Text>
+                  <KinWorkFieldBox label={"Join link"} input={linkField}>
                     <TextInput
+                      ref={linkField}
                       accessibilityLabel="Join link"
                       value={text}
                       editable={!joining}
@@ -210,7 +212,7 @@ function KinJoinForm(props: { readonly openedLink: string }) {
                       placeholderTextColorClassName="accent-placeholder"
                       className="min-h-8 font-sans text-base text-foreground"
                     />
-                  </View>
+                  </KinWorkFieldBox>
                 </ListSection>
                 {target === null ? null : (
                   <Text textRole="footnote" className="px-4 text-foreground-muted">

@@ -57,13 +57,17 @@ import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { KinMonthGrid } from "./components/KinMonthGrid";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
-import { KinWorkFrame, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
+import {
+  KinWorkFrame,
+  KinWorkLoading,
+  KinWorkStaleNotice,
+  KinWorkToggleRow,
+} from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import { KinDateRowLine } from "./KinWorkMoney";
 import { kinClient } from "./state/kinClient";
@@ -824,7 +828,11 @@ function KinDatesBody(props: KinWorkTarget) {
       <KinWorkFrame {...frame}>
         {modes}
         <ListSection>
-          <ListToggleRow label={KIN_DATES.openOnly} value={openOnly} onValueChange={setOpenOnly} />
+          <KinWorkToggleRow
+            label={KIN_DATES.openOnly}
+            value={openOnly}
+            onValueChange={setOpenOnly}
+          />
         </ListSection>
         <KinMonthGrid
           label={grid.label}
@@ -876,7 +884,7 @@ function KinDatesBody(props: KinWorkTarget) {
     <KinWorkFrame {...frame}>
       {modes}
       <ListSection>
-        <ListToggleRow label={KIN_DATES.openOnly} value={openOnly} onValueChange={setOpenOnly} />
+        <KinWorkToggleRow label={KIN_DATES.openOnly} value={openOnly} onValueChange={setOpenOnly} />
       </ListSection>
       {days.length === 0 ? (
         <EmptyState variant="plain" {...KIN_DATES.none} />

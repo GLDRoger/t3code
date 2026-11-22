@@ -26,11 +26,10 @@ import { useState } from "react";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Menu } from "../../components/ui/Menu";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsRow } from "../settings/components/SettingsRow";
-import { KinWorkLoading } from "./components/KinWorkPieces";
+import { KinWorkLoading, KinWorkToggleRow } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { kinClient, refreshKinBriefs } from "./state/kinClient";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -219,7 +218,7 @@ function CheckInForm(
           .join(" ")}
       >
         {fields.includes("on") ? (
-          <ListToggleRow
+          <KinWorkToggleRow
             label={KIN_BRIEFS.on}
             value={checkIn.on}
             disabled={saving}
@@ -253,7 +252,7 @@ function CheckInForm(
       </ListSection>
       {fields.includes("pipeline") ? (
         <ListSection footer={KIN_CHECK_INS.pipelineDetail}>
-          <ListToggleRow
+          <KinWorkToggleRow
             label={KIN_CHECK_INS.pipeline}
             value={kinCheckInPipeline(checkIn) === true}
             disabled={saving}
