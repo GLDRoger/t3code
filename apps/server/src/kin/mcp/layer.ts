@@ -12,7 +12,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { parseBearerToken } from "../../auth/EnvironmentAuth.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpToolPolicy } from "./toolPolicy.ts";
-import { McpInvocationContext, type McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
+import { type McpInvocationScope, type McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as AgentSession from "../lead/AgentSession.ts";
@@ -71,18 +71,22 @@ const logToolList = Effect.fnUntraced(function* (
     tools: result.tools.length,
   });
 });
+class KinBearerScope extends Context.Service<KinBearerScope, McpInvocationScope>()(
+  "t3/kin/mcp/KinBearerScope",
+) {}
+
 type Auth = (
   effect: Effect.Effect<
     HttpServerResponse.HttpServerResponse,
     Types.unhandled,
-    McpInvocationContext | KinServer | KinIdentity
+    KinBearerScope | KinServer | KinIdentity
   >,
 ) => Effect.Effect<
   HttpServerResponse.HttpServerResponse,
   Types.unhandled,
   HttpServerRequest.HttpServerRequest
 >;
-const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer | KinIdentity }>()(
+const auth = HttpRouter.middleware<{ provides: KinBearerScope | KinServer | KinIdentity }>()(
   Effect.gen(function* () {
     const registry = yield* KinAgentSessions;
     const kin = yield* KinServer;
@@ -91,7 +95,7 @@ const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer 
       effect: Effect.Effect<
         HttpServerResponse.HttpServerResponse,
         Types.unhandled,
-        McpInvocationContext | KinServer | KinIdentity
+        KinBearerScope | KinServer | KinIdentity
       >,
     ) {
       const request = yield* HttpServerRequest.HttpServerRequest;
@@ -102,7 +106,7 @@ const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer 
       const admitted = yield* identity.resolveAgent(scope).pipe(Effect.option);
       if (Option.isNone(admitted)) return HttpServerResponse.empty({ status: 403 });
       const response = yield* effect.pipe(
-        Effect.provideService(McpInvocationContext, scope),
+        Effect.provideService(KinBearerScope, scope),
         Effect.provideService(KinServer, kin),
         Effect.provideService(KinIdentity, identity),
       );
@@ -124,8 +128,12 @@ export const endpoint = <A, E, R>(registrations: Layer.Layer<A, E, R>) =>
         McpSessionRegistry.McpSessionRegistry,
         Effect.gen(function* () {
           const registry = yield* McpSessionRegistry.McpSessionRegistry;
-          const agents = yield* KinAgentSessions;
-          return { ...registry, resolve: agents.resolveAgent };
+          return {
+            ...registry,
+            // Kin auth already checked the bearer and agent before the transport runs.
+            resolve: () =>
+              Effect.serviceOption(KinBearerScope).pipe(Effect.map(Option.getOrUndefined)),
+          };
         }),
       ),
     ),
