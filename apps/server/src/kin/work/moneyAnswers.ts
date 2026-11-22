@@ -294,8 +294,7 @@ const alertLabel = (one: AlertBalance) => `${one.bank} ••${one.account}`;
 const alertLine = (one: AlertBalance, zone: string) => ({
   availableBalance: formatMinor(BigInt(one.balanceMinor), one.currency),
   at: timeIn(one.sentAt, zone),
-  source:
-    "The Avl bal printed in the newest HDFC alert mail, read by code. It is the bank's figure at that moment, not a confirmed statement; totals below are from statements.",
+  source: `The available balance printed in the newest ${one.bank} alert mail, read by code. It is the bank's figure at that moment, not a confirmed statement; totals below are from statements.`,
 });
 
 const notRecordLine = (one: Read) => ({
