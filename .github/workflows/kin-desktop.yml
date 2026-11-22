@@ -1,0 +1,128 @@
+name: Kin desktop builds
+
+# Unsigned Kin desktop installers, uploaded as this run's artifacts. Each job brands a copy of the
+# checkout with scripts/kin-brand.ts and packages it with scripts/build-desktop-artifact.ts. It
+# publishes no release, pushes nothing, uses no secret and signs nothing. The build step drops
+# GITHUB_REPOSITORY, which the packager would otherwise turn into a GitHub update feed, so the
+# apps ship no app-update.yml and never update themselves.
+on:
+  push:
+    branches:
+      - "build/kin-desktop-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kin-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Kin ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            runner: windows-latest
+            platform: win
+            target: nsis
+            arch: x64
+          - label: Linux x64
+            runner: ubuntu-24.04
+            platform: linux
+            target: AppImage
+            arch: x64
+          - label: macOS arm64
+            runner: macos-14
+            platform: mac
+            target: dmg
+            arch: arm64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          save-pnpm-store: "false"
+
+      - name: Brand a copy as Kin
+        run: |
+          set -euo pipefail
+          copy="$RUNNER_TEMP/kin"
+          node scripts/kin-brand.ts --target "$copy"
+          cd "$copy"
+          # The packager stamps the copy's commit into the app.
+          git init -q
+          git add -A
+          git -c user.name=kin-build -c user.email=kin-build@localhost -c core.hooksPath=/dev/null \
+            commit -qm "kin branded build ${GITHUB_SHA}"
+          echo "KIN_COPY=$copy" >> "$GITHUB_ENV"
+
+      - name: Install the copy's dependencies
+        working-directory: ${{ env.KIN_COPY }}
+        run: vp install
+
+      - name: Install Linux desktop build libraries
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config libgtk-3-0t64 libnss3 libasound2t64 libgbm1 imagemagick
+
+      - name: Build desktop installer
+        working-directory: ${{ env.KIN_COPY }}
+        run: |
+          set -euo pipefail
+          env -u GITHUB_REPOSITORY -u T3CODE_DESKTOP_UPDATE_REPOSITORY \
+            node scripts/build-desktop-artifact.ts \
+              --platform "${{ matrix.platform }}" \
+              --target "${{ matrix.target }}" \
+              --arch "${{ matrix.arch }}" \
+              --output-dir release \
+              --verbose
+
+      - name: Check it is Kin with no update feed
+        working-directory: ${{ env.KIN_COPY }}
+        run: |
+          set -euo pipefail
+          ls -la release
+          shopt -s nullglob
+          feeds=(release/latest*.yml release/*-mac*.yml release/*-linux*.yml)
+          if (( ${#feeds[@]} > 0 )); then
+            echo "::error::update feed manifests were written: ${feeds[*]}"
+            exit 1
+          fi
+          installers=(release/Kin-*.exe release/Kin-*.AppImage release/Kin-*.dmg)
+          if (( ${#installers[@]} == 0 )); then
+            echo "::error::no Kin-named installer in release/"
+            exit 1
+          fi
+          if [[ "${{ matrix.platform }}" == "linux" ]]; then
+            appimage="${installers[0]}"
+            chmod +x "$appimage"
+            (cd "$RUNNER_TEMP" && "$OLDPWD/$appimage" --appimage-extract >/dev/null)
+            root="$RUNNER_TEMP/squashfs-root"
+            test ! -e "$root/resources/app-update.yml" || { echo "::error::app-update.yml is packaged"; exit 1; }
+            grep -E '^(Name|Exec)=' "$root"/*.desktop
+          fi
+
+      - name: Upload installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kin-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            ${{ env.KIN_COPY }}/release/Kin-*.exe
+            ${{ env.KIN_COPY }}/release/Kin-*.AppImage
+            ${{ env.KIN_COPY }}/release/Kin-*.deb
+            ${{ env.KIN_COPY }}/release/Kin-*.dmg
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
