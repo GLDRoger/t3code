@@ -813,9 +813,14 @@ async function main() {
       const filename = NodePath.join(instance.userdata, "statev2.sqlite");
       if (!NodeFS.existsSync(filename))
         throw new VerifyError("no database yet; run `kin-verify up`");
-      const { readWeekMeasure } = await import("../apps/server/src/kin/pulse/weekMeasureCli.ts");
-      const counts = await readWeekMeasure(filename, ORG, Date.now() + readOffset(instance));
-      return console.log(JSON.stringify(counts));
+      return process.stdout.write(
+        NodeChildProcess.execFileSync(process.execPath, [
+          NodePath.join(ROOT, "apps/server/scripts/kin-week-measure.ts"),
+          filename,
+          ORG,
+          String(Date.now() + readOffset(instance)),
+        ]),
+      );
     }
     case "db": {
       const sql = args.positional[0];
