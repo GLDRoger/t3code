@@ -52,7 +52,7 @@ import {
   type Writer,
 } from "./KinRecords.ts";
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
-import { milestoneLinks } from "./projectSpine.ts";
+import { milestoneLinks, principalText } from "./projectSpine.ts";
 import { keyNamedFor, personSeesRecord, sheetExtras } from "./recordComments.ts";
 import { movePage, nudge as nudgeHolder } from "./workMoves.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
@@ -416,7 +416,8 @@ export const list = Effect.fn("KinWork.list")(function* (
   input: KinWorkListInput,
   connection?: CodingAgentConnection,
 ) {
-  if (connection === undefined) return yield* listAs(yield* viewerOf(people, input.orgId), input);
+  if (connection === undefined)
+    return yield* listAs(yield* viewerOf(people, input.orgId), input, { orAlsoOn: true });
   const held: KinWorkListInput = {
     orgId: input.orgId,
     owner: { _tag: "person", personId: connection.personId },
@@ -431,7 +432,7 @@ export const list = Effect.fn("KinWork.list")(function* (
 const listAs = Effect.fn("KinWork.listAs")(function* (
   viewer: Viewer,
   input: KinWorkListInput,
-  internal: Pick<QueryInput, "order" | "withoutSensitive"> = {},
+  internal: Pick<QueryInput, "order" | "withoutSensitive" | "orAlsoOn"> = {},
 ) {
   // A task's amount is the owner's, so sums and money filters over tasks are too; a list's
   // entries a teammate sees whole (`personSees`), figures included.
@@ -473,6 +474,7 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
   const filter = {
     ...(input.list === undefined ? {} : { list: input.list }),
     ...(input.owner === undefined ? {} : { owner: input.owner }),
+    ...(internal.orAlsoOn === true ? { orAlsoOn: true } : {}),
     ...(input.states === undefined ? {} : { states: input.states }),
     ...(input.open === undefined ? {} : { open: input.open }),
     ...(input.late === undefined ? {} : { late: input.late }),
@@ -929,6 +931,9 @@ export const create = Effect.fn("KinWork.create")(function* (
         ? {}
         : { steps: input.steps.map((title) => ({ title, done: false })) }),
       ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
+      ...(input.alsoOn === undefined
+        ? {}
+        : { fields: { alsoOn: input.alsoOn.map(principalText) } }),
     });
     return {
       row,
@@ -1154,6 +1159,9 @@ export const update = Effect.fn("KinWork.update")(function* (
       ...(input.repeat === undefined ? {} : { repeat: input.repeat }),
       ...(input.steps === undefined ? {} : { steps: input.steps }),
       ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
+      ...(input.alsoOn === undefined
+        ? {}
+        : { fields: { ...input.fields, alsoOn: input.alsoOn.map(principalText) } }),
       ...due,
       ...(input.dateAt === undefined
         ? input.dateAllDay === undefined
@@ -1406,8 +1414,16 @@ const change = Effect.fn("KinWork.change")(function* (
         rev,
       );
       const detail = yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
-      // A lead may make something of their project private (`teamGuard`), even out of their view.
-      return yield* shownTo(viewer, detail, row, row, undefined, patch.sensitive === true);
+      // A lead may make something of their project private (`teamGuard`), even out of their view,
+      // and anyone on a task may take themselves off it.
+      return yield* shownTo(
+        viewer,
+        detail,
+        row,
+        row,
+        undefined,
+        patch.sensitive === true || patch.fields?.alsoOn !== undefined,
+      );
     }),
   );
 });

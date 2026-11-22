@@ -89,6 +89,7 @@ const entry = Arbitrary.all({
   project: pickOrNull(["p1", "p2"]),
   party: pickOrNull(["c1", "c2"]),
   attendees: someOf,
+  alsoOn: someOf,
   company: flag,
   title: pick(["Plan launch", "Fix login", "Call vendor"]),
 });
@@ -215,6 +216,9 @@ const rowsOf = (w: World): ReadonlyArray<Row> => [
     party: e.party,
     fields: {
       attendees: e.attendees.map((m) => `person:${m}`),
+      ...(e.list === "work" && e.alsoOn.some((m) => m !== e.owner)
+        ? { alsoOn: e.alsoOn.filter((m) => m !== e.owner).map((m) => `person:${m}`) }
+        : {}),
       ...(e.company ? { home: "company" } : {}),
     },
     title: `${e.title} ${i + 1}`,
@@ -275,7 +279,9 @@ const seen = (viewer: Member) =>
 const ownLabel = (row: Row) => row.sensitive && !SENSITIVE_BY_DEFAULT.has(row.list);
 const holdsOrAttends = (row: Row, viewer: Member) =>
   row.list === "work" &&
-  (row.owner === viewer || (row.fields["attendees"] as Array<string>).includes(`person:${viewer}`));
+  (row.owner === viewer ||
+    (row.fields["attendees"] as Array<string>).includes(`person:${viewer}`) ||
+    ((row.fields["alsoOn"] ?? []) as Array<string>).includes(`person:${viewer}`));
 
 // Every entry carries an amount no other value has; one she may not see must appear nowhere.
 const canary = (index: number) => 98_765_400_017 + index * 10_301;
@@ -389,6 +395,7 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
             createdBy: benGone(e.createdBy),
             assignedBy: e.assignedBy === "ben" ? "owner" : e.assignedBy,
             attendees: notBen(e.attendees),
+            alsoOn: notBen(e.alsoOn),
           })),
         });
         assert.deepStrictEqual([...(yield* seen("ana"))].toSorted(), [...before[0]!].toSorted());
@@ -469,6 +476,7 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
         project: null,
         party: null,
         attendees: [],
+        alsoOn: [],
         company: false,
         title: "Call vendor",
       };
@@ -714,6 +722,62 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
       }),
   );
 
+  it.effect("a member on a task sees and changes it; off the team, or not on it, they don't", () =>
+    Effect.gen(function* () {
+      const records = yield* KinRecords.KinRecords;
+      const sql = yield* SqlClient.SqlClient;
+      const task: Row = {
+        id: "e1",
+        list: "work",
+        owner: "owner",
+        createdBy: "owner",
+        assignedBy: null,
+        sensitive: true,
+        shared: false,
+        project: null,
+        party: null,
+        fields: { alsoOn: ["person:ana"] },
+        title: "Plan launch 1",
+      };
+      yield* install(emptyWorld, [task]);
+      const writer = (viewer: Member) => {
+        const personId = KinPersonId.make(viewer);
+        return {
+          actor: { _tag: "person" as const, personId },
+          via: "owner" as const,
+          teammate: true,
+        };
+      };
+      const renames = (viewer: Member) =>
+        records
+          .update(orgId, writer(viewer), "E-1", { title: "Plan launch again" })
+          .pipe(Effect.exit);
+      const edits = Effect.fn(function* (viewer: Member) {
+        const detail = yield* records.detail((yield* records.getById(orgId, "e1"))!, 1);
+        const can = yield* teamCan(orgId, KinPersonId.make(viewer), [
+          { ...detail, states: ["open", "doing", "waiting", "done", "dropped"] },
+        ]);
+        return can.get(detail.recordId)!.edit;
+      });
+      assert.isTrue((yield* seen("ana")).has("e1"));
+      assert.isTrue(yield* edits("ana"));
+      assert.isTrue(Exit.isSuccess(yield* renames("ana")));
+      assert.isFalse((yield* seen("ben")).has("e1"));
+      assert.isFalse(yield* edits("ben"));
+      assert.isTrue(Exit.isFailure(yield* renames("ben")));
+      // Off the team she is still on it, and changes it no more: back, she does again.
+      const away = (gone: boolean) =>
+        sql`UPDATE kin_session_bindings SET revoked_at = ${gone ? 1 : null}
+          WHERE org_id = ${orgId} AND person_id = 'ana'`;
+      yield* away(true);
+      yield* Effect.gen(function* () {
+        assert.isFalse(yield* edits("ana"));
+        assert.isTrue(Exit.isFailure(yield* renames("ana")));
+      }).pipe(Effect.ensuring(away(false).pipe(Effect.orDie)));
+      assert.isTrue(Exit.isSuccess(yield* renames("ana")));
+    }),
+  );
+
   it.effect.prop(
     "every control a teammate's sheet offers is one their write is let through",
     [world],
@@ -949,6 +1013,7 @@ const PINNED_JOIN: readonly [World, ReadonlyArray<Step>] = [
         project: "p1",
         party: null,
         attendees: [],
+        alsoOn: [],
         company: false,
         title: "Call vendor",
       },
@@ -1021,6 +1086,7 @@ const PINNED_MOVE: readonly [World, ReadonlyArray<Step>] = [
         project: null,
         party: null,
         attendees: [],
+        alsoOn: [],
         company: false,
         title: "Fix login",
       },
@@ -1034,6 +1100,7 @@ const PINNED_MOVE: readonly [World, ReadonlyArray<Step>] = [
         project: null,
         party: null,
         attendees: [],
+        alsoOn: [],
         company: false,
         title: "Call vendor",
       },
@@ -1047,6 +1114,7 @@ const PINNED_MOVE: readonly [World, ReadonlyArray<Step>] = [
         project: "p1",
         party: "c2",
         attendees: [],
+        alsoOn: [],
         company: false,
         title: "Call vendor",
       },
