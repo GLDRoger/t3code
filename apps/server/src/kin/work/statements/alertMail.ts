@@ -17,11 +17,9 @@ import { isHdfcAlertSender } from "./hdfcAlerts.ts";
 /**
  * A connection's new mail, as the pulse reads it, checked for HDFC alerts: a thread whose sender
  * line is HDFC's alert address, and that Kin hasn't read to its newest mail, is read through the
- * connection's own sign-in and taken message by message. Only counts are logged.
+ * connection's own sign-in and taken message by message. Only counts are logged. The activity
+ * read is already bounded, and its cursor moves only as far as it read.
  */
-
-/** Threads read per mailbox per pass; the rest wait for the next. */
-const THREADS_PER_PASS = 20;
 
 export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
   connections: Pick<KinConnections["Service"], "readThread">,
@@ -31,7 +29,6 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
   const now = yield* Clock.currentTimeMillis;
   const tally = { threads: 0, recorded: 0, duplicate: 0, rejected: 0 };
   for (const mail of activity.mail) {
-    if (tally.threads >= THREADS_PER_PASS) break;
     if (!isHdfcAlertSender(addressesIn(mail.from)[0])) continue;
     const newest = mail.date === null ? Number.NaN : Date.parse(mail.date);
     if (
@@ -74,8 +71,9 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
 });
 
 /**
- * The pulse's hook, with the services it writes through. A failure is logged by its kind only:
- * a mail's figures can sit in what failed, and none of them is ever logged.
+ * The pulse's hook, with the services it writes through: false when the mail couldn't be read,
+ * so the mailbox isn't moved past it. A failure is logged by its kind only: a mail's figures can
+ * sit in what failed, and none of them is ever logged.
  */
 export const alertsOnMail = Effect.fn("KinBankAlerts.onMail")(function* (
   connections: Pick<KinConnections["Service"], "readThread">,
@@ -83,6 +81,7 @@ export const alertsOnMail = Effect.fn("KinBankAlerts.onMail")(function* (
   const context = yield* Effect.context<SqlClient.SqlClient | KinRecords>();
   const onMail: OnMail = (orgId, activity) =>
     takeAlertMail(connections, orgId, activity).pipe(
+      Effect.as(true),
       Effect.provide(context),
       Effect.catchCause((cause) => {
         const failed = Cause.squash(cause);
@@ -90,9 +89,8 @@ export const alertsOnMail = Effect.fn("KinBankAlerts.onMail")(function* (
           orgId,
           connectionId: activity.connectionId,
           failed: failed instanceof Error ? failed.name : "unknown",
-        });
+        }).pipe(Effect.as(false));
       }),
-      Effect.asVoid,
     );
   return onMail;
 });

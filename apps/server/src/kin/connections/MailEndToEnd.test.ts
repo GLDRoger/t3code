@@ -38,6 +38,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { fromConnections, poll } from "../pulse/outside.ts";
 import * as KinRecords from "../work/KinRecords.ts";
+import { alertsOnMail } from "../work/statements/alertMail.ts";
 import { presetDefinition } from "../work/registers.ts";
 import { waitingCards } from "../work/recordComments.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
@@ -2277,5 +2278,46 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.deepStrictEqual(fake.sent().at(-1)?.to, ["ravi@lumen.example"]);
       }),
     ),
+  );
+  it.effect(
+    "reads every bank alert a pass lists, in Gmail and Outlook, and holds the cursor when it can't",
+    () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const connections = yield* KinConnections;
+          yield* connect(fake, "google", ACCOUNTS);
+          yield* connect(fake, "microsoft", HELLO);
+          yield* TestClock.adjust("2 minutes");
+          const at = yield* Clock.currentTimeMillis;
+          // Invented alerts in HDFC's shape, more of them than any one pass used to read.
+          for (const n of Array.from({ length: 25 }, (_, index) => index + 10))
+            for (const to of [ACCOUNTS, HELLO])
+              fake.deliver({
+                to,
+                from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+                subject: "You have done a UPI txn. Check details!",
+                body: `Rs.${n}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is 6322111100${n}.`,
+                at,
+                authResults: ["mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net"],
+              });
+          const outcomes = sql<{ outcome: string; count: number }>`SELECT outcome,
+            COUNT(*) AS count FROM kin_bank_alerts WHERE org_id = ${orgId}
+            GROUP BY outcome ORDER BY outcome`;
+
+          // A pass whose alert reading failed moves neither mailbox on: the next reads it all.
+          const failing = fromConnections(connections, sql, () => Effect.succeed(false));
+          assert.deepStrictEqual((yield* failing.read(orgId)).seen, []);
+
+          const source = fromConnections(connections, sql, yield* alertsOnMail(connections));
+          const read = yield* source.read(orgId);
+          assert.lengthOf(read.seen, 2);
+          yield* source.seen(orgId, read.seen);
+          assert.deepStrictEqual(yield* outcomes, [
+            { outcome: "duplicate", count: 25 },
+            { outcome: "recorded", count: 25 },
+          ]);
+        }),
+      ),
   );
 });

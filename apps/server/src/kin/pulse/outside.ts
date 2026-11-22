@@ -85,11 +85,11 @@ const linesOf = (
   }
 };
 
-/** What else a pass does with one mailbox's new mail: bank alerts are read from it. */
+/** What else a pass does with one mailbox's new mail (bank alerts): false when it couldn't. */
 export type OnMail = (
   orgId: KinOrgId,
   activity: Extract<KinConnectionActivity, { readonly _tag: "mail" }>,
-) => Effect.Effect<void>;
+) => Effect.Effect<boolean>;
 
 /** Every live connection that is signed in and not paused, through the connections service. */
 export const fromConnections = (
@@ -117,7 +117,8 @@ export const fromConnections = (
           ),
         );
         if (activity === undefined || activity._tag === "unsupported") continue;
-        if (onMail !== undefined) yield* onMail(orgId, activity);
+        // As with a failed read: the mailbox stays where it was, and the next pass reads it again.
+        if (onMail !== undefined && !(yield* onMail(orgId, activity))) continue;
         lines.push(...linesOf(row.label, activity));
         seen.push({
           connectionId: row.connectionId,
