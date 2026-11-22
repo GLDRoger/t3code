@@ -1235,7 +1235,7 @@ describe("WakeupRunner", () => {
     }).pipe(provideDeterministicTestRuntime),
   );
   it.effect(
-    "a database too full to claim a turn leaves the queue as it was, cleans once, and is told once writes work",
+    "dispatches storage failure and recovery hooks without consuming the unclaimed event",
     () =>
       Effect.gen(function* () {
         const told: Array<string> = [];
