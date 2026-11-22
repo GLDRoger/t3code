@@ -45,7 +45,7 @@ it.effect("defaults on; only owner level can set Deals on or off at the current 
     assert.equal((yield* Effect.flip(shell.set(strangers, rhea, 0, off))).reason, "not_allowed");
     assert.deepInclude(yield* refusal(rhea, 0, [{ id: "clients", on: false }]), {
       reason: "invalid_state",
-      message: "Turn off Invoices and quotes first: an invoice needs a client.",
+      message: "Turn off Invoices and quotes first: invoices need Clients.",
     });
     assert.deepInclude(
       yield* refusal(rhea, 0, [
@@ -54,7 +54,7 @@ it.effect("defaults on; only owner level can set Deals on or off at the current 
       ]),
       {
         reason: "invalid_state",
-        message: "Turn off Invoices and quotes first: an invoice needs a client.",
+        message: "Turn off Invoices and quotes first: invoices need Clients.",
       },
     );
     assert.equal((yield* refusal(rhea, 0, [{ id: "docs", on: false }])).reason, "invalid_state");
@@ -100,7 +100,10 @@ it.effect("defaults on; only owner level can set Deals on or off at the current 
     yield* sql`UPDATE kin_people SET removed_at = 1 WHERE org_id = ${orgId} AND person_id = ${zoya}`;
     assert.equal((yield* refusal(zoya, 3, off)).reason, "not_allowed");
     assert.equal(Option.getOrUndefined(yield* Stream.runHead(refresh.changes(orgId)))?.shell, 3);
-    const moneyOff = yield* shell.set(orgId, rhea, 3, [{ id: "money", on: false }]);
+    const moneyOff = yield* shell.set(orgId, rhea, 3, [
+      { id: "money", on: false },
+      { id: "clients", on: true, name: "Donors" },
+    ]);
     assert.deepStrictEqual(
       moneyOff.sections.find(({ id }) => id === "invoices"),
       {
@@ -109,9 +112,13 @@ it.effect("defaults on; only owner level can set Deals on or off at the current 
       },
     );
     assert.isFalse(KinShell.sectionOn(moneyOff, "invoices"));
+    assert.equal(
+      (yield* refusal(rhea, 4, [{ id: "clients", on: false }])).message,
+      "Turn off Invoices and quotes first: invoices need Donors.",
+    );
     assert.isTrue(KinShell.sectionOn(moneyOff, "deals"));
     const clientsOff = yield* shell.set(orgId, rhea, 4, [
-      { id: "clients", on: false },
+      { id: "clients", on: false, name: "Donors", noun: "donor" },
       { id: "invoices", on: false },
     ]);
     assert.isFalse(KinShell.sectionOn(clientsOff, "deals"));
@@ -122,7 +129,7 @@ it.effect("defaults on; only owner level can set Deals on or off at the current 
       ]),
       {
         reason: "invalid_state",
-        message: "Turn on Clients first: an invoice needs a client.",
+        message: "Turn on Donors first: invoices need it.",
       },
     );
     const resetInput = yield* decodeSet({
@@ -135,5 +142,31 @@ it.effect("defaults on; only owner level can set Deals on or off at the current 
     yield* sql`DROP TABLE kin_company_shell`;
     assert.equal((yield* refusal(rhea, 6, off)).reason, "unavailable");
     assert.equal(Option.getOrUndefined(yield* Stream.runHead(refresh.changes(orgId)))?.shell, 6);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("returns one-line service errors for bad section names from the set wire", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const shell = yield* KinShell.KinShell;
+    yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Ambermill', '2026-11-22')`;
+    yield* sql`INSERT INTO kin_people (org_id, person_id, handle, display_name, access, created_at)
+      VALUES (${orgId}, ${rhea}, 'rhea', 'Rhea', 'owner', '2026-11-22')`;
+    for (const [labels, message] of [
+      [{ name: "Patients\nStaff" }, "A name is one line of plain text."],
+      [{ noun: "patient\t" }, "A name is one line of plain text."],
+      [{ name: "Patients\u0000" }, "A name is one line of plain text."],
+      [{ noun: "p".repeat(41) }, "A name can be at most 40 characters."],
+    ] as const) {
+      const decoded = yield* decodeSet({
+        orgId,
+        rev: 0,
+        shell: { sections: [{ id: "clients", on: true, ...labels }] },
+      });
+      const result = yield* shell.set(orgId, rhea, 0, decoded.shell.sections).pipe(Effect.result);
+      assert.deepInclude(result, { _tag: "Failure" });
+      if (result._tag === "Failure") assert.equal(result.failure.message, message);
+    }
+    assert.equal((yield* shell.get(orgId)).rev, 0);
   }).pipe(Effect.provide(layer)),
 );

@@ -401,7 +401,6 @@ const make = Effect.gen(function* () {
             Effect.provideService(SqlClient.SqlClient, sql),
           )
         ) {
-          if (now - fireAt > GIVE_UP_MS) yield* inbox.markConsumed(orgId, [fire.fireId]);
           return false;
         }
         const card = (phase: KinDeferralCard["phase"], text: string, graceEndsAt?: number) => ({
