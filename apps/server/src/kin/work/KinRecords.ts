@@ -300,6 +300,44 @@ export type Patch = Partial<Omit<Fields, "owner">> & {
    */
   readonly tick?: { readonly index: number; readonly title: string; readonly done: boolean };
 };
+const selfLeave = (
+  writer: Writer,
+  row: RecordRow,
+  patch: Patch,
+  also: ReadonlyArray<FieldChange>,
+): KinPersonId | undefined => {
+  const person =
+    writer.actor._tag === "person"
+      ? writer.actor.personId
+      : writer.actor._tag === "agent" &&
+          writer.askedBy != null &&
+          writer.view?.askers.length === 1 &&
+          writer.view.askers[0] === writer.askedBy
+        ? writer.askedBy
+        : undefined;
+  const { fields, ...rest } = patch;
+  if (
+    person === undefined ||
+    row.registerId !== "work" ||
+    also.length !== 0 ||
+    fields === undefined ||
+    Object.keys(fields).length !== 1 ||
+    fields.alsoOn === undefined ||
+    Object.values(rest).some((value) => value !== undefined)
+  )
+    return undefined;
+  const stored = fieldList(parseFields(row.fieldsJson), "alsoOn");
+  const me = `person:${person}`;
+  if (!stored.includes(me)) return undefined;
+  const remaining = stored.filter((one) => one !== me);
+  const asked = fields.alsoOn ?? [];
+  return Array.isArray(asked) &&
+    asked.length === remaining.length &&
+    remaining.every((entry, index) => entry === asked[index])
+    ? person
+    : undefined;
+};
+
 export type LinkInput = {
   readonly kind: KinRecordLinkKind;
   readonly target: string;
@@ -1216,18 +1254,30 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     who: KinWorkPrincipal,
     role = "to own it",
+    options?: { readonly joiningTask: true },
   ) {
-    const rows =
-      who._tag === "agent"
-        ? yield* sql`SELECT 1 FROM kin_leads l JOIN kin_agents a
-            ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-            WHERE l.org_id = ${orgId} AND l.agent_id = ${who.agentId} AND a.retired_at IS NULL`
-        : yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId} AND person_id = ${who.personId}`;
-    if (rows.length === 0)
-      return yield* new KinChatError({
-        reason: "not_found",
-        message: `No ${who._tag === "agent" ? "agent" : "person"} ${principalId(who).slice(0, 60)} here ${role}.`,
-      });
+    if (who._tag === "person") {
+      const [person] = yield* sql<{ name: string; removedAt: number | null }>`SELECT
+        display_name AS name, removed_at AS "removedAt" FROM kin_people
+        WHERE org_id = ${orgId} AND person_id = ${who.personId}`;
+      if (person !== undefined) {
+        if (options?.joiningTask === true && person.removedAt !== null)
+          return yield* new KinChatError({
+            reason: "not_allowed",
+            message: `${person.name} has left the company and can't be added to the task.`,
+          });
+        return;
+      }
+    } else {
+      const [agent] = yield* sql`SELECT 1 FROM kin_leads l JOIN kin_agents a
+        ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+        WHERE l.org_id = ${orgId} AND l.agent_id = ${who.agentId} AND a.retired_at IS NULL`;
+      if (agent !== undefined) return;
+    }
+    return yield* new KinChatError({
+      reason: "not_found",
+      message: `No ${who._tag === "agent" ? "agent" : "person"} ${principalId(who).slice(0, 60)} here ${role}.`,
+    });
   });
 
   /**
@@ -1257,7 +1307,8 @@ const make = Effect.gen(function* () {
     if (list.some((text) => text === held))
       return yield* invalid("Whoever holds a task isn't also on it: leave them off the list.");
     for (const text of list)
-      if (!stored.includes(text)) yield* ownerExists(orgId, storedPrincipal(text)!, "to be on it");
+      if (!stored.includes(text))
+        yield* ownerExists(orgId, storedPrincipal(text)!, "to be on it", { joiningTask: true });
     return list;
   });
 
@@ -1826,16 +1877,15 @@ const make = Effect.gen(function* () {
               };
         if (writer.codingAgentKey !== undefined && !heldBy(row, writer))
           return yield* notFound(key);
+        const write = {
+          row,
+          changes: true,
+          input: patch,
+          leaveBy: selfLeave(writer, row, asked, also),
+        };
         if (writer.teammate === true && writer.actor._tag === "person")
-          yield* teamGuard(orgId, writer.actor.personId, {
-            row,
-            changes: true,
-            input: patch,
-          }).pipe(provideSql);
-        if (writer.view !== undefined)
-          yield* viewGuard(orgId, writer.view, { row, changes: true, input: patch }).pipe(
-            provideSql,
-          );
+          yield* teamGuard(orgId, writer.actor.personId, write).pipe(provideSql);
+        if (writer.view !== undefined) yield* viewGuard(orgId, writer.view, write).pipe(provideSql);
         const now = yield* Clock.currentTimeMillis;
         const before = toRecord(row, now);
         const def = yield* resolveList(orgId, row.registerId);
