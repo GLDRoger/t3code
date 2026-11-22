@@ -38,9 +38,8 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "work/exportBundle.ts": 2,
   // One settlement's parts, read to check a retry.
   "work/leadMoney.ts": 1,
-  // A new entry's repeats, and the expense it pairs with: entries of its exact amount, compared
-  // one by one, nothing summed.
-  "work/leadWork.ts": 2,
+  // Duplicate and paired-entry candidates, including the two sign filters for undated refunds.
+  "work/leadWork.ts": 4,
   // A statement's own rows, and the entries and recorded payments one row may match.
   "work/statements/bankList.ts": 1,
   // The entries one bank alert may already be, and a statement's alert entries listed one by
@@ -133,6 +132,13 @@ describe("what a figure counts", () => {
     );
     const expected = Object.fromEntries(Object.entries(OWN_READS).filter(([, n]) => n > 0));
     assert.deepStrictEqual(counts, expected, JSON.stringify(seen, null, 2));
+    assert.deepStrictEqual(
+      seen["work/leadWork.ts"]?.filter((read) => read.startsWith("r.amount_minor IS NULL OR ")),
+      [
+        "r.amount_minor IS NULL OR r.amount_minor <= 0",
+        "r.amount_minor IS NULL OR r.amount_minor >= 0",
+      ],
+    );
   });
 
   it("sees a read however it is written", () => {
