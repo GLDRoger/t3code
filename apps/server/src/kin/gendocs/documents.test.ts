@@ -181,7 +181,7 @@ const renderer = Layer.effect(
         if (failing.reason !== undefined)
           return Effect.succeed({ _tag: "failed", reason: failing.reason });
         if (request.recipe.kind === "table") return real.render(request);
-        const computed = computeData(request.inputs, request.recipe.computed);
+        const computed = computeData(request.inputs, request.recipe.computed, request.tax);
         if ("error" in computed) return Effect.succeed({ _tag: "failed", reason: computed.error });
         rendered.push({ request, data: computed.data });
         const bytes = new TextEncoder().encode(
@@ -542,6 +542,57 @@ describe("recipe documents", () => {
       const jobs = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_doc_jobs
         WHERE org_id = ${orgId}`;
       assert.strictEqual(jobs[0]!.n, 1);
+      // A client's tax number prints only for a company registered for the tax; the client keeps it.
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.gstin', '27BBBBB2222B1Z5')
+        WHERE org_id = ${orgId} AND key = 'C-1'`;
+      const profileRev = Effect.map(
+        sql<{ rev: number }>`SELECT rev FROM kin_company_profile WHERE org_id = ${orgId}`,
+        ([row]) => row!.rev,
+      );
+      const standing = (n: number) =>
+        Effect.gen(function* () {
+          yield* LeadDocuments.make(scope, invoice({ title: `Invoice INV-1 standing ${n}` }));
+          const { request, data } = rendered.at(-1)!;
+          const tax = (data as Record<string, any>).tax;
+          return [request.inputs.clientGstin, tax.notCharged, tax.taxes.length, tax.placeOfSupply];
+        });
+      assert.deepStrictEqual(yield* standing(1), [
+        "27BBBBB2222B1Z5",
+        undefined,
+        1,
+        "Maharashtra (27)",
+      ]);
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* profileRev,
+        taxRegistered: false,
+      });
+      assert.deepStrictEqual(yield* standing(2), [
+        null,
+        "GST not charged: the supplier is not registered under GST.",
+        0,
+        null,
+      ]);
+      // Saying nothing with no GSTIN still prints no client's GSTIN, and no line either.
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* profileRev,
+        taxRegistered: null,
+      });
+      assert.deepStrictEqual((yield* standing(3)).slice(0, 3), [null, undefined, 0]);
+      // A GSTIN typed again is registered again, and clears the word that it isn't.
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* profileRev,
+        taxRegistered: false,
+      });
+      const again = yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* profileRev,
+        gstin: "29AAAAA1111A1Z5",
+      });
+      assert.deepStrictEqual([again.gstin, again.taxRegistered], ["29AAAAA1111A1Z5", undefined]);
+      assert.strictEqual((yield* standing(4))[0], "27BBBBB2222B1Z5");
       // Every document tool is refused in a turn someone besides the owner reads.
       const turnRef = { orgId, agentId: lead, wakeupId: "wake-3" };
       for (const tool of ["kin_document", "kin_recipes", "kin_issue", "kin_recipe_undo"])
@@ -745,6 +796,25 @@ describe("recipe documents", () => {
         yield* csvOf(settled.documents[1]!.key),
         ",Invented Acme,27AAAAA1111A1Z5,Maharashtra,847.47,152.54,1000.01,INR,Paid,INV-1\r\n",
       );
+      // A company that isn't registered for the tax shows no client's GSTIN in the register either.
+      const { rev } = (yield* (yield* SqlClient.SqlClient)<{ rev: number }>`SELECT rev
+        FROM kin_company_profile WHERE org_id = ${orgId}`)[0]!;
+      yield* OwnerMoney.setCompanyProfile(people, { orgId, rev, taxRegistered: false });
+      const unregistered = yield* LeadDocuments.make(scope, {
+        title: "November pack, not registered",
+        recipe: "accountant-pack",
+        inputs: { month: "2026-11" },
+        sourceEventId: "event-3",
+      });
+      assert.include(
+        yield* csvOf(unregistered.documents[1]!.key),
+        ",Invented Acme,,Maharashtra,847.47,152.54,1000.01,INR,Paid,INV-1\r\n",
+      );
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: rev + 1,
+        gstin: "29AAAAA1111A1Z5",
+      });
 
       // F51: expenses confirmed, undone and confirmed again: the file, the totals a chart is drawn
       // from and Money all count the live copy once.
