@@ -647,7 +647,7 @@ export function KinRelayBubble(props: {
       <View className="items-start px-4 pt-3">
         <View
           accessible
-          accessibilityLabel={`Sent by ${row.personLabel}, via ${row.agentLabel}, ${time}: ${words}`}
+          accessibilityLabel={`Sent by ${row.personLabel}, via ${row.agentLabel}, ${time}: ${words}${row.afterReading === undefined ? "" : `. ${row.afterReading}`}`}
           className={cn(OTHER_WIDTH_CLASS_NAME, OTHER_BUBBLE_CLASS_NAME, "gap-1")}
         >
           <View className="flex-row flex-wrap items-center gap-1.5">
@@ -667,6 +667,11 @@ export function KinRelayBubble(props: {
           <Text textRole="body" selectable className="text-foreground">
             {words}
           </Text>
+          {row.afterReading === undefined ? null : (
+            <Text textRole="footnote" className="text-foreground-muted">
+              {row.afterReading}
+            </Text>
+          )}
         </View>
       </View>
     );
@@ -737,6 +742,17 @@ export function KinRelayBubble(props: {
             iconSubtleColor={iconSubtleColor}
             reply={!sent}
           />
+          {row.afterReading === undefined ? null : (
+            <Text
+              textRole="footnote"
+              className={cn(
+                "px-3.5 pb-2",
+                sent ? "text-user-bubble-foreground opacity-80" : "text-foreground-muted",
+              )}
+            >
+              {row.afterReading}
+            </Text>
+          )}
           {expanded ? <View className="gap-1 px-3.5 pb-2.5">{words}</View> : null}
           {seeHow === null ? null : <View className="px-3.5 pb-1.5">{seeHow}</View>}
         </View>

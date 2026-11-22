@@ -659,6 +659,15 @@ describe("kinWorkItemView", () => {
     );
   });
 
+  it("names the outside text a task was made or changed after, in a quiet line of its own", () => {
+    const remarks = (afterReading?: KinRecordDetail["afterReading"]) =>
+      kinWorkItemView(detail(afterReading ? { afterReading } : {}), names, now, 50, place).remarks;
+    const source = "mail from lena@brightwell.example: New bank details";
+    expect(remarks({ made: true, source })).toEqual([`Made after reading: ${source}`]);
+    expect(remarks({ made: false, source })).toEqual([`Changed after reading: ${source}`]);
+    expect(remarks()).toEqual([]);
+  });
+
   it("puts who sees a task as one answer, and a pick changes only what it must", () => {
     const project = { key: "P-1", title: "Invented app" };
     const at = (sensitive: boolean, shared: boolean) =>

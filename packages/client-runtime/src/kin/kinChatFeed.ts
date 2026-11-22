@@ -268,6 +268,8 @@ export type KinFeedRow =
       readonly summary: string | null;
       readonly personLabel?: string;
       readonly text?: string;
+      /** "Sent after reading: mail from …": the outside text the sending turn had read. */
+      readonly afterReading?: string;
     }
   /**
    * A centred time divider: it starts each local day and any message after a quiet gap
@@ -328,6 +330,11 @@ function kinRelaySummary(
     return null;
   return summary;
 }
+
+const kinRelayAfterReading = (relay: NonNullable<KinMessage["relay"]>) =>
+  relay.afterReading === undefined
+    ? {}
+    : { afterReading: `Sent after reading: ${relay.afterReading}` };
 
 const isSystem = (message: KinMessage) =>
   message.kind === "system" || message.author._tag === "system";
@@ -510,6 +517,7 @@ export function buildKinFeedRows(
         summary: null,
         personLabel: passedOn.personName ?? "A teammate",
         text: kinRelayWords(message.body),
+        ...kinRelayAfterReading(passedOn),
       });
       previousAuthor = null;
       return;
@@ -523,6 +531,7 @@ export function buildKinFeedRows(
         agentLabel: viewer.agentNames.get(message.relay.agentId) ?? "Another agent",
         discussionId: message.discussionId ?? null,
         summary: kinRelaySummary(message, message.relay.kind),
+        ...kinRelayAfterReading(message.relay),
       });
       previousAuthor = null;
       return;
