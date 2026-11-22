@@ -56,15 +56,19 @@ export const searchIndexed = Effect.fn("KinSearch.indexed")(function* () {
 });
 
 /** Rewrites one entry's rows from what is stored now: call it inside the write's transaction. */
-export const indexRecord = Effect.fn("KinSearch.indexRecord")(function* (
+export const indexRecord = (orgId: string, recordId: string) => indexRecords(orgId, [recordId]);
+
+/** Refreshes the index for a set of rows in the caller's write transaction. */
+export const indexRecords = Effect.fn("KinSearch.indexRecord")(function* (
   orgId: string,
-  recordId: string,
+  recordIds: ReadonlyArray<string>,
 ) {
+  if (recordIds.length === 0 || !(yield* searchIndexed())) return;
   const sql = yield* SqlClient.SqlClient;
-  if (!(yield* searchIndexed())) return;
+  const ids = sql.in(recordIds);
   yield* sql`DELETE FROM kin_search WHERE rowid IN (SELECT id FROM kin_search_rows
-    WHERE org_id = ${orgId} AND record_id = ${recordId})`;
-  yield* indexWhere(sql, sql`r.org_id = ${orgId} AND r.record_id = ${recordId}`);
+    WHERE org_id = ${orgId} AND record_id IN ${ids})`;
+  yield* indexWhere(sql, sql`r.org_id = ${orgId} AND r.record_id IN ${ids}`);
 });
 
 /** Indexes every entry `where` selects (alias `r`); the migration backfills with it. */
