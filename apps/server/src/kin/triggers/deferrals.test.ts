@@ -722,12 +722,17 @@ it.effect("a due kin_defer reminder on an invoice stays queued until its section
     yield* (yield* TriggerService.KinTriggerService).syncItem(remind);
     yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
       VALUES (${orgId}, '[{"id":"money","on":false}]', 1, 'owner', 0)`;
+    const threeDays = 3 * 24 * 60 * 60_000;
     yield* tick(dueAt);
+    yield* tick(dueAt + threeDays);
     assert.lengthOf(yield* handedReminders(), 0);
     assert.lengthOf(yield* pendingFires(), 1);
     yield* sql`UPDATE kin_company_shell SET shell_json = '[]', rev = 2 WHERE org_id = ${orgId}`;
-    yield* tick(dueAt + 60_000);
-    assert.lengthOf(yield* handedReminders(), 1);
+    yield* tick(dueAt + threeDays + 60_000);
+    yield* tick(dueAt + threeDays + 120_000);
+    assert.deepStrictEqual(yield* handedReminders(), [
+      { itemId: "def-r", lateByMs: threeDays + 60_000 },
+    ]);
     assert.lengthOf(yield* pendingFires(), 0);
   }).pipe(Effect.provide(layerFor([remind])));
 });
