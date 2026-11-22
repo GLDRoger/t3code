@@ -3,7 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import {
   KinChatError,
   KinCurrency,
-  type KinListDefinition,
+  KinListDefinition,
   KinListField,
   KinListFieldKey,
   KinNumberingRule,
@@ -67,6 +67,8 @@ export const StoredDefinition = Schema.Struct({
   defaultState: KinRecordState,
   categories: Schema.Array(Label).check(Schema.isMaxLength(30)),
   fields: Schema.Array(KinListField).check(Schema.isMaxLength(20)),
+  remindOn: KinListDefinition.fields.remindOn,
+  check: KinListDefinition.fields.check,
   sensitive: Schema.Boolean,
   amount: Schema.Boolean,
   currency: KinCurrency,
@@ -498,7 +500,7 @@ export const checkFields = (
         if (typeof value !== "string" || !/^(?:person|agent):.{1,120}$/.test(value)) return wrong;
         break;
       case "link":
-        if (typeof value !== "string" || value.length > 120) return wrong;
+        if (spec.link === "list" || typeof value !== "string" || value.length > 120) return wrong;
         break;
       case "money":
         if (!isMoney(value) || !isCurrency(value.currency)) return wrong;
@@ -506,6 +508,8 @@ export const checkFields = (
       case "file":
         if (!Array.isArray(value) || value.length === 0 || value.length > 10) return wrong;
         break;
+      default:
+        return wrong;
     }
   }
   return undefined;
@@ -596,34 +600,49 @@ const shownLabels = (labels: Readonly<Record<string, string>> | undefined) => {
   const shown = Object.entries(labels ?? {}).filter(([category, label]) => label !== category);
   return shown.length === 0 ? {} : { categoryLabels: Object.fromEntries(shown) };
 };
+export const legacyFieldType = ({ type, link }: FieldDef) =>
+  type === "number" || type === "yesno" || (type === "link" && link === "list") ? "text" : type;
+
 /** The contract shape, with how many of its entries are open. */
 export const toDefinition = (
   def: ListDef,
   open: number,
-  numbering = numberingOf(def),
-): KinListDefinition => ({
-  list: def.id,
-  name: def.name,
-  prefix: def.prefix,
-  builtIn: def.builtIn !== null,
-  states: def.states,
-  stateLabels: def.stateLabels,
-  defaultState: def.defaultState,
-  categories: def.categories,
-  fields: def.fields,
-  sensitive: def.sensitive,
-  amount: def.amount,
-  currency: def.currency,
-  ...shownLabels(def.categoryLabels),
-  ...(def.payments === true ? { payments: true as const } : {}),
-  ...(def.dueLabel === undefined ? {} : { dueLabel: def.dueLabel }),
-  ...(def.dateLabel === undefined ? {} : { dateLabel: def.dateLabel }),
-  ...(numbering === undefined ? {} : { numbering }),
-  archivedAt:
-    def.archivedAt === null ? null : DateTime.formatIso(DateTime.makeUnsafe(def.archivedAt)),
-  rev: def.rev,
-  open,
-});
+  accept?: ReadonlyArray<string>,
+): KinListDefinition => {
+  const numbering = numberingOf(def);
+  return {
+    list: def.id,
+    name: def.name,
+    prefix: def.prefix,
+    builtIn: def.builtIn !== null,
+    states: def.states,
+    stateLabels: def.stateLabels,
+    defaultState: def.defaultState,
+    categories: def.categories,
+    fields: def.fields.flatMap((field): ReadonlyArray<FieldDef> => {
+      if (field.type === "link" && field.link === "list")
+        return accept?.includes("list") ? [field] : [];
+      const type = accept?.includes(field.type) ? field.type : legacyFieldType(field);
+      return [field.type === type ? field : { ...field, type }];
+    }),
+    ...(def.remindOn !== undefined && accept?.includes("remindOn")
+      ? { remindOn: def.remindOn }
+      : {}),
+    ...(def.check !== undefined && accept?.includes("check") ? { check: def.check } : {}),
+    sensitive: def.sensitive,
+    amount: def.amount,
+    currency: def.currency,
+    ...shownLabels(def.categoryLabels),
+    ...(def.payments === true ? { payments: true as const } : {}),
+    ...(def.dueLabel === undefined ? {} : { dueLabel: def.dueLabel }),
+    ...(def.dateLabel === undefined ? {} : { dateLabel: def.dateLabel }),
+    ...(numbering === undefined ? {} : { numbering }),
+    archivedAt:
+      def.archivedAt === null ? null : DateTime.formatIso(DateTime.makeUnsafe(def.archivedAt)),
+    rev: def.rev,
+    open,
+  };
+};
 
 // Defining a list in conversation: proposed in one turn, created from a later one the owner's
 // answer in that chat woke. Proposals are by the lead and chat; nothing else creates one.

@@ -36,7 +36,14 @@ import type {
 import { LISTS, parseFields, type FieldValues } from "./lists.ts";
 import { currencyDigits, dayIn } from "./money.ts";
 import { iso, ownerZone, workFailure } from "./recordRows.ts";
-import { allLists, keyFor, PRESETS, type ListDef, type PresetId } from "./registers.ts";
+import {
+  allLists,
+  keyFor,
+  legacyFieldType,
+  PRESETS,
+  type ListDef,
+  type PresetId,
+} from "./registers.ts";
 import { zipStream, type ZipEntry } from "./zipStream.ts";
 
 /**
@@ -199,9 +206,9 @@ const listSpec = (def: ListDef): ImportList => {
     return [
       {
         label: one.label,
-        type: one.type,
+        type: legacyFieldType(one),
         ...some("choices", one.choices),
-        ...some("link", one.link),
+        ...some("link", one.link === "list" ? undefined : one.link),
         ...(one.sensitive && one.type !== "money" && one.type !== "file"
           ? { sensitive: true }
           : {}),
@@ -287,7 +294,7 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
       } else if (typeof value === "string") {
         if (spec?.type === "person") {
           if (value === `person:${owner}`) out[outKey] = "owner";
-        } else if (spec?.type === "link") {
+        } else if (spec !== undefined && legacyFieldType(spec) === "link") {
           const linked = parties.get(value);
           if (linked !== undefined) out[outKey] = linked;
         } else if (value.trim() !== "" && value.length <= 500) out[outKey] = value;

@@ -19,6 +19,7 @@ import type {
   KinRecordKey,
   KinRecordState,
   KinWorkListInput,
+  KinWritableListFieldType,
   KinWorkPrincipal,
 } from "@t3tools/contracts";
 import {
@@ -945,9 +946,12 @@ const principalOf = (value: string): KinWorkPrincipal | null => {
 const dayText = (day: string, now: Date, zone: string | null) =>
   DAY.test(day) ? kinWorkDueLabel(day, now, zone) : day;
 
+const legacyFieldType = ({ type, link }: Pick<KinListField, "type" | "link">) =>
+  type === "number" || type === "yesno" || (type === "link" && link === "list") ? "text" : type;
+
 /** A field's value as its type reads: a name, a day, an amount, how many files. */
 export function kinFieldText(
-  field: Pick<KinListField, "type">,
+  field: Pick<KinListField, "type" | "link">,
   value: KinFieldValue | undefined,
   context: KinListContext,
 ): string | null {
@@ -962,7 +966,7 @@ export function kinFieldText(
       : value.join(", ");
   }
   if (value.trim() === "") return null;
-  switch (field.type) {
+  switch (legacyFieldType(field)) {
     case "date":
       return dayText(value, context.now, context.names.zone);
     case "person": {
@@ -1148,7 +1152,7 @@ export interface KinListFactView {
 export interface KinListFieldView {
   readonly key: string;
   readonly label: string;
-  readonly type: KinListField["type"];
+  readonly type: typeof KinWritableListFieldType.Type;
   /** Null when the entry has nothing in it. */
   readonly text: string | null;
   /** As stored; null with nothing in it. */
@@ -1241,8 +1245,9 @@ export function kinListEntryView(
   const filesById = new Map((item.files ?? []).map((file) => [file.attachmentId, file]));
   const held = new Set<string>();
   const fields = (def?.fields ?? []).flatMap((field): ReadonlyArray<KinListFieldView> => {
+    const type = legacyFieldType(field);
     const value = item.fields?.[field.key];
-    const ids = field.type === "file" && value !== undefined && isList(value) ? value : [];
+    const ids = type === "file" && value !== undefined && isList(value) ? value : [];
     const files = ids.flatMap((id) => {
       const file = filesById.get(id);
       if (file !== undefined) held.add(id);
@@ -1251,13 +1256,13 @@ export function kinListEntryView(
     const text = kinFieldText(field, value, context);
     // A field nobody uses any more only shows where an entry still has something in it.
     if (field.retired === true && text === null) return [];
-    const link =
-      field.type === "link" && typeof value === "string" ? context.refs.get(value) : undefined;
+    const target = type === "link" && field.link !== "list" ? (field.link ?? "clients") : null;
+    const link = target !== null && typeof value === "string" ? context.refs.get(value) : undefined;
     return [
       {
         key: field.key,
         label: field.label,
-        type: field.type,
+        type,
         text,
         value: value === undefined || text === null ? null : value,
         draft:
@@ -1269,14 +1274,11 @@ export function kinListEntryView(
                 ? value
                 : "",
         choices: field.choices ?? [],
-        link: field.type === "link" ? (field.link ?? "clients") : null,
+        link: target,
         private: field.sensitive,
         retired: field.retired === true,
         files,
-        opens:
-          link === undefined
-            ? null
-            : { list: field.link === "projects" ? "projects" : "clients", key: link.key },
+        opens: link === undefined || target === null ? null : { list: target, key: link.key },
       },
     ];
   });
