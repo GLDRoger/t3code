@@ -47,10 +47,8 @@ export const KIN_CASH = {
   newerOff: (on: string) =>
     `A newer statement (${on}) doesn't add up, so it isn't counted. Ask an agent to read it again.`,
   newerUndone: (on: string) => `A newer statement (${on}) was confirmed, then undone.`,
-  /** The balance shown is a bank alert's available balance: the bank's own figure when it mailed. */
-  fromAlert: (at: string) => `From a bank alert · ${at}`,
   alertNote: (on: string, amount: string) =>
-    `This is the available balance in the newest bank alert mail, not a confirmed statement. The last confirmed statement closed at ${amount} on ${on}.`,
+    `This is the available balance in the newest bank alert mail, not a confirmed statement. The last confirmed statement closed at ${amount} (${on}).`,
   alertOnly:
     "This is the available balance in the newest bank alert mail. No confirmed statement covers this account yet.",
   apart: (label: string) =>
@@ -243,8 +241,9 @@ export interface KinCashView {
 }
 
 const onLabel = (day: string, now: Date) => kinWorkDueLabel(day, now);
+// The flag already says "From a bank alert"; the line beside it says only when it was sent.
 // @effect-diagnostics-next-line globalDate:off - the shared clock-and-day label takes a Date.
-const alertAt = (at: string, now: Date) => KIN_CASH.fromAlert(formatKinTime(new Date(at), now));
+const alertAt = (at: string, now: Date) => formatKinTime(new Date(at), now);
 
 export function kinCashView(cash: KinCash, rates: KinRates | null, now: Date): KinCashView {
   const accounts = cash.accounts.map((one, index): KinCashAccountView => {

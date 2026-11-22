@@ -303,9 +303,9 @@ describe("kinCashView with bank alerts", () => {
       ["HDFC Bank Account ••4821", "₹4,10,250.50", "From a bank alert", false],
       ["HDFC Bank ••9001", "₹12,000.00", "From a bank alert", false],
     ]);
-    expect(view.accounts[0]!.when).toMatch(/^From a bank alert · /);
+    expect(view.accounts[0]!.when).not.toContain("bank alert");
     expect(view.accounts[0]!.notes).toEqual([
-      "This is the available balance in the newest bank alert mail, not a confirmed statement. The last confirmed statement closed at ₹4,00,000.00 on Sat, Oct 31.",
+      "This is the available balance in the newest bank alert mail, not a confirmed statement. The last confirmed statement closed at ₹4,00,000.00 (Sat, Oct 31).",
     ]);
     // With no confirmed statement at all, an alert's balance is still a balance to show.
     expect(kinCashView({ ...cash, known: false, accounts: [] }, rates, now).known).toBe(true);
