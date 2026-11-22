@@ -270,7 +270,7 @@ export const looksLikeRecordReference = (value: string, explicit = false) =>
   value.length > 0 && value.length <= 40 && !/[\r\n]/.test(value) && (explicit || /\d/.test(value));
 
 // An unresolved reference only gets a prefix classification for Kin's reserved built-ins.
-export const sectionOfBuiltInKey = (key: string) =>
+const sectionOfBuiltInKey = (key: string) =>
   /^(?:C|CT|P|M|DL)-/.test(key.trim().toUpperCase()) ? sectionOfKey(key) : null;
 
 const encodeReferences = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
