@@ -1,4 +1,4 @@
-import { currencyDigits } from "../money.ts";
+import { currencyDigits, formatMinor } from "../money.ts";
 import { RAILS } from "./statementRegion.ts";
 import type { StatementRow } from "./statementTable.ts";
 import { DAY_MS } from "../../durations.ts";
@@ -664,6 +664,22 @@ export const matchRows = (
       result.candidates[0] === undefined ? [] : [{ index, score: result.candidates[0].score }],
     )
     .toSorted((left, right) => right.score - left.score || left.index - right.index);
+  // A line naming a partner it settles nothing for is the owner's to place, never a new expense.
+  const suggestFor = (row: StatementRow): Suggestion => {
+    const partner = (input.partners ?? []).find(
+      (one) =>
+        one.currency === input.currency &&
+        one.owed.length > 0 &&
+        nameIn(one.name, row.description) >= 0.5,
+    );
+    if (partner === undefined) return suggest(row, input);
+    const owed = partner.owed.reduce((sum, one) => sum + BigInt(one.amountMinor), 0n);
+    const count = partner.owed.length;
+    return {
+      action: "later",
+      why: `${partner.name} is owed ${formatMinor(owed, partner.currency)} for ${count} expense${count === 1 ? "" : "s"}; no run of the oldest adds up to this line, so mark what it pays back on those expenses`,
+    };
+  };
   const settled = new Map<number, RowMatch>();
   for (const { index } of order) {
     const { row, candidates } = results[index]!;
@@ -678,11 +694,11 @@ export const matchRows = (
     settled.set(index, {
       group: clear ? "matched" : open.length > 0 ? "choose" : "unmatched",
       candidates: clear ? [best] : open,
-      suggestion: suggest(row, input),
+      suggestion: suggestFor(row),
     });
   }
   return results.map(
     ({ row }, index) =>
-      settled.get(index) ?? { group: "unmatched", candidates: [], suggestion: suggest(row, input) },
+      settled.get(index) ?? { group: "unmatched", candidates: [], suggestion: suggestFor(row) },
   );
 };

@@ -448,6 +448,12 @@ describe("statement matching", () => {
         ["unmatched", []],
       ],
     );
+    // What she is owed stays in view on those lines, and neither is offered as a new expense.
+    assert.deepStrictEqual(lines[3]!.suggestion, {
+      action: "later",
+      why: "Meera Rao is owed ₹2,500.00 for 3 expenses; no run of the oldest adds up to this line, so mark what it pays back on those expenses",
+    });
+    assert.strictEqual(lines[4]!.suggestion.action, "later");
   });
 
   it("reads vendors the way banks write them", () => {
