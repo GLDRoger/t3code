@@ -132,7 +132,7 @@ it.effect(
       // The next ask is refused before anything starts, and capabilities no longer list it.
       assert.include(
         (yield* helperOn("invented-wren-4")) ?? "",
-        "Kin didn't start this task on invented-wren-4:",
+        "Kin didn't start this task on invented-wren-4: this server's provider refused it on 2026-11-23.",
       );
       assert.deepStrictEqual(yield* offered, ["invented-quill-5"]);
       assert.isFalse(yield* refusals.refused({ orgId: owner.orgId, selection: wren }));

@@ -8,6 +8,7 @@ import type {
   ServerSettings,
 } from "@t3tools/contracts";
 import { kinAgentDriverAllowed, KinLead, kinProviderFacts } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -170,8 +171,12 @@ const helperModelProblem = (
   const listed =
     selection.model === undefined ? undefined : findProviderModel(provider.models, selection.model);
   if (listed === undefined) return `${instanceId} doesn't offer it`;
-  if (hiddenModel(settings, provider, listed))
-    return "it's switched off in this server's model list";
+  if (hiddenModel(settings, provider, listed)) {
+    const refusedAt = settings.providerModelPreferences?.[instanceId]?.refusedAt?.[listed.slug];
+    return refusedAt === undefined
+      ? "it's switched off in this server's model list"
+      : `this server's provider refused it on ${DateTime.formatIsoDateUtc(DateTime.makeUnsafe(refusedAt))}`;
+  }
   return undefined;
 };
 

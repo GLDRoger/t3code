@@ -231,6 +231,11 @@ describe("helperModelRefusal", () => {
       "it's switched off in this server's model list",
     ],
     [
+      "a model this server's provider refused",
+      { model: "invented-wren" },
+      "this server's provider refused it on 2026-11-23",
+    ],
+    [
       "a listed model on a provider agents may not use",
       { providerInstanceId: ProviderInstanceId.make("codex"), model: "invented-lark" },
       "Kin's agents don't run on codex",
