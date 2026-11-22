@@ -13,6 +13,7 @@ import * as Refresh from "../chat/KinRefreshHub.ts";
 import { SHARED_REFUSAL } from "../lead/Audience.ts";
 import { followsOutsideRead, inheritOutside, stampEvent } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as Shell from "../shell/KinShell.ts";
 import * as Goals from "../work/goals.ts";
 import { personSees } from "../work/teamView.ts";
 import * as Numbers from "./KinNumbers.ts";
@@ -343,6 +344,19 @@ it.effect(
       yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
         received_at, queued_at, wakeup_id)
       VALUES ('due', ${orgId}, ${agent.agentId}, 'schedule.due', 'P2', '{}', ${now}, ${now}, ${agent.wakeupId})`;
+      yield* goal("G-3", { spec: '{"builtin":"pipeline_open"}' });
+      yield* goal("G-4", { spec: '{"count":"deals","states":["open"]}' });
+      const keysOf = (who: typeof owner | typeof agent) =>
+        Numbers.list(who).pipe(Effect.map(({ numbers }) => numbers.map((row) => row.key)));
+      const dealsOn = (rev: number, on: boolean) =>
+        Shell.KinShell.use((shell) =>
+          shell.set(orgId, owner.personId, rev, [{ id: "deals", on }]),
+        ).pipe(Effect.provide(Shell.layer));
+      yield* dealsOn(0, false);
+      for (const who of [owner, agent]) assert.deepStrictEqual(yield* keysOf(who), ["G-1", "G-2"]);
+      yield* dealsOn(1, true);
+      for (const who of [owner, agent])
+        assert.deepStrictEqual(yield* keysOf(who), ["G-1", "G-2", "G-3", "G-4"]);
       yield* stampEvent(orgId, "outside", "Invented connection");
       yield* inheritOutside({ ...agent, eventIds: ["outside"] });
       assert.isTrue(yield* followsOutsideRead(orgId, agent.wakeupId));

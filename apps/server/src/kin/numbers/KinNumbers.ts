@@ -25,6 +25,8 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { effectiveAudience, SHARED_REFUSAL } from "../lead/Audience.ts";
 import { outsideToolAllowed, OUTSIDE_REFUSAL } from "../lead/OutsideContent.ts";
 import { accessOf } from "../people/KinAccess.ts";
+import { sectionOn } from "../shell/KinShell.ts";
+import type { SectionId } from "../shell/sections.ts";
 import { homeCurrency } from "../work/companyProfile.ts";
 import { requestHashOf } from "../work/KinRecords.ts";
 import { openPipelineValue } from "../work/deals.ts";
@@ -35,7 +37,7 @@ import { ownerLevelInvoicedInMonth } from "../work/moneyViews.ts";
 import { countedEntry, owedInvoices, ownerZone, startOfDay } from "../work/recordRows.ts";
 import { countListStates } from "../work/registers.ts";
 import { personSees } from "../work/teamView.ts";
-import { latestValue, numberFields, targetless } from "./numberRows.ts";
+import { latestValue, numberFields, targetless, type NumberSpec } from "./numberRows.ts";
 
 type Agent = {
   readonly _tag: "agent";
@@ -124,9 +126,24 @@ const definition = Effect.fn("KinNumbers.definition")(function* (
   return { row, fields };
 });
 
+const computedSections = {
+  pipeline_open: "deals",
+  revenue_received: "money",
+  overdue_over_30: "invoices",
+  invoiced_this_month: "invoices",
+  clients_won: "clients",
+  tasks_done: null,
+  count: { deals: "deals" },
+} satisfies Record<
+  Extract<typeof NumberSpec.Type, { builtin: string }>["builtin"],
+  SectionId | null
+> & {
+  count: { deals: SectionId };
+};
+
 const compute = Effect.fn("KinNumbers.compute")(function* (
   orgId: KinOrgId,
-  spec: typeof import("./numberRows.ts").NumberSpec.Type,
+  spec: typeof NumberSpec.Type,
   row: Definition,
   now: number,
   today: string,
@@ -214,6 +231,16 @@ export const list = Effect.fn("KinNumbers.list")(
         for (const row of yield* definitions(viewer, keys)) {
           const fields = numberFields(parseFields(row.fields));
           if (fields === undefined) continue;
+          const spec = fields.spec;
+          const section =
+            spec === undefined
+              ? null
+              : "builtin" in spec
+                ? computedSections[spec.builtin]
+                : spec.count === "deals"
+                  ? computedSections.count.deals
+                  : null;
+          if (section !== null && !(yield* sectionOn(viewer.orgId, section))) continue;
           const recorded =
             fields.spec === undefined
               ? yield* latestValue(viewer.orgId, row.recordId, today)
