@@ -989,6 +989,7 @@ export const sentMail = Effect.fn("KinSending.sentMail")(function* (input: {
   readonly orgId: KinOrgId;
   readonly recordIds?: ReadonlyArray<string> | undefined;
   readonly addresses?: ReadonlyArray<string> | undefined;
+  readonly omitLists?: ReadonlyArray<string>;
   readonly limit?: number | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
@@ -1014,6 +1015,18 @@ export const sentMail = Effect.fn("KinSending.sentMail")(function* (input: {
     LEFT JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
     WHERE k.org_id = ${input.orgId} AND k.state = 'sent' AND k.done_at IS NOT NULL
       AND k.tool_name IN ${sql.in([MAIL_TOOL.send, MAIL_TOOL.reply])}
+      ${
+        input.omitLists?.length
+          ? sql`AND NOT EXISTS (
+        SELECT 1 FROM kin_records r WHERE r.org_id = k.org_id
+          AND r.register_id IN ${sql.in(input.omitLists)}
+          AND (r.record_id = k.entry_record_id OR EXISTS (
+            SELECT 1 FROM json_each(k.payload_json, '$.attachments') a
+            WHERE r.record_id IN (json_extract(a.value, '$.recordId'), json_extract(a.value, '$.entryRecordId'))
+          ))
+      )`
+          : sql``
+      }
     ORDER BY k.done_at DESC, k.rowid DESC
     LIMIT ${SENT_SCAN}`;
   const sent: Array<SentMail> = [];

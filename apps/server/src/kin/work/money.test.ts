@@ -1476,7 +1476,7 @@ describe("invoices", () => {
             overdue: summary.owed.overdue,
             byClient: summary.owed.byClient.map((one) => one.owed),
             listOwed: page.totals?.owed,
-            clientUnpaid: client.owed?.money.unpaid,
+            clientUnpaid: client.owed?.money?.unpaid,
             overdueIn: outlookView.overdueNotCounted.map((one) => one.key),
             pulse: pulse.facts
               .filter((fact) => fact.sense === "invoice_overdue")
@@ -1606,7 +1606,7 @@ describe("invoices", () => {
         // An issued invoice is opened by the number on its page too, and named by it.
         const number = String(JSON.parse((yield* records.get(orgId, "INV-2"))!.fieldsJson).number);
         assert.strictEqual((yield* LeadWork.get(scope, { key: number })).key, "INV-2");
-        const lines = (yield* LeadWork.get(scope, { key: "C-1" })).owed?.money.invoices ?? [];
+        const lines = (yield* LeadWork.get(scope, { key: "C-1" })).owed?.money?.invoices ?? [];
         assert.isTrue(lines.some((line) => line.startsWith(`${number} (INV-2): `)));
         yield* LeadMoney.payment(scope, {
           sourceEventId: asked,
