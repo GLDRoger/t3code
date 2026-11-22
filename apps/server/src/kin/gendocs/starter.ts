@@ -299,6 +299,7 @@ endorsements and the footer) is at the top of template.typ.
   align: (left, right),
   [Taxable value], [#t.taxable.text],
   ..t.taxes.map(x => ([#x.name at #x.rate%], [#x.amount.text])).flatten(),
+  ..if t.at("notCharged", default: none) != none { (table.cell(colspan: 2, align: left, text(fill: soft, t.notCharged)),) } else { () },
   table.hline(stroke: 0.8pt + accent),
   text(weight: "bold")[Total], text(weight: "bold", t.total.text),
   ..if d.paidLines != none and d.paidLines.len() > 0 {
@@ -573,6 +574,7 @@ The wording the owner may change is at the top of template.typ.
   align: (left, right),
   [Value before tax], [#t.taxable.text],
   ..t.taxes.map(x => ([#x.name at #x.rate%], [#x.amount.text])).flatten(),
+  ..if t.at("notCharged", default: none) != none { (table.cell(colspan: 2, align: left, text(fill: soft, t.notCharged)),) } else { () },
   table.hline(stroke: 0.8pt + accent),
   text(weight: "bold")[#if t.taxes.len() > 0 [Total with GST] else [Total]], text(weight: "bold", t.total.text),
 )))

@@ -79,6 +79,7 @@ import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
 import { DRAFT_OWN_CHAT_ONLY } from "../work/teamView.ts";
 import * as Questions from "./openQuestions.ts";
+import * as Dismissed from "./dismissed.ts";
 import { approvalOf, madeUnderApproval } from "./approval.ts";
 import { APPROVED_TURN_TEXT, approvedTurnText, tellDraftMade } from "./sentUpDraft.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
@@ -2576,6 +2577,16 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       assert.strictEqual(stale.reason, "invalid_state");
       yield* sql`UPDATE kin_records SET title = 'Launch day' WHERE org_id = ${orgId}
         AND key = ${posts[1]!.key}`;
+      // Deleted since, the draft can't go up; brought back, it can.
+      yield* sql`UPDATE kin_records SET state = 'dropped' WHERE org_id = ${orgId}
+        AND key = ${posts[1]!.key}`;
+      assert.deepInclude(yield* Effect.flip(press("zoya", cards[1]!.widgetId)), {
+        reason: "invalid_state",
+        message:
+          "This draft was deleted, so it can't go up. Bring it back from Docs › Deleted first.",
+      });
+      yield* sql`UPDATE kin_records SET state = 'open' WHERE org_id = ${orgId}
+        AND key = ${posts[1]!.key}`;
       // In the owner's quiet hours, a while after she last wrote there, it waits, as the agent's
       // own send-up would, and says so.
       yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"11:00","to":"13:00"}'
@@ -3843,4 +3854,319 @@ it.effect("a co-owner sees what waits on the owner, read-only, and answers none 
       assert.deepStrictEqual(yield* rheasFor("meera"), []);
     }).pipe(Effect.provide(layer), Effect.scoped),
   ),
+);
+
+// Rhea dismisses Finance's three-way question without choosing: it closes as dismissed, leaves
+// what waits on her, takes no default at its day, and Finance's task stops waiting on her, with
+// one line saying why. Finance is woken once. Her Undo puts it all back; another person can't.
+it.effect(
+  "a dismissed question stops waiting, wakes its asker once, and its Undo restores it",
+  () =>
+    Effect.andThen(
+      TestClock.setTime(IST_MON_1130),
+      Effect.gen(function* () {
+        const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+        const repo = Context.get(services, KinChatRepository);
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at)
+        VALUES (${orgId}, 'work', 'Work', 'W', 1, 0) ON CONFLICT DO NOTHING`;
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+          owner_kind, owner_id, waiting_on_kind, waiting_on_id, fields_json, created_by_kind,
+          created_by_id, origin_key, created_at, updated_at)
+        VALUES (${orgId}, 'rec_w7', 'work', 'W-7', 'Build the client portal', 'waiting', 'agent',
+          'finance', 'person', ${owner.personId}, '{}', 'person', ${owner.personId}, 'w7', 0, 0)`;
+        const asking = yield* wake(
+          "finance",
+          yield* chats.send(owner, {
+            chatId: chatOf("finance"),
+            body: "How should we build the portal?",
+            clientMessageId: "m1",
+          }),
+        );
+        // In the same turn Finance also set W-8 waiting on her, without naming it on the card.
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, waiting_on_kind, waiting_on_id, fields_json, created_by_kind,
+            created_by_id, origin_key, created_at, updated_at)
+          VALUES (${orgId}, 'rec_w8', 'work', 'W-8', 'Pick the portal host', 'waiting', 'agent',
+            'finance', 'person', ${owner.personId}, '{}', 'agent', 'finance', 'w8', 0, 0)`;
+        yield* sql`INSERT INTO kin_record_changes (seq, org_id, record_id, rev, at, actor_kind,
+            actor_id, via, kind, fields_json, wakeup_id)
+          VALUES ((SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_record_changes), ${orgId}, 'rec_w8', 1,
+            0, 'agent', 'finance', 'lead', 'updated',
+            ${JSON.stringify([{ field: "waitingOn", from: null, to: `person:${owner.personId}` }])},
+            ${asking})`;
+        const asked = yield* callAs("finance", "kin_ask", {
+          question: "Which way should I build the client portal?",
+          options: [{ label: "Static site" }, { label: "Web app" }, { label: "Hosted tool" }],
+          default: "Static site",
+          about: ["W-7"],
+          intent: "build the client portal",
+        });
+        assert.isTrue(asked.ok, JSON.stringify(asked.value));
+        const questionId = asked.value.question as string;
+        const widgetId = KinWidgetId.make(asked.value.widgetId as string);
+        const widget = () =>
+          repo.getWidget({ orgId, widgetId }).pipe(Effect.map((found) => Option.getOrThrow(found)));
+        const press = (
+          who: typeof owner | ReturnType<typeof teammate>,
+          actionId: string,
+          id: string,
+          revision?: number,
+        ) =>
+          Effect.gen(function* () {
+            const card = yield* widget();
+            return yield* chats.act(who, {
+              widgetId,
+              revision: revision ?? card.revision,
+              actionId,
+              clientActionId: id,
+            });
+          });
+        const teammate = (id: string) => ({
+          _tag: "person" as const,
+          orgId,
+          personId: KinPersonId.make(id),
+        });
+        const events = sql<{ key: string; state: string }>`SELECT dedupe_key AS key, state
+        FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'question-%' ORDER BY rowid`;
+        const taskOf = (id: string) =>
+          sql<{ state: string; waitingOn: string | null }>`SELECT state,
+              waiting_on_id AS "waitingOn" FROM kin_records WHERE record_id = ${id}`.pipe(
+            Effect.map((rows) => rows[0]!),
+          );
+        const task = taskOf("rec_w7");
+        const lines = sql<{ by: string; fields: string }>`SELECT actor_id AS by,
+          fields_json AS fields FROM kin_record_changes WHERE record_id = 'rec_w7' ORDER BY seq`;
+        const waitingHere = repo
+          .listOpenWaiting({ orgId, personId: owner.personId })
+          .pipe(Effect.map((items) => items.filter((item) => item.widgetId === widgetId)));
+        const reason = (error: { readonly _tag: string }) =>
+          "reason" in error ? (error.reason as string) : error._tag;
+
+        // Neither a co-owner nor a member outside her chat may dismiss it; a mail's Confirm never is.
+        for (const who of ["meera", "dev"])
+          assert.strictEqual(
+            reason(yield* Effect.flip(press(teammate(who), "dismiss", `${who}-dismiss`))),
+            "not_found",
+          );
+        const mail = yield* chats.ask(
+          {
+            _tag: "agent",
+            orgId,
+            agentId: KinAgentId.make("finance"),
+            ownerPersonId: owner.personId,
+            threadId: ThreadId.make("finance-thread"),
+            hostPosted: true,
+          },
+          {
+            chatId: chatOf("finance"),
+            clientMessageId: "finance-mail",
+            question: "Send this reminder to Orbit Dental?",
+            options: [
+              { label: "Confirm", kind: "yes" },
+              { label: "Cancel", kind: "no" },
+            ],
+            send: {
+              service: "Gmail",
+              action: "email",
+              from: "accounts@ambermill.example",
+              to: ["billing@orbit.example"],
+              cc: [],
+              subject: "INV-8 is past due",
+              body: "A gentle reminder that INV-8 is past due.",
+              attachments: [],
+              outcome: null,
+            },
+          },
+        );
+        const mailCard = Option.getOrThrow(
+          yield* repo.getWidget({ orgId, widgetId: KinWidgetId.make(mail.widgetId) }),
+        );
+        assert.strictEqual(
+          reason(
+            yield* Effect.flip(
+              chats.act(owner, {
+                widgetId: mailCard.widgetId,
+                revision: mailCard.revision,
+                actionId: "dismiss",
+                clientActionId: "mail-dismiss",
+              }),
+            ),
+          ),
+          "not_allowed",
+        );
+
+        // Rhea dismisses it: twice, from two devices, is the same as once.
+        const messages = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = ${chatOf("finance")}`.pipe(
+          Effect.map((rows) => rows[0]!.n),
+        );
+        const posted = yield* messages;
+        const first = yield* widget();
+        yield* press(owner, "dismiss", "phone");
+        yield* press(owner, "dismiss", "laptop", first.revision);
+        const dismissed = yield* widget();
+        assert.isNotNull(dismissed.closedAt);
+        assert.deepStrictEqual(dismissed.awaiting, []);
+        assert.strictEqual(dismissed.updatedAt, first.updatedAt);
+        assert.deepInclude((dismissed.state as { dismissed: object }).dismissed, {
+          personId: owner.personId,
+          name: "Rhea Rao",
+        });
+        assert.isNull((dismissed.state as { answer: unknown }).answer);
+        assert.strictEqual((yield* questionRow(sql, questionId)).state, "dismissed");
+        assert.lengthOf(yield* waitingHere, 0);
+        assert.deepStrictEqual(yield* task, { state: "open", waitingOn: null });
+        assert.deepStrictEqual(yield* taskOf("rec_w8"), { state: "open", waitingOn: null });
+        const released = (yield* lines).at(-1)!;
+        assert.strictEqual(released.by, owner.personId);
+        assert.deepInclude(JSON.parse(released.fields), {
+          field: "kin:dismissed",
+          from: null,
+          to: questionId,
+        });
+        const dismissedAt = Date.parse(
+          (dismissed.state as { dismissed: { at: string } }).dismissed.at,
+        );
+        assert.deepStrictEqual(yield* events, [
+          { key: `question-dismissed:${questionId}:${dismissedAt}`, state: "queued" },
+        ]);
+        // Dismissing posts nothing in the chat.
+        assert.strictEqual(yield* messages, posted);
+        // Nothing chases it: no tap answers it, and at its day no default is taken.
+        assert.strictEqual(
+          reason(
+            yield* Effect.flip(
+              chats.act(owner, {
+                widgetId,
+                revision: dismissed.revision,
+                actionId: "choose",
+                value: "option-1",
+                clientActionId: "late-tap",
+              }),
+            ),
+          ),
+          "invalid_state",
+        );
+        assert.strictEqual(yield* settle(orgId, TUE_1930 + 60_000), 0);
+        assert.strictEqual((yield* questionRow(sql, questionId)).state, "dismissed");
+        assert.lengthOf(yield* dueEvents(sql, orgId), 0);
+        assert.isFalse(
+          yield* Dismissed.dismissalGone(KinOrgId.make(orgId), {
+            questionId,
+            at: dismissedAt,
+          }),
+        );
+
+        // Only she undoes it. Before Finance's turn ran, the Undo withdraws its wake-up.
+        assert.strictEqual(
+          reason(yield* Effect.flip(press(teammate("meera"), "undismiss", "meera-undo"))),
+          "not_found",
+        );
+        yield* press(owner, "undismiss", "undo-1");
+        const reopened = yield* widget();
+        assert.isNull(reopened.closedAt);
+        assert.deepStrictEqual(reopened.awaiting, [owner.personId]);
+        assert.isUndefined((reopened.state as { dismissed?: unknown }).dismissed);
+        assert.deepStrictEqual(
+          (reopened.state as { options: ReadonlyArray<{ label: string }> }).options.map(
+            (option) => option.label,
+          ),
+          ["Static site", "Web app", "Hosted tool"],
+        );
+        assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
+        assert.lengthOf(yield* waitingHere, 1);
+        assert.deepStrictEqual(yield* task, { state: "waiting", waitingOn: owner.personId });
+        assert.deepStrictEqual(yield* taskOf("rec_w8"), {
+          state: "waiting",
+          waitingOn: owner.personId,
+        });
+        assert.deepStrictEqual(yield* events, [
+          { key: `question-dismissed:${questionId}:${dismissedAt}`, state: "expired" },
+        ]);
+        assert.isTrue(
+          yield* Dismissed.dismissalGone(KinOrgId.make(orgId), { questionId, at: dismissedAt }),
+        );
+
+        // Dismissed again, and Finance's turn has started on it: her Undo tells it once more.
+        yield* TestClock.adjust(60_000);
+        yield* press(owner, "dismiss", "phone-2");
+        const again = Date.parse(
+          ((yield* widget()).state as { dismissed: { at: string } }).dismissed.at,
+        );
+        const finance = KinAgentId.make("finance");
+        const turn = yield* startAgentWakeup({
+          orgId,
+          agentId: finance,
+          threadId: ThreadId.make("finance-thread"),
+          queued: true,
+        });
+        const stored = yield* sql<{ json: string }>`SELECT json FROM kin_events
+          WHERE org_id = ${orgId} AND wakeup_id = ${turn} ORDER BY rowid`;
+        const built = yield* Effect.flatMap(KinLeadPrompt, (prompt) =>
+          prompt.build({
+            orgId,
+            agentId: finance,
+            wakeupId: turn,
+            events: stored.map((row) => decodeEvent(JSON.parse(row.json))),
+            memoryHead: "fixture",
+            lane: { chatId: chatOf("finance"), mode: "reply" },
+          }),
+        ).pipe(Effect.provide(promptLayer));
+        assert.include(
+          built,
+          "Rhea Rao dismissed your question “Which way should I build the client portal?” without choosing. That is not a choice and not approval of your pick: do not ask it again and do not take a default. If the work can go on without that answer, do that work now, in this turn. If it cannot, leave the task open with you: change neither its state nor its notes, and add one comment of one line on it saying what it needs. Do not reply in chat, but not replying is not stopping: do the work first. End your turn with exactly NO_REPLY.",
+        );
+        // In that turn Finance may not put what the dismissal released back to waiting on her.
+        const records = Context.get(services, KinRecords);
+        const rewait = (entry: string, wakeupId: string) =>
+          records.update(
+            orgId,
+            { actor: { _tag: "agent", agentId: finance }, via: "lead", wakeupId },
+            entry,
+            { state: "waiting", waitingOn: { _tag: "person", personId: owner.personId } },
+          );
+        const refused = yield* Effect.flip(rewait("W-7", turn));
+        assert.deepInclude(refused, {
+          reason: "invalid_state",
+          message:
+            "Rhea Rao dismissed that question, so W-7 does not wait on them. Leave it open with you, or say what it needs in one comment.",
+        });
+        assert.deepStrictEqual(yield* task, { state: "open", waitingOn: null });
+        // Her own word in the turn lifts it.
+        const told = yield* wake(
+          "finance",
+          yield* chats.send(owner, {
+            chatId: chatOf("finance"),
+            body: "Wait for me on W-8 after all.",
+            clientMessageId: "m2",
+          }),
+        );
+        yield* rewait("W-8", told);
+        assert.deepStrictEqual(yield* taskOf("rec_w8"), {
+          state: "waiting",
+          waitingOn: owner.personId,
+        });
+        yield* press(owner, "undismiss", "undo-2");
+        const reopenedText = yield* Questions.dismissedTurnText(KinOrgId.make(orgId), {
+          questionId,
+          reopened: true,
+        });
+        assert.include(reopenedText!.text, "Rhea Rao undid dismissing your question");
+        assert.deepStrictEqual((yield* events).slice(1), [
+          { key: `question-dismissed:${questionId}:${again}`, state: "done" },
+          { key: `question-reopened:${questionId}:${again}`, state: "queued" },
+        ]);
+
+        // Once the question closed another way, her Undo opens nothing.
+        yield* TestClock.adjust(60_000);
+        yield* press(owner, "dismiss", "phone-3");
+        yield* sql`UPDATE kin_questions SET state = 'withdrawn' WHERE question_id = ${questionId}`;
+        assert.strictEqual(
+          reason(yield* Effect.flip(press(owner, "undismiss", "undo-3"))),
+          "invalid_state",
+        );
+        assert.isNotNull((yield* widget()).closedAt);
+      }).pipe(Effect.provide(layer)),
+    ),
 );

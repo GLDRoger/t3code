@@ -4,6 +4,7 @@ import { stableStringify } from "@t3tools/shared/relaySigning";
 import {
   KIN_RECORDS_PAGE_CAP,
   KIN_TEXT_LOCALE,
+  KIN_WORK_ALSO_ON_MAX,
   KinChatError,
   KinAgentId,
   KinChatId,
@@ -104,6 +105,7 @@ import {
   repeatOf,
   samePrincipal,
   selectRecords,
+  storedPrincipal,
   encodeSteps,
   shownSteps,
   stepsOf,
@@ -134,7 +136,9 @@ import { cleanTags } from "./tags.ts";
 import { notAVendor } from "./vendorName.ts";
 import { withArticle } from "../article.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
+import { dismissedHold, dismissedHoldText, personInTurn } from "./dismissedHold.ts";
 import {
+  alsoOnIt,
   bumpTeamSeqs,
   dependents,
   teamGuard,
@@ -201,21 +205,22 @@ export type Writer = {
     readonly tappedBy?: KinPersonId;
   };
 };
-/** A Work task this writer, a person, holds now and nobody dropped. */
+/** A Work task this writer, a person, holds or is on now, and nobody dropped. */
 const heldBy = (
   row: {
     readonly registerId: string;
     readonly ownerKind: string;
     readonly ownerId: string;
     readonly state: KinRecordState;
+    readonly fieldsJson: string;
   },
   writer: Writer,
 ) =>
   row.registerId === "work" &&
   row.state !== "dropped" &&
-  row.ownerKind === "person" &&
   writer.actor._tag === "person" &&
-  row.ownerId === writer.actor.personId;
+  ((row.ownerKind === "person" && row.ownerId === writer.actor.personId) ||
+    fieldList(parseFields(row.fieldsJson), "alsoOn").includes(`person:${writer.actor.personId}`));
 
 /** What closes the open things about an entry that closed, in its move's transaction. */
 export type Closing = (subject: ClosedSubject) => Effect.Effect<void, { readonly _tag: string }>;
@@ -322,6 +327,8 @@ export type MoveRow = {
   /** Handed back to its holder, when (`kinWorkHandedBackOpen`). */
   readonly handedBackAt: number | null;
   readonly urgent: number | null;
+  /** Who is on it besides its holder, as stored (`fields.alsoOn`); null with none. */
+  readonly alsoOn: string | null;
 };
 const MOVE_ROWS_CAP = 5_000;
 
@@ -333,6 +340,8 @@ export type QueryInput = {
   readonly projectId?: string;
   readonly repo?: string;
   readonly owner?: KinWorkPrincipal;
+  /** With `owner` a person: also the tasks they are on besides its holder, as Tasks' Mine reads. */
+  readonly orAlsoOn?: boolean;
   readonly states?: ReadonlyArray<KinRecordState>;
   readonly open?: boolean;
   readonly late?: boolean;
@@ -1221,6 +1230,37 @@ const make = Effect.gen(function* () {
       });
   });
 
+  /**
+   * Who a write leaves on a task besides its holder (`fields.alsoOn`): someone here, each once, at
+   * most `KIN_WORK_ALSO_ON_MAX`, never the holder. Given to someone on it, they come off it; an
+   * agent with no person behind its turn changes nothing else of it.
+   */
+  const alsoOnFor = Effect.fn("KinRecords.alsoOnFor")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    asked: FieldValue | null | undefined,
+    stored: ReadonlyArray<string>,
+    holder: KinWorkPrincipal,
+  ) {
+    const held = shownPrincipal(holder);
+    if (asked === undefined || (writer.actor._tag === "agent" && writer.askedBy == null))
+      return stored.filter((text) => text !== held);
+    const list = asked ?? [];
+    if (typeof list === "string" || isMoney(list) || list.some((text) => !storedPrincipal(text)))
+      return yield* invalid("Who is on a task is a list of person:<id> and agent:<id>.");
+    if (new Set(list).size !== list.length)
+      return yield* invalid("Name each person on a task once.");
+    if (list.length > KIN_WORK_ALSO_ON_MAX)
+      return yield* invalid(
+        `A task has at most ${KIN_WORK_ALSO_ON_MAX} people on it besides whoever holds it.`,
+      );
+    if (list.some((text) => text === held))
+      return yield* invalid("Whoever holds a task isn't also on it: leave them off the list.");
+    for (const text of list)
+      if (!stored.includes(text)) yield* ownerExists(orgId, storedPrincipal(text)!, "to be on it");
+    return list;
+  });
+
   const insertLink = Effect.fn("KinRecords.insertLink")(function* (
     orgId: KinOrgId,
     recordId: string,
@@ -1503,6 +1543,13 @@ const make = Effect.gen(function* () {
     const party = partyId === null ? undefined : yield* target(orgId, partyId, "clients");
     yield* sameName(orgId, list, input.title, partyId, null, input.category, writer.namesSeenBy);
     yield* ownerExists(orgId, input.owner);
+    if (list === "work") {
+      // Kin's own copy, such as a repeat's next one, keeps whoever was on the one before.
+      const copied = writer.actor._tag === "system" ? fieldList(fields, "alsoOn") : [];
+      const alsoOn = yield* alsoOnFor(orgId, writer, fields.alsoOn, copied, input.owner);
+      if (alsoOn.length === 0) delete fields.alsoOn;
+      else fields.alsoOn = alsoOn;
+    }
     const repeat =
       options.repeat ??
       (input.repeat === undefined || input.repeat === null
@@ -1920,9 +1967,22 @@ const make = Effect.gen(function* () {
             writer.namesSeenBy,
           );
         const stored = parseFields(row.fieldsJson);
+        const alsoOn =
+          list === "work"
+            ? yield* alsoOnFor(
+                orgId,
+                writer,
+                patch.fields?.alsoOn,
+                fieldList(stored, "alsoOn"),
+                patch.owner ?? before.owner,
+              )
+            : undefined;
         const merged: Record<string, FieldValue> = { ...stored };
         let fieldsChanged = false;
-        for (const [field, value] of Object.entries(patch.fields ?? {})) {
+        for (const [field, value] of Object.entries({
+          ...patch.fields,
+          ...(alsoOn === undefined ? {} : { alsoOn: alsoOn.length === 0 ? null : alsoOn }),
+        })) {
           const from = shownField(stored[field]);
           const to = shownField(value);
           if (from === to) continue;
@@ -2094,6 +2154,28 @@ const make = Effect.gen(function* () {
                 : before.waitingOn;
         if (waitingOn !== null && !samePrincipal(waitingOn, before.waitingOn))
           yield* ownerExists(orgId, waitingOn, "to wait on");
+        // A dismissed question released this task; only Undo or that person's own word re-waits it.
+        if (
+          waitingOn?._tag === "person" &&
+          carded === undefined &&
+          writer.actor._tag === "agent" &&
+          !samePrincipal(waitingOn, before.waitingOn)
+        ) {
+          const dismisser = yield* dismissedHold(orgId, row.recordId, waitingOn.personId).pipe(
+            provideSql,
+          );
+          if (
+            dismisser !== undefined &&
+            (writer.wakeupId === undefined ||
+              !(yield* personInTurn(
+                orgId,
+                writer.actor.agentId,
+                writer.wakeupId,
+                waitingOn.personId,
+              ).pipe(provideSql)))
+          )
+            return yield* invalid(dismissedHoldText(dismisser, row.key));
+        }
         if (
           !samePrincipal(waitingOn, before.waitingOn) ||
           (state !== "waiting" && row.waitingOnId !== null)
@@ -2964,7 +3046,10 @@ const make = Effect.gen(function* () {
     if (input.repo !== undefined) where.push(sql`lower(r.repo) = lower(${input.repo})`);
     if (input.owner !== undefined)
       where.push(
-        sql`r.owner_kind = ${input.owner._tag} AND r.owner_id = ${principalId(input.owner)}`,
+        input.orAlsoOn === true && input.owner._tag === "person"
+          ? sql`((r.owner_kind = 'person' AND r.owner_id = ${input.owner.personId})
+              OR ${alsoOnIt(sql, input.owner.personId)})`
+          : sql`r.owner_kind = ${input.owner._tag} AND r.owner_id = ${principalId(input.owner)}`,
       );
     if (input.states !== undefined && input.states.length > 0)
       where.push(sql`r.state IN ${sql.in(input.states)}`);
@@ -3047,7 +3132,9 @@ const make = Effect.gen(function* () {
             r.assigned_by_person_id AS "assignedBy", r.assigned_by_agent_id AS "assignedByAgent",
             r.created_at AS "createdAt", r.updated_at AS "updatedAt",
             CASE WHEN r.state IN ('done', 'dropped') THEN NULL ELSE r.handed_back_at END
-              AS "handedBackAt", r.urgent
+              AS "handedBackAt", r.urgent,
+            CASE WHEN r.register_id = 'work' THEN json_extract(r.fields_json, '$.alsoOn') END
+              AS "alsoOn"
           FROM kin_records r WHERE ${filterOf(orgId, input, now)}
           ORDER BY r.record_id LIMIT ${MOVE_ROWS_CAP}`;
       }),

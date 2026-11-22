@@ -20,6 +20,8 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
@@ -35,6 +37,7 @@ import {
   ownerZone,
   type RecordRow,
   startOfDay,
+  storedPrincipal,
   workFailure,
 } from "./recordRows.ts";
 import { teamVisible } from "./teamView.ts";
@@ -59,6 +62,16 @@ const givenOf = (row: MoveRow): KinWorkPrincipal | null => {
   const id = by._tag === "person" ? by.personId : by.agentId;
   return by._tag === row.ownerKind && id === row.ownerId ? null : by;
 };
+
+const decodeAlsoOn = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Schema.String)));
+/** Who is on it besides its holder, from `MoveRow.alsoOn`. */
+const alsoOnOf = (json: string | null) =>
+  json === null
+    ? []
+    : Option.getOrElse(decodeAlsoOn(json), () => []).flatMap((text) => {
+        const who = storedPrincipal(text);
+        return who === null ? [] : [who];
+      });
 
 /** One nudge a day per task from each person: the message's id is the day's. */
 const nudgeMessageId = (orgId: string, recordId: string, by: string, day: string) =>
@@ -143,6 +156,7 @@ export const movePage = Effect.fn("KinWork.movePage")(function* (input: {
       card: cards.has(row.recordId),
       handedBackOpen: kinWorkHandedBackOpen(row.handedBackAt, row.updatedAt),
       askedToday: asked.has(row.recordId),
+      alsoOn: alsoOnOf(row.alsoOn),
     };
     const group = kinWorkMove(facts, reader);
     const under = kinWorkMoveUnder({ ...facts, dueMs: row.dueAt }, reader, at);

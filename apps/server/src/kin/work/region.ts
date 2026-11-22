@@ -17,6 +17,10 @@ export interface CompanyRegion {
   readonly locale?: string;
   /** A client here pays an invoice less tax it withholds at source (TDS). */
   readonly withholdsAtSource?: true;
+  /** Company details keep the company's tax number here (the profile's `gstin`). */
+  readonly keepsTaxNumber?: true;
+  /** What a document says in place of its tax lines when the company is not registered for it. */
+  readonly notRegistered?: string;
 }
 
 const vat = (currency: string, financialYearStartMonth = 1): CompanyRegion => ({
@@ -39,6 +43,8 @@ const REGIONS: Readonly<Record<string, CompanyRegion>> = {
       ["tds", "TDS"],
     ],
     withholdsAtSource: true,
+    keepsTaxNumber: true,
+    notRegistered: "GST not charged: the supplier is not registered under GST.",
     // oxlint-disable-next-line t3code/kin-one-format -- the region table is where India's locale lives.
     locale: "en-IN",
   },
@@ -103,6 +109,17 @@ const REGIONS: Readonly<Record<string, CompanyRegion>> = {
 /** The country's row; none for a country with no row, or none at all. */
 export const regionOf = (country: string | null | undefined): CompanyRegion | undefined =>
   country == null || !Object.hasOwn(REGIONS, country) ? undefined : REGIONS[country];
+
+/** The tax a company here charges and what its documents say when it is not registered for it. */
+export const unregisteredTax = (country: string | null, ownTax: string | undefined) => {
+  const region = regionOf(country);
+  const tax = region?.tax ?? ownTax ?? "Tax";
+  return {
+    tax,
+    taxIdLabel: region?.taxIdLabel ?? "tax number",
+    line: region?.notRegistered ?? `${tax} not charged: the supplier is not registered for ${tax}.`,
+  };
+};
 
 /**
  * The locale Kin writes a company's text in: its country's, or for a company in no country, that

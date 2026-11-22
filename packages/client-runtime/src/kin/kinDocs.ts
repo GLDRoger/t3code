@@ -73,8 +73,19 @@ export const KIN_DOCS = {
   searchWithLists: "Search docs and lists",
   loading: "Loading docs",
   loadFailed: "Couldn't load docs",
-  archived: "Archived",
+  archived: "Deleted",
   current: "Current",
+  delete: "Delete",
+  deleting: "Deleting…",
+  deletedNotice: (title: string) => `Deleted ${title}`,
+  undo: "Undo",
+  restoreDoc: "Restore",
+  restoringDoc: "Restoring…",
+  restoredDoc: (title: string) => `Restored ${title}`,
+  deleteFailed: "Couldn't delete it. The doc is still in Docs.",
+  restoreDocFailed: "Couldn't restore it. It's still in Deleted.",
+  deleteOffline: "You're offline. The doc stays until the connection is back.",
+  deletedBanner: "This doc is deleted. Restore brings it back as it was.",
   contents: "Contents",
   history: "History",
   changes: "See changes",
@@ -120,12 +131,12 @@ export const KIN_DOCS = {
   },
   noMatch: {
     title: "No doc says that",
-    detail: "Try other words, or look in the archived ones.",
+    detail: "Try other words, or look in the deleted ones.",
   },
   passages: "Where it says so",
   emptyArchived: {
-    title: "Nothing archived",
-    detail: "A doc an agent archives is kept here, with its whole history.",
+    title: "Nothing deleted",
+    detail: "A deleted doc is kept here with its whole history, and Restore brings it back.",
   },
   // A teammate, until docs are shared with the team.
   unavailable: {
@@ -345,8 +356,20 @@ export interface KinDocRowView {
   readonly unfiled: boolean;
   readonly private: boolean;
   readonly archived: boolean;
+  /** "Deleted 2 hours ago by Rhea", for a deleted doc whose host says so. */
+  readonly deletedLine: string | null;
+  /** This viewer may bring it back (or delete it); the host decides again. */
+  readonly deletable: boolean;
   readonly accessibilityLabel: string;
 }
+
+/** Who deleted a doc and when, as its row in Deleted says it. */
+export const kinDocDeletedLine = (
+  deleted: NonNullable<KinDocListRow["deleted"]>,
+  names: KinWorkNames,
+  now: Date,
+) =>
+  `Deleted ${kinDocWhen(deleted.at, now)} by ${kinMidSentence(actorName(deleted.by, names, "you"))}`;
 
 export const kinDocKindOf = (row: Pick<KinDocListRow, "kind">): KinDocKind => row.kind ?? "other";
 export const kinDocUnfiled = (row: Pick<KinDocListRow, "party" | "project" | "company">) =>
@@ -372,6 +395,8 @@ export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): K
     unfiled: kinDocUnfiled(row),
     private: isPrivate,
     archived: row.archived,
+    deletedLine: row.deleted === undefined ? null : kinDocDeletedLine(row.deleted, names, now),
+    deletable: row.deletable === true,
     accessibilityLabel: [
       row.title,
       pinned ? KIN_WHAT_WE_SELL.pinned : null,
@@ -379,7 +404,7 @@ export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): K
       under === "" ? KIN_DOC_HOMES.unfiled : under,
       text,
       isPrivate ? "Private" : null,
-      row.archived ? "Archived" : null,
+      row.archived ? KIN_DOCS.archived : null,
     ]
       .filter(Boolean)
       .join(". "),
@@ -1281,7 +1306,7 @@ export interface KinSearchHitView {
   /** A contact's client, whose page opens for it; null for anything else or from an older host. */
   readonly clientKey: string | null;
   readonly private: boolean;
-  /** "Closed" for an entry, "Archived" for a doc; null while it is live. */
+  /** "Closed" for an entry, "Deleted" for a doc; null while it is live. */
   readonly closed: string | null;
   readonly accessibilityLabel: string;
 }
@@ -1307,7 +1332,7 @@ export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
     hit.section === undefined || hit.section.id === "top"
       ? null
       : { id: hit.section.id, title: hit.section.title };
-  const closed = !hit.closed ? null : hit.kind === "docs" ? "Archived" : "Closed";
+  const closed = !hit.closed ? null : hit.kind === "docs" ? KIN_DOCS.archived : "Closed";
   const kindLabel = hit.kind === "work" && kinIsDealKey(hit.key) ? "Deal" : KIND_LABEL[hit.kind];
   return {
     id: `${hit.recordId}:${hit.section?.id ?? ""}`,

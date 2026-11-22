@@ -57,7 +57,7 @@ import {
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
-import { homeCurrency } from "./companyProfile.ts";
+import { homeCurrency, notRegisteredFact } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
 import { parseFields } from "./lists.ts";
 import {
@@ -501,6 +501,8 @@ export const MoneyResult = Schema.Struct({
   stillToInvoice: Schema.optional(Schema.Unknown),
   nothing: Schema.optional(Schema.Literal(true)),
   bank: Schema.optional(BankAnswer),
+  /** The company said it is not registered for its tax. */
+  taxNote: Schema.optional(Schema.String),
   sensitive: Schema.Literal(true),
 });
 const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
@@ -515,6 +517,8 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
     yield* setAsideOverdue({ orgId: lead.orgId, now, viewer }),
   );
   const toInvoice = team === undefined ? yield* ownerLevelStillToInvoice(lead.orgId) : [];
+  const taxNote =
+    team === undefined ? notRegisteredFact(yield* readProfile(lead.orgId)) : undefined;
   return {
     asOf: iso(now),
     ...(section === undefined && toInvoice.length === 0
@@ -522,6 +526,7 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
       : { summary: section }),
     ...(toInvoice.length === 0 ? {} : { stillToInvoice: toInvoice }),
     bank: bankAnswer(yield* bankKnown(lead.orgId)),
+    ...(taxNote === undefined ? {} : { taxNote }),
     sensitive: true as const,
   };
 });
@@ -777,6 +782,8 @@ export const ProfileResult = Schema.Struct({
   /** What a set asked for, waiting on the owner's Confirm on the card Kin showed them. */
   proposed: Schema.optional(Schema.Array(Schema.String)),
   next: Schema.optional(Schema.String),
+  /** The company said it is not registered for its tax. */
+  taxNote: Schema.optional(Schema.String),
   sensitive: Schema.Literal(true),
 });
 const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof ProfileInput.Type) {
@@ -849,6 +856,7 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
   const kept = (value: Record<string, unknown>) =>
     Object.fromEntries(Object.entries(value).filter(([, one]) => one !== null));
   const shownBank = kept(bank);
+  const taxNote = notRegisteredFact(current);
   return {
     profile: { ...kept(rest), ...(Object.keys(shownBank).length === 0 ? {} : { bank: shownBank }) },
     rev,
@@ -858,6 +866,7 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
           proposed: [...proposed],
           next: "Nothing has changed yet. Kin showed this change on a card in this chat; it applies when they tap Confirm. Say so in one line.",
         }),
+    ...(taxNote === undefined ? {} : { taxNote }),
     sensitive: true as const,
   };
 });

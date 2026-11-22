@@ -157,6 +157,13 @@ export const KinWorkSteps = Schema.Array(KinWorkStep).check(Schema.isMaxLength(K
 export const KinWorkStepCount = Schema.Struct({ done: NonNegativeInt, of: NonNegativeInt });
 export type KinWorkStepCount = typeof KinWorkStepCount.Type;
 
+/** How many people and agents may be on a task besides its holder. */
+export const KIN_WORK_ALSO_ON_MAX = 10;
+/** Who else is on a task: never its holder, each once. The holder still answers for it. */
+export const KinWorkAlsoOn = Schema.Array(KinWorkPrincipal).check(
+  Schema.isMaxLength(KIN_WORK_ALSO_ON_MAX),
+);
+
 /** One slim list row, about 150 bytes: what a list, the profile and the prompt show. */
 export const KinRecord = Schema.Struct({
   recordId: KinRecordId,
@@ -227,6 +234,8 @@ export const KinRecord = Schema.Struct({
   steps: Schema.optional(KinWorkStepCount),
   /** Someone marked the task urgent: first within its day; absent otherwise. */
   urgent: Schema.optional(Schema.Literal(true)),
+  /** A task's people and agents besides its holder; absent with none, and from older hosts. */
+  alsoOn: Schema.optional(Schema.Array(KinWorkPrincipal)),
 });
 export type KinRecord = typeof KinRecord.Type;
 
@@ -288,6 +297,8 @@ export const KinRecordLink = Schema.Struct({
   record: Schema.optional(KinRecordRef),
   /** That record's issued number (INV/26-27/004), once it has one. */
   number: Schema.optional(TrimmedNonEmptyString),
+  /** That record is a deleted doc: the link stays, and says so. Absent from older hosts. */
+  deleted: Schema.optional(Schema.Literal(true)),
   /**
    * A `worker` link's run, as its task card shows it: the thread (in `remoteEnvironmentId` when
    * that is set, else on this host) and the draft pull request Kin opened from it.
@@ -329,6 +340,11 @@ export type KinRecordChange = typeof KinRecordChange.Type;
 export const KIN_CODING_AGENT_UNNAMED = "a coding agent";
 /** The field a change carries when Kin took a question's default: no list field's key has a colon. */
 export const KIN_TAKEN_DEFAULT_FIELD = "kin:default";
+/**
+ * The field a change carries when the person a question waited on dismissed it without choosing,
+ * which stopped the task waiting on them: the question's id in `to`.
+ */
+export const KIN_DISMISSED_FIELD = "kin:dismissed";
 /** The field a hand-over carries for someone who left the team: `person:<id>` in `from`. */
 export const KIN_LEFT_FIELD = "kin:left";
 /** The field a deal's hand-over carries for each next step that went with it: the step's key in `to`. */
@@ -796,6 +812,8 @@ export const KinWorkCreateInput = Schema.Struct({
     Schema.Array(KinWorkStepTitle).check(Schema.isMaxLength(KIN_WORK_STEPS_MAX)),
   ),
   urgent: Schema.optional(Schema.Boolean),
+  /** A task's people and agents besides its holder. */
+  alsoOn: Schema.optional(KinWorkAlsoOn),
   /** A retry with the same id returns the same entry. */
   clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
 });
@@ -854,6 +872,8 @@ export const KinWorkUpdateInput = Schema.Struct({
   steps: Schema.optional(KinWorkSteps),
   /** Marks a task urgent, or takes the mark off. */
   urgent: Schema.optional(Schema.Boolean),
+  /** A task's whole list of people and agents besides its holder; `[]` takes everyone off. */
+  alsoOn: Schema.optional(KinWorkAlsoOn),
   // Defined lists only.
   /** One of the list's own categories; `null` clears it. */
   listCategory: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(60)))),

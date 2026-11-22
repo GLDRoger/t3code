@@ -50,6 +50,9 @@ const MEMBER = [
   "kin.chats.pin",
   "kin.chats.subscribe",
   "kin.chats.withPerson",
+  // A delete or its undo: `Docs.deleteByHand` allows exactly whom a hand edit allows, and
+  // never an agent's character or What we sell; the docs test pins who is refused.
+  "kin.docs.delete",
   "kin.docs.diff",
   // A hand edit: `Docs.editSectionByHand` refuses all but the owner level and the doc's project
   // lead, and keeps playbooks and What we sell to the owner level.

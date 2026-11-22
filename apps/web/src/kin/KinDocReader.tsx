@@ -26,6 +26,7 @@ import {
   MessageCircleQuestionIcon,
   PencilLineIcon,
   ShareIcon,
+  Trash2Icon,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
@@ -210,6 +211,8 @@ export function KinDocReader(
     readonly onExportPdf: (() => void) | null;
     /** Null where this browser may not restore. */
     readonly onRestore: ((version: number) => void) | null;
+    /** Null where this reader may not delete it, or it is deleted already. */
+    readonly onDelete: (() => void) | null;
     /** Where the page header's own buttons go. */
     readonly actions: HTMLElement | null;
     /** What links to the doc and what it links to, after the body. */
@@ -409,6 +412,15 @@ export function KinDocReader(
                       {label.action.sensitive ? <LockIcon /> : <LockOpenIcon />}
                       {label.action.label}
                     </MenuItem>
+                  )}
+                  {props.onDelete === null ? null : (
+                    <>
+                      <MenuSeparator />
+                      <MenuItem variant="destructive" onClick={props.onDelete}>
+                        <Trash2Icon />
+                        {KIN_DOCS.delete}
+                      </MenuItem>
+                    </>
                   )}
                 </MenuPopup>
               </Menu>

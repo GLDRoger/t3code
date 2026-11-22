@@ -71,7 +71,16 @@ import {
   type StoredDraft,
 } from "./approval.ts";
 
-export type QuestionState = "open" | "answered" | "default_taken" | "withdrawn";
+/** The fixed headings of the open-questions sections; Kin's evals check a case's against these. */
+export const OPEN_QUESTION_HEADINGS = {
+  askedHere: "# Questions you asked for this chat (not answered yet)",
+  draftsBack: "# Drafts back from Changes first (not redrafted yet)",
+} as const;
+/** The heading over the questions already put to one person. */
+export const openQuestionsHeading = (who: string) =>
+  `# Open questions to ${who} (already asked; don't ask or repeat them)`;
+
+export type QuestionState = "open" | "answered" | "default_taken" | "withdrawn" | "dismissed";
 export type QuestionRow = {
   readonly questionId: string;
   readonly agentId: KinAgentId;
@@ -1823,6 +1832,33 @@ export const undoneTurnText = Effect.fn("KinQuestions.undoneTurnText")(function*
 });
 
 /**
+ * What the asker's turn is told when its person dismissed its question without choosing, or
+ * (`reopened`) undid that after the turn that heard it. Undefined when there is nothing to say.
+ */
+export const dismissedTurnText = Effect.fn("KinQuestions.dismissedTurnText")(function* (
+  orgId: KinOrgId,
+  subject: { readonly questionId: string; readonly reopened?: true | undefined },
+) {
+  const row = yield* readQuestion(orgId, subject.questionId);
+  if (row === undefined) return undefined;
+  const who = yield* personName(orgId, row.personId);
+  const data = {
+    question: row.question,
+    options: row.options.map((option) => option.label),
+    ...(row.about.length === 0 ? {} : { about: row.about }),
+  };
+  if (subject.reopened === true)
+    return {
+      text: `${who} undid dismissing your question “${row.question}”: it is open again on its card, waiting for their answer. Don't ask it again and don't take a default; wait for their answer. Do not reply in chat.`,
+      data,
+    };
+  return {
+    text: `${who} dismissed your question “${row.question}” without choosing. That is not a choice and not approval of your pick: do not ask it again and do not take a default. If the work can go on without that answer, do that work now, in this turn. If it cannot, leave the task open with you: change neither its state nor its notes, and add one comment of one line on it saying what it needs. Do not reply in chat, but not replying is not stopping: do the work first.`,
+    data,
+  };
+});
+
+/**
  * What the asker's turn is told when a question it asked for a chat was answered, in that chat's
  * lane; undefined when there is nothing to carry on.
  */
@@ -1884,7 +1920,7 @@ export const openQuestionsSection = Effect.fn("KinQuestions.section")(function* 
     return `- ${row.questionId}, ${row.agentName}${asker}, ${dayWord(row.askedAt, input.now, clock.zone).replace(/^on /, "")}: “${row.question}”${about}; ${tail}`;
   });
   return {
-    heading: `# Open questions to ${who} (already asked; don't ask or repeat them)`,
+    heading: openQuestionsHeading(who),
     body: [
       "Like a fact already told, each is with them once: never put one to them again, on a card or in words; at most say it is open and what happens at its day. When they answer one of yours in words in its chat, kin_ask_close it as answered; withdraw yours when it no longer stands. Another agent's is that agent's to close. A task one of yours is about waits on its answer: never set it done.",
       ...(forWhom.size === 0
@@ -1924,7 +1960,7 @@ export const askedForSection = Effect.fn("KinQuestions.askedForSection")(functio
       }`,
     );
   return {
-    heading: "# Questions you asked for this chat (not answered yet)",
+    heading: OPEN_QUESTION_HEADINGS.askedHere,
     body: [
       "Each waits on its person, with no default. When one answers, Kin says so here and wakes you to carry on; until then say it is with them, and don't ask again. Withdraw one with kin_ask_close when it no longer stands.",
       ...lines,
@@ -1943,7 +1979,7 @@ export const redraftsSection = Effect.fn("KinQuestions.redraftsSection")(functio
   const waiting = yield* waitingRedrafts(turn, chatId);
   if (waiting.length === 0) return undefined;
   return {
-    heading: "# Drafts back from Changes first (not redrafted yet)",
+    heading: OPEN_QUESTION_HEADINGS.draftsBack,
     body: waiting
       .map(({ draft }) => {
         const party = draft.for === null ? "" : ` for ${draft.for.title} (${draft.for.key})`;
