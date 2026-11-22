@@ -443,7 +443,7 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
       text: `Sent to ${asker}. ${row.agentName} is making it now.`,
     } satisfies KinChoiceOutcome;
   if (isChangesFirst(row, input.label))
-    return yield* changesFirst(input.orgId, row, row.forChatId, input.now, chat);
+    return yield* changesFirst(input.orgId, row, row.forChatId, input.now, chat, "tap");
   return { title: "Answered", text: `Sent to ${asker}.` } satisfies KinChoiceOutcome;
 });
 
@@ -461,6 +461,7 @@ const changesFirst = Effect.fn("KinQuestions.changesFirst")(function* (
   forChatId: KinChatId,
   now: number,
   chat: Pick<KinChatService["Service"], "setDocCardChangesFirst">,
+  how: "tap" | "words",
 ) {
   for (const { widgetId } of yield* draftCardsAbout(orgId, forChatId, row.about, "sent"))
     yield* chat.setDocCardChangesFirst({
@@ -470,7 +471,10 @@ const changesFirst = Effect.fn("KinQuestions.changesFirst")(function* (
     });
   return {
     title: "Answered",
-    text: "Say here what to change; the new draft comes back to you to approve.",
+    text:
+      how === "tap"
+        ? "Say here what to change; the new draft comes back to you to approve."
+        : "The new draft comes back to you to approve.",
   } satisfies KinChoiceOutcome;
 });
 
@@ -856,7 +860,7 @@ export const closeQuestion = Effect.fn("KinQuestions.close")(function* (
       queue,
     );
     if (isChangesFirst(row, answer))
-      changed = yield* changesFirst(input.orgId, row, row.forChatId, input.now, chat);
+      changed = yield* changesFirst(input.orgId, row, row.forChatId, input.now, chat, "words");
   }
   const cards = cardIds(row);
   for (const widgetId of cards)

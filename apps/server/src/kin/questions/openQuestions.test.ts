@@ -2761,7 +2761,8 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.deepInclude((yield* draftOf()).sent, { name: "Rhea Rao" });
       const shownBefore = yield* shownUp(zoyaChat);
       // This round Rhea answers in words, and the agent closes it as Changes first: the same as
-      // her tap. No turn in Zoya's chat, Kin's line there, her card sendable, Rhea's card says so.
+      // her tap. No turn in Zoya's chat, Kin's line there, her card sendable, and Rhea's card
+      // doesn't ask her to say again what she just said.
       const edit = yield* turnOn("rhea", chatOf("chief"), "Say 3 December, fee 300000.");
       yield* Questions.closeQuestion(
         {
@@ -2785,10 +2786,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.deepInclude(
         (yield* team.widgetOf((yield* team.cardOf(again!.questionId)).widgetId!)).state,
         {
-          outcome: {
-            title: "Answered",
-            text: "Say here what to change; the new draft comes back to you to approve.",
-          },
+          outcome: { title: "Answered", text: "The new draft comes back to you to approve." },
         },
       );
       // While Zoya can't see the mail, Rhea's edit of it is today's edit: nothing goes to her chat.
