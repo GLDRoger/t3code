@@ -78,6 +78,7 @@ import {
   whenNodeRemoveLabel,
 } from "./KeybindingsSettings.logic";
 import { SettingsGroup } from "./SettingsGroup";
+import { kinKeyShown } from "~/kin/kinNoCode";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { keybindingSearchAnchorId, useSearchableSetting } from "./settingsSearch";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -1430,8 +1431,10 @@ function useKeybindingCatalog() {
   const merged = mergeWithDefaultKeybindings(serverKeybindings ?? []);
   const m = useMessages();
   return {
-    commandOptions: buildKeybindingCommandOptions(merged, m),
-    allRows: buildKeybindingRows(merged, navigator.platform, m),
+    commandOptions: buildKeybindingCommandOptions(merged, m).filter((c) => kinKeyShown(c)),
+    allRows: buildKeybindingRows(merged, navigator.platform, m).filter((r) =>
+      kinKeyShown(r.command),
+    ),
   };
 }
 

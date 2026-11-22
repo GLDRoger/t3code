@@ -1,7 +1,9 @@
 import {
   KIN_MEMORY_CHANGES_CARD,
   KinChatError,
+  KinChatId,
   KinMemoryChangeCard,
+  KinMessageId,
   type KinAgentId,
   type KinMemoryConfirmSuggestionsInput,
   type KinMemoryConfirmSuggestionsResult,
@@ -41,7 +43,7 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { endedBy } from "./frontMatter.ts";
-import { readableSources } from "./quoteAccess.ts";
+import { CHAT_SOURCE, readableSources } from "./quoteAccess.ts";
 import type { MemoryItem } from "./MemoryCache.ts";
 import type { KinDecision, MemoryWriter } from "./MemoryWriter.ts";
 import {
@@ -228,12 +230,22 @@ const make = Effect.gen(function* () {
       ).pipe(provideSql);
       return ({ head }: MemoryItem): Provenance => {
         const at = saidAt.get(head.source);
+        const [, chatId, messageId] =
+          (at === undefined ? null : CHAT_SOURCE.exec(head.source)) ?? [];
         return {
           saidBy: head.said_by,
           trust: head.trust,
           recordedAt: head.recorded_at,
           saidAt: at ?? null,
           quote: at === undefined ? null : (head.quote ?? null),
+          ...(chatId === undefined || messageId === undefined
+            ? {}
+            : {
+                message: {
+                  chatId: KinChatId.make(chatId),
+                  messageId: KinMessageId.make(messageId),
+                },
+              }),
         };
       };
     },

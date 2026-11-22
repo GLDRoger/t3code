@@ -8,7 +8,7 @@ import { isItemPath } from "./checkoutPaths.ts";
 import { FRONT_MATTER_YAML, parseFrontMatter } from "./frontMatter.ts";
 
 // As `LeadMemory.authority` writes the source of an item saved from a chat message.
-const CHAT_SOURCE = /^kin:chat:([^:]+):message:(.+)$/;
+export const CHAT_SOURCE = /^kin:chat:([^:]+):message:(.+)$/;
 
 /**
  * When each cited message `person` can open in chat now was said, by ref: a posted text message,

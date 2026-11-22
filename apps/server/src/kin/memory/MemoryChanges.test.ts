@@ -573,14 +573,17 @@ it.effect(
           entry.provenance,
         ]),
       );
+      // The message to open it at, only while he can open that message now.
+      const message = { chatId: direct.chatId, messageId: said.messageId };
       const stated = {
         saidBy: "fixture-owner",
         trust: "owner" as const,
         recordedAt: "2026-11-03T00:00:00.000Z",
       };
       assert.deepStrictEqual(listed, {
-        quoted: { ...stated, saidAt: said.createdAt, quote: "every report as a PDF" },
-        old: { ...stated, saidAt: said.createdAt, quote: null },
+        quoted: { ...stated, saidAt: said.createdAt, quote: "every report as a PDF", message },
+        old: { ...stated, saidAt: said.createdAt, quote: null, message },
+        // No link, and nothing that says the message or the room exists.
         deleted: { ...stated, saidAt: null, quote: null },
         left: { ...stated, saidAt: null, quote: null },
         inferred: {
