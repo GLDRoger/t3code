@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   KIN_MESSAGE_LINKS_CAP,
   type KinChatMember,
   type KinMessage,
@@ -8,6 +9,12 @@ import {
   type KinPersonId,
   type KinTurnChanges,
 } from "@t3tools/contracts";
+import {
+  hasThreadLinks,
+  parseThreadLinkHref,
+  replaceThreadLinks,
+  threadLinkRefs,
+} from "@t3tools/shared/threadLinks";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -250,6 +257,85 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
     names: names.filter((one) => counts.get(one.name) === 1),
     keys: new Map(keyed.map((row) => [row.key, record(row)])),
   };
+});
+
+// What an agent pastes without Markdown around it: a bare thread link, or a delegated task's id.
+const BARE_THREAD =
+  /t3-thread:\/\/v[12]\/[^\s<>()[\]`"']*[^\s<>()[\]`"'.,;:!?]|thread:delegated-task:[^\s<>()[\]`"']*[^\s<>()[\]`"'.,;:!?]/g;
+// Only a link's thread id matters here; a v1 link names no environment.
+const ANY_ENVIRONMENT = EnvironmentId.make("kin");
+const HELPER_TASK = "a helper task";
+const plainTitle = (title: string) => title.replace(/\s+/g, " ").trim();
+const bareThreadId = (token: string) =>
+  token.startsWith("t3-thread:") ? (parseThreadLinkHref(token)?.threadId ?? null) : token;
+
+/**
+ * An agent's message for people with every T3 thread link (Markdown, bare or hosted) and every
+ * pasted helper id written as words, since Kin opens no thread: a helper's title from its card in
+ * this chat, an agent's own thread as its name, else the link's words or "a helper task". Code is
+ * left as written.
+ */
+export const nameThreads = Effect.fn("KinMessageLinks.nameThreads")(function* (
+  orgId: KinOrgId,
+  chatId: string,
+  body: string,
+) {
+  const bare = (text: string) => [...linkableText(text).matchAll(BARE_THREAD)];
+  const ids = [
+    ...new Set([
+      ...threadLinkRefs(body, ANY_ENVIRONMENT).map((ref) => ref.threadId),
+      ...bare(body).flatMap((match) => bareThreadId(match[0]) ?? []),
+    ]),
+  ];
+  if (ids.length === 0 && !hasThreadLinks(body)) return body;
+  const sql = yield* SqlClient.SqlClient;
+  // A card's title only where its own chat reads it; elsewhere it could say more than the agent did.
+  const cards =
+    ids.length === 0
+      ? []
+      : yield* sql<{ threadId: string; title: string | null }>`SELECT
+          json_extract(state_json, '$.threadId') AS "threadId",
+          json_extract(state_json, '$.title') AS title
+        FROM kin_widgets
+        WHERE org_id = ${orgId} AND chat_id = ${chatId} AND type = 'task'
+          AND json_extract(state_json, '$.threadId') IN ${sql.in(ids)}
+        ORDER BY updated_at, widget_id`;
+  const agents =
+    ids.length === 0
+      ? []
+      : yield* sql<{ threadId: string; title: string | null }>`SELECT t.thread_id AS "threadId",
+          a.display_name AS title
+        FROM kin_agent_threads t
+        JOIN kin_agents a ON a.org_id = t.org_id AND a.agent_id = t.agent_id
+        WHERE t.org_id = ${orgId} AND t.thread_id IN ${sql.in(ids)}
+        ORDER BY t.thread_id`;
+  const titles = new Map<string, string>();
+  for (const row of [...agents, ...cards])
+    if (row.title !== null && plainTitle(row.title) !== "")
+      titles.set(row.threadId, plainTitle(row.title));
+  const titleOf = (threadId: string) => {
+    const title = titles.get(threadId);
+    if (title !== undefined) return title;
+    try {
+      return titles.get(decodeURIComponent(threadId));
+    } catch {
+      return undefined;
+    }
+  };
+  let out = replaceThreadLinks(
+    body,
+    (link, label) => titleOf(link.threadId) ?? (label?.trim() || HELPER_TASK),
+  );
+  // From the end, so earlier indexes stay put. An id nobody knows stays: it opens nothing.
+  for (const match of bare(out).toReversed()) {
+    const threadId = bareThreadId(match[0]);
+    const title =
+      (threadId === null ? undefined : titleOf(threadId)) ??
+      (match[0].startsWith("t3-thread:") ? HELPER_TASK : undefined);
+    if (title === undefined) continue;
+    out = `${out.slice(0, match.index)}${title}${out.slice(match.index + match[0].length)}`;
+  }
+  return out;
 });
 
 /** A name written in place of an entry's key, kept so the name still links to it. */
