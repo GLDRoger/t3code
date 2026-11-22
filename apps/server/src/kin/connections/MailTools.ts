@@ -495,5 +495,7 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
       replyTarget(vendor, { http, token, mailbox }, threadId),
     sendMessage: vendor.sendMessage,
     saveEvent: vendor.saveEvent,
+    calendarName: (http, token, mailbox, calendarId) =>
+      vendor.calendarName({ http, token, mailbox }, calendarId),
   };
 };

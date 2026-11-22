@@ -234,6 +234,8 @@ export interface MailVendor {
     calendarId: string | undefined,
     eventId: string,
   ) => Call<MailCalendarEvent>;
+  /** A calendar's name as the account shows it, or null when it has none. */
+  readonly calendarName: (context: MailContext, calendarId: string) => Call<string | null>;
   /**
    * Inbox mail that arrived and events that changed, were cancelled or deleted since `since`,
    * each occurrence of a series on its own. `cursor` is what the last read returned. A read holds
@@ -329,6 +331,13 @@ export interface MailProvider {
   ) => Call<Sent>;
   /** Adds or changes an event on the account's calendar and invites its guests. */
   readonly saveEvent: (http: HttpClient.HttpClient, token: string, event: MailEvent) => Call<Sent>;
+  /** A calendar's name as the account shows it, or null when it has none. */
+  readonly calendarName: (
+    http: HttpClient.HttpClient,
+    token: string,
+    mailbox: Mailbox,
+    calendarId: string,
+  ) => Call<string | null>;
 }
 
 const PLAIN = /^[^\s<>@,;"]+@[^\s<>@,;"]+$/;

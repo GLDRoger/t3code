@@ -360,6 +360,10 @@ const google: MailVendor = {
     api(context, `${calendarOf(calendarId)}/${encodeURIComponent(eventId)}`).pipe(
       Effect.map(eventOf),
     ),
+  calendarName: (context, calendarId) =>
+    api(context, `${CALENDAR}/${encodeURIComponent(calendarId)}`).pipe(
+      Effect.map((calendar) => text(field(calendar, "summary")) ?? null),
+    ),
   // Deleted and cancelled events come back as `cancelled`; a series, one occurrence at a time.
   activity: (context, since, _cursor, now) =>
     Effect.all({
