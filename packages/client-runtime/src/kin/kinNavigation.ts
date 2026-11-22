@@ -98,6 +98,7 @@ export type KinSettingsPage =
   | "memory"
   | "company"
   | "approvals"
+  | "host"
   | "recommendations";
 
 const KIN_SETTINGS_PAGES: ReadonlyArray<KinSettingsPage> = [
@@ -113,6 +114,7 @@ const KIN_SETTINGS_PAGES: ReadonlyArray<KinSettingsPage> = [
   "memory",
   "company",
   "approvals",
+  "host",
   "recommendations",
 ];
 
@@ -129,6 +131,7 @@ export const KIN_SETTINGS_PAGE_TITLES: Readonly<Record<KinSettingsPage, string>>
   memory: "Memory",
   company: "Company details",
   approvals: "Approvals",
+  host: "Kin's computer",
   recommendations: "Recommendations",
 };
 
@@ -191,6 +194,7 @@ export function kinSettingsGroups(input: {
         "memory",
         "company",
         "approvals",
+        "host",
         ...(input.recommendations ? (["recommendations"] as const) : []),
       ],
     },
@@ -210,6 +214,7 @@ export type KinPhoneSettingsRow =
   | "company"
   | "deals"
   | "watches"
+  | "host"
   | "stop";
 
 /**
@@ -223,7 +228,7 @@ export function kinPhoneSettingsRows(input: { readonly ownerLevel: boolean }): {
   return {
     you: ["profile", "notifications", "appearance"],
     company: input.ownerLevel
-      ? ["team", "agents", "company", "deals", "watches", "stop"]
+      ? ["team", "agents", "company", "deals", "watches", "host", "stop"]
       : ["watches"],
   };
 }

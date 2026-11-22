@@ -44,8 +44,14 @@ const COMPANY_ROWS: Partial<
   Record<
     KinPhoneSettingsRow,
     {
-      readonly icon: "person.2" | "robot" | "doc.text" | "chart.bar.xaxis" | "eye";
-      readonly route: "KinTeam" | "KinAgents" | "KinCompany" | "KinDealStages" | "KinWatchLog";
+      readonly icon: "person.2" | "robot" | "doc.text" | "chart.bar.xaxis" | "eye" | "server.rack";
+      readonly route:
+        | "KinTeam"
+        | "KinAgents"
+        | "KinCompany"
+        | "KinDealStages"
+        | "KinWatchLog"
+        | "KinHost";
       readonly title: string;
     }
   >
@@ -55,6 +61,7 @@ const COMPANY_ROWS: Partial<
   company: { icon: "doc.text", route: "KinCompany", title: KIN_SETTINGS_PAGE_TITLES.company },
   deals: { icon: "chart.bar.xaxis", route: "KinDealStages", title: KIN_SETTINGS_PAGE_TITLES.deals },
   watches: { icon: "eye", route: "KinWatchLog", title: KIN_SETTINGS_PAGE_TITLES.watches },
+  host: { icon: "server.rack", route: "KinHost", title: KIN_SETTINGS_PAGE_TITLES.host },
 };
 
 export function KinSettings(props: {

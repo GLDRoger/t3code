@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinRateDay, type KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
+import { KIN_MONEY } from "@t3tools/client-runtime/kin/kinMoney";
 import { KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_SUBSCRIPTIONS,
@@ -220,8 +221,7 @@ export function KinSubscriptionsPage(
   const lists = useKinLists(props, { enabled: true });
   const rates = useKinRates(props);
   const def = kinSubscriptionsList(kinListsOf(lists));
-  if (lists.state._tag === "refused")
-    return <KinWorkNotice title="Not available" detail={KIN_SUBSCRIPTIONS.moneyKept} />;
+  if (lists.state._tag === "refused") return <KinWorkNotice {...KIN_MONEY.onlyOwner} />;
   if (lists.state._tag !== "ready")
     return lists.state._tag === "loading" ? (
       <div

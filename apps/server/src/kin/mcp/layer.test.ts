@@ -238,6 +238,20 @@ it.effect.each([true, false])(
               | OrchestratorV2
             >
           >();
+        let tokenLookups = 0;
+        let tokenClock = 0;
+        const baseRegistry = Layer.effect(
+          McpSessions.McpSessionRegistry,
+          McpSessions.__testing.make({ livenessWindowMs: 100, now: () => tokenClock }).pipe(
+            Effect.map((registry) => ({
+              ...registry,
+              resolve: (token: string) =>
+                Effect.sync(() => void (tokenLookups += 1)).pipe(
+                  Effect.andThen(registry.resolve(token)),
+                ),
+            })),
+          ),
+        );
         const routes = Layer.merge(
           Kin.mcpLayer(t3Composition),
           Layer.effectDiscard(
@@ -251,7 +265,7 @@ it.effect.each([true, false])(
             >().pipe(Effect.flatMap((context) => Deferred.succeed(ready, context))),
           ),
         ).pipe(
-          Layer.provideMerge(Kin.mcpRegistryLayer(McpSessions.layer)),
+          Layer.provideMerge(Kin.mcpRegistryLayer(baseRegistry)),
           Layer.provideMerge(
             authorityLayerWithDatabase(
               KinPersistence.layer.pipe(
@@ -442,12 +456,28 @@ it.effect.each([true, false])(
             .status,
           403,
         );
+        const expired = yield* registry.issue({
+          threadId,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        });
+        tokenClock += 101;
+        for (const credential of [
+          "Bearer invented-invalid-token",
+          expired.config.authorizationHeader,
+        ]) {
+          const before = tokenLookups;
+          const rejected = yield* request("/kin/mcp", credential, "initialize", initialize);
+          assert.strictEqual(rejected.status, 401);
+          assert.strictEqual(tokenLookups - before, 1);
+        }
+        yield* registry.touch(threadId);
         // L1: this lead posts for real (an L0 lead's posts are shadow entries).
         yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
           VALUES (${agentId}, ${person.orgId}, 'Lead', 'L1', 0, '{}', '[]', ${chat.chatId})`;
         yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId }).pipe(
           Effect.provide(services),
         );
+        const lookupsBeforeInitialize = tokenLookups;
         const initialized = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,
@@ -455,6 +485,7 @@ it.effect.each([true, false])(
           initialize,
         );
         assert.strictEqual(initialized.status, 200);
+        assert.strictEqual(tokenLookups - lookupsBeforeInitialize, 1);
         const toolList = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,

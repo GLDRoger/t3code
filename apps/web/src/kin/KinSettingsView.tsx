@@ -19,6 +19,7 @@ import {
   ChevronRightIcon,
   CircleUserIcon,
   FingerprintIcon,
+  HardDriveIcon,
   SlidersHorizontalIcon,
   PaletteIcon,
   PlugIcon,
@@ -52,6 +53,7 @@ import { KinCheckInsPage } from "./KinCheckIns";
 import { kinClient } from "./kinClient";
 import { KinSettingsNotifications } from "./KinNotifications";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
+import { kinSettingsShown } from "./kinNoCode";
 import { KinRecommendationsSettings } from "./KinRecommendations";
 import {
   closeKinSettings,
@@ -69,6 +71,7 @@ import { KinAppearancePage } from "./settings/KinAppearancePage";
 import { KinCompanyPage } from "./settings/KinCompanyPage";
 import { KinConnectionsPage } from "./settings/KinConnectionsPage";
 import { KinDealsPage } from "./settings/KinDealsPage";
+import { KinHostPage } from "./settings/KinHostPage";
 import { KinMemoryPage } from "./settings/KinMemoryPage";
 import { KinProfilePage } from "./settings/KinProfilePage";
 import { KinWatchLogPage } from "./settings/KinWatchLogPage";
@@ -90,6 +93,7 @@ const PAGE_ICON: Record<KinSettingsPage, LucideIcon> = {
   memory: BrainIcon,
   company: Building2Icon,
   approvals: FingerprintIcon,
+  host: HardDriveIcon,
   recommendations: SlidersHorizontalIcon,
 };
 
@@ -293,7 +297,7 @@ function KinSettingsMenu(props: {
                 </SidebarMenuButton>
               </SidebarMenuItem>
               {computerOpen
-                ? THIS_COMPUTER.map((item) => (
+                ? kinSettingsShown(THIS_COMPUTER).map((item) => (
                     <SidebarMenuItem key={item.to}>
                       <SidebarMenuButton render={<Link to={item.to} />}>
                         <span className="truncate">{item.label}</span>
@@ -365,6 +369,8 @@ function KinSettingsPageBody(props: {
       return <KinCompanyPage />;
     case "approvals":
       return <ApprovalsSettings />;
+    case "host":
+      return <KinHostPage {...target} />;
     case "recommendations":
       return <KinRecommendationsSettings key={target.orgId} {...target} />;
   }

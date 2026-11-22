@@ -6,6 +6,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_MISSING_CARD_TEXT,
   kinCardView,
+  kinTaskCardWithoutThread,
   type KinDigestCardView,
   type KinTaskCardView,
   type KinTaskTone,
@@ -128,10 +129,12 @@ import { Textarea } from "../components/ui/textarea";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { KinChart } from "./KinChart";
 import { KinSocialPackCard, KinSocialWeekCard } from "./KinSocialCards";
+import { KinHostTroubleCard } from "./KinHostTroubleCard";
 import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
 import { KinVisual } from "./KinVisual";
 import { kinClient } from "./kinClient";
 import { kinHostConnected, useKinHostAt } from "./useKinHost";
+import { KIN_WEB_ONLY } from "./kinWebOnly";
 import { toastManager } from "../components/ui/toast";
 import { serverEnvironment } from "../state/server";
 
@@ -217,7 +220,7 @@ export const KinCard = memo(function KinCard(props: {
   );
   switch (view.kind) {
     case "task":
-      return <KinTaskCard task={view.task} />;
+      return <KinTaskCard task={KIN_WEB_ONLY ? kinTaskCardWithoutThread(view.task) : view.task} />;
     case "deferral":
       return <KinDeferralCard deferral={view.deferral} environmentId={props.environmentId} />;
     case "choice":
@@ -266,6 +269,8 @@ export const KinCard = memo(function KinCard(props: {
       return <KinSocialWeekCard week={view.week} environmentId={props.environmentId} />;
     case "social_pack":
       return <KinSocialPackCard pack={view.pack} environmentId={props.environmentId} />;
+    case "host_trouble":
+      return <KinHostTroubleCard widget={view.widget} environmentId={props.environmentId} />;
     case "missing":
       return (
         <CardFrame>

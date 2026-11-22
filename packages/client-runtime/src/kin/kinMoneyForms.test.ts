@@ -149,6 +149,10 @@ describe("an expense typed by hand", () => {
         clientRequestId: "form-1",
       },
     });
+    expect(kinExpenseInput(orgId, { ...named, amount: "-$5" }, send)).toMatchObject({
+      ok: true,
+      input: { amount: { minor: -500, currency: "USD" } },
+    });
     expect(kinExpenseTyped(draft, draft)).toBe(false);
     expect(kinExpenseTyped({ ...draft, paidOn: "2026-11-20" }, draft)).toBe(true);
   });

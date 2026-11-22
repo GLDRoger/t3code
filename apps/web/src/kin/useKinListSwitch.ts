@@ -15,6 +15,7 @@ import {
 } from "./kinListSwitch";
 import { isChatOnlySession } from "../environments/primary";
 import { useKinHost } from "./useKinHost";
+import { KIN_WEB_ONLY } from "./kinWebOnly";
 
 export interface KinListSwitch {
   readonly current: KinList;
@@ -47,8 +48,8 @@ export function useKinListSwitch(): KinListSwitch | null {
 /** What the sidebar's mark names, or null where it stays T3 Code's home link. */
 export function useKinBrandProduct(): "Kin" | "Code" | null {
   const kinSwitch = useKinListSwitch();
-  // A teammate's session has no coding threads to switch to or go home to.
-  if (isChatOnlySession()) return "Kin";
+  // A teammate's session and the Kin web app have no coding threads to switch to or go home to.
+  if (isChatOnlySession() || KIN_WEB_ONLY) return "Kin";
   // With Kin on, the mark names the area you're in; the destinations above the list move between them.
   if (kinSwitch !== null) return kinSwitch.current === "kin" ? "Kin" : "Code";
   return null;
