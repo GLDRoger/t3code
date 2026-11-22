@@ -633,6 +633,50 @@ describe("statement matching", () => {
     ]);
   });
 
+  it("ranks a credit's refund and a partner's return together, and ticks neither on an amount alone", () => {
+    const refund = expense({
+      key: "EXP-3",
+      recordId: "rec_refund",
+      amountMinor: -1_250,
+      day: "2026-10-05",
+      vendor: "Cityline Cabs",
+    });
+    const credit = (description: string) =>
+      row({ description, amountMinor: 1_250, direction: "credit", date: "2026-10-05" });
+    const placed = (description: string, partners: ReadonlyArray<PartnerCandidate>) =>
+      matchRows([credit(description)], {
+        currency: "INR",
+        withholdsAtSource: true,
+        invoices: [],
+        expenses: [refund],
+        partners,
+        ownAccounts: [],
+        known: [],
+        bank: null,
+      }).map((one) => [one.group, one.candidates.map((c) => c.repays?.[0]?.key ?? c.key)])[0];
+    const meera: PartnerCandidate = {
+      name: "Meera Rao",
+      currency: "INR",
+      owed: [{ recordId: "rec_held", key: "EXP-5", amountMinor: -1_250 }],
+    };
+    assert.deepStrictEqual(
+      [
+        // The same amount on the same day says nothing about whose refund it is.
+        placed("NEFT-INVENTED 4417", []),
+        placed("NEFT-INVENTED 4417", [meera]),
+        // Naming her outweighs a refund with no evidence; naming the vendor outweighs her.
+        placed("IMPS-MEERA RAO-RETURN", [meera]),
+        placed("NEFT-CITYLINE CABS REFUND", [meera]),
+      ],
+      [
+        ["choose", ["EXP-3"]],
+        ["choose", ["EXP-3"]],
+        ["matched", ["EXP-5"]],
+        ["matched", ["EXP-3"]],
+      ],
+    );
+  });
+
   it("reads vendors the way banks write them", () => {
     assert.strictEqual(vendorOf("UPI/DR/412345/ZOMATO LTD/YESB/zomato@yes"), "Zomato Ltd");
     assert.strictEqual(vendorOf("ACH D- INVENTED INSURANCE CO-POLICY 88"), "Invented Insurance Co");
