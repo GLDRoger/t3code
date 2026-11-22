@@ -165,7 +165,8 @@ const teamListRow = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`(CASE WHEN ${isPicture(sql)} THEN ${pictureReader(sql, personId)}
-  WHEN r.register_id = 'goals' AND ${targetless(sql)} THEN ${teamListRow(sql, personId)}
+  WHEN r.register_id = 'goals' AND ${targetless(sql)}
+    THEN json_type(r.fields_json, '$.spec') IS NULL AND ${teamListRow(sql, personId)}
   ELSE ((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
       OR ${attends(sql, personId)} OR ${alsoOnIt(sql, personId)} OR r.marked_by_person_id = ${personId}
       OR (r.sensitive = 0 AND ((r.created_by_kind = 'person' AND r.created_by_id = ${personId})

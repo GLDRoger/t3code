@@ -14,6 +14,7 @@ import { SHARED_REFUSAL } from "../lead/Audience.ts";
 import { followsOutsideRead, inheritOutside, stampEvent } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Goals from "../work/goals.ts";
+import { personSees } from "../work/teamView.ts";
 import * as Numbers from "./KinNumbers.ts";
 
 const layer = Layer.mergeAll(
@@ -215,6 +216,44 @@ it.effect(
       ]);
       assert.deepStrictEqual((yield* Numbers.values(owner, "G-1", day, day)).values, []);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps shared computed invoice totals and counts owner-level", () =>
+  Effect.gen(function* () {
+    const sql = yield* setup;
+    yield* goal("G-1", { spec: '{"builtin":"overdue_over_30"}' });
+    yield* goal("G-2", { spec: '{"count":"invoices","states":["waiting"]}' });
+    yield* sql`UPDATE kin_records SET team_shared = 1 WHERE org_id = ${orgId}`;
+    yield* sql`UPDATE kin_people SET sees_money = 1 WHERE org_id = ${orgId} AND person_id = ${member.personId}`;
+    const old = now - 31 * 86_400_000;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind, owner_id,
+      created_by_kind, origin_key, state, amount_minor, currency, due_at, created_at, updated_at, sensitive)
+      VALUES (${orgId}, 'inv-one', 'invoices', 'INV-1', 'Ordinary', 'person', ${owner.personId},
+        'system', 'invoice-one', 'waiting', 1000, 'USD', ${old}, ${now}, ${now}, 0),
+      (${orgId}, 'inv-two', 'invoices', 'INV-2', 'Private', 'person', ${owner.personId},
+        'system', 'invoice-two', 'waiting', 70000, 'USD', ${old}, ${now}, ${now}, 1)`;
+    const revision = yield* Numbers.visibleValueRevision(member);
+    // A definition can change after it acquires a value.
+    yield* sql`INSERT INTO kin_number_values (org_id, record_id, as_of, seq, value,
+        person_id, recorder_name, created_at)
+      VALUES (${orgId}, 'G-1', ${day}, 1, '999', ${owner.personId}, 'Rhea', ${now})`;
+    assert.deepStrictEqual((yield* Numbers.list(member)).numbers, []);
+    for (const key of ["G-1", "G-2"])
+      assert.strictEqual(
+        (yield* Effect.flip(Numbers.values(member, key, day, day))).reason,
+        "not_found",
+      );
+    assert.strictEqual(yield* Numbers.visibleValueRevision(member), revision);
+    assert.deepStrictEqual(
+      yield* sql`SELECT r.key FROM kin_records r WHERE r.org_id = ${orgId}
+      AND r.register_id = 'goals' AND ${personSees(sql, member.personId)} ORDER BY r.key`,
+      [],
+    );
+    assert.deepStrictEqual(
+      (yield* Numbers.list(owner)).numbers.map((row) => row.value),
+      [[{ currency: "USD", minor: 71000 }], "2"],
+    );
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect(
