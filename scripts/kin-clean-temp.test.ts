@@ -27,6 +27,7 @@ THREE_HOURS_AGO=202611112100
 JUST_NOW=202611112330
 T="$FIXTURE/tmp"
 mkdir "$T/old-work" "$T/busy-work" "$T/held" "$T/cache" "$T/cache/pkg" "$T/three-hours"
+mkdir "$T/three-hours-checkout" "$T/three-hours-checkout/.git"
 head -c 4096 /dev/zero >"$T/old-work/out.bin"
 echo x >"$T/busy-work/live.log"
 echo x >"$T/held/socket-dir-file"
@@ -41,6 +42,8 @@ done
 at "$JUST_NOW" "$T/busy-work/live.log"
 at "$JUST_NOW" "$FIXTURE/kin-tmp/fresh"
 at "$THREE_HOURS_AGO" "$T/three-hours"
+at "$THREE_HOURS_AGO" "$T/three-hours-checkout"
+at "$THREE_HOURS_AGO" "$T/three-hours-checkout/.git"
 # A package cache's read-only folders.
 chmod 555 "$T/cache/pkg"
 held_paths() { echo "$T/held/socket-dir-file"; }
@@ -67,12 +70,12 @@ echo "outside $(cat "$FIXTURE/outside/keep")"`);
       /^Cleared 5 old temporary item\(s\) and gave back \d+(\.\d)? (KB|MB)\.$/,
     );
     expect(out.slice(1)).toEqual([
-      "left kin-tmp/fresh outside/keep tmp/busy-work tmp/held tmp/three-hours ",
+      "left kin-tmp/fresh outside/keep tmp/busy-work tmp/held tmp/three-hours tmp/three-hours-checkout ",
       "outside keep",
     ]);
   });
 
-  it("counts two hours as old while space is low, and says so", () => {
+  it("counts two hours as old while space is low, except for a git checkout, and says so", () => {
     const { out, said } = inFixture(`
 percent_left() { echo 19; }
 main
@@ -80,7 +83,9 @@ echo "left $(left)"`);
     expect(out[0], said).toMatch(
       /^Cleared 6 old temporary item\(s\) and gave back .+\. Space was low, so anything untouched for 2 hours counted as old\.$/,
     );
-    expect(out[1]).toBe("left kin-tmp/fresh outside/keep tmp/busy-work tmp/held");
+    expect(out[1]).toBe(
+      "left kin-tmp/fresh outside/keep tmp/busy-work tmp/held tmp/three-hours-checkout",
+    );
   });
 
   it("never touches what another user owns", () => {
@@ -89,6 +94,6 @@ percent_left() { echo 50; }
 id() { if [ "$*" = -u ]; then echo 4242; else command id "$@"; fi; }
 main
 echo "left $(left | wc -w | tr -d ' ')"`);
-    expect(out, said).toEqual(["Nothing old to clear from the temporary folders.", "left 10"]);
+    expect(out, said).toEqual(["Nothing old to clear from the temporary folders.", "left 11"]);
   });
 });

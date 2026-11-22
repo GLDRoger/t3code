@@ -5,7 +5,8 @@
 #
 # Removes the user's own top-level entries in each folder of ROOTS that nothing has modified inside
 # for MAX_AGE_MINUTES (LOW_SPACE_AGE_MINUTES while a folder's disk, or the user's quota on it, has
-# less than LOW_SPACE_PERCENT left) and that no process of the user is in, holds open or listens on.
+# less than LOW_SPACE_PERCENT left; a git checkout always gets the full MAX_AGE_MINUTES) and that no
+# process of the user is in, holds open or listens on.
 # Never touches another user's files, never follows a symlink, never leaves ROOTS.
 #
 # Sourcing this file defines its functions and runs nothing (scripts/kin-clean-temp.test.ts).
@@ -78,7 +79,7 @@ human() {
 
 main() {
   set -uo pipefail
-  local now root age cutoff entry held kb removed=0 freed=0 failed=0 low=""
+  local now root age cutoff day_cutoff limit entry held kb removed=0 freed=0 failed=0 low=""
   now="${NOW:-$(date +%s)}"
   held="$(held_paths)"
   for root in "${ROOTS[@]}"; do
@@ -91,8 +92,12 @@ main() {
       low=1
     fi
     cutoff="$(utc $((now - age * 60)))"
+    day_cutoff="$(utc $((now - MAX_AGE_MINUTES * 60)))"
     while IFS= read -r -d '' entry; do
-      if recent "$entry" "$cutoff" || in_use "$entry" "$held"; then continue; fi
+      limit="$cutoff"
+      # An agent's checkout may be waiting on a person's answer with work not yet pushed.
+      if [ -e "$entry/.git" ]; then limit="$day_cutoff"; fi
+      if in_use "$entry" "$held" || recent "$entry" "$limit"; then continue; fi
       kb="$(du -sk "$entry" 2>/dev/null | awk '{ print $1 }')"
       # A read-only folder (a package cache) can't be emptied until it is writable again.
       if ! rm -rf "$entry" 2>/dev/null && [ -d "$entry" ] && [ ! -L "$entry" ]; then
