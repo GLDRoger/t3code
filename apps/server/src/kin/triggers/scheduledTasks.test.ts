@@ -722,6 +722,13 @@ it.effect("a group's own routine runs in the group, and pauses once its agent le
     const [row] = yield* sql<{ pending: number | null }>`SELECT pending_enabled AS pending
       FROM kin_schedules WHERE org_id = ${orgId}`;
     assert.equal(row?.pending, 0);
+    // Paused, a Run now does nothing and tells no one again.
+    yield* runNow();
+    assert.lengthOf(yield* nativeRuns(), 2);
+    assert.lengthOf(
+      yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId} AND body LIKE 'Paused %'`,
+      1,
+    );
   }).pipe(Effect.provide(layer));
 });
 
@@ -787,16 +794,16 @@ it.effect("the card's Pause, Run now and Delete act on the native task", () => {
     assert.isFalse((yield* tasks.list()).tasks[0]!.enabled);
     assert.include((yield* nativeCard()).state, { status: "paused" });
     assert.lengthOf(yield* nativeRuns(), 0);
-    // Run now still runs a paused schedule, as before.
+    // Run now respects the pause: resume it first.
     yield* tap("run_now");
     yield* drain;
-    assert.lengthOf(yield* nativeRuns(), 1);
+    assert.lengthOf(yield* nativeRuns(), 0);
     // The same when the pause comes from T3's Scheduled tasks screen.
     yield* tasks.setEnabled({ id: taskId, enabled: true });
     yield* due();
     yield* tasks.setEnabled({ id: taskId, enabled: false });
     yield* drain;
-    assert.lengthOf(yield* nativeRuns(), 1);
+    assert.lengthOf(yield* nativeRuns(), 0);
     yield* tap("delete");
     yield* drain;
     assert.lengthOf((yield* tasks.list()).tasks, 0);

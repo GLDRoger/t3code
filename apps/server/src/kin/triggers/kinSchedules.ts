@@ -6,6 +6,7 @@ import {
   KinChatError,
   KinLead,
   type KinMemoryItemId,
+  KinPersonId,
   type KinOrgId,
   type MemoryItemEvery,
   ProjectId,
@@ -30,6 +31,7 @@ import * as ThreadManagementService from "../../orchestration-v2/ThreadManagemen
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import { leadProjectId } from "../lead/leadProject.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { isStrayKinTask, KIN_COMMAND_PREFIX, KIN_TASK_PREFIX } from "./taskIds.ts";
 
 const commandIdOf = (orgId: KinOrgId, scheduleId: string) =>
@@ -414,3 +416,22 @@ function asChatError(cause: unknown) {
 }
 
 export const layer = Layer.effect(KinSchedules, make);
+
+/**
+ * Whether a run of `schedule` may still go on: not paused (a Run now included), and a room's own
+ * still has its setter in the company, owner or co-owner. Read at the fire and again at the claim.
+ */
+export const runnable = Effect.fn("KinSchedules.runnable")(function* (
+  sql: SqlClient.SqlClient,
+  schedule: KinSchedule,
+  task: NativeTask,
+) {
+  if ((schedule.pendingEnabled ?? task.enabled) !== 1) return false;
+  if (schedule.audience !== "shared") return true;
+  const [setter] = yield* sql<{ removed: number }>`SELECT removed_at IS NOT NULL AS removed
+    FROM kin_people WHERE org_id = ${schedule.orgId} AND person_id = ${schedule.saidBy}`;
+  if (setter === undefined || setter.removed === 1) return false;
+  return yield* ownerLevel(schedule.orgId, KinPersonId.make(schedule.saidBy)).pipe(
+    Effect.provideService(SqlClient.SqlClient, sql),
+  );
+});

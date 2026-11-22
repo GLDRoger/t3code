@@ -459,13 +459,14 @@ const make = Effect.gen(function* () {
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const row = yield* KinSchedules.readSchedule(sql, orgId, schedule.scheduleId);
-        // Deleted, or paused (from the card or T3's screen) since the slot fired: drop the fire.
+        // Deleted, or paused (from the card or T3's screen, a Run now too), or its setter gone
+        // since the slot fired: drop the fire.
         if (
           row === undefined ||
           task === undefined ||
           hash === undefined ||
           row.deletedAt !== null ||
-          (!manual && (row.pendingEnabled ?? task.enabled) !== 1)
+          !(yield* KinSchedules.runnable(sql, row, task))
         )
           return yield* consume;
         const itemId = row.scheduleId;
