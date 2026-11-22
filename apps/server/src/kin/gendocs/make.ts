@@ -342,7 +342,9 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
     tax: first.tax,
   });
   if (rendered._tag === "failed")
-    return yield* invalid(`${NOTHING} The ${recipe.name} recipe didn't render: ${rendered.reason}`);
+    return yield* invalid(
+      `${NOTHING} The ${recipe.name} recipe didn't render because ${rendered.reason}`,
+    );
   if (request.preview === true) {
     yield* request.admit;
     return {
