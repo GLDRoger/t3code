@@ -96,10 +96,18 @@ export const KIN_DEALS = {
   addStep: "Add a next step",
   stepNeeded: "Add a next step, or choose None yet.",
   what: "What",
+  whatPlaceholder: "What the deal is for",
   value: "Value",
+  valuePlaceholder: "Such as 90k or 9 lakh",
   expected: "Expected",
-  valueHint: "Leave it empty if you don't know yet",
+  valueHint: "A rough figure is fine. Leave it empty if you don't know yet.",
   notAmount: "That isn't an amount.",
+  readAs: (amount: string) => `Read as ${amount}`,
+  notes: "Notes",
+  notesPlaceholder: "Prices mentioned, rough numbers",
+  notesHint: "Anything to remember when you talk numbers.",
+  stepPlaceholder: "What happens next",
+  cameFromPlaceholder: "Such as a referral or an event",
   add: "Add deal",
   boardHint: "Each deal keeps its own currency. Dragging a card changes its stage; Lost asks why.",
   section: "Deals",
@@ -767,6 +775,16 @@ const concernLabels = (text: string | null) =>
     ? new Set<string>()
     : new Set(text.split("\n").map((item) => item.split(": ")[0]!.trim()));
 
+/** What the Value field read from what was typed, and the line shown under it. */
+export function kinDealValueRead(typed: string, currency: string) {
+  const text = typed.trim();
+  if (text === "") return { money: null, bad: false, hint: KIN_DEALS.valueHint };
+  const money = kinParseMoney(text, currency);
+  return money === null
+    ? { money, bad: true, hint: KIN_DEALS.notAmount }
+    : { money, bad: false, hint: KIN_DEALS.readAs(kinMoneyText(money)) };
+}
+
 // Editing a deal
 
 /** What the Edit form holds, as typed. The client stays: a deal never moves to another. */
@@ -777,18 +795,24 @@ export interface KinDealEditDraft {
   readonly expected: string | null;
   readonly source: string;
   readonly quote: KinRecordKey | null;
+  /** What was said about price and the like: the deal page's notes. */
+  readonly notes: string;
 }
 
-export function kinDealEditDraft(
-  deal: Pick<KinDealRow, "title" | "value" | "expectedAt" | "expectedAllDay" | "source" | "quote">,
-  names: KinWorkNames,
-): KinDealEditDraft {
+/** A deal as Edit opens it: its row, with the notes its page carries. */
+type KinDealEditable = Pick<
+  KinDealRow,
+  "title" | "value" | "expectedAt" | "expectedAllDay" | "source" | "quote"
+> & { readonly notes?: string };
+
+export function kinDealEditDraft(deal: KinDealEditable, names: KinWorkNames): KinDealEditDraft {
   return {
     title: deal.title,
     value: deal.value === undefined ? "" : kinMoneyText(deal.value),
     expected: kinWorkAllDay(deal.expectedAt, deal.expectedAllDay, names),
     source: deal.source ?? "",
     quote: deal.quote?.key ?? null,
+    notes: deal.notes ?? "",
   };
 }
 
@@ -801,10 +825,7 @@ export type KinDealEditRequest =
  * typed without a currency takes the deal's own, else the company's.
  */
 export function kinDealEditRequest(
-  deal: Pick<
-    KinDealRow,
-    "key" | "rev" | "title" | "value" | "expectedAt" | "expectedAllDay" | "source" | "quote"
-  >,
+  deal: KinDealEditable & Pick<KinDealRow, "key" | "rev">,
   draft: KinDealEditDraft,
   names: KinWorkNames,
   home: string | null,
@@ -817,6 +838,7 @@ export function kinDealEditRequest(
   const value = typed === "" ? null : kinParseMoney(typed, currency);
   if (typed !== "" && value === null) return { ok: false, problem: KIN_DEALS.notAmount };
   const source = draft.source.trim();
+  const notes = draft.notes.trim();
   const sameValue =
     value === null
       ? deal.value === undefined
@@ -833,6 +855,7 @@ export function kinDealEditRequest(
       ...(draft.expected === was.expected ? {} : { expectedOn: draft.expected }),
       ...(source === was.source ? {} : { source: source === "" ? null : source }),
       ...(draft.quote === was.quote ? {} : { quote: draft.quote }),
+      ...(notes === was.notes.trim() ? {} : { notes }),
     },
   };
 }

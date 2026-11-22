@@ -50,7 +50,6 @@ import { ListActionRow } from "../../../components/ui/ListActionRow";
 import { ListRow } from "../../../components/ui/ListRow";
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { ListSection } from "../../../components/ui/ListSection";
-import { ListToggleRow } from "../../../components/ui/ListToggleRow";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
@@ -67,6 +66,7 @@ import {
   type KinConnectionsParams,
   type KinConnectionsTarget,
 } from "./kinConnectionTarget";
+import { KinWorkToggleRow } from "../components/KinWorkPieces";
 
 function useGitHub(environmentId: EnvironmentId, orgId: KinOrgId) {
   const statusAtom = kinClient.github({ environmentId, input: { orgId } });
@@ -484,7 +484,7 @@ function AccountRepos(props: {
         </View>
       ) : (
         shown.map((repo) => (
-          <ListToggleRow
+          <KinWorkToggleRow
             key={repo.repo}
             label={repo.repo}
             description={repo.agentsAs === "app" ? WATCH.asApp : WATCH.asYou}
@@ -622,7 +622,7 @@ function RepoRows(props: {
         const action = kinGitHubGuardAction(repo.guard);
         return (
           <View key={repo.repo}>
-            <ListToggleRow
+            <KinWorkToggleRow
               label={repo.repo}
               description={repoNote(repo)}
               value={repo.watched}
