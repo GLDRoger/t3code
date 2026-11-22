@@ -5359,6 +5359,57 @@ describe("money answers", () => {
   );
 
   it.effect(
+    "read a company's own Reimbursement text as nothing owed: K208 moves it off Kin's key",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* defined(3, { template: "expenses" });
+        // As a company's list was before: its own Reimbursement, a note, under Kin's key.
+        const [list] = yield* sql<{ json: string }>`SELECT definition_json AS json
+          FROM kin_registers WHERE org_id = ${orgId} AND register_id = 'expenses'`;
+        const definition = JSON.parse(list!.json) as {
+          fields: ReadonlyArray<{ key: string; label: string; type: string }>;
+        };
+        const own = JSON.stringify({
+          ...definition,
+          fields: [
+            ...definition.fields.filter(
+              (one) => !["fundedBy", "reimbursement", "repaidOn"].includes(one.key),
+            ),
+            { key: "reimbursement", label: "Reimbursement", type: "text", sensitive: false },
+          ],
+        });
+        yield* sql`UPDATE kin_registers SET definition_json = ${own}, built_in = 0
+          WHERE org_id = ${orgId} AND register_id = 'expenses'`;
+        const records = yield* KinRecords.KinRecords;
+        const { row } = yield* records.create(orgId, system, {
+          owner,
+          originKey: "claim",
+          list: "expenses",
+          title: "Invented client dinner",
+          state: "done",
+          amount: inr(9_000),
+          dateAt: on("2026-10-10"),
+          fields: { reimbursement: "owed" },
+        });
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 208`;
+        yield* runKinMigrations();
+
+        const view = outlookAnswer(yield* outlook(orgId, NOW));
+        const fields = JSON.parse((yield* records.get(orgId, row.key))!.fieldsJson);
+        assert.deepStrictEqual(
+          [
+            fields,
+            view.owedToPartnersCountedAsGoingOut,
+            view.runway[0]?.lastThreeMonths.find((one) => one.month === "2026-10")?.out,
+          ],
+          [{ reimbursement2: "owed" }, undefined, "₹9,000.00"],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
     "owe each partner the net of their list per currency, and count each expense once, when repaid",
     () =>
       Effect.gen(function* () {

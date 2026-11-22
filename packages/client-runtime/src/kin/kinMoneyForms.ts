@@ -79,6 +79,8 @@ export const KIN_MONEY_FORMS = {
     fundedBy: "Funded by",
     company: "The company",
     fundedByHint: "A partner who paid from their own money is owed it back until it's repaid.",
+    fundedByNoRoom:
+      "Expenses has no room for Funded by: a list holds at most 20 fields, so who paid from their own money can't be recorded.",
     receipt: "Receipt",
     noReceipt: "No receipt",
     receiptHint:
@@ -322,6 +324,8 @@ export function kinExpenseChoices(
   const funded =
     def == null || def.fields.some((field) => field.key === "fundedBy" && !field.retired);
   return {
+    /** Said in place of the picker when Expenses has no Funded by to save it in. */
+    fundedByNote: funded || people.size === 0 ? null : KIN_MONEY_FORMS.expense.fundedByNoRoom,
     fundedBy: funded
       ? [...people]
           .map(([value, label]) => ({ value, label }))

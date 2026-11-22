@@ -5,7 +5,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { FieldValues } from "./lists.ts";
 import { checkFields, type ListDef, presetDefinition } from "./registers.ts";
-import { fundingOf, owedToPartner, partnerFunded, repaidDay } from "./reimbursement.ts";
+import {
+  fundingKeyRefusal,
+  fundingOf,
+  owedToPartner,
+  partnerFunded,
+  repaidDay,
+} from "./reimbursement.ts";
 
 const partner = "person:meera";
 const cases: ReadonlyArray<[string, FieldValues, ReturnType<typeof fundingOf>]> = [
@@ -94,5 +100,14 @@ describe("partner reimbursements", () => {
     assert.isUndefined(checkFields(def, { fundedBy: partner, reimbursement: "owed" }));
     assert.match(checkFields(def, { fundedBy: "agent:finance" })!.message, /not an agent/);
     assert.match(checkFields(def, { reimbursement: "maybe" })!.message, /one of owed, repaid/);
+    // Kin's keys are Kin's: Expenses takes no field of another kind under them.
+    assert.isUndefined(fundingKeyRefusal(def.fields));
+    assert.strictEqual(
+      fundingKeyRefusal([
+        ...def.fields.filter((one) => one.key !== "reimbursement"),
+        { key: "reimbursement", label: "Claim note", type: "text" },
+      ]),
+      "Expenses keeps reimbursement for who funded an expense; name Claim note differently.",
+    );
   });
 });

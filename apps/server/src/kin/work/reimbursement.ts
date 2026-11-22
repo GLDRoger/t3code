@@ -32,6 +32,36 @@ export const REIMBURSEMENT_FIELDS: ReadonlyArray<KinListField> = [
   { key: REPAID_ON, label: "Repaid on", type: "date", sensitive: false },
 ];
 
+/**
+ * Why Expenses can't take these fields: one under a key Kin keeps for who funded an expense that
+ * isn't Kin's own kind, so Money would read its values as funding.
+ */
+export const fundingKeyRefusal = (
+  fields: ReadonlyArray<{
+    readonly key: string;
+    readonly label: string;
+    readonly type: string;
+    readonly choices?: ReadonlyArray<string> | undefined;
+  }>,
+) => {
+  const taken = fields.find((field) => {
+    const own = REIMBURSEMENT_FIELDS.find((one) => one.key === field.key);
+    return (
+      own !== undefined &&
+      (own.type !== field.type ||
+        (own.choices ?? []).length !== (field.choices ?? []).length ||
+        (own.choices ?? []).some((choice) => !(field.choices ?? []).includes(choice)))
+    );
+  });
+  return taken === undefined
+    ? undefined
+    : `Expenses keeps ${taken.key} for who funded an expense; name ${taken.label} differently.`;
+};
+
+/** Said when Expenses has no Funded by field to record it in: a list holds at most 20 fields. */
+export const NO_ROOM_FOR_FUNDING =
+  "Expenses has no room for Funded by: a list holds at most 20 fields, so who paid from their own money can't be recorded.";
+
 export type Funding =
   | { readonly by: "company" }
   | {

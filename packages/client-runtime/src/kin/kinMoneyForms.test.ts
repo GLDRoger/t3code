@@ -171,6 +171,15 @@ describe("an expense typed by hand", () => {
       { value: "meera", label: "Meera" },
       { value: "zoya", label: "Zoya" },
     ]);
+    // An Expenses list with no room for Funded by says so in a line, and offers no picker.
+    const full = {
+      fields: Array.from({ length: 20 }, (_, n) => ({ key: `extra${n}`, retired: false })),
+      categories: [],
+    } as unknown as Parameters<typeof kinExpenseChoices>[0];
+    expect(kinExpenseChoices(full, people)).toMatchObject({
+      fundedBy: [],
+      fundedByNote: KIN_MONEY_FORMS.expense.fundedByNoRoom,
+    });
     expect(
       kinPersonChoices("fundedBy", [{ value: "person:meera" }, { value: "agent:finance" }]),
     ).toEqual([{ value: "person:meera" }]);
@@ -181,6 +190,7 @@ describe("an expense typed by hand", () => {
 
   it("offers no categories before the Expenses list exists, which the first one makes", () => {
     expect(kinExpenseChoices(null)).toEqual({
+      fundedByNote: null,
       fundedBy: [],
       categories: [],
       paidWith: [],

@@ -516,6 +516,11 @@ function ExpenseForm(props: KinWorkTarget) {
           )}
         </ListSection>
       )}
+      {choices.fundedByNote === null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {choices.fundedByNote}
+        </Text>
+      )}
       {choices.fundedBy.length === 0 ? null : (
         <ListSection>
           <PickRow

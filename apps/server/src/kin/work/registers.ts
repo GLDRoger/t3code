@@ -35,7 +35,12 @@ import {
   homeCurrency,
 } from "./companyProfile.ts";
 import { regionOf } from "./region.ts";
-import { FUNDED_BY, fundedByRefusal, REIMBURSEMENT_FIELDS } from "./reimbursement.ts";
+import {
+  FUNDED_BY,
+  fundedByRefusal,
+  fundingKeyRefusal,
+  REIMBURSEMENT_FIELDS,
+} from "./reimbursement.ts";
 import { companyRegion, NEUTRAL_PAID_WITH } from "./statements/statementRegion.ts";
 import { dayIn, isCurrency } from "./money.ts";
 import { cardAnswer } from "./ownerCards.ts";
@@ -801,6 +806,8 @@ const checkDraft = (draft: Draft): KinChatError | undefined => {
   if (isBuiltIn(draft.id) || Object.values(LISTS).some((list) => list.prefix === draft.prefix))
     return invalid(`The key prefix ${draft.prefix} is Kin's own. Propose another.`);
   if (!isCurrency(def.currency)) return invalid(`${def.currency} is not a currency code.`);
+  const taken = draft.id === "expenses" ? fundingKeyRefusal(def.fields) : undefined;
+  if (taken !== undefined) return invalid(taken);
   return checkFieldDefs(def.fields);
 };
 
@@ -1061,6 +1068,8 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
     if (def === undefined || def.builtIn !== null) return yield* unknownList(proposal.id);
     const next = extended(def, proposal);
     if (isChatError(next)) return yield* next;
+    const taken = def.id === "expenses" ? fundingKeyRefusal(next.fields) : undefined;
+    if (taken !== undefined) return yield* invalid(taken);
     yield* sql`UPDATE kin_registers SET definition_json = ${yield* encodeDefinition(next)},
         rev = rev + 1
       WHERE org_id = ${orgId} AND register_id = ${proposal.id}`;

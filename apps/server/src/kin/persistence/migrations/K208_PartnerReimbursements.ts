@@ -4,9 +4,11 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 /**
- * Expenses gain Funded by, Reimbursement and Repaid on, all or none within 20 fields. No entry is
- * changed: an imported one that says a partner paid stays counted as before until the owner says
- * who it was and whether it is still owed (Money, `kin.work.matchPartner`).
+ * Expenses gain Funded by, Reimbursement and Repaid on, all or none within 20 fields. A company's
+ * own field already under one of those keys, of another kind, moves to a free key with its values
+ * first, so Money never reads its text as who funded what; nothing else in an entry changes. An
+ * imported one that says a partner paid stays counted as before until the owner says who it was
+ * and whether it is still owed (Money, `kin.work.matchPartner`).
  */
 
 const ADDED = [
@@ -21,6 +23,13 @@ const ADDED = [
   { key: "repaidOn", label: "Repaid on", type: "date", sensitive: false },
 ] as const;
 const MAX_FIELDS = 20;
+/** A field already under one of Kin's keys that is Kin's own kind: kept, and read as Kin's. */
+const sameKind = (own: (typeof ADDED)[number], field: Record<string, unknown>) =>
+  field.type === own.type &&
+  (!("choices" in own) ||
+    (Array.isArray(field.choices) &&
+      field.choices.length === own.choices.length &&
+      own.choices.every((choice) => (field.choices as ReadonlyArray<unknown>).includes(choice))));
 
 const Definition = Schema.fromJsonString(
   Schema.StructWithRest(
@@ -46,13 +55,28 @@ export default Effect.gen(function* () {
     const decoded = decodeDefinition(list.json);
     if (Option.isNone(decoded)) continue;
     const definition = decoded.value;
-    const missing = ADDED.filter((one) =>
-      definition.fields.every((field) => field.key !== one.key),
-    );
-    if (missing.length === 0 || definition.fields.length + missing.length > MAX_FIELDS) continue;
+    const keys = new Set(definition.fields.map((field) => String(field.key)));
+    const moved: Array<readonly [string, string]> = [];
+    const fields = definition.fields.map((field) => {
+      const own = ADDED.find((one) => one.key === field.key);
+      if (own === undefined || sameKind(own, field)) return field;
+      let free = `${own.key}2`;
+      for (let n = 3; keys.has(free); n += 1) free = `${own.key}${n}`;
+      keys.add(free);
+      moved.push([own.key, free]);
+      return { ...field, key: free };
+    });
+    for (const [from, to] of moved)
+      yield* sql`UPDATE kin_records SET fields_json = json_remove(
+          json_set(fields_json, ${`$.${to}`}, fields_json -> ${`$.${from}`}), ${`$.${from}`})
+        WHERE org_id = ${list.orgId} AND register_id = 'expenses'
+          AND json_type(fields_json, ${`$.${from}`}) IS NOT NULL`;
+    const missing = ADDED.filter((one) => fields.every((field) => field.key !== one.key));
+    const room = fields.length + missing.length <= MAX_FIELDS;
+    if (moved.length === 0 && (missing.length === 0 || !room)) continue;
     const json = yield* encodeDefinition({
       ...definition,
-      fields: [...definition.fields, ...missing],
+      fields: room ? [...fields, ...missing] : fields,
     }).pipe(Effect.orDie);
     yield* sql`UPDATE kin_registers SET definition_json = ${json}, rev = rev + 1
       WHERE org_id = ${list.orgId} AND register_id = 'expenses' AND built_in = 0`;

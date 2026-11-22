@@ -528,6 +528,9 @@ export function KinNewExpenseDialog(
               )}
         </div>
       )}
+      {choices.fundedByNote === null ? null : (
+        <p className="text-xs text-muted-foreground">{choices.fundedByNote}</p>
+      )}
       {choices.fundedBy.length === 0 ? null : (
         <div className="flex flex-col gap-1.5">
           {pick(

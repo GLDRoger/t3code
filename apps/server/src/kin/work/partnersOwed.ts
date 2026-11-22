@@ -4,12 +4,14 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRecords, type Writer } from "./KinRecords.ts";
 import { fieldText, parseFields } from "./lists.ts";
+import { listDef } from "./registers.ts";
 import { addUp, dayIn, formatMoney } from "./money.ts";
 import { countedEntry, moneyDay } from "./recordRows.ts";
 import {
   FUNDED_BY,
   fundingOf,
   IMPORTED_PARTNER,
+  NO_ROOM_FOR_FUNDING,
   owedToPartner,
   partnerAddress,
   partnerFunded,
@@ -156,6 +158,12 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
   }));
 });
 
+/** Whether Expenses has Funded by to record a partner in. */
+export const fundable = Effect.fn("KinPartnersOwed.fundable")(function* (orgId: KinOrgId) {
+  const def = yield* listDef(orgId, "expenses");
+  return def?.fields.some((one) => one.key === FUNDED_BY && one.retired !== true) === true;
+});
+
 /** Paid expenses an import says a partner paid, by address, until the owner says who and whether owed. */
 export const partnersUnsaid = Effect.fn("KinPartnersOwed.unsaid")(function* (
   orgId: KinOrgId,
@@ -237,6 +245,8 @@ export const matchPartner = Effect.fn("KinPartnersOwed.match")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  if (!(yield* fundable(orgId)))
+    return yield* new KinChatError({ reason: "invalid_state", message: NO_ROOM_FOR_FUNDING });
   const given = address === null ? null : partnerAddress(address);
   const rows = yield* sql<{ key: string; rev: number; fieldsJson: string }>`SELECT r.key, r.rev,
       r.fields_json AS "fieldsJson"

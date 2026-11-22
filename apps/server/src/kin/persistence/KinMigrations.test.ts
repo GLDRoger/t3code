@@ -2332,7 +2332,7 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
-    "K208 adds only the missing fields and leaves a list's own reimbursement of another kind",
+    "K208 adds only the missing fields, and moves a list's own reimbursement of another kind off Kin's key",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -2351,6 +2351,11 @@ describe("Kin migrations", () => {
             owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
           VALUES ('org', 'e', 'expenses', 'EXP-1', 'Train tickets', 'done', 'person', 'dev',
             'person', 'e', 1, 1, ${stored})`;
+        // The company's own note under Kin's key: it keeps its words, under a key of its own.
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
+          VALUES ('org', 'n', 'expenses', 'EXP-2', 'Client dinner', 'done', 'person', 'dev',
+            'person', 'n', 1, 1, ${JSON.stringify({ reimbursement: "owed", vendor: "Cafe" })})`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(208));
         const [list] = yield* sql<{
           json: string;
@@ -2360,11 +2365,20 @@ describe("Kin migrations", () => {
         };
         assert.deepStrictEqual(
           shape.fields.map((one) => `${one.key}:${one.type}`),
-          ["fundedBy:person", "reimbursement:text", "repaidOn:date"],
+          ["fundedBy:person", "reimbursement2:text", "reimbursement:choice", "repaidOn:date"],
         );
-        const [row] = yield* sql<{ json: string; rev: number }>`SELECT fields_json AS json, rev
-          FROM kin_records`;
-        assert.deepStrictEqual(row, { json: stored, rev: 1 });
+        const rows = yield* sql<{ json: string }>`SELECT fields_json AS json FROM kin_records
+          ORDER BY key`;
+        assert.deepStrictEqual(
+          rows.map((one) => JSON.parse(one.json)),
+          [JSON.parse(stored), { vendor: "Cafe", reimbursement2: "owed" }],
+        );
+        // Again: nothing moves twice.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 208`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(208));
+        const [again] = yield* sql<{ json: string }>`SELECT definition_json AS json
+          FROM kin_registers`;
+        assert.strictEqual(again!.json, list!.json);
       }).pipe(Effect.provide(layer)),
   );
 

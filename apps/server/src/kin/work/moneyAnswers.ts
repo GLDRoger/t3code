@@ -19,7 +19,7 @@ import {
 } from "./recordRows.ts";
 import { nextDates, repeatsBetween } from "./repeat.ts";
 import { companyCashOut, partnerRepaidDay, repaidDay } from "./reimbursement.ts";
-import { partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
+import { fundable, partnersOwed, partnersUnsaid } from "./partnersOwed.ts";
 import { alertsBeside, type AlertBalance } from "./statements/bankAlerts.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
 import {
@@ -616,7 +616,8 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
     dueOut,
     overdueOut,
     partners,
-    unsaid: yield* partnersUnsaid(orgId, home),
+    // With no Funded by to record them in, there is nobody to say: no picker that can't save.
+    unsaid: (yield* fundable(orgId)) ? yield* partnersUnsaid(orgId, home) : [],
     datesWithoutAmount: undated.rows,
     incomplete,
     runway: yield* runway(orgId, now, zone, today),
