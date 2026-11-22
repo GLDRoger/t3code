@@ -254,11 +254,23 @@ export const namedTask = Effect.fn("KinSending.namedTask")(function* (
       AND m.chat_id = ${turn.chatId} AND m.author_kind = 'human' AND m.status = 'posted'
     ORDER BY m.seq`;
   const keys = [...new Set([...asked.map((one) => one.body), ...words].flatMap(keysIn))];
-  if (keys.length === 0) return null;
+  // A follow-up woken for one person in this chat (`draftWake.ts`) is its own task's.
+  const woken =
+    keys.length > 0
+      ? []
+      : (yield* sql<{ recordId: string }>`SELECT DISTINCT f.subject_record_id AS "recordId"
+          FROM kin_events e, json_each(e.json, '$.factKeys') k
+          JOIN kin_pulse_facts f ON f.org_id = e.org_id AND f.fact_key = k.value
+          WHERE e.org_id = ${turn.orgId} AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'pulse'
+            AND json_extract(e.json, '$.chatId') = ${turn.chatId}
+            AND f.subject_record_id IS NOT NULL
+          ORDER BY f.subject_record_id`).map((row) => row.recordId);
+  if (keys.length === 0 && woken.length === 0) return null;
   const viewer = yield* chatReaders(turn.orgId, turn.chatId);
   const tasks = yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId"
     FROM kin_records r
-    WHERE r.org_id = ${turn.orgId} AND r.register_id = 'work' AND r.key IN ${sql.in(keys)}
+    WHERE r.org_id = ${turn.orgId} AND r.register_id = 'work'
+      AND ${keys.length > 0 ? sql`r.key IN ${sql.in(keys)}` : sql`r.record_id IN ${sql.in(woken)}`}
       AND r.state NOT IN ('done', 'dropped') AND ${seenBy(sql, viewer)}
     ORDER BY r.record_id LIMIT 2`;
   return tasks.length === 1 ? tasks[0]!.recordId : null;

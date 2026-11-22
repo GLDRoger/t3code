@@ -77,6 +77,7 @@ import {
 } from "../pulse/prompt.ts";
 import { setAsideOverdue } from "../pulse/invoiceAsides.ts";
 import { toldBy } from "../pulse/told.ts";
+import { draftWakeText } from "../pulse/draftWake.ts";
 import {
   buildWeeklySection,
   isEveningCheckIn,
@@ -152,6 +153,7 @@ export const QUOTE_LABELS = {
   dismissedQuestion: "dismissed question (data)",
   reopenedQuestion: "reopened question (data)",
   openQuestion: "open question (data)",
+  followUp: "follow-up (data)",
   githubEvent: "GitHub event (untrusted hint)",
   teamRoomTurn: "Team room turn",
   ownerMessage: "owner message",
@@ -734,6 +736,28 @@ export class KinLeadPrompt extends Context.Service<
             const names = forWhom.join(" and ");
             events.push(
               `${quote(QUOTE_LABELS.eventData, eventFacts(event), true)}\n\n${workForText(names)}`,
+            );
+            continue;
+          }
+          // A wake Kin made for one person's own follow-up (`draftWake.ts`): theirs, in their chat.
+          if (event._tag === "pulse" && event.origin?.personId !== undefined) {
+            fromOwner = false;
+            const made = yield* draftWakeText(orgId, event).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin follow-up unreadable", cause).pipe(Effect.as(undefined)),
+              ),
+            );
+            const eventQuote = quote(QUOTE_LABELS.eventData, { event: event.eventId });
+            if (made === undefined) {
+              events.push(
+                `${eventQuote}\n\nThat follow-up was closed before this turn. Write exactly ${SILENT_REPLY}.`,
+              );
+              continue;
+            }
+            replyDue = true;
+            events.push(
+              `${eventQuote}\n\n${made.text}\n\n${quote(QUOTE_LABELS.followUp, made.data, true)}`,
             );
             continue;
           }

@@ -223,6 +223,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.connections.calls",
   });
   const readConnectionCalls = kinGuardedRead(connectionCallsRead);
+  const myMailboxRead = createKinRpcCommand(runtime, {
+    label: "kin:my-mailbox:read",
+    tag: "kin.connections.mine",
+  });
+  const readMyMailbox = kinGuardedRead(myMailboxRead);
   const githubRead = createKinRpcCommand(runtime, {
     label: "kin:github:read",
     tag: "kin.github.connect.status",
@@ -705,6 +710,15 @@ export function makeKinClient<R, ER>(
       staleTimeMs: 30_000,
       refreshTrigger: kinRefreshOn("connections"),
     }),
+    /** The person's own mailbox; anyone's, live on the `connections` topic. */
+    myMailbox: createKinQueryAtomFamily(runtime, {
+      label: "kin:my-mailbox",
+      execute: Effect.fn("KinClient.myMailbox")(function* (input: KinConnectionsInput) {
+        return yield* readMyMailbox(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinRefreshOn("connections"),
+    }),
     connection: createKinQueryAtomFamily(runtime, {
       label: "kin:connection",
       execute: Effect.fn("KinClient.connection")(function* (input: KinConnectionRef) {
@@ -866,6 +880,21 @@ export function makeKinClient<R, ER>(
       label: "kin:connection:signInFinish",
       tag: "kin.connections.signInFinish",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:signIn` },
+    }),
+    /** A person signs in to their own mailbox: theirs alone to connect and disconnect. */
+    myMailboxSignInStart: createKinRpcCommand(runtime, {
+      label: "kin:my-mailbox:signInStart",
+      tag: "kin.connections.mineSignInStart",
+    }),
+    myMailboxSignInFinish: createKinRpcCommand(runtime, {
+      label: "kin:my-mailbox:signInFinish",
+      tag: "kin.connections.mineSignInFinish",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:mine` },
+    }),
+    myMailboxRemove: createKinRpcCommand(runtime, {
+      label: "kin:my-mailbox:remove",
+      tag: "kin.connections.mineRemove",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:mine` },
     }),
     connectionSetSignInClient: createKinRpcCommand(runtime, {
       label: "kin:connection:setSignInClient",

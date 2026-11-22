@@ -22,6 +22,7 @@ import {
   type KinConnectionTool,
   type KinConnectionToolDefinition,
   type KinConnectionToolMode,
+  type KinMyMailbox,
   type KinOrgId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -992,3 +993,37 @@ export function kinUseRow(
     time: formatKinTime(new Date(call.createdAt), now),
   };
 }
+
+/**
+ * Settings › Your mailbox, on web and phone: a person's own Google or Microsoft mail, which Kin
+ * drafts their follow-ups from and only they confirm sends from. The owner level sees whose
+ * mailbox is connected and which address, never what is in it.
+ */
+export const KIN_MY_MAILBOX_COPY = {
+  title: "Your mailbox",
+  none: "Connect your own Google or Microsoft mail, and Kin drafts your follow-ups from it. Nothing goes until you tap Confirm, and only you see what is in it.",
+  connected: (address: string) =>
+    `Connected as ${address}. Kin drafts your follow-ups from it; only you confirm what goes.`,
+  needsSignIn: (address: string) =>
+    `${address} needs signing in again before Kin can draft or send from it.`,
+  connect: (label: string) => `Connect ${label}`,
+  notReady: (label: string) =>
+    `${label} isn't set up for this company yet. The owner sets it up once in Connections.`,
+  signInAgain: "Sign in again",
+  disconnect: "Disconnect",
+  loadFailed: "Couldn't load your mailbox",
+  teammatesTitle: "Teammates' mailboxes",
+  teammatesFooter:
+    "Which address each person connected. Kin never shows you what is in it or sends from it for you.",
+  teammateNeedsSignIn: "Needs signing in again",
+} as const;
+
+/** What Your mailbox shows: none yet, connected, or connected and needing a sign-in. */
+export const kinMyMailboxLine = (view: KinMyMailbox) => {
+  const mailbox = view.mailbox;
+  if (mailbox === null) return { _tag: "none" as const, text: KIN_MY_MAILBOX_COPY.none };
+  const address = mailbox.account ?? mailbox.preset ?? KIN_MY_MAILBOX_COPY.title;
+  return mailbox.state === "needs_sign_in"
+    ? { _tag: "signIn" as const, text: KIN_MY_MAILBOX_COPY.needsSignIn(address) }
+    : { _tag: "connected" as const, text: KIN_MY_MAILBOX_COPY.connected(address) };
+};

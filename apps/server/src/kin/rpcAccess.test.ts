@@ -50,6 +50,12 @@ const MEMBER = [
   "kin.chats.pin",
   "kin.chats.subscribe",
   "kin.chats.withPerson",
+  // Their own mailbox only: `KinConnections.mine*` finds the caller's own row and no one
+  // else's (`MailEndToEnd.test.ts` pins that the owner level can't reach it either).
+  "kin.connections.mine",
+  "kin.connections.mineRemove",
+  "kin.connections.mineSignInFinish",
+  "kin.connections.mineSignInStart",
   // A delete or its undo: `Docs.deleteByHand` allows exactly whom a hand edit allows, and
   // never an agent's character or What we sell; the docs test pins who is refused.
   "kin.docs.delete",

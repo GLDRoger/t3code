@@ -53,6 +53,10 @@ import {
   REPLACED,
   type SaveCards,
   SHARED_CONNECTIONS,
+  ASKED_OWN,
+  MAILBOX_GONE,
+  NO_OWN_MAILBOX,
+  OWN_CONFIRM_ONLY,
 } from "./ConnectionsService.ts";
 import * as Connections from "./ConnectionsService.ts";
 import { guarded } from "./EgressGuard.ts";
@@ -71,6 +75,7 @@ const NOW = Date.UTC(2026, 10, 16, 9);
 const ACCOUNTS = "accounts@invented-co.example";
 const HELLO = "hello@invented-co.example";
 const CLIENT = "Ravi Menon <ravi@lumen.example>";
+const MEERA = "meera@invented-co.example";
 const people = (personId: KinPersonId) => [{ _tag: "person" as const, orgId, personId }];
 
 const scope: McpInvocationScope = {
@@ -341,6 +346,22 @@ const connect = (fake: FakeMail, service: "google" | "microsoft", address: strin
       ],
     });
     return done.connection.connectionId;
+  });
+
+/** `personId` connects their own mailbox at the (fake) vendor; its id. */
+const connectOwn = (fake: FakeMail, personId: KinPersonId, address: string) =>
+  Effect.gen(function* () {
+    const connections = yield* KinConnections;
+    const started = yield* connections.mineSignInStart(people(personId), {
+      orgId,
+      service: "google",
+      returnTo: "web",
+    });
+    const done = yield* connections.mineSignInFinish(people(personId), {
+      orgId,
+      response: fake.approve(started.authorizationUrl, address),
+    });
+    return done.mailbox!.connectionId;
   });
 
 const setUp = <E>(body: (fake: FakeMail, cards: Array<Card>) => Effect.Effect<void, E, Env>) =>
@@ -1132,7 +1153,241 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           subject: "Hi",
           body: "x",
         }).pipe(Effect.flip);
-        assert.strictEqual(shared.message, SHARED_CONNECTIONS);
+        // Her own turn, with no mailbox of hers connected: the company's is not offered.
+        assert.strictEqual(shared.message, NO_OWN_MAILBOX);
+      }),
+    ),
+  );
+
+  it.effect(
+    "a member's own mailbox: only her own turn uses it, and only she confirms its sends",
+    () =>
+      setUp((fake, cards) =>
+        Effect.gen(function* () {
+          const connections = yield* KinConnections;
+          fake.addAccount({ provider: "google", address: MEERA, name: "Meera" });
+          yield* connect(fake, "google", ACCOUNTS);
+          const own = yield* connectOwn(fake, member, MEERA);
+          // The owner level sees whose it is and its address, never in the company's list.
+          const seen = yield* connections.list(people(owner), { orgId });
+          assert.deepStrictEqual(seen.mailboxes, [
+            { personId: member, connectionId: own, account: MEERA, state: "active" },
+          ]);
+          assert.isFalse(seen.connections.some((one) => one.connectionId === own));
+          assert.isNull((yield* connections.mine(people(owner), { orgId })).mailbox);
+          assert.strictEqual(
+            (yield* connections.mine(people(member), { orgId })).mailbox?.account,
+            MEERA,
+          );
+
+          // Her own turn lists her mailbox alone; the company's account answers to nothing there.
+          yield* wake({ person: member });
+          const listed = yield* connections.tools(scope, {});
+          assert.deepStrictEqual(
+            listed.connections?.map((one) => one.account),
+            [MEERA],
+          );
+          assert.isUndefined(listed.recentlySent);
+          const company = yield* callTool(ACCOUNTS, "mail_send", {
+            to: ["ravi@lumen.example"],
+            subject: "Hi",
+            body: "x",
+          }).pipe(Effect.flip);
+          assert.strictEqual(company.reason, "not_found");
+          const drafted = yield* callTool(MEERA, "mail_send", {
+            to: ["ravi@lumen.example"],
+            subject: "Following up on the kickoff",
+            body: "Here is what we agreed.",
+          });
+          assert.strictEqual(drafted.note, ASKED_OWN);
+          const card = cards.at(-1)!;
+          assert.strictEqual(card.chatId, `cos-${member}`);
+          // Not the owner, not a co-owner: hers alone, and a reaction never counts.
+          for (const other of [owner, coOwner]) {
+            const refused = yield* tap(card.widgetId, other).pipe(Effect.flip);
+            assert.strictEqual(refused.message, OWN_CONFIRM_ONLY);
+          }
+          assert.lengthOf(fake.sent(), 0);
+          assert.deepStrictEqual(yield* tap(card.widgetId, member), {
+            state: "sent",
+            reason: null,
+          });
+          assert.lengthOf(fake.sent(), 1);
+          assert.include(JSON.stringify(fake.sent()[0]), MEERA);
+
+          // The owner's and the co-owner's turns reach the company's account, never hers.
+          for (const person of [owner, coOwner]) {
+            yield* wake({ person });
+            const theirs = yield* connections.tools(scope, {});
+            assert.deepStrictEqual(
+              theirs.connections?.map((one) => one.account),
+              [ACCOUNTS],
+            );
+            const refused = yield* callTool(MEERA, "mail_search", { query: "kickoff" }).pipe(
+              Effect.flip,
+            );
+            assert.strictEqual(refused.reason, "not_found");
+          }
+          // And she can't confirm a company send.
+          yield* wake({ person: owner });
+          yield* callTool(ACCOUNTS, "mail_send", {
+            to: ["ravi@lumen.example"],
+            subject: "Hi",
+            body: "x",
+          });
+          const companyCard = cards.at(-1)!;
+          const notHers = yield* tap(companyCard.widgetId, member).pipe(Effect.flip);
+          assert.strictEqual(notHers.reason, "not_allowed");
+          // What was asked of her mailbox is not in the owner's activity log.
+          const log = yield* connections.calls(people(owner), { orgId });
+          assert.isFalse(log.calls.some((one) => one.connectionId === own));
+        }),
+      ),
+  );
+
+  it.effect("a member's mailbox goes from a turn someone else joins, and with her access", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const connections = yield* KinConnections;
+        fake.addAccount({ provider: "google", address: MEERA, name: "Meera" });
+        const own = yield* connectOwn(fake, member, MEERA);
+        yield* wake({ person: member });
+        yield* callTool(MEERA, "mail_send", {
+          to: ["ravi@lumen.example"],
+          subject: "Hi",
+          body: "x",
+        });
+        const card = cards.at(-1)!;
+        // Someone else now reads her chat: the next call can't reach her mailbox.
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, role, joined_at)
+          VALUES ('cos-mate-asha', ${orgId}, ${`cos-${member}`}, 'person', ${coOwner}, 'member',
+            ${stamp})`;
+        const joined = yield* callTool(MEERA, "mail_search", { query: "x" }).pipe(Effect.flip);
+        assert.strictEqual(joined.message, SHARED_CONNECTIONS);
+        // Removed from the team, her waiting send can't be confirmed, even by her.
+        yield* sql`UPDATE kin_people SET removed_at = ${NOW} WHERE person_id = ${member}`;
+        const gone = yield* tap(card.widgetId, member).pipe(Effect.flip);
+        assert.strictEqual(gone.message, OWN_CONFIRM_ONLY);
+        yield* sql`UPDATE kin_people SET removed_at = NULL WHERE person_id = ${member}`;
+        // The owner level disconnects it: its card closes, nothing sends, and she connects again.
+        const closed: Array<string> = [];
+        yield* connections.remove(people(owner), { orgId, connectionId: own }, (ids, text) =>
+          Effect.sync(() => closed.push(...ids.map((id) => `${id}: ${text}`))),
+        );
+        assert.deepStrictEqual(closed, [`${card.widgetId}: ${MAILBOX_GONE}`]);
+        assert.isNull((yield* connections.mine(people(member), { orgId })).mailbox);
+        assert.notStrictEqual(
+          yield* tap(card.widgetId, member).pipe(
+            Effect.flip,
+            Effect.map((e) => e.reason),
+          ),
+          undefined,
+        );
+        assert.lengthOf(fake.sent(), 0);
+        yield* connectOwn(fake, member, MEERA);
+        assert.strictEqual(
+          (yield* connections.mine(people(member), { orgId })).mailbox?.account,
+          MEERA,
+        );
+        // Her own Disconnect is the same way out.
+        yield* connections.mineRemove(people(member), { orgId });
+        assert.isNull((yield* connections.mine(people(member), { orgId })).mailbox);
+      }),
+    ),
+  );
+
+  it.effect("a follow-up woken for a member drafts from her mailbox, tied to its task", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        fake.addAccount({ provider: "google", address: MEERA, name: "Meera" });
+        yield* connect(fake, "google", ACCOUNTS);
+        yield* connectOwn(fake, member, MEERA);
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+          VALUES (${orgId}, 'work', 'Work', 'W', 0)`;
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at, party_id, fields_json)
+          VALUES (${orgId}, 'rec_w7', 'work', 'W-7', 'Follow up with Lumen', 'person', ${member},
+            'person', 'w7', 0, 0, 'rec_lumen', '{}')`;
+        yield* sql`INSERT INTO kin_pulse_facts (org_id, fact_key, sense, subject_record_id,
+            scope_json, first_seen_at, last_seen_at)
+          VALUES (${orgId}, 'task_late:W-7:due=1', 'task_late', 'rec_w7', '{}', 0, 0)`;
+        const chatId = `cos-${member}`;
+        const event = {
+          _tag: "pulse",
+          orgId,
+          agentId: lead,
+          eventId: "pulse-draft",
+          receivedAt: stamp,
+          dedupeKey: "draft:mate:task_late:W-7:due=1:2026-11-16",
+          provenance: { _tag: "system" },
+          factKeys: ["task_late:W-7:due=1"],
+          chatId,
+          origin: { agentId: lead, chatId, personId: member },
+        };
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state)
+          VALUES ('pulse-draft', ${orgId}, ${lead}, 'pulse', 'P2', ${JSON.stringify(event)}, 0, 0,
+            'queued')`;
+        yield* wake({ eventId: "pulse-draft" });
+        // Her turn alone: her mailbox, never the company's, and the card waits in her chat.
+        const listed = yield* (yield* KinConnections).tools(scope, {});
+        assert.deepStrictEqual(
+          listed.connections?.map((one) => one.account),
+          [MEERA],
+        );
+        const drafted = yield* callTool(MEERA, "mail_send", {
+          to: ["ravi@lumen.example"],
+          subject: "Following up",
+          body: "Checking in on the kickoff notes.",
+        });
+        assert.strictEqual(drafted.note, ASKED_OWN);
+        assert.strictEqual(cards.at(-1)!.chatId, chatId);
+        const [ask] = yield* sql<{ entry: string | null }>`SELECT entry_record_id AS entry
+          FROM kin_connection_asks ORDER BY proposed_at DESC LIMIT 1`;
+        assert.strictEqual(ask?.entry, "rec_w7");
+        assert.lengthOf(fake.sent(), 0);
+      }),
+    ),
+  );
+
+  it.effect("a quote or invoice from a person's own mailbox needs the owner level", () =>
+    setUp(() =>
+      Effect.gen(function* () {
+        const invoice = {
+          _tag: "email" as const,
+          to: ["ravi@lumen.example"],
+          cc: [],
+          subject: "November",
+          body: "Attached.",
+          threadId: null,
+          inReplyTo: null,
+          references: null,
+          attachments: [
+            {
+              key: "DOC-1",
+              recordId: "rec_doc",
+              version: 1,
+              attachmentId: "a",
+              sha256: "s",
+              name: "INV.pdf",
+              mimeType: "application/pdf",
+              bytes: 1,
+              label: null,
+              entryRecordId: "rec_inv",
+            },
+          ],
+        };
+        const rule = (mailbox: string | null, by: KinPersonId, prepared = invoice) =>
+          Connections.confirmRefusal(orgId, { personId: mailbox }, by, prepared);
+        assert.strictEqual(yield* rule(member, member), Connections.MONEY_CONFIRM);
+        assert.isNull(yield* rule(member, member, { ...invoice, attachments: [] }));
+        assert.isNull(yield* rule(coOwner, coOwner));
+        assert.strictEqual(yield* rule(coOwner, owner), OWN_CONFIRM_ONLY);
+        assert.isNull(yield* rule(null, coOwner));
+        assert.isNotNull(yield* rule(null, member, { ...invoice, attachments: [] }));
       }),
     ),
   );

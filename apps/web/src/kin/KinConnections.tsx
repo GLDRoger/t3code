@@ -61,6 +61,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinConnectionPage, type KinMailDiffers } from "./KinConnectionPage";
 import { OwnerClientSetup, openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
 import { KinGitHubConnect, KinGitHubPage } from "./KinGitHubConnect";
+import { KinMyMailbox, KinPeopleMailboxes } from "./KinMyMailbox";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { KinSocialConnect } from "./KinSocialConnect";
 import { KinVisualHosts } from "./KinVisualHosts";
@@ -307,6 +308,12 @@ function ConnectionsBody(
   return (
     <KinSettingsPage purpose={COPY.purpose}>
       <div className="flex flex-col gap-5">
+        <KinMyMailbox environmentId={environmentId} orgId={orgId} />
+        <KinPeopleMailboxes
+          environmentId={environmentId}
+          orgId={orgId}
+          mailboxes={view?.mailboxes ?? []}
+        />
         <KinSettingsSection
           title={MAIL.section}
           description={accounts.length === 0 ? undefined : MAIL.sectionDetail}

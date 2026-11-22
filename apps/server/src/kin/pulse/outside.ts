@@ -102,7 +102,7 @@ export const fromConnections = (
       const rows = yield* sql<{ connectionId: string; label: string }>`SELECT connection_id AS
         "connectionId", label FROM kin_connections
       WHERE org_id = ${orgId} AND removed_at IS NULL AND paused_at IS NULL AND state = 'active'
-        AND preset IN ${sql.in(MAIL_PRESETS)}
+        AND preset IN ${sql.in(MAIL_PRESETS)} AND person_id IS NULL
       ORDER BY created_at, connection_id`;
       const lines: Array<KinPulseOutsideLine> = [];
       const seen: Array<{ connectionId: string; until: number; cursor: string | null }> = [];

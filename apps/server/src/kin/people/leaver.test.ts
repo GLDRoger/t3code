@@ -453,6 +453,8 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_company_profile: "updated_by_id",
   kin_connection_asks: "agent_id decided_by",
   kin_connection_calls: "agent_id",
+  // A person's own mailbox: removing them removes it and stales its asks (`KinPeople.test.ts`).
+  kin_connections: "person_id",
   kin_discussions: "ask_agent_id decider_agent_id opened_by_agent_id",
   kin_doc_jobs: "agent_id answered_author_id asked_by_person_id",
   kin_doc_versions: "actor_id answered_author_id",

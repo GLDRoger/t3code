@@ -21,6 +21,10 @@ vi.mock(
 );
 vi.mock(import("./KinSocialConnect"), () => ({ KinSocialConnect: () => null }) as never);
 vi.mock(import("./KinVisualHosts"), () => ({ KinVisualHosts: () => null }) as never);
+vi.mock(
+  import("./KinMyMailbox"),
+  () => ({ KinMyMailbox: () => null, KinPeopleMailboxes: () => null }) as never,
+);
 vi.mock(import("./kinClient"), async (importOriginal) => {
   const real = await importOriginal();
   const { AsyncResult, Atom } = await import("effect/reactivity");

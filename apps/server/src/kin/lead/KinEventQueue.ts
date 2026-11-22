@@ -81,9 +81,9 @@ const SteerInput = Schema.Struct({
 
 /**
  * An event's lane, the chat a wake-up answers: a message's, tap's or task's asking chat, else the
- * lead's owner chat. A due deferral from another chat, each GitHub trigger and each approved draft
- * get their own lane, so a level, a stranger's text or one approval never mixes with anything else.
- * From stored rows, not model text.
+ * lead's owner chat. A due deferral from another chat, each GitHub trigger, each approved draft
+ * and each follow-up woken for one person (`draftWake.ts`) get their own lane, so a level, a
+ * stranger's text or one approval never mixes with anything else. From stored rows, not model text.
  */
 const LANE_OF = `CASE WHEN e.tag = 'github' AND json_extract(e.json, '$.trigger.key') IS NOT NULL
   THEN 'github:' || json_extract(e.json, '$.trigger.key')
@@ -94,6 +94,8 @@ const LANE_OF = `CASE WHEN e.tag = 'github' AND json_extract(e.json, '$.trigger.
   WHEN e.tag IN ('record.changed', 'task.finished')
     AND json_extract(e.json, '$.chatId') IS NOT NULL
   THEN json_extract(e.json, '$.chatId')
+  WHEN e.tag = 'pulse' AND json_extract(e.json, '$.chatId') IS NOT NULL
+  THEN 'draft:' || json_extract(e.json, '$.chatId') || ':' || json_extract(e.json, '$.factKeys[0]')
   WHEN e.tag = 'deferral.due' AND json_extract(e.json, '$.origin.chatId') IS NOT NULL
   THEN 'origin:' || json_extract(e.json, '$.origin.agentId') || ':' || json_extract(e.json, '$.origin.chatId')
     || ':' || COALESCE(json_extract(e.json, '$.origin.personId'), '')
