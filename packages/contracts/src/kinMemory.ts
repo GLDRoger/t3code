@@ -3,7 +3,14 @@ import * as Schema from "effect/Schema";
 
 import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinAgentId, KinChatError, KinOrgId, KinWidgetId } from "./kinChat.ts";
+import {
+  KinAgentId,
+  KinChatError,
+  KinChatId,
+  KinMessageId,
+  KinOrgId,
+  KinWidgetId,
+} from "./kinChat.ts";
 import { KinMemoryItemId, MemoryItemKind, MemoryTrust } from "./kinLead.ts";
 
 /** The widget `type` of the memory change cards earlier versions posted after a wake-up. */
@@ -87,6 +94,8 @@ export const KinMemoryListItem = Schema.Struct({
       recordedAt: Schema.String,
       saidAt: Schema.NullOr(Schema.String),
       quote: Schema.NullOr(Schema.String),
+      /** The message to open it at, only while the viewer can open it now. Absent from older hosts. */
+      message: Schema.optional(Schema.Struct({ chatId: KinChatId, messageId: KinMessageId })),
     }),
   ),
   /** Marks the words listed. Pass it back so a choice applies only if the item still reads so. */
