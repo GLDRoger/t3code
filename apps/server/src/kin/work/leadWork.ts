@@ -586,7 +586,10 @@ const CreateRow = Schema.Struct({
   ...SpineInputs,
   from: Schema.optional(CreateFrom),
   deal: Schema.optional(
-    KinToolText(40, "An obligation's deal, by key (DL-3): it sits on that deal and its client."),
+    KinToolText(
+      40,
+      "A promise's (an obligation's) deal, by key (DL-3): it sits on that deal and its client.",
+    ),
   ),
   ...GoalInputs,
 });
