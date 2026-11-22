@@ -182,3 +182,32 @@ it.effect("a card a turn posts is announced after the turn, with the turn's word
     }).pipe(Effect.provide(layer));
   }),
 );
+
+it.effect("a trouble card rings once, by its message: its count going up rings no one", () =>
+  Effect.gen(function* () {
+    const { events, asked, layer } = yield* dispatching;
+    const trouble = (revision: number, count: number): KinWidget => ({
+      ...card("msg_trouble"),
+      widgetId: KinWidgetId.make("kin-trouble:org_01:space:1"),
+      type: "host_trouble",
+      revision,
+      state: { cause: "space", count },
+      awaiting: [],
+    });
+    yield* Effect.gen(function* () {
+      for (const event of [
+        { type: "message.posted", orgId, message: said("msg_trouble") },
+        { type: "widget.updated", orgId, widget: trouble(1, 1) },
+        { type: "widget.updated", orgId, widget: trouble(2, 5) },
+        { type: "widget.updated", orgId, widget: trouble(3, 10) },
+        { type: "message.posted", orgId, message: said("msg_after") },
+      ] satisfies ReadonlyArray<KinChatHubEvent>)
+        yield* Queue.offer(events, event);
+      const got = [yield* Queue.take(asked), yield* Queue.take(asked)];
+      assert.deepStrictEqual(got, [
+        { _tag: "message", orgId, messageId: KinMessageId.make("msg_trouble") },
+        { _tag: "message", orgId, messageId: KinMessageId.make("msg_after") },
+      ]);
+    }).pipe(Effect.provide(layer));
+  }),
+);
