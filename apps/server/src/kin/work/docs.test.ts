@@ -578,8 +578,9 @@ it.effect("a turn others read reaches only docs they all see, and restores none"
     assert.strictEqual((yield* Docs.versionOf(orgId, created.row.recordId))!.version, 1);
     // A member reaches the doc reads, where the service shows them only their docs.
     const reads = ["kin.docs.list", "kin.docs.get", "kin.docs.history", "kin.docs.diff"];
-    // The service decides a hand edit (`Docs.editSectionByHand`), and Send to on a draft card.
-    const decided = ["kin.docs.editSection", "kin.docs.sendUp"];
+    // The service decides a hand edit (`Docs.editSectionByHand`), a delete
+    // (`Docs.deleteByHand`), and Send to on a draft card.
+    const decided = ["kin.docs.editSection", "kin.docs.delete", "kin.docs.sendUp"];
     for (const rpc of KinDocsRpcs)
       assert.strictEqual(
         kinRpcAccess(rpc._tag) === "person",
@@ -1089,6 +1090,160 @@ it.effect(
           assert.strictEqual(changed.version.version, version);
         }
       }
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a doc is deleted and brought back by whoever may change it by hand, exactly as it was; others are refused",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { ids, as, appDoc, siteDoc, companyDoc } = yield* handSeed();
+      const remove = (personId: KinPersonId, key: string, deleted = true) =>
+        OwnerDocs.remove(as(personId), { orgId, key: KinRecordKey.make(key), deleted });
+      const refusal = <A, R>(effect: Effect.Effect<A, KinChatError, R>) =>
+        Effect.flip(effect).pipe(Effect.map((error) => [error.reason, error.message] as const));
+      const notAllowed = [
+        "not_allowed",
+        "Only the owner, a co-owner or the project's lead can delete this doc or bring it back. Nothing was changed.",
+      ] as const;
+      const listed = (personId: KinPersonId, archived: boolean) =>
+        OwnerDocs.list(as(personId), { orgId, archived }).pipe(
+          Effect.map((page) => page.docs.map((doc) => doc.key)),
+        );
+      // Arjun reads the app doc, Dev the site doc and the company's: none of them may delete it.
+      const kept = yield* newDoc(plan, {
+        title: "Invented notes Arjun keeps",
+        projectId: appDoc.projectId,
+        owner: { _tag: "person", personId: ids.arjun },
+      });
+      for (const [personId, key] of [
+        [ids.arjun, appDoc.key],
+        [ids.arjun, kept.row.key],
+        [ids.dev, siteDoc.key],
+        [ids.dev, companyDoc.key],
+      ] as const) {
+        assert.isUndefined((yield* OwnerDocs.get(as(personId), { orgId, key })).deletable);
+        assert.deepStrictEqual(yield* refusal(remove(personId, key)), notAllowed);
+      }
+      // The owner deletes it: gone from Docs and its search, kept in Deleted with who and when.
+      const before = yield* OwnerDocs.get([owner], { orgId, key: appDoc.key });
+      assert.isTrue(before.deletable);
+      const deleted = yield* remove(ownerId, appDoc.key);
+      assert.isTrue(deleted.archived);
+      assert.deepStrictEqual(deleted.deleted?.by, { _tag: "person", personId: ownerId });
+      assert.notInclude(yield* listed(ownerId, false), appDoc.key);
+      assert.include(yield* listed(ownerId, true), appDoc.key);
+      const [shelved] = (yield* OwnerDocs.list([owner], { orgId, archived: true })).docs;
+      assert.deepInclude(shelved!, {
+        key: appDoc.key,
+        deletable: true,
+        deleted: deleted.deleted!,
+      });
+      const hits = (yield* search(orgId, {
+        text: "Invented app plan",
+        kinds: ["docs"],
+        limit: 20,
+        viewer: "owner",
+        scope: KIN_OWNER_LEVEL,
+      })).hits.map((hit) => hit.key);
+      assert.notInclude(hits, appDoc.key);
+      // Its project's lead sees it there and may bring it back; Arjun, who reads it, may not.
+      assert.include(yield* listed(ids.dev, true), appDoc.key);
+      assert.deepStrictEqual(yield* refusal(remove(ids.arjun, appDoc.key, false)), notAllowed);
+      // Deleting it again changes nothing.
+      const [rev] = yield* sql<{
+        rev: number;
+      }>`SELECT rev FROM kin_records WHERE key = ${appDoc.key}`;
+      assert.strictEqual((yield* remove(ownerId, appDoc.key)).rev, rev!.rev);
+      const back = yield* remove(ids.dev, appDoc.key, false);
+      assert.isFalse(back.archived);
+      assert.isUndefined(back.deleted);
+      for (const field of ["title", "body", "project", "kind", "sensitive"] as const)
+        assert.deepStrictEqual(back[field], before[field], field);
+      assert.strictEqual(back.latest.version, before.latest.version);
+      assert.include(yield* listed(ownerId, false), appDoc.key);
+      // A co-owner deletes any doc; the project's lead deletes its doc.
+      assert.isTrue((yield* remove(ids.meera, siteDoc.key)).archived);
+      assert.isTrue((yield* remove(ids.dev, appDoc.key)).archived);
+      assert.deepStrictEqual(
+        (yield* OwnerDocs.get([owner], { orgId, key: appDoc.key })).deleted?.by,
+        { _tag: "person", personId: ids.dev },
+      );
+      // A coding agent's key reaches no doc, and an agent's character and What we sell aren't deleted.
+      assert.strictEqual(
+        reasonOf(
+          yield* Effect.flip(
+            Docs.move(
+              orgId,
+              {
+                actor: { _tag: "person", personId: ownerId },
+                via: "owner",
+                codingAgentKey: "key-1",
+              },
+              { key: companyDoc.key },
+              { archived: true },
+            ),
+          ),
+        ),
+        "not_found",
+      );
+      const offerings = yield* newDoc(plan, { title: "What we sell", originKey: OFFERINGS_ORIGIN });
+      yield* seedCharacters(orgId);
+      const [character] = yield* characters(orgId);
+      for (const key of [offerings.row.key, character!.key]) {
+        assert.isUndefined(
+          (yield* OwnerDocs.get([owner], { orgId, key: KinRecordKey.make(key) })).deletable,
+        );
+        assert.strictEqual((yield* refusal(remove(ownerId, key)))[0], "invalid_state");
+      }
+      // Another org's owner finds no such doc.
+      assert.strictEqual(
+        (yield* refusal(
+          OwnerDocs.remove([owner], { orgId: elsewhere, key: companyDoc.key, deleted: true }),
+        ))[0],
+        "not_found",
+      );
+      assert.isFalse((yield* OwnerDocs.get([owner], { orgId, key: companyDoc.key })).archived);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an agent deletes a doc a person wrote part of only when that person or the owner level asked in this turn",
+  () =>
+    Effect.gen(function* () {
+      const { ids, edit, appDoc } = yield* handSeed();
+      // Meera, a co-owner, wrote a section; Dev's message is what the agent answers.
+      yield* edit(ids.meera, appDoc.key, "Starter costs 11 invented credits.");
+      yield* turn("mate");
+      const refused = yield* Effect.flip(
+        LeadDocs.move(scopeOf(lead), {
+          key: appDoc.key,
+          sourceEventId: "ask-event",
+          archived: true,
+        }),
+      );
+      assert.deepInclude(refused, {
+        reason: "not_allowed",
+        message: `A person wrote part of ${appDoc.key}, so it is deleted only when they or the owner ask for it in this turn. Nothing was deleted.`,
+      });
+      assert.isFalse((yield* OwnerDocs.get([owner], { orgId, key: appDoc.key })).archived);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "the owner's message lets an agent delete a doc a teammate wrote part of, into the same Deleted",
+  () =>
+    Effect.gen(function* () {
+      const { ids, edit, appDoc } = yield* handSeed();
+      yield* edit(ids.dev, appDoc.key, "Starter costs 12 invented credits.");
+      yield* turn("owner");
+      const move = (archived: boolean) =>
+        LeadDocs.move(scopeOf(lead), { key: appDoc.key, sourceEventId: "ask-event", archived });
+      assert.isTrue((yield* move(true)).archived);
+      const shelved = yield* OwnerDocs.get([owner], { orgId, key: appDoc.key });
+      assert.deepStrictEqual(shelved.deleted?.by, { _tag: "agent", agentId: lead });
+      assert.isFalse((yield* move(false)).archived);
     }).pipe(Effect.provide(layer)),
 );
 

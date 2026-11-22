@@ -26,6 +26,7 @@ export const KIN_COMPANY = {
   cancel: "Cancel",
   saved: "Saved.",
   notSet: "Not set",
+  notRegistered: "Not registered for GST",
   timeZone: "Time zone",
   timeZoneUse: "Check-ins, due days and your agents' times follow it.",
   /** How it changes: the owner's device sets it once per app run (`createKinOwnerTimeZoneSync`). */
@@ -92,6 +93,7 @@ export type KinCompanyFieldId =
   | "taxName"
   | "taxRate"
   | "gstin"
+  | "notRegistered"
   | "pan"
   | "placeOfSupply"
   | "sac"
@@ -120,6 +122,8 @@ interface FieldSpec {
   readonly india?: boolean;
   /** An invoice needs it: read as "Not set" while empty, so a gap is seen. */
   readonly invoice?: true;
+  /** A yes-or-no choice: the draft holds "yes" or "". */
+  readonly choice?: true;
 }
 
 /** The form in the order an invoice needs it. */
@@ -179,6 +183,7 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         invoice: true,
         problem: "A GSTIN is 15 characters, like 29ABCDE1234F1Z5.",
       },
+      { id: "notRegistered", label: "Not registered for GST", india: true, choice: true },
       {
         id: "pan",
         india: true,
@@ -282,6 +287,7 @@ const valid: Record<KinCompanyFieldId, (value: string | null) => boolean> = {
   tradeName: Schema.is(KinCompanyProfileData.fields.tradeName),
   address: Schema.is(KinCompanyProfileData.fields.address),
   gstin: Schema.is(KinCompanyProfileData.fields.gstin),
+  notRegistered: () => true,
   pan: Schema.is(KinCompanyProfileData.fields.pan),
   placeOfSupply: Schema.is(KinCompanyProfileData.fields.placeOfSupply),
   sac: Schema.is(KinCompanyProfileData.fields.sac),
@@ -295,6 +301,7 @@ const valid: Record<KinCompanyFieldId, (value: string | null) => boolean> = {
   upi: Schema.is(KinCompanyBank.fields.upi),
 };
 
+const YES = "yes";
 const stored = (profile: KinCompanyProfile, id: KinCompanyFieldId): string | null => {
   if (isBank(id)) return profile.bank[id];
   switch (id) {
@@ -306,6 +313,8 @@ const stored = (profile: KinCompanyProfile, id: KinCompanyFieldId): string | nul
       return profile.tax?.name ?? null;
     case "taxRate":
       return profile.tax?.rate ?? null;
+    case "notRegistered":
+      return profile.taxRegistered === false ? YES : null;
     default:
       return profile[id] ?? null;
   }
@@ -378,6 +387,23 @@ const kinCompanySections = (country: string | null | undefined) => {
   }));
 };
 
+/**
+ * The draft after a tap on a choice: saying the company isn't registered clears its tax number,
+ * and typing a number unsays it.
+ */
+export const kinCompanyDraftEdit = (
+  draft: KinCompanyDraft,
+  id: KinCompanyFieldId,
+  value: string | boolean,
+): KinCompanyDraft => {
+  if (id === "notRegistered")
+    return value === true
+      ? { ...draft, notRegistered: YES, gstin: "" }
+      : { ...draft, notRegistered: "" };
+  const next = { ...draft, [id]: typeof value === "string" ? value : "" };
+  return id === "gstin" && String(value).trim() !== "" ? { ...next, notRegistered: "" } : next;
+};
+
 /** The sections while editing: they follow the country typed, once it is a whole code. */
 export const kinCompanyEditSections = (profile: KinCompanyProfile, draft: KinCompanyDraft) => {
   const typed = draft.country.trim().toUpperCase();
@@ -430,6 +456,7 @@ export function kinCompanyInput(
       continue;
     }
     if (isMoneyField(field.id)) money[field.id] = value;
+    else if (field.id === "notRegistered") top.taxRegistered = value === null ? null : false;
     else (isBank(field.id) ? bank : top)[field.id] = value;
   }
   if (money.country !== undefined) top.country = money.country;
@@ -477,6 +504,12 @@ export function kinCompanyRead(profile: KinCompanyProfile): ReadonlyArray<{
   return kinCompanySections(profile.country).map((section) => ({
     title: section.title,
     rows: section.fields.flatMap((field) => {
+      if (field.choice) return [];
+      // A company not registered has no tax number to set: that is no gap.
+      if (field.id === "gstin" && profile.taxRegistered === false)
+        return [
+          { id: field.id, label: field.label, value: KIN_COMPANY.notRegistered, missing: false },
+        ];
       const value = stored(profile, field.id);
       const missing = value === null && field.invoice === true && !(paid && isBank(field.id));
       if (value === null && !missing) return [];

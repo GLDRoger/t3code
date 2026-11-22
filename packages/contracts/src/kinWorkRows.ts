@@ -259,6 +259,12 @@ function kinWorkOrder(a: KinRecord, b: KinRecord, dueFirst: boolean): number {
 
 const CLOSED = new Set(["done", "dropped"]);
 
+/** A person's tasks are those they hold or are on besides its holder; an agent's, those it holds. */
+const ownedBy = (owner: KinWorkPrincipal, record: KinRecord) =>
+  principalKey(owner) === principalKey(record.owner) ||
+  (owner._tag === "person" &&
+    (record.alsoOn ?? []).some((who) => principalKey(who) === principalKey(owner)));
+
 /**
  * Whether `record` is one `input` asks for, as `KinRecords.query` filters; undefined for a filter
  * a row can't answer, which the caller reads again for: words, a money window, and a client or
@@ -280,8 +286,7 @@ function kinWorkMatches(
     input.totalsBy !== undefined
   )
     return undefined;
-  if (input.owner !== undefined && principalKey(input.owner) !== principalKey(record.owner))
-    return false;
+  if (input.owner !== undefined && !ownedBy(input.owner, record)) return false;
   if (input.states !== undefined && input.states.length > 0) {
     if (!input.states.includes(record.state)) return false;
   } else if (input.open === true && CLOSED.has(record.state)) return false;

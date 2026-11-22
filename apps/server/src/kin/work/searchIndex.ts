@@ -21,7 +21,7 @@ const sensitiveField = (sql: SqlClient.SqlClient) =>
         AND json_extract(f.value, '$.sensitive') = 1)`,
   ]);
 /** Fields that hold who is on it as ids, which are no one's words (`KinSearch.shown`). */
-const ID_FIELDS = ["members", "attendees"];
+const ID_FIELDS = ["members", "attendees", "alsoOn"];
 const fieldText = (sql: SqlClient.SqlClient, sensitive: boolean) =>
   sql`COALESCE((SELECT group_concat(j.value, ' ') FROM json_each(r.fields_json) j
     WHERE j.key NOT IN ${sql.in(ID_FIELDS)}

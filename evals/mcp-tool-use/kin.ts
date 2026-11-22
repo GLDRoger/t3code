@@ -45,6 +45,7 @@ import { quote } from "../../apps/server/src/kin/lead/quote.ts";
 import { concernsLine, mineLine, totalsLine } from "../../apps/server/src/kin/sales/text.ts";
 import { whenLabel } from "../../apps/server/src/kin/social/rows.ts";
 import { moneySection } from "../../apps/server/src/kin/work/moneyViews.ts";
+import { notRegisteredFact } from "../../apps/server/src/kin/work/companyProfile.ts";
 import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
@@ -445,6 +446,9 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       when: whenLabel(ms, { zone: input.zone, locale: KIN_TEXT_LOCALE }),
     };
   },
+  // The taxNote line for a company its owner said is not registered for its country's tax.
+  notRegisteredFact: (input: { country: string }) =>
+    notRegisteredFact({ taxRegistered: false, country: input.country, tax: null }),
   bankAnswer: (input: { through: string | null }) =>
     bankAnswer({ through: input.through, accounts: [] }),
   cashUnknown: (input: { timeZone: string }) =>
