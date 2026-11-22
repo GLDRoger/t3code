@@ -891,11 +891,10 @@ export const KinEvent = Schema.Union([
     // Metadata the server read from connections the owner marked Read: still outside text.
     outside: Schema.optional(Schema.Array(KinPulseOutsideLine).check(Schema.isMaxLength(200))),
   }),
-  // Someone else gives this lead an entry (`assigned`), its owner closes or takes back one it
-  // holds (`withdrawn`), it comes back (`handed_back`), or a person comments on one it holds
-  // (`commented`), or a person puts it on a task someone else holds (`joined`: help, never hold);
-  // `note` holds their words. Its provenance is the human whose authority the entry carries, the
-  // only authority the turn has; the entry's text is data.
+  // An entry given to this lead (`assigned`), closed or taken back (`withdrawn`), come back
+  // (`handed_back`), commented on (`commented`, `note` their words), or someone else's it is put on
+  // to help (`joined`). Its provenance is the human whose authority the entry carries, the only
+  // authority the turn has; the entry's text is data.
   Schema.TaggedStruct("record.changed", {
     ...EventBase,
     recordId: KinRecordId,

@@ -985,10 +985,9 @@ const make = Effect.gen(function* () {
 
   /**
    * Wakes a lead about an entry someone else changed, with that human as the turn's provenance:
-   * given to it (`assigned`, by the stored assigner), or closed or taken back while it held it
-   * open (`withdrawn`, by the person who did; only its owner is told), or put on one someone else
-   * holds (`joined`, by whoever asked). A teammate's assignment wakes it in their own direct chat
-   * with it, as a message from them would (`teammateWake`).
+   * given to it (`assigned`), closed or taken back while it held it or was on it (`withdrawn`; only
+   * its owner is told), or put on one someone else holds (`joined`). A teammate's act wakes it in
+   * their own direct chat with it, as a message from them would (`teammateWake`).
    */
   const wakeLead = Effect.fn("KinRecords.wakeLead")(function* (
     orgId: KinOrgId,

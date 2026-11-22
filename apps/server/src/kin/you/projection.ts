@@ -38,10 +38,11 @@ const row = Effect.fn("KinYouProjection.row")(function* (
   zone: string,
   names: Names,
 ) {
+  const { owner: holder } = task;
   const held =
-    task.owner._tag === "person" && task.owner.personId === connection.personId
+    holder._tag === "person" && holder.personId === connection.personId
       ? {}
-      : { holder: toolName(task.owner, names, { _tag: "person", personId: connection.personId }) };
+      : { holder: toolName(holder, names, { _tag: "person", personId: connection.personId }) };
   return {
     key: task.key,
     title: task.title,
