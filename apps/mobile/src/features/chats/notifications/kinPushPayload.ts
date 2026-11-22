@@ -21,7 +21,7 @@ import {
 export const KIN_DEFAULT_ACTION_IDENTIFIER = "expo.modules.notifications.actions.DEFAULT";
 
 export interface KinNotificationRoute {
-  /** One per notification and button, so the live listener and the cold-start read act once. */
+  /** One per delivery and button, so the live listener and the cold-start read act once. */
   readonly responseKey: string;
   readonly environmentId: EnvironmentId;
   /** Opened in order: the chat, then what the push is about over it, so Back lands in the chat. */
@@ -164,12 +164,12 @@ function linkTarget(data: KinPushData): { environmentId: string; path: string } 
 function buttonAct(
   data: KinPushData,
   action: KinNotificationAction,
-  notificationId: string,
+  delivery: string,
 ): KinWidgetsActInput | null {
   if (action.identifier === "review") return null;
   if (data.widgetId === undefined || data.revision === undefined || data.revision < 1) return null;
   // The host dedupes on this, so a replayed response can't act twice.
-  const clientActionId = `push:${notificationId}:${action.identifier}`;
+  const clientActionId = `push:${delivery}:${action.identifier}`;
   const answer = KIN_CHOICE_ANSWERS.findIndex((one) => one === action.identifier);
   if (answer >= 0) {
     const optionId = data.choices?.[answer];
@@ -204,6 +204,10 @@ export function kinNotificationRoute(response: unknown): KinNotificationRoute | 
   const notificationId = field(request, "identifier");
   const actionIdentifier = field(response, "actionIdentifier");
   if (typeof notificationId !== "string" || notificationId.length === 0) return null;
+  // A chat's pushes share one collapse id, which iOS and Android make the identifier: each
+  // delivery is told apart by its date.
+  const date = field(field(response, "notification"), "date");
+  const delivery = typeof date === "number" ? `${notificationId}:${date}` : notificationId;
   const pressed = typeof actionIdentifier === "string" ? actionIdentifier : "";
   const category = field(content, "categoryIdentifier");
   const actions: ReadonlyArray<KinNotificationAction> = isCategory(category)
@@ -214,10 +218,10 @@ export function kinNotificationRoute(response: unknown): KinNotificationRoute | 
       ? undefined
       : actions.find((candidate) => candidate.identifier === pressed);
   return {
-    responseKey: `${notificationId}\u0000${pressed}`,
+    responseKey: `${delivery}\u0000${pressed}`,
     environmentId: EnvironmentId.make(target.environmentId),
     paths: landing(data, read.subject, target),
-    act: action === undefined ? null : buttonAct(data, action, notificationId),
+    act: action === undefined ? null : buttonAct(data, action, delivery),
   };
 }
 
