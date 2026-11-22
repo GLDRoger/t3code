@@ -278,9 +278,9 @@ const make = Effect.gen(function* () {
   const spaceFolders = Option.map(yield* Effect.serviceOption(ServerConfig), (config) =>
     HostBackup.spaceFolders(config.baseDir),
   );
-  const toOwners = (
+  const toOwners = <E>(
     orgId: KinOrgId,
-    notice: Effect.Effect<void, unknown, KinChatService | SqlClient.SqlClient>,
+    notice: Effect.Effect<void, E, KinChatService | SqlClient.SqlClient>,
   ) =>
     Option.isNone(chat)
       ? Effect.void

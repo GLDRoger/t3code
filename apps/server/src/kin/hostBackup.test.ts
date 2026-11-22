@@ -194,7 +194,7 @@ it.effect("tells nobody when a wake-up fails for another reason", () =>
 const space =
   (left: Record<string, number>) =>
   (folder: string): Effect.Effect<Option.Option<HostBackup.SpaceReading>> =>
-    Effect.succeed(Option.some({ folder, freeBytes: left[folder] ?? 100, totalBytes: 100 }));
+    Effect.succeedSome({ folder, freeBytes: left[folder] ?? 100, totalBytes: 100 });
 
 it.effect(
   "tells the owner once a day when a disk is under 20% free, and nothing it can't read",

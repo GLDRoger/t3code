@@ -134,8 +134,16 @@ export interface SpaceReading {
 }
 
 /** One statfs; none when the folder can't be read. */
-export const readSpace = (folder: string) =>
-  Effect.tryPromise(() => NodeFSP.statfs(folder)).pipe(
+class SpaceReadError extends Schema.TaggedError<SpaceReadError>()("KinHostSpaceReadError", {
+  folder: Schema.String,
+  cause: Schema.Defect(),
+}) {}
+
+const readSpace = (folder: string) =>
+  Effect.tryPromise({
+    try: () => NodeFSP.statfs(folder),
+    catch: (cause) => new SpaceReadError({ folder, cause }),
+  }).pipe(
     Effect.map((stats): SpaceReading => ({
       folder,
       freeBytes: stats.bavail * stats.bsize,
@@ -144,10 +152,8 @@ export const readSpace = (folder: string) =>
     Effect.option,
   );
 
-/** Kin's temp folder, the system one agents also write to, and the T3 home. */
-export const spaceFolders = (baseDir: string) => [
-  ...new Set([NodeOS.tmpdir(), ...(process.platform === "win32" ? [] : ["/tmp"]), baseDir]),
-];
+/** Kin's temp folder, the system one agents also write to (skipped where it doesn't exist), and the T3 home. */
+export const spaceFolders = (baseDir: string) => [...new Set([NodeOS.tmpdir(), "/tmp", baseDir])];
 
 /**
  * Warns in the log, and tells a company's owners at most once a UTC day, when a folder's disk has
