@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 
 import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinLabelText } from "./kinChat.ts";
