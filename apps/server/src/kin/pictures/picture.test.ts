@@ -48,6 +48,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as Docs from "../work/docs.ts";
 import * as KinRecords from "../work/KinRecords.ts";
+import * as LeadDocs from "../work/leadDocs.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import { makeFakeImageVendor } from "./FakeImageVendor.ts";
@@ -361,6 +362,14 @@ describe("kin_picture", () => {
         for (const version of [one, two])
           assert.isTrue(yield* fs.exists(`${attachmentsDir}/${version!.file!.attachmentId}.png`));
         assert.notStrictEqual(placed[1]!.attachment.id, first.files[0]);
+        // Read back, each version gives the page it was drawn from, so a change starts there.
+        const pageOf = (read: object) => ("page" in read ? read.page : undefined);
+        const readBack = yield* LeadDocs.read(scope, { key: "D-1" });
+        assert.strictEqual(pageOf(readBack), post("72px", { doc: "D-1" }).html);
+        assert.strictEqual(
+          pageOf(yield* LeadDocs.read(scope, { key: "D-1", version: 1 })),
+          post("48px").html,
+        );
         assert.deepStrictEqual(placed.at(-1)!.doc, { key: "D-1", version: 2 });
 
         // Deleted from Docs, it isn't changed out of sight: the change is a new doc.

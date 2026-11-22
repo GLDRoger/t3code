@@ -56,7 +56,13 @@ import {
 import { iso, type RecordRow, unavailable } from "./recordRows.ts";
 import { DRAFT_TEXT_MAX, docCardId, draftCardOf } from "./draftCards.ts";
 import { search } from "./search.ts";
-import { DRAFT_OWN_CHAT_ONLY, KIN_OWNER_LEVEL, viewSees, viewerOfPeople } from "./teamView.ts";
+import {
+  DRAFT_OWN_CHAT_ONLY,
+  KIN_OWNER_LEVEL,
+  PICTURE_DOC_ORIGIN,
+  viewSees,
+  viewerOfPeople,
+} from "./teamView.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
@@ -168,6 +174,8 @@ export const ReadResult = Schema.Struct({
     ),
   ),
   note: Schema.optional(Schema.String),
+  /** A drawn picture's page, as kin_picture took it. */
+  page: Schema.optional(Schema.String),
   owner: Schema.String,
   client: Schema.optional(Schema.String),
   project: Schema.optional(Schema.String),
@@ -777,6 +785,13 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
         });
   const whole = asked === undefined && version.body.length <= WHOLE_DOC;
   const by = Docs.toVersion(version).provenance.by;
+  const sql = yield* SqlClient.SqlClient;
+  const pages = row.originKey.startsWith(PICTURE_DOC_ORIGIN)
+    ? yield* sql<{ page: string | null }>`SELECT page FROM kin_picture_images
+        WHERE org_id = ${lead.orgId} AND record_id = ${row.recordId}
+          AND version = ${version.version} ORDER BY version`
+    : undefined;
+  const picture = pages === undefined ? undefined : (pages[0] ?? { page: null });
   return {
     key: row.key,
     title: row.title,
@@ -791,9 +806,13 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
     outline: [...outlineOf(version.body)],
     ...(whole ? { body: version.body } : {}),
     ...(asked === undefined ? {} : { sections: asked }),
-    ...(whole || asked !== undefined
-      ? {}
-      : { note: "A long doc: read the sections you need by id." }),
+    ...(picture !== undefined
+      ? {
+          ...(picture.page === null ? {} : { page: picture.page }),
+        }
+      : whole || asked !== undefined
+        ? {}
+        : { note: "A long doc: read the sections you need by id." }),
     owner: name(ownerOf(row)) ?? "someone",
     ...(row.partyKey === null || unseen.has(row.partyId ?? "")
       ? {}

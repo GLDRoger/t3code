@@ -43,12 +43,14 @@ export default Effect.gen(function* () {
   yield* sql`CREATE INDEX IF NOT EXISTS kin_picture_counts_month
     ON kin_picture_counts (org_id, month, state)`;
   // The chat image each picture version was posted as: who reads that reply reads the version.
+  // A drawn version keeps the page it was drawn from, so a change starts from it.
   yield* sql`
     CREATE TABLE IF NOT EXISTS kin_picture_images (
       org_id TEXT NOT NULL,
       record_id TEXT NOT NULL,
       version INTEGER NOT NULL,
       attachment_id TEXT NOT NULL,
+      page TEXT,
       PRIMARY KEY (org_id, record_id, version)
     )
   `;

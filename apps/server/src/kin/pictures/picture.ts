@@ -455,9 +455,10 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
               doc: { key: filed.row.key, version: filed.version.version },
               seen: picture.seen,
             });
-            yield* sql`INSERT INTO kin_picture_images (org_id, record_id, version, attachment_id)
+            yield* sql`INSERT INTO kin_picture_images (org_id, record_id, version, attachment_id,
+                page)
               VALUES (${lead.orgId}, ${filed.row.recordId}, ${filed.version.version},
-                ${placed.attachmentId})
+                ${placed.attachmentId}, ${input.html ?? null})
               ON CONFLICT DO NOTHING`;
             return { filed, placed };
           }),
