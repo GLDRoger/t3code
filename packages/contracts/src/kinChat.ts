@@ -249,6 +249,11 @@ export const KinMessageRelay = Schema.Struct({
   personId: Schema.optional(KinPersonId),
   /** Their name when it was passed on, so any reader can say whose words these are. */
   personName: Schema.optional(Schema.String.check(Schema.isMaxLength(80))),
+  /**
+   * What the sending agent's turn had read from outside (a mail, a web page) before it sent this,
+   * as a person reads it: the words follow that text, not only the asker's own. Absent otherwise.
+   */
+  afterReading: Schema.optional(Schema.String.check(Schema.isMaxLength(300))),
 });
 export type KinMessageRelay = typeof KinMessageRelay.Type;
 

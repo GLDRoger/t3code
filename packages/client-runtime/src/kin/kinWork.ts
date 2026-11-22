@@ -1702,6 +1702,9 @@ export function kinWorkItemView(
       item.side === "theirs"
         ? `${item.party?.title ?? "The other side"} owes this. Whoever has it chases it.`
         : null,
+      item.afterReading === undefined
+        ? null
+        : `${item.afterReading.made ? "Made" : "Changed"} after reading: ${item.afterReading.source}`,
     ].filter((part) => part !== null),
     notes: notes === "" ? null : notes,
     links: [...links.values()],

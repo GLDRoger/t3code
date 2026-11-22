@@ -147,6 +147,173 @@ export const OUTSIDE_TOOLS = {
   >),
 } satisfies Record<string, OutsideToolPolicy>;
 
+// A stamp is its key (what cards and checks read), then a tab and its reads as JSON (`{"r":[…]}`):
+// each read's kind, the connection it came through and its readable parts, rendered per reader.
+const READABLE = "\t";
+const READS_MAX = 8;
+const PART_MAX = 120;
+const RENDERED_MAX = 300;
+
+/** One outside read: its kind, the connection (`id`) or account it came through, and its parts. */
+export type OutsideReadItem = { readonly id?: string } & (
+  | {
+      readonly k: "mail" | "check-in";
+      readonly account?: string;
+      readonly from?: string;
+      readonly subject?: string;
+      readonly more?: number;
+    }
+  | { readonly k: "calendar"; readonly account?: string }
+  | { readonly k: "service"; readonly label?: string; readonly tool?: string }
+  | { readonly k: "web"; readonly host?: string }
+  | { readonly k: "social"; readonly handle?: string }
+  | { readonly k: "github" }
+  | { readonly k: "coding-agent"; readonly name?: string }
+);
+
+/** A stamp's key: a connection id, `web:<host>`, `social:@<name>`, `check-in`, `github`, …. */
+export const stampKey = (stamp: string) => stamp.split(READABLE, 1)[0]!;
+
+const CODING_AGENT_SOURCE = "coding-agent:";
+/** The read a bare key names, as stamps before reads were stored carry it. */
+const keyRead = (key: string): OutsideReadItem => {
+  if (key === "check-in") return { k: "check-in" };
+  if (key === "github") return { k: "github" };
+  if (key === "web search") return { k: "web" };
+  if (key.startsWith("web:")) return { k: "web", host: key.slice("web:".length) };
+  if (key.startsWith("social:")) return { k: "social", handle: key.slice("social:".length) };
+  if (key.startsWith(CODING_AGENT_SOURCE))
+    return { k: "coding-agent", name: key.slice(CODING_AGENT_SOURCE.length) };
+  return { k: "service", id: key };
+};
+const KINDS = new Set([
+  "mail",
+  "check-in",
+  "calendar",
+  "service",
+  "web",
+  "social",
+  "github",
+  "coding-agent",
+]);
+const part = (value: unknown) =>
+  typeof value === "string" && value.trim() !== ""
+    ? value.replace(/\s+/g, " ").trim().slice(0, PART_MAX)
+    : undefined;
+/** One read as stored, its parts bounded; anything else is dropped. */
+const cleanRead = (value: unknown): OutsideReadItem | undefined => {
+  if (typeof value !== "object" || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.k !== "string" || !KINDS.has(raw.k)) return undefined;
+  const fields = Object.fromEntries(
+    ["id", "account", "from", "subject", "label", "tool", "host", "handle", "name"].flatMap(
+      (name) => {
+        const text = part(raw[name]);
+        return text === undefined ? [] : [[name, text]];
+      },
+    ),
+  );
+  const more = typeof raw.more === "number" && raw.more > 0 ? { more: Math.floor(raw.more) } : {};
+  return { k: raw.k, ...fields, ...more } as OutsideReadItem;
+};
+
+/** A stamp's reads, oldest first; a bare key, or one stored before reads were, is its key's read. */
+export const stampReads = (stamp: string): ReadonlyArray<OutsideReadItem> => {
+  const tab = stamp.indexOf(READABLE);
+  if (tab >= 0) {
+    try {
+      const stored: unknown = JSON.parse(stamp.slice(tab + 1));
+      const reads =
+        typeof stored === "object" &&
+        stored !== null &&
+        Array.isArray((stored as { r?: unknown }).r)
+          ? ((stored as { r: ReadonlyArray<unknown> }).r
+              .map(cleanRead)
+              .filter((read) => read !== undefined) as ReadonlyArray<OutsideReadItem>)
+          : [];
+      if (reads.length > 0) return reads;
+    } catch {
+      // An unreadable tail is read by its key, which never says more than the key does.
+    }
+  }
+  return [keyRead(stampKey(stamp))];
+};
+
+const readKey = (read: OutsideReadItem) => JSON.stringify(read);
+/** A stamp from its key and reads, each read once, at most `READS_MAX`. */
+export const outsideSource = (key: string, reads: ReadonlyArray<OutsideReadItem>) => {
+  const seen = new Set<string>();
+  const kept = reads.flatMap((read) => {
+    const clean = cleanRead(read);
+    if (clean === undefined || seen.has(readKey(clean))) return [];
+    seen.add(readKey(clean));
+    return [clean];
+  });
+  return `${stampKey(key)}${READABLE}${JSON.stringify({ r: kept.slice(0, READS_MAX) })}`;
+};
+
+const more = (count: number | undefined) => (count === undefined ? "" : `, and ${count} more`);
+/** A read as someone who may see where it came from reads it. */
+const detailOf = (read: OutsideReadItem): string => {
+  switch (read.k) {
+    case "mail":
+    case "check-in":
+      return read.from === undefined
+        ? read.k === "check-in"
+          ? "outside text in a check-in"
+          : read.account === undefined
+            ? "a mail"
+            : `mail in ${read.account}`
+        : `mail from ${read.from}${read.subject === undefined ? "" : `: ${read.subject}`}${more(read.more)}`;
+    case "calendar":
+      return read.account === undefined ? "a calendar" : `the calendar of ${read.account}`;
+    case "service":
+      return read.label === undefined
+        ? "text from a connected service"
+        : read.tool === undefined
+          ? `${read.label}'s tools`
+          : `${read.label} (${read.tool})`;
+    case "web":
+      return read.host === undefined ? "a web search" : `the web page ${read.host}`;
+    case "social":
+      return read.handle === undefined ? "social posts" : `posts by ${read.handle}`;
+    case "github":
+      return "text from GitHub";
+    case "coding-agent":
+      return read.name === undefined ? "a coding agent" : `${read.name}, a coding agent`;
+  }
+};
+/** A read as anyone may read it: its kind, with no sender, subject, account or connection. */
+const neutralOf = (read: OutsideReadItem): string => {
+  switch (read.k) {
+    case "mail":
+      return "a mail";
+    case "check-in":
+      return read.from === undefined ? "outside text in a check-in" : "a mail";
+    case "calendar":
+      return "a calendar";
+    case "service":
+      return "a connected service";
+    case "web":
+      return read.host === undefined ? "a web search" : "a web page";
+    case "social":
+      return "social posts";
+    case "github":
+      return "text from GitHub";
+    case "coding-agent":
+      return "a coding agent";
+  }
+};
+
+/**
+ * What a reader reads for a stamp. `detailed` only for an owner-level person or a turn only the
+ * owner side reads: connections are theirs alone, so anyone else gets each read's kind.
+ */
+export const renderSource = (stamp: string, detailed: boolean) => {
+  const text = [...new Set(stampReads(stamp).map(detailed ? detailOf : neutralOf))].join("; ");
+  return text.length <= RENDERED_MAX ? text : `${text.slice(0, RENDERED_MAX - 1)}…`;
+};
+
 /**
  * Where the turn's outside text came from, or `undefined` while it has read none. Sticky: once
  * read, it stays read until the turn ends. Events the turn makes carry it as their stamp.
@@ -166,24 +333,33 @@ export const outsideRead = (turn: Pick<Turn, "orgId" | "wakeupId">) =>
 
 /**
  * Marks the turn outside-read, before the outside text reaches it. The events it claimed carry
- * the stamp too, so a retry that requeues them, and a reminder asked by one, start marked.
+ * the stamp too, so a retry that requeues them starts marked. `source` is a key or a whole stamp.
  */
 export const markOutside = Effect.fn("KinOutsideContent.mark")(function* (
   turn: Pick<Turn, "orgId" | "wakeupId">,
   source: string,
+  /** What was read; the source's own reads when left out. */
+  reads?: ReadonlyArray<OutsideReadItem>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const at = yield* Clock.currentTimeMillis;
-  yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
-    VALUES (${turn.orgId}, ${turn.wakeupId}, ${at}, ${source})
-    ON CONFLICT (org_id, wakeup_id) DO NOTHING`;
-  yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
-    SELECT org_id, event_id, ${source} FROM kin_events
-    WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}
-    ON CONFLICT (org_id, event_id) DO NOTHING`;
+  yield* Effect.gen(function* () {
+    const before = yield* outsideStamp(turn);
+    // The first read keeps the key; each later one is named once more, while the list stays short.
+    const stamp = outsideSource(before === undefined ? source : stampKey(before), [
+      ...(before === undefined ? [] : stampReads(before)),
+      ...(reads ?? stampReads(source)),
+    ]);
+    yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+      VALUES (${turn.orgId}, ${turn.wakeupId}, ${at}, ${stamp})
+      ON CONFLICT (org_id, wakeup_id) DO UPDATE SET source = excluded.source`;
+    yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
+      SELECT org_id, event_id, ${stamp} FROM kin_events
+      WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}
+      ON CONFLICT (org_id, event_id) DO UPDATE SET outside_from = excluded.outside_from`;
+  }).pipe(sql.withTransaction);
 });
 
-const CODING_AGENT_SOURCE = "coding-agent:";
 /** The stamp for text a person's coding agent wrote through its key, by the key's name. */
 export const codingAgentSource = (name: string) => `${CODING_AGENT_SOURCE}${name}`;
 
@@ -213,6 +389,33 @@ export const stampEvent = Effect.fn("KinOutsideContent.stampEvent")(function* (
     VALUES (${orgId}, ${eventId}, ${source}) ON CONFLICT (org_id, event_id) DO NOTHING`;
 });
 
+/** Where an entry's change stores its turn's stamp (`KinRecords.logChange`). */
+export const changeStampKey = (recordId: string, seq: number) => `record-change:${recordId}:${seq}`;
+
+/**
+ * The first change an agent made to an entry after its turn read outside text, and what it had
+ * read, as a person reads it.
+ */
+export const entryAfterReading = Effect.fn("KinOutsideContent.entryAfterReading")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  /** For an owner-level reader (`renderSource`). */
+  detailed = false,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [first] = yield* sql<{
+    kind: string;
+    source: string;
+  }>`SELECT c.kind, o.outside_from AS source
+    FROM kin_record_changes c JOIN kin_event_outside o ON o.org_id = c.org_id
+      AND o.event_id = 'record-change:' || c.record_id || ':' || c.seq
+    WHERE c.org_id = ${orgId} AND c.record_id = ${recordId} AND c.actor_kind = 'agent'
+    ORDER BY c.seq LIMIT 1`;
+  return first === undefined
+    ? undefined
+    : { made: first.kind === "created", source: renderSource(first.source, detailed) };
+});
+
 /** The stamp stored under `key`: an event's, or a question's an outside-read turn asked. */
 export const storedStamp = Effect.fn("KinOutsideContent.storedStamp")(function* (
   orgId: KinOrgId,
@@ -224,9 +427,47 @@ export const storedStamp = Effect.fn("KinOutsideContent.storedStamp")(function* 
   return row?.source;
 });
 
+/** Where a schedule or deferral keeps the stamp that applied when it was made. */
+const itemSourceKey = (itemId: string) => `memory-item:${itemId}`;
+
+/**
+ * Keeps the stamp the making turn had when it made a schedule or deferral ('' for none), so a
+ * read after it is never its source. A retry keeps the first; a replacement writes its own.
+ */
+export const snapshotSource = Effect.fn("KinOutsideContent.snapshotSource")(function* (
+  turn: Pick<Turn, "orgId" | "wakeupId">,
+  itemId: string,
+  replaced = false,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const stamp = (yield* outsideStamp(turn)) ?? "";
+  yield* replaced
+    ? sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
+        VALUES (${turn.orgId}, ${itemSourceKey(itemId)}, ${stamp})
+        ON CONFLICT (org_id, event_id) DO UPDATE SET outside_from = excluded.outside_from`
+    : sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
+        VALUES (${turn.orgId}, ${itemSourceKey(itemId)}, ${stamp})
+        ON CONFLICT (org_id, event_id) DO NOTHING`;
+});
+
+/**
+ * The stamp a schedule or deferral was made under: its own snapshot, or for one made before
+ * snapshots, the stamp of the event that asked for it.
+ */
+export const itemSource = Effect.fn("KinOutsideContent.itemSource")(function* (
+  orgId: KinOrgId,
+  itemId: string,
+  sourceEvent: string | undefined,
+) {
+  const snapshot = yield* storedStamp(orgId, itemSourceKey(itemId));
+  if (snapshot !== undefined) return snapshot === "" ? undefined : snapshot;
+  return sourceEvent === undefined ? undefined : yield* storedStamp(orgId, sourceEvent);
+});
+
 /**
  * A turn starts outside-read when it shows outside text itself, or when an event it shows, or the
  * event a reminder it shows was asked in, carries a stamp. Run before the prompt is sent; a failure stops the prompt.
+ * Returns the stamp it took from an event, the read this turn follows; none for what it shows.
  */
 export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (input: {
   readonly orgId: KinOrgId;
@@ -234,20 +475,49 @@ export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (
   readonly eventIds: ReadonlyArray<string>;
   /** The prompt itself shows outside text, such as a check-in's mail lines, from here. */
   readonly shows?: string | undefined;
+  /** What it shows, such as the check-in's first mail by sender and subject. */
+  readonly showsReads?: ReadonlyArray<OutsideReadItem> | undefined;
+  /** Schedules and deferrals it runs, each with the stamp it was made under (`itemSource`). */
+  readonly items?: ReadonlyArray<{ readonly itemId: string; readonly sourceEvent?: string }>;
 }) {
-  if (input.shows !== undefined) return yield* markOutside(input, input.shows);
+  if (input.shows !== undefined) {
+    yield* markOutside(input, input.shows, input.showsReads);
+    return undefined;
+  }
   const sql = yield* SqlClient.SqlClient;
   const events =
     input.eventIds.length === 0
       ? []
       : yield* sql<{ source: string }>`SELECT outside_from AS source FROM kin_event_outside
           WHERE org_id = ${input.orgId} AND event_id IN ${sql.in(input.eventIds)}
-          ORDER BY event_id LIMIT 1`;
-  const source = events[0]?.source;
-  if (source === undefined) return;
-  yield* source.startsWith(CODING_AGENT_SOURCE)
+            AND outside_from <> ''
+          ORDER BY event_id`;
+  const stamps = events.map((row) => row.source);
+  for (const item of input.items ?? []) {
+    const stamp = yield* itemSource(input.orgId, item.itemId, item.sourceEvent);
+    if (stamp !== undefined) stamps.push(stamp);
+  }
+  const first = stamps[0];
+  if (first === undefined) return undefined;
+  // Every event's reads, so a turn woken by two passed-on requests names both.
+  const source = outsideSource(
+    first,
+    stamps.flatMap((stamp) => stampReads(stamp)),
+  );
+  yield* stampKey(source).startsWith(CODING_AGENT_SOURCE)
     ? codingAgentTextShown(input, source)
     : markOutside(input, source);
+  yield* stampEvent(input.orgId, followsKey(input.wakeupId), source);
+  return source;
+});
+
+const followsKey = (wakeupId: string) => `follows:${wakeupId}`;
+/** Whether the turn started from an outside read it did not make itself (`inheritOutside`). */
+export const followsOutsideRead = Effect.fn("KinOutsideContent.followsOutsideRead")(function* (
+  orgId: KinOrgId,
+  wakeupId: string,
+) {
+  return (yield* storedStamp(orgId, followsKey(wakeupId))) !== undefined;
 });
 
 const PAGES_TURNS = 200;

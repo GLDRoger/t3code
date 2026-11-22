@@ -47,7 +47,8 @@ export const ownerLevel = Effect.fn("KinAccess.ownerLevel")(function* (
 
 /**
  * Whether an owner-level person asked this turn in person: every event that woke it is their own
- * message or card tap, passed on by no agent, or their own act on a task (`OWN_TASK_ACT`). Only
+ * message or card tap, passed on by no agent, their own act on a task (`OWN_TASK_ACT`), or their
+ * Keep of a suggestion that gave it the task (`KEPT_BY_HAND`). Only
  * this makes what an agent writes kept (`KinRecords`); `askedBy` keeps naming who asked.
  */
 export const ownerLevelAsked = Effect.fn("KinAccess.ownerLevelAsked")(function* (
@@ -62,7 +63,8 @@ export const ownerLevelAsked = Effect.fn("KinAccess.ownerLevelAsked")(function* 
         -- Kin's copy of group words (KinHandoff.takePrivate) was asked among others, not here.
         AND COALESCE(m.client_message_id, '') NOT LIKE 'send:private:%'
         AND ${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))})
-      OR (e.tag = 'record.changed' AND ${sql.literal(OWN_TASK_ACT)}), 0) AS direct
+      OR (e.tag = 'record.changed' AND ${sql.literal(OWN_TASK_ACT)})
+      OR (e.tag = 'record.changed' AND ${sql.literal(KEPT_BY_HAND)}), 0) AS direct
     FROM kin_events e
     JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
     LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
@@ -115,6 +117,21 @@ const OWN_TASK_ACT = `json_extract(e.json, '$.provenance._tag') = 'human' AND ${
             AND (ow.actor_kind <> 'person' OR ow.actor_id IS NOT orr.created_by_id
               OR ow.via <> 'owner' OR ow.coding_agent_key IS NOT NULL)))
     ELSE 0 END`;
+
+/**
+ * A task event that an owner-level person's own Keep in the app gave this agent: their tap on a
+ * suggestion through the app (`via` owner), not an agent's tool call, a coding agent's key, a turn
+ * Kin carried out for them, or a timed default (a system change). Reported in its owner's chat.
+ */
+const KEPT_BY_HAND = `json_extract(e.json, '$.reason') = 'assigned'
+  AND json_extract(e.json, '$.origin') IS NULL
+  AND EXISTS (SELECT 1 FROM kin_record_changes ok, json_each(ok.fields_json) kf
+    WHERE ok.org_id = e.org_id AND ok.record_id = json_extract(e.json, '$.recordId')
+      AND ok.seq = json_extract(e.json, '$.seq') AND ok.actor_kind = 'person'
+      AND ok.via = 'owner' AND ok.coding_agent_key IS NULL AND ok.wakeup_id IS NULL
+      AND ${ownerLevelSql("ok.org_id", "ok.actor_id")}
+      AND json_extract(kf.value, '$.field') = 'confirmed'
+      AND json_extract(kf.value, '$.to') = 'true')`;
 
 /** The org's owner-level people. */
 export const ownerLevelPeople = Effect.fn("KinAccess.ownerLevelPeople")(function* (

@@ -38,6 +38,7 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { SHARED_REFUSAL, aborted } from "../lead/Audience.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
+import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { teamAgent } from "../lead/LeadAccess.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { CHIEF_OF_STAFF_DOMAIN } from "../lead/orgLeads.ts";
@@ -415,6 +416,8 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     row: Row,
     turn: Turns.Turn,
+    /** The speaker's turn had read outside text: the next one starts from it (`stampEvent`). */
+    outside?: string,
   ) {
     const message = yield* latest(orgId, row);
     if (message === undefined) return null;
@@ -434,6 +437,7 @@ const make = Effect.gen(function* () {
         messageId: message.messageId,
       })
       .pipe(
+        Effect.tap(() => stampEvent(orgId, eventId, outside).pipe(access)),
         Effect.catchTags({
           KinEventQueueConflict: () => Effect.void,
           KinEventQueueRetiredAgent: () => Effect.void,
@@ -454,6 +458,8 @@ const make = Effect.gen(function* () {
       readonly outcome?: string;
       readonly card?: HeldCard;
       readonly lastAt?: number;
+      /** The speaking turn's outside stamp, which the next speaker's wake carries. */
+      readonly outside?: string | undefined;
     } = {},
   ) {
     const now = yield* Clock.currentTimeMillis;
@@ -493,7 +499,7 @@ const make = Effect.gen(function* () {
       }
     }
     if (turn !== null && turn.eventId === null) {
-      const eventId = yield* wakeTurn(orgId, next, turn);
+      const eventId = yield* wakeTurn(orgId, next, turn, changes.outside);
       if (eventId !== null)
         yield* sql`UPDATE kin_discussions SET turn_json = ${encodeJson({ ...turn, eventId })}
           WHERE org_id = ${orgId} AND discussion_id = ${row.discussionId}`;
@@ -854,7 +860,11 @@ const make = Effect.gen(function* () {
           ),
         };
         const next = Turns.afterSay(d, said);
-        yield* settle(ctx.orgId, row, next, { said: true, lastAt: now });
+        yield* settle(ctx.orgId, row, next, {
+          said: true,
+          lastAt: now,
+          outside: yield* outsideStamp(ctx).pipe(access),
+        });
         // Asked by the owner: the agent it went to shows it in its chat with him, sent by the opener.
         const receiver = asked.find((agent) => agent.agentId !== ctx.agentId);
         if (byOwner && receiver !== undefined)
@@ -1033,6 +1043,7 @@ const make = Effect.gen(function* () {
         yield* settle(ctx.orgId, row, next, {
           said: true,
           lastAt: now,
+          outside: yield* outsideStamp(ctx).pipe(access),
           ...(input.widen === undefined ? {} : { question: oneLine(input.widen) }),
           ...(input.outcome === undefined ? {} : { outcome: oneLine(input.outcome) }),
         });
