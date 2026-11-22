@@ -169,8 +169,7 @@ const sectionOfArguments = (args: unknown) => {
   return null;
 };
 
-const DEALS_OFF =
-  "Deals is turned off for this company. An owner can turn it on in Settings › Deals.";
+const DEALS_OFF = "Deals is turned off for this company.";
 
 const dealRefusal = (args: unknown) => {
   if (!Predicate.hasProperty(args, "records") || !Array.isArray(args.records)) return DEALS_OFF;
