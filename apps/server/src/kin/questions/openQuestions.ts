@@ -1878,11 +1878,7 @@ export const openQuestionsSection = Effect.fn("KinQuestions.section")(function* 
             : "no safe default: waits for them";
     const about = input.ownerOnly && row.about.length > 0 ? ` (about ${row.about.join(", ")})` : "";
     const asker = row.forChatId === null ? "" : ` for ${forWhom.get(row.forChatId)}`;
-    const redraft =
-      input.ownerOnly && row.draft !== null && row.forChatId !== null
-        ? `; ${row.draft.names.asker}'s ${DRAFT_WORDS[row.draft.kind]}: a change they ask for to it is its redraft, which Kin puts back on their card`
-        : "";
-    return `- ${row.questionId}, ${row.agentName}${asker}, ${dayWord(row.askedAt, input.now, clock.zone).replace(/^on /, "")}: “${row.question}”${about}; ${tail}${redraft}`;
+    return `- ${row.questionId}, ${row.agentName}${asker}, ${dayWord(row.askedAt, input.now, clock.zone).replace(/^on /, "")}: “${row.question}”${about}; ${tail}`;
   });
   return {
     heading: `# Open questions to ${who} (already asked; don't ask or repeat them)`,
