@@ -544,7 +544,10 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   plan: CardPlan,
   deps: {
     readonly records: KinRecords["Service"];
-    readonly chat: Pick<KinChatService["Service"], "closeReplaced" | "reopenClosed" | "notice">;
+    readonly chat: Pick<
+      KinChatService["Service"],
+      "closeReplaced" | "reopenClosed" | "notice" | "setDocCardChangesFirst"
+    >;
   },
 ) {
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);

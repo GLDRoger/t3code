@@ -1206,27 +1206,31 @@ const fold = (text: string) => text.toLowerCase().replace(/\s+/g, " ");
  * Why `text` can't go to this person, or undefined: no amount, money document number, client's
  * terms, or key or title of an entry they don't see. `askedBy`, a teammate whose own words these
  * are, is held only to what they see, so a refusal never says a guess matches something hidden.
+ * `own`: words whose figures are theirs to read, exempt from the amount checks only.
  */
 export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   text: string,
   askedBy?: KinPersonId,
+  own?: string,
 ) {
+  // Keys, titles and terms are matched as written: an exempt figure never hides one.
+  const sums = own === undefined ? text : withoutOwnFigures(text, own);
   // The agent is told which words read as a sum, so it can send the rest or ask the owner.
   const figure = (said: string) =>
     `“${said.trim()}” reads as an amount of money, which they may not see`;
   const written =
-    AMOUNT.exec(text) ??
-    AMOUNT_WORDS.exec(text) ??
-    MONEY_NUMBER.exec(text) ??
-    EURO_FIGURE.exec(text) ??
-    (MONEY_CONTEXT.test(text) ? THOUSANDS.exec(text) : null);
+    AMOUNT.exec(sums) ??
+    AMOUNT_WORDS.exec(sums) ??
+    MONEY_NUMBER.exec(sums) ??
+    EURO_FIGURE.exec(sums) ??
+    (MONEY_CONTEXT.test(sums) ? THOUSANDS.exec(sums) : null);
   if (written !== null) return figure(written[0]);
   const sql = yield* SqlClient.SqlClient;
   const known = askedBy === undefined ? sql`1 = 1` : personSees(sql, askedBy);
   // A bare figure that is the sum on something they can't see, however it is written.
-  const figures = figuresIn(text);
+  const figures = figuresIn(sums);
   if (figures.length > 0) {
     // The sum in whole units of its own currency, as a person writes it: yen have no minor unit.
     const same = (column: Statement.Fragment, currency: Statement.Fragment) =>
