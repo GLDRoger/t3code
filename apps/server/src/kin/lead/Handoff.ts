@@ -128,7 +128,7 @@ export const RelayInput = Schema.Struct({
   }),
   text: TrimmedNonEmptyString.check(Schema.isMaxLength(RELAY_MAX)).annotate({
     description:
-      "The message, written for them, in at most 300 characters: a request in the asker's words with the task key, or the answer back.",
+      "The message, written for them, in at most 2,000 characters: a request in the asker's words with the task key, or the answer back.",
   }),
   sourceEventId: TurnEvent,
   urgent: Schema.optional(
