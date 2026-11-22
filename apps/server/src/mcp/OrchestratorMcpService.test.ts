@@ -77,6 +77,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
+import { McpProvidersOffered } from "../kin/mcp/toolPolicy.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import { resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import type { ProjectionRecordFilter } from "../orchestration-v2/ProjectionStore.ts";
@@ -2313,6 +2314,28 @@ describe("OrchestratorMcpService provider resolution", () => {
           models: ["gpt-5"],
           omitted: 0,
         });
+      }),
+    );
+
+    it.effect("lists only what the caller's host offers it, and everything by default", () =>
+      Effect.gen(function* () {
+        const everything = listing(yield* capabilitiesWith());
+        assert.isAbove(everything.length, 1);
+        const offered = listing(
+          yield* capabilitiesWith().pipe(
+            Effect.provideService(McpProvidersOffered, (_settings, providers) =>
+              Effect.succeed(
+                providers
+                  .filter((provider) => provider.instanceId === codexInstanceId)
+                  .map((provider) => ({
+                    ...provider,
+                    models: provider.models.filter((model) => model.slug === "gpt-4"),
+                  })),
+              ),
+            ),
+          ),
+        );
+        assert.deepEqual(offered, [{ id: codexInstanceId, models: ["gpt-4"], omitted: 0 }]);
       }),
     );
 

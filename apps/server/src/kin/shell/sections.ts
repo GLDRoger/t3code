@@ -82,6 +82,7 @@ export const SECTIONS = {
     statement_read: "money",
     statement_rows: "money",
     kin_document: null,
+    kin_picture: null,
     kin_recipes: null,
     kin_issue: null,
     kin_recipe_undo: null,

@@ -374,6 +374,8 @@ export const ProviderModelPreferences = Schema.Record(
   Schema.Struct({
     hiddenModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     modelOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+    /** Hidden models the provider refused here, with when (epoch ms); un-hiding one clears it. */
+    refusedAt: Schema.optionalKey(Schema.Record(Schema.String, Schema.Number)),
   }),
 );
 export type ModelPreferences = {
@@ -1819,7 +1821,13 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),
   ),
   setModelsHidden: Schema.optionalKey(
-    Schema.Array(Schema.Struct({ ...ModelFavorite.fields, hidden: Schema.Boolean })),
+    Schema.Array(
+      Schema.Struct({
+        ...ModelFavorite.fields,
+        hidden: Schema.Boolean,
+        refusedAt: Schema.optionalKey(Schema.Number),
+      }),
+    ),
   ),
   setProviderModelOrder: Schema.optionalKey(
     Schema.Struct({ provider: ProviderInstanceId, modelOrder: Schema.Array(TrimmedString) }),

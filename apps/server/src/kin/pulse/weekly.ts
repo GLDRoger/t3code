@@ -1,5 +1,5 @@
 import { formatKinWhen, KIN_TEXT_LOCALE } from "@t3tools/contracts";
-import type { KinEvent, KinMoney, KinOrgId } from "@t3tools/contracts";
+import type { KinChatId, KinEvent, KinMoney, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -25,6 +25,8 @@ import {
 } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { DAY_MS, WEEK_MS } from "../durations.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
+import { lastCompleteWeek, weekMeasure } from "./weekMeasure.ts";
 
 export const WEEKLY_RULE =
   "This is the weekly brief, the owner's one post this morning. Kin writes the week's figures into the page as its own section: goals, money, overdue invoices, open quotes, renewals, cold and quiet clients, projects behind and meetings. Below is the rest of the week, for your judgement: how projects moved, last week's meetings, who is overloaded or free, and what falls due next week. In a few short lines: what matters most this week and why, and each decision as what you did or will do and how to stop it. A meeting that already happened is not coming up; a follow-up you set is not a meeting. An overdue invoice's fact says what mail went and what waits on a Confirm, as recorded now: never call something sent a draft.";
@@ -451,6 +453,42 @@ export const pipelineLines = Effect.fn("KinWeekly.pipeline")(function* (
   ];
 });
 
+const measureLines = Effect.fn("KinWeekly.measureLines")(function* (
+  orgId: KinOrgId,
+  chatId: KinChatId,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [audience] = yield* sql<{ people: number; others: number }>`SELECT COUNT(*) AS people,
+      COUNT(*) FILTER (WHERE NOT ${sql.literal(ownerLevelSql("m.org_id", "m.person_id"))}) AS others
+    FROM kin_chat_members m WHERE m.org_id = ${orgId} AND m.chat_id = ${chatId}
+      AND m.principal_kind = 'person' AND m.left_at IS NULL`;
+  if (audience === undefined || audience.people === 0 || audience.others > 0) return [];
+  const counts = yield* weekMeasure({ orgId, ...(yield* lastCompleteWeek(orgId, now)) });
+  return [
+    ...(counts.unasked === 0
+      ? []
+      : [
+          `Unasked: ${plural(counts.unasked, "turn", "turns")} with a message, ${counts.withCard} with something ready to act on.`,
+        ]),
+    ...(counts.withCard === 0
+      ? []
+      : [
+          `Of those: ${counts.acted} acted on as shown, ${counts.changed} changed first, ${counts.dismissed} dismissed, ${counts.left} unanswered.`,
+        ]),
+    ...(counts.asked === 0
+      ? []
+      : [
+          `Asked: ${plural(counts.asked, "turn", "turns")}, ${counts.askedCorrected} followed by a same-day message after a card was dismissed or changed.`,
+        ]),
+    ...(counts.due === 0
+      ? []
+      : [
+          `Things Kin said it would do: ${counts.due} came due, ${counts.kept} on time, ${counts.late} late, ${counts.missed} missed.`,
+        ]),
+  ];
+});
+
 export const WEEK_FIGURES_TITLE = "The week, from Kin's records";
 
 /**
@@ -460,6 +498,7 @@ export const WEEK_FIGURES_TITLE = "The week, from Kin's records";
 export const weeklyFigures = Effect.fn("KinWeekly.figures")(function* (input: {
   readonly orgId: KinOrgId;
   readonly now: number;
+  readonly chatId?: KinChatId;
 }) {
   const { section: week, shell, overdue, notYetDue } = yield* weekRows(input);
   const block = (title: string, lines: ReadonlyArray<string>, empty?: string) =>
@@ -499,6 +538,16 @@ export const weeklyFigures = Effect.fn("KinWeekly.figures")(function* (input: {
       week.meetings.lastWeek.filter((line) => line.endsWith(NO_OUTCOME)),
     ),
     block("Coming up", week.meetings.comingUp),
+    block(
+      "How Kin did",
+      input.chatId === undefined
+        ? []
+        : yield* measureLines(input.orgId, input.chatId, input.now).pipe(
+            Effect.catch(() =>
+              Effect.logWarning("Kin weekly measure unavailable").pipe(Effect.as([])),
+            ),
+          ),
+    ),
   ].filter((lines) => lines.length > 0);
   return [`## ${WEEK_FIGURES_TITLE}`, week.week, ...blocks.map((lines) => lines.join("\n"))].join(
     "\n\n",

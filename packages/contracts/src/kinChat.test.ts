@@ -300,7 +300,8 @@ const samples = {
     { ...widget, widgetClass: "generated", source: { threadId: "thread-1", itemId: "item-1" } },
     { ...widget, widgetClass: "live", feed: { kind: "build", key: "build-1" } },
   ],
-  KinTaskCardState: [task],
+  KinTaskCardState: [task, { ...task, status: "failed", failure: "model_not_offered" }],
+  KinTaskFailure: ["model_not_offered", "signed_out", "unreachable", "usage_limit"],
   KinWaitingAsk: [
     {
       agent: "Finance",

@@ -47,6 +47,8 @@ import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
 import { handlers as documentHandlers, KinDocumentToolkit } from "../gendocs/mcp.ts";
+import { handlers as pictureHandlers, KinPictureToolkit } from "../pictures/mcp.ts";
+import * as PictureRenderer from "../pictures/renderer.ts";
 import * as Render from "../gendocs/render.ts";
 import * as Toolchain from "../gendocs/toolchain.ts";
 import * as Workspace from "../gendocs/workspace.ts";
@@ -303,6 +305,7 @@ const registration = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocsToolkit), docHandlers),
   McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocumentToolkit), documentHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPictureToolkit), pictureHandlers),
   McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPulseToolkit), pulseHandlers),
 );
 const toolkit = LeadMemory.layer.pipe(
@@ -327,7 +330,7 @@ const toolkit = LeadMemory.layer.pipe(
 
 export const layer = withServices(Layer.merge(runner, ChatWake.layer));
 // Documents render on this server; agents' own files and recipe drafts come through it too.
-const documents = Render.layer.pipe(
+const documents = Layer.merge(Render.layer, PictureRenderer.layer).pipe(
   Layer.provideMerge(Layer.mergeAll(Workspace.layer, Toolchain.layer)),
 );
 // Once per item, at every start: what leads tracked before Work existed becomes entries.

@@ -68,6 +68,7 @@ import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import * as HostCare from "../host/KinHostCare.ts";
+import { KinRefusedModels } from "./refusedModels.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
 import * as ClaudeAdapter from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { makeFakeClaudeCli } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.testkit.ts";
@@ -99,6 +100,7 @@ import {
   orgId,
   agentId,
   event,
+  selection,
   toolCall,
 } from "./WakeupRunner.testkit.ts";
 import { ProviderAdapterSteerRunError } from "@t3tools/provider-core/server/ProviderAdapter";
@@ -1097,6 +1099,37 @@ describe("WakeupRunner", () => {
       }).pipe(provideDeterministicTestRuntime),
   );
   it.effect(
+    "asks Kin to stop offering the model a provider turned an agent's own turn away on",
+    () =>
+      Effect.gen(function* () {
+        const refused: Array<Parameters<KinRefusedModels["Service"]["refused"]>[0]> = [];
+        const refusals = Layer.succeed(KinRefusedModels, {
+          refused: (input) => Effect.sync(() => refused.push(input)).pipe(Effect.as(true)),
+        });
+        yield* Effect.gen(function* () {
+          yield* seed;
+          yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("refused-model"));
+          yield* Fiber.join(yield* run());
+          assert.deepStrictEqual(
+            refused.map((input) => [
+              input.orgId,
+              input.selection.instanceId,
+              input.selection.model,
+            ]),
+            [[orgId, "claudeAgent", "claude-opus-4-6"]],
+          );
+        }).pipe(
+          Effect.provide(
+            harness({
+              failed: true,
+              failureCode: "api_error_400",
+              failureMessage: `API Error: 400 unknown provider for model ${selection.model}`,
+            }).pipe(Layer.provide(refusals)),
+          ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect(
     "retries a failed batch one at a time and gives up only on the event that cannot start",
     () =>
       Effect.gen(function* () {
@@ -1517,6 +1550,16 @@ describe("WakeupRunner", () => {
           const identity = yield* resolveAgent(ThreadId.make(lead!.thread_id));
           // The renewed grant lasts as long as the wake-up, so a reply 10 minutes in still lands.
           yield* TestClock.adjust("10 minutes");
+          if (kind === "team_group") {
+            yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+              VALUES ('other-group', ${orgId}, 'team_group', 0, ${at})`;
+            const other = Option.getOrThrow(
+              yield* repo.getChat({ orgId, chatId: KinChatId.make("other-group") }),
+            );
+            assert.include(yield* floor.authorize(identity, other, "answer").pipe(Effect.flip), {
+              reason: "floor_not_granted",
+            });
+          }
           const { runId } = yield* floor.authorize(identity, chat, "answer");
           assert.isNotNull(runId);
           // The wake-up keeps the grant for its run: its next post is the same agent turn.

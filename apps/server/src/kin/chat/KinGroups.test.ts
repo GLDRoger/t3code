@@ -525,6 +525,39 @@ it.effect(
       assert.isTrue(yield* chats.attachmentReadable([owner], "kin-chat-docfile"));
       for (const who of [priya, sam])
         assert.isFalse(yield* chats.attachmentReadable([who], "kin-chat-docfile"));
+      // A picture's file is read by whoever reads the reply it was posted on, until redrawn
+      // where only the owner reads.
+      const posted = (version: number, image: string) =>
+        Effect.gen(function* () {
+          const reply = yield* say(owner, chatId, "The quote card");
+          yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+            VALUES (${image}, ${orgId}, ${chatId}, ${reply.messageId})`;
+          yield* sql`INSERT INTO kin_picture_images (org_id, record_id, version, attachment_id)
+            VALUES (${orgId}, 'pic-record', ${version}, ${image})`;
+        });
+      yield* posted(1, "kin-chat-picimg");
+      yield* posted(2, "kin-chat-picimg-2");
+      yield* sql`PRAGMA foreign_keys = OFF`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at)
+        VALUES (${orgId}, 'pic-record', 'docs', 'D-9', 'Quote card', 'agent', ${tech}, 'agent',
+          ${`picture:${tech}:k`}, 0, 0)`;
+      const drawn = (version: number, audience: string, file: string) =>
+        sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body_kind, title, kind,
+            summary, operations_json, actor_kind, actor_id, via, origin_key, created_at,
+            file_attachment_id, audience, chat_id)
+          VALUES (${orgId}, 'pic-record', ${version}, 'file', 'Quote card', 'created', 'Picture',
+            '[]', 'agent', ${tech}, 'agent', ${`kin-picture:w${version}:k`}, 0, ${file}, ${audience},
+            ${chatId})`;
+      yield* drawn(1, "shared", "kin-chat-picfile");
+      yield* sql`PRAGMA foreign_keys = ON`;
+      const reads = (file: string) =>
+        Effect.forEach([owner, priya, sam], (who) => chats.attachmentReadable([who], file));
+      assert.deepStrictEqual(yield* reads("kin-chat-picfile"), [true, true, false]);
+      yield* sql`PRAGMA foreign_keys = OFF`;
+      yield* drawn(2, "owner_only", "kin-chat-picfile-2");
+      yield* sql`PRAGMA foreign_keys = ON`;
+      assert.deepStrictEqual(yield* reads("kin-chat-picfile-2"), [true, false, false]);
 
       // Priya watches her list; being taken out removes the row there and then.
       const list = yield* Stream.toQueue(chats.subscribeChats([priya], {}), {

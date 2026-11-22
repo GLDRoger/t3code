@@ -68,6 +68,7 @@
         "scripts/kin-fake-social.ts",
         "scripts/kin-feature-map.ts",
         "scripts/kin-push-test.ts",
+        "scripts/kin-week-measure.ts",
         "scripts/kin-wire-scaled.ts",
         "scripts/probe-claude-fork-local-rollback-replay.ts",
         "scripts/update-test-shard-weights.ts",

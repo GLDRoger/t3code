@@ -123,6 +123,9 @@ const tableNames = [
   "kin_pending_actions",
   "kin_people",
   "kin_people_invites",
+  "kin_picture_counts",
+  "kin_picture_images",
+  "kin_picture_settings",
   "kin_ping_deliveries",
   "kin_ping_escalations",
   "kin_ping_items",
@@ -1887,7 +1890,7 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
-    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 208, and runs again",
+    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 209, and runs again",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -1917,7 +1920,7 @@ describe("Kin migrations", () => {
         // Later branches' migrations run after these too; only these three are this test's.
         assert.deepStrictEqual(
           (yield* runKinMigrations()).map(([id]) => id),
-          [196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208],
+          [196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209],
         );
         assert.deepStrictEqual(yield* receipts, [
           { trigger_key: "review:ambermill/shop#7", review_url: null },
@@ -1944,7 +1947,7 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("a host on K196 migrates through 197 to 208, and again", () =>
+  it.effect("a host on K196 migrates through 197 to 209, and again", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const added = sql<{ name: string }>`
@@ -1966,7 +1969,7 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* added, []);
       assert.deepStrictEqual(
         (yield* runKinMigrations()).map(([id]) => id),
-        [197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208],
+        [197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209],
       );
       const all = [
         "approved_at",
@@ -1982,7 +1985,7 @@ describe("Kin migrations", () => {
         (yield* added).map(({ name }) => name),
         all,
       );
-      for (const from of [197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208]) {
+      for (const from of [197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209]) {
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
         assert.deepStrictEqual(
@@ -2286,6 +2289,51 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect(
+    "K209 keeps one picture setting per org, only reserved, made or unclear counts of 1 to 4, and one image per picture version",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        assert.deepInclude(yield* kinHistory, { migration_id: 209, name: "Pictures" });
+        yield* sql`INSERT INTO kin_picture_settings (org_id, monthly_limit, updated_at, updated_by)
+          VALUES ('org', NULL, 1, 'rhea')`;
+        const refused = [
+          sql`INSERT INTO kin_picture_settings (org_id, monthly_limit, updated_at, updated_by)
+            VALUES ('org', 50, 1, 'rhea')`,
+          sql`INSERT INTO kin_picture_settings (org_id, monthly_limit, updated_at, updated_by)
+            VALUES ('other', 0, 1, 'rhea')`,
+          ...[0, 5].map(
+            (count) => sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id,
+              count, state, at) VALUES ('org', ${`c${count}`}, '2026-11', 'growth', ${count},
+              'made', 1)`,
+          ),
+          sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, count, state, at)
+            VALUES ('org', 'c-failed', '2026-11', 'growth', 1, 'failed', 1)`,
+          // A picture version is posted as one chat image.
+          sql`INSERT INTO kin_picture_images (org_id, record_id, version, attachment_id)
+            VALUES ('org', 'pic', 1, 'kin-chat-b')`,
+        ];
+        yield* sql`INSERT INTO kin_picture_images (org_id, record_id, version, attachment_id)
+          VALUES ('org', 'pic', 1, 'kin-chat-a')`;
+        for (const query of refused) assert.isTrue(Exit.isFailure(yield* Effect.exit(query)));
+        yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, person_id,
+            count, state, at)
+          VALUES ('org', 'c1', '2026-11', 'growth', NULL, 4, 'reserved', 1),
+            ('org', 'c2', '2026-11', 'growth', NULL, 1, 'unclear', 1)`;
+        // Run again, it changes nothing.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 209`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(209));
+        assert.deepStrictEqual(
+          yield* sql`SELECT count_id, count FROM kin_picture_counts ORDER BY count_id`,
+          [
+            { count_id: "c1", count: 4 },
+            { count_id: "c2", count: 1 },
+          ],
+        );
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -2296,7 +2344,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 208");
+      assert.include(String(exit), "below the latest applied migration 209");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

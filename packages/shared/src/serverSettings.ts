@@ -482,9 +482,22 @@ export function applyServerSettingsPatch(
         hiddenModels: [],
         modelOrder: [],
       };
+      // A refusal records only a new hide: the owner's own, or an earlier refusal, stays as it was.
+      if (change.refusedAt !== undefined && preferences.hiddenModels.includes(change.model))
+        continue;
       const hiddenModels = preferences.hiddenModels.filter((model) => model !== change.model);
       if (change.hidden) hiddenModels.push(change.model);
-      updated[change.provider] = { ...preferences, hiddenModels };
+      const { refusedAt: previous, ...kept } = preferences;
+      const refusedAt = Object.fromEntries(
+        Object.entries(previous ?? {}).filter(([model]) => model !== change.model || change.hidden),
+      );
+      if (change.hidden && change.refusedAt !== undefined)
+        refusedAt[change.model] = change.refusedAt;
+      updated[change.provider] = {
+        ...kept,
+        hiddenModels,
+        ...(Object.keys(refusedAt).length === 0 ? {} : { refusedAt }),
+      };
     }
     nextModelPreferences = updated;
   }
