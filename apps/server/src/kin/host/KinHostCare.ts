@@ -764,7 +764,7 @@ const make = Effect.gen(function* () {
   const failed = Effect.fn("KinHostCare.failed")(
     function* (input: TroubleInput) {
       const { orgId } = input;
-      const troubleId = yield* troubleLock.withPermits(1)(
+      const recorded = yield* troubleLock.withPermits(1)(
         sql.withTransaction(
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis;
@@ -775,18 +775,15 @@ const make = Effect.gen(function* () {
                 detail = COALESCE(${input.detail?.slice(0, 600) ?? null}, detail),
                 reset_at = COALESCE(${input.resetAt ?? null}, reset_at)
               WHERE org_id = ${orgId} AND trouble_id = ${troubleId}`;
-            if (input.eventIds.length > 0)
-              yield* sql`UPDATE kin_events SET held_by = ${troubleId}
-                WHERE org_id = ${orgId} AND state IN ('queued', 'failed')
-                  AND event_id IN (SELECT value FROM json_each(${yield* encodeIds(input.eventIds)}))`;
-            return troubleId;
+            const held = yield* queue.hold(orgId, input.agentId, troubleId, input.eventIds);
+            return { troubleId, held };
           }),
         ),
       );
-      if (troubleId === undefined) return false;
-      yield* projectQuietly(orgId, troubleId, true);
-      yield* noteRuns(orgId, input.eventIds, KIN_TROUBLE_WHY[input.cause]);
-      const trouble = yield* troubleById(orgId, troubleId);
+      if (recorded === undefined) return false;
+      yield* projectQuietly(orgId, recorded.troubleId, true);
+      yield* noteRuns(orgId, recorded.held, KIN_TROUBLE_WHY[input.cause]);
+      const trouble = yield* troubleById(orgId, recorded.troubleId);
       return trouble?.toldAt != null;
     },
     Effect.catchCause((cause) =>

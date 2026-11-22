@@ -303,6 +303,8 @@ it.effect(
           VALUES ('zoya-held', ${ctx.orgId}, ${chief}, 'chat.message', 'P1',
             ${JSON.stringify({ chatId: zoyasChat.chatId })}, 0, 0, 'queued', 72000000),
             ('zoya-spent', ${ctx.orgId}, ${chief}, 'chat.message', 'P1',
+              ${JSON.stringify({ chatId: zoyasChat.chatId })}, 0, 0, 'failed', 72000000),
+            ('zoya-finished-before-hold', ${ctx.orgId}, ${chief}, 'chat.message', 'P1',
               ${JSON.stringify({ chatId: zoyasChat.chatId })}, 0, 0, 'failed', 72000000)`;
         yield* care.failed({
           orgId: ctx.orgId,
@@ -311,9 +313,17 @@ it.effect(
           eventIds: [KinEventId.make("zoya-held"), KinEventId.make("zoya-spent")],
         });
         yield* ctx.people.removeAccess(ownerSession, { orgId: ctx.orgId, personId: zoyaId });
+        yield* care.failed({
+          orgId: ctx.orgId,
+          agentId: chief,
+          cause: "signin",
+          eventIds: [KinEventId.make("zoya-finished-before-hold")],
+        });
+        assert.deepStrictEqual(yield* care.retry(ctx.orgId), { requeued: 0 });
         const departingEvents = ctx.sql`SELECT state, not_before FROM kin_events
-          WHERE org_id = ${ctx.orgId} AND event_id IN ('zoya-held', 'zoya-spent') ORDER BY event_id`;
+          WHERE org_id = ${ctx.orgId} AND event_id IN ('zoya-held', 'zoya-spent', 'zoya-finished-before-hold') ORDER BY event_id`;
         assert.deepStrictEqual(yield* departingEvents, [
+          { state: "expired", not_before: 72000000 },
           { state: "expired", not_before: 72000000 },
           { state: "expired", not_before: 72000000 },
         ]);
@@ -328,6 +338,7 @@ it.effect(
         );
         yield* care.succeeded(ctx.orgId, chief);
         assert.deepStrictEqual(yield* departingEvents, [
+          { state: "expired", not_before: 72000000 },
           { state: "expired", not_before: 72000000 },
           { state: "expired", not_before: 72000000 },
         ]);

@@ -263,6 +263,12 @@ export class KinEventQueue extends Context.Service<
       },
       PersistenceSqlError | PersistenceDecodeError
     >;
+    readonly hold: (
+      orgId: KinOrgId,
+      agentId: KinAgentId,
+      troubleId: string,
+      eventIds: ReadonlyArray<KinEventId>,
+    ) => Effect.Effect<ReadonlyArray<KinEventId>, PersistenceSqlError | PersistenceDecodeError>;
     /**
      * Runs these events now: held ones at once, and ones that used their last try with their tries
      * back (a person's Try again). Claimed or done ones are left alone. Returns how many moved.
@@ -356,6 +362,41 @@ const make = Effect.gen(function* () {
   const retryAlone = sql.literal("json_extract(e.json, '$._retryAlone') IS 1");
   const storedAuthor = sql.literal(STORED_AUTHOR);
   const authorOf = sql.literal(AUTHOR_OF);
+  const canRetry = sql`EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = e.org_id
+      AND a.agent_id = e.agent_id AND a.retired_at IS NULL)
+    AND NOT EXISTS (
+      SELECT 1 FROM (
+        SELECT json_extract(e.json, '$.provenance.personId') AS person_id,
+          json_extract(e.json, '$.chatId') AS chat_id
+        WHERE json_extract(e.json, '$.provenance._tag') = 'human'
+        UNION ALL
+        SELECT json_extract(e.json, '$.origin.personId'), json_extract(e.json, '$.origin.chatId')
+        UNION ALL
+        SELECT json_extract(e.json, '$.askedBy'), NULL WHERE e.tag = 'github'
+        UNION ALL
+        SELECT m.author_person_id, m.chat_id FROM kin_messages m WHERE m.org_id = e.org_id
+          AND e.tag IN ('chat.message', 'widget.action') AND m.author_kind = 'human'
+          AND m.message_id = json_extract(e.json, '$.messageId')
+        UNION ALL
+        SELECT cm.person_id, cm.chat_id FROM kin_chat_members cm JOIN kin_chats c
+          ON c.org_id = cm.org_id AND c.chat_id = cm.chat_id AND c.kind = 'direct'
+        WHERE cm.org_id = e.org_id AND cm.chat_id = json_extract(e.json, '$.chatId')
+          AND cm.principal_kind = 'person'
+      ) request
+      WHERE request.person_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM kin_people p WHERE p.org_id = e.org_id
+          AND p.person_id = request.person_id AND p.removed_at IS NULL
+          AND (request.chat_id IS NULL OR EXISTS (
+            SELECT 1 FROM kin_chat_members cm WHERE cm.org_id = p.org_id
+              AND cm.chat_id = request.chat_id AND cm.principal_kind = 'person'
+              AND cm.person_id = p.person_id AND cm.left_at IS NULL
+          ))
+      )
+    )`;
+  const expireStaleHolds = (orgId: KinOrgId, agentId: KinAgentId) =>
+    sql`UPDATE kin_events AS e SET state = 'expired'
+      WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId}
+        AND e.state = 'queued' AND e.held_by IS NOT NULL AND NOT (${canRetry})`;
   const organizations = new Map<KinOrgId, { changed: Deferred.Deferred<void> }>();
   // One running wake-up per lead: the in-process gate is keyed like the claim index.
   const gates = new Map<string, Semaphore.Semaphore>();
@@ -615,7 +656,11 @@ const make = Effect.gen(function* () {
             Effect.gen(function* () {
               while (true) {
                 const changed = entry.changed;
-                yield* sql.withTransaction(expireStaleRoutes(input.orgId, input.agentId));
+                yield* sql.withTransaction(
+                  expireStaleHolds(input.orgId, input.agentId).pipe(
+                    Effect.andThen(expireStaleRoutes(input.orgId, input.agentId)),
+                  ),
+                );
                 const now = yield* Clock.currentTimeMillis;
                 const { readyAt, next } = yield* readiness(input, now);
                 if (readyAt > now) {
@@ -632,6 +677,7 @@ const make = Effect.gen(function* () {
                 const events = yield* sql
                   .withTransaction(
                     Effect.gen(function* () {
+                      yield* expireStaleHolds(input.orgId, input.agentId);
                       const now = yield* Clock.currentTimeMillis;
                       if ((yield* readiness(input, now)).readyAt > now)
                         return yield* new NoClaimableEvents({});
@@ -732,6 +778,7 @@ const make = Effect.gen(function* () {
       yield* decodeSteerInput(input);
       return yield* sql.withTransaction(
         Effect.gen(function* () {
+          yield* expireStaleHolds(input.orgId, input.agentId);
           const now = yield* Clock.currentTimeMillis;
           // The lane is the claimed events' (one per wake-up); human messages in it join. Authors
           // come from stored rows, as `KinLevels.askers` reads them: the owner's always join, and
@@ -1056,25 +1103,56 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toQueuePersistenceError("KinEventQueue.readyLeads")),
   );
+  const hold = Effect.fn("KinEventQueue.hold")(
+    function* (
+      orgId: KinOrgId,
+      agentId: KinAgentId,
+      troubleId: string,
+      eventIds: ReadonlyArray<KinEventId>,
+    ) {
+      if (eventIds.length === 0) return [];
+      const ids = yield* encodeEventIds(eventIds);
+      const rows = yield* sql<{ event_id: string; state: string }>`UPDATE kin_events AS e
+        SET held_by = CASE WHEN ${canRetry} THEN ${troubleId} ELSE held_by END,
+          state = CASE WHEN ${canRetry} THEN state ELSE 'expired' END
+        WHERE org_id = ${orgId} AND agent_id = ${agentId} AND state IN ('queued', 'failed')
+          AND event_id IN (SELECT value FROM json_each(${ids}))
+        RETURNING event_id, state`;
+      return rows
+        .filter((row) => row.state !== "expired")
+        .map((row) => KinEventId.make(row.event_id));
+    },
+    Effect.mapError(toQueuePersistenceError("KinEventQueue.hold")),
+  );
+
   const wake = Effect.fn("KinEventQueue.wake")(
     function* (orgId: KinOrgId, eventIds: ReadonlyArray<KinEventId>) {
       if (eventIds.length === 0) return 0;
       const ids = yield* encodeEventIds(eventIds);
       const now = yield* Clock.currentTimeMillis;
-      const rows = yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL,
-          not_before = ${now}, attempts = CASE WHEN state = 'failed' THEN 0 ELSE attempts END
-        WHERE org_id = ${orgId} AND state IN ('queued', 'failed') AND budget_deferred = 0
-          -- Already due: waking it again changes nothing, and counts nothing.
-          AND (state = 'failed' OR not_before > ${now})
-          AND event_id IN (SELECT value FROM json_each(${ids}))
-        RETURNING event_id`;
-      if (rows.length > 0) yield* notify(orgId);
+      const rows = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`UPDATE kin_events AS e SET state = 'expired'
+            WHERE org_id = ${orgId} AND state IN ('queued', 'failed')
+              AND event_id IN (SELECT value FROM json_each(${ids})) AND NOT (${canRetry})`;
+          const rows = yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL,
+              not_before = ${now}, attempts = CASE WHEN state = 'failed' THEN 0 ELSE attempts END
+            WHERE org_id = ${orgId} AND state IN ('queued', 'failed') AND budget_deferred = 0
+              -- Already due: waking it again changes nothing, and counts nothing.
+              AND (state = 'failed' OR not_before > ${now})
+              AND event_id IN (SELECT value FROM json_each(${ids}))
+            RETURNING event_id`;
+          if (rows.length > 0) yield* sql.afterCommit(notify(orgId));
+          return rows;
+        }),
+      );
       return rows.length;
     },
     Effect.mapError(toQueuePersistenceError("KinEventQueue.wake")),
   );
 
   return KinEventQueue.of({
+    hold,
     wake,
     reconsiderBudget: Effect.fn("KinEventQueue.reconsiderBudget")(function* (orgId) {
       yield* sql`UPDATE kin_events SET not_before = NULL, budget_deferred = 0
