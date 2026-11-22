@@ -680,6 +680,14 @@ it.effect.each([true, false])(
         );
         assert.include(yield* leadCall("record_get", readClient), '"isError":false');
         yield* store(5, clientsOff);
+        const linear = yield* leadCall("kin_connection_call", {
+          connection: "linear",
+          tool: "create_issue",
+          arguments: { project: "Website" },
+          reason: "Invented issue",
+        });
+        assert.notInclude(linear, "Donors is turned off for this company.");
+        assert.match(linear, /connection|connected/i);
         assert.notInclude(yield* leadMcp.list, "client_read");
         assert.notInclude(yield* leadMcp.list, "pipeline_read");
         for (const args of [readClient, { key: project.key }])

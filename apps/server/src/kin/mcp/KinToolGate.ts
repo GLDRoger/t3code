@@ -1,3 +1,4 @@
+import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
 import { viewOf } from "../work/leadWork.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import * as Context from "effect/Context";
@@ -24,6 +25,7 @@ import * as KinShell from "../shell/KinShell.ts";
 import {
   looksLikeRecordReference,
   resolveSections,
+  SECTIONS,
   sectionOfList,
   sectionOfTool,
   type SectionId,
@@ -169,6 +171,7 @@ const besideReview =
 const sectionsOfArguments = (
   args: unknown,
   sectionOfReference: (value: string) => SectionId | null,
+  skipForeignArguments = false,
 ) => {
   const sections = new Set<SectionId>();
   const pending = [{ value: args, field: "" }];
@@ -183,7 +186,9 @@ const sectionsOfArguments = (
     } else if (Array.isArray(value)) {
       for (const item of value) pending.push({ value: item, field });
     } else if (Predicate.isReadonlyObject(value)) {
-      for (const [key, child] of Object.entries(value)) pending.push({ value: child, field: key });
+      for (const [key, child] of Object.entries(value))
+        if (!skipForeignArguments || key !== "arguments")
+          pending.push({ value: child, field: key });
     }
   }
   return sections;
@@ -208,12 +213,19 @@ const sectionRefusal = (
   return `Row ${index + 1}${named}: ${message} Nothing was saved.`;
 };
 
+const forwardedTools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
 const sectionAdmitted = McpToolPolicy.toolCallRefusal((name, args) => {
+  if (!Object.hasOwn(SECTIONS.tools, name) || forwardedTools.has(name)) return Effect.undefined;
+  const foreign = name === "kin_connection_call";
   const references = new Set<string>();
-  const sections = sectionsOfArguments(args, (value) => {
-    if (looksLikeRecordReference(value)) references.add(value);
-    return null;
-  });
+  const sections = sectionsOfArguments(
+    args,
+    (value) => {
+      if (looksLikeRecordReference(value)) references.add(value);
+      return null;
+    },
+    foreign,
+  );
   const tool = sectionOfTool(name);
   const template =
     name === "list_define" &&
@@ -240,7 +252,7 @@ const sectionAdmitted = McpToolPolicy.toolCallRefusal((name, args) => {
         const off =
           tool !== null && !KinShell.sectionOn(shell, tool)
             ? tool
-            : [...sectionsOfArguments(args, sectionOfReference), ...sections].find(
+            : [...sectionsOfArguments(args, sectionOfReference, foreign), ...sections].find(
                 (id) => !KinShell.sectionOn(shell, id),
               );
         return off === undefined
