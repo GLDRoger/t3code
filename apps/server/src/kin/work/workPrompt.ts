@@ -55,9 +55,11 @@ export const taskFacts = Effect.fn("KinWorkPrompt.taskFacts")(function* (
     key: string;
     partyId: string | null;
     projectId: string | null;
-  }>`SELECT record_id AS "recordId", key, party_id AS "partyId", project_id AS "projectId"
-    FROM kin_records WHERE org_id = ${orgId} AND register_id = 'work'
-      AND record_id IN ${sql.in([...new Set(recordIds)])} ORDER BY record_id`;
+  }>`SELECT r.record_id AS "recordId", r.key, r.party_id AS "partyId",
+      r.project_id AS "projectId"
+    FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'work'
+      AND r.record_id IN ${sql.in([...new Set(recordIds)])} AND ${seenBy(sql, viewer)}
+    ORDER BY r.record_id`;
   const ids = (pick: (task: (typeof tasks)[number]) => string | null) => [
     ...new Set(tasks.flatMap((task) => (pick(task) === null ? [] : [pick(task)!]))),
   ];
