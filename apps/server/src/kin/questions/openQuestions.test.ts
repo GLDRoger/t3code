@@ -2711,13 +2711,21 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.strictEqual(of._tag === "approved" ? of.approval.draft.text : undefined, latest!.text);
       const [approvedEvent] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
         FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${approved}`;
-      yield* LeadDocs.create(scopeOf("chief"), {
+      // What his Approve makes shows as its card in his chat, which no message of his woke.
+      const made = yield* LeadDocs.create(scopeOf("chief"), {
         sourceEventId: approvedEvent!.eventId,
         title: "Harbourline proposal",
         body: latest!.text,
         kind: "proposal",
         client: "C-7",
+        draft: { kind: "proposal" },
       }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.notInclude(made.note ?? "", "couldn't be shown");
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")}
+          AND type = 'doc' AND json_extract(state_json, '$.key') = ${made.key}`,
+        1,
+      );
       const [started] = yield* sql<{ at: number }>`SELECT started_at AS at FROM kin_wakeups
         WHERE wakeup_id = ${approved}`;
       yield* tellDraftMade({ ...turn, startedAt: started!.at }, chats);
