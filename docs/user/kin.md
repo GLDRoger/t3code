@@ -412,6 +412,10 @@ hosting", "the GST filing is due on the 20th". It records the entry and answers 
   reads **owed** until the company pays the partner back. Then set it to **repaid**, with the day
   in **Repaid on**. Choose **not reimbursable** when the partner won't be paid back. Expenses imported
   with a partner's email address but no Kin person to match show as owed to that address.
+  Ask "what do we owe the partners?" for each partner's total and oldest expenses. The outlook
+  counts what partners are owed as going out now. Runway counts a partner's expense in the month
+  the company paid them back, not the month they bought it, and never counts one that isn't
+  reimbursable.
 - **Subscriptions.** Tell an agent what you pay for each month or year, with a screenshot or the
   bill, and it keeps them under Subscriptions with what renews next.
 - **Budgets and goals.** **Add → Set a budget** or **Add goal**. Goals show to the whole team.

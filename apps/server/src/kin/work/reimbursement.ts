@@ -13,7 +13,7 @@ export const FUNDED_BY = "fundedBy";
 const REIMBURSEMENT = "reimbursement";
 const REPAID_ON = "repaidOn";
 /** The address an import gave for who paid; read only to show who an unmatched row is owed to. */
-const IMPORTED_PARTNER = "paidPersonallyBy";
+export const IMPORTED_PARTNER = "paidPersonallyBy";
 
 const REIMBURSEMENT_STATES = ["owed", "repaid", "not reimbursable"] as const;
 export type ReimbursementState = (typeof REIMBURSEMENT_STATES)[number];
@@ -85,3 +85,10 @@ export const fundedByRefusal = (value: unknown) =>
   typeof value === "string" && !value.startsWith("person:")
     ? "Funded by takes the person who paid from their own money, not an agent."
     : undefined;
+
+/**
+ * Whether an expense `r` was company cash out: the company paid it, or paid its partner back.
+ * One a partner gave, or is still owed for, never left the company's accounts.
+ */
+export const companyCashOut = (sql: SqlClient.SqlClient) =>
+  sql`(NOT ${partnerFunded(sql)} OR COALESCE(${valueOf(sql, REIMBURSEMENT)}, '') = 'repaid')`;

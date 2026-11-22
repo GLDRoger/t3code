@@ -56,6 +56,7 @@ import {
   writerFor,
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
+import { partnersAnswer, partnersOwed } from "./partnersOwed.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { homeCurrency, notRegisteredFact } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
@@ -534,9 +535,9 @@ export const money = leadTool("KinWorkTools.money", runMoney);
 
 const Month = Schema.String.check(Schema.isPattern(/^\d{4}-(?:0[1-9]|1[0-2])$/));
 export const MoneyQueryInput = Schema.Struct({
-  view: Schema.Literals(["cash", "outlook", "budgets"]).annotate({
+  view: Schema.Literals(["cash", "outlook", "budgets", "partners"]).annotate({
     description:
-      "cash: balances from the bank statements Kin read. outlook: due in and out ahead, and runway. budgets: this month's spending against each limit.",
+      "cash: balances from the bank statements Kin read. outlook: due in and out ahead, and runway. budgets: this month's spending against each limit. partners: what the company owes each partner back for expenses they paid themselves.",
   }),
   days: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(366)),
@@ -563,7 +564,12 @@ const runMoneyQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof Mon
       ? cashAnswer(cash)
       : input.view === "outlook"
         ? outlookAnswer(yield* outlook(lead.orgId, now, input.days))
-        : budgetsAnswer(yield* budgetsView(lead.orgId, now, input.month));
+        : input.view === "partners"
+          ? partnersAnswer(
+              yield* partnersOwed(lead.orgId, yield* homeCurrency(lead.orgId)),
+              yield* ownerZone(lead.orgId),
+            )
+          : budgetsAnswer(yield* budgetsView(lead.orgId, now, input.month));
   const bank = bankAnswer(cash?.bank ?? (yield* bankKnown(lead.orgId)), cash !== undefined);
   return { asOf: iso(now), view: input.view, answer, bank, sensitive: true as const };
 });

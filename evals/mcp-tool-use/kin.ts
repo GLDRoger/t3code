@@ -614,6 +614,7 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       laterIn: [],
       dueOut: [],
       overdueOut: [],
+      partners: [],
       incomplete: [],
       datesWithoutAmount: [],
       runway: [],
