@@ -2300,7 +2300,9 @@ describe("Kin mail end to end, on a fake mailbox", () => {
                 subject: "You have done a UPI txn. Check details!",
                 body: `Rs.${n}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is 6322111100${n}.`,
                 at,
-                authResults: ["mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net"],
+                authResults: [
+                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net",
+                ],
               });
           const outcomes = sql<{ outcome: string; count: number }>`SELECT outcome,
             COUNT(*) AS count FROM kin_bank_alerts WHERE org_id = ${orgId}

@@ -73,7 +73,9 @@ describe("an HDFC alert mail", () => {
       ],
       [
         "two movements",
-        mail(`${UPI_DEBIT} Rs.10.00 has been debited from account **4821 to VPA someone@invented on 18-11-26.`),
+        mail(
+          `${UPI_DEBIT} Rs.10.00 has been debited from account **4821 to VPA someone@invented on 18-11-26.`,
+        ),
         "unparsed",
       ],
       ["no amount", mail(UPI_DEBIT.replace("Rs.1,250.00 ", "")), "unparsed"],
