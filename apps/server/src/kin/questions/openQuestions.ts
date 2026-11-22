@@ -552,11 +552,9 @@ export const askedBy = (askerName: string | null, agentName: string) =>
   askerName === null ? `${agentName} asks.` : `${askerName} asks, through ${agentName}.`;
 
 /**
- * An answer to a question asked for another chat goes back there, in the answer's transaction:
- * Kin's line in that chat, and one turn of the asker answering there (`question-answered:<id>`),
- * at that chat's access; none when its asker no longer writes there, and none for a draft's
- * Changes first, whose redraft comes from the owner's own chat (`redo`). Returns the name of
- * the person that chat is with.
+ * An answer to a question asked for another chat goes back there: Kin's line, and one turn there
+ * (`question-answered:<id>`) unless its asker no longer writes there or it is a draft's Changes
+ * first, whose redraft comes from the owner's chat (`redo`). Returns who that chat is with.
  */
 const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
   orgId: KinOrgId,
