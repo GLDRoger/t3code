@@ -173,6 +173,7 @@ export const QUOTE_LABELS = {
   workHeld: "work you hold (data)",
   workHandedBack: "work handed back to you (data)",
   workGiven: "work given to you (data)",
+  workHelping: "work you are helping on (data)",
   handedBackWhy: "why they handed it back, in their words (data)",
   comment: "their comment on it, in their words (data)",
   recentChat: "recent chat",
@@ -1990,7 +1991,8 @@ export class KinLeadPrompt extends Context.Service<
             ? []
             : [ownerPart(PROMPT_HEADINGS.checkIns), ownerPart(checkIns.join("\n"))]),
           // Nothing owned and nothing new: the section would be noise.
-          ...(work === undefined || (work.open === 0 && work.changed.length === 0)
+          ...(work === undefined ||
+          (work.open === 0 && work.changed.length === 0 && work.helpingOn === undefined)
             ? []
             : [
                 ownerPart(PROMPT_HEADINGS.work),
@@ -2145,6 +2147,14 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
   // reaches theirs while it is still one they may see.
   if (!ownerOnly && teammate === undefined) return undefined;
   const withdrawn = event.reason === "withdrawn";
+  const joined = event.reason === "joined";
+  if (
+    joined &&
+    !(yield* stillJoined(orgId, event.agentId, event.recordId).pipe(
+      Effect.orElseSucceed(() => true),
+    ))
+  )
+    return undefined;
   const handedBack = event.reason === "handed_back";
   const commented = event.reason === "commented";
   // The server's own check for this wake-up (what an agent writes stays kept), never re-derived.
@@ -2187,8 +2197,14 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
     titleBy: string | null;
     notesBy: string | null;
     number: unknown;
+    holder: string | null;
   }>`SELECT r.title, r.notes, r.due_at AS "dueAt", ${writer("title_by")} AS "titleBy",
-      ${writer("notes_by")} AS "notesBy", json_extract(r.fields_json, '$.number') AS number
+      ${writer("notes_by")} AS "notesBy", json_extract(r.fields_json, '$.number') AS number,
+      CASE r.owner_kind
+        WHEN 'person' THEN (SELECT hp.display_name FROM kin_people hp
+          WHERE hp.org_id = r.org_id AND hp.person_id = r.owner_id)
+        ELSE (SELECT ha.display_name FROM kin_agents ha
+          WHERE ha.org_id = r.org_id AND ha.agent_id = r.owner_id) END AS holder
     FROM kin_records r LEFT JOIN kin_agents a ON a.org_id = r.org_id AND a.agent_id = ${event.agentId}
     WHERE r.org_id = ${orgId} AND r.record_id = ${event.recordId}
       AND ${ownerOnly || teammate === undefined ? sql`1 = 1` : personSees(sql, teammate)}`.pipe(
@@ -2220,24 +2236,26 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
     theirs.set(notesBy, { ...theirs.get(notesBy), notes: entry.notes });
   const given = withdrawn
     ? WITHDRAWN_WORK
-    : commented
-      ? inPerson
-        ? OWN_COMMENT
-        : COMMENTED_WORK
-      : handedBack
-        ? HANDED_BACK_WORK
-        : !ownerOnly
-          ? teammateWork(giver?.name ?? "Someone", role)
-          : giver !== undefined && !byOwner
-            ? (inPerson ? othersWork : othersRequest)(giver.name, role)
-            : !inPerson &&
-                (yield* storedStamp(orgId, event.eventId).pipe(
-                  Effect.orElseSucceed(() => undefined),
-                )) !== undefined
-              ? ASSIGNED_AFTER_OUTSIDE
-              : theirs.size > 0
-                ? ASSIGNED_OTHERS_WORDS
-                : ASSIGNED_WORK;
+    : joined
+      ? joinedWork(giver?.name ?? "Someone", entry?.holder ?? "Its holder")
+      : commented
+        ? inPerson
+          ? OWN_COMMENT
+          : COMMENTED_WORK
+        : handedBack
+          ? HANDED_BACK_WORK
+          : !ownerOnly
+            ? teammateWork(giver?.name ?? "Someone", role)
+            : giver !== undefined && !byOwner
+              ? (inPerson ? othersWork : othersRequest)(giver.name, role)
+              : !inPerson &&
+                  (yield* storedStamp(orgId, event.eventId).pipe(
+                    Effect.orElseSucceed(() => undefined),
+                  )) !== undefined
+                ? ASSIGNED_AFTER_OUTSIDE
+                : theirs.size > 0
+                  ? ASSIGNED_OTHERS_WORDS
+                  : ASSIGNED_WORK;
   const intro =
     about?.client === undefined || withdrawn || commented || handedBack
       ? given
@@ -2247,11 +2265,13 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
     quote(
       withdrawn
         ? QUOTE_LABELS.workTaken
-        : commented
-          ? QUOTE_LABELS.workHeld
-          : handedBack
-            ? QUOTE_LABELS.workHandedBack
-            : QUOTE_LABELS.workGiven,
+        : joined
+          ? QUOTE_LABELS.workHelping
+          : commented
+            ? QUOTE_LABELS.workHeld
+            : handedBack
+              ? QUOTE_LABELS.workHandedBack
+              : QUOTE_LABELS.workGiven,
       {
         event: event.eventId,
         key: event.key,
@@ -2280,6 +2300,24 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
       : []),
   ].join("\n\n");
 });
+
+/** Put on a task someone else holds: the head start, handed to its holder, never the task itself. */
+/** Whether an agent put on a task is still on it and it is open: else its wake is dropped. */
+export const stillJoined = Effect.fn("KinLeadPrompt.stillJoined")(function* (
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_records r, json_each(r.fields_json, '$.alsoOn') j
+    WHERE r.org_id = ${orgId} AND r.record_id = ${recordId}
+      AND r.state NOT IN ('done', 'dropped') AND j.value = ${`agent:${agentId}`}
+    LIMIT 1`;
+  return rows.length > 0;
+});
+
+export const joinedWork = (adder: string, holder: string) =>
+  `${adder} put you on this. ${holder} holds it and answers for it. Do what you can ahead of them now: look things up, draft, prepare. Give your work to ${holder} on the task as a comment, a draft or a card. Don't close it or change who holds it or when it is due.`;
 
 // The turn's plain text also posts to its chat, so a comment answered on the task ends on NO_REPLY.
 const ANSWER_ON_TASK =

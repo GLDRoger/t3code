@@ -42,6 +42,7 @@ import * as Records from "../work/KinRecords.ts";
 import * as Work from "../work/ownerWork.ts";
 import { TasksKeyAudience } from "./audience.ts";
 import { commentMine, getMine, listMine, setStateMine } from "./tasks.ts";
+import { onlyOnIt } from "../work/codingAgent.ts";
 import { admitted, layer, layerAt, team } from "./tasksKey.testkit.ts";
 import * as TasksKeys from "./TasksKeys.ts";
 import { KIN_GITHUB_HOOK_ROUTE } from "../github/appHook.ts";
@@ -293,6 +294,25 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
       yield* reason(setStateMine(zoyaKey, { key: hers.key, state: "done" })),
       "not_found",
     );
+    // Put on it beside Arjun, her key lists it, naming who holds it, reads it and comments on
+    // it; its state stays Arjun's to change.
+    yield* records.update(orgId, writer(rhea.personId), hers.key, {
+      fields: { alsoOn: [`person:${zoya.personId}`] },
+    });
+    assert.deepInclude(
+      (yield* listMine(zoyaKey)).tasks.find((one) => one.key === hers.key),
+      { holder: "Arjun" },
+    );
+    assert.strictEqual((yield* getMine(zoyaKey, hers.key)).key, hers.key);
+    assert.deepStrictEqual(
+      yield* commentMine(zoyaKey, { key: hers.key, text: "Invented: chairs ordered" }),
+      { key: hers.key, posted: true },
+    );
+    assert.deepInclude(
+      yield* Effect.flip(setStateMine(zoyaKey, { key: hers.key, state: "doing" })),
+      { reason: "not_allowed", message: onlyOnIt(hers.key) },
+    );
+    assert.strictEqual((yield* getMine(zoyaKey, hers.key)).state, "open");
   }).pipe(Effect.provide(layer)),
 );
 

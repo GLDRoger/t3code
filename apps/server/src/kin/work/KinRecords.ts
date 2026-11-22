@@ -143,7 +143,12 @@ import { cleanTags } from "./tags.ts";
 import { notAVendor } from "./vendorName.ts";
 import { withArticle } from "../article.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
-import { dismissedHold, dismissedHoldText, personInTurn } from "./dismissedHold.ts";
+import {
+  dismissedHold,
+  dismissedHoldText,
+  personInTurn,
+  personSpokeInTurn,
+} from "./dismissedHold.ts";
 import {
   alsoOnIt,
   bumpTeamSeqs,
@@ -228,6 +233,16 @@ const heldBy = (
   writer.actor._tag === "person" &&
   ((row.ownerKind === "person" && row.ownerId === writer.actor.personId) ||
     fieldList(parseFields(row.fieldsJson), "alsoOn").includes(`person:${writer.actor.personId}`));
+
+/** What an agent on a task hears when it tries what only its holder, or a person's word, may do. */
+export const ALSO_ON_UNASKED =
+  "Who is on a task changes only when a person asks for it in this turn. Nothing was saved: ask them.";
+/** The helper guard's refusal: a timed default it stops falls back to asking the person. */
+export class KinHelperRefusal extends KinChatError {}
+// @effect-diagnostics-next-line instanceOfSchema:off -- the subclass, not the schema, marks it.
+export const isHelperRefusal = (error: unknown) => error instanceof KinHelperRefusal;
+export const helperRefusal = (holder: string, key: string) =>
+  `${holder} holds ${key}: put it to them as a comment or a card.`;
 
 /** What closes the open things about an entry that closed, in its move's transaction. */
 export type Closing = (subject: ClosedSubject) => Effect.Effect<void, { readonly _tag: string }>;
@@ -1024,8 +1039,10 @@ const make = Effect.gen(function* () {
     agentId: KinAgentId,
     personId: KinPersonId,
     now: number,
+    /** Putting it on is refused whoever writes: saved with no way to wake it would be a lie. */
+    always: boolean,
   ) {
-    const own = writer.actor._tag === "person" && writer.actor.personId === personId;
+    const own = always || (writer.actor._tag === "person" && writer.actor.personId === personId);
     const refuse = (error: KinChatError) => (own ? Effect.fail(error) : Effect.void);
     // A co-owner has no daily cap, as the owner does.
     const level = yield* ownerLevel(orgId, personId).pipe(provideSql);
@@ -1072,9 +1089,9 @@ const make = Effect.gen(function* () {
 
   /**
    * Wakes a lead about an entry someone else changed, with that human as the turn's provenance:
-   * given to it (`assigned`, by the stored assigner), or closed or taken back while it held it
-   * open (`withdrawn`, by the person who did; only its owner is told). A teammate's assignment
-   * wakes it in their own direct chat with it, as a message from them would (`teammateWake`).
+   * given to it (`assigned`), closed or taken back while it held it or was on it (`withdrawn`; only
+   * its owner is told), or put on one someone else holds (`joined`). A teammate's act wakes it in
+   * their own direct chat with it, as a message from them would (`teammateWake`).
    */
   const wakeLead = Effect.fn("KinRecords.wakeLead")(function* (
     orgId: KinOrgId,
@@ -1084,7 +1101,7 @@ const make = Effect.gen(function* () {
     assignedBy: KinPersonId | null,
     seq: number,
     now: number,
-    reason: "assigned" | "withdrawn" | "handed_back" | "commented" = "assigned",
+    reason: "assigned" | "withdrawn" | "handed_back" | "commented" | "joined" = "assigned",
     note?: string | null,
   ) {
     // Looking after a client or leading a project is not an instruction to do anything.
@@ -1109,10 +1126,11 @@ const make = Effect.gen(function* () {
     const teammate = ownsAgent(lead, assignedBy)
       ? undefined
       : reason !== "withdrawn"
-        ? yield* teammateWake(orgId, writer, to.agentId, assignedBy, now)
+        ? yield* teammateWake(orgId, writer, to.agentId, assignedBy, now, reason === "joined")
         : undefined;
     if (!ownsAgent(lead, assignedBy) && teammate === undefined) return false;
-    const key = `record-${reason}:${row.recordId}:${seq}`;
+    // One change may put several agents on a task, or take several off it.
+    const key = `record-${reason}:${row.recordId}:${seq}${reason === "joined" || reason === "withdrawn" ? `:${to.agentId}` : ""}`;
     return yield* queue
       .enqueue({
         _tag: "record.changed",
@@ -1184,6 +1202,94 @@ const make = Effect.gen(function* () {
         AND actor_id = ${agentId} AND kind <> 'created'
       LIMIT 1`;
     return worked !== undefined;
+  });
+
+  const alreadyJoined = Effect.fn("KinRecords.alreadyJoined")(function* (
+    orgId: KinOrgId,
+    recordId: string,
+    agentId: KinAgentId,
+  ) {
+    const [woken] = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_events
+      WHERE org_id = ${orgId} AND agent_id = ${agentId} AND tag = 'record.changed'
+        AND json_extract(json, '$.recordId') = ${recordId}
+        AND json_extract(json, '$.reason') = 'joined'
+      LIMIT 1`;
+    return woken !== undefined;
+  });
+
+  /**
+   * Joined wakes. An agent newly put on an open, kept Work task gets one; on a done or dropped
+   * one it is saved and never woken, even on reopen; putting itself on wakes nothing; keeping a
+   * suggestion wakes each agent on it never woken for it; an adder who can't reach it is refused.
+   */
+  const joinedWakes = Effect.fn("KinRecords.joinedWakes")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    row: { readonly recordId: string; readonly key: string; readonly registerId: string },
+    state: KinRecordState,
+    added: ReadonlyArray<string>,
+    seq: number,
+    now: number,
+    keeping: boolean,
+  ) {
+    if (isClosed(state)) return;
+    for (const text of added) {
+      const on = storedPrincipal(text);
+      if (on?._tag !== "agent") continue;
+      if (keeping && (yield* alreadyJoined(orgId, row.recordId, on.agentId))) continue;
+      yield* wakeLead(orgId, writer, row, on, textBy(writer), seq, now, "joined");
+    }
+  });
+
+  /**
+   * An agent on a Work task it doesn't hold helps its holder: it may not close the task, give it,
+   * move its due, change who is on it or tick its steps unless a person's own word woke the turn.
+   */
+  const helperGuard = Effect.fn("KinRecords.helperGuard")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    row: RecordRow,
+    holder: KinWorkPrincipal,
+    asked: Pick<Patch, "state" | "owner" | "dueAt" | "dueAllDay" | "tick" | "steps">,
+    alsoOn: ReadonlyArray<string>,
+  ) {
+    if (writer.actor._tag !== "agent" || row.registerId !== "work") return;
+    const { agentId } = writer.actor;
+    if (samePrincipal(writer.actor, holder)) return;
+    const stored = fieldList(parseFields(row.fieldsJson), "alsoOn");
+    if (!stored.includes(`agent:${agentId}`)) return;
+    const ticked = (steps: ReadonlyArray<{ readonly title: string; readonly done?: boolean }>) =>
+      steps
+        .filter((step) => step.done === true)
+        .map((step) => step.title)
+        .toSorted()
+        .join("\n");
+    const storedSteps = stepsOf(row);
+    const reserved =
+      (asked.state !== undefined && isClosed(asked.state) && asked.state !== row.state) ||
+      (asked.owner !== undefined && !samePrincipal(asked.owner, holder)) ||
+      (asked.dueAt !== undefined && asked.dueAt !== row.dueAt) ||
+      (asked.dueAllDay !== undefined && (asked.dueAllDay ? 1 : 0) !== row.dueAllDay) ||
+      alsoOn.join(",") !== stored.join(",") ||
+      (asked.tick !== undefined &&
+        asked.tick.done !== (storedSteps[asked.tick.index]?.done ?? false)) ||
+      (asked.steps !== undefined && ticked(asked.steps) !== ticked(storedSteps));
+    if (!reserved) return;
+    if (
+      writer.wakeupId !== undefined &&
+      (yield* personSpokeInTurn(orgId, agentId, writer.wakeupId).pipe(provideSql))
+    )
+      return;
+    const [named] =
+      holder._tag === "agent"
+        ? yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_agents
+            WHERE org_id = ${orgId} AND agent_id = ${holder.agentId}`
+        : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+            WHERE org_id = ${orgId} AND person_id = ${holder.personId}`;
+    return yield* new KinHelperRefusal({
+      reason: "not_allowed",
+      message: helperRefusal(named?.name ?? "Someone else", row.key),
+    });
   });
 
   /**
@@ -1335,8 +1441,8 @@ const make = Effect.gen(function* () {
 
   /**
    * Who a write leaves on a task besides its holder (`fields.alsoOn`): someone here, each once, at
-   * most `KIN_WORK_ALSO_ON_MAX`, never the holder. Given to someone on it, they come off it; an
-   * agent with no person behind its turn changes nothing else of it.
+   * most `KIN_WORK_ALSO_ON_MAX`, never the holder. Given to someone on it, they come off it. An
+   * agent with no person asking in its turn may not change it: being put on one is no one's ask.
    */
   const alsoOnFor = Effect.fn("KinRecords.alsoOnFor")(function* (
     orgId: KinOrgId,
@@ -1346,9 +1452,13 @@ const make = Effect.gen(function* () {
     holder: KinWorkPrincipal,
   ) {
     const held = shownPrincipal(holder);
-    if (asked === undefined || (writer.actor._tag === "agent" && writer.askedBy == null))
-      return stored.filter((text) => text !== held);
+    const kept = stored.filter((text) => text !== held);
+    if (asked === undefined) return kept;
     const list = asked ?? [];
+    if (writer.actor._tag === "agent" && writer.askedBy == null) {
+      if (Array.isArray(list) && list.join(",") === kept.join(",")) return kept;
+      return yield* new KinChatError({ reason: "not_allowed", message: ALSO_ON_UNASKED });
+    }
     if (typeof list === "string" || isMoney(list) || list.some((text) => !storedPrincipal(text)))
       return yield* invalid("Who is on a task is a list of person:<id> and agent:<id>.");
     if (new Set(list).size !== list.length)
@@ -1769,7 +1879,7 @@ const make = Effect.gen(function* () {
         to: shownField(value),
       })),
     ];
-    return { values, changes, now, approved, givenAway, assignedBy, kept };
+    return { values, changes, now, approved, givenAway, assignedBy, kept, state, fields };
   });
 
   /**
@@ -1815,14 +1925,8 @@ const make = Effect.gen(function* () {
         });
       return { row: existing, created: false };
     }
-    const { values, changes, now, approved, givenAway, assignedBy, kept } = yield* prepareNew(
-      orgId,
-      writer,
-      input,
-      recordId,
-      guarded,
-      options,
-    );
+    const { values, changes, now, approved, givenAway, assignedBy, kept, state, fields } =
+      yield* prepareNew(orgId, writer, input, recordId, guarded, options);
     const { key, register_id: list } = values;
     yield* sql`INSERT INTO kin_records ${sql.insert(values)}`;
     if (approved?.keeps === true)
@@ -1855,6 +1959,17 @@ const make = Effect.gen(function* () {
         assignedBy,
         seq,
         now,
+      );
+    if (options.wake && kept)
+      yield* joinedWakes(
+        orgId,
+        writer,
+        { recordId, key, registerId: list },
+        state,
+        fieldList(fields, "alsoOn"),
+        seq,
+        now,
+        false,
       );
     const row = yield* byId(orgId, recordId).pipe(provideSql);
     if (row === undefined) return yield* unavailable;
@@ -2225,6 +2340,8 @@ const make = Effect.gen(function* () {
                 patch.owner ?? before.owner,
               )
             : undefined;
+        if (alsoOn !== undefined)
+          yield* helperGuard(orgId, writer, row, before.owner, patch, alsoOn);
         const merged: Record<string, FieldValue> = { ...stored };
         let fieldsChanged = false;
         for (const [field, value] of Object.entries({
@@ -2809,6 +2926,27 @@ const make = Effect.gen(function* () {
             now,
             "withdrawn",
           );
+        if (alsoOn !== undefined && (!isSuggestion(row) || keeping)) {
+          const was = fieldList(stored, "alsoOn");
+          const added = keeping ? alsoOn : alsoOn.filter((text) => !was.includes(text));
+          yield* joinedWakes(orgId, writer, row, state, added, seq, now, keeping);
+          if (!isClosed(state) && !isSuggestion(row) && writer.actor._tag === "person")
+            for (const text of was) {
+              const off = storedPrincipal(text);
+              if (off?._tag !== "agent" || alsoOn.includes(text)) continue;
+              if (reassigned !== undefined && samePrincipal(off, reassigned)) continue;
+              yield* wakeLead(
+                orgId,
+                writer,
+                row,
+                off,
+                writer.actor.personId,
+                seq,
+                now,
+                "withdrawn",
+              );
+            }
+        }
         const updated = yield* byId(orgId, row.recordId).pipe(provideSql);
         if (updated === undefined) return yield* unavailable;
         if (!isClosed(row.state) && isClosed(updated.state))
