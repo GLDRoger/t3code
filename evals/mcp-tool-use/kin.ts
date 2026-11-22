@@ -33,9 +33,10 @@ import {
 } from "../../apps/server/src/kin/lead/instructions.ts";
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
+import { alreadyOnIt } from "../../apps/server/src/kin/lead/Handoff.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import { UNISSUED_INVOICE } from "../../apps/server/src/kin/work/recordRows.ts";
-import { helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
+import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
 import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
 import { ASKED } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
 import { microsoftMail } from "../../apps/server/src/kin/connections/Microsoft.ts";
@@ -464,6 +465,15 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       reason: "not_allowed",
       message: helperRefusal(input.holder, input.key),
     },
+  }),
+  // An agent with no person asking in its turn, refused a change to who is on a task.
+  alsoOnUnasked: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: ALSO_ON_UNASKED },
+  }),
+  // kin_hand_off to an agent this turn put on a task: nothing more is passed on.
+  alreadyOnIt: (input: { keys: ReadonlyArray<string> }) => ({
+    passed: false,
+    note: alreadyOnIt(input.keys),
   }),
   bankAnswer: (input: { through: string | null }) =>
     bankAnswer({ through: input.through, accounts: [] }),
