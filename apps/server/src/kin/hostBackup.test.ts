@@ -325,8 +325,12 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
         ["space", 2, ["Chief of staff", "Finance"], true, "[]"],
       ],
     );
-    // Two notices, each one message: one push each, however many turns they count.
-    assert.lengthOf(yield* notices, 2);
+    // Two notices, each one message: one push each, however many turns they count. The message
+    // says what is wrong; the card carries the count and the way out.
+    assert.deepStrictEqual((yield* notices).toSorted(), [
+      "Kin's computer ran out of space, so Chief of staff couldn't work. Kin cleared out old temporary files, but that wasn't enough.",
+      "The AI account behind Finance is signed out, so it couldn't work.",
+    ]);
     assert.isTrue(yield* care.troubleOpen(orgId, "space"));
     // A scheduled task's "couldn't finish" line says why, from the open notice.
     assert.strictEqual(yield* care.causeFor(orgId, chief), "space");

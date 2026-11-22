@@ -124,6 +124,7 @@ import { Textarea } from "../components/ui/textarea";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { KinChart } from "./KinChart";
 import { KinSocialPackCard, KinSocialWeekCard } from "./KinSocialCards";
+import { KinHostTroubleCard } from "./KinHostTroubleCard";
 import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
 import { KinVisual } from "./KinVisual";
 import { kinClient } from "./kinClient";
@@ -262,6 +263,8 @@ export const KinCard = memo(function KinCard(props: {
       return <KinSocialWeekCard week={view.week} environmentId={props.environmentId} />;
     case "social_pack":
       return <KinSocialPackCard pack={view.pack} environmentId={props.environmentId} />;
+    case "host_trouble":
+      return <KinHostTroubleCard widget={view.widget} environmentId={props.environmentId} />;
     case "missing":
       return (
         <CardFrame>

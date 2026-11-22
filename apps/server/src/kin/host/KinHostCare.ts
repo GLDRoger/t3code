@@ -336,8 +336,8 @@ const make = Effect.gen(function* () {
         options,
       );
     };
-    const { what, doing } = kinTroubleWords(card, at);
-    return doing === null ? what : `${what} ${doing}`;
+    // The message says what is wrong; its card carries what changes (the count, the fix).
+    return kinTroubleWords(card, at).what;
   });
   const writeCard = Effect.fn("KinHostCare.writeCard")(function* (
     orgId: KinOrgId,
