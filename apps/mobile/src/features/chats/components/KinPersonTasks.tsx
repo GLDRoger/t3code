@@ -15,7 +15,7 @@ import { kinClient } from "../state/kinClient";
 import { useKinWorkDirectory, type KinWorkTarget } from "../state/useKinWork";
 
 /**
- * A person's page lists what they hold: the five most urgent open tasks the reader sees, in
+ * A person's page lists what they hold or are on: the five most urgent open tasks the reader sees, in
  * Tasks' own order, then the way to all of them in Tasks. `children` follow, such as Give all.
  */
 export function KinPersonTasks(
@@ -66,7 +66,7 @@ export function KinPersonTasks(
           <ListRow
             icon="checkmark.circle"
             label={KIN_PERSON_TASKS.seeAll}
-            detail={KIN_PERSON_TASKS.count(held.total)}
+            detail={held.count}
             onPress={() =>
               navigation.navigate("KinWork", { ...base, show: "tasks", person: props.personId })
             }

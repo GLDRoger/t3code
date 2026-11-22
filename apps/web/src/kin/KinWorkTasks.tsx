@@ -1,3 +1,5 @@
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { connectionAtomRuntime } from "../connection/runtime";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { useKinHostAt } from "./useKinHost";
 import { useKinOwnerLevel, useKinViewerScope } from "./useKinOwnerLevel";
@@ -184,6 +186,8 @@ export function KinWorkTaskList(
   const [initial] = useState(() =>
     within === undefined ? { ...props.initial, groupBy: savedGroupBy } : props.initial,
   );
+  const viewer =
+    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId))?.personId ?? null;
   const [kept] = useState(() =>
     kinTaskLists.take(
       `${environmentId}\u0000${orgId}\u0000${JSON.stringify(initial)}`,
@@ -210,6 +214,7 @@ export function KinWorkTaskList(
               .get(kinWorkLiveAtom({ environmentId, orgId }))
               .pipe(AsyncResult.value, Option.getOrNull)?.rows ?? null,
         }),
+      viewer,
     ),
   );
   const list = kept.list;

@@ -70,7 +70,7 @@ const ReleaseInput = Schema.Union([
 const FinishInput = Schema.Struct({
   orgId: KinOrgId,
   wakeupId: KinWakeupId,
-  status: Schema.Literals(["completed", "failed", "timed_out"]),
+  status: Schema.Literals(["completed", "failed", "interrupted", "timed_out"]),
   /**
    * A failure whose cause the server knows and is waiting out (`KinHostCare`): a start that showed
    * nothing goes back to the queue until then without spending an attempt, so nothing is lost.
@@ -270,6 +270,14 @@ export class KinEventQueue extends Context.Service<
     readonly wake: (
       orgId: KinOrgId,
       eventIds: ReadonlyArray<KinEventId>,
+    ) => Effect.Effect<number, PersistenceSqlError | PersistenceDecodeError>;
+    /**
+     * A person's Stop on a turn a trouble holds (`finish` with `holdUntil`): what that wake-up
+     * handed back to wait never runs, and its trouble lets go of it. Returns how many.
+     */
+    readonly dropHeld: (
+      orgId: KinOrgId,
+      wakeupId: KinWakeupId,
     ) => Effect.Effect<number, PersistenceSqlError | PersistenceDecodeError>;
     // LEAD-5 startup recovery calls this only after confirming the provider run stopped.
     readonly requeueUnfinished: (
@@ -868,7 +876,7 @@ const make = Effect.gen(function* () {
           }
           // Read before the row closes; every subquery stays inside this wake-up's org.
           const [visible] =
-            input.status === "completed"
+            input.status === "completed" || input.status === "interrupted"
               ? [undefined]
               : yield* sql`SELECT 1 FROM kin_wakeups w
             WHERE w.org_id = ${input.orgId} AND w.wakeup_id = ${input.wakeupId} AND w.status = 'running' AND (
@@ -892,7 +900,8 @@ const make = Effect.gen(function* () {
               input.orgId,
               ended.map((row) => row.event_id),
             );
-          if (input.status === "completed") {
+          // Stopped by a person: what it was asked is over, never retried or told as failed.
+          if (input.status === "completed" || input.status === "interrupted") {
             yield* settle(
               yield* sql<{ event_id: string }>`UPDATE kin_events SET state = 'done'
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
@@ -921,7 +930,8 @@ const make = Effect.gen(function* () {
           }
           if (input.holdUntil !== undefined) {
             const held = yield* sql<{ event_id: string }>`UPDATE kin_events
-              SET state = 'queued', wakeup_id = NULL, not_before = ${input.holdUntil}
+              SET state = 'queued', wakeup_id = NULL, not_before = ${input.holdUntil},
+                json = json_set(json, '$._heldFrom', ${input.wakeupId})
               WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
               RETURNING event_id`;
             return {
@@ -1074,8 +1084,33 @@ const make = Effect.gen(function* () {
     Effect.mapError(toQueuePersistenceError("KinEventQueue.wake")),
   );
 
+  const dropHeld = Effect.fn("KinEventQueue.dropHeld")(
+    function* (orgId: KinOrgId, wakeupId: KinWakeupId) {
+      yield* decodeOrgId(orgId);
+      yield* decodeWakeupId(wakeupId);
+      const dropped = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const rows = yield* sql<{ event_id: string }>`UPDATE kin_events
+            SET state = 'done', held_by = NULL
+            WHERE org_id = ${orgId} AND state = 'queued'
+              AND json_extract(json, '$._heldFrom') = ${wakeupId}
+            RETURNING event_id`;
+          yield* settled(
+            orgId,
+            rows.map((row) => row.event_id),
+          );
+          return rows.length;
+        }),
+      );
+      if (dropped > 0) yield* notify(orgId);
+      return dropped;
+    },
+    Effect.mapError(toQueuePersistenceError("KinEventQueue.dropHeld")),
+  );
+
   return KinEventQueue.of({
     wake,
+    dropHeld,
     reconsiderBudget: Effect.fn("KinEventQueue.reconsiderBudget")(function* (orgId) {
       yield* sql`UPDATE kin_events SET not_before = NULL, budget_deferred = 0
         WHERE org_id = ${orgId} AND state = 'queued' AND budget_deferred = 1`.pipe(
