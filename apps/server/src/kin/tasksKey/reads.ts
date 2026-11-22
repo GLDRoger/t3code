@@ -30,7 +30,7 @@ import type { TasksKeyHolder } from "./TasksKeys.ts";
 /**
  * What a person's coding agent reads beyond their tasks: each through the read their own screen
  * makes, as them, in one transaction with the key's own check (`connectionViewer`), minus what no
- * key reaches (`keyHidden`, `keySensitive`): private stays in Kin, whoever holds the key.
+ * key reaches (`keyHidden`, `keyWithheld`): private stays in Kin, whoever holds the key.
  */
 
 const ROWS = 50;

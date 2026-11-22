@@ -109,7 +109,7 @@ import {
   encodeSteps,
   shownSteps,
   stepsOf,
-  keySensitive,
+  keyWithheld,
   sensitiveNow,
   type StoredRepeat,
   toDetail,
@@ -3091,7 +3091,7 @@ const make = Effect.gen(function* () {
     const where = [sql`r.org_id = ${orgId}`, sql`r.register_id = ${input.list ?? "work"}`];
     if (input.team !== undefined) where.push(personSees(sql, input.team));
     if (input.view !== undefined) where.push(viewSees(sql, input.view));
-    if (input.withoutSensitive === true) where.push(sql`NOT ${keySensitive(sql)}`);
+    if (input.withoutSensitive === true) where.push(sql`NOT ${keyWithheld(sql)}`);
     if (input.partyId !== undefined) where.push(sql`r.party_id IS ${input.partyId}`);
     if (input.projectId !== undefined) where.push(sql`r.project_id = ${input.projectId}`);
     if (input.repo !== undefined) where.push(sql`lower(r.repo) = lower(${input.repo})`);

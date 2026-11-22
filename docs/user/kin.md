@@ -294,10 +294,10 @@ the projects, clients and docs you can see, your Money figures if you have Money
 and co-owners, what Kin remembers that the team may know. It can't reach anyone else's tasks, your
 chats, or anything your own screens don't show you.
 
-Anything marked private stays in Kin and is not available through a key, whoever holds it, the
-owner's included. That covers an entry marked **Keep private** and everything under a private client
-or project. Money lists such as invoices and expenses are private by default, so Money figures read
-through a key leave those entries out and say how many were left out.
+Clients, projects, tasks, deals and docs marked private, and everything under a private client or
+project, stay in Kin: no key reads them, whoever holds it, the owner's included. Money is there only
+for people who have Money, and a key's Money figures leave out entries under a private client or
+project and say how many.
 
 To make one, open **Settings → Profile** and choose **Make a
 key** under **Coding agent keys**. Name it for the computer or tool it's for. Kin shows the key, its

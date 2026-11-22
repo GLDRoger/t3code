@@ -11,7 +11,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { isOwnerHimself } from "../people/KinAccess.ts";
 import { holderOf, type TasksKeyHolder } from "../tasksKey/TasksKeys.ts";
-import { keySensitive } from "./recordRows.ts";
+import { keyWithheld } from "./recordRows.ts";
 
 /**
  * A person's own coding agent, calling with its key: who it acts as, from `admit`, never from a
@@ -68,13 +68,13 @@ export const connectionReaches = Effect.fn("KinCodingAgent.reaches")(function* (
     WHERE r.org_id = ${connection.orgId} AND r.record_id = ${recordId}
       AND r.register_id = 'work' AND r.owner_kind = 'person'
       AND r.owner_id = ${connection.personId} AND r.state <> 'dropped'
-      AND NOT ${keySensitive(sql)}`;
+      AND NOT ${keyWithheld(sql)}`;
   return found.length > 0;
 });
 
 /**
  * In the caller's transaction: which of these entries no key reaches, whoever holds it
- * (`keySensitive`). Every read a key makes beyond its tasks passes its rows through this.
+ * (`keyWithheld`). Every read a key makes beyond its tasks passes its rows through this.
  */
 export const keyHidden = Effect.fn("KinCodingAgent.hidden")(function* (
   orgId: KinOrgId,
@@ -84,7 +84,7 @@ export const keyHidden = Effect.fn("KinCodingAgent.hidden")(function* (
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ id: string }>`SELECT r.record_id AS id FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in([...new Set(recordIds)])}
-      AND ${keySensitive(sql)}
+      AND ${keyWithheld(sql)}
     ORDER BY r.record_id`;
   return new Set(rows.map((row) => row.id));
 });

@@ -248,7 +248,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("find", {
     ...shared,
     description:
-      "Find projects, clients or docs the person this key belongs to can see in Kin, by words in the name or title; docs also by client or project key. Returns keys and titles; open one with open_project, open_client or read_doc. Anything marked private stays in Kin and is not shown here.",
+      "Find projects, clients or docs the person this key belongs to can see in Kin, by words in the name or title; docs also by client or project key. Returns keys and titles; open one with open_project, open_client or read_doc. Clients, projects, deals and docs marked private, and everything under a private client or project, stay in Kin and are not shown here.",
     parameters: Schema.Struct({
       kind: Schema.Literals(["projects", "clients", "docs"]),
       text: Schema.optional(Words.annotate({ description: "Words in the name or title." })),
@@ -275,7 +275,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("open_project", {
     ...shared,
     description:
-      "Open one project by its key, such as a task's project: client, state, lead, repositories, notes, the person's own open tasks on it and its docs. One they can't see is not found. Anything marked private stays in Kin and is not shown here.",
+      "Open one project by its key, such as a task's project: client, state, lead, repositories, notes, the person's own open tasks on it and its docs. One they can't see is not found. Clients, projects, deals and docs marked private, and everything under a private client or project, stay in Kin and are not shown here.",
     parameters: Schema.Struct({
       key: KinRecordKey.annotate({ description: "The project's key, such as P-3." }),
     }),
@@ -288,7 +288,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("open_client", {
     ...shared,
     description:
-      "Open one client by its key: notes, contacts, projects, and deals when the person can see deals. One they can't see is not found. Anything marked private stays in Kin and is not shown here.",
+      "Open one client by its key: notes, contacts, projects, and deals when the person can see deals. One they can't see is not found. Clients, projects, deals and docs marked private, and everything under a private client or project, stay in Kin and are not shown here.",
     parameters: Schema.Struct({
       key: KinRecordKey.annotate({ description: "The client's key, such as C-4." }),
     }),
@@ -301,7 +301,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("read_doc", {
     ...shared,
     description:
-      "Read a doc's latest text by its key, one page at a time: the answer says which page it is and how many there are; ask for the next page to read on. Anything marked private stays in Kin and is not shown here.",
+      "Read a doc's latest text by its key, one page at a time: the answer says which page it is and how many there are; ask for the next page to read on. Clients, projects, deals and docs marked private, and everything under a private client or project, stay in Kin and are not shown here.",
     parameters: Schema.Struct({
       key: KinRecordKey.annotate({ description: "The doc's key, such as D-7." }),
       page: Schema.optional(
@@ -319,7 +319,7 @@ const TasksKeyToolkit = Toolkit.make(
   Tool.make("money_summary", {
     ...shared,
     description:
-      "What the person's Money page shows: what clients owe and what is overdue, money in and out this month, last month and this financial year, and money coming due soon, each entry by key. Entries marked private stay in Kin: they are left out of every figure and list here, and privateLeftOut says how many were left out.",
+      "What the person's Money page shows: what clients owe and what is overdue, money in and out this month, last month and this financial year, and money coming due soon, each entry by key. Listed only for people who have Money. Entries under a client or project marked private stay in Kin: they are left out of every figure and list here, and privateLeftOut says how many.",
     success: MoneySheet,
   })
     .annotate(Tool.Readonly, true)

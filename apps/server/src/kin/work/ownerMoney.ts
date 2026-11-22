@@ -265,7 +265,7 @@ const SCREEN_CLIENTS = 20;
 export const money = Effect.fn("KinMoney.summary")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinMoneySummaryInput,
-  /** A coding agent's key reads it: nothing `keySensitive` covers, and how many were left out. */
+  /** A coding agent's key reads it: nothing `keyWithheld` covers, and how many were left out. */
   options: { readonly keyed?: boolean } = {},
 ) {
   const team = yield* moneyReader(people, input.orgId);

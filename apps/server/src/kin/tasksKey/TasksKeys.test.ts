@@ -393,8 +393,8 @@ it.effect(
         );
       }
 
-      // Every other tool too: what its person's screens show, minus anything labelled, for the
-      // owner's key, a co-owner's (Zoya), a lead's (Dev) and a member's (Arjun, with Money).
+      // Every other tool too: what its person's screens show, minus what a person labelled, for
+      // the owner's key, a co-owner's (Zoya), a lead's (Dev) and a member's (Arjun, no Money).
       const sessions = yield* SessionStore;
       const invite = yield* people.createInvite(rhea.app, { orgId, displayName: "Dev Malhotra" });
       const dev = yield* people.accept({ secret: invite.secret });
@@ -403,19 +403,32 @@ it.effect(
         list: "projects",
         owner: { _tag: "person", personId: dev.person.personId },
       });
-      yield* sql`UPDATE kin_people SET sees_money = 1 WHERE person_id = ${arjun.personId}`;
-      // An expense is labelled by its list; a doc sits under the labelled client.
+      yield* sql`UPDATE kin_people SET sees_money = 0 WHERE person_id = ${arjun.personId}`;
+      // Expenses are labelled by their list, which is no person's choice: one under an unlabelled
+      // client reaches a key whose person has Money; one under the labelled client reaches none.
+      // A doc sits under the labelled client.
       yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
           created_at, definition_json)
         VALUES (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0,
           ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
-      const salary = yield* make("salary", {
+      const potters = yield* make("Invented Potters", { list: "clients" });
+      const glaze = yield* make("glaze bill", {
         list: "expenses",
         owner: { _tag: "person", personId: rhea.personId },
+        partyId: potters.recordId,
+        amount: { minor: 1_717_100, currency: "INR" },
+        state: "done",
+        dateAt: 0,
+      });
+      const rent = yield* make("kiln rent", {
+        list: "expenses",
+        owner: { _tag: "person", personId: rhea.personId },
+        partyId: quietClient.recordId,
         amount: { minor: 4_242_400, currency: "INR" },
         state: "done",
         dateAt: 0,
       });
+      assert.strictEqual((yield* records.get(orgId, glaze.key))?.sensitive, 1);
       const { row: kilnTerms } = yield* Docs.create(
         orgId,
         writerFor(rhea.personId),
@@ -463,11 +476,11 @@ it.effect(
       });
       // "Only you": the price. The day the team may know.
       yield* authorise(orgId, "day", fingerprint(items[1]!), "owner_setting");
-      // Rhea's own screen counts the expense, so it is there to leave out.
-      assert.deepInclude(
+      // Rhea's own screen counts both expenses, so the rent is there to leave out.
+      assert.deepStrictEqual(
         (yield* money([{ _tag: "person", orgId, personId: rhea.personId }], { orgId })).spent
           .thisMonth.total,
-        { minor: 4_242_400, currency: "INR" },
+        [{ minor: 5_959_500, currency: "INR" }],
       );
       const labelled = [
         quietClient,
@@ -478,7 +491,7 @@ it.effect(
         underProject,
         underClient,
         underTheirs,
-        salary,
+        rent,
         kilnTerms,
       ];
       const never = [
@@ -527,9 +540,16 @@ it.effect(
         yield* Effect.flip(readDoc(keys.rhea, { key: kilnTerms.key })),
       ])
         assert.strictEqual(JSON.stringify(opened), JSON.stringify(unknownKey));
-      const owners = yield* moneySummary(keys.rhea);
-      assert.deepStrictEqual(owners.spent.thisMonth.total, []);
-      assert.isAtLeast(owners.privateLeftOut, 1);
+      // Those with Money read the list-labelled expense, the rent under the labelled client left
+      // out and counted; a member without Money reads no money at all.
+      for (const holder of [keys.rhea, keys.zoya]) {
+        const figures = yield* moneySummary(holder);
+        assert.deepStrictEqual(figures.spent.thisMonth.total, [
+          { minor: 1_717_100, currency: "INR" },
+        ]);
+        assert.strictEqual(figures.privateLeftOut, 1);
+      }
+      assert.strictEqual((yield* Effect.flip(moneySummary(keys.arjun))).reason, "not_allowed");
       assert.deepStrictEqual(
         (yield* searchMemory(keys.rhea, "kiln")).lines.map((line) => line.title),
         ["Invented kiln day"],

@@ -32,7 +32,7 @@ import {
   issuedNumber,
   iso,
   keptEntry,
-  keySensitive,
+  keyWithheld,
   moneyDay,
   owedInvoices,
   ownerZone,
@@ -45,9 +45,9 @@ import { findBankList } from "./statements/bankList.ts";
 import { allLists, isBuiltIn, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 
-/** `seenBy`, and with `keyed` also nothing a coding agent's key never reaches (`keySensitive`). */
+/** `seenBy`, and with `keyed` also nothing a coding agent's key never carries (`keyWithheld`). */
 const seenFor = (sql: SqlClient.SqlClient, viewer: KinViewer, keyed: boolean | undefined) =>
-  keyed === true ? sql`(${seenBy(sql, viewer)} AND NOT ${keySensitive(sql)})` : seenBy(sql, viewer);
+  keyed === true ? sql`(${seenBy(sql, viewer)} AND NOT ${keyWithheld(sql)})` : seenBy(sql, viewer);
 import { DAY_MS } from "../durations.ts";
 import type { SetAsideInvoice } from "../pulse/invoiceAsides.ts";
 
@@ -165,7 +165,7 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
     readonly offset?: number | undefined;
     readonly limit?: number | undefined;
     readonly viewer: KinViewer;
-    /** Read for a coding agent's key: leave out what `keySensitive` covers. */
+    /** Read for a coding agent's key: leave out what `keyWithheld` covers. */
     readonly keyed?: boolean | undefined;
   },
   now: number,
@@ -358,7 +358,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   viewer: KinViewer,
   /**
    * People's Money lists money's dates alone ahead; an agent's read keeps every date. `keyed`:
-   * for a coding agent's key, every figure and row leaves out what `keySensitive` covers.
+   * for a coding agent's key, every figure and row leaves out what `keyWithheld` covers.
    */
   options: {
     readonly moneyDates?: boolean;
@@ -845,7 +845,7 @@ const moneyOf = (json: string): KinMoney | undefined => {
 
 /**
  * Entries with money this viewer's Money counts that a coding agent's key leaves out
- * (`keySensitive`): a count only, so a key's figures say they are partial without saying by what.
+ * (`keyWithheld`): a count only, so a key's figures say they are partial without saying by what.
  */
 export const keyLeftOut = Effect.fn("KinMoneyViews.keyLeftOut")(function* (
   orgId: KinOrgId,
@@ -856,6 +856,6 @@ export const keyLeftOut = Effect.fn("KinMoneyViews.keyLeftOut")(function* (
     WHERE r.org_id = ${orgId} AND ${countedEntry(sql)}
       AND (r.register_id IN ${sql.in(MONEY_LISTS)}
         OR (r.amount_minor IS NOT NULL AND r.register_id NOT IN ('work', 'deals')))
-      AND ${seenBy(sql, viewer)} AND ${keySensitive(sql)}`;
+      AND ${seenBy(sql, viewer)} AND ${keyWithheld(sql)}`;
   return row?.count ?? 0;
 });

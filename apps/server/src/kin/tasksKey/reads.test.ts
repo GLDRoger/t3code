@@ -19,6 +19,7 @@ import { authorise, fingerprint } from "../memory/sensitivity.ts";
 import * as People from "../people/KinPeople.ts";
 import * as Deals from "../work/deals.ts";
 import * as Docs from "../work/docs.ts";
+import { presetDefinition } from "../work/registers.ts";
 import * as Records from "../work/KinRecords.ts";
 import * as Clients from "../work/ownerClients.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
@@ -387,18 +388,51 @@ it.effect("money and memory reach only those whose own screens open them", () =>
       assert.isFalse(yield* readsMemory(key));
       assert.strictEqual((yield* errorOf(searchMemory(key, "kiln"))).reason, "not_allowed");
     }
-    // Money: with nothing labelled in it, the same figures the Money page reads, for those it
-    // opens to, and nobody else.
+    // Money: an expense, labelled by its list as every expense is, under an unlabelled client.
+    // With nothing a person labelled in it, the same figures the Money page reads.
+    const sql = yield* SqlClient.SqlClient;
+    const records = yield* Records.KinRecords;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0,
+        ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
+    const expense = (title: string, partyId: string, minor: number) =>
+      records.create(
+        orgId,
+        {
+          actor: { _tag: "person", personId: seeded.rhea.personId },
+          via: "owner",
+          askedBy: seeded.rhea.personId,
+        },
+        {
+          originKey: title,
+          title,
+          list: "expenses",
+          owner: { _tag: "person", personId: seeded.rhea.personId },
+          partyId,
+          amount: { minor, currency: "INR" },
+          state: "done",
+          dateAt: 0,
+        },
+      );
+    yield* expense("Invented glaze bill", seeded.lanterns.recordId, 1_000_000);
+    const page = (one: typeof seeded.rhea) =>
+      money(as(orgId, one.personId), { orgId, allClients: true });
     for (const one of [seeded.rhea, seeded.meera, seeded.dev]) {
       assert.isTrue(yield* readsMoney(one.key));
       assert.deepStrictEqual(
         yield* moneySummary(one.key),
-        moneySheet({
-          ...(yield* money(as(orgId, one.personId), { orgId, allClients: true })),
-          privateLeftOut: 0,
-        }),
+        moneySheet({ ...(yield* page(one)), privateLeftOut: 0 }),
       );
     }
+    // One under the labelled client: the page's figures less that client's entry, counted.
+    yield* expense("Invented kiln rent", seeded.kilns.recordId, 2_500_000);
+    const owners = yield* page(seeded.rhea);
+    assert.deepStrictEqual(owners.spent.thisMonth.total, [{ minor: 3_500_000, currency: "INR" }]);
+    const keyed = yield* moneySummary(seeded.rhea.key);
+    assert.deepStrictEqual(keyed.spent.thisMonth.total, [{ minor: 1_000_000, currency: "INR" }]);
+    assert.strictEqual(keyed.privateLeftOut, 1);
+    assert.notInclude(JSON.stringify(keyed), "Invented kiln rent");
     for (const one of [seeded.zoya, seeded.arjun]) {
       assert.isFalse(yield* readsMoney(one.key));
       assert.strictEqual((yield* errorOf(moneySummary(one.key))).reason, "not_allowed");

@@ -182,6 +182,19 @@ export const sensitiveNow = (sql: SqlClient.SqlClient) =>
 export const keySensitive = (sql: SqlClient.SqlClient) =>
   sql`(r.sensitive = 1 OR ${parentLabelled(sql)})`;
 
+/** `r`'s list labels every entry when it is made (its definition's `sensitive`): the list's choice. */
+const listLabels = (sql: SqlClient.SqlClient) => sql`EXISTS (SELECT 1 FROM kin_registers g
+    WHERE g.org_id = r.org_id AND g.register_id = r.register_id AND g.built_in = 0
+      AND json_extract(g.definition_json, '$.sensitive') = 1)`;
+
+/**
+ * What a coding-agent key never carries, whoever holds it: a label a person put on `r`, or on its
+ * client, project or project's client. An entry's own label in a list that labels every entry is
+ * the list's, not a person's; Money's permission gates those lists.
+ */
+export const keyWithheld = (sql: SqlClient.SqlClient) =>
+  sql`((r.sensitive = 1 AND NOT ${listLabels(sql)}) OR ${parentLabelled(sql)})`;
+
 /**
  * Whether an entry is sensitive now: its own label, or its client's, project's or project's
  * client's. Reads through the caller's transaction; `undefined` when the org has no such entry.
