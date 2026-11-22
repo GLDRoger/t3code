@@ -176,6 +176,8 @@ export const ReadResult = Schema.Struct({
   note: Schema.optional(Schema.String),
   /** A drawn picture's page, as kin_picture took it. */
   page: Schema.optional(Schema.String),
+  /** A generated picture's whole prompt, as kin_picture took it. */
+  prompt: Schema.optional(Schema.String),
   owner: Schema.String,
   client: Schema.optional(Schema.String),
   project: Schema.optional(Schema.String),
@@ -765,7 +767,7 @@ const readable = Effect.fn("KinDocTools.readable")(function* (lead: Lead, key: s
 export const pictureNote = (key: string, drawn: boolean) =>
   drawn
     ? `${key} is a picture, and page is the page it was drawn from. To change it, call kin_picture with doc ${key} and that page, changed.`
-    : `${key} is a generated picture; its summary ends with the prompt. To change it, call kin_picture with doc ${key} and the prompt, changed.`;
+    : `${key} is a generated picture, and prompt is the prompt it was made from. To change it, call kin_picture with doc ${key} and that prompt, changed.`;
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput.Type) {
   const { row, seen } = yield* readable(lead, input.key);
   const latest = yield* Docs.versionOf(lead.orgId, row.recordId);
@@ -792,11 +794,14 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
   const by = Docs.toVersion(version).provenance.by;
   const sql = yield* SqlClient.SqlClient;
   const pages = row.originKey.startsWith(PICTURE_DOC_ORIGIN)
-    ? yield* sql<{ page: string | null }>`SELECT page FROM kin_picture_images
+    ? yield* sql<{
+        page: string | null;
+        prompt: string | null;
+      }>`SELECT page, prompt FROM kin_picture_images
         WHERE org_id = ${lead.orgId} AND record_id = ${row.recordId}
           AND version = ${version.version} ORDER BY version`
     : undefined;
-  const picture = pages === undefined ? undefined : (pages[0] ?? { page: null });
+  const picture = pages === undefined ? undefined : (pages[0] ?? { page: null, prompt: null });
   return {
     key: row.key,
     title: row.title,
@@ -814,6 +819,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
     ...(picture !== undefined
       ? {
           ...(picture.page === null ? {} : { page: picture.page }),
+          ...(picture.prompt === null ? {} : { prompt: picture.prompt }),
           note: pictureNote(row.key, picture.page !== null),
         }
       : whole || asked !== undefined

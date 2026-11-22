@@ -985,7 +985,6 @@ describe("kin_picture", () => {
         assert.lengthOf(fake.calls, 1);
         assert.lengthOf(placed, 2);
         assert.deepStrictEqual(yield* counted, [{ count: 2, person: meera }]);
-
         // Rhea and Meera, who is in the chat, open the doc and its file; Dev, outside it, neither.
         const chats = yield* ChatService.KinChatService;
         const file = version!.file!.attachmentId;
@@ -1010,14 +1009,26 @@ describe("kin_picture", () => {
         // A change in Rhea's own turn is the doc's next version, hers alone again.
         yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'lead-chat-meera'`;
         yield* turn(2);
+        // Its whole prompt is kept for the next change; the summary keeps only its start.
+        const long = `The same mill at dawn, ${"oat sheaves along the bank, ".repeat(20)}more mist`;
         const changed = yield* makePicture(scope, {
           title: "Mill at dawn",
           size: "portrait",
-          prompt: "The same mill at dawn, with more mist",
+          prompt: long,
           doc: "D-1",
         });
         assert.deepInclude(changed, { doc: "D-1", version: 2 });
         assert.lengthOf(yield* versions("D-1"), 2);
+        const read = yield* LeadDocs.read(scope, { key: "D-1" });
+        assert.deepInclude(read, {
+          version: 2,
+          prompt: long,
+          note: LeadDocs.pictureNote("D-1", false),
+        });
+        assert.isBelow(read.updated.summary.length, 400);
+        assert.include(yield* LeadDocs.read(scope, { key: "D-1", version: 1 }), {
+          prompt: ask.prompt,
+        });
       }).pipe(Effect.provide(layer)),
   );
 
