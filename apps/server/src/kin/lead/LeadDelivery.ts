@@ -8,6 +8,7 @@ import {
   KinScheduledTaskCard,
   KinWidgetId,
   type KinWidget,
+  KIN_TROUBLE_WHY,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -22,6 +23,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 
@@ -224,6 +226,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Repository.KinChatRepository;
   const queue = yield* KinEventQueue.KinEventQueue;
+  const care = yield* Effect.serviceOption(KinHostCare);
   const ticks = yield* Scheduler.Scheduler;
   const hub = yield* Effect.serviceOption(KinChatHub);
   const cards = yield* makeCardWriter;
@@ -257,6 +260,18 @@ const make = Effect.gen(function* () {
   ) {
     const { orgId } = delivery;
     if (delivery.kind === "scheduled_task") {
+      // Why the run didn't happen, when an open trouble knows it; once the owner was told of
+      // that trouble, this line rings no one.
+      const why = Option.isSome(care)
+        ? yield* care.value.causeFor(orgId, delivery.agentId)
+        : undefined;
+      const title = /"(.*)"/.exec(delivery.fallbackBody)?.[1];
+      const body =
+        why === undefined
+          ? delivery.fallbackBody
+          : title === undefined
+            ? `${delivery.fallbackBody.replace(/\.$/, "")}: ${KIN_TROUBLE_WHY[why.cause]}.`
+            : `"${title}" didn't run: ${KIN_TROUBLE_WHY[why.cause]}.`;
       yield* repo
         .insertMessage({
           orgId,
@@ -265,7 +280,7 @@ const make = Effect.gen(function* () {
           messageId: KinMessageId.make(`kin-run-failed:${delivery.eventId}`),
           author: { _tag: "system" },
           kind: "system",
-          body: delivery.fallbackBody,
+          body,
           intent: null,
           mentions: [],
           replyTo: null,
@@ -276,6 +291,7 @@ const make = Effect.gen(function* () {
           clientMessageId: null,
           createdAt: iso(now),
           editedAt: null,
+          ...(why?.told === true ? { silent: true as const } : {}),
         })
         .pipe(
           Effect.tap((message) =>
@@ -294,7 +310,7 @@ const make = Effect.gen(function* () {
             onSome: (card) => card.lastRun?.at ?? iso(now),
           }),
           status: "failed",
-          note: excerpt(delivery.fallbackBody),
+          note: excerpt(body),
         },
         now,
       );
@@ -337,6 +353,8 @@ const make = Effect.gen(function* () {
       fallbackBody: row.fallbackBody,
       deadlineAt: row.deadlineAt,
     };
+    // A held turn that passed its time leaves its trouble's count.
+    let lapsed = false;
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const [pending] = yield* sql`SELECT 1 FROM kin_lead_deliveries
@@ -370,6 +388,7 @@ const make = Effect.gen(function* () {
             WHERE org_id = ${orgId} AND event_id = ${row.eventId} AND state = 'queued'
             RETURNING event_id`;
           if (expired.length === 0) return;
+          lapsed = true;
           return yield* fallback;
         }
         // Done: the lead's last message in its lane during that wake-up carries the card.
@@ -413,6 +432,7 @@ const make = Effect.gen(function* () {
         yield* finish("delivered", message.messageId);
       }),
     );
+    if (lapsed && Option.isSome(care)) yield* care.value.refresh(orgId);
   });
 
   const settle = Effect.fn("KinLeadDelivery.settle")(
