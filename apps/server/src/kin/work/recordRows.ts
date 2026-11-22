@@ -1029,7 +1029,8 @@ const paymentSourceColumns = (sql: SqlClient.SqlClient) => sql`p.created_by_kind
       WHERE ev.event_id = substr(p.origin_key, length(p.created_by_id) + 7,
           instr(substr(p.origin_key, length(p.created_by_id) + 7), ':') - 1)
         AND ev.org_id = p.org_id AND ev.agent_id = p.created_by_id
-        AND json_extract(ev.json, '$.provenance._tag') = 'human')
+        AND json_extract(ev.json, '$.provenance._tag') = 'human'
+        AND COALESCE(json_extract(ev.json, '$.reason'), '') <> 'joined')
   END AS "wordOf"`;
 const paymentSourceOf = (row: PaymentSourceRow): KinPaymentSource =>
   row.fromBank === 1

@@ -1827,9 +1827,14 @@ it.effect(
         { reason: "invalid_state" },
       );
       // An agent with no person behind its turn changes nothing of it.
-      yield* records.update(orgId, { actor: toLead, via: "lead" }, made.key, {
-        fields: { alsoOn: [`person:${devId}`] },
-      });
+      assert.include(
+        yield* Effect.flip(
+          records.update(orgId, { actor: toLead, via: "lead" }, made.key, {
+            fields: { alsoOn: [`person:${devId}`] },
+          }),
+        ),
+        { reason: "not_allowed", message: KinRecords.ALSO_ON_UNASKED },
+      );
       const unchanged = yield* OwnerWork.get([owner], { orgId, key: made.key });
       assert.deepStrictEqual(unchanged.alsoOn, [person(mateId), toLead]);
       assert.strictEqual(unchanged.rev, made.rev);
@@ -1987,6 +1992,40 @@ it.effect(
         ),
         { reason: "not_allowed", message: KinRecords.helperRefusal("Dev", task.key) },
       );
+      // Nor does it ask for anyone elsewhere: putting another agent on another task is refused.
+      const elsewhere = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: book the hall",
+        clientRequestId: "join-3",
+        owner: dev,
+      });
+      const woken = (yield* wakes).length;
+      assert.include(
+        yield* Effect.flip(
+          LeadWork.update(scopeOf(lead), {
+            key: elsewhere.key,
+            sourceEventId: joinedEvent,
+            alsoOn: ["Lead other"],
+          }),
+        ),
+        { reason: "not_allowed", message: KinRecords.ALSO_ON_UNASKED },
+      );
+      assert.lengthOf(yield* wakes, woken);
+      // A teammate who put it on is someone it reads for, not someone it acts for.
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+          started_at, status, event_ids)
+        VALUES ('mate-joined-turn', ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'completed', '[]')`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+          queued_at, state, wakeup_id)
+        VALUES ('mate-joined', ${orgId}, ${lead}, 'record.changed', 'P0', ${JSON.stringify({
+          reason: "joined",
+          provenance: { _tag: "human", personId: mateId, memberId: "mate-chat-mate" },
+          origin: { agentId: lead, chatId: "mate-chat", personId: mateId },
+        })}, 0, 0, 'claimed', 'mate-joined-turn')`;
+      assert.deepInclude(
+        yield* turnPeople({ orgId, agentId: lead, wakeupId: "mate-joined-turn" }),
+        { people: [mateId], askers: [] },
+      );
       // Its head start goes on the task: its progress, a comment and its own draft lines.
       yield* records.update(orgId, helper, task.key, { state: "doing" });
       assert.include(
@@ -2034,12 +2073,25 @@ it.effect(
       yield* say("elsewhere", 4, null, {}, "other-chat");
       assert.deepInclude(
         yield* Effect.flip(
-          records.update(orgId, helper, task.key, { fields: { alsoOn: [`agent:${lead}`, `agent:${other}`] } }),
+          records.update(orgId, helper, task.key, {
+            fields: { alsoOn: [`agent:${lead}`, `agent:${other}`] },
+          }),
         ),
         { reason: "not_allowed", message: KinRecords.helperRefusal("Dev", task.key) },
       );
       yield* sql`DELETE FROM kin_events WHERE wakeup_id = 'joined-turn' AND tag = 'chat.message'`;
       const closeEvent = yield* say("close-it", 5, null);
+      // The owner's own message beside being put on is no in-person ask for an owner-only write.
+      assert.match(
+        (yield* Effect.flip(
+          LeadMoney.budget(scopeOf(lead), {
+            sourceEventId: closeEvent,
+            category: "Invented: travel",
+            limit: "50k",
+          }),
+        )).message,
+        /^A budget is set only from the owner's own message or tap/,
+      );
       yield* LeadWork.update(scopeOf(lead), {
         key: task.key,
         sourceEventId: closeEvent,
@@ -2056,16 +2108,15 @@ it.effect(
 
       // An agent's change with no person behind it puts nobody on and wakes nobody.
       const before = (yield* wakes).length;
-      const hall = yield* OwnerWork.create([owner], {
-        orgId,
-        title: "Invented: book the hall",
-        clientRequestId: "join-3",
-        owner: dev,
-      });
-      yield* records.update(orgId, { actor: toLead, via: "lead" }, hall.key, {
-        fields: { alsoOn: [`agent:${other}`] },
-      });
-      assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: hall.key })).alsoOn);
+      assert.include(
+        yield* Effect.flip(
+          records.update(orgId, { actor: toLead, via: "lead" }, elsewhere.key, {
+            fields: { alsoOn: [`agent:${other}`] },
+          }),
+        ),
+        { reason: "not_allowed", message: KinRecords.ALSO_ON_UNASKED },
+      );
+      assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: elsewhere.key })).alsoOn);
       assert.lengthOf(yield* wakes, before);
       // A suggestion wakes nobody on it until kept; kept, each once, and a retry none again.
       const suggested = (yield* records.create(

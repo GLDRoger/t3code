@@ -765,7 +765,10 @@ const isKinChatError = Schema.is(KinChatError);
 const isDoc = (key: string) =>
   invalid(`${key.slice(0, 40)} is a doc: read it with doc_read and change it with doc_edit.`);
 
-/** Who the turn's events came from, by stored author: the owner only when every one is the owner's. */
+/**
+ * Who the turn's events came from, by stored author: the owner only when every one is the owner's.
+ * Being put on a task (`joined`) is nobody's ask: it counts for no one.
+ */
 export const askedBy = Effect.fn("KinWorkTools.askedBy")(function* (lead: Lead) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ person: string | null; owner: string }>`
@@ -782,6 +785,7 @@ export const askedBy = Effect.fn("KinWorkTools.askedBy")(function* (lead: Lead) 
       AND m.message_id = json_extract(e.json, '$.messageId')
       AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId} AND e.wakeup_id = ${lead.wakeupId}
+      AND NOT (e.tag = 'record.changed' AND json_extract(e.json, '$.reason') IS 'joined')
     ORDER BY e.event_id`;
   const owner = rows[0]?.owner;
   return owner !== undefined && rows.every((row) => row.person === owner)
@@ -791,22 +795,26 @@ export const askedBy = Effect.fn("KinWorkTools.askedBy")(function* (lead: Lead) 
 
 /**
  * Whether the owner asked in person: `eventId` is their own message or card tap in this turn, not
- * passed on by another lead, and every event in the turn is theirs, so no routine, schedule or
- * report rides with it.
+ * passed on by another lead, and every event in the turn is theirs, so no routine, schedule,
+ * report or being put on a task rides with it.
  */
 export const ownerAsked = Effect.fn("KinWorkTools.ownerAsked")(function* (
   lead: Lead,
   eventId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ tag: string; origin: string | null }>`
-    SELECT tag, json_extract(json, '$.origin') AS origin
+  const [row] = yield* sql<{ tag: string; origin: string | null; joined: number }>`
+    SELECT tag, json_extract(json, '$.origin') AS origin,
+      EXISTS (SELECT 1 FROM kin_events j WHERE j.org_id = kin_events.org_id
+        AND j.agent_id = kin_events.agent_id AND j.wakeup_id = kin_events.wakeup_id
+        AND j.tag = 'record.changed' AND json_extract(j.json, '$.reason') = 'joined') AS joined
     FROM kin_events WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}
       AND wakeup_id = ${lead.wakeupId} AND event_id = ${eventId} ORDER BY event_id`;
   return (
     row !== undefined &&
     (row.tag === "chat.message" || row.tag === "widget.action") &&
     row.origin === null &&
+    row.joined === 0 &&
     (yield* askedBy(lead)) !== null
   );
 });

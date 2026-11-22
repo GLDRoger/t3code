@@ -228,6 +228,8 @@ const heldBy = (
     fieldList(parseFields(row.fieldsJson), "alsoOn").includes(`person:${writer.actor.personId}`));
 
 /** What an agent on a task hears when it tries what only its holder, or a person's word, may do. */
+export const ALSO_ON_UNASKED =
+  "Who is on a task changes only when a person asks for it in this turn. Nothing was saved: ask them.";
 export const helperRefusal = (holder: string, key: string) =>
   `${holder} holds ${key}: put it to them as a comment or a card.`;
 
@@ -1312,8 +1314,8 @@ const make = Effect.gen(function* () {
 
   /**
    * Who a write leaves on a task besides its holder (`fields.alsoOn`): someone here, each once, at
-   * most `KIN_WORK_ALSO_ON_MAX`, never the holder. Given to someone on it, they come off it; an
-   * agent with no person behind its turn changes nothing else of it.
+   * most `KIN_WORK_ALSO_ON_MAX`, never the holder. Given to someone on it, they come off it. An
+   * agent with no person asking in its turn may not change it: being put on one is no one's ask.
    */
   const alsoOnFor = Effect.fn("KinRecords.alsoOnFor")(function* (
     orgId: KinOrgId,
@@ -1323,9 +1325,13 @@ const make = Effect.gen(function* () {
     holder: KinWorkPrincipal,
   ) {
     const held = shownPrincipal(holder);
-    if (asked === undefined || (writer.actor._tag === "agent" && writer.askedBy == null))
-      return stored.filter((text) => text !== held);
+    const kept = stored.filter((text) => text !== held);
+    if (asked === undefined) return kept;
     const list = asked ?? [];
+    if (writer.actor._tag === "agent" && writer.askedBy == null) {
+      if (Array.isArray(list) && list.join(",") === kept.join(",")) return kept;
+      return yield* new KinChatError({ reason: "not_allowed", message: ALSO_ON_UNASKED });
+    }
     if (typeof list === "string" || isMoney(list) || list.some((text) => !storedPrincipal(text)))
       return yield* invalid("Who is on a task is a list of person:<id> and agent:<id>.");
     if (new Set(list).size !== list.length)
