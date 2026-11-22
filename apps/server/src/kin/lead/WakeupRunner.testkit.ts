@@ -87,7 +87,11 @@ export const agentId = KinAgentId.make("lead");
 const timestamp = "2026-11-08T00:00:00.000Z";
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeEvent = Schema.decodeSync(KinEvent);
-const selection = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-4-6" };
+/** The lead's own model in this harness. */
+export const selection = {
+  instanceId: ProviderInstanceId.make("claudeAgent"),
+  model: "claude-opus-4-6",
+};
 const project = {
   id: ProjectId.make("kin:org"),
   title: "Kin · Org",

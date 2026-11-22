@@ -14,6 +14,7 @@ import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
+import { modelNotOffered } from "../lead/leadModels.ts";
 
 export const taskCardEquivalent = Schema.toEquivalence(KinTaskCardState);
 export const decodeTaskCard = Schema.decodeUnknownSync(KinTaskCardState);
@@ -65,12 +66,7 @@ const failureOf = (
   )
     return "signed_out";
   if (shell.lastErrorClass === "transport_error") return "unreachable";
-  // A request the provider turned away that names the task's model: it doesn't serve that model.
-  if (
-    (code === "api_error_400" || code === "api_error_404") &&
-    model !== null &&
-    (shell.lastError ?? "").includes(model)
-  )
+  if (model !== null && modelNotOffered({ code, message: shell.lastError }, model))
     return "model_not_offered";
   return null;
 };

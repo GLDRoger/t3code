@@ -97,6 +97,18 @@ export const leadModelProblem = (
   return undefined;
 };
 
+/** The provider turned the request away (400 or 404) naming `model`: it doesn't serve it here. */
+export const modelNotOffered = (
+  failure: {
+    readonly code: string | null | undefined;
+    readonly message: string | null | undefined;
+  },
+  model: string,
+) =>
+  (failure.code === "api_error_400" || failure.code === "api_error_404") &&
+  model !== "" &&
+  (failure.message ?? "").includes(model);
+
 /** A model the owner hid from this host's model list; Kin's agent pickers leave it out too. */
 const hiddenModel = (
   settings: ServerSettings,

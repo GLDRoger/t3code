@@ -162,7 +162,12 @@ describe("matchModel", () => {
 });
 
 const host = Schema.decodeSync(ServerSettings)({
-  providerModelPreferences: { claudeAgent: { hiddenModels: ["invented-moth"] } },
+  providerModelPreferences: {
+    claudeAgent: {
+      hiddenModels: ["invented-moth", "invented-wren"],
+      refusedAt: { "invented-wren": 1_795_424_400_000 },
+    },
+  },
 });
 
 describe("helperModelRefusal", () => {
@@ -185,6 +190,7 @@ describe("helperModelRefusal", () => {
       model("invented-quill", "Invented Quill", { aliases: ["quill"] }),
       model("invented-ember", "Invented Ember", { isLegacy: true }),
       model("invented-moth", "Invented Moth"),
+      model("invented-wren", "Invented Wren"),
     ]),
     provider("codex", "codex", [model("invented-lark", "Invented Lark")]),
   ];
@@ -245,6 +251,7 @@ describe("helperModelRefusal", () => {
     assert.include(text, ALLOWED);
     const offered = text.split("Models you may use")[1] ?? "";
     assert.notInclude(offered, "invented-moth");
+    assert.notInclude(offered, "invented-wren");
     assert.notInclude(offered, "invented-lark");
     assert.include(text, "leave target.model and target.providerInstanceId out");
   });

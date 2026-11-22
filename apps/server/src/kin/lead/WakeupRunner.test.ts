@@ -65,6 +65,7 @@ import * as KinStop from "./KinStop.ts";
 import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import { KinRefusedModels } from "./refusedModels.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
 import * as PlatformError from "effect/PlatformError";
 import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
@@ -85,6 +86,7 @@ import {
   orgId,
   agentId,
   event,
+  selection,
   toolCall,
 } from "./WakeupRunner.testkit.ts";
 import { ProviderAdapterSteerRunError } from "@t3tools/provider-core/server/ProviderAdapter";
@@ -1042,6 +1044,37 @@ describe("WakeupRunner", () => {
             harness({ failed: true, ...(failureCode === undefined ? {} : { failureCode }) }).pipe(
               Layer.provide(bridge),
             ),
+          ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect(
+    "asks Kin to stop offering the model a provider turned an agent's own turn away on",
+    () =>
+      Effect.gen(function* () {
+        const refused: Array<Parameters<KinRefusedModels["Service"]["refused"]>[0]> = [];
+        const refusals = Layer.succeed(KinRefusedModels, {
+          refused: (input) => Effect.sync(() => refused.push(input)).pipe(Effect.as(true)),
+        });
+        yield* Effect.gen(function* () {
+          yield* seed;
+          yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("refused-model"));
+          yield* Fiber.join(yield* run());
+          assert.deepStrictEqual(
+            refused.map((input) => [
+              input.orgId,
+              input.selection.instanceId,
+              input.selection.model,
+            ]),
+            [[orgId, "claudeAgent", "claude-opus-4-6"]],
+          );
+        }).pipe(
+          Effect.provide(
+            harness({
+              failed: true,
+              failureCode: "api_error_400",
+              failureMessage: `API Error: 400 unknown provider for model ${selection.model}`,
+            }).pipe(Layer.provide(refusals)),
           ),
         );
       }).pipe(provideDeterministicTestRuntime),
