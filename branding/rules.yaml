@@ -504,6 +504,13 @@ text:
       - apps/web/src/components/sidebar/SidebarChrome.tsx
     from: T3 Code
     to: Kin
+  # Kin's own Settings pages that name the app: Environments' "Use in another app" dialog, and
+  # Maintenance's database notice.
+  - files:
+      - apps/web/src/components/mcp/UseInAnotherAppDialog.tsx
+      - apps/web/src/components/settings/DatabaseStorageNotice.tsx
+    from: T3 Code
+    to: Kin
   # The wordmark itself is an asset (assets/apps/web/src/components/T3Wordmark.tsx).
   - files: [apps/web/src/components/sidebar/SidebarChrome.tsx]
     from: T3
@@ -682,6 +689,8 @@ scopes:
       - apps/web/src/components/T3Wordmark.tsx
       - apps/web/src/components/sidebar/SidebarChrome.tsx
       - apps/web/src/components/ui/standalone-page.tsx
+      - apps/web/src/components/mcp/UseInAnotherAppDialog.tsx
+      - apps/web/src/components/settings/DatabaseStorageNotice.tsx
       - apps/web/src/kin/kinWebOnly.ts
       # The server build copies these over the client's icons (applyDevelopmentIconOverrides).
       - assets/dev/blueprint-web-*

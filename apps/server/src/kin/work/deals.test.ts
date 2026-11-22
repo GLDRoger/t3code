@@ -1432,6 +1432,7 @@ it.effect(
         clients: 1,
         followUps: 1,
         promises: 1,
+        watches: 0,
       });
       assert.strictEqual(
         yield* message(handOver(arjunId, arjunId)),
@@ -1462,6 +1463,7 @@ it.effect(
         clients: 1,
         followUps: 1,
         promises: 1,
+        watches: 0,
       });
       const moved = moving.filter((key) => key !== hushDeal.key);
       assert.deepStrictEqual(
