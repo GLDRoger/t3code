@@ -295,6 +295,8 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     .flatMap((partner) =>
       [...new Set(partner.entries.map((one) => one.money.currency))].map((currency) => ({
         name: partner.name,
+        id: partner.personId ?? `address:${partner.address}`,
+        ids: partner.address === null ? [] : [partner.address],
         currency,
         owed: partner.entries
           .filter((one) => one.money.currency === currency)

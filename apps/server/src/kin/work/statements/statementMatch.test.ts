@@ -488,6 +488,28 @@ describe("statement matching", () => {
       own.map((one) => [one.group, one.candidates.length, one.suggestion.action]),
       [["unmatched", 0, "transfer"]],
     );
+    // Ticked only for an unambiguous payee: a whole name one partner answers to, or a stored id.
+    const meeras = [
+      { name: "Meera Iyer", id: "person:meera", currency: "INR", owed: [owed("EXP-21", 10_000)] },
+      { name: "Meera Shah", id: "person:shah", currency: "INR", owed: [owed("EXP-22", 20_000)] },
+    ];
+    assert.deepStrictEqual(
+      [
+        only([debit(0, "2026-10-08", "REIMBURSE MEERA", 10_000)], meeras),
+        only([debit(0, "2026-10-08", "REIMBURSE MEERA", 10_000)], [meeras[0]!]),
+        only([debit(0, "2026-10-08", "NEFT DR-MEERA IYER", 10_000)], meeras),
+        only(
+          [debit(0, "2026-10-08", "IMPS MEERA meera@invented.example", 10_000)],
+          [{ ...meeras[0]!, name: "M. I.", ids: ["meera@invented.example"] }],
+        ),
+      ],
+      [
+        [["choose", [["EXP-21"]]]],
+        [["choose", [["EXP-21"]]]],
+        [["matched", [["EXP-21"]]]],
+        [["matched", [["EXP-21"]]]],
+      ],
+    );
     assert.deepStrictEqual(only([debit(0, "2026-10-08", "MEERA RAO", 2)], huge), [
       ["matched", [["EXP-11", "EXP-12", "EXP-13"]]],
     ]);

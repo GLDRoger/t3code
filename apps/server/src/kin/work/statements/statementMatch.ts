@@ -53,6 +53,10 @@ export type PaymentCandidate = {
 /** A partner the company owes, with their owed Paid expenses in one currency, oldest first. */
 export type PartnerCandidate = {
   readonly name: string;
+  /** Who they are, the same across their currencies: two partners can share a name. */
+  readonly id?: string;
+  /** Something stored that only they are, such as an imported address: in a narration, it is them. */
+  readonly ids?: ReadonlyArray<string>;
   readonly currency: string;
   readonly owed: ReadonlyArray<{
     readonly recordId: string;
@@ -319,6 +323,13 @@ const expenseCandidate = (
   };
 };
 
+/** The narration carries a partner's whole name, or something stored that only they are. */
+const identifies = (partner: PartnerCandidate, narration: string) =>
+  nameIn(partner.name, narration) === 1 ||
+  (partner.ids ?? []).some(
+    (id) => squashed(id).length >= 6 && squashed(narration).includes(squashed(id)),
+  );
+
 /** Most owed expenses one repayment is looked for across. */
 const REPAYS_AT_MOST = 50;
 
@@ -328,8 +339,8 @@ const REPAYS_AT_MOST = 50;
  * pays them back; a credit is theirs paying back a run that nets below zero. An amount alone may
  * be anyone's.
  */
-const repayment = (row: StatementRow, partner: PartnerCandidate, from: number) => {
-  const named = nameIn(partner.name, row.description);
+const repayment = (row: StatementRow, partner: PartnerCandidate, from: number, sure: boolean) => {
+  const named = identifies(partner, row.description) ? 1 : nameIn(partner.name, row.description);
   if (named < 0.5) return undefined;
   // Minor units past 2^53 add up wrong as numbers; exact sums decide what a line settles.
   const signed = BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor);
@@ -343,6 +354,11 @@ const repayment = (row: StatementRow, partner: PartnerCandidate, from: number) =
     if (DRAWINGS.test(row.description)) {
       score += 10;
       why.push("says reimbursement");
+    }
+    // Part of a name, or a name two partners answer to, is the owner's to pick: never ticked.
+    if (!sure) {
+      score = Math.min(score, CONFIDENT - 1);
+      why.push("the name could be someone else's");
     }
     const candidate: Candidate = {
       kind: "expense",
@@ -376,7 +392,7 @@ const repayments = (
   const offers = (index: number) =>
     partners.flatMap((partner, at) => {
       if (partner.currency !== currency || transfer(index)) return [];
-      const offer = repayment(rows[index]!, partner, settled[at]!);
+      const offer = repayment(rows[index]!, partner, settled[at]!, sureOf(rows[index]!, partner));
       return offer === undefined ? [] : [{ at, ...offer }];
     });
   const clear = (index: number) => {
@@ -390,6 +406,14 @@ const repayments = (
       (next === undefined || best!.score - next.score >= MARGIN)
       ? won
       : undefined;
+  };
+  const sureOf = (row: StatementRow, partner: PartnerCandidate) => {
+    const whole = new Set(
+      partners
+        .filter((one) => identifies(one, row.description))
+        .map((one) => one.id ?? one.name),
+    );
+    return whole.size === 1 && whole.has(partner.id ?? partner.name);
   };
   const found = new Map<number, ReadonlyArray<Candidate>>();
   const debits = rows
