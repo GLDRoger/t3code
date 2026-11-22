@@ -9,7 +9,6 @@ import {
   createKinGitHubGuardActions,
   createKinGitHubLookActions,
   KIN_GITHUB_APP_SETUP_COPY as SETUP,
-  kinGitHubAppCreatePath,
   KIN_GITHUB_AGENTS_COPY as AGENTS,
   KIN_GITHUB_APP_REPOS_COPY as PICK,
   KIN_GITHUB_COPY as COPY,
@@ -28,6 +27,7 @@ import {
   kinGitHubSheet,
   kinGitHubWatchLine,
 } from "@t3tools/client-runtime/kin/kinGitHub";
+import { KIN_SET_UP_ON_COMPUTER } from "@t3tools/client-runtime/kin/kinNavigation";
 import type {
   EnvironmentId,
   KinGitHubAgents,
@@ -35,7 +35,6 @@ import type {
   KinGitHubWatch,
   KinOrgId,
 } from "@t3tools/contracts";
-import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useRef, useState } from "react";
@@ -57,7 +56,6 @@ import { SearchField } from "../../../components/ui/SearchField";
 import { SecretTextInput } from "../../../components/ui/SecretTextInput";
 import { useNowMinuteMs } from "../../../lib/clock";
 import { tryCopyTextWithHaptic } from "../../../lib/copyTextWithHaptic";
-import { usePreparedConnection } from "../../../state/session";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import {
@@ -302,7 +300,6 @@ function AppSetUp(props: {
   const reload = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
   const create = useAtomCommand(kinClient.githubAppCreate, { reportFailure: false });
   const disconnect = useAtomCommand(kinClient.githubAppDisconnect, { reportFailure: false });
-  const connection = usePreparedConnection(environmentId);
   const [problem, setProblem] = useState<string | null>(null);
   const actions = createKinGitHubAppSetupActions({
     orgId,
@@ -311,25 +308,6 @@ function AppSetUp(props: {
     refresh: reload,
   });
   const forgetting = view.disconnect;
-  const startCreate = async () => {
-    setProblem(null);
-    const outcome = await actions.start();
-    if (!outcome.ok) return setProblem(outcome.problem);
-    const started = outcome.value;
-    Dialog.prompt({
-      title: SETUP.create,
-      message: `${SETUP.createDetail}\n\n${SETUP.nameHint}`,
-      initialValue: started.name,
-      confirmText: SETUP.continue,
-      onConfirm: (name) => {
-        const url = Option.isSome(connection)
-          ? resolveAssetUrl(connection.value.httpBaseUrl, kinGitHubAppCreatePath(started, name))
-          : null;
-        if (url === null) setProblem(KIN_CHECK_CONNECTION);
-        else void Linking.openURL(url);
-      },
-    });
-  };
   const confirmDisconnect = (name: string) =>
     Dialog.confirm({
       title: SETUP.disconnectTitle,
@@ -362,7 +340,7 @@ function AppSetUp(props: {
       )}
       {view.canCreate ? (
         <View className="border-t border-border-subtle">
-          <ListActionRow label={SETUP.create} onPress={() => void startCreate()} />
+          <ListRowLayout label={KIN_SET_UP_ON_COMPUTER.githubApp} />
         </View>
       ) : null}
       {forgetting === null ? null : (
