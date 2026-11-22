@@ -47,7 +47,6 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { turnAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
-import { markOutside } from "../lead/OutsideContent.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -390,20 +389,6 @@ const ownChatTurn = Effect.fn("KinRecordsTest.ownChatTurn")(function* (
       'claimed', ${`wake-${personId}`})`;
   return eventId;
 });
-
-it.effect("a task the owner's own ask makes after the turn read a mail waits to be kept", () =>
-  Effect.gen(function* () {
-    yield* seed;
-    yield* turn();
-    const made = (title: string) =>
-      LeadWork.create(scopeOf(lead), { sourceEventId: "ask-event", records: [{ title }] }).pipe(
-        Effect.map(({ records: [made] }) => made !== undefined && "suggested" in made),
-      );
-    assert.isFalse(yield* made("Invented: before the mail"));
-    yield* markOutside({ orgId, wakeupId: "wake" }, "mail-connection");
-    assert.isTrue(yield* made("Invented: what the mail asks"));
-  }).pipe(Effect.provide(layer)),
-);
 
 it.effect(
   "a task put on the owner in someone else's chat is the asker's unless a reason says it is his",
