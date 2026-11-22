@@ -115,7 +115,7 @@ type Push = {
   readonly chatId: KinChatId | undefined;
   /** The message, or card's anchor, it tells of: each send checks the recipient still reads it. */
   readonly source: KinMessageId | undefined;
-  /** Message pushes collapse per chat, so a busy chat shows one banner. */
+  /** One per message: a resend replaces its own banner. The chat groups them (`thread-id`). */
   readonly collapseId?: string;
   readonly data: KinPushData;
   readonly recipients: ReadonlyArray<Recipient>;
@@ -305,9 +305,11 @@ export const kinTasksSubject = (keys: ReadonlyArray<KinRecordKey>): KinPushSubje
     ? { _tag: "record", key: unique[0]!, kind: "task" }
     : { _tag: "tasks" };
 };
+// One per message, not per chat: iOS and Android make it the notification's identifier, and a
+// phone acts once per identifier, so a shared id left every later tap from that chat dead.
 /** Fits `apns-collapse-id`'s 64 bytes whatever the ids' length. */
-const kinPushCollapseId = (orgId: KinOrgId, chatId: KinChatId) =>
-  `kin:${kinPushDeviceId(`${orgId}\u0000${chatId}`)}`;
+const kinPushCollapseId = (orgId: KinOrgId, chatId: KinChatId, messageId: KinMessageId) =>
+  `kin:${kinPushDeviceId(`${orgId}\u0000${chatId}\u0000${messageId}`)}`;
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeIds = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
 const decodeState = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
@@ -749,7 +751,7 @@ const make = Effect.gen(function* () {
       body: body || "New message",
       chatId: row.chat_id,
       source: messageId,
-      collapseId: kinPushCollapseId(orgId, row.chat_id),
+      collapseId: kinPushCollapseId(orgId, row.chat_id, messageId),
       data: {
         kin: 1,
         orgId,
@@ -870,7 +872,7 @@ const make = Effect.gen(function* () {
       source: row.message_id,
       // A notice with buttons keeps its own banner.
       ...(kind.category === "kin.message"
-        ? { collapseId: kinPushCollapseId(orgId, row.chat_id) }
+        ? { collapseId: kinPushCollapseId(orgId, row.chat_id, row.message_id) }
         : {}),
       data: {
         kin: 1,
@@ -1245,7 +1247,7 @@ const make = Effect.gen(function* () {
       body: unread.length === 1 && one !== "" ? one : `${name} sent ${unread.length} messages`,
       chatId: first.chatId,
       source: oldest.messageId,
-      collapseId: kinPushCollapseId(orgId, first.chatId),
+      collapseId: kinPushCollapseId(orgId, first.chatId, oldest.messageId),
       data: { kin: 1, orgId, chatId: first.chatId, deepLink: chatLink(orgId, first.chatId) },
       recipients: [
         {
