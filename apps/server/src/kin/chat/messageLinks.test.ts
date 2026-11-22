@@ -19,6 +19,7 @@ import {
   keysIn,
   linkMatcher,
   nameKeys,
+  nameThreads,
   withLinks,
   type LinkName,
 } from "./messageLinks.ts";
@@ -264,5 +265,46 @@ it.effect("links for each reader only what they may open; a hidden client leaves
       key: "W-1",
       kind: "task",
     });
+
+    // Kin opens no T3 thread: a helper's link or pasted id reaches people as its card's title, the
+    // agent's own thread as its name; code stays as written.
+    const helper = "thread:delegated-task:command%3Amcp%3Aa1%3Adelegate-task%3Ab2";
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_agent_id,
+        author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body,
+        mentions_json, status, created_at)
+      VALUES ('m-card', ${orgId}, 'finance-chat', 1, 'agent', 'finance', ${ownerId}, 'kin:01FIN',
+        'finance-in-finance', 'member', 'text', '', '[]', 'posted', ${at})`;
+    yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type,
+        revision, state_json, awaiting_json, updated_at)
+      VALUES ('w-card', ${orgId}, 'finance-chat', 'm-card', 'native', 'task', 1,
+        ${JSON.stringify({ threadId: helper, title: "Check the  login copy" })}, '[]', ${at})`;
+    yield* sql`INSERT INTO kin_agent_threads (thread_id, org_id, agent_id, started_at)
+      VALUES ('kin:01FIN', ${orgId}, 'finance', ${at})`;
+    const link = `t3-thread://v2/env-1/${helper}`;
+    assert.strictEqual(
+      yield* nameThreads(
+        orgId,
+        "finance-chat",
+        [
+          `Started [the copy check](${link}).`,
+          `Also <${link}>, bare ${link}, pasted ${helper}, and [my notes](t3-thread://v2/env-1/kin%3A01FIN).`,
+          `Hosted: https://app.t3.codes/threads/env-1/${encodeURIComponent(helper)}`,
+          `Unknown: [Old work](t3-thread://v2/env-1/thread%3Agone) and <t3-thread://v1/thread%3Agone>.`,
+          `In code: \`${helper}\``,
+        ].join("\n"),
+      ),
+      [
+        "Started Check the login copy.",
+        "Also Check the login copy, bare Check the login copy, pasted Check the login copy, and Finance.",
+        "Hosted: Check the login copy",
+        "Unknown: Old work and a helper task.",
+        `In code: \`${helper}\``,
+      ].join("\n"),
+    );
+    // Another chat doesn't read the card, so its title isn't told there.
+    assert.strictEqual(
+      yield* nameThreads(orgId, "zoya-chat", `Started [a task](${link}) and ${helper}.`),
+      `Started a task and ${helper}.`,
+    );
   }).pipe(Effect.provide(layer)),
 );

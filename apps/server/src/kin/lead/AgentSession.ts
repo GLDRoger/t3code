@@ -5,6 +5,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfTool } from "../shell/sections.ts";
 import * as McpToolPolicy from "../mcp/toolPolicy.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpToolExposure from "../../mcp/McpToolExposure.ts";
@@ -25,6 +27,7 @@ import { ThemeToolkit } from "../../mcp/toolkits/theme/tools.ts";
 import { ServerConfig } from "../../config.ts";
 import { toolDirectories } from "../gendocs/toolchain.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinServer } from "../KinServer.ts";
 import { approvalOf } from "../questions/approval.ts";
 import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "./Audience.ts";
@@ -298,10 +301,25 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
   return !codingT3Tools.has(name) || (yield* threadSeat(threadId))?.seat === "engineering";
 });
 
-export const endpointVisibility = McpToolPolicy.toolVisibility((name) =>
+export const endpointVisibility = McpToolPolicy.toolVisibility((name, method) =>
   Effect.gen(function* () {
     const scope = yield* Effect.serviceOption(McpInvocationContext);
     if (Option.isNone(scope) || scope.value.thread === undefined) return false;
+    const section = sectionOfTool(name);
+    // Only the list hides a section; the call gate returns the refusal on tools/call.
+    if (method === "tools/list" && section !== null) {
+      const kin = yield* Effect.serviceOption(KinServer);
+      const services = Option.flatMap(kin, (entry) => entry.services);
+      if (Option.isNone(services)) return false;
+      const { owner } = Context.get(services.value, KinIdentity);
+      if (
+        !(yield* KinShell.sectionOn(owner.orgId, section).pipe(
+          Effect.provideContext(services.value),
+          Effect.orElseSucceed(() => false),
+        ))
+      )
+        return false;
+    }
     return yield* visibleOnKinEndpoint(name, scope.value.thread.threadId);
   }),
 );

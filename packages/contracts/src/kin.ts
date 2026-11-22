@@ -36,6 +36,7 @@ export * from "./kinConnections.ts";
 export * from "./kinSocial.ts";
 
 export * from "./kinPeople.ts";
+export * from "./kinShell.ts";
 export * from "./kinTasksKey.ts";
 
 export * from "./kinEmbed.ts";

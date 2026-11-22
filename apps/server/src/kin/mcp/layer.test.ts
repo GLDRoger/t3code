@@ -1,3 +1,4 @@
+import * as KinShell from "../shell/KinShell.ts";
 import { EnvironmentThemeService } from "../../environmentTheme.ts";
 import { IssueService } from "../../issue/IssueService.ts";
 import { ThreadIssueService } from "../../orchestration-v2/ThreadIssueService.ts";
@@ -70,6 +71,7 @@ import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as Kin from "../layer.ts";
 import { ServerActivation } from "../../serverActivation.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as OwnerClients from "../work/ownerClients.ts";
 import { companyMoney } from "../work/companyProfile.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { AssetSigner } from "../../assets/AssetSigner.ts";
@@ -236,6 +238,20 @@ it.effect.each([true, false])(
               | OrchestratorV2
             >
           >();
+        let tokenLookups = 0;
+        let tokenClock = 0;
+        const baseRegistry = Layer.effect(
+          McpSessions.McpSessionRegistry,
+          McpSessions.__testing.make({ livenessWindowMs: 100, now: () => tokenClock }).pipe(
+            Effect.map((registry) => ({
+              ...registry,
+              resolve: (token: string) =>
+                Effect.sync(() => void (tokenLookups += 1)).pipe(
+                  Effect.andThen(registry.resolve(token)),
+                ),
+            })),
+          ),
+        );
         const routes = Layer.merge(
           Kin.mcpLayer(t3Composition),
           Layer.effectDiscard(
@@ -249,7 +265,7 @@ it.effect.each([true, false])(
             >().pipe(Effect.flatMap((context) => Deferred.succeed(ready, context))),
           ),
         ).pipe(
-          Layer.provideMerge(Kin.mcpRegistryLayer(McpSessions.layer)),
+          Layer.provideMerge(Kin.mcpRegistryLayer(baseRegistry)),
           Layer.provideMerge(
             authorityLayerWithDatabase(
               KinPersistence.layer.pipe(
@@ -440,12 +456,28 @@ it.effect.each([true, false])(
             .status,
           403,
         );
+        const expired = yield* registry.issue({
+          threadId,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        });
+        tokenClock += 101;
+        for (const credential of [
+          "Bearer invented-invalid-token",
+          expired.config.authorizationHeader,
+        ]) {
+          const before = tokenLookups;
+          const rejected = yield* request("/kin/mcp", credential, "initialize", initialize);
+          assert.strictEqual(rejected.status, 401);
+          assert.strictEqual(tokenLookups - before, 1);
+        }
+        yield* registry.touch(threadId);
         // L1: this lead posts for real (an L0 lead's posts are shadow entries).
         yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
           VALUES (${agentId}, ${person.orgId}, 'Lead', 'L1', 0, '{}', '[]', ${chat.chatId})`;
         yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId }).pipe(
           Effect.provide(services),
         );
+        const lookupsBeforeInitialize = tokenLookups;
         const initialized = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,
@@ -453,6 +485,7 @@ it.effect.each([true, false])(
           initialize,
         );
         assert.strictEqual(initialized.status, 200);
+        assert.strictEqual(tokenLookups - lookupsBeforeInitialize, 1);
         const toolList = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,
@@ -476,6 +509,147 @@ it.effect.each([true, false])(
             { name, arguments: args },
             initialized.headers["mcp-session-id"],
           ).pipe(Effect.flatMap(bodyOf));
+        yield* sql`UPDATE kin_leads SET thread_id = ${threadId}
+          WHERE org_id = ${person.orgId} AND agent_id = ${agentId}`;
+        const client = yield* OwnerClients.createParty([person], {
+          orgId: person.orgId,
+          name: "Invented Shell Client",
+          clientRequestId: "shell-client",
+        }).pipe(Effect.provideContext(kin.services.value));
+        const createDeal = {
+          records: [
+            { list: "deals", title: "Invented Shell Deal", client: client.key, owner: "owner" },
+          ],
+        };
+        const shellArgs = [
+          ["deal_stages", {}],
+          ["pipeline_read", { view: "totals" }],
+          ["record_update", { key: "DL-3" }],
+          ["record_update", { keys: ["W-1", "DL-3"] }],
+          ["record_create", { list: "deals" }],
+          ["record_create", createDeal],
+          ["record_create", { records: [{ title: "Invented call" }, { list: "deals" }] }],
+          ["records_query", { list: "deals" }],
+        ] as const;
+        const dealsRefusal =
+          "Deals is turned off for this company. An owner can turn it on in Settings › Deals.";
+        const leadMcp = yield* open("/kin/mcp", issued.config.authorizationHeader);
+        assert.includeMembers(yield* leadMcp.list, ["deal_stages", "pipeline_read"]);
+        const shell = Context.get(kin.services.value, KinShell.KinShell);
+        const toggle = (rev: number, on: boolean) =>
+          shell.set(person.orgId, person.personId, rev, [{ id: "deals", on }]);
+        yield* toggle(0, false);
+        for (const name of ["deal_stages", "pipeline_read"])
+          assert.notInclude(yield* leadMcp.list, name);
+        for (const [name, args] of shellArgs)
+          assert.include(yield* leadCall(name, args), dealsRefusal, name);
+        assert.notInclude(yield* leadCall("record_update", { key: "W-3" }), dealsRefusal);
+        yield* toggle(1, true);
+        assert.includeMembers(yield* leadMcp.list, ["deal_stages", "pipeline_read"]);
+        for (const [name, args] of shellArgs)
+          if (args !== createDeal)
+            assert.notInclude(yield* leadCall(name, args), dealsRefusal, name);
+        const made = yield* leadCall("record_create", createDeal);
+        const [deal] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE org_id = ${person.orgId} AND register_id = 'deals' AND title = 'Invented Shell Deal'`;
+        assert.isDefined(deal, made);
+        const beforeUpdate = yield* leadCall("record_update", {
+          key: deal!.key,
+          title: "Invented Revised Deal",
+        });
+        const [updated] = yield* sql<{ title: string }>`SELECT title FROM kin_records
+          WHERE org_id = ${person.orgId} AND key = ${deal!.key}`;
+        assert.equal(updated?.title, "Invented Revised Deal", beforeUpdate);
+        const key = deal!.key;
+        const touch = { client: client.key, kind: "call", note: "Invented: discussed DL-3 today" };
+        assert.include(yield* leadCall("touch_log", touch), key);
+        assert.include(yield* leadCall("docs_search", { text: "Invented Revised Deal" }), key);
+        const doc = yield* leadCall("doc_create", {
+          title: "Invented linked doc",
+          body: "Invented notes",
+          company: true,
+          card: false,
+        });
+        const docKey = /"key":"(D-\d+)"/.exec(doc)?.[1];
+        assert.isDefined(docKey, doc);
+        const work = yield* leadCall("record_create", {
+          records: [{ title: "Invented linked task" }],
+        });
+        const workKey = /"key":"(W-\d+)"/.exec(work)?.[1];
+        assert.isDefined(workKey, work);
+        const sqlRow = (recordKey: string) =>
+          sql<{ recordId: string }>`SELECT record_id AS "recordId" FROM kin_records
+            WHERE org_id = ${person.orgId} AND key = ${recordKey}`;
+        const [workRow] = yield* sqlRow(workKey!);
+        const [dealRow] = yield* sqlRow(key);
+        yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation, label, created_at)
+          VALUES (${person.orgId}, ${workRow!.recordId}, 'record', ${dealRow!.recordId}, 'relates', ${key}, 0)`;
+        yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at,
+            actor_kind, actor_id, via, kind, fields_json)
+          VALUES (${person.orgId}, ${workRow!.recordId}, 1, 0, 'person', ${person.personId},
+            'owner', 'linked', ${JSON.stringify([{ field: "record", from: null, to: dealRow!.recordId }])})`;
+        const previouslyLinked = yield* leadCall("record_get", { key: workKey });
+        assert.include(previouslyLinked, key);
+        assert.include(previouslyLinked, `record: ${dealRow!.recordId}`);
+        const project = yield* OwnerClients.createProject([person], {
+          orgId: person.orgId,
+          name: "Invented linked project",
+          party: client.key,
+          clientRequestId: "shell-project",
+        }).pipe(Effect.provideContext(kin.services.value));
+        for (const related of [client.key, project.key]) {
+          const [row] = yield* sqlRow(related);
+          yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation, label, created_at)
+            VALUES (${person.orgId}, ${row!.recordId}, 'record', ${dealRow!.recordId}, 'relates', ${key}, 0)`;
+          assert.include(yield* leadCall("record_get", { key: related }), key);
+        }
+        yield* sql`UPDATE kin_records SET confirmed = 0, amount_minor = 123400, currency = 'GBP'
+          WHERE org_id = ${person.orgId} AND key = ${key}`;
+        assert.include(yield* leadCall("money_summary", {}), key);
+
+        yield* toggle(2, false);
+        for (const [name, args] of [
+          ["record_assign", { tasks: [{ key, to: "owner", reason: "Invented assignment" }] }],
+          [
+            "doc_create",
+            { title: "Invented forbidden", body: "Notes", company: true, links: [key] },
+          ],
+          ["doc_link", { key: docKey, to: [key] }],
+          ["pulse_handle", { record: key, action: "set_aside" }],
+        ] as const)
+          assert.include(yield* leadCall(name, args), dealsRefusal, name);
+        const batch = yield* leadCall("record_create", {
+          records: [
+            { title: "Invented atomic task" },
+            { ...createDeal.records[0], title: "Invented refused deal row" },
+          ],
+        });
+        assert.include(batch, dealsRefusal);
+        assert.include(batch, "Invented refused deal row");
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_records WHERE org_id = ${person.orgId}
+          AND title IN ('Invented atomic task','Invented refused deal row','Invented forbidden')`,
+          0,
+        );
+        const afterTouch = yield* leadCall("touch_log", touch);
+        assert.include(afterTouch, '"isError":false');
+        assert.include(afterTouch, '"openDeals":[]');
+        assert.notInclude(yield* leadCall("docs_search", { text: "Invented Revised Deal" }), key);
+        for (const related of [workKey, client.key, project.key]) {
+          const result = yield* leadCall("record_get", { key: related });
+          assert.include(result, '"isError":false');
+          assert.notInclude(result, key);
+        }
+        assert.notInclude(
+          yield* leadCall("record_get", { key: workKey }),
+          `record: ${dealRow!.recordId}`,
+        );
+        const money = yield* leadCall("money_summary", {});
+        assert.include(money, '"isError":false');
+        assert.notInclude(money, key);
+        yield* toggle(3, true);
+        yield* sql`UPDATE kin_leads SET thread_id = NULL
+          WHERE org_id = ${person.orgId} AND agent_id = ${agentId}`;
         const elsewhere = [
           ["delegate_task", { task: "Invented: tidy the docs", target: { environmentId: "vps" } }],
           ["t3_thread_send", { environmentId: "vps", threadId: "remote-thread", message: "Go" }],

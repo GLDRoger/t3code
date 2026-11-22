@@ -16,6 +16,7 @@ import { leadNamer } from "../work/toolNames.ts";
 import { clientHistory } from "./clientHistory.ts";
 import { headStarts } from "./headStart.ts";
 import { covers, endedHolds } from "./holds.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { teamHoursNow } from "./nudge.ts";
 import { DEAL_SENSES } from "./senses/deals.ts";
@@ -50,7 +51,9 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
 }) {
   const tell = input.checkIn;
   const checkIn = tell !== undefined;
+  const shell = yield* KinShell.getForDisplay(input.orgId);
   const read = yield* KinPulse.read({
+    shell,
     orgId: input.orgId,
     at: input.now,
     viewer: { _tag: "owner" },
@@ -58,9 +61,12 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   });
   const all =
     tell === undefined ? read : { ...read, facts: read.facts.filter((fact) => tell.has(fact.key)) };
-  const woke = new Set(input.wokeFor);
+  const wokeFor = input.wokeFor.filter(
+    (key) => !KinPulse.quiet({ sense: key.split(":")[0] ?? "" }, shell),
+  );
+  const woke = new Set(wokeFor);
   const open = new Set(all.facts.map((fact) => fact.key));
-  const gone = input.wokeFor.filter((key) => !open.has(key));
+  const gone = wokeFor.filter((key) => !open.has(key));
   if ((checkIn ? all.facts.length : all.total) === 0 && gone.length === 0) return undefined;
   const shown = all.facts
     .toSorted((a, b) => Number(woke.has(b.key)) - Number(woke.has(a.key)))

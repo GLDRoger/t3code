@@ -1,3 +1,4 @@
+import * as KinShell from "../shell/KinShell.ts";
 import { KIN_MONEY_SEARCH_KINDS, type KinOrgId, type KinSearchKind } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -99,7 +100,8 @@ export const search = Effect.fn("KinSearch.search")(function* (
   const indexed = yield* searchIndexed();
   if (words.length === 0) return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
   const kinds = input.kinds === undefined || input.kinds.length === 0 ? KINDS : input.kinds;
-  const registers: ReadonlyArray<string> = input.deals === true ? [...kinds, "deals"] : kinds;
+  const deals = input.deals === true && (yield* KinShell.sectionOn(orgId, "deals"));
+  const registers: ReadonlyArray<string> = deals ? [...kinds, "deals"] : kinds;
   const where = [
     sql`r.org_id = ${orgId}`,
     sql`r.register_id IN ${sql.in(registers)}`,
@@ -131,7 +133,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
   // No index holds a key; a deal's, typed whole, finds that deal first.
   const typed = input.text.trim().toUpperCase();
   const keyed =
-    input.deals === true && /^DL-\d{1,9}$/.test(typed)
+    deals && /^DL-\d{1,9}$/.test(typed)
       ? yield* sql<Row>`SELECT ${columns}, 'public' AS part, r.title AS snippet FROM kin_records r
           WHERE ${sql.and([...where, sql`r.register_id = 'deals'`, sql`r.key = ${typed}`])}`
       : [];
