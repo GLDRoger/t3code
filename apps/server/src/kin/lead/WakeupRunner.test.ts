@@ -7,7 +7,7 @@ import * as DocumentText from "../../provider/DocumentText.ts";
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, vi } from "@effect/vitest";
 import {
   CommandId,
   EventId,
@@ -78,6 +78,7 @@ import {
   ProviderAdapterTurnStartError,
   type ProviderAdapterV2TurnInput,
 } from "@t3tools/provider-core/server/ProviderAdapter";
+import * as HostBackup from "../hostBackup.ts";
 import * as PlatformError from "effect/PlatformError";
 import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -1229,8 +1230,60 @@ describe("WakeupRunner", () => {
         }).pipe(Effect.provide(harness({ failed: true }).pipe(Layer.provide(bridge))));
       }).pipe(provideDeterministicTestRuntime),
   );
+  it.effect("claims a runnable turn while the low-space cleanup is still running", () =>
+    Effect.gen(function* () {
+      using _space = vi
+        .spyOn(HostBackup, "readSpace")
+        .mockImplementation((folder) =>
+          Effect.succeedSome({ folder, freeBytes: 128 * 1024 ** 2, totalBytes: 1024 ** 3 }),
+        );
+      const cleaning = yield* Deferred.make<void>();
+      const finishClean = yield* Deferred.make<void>();
+      const startProvider = yield* Deferred.make<void>();
+      const care = Layer.mock(KinHostCare)({
+        host: true,
+        troubleOpen: () => Effect.succeed(false),
+        clean: () =>
+          Deferred.succeed(cleaning, undefined).pipe(
+            Effect.andThen(Deferred.await(finishClean)),
+            Effect.as({ ran: true, removed: 0, freedBytes: 0, failed: 0 }),
+          ),
+        storageRecovered: () => Effect.void,
+        devFullDisk: Deferred.await(startProvider),
+        succeeded: () => Effect.void,
+      });
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("runnable"));
+        const turn = yield* run();
+        yield* Deferred.await(cleaning);
+        yield* TestClock.adjust(0);
+        const [beforeCleanup] = yield* sql<{ state: string }>`SELECT state FROM kin_events
+          WHERE org_id = ${orgId} AND event_id = 'runnable'`;
+        yield* Deferred.succeed(finishClean, undefined);
+        yield* Deferred.succeed(startProvider, undefined);
+        yield* Fiber.join(turn);
+        assert.strictEqual(beforeCleanup?.state, "claimed");
+      }).pipe(
+        Effect.provide(
+          harness().pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                care,
+                Layer.mock(ChatService.KinChatService)({}),
+                ServerConfig.layerTest(process.cwd(), { prefix: "kin-low-space-" }).pipe(
+                  Layer.provide(NodeServices.layer),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }).pipe(provideDeterministicTestRuntime),
+  );
   it.effect(
-    "a database too full to claim a turn leaves the queue as it was, cleans once, and is told once writes work",
+    "dispatches storage failure and recovery hooks without consuming the unclaimed event",
     () =>
       Effect.gen(function* () {
         const told: Array<string> = [];

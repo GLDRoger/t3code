@@ -531,8 +531,7 @@ it.effect.each([true, false])(
           ["record_create", { records: [{ title: "Invented call" }, { list: "deals" }] }],
           ["records_query", { list: "deals" }],
         ] as const;
-        const dealsRefusal =
-          "Deals is turned off for this company. An owner can turn it on in Settings › Deals.";
+        const dealsRefusal = "Deals is turned off for this company.";
         const leadMcp = yield* open("/kin/mcp", issued.config.authorizationHeader);
         assert.includeMembers(yield* leadMcp.list, ["deal_stages", "pipeline_read"]);
         const shell = Context.get(kin.services.value, KinShell.KinShell);

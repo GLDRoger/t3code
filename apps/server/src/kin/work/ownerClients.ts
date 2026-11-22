@@ -30,6 +30,8 @@ import { isSqlError, type SqlError } from "effect/sql/SqlError";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Crm from "./crm.ts";
+import { sectionOn } from "../shell/KinShell.ts";
+import { DEALS_OFF } from "../shell/sections.ts";
 import { createdOut, createIn as createDealIn, dealSeesField } from "./deals.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
 import { fieldList, parseFields, type FieldValue, type ListName } from "./lists.ts";
@@ -747,17 +749,18 @@ export const createParty = Effect.fn("KinWork.createParty")(function* (
 
 /**
  * A new client and its first deal in one transaction, as the two forms would make them: a refusal
- * of either keeps neither, and a retry returns both.
+ * of either keeps neither. With Deals off, only the client is kept.
  */
 export const createPartyWithDeal = Effect.fn("KinWork.createPartyWithDeal")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPartyWithDealCreateInput,
 ) {
-  const { deal, ...asked } = input;
+  const { deal, acceptDealLeftOut: _acceptDealLeftOut, ...asked } = input;
   const { party, made } = yield* (yield* SqlClient.SqlClient)
     .withTransaction(
       Effect.gen(function* () {
         const party = yield* createParty(people, asked);
+        if (!(yield* sectionOn(input.orgId, "deals"))) return { party, made: undefined };
         const made = yield* createDealIn(people, {
           ...deal,
           orgId: input.orgId,
@@ -768,6 +771,7 @@ export const createPartyWithDeal = Effect.fn("KinWork.createPartyWithDeal")(func
       }),
     )
     .pipe(workFailure);
+  if (made === undefined) return { party, dealLeftOut: DEALS_OFF };
   yield* (yield* KinRecords).announce(input.orgId, [made.row.recordId]);
   const { deal: shown } = yield* createdOut(input.orgId, made);
   return { party, deal: shown };
