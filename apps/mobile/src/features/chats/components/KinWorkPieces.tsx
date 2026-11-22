@@ -696,7 +696,6 @@ export function KinWorkProblemNotice(props: {
   );
 }
 
-/** One labelled field of a form, with what someone else changed it to while it was being typed. */
 /**
  * A label above its input. A tap anywhere on the box, the label's line included, puts the cursor
  * in the input: an empty input draws nothing, so its own line alone is no target.
@@ -726,6 +725,7 @@ export function KinWorkFieldBox(props: {
   );
 }
 
+/** One labelled field of a form, with what someone else changed it to while it was being typed. */
 export function KinWorkTextField(props: {
   readonly label: string;
   readonly value: string;

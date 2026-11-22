@@ -548,10 +548,13 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
             </>
           )}
         </dl>
-        {page.notes === "" ? null : (
-          <p className="whitespace-pre-wrap text-sm text-foreground">{page.notes}</p>
-        )}
       </KinWorkSection>
+
+      {page.notes === "" ? null : (
+        <KinWorkSection title={KIN_DEALS.notes}>
+          <p className="whitespace-pre-wrap text-sm text-foreground">{page.notes}</p>
+        </KinWorkSection>
+      )}
 
       {page.changes.length === 0 ? null : (
         <KinWorkSection title={KIN_DEALS.activity}>
