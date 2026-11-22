@@ -604,6 +604,7 @@ type LinkRow = {
   readonly otherKey: string | null;
   readonly otherTitle: string | null;
   readonly otherNumber: unknown;
+  readonly otherDeleted: number | null;
   readonly workerId: string | null;
   readonly workerThreadId: string | null;
   readonly workerEnvironmentId: string | null;
@@ -705,6 +706,7 @@ const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, reco
       l.label, l.created_at AS "createdAt",
       o.record_id AS "otherId", o.key AS "otherKey", o.title AS "otherTitle",
       json_extract(o.fields_json, '$.number') AS "otherNumber",
+      (o.register_id = 'docs' AND o.state = 'dropped') AS "otherDeleted",
       k.worker_id AS "workerId", k.thread_id AS "workerThreadId",
       k.environment_id AS "workerEnvironmentId", k.ended_at AS "workerEndedAt",
       k.pull_request_url AS "workerPullUrl", k.pull_request_number AS "workerPullNumber"
@@ -729,6 +731,7 @@ const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, reco
             title: row.otherTitle as KinRecord["title"],
           },
           ...issuedNumber(row.otherNumber),
+          ...(row.otherDeleted === 1 ? { deleted: true as const } : {}),
         }),
     ...(row.workerId === null
       ? {}

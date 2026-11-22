@@ -80,7 +80,7 @@ export const KinDocsToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("doc_move", {
     ...shared,
-    description: `File a doc under another client or project (null clears) or as the company's own (company true), change its kind, give it to another owner, mark it sensitive, or archive it (archived false brings it back). Rename with doc_edit retitle. ${writes}`,
+    description: `File a doc under another client or project (null clears) or as the company's own (company true), change its kind, give it to another owner, mark it sensitive, or delete it with archived true (it can be restored from Docs › Deleted; archived false brings it back). Rename with doc_edit retitle. ${writes}`,
     parameters: Docs.MoveInput,
     success: Docs.MoveResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

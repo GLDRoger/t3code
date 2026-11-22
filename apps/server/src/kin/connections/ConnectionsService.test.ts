@@ -2938,6 +2938,78 @@ describe("KinConnections sending", () => {
     ),
   );
 
+  it.effect(
+    "deleting a doc closes the open send card carrying it: it can't be confirmed, and bringing the doc back doesn't reopen it",
+    () =>
+      withGoogle((vendor, cards) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* connectGoogle(vendor);
+          const mail = { to: ["ana@client.example"], subject: "Invoice", attachments: ["DOC-1"] };
+          yield* sendCall("mail_send", { ...mail, body: "Attached." });
+          const open = cards.at(-1)!.widgetId;
+          const closed: Array<{
+            readonly widgetId: string;
+            readonly title?: string;
+            readonly text?: string;
+          }> = [];
+          yield* sql.withTransaction(
+            Effect.andThen(
+              sql`UPDATE kin_records SET state = 'dropped'
+                WHERE org_id = ${orgId} AND record_id = 'rec_doc'`,
+              closeSubject(
+                {
+                  orgId,
+                  recordId: "rec_doc",
+                  key: "DOC-1",
+                  registerId: "docs",
+                  state: "dropped",
+                  sparing: [],
+                  now: 2,
+                },
+                {
+                  closeReplaced: (input) =>
+                    Effect.sync(
+                      () =>
+                        void closed.push({
+                          widgetId: input.widgetId,
+                          ...(input.outcome?.title === undefined
+                            ? {}
+                            : { title: input.outcome.title }),
+                          ...(input.outcome?.text === undefined
+                            ? {}
+                            : { text: input.outcome.text }),
+                        }),
+                    ),
+                },
+              ),
+            ),
+          );
+          assert.deepStrictEqual(closed, [
+            {
+              widgetId: open,
+              title: "Deleted with its draft",
+              text: "Deleted with its draft: DOC-1 was deleted.",
+            },
+          ]);
+          assert.deepStrictEqual(
+            yield* sql`SELECT state, reason FROM kin_connection_asks WHERE widget_id = ${open}`,
+            [{ state: "stale", reason: "DOC-1 was deleted, so nothing was sent." }],
+          );
+          assert.include(yield* answer(open, ownerId, true).pipe(Effect.flip), {
+            reason: "widget_changed",
+          });
+          // Brought back, the card stays closed and the same call is told why.
+          yield* sql`UPDATE kin_records SET state = 'open'
+            WHERE org_id = ${orgId} AND record_id = 'rec_doc'`;
+          assert.deepInclude(yield* sendCall("mail_send", { ...mail, body: "Attached." }), {
+            note: "The card for this exact action was closed: DOC-1 was deleted, so nothing was sent.",
+          });
+          assert.lengthOf(vendor.vendor.sent, 0);
+        }),
+      ),
+  );
+
   it.effect("a co-owner made a member strands no card in a chat that is no longer owner-only", () =>
     withGoogle((vendor, cards) =>
       Effect.gen(function* () {

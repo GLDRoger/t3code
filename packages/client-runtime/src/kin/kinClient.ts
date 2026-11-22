@@ -1691,6 +1691,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.docs.editSection",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
+    /** Deletes a doc or brings it back; the host decides who may (`kin.docs.delete`). */
+    docDelete: createKinRpcCommand(runtime, {
+      label: "kin:docs:delete",
+      tag: "kin.docs.delete",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
     /** A teammate's own draft goes up to the agent's owner to approve; a second tap finds the first. */
     docSendUp: createKinRpcCommand(runtime, {
       label: "kin:docs:sendUp",
