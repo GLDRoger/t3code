@@ -2486,6 +2486,20 @@ describe("bank statement safety", () => {
           yield* confirmAll((yield* reviewCardOf(result.statement)).card),
         );
         assert.include(applied.card.result!.join(" "), "Marked 2 partner-paid expenses repaid.");
+        // Bound to the bank line: what it cost, who is paid back and when, and whether it stands.
+        const paidBack = "This was paid back on 2026-10-15. Undo that repayment first.";
+        for (const patch of [
+          { amount: { minor: 300_100, currency: "INR" } },
+          { amount: { minor: 300_000, currency: "USD" } },
+          { fields: { fundedBy: "person:dev" } },
+          { fields: { repaidOn: "2026-10-16" } },
+          { fields: { reimbursement: "owed" } },
+          { state: "dropped" as const },
+        ])
+          assert.strictEqual(
+            (yield* Effect.flip(records.update(orgId, owner, first.key, patch))).message,
+            paidBack,
+          );
         assert.isTrue((yield* bankRows).every((one) => one.state === "done"));
         for (const key of [first.key, second.key])
           assert.include(yield* fieldsOf(key), { reimbursement: "repaid", repaidOn: "2026-10-15" });
@@ -2506,14 +2520,14 @@ describe("bank statement safety", () => {
           WHERE record_id IN (${first.recordId}, ${second.recordId}) AND kind = 'record'`;
         assert.strictEqual(left!.n, 0);
 
-        // A repaid day changed by hand after Confirm is the owner's: Undo keeps that row whole.
+        // An entry changed by hand after Confirm is the owner's: Undo keeps that row whole.
         const again = (yield* reviewCardOf(result.statement)).card;
         yield* OwnerStatements.apply(people, yield* confirmAll(again));
-        yield* records.update(orgId, owner, first.key, { fields: { repaidOn: "2026-10-16" } });
+        yield* records.update(orgId, owner, first.key, { notes: "Deposit back in March" });
         yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
         assert.include(yield* fieldsOf(first.key), {
           reimbursement: "repaid",
-          repaidOn: "2026-10-16",
+          repaidOn: "2026-10-15",
         });
         assert.include(yield* fieldsOf(second.key), {
           reimbursement: "repaid",

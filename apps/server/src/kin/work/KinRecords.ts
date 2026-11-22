@@ -141,6 +141,7 @@ import { contactFields } from "./contactDetails.ts";
 import { directionOf, findBankList } from "./statements/bankList.ts";
 import { cleanTags } from "./tags.ts";
 import { notAVendor } from "./vendorName.ts";
+import { FUNDED_BY, fundingOf, REIMBURSEMENT, REPAID_ON } from "./reimbursement.ts";
 import { withArticle } from "../article.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
@@ -2385,6 +2386,27 @@ const make = Effect.gen(function* () {
         const amountChanged =
           patch.amount !== undefined &&
           (patch.amount?.minor !== amount?.minor || patch.amount?.currency !== amount?.currency);
+        // A repayment Confirm linked to a bank row binds the expenses it settled: what they cost,
+        // who is paid back and when stay as the bank saw them until that repayment is undone.
+        if (list === "expenses") {
+          const was = fundingOf(stored);
+          const moves =
+            amountChanged ||
+            (patch.state !== undefined && patch.state !== row.state) ||
+            [FUNDED_BY, REIMBURSEMENT, REPAID_ON].some(
+              (field) => shownField(stored[field]) !== shownField(merged[field]),
+            );
+          if (moves && was.by === "partner" && was.state === "repaid") {
+            const [bound] = yield* sql`SELECT 1 FROM kin_bank_statement_entries
+              WHERE org_id = ${orgId} AND target_record_id = ${row.recordId}
+                AND action = 'expense_linked' AND json_extract(prior_json, '$.repaid') IS NOT NULL
+              LIMIT 1`;
+            if (bound !== undefined)
+              return yield* invalid(
+                `This was paid back on ${was.repaidOn ?? "its bank line's day"}. Undo that repayment first.`,
+              );
+          }
+        }
         if (amountChanged && row.paid > 0) {
           const received = formatMoney({ minor: row.paid, currency: amount!.currency });
           // An invoice's payments are in its currency: a different one would make them nonsense.

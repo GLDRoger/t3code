@@ -108,6 +108,8 @@ const Snapshot = Schema.Struct({
   // Optional: entries kept before these were snapshotted compare on the rest.
   reimbursement: Schema.optional(Schema.NullOr(Schema.String)),
   repaidOn: Schema.optional(Schema.NullOr(Schema.String)),
+  fundedBy: Schema.optional(Schema.NullOr(Schema.String)),
+  currency: Schema.optional(Schema.NullOr(Schema.String)),
 });
 const After = Schema.Struct({ bank: Snapshot, target: Schema.optional(Snapshot) });
 const AfterJson = Schema.fromJsonString(After);
@@ -124,6 +126,8 @@ const snapshot = (row: RecordRow): typeof Snapshot.Type => {
     category: row.category,
     reimbursement: fieldText(fields, "reimbursement"),
     repaidOn: fieldText(fields, "repaidOn"),
+    fundedBy: fieldText(fields, "fundedBy"),
+    currency: row.currency,
   };
 };
 /** Whether an entry is as Kin left it, on what was snapshotted; none kept counts as unchanged. */
@@ -854,10 +858,13 @@ export const undoStatement = Effect.fn("KinStatements.undo")(function* (input: {
       const keptRows = new Set([...receipted.keys(), ...changed.keys()]);
 
       const tally = { payments: 0, expenses: 0, others: 0 };
-      const reversed: Array<number> = [];
+      // Unbound first: a repaid expense its entry binds refuses the very edits undo makes.
+      const reversed = entries.filter((one) => !keptRows.has(one.row)).map((one) => one.seq);
+      for (let at = 0; at < reversed.length; at += 500)
+        yield* sql`DELETE FROM kin_bank_statement_entries WHERE org_id = ${input.orgId}
+          AND statement_id = ${input.statementId} AND seq IN ${sql.in(reversed.slice(at, at + 500))}`;
       for (const entry of entries) {
         if (keptRows.has(entry.row)) continue;
-        reversed.push(entry.seq);
         const prior =
           entry.prior === null ? undefined : Option.getOrUndefined(decodePrior(entry.prior));
         const target = entry.target === null ? undefined : targets.get(entry.target);
@@ -914,10 +921,7 @@ export const undoStatement = Effect.fn("KinStatements.undo")(function* (input: {
           category: first.bank.category,
         });
       }
-      // Only what was taken back stops being recorded: a kept row's entries stay for a later undo.
-      for (let at = 0; at < reversed.length; at += 500)
-        yield* sql`DELETE FROM kin_bank_statement_entries WHERE org_id = ${input.orgId}
-          AND statement_id = ${input.statementId} AND seq IN ${sql.in(reversed.slice(at, at + 500))}`;
+      // Only what was taken back stopped being recorded: a kept row's entries stay for a later undo.
       yield* sql`UPDATE kin_bank_statements SET applied_at = NULL, applied_by = NULL,
           undone_at = ${input.now}, generation = generation + 1
         WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;

@@ -12,7 +12,7 @@ import { fieldText, type FieldValues } from "./lists.ts";
 
 export const FUNDED_BY = "fundedBy";
 export const REIMBURSEMENT = "reimbursement";
-const REPAID_ON = "repaidOn";
+export const REPAID_ON = "repaidOn";
 /** The address an import gave for who paid personally; read to show and match who it was. */
 export const IMPORTED_PARTNER = "paidPersonallyBy";
 
