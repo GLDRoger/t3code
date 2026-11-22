@@ -147,6 +147,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
       AND r.register_id IN ('invoices', 'receipts') AND p.paid_on >= ${dayIn(weekAgo, zone)}
+      AND p.paid_on <= ${dayIn(now, zone)}
     ORDER BY p.paid_on, p.payment_id`;
   // Cash out, as runway counts it: a partner's expense on the day it was paid back.
   const repaid = partnerRepaidDay(sql);
@@ -154,8 +155,8 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND ${countedEntry(sql)}
       AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${companyCashOut(sql)}
-      AND CASE WHEN ${repaid} IS NULL THEN ${moneyDay(sql)} >= ${weekAgo}
-        ELSE ${repaid} >= ${dayIn(weekAgo, zone)} END
+      AND CASE WHEN ${repaid} IS NULL THEN ${moneyDay(sql)} >= ${weekAgo} AND ${moneyDay(sql)} <= ${now}
+        ELSE ${repaid} >= ${dayIn(weekAgo, zone)} AND ${repaid} <= ${dayIn(now, zone)} END
     ORDER BY r.key`;
   const owed = (yield* owedInvoices({ orgId, now })).slice(0, CAP);
   const isOverdue = (one: (typeof owed)[number]) => one.overdue;

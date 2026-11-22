@@ -47,7 +47,7 @@ import * as LeadMoney from "./leadMoney.ts";
 import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import * as LeadWork from "./leadWork.ts";
 import { typedFields } from "./leadFields.ts";
-import { aboutTotal, addUp, financialYearOf, formatMinor, parseAmount } from "./money.ts";
+import { aboutTotal, addUp, dayIn, financialYearOf, formatMinor, parseAmount } from "./money.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { partnersOwed } from "./partnersOwed.ts";
@@ -4967,6 +4967,16 @@ describe("money answers", () => {
           dateAt: on("2026-11-10"),
           originKey: "hosting",
         });
+        // Recorded for a later day: no money has moved for it yet.
+        yield* records.create(orgId, system, {
+          list: "expenses",
+          title: "Invented annual licence",
+          owner,
+          state: "done",
+          amount: inr(7_000),
+          dateAt: on("2026-11-20"),
+          originKey: "licence ahead",
+        });
         const answer = cashAnswer(yield* cashPosition(orgId, now));
         if (!answer.known) return assert.fail(answer.note);
         assert.deepStrictEqual(answer.accounts, [
@@ -5510,9 +5520,25 @@ describe("money answers", () => {
           reimbursement: "not reimbursable",
         });
 
+        // Paid back tomorrow is not yet paid back; one an older import stored that way waits too.
+        const ahead = yield* spend("repaid ahead", "2026-11-05", 32_000, { fundedBy: partner });
+        const today = dayIn(yield* Clock.currentTimeMillis, "Asia/Kolkata");
+        const tomorrow = dayIn((yield* Clock.currentTimeMillis) + 86_400_000, "Asia/Kolkata");
+        assert.strictEqual(
+          (yield* Effect.flip(
+            records.update(orgId, system, ahead.row.key, {
+              fields: { reimbursement: "repaid", repaidOn: tomorrow },
+            }),
+          )).message,
+          `Repaid on can't be after today, ${today}.`,
+        );
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json,
+            '$.reimbursement', 'repaid', '$.repaidOn', '2026-11-13')
+          WHERE record_id = ${ahead.row.recordId}`;
+
         const { series } = yield* OwnerMoney.money(people, { orgId });
         const spentIn = (month: string) => series.find((one) => one.month === month)?.spent;
-        assert.deepStrictEqual(spentIn("2026-11"), [inr(13_000)]);
+        assert.deepStrictEqual(spentIn("2026-11"), [inr(45_000)]);
         assert.deepStrictEqual(spentIn("2026-10"), []);
         const figures = yield* weeklyFigures({ orgId, now: NOW });
         assert.include(figures, "Out this week: ₹13,000.00");

@@ -85,6 +85,8 @@ const recordedMoney = Effect.fn("KinMoneyAnswers.recorded")(function* (
   orgId: KinOrgId,
   sinceDay: string,
   zone: string,
+  /** The estimate's own day: money recorded for a later day hasn't moved yet. */
+  untilDay: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const received = yield* sql<{ minor: number; currency: string; day: string }>`
@@ -93,6 +95,7 @@ const recordedMoney = Effect.fn("KinMoneyAnswers.recorded")(function* (
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
       AND r.register_id IN ('invoices', 'receipts') AND p.paid_on >= ${sinceDay}
+      AND p.paid_on <= ${untilDay}
     ORDER BY p.paid_on, p.payment_id`;
   // A partner's expense leaves the company's accounts on the day it is paid back, if ever.
   const spent = yield* sql<{ minor: number; currency: string; at: number; repaid: string | null }>`
@@ -111,7 +114,7 @@ const recordedMoney = Effect.fn("KinMoneyAnswers.recorded")(function* (
         currency: one.currency,
         day: one.repaid ?? dayIn(one.at, zone),
       }))
-      .filter((one) => one.day >= sinceDay),
+      .filter((one) => one.day >= sinceDay && one.day <= untilDay),
   };
 });
 
@@ -254,7 +257,7 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
   const recorded =
     earliest === undefined
       ? { received: [], spent: [] }
-      : yield* recordedMoney(orgId, earliest, zone);
+      : yield* recordedMoney(orgId, earliest, zone, today);
   const byCurrency = currencies.map((currency) => {
     const these = held.filter((one) => one.currency === currency);
     const since = these.map((one) => one.on).toSorted()[0]!;
@@ -637,7 +640,7 @@ const runway = Effect.fn("KinMoneyAnswers.runway")(function* (
   const thisMonth = monthOf(today);
   const months = [-3, -2, -1].map((back) => shiftMonth(thisMonth, back));
   const first = `${months[0]!}-01`;
-  const recorded = yield* recordedMoney(orgId, first, zone);
+  const recorded = yield* recordedMoney(orgId, first, zone, today);
   const inWindow = (one: { readonly day: string }) => one.day < `${thisMonth}-01`;
   const paidFirst = yield* sql<{ currency: string; day: string }>`SELECT p.currency,
       MIN(p.paid_on) AS day

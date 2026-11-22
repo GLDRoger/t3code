@@ -604,6 +604,13 @@ const FIELD_NAMES: Readonly<Record<string, string>> = {
 /** What a refusal may quote of an entry that isn't sensitive; money, notes and a list's own fields it doesn't. */
 const QUOTED = new Set(["title", "state", "owner", "waitingOn", "due", "date", "category", "side"]);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+/** A repaid day after today in the owner's zone: nothing is paid back before it happens. */
+const repaidAhead = (fields: Readonly<Record<string, unknown>>, today: string) => {
+  const day = fields[REPAID_ON];
+  return typeof day === "string" && day.slice(0, 10) > today
+    ? invalid(`Repaid on can't be after today, ${today}.`)
+    : undefined;
+};
 /** Whether an entry's amount or fields put money on it. */
 const recordsMoney = (
   amount: KinMoney | null | undefined,
@@ -1771,6 +1778,10 @@ const make = Effect.gen(function* () {
         ? undefined
         : yield* storedRepeat(orgId, input.repeat, input.dueAt ?? null, input.dateAt ?? null));
     const now = yield* Clock.currentTimeMillis;
+    if (list === "expenses" && REPAID_ON in fields) {
+      const ahead = repaidAhead(fields, dayIn(now, yield* ownerZone(orgId).pipe(provideSql)));
+      if (ahead !== undefined) return yield* ahead;
+    }
     const next = batch ?? (yield* reserveKeys(orgId, def, now, 1));
     const key = `${next.prefix}-${next.next}`;
     const approved =
@@ -2403,6 +2414,17 @@ const make = Effect.gen(function* () {
         const amountChanged =
           patch.amount !== undefined &&
           (patch.amount?.minor !== amount?.minor || patch.amount?.currency !== amount?.currency);
+        if (
+          list === "expenses" &&
+          shownField(stored[REPAID_ON]) !== shownField(merged[REPAID_ON])
+        ) {
+          const today = dayIn(
+            yield* Clock.currentTimeMillis,
+            yield* ownerZone(orgId).pipe(provideSql),
+          );
+          const ahead = repaidAhead(merged, today);
+          if (ahead !== undefined) return yield* ahead;
+        }
         // A repayment Confirm linked to a bank row binds the expenses it settled: what they cost,
         // who is paid back and when stay as the bank saw them until that repayment is undone.
         if (list === "expenses") {
