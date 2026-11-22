@@ -1,8 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- workflow fixtures use files and the fake Claude CLI uses Node streams
-import * as NodeEvents from "node:events";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import * as NodeStream from "node:stream";
 
 import * as ClaudeSdk from "@anthropic-ai/claude-agent-sdk";
 import { beforeEach, vi } from "vite-plus/test";
@@ -14,8 +12,6 @@ import type {
   SDKMessage,
   SDKResultMessage,
   SDKUserMessage,
-  SpawnedProcess,
-  SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AskUserQuestionInput,
@@ -115,6 +111,7 @@ import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEve
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { makeFakeClaudeCli } from "./ClaudeAdapterV2.testkit.ts";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderInstallationGate from "../../provider/ProviderInstallationGate.ts";
@@ -3059,54 +3056,6 @@ describe("ClaudeAdapterV2 native fork", () => {
   );
 });
 
-function makeFakeClaudeCli(answerSetServers = true) {
-  const spawns: Array<SpawnOptions> = [];
-  const controlRequests: Array<object> = [];
-  const stdins: Array<NodeStream.PassThrough> = [];
-  const spawn = (options: SpawnOptions): SpawnedProcess => {
-    spawns.push(options);
-    const stdin = new NodeStream.PassThrough();
-    const stdout = new NodeStream.PassThrough();
-    stdins.push(stdin);
-    const child = Object.assign(new NodeEvents.EventEmitter(), {
-      stdin,
-      stdout,
-      killed: false,
-      exitCode: null as number | null,
-      kill: () => {
-        stdout.end();
-        child.emit("exit", null, "SIGTERM");
-        return true;
-      },
-    });
-    let pending = "";
-    stdin.on("data", (chunk: Buffer) => {
-      pending += chunk.toString("utf8");
-      for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
-        const frame = JSON.parse(pending.slice(0, end));
-        pending = pending.slice(end + 1);
-        if (frame.type !== "control_request") continue;
-        controlRequests.push(frame.request);
-        const setServers = frame.request.subtype === "mcp_set_servers";
-        if (setServers && !answerSetServers) continue;
-        const response = {
-          subtype: "success",
-          request_id: frame.request_id,
-          response: setServers ? { added: [], removed: [], errors: {} } : {},
-        };
-        stdout.write(`${JSON.stringify({ type: "control_response", response })}\n`);
-      }
-    });
-    stdin.on("end", () => {
-      stdout.end();
-      child.emit("exit", 0, null);
-    });
-    return child;
-  };
-  const closed = () => stdins.length > 0 && stdins.every((stdin) => stdin.writableEnded);
-  return { spawn, spawns, controlRequests, closed };
-}
-
 describe("ClaudeAdapterV2 MCP credential channel", () => {
   const t3McpServer = {
     type: "http" as const,
@@ -3116,6 +3065,7 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
   const openWith = (
     cli: ReturnType<typeof makeFakeClaudeCli>,
     native?: ProviderEventLoggers.EventNdjsonLogger,
+    resume = false,
   ) =>
     Effect.gen(function* () {
       const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
@@ -3127,7 +3077,7 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
             modelSelection: CLAUDE_TEST_MODEL_SELECTION,
             nativeThreadId: "native-thread-claude-mcp-channel",
             title: "Existing T3 title",
-            resume: false,
+            resume,
             cwd: null,
             environment: { PATH: "/usr/bin" },
             mcpServers: { "t3-code": t3McpServer },
@@ -3168,6 +3118,25 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
       assert.isTrue(committed);
       committed = false;
       yield* session.close;
+    }),
+  );
+
+  it.effect("reopens a saved Claude session once when its CLI exits during initialization", () =>
+    Effect.gen(function* () {
+      const cli = makeFakeClaudeCli(true, true);
+      const session = yield* openWith(cli, undefined, true);
+      yield* session.close;
+
+      assert.lengthOf(cli.spawns, 2);
+      for (const spawn of cli.spawns) {
+        assert.include(spawn.args, "--resume=native-thread-claude-mcp-channel");
+      }
+      assert.lengthOf(
+        cli.controlRequests.filter(
+          (request) => Reflect.get(request, "subtype") === "mcp_set_servers",
+        ),
+        1,
+      );
     }),
   );
 

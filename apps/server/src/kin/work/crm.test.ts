@@ -2686,6 +2686,26 @@ it.effect(
         JSON.stringify(yield* OwnerWork.list([who("offLead")], { orgId, list: "quotes" })),
         "Invented accepted quote",
       );
+      const usdInvoice = made.records.find((one) => one.title === "Invented booking invoice")!.key;
+      const reversed = yield* OwnerMoney.recordPayment([owner], {
+        orgId,
+        key: usdInvoice,
+        amount: { minor: 1200, currency: "USD" },
+        paidOn: "1970-01-11",
+        clientRequestId: "invented-reversed",
+      });
+      yield* OwnerMoney.voidPayment([owner], {
+        orgId,
+        key: usdInvoice,
+        paymentId: reversed.payments![0]!.paymentId,
+      });
+      yield* OwnerMoney.recordPayment([owner], {
+        orgId,
+        key: usdInvoice,
+        amount: { minor: 600, currency: "USD" },
+        paidOn: "1970-01-12",
+        clientRequestId: "invented-kept",
+      });
       const excluded = yield* LeadWork.create(scope, {
         sourceEventId: "ask-event",
         records: [
@@ -2715,18 +2735,41 @@ it.effect(
       const owing = invoices.records.filter(
         (row) => row.state === "waiting" && (row.balance?.minor ?? 0) > 0,
       );
-      const sum = (rows: typeof owing) => {
+      const sum = (
+        amounts: ReadonlyArray<{ readonly currency: string; readonly minor: number } | undefined>,
+      ) => {
         const totals = new Map<string, number>();
-        for (const { balance } of rows) {
-          if (balance === undefined) continue;
-          totals.set(balance.currency, (totals.get(balance.currency) ?? 0) + balance.minor);
+        for (const amount of amounts) {
+          if (amount === undefined || amount.minor === 0) continue;
+          totals.set(amount.currency, (totals.get(amount.currency) ?? 0) + amount.minor);
         }
         return [...totals].map(([currency, minor]) => ({ currency, minor }));
       };
+      assert.sameDeepMembers(
+        [...invoices.totals!.total],
+        sum(invoices.records.filter((row) => row.state !== "dropped").map((row) => row.amount)),
+      );
+      assert.sameDeepMembers([...invoices.totals!.owed!], sum(owing.map((row) => row.balance)));
+      const paid = yield* OwnerWork.list([owner], {
+        orgId,
+        list: "invoices",
+        party: "C-1",
+        totalsBy: "none",
+        paidFrom: "1970-01-01",
+        paidTo: "1970-01-31",
+      });
+      assert.sameDeepMembers(
+        [...paid.totals!.received!],
+        sum(invoices.records.map((row) => row.received)),
+      );
+      assert.lengthOf(paid.totals!.received!, 2);
       assert.strictEqual(header?.invoices, owing.length);
       assert.lengthOf(header?.owed ?? [], 2);
-      assert.sameDeepMembers([...header!.owed], sum(owing));
-      assert.sameDeepMembers([...header!.overdue], sum(owing.filter((row) => row.late)));
+      assert.sameDeepMembers([...header!.owed], sum(owing.map((row) => row.balance)));
+      assert.sameDeepMembers(
+        [...header!.overdue],
+        sum(owing.filter((row) => row.late).map((row) => row.balance)),
+      );
     }).pipe(Effect.provide(layer)),
 );
 

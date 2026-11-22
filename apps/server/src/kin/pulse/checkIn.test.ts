@@ -1,4 +1,4 @@
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, vi } from "@effect/vitest";
 import {
   KinAgentId,
   KinChatId,
@@ -1033,14 +1033,14 @@ describe("pulse check-ins", () => {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
       yield* companyClock("America/New_York");
-      const host = KinSchedules.hostTimeZone();
+      using _hostClock = vi.spyOn(KinSchedules, "hostTimeZone").mockReturnValue("UTC");
       const weekdays = [1, 2, 3, 4, 5];
       const JULY = Date.UTC(2026, 6, 13);
       const DECEMBER = Date.UTC(2026, 11, 14);
       // Set at 09:00 his time in July; "moved" was changed on T3's screen since.
-      const july = onHostClock("09:00", weekdays, "America/New_York", host, JULY);
+      const july = { at: "13:00", days: weekdays };
       for (const slug of ["mine", "moved"]) {
-        const at = slug === "moved" ? onHostClock("11:00", weekdays, "UTC", host, JULY) : july;
+        const at = slug === "moved" ? { ...july, at: "11:00" } : july;
         yield* scheduleRow({ slug, at: at.at, days: at.days, source: "kin-settings:check-ins" });
         yield* sql`UPDATE kin_schedules SET owner_time_json = ${JSON.stringify({
           at: "09:00",
@@ -1069,7 +1069,7 @@ describe("pulse check-ins", () => {
         [
           {
             scheduleId: KinMemoryItemId.make("checkin-mine"),
-            every: onHostClock("09:00", weekdays, "America/New_York", host, DECEMBER),
+            every: { at: "14:00", days: weekdays },
             ownerTime: { at: "09:00", days: weekdays },
             keepWording: true,
           },

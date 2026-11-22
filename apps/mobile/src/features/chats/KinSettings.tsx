@@ -25,6 +25,7 @@ import { SettingsSection } from "../settings/components/SettingsSection";
 import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinBriefsSection } from "./KinBriefs";
+import { KinQuietHoursRows } from "./KinQuietHoursRows";
 import { useKinIsHome } from "./state/kinHome";
 import { openKinNotificationSettings } from "./notifications/installKinNotifications";
 import { KinStopRows } from "./KinStopRows";
@@ -45,8 +46,14 @@ const COMPANY_ROWS: Partial<
   Record<
     KinPhoneSettingsRow,
     {
-      readonly icon: "person.2" | "robot" | "doc.text" | "eye" | "server.rack";
-      readonly route: "KinTeam" | "KinAgents" | "KinCompany" | "KinWatchLog" | "KinHost";
+      readonly icon: "person.2" | "robot" | "doc.text" | "chart.bar.xaxis" | "eye" | "server.rack";
+      readonly route:
+        | "KinTeam"
+        | "KinAgents"
+        | "KinCompany"
+        | "KinDealStages"
+        | "KinWatchLog"
+        | "KinHost";
       readonly title: string;
     }
   >
@@ -54,6 +61,7 @@ const COMPANY_ROWS: Partial<
   team: { icon: "person.2", route: "KinTeam", title: KIN_SETTINGS_PAGE_TITLES.team },
   agents: { icon: "robot", route: "KinAgents", title: KIN_SETTINGS_PAGE_TITLES.agents },
   company: { icon: "doc.text", route: "KinCompany", title: KIN_SETTINGS_PAGE_TITLES.company },
+  deals: { icon: "chart.bar.xaxis", route: "KinDealStages", title: KIN_SETTINGS_PAGE_TITLES.deals },
   watches: { icon: "eye", route: "KinWatchLog", title: KIN_SETTINGS_PAGE_TITLES.watches },
   host: { icon: "server.rack", route: "KinHost", title: KIN_SETTINGS_PAGE_TITLES.host },
 };
@@ -187,6 +195,17 @@ export function KinSettings(props: {
               }
             })}
           </SettingsSection>
+          {host._tag !== "host" ||
+          orgId === null ||
+          profiles === null ||
+          myPersonId === null ? null : (
+            <KinQuietHoursRows
+              environmentId={host.environmentId}
+              orgId={orgId}
+              profiles={profiles}
+              personId={myPersonId}
+            />
+          )}
           {host._tag !== "host" || orgId === null ? null : (
             <KinBriefsSection
               environmentId={host.environmentId}

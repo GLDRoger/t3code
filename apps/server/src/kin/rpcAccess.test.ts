@@ -220,6 +220,11 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         assert.isTrue(yield* allowed("meera", "kin.work.recordPayment"));
         assert.isTrue(yield* allowed("meera", "kin.connections.sendEdited"));
         assert.isTrue(yield* allowed("meera", "kin.connections.saveEdited"));
+        // The picture service's key and monthly limit spend the company's money: owner level only.
+        for (const method of ["kin.pictures.get", "kin.pictures.set"]) {
+          assert.isFalse(yield* allowed("ravi", method));
+          assert.isTrue(yield* allowed("meera", method));
+        }
         // Someone the org doesn't know is refused, not admitted as a member of nothing.
         assert.isFalse(yield* allowed("stranger", "kin.work.recordPayment"));
         // Team memory is the owner's call: a co-owner (now Meera) may set it, a member never.

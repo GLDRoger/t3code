@@ -778,6 +778,15 @@ export class ClaudeConversationNotFoundError extends Schema.TaggedError<ClaudeCo
   }
 }
 
+class ClaudeQueryStartupExitError extends Schema.TaggedError<ClaudeQueryStartupExitError>()(
+  "ClaudeQueryStartupExitError",
+  { cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return "Claude exited before it could receive the prompt.";
+  }
+}
+
 class ClaudeMcpRegistrationTimeoutError extends Schema.TaggedError<ClaudeMcpRegistrationTimeoutError>()(
   "ClaudeMcpRegistrationTimeoutError",
   { phase: Schema.Literals(["initialize", "setMcpServers"]) },
@@ -1624,6 +1633,38 @@ export const layerQueryRunner: Layer.Layer<
         });
         return child;
       };
+      const classifyQueryError = Effect.fnUntraced(function* (cause: unknown) {
+        if (!answered) {
+          yield* Effect.promise(() => stderrClosed).pipe(
+            Effect.timeoutOption(CLAUDE_STDERR_DRAIN_TIMEOUT),
+          );
+        }
+        if (!answered && stderrTail.includes(CLAUDE_ROOT_REFUSAL)) {
+          return new ClaudeCodeRootRefusalError({ cause });
+        }
+        if (
+          conversationMissing ||
+          (!answered && stderrTail.includes(CLAUDE_CONVERSATION_NOT_FOUND))
+        ) {
+          return new ClaudeConversationNotFoundError({ cause });
+        }
+        return cause;
+      });
+      const register = <A>(method: string, attempt: () => Promise<A>) =>
+        Effect.tryPromise({ try: attempt, catch: (cause) => queryRunnerError(cause, method) }).pipe(
+          Effect.catch(
+            Effect.fnUntraced(function* (error) {
+              if (!processExited && claudeProcessExitFailure(Cause.fail(error)) === undefined) {
+                return undefined;
+              }
+              const cause = yield* classifyQueryError(error.cause);
+              return yield* queryRunnerError(
+                cause === error.cause ? new ClaudeQueryStartupExitError({ cause }) : cause,
+                method,
+              );
+            }),
+          ),
+        );
       const queryRuntime = yield* Effect.uninterruptibleMask((restore) =>
         Effect.try({
           try: () =>
@@ -1653,21 +1694,17 @@ export const layerQueryRunner: Layer.Layer<
                     );
                   // The SDK leaves query() boot unbounded, and it takes about a minute on a host
                   // with CPUs 12x oversubscribed, so it gets its own, longer deadline.
-                  yield* Effect.promise(() =>
-                    queryRuntime.initializationResult().catch(() => undefined),
-                  ).pipe(
+                  yield* register("initialize", () => queryRuntime.initializationResult()).pipe(
                     Effect.timeoutOrElse({
                       duration: CLAUDE_BOOT_TIMEOUT,
                       orElse: timedOut("initialize"),
                     }),
                   );
                   // Errors and mcp_status can echo headers; log only server names.
-                  const failed = yield* Effect.tryPromise({
-                    try: () => queryRuntime.setMcpServers(mcpServers),
-                    catch: (cause) => queryRunnerError(cause, "setMcpServers"),
-                  }).pipe(
-                    Effect.map((result) => Object.keys(result.errors)),
-                    Effect.orElseSucceed(() => Object.keys(mcpServers)),
+                  const failed = yield* register("setMcpServers", () =>
+                    queryRuntime.setMcpServers(mcpServers),
+                  ).pipe(
+                    Effect.map((result) => Object.keys(result?.errors ?? mcpServers)),
                     Effect.timeoutOrElse({
                       duration: CLAUDE_MCP_REGISTRATION_TIMEOUT,
                       orElse: timedOut("setMcpServers"),
@@ -1725,23 +1762,11 @@ export const layerQueryRunner: Layer.Layer<
         ).pipe(
           Stream.catch((cause) =>
             Stream.fromEffect(
-              Effect.gen(function* () {
-                if (!answered) {
-                  yield* Effect.promise(() => stderrClosed).pipe(
-                    Effect.timeoutOption(CLAUDE_STDERR_DRAIN_TIMEOUT),
-                  );
-                }
-                const refusedRoot = !answered && stderrTail.includes(CLAUDE_ROOT_REFUSAL);
-                return yield* queryRunnerError(
-                  refusedRoot
-                    ? new ClaudeCodeRootRefusalError({ cause })
-                    : conversationMissing ||
-                        (!answered && stderrTail.includes(CLAUDE_CONVERSATION_NOT_FOUND))
-                      ? new ClaudeConversationNotFoundError({ cause })
-                      : cause,
-                  "fromAsyncIterable",
-                );
-              }),
+              classifyQueryError(cause).pipe(
+                Effect.flatMap((failure) =>
+                  Effect.fail(queryRunnerError(failure, "fromAsyncIterable")),
+                ),
+              ),
             ),
           ),
           Stream.tap((message) =>
@@ -1951,8 +1976,18 @@ export const layerQueryRunner: Layer.Layer<
         // the adapter adopts it from the init message, as it does after /clear.
         return yield* openQuery(input).pipe(
           Effect.catchIf(
-            (error) => isClaudeMcpRegistrationTimeoutError(error.cause),
-            Effect.fnUntraced(function* () {
+            (error) =>
+              isClaudeMcpRegistrationTimeoutError(error.cause) ||
+              // Explicit native resume can start work without a new prompt.
+              (!input.resume && Predicate.isTagged(error.cause, "ClaudeQueryStartupExitError")),
+            Effect.fnUntraced(function* (error) {
+              if (Predicate.isTagged(error.cause, "ClaudeQueryStartupExitError")) {
+                yield* Effect.logInfo("orchestration-v2.claude-query-startup-exit-retry", {
+                  threadId: input.threadId,
+                  providerSessionId: input.providerSessionId,
+                  phase: error.method,
+                });
+              }
               const { resume, ...options } = input.options;
               if (resume !== undefined) return yield* openQuery(input);
               const sessionId = yield* random.uuidV4();
@@ -13083,6 +13118,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? openQueryRuntime
               : adapterOptions.installationGate.execute(adapterOptions.instanceId, openQueryRuntime)
           ).pipe(
+            Effect.mapError((error) => {
+              if (Predicate.isTagged(error.cause, "ClaudeConversationNotFoundError")) {
+                missingNativeThreads.add(nativeThreadId);
+              }
+              return Predicate.isTagged(error.cause, "ClaudeQueryStartupExitError") ||
+                Predicate.isTagged(error.cause, "ClaudeConversationNotFoundError") ||
+                Predicate.isTagged(error.cause, "ClaudeCodeRootRefusalError")
+                ? new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: CLAUDE_PROVIDER,
+                    detail: CLAUDE_QUERY_ENDED_BEFORE_TURN_DETAIL,
+                    cause: error,
+                  })
+                : error;
+            }),
             Effect.onError(() =>
               closedExistingNativeThreadId === nativeThreadId
                 ? Effect.gen(function* () {

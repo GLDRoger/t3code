@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-const addColumn = Effect.fn("K208.addColumn")(function* (
+const addColumn = Effect.fn("K210.addColumn")(function* (
   table: string,
   column: string,
   type: string,

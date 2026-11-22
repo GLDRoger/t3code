@@ -62,6 +62,7 @@ import { KinTasksKeyRpcs, KIN_TASKS_KEY_RPC_SCOPES } from "./kinTasksKey.ts";
 import { KinVisualRpcs, KIN_VISUAL_RPC_SCOPES } from "./kinVisual.ts";
 import { KinConnectionRpcs, KIN_CONNECTION_RPC_SCOPES } from "./kinConnections.ts";
 import { KinSocialRpcs, KIN_SOCIAL_RPC_SCOPES } from "./kinSocial.ts";
+import { KinPicturesRpcs, KIN_PICTURES_RPC_SCOPES } from "./kinPictures.ts";
 import { KinOwnerTimeZone, KinOwnerTimeZoneGetInput, KinOwnerTimeZoneRead } from "./kinTriggers.ts";
 import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 
@@ -215,6 +216,7 @@ export const KinRpcs = [
   ...KinTasksKeyRpcs,
   ...KinConnectionRpcs,
   ...KinSocialRpcs,
+  ...KinPicturesRpcs,
   ...KinRefreshRpcs,
   ...KinPulseRpcs,
   ...KinOpenRpcs,
@@ -242,6 +244,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_VISUAL_RPC_SCOPES,
   ...KIN_CONNECTION_RPC_SCOPES,
   ...KIN_SOCIAL_RPC_SCOPES,
+  ...KIN_PICTURES_RPC_SCOPES,
   ...KIN_REFRESH_RPC_SCOPES,
   ...KIN_PULSE_RPC_SCOPES,
   ...KIN_OPEN_RPC_SCOPES,
@@ -575,6 +578,8 @@ const KIN_RPC_ACCESS = {
   "kin.social.refresh": "owner_level",
   "kin.social.remove": "owner_level",
   "kin.social.link": "owner_level",
+  "kin.pictures.get": "owner_level",
+  "kin.pictures.set": "owner_level",
 } as const satisfies Record<(typeof KinRpcs)[number]["_tag"], KinRpcAccess>;
 export const kinRpcAccess = (method: string): KinRpcAccess | undefined =>
   (KIN_RPC_ACCESS as Record<string, KinRpcAccess>)[method];
@@ -848,4 +853,6 @@ export const KIN_RPC_AGGREGATES = {
   "kin.social.refresh": "kin-connections",
   "kin.social.remove": "kin-connections",
   "kin.social.link": "kin-connections",
+  "kin.pictures.get": "kin-connections",
+  "kin.pictures.set": "kin-connections",
 } as const;

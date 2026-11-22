@@ -36,7 +36,7 @@ import type {
 } from "./importFormat.ts";
 import { LISTS, parseFields, type FieldValues } from "./lists.ts";
 import { dayIn } from "./money.ts";
-import { iso, ownerZone, workFailure } from "./recordRows.ts";
+import { iso, ownerZone, stepsOf, workFailure } from "./recordRows.ts";
 import {
   allLists,
   keyFor,
@@ -182,6 +182,8 @@ type RecordRow = {
   readonly confirmed: number;
   readonly notes: string;
   readonly fieldsJson: string;
+  readonly stepsJson: string | null;
+  readonly urgent: number | null;
   readonly createdAt: number;
   readonly closedAt: number | null;
 };
@@ -305,7 +307,7 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
       title, state, category, party_id AS "partyId", project_id AS "projectId", due_at AS "dueAt",
       due_all_day AS "dueAllDay", date_at AS "dateAt", date_all_day AS "dateAllDay",
       amount_minor AS "amountMinor", currency, sensitive, confirmed, notes,
-      fields_json AS "fieldsJson", created_at AS "createdAt", closed_at AS "closedAt"
+      fields_json AS "fieldsJson", steps_json AS "stepsJson", urgent, created_at AS "createdAt", closed_at AS "closedAt"
     FROM kin_records`;
   /** One register's rows in pages, so a company's whole history never sits in memory. */
   const pages = (registers: ReadonlyArray<string>, not: boolean) =>
@@ -400,6 +402,7 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
         const number = numbers.find((one) => one.recordId === row.recordId)?.number;
         const paid = payments.filter((one) => one.recordId === row.recordId);
         const fields = fieldsOf(row, def);
+        const steps = stepsOf(row);
         const entry: ImportEntry = {
           source: row.key,
           list: row.registerId,
@@ -414,6 +417,8 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
             ? {}
             : { amount: decimal(row.amountMinor, row.currency), currency: row.currency }),
           ...some("notes", row.notes),
+          ...(steps.length > 0 ? { steps } : {}),
+          ...(row.registerId === "work" ? { urgent: row.urgent === 1 } : {}),
           ...(Object.keys(fields).length === 0 ? {} : { fields }),
           ...(row.sensitive === 1 ? { sensitive: true } : {}),
           ...(row.confirmed === 0 ? { suggested: true } : {}),

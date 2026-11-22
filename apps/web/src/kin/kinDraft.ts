@@ -61,6 +61,12 @@ export function carryKinDraftsAcrossReload() {
   }
 }
 
+/** A reload Kin didn't ask for (code a new build replaced) that still keeps every unsent draft. */
+export function reloadKeepingKinDrafts() {
+  carryKinDraftsAcrossReload();
+  window.location.reload();
+}
+
 export function restoreCarriedKinDrafts() {
   let carried: unknown;
   try {

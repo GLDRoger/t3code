@@ -2,18 +2,18 @@
   "mcpToolListJsonBytes": 60364,
   "kinToolListJsonBytes": 3044,
   "kinInstructionsBytes": {
-    "owner": 38586,
-    "confined": 38534
+    "owner": 38920,
+    "confined": 38868
   },
-  "kinSharedInstructionsHash": "9ef9b137e9d9675f61b8a8f0beec886ca470e4ae0617d50dfa45c841f74bef52",
+  "kinSharedInstructionsHash": "44cecacf17da45e0b892756a6eaba2fc3eb50a541a925747664ba86fcaf2c693",
   "kinLeadToolListJsonBytes": {
-    "engineering": 146999,
-    "engineeringBesideFinanceAndSales": 133836,
-    "finance": 126583,
-    "shared": 81587,
-    "social": 129656,
-    "socialBesideFinanceAndSales": 116493,
-    "support": 126583
+    "engineering": 154392,
+    "engineeringBesideFinanceAndSales": 141229,
+    "finance": 133976,
+    "shared": 88980,
+    "social": 137049,
+    "socialBesideFinanceAndSales": 123886,
+    "support": 133976
   },
   "kinLeadAlwaysLoadedToolBytes": 69849,
   "kinLeadToolBytes": {
@@ -110,7 +110,7 @@
       "schema": 237
     },
     "kin_computer": {
-      "desc": 328,
+      "desc": 290,
       "schema": 46
     },
     "kin_connection_call": {
@@ -169,6 +169,10 @@
       "desc": 242,
       "schema": 46
     },
+    "kin_picture": {
+      "desc": 6732,
+      "schema": 344
+    },
     "kin_react": {
       "desc": 317,
       "schema": 221
@@ -198,7 +202,7 @@
       "schema": 92
     },
     "kin_visual": {
-      "desc": 4451,
+      "desc": 4676,
       "schema": 138
     },
     "kin_widget_upsert": {

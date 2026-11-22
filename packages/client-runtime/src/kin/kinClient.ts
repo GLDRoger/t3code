@@ -48,6 +48,7 @@ import {
   type KinTasksKeysListInput,
   type KinRecommendationsInput,
   type KinSocialInput,
+  type KinPicturesInput,
   type KinGitHubInput,
   type KinProjectPageInput,
   type KinContactListInput,
@@ -244,6 +245,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.social.list",
   });
   const readSocial = kinGuardedRead(socialRead);
+  const picturesRead = createKinRpcCommand(runtime, {
+    label: "kin:pictures:read",
+    tag: "kin.pictures.get",
+  });
+  const readPictures = kinGuardedRead(picturesRead);
 
   const membersRead = createKinRpcCommand(runtime, {
     label: "kin:chat-members:read",
@@ -833,6 +839,21 @@ export function makeKinClient<R, ER>(
     socialLink: createKinRpcCommand(runtime, {
       label: "kin:social:link",
       tag: "kin.social.link",
+    }),
+    /** The picture service's key state, monthly limit and count; owner-level only. */
+    pictures: createKinQueryAtomFamily(runtime, {
+      label: "kin:pictures",
+      execute: Effect.fn("KinClient.pictures")(function* (input: KinPicturesInput) {
+        return yield* readPictures(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinRefreshOn("connections"),
+    }),
+    /** Saves a key (once, redacted, never sent back), the limit, or disconnects. */
+    picturesSet: createKinRpcCommand(runtime, {
+      label: "kin:pictures:set",
+      tag: "kin.pictures.set",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:pictures` },
     }),
     /** Adds a connection; the key travels once, redacted, and is never sent back. */
     connectionAdd: createKinRpcCommand(runtime, {
@@ -2015,6 +2036,12 @@ export function makeKinClient<R, ER>(
     workContactsExport: createKinRpcCommand(runtime, {
       label: "kin:work:contacts:export",
       tag: "kin.work.exportContacts",
+    }),
+    /** Switches the company's sections: the owner and co-owners only. */
+    shellSet: createKinRpcCommand(runtime, {
+      label: "kin:shell:set",
+      tag: "kin.shell.set",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
     }),
     companyProfileSet: createKinRpcCommand(runtime, {
       label: "kin:company:set",

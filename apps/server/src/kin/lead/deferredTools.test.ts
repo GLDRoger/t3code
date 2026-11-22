@@ -6,6 +6,7 @@ import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
 import { KinConnectionsToolkit } from "../connections/mcp.ts";
 import { KinDocumentToolkit } from "../gendocs/mcp.ts";
 import { KinChatToolkit } from "../mcp/KinChatToolkit.ts";
+import { KinPictureToolkit } from "../pictures/mcp.ts";
 import contextBudget from "../mcp/agentContextBudget.json" with { type: "json" };
 import { KinPulseToolkit } from "../pulse/mcp.ts";
 import { KinSalesToolkit } from "../sales/mcp.ts";
@@ -23,6 +24,7 @@ const kinTools = [
   KinStatementToolkit,
   KinDocsToolkit,
   KinDocumentToolkit,
+  KinPictureToolkit,
   KinConnectionsToolkit,
   KinPulseToolkit,
   KinSocialToolkit,

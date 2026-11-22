@@ -66,6 +66,7 @@ import { KinMyMailbox, KinPeopleMailboxes } from "./KinMyMailbox";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useKinFormDiscard } from "./KinFormDiscard";
 import { KinSocialConnect } from "./KinSocialConnect";
+import { KinPicturesConnect } from "./KinPicturesConnect";
 import { KinVisualHosts } from "./KinVisualHosts";
 import { kinClient } from "./kinClient";
 import { kinSettingsFindIn } from "./kinSettingsAddress";
@@ -90,7 +91,7 @@ type Adding = { readonly title: string; readonly offered: ReadonlyArray<KinConne
 const isMailService = (service: KinConnectionService) =>
   service.service === "google" || service.service === "microsoft";
 
-/** Settings → Connections: mail and calendar, GitHub, social, other services, then charts. */
+/** Settings → Connections: mail and calendar, GitHub, social, pictures, other services, then charts. */
 export function KinConnectionsSettings() {
   const target = kinNewLeadTarget(useKinHost());
   return target === null ? (
@@ -395,6 +396,7 @@ function ConnectionsBody(
         onOpen={() => setOpen({ kind: "github" })}
       />
       <KinSocialConnect environmentId={environmentId} orgId={orgId} />
+      <KinPicturesConnect environmentId={environmentId} orgId={orgId} />
       {view === null ? null : (
         <KinSettingsSection
           title={MAIL.otherServices}

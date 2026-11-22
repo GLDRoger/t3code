@@ -155,6 +155,10 @@ export const ImportEntry = Schema.Struct({
     Schema.Record(Schema.String, FieldValue).check(Schema.isMaxProperties(20)),
   ),
   sensitive: Schema.optional(Schema.Boolean),
+  steps: Schema.optional(
+    Schema.Array(Schema.Struct({ title: Schema.String, done: Schema.Boolean })),
+  ),
+  urgent: Schema.optional(Schema.Boolean),
   /** The number it was issued; Kin's own numbering continues past it. */
   number: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Za-z0-9/-]{1,32}$/))),
   createdAt: Schema.optional(When),

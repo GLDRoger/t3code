@@ -1,5 +1,6 @@
 import * as KinPeopleHttp from "./kin/people/http.ts";
 import * as KinExportHttp from "./kin/work/exportHttp.ts";
+import * as KinVisualFonts from "./kin/visualFonts.ts";
 import * as KinGitHubAppSetupHttp from "./kin/github/appSetupHttp.ts";
 import * as KinGitHubHookHttp from "./kin/github/hookHttp.ts";
 import * as ProofKeySessions from "./kin/auth/ProofKeySessions.ts";
@@ -861,6 +862,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerOtlpTracesProxyRoute,
     ServerHttp.layerAssetRoute,
     ServerHttp.layerKinVisualLibraryRoute,
+    KinVisualFonts.layer,
     ServerHttp.layerAttachmentUploadRoute,
     GuestHttp.layer,
     KinPeopleHttp.layer,

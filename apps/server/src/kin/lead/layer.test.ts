@@ -21,11 +21,14 @@ import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { ProcessRunner } from "../../processRunner.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinSocial } from "../social/SocialService.ts";
+import { KinPictures } from "../pictures/KinPictures.ts";
+import * as PreviewBrowser from "../../preview/PreviewBrowser.ts";
 import { zernio } from "../social/Zernio.ts";
 import { KinSocialToolkit } from "../social/mcp.ts";
 import { KinSalesToolkit } from "../sales/mcp.ts";
 import { KinPulseToolkit } from "../pulse/mcp.ts";
 import { KinDocumentToolkit } from "../gendocs/mcp.ts";
+import { KinPictureToolkit } from "../pictures/mcp.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
@@ -69,6 +72,8 @@ const external = Layer.mergeAll(
     taskCardUpdater: Layer.empty,
   }),
   Layer.mock(KinSocial)({ provider: zernio }),
+  Layer.mock(KinPictures)({}),
+  Layer.mock(PreviewBrowser.PreviewBrowser)({}),
   Layer.mock(ProcessRunner)({}),
   Layer.mock(ServerEnvironment.ServerEnvironment)({}),
   FetchHttpClient.layer,
@@ -111,6 +116,7 @@ vi.mock("../memory/Memory.ts", async (importOriginal) => {
               };
             }),
           items: () => Effect.die("Unused"),
+          snapshotItems: () => Effect.die("Unused"),
           readPromptSnapshot: (_orgId, head) =>
             prepared && head === "fixture-head"
               ? Effect.succeed({
@@ -186,6 +192,7 @@ it.effect("starts configured Kin with the real prompt and the runner's pinned me
         KinDocsToolkit,
         KinStatementToolkit,
         KinDocumentToolkit,
+        KinPictureToolkit,
         KinPulseToolkit,
         KinSocialToolkit,
         KinSalesToolkit,

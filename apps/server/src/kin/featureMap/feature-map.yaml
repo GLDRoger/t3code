@@ -95,6 +95,23 @@ features:
       - packages/client-runtime/src/kin/kinCardPresentation.test.ts
       - .agents/skills/verify-kin/scripts/card-gallery.sh
 
+  - id: chat-pictures
+    name: Pictures an agent designs or generates, sent as image files and kept in Docs
+    tab: chats
+    web: [chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      A picture is drawn on the host from one page of HTML at a named size, or generated from a
+      prompt by the picture service and counted toward its monthly limit, and arrives under the
+      reply as an image; it is also a doc whose versions are each picture. A teammate's picture is
+      theirs, the owner's and the chat's readers', and no one else's.
+    tools: [kin_picture]
+    proof:
+      - apps/server/src/kin/pictures/picture.test.ts
+      - apps/server/src/kin/pictures/renderer.test.ts
+      - apps/server/src/kin/pictures/confine.test.ts
+
   - id: chat-pages
     name: Long replies as pages, briefs, and names that open what they name
     tab: chats
@@ -890,6 +907,21 @@ features:
       - apps/server/src/kin/work/deals.test.ts
       - apps/web/src/kin/KinDeals.browser.test.tsx
 
+  - id: deals-switch
+    name: We run deals, the switch that hides Deals everywhere
+    tab: settings
+    web: [settings, section:Deals]
+    phone: [SettingsKin, KinDealStages]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      Off hides the Deals tab, deals on client and project pages, New deal, deal search hits,
+      nudges, the Monday pipeline and deal tools for everyone; nothing is deleted, and on restores
+      it. A deal still opens by its link, saying Deals is turned off.
+    proof:
+      - packages/client-runtime/src/kin/kinShell.test.ts
+      - apps/web/src/kin/KinDeals.browser.test.tsx
+      - apps/server/src/kin/shell/KinShell.test.ts
+
   - id: marketing-list
     name: A campaign's results, a tag's list, and Export list
     tab: clients
@@ -1256,6 +1288,18 @@ features:
       - packages/client-runtime/src/kin/kinSocial.test.ts
       - .agents/skills/verify-kin/scripts/social-week.sh
 
+  - id: pictures-service
+    name: A picture service and its monthly limit
+    tab: settings
+    web: [settings, section:Connections, section:Pictures]
+    phone: [SettingsKin, KinConnections]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: One key, kept on the host and never shown again; the count is kept with No limit too.
+    proof:
+      - apps/server/src/kin/pictures/KinPictures.test.ts
+      - apps/server/src/kin/pictures/OpenAiImages.test.ts
+      - packages/client-runtime/src/kin/kinPictures.test.ts
+
   - id: social-connect
     name: Connect social accounts with a profile key
     tab: settings
@@ -1542,17 +1586,34 @@ features:
     tab: settings
     web: [home, sheet:Profile, section:Coding agent keys]
     roles: { owner: web, co_owner: web, lead: web, member: web }
-    tools: [list_my_tasks, get_task, comment_on_task, set_task_state]
+    tools:
+      [
+        list_my_tasks,
+        get_task,
+        comment_on_task,
+        set_task_state,
+        find,
+        open_project,
+        open_client,
+        read_doc,
+        money_summary,
+        search_memory,
+      ]
     note: >-
       A person makes a key for their own coding agent (Claude Code, Codex, Cursor) to read the
-      tasks they hold, comment and set state through `/kin/you/mcp`, and nothing else. The key shows
-      once; the address and the setup lines, with the key left to fill, stay on their own section.
-      At most three live keys, 30 days each. Settings → Profile on the web shows the same section.
+      tasks they hold, comment and set state through `/kin/you/mcp`. It also reads, never writes,
+      the projects, clients, docs, Money and team memory that person's own screens show them,
+      through the same reads, minus anything a person marked private and everything under a
+      private client or project, which stay in Kin for every key.
+      Money and memory are listed only for those whose screens open them. The key shows once; the
+      address and the setup lines, with the key left to fill, stay on their own section. At most
+      three live keys, 30 days each. Settings → Profile on the web shows the same section.
     proof:
       - packages/client-runtime/src/kin/kinTasksKeys.test.ts
       - apps/web/src/kin/KinTasksKeys.browser.test.tsx
       - apps/server/src/kin/tasksKey/TasksKeys.test.ts
       - apps/server/src/kin/tasksKey/mcp.test.ts
+      - apps/server/src/kin/tasksKey/reads.test.ts
 
   - id: teammate-coding-agent-keys
     name: See and remove a teammate's coding agent keys
@@ -1604,7 +1665,6 @@ unlisted:
   "rpc:kin.work.statementPasswords": Served; no client manages statement passwords yet.
   "rpc:kin.work.statementForgetAccount": Served; no client forgets a statement account yet.
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
-  "rpc:kin.shell.set": Server-only until the Deals switch ships in the clients.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
   "rpc:kin.open.read": Served; no client reads the open list (Needs you and Tasks use their own reads).
   "rpc:kin.open.subscribe": Served; no host lists "open" in its streams, so no client follows it.

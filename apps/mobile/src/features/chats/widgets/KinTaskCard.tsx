@@ -73,6 +73,11 @@ export const KinTaskCard = memo(function KinTaskCard(props: {
           {task.detail}
         </Text>
       )}
+      {task.detailNote === null ? null : (
+        <Text textRole="caption" numberOfLines={4} className="text-foreground-muted">
+          {task.detailNote}
+        </Text>
+      )}
       {task.unknownEnvironment ? (
         <Text textRole="footnote" className="text-foreground-muted">
           {KIN_DEVICE_COPY.unknownEnvironment("phone")}

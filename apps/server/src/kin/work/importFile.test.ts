@@ -32,6 +32,7 @@ import * as ImportFile from "./importFile.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { dayIn } from "./money.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import * as Clients from "./ownerClients.ts";
 
 // Invented company (Ambermill), people, clients and amounts only.
@@ -62,7 +63,7 @@ const gate = Layer.mock(KinLevelGate)({
   ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
 });
 const layer = KinImport.layer.pipe(
-  Layer.provideMerge(Layer.mergeAll(KinRecords.layer, identity, gate)),
+  Layer.provideMerge(Layer.mergeAll(KinRecords.layer, identity, gate, KinShell.layer)),
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
@@ -397,6 +398,43 @@ describe("bringing a file in", () => {
         ],
       );
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "checks and imports clients, but counts their deals as left out while Deals is off",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const input = {
+          orgId,
+          file: fileOf("Company,Deal,Stage,Value\nInvented Alder,First order,in-talks,EUR 110\n"),
+          mapping: { columns: ["client.name", "deal.title", "deal.stage", "deal.value"] as const },
+        };
+        const on = yield* ImportFile.check([rhea], input);
+        assert.strictEqual(on.will.deals, 1);
+        const shell = yield* KinShell.KinShell;
+        yield* shell.set(orgId, ownerId, 0, [{ id: "deals", on: false }]);
+        const checked = yield* ImportFile.check([rhea], input);
+        assert.isTrue(checked.ready);
+        assert.strictEqual(checked.will.deals, 0);
+        assert.deepStrictEqual(checked.leftOut, [
+          { line: 2, reason: "Deals is turned off for this company." },
+        ]);
+        const applied = yield* ImportFile.apply([rhea], { ...input, batch: on.batch });
+        assert.deepStrictEqual(applied.added, { ...on.will, deals: 0 });
+        assert.deepStrictEqual(applied.leftOut, checked.leftOut);
+        assert.deepStrictEqual(
+          yield* sql`SELECT register_id AS list FROM kin_records WHERE org_id = ${orgId}
+          AND title IN ('Invented Alder', 'First order') ORDER BY register_id`,
+          [{ list: "clients" }],
+        );
+        yield* shell.set(orgId, ownerId, 1, [{ id: "deals", on: true }]);
+        assert.strictEqual(
+          (yield* ImportFile.apply([rhea], { ...input, batch: on.batch })).added.deals,
+          1,
+        );
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect(

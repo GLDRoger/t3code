@@ -4,6 +4,7 @@ import {
   kinBytesText,
   KIN_HOST_TROUBLE_CARD,
   KinChatError,
+  KinChatId,
   KinEventId,
   KinHostTroubleCard,
   KinMessageId,
@@ -56,6 +57,7 @@ export const HOLD_MS: Readonly<Partial<Record<KinTroubleCause, number>>> = {
   model: 15 * 60_000,
   program: 15 * 60_000,
   usage_limit: 15 * 60_000,
+  memory: KinEventQueue.FIRST_RETRY_MS,
 };
 /** Causes any stopped agent's next good turn proves gone; the rest clear agent by agent. */
 const HOST_WIDE: ReadonlySet<KinTroubleCause> = new Set(["space"]);
@@ -220,6 +222,10 @@ const unavailable = new KinChatError({
   message: "Kin couldn't read its computer just now. Try again.",
 });
 
+// Only finish's partway branch leaves a failed event attached to its wake-up.
+const strandedEvent = (sql: SqlClient.SqlClient) =>
+  sql`e.state = 'failed' AND e.wakeup_id IS NOT NULL`;
+
 /** In the retirement transaction, close troubles with no other agent still stopped. */
 export const closeRetiredTroubles = Effect.fn("KinHostCare.closeRetiredTroubles")(function* (
   orgId: KinOrgId,
@@ -233,7 +239,9 @@ export const closeRetiredTroubles = Effect.fn("KinHostCare.closeRetiredTroubles"
         AND a.trouble_id = t.trouble_id AND a.agent_id = ${agentId})
       AND NOT EXISTS (SELECT 1 FROM kin_trouble_agents a JOIN kin_agents l
         ON l.org_id = a.org_id AND l.agent_id = a.agent_id AND l.retired_at IS NULL
-        WHERE a.org_id = t.org_id AND a.trouble_id = t.trouble_id AND a.worked_at IS NULL)`;
+        WHERE a.org_id = t.org_id AND a.trouble_id = t.trouble_id AND a.worked_at IS NULL)
+      AND NOT EXISTS (SELECT 1 FROM kin_events e
+        WHERE e.org_id = t.org_id AND e.held_by = t.trouble_id AND ${strandedEvent(sql)})`;
 });
 
 const make = Effect.gen(function* () {
@@ -432,10 +440,12 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${orgId} AND trouble_id = ${troubleId} ORDER BY trouble_id`.pipe(
       Effect.map((rows) => rows[0]),
     );
-  /** The trouble's held turns, as their event rows say: no list kept anywhere else. */
-  const heldIds = (orgId: KinOrgId, troubleId: string) =>
-    sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+  const stranded = strandedEvent(sql);
+  const heldIds = (orgId: KinOrgId, troubleId: string, automatic: boolean, agentId?: KinAgentId) =>
+    sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events e
       WHERE org_id = ${orgId} AND held_by = ${troubleId} AND state IN ('queued', 'failed')
+        AND (${agentId ?? null} IS NULL OR agent_id = ${agentId ?? null})
+        AND (NOT ${automatic} OR NOT (${stranded}))
       ORDER BY event_id`.pipe(
       Effect.map((rows) => rows.map((row) => KinEventId.make(row.eventId))),
     );
@@ -497,9 +507,11 @@ const make = Effect.gen(function* () {
       done: number | null;
       expiring: number | null;
       stopped: number | null;
+      stranded: number | null;
     }>`SELECT
         SUM(CASE WHEN e.state = 'queued' THEN 1 ELSE 0 END) AS held,
         SUM(CASE WHEN e.state = 'failed' THEN 1 ELSE 0 END) AS stopped,
+        SUM(CASE WHEN ${stranded} THEN 1 ELSE 0 END) AS stranded,
         SUM(CASE WHEN e.state = 'done' THEN 1 ELSE 0 END) AS done,
         SUM(CASE WHEN e.state = 'queued' AND EXISTS (SELECT 1 FROM kin_lead_deliveries d
           WHERE d.org_id = e.org_id AND d.event_id = e.event_id AND d.status = 'pending')
@@ -531,6 +543,9 @@ const make = Effect.gen(function* () {
         : {}),
       ...((counts?.stopped ?? 0) > 0 && trouble.closedAt === null
         ? { stopped: counts!.stopped! }
+        : {}),
+      ...((counts?.stranded ?? 0) > 0 && trouble.closedAt === null
+        ? { stranded: counts!.stranded! }
         : {}),
       closed:
         trouble.closedAt === null ? null : { at: iso(trouble.closedAt), ran: counts?.done ?? 0 },
@@ -598,50 +613,69 @@ const make = Effect.gen(function* () {
       yield* publish({ type: "widget.updated", orgId, widget });
       return;
     }
-    if (!announce || trouble.closedAt !== null) return;
-    const chatId = yield* noticeChat(orgId);
-    if (chatId === undefined) return;
-    const message = yield* repo.insertMessage({
-      orgId,
-      chatId,
-      audience: "owner",
-      messageId: KinMessageId.make(widgetId),
-      author: { _tag: "system" },
-      kind: "system",
-      body: yield* words(orgId, card),
-      intent: null,
-      mentions: [],
-      replyTo: null,
-      widgetId: null,
-      floorRunId: null,
-      status: "posted",
-      sentBy: null,
-      clientMessageId: null,
-      createdAt: iso(now),
-      editedAt: null,
-    });
-    const widget = {
-      orgId,
-      chatId,
-      messageId: message.messageId,
-      widgetId,
-      widgetClass: "native" as const,
-      type: KIN_HOST_TROUBLE_CARD,
-      state,
-      source: null,
-      feed: null,
-      // Nobody is awaited: the message's own push is the one ring, and redraws ring no one.
-      awaiting: [],
-      pinnedAt: null,
-      closedAt: null,
-      updatedAt: iso(now),
-    };
-    yield* repo.insertWidget({ ...widget, audience: "owner" });
-    yield* sql`UPDATE kin_troubles SET told_at = ${now}
-      WHERE org_id = ${orgId} AND trouble_id = ${troubleId}`;
-    // The insert links the message to the card; clients only attach a card through that link.
-    yield* publish({ type: "message.posted", orgId, message: { ...message, widgetId } });
-    yield* publish({ type: "widget.updated", orgId, widget: { ...widget, revision: 1 } });
+    const messageId = KinMessageId.make(widgetId);
+    const body = announce && trouble.closedAt === null ? yield* words(orgId, card) : undefined;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        if (Option.isSome(yield* repo.getWidget({ orgId, widgetId }))) return;
+        const [bare] = yield* sql<{
+          chatId: KinChatId;
+        }>`SELECT chat_id AS "chatId" FROM kin_messages
+          WHERE org_id = ${orgId} AND message_id = ${messageId} AND kind = 'system'
+            AND author_kind = 'system' AND status = 'posted' AND widget_id IS NULL
+          ORDER BY message_id`;
+        if (bare === undefined && body === undefined) return;
+        const chatId = bare?.chatId ?? (yield* noticeChat(orgId));
+        if (chatId === undefined) return;
+        if (bare === undefined && body !== undefined)
+          yield* repo.insertMessage({
+            orgId,
+            chatId,
+            audience: "owner",
+            messageId,
+            author: { _tag: "system" },
+            kind: "system",
+            body,
+            intent: null,
+            mentions: [],
+            replyTo: null,
+            widgetId: null,
+            floorRunId: null,
+            status: "posted",
+            sentBy: null,
+            clientMessageId: null,
+            createdAt: iso(now),
+            editedAt: null,
+          });
+        const widget = {
+          orgId,
+          chatId,
+          messageId,
+          widgetId,
+          widgetClass: "native" as const,
+          type: KIN_HOST_TROUBLE_CARD,
+          state,
+          source: null,
+          feed: null,
+          // Nobody is awaited: the message's own push is the one ring, and redraws ring no one.
+          awaiting: [],
+          pinnedAt: null,
+          closedAt: card.closed?.at ?? null,
+          updatedAt: iso(now),
+        };
+        yield* repo.insertWidget({ ...widget, audience: "owner" });
+        yield* sql`UPDATE kin_troubles SET told_at = COALESCE(told_at, ${now})
+          WHERE org_id = ${orgId} AND trouble_id = ${troubleId}`;
+        const linked = yield* repo.getMessage({ orgId, messageId });
+        if (Option.isSome(linked))
+          yield* publish({
+            type: bare === undefined ? "message.posted" : "message.changed",
+            orgId,
+            message: linked.value,
+          });
+        yield* publish({ type: "widget.updated", orgId, widget: { ...widget, revision: 1 } });
+      }),
+    );
   });
   /** A notice that can't be drawn never undoes the trouble it shows. */
   const projectQuietly = (orgId: KinOrgId, troubleId: string, announce: boolean) =>
@@ -756,7 +790,7 @@ const make = Effect.gen(function* () {
   const failed = Effect.fn("KinHostCare.failed")(
     function* (input: TroubleInput) {
       const { orgId } = input;
-      const troubleId = yield* troubleLock.withPermits(1)(
+      const recorded = yield* troubleLock.withPermits(1)(
         sql.withTransaction(
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis;
@@ -767,18 +801,15 @@ const make = Effect.gen(function* () {
                 detail = COALESCE(${input.detail?.slice(0, 600) ?? null}, detail),
                 reset_at = COALESCE(${input.resetAt ?? null}, reset_at)
               WHERE org_id = ${orgId} AND trouble_id = ${troubleId}`;
-            if (input.eventIds.length > 0)
-              yield* sql`UPDATE kin_events SET held_by = ${troubleId}
-                WHERE org_id = ${orgId} AND state IN ('queued', 'failed')
-                  AND event_id IN (SELECT value FROM json_each(${yield* encodeIds(input.eventIds)}))`;
-            return troubleId;
+            const held = yield* queue.hold(orgId, input.agentId, troubleId, input.eventIds);
+            return { troubleId, held };
           }),
         ),
       );
-      if (troubleId === undefined) return false;
-      yield* projectQuietly(orgId, troubleId, true);
-      yield* noteRuns(orgId, input.eventIds, KIN_TROUBLE_WHY[input.cause]);
-      const trouble = yield* troubleById(orgId, troubleId);
+      if (recorded === undefined) return false;
+      yield* projectQuietly(orgId, recorded.troubleId, true);
+      yield* noteRuns(orgId, recorded.held, KIN_TROUBLE_WHY[input.cause]);
+      const trouble = yield* troubleById(orgId, recorded.troubleId);
       return trouble?.toldAt != null;
     },
     Effect.catchCause((cause) =>
@@ -786,61 +817,73 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  /** Closes the trouble and runs what it held; its notice says so. */
+  const release = Effect.fn("KinHostCare.release")(function* (
+    orgId: KinOrgId,
+    eventIds: ReadonlyArray<KinEventId>,
+  ) {
+    const requeued = yield* queue.wake(orgId, eventIds);
+    yield* noteRuns(orgId, eventIds, undefined);
+    return requeued;
+  });
+
+  const closeAndRelease = Effect.fn("KinHostCare.closeAndRelease")(function* (
+    orgId: KinOrgId,
+    troubleId: string,
+    now: number,
+  ) {
+    const [open] = yield* sql`SELECT 1 FROM kin_troubles
+      WHERE org_id = ${orgId} AND trouble_id = ${troubleId} AND closed_at IS NULL`;
+    if (open === undefined) return false;
+    const [manual] = yield* sql`SELECT 1 FROM kin_events e
+      WHERE org_id = ${orgId} AND held_by = ${troubleId} AND ${stranded} LIMIT 1`;
+    if (manual === undefined)
+      yield* sql`UPDATE kin_troubles SET closed_at = ${now}
+        WHERE org_id = ${orgId} AND trouble_id = ${troubleId} AND closed_at IS NULL`;
+    else
+      yield* sql`UPDATE kin_trouble_agents SET worked_at = ${now}
+        WHERE org_id = ${orgId} AND trouble_id = ${troubleId} AND worked_at IS NULL`;
+    yield* release(orgId, yield* heldIds(orgId, troubleId, true));
+    return true;
+  });
+
   const close = Effect.fn("KinHostCare.close")(function* (orgId: KinOrgId, troubleId: string) {
+    const now = yield* Clock.currentTimeMillis;
     const closed = yield* troubleLock.withPermits(1)(
-      Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        const rows = yield* sql`UPDATE kin_troubles SET closed_at = ${now}
-          WHERE org_id = ${orgId} AND trouble_id = ${troubleId} AND closed_at IS NULL
-          RETURNING trouble_id`;
-        if (rows.length === 0) return false;
-        const held = yield* heldIds(orgId, troubleId);
-        yield* queue.wake(orgId, held);
-        yield* noteRuns(orgId, held, undefined);
-        return true;
-      }),
+      sql.withTransaction(closeAndRelease(orgId, troubleId, now)),
     );
     if (closed) yield* projectQuietly(orgId, troubleId, false);
   });
 
   const succeeded = Effect.fn("KinHostCare.succeeded")(
     function* (orgId: KinOrgId, agentId: KinAgentId) {
-      if (!(yield* agentActive(orgId, agentId))) return;
-      for (const trouble of yield* openTroubles(orgId)) {
-        if (trouble.cause === "backup") continue;
-        const [affected] = yield* sql`SELECT 1 FROM kin_trouble_agents
-          WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} AND agent_id = ${agentId}`;
-        // An agent this trouble never stopped proves nothing about it.
-        if (affected === undefined) continue;
-        if (HOST_WIDE.has(trouble.cause)) {
-          yield* close(orgId, trouble.troubleId);
-          continue;
-        }
-        // Its own part is over: its held turns run, the others' stay held.
-        yield* troubleLock.withPermits(1)(
-          Effect.gen(function* () {
-            const now = yield* Clock.currentTimeMillis;
-            yield* sql`UPDATE kin_trouble_agents SET worked_at = ${now}
-              WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} AND agent_id = ${agentId}`;
-            const own = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
-              WHERE org_id = ${orgId} AND held_by = ${trouble.troubleId} AND agent_id = ${agentId}
-                AND state IN ('queued', 'failed') ORDER BY event_id`;
-            const released = own.map((row) => KinEventId.make(row.eventId));
-            yield* queue.wake(orgId, released);
-            yield* noteRuns(orgId, released, undefined);
-          }),
+      for (const { troubleId, cause } of yield* openTroubles(orgId)) {
+        if (cause === "backup") continue;
+        const updated = yield* troubleLock.withPermits(1)(
+          sql.withTransaction(
+            Effect.gen(function* () {
+              const [affected] = yield* sql`SELECT 1 FROM kin_trouble_agents a JOIN kin_troubles t
+                ON t.org_id = a.org_id AND t.trouble_id = a.trouble_id AND t.closed_at IS NULL
+                WHERE a.org_id = ${orgId} AND a.trouble_id = ${troubleId} AND a.agent_id = ${agentId}`;
+              if (affected === undefined || !(yield* agentActive(orgId, agentId))) return false;
+              const now = yield* Clock.currentTimeMillis;
+              if (HOST_WIDE.has(cause)) return yield* closeAndRelease(orgId, troubleId, now);
+
+              yield* sql`UPDATE kin_trouble_agents SET worked_at = ${now}
+                WHERE org_id = ${orgId} AND trouble_id = ${troubleId} AND agent_id = ${agentId}`;
+              const [still] = yield* sql`SELECT 1 FROM kin_trouble_agents a JOIN kin_agents l
+                ON l.org_id = a.org_id AND l.agent_id = a.agent_id AND l.retired_at IS NULL
+                WHERE a.org_id = ${orgId} AND a.trouble_id = ${troubleId} AND a.worked_at IS NULL
+                  AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = a.org_id
+                    AND e.held_by = a.trouble_id AND e.agent_id = a.agent_id
+                    AND e.state IN ('queued', 'failed'))
+                LIMIT 1`;
+              if (still === undefined) return yield* closeAndRelease(orgId, troubleId, now);
+              yield* release(orgId, yield* heldIds(orgId, troubleId, true, agentId));
+              return true;
+            }),
+          ),
         );
-        // Over when no stopped agent is left with a held turn.
-        const [still] = yield* sql`SELECT 1 FROM kin_trouble_agents a JOIN kin_agents l
-          ON l.org_id = a.org_id AND l.agent_id = a.agent_id AND l.retired_at IS NULL
-          WHERE a.org_id = ${orgId} AND a.trouble_id = ${trouble.troubleId} AND a.worked_at IS NULL
-            AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = a.org_id
-              AND e.held_by = a.trouble_id AND e.agent_id = a.agent_id
-              AND e.state IN ('queued', 'failed'))
-          LIMIT 1`;
-        if (still === undefined) yield* close(orgId, trouble.troubleId);
-        else yield* projectQuietly(orgId, trouble.troubleId, false);
+        if (updated) yield* projectQuietly(orgId, troubleId, false);
       }
       // A closed notice counts its held turns as they finish, for a day after it closed.
       const since = (yield* Clock.currentTimeMillis) - 24 * 60 * 60_000;
@@ -866,7 +909,15 @@ const make = Effect.gen(function* () {
       for (const trouble of yield* openTroubles(orgId)) {
         if (trouble.cause === "backup") continue;
         const found = { cause: trouble.cause, told: trouble.toldAt !== null };
-        if (HOST_WIDE.has(trouble.cause)) return found;
+        if (HOST_WIDE.has(trouble.cause)) {
+          const [recovered] = yield* sql`SELECT 1 FROM kin_trouble_agents a
+            WHERE a.org_id = ${orgId} AND a.trouble_id = ${trouble.troubleId} AND a.worked_at IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM kin_trouble_agents b WHERE b.org_id = a.org_id
+                AND b.trouble_id = a.trouble_id AND b.worked_at IS NULL)
+            LIMIT 1`;
+          if (recovered === undefined) return found;
+          continue;
+        }
         const [affected] = yield* sql`SELECT 1 FROM kin_trouble_agents
           WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId} AND agent_id = ${agentId}
             AND worked_at IS NULL`;
@@ -883,7 +934,10 @@ const make = Effect.gen(function* () {
         FROM kin_troubles t LEFT JOIN kin_widgets w
           ON w.org_id = t.org_id AND w.widget_id = t.trouble_id
         WHERE t.org_id = ${orgId} AND ((${options?.closedOnly ? 0 : 1} AND t.closed_at IS NULL)
-          OR (t.closed_at IS NOT NULL AND w.widget_id IS NOT NULL AND w.closed_at IS NULL))
+          OR (t.closed_at IS NOT NULL AND w.widget_id IS NOT NULL AND w.closed_at IS NULL)
+          OR (w.widget_id IS NULL AND EXISTS (SELECT 1 FROM kin_messages m
+            WHERE m.org_id = t.org_id AND m.message_id = t.trouble_id AND m.widget_id IS NULL
+              AND m.kind = 'system' AND m.author_kind = 'system' AND m.status = 'posted')))
         ORDER BY t.trouble_id`;
       for (const { troubleId } of redraw) yield* projectQuietly(orgId, troubleId, false);
     },
@@ -984,14 +1038,15 @@ const make = Effect.gen(function* () {
 
   const retry = Effect.fn("KinHostCare.retry")(
     function* (orgId: KinOrgId) {
-      let requeued = 0;
-      for (const trouble of yield* openTroubles(orgId))
-        if (trouble.cause !== "backup") {
-          const held = yield* heldIds(orgId, trouble.troubleId);
-          requeued += yield* queue.wake(orgId, held);
-          yield* noteRuns(orgId, held, undefined);
-        }
-      return { requeued };
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          let requeued = 0;
+          for (const trouble of yield* openTroubles(orgId))
+            if (trouble.cause !== "backup")
+              requeued += yield* release(orgId, yield* heldIds(orgId, trouble.troubleId, false));
+          return { requeued };
+        }),
+      );
     },
     Effect.mapError(() => unavailable),
   );

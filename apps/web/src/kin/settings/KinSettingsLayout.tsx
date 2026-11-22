@@ -13,6 +13,8 @@ import { Skeleton } from "../../components/ui/skeleton";
  * The modal header carries the page's name, so a page starts with what it is for, then sections.
  */
 export function KinSettingsPage(props: {
+  /** What comes before the purpose: a section's own switch. */
+  readonly top?: ReactNode;
   /** One sentence on what the page is for, from the person's side. */
   readonly purpose?: ReactNode;
   /** The page's one primary action, beside the purpose: "Add check-in". */
@@ -21,6 +23,7 @@ export function KinSettingsPage(props: {
 }) {
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-8 px-4 py-6 sm:px-6">
+      {props.top}
       {props.purpose === undefined && props.action === undefined ? null : (
         <div className="flex min-h-8 items-start justify-between gap-4">
           <p className="text-pretty pt-1 text-sm text-muted-foreground">{props.purpose}</p>

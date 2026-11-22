@@ -105,6 +105,7 @@ import {
 import { KinWorkRow } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { KinClientDeals } from "./KinDeals";
+import { useKinSectionOn } from "./useKinShell";
 import { KinConfirm } from "./KinConfirm";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinHostConnected, useKinHostAt } from "./useKinHost";
@@ -693,6 +694,7 @@ function ClientPage(
   const ownerLevel = useKinOwnerLevel(environmentId);
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
   const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
+  const dealsOn = useKinSectionOn(environmentId, "deals");
   const now = new Date(useNowMinuteMs());
   const [dialog, setDialog] = useState<ClientDialog>(null);
   const [tagList, setTagList] = useState<string | null>(null);
@@ -929,7 +931,7 @@ function ClientPage(
             )}
           </KinWorkSection>
         )}
-        {view.vendor ? null : (
+        {view.vendor || !dealsOn ? null : (
           <KinClientDeals
             {...props}
             party={{ key: view.key, title: view.name }}

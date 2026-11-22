@@ -11,13 +11,17 @@ import { usePeerLinkHosts } from "~/state/peerLinks";
 import { useEnvironmentQuery } from "~/state/query";
 import { useEnvironmentScope } from "~/state/session";
 import { kinSettingsShown } from "~/kin/kinNoCode";
-import { useKinHost } from "~/kin/useKinHost";
+import { kinHostKeptTarget, useKinHost } from "~/kin/useKinHost";
+import { useKinSectionOn } from "~/kin/useKinShell";
 import { isWslSettingsRowVisible } from "./ConnectionsSettings.logic";
 import { isProviderSettingsEnvironmentAvailable } from "./ProviderSettingsPanel.logic";
 import {
   filterAvailableSettingsSearchItems,
   getThreadAutoSettlementSearchAvailability,
 } from "./settingsSearch";
+
+const NO_SECTIONS_OFF: ReadonlyArray<string> = [];
+const DEALS_OFF: ReadonlyArray<string> = ["deals"];
 
 export function useAvailableSettingsSearchItems() {
   const { environments } = useEnvironments();
@@ -49,7 +53,9 @@ export function useAvailableSettingsSearchItems() {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const canMaintain = useEnvironmentScope(primaryEnvironmentId, AuthEnvironmentMaintainScope);
   const hasPeerLinkHost = usePeerLinkHosts().length > 0;
-  const hasKinHost = useKinHost()._tag === "host";
+  const kinHost = useKinHost();
+  const hasKinHost = kinHost._tag === "host";
+  const kinDealsOn = useKinSectionOn(kinHostKeptTarget(kinHost)?.environmentId ?? null, "deals");
   const cloudLinkState = usePrimaryCloudLinkState().data;
   // Same fallback as the Connections row: older servers imply a tunnel from `linked`.
   const managedTunnelActive =
@@ -76,6 +82,7 @@ export function useAvailableSettingsSearchItems() {
     managedTunnelActive,
     hasPeerLinkHost,
     hasKinHost,
+    kinSectionsOff: kinDealsOn ? NO_SECTIONS_OFF : DEALS_OFF,
     hasFastWorktreeCheckoutEnvironment,
     hasTextGeneratorsEnvironment,
     hasPrimaryEnvironment: primaryEnvironmentId !== null,

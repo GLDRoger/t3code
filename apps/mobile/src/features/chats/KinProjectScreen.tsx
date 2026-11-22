@@ -58,6 +58,7 @@ import { KinTasksList } from "./KinTasksList";
 import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinCampaignResultsSection } from "./KinMarketing";
+import { useKinSectionOn } from "./state/useKinShell";
 import { KinProjectPeopleSection } from "./KinProjectPeopleScreen";
 import { kinClient } from "./state/kinClient";
 import { useKinAskRecord } from "./state/useKinAskRecord";
@@ -183,6 +184,7 @@ function KinProjectBody(
   const { environmentId, orgId } = props;
   const canChange = useAtomValue(kinClient.workProjectUpdate.permissionAtom(environmentId));
   const canNote = useAtomValue(kinClient.workProjectNote.permissionAtom(environmentId));
+  const dealsOn = useKinSectionOn(environmentId, "deals");
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const now = new Date(useNowMinuteMs());
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
@@ -333,6 +335,7 @@ function KinProjectBody(
                   <KinCampaignResultsSection
                     results={props.page.results}
                     audience={view.audience}
+                    deals={dealsOn}
                     onOpen={(id) => {
                       const opened = kinCampaignResultOpens(orgId, view.key, view.name, id);
                       navigation.navigate("KinMarketingList", {

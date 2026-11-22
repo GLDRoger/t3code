@@ -13,6 +13,7 @@ import {
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Struct from "effect/Struct";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
@@ -107,7 +108,8 @@ const widget = Tool.make("kin_widget_upsert", {
     widgetId: KinWidgetId,
     revision: KinWidget.fields.revision,
     type: Schema.Literal("task"),
-    state: KinTaskCardState,
+    // Why a task failed is the server's to say.
+    state: KinTaskCardState.mapFields(Struct.omit(["failure"])),
     awaiting: Schema.optional(Schema.Array(KinPersonId).check(Schema.isMaxLength(100))),
     closed: Schema.optional(Schema.Boolean),
   }),
