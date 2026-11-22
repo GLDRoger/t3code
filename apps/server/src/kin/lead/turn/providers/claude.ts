@@ -155,6 +155,17 @@ const refused = (reason?: string) => ({
   },
 });
 
+const WEB_READS: ReadonlySet<string> = new Set([
+  ...capabilities.webSearch,
+  ...capabilities.webFetch,
+]);
+/** The host of a page fetch's `url`; a search has none. */
+const hostOf = (input: unknown) => {
+  const url =
+    typeof input === "object" && input !== null ? (input as { url?: unknown }).url : undefined;
+  return typeof url === "string" && URL.canParse(url) ? new URL(url).hostname : undefined;
+};
+
 /**
  * The plan's decision as a PreToolUse hook. It runs in this process before Claude Code's
  * permission modes, so its deny holds under bypassPermissions too; `block` refuses the call if the
@@ -175,7 +186,11 @@ const decisionHook = (plan: KinSessionPlan): HookCallbackMatcher => ({
       }
       if (kinTool && plan.seat !== "delegated") return {};
       const reason = await Effect.runPromise(plan.refusal);
-      return reason === undefined ? {} : refused(reason);
+      if (reason !== undefined) return refused(reason);
+      if (!WEB_READS.has(input.tool_name)) return {};
+      // What it reads is outside text: the turn is marked before the result reaches the model.
+      const marked = await Effect.runPromise(plan.webRead(hostOf(input.tool_input)));
+      return marked === undefined ? {} : refused(marked);
     },
   ],
 });

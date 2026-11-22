@@ -434,6 +434,15 @@ export const KinLinkedFromFields = {
   linkedFromMore: Schema.optional(NonNegativeInt),
 };
 
+/** The first change an agent made to an entry after its turn read text from outside. */
+export const KinRecordAfterReading = Schema.Struct({
+  /** It made the entry; otherwise it changed one already there. */
+  made: Schema.Boolean,
+  /** What a person reads for what the turn had read, such as a mail's sender and subject. */
+  source: Schema.String.check(Schema.isMaxLength(300)),
+});
+export type KinRecordAfterReading = typeof KinRecordAfterReading.Type;
+
 /** An entry with everything the entry sheet shows. */
 export const KinRecordDetail = Schema.Struct({
   ...KinRecord.fields,
@@ -501,6 +510,8 @@ export const KinRecordDetail = Schema.Struct({
   checklist: Schema.optional(KinWorkSteps),
   /** What Kin is watching on it, for a reader who may see that watch; absent with none. */
   watch: Schema.optional(KinWatchLine),
+  /** Made or changed by an agent after its turn read outside text; absent otherwise. */
+  afterReading: Schema.optional(KinRecordAfterReading),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;

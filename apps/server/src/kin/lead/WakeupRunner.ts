@@ -70,7 +70,7 @@ import {
   turnChat,
 } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX, outsideReview } from "./outsideReview.ts";
-import { KinLeadPrompt, STEER_CLOSING } from "./LeadPrompt.ts";
+import { KinLeadPrompt, STEER_CLOSING, stillJoined } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import {
   chooseLeadModel,
@@ -206,7 +206,7 @@ const make = Effect.gen(function* () {
   }) => (Option.isSome(bridge) ? bridge.value.end(row) : Effect.void);
   const finishWakeup = Effect.fn("WakeupRunner.finishWakeup")(function* (
     row: typeof RunningRow.Type,
-    status: "completed" | "failed" | "timed_out",
+    status: "completed" | "failed" | "interrupted" | "timed_out",
     setup: SetupFailure | null = null,
     failure: unknown = null,
   ) {
@@ -466,12 +466,14 @@ const make = Effect.gen(function* () {
     ),
   );
   /**
-   * A due run of a scheduled task that no longer exists, or a question with nothing left to take:
-   * every prompt answers it with NO_REPLY (`KinLeadPrompt`), so it starts no turn. A failed read
-   * keeps the event for the turn.
+   * A due run of a scheduled task that no longer exists, a question with nothing left to take, or
+   * a task an agent was put on and is off now or closed: no prompt shows it (`KinLeadPrompt`), so
+   * it starts no turn. A failed read keeps the event for the turn.
    */
   const goneBeforeTurn = Effect.fn("WakeupRunner.goneBeforeTurn")(
     function* (orgId: KinOrgId, event: KinEvent) {
+      if (event._tag === "record.changed" && event.reason === "joined")
+        return !(yield* stillJoined(orgId, event.agentId, event.recordId));
       if (event._tag !== "deferral.due") return false;
       const subject = event.subject;
       if (subject.type === "scheduled_task") {
@@ -859,15 +861,20 @@ const make = Effect.gen(function* () {
             ),
           );
       }
-      const status = result.timedOut
+      const ended = result.timedOut
         ? "timed_out"
         : result.run?.status === "completed"
           ? "completed"
           : "failed";
+      // The stop switch interrupted this run: hand its events back without spending an attempt.
+      const stopped = ended === "failed" && (yield* paused(row.orgId));
+      // Otherwise an interrupted run was a person's Stop (`KinStop.interrupt`), not a failure.
+      const status =
+        ended === "failed" && !stopped && result.run?.status === "interrupted"
+          ? "interrupted"
+          : ended;
       const setup = status === "failed" ? setupFailureIn(final, runId) : null;
       const failure = status === "failed" ? providerFailureIn(final, runId) : null;
-      // The stop switch interrupted this run: hand its events back without spending an attempt.
-      const stopped = status === "failed" && (yield* paused(row.orgId));
       // Someone besides the owner joined while it worked: it says nothing more, and a fresh
       // wake-up answers its events (`KinEventQueue.finish`).
       let abandoned = yield* isAborted(row);

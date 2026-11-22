@@ -37,7 +37,7 @@ import { arrivesNote } from "../lead/Handoff.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import type { KinLevelGate } from "../lead/LevelGate.ts";
-import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
+import { outsideStamp, renderSource, stampEvent } from "../lead/OutsideContent.ts";
 import * as Reach from "../lead/Reach.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { signedIn } from "../people/signedIn.ts";
@@ -665,15 +665,23 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
       if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
       const dueAt = named?.at ?? defaultDue(now, clock.zone, clock.work);
       const by = askedBy(askerName, self.name);
-      if (redone !== null && sentUp !== undefined && !cardHolds(draftDetail(by, sentUp)))
+      // Asked after an outside read: the card says so, as much as its reader may see of it.
+      const read = turn === null ? undefined : yield* outsideStamp(turn);
+      const afterLine =
+        read === undefined ? "" : `\n\nAsked after reading: ${renderSource(read, targetOwnerSide)}`;
+      if (
+        redone !== null &&
+        sentUp !== undefined &&
+        !cardHolds(`${draftDetail(by, sentUp)}${afterLine}`)
+      )
         return yield* refuse(
           "With who asks and who it is for, this draft is too long for its card.",
         );
       // A sent-up draft's card is Kin's from its stored payload: its line and its two buttons.
       const detail =
         sentUp !== undefined
-          ? draftDetail(by, sentUp)
-          : `${by}${
+          ? `${draftDetail(by, sentUp)}${afterLine}`
+          : `${by}${afterLine}${
               input.detail === undefined || input.detail.trim() === "" ? "" : `\n\n${input.detail}`
             }`;
       const card = {
@@ -716,7 +724,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
         (widget) => store(widget === null ? null : widget.widgetId),
       );
       // Asked after an outside read, its answer wakes a turn that has read outside text too.
-      if (turn !== null) yield* stampEvent(orgId, questionId, yield* outsideStamp(turn));
+      if (turn !== null) yield* stampEvent(orgId, questionId, read);
       // Her card that sent the first one up reads sent again.
       const herCards =
         redone === null ? [] : yield* draftCardsAbout(orgId, here.chatId, about, "changesFirst");

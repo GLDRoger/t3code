@@ -17,6 +17,7 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
 
+import { kinAccessMeAtom } from "../kinAccess.ts";
 import { kinHostLink, type KinRouteHost } from "../kinHost.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import { kinInvitedPeople } from "../kinTeam.ts";
@@ -88,6 +89,14 @@ const noZoneAtom: Atom.Atom<AsyncResult.AsyncResult<KinOwnerTimeZone, unknown>> 
 );
 const noInvitesAtom: Atom.Atom<AsyncResult.AsyncResult<KinPeopleListInvitesResult, unknown>> =
   Atom.make(AsyncResult.initial());
+
+/** Who is signed in to this host, by person id; null until the host says. */
+export function useKinViewer<R, ER>(
+  runtime: KinHookApp<R, ER>["runtime"],
+  environmentId: EnvironmentId,
+): string | null {
+  return useAtomValue(kinAccessMeAtom(runtime, environmentId))?.personId ?? null;
+}
 
 export const kinSchedule = (run: () => void, ms: number) => {
   const timer = setTimeout(run, ms);
@@ -288,9 +297,16 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     make: (onChange: (state: KinPagedListState<Filter, Row>) => void) => Paged<Filter, Row>,
     /** The host's latest change number; null while what is held may be behind. */
     seq: number | null,
-    keep?: { readonly keeper: KinPagedKeeper<Filter, Row>; readonly key: string },
+    keep?: {
+      readonly keeper: KinPagedKeeper<Filter, Row>;
+      readonly key: string;
+      /** The signed-in person (`useKinViewer`): another's kept list is never shown. */
+      readonly viewer: string | null;
+    },
   ) {
-    const [kept] = useState(() => (keep === undefined ? null : keep.keeper.take(keep.key, make)));
+    const [kept] = useState(() =>
+      keep === undefined ? null : keep.keeper.take(keep.key, make, keep.viewer),
+    );
     const [resumed] = useState(
       () => kept !== null && keep !== undefined && keep.keeper.wasKept(kept),
     );
@@ -343,7 +359,11 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
             ),
         }),
       seq,
-      { keeper: clientLists, key: JSON.stringify([environmentId, orgId, initial]) },
+      {
+        keeper: clientLists,
+        key: JSON.stringify([environmentId, orgId, initial]),
+        viewer: useKinViewer(app.runtime, environmentId),
+      },
     );
   }
 
@@ -373,7 +393,11 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
             ),
         }),
       seq,
-      { keeper: projectLists, key: JSON.stringify([environmentId, orgId, view]) },
+      {
+        keeper: projectLists,
+        key: JSON.stringify([environmentId, orgId, view]),
+        viewer: useKinViewer(app.runtime, environmentId),
+      },
     );
   }
 

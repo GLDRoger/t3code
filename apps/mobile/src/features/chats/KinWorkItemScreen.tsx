@@ -26,6 +26,8 @@ import {
   kinTaskControls,
   kinTaskActivity,
   kinTaskPeopleFolded,
+  kinTaskWith,
+  kinTaskWithout,
   type KinActivityLine,
   type KinNextStepAct,
   type KinRecordChipTone,
@@ -143,6 +145,8 @@ import { useKinGate, useKinHostAt } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 import { KinWatchLine } from "./KinWatchLine";
+import { KinTaskWithRows } from "./components/KinTaskWithRows";
+import { kinTaskLeftAtom } from "./state/kinTaskLeft";
 
 export type KinWorkItemParams = {
   readonly environmentId: string;
@@ -496,7 +500,42 @@ function KinWorkItemBody(props: ItemTarget) {
   const heldBy = kinRecordWho(item.owner, names);
   const briefBy = kinBriefBy(shown, names, now);
   const chip = kinRecordChip(shown, view, names, now);
-  const folded = kinTaskPeopleFolded(shown, step);
+  const folded = kinTaskPeopleFolded(shown, step, names);
+  const withView = kinTaskWith({
+    item: shown,
+    names,
+    edit: view.can.edit,
+    change: act !== null,
+    joined,
+    invited,
+  });
+  // The fold names who's on it only when the reader is: then their With line folds with Held by.
+  const withFolded =
+    folded?.held === true &&
+    !peopleOpen &&
+    (shown.alsoOn ?? []).some((who) => who._tag === "person" && who.personId === names.me);
+  const leave = async (action: KinWorkAction) => {
+    if (!(await changes.run(item, action, names))) return;
+    const { notice, answers } = changes.getState();
+    const answer = answers[item.key];
+    if (notice !== null && answer !== undefined)
+      appAtomRegistry.set(kinTaskLeftAtom, {
+        environmentId,
+        orgId,
+        record: answer,
+        undo: notice.undo,
+        text: notice.text,
+      });
+    // They may no longer see it: Tasks says so, with its Undo.
+    back();
+  };
+  const setWith = (said: "removed" | "left", key: string) => {
+    const who = withView.people.find((one) => one.key === key)?.principal;
+    if (who === undefined) return;
+    const action = { type: "alsoOn" as const, alsoOn: kinTaskWithout(shown, who), who, said };
+    if (said === "left") void leave(action);
+    else act?.(action);
+  };
   const controls = kinTaskControls({
     view,
     change: act !== null,
@@ -794,6 +833,25 @@ function KinWorkItemBody(props: ItemTarget) {
             onOpen={openChat}
           />
         ) : null}
+        {withFolded || (withView.people.length === 0 && !withView.add) ? null : (
+          <KinTaskWithRows
+            with={withView}
+            saving={saving}
+            onAdd={() =>
+              navigation.navigate("KinWorkAssign", {
+                environmentId,
+                orgId,
+                task: itemKey,
+                with: "yes",
+              })
+            }
+            onRemove={(key) => setWith("removed", key)}
+            onLeave={() => {
+              const me = withView.people.find((one) => one.act === "leave");
+              if (me !== undefined) setWith("left", me.key);
+            }}
+          />
+        )}
         {act === null || controls.page.status === null ? null : (
           <KinWorkStatusRow
             view={view}

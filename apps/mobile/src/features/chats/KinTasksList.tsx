@@ -1,3 +1,4 @@
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
@@ -11,6 +12,7 @@ import {
   KIN_TASK_MORE_VIEWS,
   kinTaskFilterProjects,
   kinTaskQuickFilters,
+  kinTasksOnCount,
   KIN_TASKS,
   kinNeedsYouCount,
   kinTaskGroupedChip,
@@ -105,6 +107,7 @@ import {
 } from "./components/KinWorkPieces";
 import { useKinViewerScope } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
+import { kinTaskLeftAtom } from "./state/kinTaskLeft";
 import { useKinOpenHit, useKinWorkLink } from "./state/kinWorkLink";
 import { useKinSearch } from "./state/useKinDocs";
 import { useKinAskAgent } from "./state/useKinMoney";
@@ -159,6 +162,8 @@ export function KinTasksList(
   const hostEdits = kinWorkHostEdits(live.summary);
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)) && hostEdits;
   const now = new Date(useNowMinuteMs());
+  const viewer =
+    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId))?.personId ?? null;
   const [kept] = useState(() =>
     kinTaskLists.take(
       `${environmentId}\u0000${orgId}\u0000${JSON.stringify(props.initial)}`,
@@ -185,6 +190,7 @@ export function KinTasksList(
               .get(kinWorkLiveAtom({ environmentId, orgId }))
               .pipe(AsyncResult.value, Option.getOrNull)?.rows ?? null,
         }),
+      viewer,
     ),
   );
   const list = kept.list;
@@ -211,11 +217,21 @@ export function KinTasksList(
   const { filter } = listState;
   const shown = kinListShown(listState, kinHostLink(useKinHostAt(environmentId)));
   const scope = useKinViewerScope(environmentId);
-  const overview = kinWorkOverview(live.summary, filter, names);
+  const overview = kinWorkOverview(
+    live.summary,
+    filter,
+    names,
+    kinTasksOnCount(listState.records, names.me),
+  );
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
     kinWorkApplied(record, changed),
   );
   const notice = kinWorkListNotice(changed, null);
+  const leftAt = useAtomValue(kinTaskLeftAtom);
+  const left =
+    leftAt !== null && leftAt.environmentId === environmentId && leftAt.orgId === orgId
+      ? leftAt
+      : null;
   const [ticked, setTicked] = useState<ReadonlyArray<KinTaskTicked<KinRecord>>>([]);
   const held = kinTasksTickedShown(ticked, changed, notice);
   // A project's own list is always its project's, so only the rest of the filter is a chip.
@@ -608,6 +624,22 @@ export function KinTasksList(
           }}
         />
       </ScreenContent>
+      {left === null || (notice !== null && notice.undo !== null) ? null : (
+        <KinTasksUndoToast
+          key={`left:${left.record.key}`}
+          text={left.text}
+          bottom={(tab?.bottomClearance ?? 0) + 12}
+          onUndo={
+            left.undo === null
+              ? null
+              : () => {
+                  forgetLeft();
+                  if (left.undo !== null) void changes.run(left.record, left.undo, names);
+                }
+          }
+          onDismiss={forgetLeft}
+        />
+      )}
       {notice === null || notice.undo === null ? null : (
         <KinTasksUndoToast
           key={`${notice.key}:${notice.text}`}
@@ -731,10 +763,10 @@ function KinTasksDoneRow(props: { readonly count: number; readonly onPress: () =
 function KinTasksUndoToast(props: {
   readonly text: string;
   readonly bottom: number;
-  readonly onUndo: () => void;
+  readonly onUndo: (() => void) | null;
   readonly onDismiss: () => void;
 }) {
-  const { onDismiss } = props;
+  const { onDismiss, onUndo } = props;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the Undo stays eight seconds, then the change only lives in the task's Activity
   useEffect(() => {
     const timer = setTimeout(onDismiss, UNDO_MS);
@@ -751,7 +783,7 @@ function KinTasksUndoToast(props: {
         singleLine
         opaque
         message={props.text}
-        action={{ label: KIN_WORK_COPY.undo, onPress: props.onUndo }}
+        {...(onUndo === null ? {} : { action: { label: KIN_WORK_COPY.undo, onPress: onUndo } })}
         dismissMode="swipe"
         onDismiss={onDismiss}
       />
@@ -760,6 +792,9 @@ function KinTasksUndoToast(props: {
 }
 
 const UNDO_MS = 8_000;
+
+/** Stable, so the toast's eight seconds don't start again on every render. */
+const forgetLeft = () => appAtomRegistry.set(kinTaskLeftAtom, null);
 
 /**
  * Tasks' one filter: five at a glance (`kinTaskQuickFilters`), then More filters with the other

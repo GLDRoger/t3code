@@ -197,6 +197,40 @@ describe("createKinWorkChanges", () => {
     expect(h.state().notice).toMatchObject({ text: "Marked urgent.", undo: null });
   });
 
+  it("offers Undo on leaving only to a reader the host lets put people on it", async () => {
+    const zoya = { _tag: "person", personId: KinPersonId.make("invented-zoya") } as const;
+    const can = {
+      states: [],
+      edit: true,
+      party: false,
+      project: false,
+      clearProject: false,
+      give: false,
+      takeBack: false,
+      mark: false,
+      unmark: false,
+      share: false,
+      confirm: false,
+    };
+    const leave = { type: "alsoOn", alsoOn: [zoya], who: me, said: "left" } as const;
+    const left = async (edit: boolean) => {
+      const h = harness();
+      const held = task({ owner: lead, alsoOn: [me, zoya], can: { ...can, edit } });
+      const run = h.changes.run(held, leave, names);
+      h.answer(AsyncResult.success(task({ rev: 4, owner: lead, alsoOn: [zoya] })));
+      expect(await run).toBe(true);
+      return h.state().notice;
+    };
+    expect((await left(true))?.undo).toEqual({
+      type: "alsoOn",
+      alsoOn: [me, zoya],
+      who: me,
+      said: "back",
+    });
+    // Only on it: the host refuses them back, so no Undo promises it.
+    expect(await left(false)).toMatchObject({ kind: "saved", undo: null });
+  });
+
   it("takes a refused change back and says why without the host's wording", async () => {
     const h = harness();
     const held = task();

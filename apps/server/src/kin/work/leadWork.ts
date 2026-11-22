@@ -119,6 +119,7 @@ import {
   notFound,
   overdueFor,
   owedInvoices,
+  isClosed,
   ownerZone,
   principalId,
   recordName,
@@ -633,6 +634,7 @@ export const CreateResult = Schema.Struct({
       alsoNamed: Schema.optional(Schema.String),
       /** Other contacts with the same email. */
       sameEmail: Schema.optional(Schema.Array(Named)),
+      notWoken: Schema.optional(Schema.String),
     }),
   ),
 });
@@ -711,6 +713,8 @@ const Updated = Schema.Struct({
   projectLeft: Schema.optional(Schema.String),
   /** Its notes are a person's: the agent's text went on its activity (`KinRecords.update`). */
   notesKept: Schema.optional(Schema.String),
+  /** Agents put on a closed task: saved there, and never woken for it (`KinRecords.update`). */
+  notWoken: Schema.optional(Schema.String),
   openSteps: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -739,6 +743,7 @@ export const UpdateResult = Schema.Struct({
   sameEmail: Updated.fields.sameEmail,
   projectLeft: Updated.fields.projectLeft,
   notesKept: Updated.fields.notesKept,
+  notWoken: Updated.fields.notWoken,
   openSteps: Updated.fields.openSteps,
   entries: Schema.optional(Schema.Array(Updated)),
 });
@@ -750,7 +755,13 @@ const Why = KinToolText(
 export const AssignInput = Schema.Struct({
   sourceEventId: TurnEvent,
   tasks: Schema.Array(
-    Schema.Struct({ key: KinRecordKey, to: Who, reason: Why, due: Schema.optional(Due) }),
+    Schema.Struct({
+      key: KinRecordKey,
+      to: Who,
+      reason: Why,
+      due: Schema.optional(Due),
+      alsoOn: SpineInputs.alsoOn,
+    }),
   ).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
   tell: Tell,
 });
@@ -782,12 +793,28 @@ export const HandBackResult = Schema.Struct({
 });
 
 export type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
+export const CLOSED_NOT_WOKEN = "Saved; it is closed, so nobody was woken.";
+/** Another agent this write put on a task that is closed: it stays on and is never woken for it. */
+const closedNotWoken = (
+  lead: Lead,
+  was: ReadonlyArray<string>,
+  after: { readonly state: KinRecordState; readonly fieldsJson: string },
+) =>
+  isClosed(after.state) &&
+  fieldList(parseFields(after.fieldsJson), "alsoOn").some(
+    (text) => text.startsWith("agent:") && text !== `agent:${lead.agentId}` && !was.includes(text),
+  )
+    ? { notWoken: CLOSED_NOT_WOKEN }
+    : {};
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const isKinChatError = Schema.is(KinChatError);
 const isDoc = (key: string) =>
   invalid(`${key.slice(0, 40)} is a doc: read it with doc_read and change it with doc_edit.`);
 
-/** Who the turn's events came from, by stored author: the owner only when every one is the owner's. */
+/**
+ * Who the turn's events came from, by stored author: the owner only when every one is the owner's.
+ * Being put on a task (`joined`) is nobody's ask: it counts for no one.
+ */
 export const askedBy = Effect.fn("KinWorkTools.askedBy")(function* (lead: Lead) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ person: string | null; owner: string }>`
@@ -804,6 +831,7 @@ export const askedBy = Effect.fn("KinWorkTools.askedBy")(function* (lead: Lead) 
       AND m.message_id = json_extract(e.json, '$.messageId')
       AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId} AND e.wakeup_id = ${lead.wakeupId}
+      AND NOT (e.tag = 'record.changed' AND json_extract(e.json, '$.reason') IS 'joined')
     ORDER BY e.event_id`;
   const owner = rows[0]?.owner;
   return owner !== undefined && rows.every((row) => row.person === owner)
@@ -813,22 +841,26 @@ export const askedBy = Effect.fn("KinWorkTools.askedBy")(function* (lead: Lead) 
 
 /**
  * Whether the owner asked in person: `eventId` is their own message or card tap in this turn, not
- * passed on by another lead, and every event in the turn is theirs, so no routine, schedule or
- * report rides with it.
+ * passed on by another lead, and every event in the turn is theirs, so no routine, schedule,
+ * report or being put on a task rides with it.
  */
 export const ownerAsked = Effect.fn("KinWorkTools.ownerAsked")(function* (
   lead: Lead,
   eventId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ tag: string; origin: string | null }>`
-    SELECT tag, json_extract(json, '$.origin') AS origin
+  const [row] = yield* sql<{ tag: string; origin: string | null; joined: number }>`
+    SELECT tag, json_extract(json, '$.origin') AS origin,
+      EXISTS (SELECT 1 FROM kin_events j WHERE j.org_id = kin_events.org_id
+        AND j.agent_id = kin_events.agent_id AND j.wakeup_id = kin_events.wakeup_id
+        AND j.tag = 'record.changed' AND json_extract(j.json, '$.reason') = 'joined') AS joined
     FROM kin_events WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}
       AND wakeup_id = ${lead.wakeupId} AND event_id = ${eventId} ORDER BY event_id`;
   return (
     row !== undefined &&
     (row.tag === "chat.message" || row.tag === "widget.action") &&
     row.origin === null &&
+    row.joined === 0 &&
     (yield* askedBy(lead)) !== null
   );
 });
@@ -2852,6 +2884,7 @@ const createRow = Effect.fnUntraced(function* (
     ...(created && alsoOpen.length > 0 ? { alsoOpen } : {}),
     ...(alsoNamed === undefined ? {} : { alsoNamed }),
     ...(sameEmail === undefined ? {} : { sameEmail }),
+    ...(created ? closedNotWoken(lead, [], stored) : {}),
   };
 });
 const DEAL_FIELDS = ["stage", "source", "lostReason", "concerns"];
@@ -3766,6 +3799,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
       ...(input.notes !== undefined && input.notes !== before.notes && after.notes === before.notes
         ? { notesKept: input.notes.trim() === "" ? NOTES_KEPT_BLANK : NOTES_KEPT }
         : {}),
+      ...closedNotWoken(lead, fieldList(parseFields(before.fieldsJson), "alsoOn"), after),
       ...(written.projectId === undefined && before.projectKey !== null && after.projectId === null
         ? {
             projectLeft: `${before.projectKey} is another client's project, so ${after.key} is on no project now. Give it a project of its client with project if it needs one.`,
@@ -3806,6 +3840,7 @@ const runAssign = Effect.fnUntraced(function* (lead: Lead, input: typeof AssignI
           owner: task.to,
           reason: task.reason,
           ...(task.due === undefined ? {} : { due: task.due }),
+          ...(task.alsoOn === undefined ? {} : { alsoOn: task.alsoOn }),
           ...(input.tell === undefined ? {} : { tell: input.tell }),
         });
         const after = yield* records.get(lead.orgId, task.key);

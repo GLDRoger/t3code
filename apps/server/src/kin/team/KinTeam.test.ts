@@ -40,6 +40,7 @@ import { agentServices } from "../mcp/KinChatToolkit.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
 import { wakeEvent } from "../lead/ChatWake.ts";
 import * as Handoff from "../lead/Handoff.ts";
+import { markOutside, stampReads } from "../lead/OutsideContent.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
@@ -297,7 +298,9 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
         "It isn't your turn in any Team-room discussion.",
       );
 
-      yield* wake("finance");
+      // Finance read the printer's page before it answered: the turn it wakes carries that read.
+      const financeWake = yield* wake("finance");
+      yield* markOutside({ orgId, wakeupId: financeWake }, "web:printer.example");
       const answer = yield* callAs("finance", "team_say", {
         text: "₹15,200 for 400 is over the ₹12,000 print budget. 300 copies fit at ₹11,400.",
         intent: "answer",
@@ -306,6 +309,14 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
       // Social answers (it spoke last); Growth, whose lane "expo" leads touch, may pitch in once.
       const keys = (yield* teamWakes(sql, orgId)).map(({ key }) => key);
       assert.match(keys.at(-1)!, /^team:TD-1:\d+:social:named$/);
+      const marks = yield* sql<{ key: string; source: string | null }>`SELECT e.dedupe_key AS key,
+          o.outside_from AS source FROM kin_events e LEFT JOIN kin_event_outside o
+          ON o.org_id = e.org_id AND o.event_id = e.event_id
+        WHERE e.org_id = ${orgId} AND e.dedupe_key LIKE 'team:%' ORDER BY e.rowid`;
+      // Social's opening words read nothing, so nothing marked them before Finance's read.
+      assert.deepStrictEqual(stampReads(marks.at(-1)!.source ?? ""), [
+        { k: "web", host: "printer.example" },
+      ]);
 
       yield* wake("social");
       const back = yield* callAs("social", "team_say", {

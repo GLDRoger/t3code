@@ -27,19 +27,45 @@ export const dismissedHold = Effect.fn("KinDismissedHold.of")(function* (
   return held?.name;
 });
 
-/** Whether `personId`'s own chat message or card tap is among the events that woke this turn. */
+/**
+ * Whether a person's own chat message or card tap is among the events that woke this turn:
+ * `personId`'s, or with none given, anyone's.
+ */
 export const personInTurn = Effect.fn("KinDismissedHold.personInTurn")(function* (
   orgId: string,
   agentId: string,
   wakeupId: string,
-  personId: string,
+  personId?: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql`SELECT 1 FROM kin_events e
     JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
     WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
       AND e.tag IN ('chat.message', 'widget.action')
-      AND m.author_kind = 'human' AND m.author_person_id = ${personId}
+      AND m.author_kind = 'human' AND m.author_person_id IS NOT NULL
+      ${personId === undefined ? sql`` : sql`AND m.author_person_id = ${personId}`}
+    LIMIT 1`;
+  return rows.length > 0;
+});
+
+/**
+ * Whether a person's own words woke this turn: their message or card tap in the chat the event
+ * names, not an agent-made event (`$.origin`) and not Kin's copy of group words taken private.
+ */
+export const personSpokeInTurn = Effect.fn("KinDismissedHold.personSpokeInTurn")(function* (
+  orgId: string,
+  agentId: string,
+  wakeupId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_events e
+    JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+      AND m.chat_id = json_extract(e.json, '$.chatId')
+      AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
+    WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
+      AND e.tag IN ('chat.message', 'widget.action') AND json_extract(e.json, '$.origin') IS NULL
+      AND m.author_kind = 'human' AND m.author_person_id IS NOT NULL
+      AND COALESCE(m.client_message_id, '') NOT LIKE 'send:private:%'
     LIMIT 1`;
   return rows.length > 0;
 });
