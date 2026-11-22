@@ -891,6 +891,127 @@ it.effect("a held message follows its reader's changed clock", () =>
   ),
 );
 
+// Ambermill, 22 Nov: a long message held for a teammate's next morning was sent again as urgent,
+// and the held copy stayed queued to arrive a second time.
+it.effect("an urgent message replaces what the agent held for them from the same chat", () =>
+  Effect.andThen(
+    // Monday 18:30 in India: Zoya, there, works 10:00 to 18:00, so a relay waits for Tuesday.
+    TestClock.setTime(Date.UTC(2026, 10, 16, 13)),
+    Effect.gen(function* () {
+      const services = Option.getOrThrow((yield* Kin.KinServer).services);
+      const identity = Context.get(services, KinIdentity);
+      const chats = Context.get(services, KinChatService);
+      const sql = yield* SqlClient.SqlClient;
+      yield* pairSession(AuthSessionId.make("owner"));
+      const [resolved] = yield* identity.resolve({
+        sessionId: AuthSessionId.make("owner"),
+        subject: "browser",
+        method: "browser-session-cookie",
+        scopes: AuthStandardClientScopes,
+      });
+      const owner = resolved!;
+      const { orgId } = owner;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+          access, time_zone, work_hours_json)
+        VALUES ('zoya', ${orgId}, 'zoya', 'Zoya Sheikh', ${at}, 'member', 'Asia/Kolkata',
+          '{"days":[1,2,3,4,5],"start":"10:00","end":"18:00"}')`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+          access, time_zone)
+        VALUES ('meera', ${orgId}, 'meera', 'Meera Iyer', ${at}, 'co_owner', 'Asia/Kolkata')`;
+      yield* signIn(orgId, "zoya");
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 'lead', ${owner.personId}, ${at})`;
+      yield* identity.registerAgentThread({ orgId, agentId: chief, threadId });
+      const ownerChat = (yield* chats.createDirect(owner, { orgId, agentId: chief })).chatId;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+          worker_projects_json, owner_chat_id, domain)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 0, ${threadId}, '{}', '[]', ${ownerChat},
+          'chief-of-staff')`;
+      yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+        VALUES (${orgId}, ${chief}, ${owner.personId}, 0)`;
+      const person = (id: string) => ({
+        _tag: "person" as const,
+        orgId,
+        personId: KinPersonId.make(id),
+      });
+      const zoyasChat = (yield* chats.createDirect(person("zoya"), { orgId, agentId: chief }))
+        .chatId;
+      const meerasChat = (yield* chats.createDirect(person("meera"), { orgId, agentId: chief }))
+        .chatId;
+      const says = Effect.fn("test.says")(function* (
+        who: typeof owner | ReturnType<typeof person>,
+        chatId: KinChatId,
+        body: string,
+      ) {
+        const message = yield* chats.send(who, { chatId, body, clientMessageId: body });
+        return `event:${yield* startAgentWakeup({ orgId, agentId: chief, threadId, message })}`;
+      });
+      const waiting = sql<{ body: string }>`SELECT body FROM kin_held_posts
+        WHERE org_id = ${orgId} AND person_id = 'zoya' AND delivered_at IS NULL ORDER BY held_at`;
+      const inHerChat = (text: string) =>
+        sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages
+          WHERE org_id = ${orgId} AND chat_id = ${zoyasChat} AND body = ${text}`.pipe(
+          Effect.map((rows) => rows[0]!.n),
+        );
+
+      // A message with the pointers asked for is well past a line; past 2,000 it is refused.
+      const pointers = Array.from(
+        { length: 9 },
+        (_, n) => `Pointer ${n + 1}: open Tasks, pick the Lumen Grove brochure, and add a note.`,
+      ).join(" ");
+      assert.isAbove(pointers.length, 600);
+      const ask = yield* says(owner, ownerChat, "Give Zoya some pointers for using Kin.");
+      const tooLong = yield* Effect.flip(
+        call("kin_relay", { to: "Zoya", text: "x".repeat(2_001), sourceEventId: ask }),
+      );
+      assert.include(tooLong.message, "text is 2001 characters; at most 2000");
+      const first = yield* call("kin_relay", { to: "Zoya", text: pointers, sourceEventId: ask });
+      assert.isTrue(first.ok, JSON.stringify(first.value));
+      // Meera's own request to her, held from another chat, is not this one.
+      const meeras = yield* says(person("meera"), meerasChat, "Tell Zoya the call moved.");
+      const other = yield* call("kin_relay", {
+        to: "Zoya",
+        text: "The Lumen Grove call moved to Thursday.",
+        sourceEventId: meeras,
+      });
+      assert.isTrue(other.ok, JSON.stringify(other.value));
+      assert.deepStrictEqual(yield* waiting, [
+        { body: pointers },
+        { body: "The Lumen Grove call moved to Thursday." },
+      ]);
+      // As an older build left it: the held copy stays after the urgent one went.
+      yield* sql`CREATE TEMP TABLE old_hold AS SELECT * FROM kin_held_posts
+        WHERE org_id = ${orgId} AND body = ${pointers}`;
+
+      const now = yield* says(owner, ownerChat, "Alert her today anyway.");
+      const urgent = yield* call("kin_relay", {
+        to: "Zoya",
+        text: pointers,
+        sourceEventId: now,
+        urgent: "The owner asked for it today",
+      });
+      assert.isTrue(urgent.ok, JSON.stringify(urgent.value));
+      assert.strictEqual(
+        urgent.value.note,
+        "Sent in Zoya Sheikh's chat with you; their answer arrives there. This replaced your held message to Zoya Sheikh.",
+      );
+      assert.deepStrictEqual(yield* waiting, [{ body: "The Lumen Grove call moved to Thursday." }]);
+      assert.strictEqual(yield* inHerChat(pointers), 1);
+
+      // Her morning: what an older build held is dropped, as its urgent twin went; Meera's goes.
+      yield* sql`INSERT INTO kin_held_posts SELECT * FROM old_hold`;
+      yield* TestClock.setTime(Date.UTC(2026, 10, 17, 4, 30));
+      assert.strictEqual(yield* deliverHeld(orgId, chats), 1);
+      assert.strictEqual(yield* inHerChat(pointers), 1);
+      assert.strictEqual(yield* inHerChat("The Lumen Grove call moved to Thursday."), 1);
+      assert.deepStrictEqual(
+        yield* sql`SELECT body FROM kin_held_posts WHERE org_id = ${orgId} AND body = ${pointers}`,
+        [],
+      );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 it.effect(
   "a teammate says she is away in her own chat: what waits for her goes once she is back",
   () =>

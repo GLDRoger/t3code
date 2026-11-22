@@ -99,7 +99,7 @@ export class KinLevelGate extends Context.Service<
       agent: AgentIdentity,
       personId: KinPersonId,
       input: PostToInput,
-    ) => Effect.Effect<KinMessage | HeldPost, KinChatError>;
+    ) => Effect.Effect<(KinMessage & { readonly replaced?: number }) | HeldPost, KinChatError>;
     /** The turn's one reply grows by its next segment, gated like the post that began it. */
     readonly extend: (
       agent: AgentIdentity,
@@ -496,12 +496,19 @@ const make = Effect.gen(function* () {
         input.chatId,
         Effect.gen(function* () {
           const where = { orgId: agent.orgId, personId, chatId: input.chatId };
+          const replaced =
+            input.urgent === undefined
+              ? 0
+              : yield* urgentNow({
+                  ...where,
+                  agentId: agent.agentId,
+                  wakeupId: agent.wakeupId,
+                  reason: input.urgent,
+                });
           const held =
             input.urgent === undefined
               ? yield* holdFor({ ...where, notBefore: input.notBefore })
-              : yield* urgentNow({ ...where, agentId: agent.agentId, reason: input.urgent }).pipe(
-                  Effect.as(undefined),
-                );
+              : undefined;
           if (held !== undefined)
             return {
               _tag: "held" as const,
@@ -517,7 +524,7 @@ const make = Effect.gen(function* () {
                 relay: input.relay,
               }),
             };
-          return yield* chat.send(agent, {
+          const sent = yield* chat.send(agent, {
             chatId: input.chatId,
             clientMessageId: input.clientMessageId,
             body: input.body,
@@ -525,6 +532,7 @@ const make = Effect.gen(function* () {
             forChat: true,
             ...(input.relay === undefined ? {} : { relay: input.relay }),
           });
+          return replaced === 0 ? sent : { ...sent, replaced };
         }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
         { personId, text: input.body },
       ),

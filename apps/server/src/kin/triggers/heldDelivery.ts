@@ -7,6 +7,7 @@ import {
   type KinPersonId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -18,7 +19,7 @@ import { turnChat } from "../lead/Audience.ts";
 import * as Reach from "../lead/Reach.ts";
 import type { KinPushSender } from "../push/KinPushSender.ts";
 import { heldGivenBody, isGivenHeld, TASK_NEWS } from "../work/assignNotices.ts";
-import { personQuietUntil } from "./quietHold.ts";
+import { ANSWERS_WITHIN_MS, personQuietUntil, relayWakeup, sameAsk } from "./quietHold.ts";
 
 /** A delivered held line's message id is this before its first hold's id. */
 export const HELD_ID = "kin-held:";
@@ -54,8 +55,11 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
     agentId: KinAgentId | null;
     waits: number;
     relay: string | null;
+    heldAt: number;
+    deliverAt: number;
   }>`SELECT hold_id AS "holdId", chat_id AS "chatId", person_id AS "personId", kind, body, audience,
-      agent_id AS "agentId", waits, relay_json AS relay
+      agent_id AS "agentId", waits, relay_json AS relay, held_at AS "heldAt",
+      deliver_at AS "deliverAt"
     FROM kin_held_posts
     WHERE org_id = ${orgId} AND delivered_at IS NULL AND deliver_at <= ${now}
       AND substr(kind, 1, ${TASK_NEWS.length}) != ${TASK_NEWS}
@@ -86,6 +90,10 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
         )
       : [...new Set(group.map((row) => row.body))].join("\n\n");
     if (body === undefined) {
+      yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+      continue;
+    }
+    if (yield* urgentSince(orgId, first)) {
       yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
       continue;
     }
@@ -203,6 +211,41 @@ type Held = {
   readonly agentId: KinAgentId | null;
   readonly relay: string | null;
 };
+
+/**
+ * Whether, while this relay waited, its agent sent them an urgent one raised from the same chat:
+ * posted in their chat before this was due, not answering anything they wrote. Read at delivery,
+ * so it covers lines held before `urgentNow` withdrew them at send.
+ */
+const urgentSince = Effect.fn("KinQuiet.urgentSince")(function* (
+  orgId: KinOrgId,
+  held: Held & { readonly chatId: string; readonly heldAt: number; readonly deliverAt: number },
+) {
+  const wakeupId = relayWakeup(held.kind);
+  if (wakeupId === undefined || held.agentId === null) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const iso = (at: number) => DateTime.formatIso(DateTime.makeUnsafe(at));
+  const sent = yield* sql<{ key: string; at: string }>`SELECT
+      COALESCE(substr(client_message_id, 6), message_id) AS key, created_at AS at
+    FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${held.chatId}
+      AND author_kind = 'agent' AND author_agent_id = ${held.agentId} AND status = 'posted'
+      AND created_at > ${iso(held.heldAt)} AND created_at < ${iso(held.deliverAt)}
+      AND (substr(message_id, 1, 10) = 'kin-relay:'
+        OR substr(client_message_id, 1, 15) = 'send:kin-relay:')
+    ORDER BY seq`;
+  for (const row of sent) {
+    const twin = relayWakeup(row.key);
+    if (twin === undefined || !(yield* sameAsk(orgId, held.agentId, wakeupId, twin))) continue;
+    const at = Date.parse(row.at);
+    const [answered] = yield* sql`SELECT 1 FROM kin_messages
+      WHERE org_id = ${orgId} AND chat_id = ${held.chatId} AND author_person_id = ${held.personId}
+        AND origin_json IS NULL AND created_at > ${iso(at - ANSWERS_WITHIN_MS)}
+        AND created_at <= ${row.at}
+      LIMIT 1`;
+    if (answered === undefined) return true;
+  }
+  return false;
+});
 
 /** The pair a held line from an agent may no longer cross, by name; undefined when it may. */
 const restrictedSince = Effect.fn("KinQuiet.restrictedSince")(function* (
