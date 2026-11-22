@@ -168,7 +168,8 @@ echo "backups $(ls "$UPDATE_BACKUPS" | tr '\n' ' ')"`);
 percent_left() { echo 50; }
 TMPDIR="$FIXTURE/kin-tmp" main --tmpdir-only
 echo "left $(left)"`);
-    expect(out[0], said).toBe("Cleared 1 old temporary item(s) and gave back 0 KB.");
+    // An empty entry is 0 KB on APFS and one 4 KB block on ext4.
+    expect(out[0], said).toMatch(/^Cleared 1 old temporary item\(s\) and gave back [04] KB\.$/);
     expect(out[1]).toMatch(/^left kin-tmp\/fresh outside\/keep tmp\/busy-work tmp\/cache /);
   });
 
