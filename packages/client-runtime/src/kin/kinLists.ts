@@ -287,7 +287,7 @@ export const kinCategoryLabel = (
 ) => def?.categoryLabels?.[category] ?? category;
 
 /** "Today" reads as "today" after a label; a date keeps its capitals. */
-const afterLabel = (when: string) =>
+export const afterLabel = (when: string) =>
   /^(Today|Tomorrow|Yesterday)/.test(when) ? when.charAt(0).toLowerCase() + when.slice(1) : when;
 
 /** Totals in a sentence: "₹4,20,000 and $13", or "Nothing". */

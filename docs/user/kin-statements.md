@@ -33,11 +33,15 @@ One review card shows the statement in three groups:
   the invoice less 10% or 2% shows as paid with TDS deducted, and records the TDS as its own
   line. Untick any you want to leave.
 - **Paying a partner back**: a debit whose narration names a partner and that adds up exactly to
-  their oldest expenses still owed shows as repaying them. One payment often covers several.
-  Confirm marks those expenses repaid on the debit's day and links them to its bank row. If any of
-  them was edited, voided or repaid since Kin read the statement, Confirm records nothing and asks
-  you to read it again. A debit that doesn't name the partner is never offered as repaying them,
-  and expenses a partner paid themselves are never matched to the company's own debits.
+  their oldest expenses still owed, less refunds on them, shows under Matched as repaying them.
+  One payment often covers several. A credit from a partner whose refunds outweigh what they paid
+  settles with them the same way. Confirm marks those expenses repaid on the row's day and links
+  them to its bank row. If any of them was edited, voided or repaid since Kin read the statement,
+  Confirm records nothing and asks you to read it again. A row that names a partner but adds up to
+  none of their oldest expenses stays in Not matched, left for later, with what they're owed beside
+  it: mark what it paid back on those expenses yourself. A debit that doesn't name the partner is
+  never offered as repaying them, and expenses a partner paid themselves are never matched to the
+  company's own debits.
 - **Pick a match**: rows that fit more than one entry. Pick one, or leave it for later.
 - **Not matched**: each row starts as left for later, with what Kin suggests beside it. Make a
   debit a new expense, mark a row a transfer between your own accounts, or ignore it. **Use

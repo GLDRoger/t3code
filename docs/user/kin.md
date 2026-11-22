@@ -410,13 +410,22 @@ hosting", "the GST filing is due on the 20th". It records the entry and answers 
 - **Statements.** Send your bank or card statement in a chat to match its rows to invoices and
   expenses. See [Bank and card statements](./kin-statements.md).
 - **Paid by a partner.** When a partner pays a company expense from their own money, set **Funded
-  by** on the expense to that partner, in **Add → Expense** or on the expense itself. Leave it
-  empty when the company paid. Its **Reimbursement** reads **owed** until the company pays the
-  partner back. Then set it to **repaid**, with the day in **Repaid on**. Choose **not
-  reimbursable** when the partner won't be paid back. Expenses imported with a partner's email
-  address but no Kin person to match show as owed to that address. In **Next 30 days**, **Owed to
-  partners** lists each partner. Pick **Who is this?** beside an address, or beside expenses marked
-  owed with no partner, to set that teammate as Funded by on all of them. The accountant's pack has
+  by** on the expense to that partner, in **Add → Expense** or on the expense itself. Leave it as
+  **The company** when the company paid. Its **Reimbursement** reads **owed** until the company
+  pays the partner back. A bank statement row that repays them marks it **repaid** for you (see
+  [Bank and card statements](./kin-statements.md)); or set it yourself, with the day in **Repaid
+  on**. Choose **not reimbursable** when the partner won't be paid back. A refund on something a
+  partner paid for, entered as a minus amount funded by them, comes off what they're owed. In
+  **Next 30 days**, **Owed to partners** lists each partner, per currency. Pick **Who is this?**
+  beside expenses marked owed with an address or no partner, to set that teammate as Funded by on
+  all of them.
+- **Imported expenses a partner paid.** An import can say a partner paid with an email address,
+  without saying who that is in Kin or whether they were paid back. Until you say, those expenses
+  count as the company's own spending, as they did before. **Paid personally, not counted as owed
+  yet** under **Next 30 days** lists each address. Pick **Say who paid**, choose the teammate, and
+  say whether the company still owes them or already paid them back. **Still owed** counts them as
+  going out now; **Already paid back** changes no figure. The same address with other capitals or
+  spaces is one address. The accountant's pack has
   an **Owed to partners** sheet with what was owed at the month's end and what was repaid in it.
   Ask "what do we owe the partners?" for each partner's total and oldest expenses. The outlook
   counts what partners are owed as going out now. Runway, Money's spent this month and the weekly

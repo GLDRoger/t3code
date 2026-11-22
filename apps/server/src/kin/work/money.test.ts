@@ -3632,6 +3632,7 @@ describe("an expense typed by hand", () => {
               vendor: "Invented Couriers",
               paidWith: "upi",
               fundedBy: `person:${ownerId}`,
+              reimbursement: "owed",
               receipt: ["att-1-0"],
             },
           ],

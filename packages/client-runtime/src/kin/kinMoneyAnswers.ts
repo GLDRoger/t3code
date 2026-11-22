@@ -20,6 +20,7 @@ import * as Schema from "effect/Schema";
 
 import { kinEstimate, type KinRates } from "./kinCurrency.ts";
 import {
+  afterLabel,
   kinBankKnownText,
   kinCategoryLabel,
   kinMoneyText,
@@ -118,7 +119,7 @@ export const KIN_OUTLOOK = {
   sayTitle: (address: string) => `Who is ${address}?`,
   sayDetail: (count: number, amount: string) =>
     `An import says this address paid ${amount} across ${count} expense${count === 1 ? "" : "s"} from their own money. Until you say, Money counts them as the company's own spending.`,
-  paidBy: "Paid by",
+  paidBy: "Teammate",
   pickPerson: "Pick a teammate",
   settledQuestion: "Has the company paid them back?",
   stillOwed: "Still owed",
@@ -457,7 +458,7 @@ export function kinOutlookView(
       amount: kinTotalsLines(one.owed).join(" + "),
       note:
         one.personId !== null
-          ? KIN_OUTLOOK.partnerNote(one.expenses, onLabel(one.oldest, now))
+          ? KIN_OUTLOOK.partnerNote(one.expenses, afterLabel(onLabel(one.oldest, now)))
           : one.address === null
             ? KIN_OUTLOOK.nameless
             : KIN_OUTLOOK.unmatched,
@@ -467,7 +468,7 @@ export function kinOutlookView(
       address: one.address,
       amount: kinTotalsLines(one.total).join(" + "),
       expenses: one.expenses,
-      note: KIN_OUTLOOK.unsaidNote(one.expenses, onLabel(one.oldest, now)),
+      note: KIN_OUTLOOK.unsaidNote(one.expenses, afterLabel(onLabel(one.oldest, now))),
     })),
   };
 }

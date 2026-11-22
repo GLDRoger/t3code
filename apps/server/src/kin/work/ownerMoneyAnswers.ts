@@ -442,7 +442,9 @@ export const newExpense = Effect.fn("KinMoneyAnswers.rpc.newExpense")(function* 
   const fields = {
     ...(input.vendor === undefined ? {} : { vendor: input.vendor }),
     ...(input.paidWith === undefined ? {} : { paidWith: sameWord(paidWith, input.paidWith)! }),
-    ...(input.fundedBy === undefined ? {} : { fundedBy: `person:${input.fundedBy}` }),
+    ...(input.fundedBy === undefined
+      ? {}
+      : { fundedBy: `person:${input.fundedBy}`, reimbursement: "owed" }),
     ...(input.receipt === undefined || input.receipt.length === 0
       ? {}
       : { receipt: [...input.receipt] }),
