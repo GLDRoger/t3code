@@ -133,6 +133,7 @@ const writer = Layer.mock(Writer.MemoryWriter)({
 });
 const decodeWrite = Schema.decodeUnknownEffect(Lead.WriteInput);
 const decodeDefer = Schema.decodeEffect(Lead.DeferInput);
+const decodeSchedule = Schema.decodeEffect(Lead.ScheduleInput);
 const withTeamMemory = (env: Record<string, string>) =>
   Lead.layer.pipe(
     Layer.provide(recordingSchedules([], [])),
@@ -741,7 +742,7 @@ it.effect(
         SHARED_REFUSAL,
       );
       // Who may set a routine is unchanged: an owner-level person's own message.
-      const routine = yield* Schema.decodeEffect(Lead.ScheduleInput)({
+      const routine = yield* decodeSchedule({
         what: "Invented: post what is open here",
         at: "09:00",
         days: [1],

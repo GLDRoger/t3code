@@ -713,11 +713,10 @@ const make = Effect.gen(function* () {
           }),
       )
       .map((person) => ({ personId: person.personId, silent: person.muted }));
-    // On their own clock: what someone timed rings whatever the hour in their direct chat, and in a
-    // chat with others outside each reader's quiet hours; in quiet hours nothing else does (a
-    // teammate's word rings at their end, `later`); off hours, only a person or an answer.
-    // Kin's word on their own work or a default it took for them rings past the half hour cap
-    // that holds anything else from Kin or an agent.
+    // Each on their own clock: a timed line rings any hour in a direct chat, else outside quiet
+    // hours; in quiet hours nothing else does (a teammate's word rings at their end, `later`); off
+    // hours, only a person, an answer or a timed line. Kin's word on their own work or a default it
+    // took for them rings past the half hour cap on anything else from Kin or an agent.
     const recipients: Array<Recipient> = [];
     const later: Array<KinPersonId> = [];
     let answersAnyone = false;
