@@ -2213,16 +2213,17 @@ describe("Kin migrations", () => {
         const sql = yield* SqlClient.SqlClient;
         yield* runKinMigrations();
         yield* sql`DROP TABLE kin_company_shell`;
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 206`;
+        // Later migrations run after it again; only K206 is this test's.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 206`;
         yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Ambermill', '2026-11-22')`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[206, "CompanyShell"]]);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(206));
         const shells = sql`SELECT org_id, shell_json, rev, set_by, set_at
         FROM kin_company_shell ORDER BY org_id`;
         assert.deepStrictEqual(yield* shells, []);
         const sections = '[{"id":"deals","on":false}]';
         yield* sql`INSERT INTO kin_company_shell VALUES ('org', ${sections}, 1, 'rhea', 1)`;
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 206`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[206, "CompanyShell"]]);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 206`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(206));
         assert.deepStrictEqual(yield* shells, [
           { org_id: "org", shell_json: sections, rev: 1, set_by: "rhea", set_at: 1 },
         ]);
