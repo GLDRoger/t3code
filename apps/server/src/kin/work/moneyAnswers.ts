@@ -18,7 +18,7 @@ import {
   startOfDay,
 } from "./recordRows.ts";
 import { nextDates, repeatsBetween } from "./repeat.ts";
-import { companyCashOut, partnerFunded, repaidDay } from "./reimbursement.ts";
+import { companyCashOut, partnerRepaidDay, repaidDay } from "./reimbursement.ts";
 import { partnersOwed } from "./partnersOwed.ts";
 import { alertsBeside, type AlertBalance } from "./statements/bankAlerts.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
@@ -97,7 +97,7 @@ const recordedMoney = Effect.fn("KinMoneyAnswers.recorded")(function* (
   // A partner's expense leaves the company's accounts on the day it is paid back, if ever.
   const spent = yield* sql<{ minor: number; currency: string; at: number; repaid: string | null }>`
     SELECT r.amount_minor AS minor, r.currency, ${moneyDay(sql)} AS at,
-      CASE WHEN ${partnerFunded(sql)} THEN ${repaidDay(sql)} END AS repaid
+      ${partnerRepaidDay(sql)} AS repaid
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
       AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${companyCashOut(sql)}
@@ -639,7 +639,7 @@ const runway = Effect.fn("KinMoneyAnswers.runway")(function* (
     WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
       AND r.register_id IN ('invoices', 'receipts')
     GROUP BY p.currency ORDER BY p.currency`;
-  const repaid = sql`CASE WHEN ${partnerFunded(sql)} THEN ${repaidDay(sql)} END`;
+  const repaid = partnerRepaidDay(sql);
   const spentFirst = yield* sql<{ currency: string; at: number | null; repaid: string | null }>`
     SELECT r.currency, MIN(CASE WHEN ${repaid} IS NULL THEN ${moneyDay(sql)} END) AS at,
       MIN(${repaid}) AS repaid

@@ -301,7 +301,7 @@ export type KinNewExpenseInput = typeof KinNewExpenseInput.Type;
 export const KinNewExpenseResult = Schema.Struct({ expense: KinRecordKey });
 export type KinNewExpenseResult = typeof KinNewExpenseResult.Type;
 
-/** The owner says which person an import's partner address is; their expenses take that funder. */
+/** The owner or a co-owner says which person an import's partner address is; its expenses take that funder. */
 export const KinMatchPartnerInput = Schema.Struct({
   orgId: KinOrgId,
   address: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),

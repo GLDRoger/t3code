@@ -57,6 +57,7 @@ import {
 } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
+import { weeklyFigures } from "../pulse/weekly.ts";
 import { checkFields, listDef, presetList, proposalFor } from "./registers.ts";
 import { ensureBankList } from "./statements/bankList.ts";
 import { waitLine } from "./statements/passwordBudget.ts";
@@ -5145,6 +5146,8 @@ describe("money answers", () => {
         const sql = yield* SqlClient.SqlClient;
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
           VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at})`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('co-owner', ${orgId}, 'co', 'Co', ${at}, 'co_owner')`;
         yield* defined(3, { template: "expenses" });
         const records = yield* KinRecords.KinRecords;
         const spend = (key: string, day: string, rupees: number, fields = {}) =>
@@ -5173,9 +5176,11 @@ describe("money answers", () => {
         const { row: imported } = yield* spend("imported", "2026-09-01", 3_000, {
           reimbursement: "owed",
         });
-        // As K205 left an import's row: its partner's address, and no Kin person for it.
+        // As K205 left an import's row: its partner's address, and no Kin person for it. A CSV's
+        // tab, CR and NBSP and a non-ASCII capital, which SQLite's trim and lower would keep.
+        const raw = "\tPARTNÉR@Invented.example\u00a0\r";
         yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.paidPersonallyBy',
-            'partner@invented.example') WHERE key = ${imported.key}`;
+            ${raw}) WHERE key = ${imported.key}`;
 
         const view = outlookAnswer(yield* outlook(orgId, NOW));
         assert.deepStrictEqual(
@@ -5184,7 +5189,7 @@ describe("money answers", () => {
         );
         assert.deepStrictEqual(view.owedToPartnersCountedAsGoingOut, [
           { partner: "Meera", owed: "₹5,000.00", expenses: 1 },
-          { partner: "partner@invented.example (unmatched)", owed: "₹3,000.00", expenses: 1 },
+          { partner: "partnér@invented.example (unmatched)", owed: "₹3,000.00", expenses: 1 },
         ]);
         // Repaid in October, so not September's; owed and given never left the company.
         assert.deepStrictEqual(
@@ -5197,18 +5202,34 @@ describe("money answers", () => {
         );
 
         const teammate = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("meera") }];
+        const coOwner = [
+          { _tag: "person" as const, orgId, personId: KinPersonId.make("co-owner") },
+        ];
+        // As the picker sends it: the address as Money grouped it.
         const match = {
           orgId,
-          address: " Partner@Invented.example",
+          address: "partnér@invented.example",
           personId: KinPersonId.make("meera"),
         };
         assert.strictEqual(
           (yield* Effect.flip(OwnerMoneyAnswers.matchPartner(teammate, match)))._tag,
           "KinChatError",
         );
-        assert.deepStrictEqual(yield* OwnerMoneyAnswers.matchPartner(people, match), {
+        assert.match(
+          (yield* Effect.flip(
+            OwnerMoneyAnswers.matchPartner(people, { ...match, address: "other@invented.example" }),
+          )).message,
+          /No expense owed to a partner carries that address/,
+        );
+        // Matching is owner level: a co-owner may say who the address is.
+        assert.deepStrictEqual(yield* OwnerMoneyAnswers.matchPartner(coOwner, match), {
           matched: [imported.key],
         });
+        // A second pick for the same address finds nothing left to match, and says so.
+        assert.match(
+          (yield* Effect.flip(OwnerMoneyAnswers.matchPartner(people, match))).message,
+          /already say who funded them/,
+        );
         const owed = (yield* OwnerMoneyAnswers.outlook(people, { orgId })).owedToPartners;
         assert.deepStrictEqual(owed, [
           {
@@ -5227,6 +5248,54 @@ describe("money answers", () => {
           ).partners[0]?.oldest.map((one) => one.key),
           [imported.key, "EXP-5"],
         );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "count a partner's expense in the month and the week's out on the day it was repaid",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at})`;
+        yield* defined(3, { template: "expenses" });
+        const records = yield* KinRecords.KinRecords;
+        const spend = (key: string, day: string, rupees: number, fields = {}) =>
+          records.create(orgId, system, {
+            owner,
+            originKey: key,
+            list: "expenses",
+            title: `Invented ${key}`,
+            state: "done",
+            amount: inr(rupees),
+            dateAt: on(day),
+            fields,
+          });
+        const partner = "person:meera";
+        yield* spend("company", "2026-11-09", 1_000);
+        yield* spend("owed", "2026-11-10", 2_000, { fundedBy: partner });
+        yield* spend("repaid in the week", "2026-10-01", 4_000, {
+          fundedBy: partner,
+          reimbursement: "repaid",
+          repaidOn: "2026-11-11",
+        });
+        // Repaid with no day: counted on the day it was bought, as runway does.
+        yield* spend("repaid, no day", "2026-11-07", 8_000, {
+          fundedBy: partner,
+          reimbursement: "repaid",
+        });
+        yield* spend("given", "2026-11-08", 16_000, {
+          fundedBy: partner,
+          reimbursement: "not reimbursable",
+        });
+
+        const { series } = yield* OwnerMoney.money(people, { orgId });
+        const spentIn = (month: string) => series.find((one) => one.month === month)?.spent;
+        assert.deepStrictEqual(spentIn("2026-11"), [inr(13_000)]);
+        assert.deepStrictEqual(spentIn("2026-10"), []);
+        const figures = yield* weeklyFigures({ orgId, now: NOW });
+        assert.include(figures, "Out this week: ₹13,000.00");
       }).pipe(Effect.provide(layer)),
   );
 

@@ -40,6 +40,7 @@ import {
   toRecord,
 } from "./recordRows.ts";
 import { LISTS, parseFields } from "./lists.ts";
+import { companyCashOut, partnerRepaidDay, repaidDay } from "./reimbursement.ts";
 import { findBankList } from "./statements/bankList.ts";
 import { allLists, isBuiltIn, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
@@ -436,18 +437,21 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
       home,
     );
 
-  // Spent: paid expenses by their date, in the owner's zone.
+  // Spent: paid expenses by their date, in the owner's zone; a partner's on the day it was paid
+  // back, as runway counts it, and never while owed or given.
   const expenses = yield* sql<{
     id: string;
     minor: number;
     currency: string;
     category: string | null;
     at: number;
+    repaid: string | null;
   }>`SELECT r.record_id AS id, r.amount_minor AS minor, r.currency, r.category,
-      ${moneyDay(sql)} AS at
+      ${moneyDay(sql)} AS at, ${partnerRepaidDay(sql)} AS repaid
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND ${countedEntry(sql)} AND ${seen}
-      AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${monthStart(monthOf(since), zone)}
+      AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${companyCashOut(sql)}
+      AND (${moneyDay(sql)} >= ${monthStart(monthOf(since), zone)} OR ${repaidDay(sql)} >= ${since})
     ORDER BY at, category`;
   const charged = yield* chargedAtBank(
     orgId,
@@ -455,11 +459,11 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     home,
     seen,
   );
-  const spentRows = expenses.map((one) => {
+  const spentRows = expenses.map(({ repaid, ...one }) => {
     const bank = charged.get(one.id);
     return {
       ...one,
-      day: dayIn(one.at, zone),
+      day: repaid ?? dayIn(one.at, zone),
       ...(bank === undefined ? {} : { charged: { minor: bank, currency: home } }),
     };
   });

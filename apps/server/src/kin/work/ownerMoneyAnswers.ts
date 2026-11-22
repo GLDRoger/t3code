@@ -459,8 +459,9 @@ export const newExpense = Effect.fn("KinMoneyAnswers.rpc.newExpense")(function* 
 }, workFailure);
 
 /**
- * The owner names the Kin person an import's partner address is. Only a current member can fund
- * an expense; their unmatched expenses with that address take them as funder.
+ * The owner or a co-owner (owner level, as for `newExpense`) names the Kin person an import's
+ * partner address is. Only a current member can fund an expense; the unmatched expenses with that
+ * address take them as funder.
  */
 export const matchPartner = Effect.fn("KinMoneyAnswers.rpc.matchPartner")(function* (
   people: ReadonlyArray<PersonIdentity>,

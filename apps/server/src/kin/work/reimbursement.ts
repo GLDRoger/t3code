@@ -47,6 +47,9 @@ export type Funding =
 const isState = (value: string | null): value is ReimbursementState =>
   (REIMBURSEMENT_STATES as ReadonlyArray<string | null>).includes(value);
 
+/** An import's partner address as Kin compares it: JS `trim` (tabs, CR, NBSP) and Unicode case. */
+export const partnerAddress = (raw: string | null) => raw?.trim().toLowerCase() ?? "";
+
 /** Who funded an expense, from its fields. */
 export const fundingOf = (fields: FieldValues): Funding => {
   const funder = fieldText(fields, FUNDED_BY);
@@ -54,7 +57,7 @@ export const fundingOf = (fields: FieldValues): Funding => {
   const marked = fieldText(fields, REIMBURSEMENT);
   const state = isState(marked) ? marked : null;
   if (personId === null && state !== "owed" && state !== "repaid") return { by: "company" };
-  const imported = fieldText(fields, IMPORTED_PARTNER)?.trim() ?? "";
+  const imported = partnerAddress(fieldText(fields, IMPORTED_PARTNER));
   return {
     by: "partner",
     personId,
@@ -92,3 +95,10 @@ export const fundedByRefusal = (value: unknown) =>
  */
 export const companyCashOut = (sql: SqlClient.SqlClient) =>
   sql`(NOT ${partnerFunded(sql)} OR COALESCE(${valueOf(sql, REIMBURSEMENT)}, '') = 'repaid')`;
+
+/**
+ * The day a company-cash-out expense `r` left the accounts when that isn't its own date: a
+ * partner's repaid day, `YYYY-MM-DD`. NULL for the company's own, or a repaid one with no day.
+ */
+export const partnerRepaidDay = (sql: SqlClient.SqlClient) =>
+  sql`CASE WHEN ${partnerFunded(sql)} THEN ${repaidDay(sql)} END`;
