@@ -48,7 +48,7 @@ export const ownerLevelAgentPage = Effect.fn("KinAgentPage.read")(function* (inp
   readonly agentId: KinAgentId;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const { lead } = yield* retirable(input);
+  const { lead, by } = yield* retirable(input);
   const { orgId, agentId } = lead;
   const persistence = toPersistenceSqlError("KinAgentPage.read");
   const runs = yield* turnModel(orgId, lead.model).pipe(Effect.mapError(persistence));
@@ -82,7 +82,7 @@ export const ownerLevelAgentPage = Effect.fn("KinAgentPage.read")(function* (inp
   const connections = yield* liveConnections(orgId).pipe(Effect.mapError(persistence));
   const team = yield* LeadAccess.teamAgent(orgId).pipe(Effect.mapError(persistence));
   return {
-    profile: yield* profileIn(lead),
+    profile: yield* profileIn(lead, by ?? undefined),
     model: lead.model,
     runsOn: runs.model,
     modelNote: runs.note,
