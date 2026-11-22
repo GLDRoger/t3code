@@ -3305,6 +3305,8 @@ const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
 /** `record_update`'s answer when the notes it gave would have replaced a person's. */
 export const NOTES_KEPT =
   "Its notes are a person's, so they stay as they are; your text went on its activity as a note.";
+/** The same, for blank notes: nothing goes on its activity. */
+export const NOTES_KEPT_BLANK = "Its notes are a person's, so they stay as they are.";
 type Change = Omit<typeof UpdateInput.Type, "key" | "keys">;
 const runUpdate = Effect.fnUntraced(function* (
   lead: Lead,
@@ -3485,7 +3487,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
       ...(hiddenFrom.length === 0 ? {} : { noLongerSeenBy: hiddenFrom }),
       ...(sameEmail === undefined ? {} : { sameEmail }),
       ...(input.notes !== undefined && input.notes !== before.notes && after.notes === before.notes
-        ? { notesKept: NOTES_KEPT }
+        ? { notesKept: input.notes.trim() === "" ? NOTES_KEPT_BLANK : NOTES_KEPT }
         : {}),
       ...(written.projectId === undefined && before.projectKey !== null && after.projectId === null
         ? {

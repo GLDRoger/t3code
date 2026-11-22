@@ -31,8 +31,8 @@ const CONTACTS_SHOWN = 3;
 /** Who a task is about, as a turn reads it: its client by name and key, and so on. */
 export type TaskFacts = {
   readonly client?: string;
-  /** That client's recorded contacts, newest first; "none recorded" when it has none. */
-  readonly contacts?: ReadonlyArray<string> | "none recorded";
+  /** That client's open contacts the viewer sees, newest first; left out when there are none. */
+  readonly contacts?: ReadonlyArray<string>;
   readonly project?: string;
   /** It is the client's next step: its soonest open task of ours, as Clients shows it. */
   readonly clientNextStep?: true;
@@ -115,7 +115,7 @@ export const taskFacts = Effect.fn("KinWorkPrompt.taskFacts")(function* (
         ? {}
         : {
             client,
-            contacts: theirs.length === 0 ? ("none recorded" as const) : theirs,
+            ...(theirs.length === 0 ? {} : { contacts: theirs }),
             ...(nextBy.get(task.partyId!) === task.key ? { clientNextStep: true as const } : {}),
           }),
       ...(project === undefined ? {} : { project }),

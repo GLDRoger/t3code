@@ -635,6 +635,9 @@ const keptForPerson = [
       const written = yield* scene.write(given!.eventId, { ...status, expectedRev: seen });
       assert.include(written, { notesKept: LeadWork.NOTES_KEPT });
       yield* scene.write(given!.eventId, { ...status, expectedRev: seen });
+      // Blank words write nothing, and say nothing was noted.
+      const blank = yield* scene.write(given!.eventId, { notes: "  " });
+      assert.include(blank, { notesKept: LeadWork.NOTES_KEPT_BLANK });
       // New words at a revision since changed are refused, and noted nowhere.
       assert.include(
         yield* Effect.flip(
@@ -2889,9 +2892,9 @@ it.effect("a task a teammate holds and gives an agent wakes it in their chat, at
     yield* places(1, 0, 0);
     assert.deepInclude(yield* given, {
       client: `Invented Client (${client.key})`,
-      contacts: "none recorded",
       clientNextStep: true,
     });
+    assert.notProperty(yield* given, "contacts");
     // Read with someone else in the chat who can't see Clients, it names no client.
     yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
       VALUES ('other-mate', ${orgId}, 'other-mate', 'Other mate', ${at}, 'member')`;
@@ -3064,11 +3067,12 @@ it.effect(
         owner: toLead,
         clientRequestId: "lonely",
       });
-      assert.deepInclude(JSON.parse(quotesIn((yield* told)!).get("work given to you (data)")!), {
+      const lonelyTask = JSON.parse(quotesIn((yield* told)!).get("work given to you (data)")!);
+      assert.deepInclude(lonelyTask, {
         client: `Invented Lonely (${lonely.key})`,
-        contacts: "none recorded",
         clientNextStep: true,
       });
+      assert.notProperty(lonelyTask, "contacts");
     }).pipe(Effect.provide(layer)),
 );
 
