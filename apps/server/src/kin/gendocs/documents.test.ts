@@ -1752,6 +1752,7 @@ describe("the accountant's pack", () => {
       const day = (iso: string) => Date.parse(`${iso}T12:00:00.000Z`);
       for (const [key, state, category, minor, dateAt] of [
         ["taxi", "done", "travel", 100_00, day("2026-11-03")],
+        ["refund", "done", "travel", -500, day("2026-11-04")],
         ["hosting", "done", "software", 50_50, day("2026-11-04")],
         ["rent", "open", "rent", 400_00, day("2026-11-05")],
         ["void", "dropped", "travel", 999_00, day("2026-11-06")],
@@ -1808,11 +1809,27 @@ describe("the accountant's pack", () => {
         Date.parse("2026-11-12T06:00:00.000Z"),
         KIN_OWNER_LEVEL,
       );
-      assert.deepStrictEqual(money.spent.thisMonth.total, [{ minor: 151_75, currency: "INR" }]);
+      assert.deepStrictEqual(money.spent.thisMonth.total, [{ minor: 146_75, currency: "INR" }]);
       assert.deepStrictEqual(totals("Expenses"), [
         ["Total software", "51.75"],
-        ["Total travel", "100.00"],
+        ["Total travel", "95.00"],
       ]);
+      const expenseSheet = recipe.sheets.find((one) => one.name === "Expenses")!;
+      const expenseRows = assembled.inputs[expenseSheet.input];
+      const cells = sheetCells(
+        Array.isArray(expenseRows) ? (expenseRows as never) : [],
+        expenseSheet,
+      );
+      const amountColumn = expenseSheet.columns.findIndex((one) => one.field === "amount");
+      assert.isTrue(
+        cells.some(
+          (row) =>
+            row.some((cell) => "text" in cell && cell.text === "Invented refund") &&
+            row[amountColumn] !== undefined &&
+            "number" in row[amountColumn] &&
+            row[amountColumn].number === "-5.00",
+        ),
+      );
       assert.deepStrictEqual(totals("Unpaid expenses"), [["Total", "400.00"]]);
       assert.deepStrictEqual(money.received.thisMonth, [{ minor: 300_00, currency: "INR" }]);
       assert.deepStrictEqual(totals("Receipts"), [["Total", "300.00"]]);

@@ -34,11 +34,12 @@ export const currencyDigits = (currency: string) => kinCurrency(currency).decima
 export const parseAmount = (
   text: string,
   fallback: string,
+  refund = false,
 ): { readonly money: KinMoney } | { readonly error: KinChatError } => {
   const read = parseKinMoney(text, fallback);
   if (!("money" in read)) return { error: invalid(read.error) };
-  return read.money.minor < 0
-    ? { error: invalid(`${text.slice(0, 40)} is below zero; Kin records an amount of 0 or more.`) }
+  return read.money.minor < 0 && !refund
+    ? { error: invalid(`${text.slice(0, 40)} is below zero; only an expense can be, as a refund.`) }
     : read;
 };
 
@@ -169,9 +170,9 @@ export const largestIn = Effect.fn("KinMoney.largestIn")(function* (
   except?: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ largest: number | null }>`SELECT MAX(ABS(r.amount_minor)) AS largest
+  const [row] = yield* sql<{ largest: number | null }>`SELECT MAX(r.amount_minor) AS largest
     FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = ${list}
-      AND r.currency = ${currency} AND r.amount_minor IS NOT NULL AND ${countedEntry(sql)}
+      AND r.currency = ${currency} AND r.amount_minor >= 0 AND ${countedEntry(sql)}
       AND r.record_id <> ${except ?? ""}`;
   return BigInt(row?.largest ?? 0);
 });
@@ -187,7 +188,8 @@ export const farAbove = (
   largest: bigint,
   home: string,
 ): string | undefined => {
-  const size = BigInt(Math.abs(money.minor));
+  if (money.minor < 0) return undefined;
+  const size = BigInt(money.minor);
   if (largest > 0n)
     return size > largest * 1_000n
       ? `${formatMoney(money)} is far above anything in ${listName} (largest ${formatMinor(largest, money.currency)}). ${CHECK_IT}`
@@ -207,6 +209,7 @@ export const askSlip = Effect.fn("KinMoney.askSlip")(function* (
   money: KinMoney,
   except?: string,
 ) {
+  if (money.minor < 0) return;
   const largest = yield* largestIn(orgId, def.id, money.currency, except);
   if (farAbove(def.name, money, largest, yield* homeCurrency(orgId)) === undefined) return;
   return yield* new KinChatError({
