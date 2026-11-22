@@ -350,18 +350,21 @@ describe("Kin watches", () => {
         assert.strictEqual((yield* looks).length, 8);
         assert.strictEqual((yield* watches)[0]!.nextLookAt, at + HOUR + MINUTE + 45 * MINUTE);
         // Paid in full: closed in the round the payment's change starts, with its words.
-        const toggle = (rev: number, on: boolean) =>
-          KinShell.KinShell.use((shell) => shell.set(orgId, rhea, rev, [{ id: "money", on }])).pipe(
+        const toggle = (rev: number, id: "money" | "invoices", on: boolean) =>
+          KinShell.KinShell.use((shell) => shell.set(orgId, rhea, rev, [{ id, on }])).pipe(
             Effect.provide(KinShell.layer),
             Effect.provideService(KinRefreshObserver, { touch: () => Effect.void }),
           );
-        yield* toggle(0, false);
+        yield* toggle(0, "invoices", false);
         yield* pay(at + 2 * HOUR);
         yield* runAt(at + 2 * HOUR + 5_000);
         assert.strictEqual((yield* watches)[0]!.state, "open");
         assert.strictEqual((yield* looks).length, 8);
-        yield* toggle(1, true);
+        yield* toggle(1, "money", false);
         yield* runAt(at + 2 * HOUR + 6_000);
+        assert.strictEqual((yield* looks).length, 8);
+        yield* toggle(2, "money", true);
+        yield* runAt(at + 2 * HOUR + 7_000);
         assert.deepInclude((yield* watches)[0], {
           state: "closed",
           closedHow: "INV/26/011 was paid on 25 Nov",
