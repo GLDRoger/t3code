@@ -2381,6 +2381,7 @@ const ROUTING_FIELDS = new Set([
   "dedupeKey",
   "provenance",
   "priority",
+  "arrivalId",
 ]);
 /** An event without the routing fields the server already acted on. */
 const eventFacts = (event: KinEvent) => ({

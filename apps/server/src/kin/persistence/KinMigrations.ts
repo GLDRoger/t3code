@@ -125,7 +125,8 @@ import SearchDocKinds from "./migrations/K201_SearchDocKinds.ts";
 import AndroidPushDevices from "./migrations/K202_AndroidPushDevices.ts";
 import Watches from "./migrations/K203_Watches.ts";
 import BankAlerts from "./migrations/K204_BankAlerts.ts";
-import CompanyShell from "./migrations/K205_CompanyShell.ts";
+import Arrivals from "./migrations/K205_Arrivals.ts";
+import CompanyShell from "./migrations/K206_CompanyShell.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -331,7 +332,8 @@ const migrations = {
   "202_AndroidPushDevices": AndroidPushDevices,
   "203_Watches": Watches,
   "204_BankAlerts": BankAlerts,
-  "205_CompanyShell": CompanyShell,
+  "205_Arrivals": Arrivals,
+  "206_CompanyShell": CompanyShell,
 };
 const loader = Migrator.fromRecord(migrations);
 
