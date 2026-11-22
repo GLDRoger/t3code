@@ -33,7 +33,7 @@ One review card shows the statement in three groups:
   the invoice less 10% or 2% shows as paid with TDS deducted, and records the TDS as its own
   line. Untick any you want to leave.
 - **Paying a partner back**: a debit whose narration names a partner and that adds up exactly to
-  their oldest expenses still owed, less refunds on them, shows under Matched as repaying them.
+  their oldest expenses owed by its day, less refunds on them, shows under Matched as repaying them.
   One payment often covers several. A credit from a partner whose refunds outweigh what they paid
   settles with them the same way. Confirm marks those expenses repaid on the row's day and links
   them to its bank row. If any of them was edited, voided or repaid since Kin read the statement,

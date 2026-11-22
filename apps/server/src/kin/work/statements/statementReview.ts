@@ -96,7 +96,7 @@ export const reviewOf = (json: string): Review | undefined =>
       ...(stored.alerts === undefined ? {} : { alerts: stored.alerts as AlertCheck }),
     }),
   });
-const storeReview = (review: Review) =>
+export const storeReview = (review: Review) =>
   encodeReview({
     statement: review.statement,
     format: review.format,
@@ -253,7 +253,8 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     fieldsJson: string;
     repeats: number;
     linked: number;
-  }>`SELECT r.record_id AS "recordId", r.key, r.title, r.state, r.currency,
+    rev: number;
+  }>`SELECT r.record_id AS "recordId", r.key, r.rev, r.title, r.state, r.currency,
       r.amount_minor AS "amountMinor", r.date_at AS "dateAt", r.due_at AS "dueAt",
       r.fields_json AS "fieldsJson", (r.repeat_json IS NOT NULL) AS repeats,
       EXISTS (SELECT 1 FROM kin_bank_statement_entries e WHERE e.org_id = r.org_id
@@ -300,7 +301,13 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         currency,
         owed: partner.entries
           .filter((one) => one.money.currency === currency)
-          .map((one) => ({ recordId: one.recordId, key: one.key, amountMinor: one.money.minor })),
+          .map((one) => ({
+            recordId: one.recordId,
+            key: one.key,
+            amountMinor: one.money.minor,
+            day: dayIn(one.at, zone),
+            rev: one.rev,
+          })),
       })),
     );
   const payees = yield* partnerPayees(orgId);
@@ -347,6 +354,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         open: row.state === "open",
         vendor: fieldText(parseFields(row.fieldsJson), "vendor"),
         repeats: row.repeats === 1,
+        rev: row.rev,
       })),
     ownAccounts: accounts.map((row) => row.account).filter((one) => one !== statement.account),
     known: [

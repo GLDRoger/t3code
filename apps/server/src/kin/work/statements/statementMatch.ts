@@ -38,6 +38,8 @@ export type ExpenseCandidate = {
   readonly open: boolean;
   readonly vendor: string | null;
   readonly repeats: boolean;
+  /** Its revision when read: Confirm applies nothing to one edited since. */
+  readonly rev?: number;
 };
 /** A payment already recorded on an invoice, by hand or from another statement, with no bank row. */
 export type PaymentCandidate = {
@@ -59,11 +61,18 @@ export type PartnerCandidate = {
   /** Something stored that only they are, such as an imported address: in a narration, it is them. */
   readonly ids?: ReadonlyArray<string>;
   readonly currency: string;
-  readonly owed: ReadonlyArray<{
-    readonly recordId: string;
-    readonly key: string;
-    readonly amountMinor: number;
-  }>;
+  readonly owed: ReadonlyArray<Repaid>;
+};
+/** One owed expense as the card shows it, what Confirm checks is still so before marking it repaid. */
+export type Repaid = {
+  readonly recordId: string;
+  readonly key: string;
+  readonly amountMinor: number;
+  /** Its own day, `YYYY-MM-DD`: a line before it can't have paid it back. */
+  readonly day?: string;
+  readonly rev?: number;
+  /** Who funded it, the partner's `id`. */
+  readonly by?: string;
 };
 /**
  * Anyone who has funded an expense, in any currency, owed or not, with the repayments marked by
@@ -101,12 +110,10 @@ export type Candidate = {
   readonly seen?: string;
   readonly score: number;
   readonly why: ReadonlyArray<string>;
+  /** An expense's revision when read, for an ordinary expense match. */
+  readonly rev?: number;
   /** A partner's owed expenses this debit pays back, oldest first; `recordId` is the first's. */
-  readonly repays?: ReadonlyArray<{
-    readonly recordId: string;
-    readonly key: string;
-    readonly amountMinor: number;
-  }>;
+  readonly repays?: ReadonlyArray<Repaid>;
 };
 export type Suggestion = {
   readonly action: "expense" | "transfer" | "ignore" | "later";
@@ -179,7 +186,8 @@ const personIn = (name: string, narration: string) => {
   const words = new Set(said.split(" "));
   const flat = said.replaceAll(" ", "");
   const found = wanted.filter(
-    (word) => words.has(word) || ((word.length >= 5 || /[^a-z0-9]/.test(word)) && flat.includes(word)),
+    (word) =>
+      words.has(word) || ((word.length >= 5 || /[^a-z0-9]/.test(word)) && flat.includes(word)),
   );
   return found.length / wanted.length;
 };
@@ -351,6 +359,7 @@ const expenseCandidate = (
     key: expense.key,
     title: expense.title,
     fit: foreign ? "foreign" : "exact",
+    ...(expense.rev === undefined ? {} : { rev: expense.rev }),
     score,
     why,
   };
@@ -379,9 +388,13 @@ const repayment = (row: StatementRow, partner: PartnerCandidate, from: number, s
   const signed = BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor);
   let sum = 0n;
   for (let end = from; end < Math.min(partner.owed.length, from + REPAYS_AT_MOST); end += 1) {
+    const day = partner.owed[end]!.day;
+    if (day !== undefined && day > row.date) break;
     sum += BigInt(partner.owed[end]!.amountMinor);
     if (sum !== signed) continue;
-    const repays = partner.owed.slice(from, end + 1);
+    const repays = partner.owed
+      .slice(from, end + 1)
+      .map((one) => (partner.id === undefined ? one : { ...one, by: partner.id }));
     const why = [`adds up to ${partner.name}'s oldest owed expenses`, "partner named"];
     let score = 40 + Math.round(30 * named);
     if (DRAWINGS.test(row.description)) {
@@ -442,9 +455,7 @@ const repayments = (
   };
   const sureOf = (row: StatementRow, partner: PartnerCandidate) => {
     const whole = new Set(
-      partners
-        .filter((one) => identifies(one, row.description))
-        .map((one) => one.id ?? one.name),
+      partners.filter((one) => identifies(one, row.description)).map((one) => one.id ?? one.name),
     );
     return whole.size === 1 && whole.has(partner.id ?? partner.name);
   };

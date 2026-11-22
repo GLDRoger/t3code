@@ -537,11 +537,16 @@ describe("statement matching", () => {
         placed(debit(0, "2026-10-08", "NEFT DR-MEERA RAO", 30_000), [
           { name: "Meera Rao", currency: "USD", owed: [owed("EXP-6", 3_000)] },
         ]),
-        placed(debit(0, "2026-10-08", "IMPS-DEV MALHOTRA", 30_000), [], [
-          { name: "Dev Malhotra", repaid: [] },
-        ]),
+        placed(
+          debit(0, "2026-10-08", "IMPS-DEV MALHOTRA", 30_000),
+          [],
+          [{ name: "Dev Malhotra", repaid: [] }],
+        ),
         placed(debit(0, "2026-10-08", "NEFT DR-MEERA RAO", 120_000), partners, [
-          { name: "Meera Rao", repaid: [{ currency: "INR", day: "2026-10-06", amountMinor: 120_000 }] },
+          {
+            name: "Meera Rao",
+            repaid: [{ currency: "INR", day: "2026-10-06", amountMinor: 120_000 }],
+          },
         ]),
       ],
       [
@@ -570,6 +575,17 @@ describe("statement matching", () => {
           },
         ],
       ],
+    );
+    // A line can't pay back what was spent after it.
+    assert.deepStrictEqual(
+      placed(debit(0, "2026-10-08", "NEFT DR-MEERA RAO", 10_000), [
+        {
+          name: "Meera Rao",
+          currency: "INR",
+          owed: [{ ...owed("EXP-41", 10_000), day: "2026-10-09" }],
+        },
+      ]).slice(0, 2),
+      ["unmatched", []],
     );
     // Names in any script, accents or none.
     assert.deepStrictEqual(

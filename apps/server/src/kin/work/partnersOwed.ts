@@ -21,6 +21,7 @@ import {
 export type OwedEntry = {
   readonly recordId: string;
   readonly key: string;
+  readonly rev: number;
   readonly title: string;
   readonly at: number;
   readonly money: KinMoney;
@@ -45,12 +46,13 @@ export const partnersOwed = Effect.fn("KinPartnersOwed.read")(function* (
   const rows = yield* sql<{
     recordId: string;
     key: string;
+    rev: number;
     title: string;
     minor: number;
     currency: string;
     at: number;
     fieldsJson: string;
-  }>`SELECT r.record_id AS "recordId", r.key, r.title, r.amount_minor AS minor, r.currency,
+  }>`SELECT r.record_id AS "recordId", r.key, r.rev, r.title, r.amount_minor AS minor, r.currency,
       ${moneyDay(sql)} AS at, r.fields_json AS "fieldsJson"
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
@@ -73,6 +75,7 @@ export const partnersOwed = Effect.fn("KinPartnersOwed.read")(function* (
     group.entries.push({
       recordId: row.recordId,
       key: row.key,
+      rev: row.rev,
       title: row.title,
       at: row.at,
       money: { minor: row.minor, currency: row.currency },
