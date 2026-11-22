@@ -246,6 +246,13 @@ describe("kinChatFeedView", () => {
     );
     expect(feed({ landOn: "fixture-3" }).landIndex).toBeGreaterThan(-1);
     expect(feed({ landOn: "fixture-99" }).landIndex).toBe(-1);
+    // A Team-room discussion opens on its first row.
+    const discussed = messages.map((m) =>
+      m.seq >= 3 ? { ...m, discussionId: "TD-1" as KinMessage["discussionId"] } : m,
+    );
+    expect(feed({ live: { ...emptyKinChat, messages: discussed }, landOn: "TD-1" }).landIndex).toBe(
+      keys(feed()).findIndex((key) => key.includes("fixture-3")),
+    );
     // Older than what has loaded: the chat reads back to it instead of opening at the end.
     const later = { ...emptyKinChat, messages: messages.map((m) => ({ ...m, seq: m.seq + 50 })) };
     expect(feed({ live: later, exhausted: false, landOn: "fixture-99" }).landPage).toEqual({

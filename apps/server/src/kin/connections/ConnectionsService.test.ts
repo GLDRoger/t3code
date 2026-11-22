@@ -1939,6 +1939,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
         if (path.endsWith("/users/me/threads")) return json({ threads: [{ id: "t1" }] });
         if (path.endsWith("/users/me/threads/t1"))
           return json(thread(url.searchParams.get("format")));
+        if (path.endsWith("/calendars/team%40group.calendar.example"))
+          return json({ id: "team@group.calendar.example", summary: "Invented team" });
         if (/\/calendars\/[^/]+\/events\/e1$/.test(path)) {
           const wait = vendor.beforeEvent;
           vendor.beforeEvent = undefined;
@@ -2662,7 +2664,8 @@ describe("KinConnections sending", () => {
             [{ email: "ana@client.example" }],
           );
 
-          // A change names the calendar and the event as they are, and goes to exactly those.
+          // A change names the calendar, by the name it has there, and the event as it is now,
+          // and goes to exactly those.
           yield* sendCall("calendar_save_event", {
             calendarId: "team@group.calendar.example",
             eventId: "e1",
@@ -2675,7 +2678,7 @@ describe("KinConnections sending", () => {
           assert.strictEqual(
             change.send!.body,
             [
-              "In calendar: team@group.calendar.example",
+              "In calendar: Invented team",
               "Currently: Board prep, Fri, 20 Nov, 4:30 am to 5:00 am",
               "When: Fri, 20 Nov, 10:30 am to 11:00 am",
             ].join("\n"),

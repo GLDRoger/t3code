@@ -56,7 +56,7 @@ import {
 } from "./Audience.ts";
 import { sectionsOf } from "../work/docBody.ts";
 import { budgetFlags } from "../work/budgets.ts";
-import { moneySection, moneySummary } from "../work/moneyViews.ts";
+import { moneySection, moneySummaryForAgent } from "../work/moneyViews.ts";
 import {
   buildWorkSection,
   MONEY_RULE,
@@ -1594,7 +1594,7 @@ export class KinLeadPrompt extends Context.Service<
               isMorningCheckIn(event),
           )
             ? yield* Effect.all([
-                moneySummary(orgId, now, KIN_OWNER_LEVEL),
+                moneySummaryForAgent(orgId, now, KIN_OWNER_LEVEL),
                 budgetFlags(orgId, now),
                 setAsideOverdue({ orgId, now, viewer: KIN_OWNER_LEVEL }),
               ]).pipe(
@@ -2393,6 +2393,7 @@ const ROUTING_FIELDS = new Set([
   "dedupeKey",
   "provenance",
   "priority",
+  "arrivalId",
 ]);
 /** An event without the routing fields the server already acted on. */
 const eventFacts = (event: KinEvent) => ({

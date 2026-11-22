@@ -460,6 +460,9 @@ const activity = Effect.fn("KinMail.activity")(function* (
   };
 });
 
+// The feed's reads name messages by id, never by which address got them.
+const NO_MAILBOX: Mailbox = { account: null, addresses: [] };
+
 /** A vendor as Kin uses it: its descriptor and mapping behind the one tool layer. */
 export const mailProvider = (vendor: MailVendor): MailProvider => {
   const rule = KIN_SIGN_IN_CLIENTS[vendor.preset];
@@ -493,7 +496,14 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
       ),
     replyTarget: (http, token, mailbox, threadId) =>
       replyTarget(vendor, { http, token, mailbox }, threadId),
+    mailStart: (http, token, now) => vendor.mailStart({ http, token, mailbox: NO_MAILBOX }, now),
+    changes: (http, token, position) =>
+      vendor.changes({ http, token, mailbox: NO_MAILBOX }, position),
+    arrival: (http, token, messageId) =>
+      vendor.arrival({ http, token, mailbox: NO_MAILBOX }, messageId),
     sendMessage: vendor.sendMessage,
     saveEvent: vendor.saveEvent,
+    calendarName: (http, token, mailbox, calendarId) =>
+      vendor.calendarName({ http, token, mailbox }, calendarId),
   };
 };

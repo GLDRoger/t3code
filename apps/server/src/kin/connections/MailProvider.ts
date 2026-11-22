@@ -84,6 +84,43 @@ export type MailActivity = {
   }>;
 };
 
+/** A message the vendor's own change record named in the Inbox: its ids, nothing else. */
+export type MailChange = { readonly messageId: string; readonly threadId: string | null };
+/** One page of the Inbox's change record; `expired` when the vendor no longer knows `position`. */
+export type MailChanges =
+  | { readonly _tag: "expired" }
+  | {
+      readonly _tag: "read";
+      readonly changes: ReadonlyArray<MailChange>;
+      /** Where the next read starts. */
+      readonly position: string;
+      /** More pages wait at `position`. */
+      readonly more: boolean;
+    };
+/** A new message's headers, read once by id; never its body. */
+export type MailArrival = {
+  readonly messageId: string;
+  readonly threadId: string;
+  /** When the vendor received it, its own clock. */
+  readonly receivedAt: number;
+  readonly from: string | null;
+  readonly fromAddress: string | null;
+  readonly to: ReadonlyArray<string>;
+  readonly cc: ReadonlyArray<string>;
+  readonly deliveredTo: ReadonlyArray<string>;
+  readonly subject: string;
+  readonly date: string | null;
+  /** The RFC 5322 Message-ID, the same in every mailbox that got the message. */
+  readonly internetId: string | null;
+  readonly authResults: ReadonlyArray<string>;
+  readonly listUnsubscribe: boolean;
+  readonly precedence: string | null;
+  readonly autoSubmitted: string | null;
+  /** The vendor filed it as bulk (Gmail's Promotions, Social or Forums). */
+  readonly bulk: boolean;
+  readonly hasFile: boolean;
+};
+
 export type MailEvent = {
   readonly calendarId: string;
   readonly eventId: string | null;
@@ -234,6 +271,8 @@ export interface MailVendor {
     calendarId: string | undefined,
     eventId: string,
   ) => Call<MailCalendarEvent>;
+  /** A calendar's name as the account shows it, or null when it has none. */
+  readonly calendarName: (context: MailContext, calendarId: string) => Call<string | null>;
   /**
    * Inbox mail that arrived and events that changed, were cancelled or deleted since `since`,
    * each occurrence of a series on its own. `cursor` is what the last read returned. A read holds
@@ -250,6 +289,12 @@ export interface MailVendor {
     readonly cursor: string | null;
     readonly until?: number;
   }>;
+  /** Where the Inbox's change record stands now, so a feed starts from here. */
+  readonly mailStart: (context: MailContext, now: number) => Call<string>;
+  /** The Inbox's change record after `position`: ids only, one page. */
+  readonly changes: (context: MailContext, position: string) => Call<MailChanges>;
+  /** One message's headers; null when the account no longer has it. */
+  readonly arrival: (context: MailContext, messageId: string) => Call<MailArrival | null>;
   readonly account: MailProvider["account"];
   readonly sendAs: MailProvider["sendAs"];
   readonly sendMessage: MailProvider["sendMessage"];
@@ -307,6 +352,18 @@ export interface MailProvider {
     cursor: string | null,
     now: number,
   ) => Call<MailActivity>;
+  /** The arrival feed's reads (`arrivals/ArrivalFeed.ts`): server use only, metadata only. */
+  readonly mailStart: (http: HttpClient.HttpClient, token: string, now: number) => Call<string>;
+  readonly changes: (
+    http: HttpClient.HttpClient,
+    token: string,
+    position: string,
+  ) => Call<MailChanges>;
+  readonly arrival: (
+    http: HttpClient.HttpClient,
+    token: string,
+    messageId: string,
+  ) => Call<MailArrival | null>;
   /** Server use only: a thread's messages with their text, as `mail_read_thread` reads them. */
   readonly messages: (
     http: HttpClient.HttpClient,
@@ -329,6 +386,13 @@ export interface MailProvider {
   ) => Call<Sent>;
   /** Adds or changes an event on the account's calendar and invites its guests. */
   readonly saveEvent: (http: HttpClient.HttpClient, token: string, event: MailEvent) => Call<Sent>;
+  /** A calendar's name as the account shows it, or null when it has none. */
+  readonly calendarName: (
+    http: HttpClient.HttpClient,
+    token: string,
+    mailbox: Mailbox,
+    calendarId: string,
+  ) => Call<string | null>;
 }
 
 const PLAIN = /^[^\s<>@,;"]+@[^\s<>@,;"]+$/;

@@ -156,6 +156,7 @@ import { kinClient } from "./kinClient";
 import { openDestination } from "./KinNotifications";
 import { KinWatchLine } from "./KinWatchLine";
 import { useNowMinuteMs } from "./useKinClock";
+import { KIN_WEB_ONLY } from "./kinWebOnly";
 import {
   useKinPickerSearch,
   useKinWorkItemWatch,
@@ -1864,9 +1865,10 @@ function KinWorkLink(
       )}
     </>
   );
-  // A lead's work opens its thread the way its task card does, beside whatever the row opens.
+  // A lead's work opens its thread the way its task card does, beside whatever the row opens;
+  // the Kin web app has no threads.
   const thread =
-    link.thread === null ? null : (
+    link.thread === null || KIN_WEB_ONLY ? null : (
       <Button
         size="xs"
         variant="ghost"

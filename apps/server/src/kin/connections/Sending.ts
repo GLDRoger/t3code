@@ -77,6 +77,8 @@ export const Prepared = Schema.Union([
   }),
   Schema.TaggedStruct("event", {
     calendarId: Schema.String,
+    /** The calendar's name, read when the card was drawn; missing on asks from before. */
+    calendarName: Schema.optionalKey(Schema.NullOr(Schema.String)),
     eventId: Schema.NullOr(Schema.String),
     /** A changed event as it stood when the card was drawn; missing on asks from before. */
     current: Schema.optionalKey(
@@ -396,9 +398,16 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
                   : Effect.succeed({ title: read.summary, start: read.start, end: read.end });
               }),
             );
+    const calendarName =
+      calendarId === "primary"
+        ? null
+        : yield* input.provider
+            .calendarName(input.http, yield* input.token, mailbox, calendarId)
+            .pipe(Effect.orElseSucceed(() => null));
     return {
       _tag: "event",
       calendarId,
+      calendarName,
       eventId,
       current,
       title: title.slice(0, 300),
@@ -595,7 +604,13 @@ const plainWhen = (...args: Parameters<typeof whenOf>) => `When: ${whenOf(...arg
 const eventTarget = (prepared: Extract<Prepared, { _tag: "event" }>, clock: TextClock) => {
   const current = prepared.current ?? null;
   return [
-    ...(prepared.calendarId === "primary" ? [] : [`In calendar: ${prepared.calendarId}`]),
+    ...(prepared.calendarId === "primary"
+      ? []
+      : [
+          (prepared.calendarName ?? null) === null
+            ? "In your calendar"
+            : `In calendar: ${prepared.calendarName}`,
+        ]),
     ...(prepared.eventId === null || current === null
       ? []
       : [

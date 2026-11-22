@@ -341,6 +341,7 @@ const make = Effect.gen(function* () {
       Effect.provideService(SqlClient.SqlClient, sql),
     );
   const laneOf = sql.literal(LANE_OF);
+  const retryAlone = sql.literal("json_extract(e.json, '$._retryAlone') IS 1");
   const storedAuthor = sql.literal(STORED_AUTHOR);
   const authorOf = sql.literal(AUTHOR_OF);
   const organizations = new Map<KinOrgId, { changed: Deferred.Deferred<void> }>();
@@ -467,14 +468,14 @@ const make = Effect.gen(function* () {
       RETURNING event_id
     `;
           if (inserted.length > 0) {
-            // The person is waiting: a failed start still backing off in this chat joins them.
+            // A new message brings forward a failed start still backing off in this chat.
             if (
               (event._tag === "chat.message" || event._tag === "widget.action") &&
               event.provenance._tag === "human"
             )
-              yield* sql`UPDATE kin_events SET not_before = NULL
+              yield* sql`UPDATE kin_events AS e SET not_before = NULL
                 WHERE org_id = ${event.orgId} AND agent_id = ${event.agentId} AND state = 'queued'
-                  AND attempts > 0 AND budget_deferred = 0 AND not_before > ${now}
+                  AND (attempts > 0 OR ${retryAlone}) AND budget_deferred = 0 AND not_before > ${now}
                   AND tag IN ('chat.message', 'widget.action', 'chat.reaction')
                   AND json_extract(json, '$.chatId') = ${event.chatId}`;
             yield* sql.afterCommit(notify(event.orgId));
@@ -648,7 +649,7 @@ const make = Effect.gen(function* () {
                       }>`
                 WITH eligible AS (
                   SELECT e.event_id, e.priority, e.received_at, ${laneOf} AS lane,
-                    ${sql.literal(MORNING_PAGE)} AS page,
+                    ${retryAlone} AS solo, ${sql.literal(MORNING_PAGE)} AS page,
                     e.tag IN ('chat.message', 'widget.action', 'chat.reaction') AS asked,
                     MAX(e.queued_at, COALESCE(e.not_before, 0)) AS due
                   FROM kin_events e JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
@@ -658,19 +659,21 @@ const make = Effect.gen(function* () {
                   WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId} AND e.state = 'queued'
                     AND (e.not_before IS NULL OR e.not_before <= ${now})
                 ), first AS (
-                  SELECT lane FROM eligible ORDER BY priority, received_at, event_id LIMIT 1
+                  SELECT event_id, lane, solo FROM eligible ORDER BY priority, received_at, event_id LIMIT 1
+                ), selected AS (
+                  SELECT e.* FROM eligible e JOIN first f
+                    ON CASE WHEN f.solo THEN e.event_id = f.event_id ELSE e.lane = f.lane AND NOT e.solo END
                 ), brief AS (
                   -- The morning page is a turn of its own. It waits for one turn on the messages
                   -- already waiting when it came due; then it runs, and later ones wait for it.
-                  SELECT EXISTS (SELECT 1 FROM eligible p WHERE p.lane = (SELECT lane FROM first)
-                    AND p.page = 1 AND NOT EXISTS (SELECT 1 FROM eligible h
-                      WHERE h.lane = p.lane AND h.asked = 1 AND h.received_at <= p.due)) AS alone
+                  SELECT EXISTS (SELECT 1 FROM selected p WHERE p.page = 1
+                    AND NOT EXISTS (SELECT 1 FROM selected h
+                      WHERE h.asked = 1 AND h.received_at <= p.due)) AS alone
                 )
                 UPDATE kin_events SET state = 'claimed', wakeup_id = ${input.wakeupId}, budget_deferred = 0
                 WHERE org_id = ${input.orgId} AND event_id IN (
-                  SELECT event_id FROM eligible o
-                  WHERE lane = (SELECT lane FROM first)
-                    AND CASE WHEN (SELECT alone FROM brief) THEN o.asked = 0 ELSE o.page IS NOT 1 END
+                  SELECT event_id FROM selected o
+                  WHERE CASE WHEN (SELECT alone FROM brief) THEN o.asked = 0 ELSE o.page IS NOT 1 END
                   ORDER BY priority, received_at, event_id LIMIT 50
                 ) RETURNING json, priority, received_at, queued_at, event_id`;
                       if (rows.length === 0) return yield* new NoClaimableEvents({});
@@ -736,7 +739,7 @@ const make = Effect.gen(function* () {
               AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = w.org_id
                 AND a.agent_id = w.agent_id AND a.retired_at IS NULL)
               AND NOT EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id
-                AND e.wakeup_id = w.wakeup_id AND ${sql.literal(MORNING_PAGE)})
+                AND e.wakeup_id = w.wakeup_id AND (${sql.literal(MORNING_PAGE)} OR ${retryAlone}))
           ), lane AS (
             SELECT ${laneOf} AS chat_id FROM wakeup w
             JOIN kin_events e ON e.org_id = w.org_id AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id
@@ -757,6 +760,7 @@ const make = Effect.gen(function* () {
             SELECT e.event_id FROM kin_events e JOIN wakeup w ON w.org_id = e.org_id AND w.agent_id = e.agent_id
             ${storedAuthor}
             WHERE e.org_id = ${input.orgId} AND e.state = 'queued'
+              AND NOT (${retryAlone})
               AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
               AND json_extract(e.json, '$.provenance._tag') = 'human'
               AND json_extract(e.json, '$.chatId') = (SELECT chat_id FROM lane)
@@ -903,14 +907,21 @@ const make = Effect.gen(function* () {
               retryInMs: 0,
             };
           }
+          // A silent batch failure cannot be attributed until each event runs on its own.
+          const [batch] = yield* sql<{ split: number }>`SELECT EXISTS (
+            SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
+              AND wakeup_id = ${input.wakeupId} AND state = 'claimed' LIMIT 1 OFFSET 1
+          ) AS split`;
+          const split = batch?.split === 1;
           const rows = yield* sql<{
             event_id: string;
             state: string;
             not_before: number;
-          }>`UPDATE kin_events SET attempts = attempts + 1,
-            state = CASE WHEN attempts + 1 >= ${RUN_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
+          }>`UPDATE kin_events SET attempts = attempts + ${split ? 0 : 1},
+            state = CASE WHEN NOT ${split} AND attempts + 1 >= ${RUN_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
+            json = CASE WHEN ${split} THEN json_set(json, '$._retryAlone', 1) ELSE json END,
             wakeup_id = NULL,
-            not_before = ${now} + CASE WHEN attempts = 0 THEN ${FIRST_RETRY_MS}
+            not_before = ${now} + CASE WHEN ${split} OR attempts = 0 THEN ${FIRST_RETRY_MS}
               WHEN attempts = 1 THEN ${LATER_RETRY_MS} ELSE ${LAST_RETRY_MS} END
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed' RETURNING event_id, state, not_before`;
           yield* settle(rows.filter((row) => row.state === "failed"));

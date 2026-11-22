@@ -1,4 +1,11 @@
-import { KinAgentId, type KinChatId, type KinOrgId, type MemoryItemHead } from "@t3tools/contracts";
+import {
+  calendarTimeMillis,
+  isCalendarDay,
+  KinAgentId,
+  type KinChatId,
+  type KinOrgId,
+  type MemoryItemHead,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -18,8 +25,8 @@ const IMPORTED = new Set(["commitment", "objective"]);
 
 const dueOf = (due: string | null, zone: string) => {
   if (due === null) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(due)) return { dueAt: endOfDay(due, zone), dueAllDay: true };
-  const ms = Date.parse(due);
+  if (isCalendarDay(due)) return { dueAt: endOfDay(due, zone), dueAllDay: true };
+  const ms = calendarTimeMillis(due);
   return Number.isFinite(ms) ? { dueAt: ms, dueAllDay: false } : null;
 };
 

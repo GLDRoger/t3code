@@ -890,6 +890,8 @@ export const KinEvent = Schema.Union([
     ),
     // Metadata the server read from connections the owner marked Read: still outside text.
     outside: Schema.optional(Schema.Array(KinPulseOutsideLine).check(Schema.isMaxLength(200))),
+    // The one mail that woke it, as `kin_arrivals` keeps it (`arrivals/ArrivalStore.ts`).
+    arrivalId: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
     // A wake for one person's own follow-up (`pulse/draftWake.ts`): it answers in their direct
     // chat with this agent, `origin` naming them, so the turn is theirs alone. From stored rows.
     chatId: Schema.optional(KinChatId),

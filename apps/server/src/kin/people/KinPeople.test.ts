@@ -1,3 +1,4 @@
+import * as KinShell from "../shell/KinShell.ts";
 import * as Deferred from "effect/Deferred";
 import { assert, it } from "@effect/vitest";
 import {
@@ -1086,6 +1087,10 @@ it.effect(
         });
       yield* alike(raviSession, { money: true, docs: false });
       yield* alike(ownerSession, { money: false, docs: false });
+      assert.deepStrictEqual((yield* service.accessMe(ownerSession, { orgId })).shell, {
+        rev: 0,
+        sections: ["clients", "deals", "money", "invoices", "docs"].map((id) => ({ id, on: true })),
+      });
       const switched = yield* service.setPlaces(ownerSession, {
         orgId,
         personId: ravi.person.personId,
@@ -1103,6 +1108,40 @@ it.effect(
       });
       assert.equal(coOwner.access, "co_owner");
       const meeraSession = yield* sessions.verify(meera.accessToken);
+      yield* service.setPlaces(ownerSession, {
+        orgId,
+        personId: ravi.person.personId,
+        money: false,
+      });
+      const changeShell = (rev: number, on: boolean) =>
+        KinShell.KinShell.use((shell) =>
+          shell.set(orgId, coOwner.personId, rev, [{ id: "deals", on }]),
+        ).pipe(Effect.provide(KinShell.layer));
+      const parties = [meeraSession, raviSession];
+      const original = yield* Effect.forEach(parties, (session) =>
+        service.accessMe(session, { orgId }),
+      );
+      assert.isFalse(original[0]?.refused?.money);
+      assert.isTrue(original[1]?.refused?.money);
+      yield* changeShell(0, false);
+      for (const [n, session] of parties.entries()) {
+        const { shell, ...after } = yield* service.accessMe(session, { orgId });
+        const { shell: _before, ...before } = original[n]!;
+        assert.deepStrictEqual(after, before);
+        assert.isTrue(shell?.sections.some((section) => section.id === "deals" && !section.on));
+      }
+      yield* changeShell(1, true);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_company_shell SET shell_json = 'broken' WHERE org_id = ${orgId}`;
+      const { shell: fallback, ...still } = yield* service.accessMe(raviSession, { orgId });
+      const { shell: expectedShell, ...expectedMe } = original[1]!;
+      assert.deepStrictEqual(still, expectedMe);
+      assert.deepStrictEqual(fallback, expectedShell);
+      yield* service.setPlaces(ownerSession, {
+        orgId,
+        personId: ravi.person.personId,
+        money: true,
+      });
       const addressed = ConfigProvider.layer(
         ConfigProvider.fromUnknown({ KIN_PUBLIC_URL: "https://kin.ambermill.example.test" }),
       );

@@ -65,7 +65,7 @@ import * as KinStop from "./KinStop.ts";
 import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
-import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
+import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -76,7 +76,15 @@ import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
-import { harness, seed, orgId, agentId, event, toolCall } from "./WakeupRunner.testkit.ts";
+import {
+  harness,
+  orchestrationHarness,
+  seed,
+  orgId,
+  agentId,
+  event,
+  toolCall,
+} from "./WakeupRunner.testkit.ts";
 import { ProviderAdapterSteerRunError } from "@t3tools/provider-core/server/ProviderAdapter";
 import { ProviderDriverKind, ProviderThreadId } from "@t3tools/contracts";
 
@@ -1036,6 +1044,98 @@ describe("WakeupRunner", () => {
         );
       }).pipe(provideDeterministicTestRuntime),
   );
+  it.effect(
+    "retries a failed batch one at a time and gives up only on the event that cannot start",
+    () =>
+      Effect.gen(function* () {
+        const starts: Array<ReadonlyArray<string>> = [];
+        const notices: Array<{ outcome: string; wakeupId: KinWakeupId }> = [];
+        const bridge = Layer.mock(KinReplyBridge)({
+          lane: () =>
+            Effect.succeedSome({
+              chatId: KinChatId.make("owner-chat"),
+              mode: "reply",
+              owed: true,
+              leadName: "Lead",
+            }),
+          preparing: () => Effect.void,
+          begin: () => Effect.void,
+          complete: () => Effect.void,
+          end: () => Effect.void,
+          failed: ({ outcome, wakeupId }) =>
+            Effect.sync(() => void notices.push({ outcome, wakeupId })),
+        });
+        const rejectBad = Layer.effect(
+          KinLeadPrompt,
+          Effect.map(KinLeadPrompt, (prompt) => ({
+            ...prompt,
+            build: Effect.fn("test.build")(function* (input: KinLeadPromptInput) {
+              const ids = input.events.map((event) => event.eventId);
+              starts.push(ids);
+              if (ids.some((id) => id === "c-bad"))
+                return yield* new KinLeadPromptError({
+                  orgId,
+                  reason: "Cannot prepare this event",
+                });
+              return yield* prompt.build(input);
+            }),
+          })),
+        );
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          const queue = yield* KinEventQueue.KinEventQueue;
+          for (const id of ["a-good", "b-good", "c-bad"])
+            yield* queue.enqueue(yield* ownerSays(id));
+          const step = Effect.gen(function* () {
+            const [next] = yield* queue.readyLeads(orgId);
+            assert.isDefined(next);
+            const now = yield* Clock.currentTimeMillis;
+            if (next!.readyAt > now) yield* TestClock.adjust(next!.readyAt - now);
+            const result = yield* Fiber.join(yield* run()).pipe(Effect.result);
+            if (result._tag === "Failure")
+              assert.instanceOf(result.failure.cause, KinLeadPromptError);
+          });
+          for (let turn = 0; turn < 4; turn++) yield* step;
+          const states = sql`SELECT event_id, state, attempts FROM kin_events
+          WHERE org_id = ${orgId} ORDER BY event_id`;
+          const good = [
+            { event_id: "a-good", state: "done", attempts: 0 },
+            { event_id: "b-good", state: "done", attempts: 0 },
+          ];
+          assert.deepStrictEqual(yield* states, [
+            ...good,
+            { event_id: "c-bad", state: "queued", attempts: 1 },
+          ]);
+          for (let turn = 0; turn < 3; turn++) yield* step;
+          assert.deepStrictEqual(yield* states, [
+            ...good,
+            { event_id: "c-bad", state: "failed", attempts: 4 },
+          ]);
+          assert.deepStrictEqual(starts, [
+            ["a-good", "b-good", "c-bad"],
+            ["a-good"],
+            ["b-good"],
+            ...Array.from({ length: 4 }, () => ["c-bad"]),
+          ]);
+          const gaveUp = notices.filter(({ outcome }) => outcome === "gave_up");
+          assert.lengthOf(gaveUp, 1);
+          assert.deepStrictEqual(
+            yield* sql`SELECT event_ids FROM kin_wakeups
+            WHERE org_id = ${orgId} AND wakeup_id = ${gaveUp[0]!.wakeupId}`,
+            [{ event_ids: '["c-bad"]' }],
+          );
+        }).pipe(
+          Effect.provide(
+            WakeupRunner.layer.pipe(
+              Layer.provide(rejectBad),
+              Layer.provideMerge(orchestrationHarness()),
+              Layer.provide(bridge),
+            ),
+          ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
+  );
   it.effect.each([
     { replied: true, said: ["replied"], state: "done" },
     { replied: false, said: ["partway"], state: "failed" },
@@ -1131,9 +1231,13 @@ describe("WakeupRunner", () => {
         ]);
       }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
-  it.effect(
-    "re-arms a lapsed direct-chat grant when the wake-up starts, for that wake-up only",
-    () =>
+  it.effect.each([
+    { kind: "direct", closed: false },
+    { kind: "team_group", closed: false },
+    { kind: "team_group", closed: true },
+  ] as const)(
+    "re-arms a lapsed $kind grant only for an open run (closed=$closed)",
+    ({ kind, closed }) =>
       Effect.gen(function* () {
         const entered = yield* Deferred.make<void>();
         const hold = yield* Deferred.make<void>();
@@ -1144,7 +1248,7 @@ describe("WakeupRunner", () => {
           const floor = yield* Floor.KinFloor;
           const at = "2026-11-08T00:00:00.000Z";
           yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
-            VALUES ('direct', 'org', 'direct', 'owner:lead', 1, ${at})`;
+            VALUES ('direct', 'org', ${kind}, ${kind === "direct" ? "owner:lead" : null}, 1, ${at})`;
           yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
             VALUES ('owner-member', 'org', 'direct', 'person', 'owner', 'owner', ${at})`;
           yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
@@ -1161,6 +1265,13 @@ describe("WakeupRunner", () => {
           yield* floor.open(message, chat);
           // The post-time grant lapses while the server is down, before catch-up enqueues it.
           yield* TestClock.adjust(FLOOR_GRANT_TTL_MS + 60_000);
+          if (closed)
+            yield* sql`UPDATE kin_floor_runs SET state = 'closed'
+              WHERE org_id = ${orgId} AND chat_id = ${scope.chatId}`;
+          const grantExpiry = sql<{ expires_at: number }>`SELECT expires_at FROM kin_floor_grants
+          WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY expires_at`;
+          const expired = yield* grantExpiry;
+          assert.lengthOf(expired, 1);
           yield* (yield* KinEventQueue.KinEventQueue).enqueue(
             decodeEvent({
               _tag: "chat.message",
@@ -1176,6 +1287,12 @@ describe("WakeupRunner", () => {
           );
           const fiber = yield* run();
           yield* Deferred.await(entered);
+          if (closed) {
+            assert.deepStrictEqual(yield* grantExpiry, expired);
+            yield* Deferred.succeed(hold, undefined);
+            yield* Fiber.join(fiber);
+            return;
+          }
           const [lead] = yield* sql<{ thread_id: string }>`SELECT thread_id FROM kin_leads`;
           const identity = yield* resolveAgent(ThreadId.make(lead!.thread_id));
           // The renewed grant lasts as long as the wake-up, so a reply 10 minutes in still lands.
@@ -1185,8 +1302,6 @@ describe("WakeupRunner", () => {
           // The wake-up keeps the grant for its run: its next post is the same agent turn.
           assert.strictEqual((yield* floor.authorize(identity, chat, "evidence")).runId, runId);
           // A used grant is never re-armed, whatever deadline is asked for.
-          const grantExpiry = sql<{ expires_at: number }>`SELECT expires_at FROM kin_floor_grants
-          WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY expires_at`;
           const before = yield* grantExpiry;
           yield* floor.renew({
             orgId,
@@ -2270,68 +2385,79 @@ describe("WakeupRunner", () => {
     }).pipe(provideDeterministicTestRuntime),
   );
 
-  it.effect("settles a turn that fails at start while a burst steers in, then answers anew", () =>
-    Effect.gen(function* () {
-      const fixture = {
-        entered: yield* Deferred.make<void>(),
-        hold: yield* Deferred.make<void>(),
-        steering: yield* Deferred.make<void>(),
-        failed: true,
-      };
-      const ended: Array<string> = [];
-      const outcomes: Array<string> = [];
-      const bridge = Layer.mock(KinReplyBridge)({
-        lane: () =>
-          Effect.succeedSome({
-            chatId: KinChatId.make("owner-chat"),
-            mode: "reply" as const,
-            owed: true,
-            leadName: "Lead",
+  it.effect(
+    "settles a turn that fails at start while a burst steers in, then answers each separately",
+    () =>
+      Effect.gen(function* () {
+        const fixture = {
+          entered: yield* Deferred.make<void>(),
+          hold: yield* Deferred.make<void>(),
+          failed: true,
+        };
+        const ids = Array.from({ length: 11 }, (_, n) => `m${String(n).padStart(2, "0")}`);
+        const allSteered = yield* Deferred.make<void>();
+        const steered = new Set<string>();
+        const ended: Array<string> = [];
+        const outcomes: Array<string> = [];
+        const bridge = Layer.mock(KinReplyBridge)({
+          lane: () =>
+            Effect.succeedSome({
+              chatId: KinChatId.make("owner-chat"),
+              mode: "reply" as const,
+              owed: true,
+              leadName: "Lead",
+            }),
+          preparing: () => Effect.void,
+          begin: () => Effect.void,
+          complete: () => Effect.void,
+          steered: Effect.fn("test.steered")(function* (_orgId, _wakeupId, steer) {
+            for (const id of steer?.eventIds ?? []) steered.add(id);
+            if (steered.size === ids.length - 1) yield* Deferred.succeed(allSteered, undefined);
           }),
-        preparing: () => Effect.void,
-        begin: () => Effect.void,
-        complete: () => Effect.void,
-        steered: () => Effect.void,
-        end: (input) => Effect.sync(() => void ended.push(input.wakeupId)),
-        failed: (input) => Effect.sync(() => void outcomes.push(input.outcome)),
-      });
-      yield* Effect.gen(function* () {
-        yield* seed;
-        const queue = yield* KinEventQueue.KinEventQueue;
-        const threads = yield* ThreadManagement.ThreadManagementService;
-        const sql = yield* SqlClient.SqlClient;
-        yield* queue.enqueue(yield* ownerSays("m00"));
-        const fiber = yield* run();
-        yield* Deferred.await(fixture.entered);
-        for (let n = 1; n <= 10; n++)
-          yield* queue.enqueue(yield* ownerSays(`m${String(n).padStart(2, "0")}`));
-        yield* Deferred.await(fixture.steering);
-        yield* Deferred.succeed(fixture.hold, undefined);
-        yield* Fiber.join(fiber);
-        const [first] = yield* sql<{ wakeupId: string; threadId: string; status: string }>`
+          end: (input) => Effect.sync(() => void ended.push(input.wakeupId)),
+          failed: (input) => Effect.sync(() => void outcomes.push(input.outcome)),
+        });
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const queue = yield* KinEventQueue.KinEventQueue;
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const sql = yield* SqlClient.SqlClient;
+          yield* queue.enqueue(yield* ownerSays("m00"));
+          const fiber = yield* run();
+          yield* Deferred.await(fixture.entered);
+          for (const id of ids.slice(1)) yield* queue.enqueue(yield* ownerSays(id));
+          yield* Deferred.await(allSteered);
+          yield* Deferred.succeed(fixture.hold, undefined);
+          yield* Fiber.join(fiber);
+          const [first] = yield* sql<{ wakeupId: string; threadId: string; status: string }>`
           SELECT wakeup_id AS "wakeupId", thread_id AS "threadId", status FROM kin_wakeups`;
-        assert.strictEqual(first!.status, "failed");
-        assert.deepStrictEqual([...new Set(ended)], [first!.wakeupId]);
-        assert.deepStrictEqual(outcomes, ["retrying"]);
-        const projection = yield* threads.getThreadProjection(ThreadId.make(first!.threadId));
-        assert.isFalse(projection.runs.some((entry) => entry.status === "queued"));
-        assert.deepStrictEqual(yield* sql`SELECT DISTINCT state FROM kin_events ORDER BY state`, [
-          { state: "queued" },
-        ]);
+          assert.strictEqual(first!.status, "failed");
+          assert.deepStrictEqual([...new Set(ended)], [first!.wakeupId]);
+          assert.deepStrictEqual(outcomes, ["retrying"]);
+          const projection = yield* threads.getThreadProjection(ThreadId.make(first!.threadId));
+          assert.isFalse(projection.runs.some((entry) => entry.status === "queued"));
+          assert.deepStrictEqual(yield* sql`SELECT DISTINCT state FROM kin_events ORDER BY state`, [
+            { state: "queued" },
+          ]);
 
-        fixture.failed = false;
-        yield* TestClock.adjust("15 seconds");
-        yield* Fiber.join(yield* run());
-        assert.deepStrictEqual(
-          yield* sql`SELECT status FROM kin_wakeups ORDER BY started_at, wakeup_id`,
-          [{ status: "failed" }, { status: "completed" }],
-        );
-        assert.deepStrictEqual(yield* sql`SELECT DISTINCT state FROM kin_events`, [
-          { state: "done" },
-        ]);
-        assert.lengthOf(new Set(ended), 2);
-      }).pipe(Effect.scoped, Effect.provide(harness(fixture).pipe(Layer.provide(bridge))));
-    }).pipe(provideDeterministicTestRuntime),
+          fixture.failed = false;
+          yield* TestClock.adjust("15 seconds");
+          for (const _id of ids) yield* Fiber.join(yield* run());
+          assert.deepStrictEqual(
+            yield* sql`SELECT status, event_ids FROM kin_wakeups
+            WHERE org_id = ${orgId} ORDER BY started_at, wakeup_id`,
+            [
+              { status: "failed", event_ids: JSON.stringify(ids) },
+              ...ids.map((id) => ({ status: "completed", event_ids: JSON.stringify([id]) })),
+            ],
+          );
+          assert.deepStrictEqual(
+            yield* sql`SELECT event_id, state FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
+            ids.map((id) => ({ event_id: id, state: "done" })),
+          );
+          assert.lengthOf(new Set(ended), ids.length + 1);
+        }).pipe(Effect.scoped, Effect.provide(harness(fixture).pipe(Layer.provide(bridge))));
+      }).pipe(provideDeterministicTestRuntime),
   );
 
   it.effect("defers claims while an interrupted run's provider turn is unfinished", () =>

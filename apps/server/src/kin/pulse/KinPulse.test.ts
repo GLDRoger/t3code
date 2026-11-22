@@ -787,13 +787,16 @@ describe("KinPulse", () => {
         const first = yield* KinPulse.tick(orgId, at);
         assert.deepStrictEqual(first.drafted, [{ personId: mate, key }]);
         const [made] = yield* drafts;
-        assert.deepInclude(made, {
-          _tag: "pulse",
-          agentId: growth,
-          factKeys: [key],
-          chatId: "mate-growth",
-          origin: { agentId: growth, chatId: "mate-growth", personId: mate },
-        });
+        if (made?._tag !== "pulse") return assert.fail("no draft wake");
+        assert.deepStrictEqual(
+          [made.agentId, made.factKeys, made.chatId, made.origin],
+          [
+            growth,
+            [key],
+            "mate-growth",
+            { agentId: growth, chatId: "mate-growth", personId: mate },
+          ],
+        );
         // She is still told of it as before, apart from the draft's own ledger.
         assert.deepStrictEqual(
           first.told.filter((one) => one.key === key),
@@ -892,7 +895,7 @@ describe("KinPulse", () => {
           ${mate})`;
       const own = yield* draftWakeText(orgId, event);
       assert.strictEqual(own?.text, DRAFT_FROM_MAILBOX("Meera", "meera@invented.example"));
-      assert.strictEqual(own?.data.from, "meera@invented.example");
+      assert.deepInclude(own?.data ?? {}, { from: "meera@invented.example" });
       // Done since: the turn says nothing.
       yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-30'`;
       assert.isUndefined(yield* draftWakeText(orgId, event));

@@ -287,7 +287,10 @@ describe("invoice", () => {
       () => computeInvoice({ ...base, total: inr(118000), clientPlace: "Maharashtra" }),
       "the lines come to ₹1,179.99 with tax, but the entry is recorded at ₹1,180.00",
     );
-    assert.throws(() => computeInvoice(base), /no place of supply/);
+    assert.throws(
+      () => computeInvoice(base),
+      /the client has no place of supply and needs a GSTIN or a place of supply/,
+    );
     // Tax recorded on an entry of a company that isn't registered is never printed as charged.
     for (const lines of [null, base.lines!])
       assert.throws(

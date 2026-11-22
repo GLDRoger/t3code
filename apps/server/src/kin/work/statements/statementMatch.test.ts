@@ -67,6 +67,22 @@ const match = (
 describe("statement matching", () => {
   it.each([
     {
+      name: "a credit matching a signed refund, not the same positive expense",
+      rows: [row({ description: "Ambermill Hosting refund", amountMinor: 500 })],
+      invoices: [],
+      expenses: [
+        expense({ amountMinor: -500, vendor: "Ambermill Hosting" }),
+        expense({
+          recordId: "rec_charge",
+          key: "EXP-2",
+          amountMinor: 500,
+          vendor: "Ambermill Hosting",
+        }),
+      ],
+      group: "matched",
+      fit: "exact",
+    },
+    {
       name: "a credit of the exact balance from the named client",
       rows: [
         row({ description: "NEFT CR-ICIC0000001-BRIGHTLINE MEDIA LLP", amountMinor: 11_800_000 }),

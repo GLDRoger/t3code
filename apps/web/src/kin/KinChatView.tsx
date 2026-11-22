@@ -927,6 +927,16 @@ function KinChatFeed(props: {
                 ? null
                 : { target: item.open, environmentId: props.environmentId, orgId: props.orgId }
             }
+            discussion={
+              item.discussionId === null || props.teamRoomId === null
+                ? null
+                : {
+                    discussionId: item.discussionId,
+                    teamRoomId: props.teamRoomId,
+                    environmentId: props.environmentId,
+                    orgId: props.orgId,
+                  }
+            }
           />
         );
       }
