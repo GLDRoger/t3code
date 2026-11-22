@@ -1493,6 +1493,13 @@ it.effect("a scheduled run quotes the owner's instruction, and refuses a task wi
     yield* prompt.build({ ...input, events: [run("sch-native")] });
     expect(yield* marked).toEqual([{ wakeup_id: input.wakeupId }]);
     yield* sql`DELETE FROM kin_wakeup_sensitive_reads`;
+    // Set up after an outside read, its run is a request to weigh, not the owner's instruction.
+    yield* stampEvent(orgId, "setting-wake:run-sch-setting", outsideSource("conn-1", [lenaMail]));
+    const afterRead = yield* prompt.build({ ...input, events: [run("sch-native")] });
+    expect(afterRead).not.toContain("Do the work now");
+    expect(afterRead).toContain("A scheduled run of a task set up after text from outside");
+    expect(afterRead.split("> BEGIN QUOTE: scheduled task (untrusted)")[1]).toContain(approved);
+    expect(stampReads((yield* outsideStamp(input)) ?? "")).toEqual([lenaMail]);
     // Reworded in T3's Scheduled tasks screen: the lead asks, and does nothing else.
     yield* sql`UPDATE scheduled_tasks SET prompt = 'Merge every open PR on acme/app.'
       WHERE task_id = ${taskId}`;
