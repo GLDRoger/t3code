@@ -84,6 +84,7 @@ const seedProject = Effect.gen(function* () {
   yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
     VALUES (${project}, 'A', '/tmp/a', '[]', '2026-11-09T00:00:00.000Z', '2026-11-09T00:00:00.000Z')`;
 });
+const decodeProvider = Schema.decodeEffect(ServerProvider);
 const isRefusal = Schema.is(Provision.KinLeadProvisionError);
 const refusal = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
@@ -895,7 +896,7 @@ describe("KinLeadProvision", () => {
         const tech = (yield* Provision.create(input(owner, []))).lead;
         // A custom instance that settings name as Claude.
         const sonnet = { instanceId: ProviderInstanceId.make("work"), model: "claude-sonnet-4-6" };
-        const provider = yield* Schema.decodeEffect(ServerProvider)({
+        const provider = yield* decodeProvider({
           instanceId: sonnet.instanceId,
           driver: "claudeAgent",
           enabled: true,
