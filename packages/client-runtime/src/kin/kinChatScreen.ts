@@ -200,7 +200,7 @@ type KinChatFeedInput = {
   readonly teamRoomId: KinChatId | null;
   readonly direct: boolean;
   readonly formatTime: (iso: string) => string;
-  /** A message a notification opened the chat on. */
+  /** A message the chat was opened on: a notification's, a waiting row's, a task's card. */
   readonly landOn: string | null;
   readonly ownsLead: boolean;
   readonly agentName: string | null;
@@ -269,6 +269,8 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
               [row.question, ...row.tasks].some((card) => card?.message.messageId === landOn),
         );
   const earlierPage = kinEarlierPage(input.chatId, messages, input.exhausted, live.clearedSeq);
+  // Older than what has loaded: page back to it rather than open at the end.
+  const landPage = landOn !== null && landIndex < 0 ? earlierPage : null;
   const showIntro = kinIntroVisible({
     // Nobody is there to greet in a retired agent's chat.
     ownsLead: input.ownsLead && !input.retired,
@@ -296,6 +298,8 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
     display,
     /** The row to bring into view for `landOn`; -1 until it has loaded. */
     landIndex,
+    /** The page to read next to reach `landOn`; null once it has loaded or nothing is left. */
+    landPage,
     latestSeq: latestKinSeq(messages),
     earlierPage,
     showIntro,
