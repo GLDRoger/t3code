@@ -23,7 +23,7 @@ import { useNowMinuteMs } from "./useKinClock";
 import type { KinWorkTarget } from "./useKinWork";
 
 /** Settings' page for What Kin checked. */
-export const KIN_WATCH_LOG_PAGE = "watches";
+const KIN_WATCH_LOG_PAGE = "watches";
 
 /**
  * The one quiet line on a record Kin watches, in `kinWatchLine`'s words, with the buttons this
