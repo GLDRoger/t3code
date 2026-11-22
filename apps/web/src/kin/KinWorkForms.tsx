@@ -257,7 +257,7 @@ function ContactDetails(props: {
   );
 }
 
-function PrivateSwitch(props: {
+export function PrivateSwitch(props: {
   readonly label: string;
   readonly note: string;
   readonly checked: boolean;

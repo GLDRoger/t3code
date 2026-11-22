@@ -68,7 +68,8 @@ import { KinAsideNote } from "./KinAttention";
 import { KinWatchLine } from "./KinWatchLine";
 import { kinClient } from "./kinClient";
 import { KinDealLostDialog, KinDealMoveMenu, KinDealNextLine } from "./KinDeals";
-import { Field, FormShell, oneParagraph } from "./KinWorkForms";
+import { Field, FormShell, oneParagraph, PrivateSwitch } from "./KinWorkForms";
+import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { GiveItems } from "./KinWorkItemSheet";
 import {
   KinLoadFailed,
@@ -687,7 +688,7 @@ function AddStep(
 
 const NO_QUOTE = "none";
 
-/** Title, value, expected day, came from and the quote, as the phone's Edit sends them. */
+/** Title, value, expected day, came from, Keep private and the quote, as the phone's Edit sends them. */
 function DealEdit(
   props: KinWorkTarget & {
     readonly page: KinDealPageValue;
@@ -699,6 +700,7 @@ function DealEdit(
   const { names } = props.directory;
   const send = useKinDealSend(props);
   const home = useKinHomeCurrency(props);
+  const ownerLevel = useKinOwnerLevel(props.environmentId);
   const [opened] = useState(() => kinDealEditDraft({ ...deal, notes: props.page.notes }, names));
   const [draft, setDraft] = useState(opened);
   const [busy, setBusy] = useState(false);
@@ -794,6 +796,15 @@ function DealEdit(
           onChange={(event) => set({ source: event.target.value })}
         />
       </Field>
+      {!ownerLevel ? null : (
+        <PrivateSwitch
+          label={KIN_DEALS.privateLabel}
+          note={draft.private ? KIN_DEALS.privateOn : KIN_DEALS.privateOff}
+          checked={draft.private}
+          disabled={busy}
+          onChange={(on) => set({ private: on })}
+        />
+      )}
       {quotes === null ? null : (
         <Field
           id={ids.quote}
