@@ -1319,6 +1319,20 @@ describe("reminder and scheduled task cards", () => {
       zone,
     )!;
     expect(running.actions.map((action) => action.id)).toEqual(["pause", "edit", "delete"]);
+    expect(running.lines).toContain("Running now.");
+    // Held by a trouble on Kin's computer: it waits, in the trouble card's own words.
+    expect(
+      kinScheduledTaskCardView(
+        scheduled({
+          lastRun: {
+            at: "2026-11-10T02:30:00.000Z",
+            status: "running",
+            note: "Kin's computer ran out of space",
+          },
+        }),
+        zone,
+      )!.lines,
+    ).toContain("Waiting to run: Kin's computer ran out of space.");
 
     const paused = kinScheduledTaskCardView(
       scheduled({ status: "paused", nextRunAt: null }),

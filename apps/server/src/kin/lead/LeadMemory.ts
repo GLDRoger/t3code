@@ -367,6 +367,8 @@ export const authority = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const cache = yield* Cache.MemoryCache;
+    // A wake-up that began before this server did lived through a restart; no other one did.
+    const serverStartedAt = yield* Clock.currentTimeMillis;
     return Writer.MemoryWriterAuthority.of({
       resolve: Effect.fn("LeadMemory.writerAuthority")(
         function* (orgId, wakeupId) {
@@ -437,6 +439,7 @@ export const authority = Layer.effect(
             eventIds: [...sources.keys()],
             sources,
             stagedReceipts:
+              row.startedAt < serverStartedAt &&
               (yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}
                 -- A schedule is saved, and a review posted, when its call runs; neither waits for the turn's end.
                 AND call_key NOT LIKE 'schedule:%' AND call_key NOT LIKE 'github-review:%' LIMIT 1`)

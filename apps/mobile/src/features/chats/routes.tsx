@@ -9,6 +9,7 @@ import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinClientScreen } from "./KinClientScreen";
 import { KinCompanyScreen } from "./KinCompanyScreen";
+import { KinHostScreen } from "./KinHostScreen";
 import { KinWatchLogScreen } from "./KinWatchLogScreen";
 import { KinDealEditScreen } from "./KinDealEditScreen";
 import { KinDealNewScreen } from "./KinDealNewScreen";
@@ -173,6 +174,11 @@ export const KIN_SCREENS = {
     screen: KinCompanyScreen,
     linking: "kin/:environmentId/:orgId/company",
     options: pageRoute({ title: "Company details" }),
+  }),
+  KinHost: createNativeStackScreen({
+    screen: KinHostScreen,
+    linking: "kin/:environmentId/:orgId/host",
+    options: pageRoute({ title: "Kin's computer" }),
   }),
   KinConnections: createNativeStackScreen({
     screen: KinConnectionsScreen,

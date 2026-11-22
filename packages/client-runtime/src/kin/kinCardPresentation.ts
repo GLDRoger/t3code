@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
   KIN_DOC_CARD,
+  KIN_HOST_TROUBLE_CARD,
   KIN_MEMORY_CHANGES_CARD,
   KIN_SOCIAL_PACK_CARD,
   KIN_SOCIAL_WEEK_CARD,
@@ -25,6 +26,7 @@ import { kinHeldLine } from "./kinAgentRetire.ts";
 import { kinApprovalWidgetView, type KinApprovalWidgetView } from "./kinApprovalPresentation.ts";
 import { kinChartCardView, type KinChartView } from "./kinChart.ts";
 import { kinDocCardView, type KinDocCardView } from "./kinDocs.ts";
+import { kinHostTroubleCardView } from "./kinHostCare.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinSentences } from "./kinScreenState.ts";
 import { kinZoneLabel } from "./kinTimeZone.ts";
@@ -91,6 +93,8 @@ export type KinCardView =
   | { readonly kind: "statement_password"; readonly password: KinStatementPasswordView }
   | { readonly kind: "social_week"; readonly week: KinSocialWeekView }
   | { readonly kind: "social_pack"; readonly pack: KinSocialPackView }
+  /** Drawn with the reader's clock (`kinHostTroubleCardView`), so it carries the widget. */
+  | { readonly kind: "host_trouble"; readonly widget: KinWidget }
   | { readonly kind: "missing" }
   /** A card this build can't draw: its own plain words, or nothing when it has none. */
   | { readonly kind: "unknown"; readonly text: string | null };
@@ -385,7 +389,8 @@ function lastRunLine(run: NonNullable<KinScheduledTaskCard["lastRun"]>, timeZone
   const note = run.note === undefined ? "" : clamp(run.note, 280);
   switch (run.status) {
     case "running":
-      return "Running now.";
+      // Held by a trouble on Kin's computer: the note is why, as the trouble's own card says it.
+      return note === "" ? "Running now." : `Waiting to run: ${note.replace(/\.$/, "")}.`;
     case "posted":
       return note === "" ? `Last run ${at}.` : `Last run ${at}: ${note}`;
     case "failed":
@@ -619,6 +624,10 @@ function kinLiveCardView(
       const pack = kinSocialPackView(widget);
       return pack === null ? unknown(widget) : { kind: "social_pack", pack };
     }
+    case KIN_HOST_TROUBLE_CARD:
+      return kinHostTroubleCardView(widget, String) === null
+        ? unknown(widget)
+        : { kind: "host_trouble", widget };
     default:
       return unknown(widget);
   }
