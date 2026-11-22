@@ -352,7 +352,7 @@ function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames
 }
 
 /** Leaving a task, and the host refusing to put the reader back on it. */
-export const KIN_WORK_ALSO_ON_COPY = {
+const KIN_WORK_ALSO_ON_COPY = {
   left: (title: string) => `You left “${title}”. You may no longer see it.`,
   backRefused: "You can't put yourself back on it now. Ask whoever holds it.",
 } as const;
