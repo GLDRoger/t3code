@@ -31,7 +31,13 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
-import { inheritOutside, outsideStamp, outsideToolAllowed } from "../lead/OutsideContent.ts";
+import {
+  describeOutside,
+  inheritOutside,
+  outsideStamp,
+  outsideToolAllowed,
+  stampKey,
+} from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { commentMine, setStateMine } from "../tasksKey/tasks.ts";
 import { taskNewsBanner } from "./assignNotices.ts";
@@ -1112,7 +1118,10 @@ it.effect(
         ],
       );
       assert.include(read.codingAgent, "never their own words");
-      assert.strictEqual(yield* outsideStamp(turn), "coding-agent:Invented laptop");
+      assert.strictEqual(
+        stampKey((yield* outsideStamp(turn)) ?? ""),
+        "coding-agent:Invented laptop",
+      );
       assert.isTrue(yield* turnSensitive(orgId, "wake"));
       assert.isFalse(yield* outsideToolAllowed(turn, "payment_record", {}));
 
@@ -1139,8 +1148,8 @@ it.effect(
         wakeupId: "work-turn",
       });
       assert.strictEqual(
-        yield* outsideStamp({ orgId, wakeupId: "work-turn" }),
-        "coding-agent:Invented laptop",
+        describeOutside((yield* outsideStamp({ orgId, wakeupId: "work-turn" })) ?? ""),
+        "Invented laptop, a coding agent",
       );
       assert.include(
         section.changed.find((one) => one.key === flyers.key)?.changes ?? [],
@@ -1168,7 +1177,7 @@ it.effect(
       yield* turnAt("given-turn");
       yield* inheritOutside({ orgId, wakeupId: "given-turn", eventIds: [woken!.eventId] });
       assert.strictEqual(
-        yield* outsideStamp({ orgId, wakeupId: "given-turn" }),
+        stampKey((yield* outsideStamp({ orgId, wakeupId: "given-turn" })) ?? ""),
         "coding-agent:Invented laptop",
       );
       assert.isTrue(yield* turnSensitive(orgId, "given-turn"));

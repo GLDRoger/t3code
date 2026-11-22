@@ -242,6 +242,31 @@ export const stampEvent = Effect.fn("KinOutsideContent.stampEvent")(function* (
     VALUES (${orgId}, ${eventId}, ${source}) ON CONFLICT (org_id, event_id) DO NOTHING`;
 });
 
+/** Where an entry's change stores its turn's stamp (`KinRecords.logChange`). */
+export const changeStampKey = (recordId: string, seq: number) => `record-change:${recordId}:${seq}`;
+
+/**
+ * The first change an agent made to an entry after its turn read outside text, and what it had
+ * read, as a person reads it.
+ */
+export const entryAfterReading = Effect.fn("KinOutsideContent.entryAfterReading")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [first] = yield* sql<{
+    kind: string;
+    source: string;
+  }>`SELECT c.kind, o.outside_from AS source
+    FROM kin_record_changes c JOIN kin_event_outside o ON o.org_id = c.org_id
+      AND o.event_id = 'record-change:' || c.record_id || ':' || c.seq
+    WHERE c.org_id = ${orgId} AND c.record_id = ${recordId} AND c.actor_kind = 'agent'
+    ORDER BY c.seq LIMIT 1`;
+  return first === undefined
+    ? undefined
+    : { made: first.kind === "created", source: describeOutside(first.source) };
+});
+
 /** The stamp stored under `key`: an event's, or a question's an outside-read turn asked. */
 export const storedStamp = Effect.fn("KinOutsideContent.storedStamp")(function* (
   orgId: KinOrgId,

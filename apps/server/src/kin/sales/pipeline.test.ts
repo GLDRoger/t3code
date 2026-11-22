@@ -24,7 +24,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
-import { outsideStamp, outsideToolAllowed } from "../lead/OutsideContent.ts";
+import { describeOutside, outsideStamp, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Deals from "../work/deals.ts";
@@ -890,7 +890,10 @@ it.effect(
       assert.isUndefined(yield* outsideStamp(turn));
       // A turn that has read nothing outside opens any public address.
       const page = yield* webPage(scope, { url: "https://corran.example/about?lang=en" });
-      assert.strictEqual(yield* outsideStamp(turn), "web:corran.example");
+      assert.strictEqual(
+        describeOutside((yield* outsideStamp(turn)) ?? ""),
+        "the web page corran.example",
+      );
       // Its address comes back without the query, and its title only inside the quote.
       assert.strictEqual(page.url, "https://corran.example/about");
       assert.notProperty(page, "title");

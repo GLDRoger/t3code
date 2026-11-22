@@ -42,6 +42,7 @@ import { listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
 import { DAY_MS } from "../durations.ts";
+import { entryAfterReading } from "../lead/OutsideContent.ts";
 
 /** The plain rows behind `KinRecords`: reads and the shapes they decode into. No writes here. */
 
@@ -829,6 +830,9 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
     changes: yield* changesOf(orgId, row.recordId, changeLimit),
     seq: yield* recordSeq(orgId, row.recordId),
     ...(isBuiltIn(row.registerId) ? {} : yield* definedDetail(row)),
+    ...(yield* entryAfterReading(orgId, row.recordId).pipe(
+      Effect.map((afterReading) => (afterReading === undefined ? {} : { afterReading })),
+    )),
   } satisfies KinRecordDetail;
 });
 

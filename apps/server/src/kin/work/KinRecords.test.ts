@@ -58,6 +58,7 @@ import { taskNewsBanner } from "./assignNotices.ts";
 import { keepAllDayDays } from "./allDayZone.ts";
 import { importWork } from "./importWork.ts";
 import { newCompanyProfileJson } from "./companyProfile.ts";
+import { markOutside } from "../lead/OutsideContent.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
 import * as LeadMoney from "./leadMoney.ts";
@@ -389,6 +390,39 @@ const ownChatTurn = Effect.fn("KinRecordsTest.ownChatTurn")(function* (
       'claimed', ${`wake-${personId}`})`;
   return eventId;
 });
+
+it.effect(
+  "what a turn writes after an outside read names the read on the entry, and stays its asker's",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* turn();
+      const records = yield* KinRecords.KinRecords;
+      const sheet = (key: string) =>
+        records.get(orgId, key).pipe(Effect.flatMap((row) => records.detail(row!)));
+      const made = (title: string) =>
+        LeadWork.create(scopeOf(lead), {
+          sourceEventId: "ask-event",
+          records: [{ title, owner: "owner" }],
+        }).pipe(Effect.map((result) => result.records[0]!.key));
+      const before = yield* made("Invented: before the mail");
+      const untouched = yield* made("Invented: untouched since");
+      const read = "mail from Ravi Menon <ravi@lumen.example>: Phase 2";
+      yield* markOutside({ orgId, wakeupId: "wake" }, "conn-1", read);
+      const after = yield* made("Invented: call Ravi on Monday");
+      yield* LeadWork.update(scopeOf(lead), {
+        key: before,
+        sourceEventId: "ask-event",
+        notes: "Invented: Ravi asked for Monday",
+      });
+      // The owner asked in person: what the turn makes for him stays kept, read or not.
+      assert.include((yield* records.get(orgId, after))!, { confirmed: 1 });
+      assert.deepStrictEqual((yield* sheet(after)).afterReading, { made: true, source: read });
+      assert.deepStrictEqual((yield* sheet(before)).afterReading, { made: false, source: read });
+      // Written before the read and not since: nothing to name.
+      assert.isUndefined((yield* sheet(untouched)).afterReading);
+    }).pipe(Effect.provide(layer)),
+);
 
 it.effect(
   "a task put on the owner in someone else's chat is the asker's unless a reason says it is his",

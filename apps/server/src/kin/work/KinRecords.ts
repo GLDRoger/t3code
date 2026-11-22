@@ -46,7 +46,12 @@ import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
 import { approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
-import { codingAgentSource, outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
+import {
+  changeStampKey,
+  codingAgentSource,
+  outsideStamp,
+  stampEvent,
+} from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
 import {
   commentIdFor,
@@ -841,6 +846,12 @@ const make = Effect.gen(function* () {
         ${writer.codingAgentKey ?? null})
       RETURNING seq`;
     const seq = change?.seq ?? 0;
+    // What the agent's turn had read from outside when it wrote this, for the entry's sheet.
+    if (writer.actor._tag === "agent" && writer.wakeupId !== undefined)
+      yield* outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
+        Effect.flatMap((source) => stampEvent(orgId, changeStampKey(row.recordId, seq), source)),
+        provideSql,
+      );
     // Who sees it as this change leaves it, and what else of theirs it showed or hid (`personSees`).
     const [stored] = yield* sql<{ registerId: string; projectKey: string | null }>`SELECT
         r.register_id AS "registerId", p.key AS "projectKey"

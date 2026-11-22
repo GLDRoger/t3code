@@ -54,7 +54,13 @@ import * as Handoff from "../lead/Handoff.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { KinLeadPrompt } from "../lead/LeadPrompt.ts";
 import * as Memory from "../memory/Memory.ts";
-import { inheritOutside, markOutside, outsideStamp, storedStamp } from "../lead/OutsideContent.ts";
+import {
+  inheritOutside,
+  markOutside,
+  outsideStamp,
+  stampKey,
+  storedStamp,
+} from "../lead/OutsideContent.ts";
 import { ownerLevelAsked } from "../people/KinAccess.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import type { KinDecision } from "../memory/MemoryWriter.ts";
@@ -3416,7 +3422,7 @@ it.effect("a question asked for someone away waits for them, then is raised once
       yield* markOutside({ orgId: KinOrgId.make(orgId), wakeupId: rhea }, "mail-connection");
       const stampOf = (key: string) => storedStamp(KinOrgId.make(orgId), key);
       const asked = yield* askFor("chief", rhea, { to: "Dev" });
-      assert.strictEqual(yield* stampOf(asked.questionId), "mail-connection");
+      assert.strictEqual(stampKey((yield* stampOf(asked.questionId)) ?? ""), "mail-connection");
       assert.strictEqual(asked.state, "held");
       assert.strictEqual(
         asked.note,
@@ -3482,10 +3488,10 @@ it.effect("a question asked for someone away waits for them, then is raised once
       });
       const [answered] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
         FROM kin_events WHERE dedupe_key = ${`question-answered:${asked.questionId}`}`;
-      assert.strictEqual(yield* stampOf(answered!.eventId), "mail-connection");
+      assert.strictEqual(stampKey((yield* stampOf(answered!.eventId)) ?? ""), "mail-connection");
       const next = { orgId: KinOrgId.make(orgId), wakeupId: "answer-turn" };
       yield* inheritOutside({ ...next, eventIds: [answered!.eventId] });
-      assert.strictEqual(yield* outsideStamp(next), "mail-connection");
+      assert.strictEqual(stampKey((yield* outsideStamp(next)) ?? ""), "mail-connection");
     }).pipe(Effect.provide(layer)),
   ),
 );
