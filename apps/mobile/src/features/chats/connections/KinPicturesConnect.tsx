@@ -66,7 +66,7 @@ export function KinPicturesSection(props: { readonly target: KinConnectionsTarge
     limit === null
       ? Dialog.alert(COPY.noLimitTitle, COPY.noLimitDetail, [
           { text: COPY.cancel, style: "cancel" },
-          { text: COPY.noLimit, onPress: () => apply(null) },
+          { text: COPY.noLimitConfirm, onPress: () => apply(null) },
         ])
       : apply(limit);
   const connect = (typed?: string) =>

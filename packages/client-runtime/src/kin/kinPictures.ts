@@ -12,6 +12,7 @@ import * as Schema from "effect/Schema";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { kinFailureText } from "./kinAnswers.ts";
+import { KIN_DAILY_LIMIT } from "./kinBudget.ts";
 
 /** Settings → Connections → Pictures: the picture service's key, the monthly limit, the count. */
 export const KIN_PICTURES_COPY = {
@@ -22,6 +23,8 @@ export const KIN_PICTURES_COPY = {
   connectDetail: (service: string) =>
     `Paste ${/^[aeiou]/i.test(service) ? "an" : "a"} ${service} API key. It goes to your Kin's computer and is never shown again.`,
   keyLabel: "API key",
+  newKeyLabel: "New API key",
+  saveKey: "Save key",
   keyPlaceholder: "Paste the key",
   openService: (service: string) => `Open ${service}`,
   connect: "Connect",
@@ -29,13 +32,15 @@ export const KIN_PICTURES_COPY = {
   keySaved: (day: string) => `Key saved ${day}`,
   limitLabel: "Monthly limit",
   perMonth: (count: number) => `${count} a month`,
-  noLimit: "No limit",
+  // The same words as the daily limit's No limit.
+  noLimit: KIN_DAILY_LIMIT.none,
   used: (used: number, limit: number, resetsOn: string) =>
     `${used} of ${limit} this month, resets on ${resetsOn}`,
   usedNoLimit: (used: number) => `${used} this month · No limit`,
   noLimitTitle: "Set no monthly limit?",
   noLimitDetail:
     "With no limit, Kin never stops pictures for cost. You can see this month's count here and set a limit again any time.",
+  noLimitConfirm: KIN_DAILY_LIMIT.noneAsk.confirm,
   disconnect: "Disconnect",
   disconnectTitle: "Disconnect the picture service?",
   disconnectDetail:
@@ -71,13 +76,15 @@ export interface KinPicturesRows {
 const limitLabel = (limit: number | null) =>
   limit === null ? KIN_PICTURES_COPY.noLimit : KIN_PICTURES_COPY.perMonth(limit);
 
-/** The limit choices, the one set now among them; `selected` may be a not-yet-saved pick. */
+/**
+ * The limit choices, No limit first as the daily limit offers it, the one set now among them;
+ * `selected` may be a not-yet-saved pick.
+ */
 export function kinPicturesChoices(selected: number | null): ReadonlyArray<KinPicturesLimitChoice> {
-  const values: Array<number | null> = [...KIN_PICTURES_LIMITS];
+  const values: Array<number> = [...KIN_PICTURES_LIMITS];
   if (selected !== null && !values.includes(selected)) values.push(selected);
-  values.sort((a, b) => (a ?? 0) - (b ?? 0));
-  values.push(null);
-  return values.map((value) => ({
+  values.sort((a, b) => a - b);
+  return [null, ...values].map((value) => ({
     value,
     label: limitLabel(value),
     selected: value === selected,

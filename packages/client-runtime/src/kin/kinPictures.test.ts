@@ -37,6 +37,7 @@ describe("kinPicturesRows", () => {
     );
     const choices = kinPicturesRows(view({ monthlyLimit: 75 }), options).choices;
     expect(choices.map((choice) => choice.label)).toEqual([
+      "No limit",
       "10 a month",
       "25 a month",
       "50 a month",
@@ -44,7 +45,6 @@ describe("kinPicturesRows", () => {
       "100 a month",
       "250 a month",
       "500 a month",
-      "No limit",
     ]);
     expect(kinPicturesRows(view({ connected: false, savedAt: null }), options).keyLine).toBeNull();
   });

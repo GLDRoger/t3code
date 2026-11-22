@@ -1,5 +1,4 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   createKinPicturesActions,
   KIN_PICTURES_COPY as COPY,
@@ -10,23 +9,24 @@ import {
 import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { useId, useState } from "react";
+import { useState } from "react";
 
-import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
-import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { Label } from "../components/ui/label";
-import {
-  Select,
-  SelectItem,
-  SelectPopup,
-  SelectTrigger,
-  SelectValue,
-} from "../components/ui/select";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { kinClient } from "./kinClient";
+import {
+  KinSettingsChoice,
+  KinSettingsField,
+  KinSettingsFormDialog,
+} from "./settings/KinSettingsControls";
+import {
+  KinSettingsLoadFailed,
+  KinSettingsLoading,
+  KinSettingsRow,
+  KinSettingsSection,
+} from "./settings/KinSettingsLayout";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 
 const NONE = "none";
@@ -39,6 +39,45 @@ export function KinPicturesConnect(props: {
   readonly orgId: KinOrgId;
 }) {
   return useKinOwnerLevel(props.environmentId) ? <PicturesSection {...props} /> : null;
+}
+
+/** The limit as one choice; No limit asks first, as the daily limit does. */
+function LimitChoice(props: {
+  readonly value: number | null;
+  readonly disabled: boolean;
+  readonly onChange: (limit: number | null) => void;
+}) {
+  const [asking, setAsking] = useState(false);
+  return (
+    <>
+      <KinSettingsChoice
+        label={COPY.limitLabel}
+        value={toValue(props.value)}
+        disabled={props.disabled}
+        options={kinPicturesChoices(props.value).map((choice) => ({
+          value: toValue(choice.value),
+          label: choice.label,
+        }))}
+        onChange={(value) => {
+          const limit = fromValue(value);
+          if (limit === null) setAsking(true);
+          else props.onChange(limit);
+        }}
+      />
+      <KinConfirm
+        ask={
+          asking
+            ? { title: COPY.noLimitTitle, detail: COPY.noLimitDetail, action: COPY.noLimitConfirm }
+            : null
+        }
+        onConfirm={() => {
+          setAsking(false);
+          props.onChange(null);
+        }}
+        onClose={() => setAsking(false)}
+      />
+    </>
+  );
 }
 
 function PicturesSection(props: {
@@ -56,15 +95,11 @@ function PicturesSection(props: {
     set: (input) => set({ environmentId, input }),
     reload,
   });
-  const ids = { key: useId(), limit: useId() };
-  const [key, setKey] = useState("");
-  // The connect form's pick; null until the person changes it from the view's.
-  const [pick, setPick] = useState<{ readonly limit: number | null } | null>(null);
-  const [asking, setAsking] = useState<"no_limit" | "disconnect" | null>(null);
+  const [open, setOpen] = useState<"connect" | "key" | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const rows = view === null ? null : kinPicturesRows(view);
-  const formLimit = pick === null ? (view?.monthlyLimit ?? null) : pick.limit;
 
   const run = async (sent: Promise<KinPicturesOutcome>) => {
     setBusy(true);
@@ -74,149 +109,169 @@ function PicturesSection(props: {
     if (!outcome.ok) setProblem(outcome.problem);
     return outcome.ok;
   };
-  const chooseLimit = (value: string) => {
-    const limit = fromValue(value);
-    if (limit === null) return setAsking("no_limit");
-    if (rows?.connected === true) void run(actions.setLimit(limit));
-    else setPick({ limit });
-  };
-  const limitSelect = (selected: number | null) => (
-    <Select
-      items={kinPicturesChoices(selected).map((choice) => ({
-        value: toValue(choice.value),
-        label: choice.label,
-      }))}
-      value={toValue(selected)}
-      onValueChange={(value) => {
-        if (typeof value === "string") chooseLimit(value);
-      }}
-    >
-      <SelectTrigger id={ids.limit} aria-label={COPY.limitLabel} disabled={busy}>
-        <SelectValue />
-      </SelectTrigger>
-      <SelectPopup>
-        {kinPicturesChoices(selected).map((choice) => (
-          <SelectItem key={toValue(choice.value)} value={toValue(choice.value)}>
-            {choice.label}
-          </SelectItem>
-        ))}
-      </SelectPopup>
-    </Select>
-  );
 
   return (
     <>
-      <SettingsSection title={COPY.title}>
+      <KinSettingsSection
+        title={COPY.title}
+        description={COPY.intro}
+        problem={open === null ? problem : null}
+      >
         {rows === null ? (
           AsyncResult.isFailure(result) ? (
-            <div className="flex items-center justify-between gap-3 px-4 py-3">
-              <p className="text-sm text-destructive-foreground">{COPY.loadFailed}</p>
-              <Button size="xs" variant="outline" onClick={reload}>
-                {KIN_RETRY}
-              </Button>
-            </div>
+            <KinSettingsLoadFailed onRetry={reload}>{COPY.loadFailed}</KinSettingsLoadFailed>
           ) : (
-            <p className="px-4 py-3 text-sm text-muted-foreground">{COPY.loading}</p>
+            <KinSettingsLoading rows={2} />
           )
         ) : rows.connected ? (
           <>
-            <SettingsRow
-              title={rows.keyLine}
-              description={rows.usage}
+            <KinSettingsRow
+              title={rows.service}
+              detail={rows.keyLine}
+              openLabel={`${COPY.keyLabel}: ${rows.service}`}
+              onOpen={() => {
+                setProblem(null);
+                setOpen("key");
+              }}
+            />
+            <KinSettingsRow
+              title={COPY.limitLabel}
+              detail={rows.usage}
               control={
-                <Button
-                  size="xs"
-                  variant="ghost"
+                <LimitChoice
+                  value={rows.limit}
                   disabled={busy}
-                  onClick={() => setAsking("disconnect")}
-                >
-                  {COPY.disconnect}
-                </Button>
+                  onChange={(limit) => void run(actions.setLimit(limit))}
+                />
               }
             />
-            <SettingsRow title={COPY.limitLabel} control={limitSelect(rows.limit)} />
           </>
         ) : (
-          <>
-            <SettingsRow
-              title={COPY.connectTitle}
-              description={COPY.intro}
-              control={
-                <Button
-                  size="xs"
-                  variant="outline"
-                  render={<a href={rows.keyUrl} target="_blank" rel="noopener noreferrer" />}
-                >
-                  {COPY.openService(rows.service)}
-                </Button>
-              }
-            />
-            <form
-              className="flex flex-col gap-3 px-4 py-3"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void run(actions.connect(key, formLimit)).then((ok) => {
-                  if (!ok) return;
-                  setKey("");
-                  setPick(null);
-                });
-              }}
-            >
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={ids.key}>{COPY.keyLabel}</Label>
-                <Input
-                  id={ids.key}
-                  type="password"
-                  value={key}
-                  placeholder={COPY.keyPlaceholder}
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(event) => setKey(event.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">{COPY.connectDetail(rows.service)}</p>
-              </div>
-              <div className="flex flex-wrap items-end justify-between gap-3">
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor={ids.limit}>{COPY.limitLabel}</Label>
-                  {limitSelect(formLimit)}
-                </div>
-                <Button type="submit" disabled={busy || key.trim() === ""} aria-busy={busy}>
-                  {busy ? COPY.connecting : COPY.connect}
-                </Button>
-              </div>
-            </form>
-          </>
+          <KinSettingsRow
+            title={COPY.connectTitle}
+            control={
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  setProblem(null);
+                  setOpen("connect");
+                }}
+              >
+                {COPY.connect}
+              </Button>
+            }
+          />
         )}
-        {problem === null ? null : (
-          <div className="px-4 pb-3">
-            <Alert variant="error">
-              <AlertDescription>{problem}</AlertDescription>
-            </Alert>
-          </div>
-        )}
-      </SettingsSection>
+      </KinSettingsSection>
+      {rows !== null && open !== null ? (
+        <KeyDialog
+          rows={rows}
+          replacing={open === "key"}
+          busy={busy}
+          problem={problem}
+          onDisconnect={() => setDisconnecting(true)}
+          onSubmit={(key, limit) =>
+            void run(actions.connect(key, limit)).then((ok) => {
+              if (ok) setOpen(null);
+            })
+          }
+          onClose={() => {
+            setProblem(null);
+            setOpen(null);
+          }}
+        />
+      ) : null}
       <KinConfirm
         ask={
-          asking === "no_limit"
-            ? { title: COPY.noLimitTitle, detail: COPY.noLimitDetail, action: COPY.noLimit }
-            : asking === "disconnect"
-              ? {
-                  title: COPY.disconnectTitle,
-                  detail: COPY.disconnectDetail,
-                  action: COPY.disconnect,
-                  destructive: true,
-                }
-              : null
+          disconnecting
+            ? {
+                title: COPY.disconnectTitle,
+                detail: COPY.disconnectDetail,
+                action: COPY.disconnect,
+                destructive: true,
+              }
+            : null
         }
         onConfirm={() => {
-          const confirmed = asking;
-          setAsking(null);
-          if (confirmed === "disconnect") void run(actions.disconnect());
-          else if (rows?.connected === true) void run(actions.setLimit(null));
-          else setPick({ limit: null });
+          setDisconnecting(false);
+          void run(actions.disconnect()).then((ok) => {
+            if (ok) setOpen(null);
+          });
         }}
-        onClose={() => setAsking(null)}
+        onClose={() => setDisconnecting(false)}
       />
     </>
+  );
+}
+
+/** Paste a key: the first one with its limit, or a new one in place of the saved key. */
+function KeyDialog(props: {
+  readonly rows: ReturnType<typeof kinPicturesRows>;
+  readonly replacing: boolean;
+  readonly busy: boolean;
+  readonly problem: string | null;
+  readonly onDisconnect: () => void;
+  readonly onSubmit: (key: string, limit: number | null) => void;
+  readonly onClose: () => void;
+}) {
+  const { rows } = props;
+  const [key, setKey] = useState("");
+  const [limit, setLimit] = useState(rows.limit);
+  return (
+    <KinSettingsFormDialog
+      title={props.replacing ? rows.service : COPY.connectTitle}
+      description={props.replacing ? (rows.keyLine ?? undefined) : COPY.connectDetail(rows.service)}
+      submitLabel={props.replacing ? COPY.saveKey : COPY.connect}
+      busy={props.busy}
+      notReady={key.trim() === "" ? COPY.noKey : null}
+      problem={props.problem}
+      typed={key !== ""}
+      remove={
+        props.replacing ? (
+          <Button
+            type="button"
+            variant="ghost-destructive"
+            disabled={props.busy}
+            onClick={props.onDisconnect}
+          >
+            {COPY.disconnect}
+          </Button>
+        ) : undefined
+      }
+      secondary={
+        <Button
+          type="button"
+          variant="ghost"
+          render={<a href={rows.keyUrl} target="_blank" rel="noopener noreferrer" />}
+        >
+          {COPY.openService(rows.service)}
+        </Button>
+      }
+      onSubmit={() => props.onSubmit(key, props.replacing ? rows.limit : limit)}
+      onClose={props.onClose}
+    >
+      <KinSettingsField
+        label={props.replacing ? COPY.newKeyLabel : COPY.keyLabel}
+        help={props.replacing ? COPY.connectDetail(rows.service) : undefined}
+      >
+        {({ control }) => (
+          <Input
+            id={control}
+            type="password"
+            value={key}
+            placeholder={COPY.keyPlaceholder}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => setKey(event.target.value)}
+          />
+        )}
+      </KinSettingsField>
+      {props.replacing ? null : (
+        <KinSettingsField label={COPY.limitLabel}>
+          {() => <LimitChoice value={limit} disabled={props.busy} onChange={setLimit} />}
+        </KinSettingsField>
+      )}
+    </KinSettingsFormDialog>
   );
 }
