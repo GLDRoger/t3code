@@ -2540,8 +2540,26 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         });
       });
 
+      /** Rhea's turn puts a draft to herself, as the agent's instructions send a teammate's up. */
+      const askHerself = (at: { readonly wakeupId: KinWakeupId }, detail: string) =>
+        askFor("chief", at.wakeupId, {
+          to: "Rhea",
+          question: "Approve the proposal?",
+          options: undefined,
+          about: undefined,
+          intent: undefined,
+          detail,
+          draft: { kind: "proposal", for: "C-7" },
+        });
       // Zoya's proposal goes up; Rhea answers Changes first and says what to change in her chat.
       const first = yield* sendUp("zoya", "C-7", "harbourline proposal");
+      // While it waits on her, no draft is hers to redo: a draft put to herself is refused as ever.
+      const early = yield* turnOn("rhea", chatOf("chief"), "Make it four shoots.");
+      const notYet = yield* Effect.flip(askHerself(early, "Harbourline proposal: four shoots"));
+      assert.strictEqual(
+        notYet.message,
+        "Rhea Rao is in this chat: ask them here with kin_ask. Nothing was asked.",
+      );
       yield* tap(owner, first.questionId, "option-2", "rhea-changes");
       // No turn in Zoya's chat: it would know nothing of the change. Kin tells her what is true.
       assert.deepStrictEqual(yield* team.answeredWakes, []);
@@ -2677,10 +2695,36 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.notInclude(plain.note ?? "", "Changes first");
       assert.lengthOf(yield* drafts, 2);
 
+      // Changes first again: the next round goes back up by either call. First by kin_ask_person
+      // put to Rhea herself, as the agent's instructions send a draft up.
+      yield* tap(owner, redone!.questionId, "option-2", "rhea-changes-2");
+      const third = yield* turnOn("rhea", chatOf("chief"), "Add a reel.");
+      const byAsk = yield* askHerself(third, "Four shoots and a reel");
+      assert.strictEqual(byAsk.note, `This is ${told.slice("Not filed: this is ".length)}`);
+      const [, , thirdUp] = yield* drafts;
+      assert.deepInclude(thirdUp, {
+        questionId: byAsk.questionId,
+        state: "open",
+        chatId: chatOf("chief"),
+        forChatId: zoyaChat,
+        forPersonId: "zoya",
+        intent: "harbourline proposal",
+        text: "Four shoots and a reel",
+      });
+      // Then by doc_create with draft, after her Changes first on that one.
+      yield* tap(owner, byAsk.questionId, "option-2", "rhea-changes-3");
+      const fourth = yield* turnOn("rhea", chatOf("chief"), "Two reels.");
+      assert.deepInclude(
+        yield* proposal(fourth, { body: "Four shoots and two reels" }),
+        { key: "", note: told },
+      );
+      const [, , , latest] = yield* drafts;
+      assert.deepInclude(latest, { state: "open", forChatId: zoyaChat, forPersonId: "zoya" });
+
       // Approve on the redraft has it made, and Zoya hears so, as on the first card.
-      yield* tap(owner, redone!.questionId, "option-1", "rhea-approve");
+      yield* tap(owner, latest!.questionId, "option-1", "rhea-approve");
       yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'
-        AND dedupe_key IS NOT ${`question-approved:${redone!.questionId}`}`;
+        AND dedupe_key IS NOT ${`question-approved:${latest!.questionId}`}`;
       const approved = yield* startAgentWakeup({
         orgId,
         agentId: chief,
@@ -2689,13 +2733,13 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       });
       const turn = { orgId: org, agentId: chief, wakeupId: approved };
       const of = yield* approvalOf(turn);
-      assert.strictEqual(of._tag === "approved" ? of.approval.draft.text : undefined, redone!.text);
+      assert.strictEqual(of._tag === "approved" ? of.approval.draft.text : undefined, latest!.text);
       const [approvedEvent] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
         FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${approved}`;
       yield* LeadDocs.create(scopeOf("chief"), {
         sourceEventId: approvedEvent!.eventId,
         title: "Harbourline proposal",
-        body: redone!.text,
+        body: latest!.text,
         kind: "proposal",
         client: "C-7",
       }).pipe(Effect.provideService(KinIdentity, identity));

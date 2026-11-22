@@ -52,6 +52,7 @@ import {
   CHANGES_FIRST,
   decodeStoredDraft,
   DRAFT_OPTIONS,
+  DRAFT_WORDS,
   draftDetail,
   draftLine,
   encodeStoredDraft,
@@ -149,8 +150,61 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
   input: typeof AskPersonInput.Type,
   deps: AskDeps,
 ) {
+  const of = input.draft === undefined ? undefined : yield* sentBack(lead, input.to, input.draft);
+  if (of !== undefined)
+    return yield* redo(lead, of, input.detail ?? "", deps).pipe(
+      Effect.map((asked) => ({ ...asked, note: `This is ${redoRaised(of, asked.state)}` })),
+      Effect.catchTags({
+        KinChatError: (error) =>
+          Effect.fail(new KinChatError({ reason: error.reason, message: redoRefused(of, error) })),
+      }),
+    );
   return yield* ask({ _tag: "turn", lead }, input, deps.chat, deps.gate.askTo);
 });
+
+/**
+ * A draft put to the agent's owner in her own turn that is her redraft of one waiting on her
+ * Changes first (`redoOf`): the same kind, for the client or deal it names.
+ */
+const sentBack = Effect.fn("KinQuestions.sentBack")(function* (
+  lead: TurnLead,
+  to: string,
+  draft: NonNullable<typeof AskPersonInput.Type.draft>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [agent] = yield* sql<{ owner: KinPersonId }>`SELECT owner_person_id AS owner
+    FROM kin_agents WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}
+      AND retired_at IS NULL`;
+  const found = yield* personNamed(lead.orgId, to);
+  if (agent === undefined || found._tag !== "found" || found.item.id !== agent.owner)
+    return undefined;
+  const named = draft.for === undefined ? [] : keysIn(draft.for);
+  const parties =
+    named.length === 0
+      ? []
+      : yield* sql<{ partyId: string | null }>`SELECT
+            CASE WHEN r.register_id = 'clients' THEN r.record_id ELSE r.party_id END AS "partyId"
+          FROM kin_records r
+          WHERE r.org_id = ${lead.orgId} AND r.key IN ${sql.in(named)}
+            AND r.register_id IN ('clients', 'deals')
+          ORDER BY r.key`;
+  if (draft.for !== undefined && parties.length !== 1) return undefined;
+  return yield* redoOf(
+    { orgId: lead.orgId, agentId: lead.agentId, wakeupId: lead.wakeupId },
+    { kind: draft.kind, partyId: parties[0]?.partyId ?? null },
+  );
+});
+
+const backFrom = (of: Redraft) =>
+  `${of.draft.names.asker}'s ${DRAFT_WORDS[of.draft.kind]} back from ${of.draft.names.owner}'s Changes first`;
+/** What the agent is told of its redraft that went back up (`redo`). */
+export const redoRaised = (of: Redraft, state: "posted" | "held") => {
+  const { owner, asker } = of.draft.names;
+  return `${backFrom(of)}, so Kin put it to ${owner} again with Approve and Changes first and told ${asker}.${state === "held" ? ` It reaches ${owner} once their quiet hours or time away end.` : ""} Say in one line that it is back with ${owner} to approve; don't repeat the draft.`;
+};
+/** What the agent is told when its redraft couldn't go back up, and why. */
+export const redoRefused = (of: Redraft, error: KinChatError) =>
+  `This is ${backFrom(of)}, but Kin couldn't put it to ${of.draft.names.owner} again: ${error.message}`;
 
 /**
  * A teammate's own "Send to" on a draft card in their direct chat with the agent: the same ask,

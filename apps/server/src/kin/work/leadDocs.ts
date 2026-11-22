@@ -26,8 +26,8 @@ import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinChatService } from "../chat/KinChatService.ts";
-import { DRAFT_WORDS, madeUnderApproval } from "../questions/approval.ts";
-import { redo, redoOf } from "../questions/askPerson.ts";
+import { madeUnderApproval } from "../questions/approval.ts";
+import { redo, redoOf, redoRaised, redoRefused } from "../questions/askPerson.ts";
 import { effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -634,22 +634,14 @@ const putBack = Effect.fn("KinDocTools.putBack")(function* (
     on === undefined
       ? found
       : { ...found, draft: { ...found.draft, on: KIN_SOCIAL_PLATFORM_LABELS[on] } };
-  const { owner, asker } = of.draft.names;
-  const back = `${asker}'s ${DRAFT_WORDS[of.draft.kind]} back from ${owner}'s Changes first`;
   return yield* redo({ ...lead, wakeupId: turn.wakeupId }, of, text, {
     chat: chat.value,
     gate: yield* KinLevelGate,
   }).pipe(
-    Effect.map((asked) => ({
-      _tag: "raised" as const,
-      note: `${back}, so Kin put it to ${owner} again with Approve and Changes first and told ${asker}.${asked.state === "held" ? ` It reaches ${owner} once their quiet hours or time away end.` : ""} Say in one line that it is back with ${owner} to approve; don't repeat the draft.`,
-    })),
+    Effect.map((asked) => ({ _tag: "raised" as const, note: redoRaised(of, asked.state) })),
     Effect.catchTags({
       KinChatError: (error) =>
-        Effect.succeed({
-          _tag: "refused" as const,
-          note: `This is ${back}, but Kin couldn't put it to ${owner} again: ${error.message}`,
-        }),
+        Effect.succeed({ _tag: "refused" as const, note: redoRefused(of, error) }),
     }),
   );
 });
