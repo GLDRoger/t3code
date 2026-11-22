@@ -58,6 +58,21 @@ export const searchIndexed = Effect.fn("KinSearch.indexed")(function* () {
   return rows.length > 0;
 });
 
+export const indexStoredSteps = Effect.fn("KinSearch.indexStoredSteps")(function* (orgId: string) {
+  if (!(yield* searchIndexed())) return;
+  const sql = yield* SqlClient.SqlClient;
+  // Only the legacy public rows lacking their current checklist suffix need a rewrite.
+  yield* sql`UPDATE kin_search SET body = body || ' ' || steps.text
+    FROM (
+      SELECT m.id, ${stepText(sql)} AS text
+      FROM kin_records r JOIN kin_search_rows m ON m.org_id = r.org_id
+        AND m.record_id = r.record_id AND m.part = 'public'
+      WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.steps_json IS NOT NULL
+    ) steps
+    WHERE kin_search.rowid = steps.id AND steps.text != ''
+      AND substr(kin_search.body, -(length(steps.text) + 1)) != ' ' || steps.text`;
+});
+
 /** Rewrites one entry's rows from what is stored now: call it inside the write's transaction. */
 export const indexRecord = (orgId: string, recordId: string) => indexRecords(orgId, [recordId]);
 

@@ -38,6 +38,7 @@ import {
 } from "./work/cardAnswers.ts";
 import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
 import { KinIdentity, KinNewCompanyCountryUnset } from "./chat/KinIdentity.ts";
+import { indexStoredSteps } from "./work/searchIndex.ts";
 import { seedPlaybooks } from "./work/playbookSeeds.ts";
 import { seedCharacters, splitCharacters } from "./lead/characters.ts";
 import { closeSubject } from "./open/closeSubject.ts";
@@ -86,6 +87,10 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
       const { owner } = yield* KinIdentity;
       yield* HostPolicy.check();
       yield* checkPublicUrl();
+      yield* indexStoredSteps(owner.orgId).pipe(
+        Effect.provide(services),
+        Effect.catch((error) => Effect.logWarning("Kin could not index saved task steps", error)),
+      );
       // A failed seed leaves Kin running; the next start tries the missing ones again.
       yield* seedPlaybooks(owner.orgId, owner.personId).pipe(
         Effect.provide(services),
