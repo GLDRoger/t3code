@@ -10,7 +10,7 @@ import { KinOrgId, type EnvironmentId, type KinWakeupId } from "@t3tools/contrac
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
-import { Pressable, View } from "react-native";
+import { Pressable, ScrollView, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
 import { SymbolView } from "../../../components/ui/AppSymbol";
@@ -85,7 +85,10 @@ export function KinWorkingSheet(props: {
   const now = useVisibleSecondClock(true);
   return (
     <Sheet title={KIN_WORKING_COPY.title} onClose={props.onClose}>
-      <View className="px-5 pb-10">
+      <ScrollView
+        contentInsetAdjustmentBehavior="automatic"
+        contentContainerClassName="px-5 pb-10"
+      >
         {props.items.map((item) => (
           <KinWorkingRow
             key={item.key}
@@ -96,7 +99,7 @@ export function KinWorkingSheet(props: {
             onOpen={props.onOpen}
           />
         ))}
-      </View>
+      </ScrollView>
     </Sheet>
   );
 }
