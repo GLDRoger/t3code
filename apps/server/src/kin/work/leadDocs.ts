@@ -548,7 +548,7 @@ const runStartOfferings = Effect.fnUntraced(function* (lead: Lead, input: typeof
 
 /** What a refused doc for a teammate's own ask tells the agent to do instead: draft it for the owner. */
 const draftUpLine = (owner: string, asker: string) =>
-  `Nothing was written. Draft it for ${owner} instead: put the draft in kin_ask_person to ${owner} as its detail, with draft naming its kind and the client or deal key, keeping a price or term ${asker} gave, named as theirs, and leaving blank any other only ${owner} decides; Kin adds the buttons Approve and Changes first. Then tell ${asker} in one line that it is with ${owner} to approve, with the draft under that line.`;
+  `Nothing was written. Draft it for ${owner} instead: put the draft in kin_ask_person to ${owner} as its detail, with draft naming its kind and the client or deal key, keeping a price or term ${asker} gave, named as theirs, and leaving blank any other only ${owner} decides; Kin adds the buttons Approve and Changes first. Then tell ${asker} in one line that it is with ${owner} to approve.`;
 
 /**
  * A doc refused for the one teammate behind the turn, asked in their own direct chat with this
@@ -583,7 +583,7 @@ const draftUp = Effect.fn("KinDocTools.draftUp")(function* (lead: Lead, refused:
 const draftNote = (draft: KinDocCardDraft, key: string, placed: boolean) =>
   [
     placed
-      ? `This draft is its own card in the chat, with Copy text${draft.sendTo === undefined ? "" : ` and Send to ${draft.sendTo.name}`}: don't repeat it; say in one line it is filed as ${key}${draft.sendTo === undefined ? "" : ` and that Send to ${draft.sendTo.name} asks ${draft.sendTo.name} to approve it`}.`
+      ? `This draft is its own card in the chat, with Copy text${draft.sendTo === undefined ? "" : ` and Send to ${draft.sendTo.name}`}: don't repeat it; say in one line it is filed as ${key}${draft.sendTo === undefined ? "" : `; ${draft.sendTo.name} hasn't seen it, and it reaches ${draft.sendTo.name} only when the person in this chat presses Send to ${draft.sendTo.name}`}.`
       : `Filed as ${key}, but its card couldn't be shown here: give the draft in your reply.`,
     ...(draft.noAccount === undefined
       ? []

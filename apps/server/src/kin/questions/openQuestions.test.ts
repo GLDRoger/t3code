@@ -1677,6 +1677,11 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
         for: "Harbourline Hotels (C-7)",
       });
       assert.strictEqual(yield* marked, 1);
+      // Kin showed her the draft, so the agent only says where it is.
+      assert.strictEqual(
+        zoya.note,
+        "Posted in Rhea Rao's chat with you, waiting on them. Their answer comes back here. Kin showed Zoya Sheikh the draft here; say in one line it is with Rhea Rao.",
+      );
       // Her own turn runs for no approval: the resolver says so, and nothing is shown as one.
       const zoyaWake = { orgId: org, agentId: chief, wakeupId: zoya.turn };
       assert.deepStrictEqual(yield* approvalOf(zoyaWake), { _tag: "none" });
@@ -1920,7 +1925,7 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
           ...upInput("dev", "Shoot terms: ____"),
           intent: "dev terms after answer",
         }),
-        "A draft goes up only from Dev Malhotra's own message here, or after the owner's Changes first on one of theirs.",
+        "A draft goes up only from Dev Malhotra's own message here, or after the owner answers one of theirs in words.",
       );
       // Two approvals while the lane is busy, and a routine owner-lane turn beside them: three
       // wakes, each approval alone, each teammate told of her own result.
@@ -2192,7 +2197,7 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       );
       assert.strictEqual(
         posts[0]!.note,
-        `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it; say in one line it is filed as ${posts[0]!.key} and that Send to Rhea Rao asks Rhea Rao to approve it. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
+        `This draft is its own card in the chat, with Copy text and Send to Rhea Rao: don't repeat it; say in one line it is filed as ${posts[0]!.key}; Rhea Rao hasn't seen it, and it reaches Rhea Rao only when the person in this chat presses Send to Rhea Rao. No Instagram account is connected, so Kin can't post it; Rhea Rao can connect one in Settings on a computer. Say so.`,
       );
       // A blank draft, or one whose Approve card would be too long to carry, files nothing.
       const docCount = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records

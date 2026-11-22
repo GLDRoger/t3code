@@ -401,7 +401,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
               : yield* draftSource(source, here.chatId, asker);
         if (turn !== null && hers === undefined)
           return yield* refuse(
-            `A draft goes up only from ${askerName ?? "the teammate"}'s own message here, or after the owner's Changes first on one of theirs.`,
+            `A draft goes up only from ${askerName ?? "the teammate"}'s own message here, or after the owner answers one of theirs in words.`,
           );
         // In her turn, her mail or post is her draft card's to send up (`draftCards.sendUp`).
         if (from._tag === "turn" && CARD_KINDS.includes(input.draft.kind)) {
@@ -679,6 +679,10 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
             ),
           );
       const joined = yield* signedIn(orgId, target.id);
+      const showed =
+        redone === null && turn !== null && sentUp !== undefined
+          ? ` Kin showed ${askerName ?? "them"} the draft here; say in one line it is with ${target.name}.`
+          : "";
       if ("_tag" in posted) {
         if (turn !== null && redone === null)
           yield* arrivesNote(
@@ -697,9 +701,11 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           dueAt,
           retry: false,
           signedIn: joined,
-          note: joined
-            ? `${heldUntil(target.name, posted)}: Kin posts it in their chat with you then, and this chat has been told. Their answer comes back here.`
-            : notSignedIn(target.name),
+          note: `${
+            joined
+              ? `${heldUntil(target.name, posted)}: Kin posts it in their chat with you then, and this chat has been told. Their answer comes back here.`
+              : notSignedIn(target.name)
+          }${showed}`,
         };
       }
       return {
@@ -709,9 +715,11 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
         dueAt,
         retry: false,
         signedIn: joined,
-        note: joined
-          ? `Posted in ${target.name}'s chat with you, waiting on them. Their answer comes back here.`
-          : notSignedIn(target.name),
+        note: `${
+          joined
+            ? `Posted in ${target.name}'s chat with you, waiting on them. Their answer comes back here.`
+            : notSignedIn(target.name)
+        }${showed}`,
       };
     }),
   );
