@@ -152,6 +152,17 @@ export const personSeesRecord = Effect.fn("KinRecordComments.personSees")(functi
   return (yield* teamVisible(orgId, personId, [recordId])).has(recordId);
 });
 
+export const canHearRecord = Effect.fn("KinRecordComments.canHear")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const here = yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId}
+    AND person_id = ${personId} AND removed_at IS NULL`;
+  return here.length > 0 && (yield* personSeesRecord(orgId, personId, recordId));
+});
+
 /** The newest page of an entry's comments before `beforeSeq` (all with none), oldest first. */
 export const commentsPage = Effect.fn("KinRecordComments.page")(function* (
   orgId: KinOrgId,
