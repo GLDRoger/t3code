@@ -454,6 +454,25 @@ describe("statement matching", () => {
       why: "Meera Rao is owed ₹2,500.00 for 3 expenses; no run of the oldest adds up to this line, so mark what it pays back on those expenses",
     });
     assert.strictEqual(lines[4]!.suggestion.action, "later");
+
+    // Exact sums: as numbers, MAX + 2 - MAX rounds to 1 and a one-cent line would settle all three.
+    const huge = [
+      {
+        name: "Meera Rao",
+        currency: "INR",
+        owed: [
+          owed("EXP-11", Number.MAX_SAFE_INTEGER),
+          owed("EXP-12", 2),
+          owed("EXP-13", -Number.MAX_SAFE_INTEGER),
+        ],
+      },
+    ];
+    assert.deepStrictEqual(only([debit(0, "2026-10-08", "MEERA RAO", 1)], huge), [
+      ["unmatched", []],
+    ]);
+    assert.deepStrictEqual(only([debit(0, "2026-10-08", "MEERA RAO", 2)], huge), [
+      ["matched", [["EXP-11", "EXP-12", "EXP-13"]]],
+    ]);
   });
 
   it("reads vendors the way banks write them", () => {

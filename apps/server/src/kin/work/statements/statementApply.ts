@@ -484,8 +484,8 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
                 return yield* changed;
               owed.push(expense);
             }
-            const signed = row.direction === "debit" ? row.amountMinor : -row.amountMinor;
-            if (owed.reduce((sum, one) => sum + one.amountMinor!, 0) !== signed)
+            const signed = BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor);
+            if (owed.reduce((sum, one) => sum + BigInt(one.amountMinor!), 0n) !== signed)
               return yield* changed;
             const prior = yield* settleBank(row, states.explained, "expense");
             for (const expense of owed) {

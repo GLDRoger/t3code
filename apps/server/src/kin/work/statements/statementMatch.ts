@@ -331,10 +331,11 @@ const REPAYS_AT_MOST = 50;
 const repayment = (row: StatementRow, partner: PartnerCandidate, from: number) => {
   const named = nameIn(partner.name, row.description);
   if (named < 0.5) return undefined;
-  const signed = row.direction === "debit" ? row.amountMinor : -row.amountMinor;
-  let sum = 0;
+  // Minor units past 2^53 add up wrong as numbers; exact sums decide what a line settles.
+  const signed = BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor);
+  let sum = 0n;
   for (let end = from; end < Math.min(partner.owed.length, from + REPAYS_AT_MOST); end += 1) {
-    sum += partner.owed[end]!.amountMinor;
+    sum += BigInt(partner.owed[end]!.amountMinor);
     if (sum !== signed) continue;
     const repays = partner.owed.slice(from, end + 1);
     const why = [`adds up to ${partner.name}'s oldest owed expenses`, "partner named"];
