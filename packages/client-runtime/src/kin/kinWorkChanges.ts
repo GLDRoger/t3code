@@ -89,6 +89,8 @@ export const KIN_WORK_EDIT_CHANGED =
 
 export const KIN_WORK_COPY = {
   nowSays: (text: string) => `It now says: ${text}`,
+  /** What an empty field shows on its input line when it has no words of its own. */
+  typeHere: "Tap to type",
   done: "Mark done",
   reopen: "Reopen",
   status: "Status",

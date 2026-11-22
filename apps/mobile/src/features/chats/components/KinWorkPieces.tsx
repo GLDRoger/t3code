@@ -35,6 +35,7 @@ import * as Dialog from "../../../components/ui/Dialog";
 import { EmptyState } from "../../../components/ui/EmptyState";
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { ListSection } from "../../../components/ui/ListSection";
+import { ListToggleRow } from "../../../components/ui/ListToggleRow";
 import { RowPressable } from "../../../components/ui/RowPressable";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
@@ -696,6 +697,35 @@ export function KinWorkProblemNotice(props: {
 }
 
 /** One labelled field of a form, with what someone else changed it to while it was being typed. */
+/**
+ * A label above its input. A tap anywhere on the box, the label's line included, puts the cursor
+ * in the input: an empty input draws nothing, so its own line alone is no target.
+ */
+export function KinWorkFieldBox(props: {
+  readonly label: string;
+  readonly input: React.RefObject<ComponentRef<typeof TextInput> | null>;
+  readonly disabled?: boolean;
+  /** Beside the label, such as a lock or a remove button. */
+  readonly beside?: React.ReactNode;
+  readonly className?: string;
+  readonly children: React.ReactNode;
+}) {
+  return (
+    <Pressable
+      accessible={false}
+      disabled={props.disabled}
+      onPress={() => props.input.current?.focus()}
+      className={cn("min-h-11 gap-2 px-4 py-3", props.className)}
+    >
+      <View className="flex-row items-center justify-between gap-2">
+        <Text className="text-sm text-foreground-muted">{props.label}</Text>
+        {props.beside}
+      </View>
+      {props.children}
+    </Pressable>
+  );
+}
+
 export function KinWorkTextField(props: {
   readonly label: string;
   readonly value: string;
@@ -704,6 +734,8 @@ export function KinWorkTextField(props: {
   readonly maxLength?: number;
   readonly disabled?: boolean;
   readonly multiline?: boolean;
+  /** One paragraph that wraps to as many lines as it takes; Return closes the keyboard. */
+  readonly wraps?: boolean;
   readonly autoFocus?: boolean;
   readonly isPrivate?: boolean;
   readonly hint?: string | undefined;
@@ -714,36 +746,45 @@ export function KinWorkTextField(props: {
 }) {
   const keyboard = props.keyboard ?? "sentences";
   const { remove } = props;
+  const input = useRef<ComponentRef<typeof TextInput>>(null);
   return (
-    <View className="gap-2 px-4 py-3">
-      <View className="flex-row items-center justify-between gap-2">
-        <Text className="text-sm text-foreground-muted">{props.label}</Text>
-        <View className="flex-row items-center gap-3">
-          {props.isPrivate ? <KinWorkPrivateMark /> : null}
-          {remove === undefined ? null : (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={remove.label}
-              disabled={props.disabled}
-              hitSlop={12}
-              onPress={remove.onPress}
-            >
-              <SymbolView
-                name="xmark.circle.fill"
-                size={18}
-                tintColorClassName="accent-icon-muted"
-                type="monochrome"
-              />
-            </Pressable>
-          )}
-        </View>
-      </View>
+    <KinWorkFieldBox
+      label={props.label}
+      input={input}
+      disabled={props.disabled}
+      beside={
+        props.isPrivate || remove !== undefined ? (
+          <View className="flex-row items-center gap-3">
+            {props.isPrivate ? <KinWorkPrivateMark /> : null}
+            {remove === undefined ? null : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={remove.label}
+                disabled={props.disabled}
+                hitSlop={12}
+                onPress={remove.onPress}
+              >
+                <SymbolView
+                  name="xmark.circle.fill"
+                  size={18}
+                  tintColorClassName="accent-icon-muted"
+                  type="monochrome"
+                />
+              </Pressable>
+            )}
+          </View>
+        ) : null
+      }
+    >
       <TextInput
+        ref={input}
         accessibilityLabel={props.label}
         value={props.value}
         editable={!props.disabled}
         autoFocus={props.autoFocus}
-        multiline={props.multiline}
+        multiline={props.multiline || props.wraps}
+        scrollEnabled={props.wraps ? false : undefined}
+        submitBehavior={props.wraps ? "blurAndSubmit" : undefined}
         maxLength={props.maxLength}
         autoCapitalize={keyboard === "sentences" ? "sentences" : "none"}
         autoCorrect={keyboard === "sentences"}
@@ -758,7 +799,7 @@ export function KinWorkTextField(props: {
         }
         onChangeText={props.onChangeText}
         textAlignVertical={props.multiline ? "top" : "center"}
-        placeholder={props.placeholder}
+        placeholder={props.placeholder ?? KIN_WORK_COPY.typeHere}
         placeholderTextColorClassName="accent-placeholder"
         className={cn(
           "font-sans text-base text-foreground",
@@ -775,7 +816,23 @@ export function KinWorkTextField(props: {
           {KIN_WORK_COPY.nowSays(props.moved.trim() || "nothing")}
         </Text>
       )}
-    </View>
+    </KinWorkFieldBox>
+  );
+}
+
+/** A switch row the whole of which flips its switch, not only the switch drawn at its end. */
+export function KinWorkToggleRow(props: React.ComponentProps<typeof ListToggleRow>) {
+  const { value, disabled, onValueChange } = props;
+  return (
+    <Pressable
+      accessible={false}
+      disabled={disabled || value === null}
+      onPress={() => {
+        if (value !== null) onValueChange(!value);
+      }}
+    >
+      <ListToggleRow {...props} />
+    </Pressable>
   );
 }
 
