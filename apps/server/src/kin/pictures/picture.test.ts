@@ -525,6 +525,33 @@ describe("kin_picture", () => {
           });
         assert.deepStrictEqual(yield* reads(meera), [true, true, true]);
         assert.deepStrictEqual(yield* reads(dev), [false, false, false]);
+        // Put into a company doc, the picture still opens only for who reads its reply.
+        const shown = yield* Docs.create(
+          orgId,
+          { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: ownerId },
+          {},
+          {
+            title: "Launch one-pager",
+            body: `# Launch\n\n![Launch post](kin-file:${file})\n`,
+            owner: { _tag: "agent", agentId: lead },
+            summary: "Created",
+            originKey: "test:launch-one-pager",
+          },
+        );
+        yield* sql`UPDATE kin_records SET team_shared = 1
+          WHERE org_id = ${orgId} AND record_id = ${shown.row.recordId}`;
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_doc_files WHERE org_id = ${orgId} AND attachment_id = ${file}`,
+          1,
+        );
+        assert.deepStrictEqual(
+          [
+            yield* chats.attachmentReadable([person(ownerId)], file),
+            yield* chats.attachmentReadable([person(meera)], file),
+            yield* chats.attachmentReadable([person(dev)], file),
+          ],
+          [true, true, false],
+        );
         // Rhea's own copy is hers: Meera reads neither it nor its file.
         const copied = (yield* versions(copy.doc))[0]!.file!.attachmentId;
         assert.isFalse(yield* chats.attachmentReadable([person(meera)], copy.files[0]!));
