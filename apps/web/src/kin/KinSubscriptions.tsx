@@ -221,8 +221,7 @@ export function KinSubscriptionsPage(
   const lists = useKinLists(props, { enabled: true });
   const rates = useKinRates(props);
   const def = kinSubscriptionsList(kinListsOf(lists));
-  if (lists.state._tag === "refused")
-    return <KinWorkNotice {...KIN_MONEY.onlyOwner} />;
+  if (lists.state._tag === "refused") return <KinWorkNotice {...KIN_MONEY.onlyOwner} />;
   if (lists.state._tag !== "ready")
     return lists.state._tag === "loading" ? (
       <div
