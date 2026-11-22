@@ -308,3 +308,82 @@ export const alertsBeside = Effect.fn("KinBankAlerts.beside")(function* <A exten
   }
   return { beside, alone };
 });
+
+/** An alert's entry a statement of its account and days doesn't have. */
+export interface AlertGap {
+  readonly key: string;
+  readonly date: string;
+  readonly amountMinor: number;
+  readonly direction: "debit" | "credit" | null;
+}
+
+/** How a statement and the bank alerts of its account and days agree, for its review card. */
+export interface AlertCheck {
+  /** Rows that are an alert's entry already: one entry, not two. */
+  readonly merged: number;
+  readonly notOnStatement: ReadonlyArray<AlertGap>;
+  /** Rows from the first alert's day on that no alert has. */
+  readonly notInAlerts: number;
+  readonly alertsSince: string;
+}
+
+/**
+ * The alerts of an HDFC statement's account against its rows: which rows are alerts' entries,
+ * which alerts of its days it doesn't have, and which of its rows since alerts began no alert
+ * has. None for another bank's statement, a card's, or one without its last four digits.
+ */
+export const alertCheck = Effect.fn("KinBankAlerts.check")(function* (
+  orgId: KinOrgId,
+  listId: string | undefined,
+  statement: Statement,
+  known: ReadonlyMap<number, { readonly recordId: string }>,
+) {
+  if (
+    listId === undefined ||
+    statement.kind !== "account" ||
+    statement.account === null ||
+    !/^\d{4}$/.test(statement.account) ||
+    (statement.bank !== null && !/\bhdfc\b/i.test(statement.bank)) ||
+    statement.rows.length === 0
+  )
+    return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const zone = yield* ownerZone(orgId);
+  const entries = yield* sql<{
+    recordId: string;
+    key: string;
+    amountMinor: number;
+    currency: string | null;
+    dateAt: number;
+    fieldsJson: string;
+  }>`SELECT record_id AS "recordId", key, amount_minor AS "amountMinor", currency,
+      date_at AS "dateAt", fields_json AS "fieldsJson"
+    FROM kin_records WHERE org_id = ${orgId} AND register_id = ${listId}
+      AND origin_key LIKE ${`alert:hdfc:${statement.account}:%`} AND date_at IS NOT NULL
+    ORDER BY date_at, key`;
+  const mine = entries
+    .filter((one) => (one.currency ?? statement.currency) === statement.currency)
+    .map((one) => ({ ...one, date: dayIn(one.dateAt, zone) }));
+  if (mine.length === 0) return undefined;
+  const days = statement.rows.map((row) => row.date).toSorted();
+  const from = statement.from ?? days[0]!;
+  const to = statement.to ?? days.at(-1)!;
+  const rowsOf = new Set([...known.values()].map((one) => one.recordId));
+  const alertIds = new Set(mine.map((one) => one.recordId));
+  const alertsSince = mine[0]!.date;
+  const notOnStatement = mine
+    .filter((one) => one.date >= from && one.date <= to && !rowsOf.has(one.recordId))
+    .map((one) => ({
+      key: one.key,
+      date: one.date,
+      amountMinor: one.amountMinor,
+      direction: directionOf(parseFields(one.fieldsJson)),
+    }));
+  const notInAlerts = statement.rows.filter((row) => {
+    const entry = known.get(row.index);
+    return row.date >= alertsSince && (entry === undefined || !alertIds.has(entry.recordId));
+  }).length;
+  const merged = [...known.values()].filter((one) => alertIds.has(one.recordId)).length;
+  if (merged === 0 && notOnStatement.length === 0 && notInAlerts === 0) return undefined;
+  return { merged, notOnStatement, notInAlerts, alertsSince } satisfies AlertCheck;
+});

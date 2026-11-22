@@ -27,12 +27,14 @@ import type { MailMessage } from "../../connections/MailProvider.ts";
 import { takeAlertMail } from "./alertMail.ts";
 import {
   alertBalances,
+  alertCheck,
   alertsBeside,
   rejectedAlerts,
   takeAlerts,
   threadSeen,
 } from "./bankAlerts.ts";
-import { ensureBankList } from "./bankList.ts";
+import { ensureBankList, findBankList, knownRows } from "./bankList.ts";
+import type { Statement, StatementRow } from "./statementTable.ts";
 
 // Invented: Lakeview Studio's owner Rhea gets HDFC alerts in two connected mailboxes.
 const orgId = KinOrgId.make("lakeview");
@@ -305,6 +307,90 @@ it.layer(layer)((it) => {
       const again = yield* takeAlertMail(connections, orgId, activity);
       assert.deepStrictEqual(again, { threads: 0, recorded: 0, duplicate: 0, rejected: 0 });
       assert.deepStrictEqual(reads, ["t-hdfc"]);
+    }),
+  );
+
+  it.effect("a statement's row is an alert's entry by reference, else by day and amount", () =>
+    Effect.gen(function* () {
+      const def = yield* findBankList(orgId);
+      const row = (
+        index: number,
+        date: string,
+        amountMinor: number,
+        direction: "debit" | "credit",
+        reference: string | null,
+      ): StatementRow => ({
+        index,
+        date,
+        description: "UPI-SOMEONE-OKAXIS",
+        reference,
+        amountMinor,
+        direction,
+        balanceMinor: null,
+        foreign: null,
+      });
+      const statement = (account: string, rows: ReadonlyArray<StatementRow>): Statement => ({
+        kind: "account",
+        bank: "HDFC Bank",
+        account,
+        accountId: `id-${account}`,
+        currency: "INR",
+        from: "2026-11-17",
+        to: "2026-11-18",
+        openingMinor: null,
+        closingMinor: null,
+        rows,
+        check: { status: "adds_up", line: "" },
+      });
+      // ••4821 has three ₹1,250 debits on 18 Nov from alerts: ...0001, ...0006 and ...0007.
+      const hdfc = statement("4821", [
+        row(0, "2026-11-18", 125_000, "debit", "0000632211110001"),
+        row(1, "2026-11-18", 125_000, "debit", null),
+        row(2, "2026-11-17", 500_000, "credit", "N3212345"),
+      ]);
+      const found = yield* knownRows(orgId, def, hdfc, "st-1");
+      assert.deepStrictEqual([...found.known.keys()], [0]);
+      // Two alerts it could be: neither, rather than a guess.
+      assert.strictEqual(found.possible.size, 0);
+      const check = yield* alertCheck(orgId, def?.id, hdfc, found.known);
+      assert.deepStrictEqual(
+        {
+          merged: check?.merged,
+          notOnStatement: check?.notOnStatement.map((one) => [one.date, one.amountMinor]),
+          notInAlerts: check?.notInAlerts,
+          alertsSince: check?.alertsSince,
+        },
+        {
+          merged: 1,
+          notOnStatement: [
+            ["2026-11-18", 125_000],
+            ["2026-11-18", 125_000],
+          ],
+          // The 17 Nov credit came before any alert of this account.
+          notInAlerts: 1,
+          alertsSince: "2026-11-18",
+        },
+      );
+
+      // ••7001 has one ₹1,250 debit on 18 Nov from an alert.
+      const unique = yield* knownRows(
+        orgId,
+        def,
+        statement("7001", [row(0, "2026-11-18", 125_000, "debit", null)]),
+        "st-2",
+      );
+      assert.deepStrictEqual([unique.known.size, unique.possible.size], [1, 0]);
+      const conflicting = yield* knownRows(
+        orgId,
+        def,
+        statement("7001", [row(0, "2026-11-18", 125_000, "debit", "OTHERREF99")]),
+        "st-3",
+      );
+      assert.deepStrictEqual([conflicting.known.size, conflicting.possible.size], [0, 1]);
+      // Another bank's statement isn't checked against HDFC alerts.
+      assert.isUndefined(
+        yield* alertCheck(orgId, def?.id, { ...hdfc, bank: "Invented Bank" }, found.known),
+      );
     }),
   );
 });
