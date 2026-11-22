@@ -26,13 +26,15 @@ import * as Reach from "../lead/Reach.ts";
 import { MINUTE_MS } from "../durations.ts";
 import { awayBackOn, heldUntil, holdFor, holdLine } from "../triggers/quietHold.ts";
 import { textLocale, type TextClock } from "./companyProfile.ts";
-import { parseFields } from "./lists.ts";
+import { fieldList, parseFields } from "./lists.ts";
+import { canHearRecord } from "./recordComments.ts";
 import {
   byId,
   dueWhenText,
   isClosed,
   isSuggestion,
   ownerZone,
+  parseChanges,
   type RecordRow,
 } from "./recordRows.ts";
 
@@ -40,7 +42,11 @@ import {
  * What a turn did to one person's task: gave it to them, took it from them, or gave it back; or
  * to a project: put them on it, or made them its lead.
  */
+const PARTICIPANT_KINDS = ["putOn", "tookOff", "left"] as const;
+const participantKind = (kind: string): kind is (typeof PARTICIPANT_KINDS)[number] =>
+  PARTICIPANT_KINDS.some((one) => one === kind);
 const NOTICE_KINDS = [
+  ...PARTICIPANT_KINDS,
   "given",
   "taken",
   "returned",
@@ -102,6 +108,125 @@ const projectNotices = (before: RecordRow | undefined, after: RecordRow): Array<
   ];
 };
 
+export const alsoOnPeople = (row: RecordRow) =>
+  fieldList(parseFields(row.fieldsJson), "alsoOn").flatMap((one) =>
+    one.startsWith("person:") ? [KinPersonId.make(one.slice("person:".length))] : [],
+  );
+
+const participantNotices = (before: RecordRow | undefined, after: RecordRow) => {
+  if (isClosed(after.state)) return [];
+  const had = before === undefined || isSuggestion(before) ? [] : alsoOnPeople(before);
+  const has = alsoOnPeople(after);
+  return [
+    ...has
+      .filter((id) => !had.includes(id))
+      .map((personId) => ({
+        personId,
+        kind: "putOn" as const,
+        row: after,
+        why: null,
+      })),
+    ...had
+      .filter((id) => !has.includes(id) && !(after.ownerKind === "person" && after.ownerId === id))
+      .map((personId) => ({
+        personId,
+        kind: "tookOff" as const,
+        row: after,
+        why: null,
+      })),
+  ];
+};
+
+const adderOf = Effect.fn("KinAssignNotices.adderOf")(function* (
+  orgId: KinOrgId,
+  notice: AssignNotice,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const changes = yield* sql<{ personId: string | null; fieldsJson: string }>`SELECT
+      CASE actor_kind WHEN 'person' THEN actor_id WHEN 'agent' THEN asked_by_person_id END AS "personId",
+      fields_json AS "fieldsJson" FROM kin_record_changes
+    WHERE org_id = ${orgId} AND record_id = ${notice.row.recordId} AND rev < ${notice.row.rev}
+      AND EXISTS (SELECT 1 FROM json_each(fields_json) f WHERE json_extract(f.value, '$.field') = 'alsoOn')
+    ORDER BY seq DESC`;
+  const principal = `person:${notice.personId}`;
+  const added = changes.find((change) =>
+    parseChanges(change.fieldsJson).some(
+      (field) =>
+        field.field === "alsoOn" &&
+        field.to?.split(", ").includes(principal) &&
+        !field.from?.split(", ").includes(principal),
+    ),
+  );
+  return added?.personId == null ? undefined : KinPersonId.make(added.personId);
+});
+
+const liveParticipantNews = (
+  kind: (typeof PARTICIPANT_KINDS)[number],
+  row: RecordRow,
+  person: KinPersonId,
+) =>
+  !isSuggestion(row) &&
+  !isClosed(row.state) &&
+  (kind === "left" ||
+    (kind === "putOn"
+      ? alsoOnPeople(row).includes(person)
+      : !(row.ownerKind === "person" && row.ownerId === person) &&
+        !alsoOnPeople(row).includes(person)));
+
+const forDelivery = Effect.fn("KinAssignNotices.forDelivery")(function* (
+  orgId: KinOrgId,
+  notices: ReadonlyArray<AssignNotice>,
+  mover?: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const result: Array<AssignNotice> = [];
+  for (const notice of notices) {
+    if (!participantKind(notice.kind)) {
+      result.push(notice);
+      continue;
+    }
+    const { row, personId } = notice;
+    const [cause] =
+      mover !== undefined
+        ? []
+        : yield* sql<{ asker: string | null }>`SELECT
+      asked_by_person_id AS asker FROM kin_record_changes
+      WHERE org_id = ${orgId} AND record_id = ${row.recordId} AND rev = ${row.rev}
+      ORDER BY seq DESC LIMIT 1`;
+    const actor = mover ?? cause?.asker;
+    const sharing = yield* byId(orgId, row.recordId);
+    if (sharing === undefined || !liveParticipantNews(notice.kind, sharing, personId)) continue;
+    if (actor !== personId) {
+      if (yield* canHearRecord(orgId, personId, row.recordId)) result.push(notice);
+      continue;
+    }
+    if (notice.kind !== "tookOff") continue;
+    const adder = yield* adderOf(orgId, notice);
+    const readers = new Set([
+      row.ownerKind === "person" ? KinPersonId.make(row.ownerId) : undefined,
+      adder,
+    ]);
+    const [leaver] =
+      mover !== undefined
+        ? []
+        : yield* sql<{ name: string }>`SELECT
+      display_name AS name FROM kin_people WHERE org_id = ${orgId} AND person_id = ${personId}`;
+    for (const reader of readers)
+      if (
+        reader !== undefined &&
+        reader !== personId &&
+        (yield* canHearRecord(orgId, reader, row.recordId))
+      )
+        result.push({
+          ...notice,
+          personId: reader,
+          kind: "left",
+          ...(leaver === undefined ? {} : { by: firstName(leaver.name) }),
+        });
+  }
+  return result;
+});
+
 /** Who to tell that a task came to them or left them, and why; or that a project took them on. */
 export const movedNotices = (
   before: RecordRow | undefined,
@@ -111,6 +236,7 @@ export const movedNotices = (
   if (after.registerId !== "work") return [];
   // A suggestion is nobody's until a person keeps it: its holder hears of it then, once.
   if (isSuggestion(after)) return [];
+  const participants = participantNotices(before, after);
   const kept = before !== undefined && isSuggestion(before);
   if (
     before !== undefined &&
@@ -118,9 +244,10 @@ export const movedNotices = (
     before.ownerKind === after.ownerKind &&
     before.ownerId === after.ownerId
   )
-    return [];
+    return participants;
   const why = reasonOf(after);
   return [
+    ...participants,
     ...(after.ownerKind === "person"
       ? [{ personId: KinPersonId.make(after.ownerId), kind: "given" as const, row: after, why }]
       : []),
@@ -158,10 +285,18 @@ const meetingLine = (agent: string, notice: AssignNotice, clock: TextClock, now:
   );
 };
 
+const participantLine = {
+  putOn: (task: string) => `put you on ${task}`,
+  tookOff: (task: string) => `took you off ${task}`,
+  left: (task: string) => `left ${task}`,
+};
+const firstName = (name: string) => name.trim().split(/\s+/)[0] || name;
+
 /** `gaveTo` names who a taken task went to, or is null when whoever moved it took it. */
 const line = (notice: AssignNotice, clock: NoticeClock, gaveTo: string | null = null) => {
   const task = `${notice.row.key} ${notice.row.title}`;
   const why = notice.why === null ? "" : `: ${notice.why}`;
+  if (participantKind(notice.kind)) return participantLine[notice.kind](task);
   if (notice.kind === "added") return `added you to ${task}`;
   if (notice.kind === "lead") return `made you the lead of ${task}`;
   if (notice.kind === "commented") return `commented on ${task}${why}`;
@@ -188,6 +323,9 @@ const bodyFor = (
 ) => {
   const given = notices.filter((notice) => notice.kind === "given");
   const projects = notices.filter((notice) => notice.kind === "added" || notice.kind === "lead");
+  const participants = notices.filter((notice) => participantKind(notice.kind));
+  const participantSentence = (notice: AssignNotice) =>
+    ended(`${notice.by ?? firstName(agent)} ${line(notice, clock)}`);
   const other = notices.filter(
     (notice) =>
       notice.kind === "taken" ||
@@ -200,18 +338,21 @@ const bodyFor = (
       ? given[0]!.row.category === "meeting"
         ? meetingLine(agent, given[0]!, clock, now)
         : ended(`${agent} gave you ${line(given[0]!, clock)}`)
-      : projects.length === 1
-        ? ended(`${agent} ${line(projects[0]!, clock)}`)
-        : ended(
-            other[0]!.by === undefined
-              ? `${agent} ${line(other[0]!, clock, gaveTo(other[0]!))}`
-              : line(other[0]!, clock),
-          );
+      : participants.length === 1
+        ? participantSentence(participants[0]!)
+        : projects.length === 1
+          ? ended(`${agent} ${line(projects[0]!, clock)}`)
+          : ended(
+              other[0]!.by === undefined
+                ? `${agent} ${line(other[0]!, clock, gaveTo(other[0]!))}`
+                : line(other[0]!, clock),
+            );
   return [
     given.length === 0
       ? `${agent}:`
       : `${agent} gave you ${given.length === 1 ? "a task" : `${given.length} tasks`}:`,
     ...given.map((notice) => `• ${line(notice, clock)}`),
+    ...participants.map((notice) => `• ${participantSentence(notice)}`),
     ...projects.map((notice) => `• ${capital(line(notice, clock))}`),
     ...other.map(
       (notice) => `• ${notice.by === undefined ? "It " : ""}${line(notice, clock, gaveTo(notice))}`,
@@ -221,7 +362,16 @@ const bodyFor = (
 
 /** A held "gave you" line: the task, its rev and who gave it, so a retried call holds nothing more. */
 const GIVEN_HELD = "kin-assign-given:";
-export const isGivenHeld = (kind: string) => kind.startsWith(GIVEN_HELD);
+const PARTICIPANT_HELD = "kin-assign-participant:";
+export const isGivenHeld = (kind: string) =>
+  kind.startsWith(GIVEN_HELD) || kind.startsWith(PARTICIPANT_HELD);
+const participantHeld = (notice: AssignNotice, by: string) =>
+  `${PARTICIPANT_HELD}${notice.row.recordId}:${notice.row.rev}:${notice.kind}:${notice.by ?? by}`;
+const recheckWhenHeld = (notice: AssignNotice) =>
+  participantKind(notice.kind) ||
+  (notice.kind === "commented" &&
+    notice.row.registerId === "work" &&
+    alsoOnPeople(notice.row).includes(notice.personId));
 const givenHeld = (row: RecordRow, by: string) => `${GIVEN_HELD}${row.recordId}:${row.rev}:${by}`;
 const heldTask = (kind: string) => {
   const [recordId = "", , ...by] = kind.slice(GIVEN_HELD.length).split(":");
@@ -239,8 +389,35 @@ export const heldGivenBody = Effect.fn("KinAssignNotices.heldGiven")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const byGiver = new Map<string, Array<AssignNotice>>();
+  const comments = new Set<string>();
   const seen = new Set<string>();
   for (const kind of kinds) {
+    if (kind.startsWith(PARTICIPANT_HELD)) {
+      const [recordId = "", , change = "", ...name] = kind
+        .slice(PARTICIPANT_HELD.length)
+        .split(":");
+      if (change === "commented") {
+        if (!(yield* canHearRecord(orgId, personId, recordId))) continue;
+        const [post] = yield* sql<{ body: string }>`SELECT body FROM kin_held_posts
+          WHERE org_id = ${orgId} AND person_id = ${personId} AND kind = ${kind}
+          ORDER BY held_at, rowid LIMIT 1`;
+        if (post !== undefined) comments.add(post.body);
+        continue;
+      }
+      const id = `${recordId}:${change}`;
+      if (!participantKind(change) || seen.has(id)) continue;
+      const row = yield* byId(orgId, recordId);
+      if (
+        row === undefined ||
+        !liveParticipantNews(change, row, personId) ||
+        !(yield* canHearRecord(orgId, personId, recordId))
+      )
+        continue;
+      seen.add(id);
+      const by = name.join(":");
+      byGiver.set(by, [...(byGiver.get(by) ?? []), { personId, kind: change, row, why: null }]);
+      continue;
+    }
     const { recordId, by } = heldTask(kind);
     if (seen.has(recordId)) continue;
     seen.add(recordId);
@@ -252,15 +429,16 @@ export const heldGivenBody = Effect.fn("KinAssignNotices.heldGiven")(function* (
       { personId, kind: "given", row, why: reasonOf(row) },
     ]);
   }
-  if (byGiver.size === 0) return undefined;
+  if (byGiver.size === 0) return comments.size === 0 ? undefined : [...comments].join("\n\n");
   const [profile] = yield* sql<{ zone: string | null }>`SELECT time_zone AS zone FROM kin_people
     WHERE org_id = ${orgId} AND person_id = ${personId}`;
   const company = yield* ownerZone(orgId);
   const clock = { zone: profile?.zone ?? company, company, locale: yield* textLocale(orgId) };
   const now = yield* Clock.currentTimeMillis;
-  return [...byGiver]
-    .map(([by, notices]) => bodyFor(by, notices, clock, now, () => null))
-    .join("\n\n");
+  return [
+    ...[...byGiver].map(([by, notices]) => bodyFor(by, notices, clock, now, () => null)),
+    ...comments,
+  ].join("\n\n");
 });
 
 /** The day a task's holder is back and hears it is theirs, while that line waits on them away. */
@@ -350,7 +528,7 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
   if (agent === undefined) return { told, waits };
   const fallbackZone = yield* ownerZone(turn.orgId);
   const byPerson = new Map<string, Array<AssignNotice>>();
-  for (const notice of notices)
+  for (const notice of yield* forDelivery(turn.orgId, notices))
     byPerson.set(notice.personId, [...(byPerson.get(notice.personId) ?? []), notice]);
   for (const [personId, all] of byPerson) {
     const person = KinPersonId.make(personId);
@@ -429,10 +607,16 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
           audience: "chat",
           at: held.at,
         });
-      const rest = theirs.filter((notice) => notice.kind !== "given");
+      const rest = theirs.filter((notice) => notice.kind !== "given" && !recheckWhenHeld(notice));
       for (const notice of theirs)
         if (notice.kind === "given")
           yield* hold(givenHeld(notice.row, giver), bodyFor(giver, [notice], clock, now, gaveTo));
+        else if (recheckWhenHeld(notice))
+          yield* hold(
+            // Comments can share a record revision; the original turn-and-body key separates them.
+            participantHeld(notice, notice.kind === "commented" ? messageId : giver),
+            bodyFor(giver, [notice], clock, now, gaveTo),
+          );
       if (rest.length > 0)
         yield* hold(
           messageId,
@@ -526,7 +710,7 @@ export const tellOnTasks = Effect.fn("KinAssignNotices.tellOnTasks")(function* (
   const name = (yield* nameOf("person", mover.personId)) ?? "Someone";
   const now = yield* Clock.currentTimeMillis;
   const byPerson = new Map<string, Array<AssignNotice>>();
-  for (const notice of notices)
+  for (const notice of yield* forDelivery(orgId, notices, mover.personId))
     byPerson.set(notice.personId, [...(byPerson.get(notice.personId) ?? []), notice]);
   for (const [personId, all] of byPerson) {
     const person = KinPersonId.make(personId);
@@ -555,7 +739,7 @@ export const tellOnTasks = Effect.fn("KinAssignNotices.tellOnTasks")(function* (
       const to = notice.to;
       const body = yield* encodeNews({
         by: mover.personId,
-        name,
+        name: participantKind(notice.kind) ? firstName(name) : name,
         kind: notice.kind,
         recordId: notice.row.recordId,
         key: notice.row.key,
@@ -577,6 +761,7 @@ export const tellOnTasks = Effect.fn("KinAssignNotices.tellOnTasks")(function* (
 });
 
 const NEWS_ONE: Record<TaskNews["kind"], (task: string, to: string | null) => string> = {
+  ...participantLine,
   given: (task) => `gave you ${task}`,
   taken: (task, to) => (to === null ? `took over ${task}` : `gave ${task} to ${to}`),
   returned: (task) => `handed back ${task}`,
@@ -586,6 +771,9 @@ const NEWS_ONE: Record<TaskNews["kind"], (task: string, to: string | null) => st
   nudged: (task) => `asked where ${task} stands`,
 };
 const NEWS_MANY: Record<TaskNews["kind"], (count: number) => string> = {
+  putOn: (count) => `put you on ${count} tasks`,
+  tookOff: (count) => `took you off ${count} tasks`,
+  left: (count) => `left ${count} tasks`,
   given: (count) => `gave you ${count} tasks`,
   taken: (count) => `reassigned ${count} of your tasks`,
   returned: (count) => `handed back ${count} tasks`,
@@ -601,7 +789,7 @@ const newsText = (news: ReadonlyArray<TaskNews>) => {
   const records = new Set(news.map((one) => one.recordId)).size;
   const mixed = new Set(news.map((one) => one.kind)).size > 1;
   const task = `${first.key} ${first.title}`;
-  return `${first.name} ${
+  const text = `${first.name} ${
     records === 1
       ? mixed
         ? `updated ${task}`
@@ -610,6 +798,7 @@ const newsText = (news: ReadonlyArray<TaskNews>) => {
         ? `updated ${records} of your tasks`
         : NEWS_MANY[first.kind](records)
   }`;
+  return news.every((one) => participantKind(one.kind)) ? ended(text) : text;
 };
 
 /** News a later change made untrue, such as a task given and taken back, is not told. */
@@ -644,8 +833,21 @@ export const taskNewsBanner = Effect.fn("KinAssignNotices.taskNewsBanner")(funct
     const news = Option.getOrUndefined(decodeNews(row.body));
     const id = news === undefined ? "" : `${news.recordId}:${news.kind}`;
     if (news === undefined || row.personId !== person || seen.has(id)) continue;
+    const record = yield* byId(orgId, news.recordId);
+    if (record === undefined) continue;
+    if (
+      (participantKind(news.kind) || news.kind === "commented") &&
+      !(yield* canHearRecord(orgId, person, news.recordId))
+    )
+      continue;
+    if (
+      !(participantKind(news.kind)
+        ? liveParticipantNews(news.kind, record, person)
+        : stillNews(news, record, person))
+    )
+      continue;
     seen.add(id);
-    if (stillNews(news, yield* byId(orgId, news.recordId), person)) told.push(news);
+    told.push(news);
   }
   if (told.length === 0) return undefined;
   const opened = new Map(
