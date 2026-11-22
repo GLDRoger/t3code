@@ -255,11 +255,30 @@ const override = Effect.fn("checkChanged.override")(function* (
   return value;
 });
 
-// Tests that read a doc; a changed doc has no test beside it to select them.
-export const docReaderTests = (files: ReadonlyArray<string>) =>
-  files.includes("docs/user/t3-connect-troubleshooting.md")
-    ? ["apps/server/src/cloud/ConnectReachability.test.ts"]
-    : [];
+const KIN_MIGRATIONS = /^apps\/server\/src\/kin\/persistence\/(migrations\/|KinMigrations\.ts$)/;
+const AGENT_TOOL_INPUTS =
+  /^(apps\/server\/src\/(kin\/|mcp\/|peer\/RemoteDelegation\.ts$)|packages\/(contracts|shared)\/src\/)/;
+
+export const crossFileTests = (files: ReadonlyArray<string>) => {
+  const tests: string[] = [];
+  if (files.includes("docs/user/t3-connect-troubleshooting.md"))
+    tests.push("apps/server/src/cloud/ConnectReachability.test.ts");
+  if (files.some((file) => KIN_MIGRATIONS.test(file)))
+    tests.push("apps/server/src/kin/people/leaver.test.ts");
+  // The wire list also uses shared schemas and the T3 tools that Kin exposes.
+  if (
+    files.some(
+      (file) =>
+        file === "apps/server/src/kin/mcp/agentContextBudget.json" ||
+        (AGENT_TOOL_INPUTS.test(file) && CODE.test(file) && !TEST.test(file)),
+    )
+  )
+    tests.push(
+      "apps/server/src/kin/lead/deferredTools.test.ts",
+      "apps/server/src/kin/mcp/layer.test.ts",
+    );
+  return tests;
+};
 
 const checkChanged = Effect.fn("checkChanged")(function* (input: {
   readonly ref: Option.Option<string>;
@@ -371,7 +390,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       if (entry.startsWith(prefix) && TEST.test(entry)) tests.add(path.join(dir, entry));
     }
   }
-  for (const test of docReaderTests(files)) tests.add(test);
+  for (const test of crossFileTests(files)) tests.add(test);
   // It reads files other than the ones beside it, so no changed file selects it.
   if (affected.includes("t3")) tests.add("apps/server/src/provider/AgentContextBudget.test.ts");
   // Kin's wire budget reads the whole read path, so any Kin server, contract or client file moves it.

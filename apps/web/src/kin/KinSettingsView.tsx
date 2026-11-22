@@ -53,6 +53,7 @@ import { KinCheckInsPage } from "./KinCheckIns";
 import { kinClient } from "./kinClient";
 import { KinSettingsNotifications } from "./KinNotifications";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
+import { kinSettingsShown } from "./kinNoCode";
 import { KinRecommendationsSettings } from "./KinRecommendations";
 import {
   closeKinSettings,
@@ -292,7 +293,7 @@ function KinSettingsMenu(props: {
                 </SidebarMenuButton>
               </SidebarMenuItem>
               {computerOpen
-                ? THIS_COMPUTER.map((item) => (
+                ? kinSettingsShown(THIS_COMPUTER).map((item) => (
                     <SidebarMenuItem key={item.to}>
                       <SidebarMenuButton render={<Link to={item.to} />}>
                         <span className="truncate">{item.label}</span>
