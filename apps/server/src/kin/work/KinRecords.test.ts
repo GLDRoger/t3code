@@ -524,6 +524,46 @@ it.effect(
         { confirmed: true },
       );
       assert.include((yield* records.get(orgId, kept))!, { confirmed: 1 });
+
+      // The owner's own Keep gives the task as his ask in person: the holder's wake is his.
+      // An agent setting `confirmed`, even in his ask, is no Keep by hand.
+      const suggest = (title: string, owner: string) =>
+        LeadWork.create(scopeOf(other), {
+          sourceEventId: given!.eventId,
+          records: [{ title, owner }],
+        }).pipe(Effect.map((result) => result.records[0]!.key));
+      const holderWake = Effect.fn("test.holderWake")(function* (
+        agentId: KinAgentId,
+        key: string,
+        wakeupId: string,
+      ) {
+        const recordId = (yield* records.get(orgId, key))!.recordId;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+            started_at, status, event_ids, audience)
+          VALUES (${wakeupId}, ${orgId}, ${agentId}, ${`${agentId}-thread`}, 'test', 0, 'completed',
+            '[]', 'owner_only')`;
+        yield* sql`UPDATE kin_events SET wakeup_id = ${wakeupId}, state = 'claimed'
+          WHERE org_id = ${orgId} AND agent_id = ${agentId} AND tag = 'record.changed'
+            AND json_extract(json, '$.recordId') = ${recordId}`;
+        return yield* ownerLevelAsked(orgId, agentId, wakeupId);
+      });
+      const byHand = yield* suggest("Invented: check the vendor's account by phone", lead);
+      yield* records.update(
+        orgId,
+        { actor: { _tag: "person", personId: ownerId }, via: "owner" },
+        byHand,
+        { confirmed: true },
+      );
+      assert.isTrue(yield* holderWake(lead, byHand, "kept-by-hand-wake"));
+      const byAgent = yield* suggest("Invented: check the vendor's account by mail", lead);
+      yield* records.update(
+        orgId,
+        { actor: { _tag: "agent", agentId: lead }, via: "lead", wakeupId: "wake" },
+        byAgent,
+        { confirmed: true },
+      );
+      assert.include((yield* records.get(orgId, byAgent))!, { confirmed: 1 });
+      assert.isFalse(yield* holderWake(lead, byAgent, "kept-by-agent-wake"));
     }).pipe(Effect.provide(layer)),
 );
 
