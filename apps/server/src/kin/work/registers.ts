@@ -600,6 +600,9 @@ const shownLabels = (labels: Readonly<Record<string, string>> | undefined) => {
   const shown = Object.entries(labels ?? {}).filter(([category, label]) => label !== category);
   return shown.length === 0 ? {} : { categoryLabels: Object.fromEntries(shown) };
 };
+export const legacyFieldType = ({ type, link }: FieldDef) =>
+  type === "number" || type === "yesno" || (type === "link" && link === "list") ? "text" : type;
+
 /** The contract shape, with how many of its entries are open. */
 export const toDefinition = (
   def: ListDef,
@@ -617,10 +620,10 @@ export const toDefinition = (
     defaultState: def.defaultState,
     categories: def.categories,
     fields: def.fields.flatMap((field): ReadonlyArray<FieldDef> => {
-      if (field.link === "list" && !accept?.includes("list")) return [];
-      if ((field.type === "number" || field.type === "yesno") && !accept?.includes(field.type))
-        return [{ ...field, type: "text" }];
-      return [field];
+      if (field.type === "link" && field.link === "list")
+        return accept?.includes("list") ? [field] : [];
+      const type = accept?.includes(field.type) ? field.type : legacyFieldType(field);
+      return [field.type === type ? field : { ...field, type }];
     }),
     ...(def.remindOn !== undefined && accept?.includes("remindOn")
       ? { remindOn: def.remindOn }
