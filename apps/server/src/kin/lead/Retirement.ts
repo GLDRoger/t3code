@@ -12,11 +12,13 @@ import type * as SqlError from "effect/sql/SqlError";
 
 import type { PersistenceDecodeError, PersistenceSqlError } from "../../persistence/Errors.ts";
 import type { KinChatService } from "../chat/KinChatService.ts";
+import { closeRetiredTroubles } from "../host/KinHostCare.ts";
 import {
   closeHeldQuestions,
   reopenRetiredQuestions,
   retiredQuestionText,
 } from "../questions/openQuestions.ts";
+import * as KinWatches from "../watches/KinWatches.ts";
 
 /**
  * What retiring an agent does to everything it has in flight, inside the transaction that sets
@@ -95,6 +97,7 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (
   // Waiting, or held by a turn just aborted (whose finish would requeue it): never runs.
   const expired = yield* sql`UPDATE kin_events AS e SET state = 'expired'
     WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND (e.state = 'queued'
+      OR (e.state = 'failed' AND e.held_by IS NOT NULL)
       OR (e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = e.org_id
         AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)))
     RETURNING event_id`;
@@ -165,6 +168,8 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (
     },
     chat,
   );
+  yield* KinWatches.closeRetired(orgId, agentId, now);
+  yield* closeRetiredTroubles(orgId, agentId, now);
   return {
     turns: turns.map((row) => KinWakeupId.make(row.wakeupId)),
     expired: expired.length,
@@ -185,7 +190,9 @@ export const restore = Effect.fn("KinRetirement.restore")(function* (input: {
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, agentId, now } = input;
-  yield* reopenRetiredQuestions({ orgId, agentId, retiredAt: Date.parse(input.retiredAt), now });
+  const retiredAt = Date.parse(input.retiredAt);
+  yield* reopenRetiredQuestions({ orgId, agentId, retiredAt, now });
+  yield* KinWatches.reopenRetired(orgId, agentId, retiredAt, now);
   const held = sql`SELECT target_id FROM kin_retirement_holds
     WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
   yield* sql`UPDATE kin_triggers AS t SET enabled = 1, updated_at = ${now},

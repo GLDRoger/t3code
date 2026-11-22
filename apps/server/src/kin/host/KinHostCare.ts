@@ -198,8 +198,11 @@ export class KinHostCare extends Context.Service<
       orgId: KinOrgId,
       agentId: KinAgentId,
     ) => Effect.Effect<{ readonly cause: KinTroubleCause; readonly told: boolean } | undefined>;
-    /** Redraws the org's open notices from what their turns' rows say now. */
-    readonly refresh: (orgId: KinOrgId) => Effect.Effect<void>;
+    /** Redraws open notices and any still showing as open after the trouble closed. */
+    readonly refresh: (
+      orgId: KinOrgId,
+      options?: { readonly closedOnly: true },
+    ) => Effect.Effect<void>;
     /** The hourly backup check: one notice while there is no recent good backup, closed after. */
     readonly checkBackup: (
       orgId: KinOrgId,
@@ -215,6 +218,22 @@ export class KinHostCare extends Context.Service<
 const unavailable = new KinChatError({
   reason: "unavailable",
   message: "Kin couldn't read its computer just now. Try again.",
+});
+
+/** In the retirement transaction, close troubles with no other agent still stopped. */
+export const closeRetiredTroubles = Effect.fn("KinHostCare.closeRetiredTroubles")(function* (
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  at: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_troubles AS t SET closed_at = ${at}
+    WHERE t.org_id = ${orgId} AND t.closed_at IS NULL AND t.cause <> 'backup'
+      AND EXISTS (SELECT 1 FROM kin_trouble_agents a WHERE a.org_id = t.org_id
+        AND a.trouble_id = t.trouble_id AND a.agent_id = ${agentId})
+      AND NOT EXISTS (SELECT 1 FROM kin_trouble_agents a JOIN kin_agents l
+        ON l.org_id = a.org_id AND l.agent_id = a.agent_id AND l.retired_at IS NULL
+        WHERE a.org_id = t.org_id AND a.trouble_id = t.trouble_id AND a.worked_at IS NULL)`;
 });
 
 const make = Effect.gen(function* () {
@@ -466,9 +485,13 @@ const make = Effect.gen(function* () {
       agentId: string;
       name: string;
       instanceId: string | null;
-    }>`SELECT agent_id AS "agentId", name, instance_id AS "instanceId" FROM kin_trouble_agents
-      WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId}
-        AND (worked_at IS NULL OR ${trouble.closedAt} IS NOT NULL) ORDER BY rowid`;
+    }>`SELECT a.agent_id AS "agentId", a.name, a.instance_id AS "instanceId"
+      FROM kin_trouble_agents a
+      WHERE a.org_id = ${orgId} AND a.trouble_id = ${trouble.troubleId}
+        AND (${trouble.closedAt} IS NOT NULL OR (a.worked_at IS NULL AND EXISTS (
+          SELECT 1 FROM kin_agents l WHERE l.org_id = a.org_id AND l.agent_id = a.agent_id
+            AND l.retired_at IS NULL)))
+      ORDER BY a.rowid`;
     const [counts] = yield* sql<{
       held: number | null;
       done: number | null;
@@ -482,7 +505,7 @@ const make = Effect.gen(function* () {
           WHERE d.org_id = e.org_id AND d.event_id = e.event_id AND d.status = 'pending')
           THEN 1 ELSE 0 END) AS expiring
       FROM kin_events e WHERE e.org_id = ${orgId} AND e.held_by = ${trouble.troubleId}`;
-    if (trouble.cause === "space") yield* measure();
+    if (trouble.cause === "space" && trouble.closedAt === null) yield* measure();
     const using =
       trouble.cause === "space"
         ? usingText(usage, Option.getOrUndefined(yield* readSpace()))
@@ -651,6 +674,15 @@ const make = Effect.gen(function* () {
     return troubleId;
   });
 
+  const agentActive = Effect.fn("KinHostCare.agentActive")(function* (
+    orgId: KinOrgId,
+    agentId: KinAgentId,
+  ) {
+    const [found] = yield* sql`SELECT 1 FROM kin_agents
+      WHERE org_id = ${orgId} AND agent_id = ${agentId} AND retired_at IS NULL`;
+    return found !== undefined;
+  });
+
   /** `agentId` is stopped by the trouble (again, if it had worked since). */
   const stopped = (orgId: KinOrgId, troubleId: string, agentId: KinAgentId) =>
     sql`INSERT INTO kin_trouble_agents (trouble_id, org_id, agent_id, name, instance_id)
@@ -666,6 +698,7 @@ const make = Effect.gen(function* () {
         sql.withTransaction(
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis;
+            if (!(yield* agentActive(orgId, agentId))) return false;
             const troubleId = yield* openOrGet(orgId, "space", now);
             yield* stopped(orgId, troubleId, agentId);
             const spent = yield* sql`UPDATE kin_troubles SET auto_clean_at = ${now}
@@ -727,6 +760,7 @@ const make = Effect.gen(function* () {
         sql.withTransaction(
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis;
+            if (!(yield* agentActive(orgId, input.agentId))) return undefined;
             const troubleId = yield* openOrGet(orgId, input.cause, now);
             yield* stopped(orgId, troubleId, input.agentId);
             yield* sql`UPDATE kin_troubles SET
@@ -741,6 +775,7 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+      if (troubleId === undefined) return false;
       yield* projectQuietly(orgId, troubleId, true);
       yield* noteRuns(orgId, input.eventIds, KIN_TROUBLE_WHY[input.cause]);
       const trouble = yield* troubleById(orgId, troubleId);
@@ -771,6 +806,7 @@ const make = Effect.gen(function* () {
 
   const succeeded = Effect.fn("KinHostCare.succeeded")(
     function* (orgId: KinOrgId, agentId: KinAgentId) {
+      if (!(yield* agentActive(orgId, agentId))) return;
       for (const trouble of yield* openTroubles(orgId)) {
         if (trouble.cause === "backup") continue;
         const [affected] = yield* sql`SELECT 1 FROM kin_trouble_agents
@@ -796,7 +832,8 @@ const make = Effect.gen(function* () {
           }),
         );
         // Over when no stopped agent is left with a held turn.
-        const [still] = yield* sql`SELECT 1 FROM kin_trouble_agents a
+        const [still] = yield* sql`SELECT 1 FROM kin_trouble_agents a JOIN kin_agents l
+          ON l.org_id = a.org_id AND l.agent_id = a.agent_id AND l.retired_at IS NULL
           WHERE a.org_id = ${orgId} AND a.trouble_id = ${trouble.troubleId} AND a.worked_at IS NULL
             AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = a.org_id
               AND e.held_by = a.trouble_id AND e.agent_id = a.agent_id
@@ -825,6 +862,7 @@ const make = Effect.gen(function* () {
 
   const causeFor = Effect.fn("KinHostCare.causeFor")(
     function* (orgId: KinOrgId, agentId: KinAgentId) {
+      if (!(yield* agentActive(orgId, agentId))) return;
       for (const trouble of yield* openTroubles(orgId)) {
         if (trouble.cause === "backup") continue;
         const found = { cause: trouble.cause, told: trouble.toldAt !== null };
@@ -840,9 +878,14 @@ const make = Effect.gen(function* () {
   );
 
   const refresh = Effect.fn("KinHostCare.refresh")(
-    function* (orgId: KinOrgId) {
-      for (const trouble of yield* openTroubles(orgId))
-        yield* projectQuietly(orgId, trouble.troubleId, false);
+    function* (orgId: KinOrgId, options?: { readonly closedOnly: true }) {
+      const redraw = yield* sql<{ troubleId: string }>`SELECT t.trouble_id AS "troubleId"
+        FROM kin_troubles t LEFT JOIN kin_widgets w
+          ON w.org_id = t.org_id AND w.widget_id = t.trouble_id
+        WHERE t.org_id = ${orgId} AND ((${options?.closedOnly ? 0 : 1} AND t.closed_at IS NULL)
+          OR (t.closed_at IS NOT NULL AND w.widget_id IS NOT NULL AND w.closed_at IS NULL))
+        ORDER BY t.trouble_id`;
+      for (const { troubleId } of redraw) yield* projectQuietly(orgId, troubleId, false);
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin trouble redraw failed", { cause })),
   );
