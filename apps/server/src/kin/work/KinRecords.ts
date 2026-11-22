@@ -2213,6 +2213,15 @@ const make = Effect.gen(function* () {
           ) {
             if (patch.notes.trim() !== "") {
               const requestHash = commentHashOf(patch.notes, []);
+              // Keyed by the one event the turn answers, which a stopped and resumed turn keeps.
+              const events =
+                writer.wakeupId === undefined
+                  ? []
+                  : yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+                      WHERE org_id = ${orgId} AND agent_id = ${writer.actor.agentId}
+                        AND wakeup_id = ${writer.wakeupId}
+                      ORDER BY event_id LIMIT 2`;
+              const source = events.length === 1 ? `${events[0]!.eventId}:` : "";
               yield* insertComment({
                 orgId,
                 key: row.key,
@@ -2221,7 +2230,7 @@ const make = Effect.gen(function* () {
                   agentId: writer.actor.agentId,
                   askedBy: writer.askedBy ?? null,
                 },
-                requestId: `notes:${writer.wakeupId ?? "turn"}:${requestHash}`,
+                requestId: `notes:${source}${requestHash}`,
                 requestHash,
                 body: patch.notes,
                 files: [],

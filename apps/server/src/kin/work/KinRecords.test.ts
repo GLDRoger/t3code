@@ -502,6 +502,12 @@ const asked = Effect.fn("KinRecordsTest.asked")(function* (
         audience = 'owner_only' WHERE wakeup_id = ${wakeupId}`;
   });
   const steer = Effect.suspend(() => queue.steer({ orgId, agentId: lead, wakeupId }));
+  /** Kin is stopped mid-turn and started again: its events come back in a new wake-up. */
+  const resume = Effect.fn("KinRecordsTest.resume")(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    yield* queue.release({ orgId, wakeupId, countAttempt: false, notBefore: now });
+    yield* wake();
+  });
   const later = TestClock.adjust(60_000);
   const rev = Effect.map(records.get(orgId, "W-1"), (row) => row!.rev);
   const write = (sourceEventId: string, change: object) =>
@@ -517,6 +523,7 @@ const asked = Effect.fn("KinRecordsTest.asked")(function* (
     say,
     wake,
     steer,
+    resume,
     later,
     rev,
     write,
@@ -642,6 +649,17 @@ const keptForPerson = [
       assert.deepStrictEqual(noted, [
         { authorKind: "agent", authorId: lead, body: "Invented: drafted, waiting on prices" },
       ]);
+      // Stopped and resumed, its turn writes the same words for the same event once; new words
+      // are a new note.
+      yield* scene.resume();
+      yield* scene.write(given!.eventId, { notes: status.notes });
+      yield* scene.write(given!.eventId, { notes: "Invented: prices are in" });
+      const bodies = yield* scene.sql<{ body: string }>`SELECT body FROM kin_record_comments
+        WHERE org_id = ${orgId} ORDER BY seq`;
+      assert.deepStrictEqual(
+        bodies.map((one) => one.body),
+        [status.notes, "Invented: prices are in"],
+      );
       // Notes the agent wrote itself it may write over, as before.
       yield* scene.sql`UPDATE kin_records SET notes = '' WHERE org_id = ${orgId} AND key = 'W-1'`;
       yield* scene.write(given!.eventId, { notes: "Invented: its own status" });
