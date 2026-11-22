@@ -1,4 +1,5 @@
 import {
+  calendarTimeMillis,
   KinCurrency,
   KinDay,
   KinLabelText,
@@ -27,6 +28,9 @@ const When = Schema.String.check(
   Schema.isPattern(
     /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2}))?$/,
   ),
+  Schema.makeFilter((value) => Number.isFinite(calendarTimeMillis(value)), {
+    expected: "a real calendar day or time with its offset",
+  }),
 );
 /** A plain decimal in major units, `1234.50`: never a float, never with grouping. */
 const Amount = Schema.String.check(Schema.isPattern(/^\d{1,15}(?:\.\d{1,6})?$/));
