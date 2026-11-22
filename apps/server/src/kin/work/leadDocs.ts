@@ -8,6 +8,7 @@ import {
   type KinDocCardDraft,
   type KinDocCardState,
   KinDraftKind,
+  KIN_SOCIAL_PLATFORM_LABELS,
   KinSocialPlatform,
   KinMessageId,
   KinPersonId,
@@ -24,7 +25,9 @@ import * as Schema from "effect/Schema";
 import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { madeUnderApproval } from "../questions/approval.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import { DRAFT_WORDS, madeUnderApproval } from "../questions/approval.ts";
+import { redo, redoOf } from "../questions/askPerson.ts";
 import { effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -596,6 +599,49 @@ const DRAFT_BLANK = "A draft needs its text. Nothing was written.";
 const DRAFT_CARD_FULL =
   "With who asks and who it is for, this draft is too long for the card it goes up on. Shorten it, or file it without draft. Nothing was written.";
 
+/**
+ * The owner's redraft of the one teammate's draft she answered Changes first on goes back to her
+ * on a new Approve card (`redo`): `raised`, or `refused` with the reason; undefined when it is none.
+ */
+const putBack = Effect.fn("KinDocTools.putBack")(function* (
+  lead: Lead,
+  redraft: Parameters<typeof redoOf>[1],
+  text: string,
+  on?: KinSocialPlatform,
+) {
+  const turn = {
+    orgId: lead.orgId,
+    agentId: lead.agentId,
+    wakeupId: KinWakeupId.make(lead.wakeupId),
+  };
+  const chat = yield* Effect.serviceOption(KinChatService);
+  if (Option.isNone(chat)) return undefined;
+  const found = yield* redoOf(turn, redraft);
+  if (found === undefined) return undefined;
+  const of =
+    on === undefined
+      ? found
+      : { ...found, draft: { ...found.draft, on: KIN_SOCIAL_PLATFORM_LABELS[on] } };
+  const { owner, asker } = of.draft.names;
+  const back = `${asker}'s ${DRAFT_WORDS[of.draft.kind]} back from ${owner}'s Changes first`;
+  return yield* redo({ ...lead, wakeupId: turn.wakeupId }, of, text, {
+    chat: chat.value,
+    gate: yield* KinLevelGate,
+  }).pipe(
+    Effect.map((asked) => ({
+      _tag: "raised" as const,
+      note: `${back}, so Kin put it to ${owner} again with Approve and Changes first and told ${asker}.${asked.state === "held" ? ` It reaches ${owner} once their quiet hours or time away end.` : ""} Say in one line that it is back with ${owner} to approve; don't repeat the draft.`,
+    })),
+    Effect.catchTags({
+      KinChatError: (error) =>
+        Effect.succeed({
+          _tag: "refused" as const,
+          note: `This is ${back}, but Kin couldn't put it to ${owner} again: ${error.message}`,
+        }),
+    }),
+  );
+});
+
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   if (input.whatWeSell === true) return yield* runStartOfferings(lead, input);
   if (input.draft !== undefined && input.body.trim() === "") return yield* invalid(DRAFT_BLANK);
@@ -609,6 +655,28 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     (input.project === undefined && input.company !== true
       ? yield* projectFor(lead, input, partyId ?? undefined)
       : undefined);
+  // Kin makes the redraft once the owner approves it, so it is filed only if it can't go up.
+  const back =
+    input.draft === undefined
+      ? undefined
+      : yield* putBack(
+          lead,
+          { kind: input.draft.kind, partyId: partyId ?? null },
+          input.body,
+          input.draft.kind === "post" ? input.draft.on : undefined,
+        );
+  if (back?._tag === "raised") {
+    const putUp: typeof WriteResult.Type = {
+      key: "",
+      title: input.title,
+      version: 0,
+      changed: false,
+      outline: [],
+      kind: input.kind ?? input.draft?.kind ?? "other",
+      note: `Not filed: this is ${back.note}`,
+    };
+    return putUp;
+  }
   const sql = yield* SqlClient.SqlClient;
   const filed = Docs.create(lead.orgId, context.writer, context.provenance, {
     title: input.title,
@@ -663,9 +731,13 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     draft === undefined ? (input.card ?? "answer") : true,
     draft,
   );
+  const notes = [
+    ...(draft === undefined ? [] : [draftNote(draft, written.row.key, placed)]),
+    ...(back === undefined ? [] : [back.note]),
+  ];
   return {
     ...writeResult(written, written.created),
-    ...(draft === undefined ? {} : { note: draftNote(draft, written.row.key, placed) }),
+    ...(notes.length === 0 ? {} : { note: notes.join(" ") }),
   };
 });
 export const create = leadTool("KinDocTools.create", runCreate);
@@ -733,6 +805,24 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
 });
 export const read = leadTool("KinDocTools.read", runRead);
 
+/** A changed doc a waiting Changes first was about goes back up on its Approve card, not as a doc card. */
+const putBackOrShow = Effect.fnUntraced(function* (
+  lead: Lead,
+  written: Docs.Written,
+  card: boolean | undefined,
+) {
+  const back = written.created
+    ? yield* putBack(lead, { docKey: written.row.key }, written.version.body)
+    : undefined;
+  if (back?._tag !== "raised") yield* shown(lead, written, card);
+  return {
+    ...writeResult(written, written.created),
+    ...(back === undefined
+      ? {}
+      : { note: back._tag === "raised" ? `This is ${back.note}` : back.note }),
+  };
+});
+
 const runEdit = Effect.fnUntraced(function* (lead: Lead, input: typeof EditInput.Type) {
   const context = yield* writeContext(lead, "doc_edit", input);
   const written = yield* Docs.edit(lead.orgId, context.writer, context.provenance, input, {
@@ -740,8 +830,7 @@ const runEdit = Effect.fnUntraced(function* (lead: Lead, input: typeof EditInput
     summary: input.summary,
     originKey: context.originKey,
   });
-  yield* shown(lead, written, input.card);
-  return writeResult(written, written.created);
+  return yield* putBackOrShow(lead, written, input.card);
 });
 export const edit = leadTool("KinDocTools.edit", runEdit);
 
@@ -753,8 +842,7 @@ const runRewrite = Effect.fnUntraced(function* (lead: Lead, input: typeof Rewrit
     summary: input.summary,
     originKey: context.originKey,
   });
-  yield* shown(lead, written, input.card);
-  return writeResult(written, written.created);
+  return yield* putBackOrShow(lead, written, input.card);
 });
 export const rewrite = leadTool("KinDocTools.rewrite", runRewrite);
 

@@ -60,6 +60,8 @@ export const DRAFT_OPTIONS = [
   { label: "Approve", kind: "yes" },
   { label: "Changes first", kind: "no" },
 ] as const;
+/** The answer a sent-up draft's "no" stores. */
+export const CHANGES_FIRST = DRAFT_OPTIONS[1].label;
 
 /** A sent-up draft's card text from its stored payload: who asks, the draft, then Kin's line. */
 export const draftDetail = (head: string, draft: Pick<StoredDraft, "text" | "line">) =>
