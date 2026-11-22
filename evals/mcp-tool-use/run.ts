@@ -64,12 +64,15 @@ import {
   type State,
 } from "./margin.ts";
 import { needsTopUp, refusals, RunManifest, tallies, tally } from "./gate.ts";
+import { casePattern } from "./pattern.ts";
+import { kinCaseProblems } from "./kin-checks.ts";
 import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import { type AppServer, openAppServer } from "./appServer.ts";
 import {
   fillKinRules,
   filledEvent,
   isKinCase,
+  kinAnswer,
   KinCaseAttachment,
   KIN_TOOLKITS,
   kinDated,
@@ -2040,7 +2043,7 @@ export const shellOutput = (content: ReadonlyArray<Block>) => {
 export const mockOutput = (sample: Sample, command: string) =>
   /&&|\|\||[;|\n]/.test(command.trim())
     ? undefined
-    : sample.testCase.setup.shellMocks?.find((mock) => new RegExp(mock.match).test(command))
+    : sample.testCase.setup.shellMocks?.find((mock) => casePattern(mock.match).test(command))
         ?.output;
 
 type Config = {
@@ -2165,7 +2168,12 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   if (isPageTool(name) && typeof input.path === "string" && !input.path.startsWith("/")) {
     return failed(`${input.path} is not a readable HTML document. Pass an absolute path.`);
   }
-  const mock = nextMock(sample, name, testCase.setup.mocks?.[name], input);
+  const mock = kinAnswer(
+    name,
+    nextMock(sample, name, testCase.setup.mocks?.[name], input),
+    input,
+    testCase.setup.world,
+  );
   if (isRecord(mock) && mock.$error !== undefined) return failed(valueText(mock.$error));
   if (isT3Name(call.name) && PREVIEW_TOOLS.has(name)) {
     if (testCase.setup.world?.browserAgentAccess === false)
@@ -2246,7 +2254,7 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
 /** GPT models write ’ ‘ “ ” where cases write ' and ": text is matched with them made plain. */
 const plainQuotes = (text: string) => text.replaceAll(/[‘’]/g, "'").replaceAll(/[“”]/g, '"');
 const matchesPattern = (pattern: string, value: string) =>
-  new RegExp(plainQuotes(pattern)).test(plainQuotes(value));
+  casePattern(plainQuotes(pattern)).test(plainQuotes(value));
 
 const BOUND = /^([<>]=)(-?\d+(?:\.\d+)?)$/;
 /**
@@ -3120,12 +3128,13 @@ const decodeBaselineRow = Schema.decodeUnknownEffect(
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(RunManifest));
 /** Files beside the runner that neither run samples nor grade them. */
-const NOT_GRADER = new Set([
+export const NOT_GRADER: ReadonlySet<string> = new Set([
   "gate.ts",
   "compare.ts",
   "regrade.ts",
   "trim-capture.ts",
   "estimate.ts",
+  "kin-checks.ts",
 ]);
 const string = { type: "string" } as const;
 
@@ -3387,7 +3396,11 @@ const main = Effect.gen(function* () {
         (placeholder) => `placeholder left unfilled: ${placeholder}`,
       );
       // Codex lists its tools differently; only Claude requests are checked for tool names.
-      const found = [...(sample.base.codex ? [] : caseProblems(testCase, tools)), ...unfilled];
+      const found = [
+        ...(sample.base.codex ? [] : caseProblems(testCase, tools)),
+        ...unfilled,
+        ...kinCaseProblems(testCase, tools),
+      ];
       problems.push(...found.map((problem) => `${testCase.id}: ${problem}`));
       sizes.push({
         prefixChars: (yield* encodeJson([sample.base.system, sample.tools])).length,

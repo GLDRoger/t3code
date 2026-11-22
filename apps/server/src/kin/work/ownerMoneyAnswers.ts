@@ -26,6 +26,7 @@ import { budgetsView, setBudget as setBudgetFor } from "./budgets.ts";
 import { countryFirst, homeCurrency } from "./companyProfile.ts";
 import { askSlip, dayIn, linesBeforeTax } from "./money.ts";
 import { cashEstimate, cashPosition, outlook as outlookOf } from "./moneyAnswers.ts";
+import type { AlertBalance } from "./statements/bankAlerts.ts";
 import { KinRecords, requestHashOf } from "./KinRecords.ts";
 import { dueMillis, ownFiles, ownerWriter, theOwner } from "./ownerWork.ts";
 import { iso, notFound, type RecordRow, workFailure } from "./recordRows.ts";
@@ -67,6 +68,7 @@ export const cash = Effect.fn("KinMoneyAnswers.rpc.cash")(function* (
               on: one.newerRead.on,
               standing: one.newerRead.standing,
             },
+      ...(one.alert === undefined ? {} : { alert: alertOf(one.alert) }),
     })),
     notOfRecord: view.notOfRecord.flatMap((one) =>
       one.standing === undefined
@@ -96,8 +98,21 @@ export const cash = Effect.fn("KinMoneyAnswers.rpc.cash")(function* (
       };
     }),
     bankKnown: { through: view.bank.through },
+    // Only when there are any: Money is read on every change.
+    ...(view.alertAccounts.length === 0
+      ? {}
+      : {
+          alertAccounts: view.alertAccounts.map((one) => ({
+            label: `${one.bank} ••${one.account}`,
+            alert: alertOf(one),
+          })),
+        }),
   };
 }, workFailure);
+const alertOf = (one: AlertBalance) => ({
+  balance: { minor: one.balanceMinor, currency: one.currency },
+  at: iso(one.sentAt),
+});
 
 export const outlook = Effect.fn("KinMoneyAnswers.rpc.outlook")(function* (
   people: ReadonlyArray<PersonIdentity>,

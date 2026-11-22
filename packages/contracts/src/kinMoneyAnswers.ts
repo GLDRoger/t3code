@@ -29,6 +29,9 @@ export const KinStatementStanding = Schema.Literals([
 export type KinStatementStanding = typeof KinStatementStanding.Type;
 
 const AccountKind = Schema.Literals(["account", "card"]);
+/** The available balance a bank alert mail printed, and when it was sent: the bank's figure then. */
+export const KinCashAlert = Schema.Struct({ balance: KinSignedMoney, at: IsoDateTime });
+export type KinCashAlert = typeof KinCashAlert.Type;
 export const KinCashAccount = Schema.Struct({
   /** "HDFC Account ••1234". */
   label: Schema.String,
@@ -44,6 +47,8 @@ export const KinCashAccount = Schema.Struct({
   newerRead: Schema.NullOr(
     Schema.Struct({ balance: KinSignedMoney, on: KinDay, standing: KinStatementStanding }),
   ),
+  /** A bank alert from after `on`: the balance shown. Absent from older hosts. */
+  alert: Schema.optional(KinCashAlert),
 });
 export type KinCashAccount = typeof KinCashAccount.Type;
 
@@ -83,6 +88,10 @@ export const KinCash = Schema.Struct({
   byCurrency: Schema.Array(KinCashCurrency),
   /** Absent from older hosts. */
   bankKnown: Schema.optional(KinBankKnown),
+  /** Accounts known only from bank alerts: "HDFC Bank ••4821". Absent from older hosts. */
+  alertAccounts: Schema.optional(
+    Schema.Array(Schema.Struct({ label: Schema.String, alert: KinCashAlert })),
+  ),
 });
 export type KinCash = typeof KinCash.Type;
 export const KinCashInput = Schema.Struct({ orgId: KinOrgId });

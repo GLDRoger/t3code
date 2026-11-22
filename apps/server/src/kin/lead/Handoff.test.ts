@@ -32,6 +32,7 @@ import type { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { ownerLevelAsked } from "../people/KinAccess.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
@@ -725,6 +726,7 @@ const room = Effect.fn("HandoffTest.room")(function* (ctx: Effect.Success<typeof
       message,
       audience: yield* turnAudience(turn),
       people: (yield* turnPeople(turn))!.people,
+      asked: yield* ownerLevelAsked(orgId, agentId, wakeupId),
     };
   });
   return { mate, ask, privateTurn };
@@ -782,6 +784,8 @@ it.effect(
         assert.strictEqual(his.message.chatId, ctx.techChat);
         assert.strictEqual(his.audience, "owner_only");
         assert.deepStrictEqual(his.people, []);
+        // Kin's copy of his group words is no ask in person: a task filed from it is a suggestion.
+        assert.isFalse(his.asked);
 
         // Only a person's own message in a group: not the owner's direct chat, not unknown events.
         assert.strictEqual(

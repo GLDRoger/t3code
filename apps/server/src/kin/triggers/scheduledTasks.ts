@@ -51,6 +51,7 @@ import { queueCheckIn } from "../pulse/checkIn.ts";
 import { missedCheckIns } from "../pulse/checkInCatchUp.ts";
 import { followOwnerZone, seedCheckIns } from "../pulse/checkInSeeds.ts";
 import { fromConnections, noOutside } from "../pulse/outside.ts";
+import { alertsOnMail } from "../work/statements/alertMail.ts";
 import { cardChatFor, firingOrigin } from "./deferralOrigin.ts";
 import { hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
@@ -314,10 +315,10 @@ const make = Effect.gen(function* () {
       Effect.provideService(SqlClient.SqlClient, sql),
     );
   const routineContent = yield* Effect.serviceOption(RoutineContent.KinRoutineContent);
-  const outsideSource = Option.match(yield* Effect.serviceOption(KinConnections), {
-    onNone: () => noOutside,
-    onSome: (connections) => fromConnections(connections, sql),
-  });
+  const connections = yield* Effect.serviceOption(KinConnections);
+  const outsideSource = Option.isNone(connections)
+    ? noOutside
+    : fromConnections(connections.value, sql, yield* alertsOnMail(connections.value));
 
   const notice = (orgId: KinOrgId, chatId: KinChatId, runId: string, body: string, now: number) =>
     repo

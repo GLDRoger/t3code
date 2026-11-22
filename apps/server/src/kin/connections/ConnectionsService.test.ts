@@ -3243,6 +3243,33 @@ describe("KinConnections accounts", () => {
             : [],
           [WORK_MAIL, ["billing@work.example"]],
         );
+        // The server's own thread read, for bank alerts, goes as far as the owner's Read does.
+        const readThread = () =>
+          connections
+            .readThread(orgId, work.connectionId, "t2")
+            .pipe(Effect.map((messages) => messages.map((one) => one.messageId)));
+        const setRead = (mode: "read" | "off") =>
+          Effect.gen(function* () {
+            const shown = yield* connections.get(owner, {
+              orgId,
+              connectionId: work.connectionId,
+            });
+            yield* connections.setToolModes(owner, {
+              orgId,
+              connectionId: work.connectionId,
+              modes: [
+                {
+                  tool: "mail_read_thread",
+                  mode,
+                  digest: shown.tools.find((one) => one.name === "mail_read_thread")?.pinDigest,
+                },
+              ],
+            });
+          });
+        yield* setRead("off");
+        assert.deepStrictEqual(yield* readThread(), []);
+        yield* setRead("read");
+        assert.deepStrictEqual(yield* readThread(), ["<m2@client2.example>"]);
 
         // A reply: only in its own account, from the alias it reached, quoted as Gmail does.
         const unknown = yield* sendCall("mail_reply", { threadId: "t9", body: "Resent." }).pipe(

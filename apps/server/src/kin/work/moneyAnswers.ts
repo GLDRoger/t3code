@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { homeCurrency } from "./companyProfile.ts";
-import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth } from "./money.ts";
+import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth, timeIn } from "./money.ts";
 import { dates } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL } from "./teamView.ts";
 import {
@@ -18,6 +18,7 @@ import {
   startOfDay,
 } from "./recordRows.ts";
 import { nextDates, repeatsBetween } from "./repeat.ts";
+import { alertsBeside, type AlertBalance } from "./statements/bankAlerts.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
 import {
   type AccountRead,
@@ -203,7 +204,7 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
   for (const read of reads.filter((one) => one.standing !== undefined).toSorted(byDay))
     if (candidates(read).every((group) => group.reads.at(-1)!.on < read.on))
       pending.set(read.identity, read);
-  const accounts = groups
+  const statementAccounts = groups
     .map((group) => {
       const head = group.reads.at(-1)!;
       const ageDays = Math.max(daysBetween(head.on, today), 0);
@@ -232,6 +233,8 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
         (a.label === b.label ? 0 : a.label < b.label ? -1 : 1) ||
         byDay(a, b),
     );
+  const alerts = yield* alertsBeside(orgId, statementAccounts);
+  const accounts = statementAccounts.map((one) => ({ ...one, alert: alerts.beside.get(one) }));
   const shownBeside = new Set(
     accounts.flatMap((one) => (one.newerRead === undefined ? [] : [one.newerRead])),
   );
@@ -276,6 +279,8 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
     notOfRecord,
     byCurrency,
     bank: yield* bankKnown(orgId, now),
+    /** Bank alert balances of accounts no confirmed statement has. */
+    alertAccounts: alerts.alone,
   };
 });
 export type CashPosition = Effect.Success<ReturnType<typeof cashPosition>>;
@@ -283,6 +288,14 @@ export type CashPosition = Effect.Success<ReturnType<typeof cashPosition>>;
 /** A currency's balance now if every recorded movement since went through its accounts. */
 export const cashEstimate = (one: CashPosition["byCurrency"][number]) =>
   one.total !== null && one.sameDay ? one.total + one.receivedSince - one.spentSince : null;
+
+const alertLabel = (one: AlertBalance) => `${one.bank} ••${one.account}`;
+/** An alert's balance as an agent quotes it: the bank's own mail, not a statement. */
+const alertLine = (one: AlertBalance, zone: string) => ({
+  availableBalance: formatMinor(BigInt(one.balanceMinor), one.currency),
+  at: timeIn(one.sentAt, zone),
+  source: `The available balance printed in the newest ${one.bank} alert mail, read by code. It is the bank's figure at that moment, not a confirmed statement; totals below are from statements.`,
+});
 
 const notRecordLine = (one: Read) => ({
   account: one.label,
@@ -293,13 +306,24 @@ const notRecordLine = (one: Read) => ({
 
 /** The cash position as an agent quotes it: every figure formatted by code. */
 export const cashAnswer = (cash: CashPosition) => {
+  const zone = cash.timeZone;
   const notOfRecord =
     cash.notOfRecord.length === 0 ? {} : { notOfRecord: cash.notOfRecord.map(notRecordLine) };
+  const fromAlerts =
+    cash.alertAccounts.length === 0
+      ? {}
+      : {
+          fromBankAlerts: cash.alertAccounts.map((one) => ({
+            account: alertLabel(one),
+            ...alertLine(one, zone),
+          })),
+        };
   if (!cash.known)
     return {
       known: false as const,
       note: "Kin has no balance of record: no bank statement the owner confirmed gives one, so the cash balance is unknown. The owner can send one in this chat and confirm it on its card.",
       ...notOfRecord,
+      ...fromAlerts,
     };
   const line = (one: CashPosition["accounts"][number]) => ({
     account: one.label,
@@ -309,6 +333,7 @@ export const cashAnswer = (cash: CashPosition) => {
     ...(one.stale ? { stale: `No statement covers the ${one.ageDays} days since ${one.on}.` } : {}),
     ...(one.check === "adds_up" ? {} : { statementCheck: one.check }),
     ...(one.cannotTellApart ? { cannotTellApart: true as const } : {}),
+    ...(one.alert === undefined ? {} : { bankAlert: alertLine(one.alert, zone) }),
     ...(one.newerRead === undefined
       ? {}
       : {
@@ -326,6 +351,7 @@ export const cashAnswer = (cash: CashPosition) => {
     accounts: cash.accounts.filter((one) => one.kind === "account").map(line),
     ...(cards.length === 0 ? {} : { cardsOwed: cards.map(line) }),
     ...notOfRecord,
+    ...fromAlerts,
     byCurrency: cash.byCurrency.map((one) => {
       const estimate = cashEstimate(one);
       return {

@@ -124,6 +124,7 @@ import SentUpDrafts from "./migrations/K200_SentUpDrafts.ts";
 import SearchDocKinds from "./migrations/K201_SearchDocKinds.ts";
 import AndroidPushDevices from "./migrations/K202_AndroidPushDevices.ts";
 import Watches from "./migrations/K203_Watches.ts";
+import BankAlerts from "./migrations/K204_BankAlerts.ts";
 import HostTroubles from "./migrations/K205_HostTroubles.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -329,6 +330,7 @@ const migrations = {
   "201_SearchDocKinds": SearchDocKinds,
   "202_AndroidPushDevices": AndroidPushDevices,
   "203_Watches": Watches,
+  "204_BankAlerts": BankAlerts,
   "205_HostTroubles": HostTroubles,
 };
 const loader = Migrator.fromRecord(migrations);
