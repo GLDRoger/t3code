@@ -468,6 +468,41 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
   }).pipe(Effect.provide(services)),
 );
 
+it.effect("commits a trouble notice with its card, and repairs a legacy bare notice", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    const care = yield* KinHostCare.KinHostCare;
+    const sql = yield* SqlClient.SqlClient;
+    const failure = {
+      orgId,
+      agentId: KinAgentId.make("chief"),
+      cause: "signin" as const,
+      eventIds: [],
+    };
+    yield* sql`CREATE TEMP TRIGGER fail_trouble_card BEFORE INSERT ON kin_widgets
+      BEGIN SELECT RAISE(ABORT, 'invented temporary widget error'); END`;
+    assert.isFalse(yield* care.failed(failure));
+    const afterError = yield* notices;
+    yield* sql`DROP TRIGGER fail_trouble_card`;
+    assert.isTrue(yield* care.failed(failure));
+    assert.deepStrictEqual(afterError, []);
+    assert.lengthOf(yield* notices, 1);
+    assert.lengthOf(yield* cards, 1);
+
+    const [{ widgetId }] = (yield* care.status(orgId)).agents.troubles;
+    yield* sql`UPDATE kin_messages SET widget_id = NULL WHERE org_id = ${orgId}
+      AND message_id = ${widgetId}`;
+    yield* sql`DELETE FROM kin_widgets WHERE org_id = ${orgId} AND widget_id = ${widgetId}`;
+    yield* sql`UPDATE kin_troubles SET told_at = NULL WHERE org_id = ${orgId}
+      AND trouble_id = ${widgetId}`;
+    yield* care.refresh(orgId);
+    assert.lengthOf(yield* notices, 1);
+    assert.lengthOf(yield* cards, 1);
+    assert.isTrue((yield* care.causeFor(orgId, failure.agentId))?.told);
+  }).pipe(Effect.provide(services)),
+);
+
 it.effect("a successful turn releases untouched space failures but not work stopped partway", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(DAY_START);

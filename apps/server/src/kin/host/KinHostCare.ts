@@ -4,6 +4,7 @@ import {
   kinBytesText,
   KIN_HOST_TROUBLE_CARD,
   KinChatError,
+  KinChatId,
   KinEventId,
   KinHostTroubleCard,
   KinMessageId,
@@ -606,50 +607,69 @@ const make = Effect.gen(function* () {
       yield* publish({ type: "widget.updated", orgId, widget });
       return;
     }
-    if (!announce || trouble.closedAt !== null) return;
-    const chatId = yield* noticeChat(orgId);
-    if (chatId === undefined) return;
-    const message = yield* repo.insertMessage({
-      orgId,
-      chatId,
-      audience: "owner",
-      messageId: KinMessageId.make(widgetId),
-      author: { _tag: "system" },
-      kind: "system",
-      body: yield* words(orgId, card),
-      intent: null,
-      mentions: [],
-      replyTo: null,
-      widgetId: null,
-      floorRunId: null,
-      status: "posted",
-      sentBy: null,
-      clientMessageId: null,
-      createdAt: iso(now),
-      editedAt: null,
-    });
-    const widget = {
-      orgId,
-      chatId,
-      messageId: message.messageId,
-      widgetId,
-      widgetClass: "native" as const,
-      type: KIN_HOST_TROUBLE_CARD,
-      state,
-      source: null,
-      feed: null,
-      // Nobody is awaited: the message's own push is the one ring, and redraws ring no one.
-      awaiting: [],
-      pinnedAt: null,
-      closedAt: null,
-      updatedAt: iso(now),
-    };
-    yield* repo.insertWidget({ ...widget, audience: "owner" });
-    yield* sql`UPDATE kin_troubles SET told_at = ${now}
-      WHERE org_id = ${orgId} AND trouble_id = ${troubleId}`;
-    // The insert links the message to the card; clients only attach a card through that link.
-    yield* publish({ type: "message.posted", orgId, message: { ...message, widgetId } });
-    yield* publish({ type: "widget.updated", orgId, widget: { ...widget, revision: 1 } });
+    const messageId = KinMessageId.make(widgetId);
+    const body = announce && trouble.closedAt === null ? yield* words(orgId, card) : undefined;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        if (Option.isSome(yield* repo.getWidget({ orgId, widgetId }))) return;
+        const [bare] = yield* sql<{
+          chatId: KinChatId;
+        }>`SELECT chat_id AS "chatId" FROM kin_messages
+          WHERE org_id = ${orgId} AND message_id = ${messageId} AND kind = 'system'
+            AND author_kind = 'system' AND status = 'posted' AND widget_id IS NULL
+          ORDER BY message_id`;
+        if (bare === undefined && body === undefined) return;
+        const chatId = bare?.chatId ?? (yield* noticeChat(orgId));
+        if (chatId === undefined) return;
+        if (bare === undefined && body !== undefined)
+          yield* repo.insertMessage({
+            orgId,
+            chatId,
+            audience: "owner",
+            messageId,
+            author: { _tag: "system" },
+            kind: "system",
+            body,
+            intent: null,
+            mentions: [],
+            replyTo: null,
+            widgetId: null,
+            floorRunId: null,
+            status: "posted",
+            sentBy: null,
+            clientMessageId: null,
+            createdAt: iso(now),
+            editedAt: null,
+          });
+        const widget = {
+          orgId,
+          chatId,
+          messageId,
+          widgetId,
+          widgetClass: "native" as const,
+          type: KIN_HOST_TROUBLE_CARD,
+          state,
+          source: null,
+          feed: null,
+          // Nobody is awaited: the message's own push is the one ring, and redraws ring no one.
+          awaiting: [],
+          pinnedAt: null,
+          closedAt: card.closed?.at ?? null,
+          updatedAt: iso(now),
+        };
+        yield* repo.insertWidget({ ...widget, audience: "owner" });
+        yield* sql`UPDATE kin_troubles SET told_at = COALESCE(told_at, ${now})
+          WHERE org_id = ${orgId} AND trouble_id = ${troubleId}`;
+        const linked = yield* repo.getMessage({ orgId, chatId, messageId });
+        if (Option.isSome(linked))
+          yield* publish({
+            type: bare === undefined ? "message.posted" : "message.changed",
+            orgId,
+            message: linked.value,
+          });
+        yield* publish({ type: "widget.updated", orgId, widget: { ...widget, revision: 1 } });
+      }),
+    );
   });
   /** A notice that can't be drawn never undoes the trouble it shows. */
   const projectQuietly = (orgId: KinOrgId, troubleId: string, announce: boolean) =>
@@ -902,7 +922,10 @@ const make = Effect.gen(function* () {
         FROM kin_troubles t LEFT JOIN kin_widgets w
           ON w.org_id = t.org_id AND w.widget_id = t.trouble_id
         WHERE t.org_id = ${orgId} AND ((${options?.closedOnly ? 0 : 1} AND t.closed_at IS NULL)
-          OR (t.closed_at IS NOT NULL AND w.widget_id IS NOT NULL AND w.closed_at IS NULL))
+          OR (t.closed_at IS NOT NULL AND w.widget_id IS NOT NULL AND w.closed_at IS NULL)
+          OR (w.widget_id IS NULL AND EXISTS (SELECT 1 FROM kin_messages m
+            WHERE m.org_id = t.org_id AND m.message_id = t.trouble_id AND m.widget_id IS NULL
+              AND m.kind = 'system' AND m.author_kind = 'system' AND m.status = 'posted')))
         ORDER BY t.trouble_id`;
       for (const { troubleId } of redraw) yield* projectQuietly(orgId, troubleId, false);
     },
