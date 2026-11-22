@@ -4,8 +4,6 @@ import { assert, expect, it } from "@effect/vitest";
 import { KinAgentId, KinWakeupId, KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
-import * as Deferred from "effect/Deferred";
-import * as Fiber from "effect/Fiber";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as SqlClient from "effect/sql/SqlClient";
