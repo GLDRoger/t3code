@@ -27,7 +27,14 @@ import { MINUTE_MS } from "../durations.ts";
 import { awayBackOn, heldUntil, holdFor, holdLine } from "../triggers/quietHold.ts";
 import { textLocale, type TextClock } from "./companyProfile.ts";
 import { parseFields } from "./lists.ts";
-import { byId, dueWhenText, isClosed, ownerZone, type RecordRow } from "./recordRows.ts";
+import {
+  byId,
+  dueWhenText,
+  isClosed,
+  isSuggestion,
+  ownerZone,
+  type RecordRow,
+} from "./recordRows.ts";
 
 /**
  * What a turn did to one person's task: gave it to them, took it from them, or gave it back; or
@@ -102,8 +109,12 @@ export const movedNotices = (
 ): Array<AssignNotice> => {
   if (after.registerId === "projects") return projectNotices(before, after);
   if (after.registerId !== "work") return [];
+  // A suggestion is nobody's until a person keeps it: its holder hears of it then, once.
+  if (isSuggestion(after)) return [];
+  const kept = before !== undefined && isSuggestion(before);
   if (
     before !== undefined &&
+    !kept &&
     before.ownerKind === after.ownerKind &&
     before.ownerId === after.ownerId
   )
@@ -113,7 +124,7 @@ export const movedNotices = (
     ...(after.ownerKind === "person"
       ? [{ personId: KinPersonId.make(after.ownerId), kind: "given" as const, row: after, why }]
       : []),
-    ...(before?.ownerKind === "person"
+    ...(before?.ownerKind === "person" && !kept && before.ownerId !== after.ownerId
       ? [
           {
             personId: KinPersonId.make(before.ownerId),

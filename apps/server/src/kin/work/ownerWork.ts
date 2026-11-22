@@ -1342,13 +1342,18 @@ export const confirm = Effect.fn("KinWork.confirm")(function* (
   input: KinWorkConfirmInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
-  return yield* change(
+  const records = yield* KinRecords;
+  // Read only to word the notices once the write is through; it decides nothing.
+  const before = yield* records.get(input.orgId, input.key);
+  const shown = yield* change(
     { person, teammate: false },
     input.orgId,
     input.key,
     { confirmed: true },
     input.rev,
   );
+  yield* tellMoved(person, before, yield* records.get(input.orgId, input.key));
+  return shown;
 });
 
 /** Declines a lead's suggestion by dropping it; an entry the owner already kept is refused. */

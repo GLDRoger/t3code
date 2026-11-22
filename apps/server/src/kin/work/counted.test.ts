@@ -43,6 +43,9 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "work/leadWork.ts": 2,
   // A statement's own rows, and the entries and recorded payments one row may match.
   "work/statements/bankList.ts": 1,
+  // The entries one bank alert may already be, and a statement's alert entries listed one by
+  // one against its rows: amounts matched and named, nothing summed.
+  "work/statements/bankAlerts.ts": 2,
   "work/statements/statementReview.ts": 4,
   // One invoice's own amount and payments: whether it is paid in full, so its watch closes.
   "watches/kinds/invoicePaid.ts": 1,

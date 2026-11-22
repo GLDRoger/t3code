@@ -7,15 +7,15 @@
   },
   "kinSharedInstructionsHash": "0c953504a4a0f8e62d409a34fc9deb07995ec771e10828ca11f0f40beed78661",
   "kinLeadToolListJsonBytes": {
-    "engineering": 143697,
-    "finance": 123281,
-    "social": 126354,
-    "support": 123281,
-    "engineeringBesideFinanceAndSales": 130534,
-    "socialBesideFinanceAndSales": 113191,
-    "shared": 76393
+    "engineering": 144930,
+    "finance": 124514,
+    "social": 127587,
+    "support": 124514,
+    "engineeringBesideFinanceAndSales": 131767,
+    "socialBesideFinanceAndSales": 114424,
+    "shared": 77512
   },
-  "kinLeadAlwaysLoadedToolBytes": 67201,
+  "kinLeadAlwaysLoadedToolBytes": 68355,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -47,7 +47,7 @@
     },
     "doc_create": {
       "desc": 1494,
-      "schema": 2093
+      "schema": 2172
     },
     "doc_edit": {
       "desc": 1017,
@@ -63,7 +63,7 @@
     },
     "doc_move": {
       "desc": 356,
-      "schema": 1110
+      "schema": 1189
     },
     "doc_read": {
       "desc": 428,
@@ -110,7 +110,7 @@
       "schema": 237
     },
     "kin_connection_call": {
-      "desc": 627,
+      "desc": 741,
       "schema": 226
     },
     "kin_connection_note": {
@@ -150,7 +150,7 @@
       "schema": 114
     },
     "kin_hand_off": {
-      "desc": 1651,
+      "desc": 1851,
       "schema": 328
     },
     "kin_issue": {
@@ -263,15 +263,15 @@
     },
     "record_assign": {
       "desc": 710,
-      "schema": 964
+      "schema": 1043
     },
     "record_comment": {
       "desc": 258,
       "schema": 239
     },
     "record_create": {
-      "desc": 4444,
-      "schema": 7542
+      "desc": 4553,
+      "schema": 7621
     },
     "record_get": {
       "desc": 1143,
@@ -286,12 +286,12 @@
       "schema": 174
     },
     "record_update": {
-      "desc": 1833,
-      "schema": 7211
+      "desc": 1966,
+      "schema": 7491
     },
     "records_query": {
       "desc": 1324,
-      "schema": 2000
+      "schema": 2079
     },
     "social_draft": {
       "desc": 430,

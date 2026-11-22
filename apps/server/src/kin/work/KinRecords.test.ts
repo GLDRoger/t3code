@@ -349,6 +349,120 @@ it.effect('"me" is the one person who asked in the turn, and "you" is the lead i
   }).pipe(Effect.provide(layer)),
 );
 
+/** A running turn of `lead` woken by `personId`'s message in their own direct chat with it. */
+const ownChatTurn = Effect.fn("KinRecordsTest.ownChatTurn")(function* (
+  personId: KinPersonId,
+  audience: "owner_only" | "shared",
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const chat = `${personId}-lead-chat`;
+  yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+    VALUES (${chat}, ${orgId}, 'direct', ${`${personId}:${lead}`}, 1, ${at})`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+    VALUES (${`${chat}-person`}, ${orgId}, ${chat}, 'person', ${personId}, 'member', ${at})`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+    VALUES (${`${chat}-lead`}, ${orgId}, ${chat}, 'agent', ${lead}, 'member', ${at})`;
+  yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+      author_member_id, author_role, kind, body, mentions_json, status, created_at)
+    VALUES (${`ask-${personId}`}, ${orgId}, ${chat}, 1, 'human', ${personId}, ${`${chat}-person`},
+      'member', 'text', 'Mail the invented client our product list', '[]', 'posted', ${at})`;
+  yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+  yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status,
+      event_ids, audience)
+    VALUES (${`wake-${personId}`}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '[]',
+      ${audience})`;
+  const eventId = `event-${personId}`;
+  const event = {
+    _tag: "chat.message",
+    orgId,
+    agentId: lead,
+    eventId,
+    receivedAt: at,
+    dedupeKey: null,
+    provenance: { _tag: "human", personId, memberId: `${chat}-person` },
+    chatId: chat,
+    messageId: `ask-${personId}`,
+  };
+  yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+      queued_at, state, wakeup_id)
+    VALUES (${eventId}, ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0,
+      'claimed', ${`wake-${personId}`})`;
+  return eventId;
+});
+
+it.effect(
+  "a task put on the owner in someone else's chat is the asker's unless a reason says it is his",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const made = (sourceEventId: string, round: string) =>
+        Effect.gen(function* () {
+          yield* LeadWork.create(scopeOf(lead), {
+            sourceEventId,
+            records: [
+              { title: `Invented: mail the client the list ${round}`, owner: "owner" },
+              {
+                title: `Invented: send the list ${round}`,
+                owner: "Owner (owner)",
+                reason: "only the owner can send this",
+              },
+              { title: `Invented: wait on the reply ${round}`, state: "waiting" },
+            ],
+          });
+          return yield* sql<{ owner: string; waits: string | null; reason: string | null }>`
+            SELECT owner_id AS owner, waiting_on_id AS waits,
+              json_extract(fields_json, '$.reason') AS reason
+            FROM kin_records WHERE org_id = ${orgId} AND title LIKE ${`% ${round}`}
+            ORDER BY created_at, key`;
+        });
+      yield* seed;
+      yield* turn();
+      // The owner asked: what he named stands, and nobody named is waited on.
+      assert.deepStrictEqual(yield* made("ask-event", "owner"), [
+        { owner: ownerId, waits: null, reason: null },
+        { owner: ownerId, waits: null, reason: "only the owner can send this" },
+        { owner: lead, waits: null, reason: null },
+      ]);
+      // A co-owner in her own chat, and a teammate in theirs: it is theirs, said so when his.
+      const coId = KinPersonId.make("co");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+        VALUES (${coId}, ${orgId}, 'co', 'Co', 'co_owner', ${at})`;
+      for (const [asker, audience] of [
+        [coId, "owner_only"],
+        [mateId, "shared"],
+      ] as const) {
+        const sourceEventId = yield* ownChatTurn(asker, audience);
+        assert.deepStrictEqual(
+          yield* made(sourceEventId, asker),
+          [
+            { owner: asker, waits: null, reason: null },
+            { owner: ownerId, waits: null, reason: "Needs Owner: only the owner can send this" },
+            { owner: lead, waits: asker, reason: null },
+          ],
+          asker,
+        );
+        // Given back "to the owner" the same way, it comes back to the asker.
+        const [own] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE org_id = ${orgId} AND title = ${`Invented: wait on the reply ${asker}`}`;
+        const moved = yield* LeadWork.update(scopeOf(lead), {
+          key: own!.key,
+          sourceEventId,
+          state: "waiting",
+          waitingOn: "owner",
+          owner: "owner",
+        });
+        assert.isString(moved.routed);
+        assert.deepInclude(
+          yield* KinRecords.KinRecords.pipe(Effect.flatMap((r) => r.get(orgId, own!.key))),
+          {
+            ownerId: asker,
+            waitingOnId: asker,
+          },
+        );
+      }
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("record_update changes only named fields, logs each change, and both of two land", () =>
   Effect.gen(function* () {
     yield* seed;
@@ -1735,9 +1849,242 @@ it.effect(
         yield* OwnerWork.decline([owner], { orgId, key: declined.key, rev: declined.rev }),
         { rev: 2 },
       );
-      // The lead held it open, so it is told once.
-      assert.deepStrictEqual(yield* wakes, [[lead, "withdrawn", declined.key, ownerId]]);
+      // Kept, its own suggestion starts once; one never kept was never its work, so declining
+      // it wakes nobody.
+      const keptWake = [lead, "assigned", kept.key, ownerId];
+      assert.deepStrictEqual(yield* wakes, [keptWake]);
+      // Suggested for another agent, it wakes nobody until kept; kept, it is given once.
+      const forOther = (id: string) =>
+        records.create(
+          orgId,
+          { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: ownerId },
+          {
+            originKey: id,
+            title: `Invented: ${id}`,
+            owner: { _tag: "agent", agentId: other },
+            confirmed: false,
+          },
+        );
+      const build = (yield* forOther("build")).row;
+      const dismissed = (yield* forOther("dismissed")).row;
+      assert.deepStrictEqual(yield* wakes, [keptWake]);
+      yield* OwnerWork.decline([owner], { orgId, key: dismissed.key, rev: dismissed.rev });
+      assert.deepStrictEqual(yield* wakes, [keptWake]);
+      yield* OwnerWork.confirm([owner], { orgId, key: build.key, rev: build.rev });
+      yield* OwnerWork.confirm([owner], { orgId, key: build.key, rev: build.rev });
+      const buildWake = [other, "assigned", build.key, ownerId];
+      assert.deepStrictEqual(yield* wakes, [keptWake, buildWake]);
+      // Already started (a hand-off did it): keeping it later starts nothing a second time.
+      const started = (yield* forOther("started")).row;
+      const moved = yield* records.update(
+        orgId,
+        { actor: { _tag: "agent", agentId: other }, via: "lead" },
+        started.key,
+        { state: "doing" },
+      );
+      yield* OwnerWork.confirm([owner], { orgId, key: started.key, rev: moved.rev });
+      assert.deepStrictEqual(yield* wakes, [keptWake, buildWake]);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a task made on the owner's own comment is kept and given at once; through a coding agent it is a suggestion",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const held = (yield* records.create(orgId, ownerWrites, {
+        originKey: "reimburse",
+        title: "Invented: tally partner reimbursements",
+        owner: toLead,
+      })).row;
+      // His comment on it, by his own hand or through his coding agent, wakes its holder.
+      const commentTurn = (seq: number, codingAgentKey: string | null) =>
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq,
+              author_kind, author_id, body, request_hash, created_at, coding_agent_key)
+            VALUES (${orgId}, ${`c-${seq}`}, ${held.recordId}, ${seq}, 'person', ${ownerId},
+              'Get the other lead to build it if it is not possible today', ${`h-${seq}`}, 0,
+              ${codingAgentKey})`;
+          yield* records.commented(orgId, ownerId, held, seq, "Build it");
+          const wakeupId = `wake-${seq}`;
+          yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+          yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+              started_at, status, event_ids, audience)
+            VALUES (${wakeupId}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '[]',
+              'owner_only')`;
+          yield* sql`UPDATE kin_events SET wakeup_id = ${wakeupId}, state = 'claimed'
+            WHERE wakeup_id IS NULL AND agent_id = ${lead}
+              AND json_extract(json, '$.reason') = 'commented'`;
+          const [event] = yield* sql<{ id: string }>`SELECT event_id AS id FROM kin_events
+            WHERE wakeup_id = ${wakeupId} ORDER BY event_id`;
+          return LeadWork.create(scopeOf(lead), {
+            sourceEventId: event!.id,
+            records: [{ title: `Invented: build the reimbursement tag ${seq}`, owner: other }],
+          });
+        });
+      const own = yield* yield* commentTurn(1, null);
+      assert.notProperty(own.records[0], "suggested");
+      assert.include(yield* leadInOf("wake-1"), IN_PERSON);
+      const viaKey = yield* yield* commentTurn(2, "invented-key");
+      assert.include(viaKey.records[0], { suggested: true });
+      assert.notInclude(yield* leadInOf("wake-2"), IN_PERSON);
+      // Only the kept one starts the other lead, once.
+      assert.deepStrictEqual(
+        (yield* wakes).filter((wake) => wake[0] === other),
+        [[other, "assigned", own.records[0]!.key, ownerId]],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a co-owner's own task from her own chat is her ask in person, as her message is; his words passed on are not",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const coId = KinPersonId.make("co");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+        VALUES (${coId}, ${orgId}, 'co', 'Co', 'co_owner', ${at})`;
+      type Words =
+        | "hers"
+        | "the owner's"
+        | "edited after"
+        | "given later"
+        | "a card's"
+        | "imported";
+      const madeBy = (personId: KinPersonId, words: Words) =>
+        Effect.gen(function* () {
+          // Her own direct chat with the lead, where its turn on her task runs.
+          const chat = `${personId}-lead-chat`;
+          yield* sql`DELETE FROM kin_chat_members WHERE chat_id = ${chat}`;
+          yield* sql`DELETE FROM kin_chats WHERE chat_id = ${chat}`;
+          yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+            VALUES (${chat}, ${orgId}, 'direct', ${`${personId}:${lead}`}, 0, ${at})`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              person_id, role, joined_at)
+            VALUES (${`${chat}-person`}, ${orgId}, ${chat}, 'person', ${personId}, 'member', ${at})`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              agent_id, role, joined_at)
+            VALUES (${`${chat}-lead`}, ${orgId}, ${chat}, 'agent', ${lead}, 'member', ${at})`;
+          const hers = { actor: { _tag: "person" as const, personId }, via: "owner" as const };
+          const title = `Invented: get the brochure built ${words}`;
+          if (words === "given later" || words === "a card's" || words === "imported") {
+            // Hers to hold first: typed in Tasks, made by her Yes on an agent's card, or imported.
+            const made = yield* records.create(
+              orgId,
+              words === "imported" ? { ...hers, via: "import" } : hers,
+              {
+                originKey:
+                  words === "a card's"
+                    ? `chosen:${title}`
+                    : words === "imported"
+                      ? `import:entry:${title}`
+                      : `owner:${title}`,
+                title,
+                owner: { _tag: "person", personId },
+              },
+            );
+            yield* records.update(orgId, { ...hers, askedBy: personId }, made.row.key, {
+              owner: toLead,
+            });
+          } else if (words !== "the owner's") {
+            const made = yield* records.create(
+              orgId,
+              { ...hers, askedBy: personId },
+              { originKey: `owner:${title}`, title, owner: toLead },
+            );
+            // The project's lead rewrites the brief after she gave it, before its turn reads it.
+            if (words === "edited after")
+              yield* records.update(
+                orgId,
+                { actor: { _tag: "person", personId: mateId }, via: "owner" },
+                made.row.key,
+                { notes: "Invented: the lead's own brief" },
+              );
+          } else {
+            // His words, given to her; she passes them on with one tap.
+            const his = yield* ownerTask(title, { owner: { _tag: "person", personId } });
+            yield* records.update(orgId, { ...hers, askedBy: personId }, his.key, {
+              owner: toLead,
+            });
+          }
+          const wakeupId = `given-${words}`;
+          yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+          yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+              started_at, status, event_ids, audience)
+            VALUES (${wakeupId}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '[]',
+              'owner_only')`;
+          yield* sql`UPDATE kin_events SET wakeup_id = ${wakeupId}, state = 'claimed'
+            WHERE wakeup_id IS NULL AND agent_id = ${lead}`;
+          const [event] = yield* sql<{ id: string }>`SELECT event_id AS id FROM kin_events
+            WHERE wakeup_id = ${wakeupId} ORDER BY event_id`;
+          assert.isDefined(event, personId);
+          // The lead-in says what the server grants this turn, from the same check.
+          const said = yield* leadInOf(wakeupId);
+          assert.strictEqual(
+            said?.includes(IN_PERSON),
+            words === "hers" || words === "given later",
+          );
+          return yield* LeadWork.create(scopeOf(lead), {
+            sourceEventId: event!.id,
+            records: [{ title: `Invented: design the brochure ${words}`, owner: other }],
+          });
+        });
+      assert.notProperty((yield* madeBy(coId, "hers")).records[0], "suggested");
+      assert.include((yield* madeBy(coId, "the owner's")).records[0], { suggested: true });
+      assert.include((yield* madeBy(coId, "edited after")).records[0], { suggested: true });
+      assert.notProperty((yield* madeBy(coId, "given later")).records[0], "suggested");
+      assert.include((yield* madeBy(coId, "a card's")).records[0], { suggested: true });
+      assert.include((yield* madeBy(coId, "imported")).records[0], { suggested: true });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("closing a task with work left files that work as a linked follow-up, once", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
+    const client = (yield* records.create(orgId, ownerWrites, {
+      list: "clients",
+      originKey: "client",
+      title: "Invented Foundry",
+      owner: { _tag: "person", personId: ownerId },
+    })).row;
+    const task = (yield* records.create(orgId, ownerWrites, {
+      originKey: "invoices",
+      title: "Invented: link the old invoices",
+      owner: toLead,
+      partyId: client.recordId,
+    })).row;
+    const asLead = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
+    const closed = yield* records.update(orgId, asLead, task.key, {
+      state: "done",
+      leftover: "Link the two December invoices by hand",
+    });
+    assert.strictEqual(closed.state, "done");
+    const follow = () =>
+      sql<{ key: string; owner: string; party: string | null; state: string; link: string }>`
+        SELECT r.key, r.owner_id AS owner, r.party_id AS party, r.state, l.target AS link
+        FROM kin_records r JOIN kin_record_links l ON l.org_id = r.org_id AND l.record_id = r.record_id
+        WHERE r.org_id = ${orgId} AND r.title = 'Link the two December invoices by hand'
+        ORDER BY r.key`;
+    const [made] = yield* follow();
+    assert.deepInclude(made, {
+      owner: lead,
+      party: client.recordId,
+      state: "open",
+      link: task.recordId,
+    });
+    // Closed again after a reopen with nothing left, or retried: no second follow-up.
+    yield* records.update(orgId, asLead, task.key, {
+      state: "done",
+      leftover: "Link the two December invoices by hand",
+    });
+    assert.lengthOf(yield* follow(), 1);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect(
@@ -2931,6 +3278,16 @@ it.effect("a task a teammate holds and gives an agent wakes it in their chat, at
 );
 
 const decodeEvent = Schema.decodeUnknownSync(KinEvent);
+/** The lead-in a wake-up's first task event gets in a turn the owner side alone reads. */
+const leadInOf = Effect.fn("KinRecordsTest.leadInOf")(function* (wakeupId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ json: string }>`SELECT json FROM kin_events
+    WHERE wakeup_id = ${wakeupId} ORDER BY event_id LIMIT 1`;
+  const event = decodeEvent(JSON.parse(row!.json));
+  if (event._tag !== "record.changed") return undefined;
+  return yield* workEventText({ orgId, event, ownerOnly: true, wakeupId });
+});
+const IN_PERSON = "as if they had asked you in their direct chat";
 /** The latest wake-up that gave a lead an entry, as stored. */
 const lastGiven = assignedEvents.pipe(
   Effect.map((rows) =>

@@ -1096,6 +1096,7 @@ const withdraw = Effect.fn("KinQuestions.withdraw")(function* (
   closedAt: number,
   chat: Pick<KinChatService["Service"], "closeReplaced"> &
     Partial<Pick<KinChatService["Service"], "notice">>,
+  title = "Closed",
 ) {
   const sql = yield* SqlClient.SqlClient;
   for (const row of rows) {
@@ -1107,7 +1108,7 @@ const withdraw = Effect.fn("KinQuestions.withdraw")(function* (
       yield* chat.closeReplaced({
         orgId,
         widgetId: KinWidgetId.make(widgetId),
-        outcome: { title: "Closed", text: reason(row) },
+        outcome: { title, text: reason(row) },
       });
     // The chat it was asked for hears once that no answer is coming.
     if (row.forChatId !== null && chat.notice !== undefined)
@@ -1180,6 +1181,8 @@ export const closeQuestionsAbout = Effect.fn("KinQuestions.closeAbout")(function
     readonly sparing: ReadonlyArray<string>;
     readonly text: string;
     readonly closedAt: number;
+    /** The card's outcome title: a task's says it closed with its task. */
+    readonly title?: string;
   },
   chat: Pick<KinChatService["Service"], "closeReplaced"> &
     Partial<Pick<KinChatService["Service"], "notice">>,
@@ -1195,7 +1198,7 @@ export const closeQuestionsAbout = Effect.fn("KinQuestions.closeAbout")(function
     ORDER BY q.asked_at, q.question_id`)
     .map(toRow)
     .filter((row) => !input.sparing.some((id) => id === row.widgetId || id === row.raiseWidgetId));
-  yield* withdraw(input.orgId, rows, () => input.text, input.closedAt, chat);
+  yield* withdraw(input.orgId, rows, () => input.text, input.closedAt, chat, input.title);
   return rows.length;
 });
 
@@ -1883,7 +1886,7 @@ export const openQuestionsSection = Effect.fn("KinQuestions.section")(function* 
   return {
     heading: `# Open questions to ${who} (already asked; don't ask or repeat them)`,
     body: [
-      "Like a fact already told, each is with them once: never put one to them again, on a card or in words; at most say it is open and what happens at its day. When they answer one of yours in words in its chat, kin_ask_close it as answered; withdraw yours when it no longer stands. Another agent's is that agent's to close.",
+      "Like a fact already told, each is with them once: never put one to them again, on a card or in words; at most say it is open and what happens at its day. When they answer one of yours in words in its chat, kin_ask_close it as answered; withdraw yours when it no longer stands. Another agent's is that agent's to close. A task one of yours is about waits on its answer: never set it done.",
       ...(forWhom.size === 0
         ? []
         : [
