@@ -26,6 +26,7 @@ import {
   iso,
   issuedNumber,
   keySensitive,
+  keyWithheld,
   notFound,
   type RecordRow,
   samePrincipal,
@@ -171,11 +172,13 @@ export const crmSees = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
 
 /** `crmSees` for every one of a viewer's people; the owner level reads everything. */
 export const crmSeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
-  viewer._tag === "ownerLevel"
-    ? sql`1 = 1`
-    : viewer.people.length === 0
-      ? sql`0 = 1`
-      : sql`(${sql.and(viewer.people.map((person) => crmSees(sql, person)))})`;
+  sql`(${
+    viewer._tag === "ownerLevel"
+      ? sql`1 = 1`
+      : viewer.people.length === 0
+        ? sql`0 = 1`
+        : sql.and(viewer.people.map((person) => crmSees(sql, person)))
+  } AND ${keyedAs(sql, viewer)})`;
 
 /** `crmSees` over another alias of `kin_records`, such as the directory's `c`. */
 export const crmSeesAs = (sql: SqlClient.SqlClient, personId: KinPersonId, alias: string) =>
@@ -307,17 +310,31 @@ export const viewSees = (sql: SqlClient.SqlClient, people: ReadonlyArray<KinPers
  * `people` reads what every one of them sees, `ownerLevel` everything.
  */
 export type KinViewer =
-  | { readonly _tag: "ownerLevel" }
-  | { readonly _tag: "people"; readonly people: ReadonlyArray<KinPersonId> };
+  | { readonly _tag: "ownerLevel"; readonly keyed?: true }
+  | { readonly _tag: "people"; readonly people: ReadonlyArray<KinPersonId>; readonly keyed?: true };
 /** The unscoped read: the owner, a co-owner, or Kin's own work for them. */
 export const KIN_OWNER_LEVEL: KinViewer = { _tag: "ownerLevel" };
 export const viewerOfPeople = (people: ReadonlyArray<KinPersonId>): KinViewer => ({
   _tag: "people",
   people,
 });
+/**
+ * The same viewer read through a coding agent's key: every read scoped by it also leaves out what
+ * a key never carries (`keyWithheld`), before any match, sort, count or limit.
+ */
+export const keyedViewer = (viewer: KinViewer): KinViewer => ({ ...viewer, keyed: true });
+/** With a keyed viewer, `alias` (default `r`) is nothing a key never carries; else always true. */
+export const keyedAs = (sql: SqlClient.SqlClient, viewer: KinViewer, alias = "r") =>
+  viewer.keyed !== true
+    ? sql`1 = 1`
+    : alias === "r"
+      ? sql`NOT ${keyWithheld(sql)}`
+      : // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- the same row as `alias`, only narrowed further
+        sql`NOT EXISTS (SELECT 1 FROM kin_records r WHERE r.org_id = ${sql(alias)}.org_id
+          AND r.record_id = ${sql(alias)}.record_id AND ${keyWithheld(sql)})`;
 /** Entries `r` this viewer sees. */
 export const seenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
-  viewer._tag === "ownerLevel" ? sql`1 = 1` : viewSees(sql, viewer.people);
+  sql`(${viewer._tag === "ownerLevel" ? sql`1 = 1` : viewSees(sql, viewer.people)} AND ${keyedAs(sql, viewer)})`;
 
 /** Whether every one of these people may see this entry now. */
 export const viewVisible = Effect.fn("KinTeamView.viewVisible")(function* (

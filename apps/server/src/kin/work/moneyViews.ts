@@ -373,7 +373,8 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const owing = yield* owedInvoices({
     orgId,
     now,
-    ...(viewer._tag === "ownerLevel" ? {} : { seen }),
+    // A key's owner-level read is scoped too (`keyedViewer`): it leaves out what a key never carries.
+    ...(viewer._tag === "ownerLevel" && viewer.keyed !== true ? {} : { seen }),
   });
   const clients = new Map<string | null, typeof owing>();
   for (const invoice of owing)

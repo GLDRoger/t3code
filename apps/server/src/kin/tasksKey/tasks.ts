@@ -17,7 +17,7 @@ export type TaskState = Extract<KinRecordState, "open" | "doing" | "done">;
 const LIST_CAP = 100;
 
 /** The key's person, as their own screens' Work methods take them, with the key's connection. */
-const asPerson = (holder: TasksKeyHolder) => {
+export const asPerson = (holder: TasksKeyHolder) => {
   const connection: CodingAgentConnection = connectionOf(holder);
   const people: ReadonlyArray<PersonIdentity> = [
     { _tag: "person", orgId: holder.orgId, personId: holder.personId },

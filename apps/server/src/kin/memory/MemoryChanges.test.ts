@@ -283,6 +283,14 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
     assert.deepStrictEqual(yield* found([owner], "invented terms"), ["terms"]);
     assert.deepStrictEqual(yield* found([owner], "invented summary"), ["legacy"]);
     assert.deepStrictEqual(yield* found([owner], "invented gone"), []);
+    // For anyone but the owner: only what the team may know, kept before the limit, and who said it.
+    const teamFound = (text: string, limit: number) =>
+      memory.search([owner], { orgId, text, limit, teamOnly: true });
+    assert.deepStrictEqual(yield* teamFound("invented terms", 5), []);
+    assert.deepStrictEqual(
+      (yield* teamFound("invented", 1)).map((hit) => [hit.itemId, hit.saidBy]),
+      [["said", "fixture"]],
+    );
     assert.include(yield* memory.setVisibility(member, flip).pipe(Effect.flip), {
       reason: "not_allowed",
     });

@@ -298,6 +298,13 @@ export class Memory extends Context.Service<
       orgId: KinOrgId,
       view?: MemoryView,
     ) => Effect.Effect<ReadonlyArray<MemoryCache.MemoryItem>, MemoryFailure>;
+    /**
+     * The default branch's items as last loaded, or none before the first load: no lock, git,
+     * trigger sync or repair, so a caller holding a database transaction may read it.
+     */
+    readonly snapshotItems: (
+      orgId: KinOrgId,
+    ) => Effect.Effect<ReadonlyArray<MemoryCache.MemoryItem> | undefined>;
     readonly query: (
       orgId: KinOrgId,
       query: MemoryQuery,
@@ -2127,6 +2134,9 @@ const make = Effect.gen(function* () {
     readRules: Effect.fn("Memory.readRules")((orgId) => locked(orgId, readFile(orgId, "rules.md"))),
     items: Effect.fn("Memory.items")((orgId, view) =>
       locked(orgId, load(orgId, false, view).pipe(Effect.map((snapshot) => snapshot.items))),
+    ),
+    snapshotItems: Effect.fn("Memory.snapshotItems")((orgId) =>
+      Effect.sync(() => snapshots.get(snapshotKey(orgId, mainBranch))?.items),
     ),
     query: Effect.fn("Memory.queryLocked")((orgId, q, view) =>
       locked(orgId, query(orgId, q, view)),

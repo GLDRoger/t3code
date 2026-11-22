@@ -7,7 +7,9 @@ import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -703,6 +705,63 @@ it.effect.each([
       ),
     ),
   ),
+);
+
+it.effect("a snapshot read takes no lock and makes no git call, trigger sync or repair", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const repository = fakeRepository(fs);
+    repository.files.set("deferrals/def-001.md", fixtureItem({}));
+    yield* fs.makeDirectory(`${root}/a/memory-read/deferrals`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/a/memory/.git/objects`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/a/memory/.git/refs`, { recursive: true });
+    const synced: Array<string> = [];
+    const holding = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let hold = false;
+    const hooks = Layer.succeed(Memory.MemorySyncHooks, {
+      // A load syncs triggers under the memory lock; while `hold`, it waits there.
+      syncItems: (orgId) =>
+        Effect.gen(function* () {
+          synced.push(orgId);
+          if (!hold) return;
+          yield* Deferred.succeed(holding, undefined);
+          yield* Deferred.await(release);
+        }),
+    });
+    const layer = memoryTestLayer.pipe(
+      Layer.provide(hooks),
+      Layer.provide(configLayer(root, "unused")),
+      Layer.provide(repository.layer),
+      Layer.provide(NodeServices.layer),
+    );
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const sql = yield* SqlClient.SqlClient;
+      const changes = sql<{ n: number }>`SELECT total_changes() AS n`;
+      const untouched = { counts: repository.counts(), writes: yield* changes };
+      // Before any load there is nothing to read, and reading it touched nothing.
+      expect(yield* memory.snapshotItems(orgA)).toBeUndefined();
+      expect(repository.counts()).toEqual(untouched.counts);
+      expect(yield* changes).toEqual(untouched.writes);
+      expect(synced).toEqual([]);
+      yield* memory.anchor(orgA, "main", repository.head());
+      const loaded = yield* memory.items(orgA);
+      const after = { counts: repository.counts(), writes: yield* changes, syncs: synced.length };
+      expect(yield* memory.snapshotItems(orgA)).toEqual(loaded);
+      expect(repository.counts()).toEqual(after.counts);
+      expect(yield* changes).toEqual(after.writes);
+      expect(synced).toHaveLength(after.syncs);
+      // Another load holds the memory lock, stopped in its trigger sync: a snapshot still reads.
+      hold = true;
+      const blocked = yield* Effect.forkChild(memory.items(orgA));
+      yield* Deferred.await(holding);
+      expect(yield* memory.snapshotItems(orgA)).toEqual(loaded);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(blocked);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(Layer.merge(NodeServices.layer, databaseLayer)), Effect.scoped),
 );
 
 it.live("a dev server with no memory repository set makes a seeded local one, once", () =>

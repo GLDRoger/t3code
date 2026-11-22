@@ -1527,17 +1527,34 @@ features:
     tab: settings
     web: [home, sheet:Profile, section:Coding agent keys]
     roles: { owner: web, co_owner: web, lead: web, member: web }
-    tools: [list_my_tasks, get_task, comment_on_task, set_task_state]
+    tools:
+      [
+        list_my_tasks,
+        get_task,
+        comment_on_task,
+        set_task_state,
+        find,
+        open_project,
+        open_client,
+        read_doc,
+        money_summary,
+        search_memory,
+      ]
     note: >-
       A person makes a key for their own coding agent (Claude Code, Codex, Cursor) to read the
-      tasks they hold, comment and set state through `/kin/you/mcp`, and nothing else. The key shows
-      once; the address and the setup lines, with the key left to fill, stay on their own section.
-      At most three live keys, 30 days each. Settings → Profile on the web shows the same section.
+      tasks they hold, comment and set state through `/kin/you/mcp`. It also reads, never writes,
+      the projects, clients, docs, Money and team memory that person's own screens show them,
+      through the same reads, minus anything a person marked private and everything under a
+      private client or project, which stay in Kin for every key.
+      Money and memory are listed only for those whose screens open them. The key shows once; the
+      address and the setup lines, with the key left to fill, stay on their own section. At most
+      three live keys, 30 days each. Settings → Profile on the web shows the same section.
     proof:
       - packages/client-runtime/src/kin/kinTasksKeys.test.ts
       - apps/web/src/kin/KinTasksKeys.browser.test.tsx
       - apps/server/src/kin/tasksKey/TasksKeys.test.ts
       - apps/server/src/kin/tasksKey/mcp.test.ts
+      - apps/server/src/kin/tasksKey/reads.test.ts
 
   - id: teammate-coding-agent-keys
     name: See and remove a teammate's coding agent keys

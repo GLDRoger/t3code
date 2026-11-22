@@ -59,6 +59,7 @@ import {
 } from "./recordRows.ts";
 import {
   KIN_OWNER_LEVEL,
+  keyedViewer,
   crmSeenBy,
   crmVisible,
   inProject,
@@ -163,11 +164,17 @@ const opened = Effect.fn("KinWork.crm.opened")(function* (
   return yield* inList(input.orgId, (yield* found(input.orgId, input)).key, list);
 });
 
+/** Read for a coding agent's key: the viewer leaves out what a key never carries (`keyedViewer`). */
+type ThroughKey = { readonly keyed?: boolean };
+const scoped = (viewer: KinViewer, options: ThroughKey) =>
+  options.keyed === true ? keyedViewer(viewer) : viewer;
+
 export const parties = Effect.fn("KinWork.parties")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPartiesInput,
+  options: ThroughKey = {},
 ) {
-  const viewer = yield* reader(people, input.orgId);
+  const viewer = scoped(yield* reader(people, input.orgId), options);
   const works = yield* switchedOn(input.orgId, viewer);
   const { now, seq } = yield* asOf(input.orgId, viewer);
   // Kinds, who looks after a client, where it came from and tags are Clients' own; a lead
@@ -193,8 +200,9 @@ export const parties = Effect.fn("KinWork.parties")(function* (
 export const projects = Effect.fn("KinWork.projects")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinProjectsInput,
+  options: ThroughKey = {},
 ) {
-  const viewer = yield* reader(people, input.orgId);
+  const viewer = scoped(yield* reader(people, input.orgId), options);
   const { now, seq } = yield* asOf(input.orgId, viewer);
   const party =
     input.party === undefined
@@ -223,8 +231,9 @@ export const projects = Effect.fn("KinWork.projects")(function* (
 export const party = Effect.fn("KinWork.party")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPartyPageInput,
+  options: ThroughKey = {},
 ) {
-  const viewer = yield* reader(people, input.orgId);
+  const viewer = scoped(yield* reader(people, input.orgId), options);
   const row = yield* opened(input, "clients");
   yield* unseen(viewer, row, input);
   const { now, seq } = yield* asOf(input.orgId, viewer);
@@ -318,9 +327,13 @@ const memberPage = Effect.fn("KinWork.crm.memberPage")(function* (
 export const project = Effect.fn("KinWork.project")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinProjectPageInput,
+  options: ThroughKey = {},
 ) {
   const person = yield* viewerOf(people, input.orgId);
-  const viewer = person.teammate ? viewerOfPeople([person.person.personId]) : KIN_OWNER_LEVEL;
+  const viewer = scoped(
+    person.teammate ? viewerOfPeople([person.person.personId]) : KIN_OWNER_LEVEL,
+    options,
+  );
   const row = yield* opened(input, "projects");
   // Anyone in it opens it, Clients place or not, and in it sees only what `personSees` shows them.
   if (

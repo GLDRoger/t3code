@@ -67,6 +67,7 @@ import {
   clientMoneySeen,
   KIN_OWNER_LEVEL,
   seenBy,
+  keyedViewer,
   teamSeq,
   linkedFromOf,
   teamVisible,
@@ -289,15 +290,19 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
 });
 
 export const list = Effect.fn("KinDocs.list")(
-  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocsListInput) {
+  function* (
+    people: ReadonlyArray<PersonIdentity>,
+    input: KinDocsListInput,
+    /** A coding agent's key reads it: nothing a key never carries (`keyedViewer`). */
+    options: { readonly keyed?: boolean } = {},
+  ) {
     const team = yield* reader(people, input.orgId);
     const sql = yield* SqlClient.SqlClient;
     const records = yield* KinRecords;
     const offset = yield* offsetOf(input.cursor);
-    const where = yield* listWhere(
-      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
-      input,
-    );
+    const base = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]);
+    const viewer = options.keyed === true ? keyedViewer(base) : base;
+    const where = yield* listWhere(viewer, input);
     const limit = input.limit ?? 50;
     const [count] = yield* sql<{
       total: number;
@@ -312,7 +317,6 @@ export const list = Effect.fn("KinDocs.list")(
     );
     const now = yield* Clock.currentTimeMillis;
     const next = offset + rows.length;
-    const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]);
     const hidden = yield* unseenClients(input.orgId, viewer, rows);
     // Only Deleted's rows say who deleted them and offer Restore; the doc's page offers Delete.
     const marks = input.archived === true ? yield* marksOf(input.orgId, viewer, rows) : undefined;
@@ -333,12 +337,17 @@ export const list = Effect.fn("KinDocs.list")(
 );
 
 export const get = Effect.fn("KinDocs.get")(
-  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocGetInput) {
+  function* (
+    people: ReadonlyArray<PersonIdentity>,
+    input: KinDocGetInput,
+    options: { readonly keyed?: boolean } = {},
+  ) {
     const { personId, team } = yield* readerOf(people, input.orgId);
+    const base = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]);
     return yield* detailOf(
       input.orgId,
       "key" in input ? { key: input.key } : { recordId: input.recordId },
-      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+      options.keyed === true ? keyedViewer(base) : base,
       personId,
       input.version,
     );
