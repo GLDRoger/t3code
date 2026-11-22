@@ -31,7 +31,7 @@ import {
  * computed by the server from integer minor units, one total per currency.
  */
 
-export const KinListFieldType = Schema.Literals([
+export const KinWritableListFieldType = Schema.Literals([
   "text",
   "choice",
   "date",
@@ -39,6 +39,11 @@ export const KinListFieldType = Schema.Literals([
   "link",
   "money",
   "file",
+]);
+export const KinListFieldType = Schema.Literals([
+  ...KinWritableListFieldType.literals,
+  "number",
+  "yesno",
 ]);
 export type KinListFieldType = typeof KinListFieldType.Type;
 export { KinListFieldKey };
@@ -52,7 +57,8 @@ export const KinListField = Schema.Struct({
   /** A choice field's options. */
   choices: Schema.optional(Schema.Array(Label).check(Schema.isMaxLength(30))),
   /** What a link field points at. */
-  link: Schema.optional(Schema.Literals(["clients", "projects"])),
+  link: Schema.optional(Schema.Literals(["clients", "projects", "list"])),
+  linkList: Schema.optional(Schema.String),
   /** Money fields always are. */
   sensitive: Schema.Boolean,
   retired: Schema.optional(Schema.Literal(true)),
@@ -94,6 +100,13 @@ export const KinListDefinition = Schema.Struct({
   /** How a category reads where that differs from how it is stored: `gst` as `GST`. */
   categoryLabels: Schema.optional(Schema.Record(Schema.String, Label)),
   fields: Schema.Array(KinListField),
+  remindOn: Schema.optional(KinListFieldKey),
+  check: Schema.optional(
+    Schema.Struct({
+      field: KinListFieldKey,
+      below: Schema.Union([KinListFieldKey, Schema.Finite]),
+    }),
+  ),
   /** New entries are labelled sensitive. */
   sensitive: Schema.Boolean,
   /** Its entries carry an amount, in `currency` unless they say otherwise. */
@@ -117,6 +130,8 @@ export const KinListsInput = Schema.Struct({
   orgId: KinOrgId,
   /** Also the archived ones. */
   archived: Schema.optional(Schema.Boolean),
+  /** The later field types and features this caller can read. */
+  accept: Schema.optional(Schema.Array(Schema.String)),
 });
 export type KinListsInput = typeof KinListsInput.Type;
 export const KinListsResult = Schema.Struct({ lists: Schema.Array(KinListDefinition) });
