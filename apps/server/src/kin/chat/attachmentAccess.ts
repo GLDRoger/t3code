@@ -161,12 +161,15 @@ export const kinVisualSources = Effect.fn("Kin.visualSources")(function* (attach
           ? Effect.succeed(NO_SOURCES)
           : Effect.all({
               hosts: Context.get(services.value, KinVisualHosts).served(sources.value.orgId),
-              brand: visualBrand(sources.value.orgId).pipe(
-                Effect.provideService(
-                  SqlClient.SqlClient,
-                  Context.get(services.value, SqlClient.SqlClient),
-                ),
-              ),
+              // A brand that can't be read is no brand: the page keeps the theme's look.
+              brand: Option.match(Context.getOption(services.value, SqlClient.SqlClient), {
+                onNone: () => Effect.undefined,
+                onSome: (sql) =>
+                  visualBrand(sources.value.orgId).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                    Effect.catchCause(() => Effect.undefined),
+                  ),
+              }),
             }).pipe(Effect.map((found) => ({ ...found, files: sources.value.files }))),
       ),
       Effect.tapError((cause) =>
