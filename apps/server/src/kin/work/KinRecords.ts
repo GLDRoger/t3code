@@ -48,7 +48,7 @@ import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
 import { approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
 import { codingAgentSource, outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
-import { commentsPage, insertComment, requestHashOf } from "./recordComments.ts";
+import { commentsPage, insertComment, requestHashOf as commentHashOf } from "./recordComments.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
 import {
@@ -2212,7 +2212,7 @@ const make = Effect.gen(function* () {
             (yield* notesByPerson(orgId, row.recordId))
           ) {
             if (patch.notes.trim() !== "") {
-              const requestHash = requestHashOf(patch.notes, []);
+              const requestHash = commentHashOf(patch.notes, []);
               yield* insertComment({
                 orgId,
                 key: row.key,
