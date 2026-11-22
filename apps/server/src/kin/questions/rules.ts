@@ -153,9 +153,12 @@ export const repeats = (
   asked.about.length > 0 &&
   asked.about.some((key) => open.about.includes(key));
 
-/** Words for doing something that leaves the company or moves money: such a default is never taken. */
+/**
+ * Words for doing something that leaves the company or moves money: such a default is never taken.
+ * A word joined to another by a hyphen names a field or a thing ("Paid-by", "send-later"), not an act.
+ */
 const LEAVES =
-  /\b(send|sends|sending|sent|post|posts|posting|publish|publishing|tweet|pay|pays|paying|paid|transfer|refund|wire|charge|submit|reply to (the )?client)\b/i;
+  /(?<![\w-])(send|sends|sending|sent|post|posts|posting|publish|publishing|tweet|pay|pays|paying|paid|transfer|refund|wire|charge|submit|reply to (the )?client)(?![\w-])/i;
 
 /** A number with a percent sign or a currency symbol beside it, in any script. */
 const RATE_OR_SYMBOL = /\p{Nd}\s*[%\u066a\uff05\p{Sc}]|[%\u066a\uff05\p{Sc}]\s*\p{Nd}/u;

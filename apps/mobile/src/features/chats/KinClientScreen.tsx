@@ -47,7 +47,6 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
 import { cn } from "../../lib/cn";
@@ -62,6 +61,7 @@ import {
   KinWorkStaleNotice,
   KinWorkTaskRow,
   KinWorkTimelineLines,
+  KinWorkToggleRow,
 } from "./components/KinWorkPieces";
 import { KinClientDeals } from "./KinDealsList";
 import { KinWorkNamedRow } from "./KinWorkLists";
@@ -83,6 +83,7 @@ import {
 import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { useKinOpenPlace } from "./state/kinHomeTab";
 import { useKinWorkLink } from "./state/kinWorkLink";
+import { KinWatchLine } from "./KinWatchLine";
 
 export type KinClientParams = {
   readonly environmentId: string;
@@ -440,6 +441,7 @@ function KinClientBody(
         <KinWorkProblemNotice problem={problem} onDismiss={() => setProblem(null)} />
       )}
       <KinAsideNote {...target} record={view.key} names={names} />
+      <KinWatchLine {...target} recordKey={view.key} />
       <KinAttentionSection
         {...target}
         scope={{ type: "client", key: view.key }}
@@ -705,7 +707,7 @@ function KinClientBody(
               )}
             </View>
             {can.owner ? (
-              <ListToggleRow
+              <KinWorkToggleRow
                 icon="lock"
                 label={KIN_CLIENTS.privateLabel}
                 description={view.privacy.note}

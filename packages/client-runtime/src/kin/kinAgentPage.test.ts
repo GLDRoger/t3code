@@ -261,6 +261,16 @@ describe("kinAgentChangeLine and kinAgentChangeOffer", () => {
     expect(kinAgentChangeOffer(one)).toEqual(offer);
   });
 
+  it("names a holder as people read names everywhere, never by id", () => {
+    const moved = change({
+      kind: "updated",
+      fields: [{ field: "owner", from: "person:p-gone", to: "agent:a-fin" }],
+    });
+    expect(kinAgentChangeLine(moved, new Map([["a-fin", "Finance"]]))).toBe(
+      "D-3 Invented chase notes: holder a teammate → Finance",
+    );
+  });
+
   it.each([
     ["Pacific/Honolulu", "2026-11-28T09:59:59.999Z", "2026-11-23T09:59:59.999Z"],
     ["Asia/Kolkata", "2026-11-27T18:29:59.999Z", "2026-11-22T18:29:59.999Z"],

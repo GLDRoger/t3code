@@ -17,6 +17,8 @@ export interface ListRowContentProps {
   readonly disabled?: boolean;
   /** Where a trailing `detail` too long for the row is cut; a name reads best cut at its end. */
   readonly detailEllipsizeMode?: "middle" | "tail";
+  /** Said whole after `detail`, which is cut at its end first: "<name>… · Connected". */
+  readonly detailEnd?: string;
   /** Above the default text size, shrinks the label rather than break a word across lines. */
   readonly labelWholeWords?: boolean;
 }
@@ -30,6 +32,7 @@ export function ListRowLayout({
   meta,
   disabled,
   detailEllipsizeMode = "middle",
+  detailEnd,
   labelWholeWords,
   accessory,
   tone = "default",
@@ -78,11 +81,25 @@ export function ListRowLayout({
         {meta}
         {detail && stackDetail ? (
           <AppText textRole="footnote" className="text-foreground-muted">
-            {detail}
+            {detailEnd === undefined ? detail : `${detail}${detailEnd}`}
           </AppText>
         ) : null}
       </View>
-      {detail && !stackDetail ? (
+      {detail && !stackDetail && detailEnd !== undefined ? (
+        <View className="max-w-[40%] shrink flex-row">
+          <AppText
+            textRole="footnote"
+            className="shrink text-right text-foreground-muted"
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
+            {detail}
+          </AppText>
+          <AppText textRole="footnote" className="text-foreground-muted" numberOfLines={1}>
+            {detailEnd}
+          </AppText>
+        </View>
+      ) : detail && !stackDetail ? (
         <AppText
           textRole="footnote"
           className="max-w-[40%] shrink text-right text-foreground-muted"

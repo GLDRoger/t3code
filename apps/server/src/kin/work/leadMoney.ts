@@ -3,6 +3,8 @@ import {
   KinCompanyBank,
   KinCompanyBrand,
   KinCompanyProfileSetInput,
+  type KinDateRow,
+  kinDateRowLate,
   KinDay,
   KinGstin,
   KinListFieldType,
@@ -55,10 +57,18 @@ import {
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
-import { homeCurrency } from "./companyProfile.ts";
+import { homeCurrency, notRegisteredFact } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
 import { parseFields } from "./lists.ts";
-import { dates, moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
+import {
+  dates,
+  datesOnce,
+  invoiceDays,
+  isInvoice,
+  moneySection,
+  moneySummary,
+  ownerLevelStillToInvoice,
+} from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import {
   endOfDay,
@@ -86,6 +96,7 @@ import {
 } from "./registers.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { DAY_MS } from "../durations.ts";
+import { setAsideOverdue } from "../pulse/invoiceAsides.ts";
 
 /** The lead tools for lists and money. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -352,7 +363,7 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
     next:
       card === undefined
         ? "Nothing is created yet. Put these fields to the owner in one short message and ask. Once they say yes, call list_define with this proposal in that later turn."
-        : "Nothing is created yet. Kin showed the owner these fields on a card to tap; ask in one short line without listing them again. Once they tap yes or say yes, call list_define with this proposal in that later turn.",
+        : "Nothing is created yet. Kin has posted the card that asks the owner, with Create it and Not now: add no kin_ask or card of your own. Ask in one short line without listing the fields again. Once they tap yes or say yes, call list_define with this proposal in that later turn.",
   };
 });
 export const define = leadTool("KinWorkTools.define", runDefine);
@@ -490,19 +501,24 @@ export const MoneyResult = Schema.Struct({
   stillToInvoice: Schema.optional(Schema.Unknown),
   nothing: Schema.optional(Schema.Literal(true)),
   bank: Schema.optional(BankAnswer),
+  /** The company said it is not registered for its tax. */
+  taxNote: Schema.optional(Schema.String),
   sensitive: Schema.Literal(true),
 });
 const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
   const now = yield* Clock.currentTimeMillis;
   // In a turn others read: figures of only the money lines they all see, such as their project's.
   const team = yield* viewOf(lead);
-  const summary = yield* moneySummary(
-    lead.orgId,
-    now,
-    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const summary = yield* moneySummary(lead.orgId, now, viewer);
+  const section = moneySection(
+    summary,
+    summary.timeZone,
+    yield* setAsideOverdue({ orgId: lead.orgId, now, viewer }),
   );
-  const section = moneySection(summary, summary.timeZone);
   const toInvoice = team === undefined ? yield* ownerLevelStillToInvoice(lead.orgId) : [];
+  const taxNote =
+    team === undefined ? notRegisteredFact(yield* readProfile(lead.orgId)) : undefined;
   return {
     asOf: iso(now),
     ...(section === undefined && toInvoice.length === 0
@@ -510,6 +526,7 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
       : { summary: section }),
     ...(toInvoice.length === 0 ? {} : { stillToInvoice: toInvoice }),
     bank: bankAnswer(yield* bankKnown(lead.orgId)),
+    ...(taxNote === undefined ? {} : { taxNote }),
     sensitive: true as const,
   };
 });
@@ -651,8 +668,14 @@ export const DatesResult = Schema.Struct({
       title: Schema.String,
       list: Schema.String,
       state: Schema.String,
-      what: Schema.String,
-      on: Schema.String,
+      /** What the day is and the day, for anything but an invoice. */
+      what: Schema.optional(Schema.String),
+      on: Schema.optional(Schema.String),
+      /** An invoice's days in range, on one entry: issued (a suggestion's "date"), and due. */
+      issued: Schema.optional(Schema.String),
+      date: Schema.optional(Schema.String),
+      due: Schema.optional(Schema.String),
+      /** Its due day has passed. Nothing else is ever late. */
       late: Schema.optional(Schema.Literal(true)),
       amount: Schema.optional(Schema.String),
       sensitive: Schema.optional(Schema.Literal(true)),
@@ -678,27 +701,39 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
     },
     now,
   );
+  const entries = datesOnce(page.rows);
+  const day = (row: KinDateRow) =>
+    row.allDay ? dayIn(Date.parse(row.at), zone) : timeIn(Date.parse(row.at), zone);
   return {
     asOf: iso(now),
-    total: page.total,
-    dates: page.rows.map((row) => ({
-      key: row.record.key,
-      title: row.record.title,
-      list: row.listName,
-      state:
-        row.record.confirmed || row.record.state === "dropped"
-          ? row.stateLabel
-          : suggestedStateLabel(row.record.list ?? "work", row.record.state, row.stateLabel),
-      what: row.label,
-      on: row.allDay ? dayIn(Date.parse(row.at), zone) : timeIn(Date.parse(row.at), zone),
-      ...(row.record.late ? { late: true as const } : {}),
-      ...(row.record.amount === undefined
-        ? {}
-        : { amount: formatMoney(row.record.amount), sensitive: true as const }),
-      ...(row.record.sensitive || row.record.sensitiveInherited === true
-        ? { sensitive: true as const }
-        : {}),
-    })),
+    // The total counts an invoice's two days twice wherever both are listed.
+    total: page.total - (page.rows.length - entries.length),
+    dates: entries.map((entry): (typeof DatesResult.Type)["dates"][number] => {
+      const row = entry[0]!;
+      const { record } = row;
+      return {
+        key: record.key,
+        title: record.title,
+        list: row.listName,
+        state:
+          record.confirmed || record.state === "dropped"
+            ? row.stateLabel
+            : suggestedStateLabel(record.list ?? "work", record.state, row.stateLabel),
+        ...(isInvoice(entry)
+          ? invoiceDays(entry, day)
+          : {
+              what: row.label,
+              on: day(row),
+              ...(kinDateRowLate(row) ? { late: true as const } : {}),
+            }),
+        ...(record.amount === undefined
+          ? {}
+          : { amount: formatMoney(record.amount), sensitive: true as const }),
+        ...(record.sensitive || record.sensitiveInherited === true
+          ? { sensitive: true as const }
+          : {}),
+      };
+    }),
   };
 });
 export const datesQuery = leadTool("KinWorkTools.dates", runDates);
@@ -747,6 +782,8 @@ export const ProfileResult = Schema.Struct({
   /** What a set asked for, waiting on the owner's Confirm on the card Kin showed them. */
   proposed: Schema.optional(Schema.Array(Schema.String)),
   next: Schema.optional(Schema.String),
+  /** The company said it is not registered for its tax. */
+  taxNote: Schema.optional(Schema.String),
   sensitive: Schema.Literal(true),
 });
 const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof ProfileInput.Type) {
@@ -819,6 +856,7 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
   const kept = (value: Record<string, unknown>) =>
     Object.fromEntries(Object.entries(value).filter(([, one]) => one !== null));
   const shownBank = kept(bank);
+  const taxNote = notRegisteredFact(current);
   return {
     profile: { ...kept(rest), ...(Object.keys(shownBank).length === 0 ? {} : { bank: shownBank }) },
     rev,
@@ -828,6 +866,7 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
           proposed: [...proposed],
           next: "Nothing has changed yet. Kin showed this change on a card in this chat; it applies when they tap Confirm. Say so in one line.",
         }),
+    ...(taxNote === undefined ? {} : { taxNote }),
     sensitive: true as const,
   };
 });

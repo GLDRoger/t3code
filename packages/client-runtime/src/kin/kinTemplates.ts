@@ -4,6 +4,15 @@ import type { KinRecipe, KinRecordDetail } from "@t3tools/contracts";
 import { formatKinTime } from "./kinScreenState.ts";
 import { kinWorkActorName, type KinWorkNames } from "./kinWork.ts";
 
+/** Web Settings: one row per template, each opening what can be done with it. */
+export const KIN_TEMPLATES_SETTINGS = {
+  detail: "How Kin makes your documents.",
+  open: (title: string) => `Open template: ${title}`,
+  done: "Done",
+  privateLabel: "Keep what it makes private",
+  usedFor: (list: string) => `Used for ${list.toLowerCase()}`,
+};
+
 export const KIN_TEMPLATES = {
   loadFailed: "Couldn't load your templates",
   title: "Templates",

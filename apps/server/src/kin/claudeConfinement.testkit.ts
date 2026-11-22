@@ -10,6 +10,7 @@ export const kinSecretVariables = [
   "KIN_APNS_KEY_FILE",
   "KIN_APNS_KEY_ID",
   "KIN_APNS_TEAM_ID",
+  "KIN_FCM_SERVICE_ACCOUNT_FILE",
   "KIN_WORKER_ENVIRONMENT_ID",
   "KIN_CHECKOUT",
   "GH_TOKEN",

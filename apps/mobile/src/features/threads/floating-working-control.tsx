@@ -163,7 +163,8 @@ export function FloatingWorkingControl(props: {
   const statusInteractive =
     props.status?.kind === "connection" ||
     props.status?.kind === "extension" ||
-    props.status?.kind === "child-input";
+    props.status?.kind === "child-input" ||
+    (props.status?.kind === "stop" && props.status.onPress !== undefined);
   const capsuleInteractive =
     statusInteractive ||
     extensionStatus !== null ||
@@ -441,8 +442,10 @@ function FloatingStatusLabel(props: {
       <StatusLabelRow
         key="stop"
         accessibilityLabel={props.status.label}
+        accessibilityRole={props.status.onPress === undefined ? undefined : "button"}
         className="gap-2"
         onLayout={props.onLayout}
+        onPress={props.status.onPress}
       >
         {props.status.unresponsive ? (
           <SymbolView

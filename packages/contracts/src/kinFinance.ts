@@ -165,6 +165,8 @@ export const KinDateRow = Schema.Struct({
   allDay: Schema.Boolean,
 });
 export type KinDateRow = typeof KinDateRow.Type;
+/** Only a due day can be late; an entry's own day, such as an invoice's issue day, never is. */
+export const kinDateRowLate = (row: KinDateRow) => row.kind === "due" && row.record.late;
 
 /** Everything with a date in `[from, to)`, across lists, soonest first. A calendar or agenda. */
 export const KinDatesInput = Schema.Struct({
@@ -534,6 +536,11 @@ const KinCompanyProfileFields = {
   financialYearStartMonth: Schema.optional(KinMonthNumber),
   /** Null charges no tax; India's GST is worked out by the invoice recipe instead. */
   tax: Schema.optional(Schema.NullOr(KinCompanyTax)),
+  /**
+   * False when an owner said the company is not registered for its country's tax: its documents
+   * charge none and print no client's tax number. Absent or null when not said.
+   */
+  taxRegistered: Schema.optional(Schema.NullOr(Schema.Literal(false))),
 };
 export const KinCompanyProfileData = Schema.Struct(KinCompanyProfileFields);
 export type KinCompanyProfileData = typeof KinCompanyProfileData.Type;
@@ -603,6 +610,8 @@ export const KinCompanyProfileSetInput = Schema.Struct({
   country: Schema.optional(Schema.NullOr(KinCountryCode)),
   financialYearStartMonth: Schema.optional(KinMonthNumber),
   tax: Schema.optional(Schema.NullOr(KinCompanyTax)),
+  /** False says the company is not registered for its tax, and clears its tax number; null unsays it. */
+  taxRegistered: Schema.optional(Schema.NullOr(Schema.Literal(false))),
 });
 export type KinCompanyProfileSetInput = typeof KinCompanyProfileSetInput.Type;
 

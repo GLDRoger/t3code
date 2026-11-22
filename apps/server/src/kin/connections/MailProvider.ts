@@ -362,6 +362,13 @@ export interface MailProvider {
     token: string,
     messageId: string,
   ) => Call<MailArrival | null>;
+  /** Server use only: a thread's messages with their text, as `mail_read_thread` reads them. */
+  readonly messages: (
+    http: HttpClient.HttpClient,
+    token: string,
+    mailbox: Mailbox,
+    threadId: string,
+  ) => Call<ReadonlyArray<MailMessage>>;
   /** A thread of another account is not found: a reply stays in its own account. */
   readonly replyTarget: (
     http: HttpClient.HttpClient,

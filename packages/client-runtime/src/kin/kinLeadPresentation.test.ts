@@ -3,6 +3,7 @@ import { KinAgentId, KinPersonId, ProviderInstanceId } from "@t3tools/contracts"
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  kinAgentRowLine,
   kinChatReadOnlyLine,
   kinDomainLabel,
   kinDomainSlug,
@@ -31,6 +32,17 @@ describe("lead domains", () => {
 
   it.each(["", "   ", "123", "—"])("has no slug for %j", (typed) => {
     expect(kinDomainSlug(typed)).toBeNull();
+  });
+
+  it("says what an agent does in its list row, never its name again or its charter", () => {
+    const lead = { name: "Finance", domain: "finance", intro: "", roleTags: [] };
+    expect(kinAgentRowLine(lead)).toBeNull();
+    expect(kinAgentRowLine({ ...lead, name: "Chief of staff", domain: "chief" })).toBeNull();
+    expect(kinAgentRowLine({ ...lead, name: "Asha" })).toBe("Finance");
+    expect(kinAgentRowLine({ ...lead, roleTags: ["billing", "payroll"] })).toBe("billing, payroll");
+    expect(
+      kinAgentRowLine({ ...lead, intro: " Ask me about invoices. ", roleTags: ["billing"] }),
+    ).toBe("Ask me about invoices.");
   });
 
   it("reads a slug back as words that make the same slug", () => {

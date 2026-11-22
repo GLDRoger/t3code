@@ -7,6 +7,9 @@ export const KIN_RECOMMENDATIONS_COPY = {
   empty:
     "Nothing suggested yet. When Kin sees the same hold-up again and again and a setting would fix it, it suggests the change here and in Needs you. Nothing changes until you tap.",
   loadFailed: "Couldn't load what Kin suggested.",
+  /** Web Settings' page line and empty card. */
+  purpose: "What Kin suggested when the same hold-up kept happening, and what came of each.",
+  settingsEmpty: "Nothing suggested yet. A new suggestion shows in Needs you first, then here.",
 } as const;
 
 /** What went wrong with a row's Ask again, in the host's words where it gave them. */

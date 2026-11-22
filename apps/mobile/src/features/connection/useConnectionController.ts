@@ -86,8 +86,10 @@ export function useConnectionController() {
       }),
     );
   // Kin: the host stops this phone's alerts before the phone forgets it.
-  const removeEnvironment = (environmentId: EnvironmentId) =>
-    forgetKinHost(environmentId, () => removeEnvironmentMutation(environmentId));
+  const removeEnvironment = (
+    environmentId: EnvironmentId,
+    tell?: Parameters<typeof forgetKinHost>[2],
+  ) => forgetKinHost(environmentId, () => removeEnvironmentMutation(environmentId), tell);
   const setEnvironmentEnabled = (environmentId: EnvironmentId, enabled: boolean) =>
     setEnvironmentEnabledMutation({ environmentId, enabled });
   const updateEnvironment = (

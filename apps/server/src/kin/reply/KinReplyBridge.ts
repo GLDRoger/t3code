@@ -57,6 +57,7 @@ import { laneFor, type Lane } from "./replyLane.ts";
 import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
 import { LAST_RETRY_MS } from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
+import { activityAt, waitWhileActive } from "../lead/runSilence.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Reach from "../lead/Reach.ts";
 import { turnRecords } from "../lead/wakeupRuns.ts";
@@ -94,7 +95,6 @@ export { rescueMessageId };
 const STALL_MS = 120_000;
 /** A streaming segment this old becomes a visible draft even while still short. */
 const DRAFT_AFTER_MS = 1_000;
-const RESCUE_TIMEOUT_MS = 120_000;
 const OVERFLOW_SUFFIX = "\n\n…more in the agent's thread";
 // Room left for the heading and for entry keys Kin replaces with longer names when it stores.
 const MORNING_HEADROOM = 200;
@@ -233,6 +233,8 @@ type Wake = {
   readonly steerEvents: Map<number, ReadonlyArray<string>>;
   movedNoticed: boolean;
   lastOutputAt: number;
+  // When the provider last worked on the thread, by the event's own time (`activityAt`).
+  workedAt: number;
   state: KinPresenceState;
   label: string | null;
   // What a stall interrupted, so the line returns to it when output resumes.
@@ -287,7 +289,7 @@ export class KinReplyBridge extends Context.Service<
       readonly wakeupId: KinWakeupId;
       readonly projectId: ProjectId;
       readonly rootRunId: RunId;
-      readonly rescueUntil: number | null;
+      readonly rescue: boolean;
     }) => Effect.Effect<void>;
     /**
      * A message was steered into the wake-up: re-reads its lane, which may now owe a reply.
@@ -693,6 +695,10 @@ const make = Effect.gen(function* () {
           orgId: wake.orgId,
           chatId: wake.lane.chatId,
           now: yield* Clock.currentTimeMillis,
+          said: kinPageSections(slot.body)
+            .filter(({ title }) => title !== null && KIN_MONEY_SECTION.match.test(title.trim()))
+            .map(({ markdown }) => markdown)
+            .join("\n"),
         }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
         if (money.length === 0) return;
         const page = kinPageWithLines(slot.body, KIN_MONEY_SECTION, money);
@@ -1002,6 +1008,8 @@ const make = Effect.gen(function* () {
   const onEvent = Effect.fnUntraced(function* (event: OrchestrationV2DomainEvent) {
     const wake = wakes.get(event.threadId);
     if (wake === undefined) return;
+    const at = activityAt(event);
+    if (at !== undefined) wake.workedAt = Math.max(wake.workedAt, at);
     yield* wake.lock
       .withPermits(1)(
         Effect.gen(function* () {
@@ -1227,7 +1235,6 @@ const make = Effect.gen(function* () {
   const rescue = Effect.fn("KinReplyBridge.rescue")(function* (
     wake: Wake,
     projectId: ProjectId,
-    until: number,
     shown: boolean,
   ) {
     const messageId = MessageId.make(rescueMessageId(wake.wakeupId));
@@ -1244,16 +1251,14 @@ const make = Effect.gen(function* () {
     });
     const run = sent.run;
     yield* wake.lock.withPermits(1)(show(wake, "thinking", PHASE_LABELS.thinking));
-    const timeoutMs = Math.max(
-      0,
-      Math.min(RESCUE_TIMEOUT_MS, until - (yield* Clock.currentTimeMillis)),
+    // It runs while it works, as the wake-up's run did; only silence ends it.
+    wake.workedAt = Math.max(wake.workedAt, yield* Clock.currentTimeMillis);
+    const result = yield* waitWhileActive(
+      threads,
+      { projectId, threadId: wake.threadId, runId: run.id },
+      () => wake.workedAt,
+      Effect.void,
     );
-    const result = yield* threads.waitForThread({
-      projectId,
-      threadId: wake.threadId,
-      runId: run.id,
-      timeoutMs,
-    });
     if (result.timedOut)
       yield* threads.interruptThread({
         projectId,
@@ -1316,7 +1321,7 @@ const make = Effect.gen(function* () {
       readonly wakeupId: KinWakeupId;
       readonly projectId: ProjectId;
       readonly rootRunId: RunId;
-      readonly rescueUntil: number | null;
+      readonly rescue: boolean;
     }) {
       const wake = byWakeup.get(input.wakeupId);
       if (wake === undefined || wake.orgId !== input.orgId) return;
@@ -1330,7 +1335,7 @@ const make = Effect.gen(function* () {
             yield* post(wake, note);
           }
           yield* flushOverflow(wake);
-          yield* settlePage(wake, input.rescueUntil !== null);
+          yield* settlePage(wake, input.rescue);
           yield* settleFigures(wake);
           yield* keptPromises(wake);
           // A reply ending on a question to the one person here: stored as open, for every agent.
@@ -1349,11 +1354,11 @@ const make = Effect.gen(function* () {
       // What follows, such as the memory commit, isn't work on the owner's message.
       const settled = settleLine(wake);
       // A failed or stopped run is retried or was the owner's choice; only a finished one is owed.
-      if ((yield* finish) || input.rescueUntil === null) return yield* settled;
+      if ((yield* finish) || !input.rescue) return yield* settled;
       const shown = yield* showed(wake).pipe(Effect.orElseSucceed(() => false));
       // A refusal would refuse the rescue's text too.
       if (wake.withheld === null) {
-        yield* rescue(wake, input.projectId, input.rescueUntil, shown);
+        yield* rescue(wake, input.projectId, shown);
         if (yield* finish) return yield* settled;
       }
       yield* settled;
@@ -1609,6 +1614,7 @@ const make = Effect.gen(function* () {
         steerEvents: new Map(),
         movedNoticed: false,
         lastOutputAt: now,
+        workedAt: now,
         state: "starting",
         label: PHASE_LABELS.preparing,
         live: { state: "starting", label: PHASE_LABELS.preparing },

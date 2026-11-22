@@ -15,6 +15,7 @@ import {
   kinDocUnfiled,
   kinDocCanEdit,
   kinDocCopyText,
+  kinDocDeletedLine,
   kinDocEditInput,
   kinDocEditOpen,
   kinDocEditOutcome,
@@ -74,7 +75,7 @@ import {
 import { Skeleton } from "../components/ui/skeleton";
 import { Textarea } from "../components/ui/textarea";
 import { toastManager } from "../components/ui/toast";
-import { isElectron } from "../env";
+import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { useRenderedAppearance } from "../hooks/useTheme";
 import {
   getRenderablePatch,
@@ -90,11 +91,14 @@ import { KinDocFileDialog } from "./KinDocFileDialog";
 import { KinDocReader } from "./KinDocReader";
 import { openDestination } from "./KinNotifications";
 import { KinLinkedGroups } from "./KinWorkItemSheet";
+import { KinWatchLine } from "./KinWatchLine";
 import { KinWorkShareRow } from "./KinWorkShareRow";
 import { KinWorkNotice, KinLoadFailed } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinDoc, useKinDocAsk, useKinDocHistory } from "./useKinDocs";
+import { useKinDocDelete } from "./useKinDocDelete";
+import { toastDocDeleted, toastDocRestored } from "./kinDocDeleteToasts";
 import { kinHostConnected } from "./useKinHost";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
@@ -170,6 +174,9 @@ export function KinDocPage(
   // Taken when the editor opens; the doc may refresh underneath without touching the draft.
   const [editing, setEditing] = useState<KinDocEditOpened | null>(null);
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
+  const deleting = useKinDocDelete(props);
+  const nowMs = useNowMinuteMs();
+  const mayDelete = doc !== null && deleting.allowed && doc.deletable === true;
 
   const run = async (target: NonNullable<Restoring>, undoing: boolean) => {
     if (!kinHostConnected(environmentId)) {
@@ -217,7 +224,7 @@ export function KinDocPage(
 
   return (
     <>
-      <WorkspacePageHeader electron={isElectron && !inPane} titlebarInset={!inPane}>
+      <WorkspacePageHeader electron={hasDesktopWindowChrome && !inPane} titlebarInset={!inPane}>
         {inPane && comparing === undefined ? null : (
           <Button
             size="icon-sm"
@@ -297,8 +304,45 @@ export function KinDocPage(
           )}
         </div>
       )}
+      {doc === null || comparing !== undefined || !doc.archived ? null : (
+        <div className="mx-auto w-full max-w-3xl px-6 pt-3">
+          <Alert variant="warning">
+            <AlertDescription>
+              {doc.deleted === undefined
+                ? KIN_DOCS.deletedBanner
+                : `${kinDocDeletedLine(doc.deleted, names, new Date(nowMs))}. ${KIN_DOCS.deletedBanner}`}
+            </AlertDescription>
+            {mayDelete ? (
+              <AlertAction>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={deleting.busy !== null}
+                  aria-busy={deleting.busy !== null}
+                  onClick={() =>
+                    void deleting.restore(doc.key).then((why) => {
+                      toastDocRestored(doc.title, why);
+                      if (why === null) refresh();
+                    })
+                  }
+                >
+                  {deleting.busy === null ? KIN_DOCS.restoreDoc : KIN_DOCS.restoringDoc}
+                </Button>
+              </AlertAction>
+            ) : null}
+          </Alert>
+        </div>
+      )}
       {doc === null || comparing !== undefined ? null : (
         <KinDocFiling doc={doc} canFile={canFile} onFile={() => setFiling(true)} />
+      )}
+      {doc === null || comparing !== undefined ? null : (
+        <KinWatchLine
+          environmentId={environmentId}
+          orgId={orgId}
+          recordKey={doc.key}
+          className="mx-auto w-full max-w-3xl px-6 pt-3"
+        />
       )}
       {doc === null ||
       comparing !== undefined ||
@@ -400,6 +444,18 @@ export function KinDocPage(
           onExportPdf={canPdf ? () => void exportPdf() : null}
           onRestore={
             canRestore ? (version) => setRestoring({ version, latest: doc.latest.version }) : null
+          }
+          onDelete={
+            mayDelete && !doc.archived && deleting.busy === null
+              ? () => {
+                  setProblem(null);
+                  void deleting.remove(doc.key).then((why) => {
+                    if (why !== null) return setProblem(why);
+                    onGo(null);
+                    toastDocDeleted(doc.title, () => deleting.restore(doc.key));
+                  });
+                }
+              : null
           }
           linked={
             <KinLinkedGroups

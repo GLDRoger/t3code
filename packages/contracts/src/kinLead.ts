@@ -13,6 +13,7 @@ import {
   ScheduledTaskId,
   ThreadId,
   TrimmedNonEmptyString,
+  TrimmedString,
 } from "./baseSchemas.ts";
 import {
   KinAgentId,
@@ -307,8 +308,15 @@ export const KinAgentPage = Schema.Struct({
   runsOn: ModelSelection,
   // Why it runs on something else, in the owner's words; null when it runs on its own choice.
   modelNote: Schema.NullOr(Schema.String),
-  // Its character doc as written now; null before Kin has given it one.
+  // Its whole character now, Kin's part then the owner's; `key` is the owner's part's doc. Null
+  // before Kin has given it one.
   character: Schema.NullOr(Schema.Struct({ key: KinRecordKey, body: Schema.String })),
+  // Kin's part, as the running release ships it; null when the agent's area has none. Absent
+  // from older hosts.
+  kinCharacter: Schema.optional(Schema.NullOr(Schema.String)),
+  // The owner's own part, which wins where the two differ; "" when he has written none. Absent
+  // from older hosts.
+  ownCharacter: Schema.optional(Schema.String),
   teamAgent: Schema.Boolean,
   // This month's turns and tokens, by the owner's calendar.
   usedThisMonth: Schema.Struct({ turns: NonNegativeInt, tokens: NonNegativeInt }),
@@ -335,11 +343,14 @@ export const KinAgentUndoChangeInput = Schema.Struct({
   seq: PositiveInt,
 });
 export type KinAgentUndoChangeInput = typeof KinAgentUndoChangeInput.Type;
-/** A new character for one agent, written over the old as a version its history keeps. */
+/**
+ * The owner's part of one agent's character, written over the old as a version its history keeps;
+ * empty clears it.
+ */
 export const KinAgentCharacterSetInput = Schema.Struct({
   orgId: KinOrgId,
   agentId: KinAgentId,
-  body: TrimmedNonEmptyString.check(Schema.isMaxLength(20_000)),
+  body: TrimmedString.check(Schema.isMaxLength(20_000)),
 });
 export type KinAgentCharacterSetInput = typeof KinAgentCharacterSetInput.Type;
 export const KinAgentDefaultsInput = Schema.Struct({ orgId: KinOrgId });
@@ -808,6 +819,10 @@ export const KinEvent = Schema.Union([
         words: Schema.optional(Schema.Literal(true)),
         answered: Schema.optional(Schema.Literal(true)),
         approved: Schema.optional(Schema.Literal(true)),
+        // The person dismissed it without choosing, at `at`; with `reopened`, they undid that.
+        dismissed: Schema.optional(Schema.Literal(true)),
+        reopened: Schema.optional(Schema.Literal(true)),
+        at: Schema.optional(NonNegativeInt),
       }),
       // One run of a scheduled task; `runId` names the fire or Run now tap that started it.
       Schema.Struct({

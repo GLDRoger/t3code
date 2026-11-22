@@ -27,7 +27,7 @@ export const makeKinPushHandlers = Effect.fn("makeKinPushHandlers")(function* (
     const people = yield* Context.get(services, KinIdentity).resolve(session);
     return {
       devices: Context.get(services, KinPushDevices),
-      sending: Context.get(services, KinPushSender).status,
+      sender: Context.get(services, KinPushSender),
       presence: Context.get(services, KinPushPresence),
       caller: { session, people },
     };
@@ -35,10 +35,13 @@ export const makeKinPushHandlers = Effect.fn("makeKinPushHandlers")(function* (
   return group.of({
     "kin.push.registerDevice": (input) =>
       caller.pipe(
-        Effect.flatMap(({ devices, sending, caller }) =>
-          devices
-            .register(caller, input)
-            .pipe(Effect.map(({ deviceId }) => ({ deviceId, sending }))),
+        Effect.flatMap(({ devices, sender, caller }) =>
+          devices.register(caller, input).pipe(
+            Effect.map(({ deviceId }) => ({
+              deviceId,
+              sending: sender.statusFor(input.platform),
+            })),
+          ),
         ),
       ),
     "kin.push.unregisterDevice": (input) =>

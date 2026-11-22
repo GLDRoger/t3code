@@ -78,6 +78,7 @@ const knownProjects = (made: Set<string>) =>
           project: project(input.projectId, input.title, input.workspaceRoot),
         };
       }),
+    update: (input) => Effect.succeed(project(input.projectId, "Kin", "/memory")),
   });
 
 /** An archived thread in the lead's project, standing in for its scheduled-runs inbox. */

@@ -1,5 +1,6 @@
 import {
   KinChatError,
+  type KinDocDeleteInput,
   type KinDocDetail,
   type KinDocDiffInput,
   type KinDocEditSectionInput,
@@ -61,7 +62,7 @@ import {
 } from "./recordRows.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { EVERY_RECORD_KIND, search as runSearch } from "./search.ts";
-import { searchIndexed } from "./searchIndex.ts";
+import { docKindWords, searchIndexed } from "./searchIndex.ts";
 import {
   clientMoneySeen,
   KIN_OWNER_LEVEL,
@@ -98,13 +99,62 @@ const readerOf = Effect.fn("KinDocs.reader")(function* (
 const reader = (people: ReadonlyArray<PersonIdentity>, orgId: KinOrgId) =>
   readerOf(people, orgId).pipe(Effect.map(({ team }) => team));
 
-/** A row as people's Docs reads it: What we sell and an agent's character marked by their origin. */
-const docRowOf = (...[row, ...rest]: Parameters<typeof Docs.toDocRow>) => {
-  const doc = withOfferings(Docs.toDocRow(row, ...rest), row);
+/**
+ * A row as people's Docs reads it: What we sell and an agent's character marked by their origin,
+ * and a client the viewer doesn't see (`hidden`) not named.
+ */
+const docRowOf = (
+  ...[row, latest, now, hidden, marks]: [
+    ...Parameters<typeof Docs.toDocRow>,
+    hidden?: ReadonlySet<string>,
+    marks?: Marks,
+  ]
+) => {
+  const { party, ...whole } = withOfferings(Docs.toDocRow(row, latest, now), row);
+  const unseen = row.partyId !== null && hidden?.has(row.partyId) === true;
+  const deleted = marks?.deleted.get(row.recordId);
+  const doc = {
+    ...whole,
+    ...(party === undefined || unseen ? {} : { party }),
+    ...(deleted === undefined ? {} : { deleted }),
+    ...(marks?.deletable.has(row.recordId) === true ? { deletable: true as const } : {}),
+  };
   return row.originKey.startsWith(Docs.CHARACTER_ORIGIN)
     ? { ...doc, character: true as const }
     : doc;
 };
+
+type Marks = Effect.Success<ReturnType<typeof marksOf>>;
+/** Who deleted each deleted doc and when, and which of them `viewer` may delete or bring back. */
+const marksOf = Effect.fn("KinDocs.marks")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  rows: ReadonlyArray<Parameters<typeof Docs.toDocRow>[0]>,
+) {
+  return {
+    deleted: yield* Docs.deletedOf(
+      orgId,
+      rows.filter((row) => row.state === "dropped").map((row) => row.recordId),
+    ),
+    deletable: yield* Docs.deletableDocs(orgId, viewer, rows),
+  };
+});
+
+/** The clients of these docs some person in `viewer` doesn't see. */
+const unseenClients = Effect.fn("KinDocs.unseenClients")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  rows: ReadonlyArray<{ readonly partyId: string | null }>,
+) {
+  const ids = rows.flatMap((row) => (row.partyId === null ? [] : [row.partyId]));
+  const hidden = new Set<string>();
+  if (viewer._tag === "ownerLevel" || ids.length === 0) return hidden;
+  for (const person of viewer.people) {
+    const seen = yield* teamVisible(orgId, person, ids);
+    for (const id of ids) if (!seen.has(id)) hidden.add(id);
+  }
+  return hidden;
+});
 
 const badCursor = new KinChatError({
   reason: "invalid_state",
@@ -145,7 +195,13 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
       linked = new Set([...(linked ?? seen)].filter((id) => seen.has(id)));
     }
   return {
-    ...docRowOf(row, latest, now),
+    ...docRowOf(
+      row,
+      latest,
+      now,
+      yield* unseenClients(orgId, viewer, [row]),
+      yield* marksOf(orgId, viewer, [row]),
+    ),
     version: Docs.toVersion(shown),
     body: shown.body,
     outline: [...outlineOf(shown.body)],
@@ -218,7 +274,8 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
     ...(text === ""
       ? []
       : [
-          sql`(instr(lower(r.title), ${text}) > 0 OR EXISTS (SELECT 1 FROM kin_doc_versions v
+          sql`(instr(lower(r.title), ${text}) > 0 OR instr(${docKindWords(sql)}, ${text}) > 0
+            OR EXISTS (SELECT 1 FROM kin_doc_versions v
               WHERE v.org_id = r.org_id AND v.record_id = r.record_id
                 AND v.version = (SELECT MAX(w.version) FROM kin_doc_versions w
                   WHERE w.org_id = r.org_id AND w.record_id = r.record_id)
@@ -255,11 +312,15 @@ export const list = Effect.fn("KinDocs.list")(
     );
     const now = yield* Clock.currentTimeMillis;
     const next = offset + rows.length;
+    const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]);
+    const hidden = yield* unseenClients(input.orgId, viewer, rows);
+    // Only Deleted's rows say who deleted them and offer Restore; the doc's page offers Delete.
+    const marks = input.archived === true ? yield* marksOf(input.orgId, viewer, rows) : undefined;
     return {
       docs: rows.flatMap((row) => {
         const version = latest.get(row.recordId);
         if (version === undefined) return [];
-        const doc = docRowOf(row, version, now);
+        const doc = docRowOf(row, version, now, hidden, marks);
         return [input.acceptSlimLatest === true ? kinSlimDocRow(doc) : doc];
       }),
       total: count?.total ?? 0,
@@ -409,6 +470,23 @@ export const editSection = Effect.fn("KinDocs.editSection")(
   Effect.catchTags({ SqlError: () => unavailable }),
 );
 
+/** A person deletes a doc or brings it back; `Docs.deleteByHand` decides who may. */
+export const remove = Effect.fn("KinDocs.remove")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocDeleteInput) {
+    if (!people.some((one) => one.orgId === input.orgId)) return yield* Docs.docNotFound(input.key);
+    const { personId, team } = yield* readerOf(people, input.orgId);
+    const { owner } = yield* KinIdentity;
+    yield* Docs.deleteByHand(input.orgId, personId, owner, { key: input.key }, input.deleted);
+    return yield* detailOf(
+      input.orgId,
+      { key: input.key },
+      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+      personId,
+    );
+  },
+  Effect.catchTags({ SqlError: () => unavailable }),
+);
+
 /** The owner level starts What we sell from its empty state, then talks it through with an agent. */
 export const startWhatWeSell = Effect.fn("KinDocs.startWhatWeSell")(
   function* (people: ReadonlyArray<PersonIdentity>, input: KinDocStartWhatWeSellInput) {
@@ -525,7 +603,11 @@ const listedOf = Effect.fn("KinDocs.listedOf")(
       total: count?.total ?? 0,
       ...(row === undefined || version === undefined
         ? { unlisted: true as const }
-        : { row: kinSlimDocRow(docRowOf(row, version, now)) }),
+        : {
+            row: kinSlimDocRow(
+              docRowOf(row, version, now, yield* unseenClients(orgId, viewer, [row])),
+            ),
+          }),
     };
   },
   Effect.catchTags({ SqlError: () => unavailable }),

@@ -16,6 +16,7 @@ import {
   filledEvent,
   kinInstructions,
   kinSessionOf,
+  kinTurnFiles,
   rescuePrompt,
   shownText,
 } from "./kin.ts";
@@ -95,6 +96,7 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
     tools: t3,
     shellUsage: spent.shellUsage,
   };
+  sample.kinFiles = yield* kinTurnFiles(testCase);
   const messages = buildMessages(sample).map((message) => ({
     ...message,
     // Claude Code's reminders (its ToolSearch list) are its harness, not the case.
@@ -107,7 +109,7 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
     .filter(isText)
     .map((block) => block.text)
     .join("\n\n");
-  // As Kin's sessions decide (`kinDeferredTools`): a tool waits only where the model can look it up.
+  // As Kin's sessions decide (`toolSearch`): a tool waits only where the model can look it up.
   const lookup = yield* Effect.promise(() => server.knowsModel(config.model));
   const deferred = new Set(lookup ? base.deferred.map((tool) => tool.name) : []);
   const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
@@ -134,7 +136,11 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
         })),
         history: responsesHistory(messages.slice(0, -1), APP_SERVER_NAMESPACE),
         prompt,
-        maxToolCalls: Math.max(config.maxSteps, testCase.maxSteps ?? 0) * 3,
+        images: sample.kinFiles?.images.map(
+          (image) => `data:${image.mimeType};base64,${image.data}`,
+        ),
+        maxToolCalls:
+          config.maxSteps === 0 ? Infinity : Math.max(config.maxSteps, testCase.maxSteps ?? 0) * 3,
         onToolCall: (tool, args) => {
           const use = {
             type: "tool_use" as const,

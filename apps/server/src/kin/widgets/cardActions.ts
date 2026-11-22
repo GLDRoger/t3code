@@ -43,7 +43,7 @@ import {
 import type { KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
 import { repeatOf } from "../work/recordRows.ts";
-import { defineProposed, proposalToCreate } from "../work/registers.ts";
+import { defineProposed, listPlace, proposalToCreate, proposedList } from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
 import {
   type CardActionInput,
@@ -544,7 +544,10 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   plan: CardPlan,
   deps: {
     readonly records: KinRecords["Service"];
-    readonly chat: Pick<KinChatService["Service"], "closeReplaced" | "reopenClosed" | "notice">;
+    readonly chat: Pick<
+      KinChatService["Service"],
+      "closeReplaced" | "reopenClosed" | "notice" | "setDocCardChangesFirst"
+    >;
   },
 ) {
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
@@ -623,7 +626,9 @@ export const untakenAtDay = Effect.fn("KinCardActions.untakenAtDay")(function* (
   if (!takesAsDefault(plan)) return undefined;
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ repeat: string | null; handedBack: number | null }>`SELECT
-      repeat_json AS repeat, handed_back_at AS "handedBack" FROM kin_records
+      repeat_json AS repeat,
+      CASE WHEN state IN ('done', 'dropped') THEN NULL ELSE handed_back_at END AS "handedBack"
+    FROM kin_records
     WHERE org_id = ${orgId} AND record_id = ${plan.recordId}`;
   return row === undefined ? undefined : outgrowsUndo(row);
 });
@@ -653,7 +658,8 @@ export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
     handedBack: number | null;
     waitingKind: string | null;
     waitingId: string | null;
-  }>`SELECT repeat_json AS repeat, handed_back_at AS "handedBack",
+  }>`SELECT repeat_json AS repeat,
+      CASE WHEN state IN ('done', 'dropped') THEN NULL ELSE handed_back_at END AS "handedBack",
       waiting_on_kind AS "waitingKind", waiting_on_id AS "waitingId" FROM kin_records
     WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
   if (more === undefined || outgrowsUndo(more) !== undefined) return false;
@@ -803,7 +809,10 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
           now: tap.now,
         }));
       if (why !== undefined) return nothingDone(why);
-      return { title: "List created", text: `Created the list ${quoted(plan.name, 60)}.` };
+      const made = proposedList(plan.definition);
+      if (made === undefined) return { title: "List created", text: "Created." };
+      const { words, ...open } = yield* listPlace(orgId, made);
+      return { title: "List created", text: `Created. It's in ${words}.`, open };
     }
   }
 });

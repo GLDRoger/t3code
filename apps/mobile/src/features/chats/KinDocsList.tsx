@@ -77,6 +77,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { kinTabBar, useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
+import { useKinDocDelete } from "./state/useKinDocDelete";
 import {
   useKinDocsList,
   useKinDocsLive,
@@ -108,8 +109,11 @@ function KinDocRowButton(props: {
   readonly onPress: () => void;
   /** An unfiled doc's one-tap way to file it. */
   readonly onFile?: () => void;
+  /** A deleted doc's way back, for whoever may. */
+  readonly onRestore?: () => void;
+  readonly restoring?: boolean;
 }) {
-  const { row, onFile } = props;
+  const { row, onFile, onRestore } = props;
   const grows = useKinTextGrows();
   return (
     <>
@@ -147,8 +151,17 @@ function KinDocRowButton(props: {
               {row.under}
             </Text>
           )}
+          {row.deletedLine === null ? null : (
+            <Text
+              textRole="footnote"
+              numberOfLines={kinLines(1, grows)}
+              className="text-foreground-muted"
+            >
+              {row.deletedLine}
+            </Text>
+          )}
         </Pressable>
-        {row.archived ? (
+        {row.archived && row.deletedLine === null ? (
           <Text textRole="footnote" className="font-t3-medium text-foreground-muted">
             {KIN_DOCS.archived}
           </Text>
@@ -160,6 +173,17 @@ function KinDocRowButton(props: {
             label={KIN_DOC_HOMES.file}
             accessibilityLabel={`${KIN_DOC_HOMES.file} ${row.title}`}
             onPress={onFile}
+          />
+        )}
+        {onRestore === undefined ? null : (
+          <Button
+            tone="secondary"
+            size="compact"
+            label={props.restoring === true ? KIN_DOCS.restoringDoc : KIN_DOCS.restoreDoc}
+            accessibilityLabel={`${KIN_DOCS.restoreDoc} ${row.title}`}
+            loading={props.restoring === true}
+            disabled={props.restoring === true}
+            onPress={onRestore}
           />
         )}
       </View>
@@ -492,6 +516,7 @@ export function KinDocsList(
   const [allLists, setAllLists] = useState(false);
   const [playbooksOpen, setPlaybooksOpen] = useState(false);
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
+  const deleting = useKinDocDelete(props);
   const scope = useKinViewerScope(environmentId);
   const { filter } = state;
   const shown = kinListShown(state, kinHostLink(useKinHostAt(environmentId)));
@@ -735,6 +760,8 @@ export function KinDocsList(
             allLists,
             playbooksOpen,
             canFile,
+            deleting.busy,
+            deleting.problem,
             starter?.agent,
             pinned,
           ]}
@@ -747,9 +774,18 @@ export function KinDocsList(
               <View className="gap-2 pt-2">
                 {shown === "rows" && (props.stale || state.stale) ? (
                   <View className="px-4">
-                    <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
+                    <KinWorkStaleNotice
+                      environmentId={environmentId}
+                      onRetry={refresh}
+                      readAt={state.readAt}
+                    />
                   </View>
                 ) : null}
+                {deleting.problem === null ? null : (
+                  <View className="px-4">
+                    <Notice tone="danger" message={deleting.problem} onDismiss={deleting.dismiss} />
+                  </View>
+                )}
                 <View className="flex-row flex-wrap gap-2 px-4">
                   {chip === null ? (
                     KIN_DOC_SHELVES.map((shelf) => (
@@ -922,6 +958,15 @@ export function KinDocsList(
                 onPress={() => open(item.row.key)}
                 {...(canFile && kinDocUnfiled(item.row) && filter.show._tag !== "files"
                   ? { onFile: () => fileDoc(item.row.key) }
+                  : {})}
+                {...(deleting.allowed && item.row.archived && item.row.deletable === true
+                  ? {
+                      onRestore: () =>
+                        void deleting
+                          .restore(item.row.key)
+                          .then((why) => why === null && list.refresh()),
+                      restoring: deleting.busy === item.row.key,
+                    }
                   : {})}
               />
             )

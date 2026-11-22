@@ -15,7 +15,11 @@ import {
   kinRoomLine,
   KIN_CHATS_EMPTY,
 } from "@t3tools/client-runtime/kin/kinChatListRows";
-import { KIN_WAITING_TITLE, selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import {
+  KIN_WAITING_TITLE,
+  selectKinInboxView,
+  type KinWaitsForGroup,
+} from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   formatKinTime,
   kinDirectory,
@@ -64,6 +68,7 @@ import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import type { KinLeadFormTarget } from "./kinLeadForm";
 import { useNowMinuteMs } from "./useKinClock";
 import { KinWaitingAsk } from "./KinWaitingAsk";
+import { KinWaitsForFolds } from "./KinWaitsFor";
 import { kinWaitingAskView } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { KinStandInLine } from "./KinStandInLine";
 import { kinAccessCopy } from "./kinTeammateMark";
@@ -161,6 +166,7 @@ export function KinChatList() {
       )}
       <KinWaiting
         waiting={view.waiting}
+        waitsFor={view.waitsFor}
         chats={inbox.chats}
         directory={directory}
         environmentId={state.environmentId}
@@ -608,17 +614,19 @@ function KinRoomLine(props: {
 
 /**
  * What waits on the viewer, oldest first. Approvals are signed with the phone's device key, so
- * they point there; everything else opens its chat.
+ * they point there; everything else opens its chat. Then, folded, what waits on someone else
+ * that the viewer may see, to look at only.
  */
 function KinWaiting(props: {
   readonly waiting: ReadonlyArray<KinWaitingItem>;
+  readonly waitsFor: ReadonlyArray<KinWaitsForGroup>;
   readonly chats: ReadonlyArray<KinChatSummary>;
   readonly directory: KinDirectory;
   readonly environmentId: EnvironmentId;
 }) {
   const [open, setOpen] = useState(false);
   const nowMs = useNowMinuteMs();
-  const banner = kinWaitingBannerView(props.waiting);
+  const banner = kinWaitingBannerView(props.waiting, props.waitsFor);
   if (banner === null) return null;
   return (
     <div className="mb-1 flex flex-col">
@@ -637,7 +645,7 @@ function KinWaiting(props: {
             {banner.summary}
           </span>
         </span>
-        <Badge size="sm">{banner.count}</Badge>
+        {banner.count === 0 ? null : <Badge size="sm">{banner.count}</Badge>}
       </Button>
       {open ? (
         <ul className="flex flex-col p-1">
@@ -662,6 +670,11 @@ function KinWaiting(props: {
                   <span className="line-clamp-2 text-xs text-muted-foreground">
                     {row.text ?? KIN_CHAT_COPY.openChatWith(row.chatTitle)}
                   </span>
+                  {row.excerpt === null ? null : (
+                    <span className="line-clamp-3 whitespace-pre-line text-xs text-foreground">
+                      {row.excerpt}
+                    </span>
+                  )}
                   {item.reason === "approval" ? <ApproveOnPhone /> : null}
                 </Link>
                 {ask === null ? null : (
@@ -671,6 +684,9 @@ function KinWaiting(props: {
             );
           })}
         </ul>
+      ) : null}
+      {open ? (
+        <KinWaitsForFolds groups={props.waitsFor} chats={props.chats} directory={props.directory} />
       ) : null}
     </div>
   );

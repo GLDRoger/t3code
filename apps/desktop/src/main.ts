@@ -80,6 +80,9 @@ import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "./wsl/DesktopWslServerTree.ts";
+import { KIN_DESKTOP_ONLY } from "./kin/KinDesktopOnly.ts";
+import * as KinShell from "./kin/KinShell.ts";
+import * as KinShellMenu from "./kin/KinShellMenu.ts";
 
 if (process.argv.includes("--version")) {
   try {
@@ -177,10 +180,10 @@ const layerDesktopPreview = PreviewManager.layer.pipe(
   Layer.provideMerge(layerDesktopFoundation),
 );
 
-const layerDesktopWindow = DesktopWindow.layer.pipe(
-  Layer.provideMerge(layerDesktopServerExposure),
-  Layer.provideMerge(layerDesktopPreview),
-);
+// mergeAll types the build's choice as either layer.
+const layerDesktopWindow = Layer.mergeAll(
+  KIN_DESKTOP_ONLY ? KinShell.layer : DesktopWindow.layer,
+).pipe(Layer.provideMerge(layerDesktopServerExposure), Layer.provideMerge(layerDesktopPreview));
 
 const layerDesktopSnapShot = DesktopSnapShot.layer.pipe(
   Layer.provideMerge(layerDesktopWindow),
@@ -211,8 +214,8 @@ const layerDesktopLocalEnvironmentAuth = DesktopLocalEnvironmentAuth.layer.pipe(
 const layerDesktopApplication = Layer.mergeAll(
   DesktopLifecycle.layer,
   layerDesktopAppActivation,
-  DesktopWebLinks.layer,
-  DesktopApplicationMenu.layer,
+  KIN_DESKTOP_ONLY ? KinShell.layerWebLinks : DesktopWebLinks.layer,
+  KIN_DESKTOP_ONLY ? KinShellMenu.layer : DesktopApplicationMenu.layer,
   DesktopLinuxUrlHandler.layer,
   DesktopCliCommand.layer,
 ).pipe(

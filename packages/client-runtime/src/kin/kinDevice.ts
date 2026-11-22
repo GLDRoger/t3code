@@ -17,6 +17,16 @@ export const KIN_DEVICE_COPY = {
     `You'll be signed out on this ${device}${device === "phone" ? " and its chats will be removed from it" : ""}. To come back, ask your team for a new join link: it brings back your chats and tasks.`,
 } as const;
 
+/**
+ * Who is signing out, by where their phone can be removed: `owner` paired it from T3 Code;
+ * `coOwner` joined with a link and may remove their own devices; `teammate` joined with a link.
+ */
+export type KinPhoneLeaver = "owner" | "coOwner" | "teammate";
+
+/** "A", "A and B", "A, B and C". */
+const kinNameList = (names: ReadonlyArray<string>) =>
+  names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+
 /** What the phone's "This phone" page says about the computers and teams it holds. */
 export const KIN_THIS_PHONE_COPY = {
   title: "This phone",
@@ -32,14 +42,35 @@ export const KIN_THIS_PHONE_COPY = {
   /** `teammate` came in with a join link, so only a new one brings them back. */
   signOutDetail: (input: {
     readonly team: string;
-    readonly computer: string;
+    /** Every computer this phone holds for the team, the pressed one first. */
+    readonly computers: ReadonlyArray<string>;
     readonly teammate: boolean;
   }) =>
-    `This phone signs out of ${input.team} on ${input.computer} and removes the chats it holds. ${
+    `${
+      input.computers.length > 1
+        ? `This phone signs out of ${input.team} on every computer it holds for it, ${kinNameList(input.computers)}, and removes the chats they hold.`
+        : `This phone signs out of ${input.team} on ${input.computers[0]} and removes the chats it holds.`
+    } ${
       input.teammate
         ? "To come back, ask your team for a new join link: it brings back your chats and tasks."
-        : `To come back, connect this phone again from ${input.computer}.`
+        : `To come back, connect this phone again from ${input.computers[0]}.`
     }`,
+  /** Signed out, but these computers didn't take this phone's notices back. */
+  stillNotifiesTitle: (team: string) => `${team} may still notify this phone`,
+  stillNotifiesDetail: (input: {
+    readonly computers: ReadonlyArray<string>;
+    readonly leaver: KinPhoneLeaver;
+  }) => {
+    const names = kinNameList(input.computers);
+    const where = {
+      teammate: "Ask whoever runs your Kin to remove this phone from your devices.",
+      coOwner: "To stop them, remove this phone under Your devices from another device.",
+      owner: `To stop them, remove this phone under Authorized clients in Settings → Sharing & access on ${names}.`,
+    }[input.leaver];
+    return `You're signed out here, but ${names} didn't answer, so Kin couldn't stop ${
+      input.computers.length > 1 ? "their" : "its"
+    } notices. ${where}`;
+  },
   forget: "Forget",
   forgetTitle: (computer: string) => `Forget ${computer}?`,
   forgetDetail:
@@ -96,6 +127,53 @@ export function kinReplacedComputers<Id extends string>(
         ),
     )
     .map((old) => old.environmentId);
+}
+
+/** A computer This phone lists, as its Sign out sees it. */
+export interface KinExitCandidate<Id extends string = string> {
+  readonly environmentId: Id;
+  readonly label: string;
+  /** The team it answered with, live or last saved; null when it never said. */
+  readonly team: string | null;
+  readonly connected: boolean;
+}
+
+/**
+ * The computers that carry a "Sign out of <team>": one per team, the one Kin opens on first, then
+ * a connected one. A row that isn't connected and never named its team is no team to leave, so
+ * it offers Forget instead.
+ */
+export function kinSignOutExits<Id extends string>(
+  computers: ReadonlyArray<KinExitCandidate<Id>>,
+  host: Id | null,
+): ReadonlyArray<Id> {
+  const rank = (one: KinExitCandidate<Id>) =>
+    one.environmentId === host ? 0 : one.connected ? 1 : 2;
+  const teamOf = (one: KinExitCandidate<Id>) => one.team ?? one.label;
+  return computers
+    .filter((one) => one.environmentId === host || one.team !== null || one.connected)
+    .sort((a, b) => rank(a) - rank(b))
+    .filter((one, index, all) => all.findIndex((other) => teamOf(other) === teamOf(one)) === index)
+    .map((one) => one.environmentId);
+}
+
+/**
+ * What one "Sign out of <team>" leaves: every computer this phone holds for that team, the pressed
+ * one first. Leaving only that one would hand its Sign out to the next copy of the team.
+ */
+export function kinSignOutGroup<Id extends string>(
+  computers: ReadonlyArray<KinExitCandidate<Id>>,
+  exitId: Id,
+): ReadonlyArray<Id> {
+  const exit = computers.find((one) => one.environmentId === exitId);
+  if (exit === undefined) return [];
+  const teamOf = (one: KinExitCandidate<Id>) => one.team ?? one.label;
+  return [
+    exitId,
+    ...computers
+      .filter((one) => one.environmentId !== exitId && teamOf(one) === teamOf(exit))
+      .map((one) => one.environmentId),
+  ];
 }
 
 /**

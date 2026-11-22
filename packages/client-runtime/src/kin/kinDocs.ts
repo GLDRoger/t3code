@@ -4,6 +4,7 @@ import { KIN_CHECK_CONNECTION, kinFailureText } from "./kinAnswers.ts";
 import { kinIsDealKey } from "./kinDeals.ts";
 import {
   KinDocCardState,
+  type KinDocCardDraft,
   type KinChatId,
   type KinChatSummary,
   type KinDocDetail,
@@ -72,8 +73,19 @@ export const KIN_DOCS = {
   searchWithLists: "Search docs and lists",
   loading: "Loading docs",
   loadFailed: "Couldn't load docs",
-  archived: "Archived",
+  archived: "Deleted",
   current: "Current",
+  delete: "Delete",
+  deleting: "Deleting…",
+  deletedNotice: (title: string) => `Deleted ${title}`,
+  undo: "Undo",
+  restoreDoc: "Restore",
+  restoringDoc: "Restoring…",
+  restoredDoc: (title: string) => `Restored ${title}`,
+  deleteFailed: "Couldn't delete it. The doc is still in Docs.",
+  restoreDocFailed: "Couldn't restore it. It's still in Deleted.",
+  deleteOffline: "You're offline. The doc stays until the connection is back.",
+  deletedBanner: "This doc is deleted. Restore brings it back as it was.",
   contents: "Contents",
   history: "History",
   changes: "See changes",
@@ -119,12 +131,12 @@ export const KIN_DOCS = {
   },
   noMatch: {
     title: "No doc says that",
-    detail: "Try other words, or look in the archived ones.",
+    detail: "Try other words, or look in the deleted ones.",
   },
   passages: "Where it says so",
   emptyArchived: {
-    title: "Nothing archived",
-    detail: "A doc an agent archives is kept here, with its whole history.",
+    title: "Nothing deleted",
+    detail: "A deleted doc is kept here with its whole history, and Restore brings it back.",
   },
   // A teammate, until docs are shared with the team.
   unavailable: {
@@ -150,6 +162,16 @@ export const KIN_DOCS = {
   noAgent: "No agent keeps this doc, so there is nobody to ask yet.",
   // The host drew nothing for the block: it predates them, or the block is new since it drew.
   undrawn: { chart: "This chart can't be shown.", visual: "This visual can't be shown." },
+  draft: "Draft",
+  sendTo: (name: string) => `Send to ${name}`,
+  sending: "Sending…",
+  sentTo: (name: string) => `Sent to ${name} to approve.`,
+  sentHeld: (name: string) => `Sent. ${name} gets it to approve when they're back.`,
+  changesFirst: (name: string) => `${name} asked for changes first.`,
+  sendFailed: "Couldn't send it.",
+  sendOffline: "You're offline. Send it when the connection is back.",
+  noAccount: (service: string, by: string | null) =>
+    `No ${service} account is connected. ${by === null ? "You can connect one in Settings on your computer." : `${by} can connect one on their computer.`}`,
 } as const;
 
 /** A stretch of a doc's markdown, or what the host drew for one of its blocks. */
@@ -334,8 +356,20 @@ export interface KinDocRowView {
   readonly unfiled: boolean;
   readonly private: boolean;
   readonly archived: boolean;
+  /** "Deleted 2 hours ago by Rhea", for a deleted doc whose host says so. */
+  readonly deletedLine: string | null;
+  /** This viewer may bring it back (or delete it); the host decides again. */
+  readonly deletable: boolean;
   readonly accessibilityLabel: string;
 }
+
+/** Who deleted a doc and when, as its row in Deleted says it. */
+export const kinDocDeletedLine = (
+  deleted: NonNullable<KinDocListRow["deleted"]>,
+  names: KinWorkNames,
+  now: Date,
+) =>
+  `Deleted ${kinDocWhen(deleted.at, now)} by ${kinMidSentence(actorName(deleted.by, names, "you"))}`;
 
 export const kinDocKindOf = (row: Pick<KinDocListRow, "kind">): KinDocKind => row.kind ?? "other";
 export const kinDocUnfiled = (row: Pick<KinDocListRow, "party" | "project" | "company">) =>
@@ -361,6 +395,8 @@ export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): K
     unfiled: kinDocUnfiled(row),
     private: isPrivate,
     archived: row.archived,
+    deletedLine: row.deleted === undefined ? null : kinDocDeletedLine(row.deleted, names, now),
+    deletable: row.deletable === true,
     accessibilityLabel: [
       row.title,
       pinned ? KIN_WHAT_WE_SELL.pinned : null,
@@ -368,7 +404,7 @@ export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): K
       under === "" ? KIN_DOC_HOMES.unfiled : under,
       text,
       isPrivate ? "Private" : null,
-      row.archived ? "Archived" : null,
+      row.archived ? KIN_DOCS.archived : null,
     ]
       .filter(Boolean)
       .join(". "),
@@ -1148,24 +1184,86 @@ export function kinDocChat(
 const decodeDocCard = Schema.decodeUnknownOption(KinDocCardState);
 
 export interface KinDocCardView {
+  readonly orgId: KinOrgId;
+  readonly widgetId: KinWidget["widgetId"];
+  readonly chatId: KinChatId;
   readonly key: string;
   readonly title: string;
   readonly version: number;
   readonly change: Change;
   /** The version before, for "See changes"; null for a new doc. */
   readonly previousVersion: number | null;
+  /** One draft an agent wrote, with its text and where it goes up; null for any other doc. */
+  readonly draft: KinDocCardDraft | null;
 }
 
 export function kinDocCardView(widget: KinWidget): KinDocCardView | null {
   const state = Option.getOrNull(decodeDocCard(widget.state));
   if (state === null) return null;
   return {
+    orgId: widget.orgId,
+    widgetId: widget.widgetId,
+    chatId: widget.chatId,
+    draft: state.draft ?? null,
     key: state.key,
     title: state.title,
     version: state.version,
     change: state.change,
     previousVersion: state.previousVersion,
   };
+}
+
+/** What a draft's card offers its reader: the text to copy, Send to, and what Kin can't do. */
+export interface KinDocCardDraftView {
+  /** The draft as clean text, without the markdown marks (Copy text). */
+  readonly copyText: string;
+  /** The "Send to" button's label, or null when this reader has nothing to send up. */
+  readonly sendTo: string | null;
+  /** That it went up, and to whom, once sent; or that its owner asked for changes first. */
+  readonly sent: string | null;
+  /** Why Kin can't post it, and who can fix that. */
+  readonly noAccount: string | null;
+}
+
+/**
+ * A draft card for its reader: Copy text for everyone; Send to only for the teammate whose own
+ * draft it is, until sent, while they may still write in that chat. The owner and a co-owner
+ * have nothing to send up, so Copy text only.
+ */
+export function kinDocCardDraft(
+  card: Pick<KinDocCardView, "draft">,
+  ownerLevel: boolean,
+  readOnly: boolean,
+): KinDocCardDraftView | null {
+  const { draft } = card;
+  if (draft === null) return null;
+  return {
+    copyText: kinDocCopyText(draft.text),
+    sendTo:
+      draft.sendTo === undefined || draft.sent !== undefined || ownerLevel || readOnly
+        ? null
+        : KIN_DOCS.sendTo(draft.sendTo.name),
+    sent:
+      draft.sent === undefined
+        ? draft.changesFirst === undefined
+          ? null
+          : KIN_DOCS.changesFirst(draft.changesFirst.name)
+        : draft.sent.held === true
+          ? KIN_DOCS.sentHeld(draft.sent.name)
+          : KIN_DOCS.sentTo(draft.sent.name),
+    noAccount:
+      draft.noAccount === undefined
+        ? null
+        : KIN_DOCS.noAccount(draft.noAccount.service, ownerLevel ? null : draft.noAccount.by.name),
+  };
+}
+
+/** What a "Send to" tap came to: nothing to say once sent (the card says it), else why not. */
+export function kinDocSendUpProblem(result: AtomCommandResult<unknown, unknown>): string | null {
+  if (AsyncResult.isSuccess(result)) return null;
+  return kinFailureText(squashAtomCommandFailure(result), KIN_DOCS.sendFailed, {
+    gone: KIN_DOCS.gone.title,
+  });
 }
 
 /** A card names agents only, and the chat knows those by id. */
@@ -1208,7 +1306,7 @@ export interface KinSearchHitView {
   /** A contact's client, whose page opens for it; null for anything else or from an older host. */
   readonly clientKey: string | null;
   readonly private: boolean;
-  /** "Closed" for an entry, "Archived" for a doc; null while it is live. */
+  /** "Closed" for an entry, "Deleted" for a doc; null while it is live. */
   readonly closed: string | null;
   readonly accessibilityLabel: string;
 }
@@ -1234,7 +1332,7 @@ export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
     hit.section === undefined || hit.section.id === "top"
       ? null
       : { id: hit.section.id, title: hit.section.title };
-  const closed = !hit.closed ? null : hit.kind === "docs" ? "Archived" : "Closed";
+  const closed = !hit.closed ? null : hit.kind === "docs" ? KIN_DOCS.archived : "Closed";
   const kindLabel = hit.kind === "work" && kinIsDealKey(hit.key) ? "Deal" : KIND_LABEL[hit.kind];
   return {
     id: `${hit.recordId}:${hit.section?.id ?? ""}`,

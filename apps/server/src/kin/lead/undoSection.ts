@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { parseChanges } from "../work/recordRows.ts";
+import { leadNamer, toolNameOfText } from "../work/toolNames.ts";
 
 /** "Undo it", "put it back", "revert that": the owner taking back something an agent did. */
 const UNDO =
@@ -16,6 +17,8 @@ const WINDOW_MS = 48 * 60 * 60 * 1000;
 const TURNS = 3;
 const CHANGES = 24;
 const VALUE = 60;
+
+const WHO_FIELDS = new Set(["owner", "waitingOn", "assignedBy"]);
 
 const shown = (value: string | null) =>
   value === null
@@ -67,9 +70,15 @@ export const recentChanges = Effect.fn("KinLeadPrompt.recentChanges")(function* 
   for (const discussion of discussions)
     for (const row of yield* changesIn(input.orgId, discussion.discussionId))
       team.push({ from: `Team room, "${discussion.topic.replaceAll('"', "'")}"`, row });
+  const name = yield* leadNamer(input.orgId, input.agentId);
+  const named = (field: string, value: string | null) =>
+    value !== null && WHO_FIELDS.has(field) ? toolNameOfText(value, name) : value;
   const line = (row: (typeof rows)[number]) => {
     const fields = parseChanges(row.fieldsJson)
-      .map((change) => `${change.field} ${shown(change.from)} → ${shown(change.to)}`)
+      .map(
+        (change) =>
+          `${change.field} ${shown(named(change.field, change.from))} → ${shown(named(change.field, change.to))}`,
+      )
       .join("; ");
     return `${row.key} ${JSON.stringify(row.title)} ${row.kind}${fields === "" ? "" : `: ${fields}`}`;
   };

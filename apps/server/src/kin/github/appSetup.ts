@@ -1,7 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off - random state for GitHub's manifest flow.
 import * as NodeCrypto from "node:crypto";
 
-import { KinChatError, type KinOrgId } from "@t3tools/contracts";
+import {
+  KinChatError,
+  type KinGitHubAppLooked,
+  type KinGitHubHookAllowed,
+  type KinOrgId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -20,7 +25,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { readStoredApp, removeStoredApp, writeSeedTaken, writeStoredApp } from "./appStore.ts";
 import { knownRepos } from "./githubWatchStore.ts";
-import { HOOK_EVENTS, KIN_GITHUB_HOOK_ROUTE } from "./appHook.ts";
+import { HOOK_EVENTS, KIN_GITHUB_HOOK_ROUTE, KinGitHubHook } from "./appHook.ts";
 import { publicAddress } from "../publicAddress.ts";
 import { KinGitHubAppKey } from "./appKey.ts";
 import { appSettingsPage, KinGitHubApp, KinGitHubAppConfig } from "./KinGitHubApp.ts";
@@ -34,6 +39,8 @@ import { appSettingsPage, KinGitHubApp, KinGitHubAppConfig } from "./KinGitHubAp
 
 export const APP_SETUP_ROUTE = "/api/kin/github-app";
 const STATE_TTL_MS = 55 * 60_000;
+/** Part of the look is unsigned: thirty an hour at most, beside the background look's four. */
+const LOOK_EVERY_MS = 2 * 60_000;
 const NAME_MAX = 34;
 
 /**
@@ -101,6 +108,19 @@ export class KinGitHubAppSetup extends Context.Service<
       people: ReadonlyArray<PersonIdentity>,
       orgId: KinOrgId,
     ) => Effect.Effect<{ readonly settingsUrl: string | null }, KinChatError>;
+    /**
+     * An owner's yes to Kin setting the webhook of Settings' App, kept with the App's record, then
+     * set up right away. Disconnecting the App is the way back.
+     */
+    readonly allowHook: (
+      people: ReadonlyArray<PersonIdentity>,
+      orgId: KinOrgId,
+    ) => Effect.Effect<KinGitHubHookAllowed, KinChatError>;
+    /** Owner-level: asks GitHub about the App again now, at most once in two minutes. */
+    readonly look: (
+      people: ReadonlyArray<PersonIdentity>,
+      orgId: KinOrgId,
+    ) => Effect.Effect<KinGitHubAppLooked, KinChatError>;
   }
 >()("t3/kin/github/appSetup/KinGitHubAppSetup") {}
 
@@ -121,11 +141,13 @@ export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const app = yield* KinGitHubApp;
   const refreshes = yield* KinRefreshObserver;
+  const hook = yield* KinGitHubHook;
   const files = Context.make(FileSystem.FileSystem, yield* FileSystem.FileSystem).pipe(
     Context.add(Path.Path, yield* Path.Path),
     Context.add(ServerConfig, yield* ServerConfig),
   );
   const pending = new Map<string, Pending>();
+  let lookedAt: number | undefined;
   const refuse = (message: string) => new KinChatError({ reason: "not_allowed", message });
 
   const ownerAt = Effect.fn("KinGitHubAppSetup.ownerAt")(function* (
@@ -276,14 +298,13 @@ export const make = Effect.gen(function* () {
           "Kin's secret store on this computer refused it, so Kin can't use the App. Delete it on GitHub, then start again.",
         link: { label: "The App on GitHub", url: settingsUrl },
       } satisfies SetupOutcome;
-    yield* writeStoredApp({
-      appId: id,
-      slug,
-      name,
-      owner: owner?.login ?? "",
-      at: yield* Clock.currentTimeMillis,
-      by: entry.by,
-    }).pipe(Effect.provideContext(files), Effect.orDie);
+    const at = yield* Clock.currentTimeMillis;
+    yield* hook.exclusive(
+      writeStoredApp({ appId: id, slug, name, owner: owner?.login ?? "", at, by: entry.by }).pipe(
+        Effect.provideContext(files),
+        Effect.orDie,
+      ),
+    );
     yield* app.lookAgain();
     yield* refreshes.touch(entry.orgId, "connections");
     return {
@@ -300,14 +321,22 @@ export const make = Effect.gen(function* () {
   ) {
     yield* ownerAt(people, orgId);
     const state = yield* app.state();
-    // Declined before removing the record, so no restart in between adopts the host's App again.
-    if (Option.isSome(config.appId))
-      yield* writeSeedTaken(config.appId.value).pipe(Effect.provideContext(files), Effect.orDie);
-    const stored = yield* readStoredApp.pipe(Effect.provideContext(files));
-    if (Option.isSome(stored)) {
-      yield* appKey.remove(String(stored.value.appId));
-      yield* removeStoredApp.pipe(Effect.provideContext(files), Effect.orDie);
-    }
+    const stored = yield* hook.exclusive(
+      Effect.gen(function* () {
+        // Declined before removing the record, so no restart in between adopts the host's App again.
+        if (Option.isSome(config.appId))
+          yield* writeSeedTaken(config.appId.value).pipe(
+            Effect.provideContext(files),
+            Effect.orDie,
+          );
+        const stored = yield* readStoredApp.pipe(Effect.provideContext(files));
+        if (Option.isSome(stored)) {
+          yield* appKey.remove(String(stored.value.appId));
+          yield* removeStoredApp.pipe(Effect.provideContext(files), Effect.orDie);
+        }
+        return stored;
+      }),
+    );
     yield* app.lookAgain();
     yield* refreshes.touch(orgId, "connections");
     return {
@@ -323,7 +352,53 @@ export const make = Effect.gen(function* () {
     };
   });
 
-  return KinGitHubAppSetup.of({ start, page, complete, disconnect });
+  const allowHook = Effect.fn("KinGitHubAppSetup.allowHook")(function* (
+    people: ReadonlyArray<PersonIdentity>,
+    orgId: KinOrgId,
+  ) {
+    const by = yield* ownerAt(people, orgId);
+    const now = yield* Clock.currentTimeMillis;
+    const kept = yield* hook.exclusive(
+      Effect.gen(function* () {
+        const stored = yield* readStoredApp.pipe(Effect.provideContext(files));
+        if (Option.isNone(stored)) return false;
+        if (stored.value.hookAllowed === undefined)
+          yield* writeStoredApp({ ...stored.value, hookAllowed: { by, at: now } }).pipe(
+            Effect.provideContext(files),
+            Effect.orDie,
+          );
+        return true;
+      }),
+    );
+    if (!kept)
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message: "Kin has no GitHub App in Settings yet. Look again in a minute.",
+      });
+    const outcome = yield* hook.ensure();
+    yield* refreshes.touch(orgId, "connections");
+    return { outcome } satisfies KinGitHubHookAllowed;
+  });
+
+  const look = Effect.fn("KinGitHubAppSetup.look")(function* (
+    people: ReadonlyArray<PersonIdentity>,
+    orgId: KinOrgId,
+  ) {
+    yield* ownerAt(people, orgId);
+    // With no App or no key there is nothing to ask GitHub, and the guard isn't spent.
+    const stored = yield* readStoredApp.pipe(Effect.provideContext(files));
+    if (Option.isNone(stored) || Option.isNone(yield* appKey.get(String(stored.value.appId))))
+      return { looked: false } satisfies KinGitHubAppLooked;
+    const now = yield* Clock.currentTimeMillis;
+    if (lookedAt !== undefined && now - lookedAt < LOOK_EVERY_MS)
+      return { looked: false } satisfies KinGitHubAppLooked;
+    lookedAt = now;
+    yield* app.lookAgain();
+    yield* refreshes.touch(orgId, "connections");
+    return { looked: true } satisfies KinGitHubAppLooked;
+  });
+
+  return KinGitHubAppSetup.of({ start, page, complete, disconnect, allowHook, look });
 });
 
 export const layer = Layer.effect(KinGitHubAppSetup, make);

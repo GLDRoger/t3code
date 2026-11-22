@@ -113,6 +113,7 @@ export const kinCashEmpty = (cash: KinCash): boolean =>
   cash.accounts.length === 0 &&
   cash.byCurrency.length === 0 &&
   cash.notOfRecord.length === 0 &&
+  (cash.alertAccounts ?? []).length === 0 &&
   (cash.bankKnown?.through ?? null) === null;
 
 /** The lists the host's summary is built from. Everything else about a list is its definition. */

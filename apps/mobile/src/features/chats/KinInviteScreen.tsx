@@ -15,7 +15,7 @@ import {
 import { EnvironmentId, KinOrgId, type KinPersonPlaceSwitches } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { useState } from "react";
+import { useState, useRef, type ComponentRef } from "react";
 import { TextInput, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -25,13 +25,17 @@ import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinInviteLink } from "./components/KinInviteLink";
 import { useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
-import { KinGateView, useKinAskBeforeDiscard } from "./components/KinWorkPieces";
+import {
+  KinGateView,
+  KinWorkFieldBox,
+  KinWorkToggleRow,
+  useKinAskBeforeDiscard,
+} from "./components/KinWorkPieces";
 
 export type KinInviteParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -67,6 +71,7 @@ export function KinInviteScreen({ route }: StaticScreenProps<KinInviteParams>) {
 }
 
 function KinInviteForm(target: KinTeamTarget) {
+  const nameField = useRef<ComponentRef<typeof TextInput>>(null);
   const navigation = useNavigation();
   const { allowed, gate, actions, list } = useKinTeam(target);
   const [name, setName] = useState("");
@@ -148,11 +153,9 @@ function KinInviteForm(target: KinTeamTarget) {
               {problem === null ? null : <ErrorBanner message={problem} />}
               <View className="gap-2">
                 <ListSection>
-                  <View className="gap-2 px-4 py-3">
-                    <Text className="text-sm text-foreground-muted">
-                      {KIN_TEAM_ADD_COPY.nameLabel}
-                    </Text>
+                  <KinWorkFieldBox label={KIN_TEAM_ADD_COPY.nameLabel} input={nameField}>
                     <TextInput
+                      ref={nameField}
                       accessibilityLabel={KIN_TEAM_ADD_COPY.nameLabel}
                       value={name}
                       editable={!saving}
@@ -167,7 +170,7 @@ function KinInviteForm(target: KinTeamTarget) {
                       placeholderTextColorClassName="accent-placeholder"
                       className="min-h-8 font-sans text-base text-foreground"
                     />
-                  </View>
+                  </KinWorkFieldBox>
                 </ListSection>
                 <Text textRole="footnote" className="px-4 text-foreground-muted">
                   {KIN_TEAM_ADD_COPY.nameHint}
@@ -180,7 +183,7 @@ function KinInviteForm(target: KinTeamTarget) {
                     key={entry.place}
                     className={index === 0 ? undefined : "border-t border-border-subtle"}
                   >
-                    <ListToggleRow
+                    <KinWorkToggleRow
                       label={entry.label}
                       description={entry.detail}
                       value={sees[entry.place]}

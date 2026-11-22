@@ -82,7 +82,6 @@ import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { NavigationRow } from "../../components/ui/NavigationRow";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -101,6 +100,7 @@ import {
   KinTaskRow,
   KinTasksAllClear,
   KinWorkStaleNotice,
+  KinWorkToggleRow,
   kinCardCorners,
 } from "./components/KinWorkPieces";
 import { useKinViewerScope } from "./state/kinChatOnly";
@@ -379,7 +379,11 @@ export function KinTasksList(
               {within?.header}
               {shown === "rows" && (props.stale || listState.stale) ? (
                 <View className="px-4">
-                  <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
+                  <KinWorkStaleNotice
+                    environmentId={environmentId}
+                    onRetry={refresh}
+                    readAt={listState.readAt}
+                  />
                 </View>
               ) : null}
               {narrowed === null && grouped === null ? null : (
@@ -477,7 +481,7 @@ export function KinTasksList(
                 <View className="gap-2 pt-4">
                   <View className="px-4">
                     <ListSection title={KIN_WORK_HOME.elsewhere}>
-                      <ListToggleRow
+                      <KinWorkToggleRow
                         label={KIN_SEARCH.includeClosed}
                         value={found.closed}
                         onValueChange={search.setClosed}

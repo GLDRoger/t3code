@@ -121,7 +121,11 @@ import InvitePlaces from "./migrations/K197_InvitePlaces.ts";
 import ChatPins from "./migrations/K198_ChatPins.ts";
 import TaskStepsAndUrgent from "./migrations/K199_TaskStepsAndUrgent.ts";
 import SentUpDrafts from "./migrations/K200_SentUpDrafts.ts";
-import Arrivals from "./migrations/K903_Arrivals.ts";
+import SearchDocKinds from "./migrations/K201_SearchDocKinds.ts";
+import AndroidPushDevices from "./migrations/K202_AndroidPushDevices.ts";
+import Watches from "./migrations/K203_Watches.ts";
+import BankAlerts from "./migrations/K204_BankAlerts.ts";
+import Arrivals from "./migrations/K208_Arrivals.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -323,7 +327,11 @@ const migrations = {
   "198_ChatPins": ChatPins,
   "199_TaskStepsAndUrgent": TaskStepsAndUrgent,
   "200_SentUpDrafts": SentUpDrafts,
-  "903_Arrivals": Arrivals,
+  "201_SearchDocKinds": SearchDocKinds,
+  "202_AndroidPushDevices": AndroidPushDevices,
+  "203_Watches": Watches,
+  "204_BankAlerts": BankAlerts,
+  "208_Arrivals": Arrivals,
 };
 const loader = Migrator.fromRecord(migrations);
 

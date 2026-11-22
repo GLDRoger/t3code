@@ -143,6 +143,8 @@ it.live(
           due: null,
           review_by: "2000-01-01",
           invalid_at: "2000-01-01",
+          superseded_by: "spare-item",
+          what: `Invented maintenance window ${"detail ".repeat(40)}`,
         }),
       );
       // One thing the team can know and one for the owner alone; `a-item` was never labelled.
@@ -445,6 +447,42 @@ it.live(
           );
         assert.isFalse(toolRead.isError);
         assert.include(JSON.stringify(toolRead), "a-item");
+        // A hit carries enough to choose what to read; the rest of its front matter is a read away.
+        const toolSearch = yield* server
+          .callTool({ name: "memory_search", arguments: { kind: "claim" } })
+          .pipe(
+            Effect.provideService(McpInvocationContext, scope),
+            Effect.provideService(KinIdentity, identity),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+        assert.isFalse(toolSearch.isError);
+        const hits = toolSearch.structuredContent as typeof Lead.SearchResult.Encoded;
+        assert.deepStrictEqual(
+          ["a-item", "spare-item"].map((id) => hits.find((hit) => hit.id === id)),
+          [
+            {
+              id: "a-item",
+              kind: "claim",
+              title: "Invented service maintenance",
+              what: `Invented maintenance window ${"detail ".repeat(40)}`.slice(0, 199) + "…",
+              status: "open",
+              due: null,
+              reviewOverdue: false,
+              misleading: true,
+              supersededBy: "spare-item",
+              duplicate: false,
+            },
+            {
+              id: "spare-item",
+              kind: "claim",
+              title: "Invented service maintenance",
+              status: "open",
+              due: null,
+              reviewOverdue: true,
+              duplicate: false,
+            },
+          ],
+        );
         const opened = yield* service.read(scope, { id: KinMemoryItemId.make("a-item") });
         assert.isTrue("head" in opened && !opened.reviewOverdue);
         assert.isTrue("head" in opened && opened.misleading);
@@ -1054,9 +1092,9 @@ it.live(
         yield* sql`UPDATE kin_leads SET level = 'L1' WHERE agent_id = ${agentId}`;
         yield* writerService.discard(orgId, "fixture-wakeup");
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'fixture-wakeup'`;
-        // A turn that only set up a schedule saved it at once: its end is no restart.
+        // A turn that only set up a schedule or posted a review saved it at once: its end is no restart.
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'schedule-wakeup', org_id, agent_id, thread_id, run_id, model, started_at, 'running', event_ids, audience FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
-        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'schedule-wakeup', 'schedule:sch-fixture', 'fixture-hash')`;
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'schedule-wakeup', 'schedule:sch-fixture', 'fixture-hash'), (${orgId}, 'schedule-wakeup', 'github-review:evt-fixture', 'posting')`;
         yield* writerService.commitWakeup(orgId, "schedule-wakeup", "completed");
         assert.isFalse(notices.some((notice) => notice.includes("lost on restart")));
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'schedule-wakeup'`;
@@ -1150,9 +1188,6 @@ it.live(
         // The owner's words show only while he can open the message they came from.
         const quotesShown = Effect.gen(function* () {
           const read = whole(yield* service.read(scope, { id: KinMemoryItemId.make("new-claim") }));
-          const found = (yield* service.search(scope, { kind: "claim" })).find(
-            (item) => item.id === "new-claim",
-          );
           // And in the files the lead greps, its checkout.
           const { read: checkout } = yield* memory.prepareWakeup(orgId, "shadow-wakeup", {
             lead: agentId,
@@ -1160,14 +1195,13 @@ it.live(
           const file = yield* fs.readFileString(`${checkout}/claims/new-claim.md`);
           return [
             read.head.quote,
-            found !== undefined && "quote" in found ? found.quote : "none",
             file.includes(`quote: ${quoted.quote}`),
             file.includes("Invented"),
           ];
         });
-        assert.deepStrictEqual(yield* quotesShown, [quoted.quote, quoted.quote, true, true]);
+        assert.deepStrictEqual(yield* quotesShown, [quoted.quote, true, true]);
         yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id = ${message.messageId}`;
-        assert.deepStrictEqual(yield* quotesShown, [undefined, "none", false, true]);
+        assert.deepStrictEqual(yield* quotesShown, [undefined, false, true]);
         yield* sql`UPDATE kin_messages SET status = 'posted' WHERE message_id = ${message.messageId}`;
         const armed = () =>
           sql<{ nextRunAt: number | null }>`SELECT next_run_at AS "nextRunAt" FROM kin_triggers

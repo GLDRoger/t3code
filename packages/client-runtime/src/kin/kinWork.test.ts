@@ -33,6 +33,7 @@ import {
   kinWorkHostClients,
   kinWorkAssignees,
   kinWorkAudience,
+  kinWorkNameOfText,
   kinWorkAudienceMove,
   kinWorkHostEdits,
   kinWorkClientStays,
@@ -107,6 +108,30 @@ const detail = (patch: Partial<KinRecordDetail> = {}): KinRecordDetail => ({
   links: [],
   changes: [],
   ...patch,
+});
+
+describe("kinWorkName", () => {
+  const names = {
+    people: new Map([
+      ["p-me", "Rhea"],
+      ["p-zoya", "Zoya"],
+    ]),
+    agents: new Map([["a-fin", "Finance"]]),
+    me: KinPersonId.make("p-me"),
+  };
+  it.each([
+    ["yourself", "person:p-me", "You"],
+    ["a teammate", "person:p-zoya", "Zoya"],
+    ["an agent, by name", "agent:a-fin", "Finance"],
+    ["an unlisted teammate", "person:p-gone", "A teammate"],
+    ["an unlisted agent, never by id", "agent:a-gone", "An agent"],
+  ])("names %s", (_, text, expected) => {
+    expect(kinWorkNameOfText(text, names)).toBe(expected);
+  });
+
+  it("leaves text that names nobody", () => {
+    expect(kinWorkNameOfText("next week", names)).toBeNull();
+  });
 });
 
 describe("kinWorkListQuery", () => {
@@ -296,6 +321,14 @@ describe("kinWorkStaleNotice", () => {
     ["connecting", null],
   ] as const)("on a held page that is behind, with the link %s, says %j", (link, notice) => {
     expect(kinWorkStaleNotice(link)).toEqual(notice);
+  });
+
+  it("offline, says when the rows shown were last read, as a chat's offline line does", () => {
+    const readAt = Date.parse("2026-11-11T08:00:00.000Z");
+    expect(kinWorkStaleNotice("offline", readAt, (date) => date.toISOString())).toEqual({
+      message: "Offline. Last updated 2026-11-11T08:00:00.000Z.",
+      retry: false,
+    });
   });
 });
 

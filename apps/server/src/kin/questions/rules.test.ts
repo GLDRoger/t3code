@@ -89,6 +89,10 @@ it("a default that sends or moves money is never safe to take alone", () => {
   // A bare yes reads its question.
   assert.isFalse(safeDefault("Yes", "Shall I send VIOM the reminder?"));
   assert.isFalse(safeDefault("Yes", "Mark INV-8 paid?"));
+  // A field named for money is no act of moving it.
+  const ways = ["Paid-by + statement match, ~3 days (my pick)", "Full build, ~2 weeks"];
+  assert.isTrue(safeDefault(ways[0]!, "Which way for partner reimbursements?", { labels: ways }));
+  assert.isFalse(safeDefault("Pay it today", "Shall I settle INV-8?"));
   // Money terms are the owner's: a rate or an amount in any option, or a money record, in any currency.
   const terms = ["40% advance now, rest on milestones", "Full amount on delivery"];
   assert.isFalse(safeDefault(terms[0]!, "How should Orbit pay for P-3?", { labels: terms }));

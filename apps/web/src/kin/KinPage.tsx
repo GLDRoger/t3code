@@ -4,7 +4,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/
 import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
-import { isElectron } from "../env";
+import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { KinAgentPageHost } from "./KinAgentPage";
 import { KinChatList } from "./KinChatList";
 import { KinGroupDialogHost } from "./KinGroupDialog";
@@ -57,7 +57,7 @@ export function KinNoChat() {
   const target = kinNewLeadTarget(useKinHost());
   return (
     <>
-      <WorkspacePageHeader electron={isElectron}>
+      <WorkspacePageHeader electron={hasDesktopWindowChrome}>
         <WorkspaceBreadcrumb ariaLabel="Kin" className="md:hidden">
           <WorkspaceBreadcrumbItem current>
             <h1 className="truncate">Chats</h1>

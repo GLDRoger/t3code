@@ -9,6 +9,7 @@ import * as Clients from "../leadClients.ts";
 import * as Money from "../leadMoney.ts";
 import * as Work from "../leadWork.ts";
 import * as Comments from "../workComments.ts";
+import { liftMarks } from "../pageMarks.ts";
 import { KinWorkToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -22,7 +23,9 @@ const failure = (error: unknown) =>
 export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
   records_query: McpToolAccess.reads(
     Effect.fn("KinWorkToolkit.query")(function* (input) {
-      return yield* Work.query(yield* McpInvocationContext, input);
+      const result = yield* Work.query(yield* McpInvocationContext, input);
+      const [records, marks] = liftMarks(result.records);
+      return { ...result, records, ...marks };
     }, Effect.mapError(failure)),
   ),
   record_get: McpToolAccess.reads(
@@ -54,7 +57,9 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
   ),
   record_create: McpToolAccess.actsAsCaller(
     Effect.fn("KinWorkToolkit.create")(function* (input) {
-      return yield* Work.create(yield* McpInvocationContext, input);
+      const result = yield* Work.create(yield* McpInvocationContext, input);
+      const [records, marks] = liftMarks(result.records);
+      return { ...result, records, ...marks };
     }, Effect.mapError(failure)),
   ),
   record_update: McpToolAccess.actsAsCaller(
@@ -123,7 +128,9 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
   ),
   dates_query: McpToolAccess.reads(
     Effect.fn("KinWorkToolkit.dates")(function* (input) {
-      return yield* Money.datesQuery(yield* McpInvocationContext, input);
+      const result = yield* Money.datesQuery(yield* McpInvocationContext, input);
+      const [dates, marks] = liftMarks(result.dates);
+      return { ...result, dates, ...marks };
     }, Effect.mapError(failure)),
   ),
   company_profile: McpToolAccess.actsAsCaller(

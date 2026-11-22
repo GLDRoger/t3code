@@ -47,7 +47,7 @@ import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
-import { isElectron } from "../env";
+import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { KinDocPage } from "./KinDocPage";
@@ -411,7 +411,7 @@ export function KinPlaceView({
       : null;
 
   const header = (
-    <WorkspacePageHeader electron={isElectron}>
+    <WorkspacePageHeader electron={hasDesktopWindowChrome}>
       {/* A place is reached from the sidebar, so only a record has a Back. */}
       {(record === null && !taskPage) || wide ? null : (
         <Button

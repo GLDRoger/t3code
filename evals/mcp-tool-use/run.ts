@@ -64,20 +64,34 @@ import {
   type State,
 } from "./margin.ts";
 import { needsTopUp, refusals, RunManifest, tallies, tally } from "./gate.ts";
+import { casePattern } from "./pattern.ts";
+import { kinCaseProblems } from "./kin-checks.ts";
 import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import { type AppServer, openAppServer } from "./appServer.ts";
 import {
   fillKinRules,
   filledEvent,
+  isKinCase,
+  kinAnswer,
+  KinCaseAttachment,
   KIN_TOOLKITS,
+  kinDated,
+  kinJudgedCall,
   kinLeadBase,
   kinLeadInstructions,
   kinLoadedBefore,
   type KinSeatOptions,
   kinSessionOf,
   kinToolVisible,
+  kinTurnBlocks,
+  type KinTurnFiles,
+  kinTurnFiles,
+  kinUnmocked,
+  longTurnNote,
+  modelCallLines,
   rescuePrompt,
   shownText,
+  unmockedLines,
   unredact,
 } from "./kin.ts";
 import { runAppServerSample } from "./kinAppServer.ts";
@@ -387,13 +401,16 @@ export const McpToolUseCase = Schema.Struct({
     /**
      * Canned tool results by bare name. `"default"` uses the runner's result. A device `DeviceError`
      * or preview `PreviewAutomationError` fails inside T3; `{"$error": value}` fails with value, as a
-     * declared tool failure does; `{"$sequence": [...]}` answers call n with entry n, then the last.
+     * declared tool failure does; `{"$sequence": [...]}` answers call n with entry n, then the last;
+     * `{"$when": [{"args", "result"}], "$else"}` answers with the first rule whose args match.
      */
     mocks: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
     /** Regexes on one part of a shell command. A match wins over the shell simulator. */
     shellMocks: Schema.optional(
       Schema.Array(Schema.Struct({ match: Schema.String, output: Schema.String })),
     ),
+    /** Kin: files on the turn's message, handed to the turn as Kin does (`kinTurnFiles`). */
+    attachments: Schema.optional(Schema.Array(KinCaseAttachment)),
     /** The thread is a side chat's first turn: T3 puts the parent's digest ahead of `prompt`. */
     sideChat: Schema.optional(
       Schema.Struct({ parentThreadId: Schema.String, digest: Schema.Array(Schema.String) }),
@@ -1009,6 +1026,8 @@ type Sample = {
   backgroundWait?: BackgroundWait;
   /** Calls so far per mocked tool, for mocks that answer in sequence. */
   readonly mockCalls: Map<string, number>;
+  /** The case's `attachments` as Kin hands them to the turn, once `kinTurnFiles` built them. */
+  kinFiles?: KinTurnFiles | undefined;
 };
 
 const SHELL_TOOLS = new Set(["Bash", "Read", "Edit", "Write", "WebFetch"]);
@@ -1070,8 +1089,17 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
   };
 };
 
-/** A `{"$sequence": [...]}` mock answers its nth call with the nth result, then repeats the last. */
-const nextMock = (sample: Sample, name: string, mock: unknown) => {
+/**
+ * A `{"$when": [{"args", "result"}], "$else"}` mock answers with the first rule whose args match the
+ * call's, as `calls` matches them, else `$else`. A `{"$sequence": [...]}` mock answers its nth call
+ * with the nth result, then repeats the last.
+ */
+const nextMock = (sample: Sample, name: string, given: unknown, input: unknown) => {
+  const mock =
+    isRecord(given) && Array.isArray(given.$when)
+      ? (given.$when.find((rule) => isRecord(rule) && matches(rule.args ?? {}, input))?.result ??
+        given.$else)
+      : given;
   if (!isRecord(mock) || !Array.isArray(mock.$sequence) || mock.$sequence.length === 0) return mock;
   const n = sample.mockCalls.get(name) ?? 0;
   sample.mockCalls.set(name, n + 1);
@@ -1254,7 +1282,14 @@ export const buildMessages = (sample: Sample) => {
       : inline;
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   if (testCase.prompt !== "")
-    push("user", text(role === "delegated-child" ? childPrompt() : prompt));
+    push(
+      "user",
+      ...kinTurnBlocks(
+        sample.kinFiles,
+        role === "delegated-child" ? childPrompt() : prompt,
+        base.codex !== undefined,
+      ),
+    );
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));
@@ -2008,7 +2043,7 @@ export const shellOutput = (content: ReadonlyArray<Block>) => {
 export const mockOutput = (sample: Sample, command: string) =>
   /&&|\|\||[;|\n]/.test(command.trim())
     ? undefined
-    : sample.testCase.setup.shellMocks?.find((mock) => new RegExp(mock.match).test(command))
+    : sample.testCase.setup.shellMocks?.find((mock) => casePattern(mock.match).test(command))
         ?.output;
 
 type Config = {
@@ -2021,6 +2056,7 @@ type Config = {
     readonly headers: Readonly<Record<string, string>>;
   };
   readonly effort: string;
+  /** Model calls per sample; 0 is no limit (`--no-step-limit`), and a case's own is ignored. */
   readonly maxSteps: number;
   readonly shellModel: ShellModel;
   /** `--harness app-server`: GPT models run in `codex app-server` as Kin runs them (`providers/codex.ts`). */
@@ -2132,7 +2168,12 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   if (isPageTool(name) && typeof input.path === "string" && !input.path.startsWith("/")) {
     return failed(`${input.path} is not a readable HTML document. Pass an absolute path.`);
   }
-  const mock = nextMock(sample, name, testCase.setup.mocks?.[name]);
+  const mock = kinAnswer(
+    name,
+    nextMock(sample, name, testCase.setup.mocks?.[name], input),
+    input,
+    testCase.setup.world,
+  );
   if (isRecord(mock) && mock.$error !== undefined) return failed(valueText(mock.$error));
   if (isT3Name(call.name) && PREVIEW_TOOLS.has(name)) {
     if (testCase.setup.world?.browserAgentAccess === false)
@@ -2213,7 +2254,7 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
 /** GPT models write ’ ‘ “ ” where cases write ' and ": text is matched with them made plain. */
 const plainQuotes = (text: string) => text.replaceAll(/[‘’]/g, "'").replaceAll(/[“”]/g, '"');
 const matchesPattern = (pattern: string, value: string) =>
-  new RegExp(plainQuotes(pattern)).test(plainQuotes(value));
+  casePattern(plainQuotes(pattern)).test(plainQuotes(value));
 
 const BOUND = /^([<>]=)(-?\d+(?:\.\d+)?)$/;
 /**
@@ -2665,7 +2706,7 @@ const callModel = (apiKey: string, body: unknown, proxy?: Config["proxy"]) =>
   );
 
 /** The rubric's checks, answered by the shell model about the turn's visible reply and calls. */
-const judged = Effect.fn("evaluateMcpToolUse.rubric")(function* (
+export const judged = Effect.fn("evaluateMcpToolUse.rubric")(function* (
   testCase: McpToolUseCase,
   sample: SampleRun,
   config: Config,
@@ -2677,7 +2718,11 @@ const judged = Effect.fn("evaluateMcpToolUse.rubric")(function* (
     return yield* Effect.die(new Error("A rubric needs a Claude shell model."));
   const turn = {
     text: sample.text,
-    calls: sample.calls.map((call) => `${call.tool} ${valueText(call.input).slice(0, 600)}`),
+    calls: sample.calls.map((call) =>
+      isKinCase(testCase)
+        ? kinJudgedCall(call)
+        : `${call.tool} ${valueText(call.input).slice(0, 600)}`,
+    ),
   };
   const response = yield* callModel(
     config.apiKey,
@@ -2728,7 +2773,7 @@ export const ranCalls = (
  * Runs one sample until the model ends its turn, uses up its steps, or fails a check that no
  * later step can undo. Tokens add up in `spent`, so a sample that errors still reports them.
  */
-const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
+export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   testCase: McpToolUseCase,
   config: Config,
   base: Base,
@@ -2739,6 +2784,7 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   const sample = { ...makeSample(testCase, base), shellUsage: spent.shellUsage };
   yield* withDevices(sample);
   yield* withBackgroundWait(sample);
+  sample.kinFiles = yield* kinTurnFiles(testCase);
   const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
   const messages = buildMessages(sample);
   const input = base.codex ? codexMessages(messages) : undefined;
@@ -2753,6 +2799,7 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   // Codex's code-mode cells take more model calls, so a case's own budget grows for it too.
   const extra = isCodex(config.model) ? 4 : 0;
   let maxSteps = testCase.maxSteps === undefined ? config.maxSteps : testCase.maxSteps + extra;
+  if (config.maxSteps === 0) maxSteps = Infinity;
   // Kin's rescue: a finished lead turn that owed words and said none is asked once, as a new turn.
   let rescue: string | undefined;
   for (let step = 0; step < maxSteps; step++) {
@@ -2770,6 +2817,8 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     }
     messages.push({ role: "assistant", content: response.content });
     responses.push(response.content);
+    const long = config.maxSteps === 0 ? longTurnNote(testCase.id, responses.length) : undefined;
+    if (long !== undefined) yield* Effect.log(long);
     shown = shownText(responses);
     const texts = response.content.filter(isText).map((block) => block.text);
     const uses = response.content.filter(isToolUse);
@@ -2865,6 +2914,7 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     text: shown,
     stopReason,
     finalText,
+    modelCalls: responses.length,
     ...(rescue === undefined ? {} : { rescue }),
     silent: rescuePrompt(sample, normalizeToolName) !== undefined,
     cwd: base.environment.cwd,
@@ -2883,11 +2933,14 @@ type ResultRow = Pick<McpToolUseCase, "id" | "kind" | "pattern"> & {
   readonly withinMargin?: boolean;
   /** `max_steps` when the step limit ended the turn. */
   readonly stopReason?: string;
+  readonly modelCalls?: number;
   /** Set when the sample could not run to the end, even after retries. It is not graded. */
   readonly error?: string;
   readonly usage: Usage;
   readonly shellUsage: Usage;
   readonly latencyMs?: number;
+  /** Kin tools the sample called that its case has no mock for. */
+  readonly unmocked?: ReadonlyArray<string>;
 };
 
 /** The share of samples that passed. Samples that errored are left out: NaN if all did. */
@@ -2948,6 +3001,7 @@ export const summarize = (
     readonly model: Model;
     /** Cases' `margin` settings, by id. */
     readonly margins?: ReadonlyMap<string, CaseMargin>;
+    readonly noStepLimit?: boolean;
   },
   before?: Map<string, number>,
 ) => {
@@ -3008,6 +3062,7 @@ export const summarize = (
           `- Cut off by the step limit: ${cutOff(rows).length} samples, ${cutOff(rows).filter((row) => !row.pass).length} graded fail. Each ended on max_steps before replying; read its calls to tell a turn that needed more steps from one that looped.`,
         ]
       : []),
+    ...(options.noStepLimit === true ? modelCallLines(rows) : []),
     `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample${codex ? ", at OpenAI's API prices; the run itself bills whatever provider the Codex config (`CODEX_HOME`) selects" : ""}.`,
     `- Agent tokens: ${agent.tokens} ($${agent.cost.toFixed(2)}).`,
     ...latencyLine(rows),
@@ -3022,6 +3077,7 @@ export const summarize = (
     ...table("Cases", caseKey, before !== undefined),
     ...table("By kind", (row) => row.kind),
     ...table("By pattern", (row) => row.pattern),
+    ...unmockedLines(rows),
   ].join("\n");
 };
 
@@ -3041,6 +3097,7 @@ const Flags = Schema.Struct({
   "top-up": Schema.optional(PositiveInt),
   concurrency: PositiveInt,
   "max-steps": Schema.optional(PositiveInt),
+  "no-step-limit": Schema.Boolean,
   effort: Schema.optional(Schema.Literals(EFFORTS)),
   "shell-model": Schema.Literals([
     ...(Object.keys(PRICES) as Array<PricedModel>),
@@ -3071,12 +3128,13 @@ const decodeBaselineRow = Schema.decodeUnknownEffect(
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(RunManifest));
 /** Files beside the runner that neither run samples nor grade them. */
-const NOT_GRADER = new Set([
+export const NOT_GRADER: ReadonlySet<string> = new Set([
   "gate.ts",
   "compare.ts",
   "regrade.ts",
   "trim-capture.ts",
   "estimate.ts",
+  "kin-checks.ts",
 ]);
 const string = { type: "string" } as const;
 
@@ -3097,6 +3155,8 @@ const main = Effect.gen(function* () {
       concurrency: { ...string, default: "8" },
       // Unset: 6 for Claude, 10 for Codex, whose code-mode cells take more steps.
       "max-steps": string,
+      // Kin's runs: no bound on model calls per sample. The manifest records it as maxSteps 0.
+      "no-step-limit": { type: "boolean", default: false },
       effort: string,
       "shell-model": { ...string, default: "claude-haiku-5-5" },
       // T3's text must work for every user, so the captured CLAUDE.md is dropped by default.
@@ -3308,12 +3368,14 @@ const main = Effect.gen(function* () {
       ),
     );
   }
-  const baseFor = (testCase: McpToolUseCase) => bases.get(baseKey(testCase)) ?? base;
+  const baseFor = (testCase: McpToolUseCase) =>
+    kinDated(testCase, bases.get(baseKey(testCase)) ?? base);
   const effort = flags.effort ?? base.codex?.reasoning.effort ?? "high";
   // The first request of a sample, as the dry run prints it.
   const firstRequest = Effect.fnUntraced(function* (testCase: McpToolUseCase) {
     const sample = makeSample(testCase, baseFor(testCase));
     yield* Effect.scoped(Effect.andThen(withDevices(sample), withBackgroundWait(sample)));
+    sample.kinFiles = yield* kinTurnFiles(testCase);
     const messages = buildMessages(sample);
     const body = sample.base.codex
       ? codexRequest(sample.base, codexMessages(messages))
@@ -3334,7 +3396,11 @@ const main = Effect.gen(function* () {
         (placeholder) => `placeholder left unfilled: ${placeholder}`,
       );
       // Codex lists its tools differently; only Claude requests are checked for tool names.
-      const found = [...(sample.base.codex ? [] : caseProblems(testCase, tools)), ...unfilled];
+      const found = [
+        ...(sample.base.codex ? [] : caseProblems(testCase, tools)),
+        ...unfilled,
+        ...kinCaseProblems(testCase, tools),
+      ];
       problems.push(...found.map((problem) => `${testCase.id}: ${problem}`));
       sizes.push({
         prefixChars: (yield* encodeJson([sample.base.system, sample.tools])).length,
@@ -3379,7 +3445,7 @@ const main = Effect.gen(function* () {
     model: flags.model,
     ...(replay || !isPricedModel(flags["shell-model"]) ? { proxy: proxyConfig() } : {}),
     effort,
-    maxSteps: flags["max-steps"] ?? (codex ? 10 : 6),
+    maxSteps: flags["no-step-limit"] ? 0 : (flags["max-steps"] ?? (codex ? 10 : 6)),
     shellModel: flags["shell-model"],
     ...(appServer
       ? {
@@ -3507,8 +3573,10 @@ const main = Effect.gen(function* () {
           ];
           const { secret } = testCase.expect;
           const state = sampleState(checks);
+          const unmocked = kinUnmocked(testCase, sample.calls);
           return {
             ...identity,
+            ...(unmocked.length > 0 ? { unmocked } : {}),
             pass: state !== "fail",
             ...(state === "margin" ? { withinMargin: true } : {}),
             checks,
@@ -3592,6 +3660,7 @@ const main = Effect.gen(function* () {
       header: [header, t3ContextReport(flags.model), ...stopped].join("\n"),
       shellModel: config.shellModel,
       model: config.model,
+      noStepLimit: config.maxSteps === 0,
       margins: new Map(
         selected.flatMap((testCase) =>
           testCase.margin === undefined ? [] : [[testCase.id, testCase.margin] as const],

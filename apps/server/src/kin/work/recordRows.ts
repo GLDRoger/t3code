@@ -38,7 +38,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
 import { ownerLevelSql } from "../people/KinAccess.ts";
-import { listNameOf, parseFields } from "./lists.ts";
+import { fieldList, listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
 import { DAY_MS } from "../durations.ts";
@@ -273,6 +273,14 @@ export const invoiceDue = (sql: SqlClient.SqlClient) => sql`COALESCE(r.due_at,
         (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))`,
   )})`;
 
+/** `owedInvoices`' overdue in SQL, for an invoice `r`: counted, issued, a balance left, past due. */
+export const overdueInvoice = (sql: SqlClient.SqlClient, now: number) => sql`(
+  r.register_id = 'invoices' AND ${countedEntry(sql)} AND r.state = 'waiting'
+  AND r.amount_minor IS NOT NULL AND r.amount_minor > (SELECT COALESCE(SUM(p.amount_minor), 0)
+    FROM kin_record_payments p
+    WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL)
+  AND ${invoiceDue(sql)} < ${now})`;
+
 /**
  * Issued invoices still owed, oldest due first: counted, issued (waiting), with an amount and a
  * balance after payments not taken back. Overdue is past `invoiceDue`. What a client owes, the
@@ -465,7 +473,26 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
     ...listNameOf(row.registerId),
     ...stepsCount(row),
     ...(row.registerId === "work" && row.urgent === 1 ? { urgent: true as const } : {}),
+    ...alsoOnShown(row),
   };
+};
+
+/** `person:<id>` or `agent:<id>`, as a list of people in an entry's fields stores one. */
+export const storedPrincipal = (text: string) => {
+  const at = text.indexOf(":");
+  return at < 1 || at === text.length - 1 ? null : principal(text.slice(0, at), text.slice(at + 1));
+};
+/** Who is on a task besides its holder (`fields.alsoOn`), in the order they were put on it. */
+const alsoOnOf = (row: Pick<RecordRow, "registerId" | "fieldsJson">) => {
+  if (row.registerId !== "work" || !row.fieldsJson.includes('"alsoOn"')) return [];
+  return fieldList(parseFields(row.fieldsJson), "alsoOn").flatMap((text) => {
+    const who = storedPrincipal(text);
+    return who === null ? [] : [who];
+  });
+};
+const alsoOnShown = (row: RecordRow) => {
+  const alsoOn = alsoOnOf(row);
+  return alsoOn.length === 0 ? {} : { alsoOn };
 };
 
 /** A task's steps as stored: in order, each its words and whether it is ticked. */
@@ -506,7 +533,12 @@ const givenOf = (row: RecordRow): { readonly givenBy?: KinWorkPrincipal } => {
 };
 
 const handedBackOf = (row: RecordRow) => {
-  if (row.registerId !== "work" || row.handedBackAt === null || row.handedBackId === null)
+  if (
+    row.registerId !== "work" ||
+    isClosed(row.state) ||
+    row.handedBackAt === null ||
+    row.handedBackId === null
+  )
     return {};
   const by: KinWorkPrincipal =
     row.handedBackKind === "agent"
@@ -591,6 +623,7 @@ type LinkRow = {
   readonly otherKey: string | null;
   readonly otherTitle: string | null;
   readonly otherNumber: unknown;
+  readonly otherDeleted: number | null;
   readonly workerId: string | null;
   readonly workerThreadId: string | null;
   readonly workerEnvironmentId: string | null;
@@ -623,6 +656,48 @@ export const parseChanges = (json: string): ReadonlyArray<FieldChange> => {
 /** A history line as stored: its fields keep their `names` until a reader puts them in words. */
 export type StoredChange = KinRecordChange & { readonly fields: ReadonlyArray<FieldChange> };
 
+/**
+ * Who wrote an entry's title and notes up to change `upTo`, newest first, and who made the entry
+ * those words began on. A repeat's next occurrence (`spawnNext`) is made by Kin with the words of
+ * the one it follows, so its words are that one's, as they were when it was made.
+ */
+export const wordsOf = Effect.fn("KinRecords.wordsOf")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  upTo: number = Number.MAX_SAFE_INTEGER,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const copied = sql`r.created_by_kind = 'system' AND r.origin_key LIKE 'repeat:%'`;
+  const chain = sql`WITH RECURSIVE chain(record_id, bound) AS (
+      SELECT ${recordId}, ${upTo}
+      UNION
+      SELECT substr(r.origin_key, 8), (SELECT MIN(c.seq) FROM kin_record_changes c
+          WHERE c.org_id = ${orgId} AND c.record_id = chain.record_id)
+        FROM chain JOIN kin_records r ON r.org_id = ${orgId} AND r.record_id = chain.record_id
+        WHERE ${copied})`;
+  const writers = yield* sql<{
+    actorKind: string;
+    actorId: string | null;
+    coding: number;
+    notes: number;
+  }>`${chain} SELECT c.actor_kind AS "actorKind", c.actor_id AS "actorId",
+      c.coding_agent_key IS NOT NULL AS coding,
+      EXISTS (SELECT 1 FROM json_each(c.fields_json) f
+        WHERE json_extract(f.value, '$.field') = 'notes') AS notes
+    FROM chain JOIN kin_records r ON r.org_id = ${orgId} AND r.record_id = chain.record_id
+    JOIN kin_record_changes c ON c.org_id = r.org_id AND c.record_id = r.record_id
+      AND c.seq <= chain.bound
+    WHERE EXISTS (SELECT 1 FROM json_each(c.fields_json) f
+        WHERE json_extract(f.value, '$.field') IN ('title', 'notes'))
+      AND NOT (c.kind = 'created' AND ${copied})
+    ORDER BY c.seq DESC`;
+  const [madeBy] = yield* sql<{ kind: string; id: string | null }>`${chain}
+    SELECT r.created_by_kind AS kind, r.created_by_id AS id
+    FROM chain JOIN kin_records r ON r.org_id = ${orgId} AND r.record_id = chain.record_id
+    WHERE NOT (${copied}) ORDER BY r.created_at LIMIT 1`;
+  return { writers, madeBy };
+});
+
 const changesOf = Effect.fn("KinRecords.changesOf")(function* (
   orgId: KinOrgId,
   recordId: string,
@@ -650,6 +725,7 @@ const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, reco
       l.label, l.created_at AS "createdAt",
       o.record_id AS "otherId", o.key AS "otherKey", o.title AS "otherTitle",
       json_extract(o.fields_json, '$.number') AS "otherNumber",
+      (o.register_id = 'docs' AND o.state = 'dropped') AS "otherDeleted",
       k.worker_id AS "workerId", k.thread_id AS "workerThreadId",
       k.environment_id AS "workerEnvironmentId", k.ended_at AS "workerEndedAt",
       k.pull_request_url AS "workerPullUrl", k.pull_request_number AS "workerPullNumber"
@@ -674,6 +750,7 @@ const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, reco
             title: row.otherTitle as KinRecord["title"],
           },
           ...issuedNumber(row.otherNumber),
+          ...(row.otherDeleted === 1 ? { deleted: true as const } : {}),
         }),
     ...(row.workerId === null
       ? {}

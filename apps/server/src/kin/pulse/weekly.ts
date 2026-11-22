@@ -6,6 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { sentMail } from "../connections/Sending.ts";
 import { goalLine, goalsNow } from "../work/goals.ts";
 import { homeCurrency, readProfile } from "../work/companyProfile.ts";
+import { projectHealths } from "../work/crm.ts";
 import { weeklyPipelineOf } from "../work/dealStages.ts";
 import { mondayCounts } from "../work/deals.ts";
 import { aboutTotal, addUp, dayIn, formatMoney, formatMoneyPlain } from "../work/money.ts";
@@ -72,6 +73,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
   );
 
   const projects = yield* sql<{
+    recordId: string;
     key: string;
     title: string;
     state: string;
@@ -81,7 +83,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     late: number;
     done: number;
     changes: number;
-  }>`SELECT p.key, p.title, p.state, p.due_at AS "dueAt", c.title AS client,
+  }>`SELECT p.record_id AS "recordId", p.key, p.title, p.state, p.due_at AS "dueAt", c.title AS client,
       (SELECT COUNT(*) FROM kin_records t WHERE t.org_id = p.org_id
         AND t.project_id = p.record_id AND t.register_id = 'work'
         AND t.state IN ${sql.in(OPEN)}) AS open,
@@ -101,6 +103,11 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
       AND (p.state = 'open' OR (p.state = 'done' AND p.closed_at >= ${weekAgo}))
     ORDER BY p.due_at IS NULL, p.due_at, p.key
     LIMIT ${CAP}`;
+  const health = yield* projectHealths(
+    orgId,
+    now,
+    projects.map((project) => project.recordId),
+  );
   const byStatus: Record<"behind" | "moving" | "quiet" | "done", Array<string>> = {
     behind: [],
     moving: [],
@@ -108,10 +115,13 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     done: [],
   };
   for (const project of projects) {
+    // Off track, less an overdue invoice or a quiet client: Overdue and Quiet clients list those.
+    const because = health.get(project.recordId)?.because;
+    const waiting = because?.waitingOverAWeek ?? 0;
     const status =
       project.state === "done"
         ? "done"
-        : project.late > 0 || (project.dueAt !== null && project.dueAt < now)
+        : because !== undefined && (because.targetPassed || because.late > 0 || waiting > 0)
           ? "behind"
           : project.changes === 0
             ? "quiet"
@@ -122,6 +132,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
         project.done > 0 ? `${project.done} done this week` : null,
         project.state === "done" ? null : `${project.open} open`,
         project.late > 0 ? `${project.late} late` : null,
+        waiting > 0 ? `${waiting} waiting over a week` : null,
         project.dueAt === null ? null : `target ${dayIn(project.dueAt, zone)}`,
       ]
         .filter((part) => part !== null)

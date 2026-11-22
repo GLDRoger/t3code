@@ -6,8 +6,11 @@ import {
   createKinPushRefusals,
   kinPushHost,
   kinPushLeaveOrgs,
+  kinPushLeaveNotice,
   kinPushLeaveOutcome,
   kinPushPermissionStep,
+  kinPushRegisterInput,
+  kinPushToken,
 } from "./kinPushRegistration";
 
 const env = EnvironmentId.make("env-1");
@@ -121,5 +124,56 @@ describe("leaving a host", () => {
     // Refused, timed out, or not sent because the host was offline.
     expect(kinPushLeaveOutcome({ orgs: 2, answers: [true, false] })).toBe("unconfirmed");
     expect(kinPushLeaveOutcome({ orgs: 1, answers: null })).toBe("unconfirmed");
+
+    // Signing out of a team leaves each of its computers: one notice at most, naming who didn't answer.
+    const left = [
+      { computer: "Studio desktop", outcome: "confirmed" },
+      { computer: "Old laptop", outcome: "nothing" },
+    ] as const;
+    expect(kinPushLeaveNotice({ team: "Ambermill", leaver: "teammate", left })).toBeNull();
+    const silent = [
+      ...left,
+      { computer: "Spare (10.0.0.4:3773)", outcome: "unconfirmed" },
+      { computer: "Spare (10.0.0.5:3773)", outcome: "unconfirmed" },
+    ] as const;
+    expect(kinPushLeaveNotice({ team: "Ambermill", leaver: "teammate", left: silent })).toEqual({
+      title: "Ambermill may still notify this phone",
+      detail:
+        "You're signed out here, but Spare (10.0.0.4:3773) and Spare (10.0.0.5:3773) didn't answer, so Kin couldn't stop their notices. Ask whoever runs your Kin to remove this phone from your devices.",
+    });
+    const one = [...left, { computer: "Spare", outcome: "unconfirmed" }] as const;
+    expect(kinPushLeaveNotice({ team: "Ambermill", leaver: "owner", left: one })?.detail).toBe(
+      "You're signed out here, but Spare didn't answer, so Kin couldn't stop its notices. To stop them, remove this phone under Authorized clients in Settings → Sharing & access on Spare.",
+    );
+    expect(kinPushLeaveNotice({ team: "Ambermill", leaver: "coOwner", left: one })?.detail).toBe(
+      "You're signed out here, but Spare didn't answer, so Kin couldn't stop its notices. To stop them, remove this phone under Your devices from another device.",
+    );
+  });
+});
+
+describe("kinPushRegisterInput", () => {
+  it("builds the same registration on Android as on an iPhone, with the platform and its token", () => {
+    const orgId = KinOrgId.make("org-a");
+    const fcm = "dQw4w9WgXcQ:APA91bH-Mixed_Case-Token";
+    expect(kinPushToken("ios", "ABCDEF0123")).toBe("abcdef0123");
+    expect(kinPushToken("android", fcm)).toBe(fcm);
+    const ios = kinPushRegisterInput({ os: "ios", orgId, token: "abcdef0123", sandbox: true });
+    const android = kinPushRegisterInput({ os: "android", orgId, token: fcm, sandbox: true });
+    expect(ios).toEqual({
+      orgId,
+      token: "abcdef0123",
+      platform: "ios",
+      apsEnvironment: "development",
+    });
+    expect(android).toEqual({
+      ...ios,
+      token: fcm,
+      platform: "android",
+      apsEnvironment: "production",
+    });
+    expect(
+      kinPushRegisterInput({ os: "ios", orgId, token: "abcdef0123", sandbox: false })
+        .apsEnvironment,
+    ).toBe("production");
   });
 });

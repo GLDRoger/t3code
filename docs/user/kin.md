@@ -36,19 +36,20 @@ Once you're in, you add your other devices yourself. Open **Your devices** (unde
 web, in **Settings** on the phone) and choose **Link a device**. Kin shows a link and a QR code that
 work once, for 10 minutes. Scan the QR code with the new phone, or open the link in the new
 browser. Each time a device is linked, Kin tells you in your chat with the Team agent; without a
-Team agent, in your direct chats. Your iPhones with notifications on also get an alert, when phone
-alerts are set up for your company's Kin. Android phones don't get this alert yet. If no notice
-reaches you, check **Your devices** for any you didn't add.
+Team agent, in your direct chats. Your phones with notifications on also get an alert, when phone
+alerts are set up for your company's Kin. If no notice reaches you, check **Your devices** for any
+you didn't add.
 
 A linked device stays signed in for 30 days, then you link it again the same way. You can have 10
 devices at a time. Remove a device from the same list to sign it out at once, along with every
 device linked from it and the coding agent keys made on them. Signing a device out from **Sharing &
-access** does the same. **Leave this team**, or removing the computer, on a phone forgets the team on that phone and asks
-your Kin to stop that team's notifications there. If your Kin doesn't confirm, because the phone is
-offline or Kin doesn't answer, the phone says so, and the notifications keep coming until you
-remove the phone from your list. The device stays in your list until you remove it. A device you linked can remove itself and the
-devices linked from it, but not the device you joined with. The owner can see and remove a
-teammate's devices on the **Team** page.
+access** does the same. On a phone, **Sign out of** your team under **Settings → This phone** forgets the team on that
+phone, on every computer the phone holds for it, and asks your Kin to stop that team's
+notifications there. If a computer doesn't confirm, because the phone is offline or Kin doesn't
+answer, the phone says so once, and its notifications may keep coming until the phone is removed
+from your devices. The phone stays in your list until it is removed. A device you linked can
+remove itself and the devices linked from it, but not the device you joined with: for that one, ask
+whoever runs your Kin. The owner can see and remove a teammate's devices on the **Team** page.
 
 ### Your profile
 
@@ -69,7 +70,8 @@ only when they end, once per teammate. Only you can change these two.
 
 **Settings → Notifications** sets how this device tells you about new messages. On the web and the
 desktop app it alerts you while Kin is open in a window you aren't looking at; on the phone it opens
-the phone's own notification settings.
+the phone's own notification settings. On Android those list Kin's kinds apart (Messages, Questions
+and approvals, Briefs, Devices and security), so you can silence one and keep the rest.
 
 ### Adding a teammate (owner and co-owners)
 
@@ -123,6 +125,11 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   under it, such as Mark W-4 “Set up the API” done, does exactly that when you tap it, with no
   wait for the agent. If what it names changed since, the card says nothing was done. A reaction
   never does it, and Kin never takes such an answer as a default: it waits for your tap.
+  On a phone, the notice of an agent's question with two answers lists them as 1 and 2; press
+  and hold it (on Android, expand it) and tap **Answer 1** or **Answer 2** to answer without
+  finding the chat. The phone
+  unlocks, opens the card and answers it once it reaches your Kin. Something to confirm, and a
+  question with more answers, opens the card instead.
 - **It asks once, and says what it will do.** An agent's question comes with the answer it will go
   with and the day, by default the end of your next working day (until 19:30). If you don't answer
   by then, it goes with that answer and tells you in one line; say "undo it" to reverse. Something
@@ -289,6 +296,17 @@ address and ready-to-paste setup for common coding agents once; copy them before
 can hold three keys at a time, and each works for 30 days. If your coding agent's computer reaches
 Kin at a different address than the app you made the key in, use that address with the same ending.
 
+Each setup keeps the key in the coding agent's own settings, so it works in every session:
+
+- **Claude Code:** run the one line Kin shows in a terminal.
+- **Codex:** add the three lines Kin shows to the end of `~/.codex/config.toml`, then start a new
+  Codex session.
+- **Cursor:** add the block Kin shows to `~/.cursor/mcp.json`, beside any servers already there.
+
+To check it worked, ask your coding agent to list your Kin tasks; the key's row then says when it
+was last used. If you set Codex up before with a `bearer_token_env_var` line, remove that line from
+the `[mcp_servers.kin]` section and add the `http_headers` line Kin shows instead.
+
 Choose **Remove** beside a key to stop it; the coding agent loses access on its next call. The owner
 and co-owners can see and remove a teammate's keys on their profile, and removing someone's access
 ends all of their keys. Removing the device a key was made on ends that key too. A key made before
@@ -302,7 +320,10 @@ On a client, add contacts and **Log contact** after a call or meeting. If nothin
 while, the client shows up under Needs attention.
 
 A project has a lead, a target day, milestones and its tasks. Its page says whether it's on track,
-what's late or stuck, and who's on it. The owner, co-owners and the project's lead add milestones;
+what's late or stuck, and who's on it. An overdue invoice for it, or no contact with its client
+for longer than their check-in days (`client_checkin_days`, 14 by default), puts it at risk. Only
+invoices linked to the project count; Kin never guesses which project an invoice is for. The
+owner, co-owners and the project's lead add milestones;
 everyone on the project sees them. The owner or a co-owner sets the lead under **Project lead**.
 
 **People** on a project's page lists who's on it. The owner, co-owners and the project's lead choose
@@ -428,6 +449,10 @@ GitHub, and others. Each mail account reads, and sends only on your Confirm. Tel
 account is for ("accounts@ is for invoices") and it sends from the right one. A reply always goes
 from the account and thread the email is in.
 
+Google and Microsoft each need a sign-in client set up once; Settings shows the steps. If your
+company already has one for a mail app (a Google client, or a Microsoft app with a Web redirect and
+a client secret), use it instead: add the return address Settings shows and paste its ID and secret.
+
 The card shows exactly what will be sent, from which account, to whom. One **Confirm** sends it
 once. Only the owner or a co-owner can confirm. To fix a mail's words yourself, tap **Edit**:
 change To, Cc, Subject or the message, then **Send edited mail** sends it as you left it, with
@@ -506,15 +531,16 @@ once, from Kin, with your GitHub login (GitHub asks for admin on each repo; if i
 why and links to the page). Each repo in the watched list says whether agents work there as the App
 or as you. Only an organization's owners can put the App on it; if you aren't one, GitHub sends
 them your request. An App that is private to one account can't go on another until you make it public in its
-settings on GitHub. The section also lists the last few things done as you.
+settings on GitHub; then choose **Check again** on its row. The section also lists the last few things done as you.
 
 #### When things happen on GitHub
 
 Kin hears at once about repos its GitHub App is on, and about your other watched repos within a
 minute, from its own checks with your login. When your Kin has a public address, Kin sets up the
-webhook of an App it made; it leaves one that points somewhere else alone. If **Settings →
-Connections → GitHub** lists events to tick, tick them once on GitHub; it links to the page. On your
-repos and your organizations' repos, these start an agent on their own:
+webhook of an App it made; for an App it didn't make, choose **Let Kin set it up** under **How fast
+Kin hears from GitHub**, on the web or desktop. It leaves a webhook that points somewhere else alone.
+If **Settings → Connections → GitHub** lists events to tick, tick them once on GitHub; it links to
+the page. On your repos and your organizations' repos, these start an agent on their own:
 
 - **A teammate opens a pull request**, or marks a draft ready: it is reviewed and the review posted.
   On your own pull requests the review is a comment, since GitHub doesn't let you approve your own.
@@ -613,6 +639,23 @@ they reach it, only your urgent messages run, on the agent's usual model, until 
 for everyone: work in progress stops, scheduled work due while they are stopped is skipped, and
 nothing anyone confirms goes out. Messages wait up to a day, and every chat with an agent says the
 agents are stopped. **Resume** starts them again.
+
+## Kin keeps watch
+
+Kin keeps a list of open loops, such as an overdue invoice waiting to be paid, and looks at each one
+every 45 minutes, day and night. It waits longer between looks while nothing changes and looks again
+soon after the thing itself changes. Most looks only read Kin's own records, so they cost nothing.
+When a loop closes, for example when the invoice is marked paid, Kin stops watching it by itself.
+
+A record Kin watches shows one quiet line under its header: what Kin is watching for, when it last
+looked and what it found, and when it looks next. **Look now** asks for a look at once without
+changing when the next one comes. **Stop watching** takes it off the list, and **Watch again** puts
+it back for three days after it closed or stopped.
+
+**What Kin checked** lists every look, one day at a time, with why it ran and what it did. Looks that
+found nothing new are folded into one row you can open. Open it from a watch line, or from
+**Settings → What Kin checked** (on the phone, the gear on Chats). Owners and co-owners see every
+watch; a teammate sees only the watches on their own things, never money.
 
 ## Recommendations
 

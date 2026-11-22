@@ -9,6 +9,7 @@ import {
   type KinPulseScope,
   type KinPulseScreenRead,
   type KinRecordKey,
+  type KinWorkPrincipal,
   formatKinWhen,
   kinWhenParts,
 } from "@t3tools/contracts";
@@ -19,6 +20,7 @@ import { kinAskName } from "./kinAskRecord.ts";
 import { KIN_NEEDS_YOU_SHOWN, type KinNeedsYouRow } from "./kinWorkHome.ts";
 import { kinFailure } from "./kinAnswers.ts";
 import { kinIsDealKey } from "./kinDeals.ts";
+import { kinMidSentence, kinWorkName } from "./kinWork.ts";
 
 /**
  * "Needs attention": what Kin worked out needs someone, on the screens it is about. One model for
@@ -164,10 +166,7 @@ const dayLabel = (at: DateTime.Utc, now: Date) =>
 const handledText = (fact: KinPulseFact, names: ReadonlyMap<string, string>, now: Date) => {
   const handled = fact.handled;
   if (handled === null) return null;
-  const by =
-    handled.by._tag === "agent"
-      ? (names.get(handled.by.agentId) ?? "An agent")
-      : (names.get(handled.by.personId) ?? "Someone");
+  const by = kinWorkName(handled.by, { people: names, agents: names });
   return handled.until === null
     ? `${by}: not a problem`
     : `${by} has it until ${dayLabel(handled.until, now)}`;
@@ -251,17 +250,15 @@ function kinAsideText(aside: KinPulseAside, names: ReadonlyMap<string, string>, 
     aside.until === null
       ? "Set aside until lifted"
       : `Set aside until ${dayLabel(aside.until, now)}`;
-  const setBy =
-    aside.by._tag === "agent"
-      ? (names.get(aside.by.agentId) ?? "an agent")
-      : (names.get(aside.by.personId) ?? "someone");
-  const by = aside.byYou ? "by you" : `by ${setBy}`;
+  const name = (who: KinWorkPrincipal) =>
+    kinMidSentence(kinWorkName(who, { people: names, agents: names }));
+  const by = aside.byYou ? "by you" : `by ${name(aside.by)}`;
   const word = aside.yourWord
     ? ", on your word"
     : aside.onWordOf === null ||
         aside.onWordOf === (aside.by._tag === "person" ? aside.by.personId : null)
       ? ""
-      : `, on ${names.get(aside.onWordOf) ?? "someone"}'s word`;
+      : `, on ${name({ _tag: "person", personId: aside.onWordOf })}'s word`;
   return `${until} · ${by}${word}`;
 }
 
@@ -494,18 +491,24 @@ export function kinTasksBlock(input: {
   const total = rows + onMe + input.needs.reduce((sum, row) => sum + (row.count ?? 1) - 1, 0);
   // The rows it shows, so the list below keeps every task the block doesn't. A money row leads,
   // so a long run of attention rows never hides it.
+  // What waits on the viewer is never cut: it lists what the sidebar's "Waiting on you" lists.
   const limit = input.expanded ? rows : KIN_NEEDS_YOU_SHOWN;
   const lead = needs[0]?.id === "attention:money" ? 1 : 0;
-  const shownAttention = attention.slice(0, Math.max(0, limit - lead));
+  const waiting = needs.filter((row) => row.kind === "waiting");
+  const room = Math.max(0, limit - lead - waiting.length);
+  const shownAttention = attention.slice(0, room);
+  const rest = new Set(
+    needs
+      .slice(lead)
+      .filter((row) => row.kind !== "waiting")
+      .slice(0, Math.max(0, room - shownAttention.length)),
+  );
   return {
     attention: shownAttention,
-    needs: [
-      ...needs.slice(0, lead),
-      ...needs.slice(lead, lead + Math.max(0, limit - lead - shownAttention.length)),
-    ],
+    needs: needs.filter((row, index) => index < lead || row.kind === "waiting" || rest.has(row)),
     total,
     onMe,
-    more: rows > KIN_NEEDS_YOU_SHOWN,
+    more: rows > Math.max(KIN_NEEDS_YOU_SHOWN, lead + waiting.length),
   };
 }
 

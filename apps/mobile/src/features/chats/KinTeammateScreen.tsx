@@ -56,7 +56,6 @@ import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Menu } from "../../components/ui/Menu";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -74,6 +73,7 @@ import { kinClient } from "./state/kinClient";
 import { KinPersonReachSections } from "./KinReachSections";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 import { useKinOpenCounts, useKinProfiles } from "./state/useKinProfiles";
+import { KinWorkToggleRow } from "./components/KinWorkPieces";
 
 export type KinTeammateParams = {
   readonly environmentId: string;
@@ -547,7 +547,7 @@ function KinTeammatePlaces(props: {
             key={entry.place}
             className={index === 0 ? undefined : "border-t border-border-subtle"}
           >
-            <ListToggleRow
+            <KinWorkToggleRow
               label={entry.label}
               description={entry.detail}
               value={asked[entry.place] ?? places[entry.place]}

@@ -47,6 +47,7 @@ import {
   FolderInputIcon,
   MessageSquareIcon,
   TableIcon,
+  Undo2Icon,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -67,6 +68,8 @@ import { KinDocFileDialog } from "./KinDocFileDialog";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinHostAt } from "./useKinHost";
+import { useKinDocDelete } from "./useKinDocDelete";
+import { toastDocRestored } from "./kinDocDeleteToasts";
 import {
   useKinDocsList,
   useKinDocsLive,
@@ -90,8 +93,11 @@ function KinDocRowButton(props: {
   readonly onOpen: () => void;
   /** An unfiled doc's one-click way to file it. */
   readonly onFile?: () => void;
+  /** A deleted doc's way back, for whoever may. */
+  readonly onRestore?: () => void;
+  readonly restoring?: boolean;
 }) {
-  const { row, onFile } = props;
+  const { row, onFile, onRestore } = props;
   return (
     <div className="flex min-w-0 items-center gap-2">
       <button
@@ -99,7 +105,7 @@ function KinDocRowButton(props: {
         aria-label={row.accessibilityLabel}
         aria-current={props.selected === true ? true : undefined}
         onClick={props.onOpen}
-        className={ROW}
+        className={cn(ROW, "min-w-0")}
       >
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-1.5">
@@ -115,8 +121,11 @@ function KinDocRowButton(props: {
           {props.bare || row.under === null ? null : (
             <span className="truncate text-xs text-muted-foreground">{row.under}</span>
           )}
+          {row.deletedLine === null ? null : (
+            <span className="truncate text-xs text-muted-foreground">{row.deletedLine}</span>
+          )}
         </span>
-        {row.archived ? (
+        {row.archived && row.deletedLine === null ? (
           <Badge size="sm" variant="outline">
             {KIN_DOCS.archived}
           </Badge>
@@ -131,6 +140,19 @@ function KinDocRowButton(props: {
         >
           <FolderInputIcon />
           {KIN_DOC_HOMES.file}
+        </Button>
+      )}
+      {onRestore === undefined ? null : (
+        <Button
+          size="xs"
+          variant="outline"
+          aria-label={`${KIN_DOCS.restoreDoc} ${row.title}`}
+          disabled={props.restoring === true}
+          aria-busy={props.restoring === true}
+          onClick={onRestore}
+        >
+          <Undo2Icon />
+          {props.restoring === true ? KIN_DOCS.restoringDoc : KIN_DOCS.restoreDoc}
         </Button>
       )}
     </div>
@@ -327,6 +349,7 @@ export function KinDocsList(
   const [playbooksOpen, setPlaybooksOpen] = useState(false);
   const [filing, setFiling] = useState<KinDocListRow | null>(null);
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(props.environmentId));
+  const deleting = useKinDocDelete(props);
   const scope = useKinViewerScope(props.environmentId);
   const { filter } = state;
   const shown = kinListShown(state, kinHostLink(useKinHostAt(props.environmentId)));
@@ -430,6 +453,7 @@ export function KinDocsList(
           allLists,
           playbooksOpen,
           canFile,
+          deleting.busy,
           props.selected,
           starter?.agent,
           pinned,
@@ -440,7 +464,11 @@ export function KinDocsList(
         ListHeaderComponent={
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
             {shown === "rows" && (props.stale || state.stale) ? (
-              <KinWorkStaleLine environmentId={props.environmentId} onRetry={list.refresh} />
+              <KinWorkStaleLine
+                environmentId={props.environmentId}
+                onRetry={list.refresh}
+                readAt={state.readAt}
+              />
             ) : null}
             <Input
               type="search"
@@ -707,6 +735,16 @@ export function KinDocsList(
                 onOpen={() => props.onOpen(item.row.key)}
                 {...(canFile && kinDocUnfiled(item.row) && filter.show._tag !== "files"
                   ? { onFile: () => setFiling(item.row) }
+                  : {})}
+                {...(deleting.allowed && item.row.archived && item.row.deletable === true
+                  ? {
+                      onRestore: () =>
+                        void deleting.restore(item.row.key).then((why) => {
+                          toastDocRestored(item.row.title, why);
+                          if (why === null) list.refresh();
+                        }),
+                      restoring: deleting.busy === item.row.key,
+                    }
                   : {})}
               />
             </div>

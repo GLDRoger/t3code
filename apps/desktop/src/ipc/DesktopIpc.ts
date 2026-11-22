@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import { isAppPageOrigin, isAppPageUrl } from "../kin/appPage.ts";
 
 export interface DesktopIpcInvokeEvent {
   readonly sender: { readonly id: number };
@@ -190,7 +191,9 @@ export const layer = (ipcMain: DesktopIpcMain) =>
           (main) =>
             Option.isSome(main) &&
             main.value.webContents.id === event.sender.id &&
-            main.value.webContents.mainFrame === event.senderFrame,
+            main.value.webContents.mainFrame === event.senderFrame &&
+            isAppPageUrl(main.value.webContents.mainFrame.url) &&
+            isAppPageOrigin(main.value.webContents.mainFrame.origin),
         ),
       );
     }),

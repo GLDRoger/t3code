@@ -120,7 +120,7 @@ import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { Spinner } from "../components/ui/spinner";
-import { isElectron } from "../env";
+import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { cn } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -458,7 +458,7 @@ function KinChatHeader(props: {
     </>
   );
   return (
-    <WorkspacePageHeader electron={isElectron}>
+    <WorkspacePageHeader electron={hasDesktopWindowChrome}>
       <Button
         size="icon-sm"
         variant="ghost"
@@ -658,12 +658,6 @@ function KinChatFeed(props: {
   };
   const { landOn } = props;
   const landed = useRef<string | null>(null);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the list, outside React, to the message a notification opened, once it has loaded
-  useEffect(() => {
-    if (landOn === null || landIndex < 0 || landed.current === landOn) return;
-    landed.current = landOn;
-    void listRef.current?.scrollToIndex({ index: landIndex, animated: false, viewPosition: 0.3 });
-  }, [landIndex, landOn, listRef, landed]);
 
   const { presence, stopLead } = props;
   const wakeupId = presence?.wakeupId ?? null;
@@ -761,6 +755,26 @@ function KinChatFeed(props: {
       });
     });
   };
+
+  const seekBefore = feed.landPage?.beforeSeq ?? null;
+  const pageFailed = paging.error !== null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads back, a page at a time, to the message the chat was opened on; stops at the chat's start or a failed page
+  useEffect(() => {
+    if (seekBefore === null || pageFailed || loading || !canLoadEarlier) return;
+    if (landed.current === landOn) return;
+    loadEarlier();
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- loadEarlier is rebuilt each render and reads the page these name.
+  }, [seekBefore, pageFailed, loading, canLoadEarlier, landOn, landed]);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the list, outside React, to the message the chat was opened on, once it has loaded
+  useEffect(() => {
+    if (landOn === null || landIndex < 0 || landed.current === landOn) return;
+    // Let go of the end first, so the list's pin to its end can't take the reader back down.
+    if (followsEnd) return transition({ type: "land" });
+    landed.current = landOn;
+    void listRef.current?.scrollToIndex({ index: landIndex, animated: false, viewPosition: 0.3 });
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition reads only refs and the stable setFollow.
+  }, [landIndex, landOn, followsEnd, listRef, landed]);
 
   const checkEnd = () => {
     const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
@@ -864,6 +878,7 @@ function KinChatFeed(props: {
         viewerPersonId={props.viewer.personId}
         firstName={props.viewer.firstName ?? null}
         heldFor={kinHeldCardAgent(message.author, props.viewer, props.retired?.name ?? null)}
+        readOnly={props.readOnly !== null}
         orgId={props.orgId}
         reactions={chips}
         onReact={

@@ -1,5 +1,6 @@
 import {
   kinCurrenciesWithDecimals,
+  type KinAgentId,
   KinChatError,
   type KinOrgId,
   type KinRecordId,
@@ -18,6 +19,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
+import { directKey } from "../lead/LeadAccess.ts";
 import { LISTS } from "./lists.ts";
 import {
   inheritedSensitive,
@@ -27,6 +29,7 @@ import {
   notFound,
   samePrincipal,
   sensitiveNow,
+  wordsOf,
 } from "./recordRows.ts";
 
 /** Lists a project's lead writes in, inside that project; quotes and invoices only as drafts. */
@@ -96,14 +99,20 @@ const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fra
   sql`EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.attendees') a
     WHERE a.value = 'person:' || ${personId})`;
 
+/** `r` is a task this person is on besides its holder (`fields.alsoOn`). */
+export const alsoOnIt = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
+  sql`(r.register_id = 'work' AND EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.alsoOn') o
+    WHERE o.value = 'person:' || ${personId}))`;
+
 /**
- * What a non-owner-level person sees everywhere: a task they hold, attend or marked private; unlabelled,
+ * What a non-owner-level person sees everywhere: a task they hold, are on, attend or marked private; unlabelled,
  * what they made, gave or share, their projects with those projects' entries and docs (never a
- * private task), company docs with Docs on, and with Clients on the deals of clients they see.
+ * private task), docs filed as their own drafts (`draftDoc`'s mark), company docs with Docs on, and
+ * with Clients on the deals of clients they see.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
-      OR ${attends(sql, personId)} OR r.marked_by_person_id = ${personId}
+      OR ${attends(sql, personId)} OR ${alsoOnIt(sql, personId)} OR r.marked_by_person_id = ${personId}
       OR (r.sensitive = 0 AND ((r.created_by_kind = 'person' AND r.created_by_id = ${personId})
         OR r.assigned_by_person_id = ${personId}))))
   OR (r.register_id IN ('work', 'milestones') AND r.sensitive = 0
@@ -114,6 +123,7 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
     (r.register_id = 'projects' AND ${onProject(sql, personId, sql`r.record_id`)})
     OR (r.register_id IN ('clients', 'contacts') AND ${placeOn(sql, personId, "sees_clients")})
     OR (r.register_id = 'docs' AND r.project_id IS NOT NULL AND ${projectPerson(sql, personId)})
+    OR (r.register_id = 'docs' AND json_extract(r.fields_json, '$.draftFor') = ${personId})
     OR (r.register_id = 'docs' AND (r.team_shared = 1
       OR json_extract(r.fields_json, '$.home') = 'company')
       AND ${placeOn(sql, personId, "sees_docs")})))
@@ -332,14 +342,22 @@ export const viewGuard = Effect.fn("KinTeamView.viewGuard")(function* (
     readonly askers: ReadonlyArray<KinPersonId>;
   },
   write: Parameters<typeof teamGuard>[2],
+  /** The agent's turn making the write, which `draftDoc` reads its ask from. */
+  turn?: { readonly agentId: KinAgentId; readonly wakeupId: string },
 ) {
   if (view.people.length === 0) return yield* noLongerTeam;
   if (yield* roomWork(orgId, view.people, write)) return;
+  const draft = yield* draftDoc(orgId, view, write, turn);
+  if (draft === "filed") return { draftFor: view.people[0]! };
   for (const person of view.people)
     yield* teamGuard(orgId, person, {
       ...write,
       changes: write.changes && view.askers.includes(person),
-    });
+    }).pipe(
+      Effect.mapError((error) =>
+        draft === "elsewhere" && error === TEAM_REFUSED ? DRAFT_OWN_CHAT_ONLY : error,
+      ),
+    );
 });
 
 /** Lists a turn others read writes for the room, shared with the team (`KinRecords.insert`). */
@@ -355,6 +373,118 @@ const ROOM_REFUSED = [
   "links",
 ] as const;
 const ROOM_FIELDS: ReadonlySet<string> = new Set(LISTS.work.fields);
+
+/** What a doc filed at one teammate's own ask may carry besides its text (`draftDoc`). */
+const DRAFT_DOC_FIELDS: ReadonlySet<string> = new Set(["list", "source", "partyId", "projectId"]);
+/** Kinds whose text sets how Kin works for everyone (`playbooks.ts`): the owner level's to file. */
+const COMPANY_DOC_KINDS: ReadonlyArray<unknown> = ["playbook", "policy"];
+
+/**
+ * A doc filed at the one teammate's ask behind the turn, marked theirs (`draftFor`), so they see
+ * it (`personSees`) and their turns may revise its text (`teamRule`): no label, sharing, money or
+ * company home, under a client they see and a project they are in.
+ */
+const draftDoc = Effect.fn("KinTeamView.draftDoc")(function* (
+  orgId: KinOrgId,
+  view: {
+    readonly people: ReadonlyArray<KinPersonId>;
+    readonly askers: ReadonlyArray<KinPersonId>;
+  },
+  write: Parameters<typeof teamGuard>[2],
+  turn: { readonly agentId: KinAgentId; readonly wakeupId: string } | undefined,
+) {
+  const { row, input } = write;
+  const [person] = view.people;
+  if (
+    person === undefined ||
+    view.people.length !== 1 ||
+    view.askers.length !== 1 ||
+    view.askers[0] !== person ||
+    input.list !== "docs" ||
+    COMPANY_DOC_KINDS.includes(input.category) ||
+    write.changes ||
+    OWNERS_FIELDS.some((field) => input[field] !== undefined && !DRAFT_DOC_FIELDS.has(field))
+  )
+    return undefined;
+  if (row === undefined && (turn === undefined || !(yield* ownDirectAsk(orgId, person, turn))))
+    return "elsewhere" as const;
+  const facts = yield* teamFactsOf(
+    orgId,
+    person,
+    row === undefined ? [] : [row.recordId],
+    typeof input.partyId === "string" ? [input.partyId] : [],
+  );
+  const own = facts(row?.recordId);
+  if (!own.member) return yield* noLongerTeam;
+  if (row !== undefined)
+    return own.seen !== null && own.seen !== undefined ? ("filed" as const) : undefined;
+  if (typeof input.partyId === "string" && !(own.clients.on && own.clients.seen.has(input.partyId)))
+    return undefined;
+  return typeof input.projectId !== "string" || (yield* inProject(orgId, person, input.projectId))
+    ? ("filed" as const)
+    : undefined;
+});
+
+export const DRAFT_OWN_CHAT_ONLY = new KinChatError({
+  reason: "not_allowed",
+  message:
+    "A teammate's doc is filed only at their own word in their own chat with you. Nothing was written.",
+});
+
+/**
+ * The turn answers this person's own message in their own direct chat with the agent, or a task
+ * they gave it there by their own hand in words only they wrote, and nothing in it was carried
+ * from another chat, person or agent.
+ */
+const ownDirectAsk = Effect.fn("KinTeamView.ownDirectAsk")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  turn: { readonly agentId: KinAgentId; readonly wakeupId: string },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const key = directKey(personId, turn.agentId);
+  const toAgent = `agent:${turn.agentId}`;
+  const asks = yield* sql<{
+    own: number | null;
+    recordId: string | null;
+    seq: number | null;
+  }>`SELECT CASE e.tag WHEN 'chat.message' THEN
+        (m.author_kind = 'human' AND m.author_person_id = ${personId} AND m.origin_json IS NULL
+          AND json_extract(e.json, '$.origin') IS NULL AND c.kind = 'direct'
+          AND c.archived_at IS NULL AND c.direct_key = ${key})
+      ELSE (json_extract(e.json, '$.origin.personId') = ${personId}
+        AND json_extract(e.json, '$.reason') = 'assigned' AND t.kind = 'direct'
+        AND t.archived_at IS NULL AND t.direct_key = ${key}
+        AND EXISTS (SELECT 1 FROM kin_record_changes rc, json_each(rc.fields_json) f
+          WHERE rc.org_id = e.org_id AND rc.record_id = json_extract(e.json, '$.recordId')
+          AND rc.seq = json_extract(e.json, '$.seq') AND rc.actor_kind = 'person'
+          AND rc.actor_id = ${personId} AND rc.coding_agent_key IS NULL
+          AND json_extract(f.value, '$.field') = 'owner'
+          AND json_extract(f.value, '$.to') = ${toAgent}
+          AND json_extract(f.value, '$.from') IS NOT ${toAgent})) END AS own,
+      json_extract(e.json, '$.recordId') AS "recordId", json_extract(e.json, '$.seq') AS seq
+    FROM kin_events e
+    LEFT JOIN kin_messages m ON m.org_id = e.org_id
+      AND m.message_id = json_extract(e.json, '$.messageId')
+    LEFT JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+    LEFT JOIN kin_chats t ON t.org_id = e.org_id AND t.chat_id = json_extract(e.json, '$.origin.chatId')
+    WHERE e.org_id = ${orgId} AND e.agent_id = ${turn.agentId} AND e.wakeup_id = ${turn.wakeupId}
+      AND e.tag IN ('chat.message', 'record.changed')
+    ORDER BY e.event_id`;
+  if (asks.length === 0 || asks.some((ask) => ask.own !== 1)) return false;
+  for (const ask of asks) {
+    if (ask.recordId === null || ask.seq === null) continue;
+    const { writers, madeBy } = yield* wordsOf(orgId, ask.recordId, ask.seq);
+    const hers = (kind: string, id: string | null) => kind === "person" && id === personId;
+    if (
+      madeBy === undefined ||
+      !hers(madeBy.kind, madeBy.id) ||
+      !writers.every((one) => hers(one.actorKind, one.actorId) && one.coding === 0)
+    )
+      return false;
+  }
+  return true;
+});
 
 /** Whether the write is team-visible work everyone behind the turn sees, before and after. */
 const roomWork = Effect.fn("KinTeamView.roomWork")(function* (
@@ -400,13 +530,15 @@ const roomWork = Effect.fn("KinTeamView.roomWork")(function* (
 });
 
 /**
- * A teammate changes only a task they hold, gave to whoever holds it or marked private, never one
- * they only see; a project's lead also anything of the project in `LEAD_LISTS`, quotes and
- * invoices as drafts.
+ * A teammate changes only a task they hold, are on, gave to whoever holds it or marked private,
+ * never one they only see; a project's lead also anything of the project in `LEAD_LISTS`, quotes
+ * and invoices as drafts.
  */
 const teamWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
   sql`(${personSees(sql, personId)} AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
-    OR r.assigned_by_person_id = ${personId} OR r.marked_by_person_id = ${personId}
+    OR ${alsoOnIt(sql, personId)}
+    OR (r.assigned_by_person_id = ${personId} AND r.register_id <> 'docs')
+    OR r.marked_by_person_id = ${personId}
     OR ${leadWrites(sql, personId)}))`;
 
 const leadWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
@@ -544,7 +676,9 @@ type TeamWrite = {
   readonly row: { readonly recordId: string; readonly key: string } | undefined;
   /** A change to the task, not a retry of the create that made it. */
   readonly changes: boolean;
-  readonly input: Readonly<Partial<Record<(typeof OWNERS_FIELDS)[number] | "state", unknown>>>;
+  readonly input: Readonly<
+    Partial<Record<(typeof OWNERS_FIELDS)[number] | "state" | "category", unknown>>
+  >;
 };
 
 /** What `teamRule` decides these entries' writes on: read once, inside the write's transaction. */
@@ -569,6 +703,7 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
           leads: number;
           marked: number;
           gave: number;
+          draft: number;
           registerId: string;
           partyId: string | null;
           projectId: string | null;
@@ -579,6 +714,8 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
           (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id
             AND p.record_id = r.project_id) AS "projectPartyId",
           COALESCE(r.assigned_by_person_id = ${personId}, 0) AS gave,
+          COALESCE(r.register_id = 'docs'
+            AND json_extract(r.fields_json, '$.draftFor') = ${personId}, 0) AS draft,
           ${leadWrites(sql, personId)} AS leads,
           COALESCE(r.marked_by_person_id = ${personId}, 0) AS marked, r.register_id AS "registerId"
         FROM kin_records r WHERE r.org_id = ${orgId}
@@ -612,6 +749,9 @@ type TeamFacts = ReturnType<Effect.Success<ReturnType<typeof teamFactsOf>>>;
  */
 const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined => {
   if (!facts.member) return noLongerTeam;
+  // Who is on a task besides its holder is set by whoever may change the task.
+  if (alsoOnOnly(facts, write))
+    return teamRule(facts, { ...write, input: { ...write.input, fields: undefined } });
   const { row } = write;
   // Whoever marked it "Only me" may take their own mark off again.
   const unmarked =
@@ -648,6 +788,11 @@ const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined 
   if (row !== undefined) {
     const seen = facts.seen;
     if (seen === undefined || seen === null) return notFound(row.key);
+    // Their own draft (`draftDoc`): a new version of its text, and nothing else about it.
+    if (write.changes && seen.writes !== 1 && seen.draft === 1)
+      return Object.values(write.input).some((value) => value !== undefined)
+        ? TEAM_REFUSED
+        : undefined;
     if (write.changes && seen.writes !== 1)
       return new KinChatError({
         reason: "not_allowed",
@@ -674,6 +819,22 @@ const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined 
   if (lead.draft && (row === undefined ? input.state !== "open" : input.state !== undefined))
     return DRAFTS_ONLY;
   return undefined;
+};
+
+/** A write to a task whose only list detail is who is on it (`fields.alsoOn`). */
+const alsoOnOnly = (facts: TeamFacts, write: TeamWrite) => {
+  const { fields } = write.input;
+  const task =
+    write.row === undefined
+      ? (typeof write.input.list === "string" ? write.input.list : "work") === "work"
+      : facts.seen?.registerId === "work";
+  return (
+    task &&
+    typeof fields === "object" &&
+    fields !== null &&
+    Object.keys(fields).length === 1 &&
+    "alsoOn" in fields
+  );
 };
 
 /** A new client that isn't its project's takes a task out of that project (`KinRecords.update`). */
@@ -943,11 +1104,12 @@ export const teamRecordIn = <
   };
 };
 
-/** History lines a teammate reads: what the task says and who holds it, never money or labels. */
+/** History lines a teammate reads: what the task says and who is on it, never money or labels. */
 const TEAM_FIELDS = new Set([
   "title",
   "state",
   "owner",
+  "alsoOn",
   "due",
   "dueAllDay",
   "waitingOn",
@@ -1085,33 +1247,48 @@ const figuresIn = (text: string) => {
   return [...found];
 };
 const ENTRY_KEY = /\b[A-Z]{1,4}-\d{1,6}\b/g;
+const FIGURE_RUN = /\d(?:[\d.,'’]*\d)?/g;
+const digitsOf = (run: string) => run.replace(/[.,]00?$/, "").replace(/\D/g, "");
+
+/** `text` without the figures that `own` also carries, however each is grouped ("2,50,000"). */
+export const withoutOwnFigures = (text: string, own: string) => {
+  const mine = new Set([...own.matchAll(FIGURE_RUN)].map(([run]) => digitsOf(run)));
+  // An entry key's number ("INV-3") is no figure of hers: it stays for the hidden-entry check.
+  return text.replace(FIGURE_RUN, (run, at: number) =>
+    mine.has(digitsOf(run)) && !/[A-Z]-$/.test(text.slice(0, at)) ? "" : run,
+  );
+};
 const fold = (text: string) => text.toLowerCase().replace(/\s+/g, " ");
 
 /**
  * Why `text` can't go to this person, or undefined: no amount, money document number, client's
  * terms, or key or title of an entry they don't see. `askedBy`, a teammate whose own words these
  * are, is held only to what they see, so a refusal never says a guess matches something hidden.
+ * `own`: words whose figures are theirs to read, exempt from the amount checks only.
  */
 export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   text: string,
   askedBy?: KinPersonId,
+  own?: string,
 ) {
+  // Keys, titles and terms are matched as written: an exempt figure never hides one.
+  const sums = own === undefined ? text : withoutOwnFigures(text, own);
   // The agent is told which words read as a sum, so it can send the rest or ask the owner.
   const figure = (said: string) =>
     `“${said.trim()}” reads as an amount of money, which they may not see`;
   const written =
-    AMOUNT.exec(text) ??
-    AMOUNT_WORDS.exec(text) ??
-    MONEY_NUMBER.exec(text) ??
-    EURO_FIGURE.exec(text) ??
-    (MONEY_CONTEXT.test(text) ? THOUSANDS.exec(text) : null);
+    AMOUNT.exec(sums) ??
+    AMOUNT_WORDS.exec(sums) ??
+    MONEY_NUMBER.exec(sums) ??
+    EURO_FIGURE.exec(sums) ??
+    (MONEY_CONTEXT.test(sums) ? THOUSANDS.exec(sums) : null);
   if (written !== null) return figure(written[0]);
   const sql = yield* SqlClient.SqlClient;
   const known = askedBy === undefined ? sql`1 = 1` : personSees(sql, askedBy);
   // A bare figure that is the sum on something they can't see, however it is written.
-  const figures = figuresIn(text);
+  const figures = figuresIn(sums);
   if (figures.length > 0) {
     // The sum in whole units of its own currency, as a person writes it: yen have no minor unit.
     const same = (column: Statement.Fragment, currency: Statement.Fragment) =>

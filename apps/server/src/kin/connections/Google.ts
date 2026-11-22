@@ -29,19 +29,26 @@ const GOOGLE_SERVER: AuthServer = {
   issParameter: false,
   basicOnly: false,
 };
-/** What sending needs; a sign-in from before Kin sent anything lacks these. */
-const GOOGLE_SEND_SCOPES = [
-  "https://www.googleapis.com/auth/gmail.send",
-  "https://www.googleapis.com/auth/calendar.events",
-];
-export const GOOGLE_SCOPES = [
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/calendar.events.readonly",
-  ...GOOGLE_SEND_SCOPES,
-].join(" ");
-const canSend = (granted: string | undefined) => {
+const AUTH = "https://www.googleapis.com/auth/";
+/** The set Google verifies for a mail app. gmail.modify could label or trash; Kin does neither. */
+export const GOOGLE_SCOPES = ["gmail.modify", "calendar.events", "calendar.readonly"]
+  .map((scope) => AUTH + scope)
+  .join(" ");
+/** What a grant allows, in either family: this set, or the four Kin asked for before it. */
+export const googleGrant = (granted: string | undefined) => {
   const scopes = new Set((granted ?? "").split(/\s+/));
-  return GOOGLE_SEND_SCOPES.every((scope) => scopes.has(scope));
+  const any = (...names: ReadonlyArray<string>) => names.some((name) => scopes.has(AUTH + name));
+  return {
+    readsMail: any("gmail.modify", "gmail.readonly"),
+    sendsMail: any("gmail.modify", "gmail.send"),
+    readsCalendar: any("calendar.events", "calendar.readonly", "calendar.events.readonly"),
+    writesCalendar: any("calendar.events"),
+  };
+};
+/** A sign-in from before Kin sent anything, or one that left a box unticked, lacks these. */
+const canSend = (granted: string | undefined) => {
+  const grant = googleGrant(granted);
+  return grant.sendsMail && grant.writesCalendar;
 };
 /**
  * Ask for a refresh token every time: Google gives one only with consent shown. The account

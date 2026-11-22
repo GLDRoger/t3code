@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { EnvironmentId } from "@t3tools/contracts";
+import { kinChoiceActInput } from "@t3tools/client-runtime/kin/kinChoicePresentation";
+import { EnvironmentId, KinWidgetId } from "@t3tools/contracts";
 
 import {
   KIN_DEFAULT_ACTION_IDENTIFIER,
@@ -25,10 +26,12 @@ function response(input: {
   readonly action?: string;
   readonly category?: string | null;
   readonly identifier?: string;
+  readonly date?: number;
 }) {
   return {
     actionIdentifier: input.action ?? KIN_DEFAULT_ACTION_IDENTIFIER,
     notification: {
+      ...(input.date === undefined ? {} : { date: input.date }),
       request: {
         identifier: input.identifier ?? "note-1",
         content: { data: input.data, categoryIdentifier: input.category ?? null },
@@ -225,14 +228,69 @@ describe("kinNotificationRoute", () => {
     });
   });
 
-  it("acts once per notification and button, whichever path delivers it", () => {
-    const monday = (identifier: string) =>
+  it("answers a two-answer question as a tap on its card would", () => {
+    const question = {
+      kin: 1,
+      orgId: "kin-default",
+      chatId: "chat-1",
+      widgetId: "w-ask",
+      revision: 1,
+      choices: ["option-1", "option-2"],
+      subject: { _tag: "message", messageId: "msg-ask" },
+      deepLink: chatLink,
+    };
+    const answer = (action: string, data: object = question) =>
+      kinNotificationRoute(response({ data, action, category: "kin.choice" }));
+    for (const [action, optionId] of [
+      ["answer_1", "option-1"],
+      ["answer_2", "option-2"],
+    ] as const)
+      expect(answer(action)).toEqual({
+        responseKey: `note-1\u0000${action}`,
+        environmentId: "env-1",
+        // Opened at the card, which shows the answer once the host records it.
+        paths: [`${chatLink}?message=msg-ask`],
+        act: kinChoiceActInput(
+          { widgetId: KinWidgetId.make("w-ask"), revision: 1 },
+          optionId,
+          `push:note-1:${action}`,
+        ),
+      });
+    // On Android the app draws the banner from FCM's data: the same answer, under FCM's id.
+    expect(
+      kinNotificationRoute(
+        response({
+          data: question,
+          action: "answer_2",
+          category: "kin.choice",
+          identifier: "0:1794096000%fcm",
+        }),
+      )?.act,
+    ).toEqual(
+      kinChoiceActInput(
+        { widgetId: KinWidgetId.make("w-ask"), revision: 1 },
+        "option-2",
+        "push:0:1794096000%fcm:answer_2",
+      ),
+    );
+    // The banner itself, or a push without its choices, opens the card and answers nothing.
+    expect(answer(KIN_DEFAULT_ACTION_IDENTIFIER)?.act).toBeNull();
+    expect(answer("answer_2", { ...question, choices: undefined })?.act).toBeNull();
+    // A build that doesn't know the category opens the card from either button.
+    expect(
+      kinNotificationRoute(response({ data: question, action: "answer_1", category: "kin.later" })),
+    ).toMatchObject({ paths: [`${chatLink}?message=msg-ask`], act: null });
+  });
+
+  it("acts once per delivery and button, whichever path delivers it", () => {
+    const monday = (identifier: string, date?: number) =>
       kinNotificationRoute(
         response({
           data: deferral,
           action: "monday",
           category: "kin.deferral.heads_up",
           identifier,
+          ...(date === undefined ? {} : { date }),
         }),
       );
     expect(monday("note-1")?.act?.clientActionId).toBe(monday("note-1")?.act?.clientActionId);
@@ -241,6 +299,14 @@ describe("kinNotificationRoute", () => {
       response({ data: deferral, category: "kin.deferral.heads_up" }),
     );
     expect(banner?.responseKey).not.toBe(monday("note-1")?.responseKey);
+    // A chat's pushes share its collapse id as their identifier; only the date tells them apart.
+    const tap = (date: number) =>
+      kinNotificationRoute(response({ data: deferral, identifier: "kin:7d82459c4d43", date }));
+    expect(tap(1795000000.25)?.responseKey).toBe(tap(1795000000.25)?.responseKey);
+    expect(tap(1795000090.5)?.responseKey).not.toBe(tap(1795000000.25)?.responseKey);
+    expect(monday("kin:7d82459c4d43", 1795000090.5)?.act?.clientActionId).not.toBe(
+      monday("kin:7d82459c4d43", 1795000000.25)?.act?.clientActionId,
+    );
   });
 
   it.each([
@@ -320,6 +386,13 @@ describe("kinClearedChat", () => {
     const cleared = kinClearedChat({ data: { dataString: JSON.stringify(body) }, aps: {} });
     expect(cleared?.chatId ?? null).toBe(chatId);
     if (chatId !== null) expect(cleared?.environmentId).toBe("env-1");
+    // Android's background task gets FCM's message, its data map holding the same body.
+    const android = kinClearedChat({
+      messageId: "0:1794096000%fcm",
+      data: { body: JSON.stringify(body), dataString: JSON.stringify(body) },
+      notification: null,
+    });
+    expect(android).toEqual(cleared);
   });
 });
 

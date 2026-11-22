@@ -21,6 +21,8 @@ export const StoredApp = Schema.Struct({
   /** When and by whom it was made in Kin; null for an App adopted from the host's environment. */
   at: Schema.NullOr(Schema.Int),
   by: Schema.NullOr(Schema.String),
+  /** An owner's yes to Kin setting this App's webhook, for one Kin didn't make: who, and when. */
+  hookAllowed: Schema.optional(Schema.Struct({ by: Schema.String, at: Schema.Int })),
 });
 export type StoredApp = typeof StoredApp.Type;
 

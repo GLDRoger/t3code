@@ -63,7 +63,7 @@ import { KinRecords } from "../work/KinRecords.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { handlers as documentHandlers, KinDocumentToolkit } from "../gendocs/mcp.ts";
-import { presetDefinition, propose } from "../work/registers.ts";
+import { listPlace, presetDefinition, propose } from "../work/registers.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import * as CardActions from "./cardActions.ts";
 import { plansOf, takesAsDefault } from "./cardPlans.ts";
@@ -461,6 +461,36 @@ it.effect("a tap on an action option runs it once, as the server wrote it", () =
       });
       const chose = yield* kin.tap(owner, plain.value.widgetId, "option-1", "tap-plain");
       assert.notProperty(JSON.parse(chose.body), "handled");
+      // Work chosen on a card is tracked: the option marked yes becomes the agent's task, once;
+      // the one marked no makes none.
+      const chosenTasks = kin.sql<{ title: string; kind: string; state: string }>`SELECT title,
+          owner_kind AS kind, state FROM kin_records
+        WHERE org_id = ${orgId} AND title LIKE 'Which way for partner reimbursements%'
+        ORDER BY key`;
+      for (const [option, turn] of [
+        ["option-2", "Reimbursements, again?"],
+        ["option-1", "Reimbursements?"],
+      ] as const) {
+        yield* kin.turn("finance", kin.chatOf("finance"), turn);
+        const way = yield* callAs("finance", "kin_ask", {
+          question: "Which way for partner reimbursements?",
+          options: [
+            { label: "Paid-by tag", kind: "yes" },
+            { label: "Leave it", kind: "no" },
+          ],
+          default: "none",
+          intent: "build the reimbursement tag",
+        });
+        assert.isTrue(way.ok, JSON.stringify(way.value));
+        yield* kin.tap(owner, way.value.widgetId, option, `tap-${option}`);
+      }
+      assert.deepStrictEqual(yield* chosenTasks, [
+        {
+          title: "Which way for partner reimbursements: Paid-by tag",
+          kind: "agent",
+          state: "open",
+        },
+      ]);
 
       // A drop the agent labelled "Not yet" says "Drop" on its button, and a plain option that
       // would read the same as an action option is refused.
@@ -675,8 +705,8 @@ it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing"
       assert.strictEqual(without.state, "withdrawn");
       assert.isNull(without.raiseWidgetId);
       assert.deepStrictEqual(card(yield* kin.widget(gone.value.widgetId)).outcome, {
-        title: "Closed",
-        text: `Closed: ${shut.key} is done now.`,
+        title: "Closed with its task",
+        text: `Closed with its task: ${shut.key} is done now.`,
       });
       assert.deepStrictEqual(
         card(yield* kin.widget((yield* question(reworded.value.question))!.raiseWidgetId)).options,
@@ -1013,6 +1043,34 @@ it.effect("take the default runs the default's own action; a list is made as pro
         made.map((one) => one.name),
         ["Vendors"],
       );
+      // The settled card says where the list lives, and opens it there.
+      const settled = (widgetId: unknown) =>
+        kin.widget(widgetId).pipe(Effect.map((widget) => card(widget).outcome));
+      assert.deepStrictEqual(yield* settled(vendors.value.widgetId), {
+        title: "List created",
+        text: "Created. It's in Docs → Vendors.",
+        open: { place: "docs", list: "vendors" },
+      });
+      const subscriptions = yield* offer(
+        yield* proposal("office_subs", "Office subscriptions", "OSB"),
+      );
+      yield* kin.tap(owner, subscriptions.value.widgetId, "option-1", "office-subs");
+      assert.deepStrictEqual(yield* settled(subscriptions.value.widgetId), {
+        title: "List created",
+        text: "Created. It's in Money → Subscriptions.",
+        open: { place: "money", list: "office_subs", subscriptions: true },
+      });
+      // Kin's own lists, which no card creates, are placed as the clients show them.
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0,
+          ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
+      for (const [list, words] of [
+        ["invoices", "Money → Invoices"],
+        ["clients", "Clients"],
+        ["deals", "Clients → Deals"],
+      ] as const)
+        assert.strictEqual((yield* listPlace(orgId, list)).words, words);
 
       // Only ever creates: an extension of a list isn't offered, nor a name already in use.
       const extension = yield* propose({
@@ -1351,8 +1409,8 @@ it.effect("closing a task closes what hangs off it, and reopening brings none ba
       const about = yield* kin.widget(asked.value.widgetId);
       assert.isNotNull(about.closedAt);
       assert.deepStrictEqual(card(about).outcome, {
-        title: "Closed",
-        text: `Closed: ${form.key} is done now.`,
+        title: "Closed with its task",
+        text: `Closed with its task: ${form.key} is done now.`,
       });
       const states = (id: unknown) =>
         Questions.readQuestion(orgId, id as string).pipe(Effect.map((row) => row?.state));
@@ -1363,8 +1421,8 @@ it.effect("closing a task closes what hangs off it, and reopening brings none ba
       assert.isNull((yield* kin.widget(mixed.value.widgetId)).closedAt);
       assert.strictEqual(yield* states(mixed.value.question), "open");
 
-      // An agent's tool call closes another: its "Mark … done" card closes, and a tap on it
-      // afterwards runs nothing.
+      // An agent can't close a task its open card is about: it waits on that card's person.
+      // Closed by hand, the card closes with it, and a tap on it afterwards runs nothing.
       const signage = yield* kin.task("Order the signage");
       yield* kin.turn("finance", chatId, "And the signage?");
       const later = yield* callAs("finance", "kin_ask", {
@@ -1373,10 +1431,23 @@ it.effect("closing a task closes what hangs off it, and reopening brings none ba
       });
       const done = yield* callAs("finance", "record_update", { key: signage.key, state: "done" });
       assert.isTrue(done.ok, JSON.stringify(done.value));
+      assert.include(done.value, { state: "waiting" });
+      assert.property(done.value, "waitsOnCard");
+      assert.deepInclude(yield* kin.records.get(orgId, signage.key), {
+        waitingOnKind: "person",
+        waitingOnId: owner.personId,
+      });
+      assert.strictEqual(yield* states(later.value.question), "open");
+      yield* kin.records.update(
+        orgId,
+        { actor: { _tag: "person", personId: owner.personId }, via: "owner" },
+        signage.key,
+        { state: "done" },
+      );
       const shut = yield* kin.widget(later.value.widgetId);
       assert.deepStrictEqual(card(shut).outcome, {
-        title: "Closed",
-        text: `Closed: ${signage.key} is done now.`,
+        title: "Closed with its task",
+        text: `Closed with its task: ${signage.key} is done now.`,
       });
       assert.strictEqual(yield* states(later.value.question), "withdrawn");
       assert.isFalse(yield* waitingOn(later.value.widgetId));
@@ -1393,6 +1464,22 @@ it.effect("closing a task closes what hangs off it, and reopening brings none ba
       assert.include(refused, { _tag: "KinChatError" });
       assert.deepStrictEqual(yield* kin.stateOf(signage.key), { state: "done", rev: closedRev });
 
+      // Closed first and asked about after, in the same turn: it was not done, so it waits again.
+      const tally = yield* kin.task("Tally the reimbursements");
+      yield* kin.turn("finance", chatId, "And the reimbursements?");
+      yield* callAs("finance", "record_update", { key: tally.key, state: "done" });
+      const which = yield* callAs("finance", "kin_ask", {
+        question: "Which way for the reimbursements?",
+        options: [{ label: "Tag them in the app" }, { label: "Leave it" }],
+        default: "none",
+        about: [tally.key],
+      });
+      assert.isTrue(which.ok, JSON.stringify(which.value));
+      assert.deepInclude(yield* kin.records.get(orgId, tally.key), {
+        state: "waiting",
+        waitingOnId: owner.personId,
+      });
+
       // Reopened: nothing comes back, and nothing fails.
       yield* kin.records.update(
         orgId,
@@ -1402,8 +1489,8 @@ it.effect("closing a task closes what hangs off it, and reopening brings none ba
       );
       assert.strictEqual((yield* kin.stateOf(signage.key)).state, "open");
       assert.deepStrictEqual(card(yield* kin.widget(later.value.widgetId)).outcome, {
-        title: "Closed",
-        text: `Closed: ${signage.key} is done now.`,
+        title: "Closed with its task",
+        text: `Closed with its task: ${signage.key} is done now.`,
       });
       assert.strictEqual(yield* states(later.value.question), "withdrawn");
 
@@ -1833,7 +1920,7 @@ it.effect("a default Kin couldn't undo, or on a task changed since, waits for it
       assert.deepStrictEqual(
         asked.map((one) => one.note),
         [
-          "Kin won't take “Mark W-1 done” on its own: its task repeats.",
+          "Kin won't take “Mark W-1 done” on its own: its task repeats. It stays as it is until they answer; say so, and set nothing to take it later.",
           "Kin won't take “Mark W-2 done” on its own: its task was handed back.",
           undefined,
           undefined,

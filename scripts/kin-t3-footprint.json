@@ -57,6 +57,7 @@
     "evals/mcp-tool-use/gate.test.ts",
     "evals/mcp-tool-use/margin.ts",
     "evals/mcp-tool-use/margin.test.ts",
-    "evals/mcp-tool-use/rubric.ts"
+    "evals/mcp-tool-use/rubric.ts",
+    "apps/desktop/src/kin/**"
   ]
 }

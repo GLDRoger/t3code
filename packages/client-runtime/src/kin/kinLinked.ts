@@ -52,6 +52,8 @@ export interface KinLinkedItem {
   readonly title: string | null;
   /** Null for a chat this reader may not open: the row is told, not tapped. */
   readonly open: KinNotificationDestination | null;
+  /** A deleted doc: still linked, and opens to its Restore. */
+  readonly deleted?: true;
 }
 export interface KinLinkedGroup {
   readonly group: KinLinkedGroupName;
@@ -88,9 +90,14 @@ const GROUP_OF: Readonly<Record<KinLinkedKind, KinLinkedGroupName>> = {
 const kinLinkedKindOf = (key: string): KeyKind =>
   KIND_BY_PREFIX[key.slice(0, key.indexOf("-"))] ?? "entry";
 
-const recordItem = (ref: Pick<KinRecordRef, "key" | "title">, number?: string): KinLinkedItem => {
+const recordItem = (
+  ref: Pick<KinRecordRef, "key" | "title">,
+  number?: string,
+  deleted?: true,
+): KinLinkedItem => {
   const kind = kinLinkedKindOf(ref.key);
   return {
+    ...(deleted === true ? { deleted } : {}),
     kind,
     key: ref.key,
     name: kinRecordName(ref.key, number),
@@ -139,7 +146,7 @@ export function kinLinked(
       if (ref !== undefined) add(recordItem(ref));
   for (const link of [...detail.links, ...(detail.linkedFrom ?? [])]) {
     if (link.kind === "record" && link.record !== undefined)
-      add(recordItem(link.record, link.number));
+      add(recordItem(link.record, link.number, link.deleted));
     if (link.kind === "message" && link.chatId !== null) add(messageItem(link, link.chatId));
     else if (link.kind === "message" && link.closedChat !== undefined)
       add({

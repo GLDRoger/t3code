@@ -1,17 +1,20 @@
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId, KinPersonId, KinSendTry } from "@t3tools/contracts";
 import { Image as ExpoImage } from "expo-image";
 import { memo, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
-import { AppState, Pressable, TextInput, View } from "react-native";
+import { Alert, AppState, Pressable, TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
 import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
 import { cn } from "../../../lib/cn";
+import { SelectableMarkdownText } from "../../../native/SelectableMarkdownText";
+import { useMarkdownPreviewStyles } from "../../files/FileMarkdownPreview";
 import { assetImageSource } from "../../../lib/assetImageSource";
 import { useNowMinuteMs } from "../../../lib/clock";
 import { uuidv4 } from "../../../lib/uuid";
@@ -24,8 +27,17 @@ import {
   kinChoiceCardTaps,
   kinChoiceAccessibilityLabel,
   kinChoiceAnswered,
+  kinChoiceDecidedLine,
   kinChoicePhase,
   kinChoiceUndoneLine,
+  KIN_CHOICE_DISMISS_COPY,
+  kinChoiceDismissedLine,
+  kinChoiceDismissible,
+  createKinHeldPress,
+  kinDeviceTimers,
+  kinMailCancels,
+  KIN_MAIL_CANCEL_COPY,
+  KIN_MAIL_CANCEL_UNDO_MS,
   kinSendEditBound,
   kinSendEditControls,
   kinSendEditedLine,
@@ -43,6 +55,10 @@ import {
   KIN_SEND_CHECKED,
   KIN_SEND_COPY,
   KIN_SEND_EDIT_COPY,
+  KIN_CHOICE_DRAFT_COPY,
+  KIN_CHOICE_OPEN_LABEL,
+  type KinChoiceDraftView,
+  type KinChoiceOpen,
   type KinSendEditBusy,
   type KinChoiceCardStatus,
   type KinChoiceCardView,
@@ -236,6 +252,42 @@ function SendDetail(props: {
 }
 
 /** A mail's whole body, folded under its card's first screen so Confirm is in reach. */
+/** A teammate's sent-up draft, rendered as a doc is; a long one opens under Show all. */
+function ChoiceDraft(props: { readonly draft: KinChoiceDraftView }) {
+  const { draft } = props;
+  const [open, setOpen] = useState(false);
+  const styles = useMarkdownPreviewStyles();
+  const line = (text: string | null) =>
+    text === null ? null : (
+      <Text textRole="footnote" className="text-foreground-secondary">
+        {text}
+      </Text>
+    );
+  return (
+    <View className="gap-2">
+      {line(draft.before)}
+      <View className="rounded-lg border border-border-subtle px-3 py-2">
+        <SelectableMarkdownText
+          markdown={kinBodyMarkdown(draft.folds && !open ? draft.preview : draft.markdown)}
+          textStyle={styles.nativeTextStyle}
+          selectable
+        />
+        {draft.folds ? (
+          <View className="flex-row">
+            <Button
+              tone="text"
+              size="compact"
+              label={open ? KIN_CHOICE_DRAFT_COPY.showLess : KIN_CHOICE_DRAFT_COPY.showAll}
+              onPress={() => setOpen(!open)}
+            />
+          </View>
+        ) : null}
+      </View>
+      {line(draft.after)}
+    </View>
+  );
+}
+
 function SendFold(props: { readonly send: NonNullable<KinChoiceCardView["send"]> }) {
   const [open, setOpen] = useState(false);
   return (
@@ -521,7 +573,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const checked = kinSendTicked(warnedView, ticked) !== null;
   const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
 
-  const { tick, press, pickFrom, sendEdit, saveEdit, discardEdit } = kinChoiceCardActions({
+  const { tick, press, pickFrom, sendEdit, saveEdit, discardEdit, dismiss } = kinChoiceCardActions({
     choice,
     environmentId,
     newId: uuidv4,
@@ -546,6 +598,12 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       kinSendEditHold(heldKey, shownEdit);
   });
   const navigation = useNavigation();
+  const openMade = (open: KinChoiceOpen) => {
+    const target = { environmentId: String(environmentId), orgId: String(choice.orgId) };
+    if (open.subscriptions === true) navigation.navigate("KinSubscriptions", target);
+    else navigation.navigate("KinList", { ...target, list: open.list });
+  };
+  const made = choice.outcome?.open ?? null;
   const editorOpen = shownEdit !== null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- unsaved words are kept when the app goes to the background, the chat loses focus or is left.
   useEffect(() => {
@@ -562,6 +620,37 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     };
   }, [editorOpen, navigation]);
   const edited = kinSendEditedLine(choice, props.viewerPersonId);
+  const decided = kinChoiceDecidedLine(choice, props.viewerPersonId);
+  // A mail's Cancel, once said yes to, waits a few seconds for Undo before it is sent.
+  const [held, setHeld] = useState<string | null>(null);
+  const sendHeld = useEffectEvent(() => {
+    const optionId = held;
+    setHeld(null);
+    if (optionId !== null) void press(optionId);
+  });
+  const [heldPress] = useState(() =>
+    createKinHeldPress({
+      delayMs: KIN_MAIL_CANCEL_UNDO_MS,
+      send: () => sendHeld(),
+      timers: kinDeviceTimers,
+    }),
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a held Cancel is sent when its card leaves the screen.
+  useEffect(() => () => heldPress.flush(), [heldPress]);
+  const choose = (optionId: string) => {
+    if (!kinMailCancels(choice, optionId)) return void press(optionId);
+    Alert.alert(KIN_MAIL_CANCEL_COPY.ask, KIN_MAIL_CANCEL_COPY.detail, [
+      { text: KIN_MAIL_CANCEL_COPY.no, style: "cancel" },
+      {
+        text: KIN_MAIL_CANCEL_COPY.yes,
+        style: "destructive",
+        onPress: () => {
+          setHeld(optionId);
+          heldPress.hold();
+        },
+      },
+    ]);
+  };
 
   const fromPicker =
     choice.send !== null &&
@@ -571,6 +660,54 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     choice.send.fromChoices.length > 1
       ? { busy: switching, problem: switchProblem, pick: (id: string) => void pickFrom(id) }
       : null;
+
+  const dismissible = canAct && kinChoiceDismissible(choice, phase, props.viewerPersonId);
+  const dismissed = kinChoiceDismissedLine(choice, props.viewerPersonId);
+  const dismissing = pending !== null && choice.options.every((option) => option.id !== pending);
+  const notice =
+    status?.notice == null ? null : (
+      <Text
+        accessibilityRole="alert"
+        accessibilityLiveRegion="polite"
+        textRole="footnote"
+        className={cn(
+          "font-t3-medium",
+          status.notice.kind === "stale" ? "text-warning-foreground" : "text-danger-foreground",
+        )}
+      >
+        {status.notice.text}
+      </Text>
+    );
+
+  if (phase === "dismissed" && dismissed !== null)
+    return (
+      <View className="gap-1 px-1">
+        <View className="flex-row items-center gap-3">
+          <Text
+            textRole="footnote"
+            numberOfLines={1}
+            accessibilityLabel={`${dismissed.text}. ${choice.question}`}
+            className="min-w-0 flex-1 text-foreground-muted"
+          >
+            <Text textRole="footnote" className="font-t3-medium text-foreground-secondary">
+              {dismissed.text}
+            </Text>
+            {` · ${choice.question}`}
+          </Text>
+          {dismissed.undo && canAct ? (
+            <Button
+              label={KIN_CHOICE_DISMISS_COPY.undo}
+              accessibilityLabel={KIN_CHOICE_DISMISS_COPY.undoName}
+              tone="text"
+              loading={dismissing}
+              disabled={pending !== null}
+              onPress={() => void dismiss(true)}
+            />
+          ) : null}
+        </View>
+        {notice}
+      </View>
+    );
 
   const grouped = fromPicker === null && shownEdit === null;
   return (
@@ -612,6 +749,8 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
           />
         ) : choice.send !== null ? (
           <SendDetail send={choice.send} edited={edited} pickFrom={fromPicker} />
+        ) : choice.draft !== null ? (
+          <ChoiceDraft draft={choice.draft} />
         ) : choice.detail === null ? null : (
           <Text textRole="footnote" className="text-foreground-secondary">
             {choice.detail}
@@ -635,14 +774,26 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       )}
       {answered !== null ? (
         answered.text === null ? null : (
-          <Text
-            textRole="footnote"
-            className="font-t3-medium text-foreground-secondary"
-            importantForAccessibility="no"
-            accessibilityElementsHidden
-          >
-            {answered.text}
-          </Text>
+          <View className="gap-1">
+            <Text
+              textRole="footnote"
+              className="font-t3-medium text-foreground-secondary"
+              importantForAccessibility="no"
+              accessibilityElementsHidden
+            >
+              {answered.text}
+            </Text>
+            {made === null ? null : (
+              <View className="flex-row">
+                <Button
+                  tone="text"
+                  size="compact"
+                  label={KIN_CHOICE_OPEN_LABEL}
+                  onPress={() => openMade(made)}
+                />
+              </View>
+            )}
+          </View>
         )
       ) : phase === "expired" ? (
         <Text textRole="footnote" className="text-foreground-muted">
@@ -652,23 +803,28 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         <Text textRole="footnote" className="text-foreground-muted">
           {KIN_DEVICE_COPY.cantAct("phone", "answer")}
         </Text>
-      ) : shownEdit !== null ? null : (
+      ) : shownEdit !== null ? null : held !== null ? (
+        <View className="flex-row items-center gap-3 pt-1">
+          <Text
+            accessibilityLiveRegion="polite"
+            textRole="footnote"
+            className="min-w-0 flex-1 font-t3-medium text-foreground-secondary"
+          >
+            {KIN_MAIL_CANCEL_COPY.held}
+          </Text>
+          <Button
+            label={KIN_MAIL_CANCEL_COPY.undo}
+            tone="outline"
+            size="compact"
+            onPress={() => {
+              heldPress.undo();
+              setHeld(null);
+            }}
+          />
+        </View>
+      ) : (
         <>
-          {status?.notice == null ? null : (
-            <Text
-              accessibilityRole="alert"
-              accessibilityLiveRegion="polite"
-              textRole="footnote"
-              className={cn(
-                "font-t3-medium",
-                status.notice.kind === "stale"
-                  ? "text-warning-foreground"
-                  : "text-danger-foreground",
-              )}
-            >
-              {status.notice.text}
-            </Text>
-          )}
+          {notice}
           <View className="gap-2 pt-1">
             {choice.options.map((option) => (
               <View key={option.id} className="gap-0.5">
@@ -684,7 +840,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
                     switching ||
                     kinSendCheckPending(choice, ticked, option.id)
                   }
-                  onPress={() => void press(option.id)}
+                  onPress={() => choose(option.id)}
                 />
                 {option.action === null ? null : (
                   <Text textRole="footnote" className="px-1 text-foreground-muted">
@@ -706,8 +862,23 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
                 }
               />
             ) : null}
+            {dismissible ? (
+              <Button
+                label={KIN_CHOICE_DISMISS_COPY.dismiss}
+                accessibilityLabel={KIN_CHOICE_DISMISS_COPY.dismissName}
+                tone="text"
+                loading={dismissing}
+                disabled={(pending !== null && !dismissing) || switching}
+                onPress={() => void dismiss()}
+              />
+            ) : null}
           </View>
         </>
+      )}
+      {decided === null ? null : (
+        <Text textRole="footnote" className="text-foreground-muted">
+          {decided}
+        </Text>
       )}
       {undone === null ? null : (
         <Text textRole="footnote" className="text-foreground-muted">

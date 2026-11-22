@@ -107,6 +107,7 @@ import {
   kinWorkLiveStream,
 } from "./kinWorkStream.ts";
 import { KIN_PERSON_TASKS, kinTasksMostUrgent } from "./kinTasksList.ts";
+import { makeKinWatches } from "./kinWatches.ts";
 
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
 const KIN_HISTORY_PAGE_TIMEOUT = Duration.seconds(20);
@@ -243,6 +244,11 @@ export function makeKinClient<R, ER>(
     tag: KIN_CHAT_WS_METHODS.chatMembers,
   });
   const readMembers = kinGuardedRead(membersRead);
+  const workingRead = createKinRpcCommand(runtime, {
+    label: "kin:chat-working:read",
+    tag: KIN_CHAT_WS_METHODS.chatWorking,
+  });
+  const readWorking = kinGuardedRead(workingRead);
   const peopleRead = createKinRpcCommand(runtime, {
     label: "kin:people:read",
     tag: KIN_PEOPLE_WS_METHODS.peopleList,
@@ -509,6 +515,15 @@ export function makeKinClient<R, ER>(
     refreshTrigger: createKinDirectoryTrigger(runtime, "people"),
   });
 
+  /** What a chat's messages were handed to other agents for; the screen refreshes it on change. */
+  const chatWorking = createKinQueryAtomFamily(runtime, {
+    label: "kin:chat-working",
+    execute: Effect.fn("KinClient.chatWorking")(function* (input: KinChatMembersInput) {
+      return yield* readWorking(input);
+    }),
+    staleTimeMs: 30_000,
+  });
+
   /** Reads a chat's members again whenever its stream says who is in it, its name or lead changed. */
   const rereadMembersOnChange =
     (chatId: KinChatId) =>
@@ -563,6 +578,7 @@ export function makeKinClient<R, ER>(
 
   /** Web's Kin reads and commands. Mobile's twin adds the device cache and push. */
   const kinClient = {
+    ...makeKinWatches(runtime, kinGuardedRead),
     orgs: createKinQueryAtomFamily(runtime, {
       label: "kin:orgs",
       execute: Effect.fn("KinClient.orgs")(function* (input: KinOrgsListInput) {
@@ -734,6 +750,15 @@ export function makeKinClient<R, ER>(
       label: "kin:github-app:disconnect",
       tag: "kin.github.app.disconnect",
     }),
+    githubAppHookAllow: createKinRpcCommand(runtime, {
+      label: "kin:github-app-hook:allow",
+      tag: "kin.github.app.hook.allow",
+    }),
+    githubAppLook: createKinRpcCommand(runtime, {
+      label: "kin:github-app:look",
+      tag: "kin.github.app.look",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:github-app-look` },
+    }),
     githubAppReposSet: createKinRpcCommand(runtime, {
       label: "kin:github-app-repos:set",
       tag: "kin.github.app.repos.set",
@@ -885,6 +910,7 @@ export function makeKinClient<R, ER>(
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.host}` },
     }),
     chatMembers,
+    chatWorking,
     /** The people of the org, for choosing who joins a group or may message a lead. */
     people: createKinQueryAtomFamily(runtime, {
       label: "kin:people",
@@ -1679,6 +1705,18 @@ export function makeKinClient<R, ER>(
       label: "kin:docs:editSection",
       tag: "kin.docs.editSection",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    /** Deletes a doc or brings it back; the host decides who may (`kin.docs.delete`). */
+    docDelete: createKinRpcCommand(runtime, {
+      label: "kin:docs:delete",
+      tag: "kin.docs.delete",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    /** A teammate's own draft goes up to the agent's owner to approve; a second tap finds the first. */
+    docSendUp: createKinRpcCommand(runtime, {
+      label: "kin:docs:sendUp",
+      tag: "kin.docs.sendUp",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.widgetId },
     }),
     /** Starts What we sell, or brings an archived one back; the same doc however often it is tapped. */
     docStartWhatWeSell: createKinRpcCommand(runtime, {

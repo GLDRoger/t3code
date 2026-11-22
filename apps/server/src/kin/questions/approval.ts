@@ -46,6 +46,10 @@ const StoredDraftJson = Schema.fromJsonString(
     ),
     text: Schema.String,
     line: Schema.String,
+    /** A post's service, by name, as the card's line said it. */
+    on: Schema.optional(Schema.String),
+    /** The owner's redraft (`redo`): on her card only, never held to the teammate. */
+    redo: Schema.optional(Schema.Literal(true)),
     names: Schema.Struct({ owner: Schema.String, asker: Schema.String, agent: Schema.String }),
   }),
 );
@@ -58,10 +62,20 @@ export const DRAFT_OPTIONS = [
   { label: "Approve", kind: "yes" },
   { label: "Changes first", kind: "no" },
 ] as const;
+/** The answer a sent-up draft's "no" stores. */
+export const CHANGES_FIRST = DRAFT_OPTIONS[1].label;
 
 /** A sent-up draft's card text from its stored payload: who asks, the draft, then Kin's line. */
-export const draftDetail = (head: string, draft: StoredDraft) =>
+export const draftDetail = (head: string, draft: Pick<StoredDraft, "text" | "line">) =>
   `${head}\n\n${draft.text}\n\n${draft.line}`;
+
+/** The card's last line: what it is, where a post goes, and for whom. */
+export const draftLine = (kind: DraftKind, on: string | undefined, party: string | undefined) => {
+  const word = DRAFT_WORDS[kind];
+  const what = `${word.charAt(0).toUpperCase()}${word.slice(1)}`;
+  if (on === undefined) return party === undefined ? what : `${what} for ${party}`;
+  return party === undefined ? `${what} for ${on}` : `${what} for ${on}, for ${party}`;
+};
 
 /** The one thing an approval made, recorded against it at its write (`recordMade`). */
 const MadeJson = Schema.fromJsonString(

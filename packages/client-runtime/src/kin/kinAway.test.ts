@@ -112,6 +112,9 @@ describe("away until a day", () => {
     expect(kinAwayLine(zoya, { mine: false, zone: "Europe/London", now })).toBe(
       "Away until Thu Nov 19 (India Standard Time)",
     );
+    expect(kinAwayLine(zoya, { mine: true, short: true, zone: "Europe/London", now })).toBe(
+      "Until Thu Nov 19 (India Standard Time)",
+    );
     expect(kinAwayLine({ ...zoya, awayUntil: undefined }, { mine: false, now })).toBeNull();
   });
 

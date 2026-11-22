@@ -46,6 +46,7 @@ import { moneySection, moneySummary } from "../work/moneyViews.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as OwnerMoney from "../work/ownerMoney.ts";
 import * as OwnerMoneyAnswers from "../work/ownerMoneyAnswers.ts";
+import { UNISSUED_INVOICE } from "../work/recordRows.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
 import * as Amounts from "./amounts.ts";
 import { computeData } from "./compute.ts";
@@ -180,7 +181,7 @@ const renderer = Layer.effect(
         if (failing.reason !== undefined)
           return Effect.succeed({ _tag: "failed", reason: failing.reason });
         if (request.recipe.kind === "table") return real.render(request);
-        const computed = computeData(request.inputs, request.recipe.computed);
+        const computed = computeData(request.inputs, request.recipe.computed, request.tax);
         if ("error" in computed) return Effect.succeed({ _tag: "failed", reason: computed.error });
         rendered.push({ request, data: computed.data });
         const bytes = new TextEncoder().encode(
@@ -443,7 +444,19 @@ describe("recipe documents", () => {
         documents: [{ key: "D-1", title: "Invoice INV-1", version: 1 }],
         sensitive: true,
         next: 'Filed, with its card in the chat. Call it "Invoice INV-1" in your reply, never by its key.',
+        record: { key: "INV-1", state: UNISSUED_INVOICE, total: "₹1,000.01" },
       });
+      // What the agent says of it is the record, and what the company details lack, the first time.
+      yield* sql`UPDATE kin_company_profile SET profile_json = json_set(profile_json,
+          '$.gstin', NULL, '$.bank.accountNumber', NULL, '$.bank.upi', NULL)
+        WHERE org_id = ${orgId}`;
+      assert.deepStrictEqual((yield* LeadDocuments.onRecord(orgId, "INV-1"))?.missing, [
+        "tax number (GSTIN)",
+        "bank details",
+      ]);
+      yield* sql`UPDATE kin_company_profile SET profile_json = json_set(profile_json,
+          '$.gstin', '29AAAAA1111A1Z5', '$.bank.accountNumber', '000111222333')
+        WHERE org_id = ${orgId}`;
       assert.deepStrictEqual(shownCards, ["D-1"], "its doc card is in the chat");
       const { request, data } = rendered.at(-1)!;
       assert.deepStrictEqual(
@@ -529,6 +542,64 @@ describe("recipe documents", () => {
       const jobs = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_doc_jobs
         WHERE org_id = ${orgId}`;
       assert.strictEqual(jobs[0]!.n, 1);
+      // A client's tax number prints only for a company registered for the tax; the client keeps it.
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.gstin', '27BBBBB2222B1Z5')
+        WHERE org_id = ${orgId} AND key = 'C-1'`;
+      const profileRev = Effect.map(
+        sql<{ rev: number }>`SELECT rev FROM kin_company_profile WHERE org_id = ${orgId}`,
+        ([row]) => row!.rev,
+      );
+      const standing = (n: number) =>
+        Effect.gen(function* () {
+          yield* LeadDocuments.make(scope, invoice({ title: `Invoice INV-1 standing ${n}` }));
+          const { request, data } = rendered.at(-1)!;
+          const tax = (data as Record<string, any>).tax;
+          return [request.inputs.clientGstin, tax.notCharged, tax.taxes.length, tax.placeOfSupply];
+        });
+      assert.deepStrictEqual(yield* standing(1), [
+        "27BBBBB2222B1Z5",
+        undefined,
+        1,
+        "Maharashtra (27)",
+      ]);
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* profileRev,
+        taxRegistered: false,
+      });
+      assert.deepStrictEqual(yield* standing(2), [
+        null,
+        "GST not charged: the supplier is not registered under GST.",
+        0,
+        null,
+      ]);
+      // The agent is told once, and no longer asked to collect a GSTIN the company doesn't have.
+      const note =
+        "The company is not registered for GST: its invoices charge no GST and never show a client's GSTIN. Don't ask for or collect clients' GSTINs for invoices.";
+      const told = yield* LeadDocuments.onRecord(orgId, "INV-1");
+      assert.deepStrictEqual([told?.missing, told?.taxNote], [undefined, note]);
+      assert.strictEqual((yield* LeadMoney.money(scope, {})).taxNote, note);
+      assert.strictEqual((yield* LeadWork.get(scope, { key: "INV-1" })).taxNote, note);
+      // Saying nothing with no GSTIN still prints no client's GSTIN, and no line either.
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* profileRev,
+        taxRegistered: null,
+      });
+      assert.deepStrictEqual((yield* standing(3)).slice(0, 3), [null, undefined, 0]);
+      // A GSTIN typed again is registered again, and clears the word that it isn't.
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* profileRev,
+        taxRegistered: false,
+      });
+      const again = yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* profileRev,
+        gstin: "29AAAAA1111A1Z5",
+      });
+      assert.deepStrictEqual([again.gstin, again.taxRegistered], ["29AAAAA1111A1Z5", undefined]);
+      assert.strictEqual((yield* standing(4))[0], "27BBBBB2222B1Z5");
       // Every document tool is refused in a turn someone besides the owner reads.
       const turnRef = { orgId, agentId: lead, wakeupId: "wake-3" };
       for (const tool of ["kin_document", "kin_recipes", "kin_issue", "kin_recipe_undo"])
@@ -538,6 +609,49 @@ describe("recipe documents", () => {
         yield* sharedToolAllowed(turnRef, "kin_document", { file: "/srv/scratch/run/shot.png" }),
       );
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "are listed to the agent with only the inputs it gives, and one recipe's read adds the rest once",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const listed = yield* LeadDocuments.recipes(scope, {});
+        const invoiceRow = listed.recipes.find((one) => one.name === "invoice");
+        const listedInput = (name: string) =>
+          invoiceRow?.agentInputs.find((one) => one.name === name);
+        assert.match(
+          listedInput("gstRate")?.description ?? "",
+          /18 unless the owner said otherwise/,
+        );
+        assert.deepStrictEqual(listedInput("lines")?.columns, [
+          "description",
+          "sac",
+          "quantity",
+          "unit",
+          "rate",
+        ]);
+        for (const row of listed.recipes) {
+          assert.notProperty(row, "storedInputs", row.name);
+          assert.notProperty(row, "computed", row.name);
+        }
+        const read = yield* LeadDocuments.recipes(scope, { recipe: "invoice" });
+        assert.deepStrictEqual(
+          read.recipes.map((one) => one.name),
+          ["invoice"],
+        );
+        const [one] = read.recipes;
+        assert.deepStrictEqual(one?.agentInputs, invoiceRow?.agentInputs);
+        const stored = one?.storedInputs ?? [];
+        assert.isNotEmpty(stored);
+        assert.isTrue(stored.every((input) => input.from !== "agent"));
+        assert.isNotEmpty(one?.computed ?? []);
+        assert.isNotEmpty(one?.outputs ?? []);
+        const unknown = yield* LeadDocuments.recipes(scope, { recipe: "nothing" }).pipe(
+          Effect.flip,
+        );
+        assert.match(unknown.message, /No recipe is called nothing/);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("are made again in place when the entry is issued, carrying its number", () =>
@@ -689,6 +803,25 @@ describe("recipe documents", () => {
         yield* csvOf(settled.documents[1]!.key),
         ",Invented Acme,27AAAAA1111A1Z5,Maharashtra,847.47,152.54,1000.01,INR,Paid,INV-1\r\n",
       );
+      // A company that isn't registered for the tax shows no client's GSTIN in the register either.
+      const { rev } = (yield* (yield* SqlClient.SqlClient)<{ rev: number }>`SELECT rev
+        FROM kin_company_profile WHERE org_id = ${orgId}`)[0]!;
+      yield* OwnerMoney.setCompanyProfile(people, { orgId, rev, taxRegistered: false });
+      const unregistered = yield* LeadDocuments.make(scope, {
+        title: "November pack, not registered",
+        recipe: "accountant-pack",
+        inputs: { month: "2026-11" },
+        sourceEventId: "event-3",
+      });
+      assert.include(
+        yield* csvOf(unregistered.documents[1]!.key),
+        ",Invented Acme,,Maharashtra,847.47,152.54,1000.01,INR,Paid,INV-1\r\n",
+      );
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: rev + 1,
+        gstin: "29AAAAA1111A1Z5",
+      });
 
       // F51: expenses confirmed, undone and confirmed again: the file, the totals a chart is drawn
       // from and Money all count the live copy once.
@@ -1339,6 +1472,7 @@ describe("recipe documents", () => {
         gstRate: "12",
         dueOn: "2026-12-12",
         notes: "Typed by hand",
+        amountConfirmed: false,
         clientRequestId: "form-1",
       };
       // The renderer is down: the draft stands with the reason, and the same request finishes it.
@@ -1412,6 +1546,17 @@ describe("recipe documents", () => {
         { reason: "not_found" },
       );
       assert.isUndefined(yield* records.get(orgId, "INV-3"));
+      // Lines far above every invoice are asked about once, saving nothing; confirmed, they save.
+      const far = {
+        ...asked,
+        lines: [{ description: "Design", sac: null, quantity: "1", rate: "₹5,00,00,000.00" }],
+        clientRequestId: "form-4",
+      };
+      const slip = yield* OwnerMoneyAnswers.newInvoice(people, far).pipe(Effect.flip);
+      assert.deepStrictEqual(slip.farAbove?.list, "Invoices");
+      assert.isUndefined(yield* records.get(orgId, "INV-3"));
+      const kept = yield* OwnerMoneyAnswers.newInvoice(people, { ...far, amountConfirmed: true });
+      assert.strictEqual(kept.invoice, "INV-3");
     }).pipe(Effect.provide(layer)),
   );
 

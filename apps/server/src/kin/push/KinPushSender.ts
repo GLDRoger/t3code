@@ -7,7 +7,9 @@ import type {
   KinPendingAction,
   KinPersonId,
   KinPushCategory,
+  KinPushChannel,
   KinPushData,
+  KinPushPlatform,
   KinPushSendingStatus,
   KinPushSubject,
   KinPushToken,
@@ -16,6 +18,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   KIN_DEVICE_LINKED_NOTICE,
+  KinChoiceCardState,
   KinMessageId,
   KinMessageRelay,
   kinGreeting,
@@ -51,6 +54,7 @@ import { DM_NEWS, HELD_ID } from "../triggers/heldDelivery.ts";
 import { personHoldNow, personQuietUntil } from "../triggers/quietHold.ts";
 import { taskNewsBanner } from "../work/assignNotices.ts";
 import { KinApnsTransport } from "./Apns.ts";
+import { KinFcmTransport } from "./Fcm.ts";
 import { KinPushDevices, kinPushDeviceId, type KinPushDevice } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
 
@@ -104,12 +108,14 @@ type Recipient = {
 
 type Push = {
   readonly category: KinPushCategory;
+  /** Where an Android phone shows it, so each kind can be silenced on its own. */
+  readonly channel: KinPushChannel;
   readonly title: string;
   readonly body: string;
   readonly chatId: KinChatId | undefined;
   /** The message, or card's anchor, it tells of: each send checks the recipient still reads it. */
   readonly source: KinMessageId | undefined;
-  /** Message pushes collapse per chat, so a busy chat shows one banner. */
+  /** One per message: a resend replaces its own banner. The chat groups them (`thread-id`). */
   readonly collapseId?: string;
   readonly data: KinPushData;
   readonly recipients: ReadonlyArray<Recipient>;
@@ -119,9 +125,16 @@ type Push = {
 
 /** APNs refuses a regular push whose JSON payload is longer than this many bytes. */
 const KIN_APNS_PAYLOAD_MAX = 4096;
+/** FCM refuses a message whose data keys and values come to more than this many bytes. */
+const KIN_FCM_DATA_MAX = 4096;
 
 const utf8 = new TextEncoder();
 const jsonBytes = (value: unknown) => utf8.encode(JSON.stringify(value)).length;
+const dataBytes = (data: Readonly<Record<string, string>>) =>
+  Object.entries(data).reduce(
+    (total, [key, value]) => total + utf8.encode(key).length + utf8.encode(value).length,
+    0,
+  );
 const wordSegments = new Intl.Segmenter(undefined, { granularity: "word" });
 const sentenceSegments = new Intl.Segmenter(undefined, { granularity: "sentence" });
 // A sentence end within the last fifth before the word cut is where the cut goes instead.
@@ -239,6 +252,31 @@ const kinCardKind = (
               ? "Scheduled task"
               : "Question";
 
+/** A card's Android channel: what waits on the reader's answer, else their messages. */
+const kinCardChannel = (kind: string): KinPushChannel =>
+  kind === "Task" || kind === "Reminder" || kind === "Scheduled task"
+    ? "kin.messages"
+    : "kin.questions";
+
+const decodeChoiceCard = Schema.decodeUnknownOption(KinChoiceCardState);
+
+/**
+ * The two answers a notice shows as buttons, or none. Only an agent's open question (`asked`,
+ * in `kin_questions`, carrying no sent-up draft) with exactly two plain options: Kin's own Confirm
+ * cards (money, mail, a company change) are no open question, an option that runs an action or
+ * sends needs the card, and a draft is approved where it is read (R12).
+ */
+const kinNoticeChoices = (state: unknown, asked: boolean) => {
+  if (!asked) return undefined;
+  const card = Option.getOrUndefined(decodeChoiceCard(state));
+  if (card === undefined || card.answer !== null || card.replaced === true) return undefined;
+  if (card.send !== undefined || card.options.length !== 2) return undefined;
+  const [first, second] = card.options;
+  if (first === undefined || second === undefined) return undefined;
+  if (first.action !== undefined || second.action !== undefined) return undefined;
+  return { question: card.question, options: [first, second] as const };
+};
+
 const HOLDER_ID = "kin-holder-";
 const ASSIGN_ID = "kin-assign-";
 const TAKEN_ID = "kin-default-taken:";
@@ -249,6 +287,10 @@ const TAKEN_CARD = `send:${TAKEN_ID}`;
 const DEAD_TOKEN_REASONS = new Set(["BadDeviceToken"]);
 // The token is fine; our `KIN_APNS_TOPIC` doesn't match the app that registered it.
 const CONFIG_REASONS = new Set(["DeviceTokenNotForTopic", "TopicDisallowed"]);
+// FCM's "Error codes for FCM": the app was removed or the token replaced.
+const FCM_DEAD_REASONS = new Set(["UNREGISTERED"]);
+// The token is from another Firebase project than the service account's.
+const FCM_CONFIG_REASONS = new Set(["SENDER_ID_MISMATCH"]);
 const SEND_CONCURRENCY = 4;
 
 const segment = encodeURIComponent;
@@ -263,9 +305,12 @@ export const kinTasksSubject = (keys: ReadonlyArray<KinRecordKey>): KinPushSubje
     ? { _tag: "record", key: unique[0]!, kind: "task" }
     : { _tag: "tasks" };
 };
+// One per message, not per chat: iOS and Android make it the notification's identifier, and a
+// phone acts once per identifier, so a shared id left every later tap from that chat dead.
 /** Fits `apns-collapse-id`'s 64 bytes whatever the ids' length. */
-const kinPushCollapseId = (orgId: KinOrgId, chatId: KinChatId) =>
-  `kin:${kinPushDeviceId(`${orgId}\u0000${chatId}`)}`;
+const kinPushCollapseId = (orgId: KinOrgId, chatId: KinChatId, messageId: KinMessageId) =>
+  `kin:${kinPushDeviceId(`${orgId}\u0000${chatId}\u0000${messageId}`)}`;
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeIds = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
 const decodeState = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const UNPROMPTED_RING_GAP_MS = 30 * 60_000;
@@ -311,6 +356,8 @@ export class KinPushSender extends Context.Service<
   KinPushSender,
   {
     readonly status: KinPushSendingStatus;
+    /** Whether pushes to this platform's devices go anywhere. */
+    readonly statusFor: (platform: KinPushPlatform) => KinPushSendingStatus;
     /** Call after the commit; it sends in the background, outliving the request, and never fails. */
     readonly notify: (
       notification: KinPushNotification,
@@ -324,6 +371,11 @@ const make = Effect.gen(function* () {
   const scope = yield* Effect.scope;
   const sql = yield* SqlClient.SqlClient;
   const apns = yield* KinApnsTransport;
+  const fcm = yield* KinFcmTransport;
+  const statusFor = (platform: KinPushPlatform) =>
+    platform === "android" ? fcm.status : apns.status;
+  const status: KinPushSendingStatus =
+    apns.status === "ready" || fcm.status === "ready" ? "ready" : "unconfigured";
   const devices = yield* KinPushDevices;
   const presence = yield* KinPushPresence;
   const keys = yield* ApproverKeys;
@@ -503,6 +555,7 @@ const make = Effect.gen(function* () {
       recipients.push({ personId, silent: (yield* holdNow(orgId, personId)) === "quiet" });
     return {
       category: "kin.approval",
+      channel: "kin.questions",
       title: lead?.display_name ?? "Approval needed",
       body: approvalPushText(action.value),
       chatId: undefined,
@@ -693,11 +746,12 @@ const make = Effect.gen(function* () {
     }
     const push: Push = {
       category: "kin.message",
+      channel: brief ? "kin.briefs" : "kin.messages",
       title: kinBannerTitle(chat, author, kind(answersAnyone)),
       body: body || "New message",
       chatId: row.chat_id,
       source: messageId,
-      collapseId: kinPushCollapseId(orgId, row.chat_id),
+      collapseId: kinPushCollapseId(orgId, row.chat_id, messageId),
       data: {
         kin: 1,
         orgId,
@@ -728,9 +782,13 @@ const make = Effect.gen(function* () {
       client_message_id: string | null;
       silent: number;
       author_name: string | null;
+      asked: number;
     }>`SELECT w.chat_id, w.type, w.revision, json_extract(w.state_json, '$.phase') AS phase,
         w.state_json, w.awaiting_json, m.seq, m.message_id, m.body, m.form, m.client_message_id,
         m.silent,
+        EXISTS (SELECT 1 FROM kin_questions q WHERE q.org_id = w.org_id AND q.state = 'open'
+          AND (q.widget_id = w.widget_id OR q.raise_widget_id = w.widget_id)
+          AND q.draft_json IS NULL) AS asked,
         COALESCE(
           (SELECT display_name FROM kin_agents a
             WHERE a.org_id = m.org_id AND a.agent_id = m.author_agent_id),
@@ -750,20 +808,34 @@ const make = Effect.gen(function* () {
       ? kinGreeting(yield* ownerHour(orgId))
       : undefined;
     const words = kinCardWords(row.body, state);
+    const choices = row.type === "choice" ? kinNoticeChoices(state, row.asked === 1) : undefined;
     const kind =
-      row.type !== "deferral"
+      choices !== undefined
         ? ({
-            category: "kin.message",
-            body:
-              greeting !== undefined && words !== undefined
-                ? `${greeting} · ${words}`
-                : (words ?? "A card is waiting on you"),
+            category: "kin.choice",
+            body: [
+              `${greeting === undefined ? "" : `${greeting} · `}${kinPushBody(choices.question)}`,
+              ...choices.options.map(
+                (option, index) => `${index + 1} · ${option.label.replace(/\s+/g, " ")}`,
+              ),
+            ].join("\n"),
           } as const)
-        : row.phase === "confirmed" || row.phase === null
-          ? ({ category: "kin.deferral.confirmed", body: "A deferral needs a look" } as const)
-          : row.phase === "heads_up"
-            ? ({ category: "kin.deferral.heads_up", body: "A deferred task starts soon" } as const)
-            : undefined;
+        : row.type !== "deferral"
+          ? ({
+              category: "kin.message",
+              body:
+                greeting !== undefined && words !== undefined
+                  ? `${greeting} · ${words}`
+                  : (words ?? "A card is waiting on you"),
+            } as const)
+          : row.phase === "confirmed" || row.phase === null
+            ? ({ category: "kin.deferral.confirmed", body: "A deferral needs a look" } as const)
+            : row.phase === "heads_up"
+              ? ({
+                  category: "kin.deferral.heads_up",
+                  body: "A deferred task starts soon",
+                } as const)
+              : undefined;
     if (kind === undefined) return undefined;
     const awaiting = new Set<string>(yield* decodeIds(row.awaiting_json));
     // Whoever the turn's own words rang heard of the card with them: one event, one banner. A
@@ -790,18 +862,17 @@ const make = Effect.gen(function* () {
         subject: { _tag: "message", messageId: row.message_id },
       });
     }
+    const cardKind =
+      greeting !== undefined ? kinBriefKind(null, greeting) : kinCardKind(row, state);
     return {
       ...kind,
-      title: kinBannerTitle(
-        chat,
-        row.author_name,
-        greeting !== undefined ? kinBriefKind(null, greeting) : kinCardKind(row, state),
-      ),
+      channel: greeting !== undefined ? "kin.briefs" : kinCardChannel(cardKind),
+      title: kinBannerTitle(chat, row.author_name, cardKind),
       chatId: row.chat_id,
       source: row.message_id,
-      // A deferral keeps its own banner, which carries its buttons.
+      // A notice with buttons keeps its own banner.
       ...(kind.category === "kin.message"
-        ? { collapseId: kinPushCollapseId(orgId, row.chat_id) }
+        ? { collapseId: kinPushCollapseId(orgId, row.chat_id, row.message_id) }
         : {}),
       data: {
         kin: 1,
@@ -809,6 +880,9 @@ const make = Effect.gen(function* () {
         chatId: row.chat_id,
         widgetId,
         revision: row.revision,
+        ...(choices === undefined
+          ? {}
+          : { choices: [choices.options[0].optionId, choices.options[1].optionId] as const }),
         deepLink: chatLink(orgId, row.chat_id),
       },
       recipients,
@@ -844,6 +918,38 @@ const make = Effect.gen(function* () {
   // The badge each device was last sent, so a read that leaves it unchanged sends nothing.
   const shownBadge = new Map<KinPushToken, number>();
 
+  /** What FCM's answer means for the device: sent, or failed and logged, a dead token retired. */
+  const fcmOutcome = Effect.fn("KinPushSender.fcmOutcome")(function* (
+    orgId: KinOrgId,
+    device: KinPushDevice,
+    result: { readonly status: number; readonly reason: string | undefined },
+    badge: number,
+  ) {
+    if (result.status === 200) {
+      shownBadge.set(device.token, badge);
+      return "sent" as const;
+    }
+    const deviceId = kinPushDeviceId(device.token);
+    if (FCM_DEAD_REASONS.has(result.reason ?? "")) {
+      yield* devices.forget(orgId, device.token);
+      yield* Effect.logInfo("Kin push device token is gone.", { deviceId, reason: result.reason });
+    } else if (result.status === 429) {
+      yield* Effect.logWarning("FCM is throttling Kin pushes; this one was dropped.", { deviceId });
+    } else if (FCM_CONFIG_REASONS.has(result.reason ?? "")) {
+      yield* Effect.logError(
+        "FCM refused a Kin push: the phone's Firebase project isn't KIN_FCM_SERVICE_ACCOUNT_FILE's.",
+        { deviceId, reason: result.reason },
+      );
+    } else {
+      yield* Effect.logWarning("FCM refused a Kin push.", {
+        deviceId,
+        status: result.status,
+        reason: result.reason,
+      });
+    }
+    return "failed" as const;
+  });
+
   const sendTo = Effect.fn("KinPushSender.sendTo")(function* (
     orgId: KinOrgId,
     push: Push,
@@ -863,6 +969,33 @@ const make = Effect.gen(function* () {
         !(yield* stillReads(orgId, device.personId, push.chatId, push.source)))
     )
       return "dropped" as const;
+    if (statusFor(device.platform) === "unconfigured") return "skipped" as const;
+    const data =
+      recipient.subject === undefined ? push.data : { ...push.data, subject: recipient.subject };
+    if (device.platform === "android") {
+      // An Android launcher counts the banners shown, so a badge-only push would show nothing.
+      if (recipient.silent) return "skipped" as const;
+      const encoded = yield* encodeJson(data);
+      // Data only: the app draws the banner, with its category's buttons, even when killed.
+      const message = (body: string) => ({
+        title: push.title,
+        message: body,
+        // expo-notifications reads a remote push's `content.data` from `body`, as on iOS.
+        body: encoded,
+        categoryId: push.category,
+        channelId: push.channel,
+        badge: String(recipient.badge),
+        ...(push.chatId === undefined ? {} : { threadIdentifier: `kin:${orgId}:${push.chatId}` }),
+        // The shown banner with this tag is replaced, as `apns-collapse-id` replaces on iOS.
+        ...(push.collapseId === undefined ? {} : { tag: push.collapseId }),
+      });
+      const result = yield* fcm.send({
+        token: device.token,
+        priority: "HIGH",
+        data: message(kinPushFit(push.body, KIN_FCM_DATA_MAX - dataBytes(message("")))),
+      });
+      return yield* fcmOutcome(orgId, device, result, recipient.badge);
+    }
     const payload = (body: string) => ({
       aps: recipient.silent
         ? { badge: recipient.badge }
@@ -874,8 +1007,7 @@ const make = Effect.gen(function* () {
             ...(push.chatId === undefined ? {} : { "thread-id": `kin:${orgId}:${push.chatId}` }),
           },
       // expo-notifications reads a remote push's `content.data` from `body`.
-      body:
-        recipient.subject === undefined ? push.data : { ...push.data, subject: recipient.subject },
+      body: data,
     });
     const result = yield* apns.send({
       token: device.token,
@@ -924,7 +1056,10 @@ const make = Effect.gen(function* () {
     const targets = (yield* devices.forPeople(
       orgId,
       push.recipients.map((recipient) => recipient.personId),
-    )).filter((device) => device.sessionId !== push.exceptSession);
+    )).filter(
+      // A phone whose platform has no sender gets nothing, and so spends no ring.
+      (device) => device.sessionId !== push.exceptSession && statusFor(device.platform) === "ready",
+    );
     const recipients = new Map<
       KinPersonId,
       { silent: boolean; badge: number; subject: KinPushSubject | undefined }
@@ -990,11 +1125,23 @@ const make = Effect.gen(function* () {
       deepLink: chatLink(orgId, chatId),
       ...(cleared ? { cleared: true } : {}),
     };
+    const encoded = yield* encodeJson(data);
     const results = yield* Effect.forEach(
       targets,
       Effect.fnUntraced(function* (device) {
         if (shownBadge.get(device.token) === badge) return "suppressed" as const;
         if (yield* presence.isWatching(device.sessionId, chatId)) return "suppressed" as const;
+        if (statusFor(device.platform) === "unconfigured") return "skipped" as const;
+        if (device.platform === "android") {
+          // Only to take the chat's banners off: an Android launcher's count follows them.
+          if (!cleared) return "skipped" as const;
+          const result = yield* fcm.send({
+            token: device.token,
+            priority: "NORMAL",
+            data: { body: encoded },
+          });
+          return yield* fcmOutcome(orgId, device, result, badge);
+        }
         const result = yield* apns.send({
           token: device.token,
           environment: device.apsEnvironment,
@@ -1036,6 +1183,7 @@ const make = Effect.gen(function* () {
     const base = `/kin/${host}/${segment(orgId)}`;
     return {
       category: "kin.message",
+      channel: "kin.messages",
       title: "Tasks",
       body: news.body,
       chatId: undefined,
@@ -1094,11 +1242,12 @@ const make = Effect.gen(function* () {
     const one = kinPushBody(kinPlainBody(oldest.body));
     return {
       category: "kin.message",
+      channel: "kin.messages",
       title: name,
       body: unread.length === 1 && one !== "" ? one : `${name} sent ${unread.length} messages`,
       chatId: first.chatId,
       source: oldest.messageId,
-      collapseId: kinPushCollapseId(orgId, first.chatId),
+      collapseId: kinPushCollapseId(orgId, first.chatId, oldest.messageId),
       data: { kin: 1, orgId, chatId: first.chatId, deepLink: chatLink(orgId, first.chatId) },
       recipients: [
         {
@@ -1144,6 +1293,7 @@ const make = Effect.gen(function* () {
     if (row === undefined) return undefined;
     const push: Push = {
       category: "kin.message",
+      channel: "kin.account",
       title: "New device linked",
       body: KIN_DEVICE_LINKED_NOTICE,
       chatId: undefined,
@@ -1160,14 +1310,14 @@ const make = Effect.gen(function* () {
     return push;
   });
 
-  const nothing: KinPushOutcome = { status: apns.status, sent: 0, suppressed: 0, failed: 0 };
+  const nothing: KinPushOutcome = { status, sent: 0, suppressed: 0, failed: 0 };
 
   const run = Effect.fn("KinPushSender.run")(
     function* (notification: KinPushNotification) {
-      if (apns.status === "unconfigured") return nothing;
+      if (status === "unconfigured") return nothing;
       if (notification._tag === "read") {
         const outcome: KinPushOutcome = {
-          status: apns.status,
+          status,
           ...(yield* readBadge(notification.orgId, notification.chatId, notification.memberId)),
         };
         return outcome;
@@ -1204,7 +1354,7 @@ const make = Effect.gen(function* () {
                     );
       if (push === undefined || push.recipients.length === 0) return nothing;
       const outcome: KinPushOutcome = {
-        status: apns.status,
+        status,
         ...(yield* deliver(notification.orgId, push)),
       };
       return outcome;
@@ -1235,9 +1385,10 @@ const make = Effect.gen(function* () {
       let settled = 0;
       for (const row of owed) {
         const sent = Effect.gen(function* () {
-          if (apns.status === "ready")
+          if (status === "ready")
             yield* deliver(row.org_id, {
               category: "kin.message",
+              channel: "kin.account",
               title: "Kin approvals",
               // The server's own text, whole, so where to remove the phone is never cut off.
               body: row.body,
@@ -1272,7 +1423,7 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  return KinPushSender.of({ status: apns.status, notify, flushKeyPushes: flushKeyPushes() });
+  return KinPushSender.of({ status, statusFor, notify, flushKeyPushes: flushKeyPushes() });
 });
 
 export const layer = Layer.effect(KinPushSender, make);

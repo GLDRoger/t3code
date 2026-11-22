@@ -2,6 +2,7 @@
 import {
   KinChatId,
   KinListId,
+  KinMessageId,
   KinOrgId,
   KinPersonId,
   KinRecordId,
@@ -101,12 +102,16 @@ const money: KinMoneySummary = {
   upcomingTotal: 0,
   series: [],
 };
-const waiting = (id: string, createdAt: string): KinWaitingItem => ({
+const waiting = (
+  id: string,
+  createdAt: string,
+  messageId: KinWaitingItem["messageId"] = null,
+): KinWaitingItem => ({
   waitingId: id as KinWaitingItem["waitingId"],
   orgId,
   personId: me.personId,
-  chatId: KinChatId.make(`chat-${id}`),
-  messageId: null,
+  chatId: KinChatId.make("chat-cos"),
+  messageId,
   widgetId: null,
   reason: "question",
   createdAt,
@@ -119,7 +124,7 @@ describe("Needs you", () => {
     lists: [list("invoices", { builtIn: true })],
     waiting: [
       waiting("w-new", "2026-11-14T08:00:00.000Z"),
-      waiting("w-old", "2026-11-13T08:00:00.000Z"),
+      waiting("w-old", "2026-11-13T08:00:00.000Z", KinMessageId.make("msg-post-card")),
     ],
     chats: [],
     agentNames: new Map(),
@@ -133,6 +138,15 @@ describe("Needs you", () => {
       "waiting:w-old",
       "waiting:w-new",
       "task:W-2",
+    ]);
+    // Two waits in one chat: each opens the chat on its own card, not on the newest.
+    expect(
+      kinNeedsYou({ ...input, money })
+        .filter((row) => row.kind === "waiting")
+        .map((row) => row.open),
+    ).toEqual([
+      { type: "chat", chatId: "chat-cos", messageId: "msg-post-card" },
+      { type: "chat", chatId: "chat-cos", messageId: null },
     ]);
   });
   it("shows a viewer kept from money nothing about money", () => {

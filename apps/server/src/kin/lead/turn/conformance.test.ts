@@ -256,8 +256,8 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
             const session = yield* open(fake, thread, { model });
             assert.isTrue(session.kinToolsUpFront, `${model} ${thread}`);
             assert.isTrue(
-              session.heldBack.length === 0 || session.deferredFindable,
-              `${model} ${thread} holds back ${session.heldBack.join(", ")}`,
+              !session.holdsBack || session.deferredFindable,
+              `${model} ${thread} holds tools back that it can't find`,
             );
           }
       }).pipe(Effect.provide(layer(`kin-conformance-lookup-${driver}-`))),

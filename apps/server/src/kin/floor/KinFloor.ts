@@ -110,7 +110,7 @@ export class KinFloor extends Context.Service<
     /**
      * Re-arms the agent's unused grant on the open run of each chat `messageIds` are in, so a
      * wake-up that starts after the TTL can still reply once. It never issues a grant.
-     * `until` (the wake-up's own deadline) replaces the default TTL from now.
+     * `until` (when the wake-up ends if its run stays silent) replaces the default TTL from now.
      */
     readonly renew: (input: {
       readonly orgId: KinOrgId;

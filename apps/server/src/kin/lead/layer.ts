@@ -55,6 +55,7 @@ import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts"
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import * as KinWatchRounds from "../watches/KinWatchRounds.ts";
 import * as KinRecommend from "../recommend/KinRecommend.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
 import { importWork } from "../work/importWork.ts";
@@ -77,6 +78,8 @@ import * as GitHubWatch from "../github/GitHubWatch.ts";
 import * as TaskWake from "./TaskWake.ts";
 import * as DelegatedTasks from "./DelegatedTasks.ts";
 import * as ChatWake from "./ChatWake.ts";
+import { archiveEarlierKinProjects } from "./leadProject.ts";
+import { withAlwaysLoaded } from "./deferredTools.ts";
 
 export class KinLeadStartupError extends Schema.TaggedError<KinLeadStartupError>()(
   "KinLeadStartupError",
@@ -109,6 +112,7 @@ const routineRuntime = Layer.mergeAll(
   HostBackup.layer,
   KinPulse.layer,
   ArrivalFeed.liveLayer,
+  KinWatchRounds.layer,
   KinRecommend.layer,
 ).pipe(
   Layer.provideMerge(LeadDelivery.layer),
@@ -293,12 +297,12 @@ const memoryPullRequests = Layer.unwrap(
 const registration = Layer.mergeAll(
   SocialMcp.registration,
   SalesMcp.registration,
-  McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers),
-  McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
-  McpHttpServer.toolkitRegistration(KinDocsToolkit, docHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinLeadToolkit), handlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinWorkToolkit), workHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocsToolkit), docHandlers),
   McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers),
-  McpHttpServer.toolkitRegistration(KinDocumentToolkit, documentHandlers),
-  McpHttpServer.toolkitRegistration(KinPulseToolkit, pulseHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocumentToolkit), documentHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPulseToolkit), pulseHandlers),
 );
 const toolkit = LeadMemory.layer.pipe(
   Layer.provide(KinSchedules.layer),
@@ -411,6 +415,17 @@ const draftAmounts = Layer.effectDiscard(
     forkParked,
   ),
 );
+// Once per project, at every start: Kin's projects from before it archived them at creation.
+const earlierProjects = Layer.effectDiscard(
+  archiveEarlierKinProjects().pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin couldn't archive its earlier projects; the next start tries again", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+    forkParked,
+  ),
+);
 const production = withServices(
   Layer.mergeAll(
     runner,
@@ -421,6 +436,7 @@ const production = withServices(
     workImport,
     issuedAmounts,
     draftAmounts,
+    earlierProjects,
   ).pipe(
     Layer.provideMerge(documents),
     Layer.provideMerge(Team.layer),

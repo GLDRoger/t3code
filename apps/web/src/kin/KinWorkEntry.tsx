@@ -1,4 +1,5 @@
 import { KinAsideNote } from "./KinAttention";
+import { KinWatchLine } from "./KinWatchLine";
 import { useKinOpensClients } from "./useKinOwnerLevel";
 import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
@@ -614,6 +615,7 @@ export function KinListEntry(
             <p className="text-sm text-muted-foreground">{invoice.description}</p>
           )}
           <KinAsideNote {...props} record={item.key} names={props.directory.names} />
+          <KinWatchLine environmentId={environmentId} orgId={props.orgId} recordKey={item.key} />
         </div>
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
@@ -629,10 +631,12 @@ export function KinListEntry(
                   draft={amountEdit.draft}
                   placeholder={KIN_LISTS.entry.amountPlaceholder}
                   disabled={busy}
+                  ask={changes.ask}
                   onSave={async (text) => {
                     const checked = kinAmountCheck(text, amountEdit.currency, amountEdit.received);
                     if (!checked.ok) return checked.problem;
-                    const save = () => changes.edit(item.rev, { amount: checked.value });
+                    const save = () =>
+                      changes.edit(item.rev, { amount: checked.value }, text.trim());
                     const question = kinIssuedAmountQuestion(item, checked.value);
                     if (question === null) return save();
                     return new Promise<string | null>((done) =>

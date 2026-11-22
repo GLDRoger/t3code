@@ -12,9 +12,11 @@ import {
   kinCompanyCountrySuggestion,
   kinCompanyDraftOf,
   kinCompanyEditSections,
+  kinCompanyDraftEdit,
   kinCompanyGlance,
   kinCompanyInput,
   kinCompanyRead,
+  kinCountryName,
 } from "./kinCompanyProfile.ts";
 import { kinDatesMonth, kinMonthWindow, kinZonedDayStart } from "./kinDates.ts";
 import {
@@ -299,7 +301,46 @@ describe("company details", () => {
     expect(kinCompanyInput("org" as never, profile, { ...draft, pan: "ABCDE" })).toEqual({
       ok: false,
       problems: { pan: "A PAN is 10 characters, like ABCDE1234F." },
+    }); // "Not registered" clears the GSTIN, a GSTIN typed unsays it, and the way back sends null.
+    const unregistered = kinCompanyDraftEdit(
+      { ...draft, gstin: "29ABCDE1234F1Z5" },
+      "notRegistered",
+      true,
+    );
+    expect([unregistered.gstin, unregistered.notRegistered]).toEqual(["", "yes"]);
+    expect(kinCompanyInput("org" as never, profile, unregistered)).toEqual({
+      ok: true,
+      input: { orgId: "org", rev: 4, taxRegistered: false },
     });
+    expect(kinCompanyDraftEdit(unregistered, "gstin", "29").notRegistered).toBe("");
+    const said = { ...(profile as object), taxRegistered: false } as never;
+    expect(kinCompanyDraftOf(said).notRegistered).toBe("yes");
+    expect(
+      kinCompanyInput(
+        "org" as never,
+        said,
+        kinCompanyDraftEdit(kinCompanyDraftOf(said), "notRegistered", false),
+      ),
+    ).toEqual({ ok: true, input: { orgId: "org", rev: 4, taxRegistered: null } });
+    // It reads as the GSTIN's answer, never as a gap.
+    expect(
+      kinCompanyRead(said)
+        .flatMap((one) => one.rows)
+        .filter((row) => row.id === "gstin" || row.id === "notRegistered"),
+    ).toEqual([{ id: "gstin", label: "GSTIN", value: "Not registered for GST", missing: false }]);
+    // What only a registered company fills is no gap to read and no field to fill.
+    const bare = { ...(profile as object), taxRegistered: false, placeOfSupply: null } as never;
+    expect(
+      kinCompanyRead(bare)
+        .flatMap((one) => one.rows)
+        .map((row) => row.id),
+    ).not.toContain("placeOfSupply");
+    const offered = kinCompanyEditSections(said, kinCompanyDraftOf(said)).flatMap((section) =>
+      section.fields.map((field) => field.id),
+    );
+    expect(offered).toContain("pan");
+    for (const id of ["placeOfSupply", "sac", "lutNumber", "lutDate"])
+      expect(offered).not.toContain(id);
   });
 
   it("asks for India's tax ids only in India, and for its own tax anywhere else", () => {
@@ -398,6 +439,8 @@ describe("company details", () => {
     ).toEqual({ ok: true, input: { orgId: "org", rev: 0, address: "1 Invented Road" } });
     const offer = kinCompanyCountrySuggestion(fresh, "IN", true);
     expect(offer?.label).toBe("Use India?");
+    // Settings reads the country by its name, and keeps a code no device can name.
+    expect([kinCountryName("GB"), kinCountryName("QQ")]).toEqual(["United Kingdom", "QQ"]);
     expect(kinCompanyInput("org" as never, waiting, offer!.accept())).toEqual({
       ok: true,
       input: { orgId: "org", rev: 0, country: "IN" },

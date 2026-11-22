@@ -84,6 +84,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinClientContact } from "./KinClientTouches";
 import { KinAsideNote, KinAttentionSection } from "./KinAttention";
+import { KinWatchLine } from "./KinWatchLine";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinClientDialog, KinContactDialog, KinProjectDialog } from "./KinWorkForms";
 import { KinNewInvoiceDialog } from "./KinMoneyForms";
@@ -209,7 +210,11 @@ export function KinWorkClientsList(
       ListHeaderComponent={
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
           {listShown === "rows" && (props.stale || state.stale) ? (
-            <KinWorkStaleLine environmentId={props.environmentId} onRetry={list.refresh} />
+            <KinWorkStaleLine
+              environmentId={props.environmentId}
+              onRetry={list.refresh}
+              readAt={state.readAt}
+            />
           ) : null}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <div className="min-w-0 flex-1">
@@ -861,6 +866,7 @@ function ClientPage(
             record={view.key}
             names={names}
           />
+          <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={view.key} />
         </div>
         <KinAttentionSection
           environmentId={environmentId}

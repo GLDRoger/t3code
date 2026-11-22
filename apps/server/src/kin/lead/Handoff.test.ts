@@ -32,6 +32,7 @@ import type { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { ownerLevelAsked } from "../people/KinAccess.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
@@ -257,6 +258,29 @@ it.effect.each([true, false, "legacy"] as const)(
         // Chief of staff, shown as from Tech lead in its chat with the owner, and wakes it, once.
         yield* sql`UPDATE kin_events SET wakeup_id = 'tech-wake', state = 'claimed'
           WHERE org_id = ${orgId} AND event_id = ${passed!.event.eventId}`;
+        // Its answer carries a choice for the owner, which lives in Tech lead's chat: open, the
+        // copy says where it is; once closed ("legacy" here), it says nothing of it.
+        if (wantsAnswer !== false) {
+          const card = yield* ctx.chats.ask(
+            {
+              _tag: "agent",
+              hostPosted: true,
+              orgId,
+              agentId: tech,
+              ownerPersonId: ctx.owner.personId,
+              threadId: ThreadId.make("tech-thread"),
+            },
+            {
+              chatId: ctx.techChat,
+              clientMessageId: "tech-choice",
+              question: "Quarantine the flaky test, or fix it today?",
+              options: [{ label: "Quarantine" }, { label: "Fix today" }],
+            },
+          );
+          if (wantsAnswer === "legacy")
+            yield* sql`UPDATE kin_widgets SET closed_at = ${at}
+              WHERE org_id = ${orgId} AND widget_id = ${card.widgetId}`;
+        }
         const [member] = yield* sql<{ id: string }>`SELECT member_id AS id FROM kin_chat_members
           WHERE org_id = ${orgId} AND chat_id = ${ctx.techChat} AND agent_id = ${tech}`;
         yield* sql`UPDATE kin_chats SET last_seq = last_seq + 1
@@ -278,7 +302,10 @@ it.effect.each([true, false, "legacy"] as const)(
           WHERE org_id = ${orgId} AND chat_id = ${ctx.chiefChat} AND relay_json IS NOT NULL`;
         assert.deepStrictEqual(back, [
           {
-            body: "A flaky e2e test on main; I reran it and it passes.",
+            body:
+              wantsAnswer === true
+                ? "A flaky e2e test on main; I reran it and it passes.\n\nAnswer on the card in your chat with Tech lead."
+                : "A flaky e2e test on main; I reran it and it passes.",
             relay: JSON.stringify({ kind: "reply_from", agentId: tech }),
             silent: 1,
           },
@@ -699,6 +726,7 @@ const room = Effect.fn("HandoffTest.room")(function* (ctx: Effect.Success<typeof
       message,
       audience: yield* turnAudience(turn),
       people: (yield* turnPeople(turn))!.people,
+      asked: yield* ownerLevelAsked(orgId, agentId, wakeupId),
     };
   });
   return { mate, ask, privateTurn };
@@ -756,6 +784,8 @@ it.effect(
         assert.strictEqual(his.message.chatId, ctx.techChat);
         assert.strictEqual(his.audience, "owner_only");
         assert.deepStrictEqual(his.people, []);
+        // Kin's copy of his group words is no ask in person: a task filed from it is a suggestion.
+        assert.isFalse(his.asked);
 
         // Only a person's own message in a group: not the owner's direct chat, not unknown events.
         assert.strictEqual(

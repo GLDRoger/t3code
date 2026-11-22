@@ -111,7 +111,13 @@ features:
     web: [home, section:Waiting on you, chat]
     phone: [tab:chats, KinWaiting]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    proof: [packages/client-runtime/src/kin/kinInboxModel.test.ts]
+    note: >-
+      Counts everything that waits on the viewer: questions, mails ready to send, drafts sent up
+      and approvals. A co-owner also sees, folded and read-only, what waits on the owner
+      ("Waiting for <name>"); every answer to those stays the owner's, refused for her at the host.
+    proof:
+      - packages/client-runtime/src/kin/kinInboxModel.test.ts
+      - apps/server/src/kin/questions/openQuestions.test.ts
 
   - id: open-questions
     name: An agent's question with its default and day, asked once
@@ -975,6 +981,22 @@ features:
       - apps/server/src/kin/work/docBody.test.ts
       - apps/server/src/kin/chat/privateDocs.test.ts
 
+  - id: doc-delete
+    name: Delete a doc, Undo, Deleted and Restore
+    tab: docs
+    web: [docs, "?doc"]
+    phone: [tab:docs, KinDoc]
+    roles: { owner: both, co_owner: both, lead: both, member: none }
+    note: >-
+      Whoever may change a doc by hand deletes it from its actions (kin.docs.delete) and gets an
+      Undo; Docs' Filter › Deleted lists who deleted each and when, with Restore. Not for an
+      agent's character or What we sell. An open send card for the doc closes as "Deleted with
+      its draft". Agents delete with doc_move archived, into the same place.
+    tools: [doc_move]
+    proof:
+      - apps/server/src/kin/work/docs.test.ts
+      - apps/server/src/kin/connections/ConnectionsService.test.ts
+
   - id: doc-history
     name: A doc's versions, restore one
     tab: docs
@@ -1002,6 +1024,21 @@ features:
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [doc_move]
     proof: [apps/server/src/kin/work/docs.test.ts]
+
+  - id: draft-cards
+    name: Each draft its own card, kept in Docs, sent up to the owner
+    tab: chats
+    web: [chat, card:Draft]
+    phone: [tab:chats, KinChat, card:Draft]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      A draft an agent files is its own doc, under its client or project, and its own card with
+      Copy text. In a teammate's own chat the card's Send to (kin.docs.sendUp) raises the owner's
+      Approve / Changes first card once; a post says when no account there is connected.
+    tools: [doc_create]
+    proof:
+      - apps/server/src/kin/questions/openQuestions.test.ts
+      - packages/client-runtime/src/kin/kinDocs.test.ts
 
   - id: list-settings
     name: Define or change a list
@@ -1145,6 +1182,21 @@ features:
       - apps/server/src/kin/pulse/checkIn.test.ts
       - apps/server/src/kin/reply/KinReplyBridge.test.ts
       - packages/client-runtime/src/kin/kinCheckIns.test.ts
+
+  - id: watches
+    name: Kin keeps watch, the line on a watched record and What Kin checked
+    tab: settings
+    web: [settings, section:What Kin checked]
+    phone: [SettingsKin, KinWatchLog]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      The line sits under a watched record's header (invoices and other entries, tasks, clients,
+      deals, docs) with Look now, Stop watching or Watch again, and opens the log too. A teammate
+      sees only watches on their own things, never money; their log says when there are none.
+    proof:
+      - apps/server/src/kin/watches/KinWatches.test.ts
+      - packages/client-runtime/src/kin/kinWatches.test.ts
+      - packages/client-runtime/src/kin/kinNavigation.test.ts
 
   - id: connections
     name: Mail and tool connections

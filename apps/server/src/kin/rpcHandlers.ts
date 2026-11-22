@@ -32,6 +32,7 @@ import { KIN_READ_RPCS, readOnlyStream } from "./readRpcs.ts";
 import { makeKinRecommendHandlers } from "./recommend/rpcHandlers.ts";
 import { makeKinWorkHandlers } from "./work/rpcHandlers.ts";
 import { makeKinTasksKeyHandlers } from "./tasksKey/rpcHandlers.ts";
+import { makeKinWatchHandlers } from "./watches/rpcHandlers.ts";
 import { countryFirstForPerson, isCountryFirst } from "./work/companyProfile.ts";
 
 const group = RpcGroup.make(...KinRpcs);
@@ -104,6 +105,7 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
     ...(yield* makeKinConnectionHandlers(session)),
     ...(yield* makeKinSocialHandlers(session)),
     ...(yield* makeKinRecommendHandlers(session)),
+    ...(yield* makeKinWatchHandlers(session)),
   });
   const personSees = forPerson(session, services);
   const guarded: Record<string, unknown> = {};

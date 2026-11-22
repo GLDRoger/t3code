@@ -37,6 +37,7 @@ import {
   KinPayment,
   KinRepeatRule,
 } from "./kinMoney.ts";
+import { KinWatchLine } from "./kinWatches.ts";
 
 /**
  * Work: everything someone owes someone, as entries in lists. Built in: Work, and the light CRM's
@@ -156,6 +157,13 @@ export const KinWorkSteps = Schema.Array(KinWorkStep).check(Schema.isMaxLength(K
 export const KinWorkStepCount = Schema.Struct({ done: NonNegativeInt, of: NonNegativeInt });
 export type KinWorkStepCount = typeof KinWorkStepCount.Type;
 
+/** How many people and agents may be on a task besides its holder. */
+export const KIN_WORK_ALSO_ON_MAX = 10;
+/** Who else is on a task: never its holder, each once. The holder still answers for it. */
+export const KinWorkAlsoOn = Schema.Array(KinWorkPrincipal).check(
+  Schema.isMaxLength(KIN_WORK_ALSO_ON_MAX),
+);
+
 /** One slim list row, about 150 bytes: what a list, the profile and the prompt show. */
 export const KinRecord = Schema.Struct({
   recordId: KinRecordId,
@@ -226,6 +234,8 @@ export const KinRecord = Schema.Struct({
   steps: Schema.optional(KinWorkStepCount),
   /** Someone marked the task urgent: first within its day; absent otherwise. */
   urgent: Schema.optional(Schema.Literal(true)),
+  /** A task's people and agents besides its holder; absent with none, and from older hosts. */
+  alsoOn: Schema.optional(Schema.Array(KinWorkPrincipal)),
 });
 export type KinRecord = typeof KinRecord.Type;
 
@@ -287,6 +297,8 @@ export const KinRecordLink = Schema.Struct({
   record: Schema.optional(KinRecordRef),
   /** That record's issued number (INV/26-27/004), once it has one. */
   number: Schema.optional(TrimmedNonEmptyString),
+  /** That record is a deleted doc: the link stays, and says so. Absent from older hosts. */
+  deleted: Schema.optional(Schema.Literal(true)),
   /**
    * A `worker` link's run, as its task card shows it: the thread (in `remoteEnvironmentId` when
    * that is set, else on this host) and the draft pull request Kin opened from it.
@@ -328,6 +340,11 @@ export type KinRecordChange = typeof KinRecordChange.Type;
 export const KIN_CODING_AGENT_UNNAMED = "a coding agent";
 /** The field a change carries when Kin took a question's default: no list field's key has a colon. */
 export const KIN_TAKEN_DEFAULT_FIELD = "kin:default";
+/**
+ * The field a change carries when the person a question waited on dismissed it without choosing,
+ * which stopped the task waiting on them: the question's id in `to`.
+ */
+export const KIN_DISMISSED_FIELD = "kin:dismissed";
 /** The field a hand-over carries for someone who left the team: `person:<id>` in `from`. */
 export const KIN_LEFT_FIELD = "kin:left";
 /** The field a deal's hand-over carries for each next step that went with it: the step's key in `to`. */
@@ -465,6 +482,8 @@ export const KinRecordDetail = Schema.Struct({
    * change the task (`can.edit`) ticks, adds and removes them and marks it urgent.
    */
   checklist: Schema.optional(KinWorkSteps),
+  /** What Kin is watching on it, for a reader who may see that watch; absent with none. */
+  watch: Schema.optional(KinWatchLine),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;
@@ -474,8 +493,12 @@ export const KIN_RECORDS_PAGE_CAP = 100;
 export const KinListGroupBy = Schema.Literals(["none", "category", "month", "financialYear"]);
 export type KinListGroupBy = typeof KinListGroupBy.Type;
 const KinListSums = {
-  /** Full amounts. */
+  /** Full amounts, whichever way the money went. */
   total: KinMoneyTotals,
+  /** The bank transactions list's money in, money out, and in less out. */
+  moneyIn: Schema.optional(KinMoneyTotals),
+  moneyOut: Schema.optional(KinMoneyTotals),
+  net: Schema.optional(KinMoneyTotals),
   /** In a list whose entries are paid over time: what the open ones still have unpaid. */
   owed: Schema.optional(KinMoneyTotals),
   /** With `paidFrom` or `paidTo`: the payments made in those days, not the entries' amounts. */
@@ -649,7 +672,8 @@ const KinPartyCounts = {
 };
 /**
  * Derived by rule on every read, never stored or typed: `late` once the target date passed,
- * `at_risk` while an entry is late or has waited more than a week, else `on_track`.
+ * `at_risk` while an entry is late or has waited more than a week, an invoice for it is overdue,
+ * or its client has gone past their check-in days without contact, else `on_track`.
  */
 export const KinProjectHealth = Schema.Literals(["on_track", "at_risk", "late"]);
 export type KinProjectHealth = typeof KinProjectHealth.Type;
@@ -788,6 +812,8 @@ export const KinWorkCreateInput = Schema.Struct({
     Schema.Array(KinWorkStepTitle).check(Schema.isMaxLength(KIN_WORK_STEPS_MAX)),
   ),
   urgent: Schema.optional(Schema.Boolean),
+  /** A task's people and agents besides its holder. */
+  alsoOn: Schema.optional(KinWorkAlsoOn),
   /** A retry with the same id returns the same entry. */
   clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
 });
@@ -834,6 +860,11 @@ export const KinWorkUpdateInput = Schema.Struct({
   sensitive: Schema.optional(Schema.Boolean),
   /** Lists with money and dates. `null` clears; the currency is the amount's own. */
   amount: Schema.optional(Schema.NullOr(KinMoney)),
+  /**
+   * A form that can ask sends false: an amount far above its list is refused with the error's
+   * `farAbove` for the person to confirm, and true saves it. Left out, nothing is asked.
+   */
+  amountConfirmed: Schema.optional(Schema.Boolean),
   dateAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   dateAllDay: Schema.optional(Schema.Boolean),
   repeat: Schema.optional(Schema.NullOr(KinRepeatRule)),
@@ -841,6 +872,8 @@ export const KinWorkUpdateInput = Schema.Struct({
   steps: Schema.optional(KinWorkSteps),
   /** Marks a task urgent, or takes the mark off. */
   urgent: Schema.optional(Schema.Boolean),
+  /** A task's whole list of people and agents besides its holder; `[]` takes everyone off. */
+  alsoOn: Schema.optional(KinWorkAlsoOn),
   // Defined lists only.
   /** One of the list's own categories; `null` clears it. */
   listCategory: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(60)))),
@@ -1201,6 +1234,12 @@ export const KinProjectDetail = Schema.Struct({
     targetPassed: Schema.Boolean,
     late: NonNegativeInt,
     waitingOverAWeek: NonNegativeInt,
+    // Linked to this project only, never guessed from its client. Absent from older hosts.
+    overdueInvoices: Schema.optional(NonNegativeInt),
+    /** Its client past their check-in days: since the last contact, or null when none is recorded. */
+    noContact: Schema.optional(
+      Schema.Struct({ lastContactAt: Schema.NullOr(IsoDateTime), days: NonNegativeInt }),
+    ),
   }),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

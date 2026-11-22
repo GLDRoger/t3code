@@ -19,7 +19,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import { useEffect, useRef, useState } from "react";
 import { AccessibilityInfo } from "react-native";
 
@@ -28,6 +28,8 @@ import { appAtomRegistry } from "../../../state/atom-registry";
 import { environmentPresentations } from "../../../state/presentation";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { useConnectionController } from "../../connection/useConnectionController";
+import type { KinPushLeave } from "../notifications/kinPushRegistration";
+import { kinLeavingAtom, kinLetGo } from "./kinLeaving";
 import { kinCachedOrgsAtom, kinClient } from "./kinClient";
 
 // Past this the supervisor is still backing off, so the button stops claiming an attempt.
@@ -142,23 +144,24 @@ export function useForgetReplacedComputers(enabled: boolean): void {
   }, [enabled, replaced, removeEnvironment]);
 }
 
-/** Computers signed out or forgotten here: nothing about one shows while the phone lets it go. */
-const kinLeavingAtom = Atom.make<ReadonlyArray<EnvironmentId>>([]).pipe(Atom.keepAlive);
-
-/** What this phone is letting go of, and the way to let one go; a failed removal shows it again. */
+/**
+ * What this phone is letting go of, and the way to let computers go, which gives back what each
+ * said to taking this phone's notices back, for the caller to tell once.
+ */
 export function useKinLeaving(): {
   readonly leaving: ReadonlyArray<EnvironmentId>;
-  readonly forget: (environmentId: EnvironmentId) => void;
+  readonly letGo: (
+    environmentIds: ReadonlyArray<EnvironmentId>,
+  ) => Promise<ReadonlyMap<EnvironmentId, KinPushLeave>>;
 } {
   const leaving = useAtomValue(kinLeavingAtom);
-  const setLeaving = useAtomSet(kinLeavingAtom);
   const { removeEnvironment } = useConnectionController();
-  const forget = (environmentId: EnvironmentId) => {
-    setLeaving((was) => [...was, environmentId]);
-    void removeEnvironment(environmentId).then((result) => {
-      if (result._tag === "Success") return;
-      setLeaving((was) => was.filter((one) => one !== environmentId));
-    });
+  const letGo = async (environmentIds: ReadonlyArray<EnvironmentId>) => {
+    const outcomes = new Map<EnvironmentId, KinPushLeave>();
+    await kinLetGo(environmentIds, (id) =>
+      removeEnvironment(id, (outcome) => outcomes.set(id, outcome)),
+    );
+    return outcomes;
   };
-  return { leaving, forget };
+  return { leaving, letGo };
 }

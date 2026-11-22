@@ -1,3 +1,4 @@
+import { kinChoiceFailureNotice } from "@t3tools/client-runtime/kin/kinChoicePresentation";
 import {
   environmentSessionGenerationAtom,
   runAtomCommand,
@@ -5,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   EnvironmentAuthorizationError,
+  KIN_CHOICE_CARD_ACTION,
   KinChatError,
   type EnvironmentId,
   type KinWidgetsActInput,
@@ -25,7 +27,7 @@ import { resolveApsEnvironment } from "../../agent-awareness/registrationPayload
 import { startApproverKeyCleanup } from "../approvals/useKinApproverKey";
 import { kinCachedOrgsAtom, kinClient } from "../state/kinClient";
 import { kinHostAtom } from "../state/useKinHost";
-import { KIN_NOTIFICATION_CATEGORIES } from "./kinCategories";
+import { KIN_ANDROID_CHANNELS, KIN_NOTIFICATION_CATEGORIES } from "./kinCategories";
 import { kinActionDelivery, kinNotificationRoute } from "./kinPushPayload";
 import {
   createKinPushFence,
@@ -33,11 +35,25 @@ import {
   kinPushHost,
   kinPushLeaveOrgs,
   kinPushLeaveOutcome,
+  kinPushOs,
   kinPushPermissionStep,
+  kinPushRegisterInput,
+  kinPushToken,
+  type KinPushLeave,
 } from "./kinPushRegistration";
 
 // A refusal is final for this response; anything else (a dropped socket) waits for a connect.
 const isFinalRefusal = Schema.is(Schema.Union([KinChatError, EnvironmentAuthorizationError]));
+
+// Android shows a push only in a channel the app made; the server names one per kind.
+function createChannels(): void {
+  if (Platform.OS !== "android") return;
+  for (const [identifier, channel] of Object.entries(KIN_ANDROID_CHANNELS))
+    void Notifications.setNotificationChannelAsync(identifier, {
+      ...channel,
+      importance: Notifications.AndroidImportance.HIGH,
+    }).catch((cause: unknown) => console.warn(`Creating ${identifier} failed`, cause));
+}
 
 function registerCategories(): void {
   for (const [identifier, actions] of Object.entries(KIN_NOTIFICATION_CATEGORIES)) {
@@ -90,6 +106,13 @@ function createActionDelivery() {
           // The chat is open by now, and its card shows the current state.
           pending.delete(key);
           console.warn("A Kin notification action was refused", failure.message);
+          if (target.input.actionId === KIN_CHOICE_CARD_ACTION)
+            Dialog.alert(
+              "Your answer wasn't recorded",
+              failure._tag === "KinChatError"
+                ? kinChoiceFailureNotice(failure).text
+                : failure.message,
+            );
         }
       });
     }
@@ -146,11 +169,15 @@ const pushFence = createKinPushFence();
 // The token this run last registered; the OS's own after a restart.
 let registeredToken: string | null = null;
 
+const os = kinPushOs(Platform.OS);
+
 const deviceToken = async () =>
   registeredToken ??
-  (await Notifications.getDevicePushTokenAsync()
-    .then((device) => String(device.data).toLowerCase())
-    .catch(() => null));
+  (os === null
+    ? null
+    : await Notifications.getDevicePushTokenAsync()
+        .then((device) => kinPushToken(os, device.data))
+        .catch(() => null));
 
 /** Takes this phone's token back from each org the host names, whatever the OS permission is now. */
 async function takeBackPush(environmentId: EnvironmentId) {
@@ -200,19 +227,22 @@ async function takeBackPush(environmentId: EnvironmentId) {
 
 /**
  * Forgets a host after taking this phone's Kin alerts back from it. Leaving always completes;
- * when the host didn't confirm, the person is told the alerts may continue.
+ * when the host didn't confirm, the person is told the alerts may continue, or `tell` is given
+ * the outcome to tell it with others.
  */
 export async function forgetKinHost<A>(
   environmentId: EnvironmentId,
   remove: () => Promise<A>,
+  tell?: (outcome: KinPushLeave) => void,
 ): Promise<A> {
-  if (Platform.OS !== "ios") return remove();
+  if (os === null) return remove();
   const { outcome, team } = await takeBackPush(environmentId);
   try {
     return await remove();
   } finally {
     pushFence.release(environmentId);
-    if (outcome === "unconfirmed")
+    if (tell !== undefined) tell(outcome);
+    else if (outcome === "unconfirmed")
       Dialog.alert(
         `${team ?? "This team"} may still notify this phone`,
         "Kin couldn't confirm with that computer. To stop them, remove this phone under Your devices from another device.",
@@ -220,17 +250,15 @@ export async function forgetKinHost<A>(
   }
 }
 
-/** Registers the APNs token with the Kin host on every connect, for each org the viewer is in. */
+/** Registers the APNs or FCM token with the Kin host on every connect, for each org the viewer is in. */
 function createTokenRegistration() {
-  if (Platform.OS !== "ios") return () => {};
+  if (os === null) return () => {};
+  const phone = os;
   let registered: string | null = null;
   let token: string | null = null;
   let permissionAsked = false;
   const refusals = createKinPushRefusals();
-  const apsEnvironment =
-    resolveApsEnvironment(Constants.expoConfig?.extra?.appVariant) === "sandbox"
-      ? "development"
-      : "production";
+  const sandbox = resolveApsEnvironment(Constants.expoConfig?.extra?.appVariant) === "sandbox";
 
   const sync = async (ask: boolean) => {
     const host = kinPushHost(appAtomRegistry.get(kinHostAtom));
@@ -249,7 +277,7 @@ function createTokenRegistration() {
         if ((await askPermission()).type !== "granted") return;
       }
       const device = await Notifications.getDevicePushTokenAsync();
-      token = String(device.data).toLowerCase();
+      token = kinPushToken(phone, device.data);
     }
     const generation = appAtomRegistry.get(
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
@@ -267,7 +295,12 @@ function createTokenRegistration() {
         if (!pushFence.allows(environmentId)) return false;
         const sent = runAtomCommand(appAtomRegistry, kinClient.registerPush, {
           environmentId,
-          input: { orgId: target.orgId, token: current, platform: "ios", apsEnvironment },
+          input: kinPushRegisterInput({
+            os: phone,
+            orgId: target.orgId,
+            token: current,
+            sandbox,
+          }),
         });
         pushFence.track(environmentId, sent);
         const result = await sent;
@@ -295,7 +328,7 @@ function createTokenRegistration() {
   const unsubscribeHost = appAtomRegistry.subscribe(kinHostAtom, () => run(), { immediate: true });
   const tokenSubscription = Notifications.addPushTokenListener((next) => {
     if (typeof next.data !== "string") return;
-    token = next.data.toLowerCase();
+    token = kinPushToken(phone, next.data);
     run();
   });
   return () => {
@@ -305,8 +338,9 @@ function createTokenRegistration() {
   };
 }
 
-/** Kin's buttons, taps and APNs token. Installed before the agent router, which clears the cold-start response. */
+/** Kin's buttons, channels, taps and push token. Installed before the agent router, which clears the cold-start response. */
 export function installKinNotifications(navigate: (href: string) => void): () => void {
+  createChannels();
   registerCategories();
   const delivery = createActionDelivery();
   const handled = new Set<string>();

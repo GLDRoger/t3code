@@ -9,6 +9,8 @@ import {
   type KinReachInput,
 } from "@t3tools/client-runtime/kin/kinReach";
 import { KIN_AGENTS_COPY } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
+import { KIN_SETTINGS_COPY } from "@t3tools/client-runtime/kin/kinSettingsSpread";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
@@ -21,25 +23,23 @@ import type {
 import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { ChevronRightIcon } from "lucide-react";
 import { useState } from "react";
 
-import {
-  AlertDialog,
-  AlertDialogClose,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogPopup,
-  AlertDialogTitle,
-} from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
+import { KinConfirm } from "./KinConfirm";
 import { kinClient } from "./kinClient";
 import { kinProfileRequestAtom } from "./kinTeamForm";
+import {
+  KinSettingsEmpty,
+  KinSettingsLoading,
+  KinSettingsRow,
+  KinSettingsSection,
+  KinSettingsStatus,
+} from "./settings/KinSettingsLayout";
 
 interface KinReachTarget {
   readonly environmentId: EnvironmentId;
@@ -139,29 +139,22 @@ function ReachConfirm(props: { readonly state: KinReachState }) {
   const { asking } = props.state;
   const [a, b] = asking?.names ?? ["", ""];
   return (
-    <AlertDialog
-      open={asking !== null}
-      onOpenChange={(open) => {
-        if (!open) props.state.cancel();
-      }}
-    >
-      <AlertDialogPopup>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{KIN_REACH_COPY.confirmTitle(a, b)}</AlertDialogTitle>
-          <AlertDialogDescription>
-            {asking?.agent === true
-              ? KIN_REACH_COPY.confirmAgent(a, b)
-              : KIN_REACH_COPY.confirmPeople(a, b)}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-          <Button variant="destructive" onClick={props.state.confirm}>
-            {KIN_REACH_COPY.restrict}
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
+    <KinConfirm
+      ask={
+        asking === null
+          ? null
+          : {
+              title: KIN_REACH_COPY.confirmTitle(a, b),
+              detail: asking.agent
+                ? KIN_REACH_COPY.confirmAgent(a, b)
+                : KIN_REACH_COPY.confirmPeople(a, b),
+              action: KIN_REACH_COPY.restrict,
+              destructive: true,
+            }
+      }
+      onConfirm={props.state.confirm}
+      onClose={props.state.cancel}
+    />
   );
 }
 
@@ -181,9 +174,18 @@ function ReachNote(props: { readonly state: KinReachState }) {
 }
 
 function ReachWaiting(props: { readonly state: KinReachState }) {
+  return props.state.failed ? (
+    <KinSettingsEmpty>{KIN_REACH_COPY.loadFailed}</KinSettingsEmpty>
+  ) : (
+    <KinSettingsLoading rows={2} />
+  );
+}
+
+/** The agent page's own look while the lists come. */
+function AgentReachWaiting(props: { readonly state: KinReachState }) {
   return (
     <p className="text-sm text-muted-foreground">
-      {props.state.failed ? KIN_REACH_COPY.loadFailed : "Loading…"}
+      {props.state.failed ? KIN_REACH_COPY.loadFailed : KIN_SETTINGS_COPY.loading}
     </p>
   );
 }
@@ -250,7 +252,7 @@ function AgentReachBody(props: Parameters<typeof KinAgentReach>[0]) {
   return (
     <Section title={KIN_REACH_COPY.title}>
       {view === null ? (
-        <ReachWaiting state={state} />
+        <AgentReachWaiting state={state} />
       ) : (
         <>
           <p className="text-sm text-muted-foreground">
@@ -326,15 +328,13 @@ export function KinPersonReach(props: {
   readonly name: string;
   readonly ownerLevel: boolean;
   readonly onOpenAgent: () => void;
-  readonly section: KinReachSection;
 }) {
-  const Section = props.section;
   if (!useMayRestrict(props.environmentId)) return null;
   if (props.ownerLevel)
     return (
-      <Section title="People">
-        <p className="text-sm text-muted-foreground">{KIN_REACH_COPY.ownerLevel(props.name)}</p>
-      </Section>
+      <KinSettingsSection title={KIN_REACH_COPY.peopleTitle}>
+        <KinSettingsEmpty>{KIN_REACH_COPY.ownerLevel(props.name)}</KinSettingsEmpty>
+      </KinSettingsSection>
     );
   return <PersonReachBody {...props} />;
 }
@@ -351,104 +351,98 @@ function PersonReachBody(props: Parameters<typeof KinPersonReach>[0]) {
     names: [props.name, one.name] as const,
     agent: one.party.kind === "agent",
   });
-  const Section = props.section;
+  const problem = state.note?.failed === true ? state.note.text : null;
+  const quietButton = (label: string, pair: KinReachChange, onClick: () => void) => (
+    <Button
+      size="xs"
+      variant="ghost"
+      disabled={state.busy}
+      aria-label={`${label} ${pair.names[0]} and ${pair.names[1]}`}
+      onClick={onClick}
+    >
+      {label}
+    </Button>
+  );
   return (
     <>
-      <Section title="Agents">
+      <KinSettingsSection title={KIN_REACH_COPY.agentsTitle} problem={problem}>
         {view === null ? (
           <ReachWaiting state={state} />
         ) : view.agents.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{KIN_AGENTS_COPY.none}</p>
+          <KinSettingsEmpty>{KIN_AGENTS_COPY.none}</KinSettingsEmpty>
         ) : (
-          <ul className="flex flex-col">
-            {view.agents.map((agent) => {
-              const shared =
-                agent.restricted && state.input !== null
-                  ? kinReachShared(state.input, self, agent.party)
-                  : null;
-              return (
-                <li key={agent.agentId} className="flex flex-col">
-                  <div className="flex items-center gap-2">
-                    <AgentLink
-                      environmentId={props.environmentId}
-                      orgId={props.orgId}
-                      agentId={agent.agentId}
-                      name={agent.name}
-                      line={
-                        agent.restricted ? KIN_REACH_COPY.restricted : KIN_REACH_COPY.canMessage
-                      }
-                      onOpen={props.onOpenAgent}
-                    />
-                    {agent.restricted ? (
-                      <LiftButton state={state} pair={pairWith(agent)} />
-                    ) : (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        disabled={state.busy}
-                        aria-label={`${KIN_REACH_COPY.restrict} ${props.name} and ${agent.name}`}
-                        onClick={() => state.restrict(pairWith(agent))}
-                      >
-                        {KIN_REACH_COPY.restrict}
-                      </Button>
-                    )}
-                  </div>
-                  {shared === null ? null : (
-                    <p className="px-1 pb-1.5 text-xs text-muted-foreground">{shared}</p>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </Section>
-      {view === null ? null : (
-        <Section title="People">
-          {view.cantMessage.length === 0 ? (
-            <p className="text-sm text-muted-foreground">{KIN_REACH_COPY.everyone(props.name)}</p>
-          ) : (
-            <>
-              <h4 className="text-xs font-medium text-muted-foreground">
-                {KIN_REACH_COPY.cantMessage}:
-              </h4>
-              <ul className="flex flex-col gap-1" aria-label={KIN_REACH_COPY.cantMessage}>
-                {view.cantMessage.map((one) => (
-                  <PersonRow
-                    key={one.personId}
-                    personId={one.personId}
-                    name={one.name}
-                    detail={state.input && kinReachShared(state.input, self, one.party)}
-                    action={<LiftButton state={state} pair={pairWith(one)} />}
-                  />
-                ))}
-              </ul>
-            </>
-          )}
-          <ReachNote state={state} />
-          {view.offered.length === 0 ? null : (
-            <Menu>
-              <MenuTrigger
-                render={
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="self-start"
-                    disabled={state.busy}
-                  />
+          view.agents.map((agent) => {
+            const pair = pairWith(agent);
+            return (
+              <AgentRow
+                key={agent.agentId}
+                environmentId={props.environmentId}
+                orgId={props.orgId}
+                agentId={agent.agentId}
+                name={agent.name}
+                detail={
+                  agent.restricted && state.input !== null
+                    ? kinReachShared(state.input, self, agent.party)
+                    : null
                 }
-              >
-                {KIN_REACH_COPY.restrictWith}
-              </MenuTrigger>
-              <MenuPopup align="start">
-                {view.offered.map((one) => (
-                  <MenuItem key={one.personId} onClick={() => state.restrict(pairWith(one))}>
-                    {one.name}
-                  </MenuItem>
-                ))}
-              </MenuPopup>
-            </Menu>
+                restricted={agent.restricted}
+                onOpen={props.onOpenAgent}
+                control={
+                  agent.restricted
+                    ? quietButton(KIN_REACH_COPY.lift, pair, () => state.lift(pair))
+                    : quietButton(KIN_REACH_COPY.restrict, pair, () => state.restrict(pair))
+                }
+              />
+            );
+          })
+        )}
+      </KinSettingsSection>
+      {view === null ? null : (
+        <KinSettingsSection
+          title={KIN_REACH_COPY.peopleTitle}
+          action={
+            view.offered.length === 0 ? undefined : (
+              <Menu>
+                <MenuTrigger render={<Button size="xs" variant="outline" disabled={state.busy} />}>
+                  {KIN_REACH_COPY.restrictWith}
+                </MenuTrigger>
+                <MenuPopup align="end">
+                  {view.offered.map((one) => (
+                    <MenuItem key={one.personId} onClick={() => state.restrict(pairWith(one))}>
+                      {one.name}
+                    </MenuItem>
+                  ))}
+                </MenuPopup>
+              </Menu>
+            )
+          }
+        >
+          {view.cantMessage.length === 0 ? (
+            <KinSettingsEmpty>{KIN_REACH_COPY.everyone(props.name)}</KinSettingsEmpty>
+          ) : (
+            view.cantMessage.map((one) => {
+              const pair = pairWith(one);
+              return (
+                <KinSettingsRow
+                  key={one.personId}
+                  leading={
+                    <KinAvatar
+                      avatar={{ kind: "person", seed: `person:${one.personId}` }}
+                      size="sm"
+                    />
+                  }
+                  title={one.name}
+                  wrap
+                  detail={
+                    (state.input && kinReachShared(state.input, self, one.party)) ??
+                    KIN_REACH_COPY.cantMessage
+                  }
+                  control={quietButton(KIN_REACH_COPY.lift, pair, () => state.lift(pair))}
+                />
+              );
+            })
           )}
-        </Section>
+        </KinSettingsSection>
       )}
       <ReachConfirm state={state} />
     </>
@@ -456,12 +450,15 @@ function PersonReachBody(props: Parameters<typeof KinPersonReach>[0]) {
 }
 
 /** An agent's row on a person's page: opens the agent's page over its chat with the owner. */
-function AgentLink(props: {
+function AgentRow(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly name: string;
-  readonly line: string;
+  /** What a restricted pair's shared groups still carry, if any. */
+  readonly detail: string | null;
+  readonly restricted: boolean;
+  readonly control: React.ReactNode;
   readonly onOpen: () => void;
 }) {
   const navigate = useNavigate();
@@ -472,27 +469,35 @@ function AgentLink(props: {
     (one) => one.agentId === props.agentId,
   );
   return (
-    <button
-      type="button"
-      onClick={() => {
-        if (lead === undefined) return;
-        props.onOpen();
-        appAtomRegistry.set(kinProfileRequestAtom, lead.ownerChatId);
-        void navigate({
-          to: "/kin/$environmentId/$orgId/$chatId",
-          params: {
-            environmentId: props.environmentId,
-            orgId: props.orgId,
-            chatId: lead.ownerChatId,
-          },
-        });
-      }}
-      className="flex min-h-9 min-w-0 flex-1 items-center gap-3 rounded-md px-1 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
-    >
-      <span className="min-w-0 flex-1 truncate text-sm text-foreground">{props.name}</span>
-      <span className="shrink-0 text-xs text-muted-foreground">{props.line}</span>
-      <ChevronRightIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-    </button>
+    <KinSettingsRow
+      leading={<KinAvatar avatar={kinAgentAvatar(props.agentId)} size="sm" />}
+      title={props.name}
+      wrap
+      detail={props.detail}
+      status={
+        props.restricted ? (
+          <KinSettingsStatus tone="quiet">{KIN_REACH_COPY.restricted}</KinSettingsStatus>
+        ) : null
+      }
+      control={props.control}
+      {...(lead === undefined
+        ? {}
+        : {
+            openLabel: KIN_REACH_COPY.openAgent(props.name),
+            onOpen: () => {
+              props.onOpen();
+              appAtomRegistry.set(kinProfileRequestAtom, lead.ownerChatId);
+              void navigate({
+                to: "/kin/$environmentId/$orgId/$chatId",
+                params: {
+                  environmentId: props.environmentId,
+                  orgId: props.orgId,
+                  chatId: lead.ownerChatId,
+                },
+              });
+            },
+          })}
+    />
   );
 }
 
@@ -506,35 +511,33 @@ function ReachListBody(props: KinReachTarget) {
   const state = useKinReach(props);
   const rows = state.input === null ? null : kinReachRows(state.input);
   return (
-    // The settings search lands here by this id.
-    <section id="kin-who-can-message" tabIndex={-1} className="flex flex-col gap-2 px-2 pt-4">
-      <h3 className="text-xs font-medium text-muted-foreground">{KIN_REACH_COPY.title}</h3>
+    <KinSettingsSection
+      title={KIN_REACH_COPY.title}
+      description={rows === null || rows.length === 0 ? undefined : KIN_REACH_COPY.allBody}
+      // The settings search lands here by this id.
+      searchId="kin-who-can-message"
+      problem={state.note?.failed === true ? state.note.text : null}
+    >
       {rows === null ? (
         <ReachWaiting state={state} />
       ) : rows.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{KIN_REACH_COPY.allNone}</p>
+        <KinSettingsEmpty>{KIN_REACH_COPY.allNone}</KinSettingsEmpty>
       ) : (
-        <>
-          <p className="text-sm text-muted-foreground">{KIN_REACH_COPY.allBody}</p>
-          <ul className="flex flex-col" aria-label={KIN_REACH_COPY.restricted}>
-            {rows.map((row) => (
-              <li key={row.key} className="flex min-h-11 items-center gap-3 py-1">
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="truncate text-sm text-foreground">
-                    {row.names[0]} and {row.names[1]}
-                  </span>
-                  <span className="truncate text-xs text-muted-foreground">{row.detail}</span>
-                </span>
-                <LiftButton
-                  state={state}
-                  pair={{ a: row.a, b: row.b, names: row.names, agent: row.b.kind === "agent" }}
-                />
-              </li>
-            ))}
-          </ul>
-        </>
+        rows.map((row) => (
+          <KinSettingsRow
+            key={row.key}
+            title={`${row.names[0]} and ${row.names[1]}`}
+            wrap
+            detail={row.detail}
+            control={
+              <LiftButton
+                state={state}
+                pair={{ a: row.a, b: row.b, names: row.names, agent: row.b.kind === "agent" }}
+              />
+            }
+          />
+        ))
       )}
-      <ReachNote state={state} />
-    </section>
+    </KinSettingsSection>
   );
 }

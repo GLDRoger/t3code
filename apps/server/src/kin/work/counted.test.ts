@@ -38,11 +38,17 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "work/exportBundle.ts": 2,
   // One settlement's parts, read to check a retry.
   "work/leadMoney.ts": 1,
-  // A new entry's repeats: entries of its exact amount, compared one by one, nothing summed.
-  "work/leadWork.ts": 1,
+  // A new entry's repeats, and the expense it pairs with: entries of its exact amount, compared
+  // one by one, nothing summed.
+  "work/leadWork.ts": 2,
   // A statement's own rows, and the entries and recorded payments one row may match.
   "work/statements/bankList.ts": 1,
+  // The entries one bank alert may already be, and a statement's alert entries listed one by
+  // one against its rows: amounts matched and named, nothing summed.
+  "work/statements/bankAlerts.ts": 2,
   "work/statements/statementReview.ts": 4,
+  // One invoice's own amount and payments: whether it is paid in full, so its watch closes.
+  "watches/kinds/invoicePaid.ts": 1,
   // Whether a figure in a message is the sum on some entry or payment its reader can't see.
   "work/teamView.ts": 3,
 };

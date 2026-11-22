@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   KinAgentId,
   KinChatId,
+  KinChoiceCardState,
   KinEventId,
   KinMemberId,
   KinMessageId,
@@ -45,6 +46,7 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinApnsTransport, type KinApnsPush, type KinApnsResult } from "./Apns.ts";
+import { KinFcmTransport, type KinFcmPush, type KinFcmResult } from "./Fcm.ts";
 import { KinPushDevices, type KinPushCaller } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
 import * as Devices from "./KinPushDevices.ts";
@@ -99,9 +101,30 @@ const makeApns = (
   return { sent, answers, layer };
 };
 
-const buildOn = <A, E, R>(apns: ReturnType<typeof makeApns>, database: Layer.Layer<A, E, R>) =>
+/** A fake FCM, unconfigured unless a test gives Android phones a sender. */
+const makeFcm = (
+  status: "ready" | "unconfigured" = "unconfigured",
+  respond: (push: KinFcmPush) => Effect.Effect<KinFcmResult | undefined> = () => Effect.undefined,
+) => {
+  const sent: Array<KinFcmPush> = [];
+  const layer = Layer.succeed(KinFcmTransport, {
+    status,
+    send: (push) =>
+      Effect.sync(() => sent.push(push)).pipe(
+        Effect.andThen(respond(push)),
+        Effect.map((answer) => answer ?? { status: 200, reason: undefined }),
+      ),
+  });
+  return { sent, layer };
+};
+
+const buildOn = <A, E, R>(
+  apns: ReturnType<typeof makeApns>,
+  database: Layer.Layer<A, E, R>,
+  fcm: ReturnType<typeof makeFcm> = makeFcm(),
+) =>
   Sender.layer.pipe(
-    Layer.provideMerge(Layer.mergeAll(Devices.layer, layerTrusting, apns.layer)),
+    Layer.provideMerge(Layer.mergeAll(Devices.layer, layerTrusting, apns.layer, fcm.layer)),
     Layer.provideMerge(ApproverKeys.layer),
     Layer.provide(MemoryCache.layer),
     Layer.provideMerge(Repository.layer),
@@ -122,7 +145,8 @@ const buildOn = <A, E, R>(apns: ReturnType<typeof makeApns>, database: Layer.Lay
     ),
     Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, database)),
   );
-const build = (apns: ReturnType<typeof makeApns>) => buildOn(apns, Sqlite.layerMemory);
+const build = (apns: ReturnType<typeof makeApns>, fcm?: ReturnType<typeof makeFcm>) =>
+  buildOn(apns, Sqlite.layerMemory, fcm);
 // Real T3 auth with Kin's proof key hooks, so revocations write what #54 writes.
 const buildRelay = (apns: ReturnType<typeof makeApns>) =>
   buildOn(apns, layerKinAuthTest("kin-push-"));
@@ -289,6 +313,8 @@ const alerts = (sent: ReadonlyArray<KinApnsPush>) =>
     (push) => (push.payload as { aps: { alert?: { title: string; body: string } } }).aps.alert,
   );
 
+const isChoiceCard = Schema.is(KinChoiceCardState);
+
 const categories = (sent: ReadonlyArray<KinApnsPush>) =>
   sent.map((push) => (push.payload as { aps: { category: string } }).aps.category);
 
@@ -454,8 +480,89 @@ describe("KinPushSender", () => {
       assert.deepStrictEqual(alerts(apns.sent), [
         { title: "Payments team", body: "Confirm receipt R-12 from Harbourline?" },
       ]);
-      // It stacks under the chat like its messages do.
+      // It carries an id of its own, as its messages do.
       assert.match(apns.sent[0]?.collapseId ?? "", /^kin:/);
+
+      // An agent's open question with two plain answers carries them as the notice's buttons.
+      const question = (labels: ReadonlyArray<string>, extra: object = {}) => ({
+        question: "Is the Harbourline NDA signed?",
+        detail: null,
+        options: labels.map((label, index) => ({ optionId: `option-${index + 1}`, label })),
+        answer: null,
+        ...extra,
+      });
+      const ask = (state: object, open: boolean, draft: string | null = null) =>
+        Effect.gen(function* () {
+          const widgetId = yield* postWidget(sql, "choice", state, [member], "Quick one on W-8.");
+          if (open)
+            yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id,
+                chat_id, kind, widget_id, question, safe, asked_at, due_at, act_at, state,
+                draft_json)
+              VALUES (${`q_${widgetId}`}, 'org_01', 'lead_fin', ${member}, 'chat_team', 'card',
+                ${widgetId}, 'Is it signed?', 0, ${NOW}, ${NOW}, ${NOW}, 'open', ${draft})`;
+          apns.sent.length = 0;
+          yield* notify({ _tag: "widget", orgId, widgetId });
+          return widgetId;
+        });
+      const choice = yield* ask(question(["Signed", "Not yet"]), true);
+      assert.deepStrictEqual(categories(apns.sent), ["kin.choice"]);
+      assert.deepStrictEqual(alerts(apns.sent), [
+        {
+          title: "Payments team",
+          body: "Is the Harbourline NDA signed?\n1 · Signed\n2 · Not yet",
+        },
+      ]);
+      assert.deepStrictEqual(
+        (apns.sent[0]?.payload as { body: { choices: unknown } } | undefined)?.body.choices,
+        ["option-1", "option-2"],
+      );
+      assert.isUndefined(apns.sent[0]?.collapseId, choice);
+      // Three answers, Kin's own Confirm (no open question), an answer that acts or sends, a
+      // sent-up draft (approved where it is read, R12): a plain notice whose tap opens the card.
+      for (const [state, open, draft] of [
+        [question(["Signed", "Not yet", "Lost it"]), true],
+        [question(["Confirm", "Cancel"]), false],
+        [
+          question(["Start W-8", "Not yet"], {
+            options: [
+              { optionId: "option-1", label: "Start W-8", action: { line: "Starts W-8." } },
+              { optionId: "option-2", label: "Not yet" },
+            ],
+          }),
+          true,
+        ],
+        [
+          question(["Confirm", "Cancel"], {
+            send: {
+              service: "Gmail",
+              action: "email",
+              from: "rhea@ambermill.example",
+              to: ["legal@harbourline.example"],
+              cc: [],
+              subject: "NDA",
+              body: "Signed copy attached.",
+              attachments: [],
+              outcome: null,
+            },
+          }),
+          true,
+        ],
+        [
+          question(["Approve", "Changes first"], {
+            draft: "## Harbourline retainer\n\nMonthly fee: ₹2,50,000",
+          }),
+          true,
+          '{"kind":"proposal","text":"## Harbourline retainer"}',
+        ],
+      ] as const) {
+        assert.isTrue(isChoiceCard(state));
+        yield* ask(state, open, draft);
+        assert.deepStrictEqual(categories(apns.sent), ["kin.message"], JSON.stringify(state));
+        assert.deepStrictEqual(alerts(apns.sent), [
+          { title: "Payments team", body: "Quick one on W-8." },
+        ]);
+      }
+
       // Kin's own unprompted card (a recommendation) waits on them without ringing: a badge only.
       apns.sent.length = 0;
       const unprompted = yield* postWidget(
@@ -821,6 +928,7 @@ describe("KinPushSender", () => {
           [ownerPhone, ownerTablet],
         ],
       ] as const;
+      const earlier = new Set<string | undefined>();
       for (const [name, author, options, expected] of cases) {
         apns.sent.length = 0;
         const messageId = yield* postMessage(sql, author, "posted", options);
@@ -830,6 +938,7 @@ describe("KinPushSender", () => {
           [...expected],
           name,
         );
+        for (const push of apns.sent) earlier.add(push.collapseId);
       }
 
       // Another unprompted line for Priya inside half an hour lands without ringing; after it, rings.
@@ -853,6 +962,8 @@ describe("KinPushSender", () => {
         JSON.stringify(apns.sent[0]?.payload),
         '"deepLink":"/kin/env_kin/org_01/chats/chat_team"',
       );
+      // Each message is its own notification: a phone tells taps apart by this id.
+      assert.isFalse(earlier.has(apns.sent[0]?.collapseId));
 
       apns.sent.length = 0;
       const dm = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
@@ -1283,6 +1394,31 @@ describe("KinPushSender", () => {
           deepLink: "/kin/env_kin/org_01/chats/chat_dm",
         },
       });
+      // A question with answer buttons is held as a plain one is: the badge, and no buttons.
+      const asked = yield* postWidget(
+        sql,
+        "choice",
+        {
+          question: "Renew Orbit on the same terms?",
+          detail: null,
+          options: [
+            { optionId: "option-1", label: "Same terms" },
+            { optionId: "option-2", label: "New terms" },
+          ],
+          answer: null,
+        },
+        [owner],
+      );
+      yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id,
+          kind, widget_id, question, safe, asked_at, due_at, act_at, state)
+        VALUES ('q_renew', 'org_01', 'lead_fin', ${owner}, 'chat_team', 'card', ${asked},
+          'Renew?', 0, ${NOW}, ${NOW}, ${NOW}, 'open')`;
+      apns.sent.length = 0;
+      yield* notify({ _tag: "widget", orgId, widgetId: asked });
+      assert.deepStrictEqual(
+        apns.sent.map((push) => (push.payload as { aps: object }).aps),
+        [{ badge: 2 }, { badge: 2 }],
+      );
 
       // A teammate writing in their chat with you lands at once, unread, but rings only when your
       // quiet hours end (`deliverHeld`).
@@ -2250,5 +2386,230 @@ describe("KinPushDevices", () => {
         [memberPhone],
       );
     }).pipe(Effect.provide(build(apns)));
+  });
+});
+
+describe("KinPushSender to Android phones", () => {
+  const androidPhone = "fcm-owner:APA91b_android-phone-token-0001" as KinPushToken;
+  type Banner = {
+    aps: Record<string, unknown> & { alert?: { title: string; body: string } };
+    body: unknown;
+  };
+
+  /** The seed, and the owner's Android phone besides her iPhone and tablet. */
+  const seedAndroid = Effect.gen(function* () {
+    const seeded = yield* seed;
+    yield* seeded.sql`INSERT INTO auth_sessions (session_id, subject, scopes, method, issued_at,
+        expires_at)
+      VALUES ('sess-owner-android', 'sess-owner-android', '[]', 'bearer-access-token', ${T},
+        '2026-12-07T00:00:00.000Z')`;
+    yield* seeded.devices.register(caller("sess-owner-android", owner), {
+      orgId,
+      token: androidPhone,
+      platform: "android",
+      apsEnvironment: "production",
+    });
+    return seeded;
+  });
+
+  /** What the Android phone got, beside what the owner's iPhone got for the same push. */
+  const pair = (apns: ReturnType<typeof makeApns>, fcm: ReturnType<typeof makeFcm>) => {
+    const iphone = apns.sent.find((push) => push.token === ownerPhone);
+    const android = fcm.sent.find((push) => push.token === androidPhone);
+    return { iphone, ios: iphone?.payload as Banner | undefined, android };
+  };
+
+  it.effect("an Android phone gets each banner the iPhone gets, in its kind's channel", () => {
+    const apns = makeApns();
+    const fcm = makeFcm("ready");
+    return Effect.gen(function* () {
+      const { notify, sql, sender } = yield* seedAndroid;
+      assert.strictEqual(sender.statusFor("android"), "ready");
+      // 09:00 in New York, inside the owner's day.
+      yield* TestClock.setTime(Date.parse("2026-11-08T14:00:00Z"));
+      const told = (notification: Sender.KinPushNotification, channel: string) =>
+        Effect.gen(function* () {
+          apns.sent.length = 0;
+          fcm.sent.length = 0;
+          yield* notify(notification);
+          const { iphone, ios, android } = pair(apns, fcm);
+          assert.isDefined(ios?.aps.alert, channel);
+          // One push, the same words, buttons, badge, landing and collapse on both phones.
+          assert.deepStrictEqual(android, {
+            token: androidPhone,
+            priority: "HIGH",
+            data: {
+              title: ios?.aps.alert?.title ?? "",
+              message: ios?.aps.alert?.body ?? "",
+              body: JSON.stringify(ios?.body),
+              categoryId: String(ios?.aps.category),
+              channelId: channel,
+              badge: String(ios?.aps.badge),
+              ...(ios?.aps["thread-id"] === undefined
+                ? {}
+                : { threadIdentifier: String(ios.aps["thread-id"]) }),
+              ...(iphone?.collapseId === undefined ? {} : { tag: iphone.collapseId }),
+            },
+          });
+          return android?.data ?? {};
+        });
+
+      const said = yield* postMessage(sql, { personId: member, memberId: "m_priya" }, "posted", {
+        mentions: ["m_owner"],
+        body: "Can you look at the **Orbit** invoice?",
+      });
+      const message = yield* told({ _tag: "message", orgId, messageId: said }, "kin.messages");
+      assert.deepStrictEqual(
+        [message.title, message.message],
+        ["Payments team · priya", "Can you look at the Orbit invoice?"],
+      );
+      assert.match(message.tag ?? "", /^kin:/);
+
+      const brief = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+        chatId: "chat_dm",
+        body: "## Needs you\n- The Orbit Dental renewal waits on you.",
+      });
+      yield* sql`UPDATE kin_messages SET form = 'brief' WHERE message_id = ${brief}`;
+      const morning = yield* told({ _tag: "message", orgId, messageId: brief }, "kin.briefs");
+      assert.strictEqual(morning.title, "Finance · Morning brief");
+
+      // An open question with two answers keeps its own banner and carries its buttons' answers.
+      const widgetId = yield* postWidget(
+        sql,
+        "choice",
+        {
+          question: "Is the Harbourline NDA signed?",
+          detail: null,
+          options: [
+            { optionId: "option-1", label: "Signed" },
+            { optionId: "option-2", label: "Not yet" },
+          ],
+          answer: null,
+        },
+        [owner],
+        "Quick one on W-8.",
+      );
+      yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
+          widget_id, question, safe, asked_at, due_at, act_at, state)
+        VALUES ('q_nda', 'org_01', 'lead_fin', ${owner}, 'chat_team', 'card', ${widgetId},
+          'Is it signed?', 0, ${NOW}, ${NOW}, ${NOW}, 'open')`;
+      const question = yield* told({ _tag: "widget", orgId, widgetId }, "kin.questions");
+      assert.strictEqual(question.categoryId, "kin.choice");
+      assert.isUndefined(question.tag);
+      assert.deepInclude(JSON.parse(question.body ?? "{}"), { choices: ["option-1", "option-2"] });
+
+      const deferral = yield* postWidget(sql, "deferral", { phase: "confirmed" }, [owner]);
+      const deferred = yield* told({ _tag: "widget", orgId, widgetId: deferral }, "kin.questions");
+      assert.strictEqual(deferred.categoryId, "kin.deferral.confirmed");
+      const task = yield* postWidget(sql, "task", { status: "needs_decision" }, [owner]);
+      yield* told({ _tag: "widget", orgId, widgetId: task }, "kin.messages");
+    }).pipe(Effect.provide(build(apns, fcm)));
+  });
+
+  it.effect("quiet hours give Android nothing, and a read elsewhere takes its banners off", () => {
+    const apns = makeApns();
+    const fcm = makeFcm("ready");
+    return Effect.gen(function* () {
+      const { notify, sql } = yield* seedAndroid;
+      // 22:00 in New York: the owner's quiet hours. Her iPhone gets the badge, Android nothing.
+      yield* TestClock.setTime(Date.parse("2026-11-08T03:00:00Z"));
+      const said = yield* postMessage(sql, { personId: member, memberId: "m_priya" }, "posted", {
+        mentions: ["m_owner"],
+      });
+      yield* notify({ _tag: "message", orgId, messageId: said });
+      assert.deepStrictEqual(alerts(apns.sent), [undefined, undefined]);
+      assert.deepStrictEqual(fcm.sent, []);
+
+      // Read on the web: the iPhone's badge push wakes it to clear; Android gets the same data.
+      yield* sql`INSERT INTO kin_read_state (org_id, chat_id, member_id, last_read_seq, updated_at)
+        SELECT 'org_01', 'chat_team', 'm_owner', MAX(seq), ${T} FROM kin_messages`;
+      apns.sent.length = 0;
+      const read = {
+        _tag: "read",
+        orgId,
+        chatId: KinChatId.make("chat_team"),
+        memberId: KinMemberId.make("m_owner"),
+      } as const;
+      yield* notify(read);
+      const ios = apns.sent.find((push) => push.token === ownerPhone)?.payload as Banner;
+      assert.deepStrictEqual(ios.body, {
+        kin: 1,
+        orgId,
+        chatId: "chat_team",
+        deepLink: "/kin/env_kin/org_01/chats/chat_team",
+        cleared: true,
+      });
+      assert.deepStrictEqual(fcm.sent, [
+        { token: androidPhone, priority: "NORMAL", data: { body: JSON.stringify(ios.body) } },
+      ]);
+
+      // A read that leaves something unread sends Android nothing: it has no banner count to set.
+      fcm.sent.length = 0;
+      yield* postMessage(sql, { personId: member, memberId: "m_priya" });
+      yield* postMessage(sql, { personId: member, memberId: "m_priya" });
+      yield* sql`UPDATE kin_read_state SET last_read_seq = last_read_seq + 1
+        WHERE member_id = 'm_owner'`;
+      yield* notify(read);
+      assert.deepStrictEqual(fcm.sent, []);
+    }).pipe(Effect.provide(build(apns, fcm)));
+  });
+
+  it.effect(
+    "a token Google calls unregistered is retired; a failure at Google spares Apple",
+    () => {
+      const apns = makeApns();
+      let google: KinFcmResult = { status: 503, reason: "UNAVAILABLE" };
+      const fcm = makeFcm("ready", () => Effect.sync(() => google));
+      return Effect.gen(function* () {
+        const { notify, sql, devices } = yield* seedAndroid;
+        const ring = Effect.gen(function* () {
+          const said = yield* postMessage(
+            sql,
+            { personId: member, memberId: "m_priya" },
+            "posted",
+            {
+              mentions: ["m_owner"],
+            },
+          );
+          return yield* notify({ _tag: "message", orgId, messageId: said });
+        });
+        assert.deepStrictEqual(yield* ring, { status: "ready", sent: 2, suppressed: 0, failed: 1 });
+        assert.deepStrictEqual(
+          apns.sent.map((push) => push.token),
+          [ownerPhone, ownerTablet],
+        );
+        const owned = () =>
+          devices.forPeople(orgId, [owner]).pipe(Effect.map((all) => all.map((one) => one.token)));
+        assert.include(yield* owned(), androidPhone);
+
+        // Google says the app is gone from that phone: the token goes, as APNs' dead tokens do.
+        google = { status: 404, reason: "UNREGISTERED" };
+        assert.deepStrictEqual(yield* ring, { status: "ready", sent: 2, suppressed: 0, failed: 1 });
+        assert.deepStrictEqual(yield* owned(), [ownerPhone, ownerTablet]);
+        fcm.sent.length = 0;
+        yield* ring;
+        assert.deepStrictEqual(fcm.sent, []);
+      }).pipe(Effect.provide(build(apns, fcm)));
+    },
+  );
+
+  it.effect("with no FCM key, Android phones are skipped and iPhones ring as before", () => {
+    const apns = makeApns();
+    const fcm = makeFcm();
+    return Effect.gen(function* () {
+      const { notify, sql, sender } = yield* seedAndroid;
+      assert.strictEqual(sender.statusFor("android"), "unconfigured");
+      assert.strictEqual(sender.statusFor("ios"), "ready");
+      const said = yield* postMessage(sql, { personId: member, memberId: "m_priya" }, "posted", {
+        mentions: ["m_owner"],
+      });
+      assert.deepStrictEqual(yield* notify({ _tag: "message", orgId, messageId: said }), {
+        status: "ready",
+        sent: 2,
+        suppressed: 0,
+        failed: 0,
+      });
+      assert.deepStrictEqual(fcm.sent, []);
+    }).pipe(Effect.provide(build(apns, fcm)));
   });
 });

@@ -6,19 +6,17 @@ import * as NodeCrypto from "node:crypto";
 
 import { liveConnections, sendAsOf } from "../connections/ConnectionRows.ts";
 import { mailProviderOf } from "../connections/mailProviders.ts";
+import { DAY_MS, HOUR_MS, MINUTE_MS } from "../durations.ts";
 import type { ArrivalClass, ArrivalContact, ArrivalRows } from "./classify.ts";
 
 /**
- * `kin_arrivals`: each mail a watched mailbox received, once. The primary key is the claim: a
- * message is a row the first time its insert returns one, and only that insert queues a wake.
- * It keeps sender address, class, reason and provider ids, never a subject or body, 30 days.
+ * A watched mailbox gets one row per message. The ledger keeps sender address, class, reason
+ * and provider ids, never a subject or body, for 30 days.
  */
-const KEEP_MS = 30 * 86_400_000;
+const KEEP_MS = 30 * DAY_MS;
 /** A message that keeps failing to read is retried later each time, then daily; never dropped. */
-const PARKED_RETRY_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 3_600_000, 86_400_000];
+const PARKED_RETRY_MS = [MINUTE_MS, 5 * MINUTE_MS, 30 * MINUTE_MS, 2 * HOUR_MS, DAY_MS];
 const PARKED_PER_READ = 20;
-/** First mail from people Kin doesn't know: this many looks per sender a day, then a line. */
-export const UNKNOWN_LOOKS_PER_DAY = 10;
 
 const hash = (...parts: ReadonlyArray<string>) =>
   NodeCrypto.createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 32);
@@ -163,15 +161,10 @@ export type Arrived = {
   readonly receivedAt: number;
   readonly class: ArrivalClass;
   readonly reason: string;
-  /** Set when an agent is woken; otherwise the row is settled as nothing to do. */
-  readonly agentId: string | null;
-  readonly eventId: string | null;
+  readonly needsLook: boolean;
 };
 
-/**
- * The claim: a new row, or a parked one read at last. Returns whether this call made it, so only
- * one call ever queues its wake, whatever restarts, retries or repeats come between.
- */
+/** Only the first insert or transition out of parked claims a message. */
 export const claim = Effect.fn("KinArrivalStore.claim")(function* (
   orgId: KinOrgId,
   arrived: Arrived,
@@ -179,31 +172,29 @@ export const claim = Effect.fn("KinArrivalStore.claim")(function* (
   parked: boolean,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const looking = arrived.agentId !== null;
-  const state = looking ? "new" : "settled";
-  const outcome = looking ? null : "nothing";
-  const settledAt = looking ? null : now;
+  const state = arrived.needsLook ? "new" : "settled";
+  const outcome = arrived.needsLook ? null : "nothing";
+  const settledAt = arrived.needsLook ? null : now;
   const reason = arrived.reason.slice(0, 200);
   const made = parked
     ? yield* sql`UPDATE kin_arrivals SET thread_id = ${arrived.threadId},
           mail_key = ${arrived.mailKey}, from_address = ${arrived.fromAddress},
           received_at = ${arrived.receivedAt}, class = ${arrived.class},
-          agent_id = ${arrived.agentId}, event_id = ${arrived.eventId}, state = ${state},
+          state = ${state},
           outcome = ${outcome}, reason = ${reason}, settled_at = ${settledAt}, retry_at = NULL
         WHERE org_id = ${orgId} AND arrival_id = ${arrived.arrivalId} AND state = 'parked'
         RETURNING arrival_id`
     : yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id,
-          thread_id, mail_key, from_address, received_at, noticed_at, class, agent_id, event_id,
-          state, outcome, reason, settled_at)
+          thread_id, mail_key, from_address, received_at, noticed_at, class, state, outcome,
+          reason, settled_at)
         VALUES (${orgId}, ${arrived.arrivalId}, ${arrived.connectionId}, ${arrived.messageId},
           ${arrived.threadId}, ${arrived.mailKey}, ${arrived.fromAddress}, ${arrived.receivedAt},
-          ${now}, ${arrived.class}, ${arrived.agentId}, ${arrived.eventId}, ${state}, ${outcome},
-          ${reason}, ${settledAt})
+          ${now}, ${arrived.class}, ${state}, ${outcome}, ${reason}, ${settledAt})
         ON CONFLICT DO NOTHING RETURNING arrival_id`;
   return made.length > 0;
 });
 
-/** A woken arrival whose wake couldn't queue: settled, with why. */
+/** Close a parked arrival that no longer needs a read. */
 export const settleNothing = Effect.fn("KinArrivalStore.settleNothing")(function* (
   orgId: KinOrgId,
   arrivalId: string,
@@ -214,39 +205,21 @@ export const settleNothing = Effect.fn("KinArrivalStore.settleNothing")(function
   yield* sql`UPDATE kin_arrivals SET state = 'settled', outcome = 'nothing',
       reason = ${reason.slice(0, 200)}, agent_id = NULL, event_id = NULL, settled_at = ${now},
       retry_at = NULL
-    WHERE org_id = ${orgId} AND arrival_id = ${arrivalId}`;
+    WHERE org_id = ${orgId} AND arrival_id = ${arrivalId} AND state = 'parked'`;
 });
 
-/** The account that already holds this message, when another mailbox noticed it first. */
-export const heldElsewhere = Effect.fn("KinArrivalStore.heldElsewhere")(function* (
+export const recordedElsewhere = Effect.fn("KinArrivalStore.recordedElsewhere")(function* (
   orgId: KinOrgId,
   mailKey: string | null,
   arrivalId: string,
 ) {
-  if (mailKey === null) return undefined;
+  if (mailKey === null) return false;
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ label: string }>`SELECT COALESCE(c.account_label, c.label) AS label
-    FROM kin_arrivals a JOIN kin_connections c ON c.org_id = a.org_id
-      AND c.connection_id = a.connection_id
-    WHERE a.org_id = ${orgId} AND a.mail_key = ${mailKey} AND a.arrival_id != ${arrivalId}
-    ORDER BY a.noticed_at LIMIT 1`;
-  return row?.label;
-});
-
-/** Looks at mail from this sender Kin doesn't know, in the day before `now`, and the first one's agent. */
-export const looksToday = Effect.fn("KinArrivalStore.looksToday")(function* (
-  orgId: KinOrgId,
-  from: string,
-  now: number,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ name: string | null }>`SELECT g.display_name AS name
-    FROM kin_arrivals a LEFT JOIN kin_agents g ON g.org_id = a.org_id AND g.agent_id = a.agent_id
-    WHERE a.org_id = ${orgId} AND a.from_address = ${from.toLowerCase()}
-      AND a.class IN ('unknown_person', 'failed_checks') AND a.agent_id IS NOT NULL
-      AND a.noticed_at > ${now - 86_400_000}
-    ORDER BY a.noticed_at, a.arrival_id`;
-  return { count: rows.length, first: rows[0]?.name ?? null };
+  const [row] = yield* sql<{ found: number }>`SELECT EXISTS (
+    SELECT 1 FROM kin_arrivals
+    WHERE org_id = ${orgId} AND mail_key = ${mailKey} AND arrival_id != ${arrivalId}
+  ) AS found`;
+  return row?.found === 1;
 });
 
 /** A stretch the feed couldn't see, as one row, so it isn't passed off as quiet. */

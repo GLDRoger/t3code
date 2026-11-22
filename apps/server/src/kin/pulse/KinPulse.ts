@@ -25,6 +25,8 @@ import * as NodeCrypto from "node:crypto";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { KinConnections } from "../connections/ConnectionsService.ts";
+import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
@@ -40,6 +42,8 @@ import { projectSenses } from "./senses/projects.ts";
 import { iso, type SenseContext, type SensedFact } from "./senses/shared.ts";
 import { systemSenses } from "./senses/system.ts";
 import { workSenses } from "./senses/work.ts";
+import { fromConnections, noOutside, poll } from "./outside.ts";
+import { alertsOnMail } from "../work/statements/alertMail.ts";
 import { DAY_MS } from "./thresholds.ts";
 import { tellHolder } from "./holderNotice.ts";
 import { morningPages, pageMinuteSince } from "./personMorning.ts";
@@ -60,6 +64,7 @@ const FINANCE_DOMAIN = "finance";
 /** How long "I've got it" with no date holds a fact. */
 export const GOT_IT_MS = 3 * DAY_MS;
 const TICK_EVERY_MS = 15 * 60_000;
+const OUTSIDE_EVERY_MS = 3 * 60_000;
 const READ_CAP = 50;
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const encodeScope = Schema.encodeEffect(Schema.fromJsonString(KinPulseFact.fields.scope));
@@ -90,7 +95,7 @@ export type Viewer =
   | { readonly _tag: "owner" }
   | { readonly _tag: "people"; readonly people: ReadonlyArray<KinPersonId> };
 
-const context = Effect.fn("KinPulse.context")(function* (orgId: KinOrgId, at: number) {
+export const context = Effect.fn("KinPulse.context")(function* (orgId: KinOrgId, at: number) {
   const sql = yield* SqlClient.SqlClient;
   const chief = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
   const leads = yield* sql<{ agentId: string; domain: string }>`SELECT l.agent_id AS "agentId",
@@ -159,17 +164,21 @@ const storedRows = Effect.fn("KinPulse.stored")(function* (
 });
 
 /**
- * A stored hold that still applies at `at`; an expired "I've got it" brings the fact back. With a
+ * A stored hold that still applies at `at`; an expired "I've got it" brings the fact back, as does
+ * "not a problem" past the fact's `quietForMs`. With a
  * reader, only theirs: an agent's or an owner-level person's hold the owner's view, a person's own
  * hold theirs. Handling a fact hides it from no one else, and never hides the task.
  */
 const handledOf = (
   row: StoredRow | undefined,
   at: number,
+  fact: Pick<SensedFact, "quietForMs">,
   reader?: { readonly viewer: Viewer; readonly level: ReadonlySet<string> },
 ): KinPulseHandled | null => {
   if (row?.byKind == null || row.byId === null || row.handledAt === null) return null;
   if (row.until !== null && row.until <= at) return null;
+  if (row.until === null && fact.quietForMs !== undefined && row.handledAt + fact.quietForMs <= at)
+    return null;
   if (reader !== undefined) {
     const theirs =
       reader.viewer._tag === "owner"
@@ -210,7 +219,7 @@ const withStored = (
   },
   hold?: Hold | undefined,
 ): KinPulseFact => {
-  const { yours, ...shared } = fact;
+  const { yours, quietForMs: _quietForMs, ...shared } = fact;
   // One person reading a fact that names them reads it as theirs; a shared view keeps names.
   const own =
     reader.viewer._tag === "people" && reader.viewer.people.length === 1
@@ -223,7 +232,7 @@ const withStored = (
       row !== undefined && row.firstSeenAt < DateTime.toEpochMillis(fact.since)
         ? iso(row.firstSeenAt)
         : fact.since,
-    handled: hold === undefined ? handledOf(row, at, reader) : heldAs(hold),
+    handled: hold === undefined ? handledOf(row, at, fact, reader) : heldAs(hold),
     ...(hold === undefined ? {} : { aside: asideView(hold, reader.viewer, reader.personId) }),
   };
 };
@@ -443,8 +452,9 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
   const { orgId, at, zone } = ctx;
-  const due = facts.flatMap(({ yours: _yours, ...fact }): Array<KinPulseFact> => {
-    const open = { ...fact, handled: handledOf(stored.get(fact.key), at) };
+  const due = facts.flatMap((sensed): Array<KinPulseFact> => {
+    const { yours: _yours, quietForMs: _quietForMs, ...fact } = sensed;
+    const open = { ...fact, handled: handledOf(stored.get(fact.key), at, sensed) };
     return open.handled === null &&
       forHolder(open, at, zone) &&
       asideOf(fact, holds, { _tag: "owner" }) === undefined
@@ -575,10 +585,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
   // Sensed from committed rows before the transaction, on a reader: off the writer it needs.
   const ctx = yield* context(orgId, at).pipe(NodeSqliteClient.readOnly);
   const facts = yield* senseIn(ctx).pipe(NodeSqliteClient.readOnly);
-  // Owner-level screens read Needs attention again only on this topic, so any change to what was
-  // sensed moves it: a fact's words or progress, not only a fact coming or going.
-  const sensedNow = shortHash(yield* encodeSensed(facts));
-  const sensedMoved = sensedNow !== lastSensed.get(orgId);
+  const sensedText = yield* encodeSensed(facts);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       // Set-wise over one JSON array: a tick can sense thousands of facts.
@@ -621,11 +628,19 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         facts.map((fact) => fact.key),
       );
       const holds = yield* liveHolds(orgId, at);
+      // Owner-level screens read Needs attention again only on this topic, so any change to what
+      // was sensed or is set aside moves it: a fact's words, progress, or a handling running out.
+      const quiet = facts.filter(
+        (fact) =>
+          handledOf(stored.get(fact.key), at, fact) !== null ||
+          asideOf(fact, holds, { _tag: "owner" }) !== undefined,
+      );
+      const sensedNow = shortHash(`${sensedText}\0${quiet.map((fact) => fact.key).join("\n")}`);
       const woken: Array<string> = [];
       for (const fact of facts) {
         const row = stored.get(fact.key);
         if (fact.wake !== "now" || fact.actor._tag !== "agent") continue;
-        if (row === undefined || row.wokeAt !== null || handledOf(row, at) !== null) continue;
+        if (row === undefined || row.wokeAt !== null || handledOf(row, at, fact) !== null) continue;
         // Set aside: it wakes no one; when the hold ends, the check-in tells it once.
         if (asideOf(fact, holds, { _tag: "owner" }) !== undefined) continue;
         const enqueued = yield* queue
@@ -663,12 +678,12 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
       // A teammate's page first: what it tells, the holder notice after it doesn't repeat.
       const pages = yield* morningPages({
         ctx,
-        open: facts.filter((fact) => handledOf(stored.get(fact.key), at) === null),
+        open: facts.filter((fact) => handledOf(stored.get(fact.key), at, fact) === null),
         holds,
         sees: (personId) => visibleTo(orgId, { _tag: "people", people: [personId] }, facts),
       });
       const told = yield* tellHolders(ctx, facts, stored, holds);
-      if (moved > 0 || sensedMoved) yield* refreshes.touch(orgId, "pulse");
+      if (moved > 0 || sensedNow !== lastSensed.get(orgId)) yield* refreshes.touch(orgId, "pulse");
       yield* sql.afterCommit(
         Effect.sync(() => {
           lastSensed.set(orgId, sensedNow);
@@ -946,11 +961,37 @@ export const pass = Effect.fnUntraced(
  */
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
     const ticks = yield* Scheduler.Scheduler;
     const queue = yield* KinEventQueue.KinEventQueue;
     const refreshes = yield* KinRefreshObserver;
     const chats = yield* Effect.serviceOption(KinChatService);
     const last: Passes = new Map();
+    const connections = yield* Effect.serviceOption(KinConnections);
+    const outside = Option.isNone(connections)
+      ? noOutside
+      : fromConnections(connections.value, sql, yield* alertsOnMail(connections.value));
+    const polled = new Map<string, number>();
+    // Mail and calendar between check-ins: metadata reads with no model, waking only on a match.
+    yield* ticks.register(
+      "kin-pulse-outside",
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        // Scheduler maintenance: orgs with a live mail connection; each poll is org-scoped.
+        const orgs = yield* sql<{ orgId: string }>`SELECT DISTINCT org_id AS "orgId"
+          FROM kin_connections WHERE preset IN ${sql.in(MAIL_PRESETS)} AND removed_at IS NULL
+            AND paused_at IS NULL AND state = 'active'
+          ORDER BY org_id`.pipe(NodeSqliteClient.readOnly);
+        for (const { orgId } of orgs) {
+          if (now - (polled.get(orgId) ?? -Infinity) < OUTSIDE_EVERY_MS) continue;
+          polled.set(orgId, now);
+          yield* poll(KinOrgId.make(orgId), now, outside).pipe(
+            Effect.provideService(KinEventQueue.KinEventQueue, queue),
+            Effect.catch((cause) => Effect.logWarning("Kin outside poll failed", { orgId, cause })),
+          );
+        }
+      }).pipe(Effect.catch((cause) => Effect.logWarning("Kin outside scan failed", { cause }))),
+    );
     yield* ticks.register(
       "kin-pulse",
       Effect.suspend(() => pass(last)).pipe(

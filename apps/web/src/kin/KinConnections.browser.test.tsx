@@ -15,7 +15,10 @@ vi.mock(import("./KinNewLeadButton"), async (importOriginal) => ({
   kinNewLeadTarget: () => ({ environmentId: "env-1", orgId: "org-1", lead: null }) as never,
 }));
 // Settings → Connections also holds these; each is its own screen with its own test.
-vi.mock(import("./KinGitHubConnect"), () => ({ KinGitHubConnect: () => null }) as never);
+vi.mock(
+  import("./KinGitHubConnect"),
+  () => ({ KinGitHubConnect: () => null, KinGitHubPage: () => null }) as never,
+);
 vi.mock(import("./KinSocialConnect"), () => ({ KinSocialConnect: () => null }) as never);
 vi.mock(import("./KinVisualHosts"), () => ({ KinVisualHosts: () => null }) as never);
 vi.mock(import("./kinClient"), async (importOriginal) => {
@@ -117,7 +120,7 @@ const screen = () => (
 );
 
 async function addWithKey() {
-  await userEvent.click(page.getByRole("button", { name: "Add connection" }));
+  await userEvent.click(page.getByRole("button", { name: "Add service" }));
   const dialog = page.getByRole("dialog");
   await userEvent.type(dialog.getByRole("textbox", { name: "Name" }), "Ambermill errors");
   await userEvent.type(dialog.getByLabelText("Key"), KEY);

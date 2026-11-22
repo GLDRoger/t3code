@@ -1,4 +1,5 @@
 import { useKinOpensClients } from "./useKinOwnerLevel";
+import { KIN_DOCS } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_RETIRED_LABEL } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { useAtomValue } from "@effect/atom-react";
 import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
@@ -148,6 +149,7 @@ import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { KinAskRecord } from "./KinAskRecord";
 import { kinClient } from "./kinClient";
 import { openDestination } from "./KinNotifications";
+import { KinWatchLine } from "./KinWatchLine";
 import { useNowMinuteMs } from "./useKinClock";
 import {
   useKinPickerSearch,
@@ -766,6 +768,7 @@ function KinWorkItem(
               {remark}
             </p>
           ))}
+          <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={view.key} />
         </div>
       </Frame.Header>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
@@ -1326,6 +1329,11 @@ export function KinLinkedGroups(props: {
                   <span className="min-w-0 flex-1 truncate text-foreground">
                     {item.title ?? KIN_LINKED.message}
                   </span>
+                  {item.deleted === true ? (
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {KIN_DOCS.archived}
+                    </span>
+                  ) : null}
                 </>
               );
               return (

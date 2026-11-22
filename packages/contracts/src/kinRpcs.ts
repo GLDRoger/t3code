@@ -44,6 +44,7 @@ import { KinRefreshRpcs, KIN_REFRESH_RPC_SCOPES } from "./kinRefresh.ts";
 import { KinPulseRpcs, KIN_PULSE_RPC_SCOPES } from "./kinPulse.ts";
 import { KinOpenRpcs, KIN_OPEN_RPC_SCOPES } from "./kinOpen.ts";
 import { KinRecommendationRpcs, KIN_RECOMMENDATION_RPC_SCOPES } from "./kinRecommendations.ts";
+import { KinWatchRpcs, KIN_WATCH_RPC_SCOPES } from "./kinWatches.ts";
 import {
   KinChatError,
   KinChatRpcs,
@@ -215,6 +216,7 @@ export const KinRpcs = [
   ...KinPulseRpcs,
   ...KinOpenRpcs,
   ...KinRecommendationRpcs,
+  ...KinWatchRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
@@ -239,6 +241,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_PULSE_RPC_SCOPES,
   ...KIN_OPEN_RPC_SCOPES,
   ...KIN_RECOMMENDATION_RPC_SCOPES,
+  ...KIN_WATCH_RPC_SCOPES,
   "kin.budget.get": AuthKinChatScope,
   "kin.budget.set": AuthKinChatScope,
   "kin.org.get": AuthKinChatScope,
@@ -289,6 +292,7 @@ const KIN_RPC_ACCESS = {
   "kin.chats.pin": "person",
   "kin.chats.clear": "person",
   "kin.chat.members": "person",
+  "kin.chat.working": "person",
   "kin.chat.subscribe": "person",
   "kin.chat.history": "person",
   "kin.messages.send": "person",
@@ -429,6 +433,10 @@ const KIN_RPC_ACCESS = {
   "kin.docs.startWhatWeSell": "owner_level",
   // The owner level, or the lead of the doc's project: the service decides from stored rows.
   "kin.docs.editSection": "person",
+  // A teammate's own draft card, in their own chat with the agent: the service decides from stored rows.
+  "kin.docs.sendUp": "person",
+  // Whoever may change the doc by hand: the service decides from stored rows.
+  "kin.docs.delete": "person",
   "kin.work.lists": "person",
   "kin.work.updateList": "owner_level",
   "kin.work.dates": "person",
@@ -495,6 +503,12 @@ const KIN_RPC_ACCESS = {
   // What Kin suggested to the owner and his answers: his alone, as the cards are.
   "kin.recommendations.list": "org_owner",
   "kin.recommendations.askAgain": "org_owner",
+  // What Kin keeps watch on: the service shows and acts on only the watches this person may see.
+  "kin.watches.list": "person",
+  "kin.watches.log": "person",
+  "kin.watches.look": "person",
+  "kin.watches.stop": "person",
+  "kin.watches.again": "person",
   "kin.goals.list": "person",
   "kin.goals.save": "owner_level",
   "kin.checkIns.list": "owner_level",
@@ -537,6 +551,8 @@ const KIN_RPC_ACCESS = {
   "kin.github.guard.set": "owner_level",
   "kin.github.app.create": "owner_level",
   "kin.github.app.disconnect": "owner_level",
+  "kin.github.app.hook.allow": "owner_level",
+  "kin.github.app.look": "owner_level",
   "kin.social.list": "owner_level",
   "kin.social.check": "owner_level",
   "kin.social.connect": "owner_level",
@@ -582,6 +598,11 @@ export const KIN_RPC_AGGREGATES = {
   "kin.open.subscribe": "kin-pulse",
   "kin.recommendations.list": "kin-recommendations",
   "kin.recommendations.askAgain": "kin-recommendations",
+  "kin.watches.list": "kin-watches",
+  "kin.watches.log": "kin-watches",
+  "kin.watches.look": "kin-watches",
+  "kin.watches.stop": "kin-watches",
+  "kin.watches.again": "kin-watches",
   "kin.goals.list": "kin-pulse",
   "kin.goals.save": "kin-pulse",
   "kin.checkIns.list": "kin-pulse",
@@ -620,6 +641,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.chats.pin": "kin-chat",
   "kin.chats.clear": "kin-chat",
   "kin.chat.members": "kin-chat",
+  "kin.chat.working": "kin-chat",
   "kin.groups.create": "kin-chat",
   "kin.groups.addMember": "kin-chat",
   "kin.groups.removeMember": "kin-chat",
@@ -671,6 +693,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.docs.setDefaultRecipe": "kin-docs",
   "kin.docs.startWhatWeSell": "kin-docs",
   "kin.docs.editSection": "kin-docs",
+  "kin.docs.sendUp": "kin-docs",
+  "kin.docs.delete": "kin-docs",
   "kin.work.summary": "kin-work",
   "kin.work.list": "kin-work",
   "kin.work.get": "kin-work",
@@ -791,6 +815,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.github.guard.set": "kin-connections",
   "kin.github.app.create": "kin-connections",
   "kin.github.app.disconnect": "kin-connections",
+  "kin.github.app.hook.allow": "kin-connections",
+  "kin.github.app.look": "kin-connections",
   "kin.social.list": "kin-connections",
   "kin.social.check": "kin-connections",
   "kin.social.connect": "kin-connections",

@@ -275,7 +275,10 @@ it.effect(
         yield* refusal(
           Deals.create(
             [zoya],
-            newDeal(corran, "Invented for Rhea", { owner: { _tag: "person", personId: ownerId } }),
+            newDeal(corran, "Invented for Rhea", {
+              owner: { _tag: "person", personId: ownerId },
+              notes: "Invented: refused, so never written",
+            }),
           ),
         ),
         "not_allowed",
@@ -286,11 +289,24 @@ it.effect(
         ),
         "not_allowed",
       );
+      // What was said about price rides in on the same write, as the deal's notes.
       const hers = yield* Deals.create(
         [zoya],
-        newDeal(corran, "Invented stock system", { value: euros(1_800_000) }),
+        newDeal(corran, "Invented stock system", {
+          value: euros(1_800_000),
+          notes: "Invented: they said about 18k on the call",
+        }),
       );
       assert.deepInclude(hers.deal, { owner: asZoya, stage: "new", state: "open" });
+      assert.strictEqual(
+        (yield* Deals.page([zoya], { orgId, key: hers.deal.key })).notes,
+        "Invented: they said about 18k on the call",
+      );
+      const refusedNote = yield* (yield* SqlClient.SqlClient)<{
+        n: number;
+      }>`SELECT COUNT(*) AS n FROM kin_records
+        WHERE notes = 'Invented: refused, so never written'`;
+      assert.strictEqual(refusedNote[0]!.n, 0);
       assert.deepStrictEqual(hers.deal.can, { edit: true, move: true, give: true, mark: false });
       const rheas = yield* Deals.create([owner], newDeal(brightwater, "Invented pilot"));
       const hidden = yield* Deals.create(

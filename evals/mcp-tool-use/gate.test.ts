@@ -115,4 +115,12 @@ it("passes unless a case is worse in every batch pooled or has no finished sampl
     "case c is not in the baseline",
   ]);
   assert.isFalse(compare(baseline, [stale]).pass);
+  // A run with no step limit (Kin's) and one with a limit are never compared, either way round.
+  const unlimited = { manifest: manifest({ maxSteps: 0 }), rows: same.rows };
+  assert.deepStrictEqual(compare(baseline, [unlimited]).refused, [
+    "maxSteps differs: baseline 6, candidate no limit",
+  ]);
+  assert.deepStrictEqual(compare(unlimited, [same]).refused, [
+    "maxSteps differs: baseline no limit, candidate 6",
+  ]);
 });

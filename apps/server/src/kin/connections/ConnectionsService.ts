@@ -98,6 +98,7 @@ import {
   type SignInSecret,
 } from "./ConnectionSecrets.ts";
 import { urlRefusal } from "./EgressGuard.ts";
+import { DAY_MS, WEEK_MS } from "../durations.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
 import { KinGatewayError, KinMcpGateway, type GatewayTarget } from "./McpGateway.ts";
 import { credentialForms } from "./Inbound.ts";
@@ -108,6 +109,7 @@ import {
   type MailArrival,
   type Mailbox,
   type MailChange,
+  type MailMessage,
   type MailProvider,
 } from "./MailProvider.ts";
 import { MAIL_PRESETS, mailProviderOf } from "./mailProviders.ts";
@@ -357,13 +359,12 @@ const mailCursorText = Schema.encodeSync(MailCursorJson);
  * Graph: "the upper limit isn't fixed"), so Kin does: older than this is a gap. Mail received
  * more than a day before the last read is existing mail, never an arrival (EEVEE's window).
  */
-export const MAIL_FEED_WINDOW = { positionMaxAgeMs: 7 * 86_400_000, marginMs: 86_400_000 } as const;
+export const MAIL_FEED_WINDOW = { positionMaxAgeMs: WEEK_MS, marginMs: DAY_MS } as const;
 /** The Inbox's changes since a mailbox's feed was last kept, as ids; server use only. */
 export type KinMailChanges =
   | { readonly _tag: "off" }
   | {
       readonly _tag: "read";
-      readonly account: string | null;
       /** Every address the account receives and sends as. */
       readonly addresses: ReadonlyArray<string>;
       /** A message the vendor received before this is existing mail. */
@@ -636,6 +637,16 @@ export class KinConnections extends Context.Service<
       connectionId: string,
       cursor: MailCursor | null,
     ) => Effect.Effect<void, KinChatError>;
+    /**
+     * Server use only (a pulse, never an agent tool): one mail thread's messages with their text,
+     * with the connection's own sign-in, and only while the owner has Read a thread on Read. None
+     * for a paused account or one that isn't mail.
+     */
+    readonly readThread: (
+      orgId: KinOrgId,
+      connectionId: string,
+      threadId: string,
+    ) => Effect.Effect<ReadonlyArray<MailMessage>, KinChatError>;
     readonly tools: Lead<typeof KinConnectionToolsInput.Type, typeof KinConnectionToolsResult.Type>;
     readonly call: Lead<typeof KinConnectionCallInput.Type, typeof KinConnectionCallResult.Type>;
     readonly offer: Lead<typeof KinConnectionOfferInput.Type, typeof KinConnectionOfferResult.Type>;
@@ -1790,6 +1801,19 @@ const make = Effect.gen(function* () {
     }),
   );
 
+  const readableTools = Effect.fn("KinConnections.readableTools")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+  ) {
+    return new Set(
+      (yield* toolsOf(orgId, connectionId).pipe(provideSql))
+        .filter((tool) => tool.mode === "read" && tool.removedAt === null)
+        .map((tool) => tool.name),
+    );
+  });
+  const mailReadOn = (read: ReadonlySet<string>) =>
+    read.has(MAIL_TOOL.list) || read.has(MAIL_TOOL.search);
+
   const activity = Effect.fn("KinConnections.activity")(function* (
     orgId: KinOrgId,
     connectionId: string,
@@ -1806,12 +1830,8 @@ const make = Effect.gen(function* () {
     const provider = mailProviderOf(row);
     if (provider !== undefined) {
       // Only what the owner marked Read: the server reads no more than an agent may.
-      const read = new Set(
-        (yield* toolsOf(orgId, row.connectionId).pipe(provideSql))
-          .filter((tool) => tool.mode === "read" && tool.removedAt === null)
-          .map((tool) => tool.name),
-      );
-      const mail = read.has(MAIL_TOOL.list) || read.has(MAIL_TOOL.search);
+      const read = yield* readableTools(orgId, row.connectionId);
+      const mail = mailReadOn(read);
       const calendar = read.has(MAIL_TOOL.events);
       const found =
         mail || calendar
@@ -1874,22 +1894,14 @@ const make = Effect.gen(function* () {
             THEN COALESCE(excluded.calendar_cursor, calendar_cursor) ELSE calendar_cursor END`;
   }, settle);
 
-  /** The mail reads the owner marked Read, as `activity` checks them. */
-  const mailReadOn = Effect.fnUntraced(function* (orgId: KinOrgId, row: ConnectionRow) {
-    const read = new Set(
-      (yield* toolsOf(orgId, row.connectionId).pipe(provideSql))
-        .filter((tool) => tool.mode === "read" && tool.removedAt === null)
-        .map((tool) => tool.name),
-    );
-    return read.has(MAIL_TOOL.list) || read.has(MAIL_TOOL.search);
-  });
   const changes = Effect.fn("KinConnections.changes")(function* (
     orgId: KinOrgId,
     connectionId: string,
   ) {
     const row = yield* live(orgId, connectionId);
     const provider = mailProviderOf(row);
-    if (provider === undefined || !(yield* mailReadOn(orgId, row))) {
+    if (row.pausedAt !== null || row.state !== "active") return { _tag: "off" } as const;
+    if (provider === undefined || !mailReadOn(yield* readableTools(orgId, row.connectionId))) {
       // Turned back on later, the feed starts from then: what came while off isn't news.
       yield* sql`UPDATE kin_connection_cursors SET mail_cursor = NULL
         WHERE org_id = ${orgId} AND connection_id = ${connectionId} AND mail_cursor IS NOT NULL`;
@@ -1906,7 +1918,6 @@ const make = Effect.gen(function* () {
     const mailbox = mailboxOf(row);
     const read = {
       _tag: "read",
-      account: row.accountLabel,
       addresses: [...(row.accountLabel === null ? [] : [row.accountLabel]), ...mailbox.addresses],
     } as const;
     const afresh = (gap: { readonly from: number; readonly to: number } | null) =>
@@ -1950,7 +1961,13 @@ const make = Effect.gen(function* () {
   ) {
     const row = yield* live(orgId, connectionId);
     const provider = mailProviderOf(row);
-    if (provider === undefined) return [];
+    if (
+      provider === undefined ||
+      row.pausedAt !== null ||
+      row.state !== "active" ||
+      !mailReadOn(yield* readableTools(orgId, row.connectionId))
+    )
+      return yield* notFound;
     return yield* Effect.forEach(messageIds, (messageId) =>
       withSignIn(orgId, row, (force) =>
         tokenOf(orgId, row, force).pipe(
@@ -1969,12 +1986,38 @@ const make = Effect.gen(function* () {
     );
   }, settle);
 
+  const readThread = Effect.fn("KinConnections.readThread")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+    threadId: string,
+  ) {
+    const row = yield* live(orgId, connectionId);
+    const provider = mailProviderOf(row);
+    if (provider === undefined || row.pausedAt !== null) return [];
+    // The server reads no more than an agent may: the owner's own Read setting for the tool.
+    const readable = (yield* toolsOf(orgId, row.connectionId).pipe(provideSql)).some(
+      (tool) => tool.name === MAIL_TOOL.read && tool.mode === "read" && tool.removedAt === null,
+    );
+    if (!readable) return [];
+    return yield* withSignIn(orgId, row, (force) =>
+      tokenOf(orgId, row, force).pipe(
+        Effect.flatMap((token) => provider.messages(http, token, mailboxOf(row), threadId)),
+      ),
+    );
+  }, settle);
+
   const changesSeen = Effect.fn("KinConnections.changesSeen")(function* (
     orgId: KinOrgId,
     connectionId: string,
     cursor: MailCursor | null,
   ) {
     const row = yield* live(orgId, connectionId);
+    if (
+      row.pausedAt !== null ||
+      row.state !== "active" ||
+      !mailReadOn(yield* readableTools(orgId, row.connectionId))
+    )
+      return yield* notFound;
     const now = yield* Clock.currentTimeMillis;
     const text = cursor === null ? null : mailCursorText(cursor);
     yield* sql`INSERT INTO kin_connection_cursors (org_id, connection_id, checked_until, updated_at,
@@ -2707,6 +2750,7 @@ const make = Effect.gen(function* () {
         : null;
     const now = yield* Clock.currentTimeMillis;
     const replaced: Array<string> = [];
+    let newer: KinWidgetId | undefined;
     const savedOver: Array<{ readonly name: string; readonly quoted: string }> = [];
     // Every older card for the mail goes, so one card can send. A person's saved words stay on it,
     // and are read to this call only when this agent drew it in this chat.
@@ -2828,9 +2872,10 @@ const make = Effect.gen(function* () {
         sql`UPDATE kin_connection_asks SET widget_id = ${widget.widgetId}
           WHERE org_id = ${turn.orgId} AND ask_id = ${askId} AND widget_id IS NULL`.pipe(
           Effect.andThen(replaceOlder()),
+          Effect.tap(() => Effect.sync(() => (newer = widget.widgetId))),
         ),
     );
-    if (replaced.length > 0) yield* levelGate.closeReplaced(turn, replaced);
+    if (replaced.length > 0) yield* levelGate.closeReplaced(turn, replaced, newer);
     // A mail filed under an entry shows on its Tasks row, in place of any card this replaced.
     if (entryRecordId !== null)
       yield* sql.afterCommit(
@@ -4140,6 +4185,7 @@ const make = Effect.gen(function* () {
     changes,
     arrivals,
     changesSeen,
+    readThread,
     tools,
     call,
     offer,

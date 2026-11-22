@@ -67,7 +67,7 @@ import { guarded } from "./EgressGuard.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
 import * as McpGateway from "./McpGateway.ts";
 import { KinConnectionsToolkit } from "./mcp.ts";
-import { GOOGLE_SCOPES } from "./Google.ts";
+import { GOOGLE_SCOPES, googleGrant, googleMail } from "./Google.ts";
 import { challengeOf } from "./OAuth.ts";
 import { promptLine } from "./ConnectionRows.ts";
 import { staleAsksStranded } from "./strandedAsks.ts";
@@ -1698,6 +1698,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
     refreshes: 0,
     revoked: false,
     googleRequests: [] as Array<URL>,
+    /** A Web app's secret at Microsoft; null for a public client, which redeems with PKCE alone. */
+    microsoftSecret: null as string | null,
     /** The scopes Google says it granted; none, as from a sign-in before Kin could send. */
     scope: undefined as string | undefined,
     sent: [] as Array<{
@@ -1863,8 +1865,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
       }
       if (url.origin === "https://login.microsoftonline.com") {
         const form = new URLSearchParams(await request.clone().text());
-        // A public client: the code is redeemed with PKCE alone.
-        if (form.has("client_secret")) return json({ error: "invalid_request" }, 400);
+        if (form.get("client_secret") !== vendor.microsoftSecret)
+          return json({ error: "invalid_client" }, 401);
         return token(request);
       }
       if (url.host === "graph.microsoft.com") {
@@ -2274,8 +2276,11 @@ describe("KinConnections sign-in", () => {
         assert.strictEqual(url.host, "accounts.google.com");
         assert.strictEqual(url.searchParams.get("client_id"), GOOGLE_CLIENT);
         assert.strictEqual(url.searchParams.get("access_type"), "offline");
-        assert.include(url.searchParams.get("scope") ?? "", "gmail.readonly");
-        assert.include(url.searchParams.get("scope") ?? "", "gmail.send");
+        assert.deepStrictEqual(url.searchParams.get("scope")?.split(" "), [
+          "https://www.googleapis.com/auth/gmail.modify",
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.readonly",
+        ]);
         const done = yield* connections.signInFinish(owner, {
           orgId,
           response: vendor.approve(started.authorizationUrl, null),
@@ -2933,6 +2938,78 @@ describe("KinConnections sending", () => {
     ),
   );
 
+  it.effect(
+    "deleting a doc closes the open send card carrying it: it can't be confirmed, and bringing the doc back doesn't reopen it",
+    () =>
+      withGoogle((vendor, cards) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* connectGoogle(vendor);
+          const mail = { to: ["ana@client.example"], subject: "Invoice", attachments: ["DOC-1"] };
+          yield* sendCall("mail_send", { ...mail, body: "Attached." });
+          const open = cards.at(-1)!.widgetId;
+          const closed: Array<{
+            readonly widgetId: string;
+            readonly title?: string;
+            readonly text?: string;
+          }> = [];
+          yield* sql.withTransaction(
+            Effect.andThen(
+              sql`UPDATE kin_records SET state = 'dropped'
+                WHERE org_id = ${orgId} AND record_id = 'rec_doc'`,
+              closeSubject(
+                {
+                  orgId,
+                  recordId: "rec_doc",
+                  key: "DOC-1",
+                  registerId: "docs",
+                  state: "dropped",
+                  sparing: [],
+                  now: 2,
+                },
+                {
+                  closeReplaced: (input) =>
+                    Effect.sync(
+                      () =>
+                        void closed.push({
+                          widgetId: input.widgetId,
+                          ...(input.outcome?.title === undefined
+                            ? {}
+                            : { title: input.outcome.title }),
+                          ...(input.outcome?.text === undefined
+                            ? {}
+                            : { text: input.outcome.text }),
+                        }),
+                    ),
+                },
+              ),
+            ),
+          );
+          assert.deepStrictEqual(closed, [
+            {
+              widgetId: open,
+              title: "Deleted with its draft",
+              text: "Deleted with its draft: DOC-1 was deleted.",
+            },
+          ]);
+          assert.deepStrictEqual(
+            yield* sql`SELECT state, reason FROM kin_connection_asks WHERE widget_id = ${open}`,
+            [{ state: "stale", reason: "DOC-1 was deleted, so nothing was sent." }],
+          );
+          assert.include(yield* answer(open, ownerId, true).pipe(Effect.flip), {
+            reason: "widget_changed",
+          });
+          // Brought back, the card stays closed and the same call is told why.
+          yield* sql`UPDATE kin_records SET state = 'open'
+            WHERE org_id = ${orgId} AND record_id = 'rec_doc'`;
+          assert.deepInclude(yield* sendCall("mail_send", { ...mail, body: "Attached." }), {
+            note: "The card for this exact action was closed: DOC-1 was deleted, so nothing was sent.",
+          });
+          assert.lengthOf(vendor.vendor.sent, 0);
+        }),
+      ),
+  );
+
   it.effect("a co-owner made a member strands no card in a chat that is no longer owner-only", () =>
     withGoogle((vendor, cards) =>
       Effect.gen(function* () {
@@ -3016,6 +3093,36 @@ describe("KinConnections sending", () => {
       }),
     ),
   );
+
+  it("reads what a Google grant allows from either family of scopes", () => {
+    const auth = (...names: ReadonlyArray<string>) =>
+      names.map((name) => `https://www.googleapis.com/auth/${name}`).join(" ");
+    const cases = [
+      { granted: GOOGLE_SCOPES, allows: [true, true, true, true], sends: true },
+      {
+        granted: auth(
+          "gmail.readonly",
+          "gmail.send",
+          "calendar.events.readonly",
+          "calendar.events",
+        ),
+        allows: [true, true, true, true],
+        sends: true,
+      },
+      { granted: auth("gmail.readonly"), allows: [true, false, false, false], sends: false },
+      { granted: auth("calendar.readonly"), allows: [false, false, true, false], sends: false },
+      { granted: undefined, allows: [false, false, false, false], sends: false },
+    ];
+    for (const { granted, allows, sends } of cases) {
+      const grant = googleGrant(granted);
+      assert.deepStrictEqual(
+        [grant.readsMail, grant.sendsMail, grant.readsCalendar, grant.writesCalendar],
+        allows,
+        granted,
+      );
+      assert.strictEqual(googleMail.canSend(granted), sends, granted);
+    }
+  });
 });
 
 /** A second Google account, signed in with the same client, its send tools marked Ask me. */
@@ -3208,6 +3315,33 @@ describe("KinConnections accounts", () => {
             : [],
           [WORK_MAIL, ["billing@work.example"]],
         );
+        // The server's own thread read, for bank alerts, goes as far as the owner's Read does.
+        const readThread = () =>
+          connections
+            .readThread(orgId, work.connectionId, "t2")
+            .pipe(Effect.map((messages) => messages.map((one) => one.messageId)));
+        const setRead = (mode: "read" | "off") =>
+          Effect.gen(function* () {
+            const shown = yield* connections.get(owner, {
+              orgId,
+              connectionId: work.connectionId,
+            });
+            yield* connections.setToolModes(owner, {
+              orgId,
+              connectionId: work.connectionId,
+              modes: [
+                {
+                  tool: "mail_read_thread",
+                  mode,
+                  digest: shown.tools.find((one) => one.name === "mail_read_thread")?.pinDigest,
+                },
+              ],
+            });
+          });
+        yield* setRead("off");
+        assert.deepStrictEqual(yield* readThread(), []);
+        yield* setRead("read");
+        assert.deepStrictEqual(yield* readThread(), ["<m2@client2.example>"]);
 
         // A reply: only in its own account, from the alias it reached, quoted as Gmail does.
         const unknown = yield* sendCall("mail_reply", { threadId: "t9", body: "Resent." }).pipe(
@@ -3450,6 +3584,26 @@ describe("KinConnections Microsoft", () => {
 
         const activity = yield* connections.activity(orgId, id);
         assert.strictEqual(activity._tag, "mail");
+
+        // A Web app the company already had: its secret goes with the code, PKCE as before.
+        vendor.vendor.microsoftSecret = "invented-web-secret";
+        yield* connections.setSignInClient(owner, {
+          orgId,
+          service: "microsoft",
+          client: { clientId: MICROSOFT_APP, clientSecret: Redacted.make("invented-web-secret") },
+        });
+        const again = yield* connections.signInStart(owner, {
+          orgId,
+          connectionId: id,
+          returnTo: "web",
+        });
+        yield* connections.signInFinish(owner, {
+          orgId,
+          response: vendor.approve(again.authorizationUrl, null),
+        });
+        const form = vendor.vendor.tokenForms.at(-1)!;
+        assert.strictEqual(form.get("client_secret"), "invented-web-secret");
+        assert.isTrue(form.has("code_verifier"));
       }),
     ),
   );

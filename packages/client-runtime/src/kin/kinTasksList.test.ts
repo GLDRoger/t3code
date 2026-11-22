@@ -697,13 +697,13 @@ describe("kinTaskStep", () => {
       { kind: "told", line: "Zoya handed this back" },
     ],
     [
-      "handed back, then changed since: no longer said, as it no longer counts",
+      "handed back, then ticked and its Undo taken: said as before, as the task's page says it",
       row("H", {
         handedBack: { by: zoya, at: "2026-11-18T08:30:00.000Z" },
         updatedAt: "2026-11-18T08:45:00.000Z",
       }),
-      { key: "H", group: "needsYou" },
-      null,
+      { key: "H", group: "needsYou", handedBackNote: "The clinic wants Zoya on it." },
+      { kind: "told", line: "Zoya handed this back: “The clinic wants Zoya on it.”" },
     ],
     [
       "yours, and someone asked today where it stands",
@@ -775,7 +775,7 @@ describe("kinTaskQuickFilters", () => {
       ["All open", 9, true],
       ["Mine", 6, false],
       ["This week", 4, false],
-      ["Waiting", 2, false],
+      ["Marked waiting", 2, false],
       ["Late", 3, false],
     ]);
     const mine = quick[1]!.next;

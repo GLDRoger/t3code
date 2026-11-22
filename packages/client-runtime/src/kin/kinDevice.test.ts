@@ -1,6 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { kinJoinSignedInAs, kinReplacedComputers, type KinHeldComputer } from "./kinDevice.ts";
+import {
+  kinJoinSignedInAs,
+  kinReplacedComputers,
+  kinSignOutExits,
+  kinSignOutGroup,
+  type KinExitCandidate,
+  type KinHeldComputer,
+} from "./kinDevice.ts";
 
 const rhea = { orgId: "org-ambermill", personId: "person-rhea" };
 const held = (
@@ -67,6 +74,88 @@ describe("kinReplacedComputers", () => {
     for (const one of cases) {
       expect(kinReplacedComputers(one.held), one.name).toEqual(one.replaced);
     }
+  });
+});
+
+describe("kinSignOutExits", () => {
+  it("gives each team one Sign out, and none to a row that is down and never named its team", () => {
+    const row = (
+      environmentId: string,
+      overrides: Partial<KinExitCandidate> = {},
+    ): KinExitCandidate => ({
+      environmentId,
+      label: "Studio desktop",
+      team: "Ambermill",
+      connected: true,
+      ...overrides,
+    });
+    const cases: ReadonlyArray<{
+      readonly name: string;
+      readonly rows: ReadonlyArray<KinExitCandidate>;
+      readonly host: string | null;
+      readonly exits: ReadonlyArray<string>;
+    }> = [
+      {
+        name: "one team beside old pairings that never answered",
+        rows: [
+          row("old-1", { team: null, connected: false }),
+          row("live"),
+          row("old-2", { team: null, connected: false }),
+        ],
+        host: "live",
+        exits: ["live"],
+      },
+      {
+        name: "two teams",
+        rows: [row("live"), row("other", { team: "Lumen Grove", label: "Lumen office" })],
+        host: "live",
+        exits: ["live", "other"],
+      },
+      {
+        name: "another team off for now keeps its Sign out",
+        rows: [row("live"), row("other", { team: "Lumen Grove", connected: false })],
+        host: "live",
+        exits: ["live", "other"],
+      },
+      {
+        name: "the computer Kin opens on, before it names its team",
+        rows: [row("live", { team: null })],
+        host: "live",
+        exits: ["live"],
+      },
+      {
+        name: "no host yet: the connected copy of a team answers for it",
+        rows: [row("down", { connected: false }), row("up")],
+        host: null,
+        exits: ["up"],
+      },
+    ];
+    for (const one of cases) {
+      expect(kinSignOutExits(one.rows, one.host), one.name).toEqual(one.exits);
+    }
+  });
+
+  it("signing out of a team takes every held computer of that team, the pressed one first, and no other team's", () => {
+    const row = (environmentId: string, overrides: Partial<KinExitCandidate> = {}) => ({
+      environmentId,
+      label: "Studio desktop",
+      team: "Ambermill",
+      connected: false,
+      ...overrides,
+    });
+    const rows = [
+      row("old-1"),
+      row("never-named", { team: null }),
+      row("other-team", { team: "Lumen Grove" }),
+      row("live", { connected: true }),
+      row("old-2"),
+    ];
+    expect(kinSignOutGroup(rows, "live")).toEqual(["live", "old-1", "old-2"]);
+    // A computer that never named its team leaves with the computers of its name.
+    expect(
+      kinSignOutGroup([row("live", { team: null }), row("old", { team: null })], "live"),
+    ).toEqual(["live", "old"]);
+    expect(kinSignOutGroup(rows, "gone")).toEqual([]);
   });
 });
 

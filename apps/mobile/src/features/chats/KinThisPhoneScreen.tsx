@@ -1,7 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import { KIN_DEVICES_COPY } from "@t3tools/client-runtime/kin/kinDevices";
-import { KIN_THIS_PHONE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
+import {
+  KIN_THIS_PHONE_COPY,
+  kinSignOutExits,
+  kinSignOutGroup,
+  type KinPhoneLeaver,
+} from "@t3tools/client-runtime/kin/kinDevice";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { View } from "react-native";
@@ -17,6 +22,7 @@ import { useEnvironments, type EnvironmentPresentation } from "../../state/envir
 import { environmentSession } from "../../state/session";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
+import { kinPushLeaveNotice } from "./notifications/kinPushRegistration";
 import { useKinIsHome } from "./state/kinHome";
 import { useChatOnlyEnvironments, useKinOwnerLevel } from "./state/kinChatOnly";
 import { useKinInbox } from "./state/useKinInbox";
@@ -54,7 +60,7 @@ export function KinThisPhoneScreen() {
   const { environments } = useEnvironments();
   const held = useAtomValue(kinHeldComputersAtom);
   const replaced = useAtomValue(kinReplacedComputersAtom);
-  const { leaving: left, forget } = useKinLeaving();
+  const { leaving: left, letGo } = useKinLeaving();
   const gone = (environmentId: EnvironmentId) =>
     left.includes(environmentId) || (!inCodingApp && replaced.includes(environmentId));
   const teammateIds = useChatOnlyEnvironments().filter((id) => !gone(id));
@@ -89,18 +95,50 @@ export function KinThisPhoneScreen() {
       : environment.label;
   const heldOf = (environmentId: EnvironmentId) =>
     held.find((one) => one.environmentId === environmentId) ?? null;
-  const teamOf = (environment: EnvironmentPresentation) =>
+  const knownTeamOf = (environment: EnvironmentPresentation) =>
     (environment.environmentId === hostId ? probe?.orgs.orgs[0]?.name : null) ??
     heldOf(environment.environmentId)?.team ??
-    environment.label;
+    null;
+  const teamOf = (environment: EnvironmentPresentation) =>
+    knownTeamOf(environment) ?? environment.label;
   // The coding app signs out of a computer it runs from its own Environments.
-  const exits: ReadonlyArray<EnvironmentPresentation> = [...yourKin, ...otherTeams]
-    .filter((one) => !inCodingApp || teammateIds.includes(one.environmentId))
-    // The computer Kin opens on answers for its team, so its team's other copies offer Forget.
-    .sort((a, b) => Number(b.environmentId === hostId) - Number(a.environmentId === hostId))
-    .filter((one, index, all) => all.findIndex((other) => teamOf(other) === teamOf(one)) === index);
+  const leavable = [...yourKin, ...otherTeams].filter(
+    (one) => !inCodingApp || teammateIds.includes(one.environmentId),
+  );
+  const candidates = leavable.map((one) => ({
+    environmentId: one.environmentId,
+    label: one.label,
+    team: knownTeamOf(one),
+    connected: one.connection.phase === "connected",
+  }));
+  const exitIds = kinSignOutExits(candidates, hostId);
+  const exits = exitIds.flatMap((id) => leavable.filter((one) => one.environmentId === id));
   const hasExit = (environmentId: EnvironmentId) =>
     exits.some((one) => one.environmentId === environmentId);
+
+  const leaverOf = (environment: EnvironmentPresentation): KinPhoneLeaver =>
+    !teammateIds.includes(environment.environmentId)
+      ? "owner"
+      : environment.environmentId === hostId && ownerLevel
+        ? "coOwner"
+        : "teammate";
+  // Lets the computers go together, then says at most one thing, and only when it is true.
+  const leave = async (
+    group: ReadonlyArray<EnvironmentPresentation>,
+    team: string,
+    leaver: KinPhoneLeaver,
+  ) => {
+    const outcomes = await letGo(group.map((one) => one.environmentId));
+    const notice = kinPushLeaveNotice({
+      team,
+      leaver,
+      left: group.flatMap((one) => {
+        const outcome = outcomes.get(one.environmentId);
+        return outcome === undefined ? [] : [{ computer: nameOf(one), outcome }];
+      }),
+    });
+    if (notice !== null) Dialog.alert(notice.title, notice.detail);
+  };
 
   const askForget = (environment: EnvironmentPresentation) =>
     Dialog.alert(
@@ -111,16 +149,21 @@ export function KinThisPhoneScreen() {
         {
           text: KIN_THIS_PHONE_COPY.forget,
           style: "destructive",
-          onPress: () => forget(environment.environmentId),
+          onPress: () => void leave([environment], teamOf(environment), leaverOf(environment)),
         },
       ],
     );
-  const askSignOut = (environment: EnvironmentPresentation) =>
+  // One press leaves every computer this phone holds for the team.
+  const askSignOut = (environment: EnvironmentPresentation) => {
+    const team = teamOf(environment);
+    const group = kinSignOutGroup(candidates, environment.environmentId).flatMap((id) =>
+      leavable.filter((one) => one.environmentId === id),
+    );
     Dialog.alert(
-      KIN_THIS_PHONE_COPY.signOutTitle(teamOf(environment)),
+      KIN_THIS_PHONE_COPY.signOutTitle(team),
       KIN_THIS_PHONE_COPY.signOutDetail({
-        team: teamOf(environment),
-        computer: nameOf(environment),
+        team,
+        computers: group.map(nameOf),
         teammate: teammateIds.includes(environment.environmentId),
       }),
       [
@@ -128,10 +171,11 @@ export function KinThisPhoneScreen() {
         {
           text: "Sign out",
           style: "destructive",
-          onPress: () => forget(environment.environmentId),
+          onPress: () => void leave(group, team, leaverOf(environment)),
         },
       ],
     );
+  };
   // A row whose team has its Sign out below leaves by that; any other row offers Forget.
   const row = (environment: EnvironmentPresentation) => (
     <KinConnection

@@ -486,6 +486,14 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
       call(vendor, { http, token, mailbox }, tool, args, now),
     activity: (http, token, mailbox, since, cursor, now) =>
       activity(vendor, { http, token, mailbox }, since, cursor, now),
+    // A thread deleted since it was listed has nothing to read; it mustn't hold a pass back.
+    messages: (http, token, mailbox, threadId) =>
+      vendor.thread({ http, token, mailbox }, threadId, false).pipe(
+        Effect.catchIf(
+          (error) => answeredWith(error, 404),
+          () => Effect.succeed([]),
+        ),
+      ),
     replyTarget: (http, token, mailbox, threadId) =>
       replyTarget(vendor, { http, token, mailbox }, threadId),
     mailStart: (http, token, now) => vendor.mailStart({ http, token, mailbox: NO_MAILBOX }, now),

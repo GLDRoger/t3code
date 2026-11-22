@@ -24,6 +24,8 @@ import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinServer } from "../../KinServer.ts";
 import * as Questions from "../../questions/openQuestions.ts";
 import { askPerson } from "../../questions/askPerson.ts";
+import { reopenAsked, turnTaskKeys } from "../../questions/cardTask.ts";
+import { normaliseAbout } from "../../questions/rules.ts";
 import * as CardActions from "../../widgets/cardActions.ts";
 import * as CardPlans from "../../widgets/cardPlans.ts";
 import * as ChoiceCard from "../../widgets/choiceCard.ts";
@@ -190,7 +192,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       const at = named[0];
       const defaultPlan = at === undefined ? undefined : drawn[at]?.plan;
       // A refused repeat posts nothing; an allowed one is stored in its card's own transaction.
-      const plan = yield* Questions.planAsk({
+      const planned = yield* Questions.planAsk({
         orgId: lead.orgId,
         agentId: lead.agentId,
         chatId,
@@ -211,6 +213,15 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           (yield* wordOf({ orgId: lead.orgId, agentId: lead.agentId, wakeupId }))?.ownerLevel ===
           true,
       });
+      // Asked in a task's own turn, the card is about that task too: it can't close under it.
+      const turn = { orgId: lead.orgId, agentId: lead.agentId, wakeupId };
+      const plan =
+        planned === undefined
+          ? undefined
+          : {
+              ...planned,
+              about: normaliseAbout([...planned.about, ...(yield* turnTaskKeys(turn))]),
+            };
       // Drawn again inside the card's transaction: what was checked is what is stored.
       const recheck = drawAll.pipe(
         Effect.flatMap((again) =>
@@ -252,6 +263,8 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
                 });
               }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       );
+      if (plan !== undefined)
+        yield* reopenAsked({ ...turn, personId: plan.personId, about: plan.about });
       return plan === undefined
         ? {
             widgetId: result.widgetId,

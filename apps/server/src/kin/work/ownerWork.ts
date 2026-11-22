@@ -52,7 +52,7 @@ import {
   type Writer,
 } from "./KinRecords.ts";
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
-import { milestoneLinks } from "./projectSpine.ts";
+import { milestoneLinks, principalText } from "./projectSpine.ts";
 import { keyNamedFor, personSeesRecord, sheetExtras } from "./recordComments.ts";
 import { movePage, nudge as nudgeHolder } from "./workMoves.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
@@ -416,7 +416,8 @@ export const list = Effect.fn("KinWork.list")(function* (
   input: KinWorkListInput,
   connection?: CodingAgentConnection,
 ) {
-  if (connection === undefined) return yield* listAs(yield* viewerOf(people, input.orgId), input);
+  if (connection === undefined)
+    return yield* listAs(yield* viewerOf(people, input.orgId), input, { orAlsoOn: true });
   const held: KinWorkListInput = {
     orgId: input.orgId,
     owner: { _tag: "person", personId: connection.personId },
@@ -431,7 +432,7 @@ export const list = Effect.fn("KinWork.list")(function* (
 const listAs = Effect.fn("KinWork.listAs")(function* (
   viewer: Viewer,
   input: KinWorkListInput,
-  internal: Pick<QueryInput, "order" | "withoutSensitive"> = {},
+  internal: Pick<QueryInput, "order" | "withoutSensitive" | "orAlsoOn"> = {},
 ) {
   // A task's amount is the owner's, so sums and money filters over tasks are too; a list's
   // entries a teammate sees whole (`personSees`), figures included.
@@ -473,6 +474,7 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
   const filter = {
     ...(input.list === undefined ? {} : { list: input.list }),
     ...(input.owner === undefined ? {} : { owner: input.owner }),
+    ...(internal.orAlsoOn === true ? { orAlsoOn: true } : {}),
     ...(input.states === undefined ? {} : { states: input.states }),
     ...(input.open === undefined ? {} : { open: input.open }),
     ...(input.late === undefined ? {} : { late: input.late }),
@@ -929,6 +931,9 @@ export const create = Effect.fn("KinWork.create")(function* (
         ? {}
         : { steps: input.steps.map((title) => ({ title, done: false })) }),
       ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
+      ...(input.alsoOn === undefined
+        ? {}
+        : { fields: { alsoOn: input.alsoOn.map(principalText) } }),
     });
     return {
       row,
@@ -973,7 +978,9 @@ export const tellMoved = (
     : tellOnScreen(person, `${after.recordId}:${after.rev}`, movedNotices(before, after));
 export const tellOnScreen = Effect.fn("KinWork.tellOnScreen")(
   function* (person: PersonIdentity, change: string, all: ReadonlyArray<AssignNotice>) {
-    const notices = all.filter((notice) => notice.personId !== person.personId);
+    const notices = all.filter(
+      (notice) => notice.personId !== person.personId || notice.kind === "tookOff",
+    );
     if (notices.length === 0) return;
     yield* tellOnTasks(
       {
@@ -1150,9 +1157,13 @@ export const update = Effect.fn("KinWork.update")(function* (
       ...(input.repo === undefined ? {} : { repo: input.repo }),
       ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
       ...(input.amount === undefined ? {} : { amount: input.amount }),
+      ...(input.amountConfirmed === false ? { askSlip: true } : {}),
       ...(input.repeat === undefined ? {} : { repeat: input.repeat }),
       ...(input.steps === undefined ? {} : { steps: input.steps }),
       ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
+      ...(input.alsoOn === undefined
+        ? {}
+        : { fields: { ...input.fields, alsoOn: input.alsoOn.map(principalText) } }),
       ...due,
       ...(input.dateAt === undefined
         ? input.dateAllDay === undefined
@@ -1167,11 +1178,28 @@ export const update = Effect.fn("KinWork.update")(function* (
     },
     input.rev,
   );
-  if (input.fields === undefined || row === undefined) return yield* save;
   // The files are checked and kept in one transaction, so none slips in between the two.
-  return yield* sql
-    .withTransaction(ownFiles(person, row.fieldsJson, input.fields).pipe(Effect.andThen(save)))
+  const withFiles =
+    input.fields === undefined || row === undefined
+      ? save
+      : sql
+          .withTransaction(
+            ownFiles(person, row.fieldsJson, input.fields).pipe(Effect.andThen(save)),
+          )
+          .pipe(workFailure);
+  if (input.alsoOn === undefined) return yield* withFiles;
+  const records = yield* KinRecords;
+  const moved = yield* sql
+    .withTransaction(
+      Effect.gen(function* () {
+        const before = yield* records.get(input.orgId, input.key);
+        const shown = yield* withFiles;
+        return { before, shown, after: yield* records.get(input.orgId, input.key) };
+      }),
+    )
     .pipe(workFailure);
+  yield* tellMoved(person, moved.before, moved.after);
+  return moved.shown;
 });
 
 /** Ticks one of a task's steps, by whoever may change the task, through the same write. */
@@ -1341,13 +1369,18 @@ export const confirm = Effect.fn("KinWork.confirm")(function* (
   input: KinWorkConfirmInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
-  return yield* change(
+  const records = yield* KinRecords;
+  // Read only to word the notices once the write is through; it decides nothing.
+  const before = yield* records.get(input.orgId, input.key);
+  const shown = yield* change(
     { person, teammate: false },
     input.orgId,
     input.key,
     { confirmed: true },
     input.rev,
   );
+  yield* tellMoved(person, before, yield* records.get(input.orgId, input.key));
+  return shown;
 });
 
 /** Declines a lead's suggestion by dropping it; an entry the owner already kept is refused. */
@@ -1400,8 +1433,16 @@ const change = Effect.fn("KinWork.change")(function* (
         rev,
       );
       const detail = yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
-      // A lead may make something of their project private (`teamGuard`), even out of their view.
-      return yield* shownTo(viewer, detail, row, row, undefined, patch.sensitive === true);
+      // A lead may make something of their project private (`teamGuard`), even out of their view,
+      // and anyone on a task may take themselves off it.
+      return yield* shownTo(
+        viewer,
+        detail,
+        row,
+        row,
+        undefined,
+        patch.sensitive === true || patch.fields?.alsoOn !== undefined,
+      );
     }),
   );
 });

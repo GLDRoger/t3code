@@ -642,6 +642,7 @@ packages/ssh/src/auth.ts	"…_ASKPASS (through ssh-askpass.cmd) when T3 Code re-
 packages/ssh/src/auth.ts	"…h\n# Invoked by ssh via SSH_ASKPASS when T3 Code re-runs ssh with a cached password\n# from …"
 scripts/build-desktop-artifact.ts	"Kin: AI team leads in chat, built on T3 Code."
 scripts/build-desktop-artifact.ts	"apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml"
+scripts/build-desktop-artifact.ts	"https://github.com/GLDRoger/t3code"
 scripts/build-desktop-artifact.ts	"t3code-bundle-selfcheck-"
 scripts/build-desktop-artifact.ts	"t3code-desktop-"
 scripts/build-desktop-artifact.ts	"t3code-icon-build-"

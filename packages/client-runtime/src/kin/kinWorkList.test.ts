@@ -214,7 +214,13 @@ describe("createKinWorkList", () => {
     await h.answer(page(1, 3, 3, 7));
     h.list.changed(8);
     await h.answer(null);
-    expect(h.state()).toMatchObject({ stale: true, failed: null, refreshing: false });
+    // Offline, the list says when its rows were read, as a chat does.
+    expect(h.state()).toMatchObject({
+      stale: true,
+      failed: null,
+      refreshing: false,
+      readAt: Date.parse("2026-11-11T08:00:00.000Z"),
+    });
     expect(h.state().records).toHaveLength(3);
 
     // Reconnecting announces the same number again; stale rows are read anyway.

@@ -12,10 +12,16 @@ import type {
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
 
-import { kinListSend } from "../kinLists.ts";
+import {
+  kinAmountAsking,
+  kinAmountConfirmed,
+  kinListSend,
+  type KinAmountAsk,
+} from "../kinLists.ts";
 import { KIN_QUOTES } from "../kinMoneyAnswers.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import { kinWorkReadState } from "../kinWorkForms.ts";
+import type { AtomCommandResult } from "../../state/runtime.ts";
 import type { KinHookApp, KinUseMoneyLive } from "./kinHookApp.ts";
 
 const none = <A>(): Atom.Atom<AsyncResult.AsyncResult<A, unknown>> =>
@@ -148,43 +154,64 @@ export function makeKinMoneyAnswersHooks<R, ER>(
    */
   function useKinNewInvoice(target: KinScreenTarget) {
     const send = useAtomCommand(kinClient.workNewInvoice, { reportFailure: false });
-    const [busy, setBusy] = useState(false);
-    const [problem, setProblem] = useState<string | null>(null);
+    const saving = useAsking(target);
     return {
-      busy,
-      problem,
-      save: async (input: KinNewInvoiceInput) => {
-        setBusy(true);
-        setProblem(null);
-        const outcome = await kinListSend({
-          online: () => kinHostConnected(target.environmentId),
-          send: () => send({ environmentId: target.environmentId, input }),
-        });
-        setBusy(false);
-        if (!outcome.ok) setProblem(outcome.problem);
-        return outcome.ok ? outcome.value : null;
-      },
+      busy: saving.busy,
+      problem: saving.problem,
+      slip: saving.slip,
+      /** `about` is the amount as the form holds it (`kinInvoiceAmountAbout`). */
+      save: (input: KinNewInvoiceInput, about: string) =>
+        saving.send(about, (confirmed) =>
+          send({ environmentId: target.environmentId, input: { ...input, ...confirmed } }),
+        ),
     };
   }
 
   /** An expense typed by hand: its key, or why nothing was saved, the words kept. */
   function useKinNewExpense(target: KinScreenTarget) {
     const send = useAtomCommand(kinClient.workNewExpense, { reportFailure: false });
+    const saving = useAsking(target);
+    return {
+      busy: saving.busy,
+      problem: saving.problem,
+      slip: saving.slip,
+      save: async (input: KinNewExpenseInput, about: string) =>
+        (
+          await saving.send(about, (confirmed) =>
+            send({ environmentId: target.environmentId, input: { ...input, ...confirmed } }),
+          )
+        )?.expense ?? null,
+    };
+  }
+
+  /**
+   * One form's save that asks once about an amount far above its list: the line stands while the
+   * amount is the one asked about, and the next save of it keeps it.
+   */
+  function useAsking(target: KinScreenTarget) {
     const [busy, setBusy] = useState(false);
     const [problem, setProblem] = useState<string | null>(null);
+    const [asked, setAsked] = useState<KinAmountAsk | null>(null);
     return {
       busy,
       problem,
-      save: async (input: KinNewExpenseInput) => {
+      slip: (about: string) => kinAmountAsking(asked, about)?.line ?? null,
+      send: async <A>(
+        about: string,
+        send: (confirmed: {
+          readonly amountConfirmed: boolean;
+        }) => Promise<AtomCommandResult<A, unknown>>,
+      ) => {
         setBusy(true);
         setProblem(null);
         const outcome = await kinListSend({
           online: () => kinHostConnected(target.environmentId),
-          send: () => send({ environmentId: target.environmentId, input }),
+          send: () => send(kinAmountConfirmed(asked, about)),
         });
         setBusy(false);
-        if (!outcome.ok) setProblem(outcome.problem);
-        return outcome.ok ? outcome.value.expense : null;
+        if (!outcome.ok && outcome.slip !== undefined) setAsked({ line: outcome.slip, about });
+        else if (!outcome.ok) setProblem(outcome.problem);
+        return outcome.ok ? outcome.value : null;
       },
     };
   }

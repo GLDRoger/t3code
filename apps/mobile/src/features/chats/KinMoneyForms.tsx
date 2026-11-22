@@ -5,13 +5,15 @@ import {
   usePreventRemove,
   type StaticScreenProps,
 } from "@react-navigation/native";
-import { KIN_LISTS } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_AMOUNT_SLIP, KIN_LISTS } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_MONEY_FORMS,
+  kinExpenseAmountAbout,
   kinExpenseChoices,
   kinExpenseDraft,
   kinExpenseInput,
   kinExpenseTyped,
+  kinInvoiceAmountAbout,
   kinInvoiceBeforeTax,
   kinInvoiceDraft,
   kinInvoiceDueChoices,
@@ -103,6 +105,15 @@ function useFormGuard(typed: boolean, busy: boolean, discardTitle: string) {
 }
 
 /** One picked value among a few, as a row that opens the system menu. */
+/** The one line a form asks under its amount when it reads like a slip. */
+function Slip(props: { readonly line: string | null }) {
+  return props.line === null ? null : (
+    <Text textRole="body" accessibilityLiveRegion="polite" className="px-2 text-foreground">
+      {props.line}
+    </Text>
+  );
+}
+
 function PickRow(props: {
   readonly label: string;
   readonly value: string;
@@ -204,6 +215,8 @@ function InvoiceForm(
     clients.find((one) => one.key === draft.party) ??
     (props.party !== null && props.party.key === draft.party ? props.party : null);
   const beforeTax = kinInvoiceBeforeTax(draft.lines, currency);
+  const about = kinInvoiceAmountAbout(draft.lines);
+  const slip = saving.slip(about);
   const save = async () => {
     const checked = kinInvoiceInput(props.orgId, draft, {
       currency,
@@ -212,7 +225,7 @@ function InvoiceForm(
     });
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);
-    const result = await saving.save(checked.input);
+    const result = await saving.save(checked.input, about);
     if (result === null) return;
     if (result.problems.length > 0)
       return setMade({ key: result.invoice, problems: result.problems });
@@ -226,7 +239,12 @@ function InvoiceForm(
       showTop={shown}
       onClose={guard.close}
       confirm={{
-        label: made === null ? KIN_MONEY_FORMS.invoice.save : KIN_MONEY_FORMS.invoice.tryAgain,
+        label:
+          made !== null
+            ? KIN_MONEY_FORMS.invoice.tryAgain
+            : slip !== null
+              ? KIN_AMOUNT_SLIP.save
+              : KIN_MONEY_FORMS.invoice.save,
         onPress: () => void save(),
         loading: saving.busy,
         disabled: saving.busy,
@@ -284,6 +302,7 @@ function InvoiceForm(
           {beforeTax}
         </Text>
       )}
+      <Slip line={slip} />
       {gst && tax.registered ? (
         <KinWorkTextField
           label={KIN_MONEY_FORMS.invoice.gstRate}
@@ -409,10 +428,11 @@ function ExpenseForm(props: KinWorkTarget) {
     const checked = kinExpenseInput(props.orgId, draft, { currency, clientRequestId: requestId });
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);
-    const key = await saving.save(checked.input);
+    const key = await saving.save(checked.input, kinExpenseAmountAbout(draft));
     if (key !== null) guard.leave(props, key);
   };
   const shown = problem ?? saving.problem;
+  const slip = saving.slip(kinExpenseAmountAbout(draft));
   const category = choices.categories.find((one) => one.value === draft.category);
   const receipt = held.find((file) => file.attachmentId === draft.receipt);
   return (
@@ -422,7 +442,7 @@ function ExpenseForm(props: KinWorkTarget) {
       showTop={shown}
       onClose={guard.close}
       confirm={{
-        label: KIN_MONEY_FORMS.expense.save,
+        label: slip === null ? KIN_MONEY_FORMS.expense.save : KIN_AMOUNT_SLIP.save,
         onPress: () => void save(),
         loading: saving.busy,
         disabled: saving.busy,
@@ -449,6 +469,7 @@ function ExpenseForm(props: KinWorkTarget) {
         keyboard="numbers"
         onChangeText={(amount) => set({ amount })}
       />
+      <Slip line={slip} />
       <ListSection>
         <PickRow
           label={KIN_MONEY_FORMS.expense.paidOn}

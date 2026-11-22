@@ -56,7 +56,6 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { Menu } from "../../components/ui/Menu";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
@@ -69,6 +68,7 @@ import { useKinWorkingAgents } from "./state/useKinInbox";
 import { useKinWorkDirectory } from "./state/useKinWork";
 import { kinRetiredWhenNow, useKinAgentRetire } from "./state/useKinAgentRetire";
 import { useKinHostAt } from "./state/useKinHost";
+import { KinWorkToggleRow } from "./components/KinWorkPieces";
 
 export type KinLeadParams = {
   readonly environmentId: string;
@@ -335,7 +335,7 @@ function KinLeadNotifications(props: {
   const muted = mutedNow(chat, personId);
   return (
     <ListSection title="Notifications">
-      <ListToggleRow
+      <KinWorkToggleRow
         label="Mute notifications"
         value={muted}
         onValueChange={(next) =>
@@ -343,7 +343,7 @@ function KinLeadNotifications(props: {
         }
       />
       {canPin ? (
-        <ListToggleRow
+        <KinWorkToggleRow
           label={KIN_CHATS_PIN.setting}
           description={KIN_CHATS_PIN.settingDetail}
           value={kinChatPinned(chat, new Set([personId]))}

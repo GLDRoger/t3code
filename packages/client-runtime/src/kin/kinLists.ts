@@ -167,6 +167,9 @@ export const KIN_LISTS = {
   billed: "Billed",
   sentWaiting: "Sent, waiting",
   accepted: "Accepted",
+  moneyIn: "Money in",
+  moneyOut: "Money out",
+  net: "Net",
   owed: "Still owed",
   received: "Received",
   paidOut: "Paid",
@@ -737,13 +740,16 @@ export const kinListGroupings = (def: KinListDefinition): ReadonlyArray<KinListG
 
 /** One figure over a list: "Still owed" with a line per currency. */
 export interface KinListFigure {
-  readonly id: "total" | "owed" | "received" | "sent" | "accepted";
+  readonly id: "total" | "owed" | "received" | "sent" | "accepted" | "moneyIn" | "moneyOut" | "net";
   /** Null for the only figure of a list that isn't paid over time: it needs no name. */
   readonly label: string | null;
   readonly lines: ReadonlyArray<string>;
 }
 
-type Sums = Pick<KinListTotals, "total" | "owed" | "received" | "sent" | "accepted">;
+type Sums = Pick<
+  KinListTotals,
+  "total" | "owed" | "received" | "sent" | "accepted" | "moneyIn" | "moneyOut" | "net"
+>;
 
 /**
  * The figures a filter's sums make, the one the filter is about first: what was received in a
@@ -754,6 +760,13 @@ function figuresOf(def: KinListDefinition, sums: Sums): ReadonlyArray<KinListFig
   const some = (totals: KinMoneyTotals) =>
     totals.length === 0 ? [KIN_MONEY_NOTHING] : kinTotalsLines(totals);
   const billed = { id: "total" as const, label: KIN_LISTS.billed, lines: some(sums.total) };
+  // Bank rows: money in and out apart, then the net, never one sum across both.
+  if (sums.net !== undefined)
+    return [
+      { id: "moneyIn", label: KIN_LISTS.moneyIn, lines: some(sums.moneyIn ?? []) },
+      { id: "moneyOut", label: KIN_LISTS.moneyOut, lines: some(sums.moneyOut ?? []) },
+      { id: "net", label: KIN_LISTS.net, lines: some(sums.net) },
+    ];
   // Quotes add up only what is out and what was won; a draft is not money yet.
   if (sums.sent !== undefined || sums.accepted !== undefined)
     return [
@@ -812,11 +825,19 @@ export function kinListHeader(
 ): KinListHeaderView {
   const groups = (totals?.groups ?? []).map((group): KinListGroupView => {
     const figures = figuresOf(def, group);
+    const flows = figures[0]?.id === "moneyIn";
+    const ways = [
+      ...((group.moneyIn ?? []).length > 0 ? [`${kinTotalsText(group.moneyIn ?? [])} in`] : []),
+      ...((group.moneyOut ?? []).length > 0 ? [`${kinTotalsText(group.moneyOut ?? [])} out`] : []),
+    ];
     const base = {
       count: countText(group.count),
-      totals: figures[0]?.lines ?? [],
-      billed:
-        figures.length > 1 && group.total.length > 0
+      totals: (flows ? figures[2] : figures[0])?.lines ?? [],
+      billed: flows
+        ? ways.length === 0
+          ? null
+          : ways.join(" · ")
+        : figures.length > 1 && group.total.length > 0
           ? `${kinTotalsText(group.total)} ${KIN_LISTS.billed.toLowerCase()}`
           : null,
     };
@@ -857,12 +878,12 @@ export function kinListHeader(
     };
   });
   const figures = totals === null ? [] : figuresOf(def, totals);
-  const quotes = figures[0]?.id === "sent";
-  const full = def.amount && totals !== null && !quotes ? kinTotalsLines(totals.total) : [];
+  const apart = figures[0]?.id === "sent" || figures[0]?.id === "moneyIn";
+  const full = def.amount && totals !== null && !apart ? kinTotalsLines(totals.total) : [];
   return {
     figures,
     totals: full,
-    summary: quotes
+    summary: apart
       ? figures.map((figure) => `${figure.label}: ${figure.lines.join(" and ")}`).join(" · ")
       : full.length === 0 || (total ?? 0) < 2
         ? null
@@ -1509,7 +1530,43 @@ export type KinListOutcome<A> =
       readonly problem: string;
       /** It moved on since it was read: the latest is on screen now. */
       readonly changed: boolean;
+      /** The amount reads like a slip: the one line the form asks, `problem` too. */
+      readonly slip?: string;
     };
+
+export const KIN_AMOUNT_SLIP = {
+  far: (list: string, largest: string) =>
+    `That is far above anything in ${list} so far (the largest is ${largest}). Save it anyway?`,
+  empty: (list: string) => `That is far above what ${list} holds so far. Save it anyway?`,
+  save: "Save anyway",
+};
+
+/** The line a form asks when the host found its amount far above its list; null for other errors. */
+export function kinAmountSlipLine(error: unknown): string | null {
+  if (!isKinChatError(error) || error.farAbove === undefined) return null;
+  const { list, largest } = error.farAbove;
+  return largest === null
+    ? KIN_AMOUNT_SLIP.empty(list)
+    : KIN_AMOUNT_SLIP.far(list, kinMoneyText(largest));
+}
+
+/** A form's question about one amount, `about` being that amount as the form holds it. */
+export interface KinAmountAsk {
+  readonly line: string;
+  readonly about: string;
+}
+
+/** The question while the amount is still the one asked about; changing it clears the question. */
+export const kinAmountAsking = (ask: KinAmountAsk | null, about: string) =>
+  ask !== null && ask.about === about ? ask : null;
+
+/**
+ * What a form that asks sends with its amount: false asks the host to check it, true, once the
+ * person was asked about this very amount and saves again, keeps it.
+ */
+export const kinAmountConfirmed = (ask: KinAmountAsk | null, about: string) => ({
+  amountConfirmed: kinAmountAsking(ask, about) !== null,
+});
 
 /** One change to an entry or a list, answered with the new value or a reason in words. */
 export async function kinListSend<A>(input: {
@@ -1520,6 +1577,8 @@ export async function kinListSend<A>(input: {
   const result = await input.send();
   if (AsyncResult.isSuccess(result)) return { ok: true, value: result.value };
   const error = squashAtomCommandFailure(result);
+  const slip = kinAmountSlipLine(error);
+  if (slip !== null) return { ok: false, problem: slip, changed: false, slip };
   // A retry key reused for something else: the form's id is stale, not the person's rights.
   if (isKinChatError(error) && error.reason === "not_allowed" && /retry key/i.test(error.message))
     return {

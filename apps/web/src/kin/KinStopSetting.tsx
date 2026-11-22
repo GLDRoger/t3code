@@ -1,7 +1,6 @@
 import { KIN_STOP, KIN_STOP_REASON_MAX } from "@t3tools/client-runtime/kin/kinStop";
 import { useId, useState } from "react";
 
-import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
 import { useSearchableSetting } from "../components/settings/settingsSearch";
 import {
   AlertDialog,
@@ -16,65 +15,78 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
+import {
+  KinSettingsLoadFailed,
+  KinSettingsLoading,
+  KinSettingsRow,
+  KinSettingsSection,
+} from "./settings/KinSettingsLayout";
 import { useKinHost } from "./useKinHost";
 import { useKinStop } from "./useKinStop";
 import type { KinWorkTarget } from "./useKinWork";
 
-/** The company stop switch, for an owner or co-owner; nothing shows where there is no Kin. */
+/** The company stop switch, last on the page, for an owner or co-owner; nothing where there is no Kin. */
 export function KinStopSetting() {
-  const searchableSetting = useSearchableSetting();
   const target = kinNewLeadTarget(useKinHost());
-  return target === null ? null : (
-    <SettingsSection {...searchableSetting("kin-stop")} hideTitle>
-      <StopRow {...target} />
-    </SettingsSection>
-  );
+  return target === null ? null : <StopSection {...target} />;
 }
 
-function StopRow(props: KinWorkTarget) {
+function StopSection(props: KinWorkTarget) {
+  const searchableSetting = useSearchableSetting();
   const { row, canAct, refresh, stop, resume } = useKinStop(props);
   const [asking, setAsking] = useState(false);
   const [reason, setReason] = useState("");
   const reasonId = useId();
   // A teammate is told in the chat instead; the host refuses them anyway.
   if (!canAct) return null;
-  const description =
-    row._tag === "loading" || row._tag === "failed" ? (
-      row.detail
-    ) : (
-      <>
-        {row.lines.map((line) => (
-          <span key={line} className="block">
-            {line}
-          </span>
-        ))}
-        {row.reason === null ? null : <span className="block">{row.reason}</span>}
-        {row.problem === null ? null : <span className="block">{row.problem}</span>}
-      </>
-    );
-  const control =
-    row._tag === "failed" ? (
-      row.retry === null ? null : (
-        <Button size="xs" variant="outline" onClick={refresh}>
-          {row.retry}
-        </Button>
-      )
-    ) : row._tag === "loading" || row.action === null ? null : (
-      <Button
-        size="xs"
-        variant={row.action.kind === "stop" ? "destructive-outline" : "outline"}
-        disabled={row.action.busy}
-        onClick={() => {
-          if (row.action?.kind === "resume") return void resume();
-          setReason("");
-          setAsking(true);
-        }}
-      >
-        {row.action.label}
-      </Button>
-    );
+  const ready = row._tag === "running" || row._tag === "stopped" ? row : null;
+  const action = ready?.action ?? null;
   return (
-    <SettingsRow title={KIN_STOP.title} description={description} control={control}>
+    <KinSettingsSection
+      title={KIN_STOP.title}
+      searchId={searchableSetting("kin-stop").id}
+      problem={ready?.problem ?? null}
+    >
+      {row._tag === "loading" ? (
+        <KinSettingsLoading rows={1} />
+      ) : row._tag === "failed" ? (
+        row.retry === null ? (
+          <KinSettingsRow title={row.detail} wrap />
+        ) : (
+          <KinSettingsLoadFailed onRetry={refresh}>{row.detail}</KinSettingsLoadFailed>
+        )
+      ) : (
+        <KinSettingsRow
+          title={row.lines[0]}
+          wrap
+          detail={
+            row.lines.length < 2 && row.reason === null ? undefined : (
+              <>
+                {row.lines.slice(1).map((line) => (
+                  <span key={line}>{line} </span>
+                ))}
+                {row.reason === null ? null : <span>{row.reason}</span>}
+              </>
+            )
+          }
+          control={
+            action === null ? null : (
+              <Button
+                size="sm"
+                variant={action.kind === "stop" ? "destructive-outline" : "outline"}
+                disabled={action.busy}
+                onClick={() => {
+                  if (action.kind === "resume") return void resume();
+                  setReason("");
+                  setAsking(true);
+                }}
+              >
+                {action.label}
+              </Button>
+            )
+          }
+        />
+      )}
       <AlertDialog open={asking} onOpenChange={setAsking}>
         <AlertDialogPopup>
           <AlertDialogHeader>
@@ -108,6 +120,6 @@ function StopRow(props: KinWorkTarget) {
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
-    </SettingsRow>
+    </KinSettingsSection>
   );
 }

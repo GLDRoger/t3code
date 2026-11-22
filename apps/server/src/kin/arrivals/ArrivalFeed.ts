@@ -1,10 +1,4 @@
-import {
-  KinEvent,
-  KinEventId,
-  KinOrgId,
-  type KinAgentId,
-  type KinPulseOutsideLine,
-} from "@t3tools/contracts";
+import { KinOrgId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -15,33 +9,28 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
-import * as NodeCrypto from "node:crypto";
 
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinConnections, MAIL_FEED_WINDOW } from "../connections/ConnectionsService.ts";
-import { type MailArrival, receivedAmong } from "../connections/MailProvider.ts";
+import type { MailArrival } from "../connections/MailProvider.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
-import * as KinEventQueue from "../lead/KinEventQueue.ts";
-import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
-import { agentQuietUntil } from "../triggers/quietHold.ts";
-import { logTouch } from "../work/touches.ts";
+import { DAY_MS, MINUTE_MS } from "../durations.ts";
 import * as ArrivalStore from "./ArrivalStore.ts";
-import { type ArrivalLook, type ArrivalRows, classify } from "./classify.ts";
+import { type ArrivalRows, classify } from "./classify.ts";
 
 /** Each mailbox is read once a minute; a host with no public address can't be told sooner. */
-const FEED_EVERY_MS = 60_000;
+const FEED_EVERY_MS = MINUTE_MS;
 /** A failing read (a vendor's rate limit, an outage) waits longer each time, up to this. */
-const BACK_OFF_MAX_MS = 30 * 60_000;
-const PRUNE_EVERY_MS = 86_400_000;
+const BACK_OFF_MAX_MS = 30 * MINUTE_MS;
+const PRUNE_EVERY_MS = DAY_MS;
 
 export type FeedRead = {
   /** The mailbox's mail reads are off, so nothing was read. */
   readonly off: boolean;
   /** More of the change record waits; the next read goes on at once. */
   readonly more: boolean;
-  /** The arrivals this read queued a wake for. */
-  readonly woke: ReadonlyArray<string>;
+  /** The arrivals this read classified for the first time. */
+  readonly recorded: ReadonlyArray<string>;
 };
 
 /** A mailbox's read failed before it committed: nothing moved, and the next read tries again. */
@@ -59,7 +48,7 @@ export class KinArrivalFeed extends Context.Service<
   {
     /**
      * One read of one mailbox's change record. What it names that is new mail becomes one
-     * arrival, classified by code; a look-worthy one wakes the agent today's watch woke, once.
+     * arrival, classified by code. The outside watch still owns every mail wake.
      */
     readonly read: (
       orgId: KinOrgId,
@@ -68,40 +57,16 @@ export class KinArrivalFeed extends Context.Service<
   }
 >()("t3/kin/arrivals/ArrivalFeed/KinArrivalFeed") {}
 
-const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
-const shortHash = (text: string) =>
-  NodeCrypto.createHash("sha256").update(text).digest("hex").slice(0, 32);
-const cut = (text: string | null | undefined, max: number) =>
-  text === null || text === undefined ? null : Array.from(text).slice(0, max).join("");
 const isoOf = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 const make = Effect.gen(function* () {
   const connections = yield* KinConnections;
   const sql = yield* SqlClient.SqlClient;
-  const queue = yield* KinEventQueue.KinEventQueue;
 
-  /** Finance for money, the Chief of staff for the rest, as the 3-minute watch chose. */
-  const agentFor = Effect.fnUntraced(function* (orgId: KinOrgId, by: ArrivalLook["by"]) {
-    const chief = (yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN }))?.agentId;
-    if (by === "chief") return chief;
-    const wanted = by === "finance" ? undefined : by.agentId;
-    const [lead] = yield* sql<{ agentId: KinAgentId }>`SELECT l.agent_id AS "agentId"
-      FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-        AND a.role = 'lead' AND a.retired_at IS NULL
-      WHERE l.org_id = ${orgId}
-        AND ${wanted === undefined ? sql`l.domain = 'finance'` : sql`l.agent_id = ${wanted}`}
-      ORDER BY a.created_at, l.agent_id LIMIT 1`;
-    return lead?.agentId ?? chief;
-  });
-
+  // Per-message work shares the mailbox read's span.
   const arrive = Effect.fnUntraced(function* (input: {
     readonly orgId: KinOrgId;
     readonly connectionId: string;
-    readonly label: string;
-    readonly mailbox: {
-      readonly account: string | null;
-      readonly addresses: ReadonlyArray<string>;
-    };
     readonly rows: ArrivalRows;
     readonly arrival: MailArrival;
     readonly parked: ArrivalStore.Parked | undefined;
@@ -118,27 +83,8 @@ const make = Effect.gen(function* () {
       return undefined;
     }
     const from = arrival.fromAddress?.toLowerCase() ?? null;
-    let mailKey = from === null ? null : ArrivalStore.mailKeyOf(orgId, from, arrival.internetId);
-    let reason = classified.reason;
-    let agentId: KinAgentId | undefined;
-    const elsewhere = yield* ArrivalStore.heldElsewhere(orgId, mailKey, arrivalId);
-    if (elsewhere !== undefined) {
-      reason = `also came in at ${elsewhere}; looked at there`;
-      mailKey = null;
-    } else if (classified.look !== undefined) {
-      agentId = yield* agentFor(orgId, classified.look.by);
-      const stranger =
-        classified.class === "unknown_person" || classified.class === "failed_checks";
-      const looks =
-        stranger && from !== null ? yield* ArrivalStore.looksToday(orgId, from, now) : undefined;
-      if (agentId === undefined) reason = "no agent could look at it";
-      else if (looks !== undefined && looks.count >= ArrivalStore.UNKNOWN_LOOKS_PER_DAY) {
-        reason = `more from this sender today; the first is with ${looks.first ?? "an agent"}`;
-        agentId = undefined;
-      }
-    }
-    const dedupeKey = `arrival:${arrivalId}`;
-    const eventId = agentId === undefined ? null : `pulse-${shortHash(`${orgId}\0${dedupeKey}`)}`;
+    const mailKey = from === null ? null : ArrivalStore.mailKeyOf(orgId, from, arrival.internetId);
+    const elsewhere = yield* ArrivalStore.recordedElsewhere(orgId, mailKey, arrivalId);
     const made = yield* ArrivalStore.claim(
       orgId,
       {
@@ -146,82 +92,23 @@ const make = Effect.gen(function* () {
         connectionId: input.connectionId,
         messageId: arrival.messageId,
         threadId: arrival.threadId,
-        mailKey,
+        mailKey: elsewhere ? null : mailKey,
         fromAddress: from,
         receivedAt: arrival.receivedAt,
         class: classified.class,
-        reason,
-        agentId: agentId ?? null,
-        eventId,
+        reason: elsewhere ? "also recorded in another connected mailbox" : classified.reason,
+        needsLook: !elsewhere && classified.look !== undefined,
       },
       now,
       parked !== undefined,
     );
-    if (!made || agentId === undefined || eventId === null || classified.look === undefined)
-      return undefined;
-    const to = receivedAmong(input.mailbox, [...arrival.to, ...arrival.cc, ...arrival.deliveredTo]);
-    const line: KinPulseOutsideLine = {
-      source: "mail",
-      connection: cut(input.label, 120)!,
-      ...(input.mailbox.account === null ? {} : { account: cut(input.mailbox.account, 320)! }),
-      ...(to === null ? {} : { to: cut(to, 320)! }),
-      id: cut(`${arrival.threadId}:${arrival.date ?? ""}`, 200)!,
-      at: cut(arrival.date, 60),
-      who: cut(arrival.from, 300),
-      subject: cut(arrival.subject, 300),
-      where: null,
-      matched: cut(classified.look.matched, 300)!,
-    };
-    // Mail from a client is contact with that client, as the watch logged it.
-    if (classified.look.clientId !== undefined)
-      yield* logTouch(orgId, {
-        partyId: classified.look.clientId,
-        kind: "email",
-        at: Math.min(arrival.receivedAt, now),
-        note: arrival.subject.slice(0, 300),
-        personId: null,
-        by: { kind: "agent", id: agentId },
-        originKey: `mail-in:${dedupeKey}`,
-        now,
-      }).pipe(
-        Effect.catch((cause) => Effect.logWarning("Kin couldn't note client mail", { cause })),
-      );
-    const notBefore = yield* agentQuietUntil(orgId, agentId, now);
-    const queued = yield* queue
-      .enqueue(
-        yield* decodeEvent({
-          _tag: "pulse",
-          orgId,
-          eventId: KinEventId.make(eventId),
-          agentId,
-          receivedAt: isoOf(now),
-          dedupeKey,
-          provenance: { _tag: "system" },
-          factKeys: [],
-          outside: [line],
-          arrivalId,
-        }),
-        notBefore === undefined ? undefined : { notBefore },
-      )
-      .pipe(
-        Effect.as(true),
-        Effect.catchTags({
-          KinEventQueueUnknownAgent: () => Effect.succeed(false),
-          KinEventQueueRetiredAgent: () => Effect.succeed(false),
-          KinEventQueueConflict: () => Effect.succeed(false),
-        }),
-      );
-    if (!queued) {
-      yield* ArrivalStore.settleNothing(orgId, arrivalId, "no agent could look at it", now);
-      return undefined;
-    }
-    return arrivalId;
+    return made ? arrivalId : undefined;
   });
 
   const read = Effect.fn("KinArrivalFeed.read")(
     function* (orgId: KinOrgId, connectionId: string) {
       const found = yield* connections.changes(orgId, connectionId);
-      if (found._tag === "off") return { off: true, more: false, woke: [] } satisfies FeedRead;
+      if (found._tag === "off") return { off: true, more: false, recorded: [] } satisfies FeedRead;
       const now = yield* Clock.currentTimeMillis;
       // A vendor can name one message twice in a page (added, then labelled Inbox again).
       const named = new Map(found.changes.map((change) => [change.messageId, change]));
@@ -229,17 +116,16 @@ const make = Effect.gen(function* () {
       const fresh = [...named.values()].filter((change) => !seen.has(change.messageId));
       const parked = yield* ArrivalStore.parkedDue(orgId, connectionId, now);
       // Reads go out before the transaction; only what they found is written, in one commit.
-      const reads = yield* connections.arrivals(orgId, connectionId, [
+      const messageIds = [
         ...fresh.map((change) => change.messageId),
         ...parked.map((one) => one.messageId),
-      ]);
-      const [connection] = yield* sql<{ label: string }>`SELECT label FROM kin_connections
-      WHERE org_id = ${orgId} AND connection_id = ${connectionId}`;
-      const mailbox = { account: found.account, addresses: found.addresses };
-      const woke = yield* sql.withTransaction(
+      ];
+      const reads =
+        messageIds.length === 0 ? [] : yield* connections.arrivals(orgId, connectionId, messageIds);
+      const recorded = yield* sql.withTransaction(
         Effect.gen(function* () {
-          const rows = yield* ArrivalStore.rowsFor(orgId, connectionId, found.addresses);
-          const woke: Array<string> = [];
+          let rows: ArrivalRows | undefined;
+          const recorded: Array<string> = [];
           for (const [index, result] of reads.entries()) {
             const retried = index >= fresh.length ? parked[index - fresh.length] : undefined;
             const change = fresh[index];
@@ -272,17 +158,16 @@ const make = Effect.gen(function* () {
                 );
               continue;
             }
+            rows ??= yield* ArrivalStore.rowsFor(orgId, connectionId, found.addresses);
             const arrivalId = yield* arrive({
               orgId,
               connectionId,
-              label: connection?.label ?? found.account ?? "Mail",
-              mailbox,
               rows,
               arrival: result.arrival,
               parked: retried,
               now,
             });
-            if (arrivalId !== undefined) woke.push(arrivalId);
+            if (arrivalId !== undefined) recorded.push(arrivalId);
           }
           if (found.gap !== null)
             yield* ArrivalStore.gap(
@@ -292,10 +177,10 @@ const make = Effect.gen(function* () {
               `Kin couldn't see mail between ${isoOf(found.gap.from)} and ${isoOf(found.gap.to)}`,
             );
           yield* connections.changesSeen(orgId, connectionId, found.cursor);
-          return woke;
+          return recorded;
         }),
       );
-      return { off: false, more: found.more, woke } satisfies FeedRead;
+      return { off: false, more: found.more, recorded } satisfies FeedRead;
     },
     (effect, _orgId, connectionId) =>
       effect.pipe(
@@ -338,18 +223,19 @@ const runtimeLayer = Layer.effectDiscard(
             AND state = 'active'
           ORDER BY org_id, created_at, connection_id`.pipe(NodeSqliteClient.readOnly);
         for (const { orgId, connectionId } of rows) {
-          const next = due.get(connectionId);
+          const key = `${orgId}\0${connectionId}`;
+          const next = due.get(key);
           if (next !== undefined && now < next.at) continue;
           const exit = yield* Effect.exit(feed.read(KinOrgId.make(orgId), connectionId));
           if (Exit.isSuccess(exit)) {
-            due.set(connectionId, {
+            due.set(key, {
               at: now + (exit.value.more ? 0 : FEED_EVERY_MS),
               failures: 0,
             });
             continue;
           }
           const failures = (next?.failures ?? 0) + 1;
-          due.set(connectionId, {
+          due.set(key, {
             at: now + Math.min(BACK_OFF_MAX_MS, FEED_EVERY_MS * 2 ** failures),
             failures,
           });

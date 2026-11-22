@@ -34,7 +34,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import { inheritOutside, outsideStamp, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { commentMine, setStateMine } from "../tasksKey/tasks.ts";
-import { taskNewsBanner } from "./assignNotices.ts";
+import { heldGivenBody, movedNotices, taskNewsBanner, tellHolding } from "./assignNotices.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadWork from "./leadWork.ts";
 import * as OwnerClients from "./ownerClients.ts";
@@ -381,7 +381,206 @@ it.effect("an agent's task and comment in a person's turn carry that person as w
         { chatId: "zoya-chat", body: line },
       ],
     );
+    const records = yield* KinRecords.KinRecords;
+    const turn = { orgId, agentId: chief, wakeupId: "wake" };
+    const writer = {
+      actor: toChief,
+      via: "lead" as const,
+      askedBy: rheaId,
+      wakeupId: turn.wakeupId,
+    };
+    const addForZoya = (title: string) =>
+      records.create(orgId, writer, {
+        list: "work",
+        title,
+        originKey: `fixture:${title}`,
+        owner: onTask(rheaId),
+        fields: { alsoOn: [`person:${zoyaId}`] },
+      });
+    const joining = yield* addForZoya("Invented: check the posters");
+    const notices = movedNotices(undefined, joining.row);
+    yield* tellHolding(turn, notices);
+    yield* tellHolding(turn, notices);
+    assert.deepStrictEqual(
+      yield* sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE org_id = ${orgId} AND chat_id = 'zoya-chat' AND body LIKE '%put you on%'
+      ORDER BY seq`,
+      [{ body: `Chief put you on ${joining.row.key} Invented: check the posters.` }],
+    );
+
+    yield* TestClock.setTime(Date.parse("2026-11-11T22:00:00.000Z"));
+    const quiet = yield* addForZoya("Invented: approve the posters");
+    yield* tellHolding(turn, movedNotices(undefined, quiet.row));
+    const held = yield* sql<{ kind: string }>`SELECT kind FROM kin_held_posts
+      WHERE org_id = ${orgId} AND person_id = ${zoyaId} AND kind LIKE 'kin-assign-participant:%'
+      ORDER BY held_at, rowid`;
+    assert.strictEqual(
+      yield* heldGivenBody(
+        orgId,
+        zoyaId,
+        held.map((one) => one.kind),
+      ),
+      `Chief put you on ${quiet.row.key} Invented: approve the posters.`,
+    );
+    yield* OwnerWork.update([rhea], {
+      orgId,
+      key: quiet.row.key,
+      rev: quiet.row.rev,
+      alsoOn: [],
+    });
+    assert.isUndefined(
+      yield* heldGivenBody(
+        orgId,
+        zoyaId,
+        held.map((one) => one.kind),
+      ),
+    );
   }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
+);
+
+const onTask = (personId: KinPersonId) => ({ _tag: "person" as const, personId });
+const taskNews = Effect.fn("Test.taskNews")(function* (key: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const held = yield* sql<{ id: string; personId: KinPersonId }>`SELECT hold_id AS id,
+    person_id AS "personId" FROM kin_held_posts
+    WHERE org_id = ${orgId} AND kind LIKE 'kin-task-news:%'
+      AND json_extract(body, '$.key') = ${key} ORDER BY person_id, rowid`;
+  return yield* Effect.forEach(held, (one) =>
+    taskNewsBanner(orgId, [one.id]).pipe(Effect.map((banner) => [one.personId, banner?.body])),
+  );
+});
+
+it.effect("putting someone on a task tells them once and does not tell the mover", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_people SET display_name = 'Rhea Patel'
+      WHERE org_id = ${orgId} AND person_id = ${rheaId}`;
+    const made = yield* task("call the printer", { owner: onTask(arjunId) });
+    const updated = yield* OwnerWork.update([rhea], {
+      orgId,
+      key: made.key,
+      rev: made.rev,
+      alsoOn: [onTask(zoyaId), onTask(rheaId)],
+    });
+    yield* OwnerWork.update([rhea], {
+      orgId,
+      key: made.key,
+      rev: updated.rev,
+      alsoOn: [onTask(zoyaId), onTask(rheaId)],
+    });
+    assert.deepStrictEqual(
+      (yield* taskNews(made.key)).filter(([id]) => id !== arjunId),
+      [[zoyaId, `Rhea put you on ${made.key} Invented: call the printer.`]],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("taking someone off is told only if they can still see it; promotion only gives", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const removed = yield* task("call the printer", { alsoOn: [onTask(zoyaId), onTask(arjunId)] });
+    yield* OwnerWork.share([rhea], { orgId, keys: [removed.key], shared: true });
+    const shared = yield* OwnerWork.get([rhea], { orgId, key: removed.key });
+    const given = yield* OwnerWork.assign([rhea], {
+      orgId,
+      key: removed.key,
+      rev: shared.rev,
+      to: onTask(arjunId),
+    });
+    yield* OwnerWork.update([rhea], { orgId, key: removed.key, rev: given.rev, alsoOn: [] });
+    assert.deepStrictEqual(
+      (yield* taskNews(removed.key)).filter(([, body]) => body !== undefined),
+      [
+        [arjunId, `Rhea gave you ${removed.key} Invented: call the printer`],
+        [zoyaId, `Rhea took you off ${removed.key} Invented: call the printer.`],
+      ],
+    );
+    const privateTask = yield* task("sort samples", { alsoOn: [onTask(zoyaId)] });
+    yield* OwnerWork.update([rhea], {
+      orgId,
+      key: privateTask.key,
+      rev: privateTask.rev,
+      alsoOn: [],
+    });
+    assert.deepStrictEqual(
+      (yield* taskNews(privateTask.key)).filter(([, body]) => body !== undefined),
+      [],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("leaving tells the holder and latest adder once, never the person leaving", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const made = yield* task("call the printer", { owner: onTask(arjunId) });
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('zoya-session', ${orgId}, ${zoyaId}, 0)`;
+    const added = yield* OwnerWork.update([rhea], {
+      orgId,
+      key: made.key,
+      rev: made.rev,
+      alsoOn: [onTask(zoyaId)],
+    });
+    yield* OwnerWork.update([zoya], { orgId, key: made.key, rev: added.rev, alsoOn: [] });
+    assert.deepStrictEqual(
+      (yield* taskNews(made.key)).filter(([, body]) => body?.includes(" left ")),
+      [
+        [arjunId, `Zoya left ${made.key} Invented: call the printer.`],
+        [rheaId, `Zoya left ${made.key} Invented: call the printer.`],
+      ],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("suggestion participants hear only when kept, and departed people never hear", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    const made = yield* records.create(orgId, OwnerWork.ownerWriter(rhea), {
+      list: "work",
+      originKey: "fixture:printer-suggestion",
+      confirmed: false,
+      title: "Invented: call the printer",
+      owner: onTask(rheaId),
+      fields: { alsoOn: [`person:${zoyaId}`, `person:${arjunId}`] },
+    });
+    yield* OwnerWork.tellMoved(rhea, undefined, made.row);
+    assert.deepStrictEqual(yield* taskNews(made.row.key), []);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_people SET removed_at = ${at} WHERE org_id = ${orgId} AND person_id = ${arjunId}`;
+    yield* OwnerWork.confirm([rhea], { orgId, key: made.row.key, rev: made.row.rev });
+    assert.deepStrictEqual(yield* taskNews(made.row.key), [
+      [zoyaId, `Rhea put you on ${made.row.key} Invented: call the printer.`],
+    ]);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a comment tells each current participant once except its author", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const devId = KinPersonId.make("dev");
+    const meeraId = KinPersonId.make("meera");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${devId}, ${orgId}, 'dev', 'Dev', ${at}), (${meeraId}, ${orgId}, 'meera', 'Meera', ${at})`;
+    const made = yield* task("call the printer", {
+      owner: onTask(arjunId),
+      alsoOn: [onTask(zoyaId), onTask(devId), onTask(meeraId), onTask(rheaId)],
+    });
+    yield* sql`UPDATE kin_people SET removed_at = ${at} WHERE org_id = ${orgId} AND person_id = ${devId}`;
+    yield* say(zoya, made.key, "Invented: proofs in");
+    yield* say(zoya, made.key, "Invented: proofs in");
+    assert.deepStrictEqual(
+      (yield* taskNews(made.key)).filter(([, body]) => body?.includes("commented")),
+      [
+        [arjunId, `Zoya commented on ${made.key} Invented: call the printer`],
+        [meeraId, `Zoya commented on ${made.key} Invented: call the printer`],
+        [rheaId, `Zoya commented on ${made.key} Invented: call the printer`],
+      ],
+    );
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("a mail waiting to be confirmed about an entry shows on the sheet of who reads it", () =>
@@ -728,7 +927,7 @@ it.effect("record_get shows the newest comments still standing, for the turn's p
     const read = yield* LeadWork.get(scope, { key: zoyas.key });
     assert.deepStrictEqual(
       read.comments?.map((one) => [one.by, one.text]),
-      [3, 4, 5, 6, 7, 8, 9, 10, 11, 13].map((n) => ["owner", `Invented note ${n}`]),
+      [3, 4, 5, 6, 7, 8, 9, 10, 11, 13].map((n) => ["Rhea (owner)", `Invented note ${n}`]),
     );
     assert.strictEqual(read.olderComments, 2);
     // Zoya now reads this chat with Rhea: her own task's comments show, Rhea's own task not at all.
@@ -1107,7 +1306,7 @@ it.effect(
       assert.deepStrictEqual(
         read.comments?.map((one) => [one.by, one.via, one.text]),
         [
-          ["owner", undefined, "Invented: two rooms"],
+          ["Rhea (owner)", undefined, "Invented: two rooms"],
           ["Zoya", "coding agent “Invented laptop”", ASKED],
         ],
       );

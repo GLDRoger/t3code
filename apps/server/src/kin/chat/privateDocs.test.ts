@@ -80,6 +80,11 @@ const card = {
       summary: "Priced the starter plan",
     },
     previousVersion: null,
+    draft: {
+      kind: "post",
+      text: "Invented launch line",
+      sendTo: { personId: ownerId, name: "Owner" },
+    },
   },
   source: null,
   feed: null,
@@ -130,6 +135,8 @@ it.effect("shows a doc labelled sensitive since as a private document to all but
     assert.notInclude(JSON.stringify(mate), "Invented plan");
     assert.notInclude(JSON.stringify(mate), "Pricing");
     assert.notInclude(JSON.stringify(mate), "starter plan");
+    // A draft's card carries none of the draft: no text to copy, nothing to send up.
+    assert.notProperty(mate.widgets[0]!.state, "draft");
     // The owner still sees it normally.
     assert.deepStrictEqual(yield* seenBy(ownerId), page);
   }).pipe(Effect.provide(layer)),
