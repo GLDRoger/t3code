@@ -4646,7 +4646,6 @@ it.effect(
           },
           {
             title: "Invented staff list",
-            category: "obligation",
             side: "theirs",
             deal,
             from: "chat:ask",
@@ -4680,13 +4679,18 @@ it.effect(
         side: "theirs",
         owner: "Mate",
       });
-      // A deal that isn't one, and one on another client, are refused and nothing is written.
+      // A row on a deal is a promise with no category; a deal that isn't one, one on another
+      // client, and a deal on a row called something else are refused and nothing is written.
       const other = yield* Clients.createParty([owner], {
         orgId,
         name: "Invented Orbit Dental",
         clientRequestId: "orbit",
       });
-      for (const row of [{ deal: "DL-99" }, { deal, client: other.key }])
+      for (const row of [
+        { deal: "DL-99" },
+        { deal, client: other.key },
+        { deal, category: "task" },
+      ])
         yield* Effect.flip(
           LeadWork.create(scope, {
             sourceEventId: "again-event",

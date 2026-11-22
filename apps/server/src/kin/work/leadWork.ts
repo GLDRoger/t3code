@@ -2548,17 +2548,28 @@ const createRow = Effect.fnUntraced(function* (
   team: View | undefined,
   source: Effect.Success<ReturnType<typeof sourceOf>>,
   lists: Lists,
-  row: typeof CreateRow.Type,
+  asked: typeof CreateRow.Type,
   notices: Array<AssignNotice>,
 ) {
   const records = yield* KinRecords;
   // Before the list is read, so an expense for a list not made yet says what comes first.
-  if (row.amount !== undefined) yield* countryFirst(lead.orgId);
-  const def = yield* listFor(lead, row.list ?? "work");
+  if (asked.amount !== undefined) yield* countryFirst(lead.orgId);
+  const def = yield* listFor(lead, asked.list ?? "work");
   const list = def.id;
   // A deal's rules are `deals.ts`'s, whoever writes it.
   if (list === "deals")
-    return yield* dealRow(lead, sourceEventId, writer, def, lists, row, notices);
+    return yield* dealRow(lead, sourceEventId, writer, def, lists, asked, notices);
+  // A Work row on a deal is a promise; its own next step is a deal's next, not this.
+  if (
+    list === "work" &&
+    asked.deal !== undefined &&
+    (asked.category ?? "obligation") !== "obligation"
+  )
+    return yield* invalid("A row on a deal is a promise: category obligation.");
+  const row =
+    list === "work" && asked.deal !== undefined
+      ? { ...asked, category: "obligation" as const }
+      : asked;
   if (row.next !== undefined) return yield* NEXT_IS_A_DEALS;
   // For a teammate alone in the turn, a prospect or a contact is what their own Clients form adds
   // (`memberAdds`, `memberAddsContact`).
