@@ -196,7 +196,7 @@ export function KinSectionsSettings(props: KinWorkTarget) {
   if (held.held === undefined)
     return (
       <Text textRole="footnote" className="px-2 text-foreground-muted">
-        This computer's Kin is older than sections. Update it to choose them.
+        {KIN_SECTIONS_PAGE.olderHost}
       </Text>
     );
   if (held.held === null) return <KinWorkLoading label={KIN_SECTIONS_PAGE.title} />;

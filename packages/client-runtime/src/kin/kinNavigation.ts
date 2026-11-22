@@ -10,7 +10,7 @@ import { KIN_WATCH_LOG_TITLE } from "./kinWatches.ts";
 
 export type KinDestination = "chats" | "tasks" | "money" | "clients" | "docs";
 
-export const KIN_DESTINATION_NAMES: Readonly<Record<KinDestination, string>> = {
+const KIN_DESTINATION_NAMES: Readonly<Record<KinDestination, string>> = {
   chats: "Chats",
   tasks: "Tasks",
   money: "Money",

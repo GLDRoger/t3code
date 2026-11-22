@@ -44,7 +44,7 @@ export function kinSectionOn(shell: KinShell | null | undefined, id: KinSectionI
 }
 
 /** The sections that keep this one off though its own switch is on; empty when none do. */
-export function kinSectionHeldOffBy(
+function kinSectionHeldOffBy(
   shell: KinShell | null | undefined,
   id: KinSectionId,
 ): ReadonlyArray<KinSectionId> {
@@ -297,6 +297,7 @@ export const KIN_SECTIONS_PAGE = {
     "The parts of Kin your company uses. A section you turn off leaves everyone's sidebar, phone, search and forms; nothing is deleted, and you can turn it back on at any time. Chats, Tasks and Docs are always on.",
   olderPhones:
     "Teammates on an older version of the phone app keep seeing a section that is off, with its client and project pickers, until they update.",
+  olderHost: "This computer's Kin is older than sections. Update it to choose them.",
   rename: {
     title: "Call it…",
     detail:

@@ -260,7 +260,7 @@ export function KinSectionsSettings(props: KinWorkTarget) {
   if (held.held === undefined)
     return (
       <p className="text-pretty px-1 text-sm text-muted-foreground">
-        This computer's Kin is older than sections. Update it to choose them.
+        {KIN_SECTIONS_PAGE.olderHost}
       </p>
     );
   const shell = held.held;
