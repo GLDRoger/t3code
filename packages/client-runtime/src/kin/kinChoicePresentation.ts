@@ -2,6 +2,8 @@
 import { kinNow } from "./kinNow.ts";
 import {
   KIN_CHOICE_CARD_ACTION,
+  KIN_CHOICE_DISMISS_ACTION,
+  KIN_CHOICE_UNDISMISS_ACTION,
   KinChatError,
   type EnvironmentId,
   type KinConnectionSaveEdited,
@@ -82,6 +84,14 @@ export interface KinChoiceCardView {
   readonly send: KinSendView | null;
   /** A teammate's draft sent up for approval: rendered as a doc is, instead of `detail`. */
   readonly draft: KinChoiceDraftView | null;
+  /** Who it asks: only they see Dismiss, and the host decides. */
+  readonly awaiting: ReadonlyArray<KinPersonId>;
+  /** Set while the person it asked dismissed it without choosing: who, by name then, and when. */
+  readonly dismissed: {
+    readonly personId: KinPersonId;
+    readonly name: string;
+    readonly atMs: number;
+  } | null;
   /** When an unanswered card stops taking taps; the host refuses later ones. */
   readonly expiresAtMs: number;
   readonly closed: boolean;
@@ -490,6 +500,15 @@ export function kinChoiceCardView(
             label: chosen?.label ?? card.answer.optionId,
             personId: card.answer.personId,
           },
+    awaiting: widget.awaiting,
+    dismissed:
+      card.dismissed === undefined || card.answer !== null
+        ? null
+        : {
+            personId: card.dismissed.personId,
+            name: card.dismissed.name,
+            atMs: Date.parse(card.dismissed.at),
+          },
     // Unanswered cards are never rewritten, so `updatedAt` is still the time it was posted. An
     // agent's open question takes taps until the host closes it.
     expiresAtMs:
@@ -510,11 +529,52 @@ export function kinChoiceCardView(
   };
 }
 
-export type KinChoicePhase = "open" | "answered" | "expired";
+export type KinChoicePhase = "open" | "answered" | "expired" | "dismissed";
 
 export function kinChoicePhase(view: KinChoiceCardView, nowMs: number): KinChoicePhase {
   if (view.answer !== null) return "answered";
+  if (view.dismissed !== null) return "dismissed";
   return view.closed || nowMs >= view.expiresAtMs ? "expired" : "open";
+}
+
+export const KIN_CHOICE_DISMISS_COPY = {
+  dismiss: "Dismiss",
+  dismissName: "Dismiss this question without choosing",
+  dismissed: "Dismissed",
+  undo: "Undo",
+  undoName: "Undo dismiss and show the question again",
+} as const;
+
+/**
+ * Whether the viewer is offered Dismiss: an open card that asks them, not a Confirm for
+ * something leaving the company, which has its own way to say no.
+ */
+export function kinChoiceDismissible(
+  view: Pick<KinChoiceCardView, "send" | "awaiting">,
+  phase: KinChoicePhase,
+  viewerPersonId: KinPersonId | null,
+): boolean {
+  return (
+    phase === "open" &&
+    view.send === null &&
+    viewerPersonId !== null &&
+    view.awaiting.includes(viewerPersonId)
+  );
+}
+
+/**
+ * A dismissed card's one line, and whether it offers Undo: the dismisser's says "Dismissed" with
+ * Undo; anyone else reads who did it.
+ */
+export function kinChoiceDismissedLine(
+  view: Pick<KinChoiceCardView, "dismissed">,
+  viewerPersonId: KinPersonId | null,
+): { readonly text: string; readonly undo: boolean } | null {
+  const { dismissed } = view;
+  if (dismissed === null) return null;
+  return dismissed.personId === viewerPersonId
+    ? { text: KIN_CHOICE_DISMISS_COPY.dismissed, undo: true }
+    : { text: `Dismissed by ${dismissed.name}`, undo: false };
 }
 
 // Imperative first words an agent's option starts with, and how the outcome says them.
@@ -668,6 +728,23 @@ export function kinChoiceAccessibilityLabel(
   ]);
 }
 
+/** The card's Dismiss, or its dismisser's Undo of it. */
+export function kinChoiceDismissInput(
+  view: Pick<KinChoiceCardView, "widgetId" | "revision">,
+  undo: boolean,
+  clientActionId: string,
+): KinWidgetsActInput {
+  return {
+    widgetId: view.widgetId,
+    revision: view.revision,
+    actionId: undo ? KIN_CHOICE_UNDISMISS_ACTION : KIN_CHOICE_DISMISS_ACTION,
+    clientActionId,
+  };
+}
+
+const isDismissAction = (actionId: string) =>
+  actionId === KIN_CHOICE_DISMISS_ACTION || actionId === KIN_CHOICE_UNDISMISS_ACTION;
+
 /** `checkedSent`: the try the person's sent-mail tick is for (`kinSendTicked`). */
 export function kinChoiceActInput(
   view: Pick<KinChoiceCardView, "widgetId" | "revision">,
@@ -749,8 +826,11 @@ export function kinSendCheckPending(
  * Why a choice tap was refused. A card Kin asked for itself (a receipt, a statement's currency)
  * refuses in the owner's words, such as "The figures changed…", so those are shown as said.
  */
-export function kinChoiceFailureNotice(cause: KinChatError): KinCardNotice {
+export function kinChoiceFailureNotice(cause: KinChatError, actionId?: string): KinCardNotice {
   const said = cause.message.trim();
+  // A refused Dismiss or Undo says why in the host's words: settled since, or not theirs.
+  if (actionId !== undefined && isDismissAction(actionId) && kinPersonWords(said))
+    return { kind: cause.reason === "widget_changed" ? "stale" : "error", text: said };
   if ((cause.reason === "conflict" || cause.reason === "widget_changed") && said !== "")
     return { kind: cause.reason === "conflict" ? "error" : "stale", text: said };
   // Kin can't send it until the person acts, such as a mail account signing in again: said as is.
@@ -1088,7 +1168,9 @@ export function kinChoiceCardActions(options: {
       taps.queue = createKinCardActions<KinChoiceCardView, string>({
         newId: options.newId,
         toInput: (view, optionId, id) =>
-          kinChoiceActInput(view, optionId, id, kinSendTicked(view, taps.ticked)),
+          isDismissAction(optionId)
+            ? kinChoiceDismissInput(view, optionId === KIN_CHOICE_UNDISMISS_ACTION, id)
+            : kinChoiceActInput(view, optionId, id, kinSendTicked(view, taps.ticked)),
         failureNotice: kinChoiceFailureNotice,
         post: async (input) => {
           const result = await commands.post({ environmentId, input });
@@ -1184,7 +1266,10 @@ export function kinChoiceCardActions(options: {
         : null,
     );
   };
-  return { tick, press, pickFrom, sendEdit, saveEdit, discardEdit };
+  /** Dismiss posts nothing in the chat; its Undo opens the card again (`kinChoiceDismissedLine`). */
+  const dismiss = (undo = false) =>
+    press(undo ? KIN_CHOICE_UNDISMISS_ACTION : KIN_CHOICE_DISMISS_ACTION);
+  return { tick, press, pickFrom, sendEdit, saveEdit, discardEdit, dismiss };
 }
 
 /** A mail card's Cancel asks first, then waits a few seconds for Undo before it is sent. */

@@ -12,6 +12,7 @@ import {
   formatKinWhen,
   kinCharacterSeat,
   KIN_PROVIDER_FACTS,
+  KIN_DISMISSED_FIELD,
   KIN_TAKEN_DEFAULT_FIELD,
 } from "@t3tools/contracts";
 
@@ -342,7 +343,13 @@ const FIELD_WORDS: Readonly<Record<string, string>> = {
   repo: "repo",
   side: "side",
 };
-const HIDDEN_FIELDS = new Set(["reason", "handedBack", "untold", KIN_TAKEN_DEFAULT_FIELD]);
+const HIDDEN_FIELDS = new Set([
+  "reason",
+  "handedBack",
+  "untold",
+  KIN_TAKEN_DEFAULT_FIELD,
+  KIN_DISMISSED_FIELD,
+]);
 const VALUE_MAX = 40;
 /** Links whose shown end is words, such as "PR #12"; other kinds name an id. */
 const SHOWN_LINKS = new Set(["url", "pull_request"]);
