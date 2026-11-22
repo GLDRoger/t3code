@@ -625,6 +625,32 @@ const nativeSetupInGroup = Effect.fn("test.nativeSetupInGroup")(function* (
   yield* (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
 });
 
+it.effect("a co-owner's routine for them alone runs in their own chat with the agent", () => {
+  const { layer } = harness();
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* TestClock.setTime(start);
+    yield* nativeSetup("meera-direct");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES ('meera', ${orgId}, 'meera', 'Meera Iyer', '2026-11-07T00:00:00.000Z', 'co_owner')`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key)
+      VALUES ('meera-direct', ${orgId}, 'direct', 0, '2026-11-07T00:00:00.000Z', 'meera:lead-a')`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+        agent_id, role, joined_at)
+      VALUES ('meera-in-direct', ${orgId}, 'meera-direct', 'person', 'meera', NULL, 'owner',
+          '2026-11-07T00:00:00.000Z'),
+        ('lead-in-meera', ${orgId}, 'meera-direct', 'agent', NULL, 'lead-a', 'member',
+          '2026-11-07T00:00:00.000Z')`;
+    yield* runNow();
+    const runIn = yield* sql<{ chatId: string | null; lane: string }>`SELECT
+        json_extract(e.json, '$.chatId') AS "chatId", d.chat_id AS lane
+      FROM kin_events e JOIN kin_lead_deliveries d ON d.org_id = e.org_id AND d.event_id = e.event_id
+      WHERE e.org_id = ${orgId} AND json_extract(e.json, '$.subject.itemId') = ${scheduleId}
+      ORDER BY e.received_at`;
+    assert.deepStrictEqual(runIn, [{ chatId: "meera-direct", lane: "meera-direct" }]);
+  }).pipe(Effect.provide(layer));
+});
+
 it.effect("a group's own routine runs in the group, and pauses once its agent left it", () => {
   const { layer } = harness();
   return Effect.gen(function* () {

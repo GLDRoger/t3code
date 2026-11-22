@@ -58,6 +58,7 @@ import {
   directChatWith,
   firingOrigin,
   sharedChatOf,
+  theirDirectChat,
 } from "./deferralOrigin.ts";
 import { hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
@@ -402,6 +403,12 @@ const make = Effect.gen(function* () {
       lead === undefined || !confirmed
         ? undefined
         : yield* sharedChatOf(sql, orgId, sourceOf(schedule));
+    // Set up for someone alone in their own chat with the lead (a co-owner's too): it runs there.
+    const theirs =
+      lead === undefined || !confirmed || chatOwn !== undefined
+        ? undefined
+        : yield* theirDirectChat(sql, orgId, schedule.chatId, lead.agentId);
+    const lane = chatOwn?.open === true ? chatOwn.chatId : theirs;
     // An unconfirmed wording is asked about in the owner's chat, as an owner-only turn.
     const origin =
       lead === undefined || !confirmed
@@ -588,14 +595,11 @@ const make = Effect.gen(function* () {
           dedupeKey,
           subject: { type: "scheduled_task", itemId, runId },
           lateByMs: fire.lateByMs,
-          ...(chatOwn === undefined
+          ...(lane === undefined
             ? origin === undefined
               ? {}
               : { origin }
-            : {
-                origin: { agentId: lead.agentId, chatId: chatOwn.chatId },
-                chatId: chatOwn.chatId,
-              }),
+            : { origin: { agentId: lead.agentId, chatId: lane }, chatId: lane }),
         });
         const running = { ...base, lastRun: { at, status: "running" as const } };
         yield* deliveries.handOff(event, {
@@ -603,7 +607,7 @@ const make = Effect.gen(function* () {
           eventId,
           kind: "scheduled_task",
           agentId: lead.agentId,
-          chatId: chatOwn?.chatId ?? lead.ownerChatId,
+          chatId: lane ?? lead.ownerChatId,
           widget: {
             widgetId: scheduledTaskWidgetId(orgId, itemId),
             type: "scheduled_task",

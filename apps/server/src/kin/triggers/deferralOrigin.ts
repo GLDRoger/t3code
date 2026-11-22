@@ -276,3 +276,27 @@ export const directChatWith = Effect.fn("Deferrals.directChatWith")(function* (
     ORDER BY c.chat_id LIMIT 1`;
   return row === undefined ? undefined : KinChatId.make(row.chatId);
 });
+
+/**
+ * `chatId` when it is someone's own open direct chat with `agentId`, not that lead's owner chat,
+ * and they are still in it: what they set up there for themselves alone runs there.
+ */
+export const theirDirectChat = Effect.fn("Deferrals.theirDirectChat")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  chatId: string,
+  agentId: string,
+) {
+  const suffix = `:${agentId}`;
+  const [row] = yield* sql`SELECT 1 FROM kin_chats c
+    JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+      AND m.principal_kind = 'person' AND m.left_at IS NULL
+      AND m.person_id = substr(c.direct_key, 1, instr(c.direct_key, ':') - 1)
+    JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = m.person_id AND p.removed_at IS NULL
+    WHERE c.org_id = ${orgId} AND c.chat_id = ${chatId} AND c.kind = 'direct'
+      AND c.archived_at IS NULL AND substr(c.direct_key, ${-suffix.length}) = ${suffix}
+      AND NOT EXISTS (SELECT 1 FROM kin_leads l WHERE l.org_id = c.org_id
+        AND l.agent_id = ${agentId} AND l.owner_chat_id = c.chat_id)
+    LIMIT 1`;
+  return row === undefined ? undefined : KinChatId.make(chatId);
+});
