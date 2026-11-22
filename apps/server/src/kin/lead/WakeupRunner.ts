@@ -360,7 +360,7 @@ const make = Effect.gen(function* () {
   );
   // Before it is full: agents' commands fail one by one for a while before a wake-up does, so a
   // low disk is cleared at once and the owner hears only when that was not enough.
-  const warnIfLowOnSpace = (orgId: KinOrgId) =>
+  const lowOnSpace = (orgId: KinOrgId) =>
     Option.isNone(spaceFolders) || Option.isNone(chat)
       ? Effect.void
       : HostBackup.warnIfLowOnSpace(
@@ -375,6 +375,11 @@ const make = Effect.gen(function* () {
             Effect.logWarning("Kin host space notice failed", { orgId, cause }),
           ),
         );
+  // While the out-of-space notice stands, it is the one word on space.
+  const warnIfLowOnSpace = Effect.fn("WakeupRunner.warnIfLowOnSpace")(function* (orgId: KinOrgId) {
+    if (Option.isSome(care) && (yield* care.value.troubleOpen(orgId, "space"))) return;
+    yield* lowOnSpace(orgId);
+  });
   const prompt = yield* KinLeadPrompt;
   const turnContent = yield* KinTurnContent;
   const identity = yield* KinIdentity.KinIdentity;

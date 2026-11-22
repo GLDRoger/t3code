@@ -296,13 +296,15 @@ describe("troubleCause", () => {
   });
 });
 
+// Held as a trouble holds a turn: until a time still ahead.
+const HELD_UNTIL = DAY_START + 5 * 60_000;
 const queued = (eventId: string, agent: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
         queued_at, state, not_before, attempts)
       VALUES (${eventId}, ${orgId}, ${agent}, 'chat.message', 'P1', '{}', ${NOW}, ${NOW}, 'queued',
-        ${NOW + 5 * 60_000}, 0)`;
+        ${HELD_UNTIL}, 0)`;
     return KinEventId.make(eventId);
   });
 
@@ -359,7 +361,7 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
     // Finance's turn is held by the sign-in trouble it hit last, so space coming back leaves it.
     assert.deepStrictEqual(events, [
       { eventId: "e1", notBefore: DAY_START },
-      { eventId: "e2", notBefore: NOW + 5 * 60_000 },
+      { eventId: "e2", notBefore: HELD_UNTIL },
     ]);
     // A new failure for space after it closed opens a fresh notice.
     yield* care.failed({ orgId, agentId: chief, cause: "space", eventIds: [first] });
@@ -409,6 +411,16 @@ it.effect(
       assert.deepStrictEqual(held, [{ n: 600 }]);
       yield* sql`UPDATE kin_events SET not_before = ${DAY_START + HOUR}`;
       assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 600 });
+      // A second device's tap finds them all due already: it moved nothing, and says so.
+      assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 0 });
+      // One used its last automatic try: only Try again runs it now, and the notice counts it.
+      yield* sql`UPDATE kin_events SET state = 'failed' WHERE event_id = 'e599'`;
+      yield* care.refresh(orgId);
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [card.count, card.stopped]),
+        [[599, 1]],
+      );
+      yield* sql`UPDATE kin_events SET state = 'queued' WHERE event_id = 'e599'`;
       // A reminder among them has a time: the notice says so, and once it passes unrun the
       // reminder leaves the held count.
       yield* sql`INSERT INTO kin_lead_deliveries (org_id, event_id, kind, agent_id, chat_id,
@@ -453,7 +465,7 @@ it.effect(
         [["signin", true, ["Chief of staff"]]],
       );
       assert.deepStrictEqual(yield* due, [
-        { eventId: "c1", notBefore: NOW + 5 * 60_000 },
+        { eventId: "c1", notBefore: HELD_UNTIL },
         { eventId: "f1", notBefore: DAY_START },
       ]);
       assert.strictEqual((yield* care.causeFor(orgId, chief))?.cause, "signin");
@@ -615,6 +627,32 @@ it.effect(
       assert.lengthOf(yield* cards, 1);
     }).pipe(Effect.provide(servicesWith({ KIN_CHECKOUT: "/srv/kin-current" }, runner)));
   },
+);
+
+it.effect("Back up now says why it can't start, and a good backup closes the notice at once", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    const care = yield* KinHostCare.KinHostCare;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const { stateDir } = yield* ServerConfig.ServerConfig;
+    assert.deepStrictEqual(yield* care.backUpNow(orgId), {
+      started: false,
+      reason: "not_set_up",
+    });
+    yield* fs.writeFileString(path.join(stateDir, "kin-dev-backup.env"), "");
+    yield* care.checkBackup(orgId, { lastGoodAt: null });
+    assert.deepStrictEqual(
+      (yield* cards).map((card) => [card.cause, card.open]),
+      [["backup", true]],
+    );
+    assert.deepStrictEqual(yield* care.backUpNow(orgId), { started: true });
+    assert.deepStrictEqual(
+      (yield* cards).map((card) => [card.cause, card.open]),
+      [["backup", false]],
+    );
+  }).pipe(Effect.provide(servicesWith({ KIN_DEV_HOST_CARE: "/srv/kin-dev" }))),
 );
 
 const space =

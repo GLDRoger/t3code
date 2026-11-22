@@ -10,6 +10,7 @@ import {
   KinWidgetId,
   kinTroubleWords,
   type KinAgentId,
+  type KinHostBackUpResult,
   type KinHostFreeSpaceResult,
   type KinHostStatus,
   type KinHostUsage,
@@ -178,9 +179,7 @@ export class KinHostCare extends Context.Service<
     ) => Effect.Effect<void>;
     readonly status: (orgId: KinOrgId) => Effect.Effect<KinHostStatus, KinChatError>;
     readonly freeSpace: (orgId: KinOrgId) => Effect.Effect<KinHostFreeSpaceResult, KinChatError>;
-    readonly backUpNow: (
-      orgId: KinOrgId,
-    ) => Effect.Effect<{ readonly started: boolean }, KinChatError>;
+    readonly backUpNow: (orgId: KinOrgId) => Effect.Effect<KinHostBackUpResult, KinChatError>;
     readonly retry: (orgId: KinOrgId) => Effect.Effect<{ readonly requeued: number }, KinChatError>;
   }
 >()("t3/kin/host/KinHostCare") {}
@@ -388,8 +387,10 @@ const make = Effect.gen(function* () {
       held: number | null;
       done: number | null;
       expiring: number | null;
+      stopped: number | null;
     }>`SELECT
         SUM(CASE WHEN e.state = 'queued' THEN 1 ELSE 0 END) AS held,
+        SUM(CASE WHEN e.state = 'failed' THEN 1 ELSE 0 END) AS stopped,
         SUM(CASE WHEN e.state = 'done' THEN 1 ELSE 0 END) AS done,
         SUM(CASE WHEN e.state = 'queued' AND EXISTS (SELECT 1 FROM kin_lead_deliveries d
           WHERE d.org_id = e.org_id AND d.event_id = e.event_id AND d.status = 'pending')
@@ -413,6 +414,9 @@ const make = Effect.gen(function* () {
       ...(trouble.detail === null ? {} : { detail: trouble.detail }),
       ...((counts?.expiring ?? 0) > 0 && trouble.closedAt === null
         ? { expiring: counts!.expiring! }
+        : {}),
+      ...((counts?.stopped ?? 0) > 0 && trouble.closedAt === null
+        ? { stopped: counts!.stopped! }
         : {}),
       closed:
         trouble.closedAt === null ? null : { at: iso(trouble.closedAt), ran: counts?.done ?? 0 },
@@ -859,9 +863,21 @@ const make = Effect.gen(function* () {
     return result;
   });
 
+  /** After a backup ends: every company's backup notice follows what it recorded. */
+  const recheckBackup = Effect.gen(function* () {
+    const file = yield* fs
+      .readFileString(path.join(config.stateDir, HostBackup.BACKUP_STATUS_FILE))
+      .pipe(Effect.option, Effect.map(Option.getOrUndefined));
+    const problem = HostBackup.backupProblem(file, yield* Clock.currentTimeMillis);
+    const orgs = yield* sql<{ orgId: KinOrgId }>`SELECT org_id AS "orgId" FROM kin_orgs
+      ORDER BY org_id`;
+    for (const { orgId } of orgs) yield* checkBackup(orgId, problem);
+  }).pipe(Effect.catchCause((cause) => Effect.logWarning("Kin backup recheck failed", { cause })));
+
   const backUpNow = Effect.fn("KinHostCare.backUpNow")(
     function* (_orgId: KinOrgId) {
-      if (!host || !(yield* backupConfigured)) return { started: false };
+      if (!host || !(yield* backupConfigured))
+        return { started: false, reason: "not_set_up" } satisfies KinHostBackUpResult;
       if (devCheckout !== undefined) {
         // Dev stand-in for backup.sh's own record of a good run, so the notice's way out shows.
         const now = yield* Clock.currentTimeMillis;
@@ -869,15 +885,38 @@ const make = Effect.gen(function* () {
           path.join(config.stateDir, HostBackup.BACKUP_STATUS_FILE),
           `${encodeDevRecord({ ranAt: now, ok: true, lastGoodAt: now, error: "" })}\n`,
         );
-        return { started: true };
+        yield* recheckBackup;
+        return { started: true } satisfies KinHostBackUpResult;
       }
-      // The same unit the nightly timer starts; systemd runs one at a time.
-      const out = yield* runner.run({
-        command: "systemctl",
-        args: ["--user", "start", "--no-block", "kin-backup.service"],
-        timeout: "1 minute",
-      });
-      return { started: out.code === 0 };
+      const unit = yield* runner
+        .run({
+          command: "systemctl",
+          args: ["--user", "cat", "kin-backup.service"],
+          timeout: "30 seconds",
+          maxOutputBytes: 1024,
+          outputMode: "truncate",
+        })
+        .pipe(Effect.option);
+      if (Option.isNone(unit))
+        return { started: false, reason: "failed" } satisfies KinHostBackUpResult;
+      if (unit.value.code !== 0)
+        return { started: false, reason: "unit_missing" } satisfies KinHostBackUpResult;
+      // The same unit the nightly timer starts; systemd runs one at a time. Waited for in the
+      // background, so the backup notice follows its result as soon as it ends.
+      yield* runner
+        .run({
+          command: "systemctl",
+          args: ["--user", "start", "--wait", "kin-backup.service"],
+          timeout: "2 hours",
+          maxOutputBytes: 4096,
+          outputMode: "truncate",
+        })
+        .pipe(
+          Effect.andThen(recheckBackup),
+          Effect.catchCause((cause) => Effect.logWarning("Kin backup run failed", { cause })),
+          Effect.forkDetach,
+        );
+      return { started: true } satisfies KinHostBackUpResult;
     },
     Effect.mapError(() => unavailable),
   );

@@ -73,6 +73,8 @@ export const KinHostTroubleCard = Schema.Struct({
   detail: Schema.optionalKey(KinText.check(Schema.isMaxLength(600))),
   /** Of the held turns, those with a time (a reminder, a scheduled run) that pass it unrun. */
   expiring: Schema.optionalKey(NonNegativeInt),
+  /** Turns Kin stopped retrying by itself: only Try again runs them now. */
+  stopped: Schema.optionalKey(NonNegativeInt),
   /** The held turns' events, so Try again and the cause clearing run exactly those. */
   held: Schema.optionalKey(
     Schema.Array(KinTrimmedText.check(Schema.isMaxLength(200))).check(Schema.isMaxLength(500)),
@@ -296,7 +298,11 @@ export const KinHostFreeSpaceResult = Schema.Struct({
 });
 export type KinHostFreeSpaceResult = typeof KinHostFreeSpaceResult.Type;
 
-export const KinHostBackUpResult = Schema.Struct({ started: Schema.Boolean });
+export const KinHostBackUpResult = Schema.Struct({
+  started: Schema.Boolean,
+  /** Why it couldn't start: no backup set up, no backup service, or the service refused. */
+  reason: Schema.optionalKey(Schema.Literals(["not_set_up", "unit_missing", "failed"])),
+});
 export type KinHostBackUpResult = typeof KinHostBackUpResult.Type;
 
 export const KinHostRetryResult = Schema.Struct({ requeued: NonNegativeInt });

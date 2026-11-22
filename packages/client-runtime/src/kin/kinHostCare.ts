@@ -270,7 +270,13 @@ export const kinFreeSpaceLine = (result: KinHostFreeSpaceResult) =>
 
 /** What Back up now did, in one line. */
 export const kinBackUpLine = (result: KinHostBackUpResult) =>
-  result.started ? "Backup started. It takes a few minutes." : "A backup can't run here.";
+  result.started
+    ? "Backup started. It takes a few minutes."
+    : result.reason === "not_set_up"
+      ? "Backups aren't set up on this computer yet."
+      : result.reason === "unit_missing"
+        ? "This computer has no backup service. Whoever set up Kin's computer can add it."
+        : "The backup couldn't start. Try again in a minute.";
 
 /** What Try again did, in one line. */
 export const kinRetryLine = (result: KinHostRetryResult) =>

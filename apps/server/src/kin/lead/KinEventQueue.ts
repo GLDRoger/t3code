@@ -1053,6 +1053,8 @@ const make = Effect.gen(function* () {
       const rows = yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL,
           not_before = ${now}, attempts = CASE WHEN state = 'failed' THEN 0 ELSE attempts END
         WHERE org_id = ${orgId} AND state IN ('queued', 'failed') AND budget_deferred = 0
+          -- Already due: waking it again changes nothing, and counts nothing.
+          AND (state = 'failed' OR not_before > ${now})
           AND event_id IN (SELECT value FROM json_each(${ids}))
         RETURNING event_id`;
       if (rows.length > 0) yield* notify(orgId);
