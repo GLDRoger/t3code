@@ -20,6 +20,7 @@ import {
   kinDocUnfiled,
   kinDocChangeItem,
   kinDocChangeLine,
+  kinDocDeletedLine,
   kinDocCanEdit,
   kinDocChat,
   kinDocCopyText,
@@ -91,6 +92,7 @@ import { KinLinkedSection, useKinOpenLinked } from "./KinWorkItemScreen";
 import { KinWorkShareRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
 import { useKinDocLabel } from "./state/useKinDocLabel";
+import { useKinDocDelete } from "./state/useKinDocDelete";
 import { useKinDoc } from "./state/useKinDocs";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { kinHostConnected } from "./state/useKinHost";
@@ -375,6 +377,8 @@ function KinDocBody(
   const previous = kinDocPrevious(doc.version);
   const privacy = kinDocPrivacy(doc);
   const label = useKinDocLabel(target, doc);
+  const deleting = useKinDocDelete(target);
+  const mayDelete = deleting.allowed && doc.deletable === true;
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
   const fileIt = () => navigation.navigate("KinDocFile", { environmentId, orgId, doc: doc.key });
   const kind = kinDocKindOf(doc);
@@ -533,6 +537,17 @@ function KinDocBody(
             ...(label.action === null
               ? []
               : [{ id: "label", title: label.action.label, onPress: label.ask }]),
+            ...(mayDelete && !doc.archived && deleting.busy === null
+              ? [
+                  {
+                    id: "delete",
+                    title: KIN_DOCS.delete,
+                    destructive: true,
+                    onPress: () =>
+                      void deleting.remove(doc.key).then((done) => done && props.onRefresh()),
+                  },
+                ]
+              : []),
           ],
         },
       ],
@@ -758,6 +773,31 @@ function KinDocBody(
             )}
             {label.problem === null ? null : (
               <Notice tone="danger" message={label.problem} onDismiss={label.dismiss} />
+            )}
+            {deleting.problem === null ? null : (
+              <Notice tone="danger" message={deleting.problem} onDismiss={deleting.dismiss} />
+            )}
+            {!doc.archived ? null : (
+              <Notice
+                message={
+                  deleting.justDeleted === doc.key
+                    ? KIN_DOCS.deletedNotice(doc.title)
+                    : doc.deleted === undefined
+                      ? KIN_DOCS.deletedBanner
+                      : `${kinDocDeletedLine(doc.deleted, names, now)}. ${KIN_DOCS.deletedBanner}`
+                }
+                {...(mayDelete
+                  ? {
+                      action: {
+                        label:
+                          deleting.justDeleted === doc.key ? KIN_DOCS.undo : KIN_DOCS.restoreDoc,
+                        pending: deleting.busy !== null,
+                        onPress: () =>
+                          void deleting.restore(doc.key).then((done) => done && props.onRefresh()),
+                      },
+                    }
+                  : {})}
+              />
             )}
             {props.stale ? <Notice message="Offline. Showing the last copy read." /> : null}
             {restore.problem === null ? null : (

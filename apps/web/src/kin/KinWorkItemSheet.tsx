@@ -1,4 +1,5 @@
 import { useKinOpensClients } from "./useKinOwnerLevel";
+import { KIN_DOCS } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_RETIRED_LABEL } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { useAtomValue } from "@effect/atom-react";
 import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
@@ -1328,6 +1329,11 @@ export function KinLinkedGroups(props: {
                   <span className="min-w-0 flex-1 truncate text-foreground">
                     {item.title ?? KIN_LINKED.message}
                   </span>
+                  {item.deleted === true ? (
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {KIN_DOCS.archived}
+                    </span>
+                  ) : null}
                 </>
               );
               return (

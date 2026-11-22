@@ -288,6 +288,8 @@ export const KinRecordLink = Schema.Struct({
   record: Schema.optional(KinRecordRef),
   /** That record's issued number (INV/26-27/004), once it has one. */
   number: Schema.optional(TrimmedNonEmptyString),
+  /** That record is a deleted doc: the link stays, and says so. Absent from older hosts. */
+  deleted: Schema.optional(Schema.Literal(true)),
   /**
    * A `worker` link's run, as its task card shows it: the thread (in `remoteEnvironmentId` when
    * that is set, else on this host) and the draft pull request Kin opened from it.
