@@ -505,9 +505,7 @@ export function kinTasksBlock(input: {
   );
   return {
     attention: shownAttention,
-    needs: needs.filter(
-      (row, index) => index < lead || row.kind === "waiting" || rest.has(row),
-    ),
+    needs: needs.filter((row, index) => index < lead || row.kind === "waiting" || rest.has(row)),
     total,
     onMe,
     more: rows > Math.max(KIN_NEEDS_YOU_SHOWN, lead + waiting.length),
