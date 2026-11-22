@@ -27,7 +27,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { KinGateView, KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { kinClient, refreshKinHost } from "./state/kinClient";
-import { KinHostTroubleCard } from "./widgets/KinHostTroubleCard";
+import { KinHostTroubleCard, type KinHostTapDone } from "./widgets/KinHostTroubleCard";
 import { useKinGate } from "./state/useKinHost";
 import type { KinWorkTarget } from "./state/useKinWork";
 
@@ -178,19 +178,37 @@ function Host(props: {
   const free = useTap(() => freeSpace(query), kinFreeSpaceLine, onChanged);
   const backup = useTap(() => backUp(query), kinBackUpLine, onChanged);
   const again = useTap(() => retry(query), kinRetryLine, onChanged);
+  // A trouble card's tap result outlives the card: a fixed trouble leaves the list.
+  const [troubleDone, setTroubleDone] = useState<KinHostTapDone>(null);
   const { space } = view;
   return (
     <>
       {/* Every open trouble with its own taps, whether or not a notice reached a chat. */}
-      {view.failing.length === 0 ? null : (
+      {view.failing.length === 0 && troubleDone === null ? null : (
         <View className="gap-2">
           {view.failing.map((failing) => (
             <KinHostTroubleCard
               key={failing.key}
               widget={{ ...failing.widget, orgId: target.orgId }}
               environmentId={target.environmentId}
+              onDone={setTroubleDone}
             />
           ))}
+          {troubleDone === null ? null : (
+            <Text
+              textRole="caption"
+              accessibilityRole={troubleDone.failed ? "alert" : undefined}
+              accessibilityLiveRegion="polite"
+              className={cn(
+                "px-1",
+                troubleDone.failed
+                  ? "font-t3-medium text-danger-foreground"
+                  : "text-foreground-muted",
+              )}
+            >
+              {troubleDone.line}
+            </Text>
+          )}
         </View>
       )}
       <ListSection title={KIN_HOST_COPY.space}>

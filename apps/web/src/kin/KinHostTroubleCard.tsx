@@ -31,7 +31,8 @@ import { withKinAgentPage } from "./kinPlaces";
 import { openKinSettings } from "./kinSettingsAddress";
 import { useNowMinuteMs } from "./useKinClock";
 
-type Done = { readonly line: string; readonly failed: boolean } | null;
+export type KinHostTapDone = { readonly line: string; readonly failed: boolean } | null;
+type Done = KinHostTapDone;
 
 /**
  * One cause's notice in the owner's chat: what Kin is doing, the count, and the taps that fix it.
@@ -40,8 +41,10 @@ type Done = { readonly line: string; readonly failed: boolean } | null;
 export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
   readonly widget: Pick<KinWidget, "type" | "state" | "orgId">;
   readonly environmentId: EnvironmentId;
+  /** Settings keeps a tap's result line itself: the card goes away when its trouble closes. */
+  readonly onDone?: (done: KinHostTapDone) => void;
 }) {
-  const { widget, environmentId } = props;
+  const { widget, environmentId, onDone } = props;
   const now = useNowMinuteMs();
   const view = kinHostTroubleCardView(widget, kinHostWhen(now));
   const router = useRouter();
@@ -67,19 +70,20 @@ export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
     if (busy !== null) return;
     setBusy(action);
     setDone(null);
+    onDone?.(null);
     const result = await command();
     setBusy(null);
     refreshKinHost(environmentId, orgId);
-    setDone(
-      AsyncResult.isSuccess(result)
-        ? { line: line(result.value), failed: false }
-        : {
-            line: kinHostFailed(
-              AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null,
-            ),
-            failed: true,
-          },
-    );
+    const next = AsyncResult.isSuccess(result)
+      ? { line: line(result.value), failed: false }
+      : {
+          line: kinHostFailed(
+            AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null,
+          ),
+          failed: true,
+        };
+    if (onDone === undefined) setDone(next);
+    else onDone(next);
   };
   const tap = (action: KinTroubleAction) => {
     switch (action) {

@@ -18,7 +18,7 @@ import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { KinHostTroubleCard } from "../KinHostTroubleCard";
+import { KinHostTroubleCard, type KinHostTapDone } from "../KinHostTroubleCard";
 import { kinClient, refreshKinHost } from "../kinClient";
 import { useNowMinuteMs } from "../useKinClock";
 import {
@@ -83,6 +83,8 @@ function HostPage(props: { readonly environmentId: EnvironmentId; readonly orgId
   const again = useHostTap(() => retry(query), kinRetryLine, refresh);
   const status = Option.getOrNull(AsyncResult.value(result));
   const now = useNowMinuteMs();
+  // A trouble card's tap result outlives the card: a fixed trouble leaves the list.
+  const [troubleDone, setTroubleDone] = useState<KinHostTapDone>(null);
 
   if (status === null)
     return (
@@ -103,15 +105,28 @@ function HostPage(props: { readonly environmentId: EnvironmentId; readonly orgId
   return (
     <KinSettingsPage purpose={KIN_HOST_COPY.purpose}>
       {/* Every open trouble with its own taps, whether or not a notice reached a chat. */}
-      {view.failing.length === 0 ? null : (
+      {view.failing.length === 0 && troubleDone === null ? null : (
         <div className="flex flex-col gap-2">
           {view.failing.map((failing) => (
             <KinHostTroubleCard
               key={failing.key}
               widget={{ ...failing.widget, orgId: props.orgId }}
               environmentId={props.environmentId}
+              onDone={setTroubleDone}
             />
           ))}
+          {troubleDone === null ? null : (
+            <p
+              role={troubleDone.failed ? "alert" : "status"}
+              className={
+                troubleDone.failed
+                  ? "px-1 text-xs font-medium text-destructive-foreground"
+                  : "px-1 text-xs text-muted-foreground"
+              }
+            >
+              {troubleDone.line}
+            </p>
+          )}
         </div>
       )}
       <KinSettingsSection

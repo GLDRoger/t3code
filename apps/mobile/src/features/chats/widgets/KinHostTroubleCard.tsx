@@ -33,11 +33,15 @@ const ON_PHONE: ReadonlySet<KinTroubleAction> = new Set([
 ]);
 
 /** One cause's notice in the owner's chat, on the phone: the same words and taps as on web. */
+export type KinHostTapDone = { readonly line: string; readonly failed: boolean } | null;
+
 export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
   readonly widget: Pick<KinWidget, "type" | "state" | "orgId">;
   readonly environmentId: EnvironmentId;
+  /** Settings keeps a tap's result line itself: the card goes away when its trouble closes. */
+  readonly onDone?: (done: KinHostTapDone) => void;
 }) {
-  const { widget, environmentId } = props;
+  const { widget, environmentId, onDone } = props;
   const now = useNowMinuteMs();
   const view = kinHostTroubleCardView(widget, kinHostWhen(now));
   const navigation = useNavigation();
@@ -46,9 +50,7 @@ export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
   const backUp = useAtomCommand(kinClient.hostBackUpNow, { reportFailure: false });
   const retry = useAtomCommand(kinClient.hostRetry, { reportFailure: false });
   const [busy, setBusy] = useState<KinTroubleAction | null>(null);
-  const [done, setDone] = useState<{ readonly line: string; readonly failed: boolean } | null>(
-    null,
-  );
+  const [done, setDone] = useState<KinHostTapDone>(null);
   if (view === null) return null;
 
   const query = { environmentId, input: { orgId: widget.orgId } };
@@ -60,19 +62,20 @@ export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
     if (busy !== null) return;
     setBusy(action);
     setDone(null);
+    onDone?.(null);
     const result = await command();
     setBusy(null);
     refreshKinHost(environmentId, widget.orgId);
-    setDone(
-      AsyncResult.isSuccess(result)
-        ? { line: line(result.value), failed: false }
-        : {
-            line: kinHostFailed(
-              AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null,
-            ),
-            failed: true,
-          },
-    );
+    const next = AsyncResult.isSuccess(result)
+      ? { line: line(result.value), failed: false }
+      : {
+          line: kinHostFailed(
+            AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null,
+          ),
+          failed: true,
+        };
+    if (onDone === undefined) setDone(next);
+    else onDone(next);
   };
   const tap = (action: KinTroubleAction) => {
     if (action === "free_space") void run(action, () => freeSpace(query), kinFreeSpaceLine);
