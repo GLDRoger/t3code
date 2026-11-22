@@ -21,6 +21,7 @@ import * as KeySeal from "./approvals/KeySeal.ts";
 import * as ApprovalCards from "./chat/approvalCards.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
+import * as KinHostCare from "./host/KinHostCare.ts";
 import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
 import * as KinImport from "./work/KinImport.ts";
@@ -69,6 +70,8 @@ import * as DevFakeMail from "./connections/DevFakeMail.ts";
 import * as DevClock from "./DevClock.ts";
 import * as McpGateway from "./connections/McpGateway.ts";
 import * as DevFakeSocial from "./social/DevFakeSocial.ts";
+
+import * as KinShell from "./shell/KinShell.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   Layer.effect(
@@ -151,6 +154,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Layer.provideMerge(
             Layer.mergeAll(
               KinPush.layer,
+              KinHostCare.layer,
               LevelControl.layer,
               MemoryChanges.layer,
               KinImport.layer.pipe(Layer.provideMerge(KinRecords.layer)),
@@ -215,6 +219,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
         ),
       ).pipe(
+        Layer.merge(KinShell.layer),
         Layer.provideMerge(KinChat.layer),
         // Social's posting service sits on top: it reads cards, chats and the document renderer.
         (core) =>

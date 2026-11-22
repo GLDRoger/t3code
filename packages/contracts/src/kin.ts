@@ -6,6 +6,7 @@ export * from "./kinRefresh.ts";
 export * from "./kinLead.ts";
 export * from "./kinProviders.ts";
 export * from "./kinHost.ts";
+export * from "./kinHostCare.ts";
 export * from "./kinTriggers.ts";
 export * from "./kinApprovals.ts";
 export * from "./kinLevels.ts";
@@ -36,6 +37,7 @@ export * from "./kinConnections.ts";
 export * from "./kinSocial.ts";
 
 export * from "./kinPeople.ts";
+export * from "./kinShell.ts";
 export * from "./kinTasksKey.ts";
 
 export * from "./kinEmbed.ts";

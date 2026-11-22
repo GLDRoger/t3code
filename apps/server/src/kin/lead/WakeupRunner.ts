@@ -4,6 +4,7 @@ import * as NodeCrypto from "node:crypto";
 import {
   CommandId,
   KinAgentId,
+  KinEventId,
   type KinEvent,
   KinLead,
   KinMessageId,
@@ -92,6 +93,14 @@ import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
+import { HOLD_MS, KinHostCare } from "../host/KinHostCare.ts";
+import {
+  HELD_CAUSES,
+  providerFailureIn,
+  providerResetAt,
+  troubleCause,
+  troubleDetail,
+} from "../host/troubleCauses.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { KinTeam } from "../team/KinTeam.ts";
 import { KinHandoff } from "./Handoff.ts";
@@ -176,6 +185,17 @@ const ulid = Effect.gen(function* () {
 
 const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
+  const care = yield* Effect.serviceOption(KinHostCare);
+  const claimedEvents = Effect.fn("WakeupRunner.claimedEvents")(function* (
+    row: typeof RunningRow.Type,
+  ) {
+    const [wakeup] = yield* sql<{ eventIds: string }>`SELECT event_ids AS "eventIds"
+      FROM kin_wakeups WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
+    return Option.getOrElse(
+      Option.flatMap(Option.fromNullishOr(wakeup?.eventIds), decodeTaskIds),
+      () => [],
+    ).map((id) => KinEventId.make(id));
+  });
   const bridge = yield* Effect.serviceOption(KinReplyBridge);
   const team = yield* Effect.serviceOption(KinTeam);
   const handoff = yield* Effect.serviceOption(KinHandoff);
@@ -188,6 +208,7 @@ const make = Effect.gen(function* () {
     row: typeof RunningRow.Type,
     status: "completed" | "failed" | "interrupted" | "timed_out",
     setup: SetupFailure | null = null,
+    failure: unknown = null,
   ) {
     // Read first: finishing returns retried events to the queue, which drops their lane.
     const lane =
@@ -195,7 +216,59 @@ const make = Effect.gen(function* () {
         ? Option.none()
         : yield* bridge.value.lane(row);
     const owed = status !== "completed" || Option.isNone(handoff) ? [] : yield* workOwed(row);
-    const finished = yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });
+    // Why it failed, from the error itself; a time-out has none and keeps the plain retries.
+    const cause =
+      status !== "failed" || Option.isNone(care) ? undefined : (setup ?? troubleCause(failure));
+    const claimed = cause === undefined ? [] : yield* claimedEvents(row);
+    const now = yield* Clock.currentTimeMillis;
+    let holdUntil: number | undefined;
+    // A full disk: the trouble's one automatic clean, then one more try at once, telling nobody.
+    let quiet = false;
+    if (
+      cause === "space" &&
+      Option.isSome(care) &&
+      (yield* care.value.spaceFailed(row.orgId, row.agentId))
+    ) {
+      holdUntil = yield* Clock.currentTimeMillis;
+      quiet = true;
+    }
+    const resetAt = providerResetAt(failure);
+    if (holdUntil === undefined && cause !== undefined && HELD_CAUSES.has(cause))
+      holdUntil =
+        cause === "usage_limit" && resetAt !== undefined
+          ? Math.max(now + 60_000, Date.parse(resetAt) + 60_000)
+          : now + (HOLD_MS[cause] ?? KinEventQueue.LAST_RETRY_MS);
+    const finished = yield* queue.finish({
+      orgId: row.orgId,
+      wakeupId: row.wakeupId,
+      status,
+      ...(holdUntil === undefined ? {} : { holdUntil }),
+    });
+    // Quiet only when the turn really went back to wait, untouched: after something visible,
+    // its unanswered events stopped instead, and that is said.
+    if (quiet && (finished.stranded > 0 || finished.replied > 0)) quiet = false;
+    let told = false;
+    if (Option.isSome(care)) {
+      if (status === "completed") yield* care.value.succeeded(row.orgId, row.agentId);
+      const held = finished.heldEventIds ?? [];
+      // Kin holds the turns of a cause it waits out; others tell once their first retry failed too.
+      const tell =
+        cause !== undefined &&
+        !quiet &&
+        (HELD_CAUSES.has(cause)
+          ? held.length > 0 || finished.stranded > 0
+          : finished.failedEventIds.length > 0 ||
+            finished.retryInMs > KinEventQueue.FIRST_RETRY_MS);
+      if (tell)
+        told = yield* care.value.failed({
+          orgId: row.orgId,
+          agentId: row.agentId,
+          cause,
+          eventIds: held.length > 0 ? held : claimed,
+          detail: troubleDetail(failure),
+          resetAt,
+        });
+    }
     // A Team-room turn that said nothing passed; a hand-off's answer goes back to who asked.
     if (Option.isSome(team)) yield* team.value.wakeupEnded(row);
     if (Option.isSome(handoff)) {
@@ -207,26 +280,33 @@ const make = Effect.gen(function* () {
     // Otherwise the person waiting hears at once that it is retrying, or has stopped. A run
     // nobody waits on (a check-in, a reminder) retries quietly, but never fails silently.
     // Every message already replied to: one message, one answer, unless the reply's promise broke.
-    const outcome =
-      finished.stranded > 0
+    const outcome = quiet
+      ? undefined
+      : finished.stranded > 0
         ? "partway"
         : finished.replied > 0
           ? "replied"
-          : setup !== null
-            ? setup
-            : finished.failedEventIds.length > 0
-              ? "gave_up"
-              : finished.retried > 0 && lane.value.owed
-                ? finished.retryInMs >= KinEventQueue.LAST_RETRY_MS
-                  ? "retrying_later"
-                  : "retrying"
-                : undefined;
+          : (finished.heldEventIds?.length ?? 0) > 0
+            ? lane.value.owed
+              ? "held"
+              : undefined
+            : setup !== null
+              ? setup
+              : finished.failedEventIds.length > 0
+                ? "gave_up"
+                : finished.retried > 0 && lane.value.owed
+                  ? finished.retryInMs >= KinEventQueue.LAST_RETRY_MS
+                    ? "retrying_later"
+                    : "retrying"
+                  : undefined;
     if (outcome !== undefined)
       yield* bridge.value.failed({
         orgId: row.orgId,
         wakeupId: row.wakeupId,
         lane: lane.value,
         outcome,
+        told,
+        ...(cause === undefined ? {} : { cause }),
       });
   });
   const routineContent = yield* Effect.serviceOption(RoutineContent.KinRoutineContent);
@@ -279,27 +359,28 @@ const make = Effect.gen(function* () {
   const spaceFolders = Option.map(yield* Effect.serviceOption(ServerConfig), (config) =>
     HostBackup.spaceFolders(config.baseDir),
   );
-  const toOwners = <E>(
-    orgId: KinOrgId,
-    notice: Effect.Effect<void, E, KinChatService | SqlClient.SqlClient>,
-  ) =>
-    Option.isNone(chat)
+  // Before it is full: agents' commands fail one by one for a while before a wake-up does, so a
+  // low disk is cleared at once and the owner hears only when that was not enough.
+  const lowOnSpace = (orgId: KinOrgId) =>
+    Option.isNone(spaceFolders) || Option.isNone(chat)
       ? Effect.void
-      : notice.pipe(
+      : HostBackup.warnIfLowOnSpace(
+          orgId,
+          spaceFolders.value,
+          HostBackup.readSpace,
+          Option.isSome(care) ? care.value.clean("low_on_space") : undefined,
+        ).pipe(
           Effect.provideService(KinChatService, chat.value),
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.catchCause((cause) =>
             Effect.logWarning("Kin host space notice failed", { orgId, cause }),
           ),
         );
-  // A full disk or quota fails every wake-up after it, so the owner hears of it, not only the journal.
-  const tellIfOutOfSpace = (orgId: KinOrgId, failure: unknown) =>
-    toOwners(orgId, HostBackup.tellIfOutOfSpace(orgId, failure));
-  // Before it is full: agents' commands fail one by one for a while before a wake-up does.
-  const warnIfLowOnSpace = (orgId: KinOrgId) =>
-    Option.isNone(spaceFolders)
-      ? Effect.void
-      : toOwners(orgId, HostBackup.warnIfLowOnSpace(orgId, spaceFolders.value));
+  // While the out-of-space notice stands, it is the one word on space.
+  const warnIfLowOnSpace = Effect.fn("WakeupRunner.warnIfLowOnSpace")(function* (orgId: KinOrgId) {
+    if (Option.isSome(care) && (yield* care.value.troubleOpen(orgId, "space"))) return;
+    yield* lowOnSpace(orgId);
+  });
   const prompt = yield* KinLeadPrompt;
   const turnContent = yield* KinTurnContent;
   const identity = yield* KinIdentity.KinIdentity;
@@ -791,6 +872,7 @@ const make = Effect.gen(function* () {
           ? "interrupted"
           : ended;
       const setup = status === "failed" ? setupFailureIn(final, runId) : null;
+      const failure = status === "failed" ? providerFailureIn(final, runId) : null;
       // Someone besides the owner joined while it worked: it says nothing more, and a fresh
       // wake-up answers its events (`KinEventQueue.finish`).
       let abandoned = yield* isAborted(row);
@@ -876,7 +958,7 @@ const make = Effect.gen(function* () {
             countAttempt: false,
             notBefore: (yield* Clock.currentTimeMillis) + PAUSE_POLL_INTERVAL_MS,
           });
-        else yield* finishWakeup(row, status, setup);
+        else yield* finishWakeup(row, status, setup, failure);
       }).pipe(
         Effect.onExit((exit) =>
           result.timedOut && Exit.isFailure(exit)
@@ -929,6 +1011,7 @@ const make = Effect.gen(function* () {
   const cleanup = Effect.fn("WakeupRunner.cleanup")(function* (
     row: typeof RunningRow.Type,
     interrupted = false,
+    failure: unknown = null,
   ) {
     // Only a stopping server interrupts a wake-up: what it staged lands then, as the agent may
     // already have said it saved it, and its events may be done. Otherwise it is dropped.
@@ -971,7 +1054,7 @@ const make = Effect.gen(function* () {
     yield* clearMissingThread(row).pipe(Effect.ignore);
     yield* capture(row).pipe(Effect.ignore);
     if (interrupted) yield* queue.requeueUnfinished(row.orgId, row.wakeupId);
-    else yield* finishWakeup(row, "failed");
+    else yield* finishWakeup(row, "failed", null, failure);
   });
 
   /** One line per wake-up: each stage's ms since the first claimed event was queued. */
@@ -1009,6 +1092,7 @@ const make = Effect.gen(function* () {
 
   const runOnce = Effect.fn("WakeupRunner.runOnce")(
     function* (orgId: KinOrgId, agentId: KinAgentId) {
+      if (Option.isSome(care)) yield* care.value.storageRecovered(orgId);
       const record = yield* lead(orgId, agentId);
       if (record.retiredAt !== null) return yield* retire(record);
       if (yield* paused(orgId)) return;
@@ -1037,9 +1121,16 @@ const make = Effect.gen(function* () {
       yield* Effect.scoped(
         Effect.gen(function* () {
           let events = yield* Effect.acquireRelease(
-            queue.claim({ orgId, agentId, wakeupId, model: record.model.model }),
+            queue.claim({ orgId, agentId, wakeupId, model: record.model.model }).pipe(
+              // Storage full before a turn could start: nothing was claimed; clean, once.
+              Effect.tapCause((cause) =>
+                Option.isSome(care) && troubleCause(cause) === "space"
+                  ? care.value.storageFailed(orgId)
+                  : Effect.void,
+              ),
+            ),
             (_, exit) =>
-              cleanup(row, Exit.hasInterrupts(exit)).pipe(
+              cleanup(row, Exit.hasInterrupts(exit), Exit.isFailure(exit) ? exit.cause : null).pipe(
                 Effect.catch((error) =>
                   Effect.logError("Kin wake-up finalizer failed", {
                     orgId,
@@ -1050,6 +1141,7 @@ const make = Effect.gen(function* () {
               ),
           );
           row = { ...row, startedAt: yield* Clock.currentTimeMillis };
+          if (Option.isSome(care)) yield* care.value.devFullDisk;
           yield* Effect.gen(function* () {
             if (yield* paused(orgId)) {
               yield* queue.release({
@@ -1522,7 +1614,7 @@ const make = Effect.gen(function* () {
           }).pipe(
             Effect.onExit((exit) =>
               Exit.isFailure(exit)
-                ? cleanup(row, Exit.hasInterrupts(exit)).pipe(
+                ? cleanup(row, Exit.hasInterrupts(exit), exit.cause).pipe(
                     Effect.catch((error) =>
                       Effect.logError("Kin wake-up cleanup failed", {
                         orgId,
@@ -1598,7 +1690,9 @@ const make = Effect.gen(function* () {
             );
             let row = yield* decodeRunning(raw);
             yield* Effect.acquireRelease(Effect.void, (_, exit) =>
-              cleanup(row, Exit.hasInterrupts(exit)).pipe(Effect.ignore),
+              cleanup(row, Exit.hasInterrupts(exit), Exit.isFailure(exit) ? exit.cause : null).pipe(
+                Effect.ignore,
+              ),
             );
             const existing =
               row.threadId === null
@@ -1661,7 +1755,7 @@ const make = Effect.gen(function* () {
             yield* wait(row, projection.thread.projectId).pipe(
               Effect.onExit((exit) =>
                 Exit.isFailure(exit)
-                  ? cleanup(row, Exit.hasInterrupts(exit)).pipe(Effect.ignore)
+                  ? cleanup(row, Exit.hasInterrupts(exit), exit.cause).pipe(Effect.ignore)
                   : Effect.void,
               ),
             );
@@ -1791,10 +1885,7 @@ const make = Effect.gen(function* () {
                   orgId,
                   agentId: candidate.agentId,
                   cause,
-                }).pipe(
-                  Effect.andThen(tellIfOutOfSpace(orgId, cause)),
-                  Effect.andThen(Effect.sleep("1 second")),
-                ),
+                }).pipe(Effect.andThen(Effect.sleep("1 second"))),
               ),
               Effect.ensuring(
                 Effect.sync(() => {
@@ -1825,7 +1916,6 @@ const make = Effect.gen(function* () {
           return yield* pass.pipe(
             Effect.catchCause((cause) =>
               Effect.logError("Kin runner iteration failed", { orgId, cause }).pipe(
-                Effect.andThen(tellIfOutOfSpace(orgId, cause)),
                 Effect.andThen(Effect.sleep("1 second")),
               ),
             ),

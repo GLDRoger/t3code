@@ -40,6 +40,7 @@ import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import type * as Routines from "../triggers/routines.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import * as Queue from "./KinEventQueue.ts";
 import { hashedEventId } from "./eventIds.ts";
@@ -234,11 +235,27 @@ const make = Effect.gen(function* () {
     const [wake] = yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_wakeups
       WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'
       ORDER BY wakeup_id`;
-    if (wake === undefined) return undefined;
+    if (wake === undefined) return yield* heldLane(orgId, wakeupId);
     const lane = yield* laneFor({ orgId, agentId: KinAgentId.make(wake.agentId), wakeupId }).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
     );
     return Option.getOrUndefined(lane);
+  });
+  /** A turn a trouble holds has no running wake-up: its line goes where its first message asked. */
+  const heldLane = Effect.fn("KinStop.heldLane")(function* (
+    orgId: KinOrgId,
+    wakeupId: KinWakeupId,
+  ) {
+    const [held] = yield* sql<{ chatId: string | null; leadName: string }>`
+      SELECT COALESCE(json_extract(e.json, '$.chatId'), l.owner_chat_id) AS "chatId",
+        l.name AS "leadName"
+      FROM kin_events e JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
+      WHERE e.org_id = ${orgId} AND e.state = 'queued'
+        AND json_extract(e.json, '$._heldFrom') = ${wakeupId}
+      ORDER BY e.priority, e.received_at, e.event_id LIMIT 1`;
+    return held === undefined || held.chatId === null
+      ? undefined
+      : { chatId: KinChatId.make(held.chatId), leadName: held.leadName };
   });
   /** One quiet line where the stopped turn would have answered: who stopped which agent. */
   const tellStopped = Effect.fn("KinStop.tellStopped")(function* (
@@ -540,6 +557,8 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const queue = yield* Queue.KinEventQueue;
+  const care = yield* Effect.serviceOption(KinHostCare);
   // Recovery keeps run ids across a restart, so a replay must not dedupe on a pre-crash receipt.
   const boot = (yield* Random.nextInt).toString(36);
   return {
@@ -596,7 +615,12 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
       const [row] = yield* sql<{ threadId: string }>`SELECT thread_id AS "threadId" FROM kin_wakeups
         WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'
           AND thread_id IS NOT NULL ORDER BY wakeup_id`.pipe(Effect.mapError(failed));
-      if (row === undefined) return false;
+      if (row === undefined) {
+        // Not running: a turn a trouble holds for later is dropped instead, and its notice redrawn.
+        const dropped = yield* queue.dropHeld(orgId, wakeupId).pipe(Effect.mapError(failed));
+        if (dropped > 0 && Option.isSome(care)) yield* care.value.refresh(orgId);
+        return dropped > 0;
+      }
       // The owner chose to stop: the run's failure must not requeue its events. A stop that
       // finds none left is a repeat of one still winding the run down.
       const released = yield* sql`UPDATE kin_events SET state = 'done'

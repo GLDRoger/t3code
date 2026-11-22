@@ -32,6 +32,7 @@ export const KIN_REFRESH_TOPICS = [
   "imports",
   "stop",
   "watches",
+  "shell",
 ] as const;
 export const KinRefreshTopic = Schema.Literals(KIN_REFRESH_TOPICS);
 export type KinRefreshTopic = typeof KinRefreshTopic.Type;
@@ -64,6 +65,7 @@ export const KinRefreshes = Schema.Struct({
   stop: Schema.optional(NonNegativeInt),
   /** What Kin keeps watch on and its looks (`kin.watches.*`). Absent from older hosts. */
   watches: Schema.optional(NonNegativeInt),
+  shell: Schema.optional(NonNegativeInt),
   /**
    * The host run these revisions count in. Unchanged across a reconnect, an unchanged revision
    * means nothing moved; a new one means anything may have. Absent from older hosts.

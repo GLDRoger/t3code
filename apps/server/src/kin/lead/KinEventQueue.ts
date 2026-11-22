@@ -71,6 +71,11 @@ const FinishInput = Schema.Struct({
   orgId: KinOrgId,
   wakeupId: KinWakeupId,
   status: Schema.Literals(["completed", "failed", "interrupted", "timed_out"]),
+  /**
+   * A failure whose cause the server knows and is waiting out (`KinHostCare`): a start that showed
+   * nothing goes back to the queue until then without spending an attempt, so nothing is lost.
+   */
+  holdUntil: Schema.optional(NonNegativeInt),
 });
 
 const SteerInput = Schema.Struct({
@@ -245,11 +250,12 @@ export class KinEventQueue extends Context.Service<
      * A failed wake-up's events retry only when it showed nothing. Of the rest, `stranded`
      * had no reply (the chat is owed a notice) and `replied` were already answered; `retried`
      * counts requeued events, `retryInMs` the longest wait before one runs again, and
-     * `failedEventIds` those that used their last try.
+     * `failedEventIds` those that used their last try. `heldEventIds` are those `holdUntil` kept.
      */
     readonly finish: (input: typeof FinishInput.Type) => Effect.Effect<
       {
         readonly failedEventIds: ReadonlyArray<KinEventId>;
+        readonly heldEventIds?: ReadonlyArray<KinEventId>;
         readonly stranded: number;
         readonly replied: number;
         readonly retried: number;
@@ -257,6 +263,22 @@ export class KinEventQueue extends Context.Service<
       },
       PersistenceSqlError | PersistenceDecodeError
     >;
+    /**
+     * Runs these events now: held ones at once, and ones that used their last try with their tries
+     * back (a person's Try again). Claimed or done ones are left alone. Returns how many moved.
+     */
+    readonly wake: (
+      orgId: KinOrgId,
+      eventIds: ReadonlyArray<KinEventId>,
+    ) => Effect.Effect<number, PersistenceSqlError | PersistenceDecodeError>;
+    /**
+     * A person's Stop on a turn a trouble holds (`finish` with `holdUntil`): what that wake-up
+     * handed back to wait never runs, and its trouble lets go of it. Returns how many.
+     */
+    readonly dropHeld: (
+      orgId: KinOrgId,
+      wakeupId: KinWakeupId,
+    ) => Effect.Effect<number, PersistenceSqlError | PersistenceDecodeError>;
     // LEAD-5 startup recovery calls this only after confirming the provider run stopped.
     readonly requeueUnfinished: (
       orgId: KinOrgId,
@@ -269,7 +291,7 @@ export class KinEventQueue extends Context.Service<
  * A failed start that showed nothing retries soon, so the owner's "trying again" is true, and
  * once more a quarter of an hour on, so a provider down for minutes doesn't lose the request.
  */
-const FIRST_RETRY_MS = 15_000;
+export const FIRST_RETRY_MS = 15_000;
 const LATER_RETRY_MS = 60_000;
 export const LAST_RETRY_MS = 900_000;
 const RUN_ATTEMPTS = 4;
@@ -906,6 +928,21 @@ const make = Effect.gen(function* () {
               retryInMs: 0,
             };
           }
+          if (input.holdUntil !== undefined) {
+            const held = yield* sql<{ event_id: string }>`UPDATE kin_events
+              SET state = 'queued', wakeup_id = NULL, not_before = ${input.holdUntil},
+                json = json_set(json, '$._heldFrom', ${input.wakeupId})
+              WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
+              RETURNING event_id`;
+            return {
+              failedEventIds: [],
+              heldEventIds: held.map((row) => KinEventId.make(row.event_id)).sort(),
+              stranded: 0,
+              replied: 0,
+              retried: held.length,
+              retryInMs: Math.max(0, input.holdUntil - now),
+            };
+          }
           // A silent batch failure cannot be attributed until each event runs on its own.
           const [batch] = yield* sql<{ split: number }>`SELECT EXISTS (
             SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
@@ -1029,7 +1066,51 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toQueuePersistenceError("KinEventQueue.readyLeads")),
   );
+  const wake = Effect.fn("KinEventQueue.wake")(
+    function* (orgId: KinOrgId, eventIds: ReadonlyArray<KinEventId>) {
+      if (eventIds.length === 0) return 0;
+      const ids = yield* encodeEventIds(eventIds);
+      const now = yield* Clock.currentTimeMillis;
+      const rows = yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL,
+          not_before = ${now}, attempts = CASE WHEN state = 'failed' THEN 0 ELSE attempts END
+        WHERE org_id = ${orgId} AND state IN ('queued', 'failed') AND budget_deferred = 0
+          -- Already due: waking it again changes nothing, and counts nothing.
+          AND (state = 'failed' OR not_before > ${now})
+          AND event_id IN (SELECT value FROM json_each(${ids}))
+        RETURNING event_id`;
+      if (rows.length > 0) yield* notify(orgId);
+      return rows.length;
+    },
+    Effect.mapError(toQueuePersistenceError("KinEventQueue.wake")),
+  );
+
+  const dropHeld = Effect.fn("KinEventQueue.dropHeld")(
+    function* (orgId: KinOrgId, wakeupId: KinWakeupId) {
+      yield* decodeOrgId(orgId);
+      yield* decodeWakeupId(wakeupId);
+      const dropped = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const rows = yield* sql<{ event_id: string }>`UPDATE kin_events
+            SET state = 'done', held_by = NULL
+            WHERE org_id = ${orgId} AND state = 'queued'
+              AND json_extract(json, '$._heldFrom') = ${wakeupId}
+            RETURNING event_id`;
+          yield* settled(
+            orgId,
+            rows.map((row) => row.event_id),
+          );
+          return rows.length;
+        }),
+      );
+      if (dropped > 0) yield* notify(orgId);
+      return dropped;
+    },
+    Effect.mapError(toQueuePersistenceError("KinEventQueue.dropHeld")),
+  );
+
   return KinEventQueue.of({
+    wake,
+    dropHeld,
     reconsiderBudget: Effect.fn("KinEventQueue.reconsiderBudget")(function* (orgId) {
       yield* sql`UPDATE kin_events SET not_before = NULL, budget_deferred = 0
         WHERE org_id = ${orgId} AND state = 'queued' AND budget_deferred = 1`.pipe(

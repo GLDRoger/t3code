@@ -1,3 +1,4 @@
+import { KinShellRpcs, KIN_SHELL_RPC_SCOPES } from "./kinShell.ts";
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 import {
@@ -44,6 +45,7 @@ import { KinRefreshRpcs, KIN_REFRESH_RPC_SCOPES } from "./kinRefresh.ts";
 import { KinPulseRpcs, KIN_PULSE_RPC_SCOPES } from "./kinPulse.ts";
 import { KinOpenRpcs, KIN_OPEN_RPC_SCOPES } from "./kinOpen.ts";
 import { KinRecommendationRpcs, KIN_RECOMMENDATION_RPC_SCOPES } from "./kinRecommendations.ts";
+import { KinHostRpcs, KIN_HOST_RPC_SCOPES } from "./kinHostCare.ts";
 import { KinWatchRpcs, KIN_WATCH_RPC_SCOPES } from "./kinWatches.ts";
 import {
   KinChatError,
@@ -209,6 +211,7 @@ export const KinRpcs = [
   ...KinStatementRpcs,
   ...KinPushRpcs,
   ...KinPeopleRpcs,
+  ...KinShellRpcs,
   ...KinTasksKeyRpcs,
   ...KinConnectionRpcs,
   ...KinSocialRpcs,
@@ -216,6 +219,7 @@ export const KinRpcs = [
   ...KinPulseRpcs,
   ...KinOpenRpcs,
   ...KinRecommendationRpcs,
+  ...KinHostRpcs,
   ...KinWatchRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
@@ -233,6 +237,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_STATEMENT_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
   ...KIN_PEOPLE_RPC_SCOPES,
+  ...KIN_SHELL_RPC_SCOPES,
   ...KIN_TASKS_KEY_RPC_SCOPES,
   ...KIN_VISUAL_RPC_SCOPES,
   ...KIN_CONNECTION_RPC_SCOPES,
@@ -241,6 +246,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_PULSE_RPC_SCOPES,
   ...KIN_OPEN_RPC_SCOPES,
   ...KIN_RECOMMENDATION_RPC_SCOPES,
+  ...KIN_HOST_RPC_SCOPES,
   ...KIN_WATCH_RPC_SCOPES,
   "kin.budget.get": AuthKinChatScope,
   "kin.budget.set": AuthKinChatScope,
@@ -456,6 +462,7 @@ const KIN_RPC_ACCESS = {
   "kin.work.companyProfile": "owner_level",
   "kin.work.exportLink": "org_owner",
   "kin.work.setCompanyProfile": "owner_level",
+  "kin.shell.set": "owner_level",
   "kin.work.issue": "owner_level",
   "kin.work.nextNumber": "owner_level",
   "kin.work.void": "owner_level",
@@ -503,6 +510,10 @@ const KIN_RPC_ACCESS = {
   // What Kin suggested to the owner and his answers: his alone, as the cards are.
   "kin.recommendations.list": "org_owner",
   "kin.recommendations.askAgain": "org_owner",
+  "kin.host.status": "owner_level",
+  "kin.host.freeSpace": "owner_level",
+  "kin.host.backUpNow": "owner_level",
+  "kin.host.retry": "owner_level",
   // What Kin keeps watch on: the service shows and acts on only the watches this person may see.
   "kin.watches.list": "person",
   "kin.watches.log": "person",
@@ -598,6 +609,10 @@ export const KIN_RPC_AGGREGATES = {
   "kin.open.subscribe": "kin-pulse",
   "kin.recommendations.list": "kin-recommendations",
   "kin.recommendations.askAgain": "kin-recommendations",
+  "kin.host.status": "kin-host",
+  "kin.host.freeSpace": "kin-host",
+  "kin.host.backUpNow": "kin-host",
+  "kin.host.retry": "kin-host",
   "kin.watches.list": "kin-watches",
   "kin.watches.log": "kin-watches",
   "kin.watches.look": "kin-watches",
@@ -756,6 +771,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.companyProfile": "kin-work",
   "kin.work.exportLink": "kin-work",
   "kin.work.setCompanyProfile": "kin-work",
+  "kin.shell.set": "kin-work",
   "kin.work.issue": "kin-work",
   "kin.work.void": "kin-work",
   "kin.work.unvoid": "kin-work",
