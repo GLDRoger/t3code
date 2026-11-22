@@ -1,6 +1,6 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { KIN_CHECK_CONNECTION, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   createKinGitHubActions,
   createKinGitHubRepoActions,
