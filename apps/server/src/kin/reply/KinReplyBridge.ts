@@ -10,8 +10,10 @@ import {
   kinPageShape,
   KIN_FIGURE_SCHEME,
   KinMessageId,
+  KIN_TROUBLE_WHY,
   MessageId,
   type KinAgentId,
+  type KinTroubleCause,
   type KinOrgId,
   type KinPersonId,
   type KinPresenceState,
@@ -81,6 +83,7 @@ import {
   type SetupFailure,
   withoutAsked,
 } from "./classify.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
 import { KinPresence, syncQueued } from "./KinPresence.ts";
 import { missingCard, NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promises.ts";
 import { morningMoneyFor } from "../pulse/morningMoney.ts";
@@ -132,45 +135,55 @@ const fitParts = (text: string, max: number) =>
 // scheduled runs owe theirs through `LeadDelivery`; the rest may end on NO_REPLY.
 
 // `replied`: the turn failed after its reply answered every message it held.
+// `held`: Kin keeps its events until the cause clears (`KinHostCare`).
 export type FailedOutcome =
   | "partway"
   | "replied"
   | "retrying"
   | "retrying_later"
   | "gave_up"
+  | "held"
   | SetupFailure;
+/** "<lead> couldn't start" and why, from the one table (`KIN_TROUBLE_WHY`); bare when unknown. */
+const couldnt = (lead: string, cause: KinTroubleCause | undefined) =>
+  cause === undefined
+    ? `${lead} couldn't start`
+    : `${lead} couldn't start: ${KIN_TROUBLE_WHY[cause]}`;
 // Plain words with the lead's name: the inbox shows this as the chat's latest line.
 const failedNotices: Record<
-  Exclude<FailedOutcome, SetupFailure | "replied">,
-  { prefix: string; body: (lead: string) => string }
+  Exclude<FailedOutcome, SetupFailure | "replied" | "held">,
+  { prefix: string; body: (lead: string, cause: KinTroubleCause | undefined) => string }
 > = {
-  partway: { prefix: "kin-partway", body: (lead) => `${lead} stopped partway.` },
+  partway: {
+    prefix: "kin-partway",
+    body: (lead, cause) =>
+      cause === undefined
+        ? `${lead} stopped partway.`
+        : `${lead} stopped partway: ${KIN_TROUBLE_WHY[cause]}.`,
+  },
   retrying: {
     prefix: "kin-retrying",
-    body: (lead) => `${lead} couldn't start. Trying again in a moment.`,
+    body: (lead, cause) => `${couldnt(lead, cause)}. Trying again in a moment.`,
   },
   // Before the long wait: the same kind of line for clients, now saying when.
   retrying_later: {
     prefix: "kin-retrying",
-    body: (lead) =>
-      `${lead} couldn't start. Trying once more in about ${Math.round(LAST_RETRY_MS / 60_000)} minutes.`,
+    body: (lead, cause) =>
+      `${couldnt(lead, cause)}. Trying once more in about ${Math.round(LAST_RETRY_MS / 60_000)} minutes.`,
   },
   gave_up: {
     prefix: "kin-failed",
-    body: (lead) => `${lead} couldn't start. It won't try again on its own.`,
+    body: (lead, cause) => `${couldnt(lead, cause)}. It won't try again on its own.`,
   },
 };
-/** Only the owner can fix the account, so only the owner's own chat hears how. */
-const setupNotice = (lead: string, failure: SetupFailure, ownerOnly: boolean) =>
-  !ownerOnly
-    ? `${lead} is unavailable right now.`
-    : failure === "signin"
-      ? `${lead} couldn't start: its model account needs signing in again on the server.`
-      : failure === "model"
-        ? `${lead} couldn't start: its model account doesn't offer the model it's set to use. Choose another model for it.`
-        : failure === "program"
-          ? `${lead} couldn't start: the server couldn't run its model program. Check the provider's binary path in Settings.`
-          : `${lead} couldn't start: its model account can't use its model. Check the account on the server.`;
+/**
+ * Only the owner level can fix the cause, so only an owner-only chat hears which; everyone else
+ * hears that the owner was told. The request waits either way.
+ */
+const heldNotice = (lead: string, cause: KinTroubleCause, ownerOnly: boolean) =>
+  ownerOnly
+    ? `${couldnt(lead, cause)}. Kin is keeping this and will run it as soon as it can.`
+    : `${lead} is unavailable right now. Kin has told the owner, and will run this as soon as it can.`;
 
 type Outcome = "posted" | "note" | "silent" | "empty" | "withheld" | "overflow" | "dropped";
 
@@ -311,6 +324,7 @@ export class KinReplyBridge extends Context.Service<
       readonly wakeupId: KinWakeupId;
       readonly lane: Lane;
       readonly outcome: FailedOutcome;
+      readonly cause?: KinTroubleCause;
     }) => Effect.Effect<void>;
     /**
      * The wake-up was aborted for its audience: its line goes and its drafts end without the
@@ -349,6 +363,9 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const gate = yield* KinLevelGate;
   const chat = yield* KinChatService;
+  const care = yield* Effect.serviceOption(KinHostCare);
+  const troubleOpen = (orgId: KinOrgId, cause: KinTroubleCause) =>
+    Option.isSome(care) ? care.value.troubleOpen(orgId, cause) : Effect.succeed(false);
   const identity = yield* KinIdentity;
   const presence = yield* KinPresence;
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
@@ -1422,6 +1439,7 @@ const make = Effect.gen(function* () {
       readonly wakeupId: KinWakeupId;
       readonly lane: Lane;
       readonly outcome: FailedOutcome;
+      readonly cause?: KinTroubleCause;
     }) {
       if (
         input.outcome === "signin" ||
@@ -1429,7 +1447,9 @@ const make = Effect.gen(function* () {
         input.outcome === "model" ||
         input.outcome === "program"
       )
-        return yield* setupFailed({ ...input, outcome: input.outcome });
+        return yield* setupFailed({ ...input, cause: input.outcome });
+      if (input.outcome === "held")
+        return yield* setupFailed({ ...input, cause: input.cause ?? "unknown" });
       if (input.outcome === "replied") return yield* failedAfterReply(input);
       const notice = failedNotices[input.outcome];
       if (input.outcome === "retrying" || input.outcome === "retrying_later") {
@@ -1438,12 +1458,18 @@ const make = Effect.gen(function* () {
         const shown = input.outcome === "retrying" ? ["kin-retrying", "kin-setup"] : ["kin-setup"];
         if (yield* standing(input, agentId, shown)) return;
       }
+      // Kin is still trying, or the owner's notice for this cause already rang: shown, not pushed.
+      const quiet =
+        input.outcome === "retrying" ||
+        input.outcome === "retrying_later" ||
+        (input.cause !== undefined && (yield* troubleOpen(input.orgId, input.cause)));
       yield* chat.notice({
         messageId: KinMessageId.make(`${notice.prefix}:${input.wakeupId}`),
         orgId: input.orgId,
         chatId: input.lane.chatId,
         audience: "chat",
-        body: notice.body(input.lane.leadName),
+        body: notice.body(input.lane.leadName, input.cause),
+        ...(quiet ? { silent: true as const } : {}),
       });
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin failure notice failed", { cause })),
@@ -1485,11 +1511,13 @@ const make = Effect.gen(function* () {
     });
   });
 
+  // Held or unable to start for a cause the owner fixes: one line per chat while nobody writes,
+  // shown without a push, since the owner's notice for the cause is the one that rings.
   const setupFailed = Effect.fn("KinReplyBridge.setupFailed")(function* (input: {
     readonly orgId: KinOrgId;
     readonly wakeupId: KinWakeupId;
     readonly lane: Lane;
-    readonly outcome: SetupFailure;
+    readonly cause: KinTroubleCause;
   }) {
     const { orgId, wakeupId, lane } = input;
     const agentId = yield* agentOf(orgId, wakeupId);
@@ -1504,7 +1532,8 @@ const make = Effect.gen(function* () {
         orgId,
         chatId: lane.chatId,
         audience: ownerOnly ? "owner" : "chat",
-        body: setupNotice(lane.leadName, input.outcome, ownerOnly),
+        body: heldNotice(lane.leadName, input.cause, ownerOnly),
+        silent: true,
       });
     // Someone may join after `ownerOnly` was read: then they get the line anyone may read.
     yield* setup(ownerOnly).pipe(Effect.catchIf(isPrivateWriteRefused, () => setup(false)));

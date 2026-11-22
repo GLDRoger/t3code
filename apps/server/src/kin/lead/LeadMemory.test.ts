@@ -1152,6 +1152,14 @@ it.live(
         assert.strictEqual(notices.length, noticesBefore + 1);
         yield* writerService.discard(orgId, "shared-wakeup");
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'shared-wakeup'`;
+        // A turn this server began has lived through no restart: its tool calls with nothing
+        // staged are no loss to tell the owner of (C13).
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'fresh-wakeup', org_id, agent_id, thread_id, run_id, model, 8640000000000000, 'running', '[]', 'shared' FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'fresh-wakeup', 'item:team-claim', 'fixture-hash')`;
+        assert.isFalse(yield* writerService.staged(orgId, "fresh-wakeup"));
+        assert.strictEqual(notices.length, noticesBefore + 1);
+        yield* writerService.discard(orgId, "fresh-wakeup");
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'fresh-wakeup'`;
         yield* (yield* Orchestrator.OrchestratorV2).dispatch({
           type: "run.interrupt",
           commandId: CommandId.make("interrupt:fixture-wakeup"),

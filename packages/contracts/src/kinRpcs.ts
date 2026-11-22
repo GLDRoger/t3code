@@ -44,6 +44,7 @@ import { KinRefreshRpcs, KIN_REFRESH_RPC_SCOPES } from "./kinRefresh.ts";
 import { KinPulseRpcs, KIN_PULSE_RPC_SCOPES } from "./kinPulse.ts";
 import { KinOpenRpcs, KIN_OPEN_RPC_SCOPES } from "./kinOpen.ts";
 import { KinRecommendationRpcs, KIN_RECOMMENDATION_RPC_SCOPES } from "./kinRecommendations.ts";
+import { KinHostRpcs, KIN_HOST_RPC_SCOPES } from "./kinHostCare.ts";
 import {
   KinChatError,
   KinChatRpcs,
@@ -215,6 +216,7 @@ export const KinRpcs = [
   ...KinPulseRpcs,
   ...KinOpenRpcs,
   ...KinRecommendationRpcs,
+  ...KinHostRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
@@ -239,6 +241,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_PULSE_RPC_SCOPES,
   ...KIN_OPEN_RPC_SCOPES,
   ...KIN_RECOMMENDATION_RPC_SCOPES,
+  ...KIN_HOST_RPC_SCOPES,
   "kin.budget.get": AuthKinChatScope,
   "kin.budget.set": AuthKinChatScope,
   "kin.org.get": AuthKinChatScope,
@@ -497,6 +500,10 @@ const KIN_RPC_ACCESS = {
   // What Kin suggested to the owner and his answers: his alone, as the cards are.
   "kin.recommendations.list": "org_owner",
   "kin.recommendations.askAgain": "org_owner",
+  "kin.host.status": "owner_level",
+  "kin.host.freeSpace": "owner_level",
+  "kin.host.backUpNow": "owner_level",
+  "kin.host.retry": "owner_level",
   "kin.goals.list": "person",
   "kin.goals.save": "owner_level",
   "kin.checkIns.list": "owner_level",
@@ -586,6 +593,10 @@ export const KIN_RPC_AGGREGATES = {
   "kin.open.subscribe": "kin-pulse",
   "kin.recommendations.list": "kin-recommendations",
   "kin.recommendations.askAgain": "kin-recommendations",
+  "kin.host.status": "kin-host",
+  "kin.host.freeSpace": "kin-host",
+  "kin.host.backUpNow": "kin-host",
+  "kin.host.retry": "kin-host",
   "kin.goals.list": "kin-pulse",
   "kin.goals.save": "kin-pulse",
   "kin.checkIns.list": "kin-pulse",

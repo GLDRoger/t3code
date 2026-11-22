@@ -1579,9 +1579,8 @@ it.effect(
 
 it.effect("keeps a run that couldn't sign in out of the chat, and says so once per burst", () =>
   Effect.gen(function* () {
-    const { fake, runId, bridge, owner, wakeupId, posted, chats, chatId, projectId } = yield* setup(
-      { ask: "Is CI green?" },
-    );
+    const { fake, runId, bridge, owner, wakeupId, posted, chats, chatId, projectId, sql } =
+      yield* setup({ ask: "Is CI green?" });
     fake.items = [
       text("a", 1, "Not logged in · Please run /login", runId),
       failure("e", 2, "authentication_failed", runId),
@@ -1602,7 +1601,8 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
       );
     yield* fail(wakeupId);
     yield* fail(yield* retry());
-    const line = "Ada couldn't start: its model account needs signing in again on the server.";
+    const line =
+      "Ada couldn't start: its AI account is signed out. Kin is keeping this and will run it as soon as it can.";
     assert.deepStrictEqual(
       (yield* posted).map((row) => [row.body, row.authorKind]),
       [[line, "system"]],
@@ -1618,7 +1618,7 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
     yield* bridge.failed({ orgId: owner.orgId, wakeupId: yield* retry(), lane, outcome: "model" });
     assert.strictEqual(
       (yield* posted).at(-1)?.body,
-      "Ada couldn't start: its model account doesn't offer the model it's set to use. Choose another model for it.",
+      "Ada couldn't start: its AI account doesn't offer the model it's set to use. Kin is keeping this and will run it as soon as it can.",
     );
     yield* chats.send(owner, { chatId, body: "Hello?", clientMessageId: "program" });
     yield* bridge.failed({
@@ -1629,20 +1629,45 @@ it.effect("keeps a run that couldn't sign in out of the chat, and says so once p
     });
     assert.strictEqual(
       (yield* posted).at(-1)?.body,
-      "Ada couldn't start: the server couldn't run its model program. Check the provider's binary path in Settings.",
+      "Ada couldn't start: Kin couldn't run its AI program. Kin is keeping this and will run it as soon as it can.",
     );
     // A retry says so once; the next retry before anyone writes adds nothing. Before the long
     // wait it says when, from the wait the queue sets.
     yield* chats.send(owner, { chatId, body: "Again?", clientMessageId: "retry" });
     const before = (yield* posted).length;
     for (const outcome of ["retrying", "retrying", "retrying_later"] as const)
-      yield* bridge.failed({ orgId: owner.orgId, wakeupId: yield* retry(), lane, outcome });
+      yield* bridge.failed({
+        orgId: owner.orgId,
+        wakeupId: yield* retry(),
+        lane,
+        outcome,
+        cause: "unreachable",
+      });
     assert.deepStrictEqual(
       (yield* posted).slice(before).map((row) => row.body),
       [
-        "Ada couldn't start. Trying again in a moment.",
-        "Ada couldn't start. Trying once more in about 15 minutes.",
+        "Ada couldn't start: Kin couldn't reach the AI provider. Trying again in a moment.",
+        "Ada couldn't start: Kin couldn't reach the AI provider. Trying once more in about 15 minutes.",
       ],
+    );
+    // Held for a cause the owner fixes: said once, why, and that the request waits.
+    yield* chats.send(owner, { chatId, body: "Disk?", clientMessageId: "held" });
+    yield* bridge.failed({
+      orgId: owner.orgId,
+      wakeupId: yield* retry(),
+      lane,
+      outcome: "held",
+      cause: "space",
+    });
+    assert.strictEqual(
+      (yield* posted).at(-1)?.body,
+      "Ada couldn't start: Kin's computer ran out of space. Kin is keeping this and will run it as soon as it can.",
+    );
+    // Shown in the chat, never pushed: the owner's one notice for the cause is what rings.
+    assert.deepStrictEqual(
+      yield* sql<{ silent: number }>`SELECT DISTINCT silent FROM kin_messages
+        WHERE message_id LIKE 'kin-setup:%' OR message_id LIKE 'kin-retrying:%'`,
+      [{ silent: 1 }],
     );
   }).pipe(Effect.provide(layer)),
 );
@@ -1682,7 +1707,9 @@ it.effect("tells a shared chat only that the lead is unavailable when its accoun
     });
     assert.deepStrictEqual(
       (yield* posted).map((row) => row.body),
-      ["Ada is unavailable right now."],
+      [
+        "Ada is unavailable right now. Kin has told the owner, and will run this as soon as it can.",
+      ],
     );
   }).pipe(Effect.provide(layer)),
 );

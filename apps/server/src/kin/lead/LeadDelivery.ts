@@ -8,6 +8,7 @@ import {
   KinScheduledTaskCard,
   KinWidgetId,
   type KinWidget,
+  KIN_TROUBLE_WHY,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -22,6 +23,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 
@@ -224,6 +226,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Repository.KinChatRepository;
   const queue = yield* KinEventQueue.KinEventQueue;
+  const care = yield* Effect.serviceOption(KinHostCare);
   const ticks = yield* Scheduler.Scheduler;
   const hub = yield* Effect.serviceOption(KinChatHub);
   const cards = yield* makeCardWriter;
@@ -257,6 +260,14 @@ const make = Effect.gen(function* () {
   ) {
     const { orgId } = delivery;
     if (delivery.kind === "scheduled_task") {
+      // Why the run didn't finish, when an open notice knows it.
+      const why = Option.isSome(care)
+        ? yield* care.value.causeFor(orgId, delivery.agentId)
+        : undefined;
+      const body =
+        why === undefined
+          ? delivery.fallbackBody
+          : `${delivery.fallbackBody.replace(/\.$/, "")}: ${KIN_TROUBLE_WHY[why]}.`;
       yield* repo
         .insertMessage({
           orgId,
@@ -265,7 +276,7 @@ const make = Effect.gen(function* () {
           messageId: KinMessageId.make(`kin-run-failed:${delivery.eventId}`),
           author: { _tag: "system" },
           kind: "system",
-          body: delivery.fallbackBody,
+          body,
           intent: null,
           mentions: [],
           replyTo: null,
@@ -294,7 +305,7 @@ const make = Effect.gen(function* () {
             onSome: (card) => card.lastRun?.at ?? iso(now),
           }),
           status: "failed",
-          note: excerpt(delivery.fallbackBody),
+          note: excerpt(body),
         },
         now,
       );

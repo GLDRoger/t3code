@@ -65,6 +65,8 @@ import * as KinStop from "./KinStop.ts";
 import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
+import * as PlatformError from "effect/PlatformError";
 import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -2427,6 +2429,78 @@ describe("WakeupRunner", () => {
               ),
             ),
           ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect(
+    "clears temporary files at once when a wake-up fails for space and retries it once, telling the owner only when that fails too",
+    () =>
+      Effect.gen(function* () {
+        const told: Array<string> = [];
+        const full = new Memory.MemoryError({
+          orgId,
+          operation: "prepareWakeup",
+          cause: PlatformError.systemError({
+            _tag: "Unknown",
+            module: "FileSystem",
+            method: "writeFile",
+            pathOrDescriptor: "/tmp/kin-x/config",
+            cause: Object.assign(new Error("ENOSPC"), { errno: -28, code: "ENOSPC" }),
+          }),
+        });
+        const care = Layer.succeed(
+          KinHostCare,
+          KinHostCare.of({
+            host: true,
+            clean: (why) =>
+              Effect.sync(() => {
+                told.push(`clean ${why}`);
+                return { ran: true, removed: 0, freedBytes: 0, failed: 0 };
+              }),
+            devFullDisk: Effect.void,
+            failed: (input) =>
+              Effect.sync(() => {
+                told.push(`notice ${input.cause} ${input.eventIds.join(",")}`);
+              }),
+            succeeded: () => Effect.void,
+            troubleOpen: () => Effect.succeed(false),
+            causeFor: () => Effect.undefined,
+            checkBackup: () => Effect.void,
+            status: () => Effect.die("not read here"),
+            freeSpace: () => Effect.die("not tapped here"),
+            backUpNow: () => Effect.die("not tapped here"),
+            retry: () => Effect.die("not tapped here"),
+          }),
+        );
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const queue = yield* KinEventQueue.KinEventQueue;
+          const sql = yield* SqlClient.SqlClient;
+          yield* queue.enqueue(event("space"));
+          assert.strictEqual((yield* Fiber.await(yield* run()))._tag, "Failure");
+          // Cleared, back in the queue at once, no attempt spent, nobody told.
+          const firstAt = yield* Clock.currentTimeMillis;
+          assert.deepStrictEqual(told, ["clean out_of_space"]);
+          assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
+            { state: "queued", attempts: 0 },
+          ]);
+          assert.isAtMost(
+            (yield* sql<{
+              notBefore: number;
+            }>`SELECT not_before AS "notBefore" FROM kin_events`)[0]!.notBefore,
+            firstAt,
+          );
+          // Still full: the owner's notice, and the turn held for when there is space.
+          assert.strictEqual((yield* Fiber.await(yield* run()))._tag, "Failure");
+          const heldAt = yield* Clock.currentTimeMillis;
+          assert.deepStrictEqual(told, ["clean out_of_space", "notice space space"]);
+          assert.deepStrictEqual(
+            yield* sql`SELECT state, attempts, not_before > ${heldAt} AS later FROM kin_events`,
+            [{ state: "queued", attempts: 0, later: 1 }],
+          );
+        }).pipe(
+          Effect.provide(harness({ prepare: () => Effect.fail(full) }).pipe(Layer.provide(care))),
         );
       }).pipe(provideDeterministicTestRuntime),
   );

@@ -3,6 +3,10 @@
 #
 #   systemctl --user start kin-temp-clean    # by hand; journalctl --user -u kin-temp-clean shows what it did
 #
+# Kin's server runs it with --now when a turn fails for want of space or a person taps Free up space
+# now: the low-space rule applies whatever the free space, and a last line `kin-clean removed=N
+# freed_kb=N failed=N` follows. --tmpdir-only (a dev server's stand-in) leaves /tmp alone.
+#
 # Removes the user's own top-level entries in each folder of ROOTS that nothing has modified inside
 # for MAX_AGE_MINUTES (LOW_SPACE_AGE_MINUTES while a folder's disk, or the user's quota on it, has
 # less than LOW_SPACE_PERCENT left; a git checkout always gets the full MAX_AGE_MINUTES) and that no
@@ -79,7 +83,15 @@ human() {
 
 main() {
   set -uo pipefail
-  local now root age cutoff day_cutoff limit entry held kb removed=0 freed=0 failed=0 low=""
+  local now root age cutoff day_cutoff limit entry held kb removed=0 freed=0 failed=0 low="" asked=""
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --now) asked=1 ;;
+      --tmpdir-only) ROOTS=("${TMPDIR:-$HOME/.cache/kin-tmp}") ;;
+      *) echo "clean-temp.sh: unknown option $arg" >&2; return 2 ;;
+    esac
+  done
   now="${NOW:-$(date +%s)}"
   held="$(held_paths)"
   for root in "${ROOTS[@]}"; do
@@ -87,7 +99,7 @@ main() {
     # /proc names held paths physically, so entries must be named the same way.
     root="$(cd -P "$root" && pwd)" || continue
     age="$MAX_AGE_MINUTES"
-    if [ "$(percent_left "$root")" -lt "$LOW_SPACE_PERCENT" ]; then
+    if [ -n "$asked" ] || [ "$(percent_left "$root")" -lt "$LOW_SPACE_PERCENT" ]; then
       age="$LOW_SPACE_AGE_MINUTES"
       low=1
     fi
@@ -120,6 +132,7 @@ main() {
   if [ -n "$low" ]; then printf ' Space was low, so anything untouched for %d hours counted as old.' $((LOW_SPACE_AGE_MINUTES / 60)); fi
   if [ "$failed" -gt 0 ]; then printf " %d item(s) couldn't be removed." "$failed"; fi
   printf '\n'
+  if [ -n "$asked" ]; then printf 'kin-clean removed=%d freed_kb=%d failed=%d\n' "$removed" "$freed" "$failed"; fi
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi

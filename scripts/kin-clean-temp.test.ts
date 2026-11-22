@@ -88,6 +88,29 @@ echo "left $(left)"`);
     );
   });
 
+  it("uses the low-space rule when Kin asks with --now, whatever the space, and sums it up last", () => {
+    const { out, said } = inFixture(`
+percent_left() { echo 50; }
+main --now
+echo "left $(left)"`);
+    expect(out[0], said).toMatch(
+      /^Cleared 6 old temporary item\(s\) and gave back .+\. Space was low/,
+    );
+    expect(out[1]).toMatch(/^kin-clean removed=6 freed_kb=\d+ failed=0$/);
+    expect(out[2]).toBe(
+      "left kin-tmp/fresh outside/keep tmp/busy-work tmp/held tmp/three-hours-checkout",
+    );
+  });
+
+  it("leaves the system temp folder alone with --tmpdir-only", () => {
+    const { out, said } = inFixture(`
+percent_left() { echo 50; }
+TMPDIR="$FIXTURE/kin-tmp" main --tmpdir-only
+echo "left $(left)"`);
+    expect(out[0], said).toBe("Cleared 1 old temporary item(s) and gave back 0 KB.");
+    expect(out[1]).toMatch(/^left kin-tmp\/fresh outside\/keep tmp\/busy-work tmp\/cache /);
+  });
+
   it("never touches what another user owns", () => {
     const { out, said } = inFixture(`
 percent_left() { echo 50; }
