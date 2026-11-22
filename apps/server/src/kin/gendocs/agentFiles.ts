@@ -332,7 +332,7 @@ export const writeRecipe = leadTool("KinAgentFiles.writeRecipe", (lead, input: D
     const lookAgain = references.length > 0 && open.compared === 0;
     const rendered = yield* renderSample(renderer, lead.orgId, logo, preview, lookAgain);
     if (typeof rendered === "string")
-      return yield* refused(`its sample didn't render: ${rendered}`);
+      return yield* refused(`its sample didn't render because ${rendered}`);
     // Written from the owner's files: its first page goes back once, to set beside them.
     if (lookAgain && rendered.page !== undefined) {
       const shownAt = path.join(folder, "in", "rendered", "page-1.png");

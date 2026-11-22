@@ -52,9 +52,10 @@ export const isCalendarDay = (value: string) => {
 };
 /** An ISO day or time as epoch ms, NaN unless it parses and its day is real. */
 export const calendarTimeMillis = (value: string) =>
-  /^\d{4}-\d{2}-\d{2}/.test(value) && !isCalendarDay(value.slice(0, 10))
-    ? Number.NaN
-    : Date.parse(value);
+  isCalendarDay(value.slice(0, 10)) &&
+  (value.length === 10 || value[10] === "T" || value[10] === " ")
+    ? Date.parse(value)
+    : Number.NaN;
 /** A calendar day in the owner's time zone. */
 export const KinDay = Schema.String.check(
   Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/),

@@ -198,7 +198,7 @@ const Category = KinToolText(
 );
 const Amount = KinToolText(
   60,
-  'The amount as said or written: "4200", "4,200.50", "€30", "12k". Kin turns it into exact minor units and refuses a form it can\'t read one way.',
+  'The amount as said or written: "4200", "4,200.50", "€30", "12k". Kin turns it into exact minor units and refuses a form it can\'t read one way. For an expense refund or credit, give a negative amount.',
 );
 const Currency = Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/)).annotate({
   description:
@@ -1525,7 +1525,7 @@ const amountFrom = (
   currency: string | undefined,
   stored: string | null | undefined,
 ) => {
-  const parsed = parseAmount(amount, currency ?? stored ?? def.currency);
+  const parsed = parseAmount(amount, currency ?? stored ?? def.currency, def.id === "expenses");
   if ("error" in parsed) return Effect.fail(parsed.error);
   if (currency !== undefined && parsed.money.currency !== currency)
     return Effect.fail(

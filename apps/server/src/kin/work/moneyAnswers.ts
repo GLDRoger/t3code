@@ -497,7 +497,7 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
       r.date_all_day AS "dateAllDay", r.repeat_json AS "repeatJson"
     FROM kin_records r
     JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
-    WHERE r.org_id = ${orgId} AND r.repeat_json IS NOT NULL AND r.amount_minor IS NOT NULL
+    WHERE r.org_id = ${orgId} AND r.repeat_json IS NOT NULL AND r.amount_minor >= 0
       AND ${countedEntry(sql)} AND COALESCE(r.side, 'ours') <> 'theirs'
       AND r.register_id NOT IN ${sql.in(notOutgoing)}
       AND NOT EXISTS (SELECT 1 FROM kin_records n WHERE n.org_id = r.org_id
