@@ -2549,6 +2549,16 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         (yield* team.kinLines(zoyaChat)).at(-1),
         "Rhea Rao wants changes first; the new proposal goes back to Rhea Rao to approve.",
       );
+      // A routine in Rhea's chat, with no word of hers, redoes nothing: filed as today.
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'`;
+      const routine = yield* team.wake("chief");
+      const unasked = yield* proposal(
+        { eventId: `event:${routine}` },
+        { title: "Morning draft", body: "Four shoots for the hotels" },
+      );
+      assert.notStrictEqual(unasked.key, "");
+      assert.notInclude(unasked.note ?? "", "Changes first");
+      assert.lengthOf(yield* drafts, 1);
       yield* TestClock.adjust("1 minute");
       const words = yield* turnOn("rhea", chatOf("chief"), "Make it four shoots, 300000 a month.");
       // Another client's proposal is another draft: today's plain card, nothing raised.

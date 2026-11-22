@@ -238,7 +238,7 @@ export const redo = Effect.fn("KinQuestions.redo")(function* (
 });
 
 /**
- * In the owner's own turn in her chat with the agent, the one teammate's draft she answered
+ * In the owner's own turn on her words in her chat with the agent, the one teammate's draft she answered
  * Changes first on there and that no later round replaced, which this redraft is: the same kind
  * for the same client, or an edit of a doc it was about. Undefined unless exactly one.
  */
@@ -253,6 +253,14 @@ export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
   if ((yield* approvalOf(turn))._tag !== "none") return undefined;
   const lane = yield* laneFor(turn);
   if (Option.isNone(lane) || lane.value.team === true) return undefined;
+  // Only a turn answering the owner's own words there redoes: never a routine or a check-in.
+  const [agent] = yield* sql<{ owner: KinPersonId }>`SELECT owner_person_id AS owner
+    FROM kin_agents WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId}`;
+  if (
+    agent === undefined ||
+    (yield* ownMessages(turn, lane.value.chatId, agent.owner)).length === 0
+  )
+    return undefined;
   const rows = yield* sql<{
     questionId: string;
     question: string;
