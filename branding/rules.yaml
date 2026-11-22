@@ -47,11 +47,17 @@ text:
     from: com.t3tools.t3code.preview
     to: com.gldroger.kin.preview
     exact: true
-  - files: [apps/mobile/app.config.ts, apps/desktop/src/electron/ElectronProtocol.ts]
+  - files:
+      - apps/mobile/app.config.ts
+      - apps/desktop/src/electron/ElectronProtocol.ts
+      - apps/desktop/src/kin/appPage.ts
     from: t3code
     to: kin
     exact: true
-  - files: [apps/mobile/app.config.ts, apps/desktop/src/electron/ElectronProtocol.ts]
+  - files:
+      - apps/mobile/app.config.ts
+      - apps/desktop/src/electron/ElectronProtocol.ts
+      - apps/desktop/src/kin/appPage.ts
     from: t3code-dev
     to: kin-dev
     exact: true

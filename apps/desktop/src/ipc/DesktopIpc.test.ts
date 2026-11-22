@@ -12,7 +12,7 @@ import * as DesktopIpc from "./DesktopIpc.ts";
 
 it.effect("answers only the main window's top frame", () =>
   Effect.gen(function* () {
-    const mainFrame = { url: getDesktopUrl(false) };
+    const mainFrame = { url: getDesktopUrl(false), origin: getDesktopUrl(false).slice(0, -1) };
     const invoke = new Map<string, DesktopIpc.DesktopIpcHandleListener>();
     const sync = new Map<string, DesktopIpc.DesktopIpcSyncListener>();
     const ipc = yield* DesktopIpc.DesktopIpc.pipe(

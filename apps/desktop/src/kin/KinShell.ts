@@ -1,4 +1,6 @@
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -29,10 +31,15 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import {
   kinShellAllowsPermission,
+  kinShellCrashReload,
   kinShellNavigation,
+  kinShellOutsideOpen,
+  kinShellRedeemResult,
   kinShellRootRedirect,
+  kinShellSessionProbe,
   kinTeamHome,
   readKinDesktopLink,
+  readKinOsLink,
 } from "./kinDesktopLink.ts";
 import { isAppPageUrl } from "./appPage.ts";
 import * as Channels from "./kinShellChannels.ts";
@@ -41,8 +48,10 @@ import {
   KIN_SHELL_PAGE_HTML,
   KIN_SHELL_PAGE_POLICY,
   KIN_SHELL_PAGE_SCRIPT,
+  kinShellJoinQuestion,
   type KinShellView,
 } from "./kinShellPages.ts";
+import { makeKinShellTransitions } from "./kinShellTransitions.ts";
 
 /**
  * What this computer is to Kin, kept in the desktop's state folder. `join` is a window on the
@@ -56,8 +65,10 @@ type KinShellSettings = typeof KinShellSettings.Type;
 const decodeSettings = Schema.decodeUnknownOption(Schema.fromJsonString(KinShellSettings));
 
 const KIN_SHELL_SETTINGS_FILE = "kin-desktop.json";
+const PAIR_PAGE = "/pair";
 const PAIR_SESSION_ROUTE = "/api/auth/browser-session";
 const SESSION_STATE_ROUTE = "/api/auth/session";
+const SESSION_PROBE_TIMEOUT_MS = 10_000;
 const ERR_ABORTED = -3;
 const HOST_DOWN_STATUSES = new Set([502, 503, 504]);
 
@@ -70,12 +81,17 @@ class KinShellSessionCheckError extends Schema.TaggedError<KinShellSessionCheckE
   { cause: Schema.Defect() },
 ) {}
 
+class KinShellClearStorageError extends Schema.TaggedError<KinShellClearStorageError>()(
+  "KinShellClearStorageError",
+  { cause: Schema.Defect() },
+) {}
+
 export class KinShell extends Context.Service<
   KinShell,
   {
     /** Serves the app's own pages and their controls, in place of the bundled server. */
     readonly start: Effect.Effect<boolean, DesktopIpc.DesktopIpcRegistrationError, Scope.Scope>;
-    /** A join link from outside the window: `kin://kin/join?link=…` or a pasted link. */
+    /** A join link the operating system handed over: `kin://kin/join?link=…` or `kin://pair?…`. */
     readonly receiveLink: (url: string) => Effect.Effect<void>;
     readonly useDifferentLink: Effect.Effect<void>;
     readonly openHostInBrowser: Effect.Effect<void>;
@@ -96,6 +112,9 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const mainWindowMutex = yield* Semaphore.make(1);
+  const transitionLock = yield* Semaphore.make(1);
+  /** Open once the app's scheme, the session's rules and the IPC guard are installed. */
+  const rulesInstalled = yield* Deferred.make<void>();
   const runPromise = Effect.runPromiseWith(yield* Effect.context<Path.Path>());
 
   const appUrl = getDesktopUrl(environment.isDevelopment);
@@ -104,34 +123,32 @@ const make = Effect.gen(function* () {
   const preloadPath = path.join(path.dirname(environment.preloadPath), "kin-shell-preload.cjs");
   const isAppPage = isAppPageUrl;
 
-  let remembered: Option.Option<KinShellSettings> = Option.flatMap(
+  const saved = Option.flatMap(
     yield* fileSystem.readFileString(settingsPath).pipe(Effect.option),
     decodeSettings,
+  );
+  const owner = makeKinShellTransitions(
+    Option.getOrNull(Option.map(saved, (settings) => settings.origin)),
   );
   let view: KinShellView = { view: "join", host: null, problem: null, canGoBack: false };
   /** What Try again opens: the host page that failed, else the last one the shell opened. */
   let lastTarget: string | null = null;
   let retried = false;
-  /** A link the host's page is redeeming, and what was remembered before it. */
-  let joining: {
-    readonly origin: string;
-    readonly previous: Option.Option<KinShellSettings>;
-  } | null = null;
-  let pendingLink: string | null = null;
+  let crashes: ReadonlyArray<number> = [];
+  /** The last click or Enter in the window; only a person's action may open the browser. */
+  let lastPersonAction = Number.NEGATIVE_INFINITY;
 
   const readableHost = (origin: string) => new URL(origin).host;
-  const currentHostOrigin = () =>
-    joining?.origin ?? Option.getOrNull(Option.map(remembered, (settings) => settings.origin));
   const hostHome = kinTeamHome;
+  const locked = <A, E, R>(effect: Effect.Effect<A, E, R>) => transitionLock.withPermits(1)(effect);
 
-  const remember = Effect.fn("KinShell.remember")(
-    function* (next: Option.Option<KinShellSettings>) {
-      remembered = next;
-      if (Option.isNone(next)) {
+  const persist = Effect.fn("KinShell.persist")(
+    function* (origin: string | null) {
+      if (origin === null) {
         yield* fileSystem.remove(settingsPath, { force: true });
         return;
       }
-      const encoded = yield* encodeSettings(next.value);
+      const encoded = yield* encodeSettings({ mode: "join", origin });
       yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
       const temporary = `${settingsPath}.tmp`;
       yield* fileSystem.writeFileString(temporary, `${encoded}\n`);
@@ -142,11 +159,35 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  /** Removes what a team's host stored on this computer; false when that failed. */
+  const clearOrigin = Effect.fn("KinShell.clearOrigin")(
+    function* (origin: string) {
+      yield* Effect.tryPromise({
+        try: () => Electron.session.defaultSession.clearStorageData({ origin }),
+        catch: (cause) => new KinShellClearStorageError({ cause }),
+      });
+      return true;
+    },
+    Effect.catch((error) =>
+      logWarning("could not clear a team's storage", { message: error.message }).pipe(
+        Effect.as(false),
+      ),
+    ),
+  );
+
   const mainWindow = electronWindow.main.pipe(
     Effect.map(Option.filter((window) => !window.isDestroyed())),
   );
 
+  /** Every main-process load goes through here, and is checked against the current team then. */
   const load = Effect.fn("KinShell.load")(function* (url: string) {
+    const allowed =
+      isAppPage(url) ||
+      kinShellNavigation({ url, hostOrigin: owner.hostOrigin(), isAppPage }) === "stay";
+    if (!allowed) {
+      yield* logWarning("refused to load a page off the team's host");
+      return;
+    }
     const window = yield* mainWindow;
     if (Option.isNone(window)) return;
     window.value.loadURL(url).catch(() => undefined);
@@ -157,13 +198,15 @@ const make = Effect.gen(function* () {
     yield* load(appUrl);
   });
 
-  const showJoin = (problem: string | null) =>
-    showPage({
+  const showJoin = (problem: string | null) => {
+    const team = owner.remembered();
+    return showPage({
       view: "join",
-      host: Option.getOrNull(Option.map(remembered, (settings) => readableHost(settings.origin))),
+      host: team === null ? null : readableHost(team),
       problem,
-      canGoBack: problem !== null && Option.isSome(remembered),
+      canGoBack: team !== null,
     });
+  };
 
   const showUnreachable = (origin: string) =>
     showPage({
@@ -178,44 +221,38 @@ const make = Effect.gen(function* () {
     yield* load(url);
   });
 
-  /** Whether the host still knows this computer; a lapsed session lands on the join page. */
-  const sessionState = Effect.fn("KinShell.sessionState")(
-    function* (origin: string) {
-      return yield* Effect.tryPromise({
-        try: async () => {
-          const response = await Electron.session.defaultSession.fetch(
-            new URL(SESSION_STATE_ROUTE, origin).toString(),
-            { credentials: "include", cache: "no-store" },
-          );
-          if (!response.ok) return "unknown" as const;
-          const body: unknown = await response.json();
-          return typeof body === "object" &&
-            body !== null &&
-            "authenticated" in body &&
-            body.authenticated === false
-            ? ("signed-out" as const)
-            : ("signed-in" as const);
-        },
-        catch: (cause) => new KinShellSessionCheckError({ cause }),
-      });
-    },
-    Effect.orElseSucceed(() => "unknown" as const),
-  );
+  const notify = Effect.fn("KinShell.notify")(function* (message: string, detail: string) {
+    const window = yield* mainWindow;
+    yield* electronDialog
+      .showMessageBox(
+        { type: "info", message, detail, buttons: ["OK"] },
+        Option.getOrUndefined(window),
+      )
+      .pipe(Effect.ignore);
+  });
 
-  const confirmLeaving = Effect.fn("KinShell.confirmLeaving")(function* (
-    origin: string,
-    message: string,
-    confirmLabel: string,
-  ) {
+  const stampPersonAction = () =>
+    void runPromise(
+      Effect.map(Clock.currentTimeMillis, (now) => {
+        lastPersonAction = now;
+      }),
+    );
+
+  const ask = Effect.fn("KinShell.ask")(function* (question: {
+    readonly message: string;
+    readonly detail: string;
+    readonly confirm: string;
+    readonly defaultToCancel: boolean;
+  }) {
     const window = yield* mainWindow;
     const result = yield* electronDialog
       .showMessageBox(
         {
           type: "question",
-          message,
-          detail: `Kin on this computer signs out of your team's Kin at ${readableHost(origin)}. To come back to it, you'll need a new join link.`,
-          buttons: [confirmLabel, "Cancel"],
-          defaultId: 0,
+          message: question.message,
+          detail: question.detail,
+          buttons: [question.confirm, "Cancel"],
+          defaultId: question.defaultToCancel ? 1 : 0,
           cancelId: 1,
         },
         Option.getOrUndefined(window),
@@ -224,64 +261,144 @@ const make = Effect.gen(function* () {
     return result.response === 0;
   });
 
-  const forget = Effect.fn("KinShell.forget")(function* (origin: string) {
-    yield* Effect.promise(() =>
-      Electron.session.defaultSession.clearStorageData({ origin }).catch(() => undefined),
-    );
-    yield* remember(Option.none());
+  /** Whether the host still knows this computer; only its own direct answer counts. */
+  const sessionState = Effect.fn("KinShell.sessionState")(function* (origin: string) {
+    const response = yield* Effect.tryPromise({
+      try: async () => {
+        const answer = await Electron.session.defaultSession.fetch(
+          new URL(SESSION_STATE_ROUTE, origin).toString(),
+          {
+            credentials: "include",
+            cache: "no-store",
+            redirect: "error",
+            signal: AbortSignal.timeout(SESSION_PROBE_TIMEOUT_MS),
+          },
+        );
+        const body: unknown = await answer.json().catch(() => null);
+        return { status: answer.status, url: answer.url, redirected: answer.redirected, body };
+      },
+      catch: (cause) => new KinShellSessionCheckError({ cause }),
+    }).pipe(Effect.orElseSucceed(() => null));
+    return kinShellSessionProbe({ origin, response });
   });
 
-  const joinWith = Effect.fn("KinShell.joinWith")(function* (text: string) {
-    const link = readKinDesktopLink(text);
-    if (link._tag === "NotALink") return KIN_SHELL_COPY.notALink;
-    if (link._tag === "Insecure") return KIN_SHELL_COPY.insecure;
-    if (Option.isSome(remembered) && remembered.value.origin !== link.origin) {
-      const previousOrigin = remembered.value.origin;
-      if (!(yield* confirmLeaving(previousOrigin, "Join a different team's Kin?", "Join"))) {
-        return null;
-      }
-      yield* forget(previousOrigin);
+  /** A link the host is redeeming didn't work: back to the team the window was on, if any. */
+  const joinFailed = Effect.fn("KinShell.joinFailed")(function* (seen: number, problem: string) {
+    const failed = owner.failed(seen);
+    if (failed === null) return;
+    yield* logWarning("the link didn't sign this computer in", {
+      host: readableHost(failed.origin),
+    });
+    if (failed.previous === null) return yield* showJoin(problem);
+    yield* goHost(hostHome(failed.previous));
+    void runPromise(notify(problem, KIN_SHELL_COPY.backOnTeam(failed.previous)));
+  });
+
+  const joinFinished = Effect.fn("KinShell.joinFinished")(function* (
+    seen: number,
+    status: number | null,
+  ) {
+    const result = kinShellRedeemResult(status);
+    if (result === "limit") return yield* joinFailed(seen, KIN_SHELL_COPY.limit);
+    if (result === "spent") return yield* joinFailed(seen, KIN_SHELL_COPY.spent);
+    if (result === "try-again") return yield* joinFailed(seen, KIN_SHELL_COPY.tryAgain);
+    const joined = owner.joined(seen);
+    if (joined === null) return;
+    yield* persist(joined.origin);
+    yield* logInfo("joined", { host: readableHost(joined.origin) });
+    if (joined.clear === null) return;
+    if (!(yield* clearOrigin(joined.clear))) {
+      void runPromise(
+        notify(
+          KIN_SHELL_COPY.clearFailed,
+          KIN_SHELL_COPY.clearFailedDetail(joined.origin, joined.clear),
+        ),
+      );
     }
-    joining = { origin: link.origin, previous: remembered };
-    yield* remember(Option.some({ mode: "join", origin: link.origin }));
+  });
+
+  /** A pasted link is the person's own action; a link from outside the app is only a proposal. */
+  const joinWith = Effect.fn("KinShell.joinWith")(function* (text: string, fromOutside: boolean) {
+    const link = fromOutside ? readKinOsLink(text) : readKinDesktopLink(text);
+    if (link._tag !== "Link") {
+      const problem =
+        link._tag === "Insecure"
+          ? KIN_SHELL_COPY.insecure
+          : link._tag === "Ambiguous"
+            ? KIN_SHELL_COPY.ambiguous
+            : KIN_SHELL_COPY.notALink;
+      return { problem, leaving: false };
+    }
+    const question = kinShellJoinQuestion({
+      origin: link.origin,
+      current: owner.remembered(),
+      fromOutside,
+    });
+    if (question !== null && !(yield* ask(question))) return { problem: null, leaving: false };
+    const page = new URL(link.url).pathname;
+    owner.startJoin(
+      link.origin,
+      page,
+      page === PAIR_PAGE ? PAIR_SESSION_ROUTE : KIN_INVITE_BROWSER_ACCEPT_ROUTE,
+    );
+    retried = false;
     yield* logInfo("joining", { host: readableHost(link.origin) });
     yield* goHost(link.url);
-    return null;
-  });
-
-  const linkFailed = Effect.fn("KinShell.linkFailed")(function* (status: number) {
-    const failed = joining;
-    joining = null;
-    if (failed === null) return;
-    yield* logWarning("the host refused the link", { status });
-    yield* remember(failed.previous);
-    yield* showJoin(status === 409 ? KIN_SHELL_COPY.limit : KIN_SHELL_COPY.spent);
-  });
-
-  const handleLink = Effect.fn("KinShell.handleLink")(function* (text: string) {
-    const problem = yield* joinWith(text);
-    if (problem !== null) yield* showJoin(problem);
+    return { problem: null, leaving: true };
   });
 
   const openStart = Effect.gen(function* () {
-    if (pendingLink !== null) {
-      const link = pendingLink;
-      pendingLink = null;
-      return yield* handleLink(link);
-    }
-    if (Option.isNone(remembered)) return yield* showJoin(null);
-    const origin = remembered.value.origin;
-    if ((yield* sessionState(origin)) === "signed-out") {
-      yield* remember(Option.none());
-      return yield* showJoin(KIN_SHELL_COPY.signedOut);
-    }
-    yield* goHost(hostHome(origin));
+    const launch = yield* locked(
+      Effect.gen(function* () {
+        const seen = owner.begin();
+        const origin = owner.remembered();
+        if (origin !== null) return { seen, origin };
+        yield* showJoin(null);
+        return null;
+      }),
+    );
+    if (launch === null) return;
+    const { seen, origin } = launch;
+    const probe = yield* sessionState(origin);
+    yield* locked(
+      Effect.gen(function* () {
+        if (!owner.isCurrent(seen)) return yield* logInfo("dropped a launch check that came late");
+        if (probe === "signed-out" && owner.signedOut(seen, origin)) {
+          yield* persist(null);
+          yield* clearOrigin(origin);
+          return yield* showJoin(KIN_SHELL_COPY.signedOut);
+        }
+        if (probe === "unreachable") {
+          lastTarget = hostHome(origin);
+          return yield* showUnreachable(origin);
+        }
+        yield* goHost(hostHome(origin));
+      }),
+    );
   }).pipe(Effect.withSpan("KinShell.openStart"));
 
-  const openOutside = (url: string) =>
-    kinShellNavigation({ url, hostOrigin: null, isAppPage }) === "outside"
-      ? electronShell.openExternal(url).pipe(Effect.asVoid)
-      : Effect.void;
+  /** An address off the team's host; only a person's click or Enter opens the browser. */
+  const openOutsideFromPage = Effect.fn("KinShell.openOutsideFromPage")(function* (
+    url: string,
+    cause: "navigate" | "new-window" | "redirect",
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const rule = kinShellOutsideOpen({ cause, sincePersonAction: now - lastPersonAction });
+    if (rule === "block") {
+      return yield* logWarning("kept a page from opening the browser by itself", { cause });
+    }
+    lastPersonAction = Number.NEGATIVE_INFINITY;
+    if (rule === "ask") {
+      const open = yield* ask({
+        message: "Open this address in your browser?",
+        detail: `Your team's Kin sent this window to ${url}`,
+        confirm: "Open",
+        defaultToCancel: true,
+      });
+      if (!open) return;
+    }
+    yield* electronShell.openExternal(url).pipe(Effect.asVoid);
+  });
 
   const installContextMenu = (window: Electron.BrowserWindow) => {
     window.webContents.on("context-menu", (_event, params) => {
@@ -320,6 +437,7 @@ const make = Effect.gen(function* () {
   });
 
   const createWindow = Effect.gen(function* () {
+    yield* Deferred.await(rulesInstalled);
     if (yield* Ref.get(desktopState.quitting)) return Option.none<Electron.BrowserWindow>();
     const settings = yield* desktopSettings.get;
     const displays = yield* Effect.sync(() =>
@@ -354,51 +472,108 @@ const make = Effect.gen(function* () {
         sandbox: true,
         webviewTag: false,
         spellcheck: true,
+        devTools: environment.isDevelopment,
       },
     });
     const contents = window.webContents;
 
+    contents.on("before-input-event", (_event, input) => {
+      if (input.type === "keyDown" && (input.key === "Enter" || input.key === " ")) {
+        stampPersonAction();
+      }
+    });
+    contents.on("before-mouse-event", (_event, mouse) => {
+      if (mouse.type === "mouseUp" && mouse.button !== "right") stampPersonAction();
+    });
+    // The main process decides when the window leaves a page; a page can't hold it there.
+    contents.on("will-prevent-unload", (event) => event.preventDefault());
     contents.setWindowOpenHandler(({ url }) => {
-      void runPromise(openOutside(url));
+      if (kinShellNavigation({ url, hostOrigin: null, isAppPage }) === "outside") {
+        void runPromise(openOutsideFromPage(url, "new-window"));
+      }
       return { action: "deny" };
     });
-    const guardNavigation = (event: Electron.Event, url: string) => {
-      const decision = kinShellNavigation({ url, hostOrigin: currentHostOrigin(), isAppPage });
+    contents.on("will-navigate", (event) => {
+      const decision = kinShellNavigation({
+        url: event.url,
+        hostOrigin: owner.hostOrigin(),
+        isAppPage,
+      });
       if (decision === "stay") return;
       event.preventDefault();
-      if (decision === "outside") void runPromise(openOutside(url));
-    };
-    contents.on("will-navigate", (event, url) => guardNavigation(event, url));
+      if (decision === "outside") void runPromise(openOutsideFromPage(event.url, "navigate"));
+    });
     contents.on("will-redirect", (event) => {
-      if (event.isMainFrame) guardNavigation(event, event.url);
+      if (!event.isMainFrame) return;
+      const host = owner.hostOrigin();
+      const decision = kinShellNavigation({ url: event.url, hostOrigin: host, isAppPage });
+      if (decision === "stay") return;
+      event.preventDefault();
+      const attempt = owner.attempt();
+      if (attempt !== null && !attempt.committed) {
+        void runPromise(locked(joinFailed(attempt.generation, KIN_SHELL_COPY.redirected)));
+        return;
+      }
+      // A load the shell started, sent off the host before it showed anything.
+      const shown = contents.getURL();
+      if (host !== null && (!URL.canParse(shown) || new URL(shown).origin !== host)) {
+        void runPromise(locked(showUnreachable(host)));
+        return;
+      }
+      if (decision === "outside") void runPromise(openOutsideFromPage(event.url, "redirect"));
     });
     contents.on("will-attach-webview", (event) => event.preventDefault());
     contents.on(
       "did-fail-load",
       (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-        const host = currentHostOrigin();
+        const host = owner.hostOrigin();
         if (!isMainFrame || errorCode === ERR_ABORTED || host === null) return;
         if (!URL.canParse(validatedURL) || new URL(validatedURL).origin !== host) return;
         lastTarget = validatedURL;
         void runPromise(
           logWarning("team's Kin did not load", { errorCode, errorDescription }).pipe(
-            Effect.andThen(showUnreachable(host)),
+            Effect.andThen(locked(showUnreachable(host))),
           ),
         );
       },
     );
     contents.on("did-navigate", (_event, url, httpResponseCode) => {
-      const host = currentHostOrigin();
+      const host = owner.hostOrigin();
       if (host === null || !URL.canParse(url) || new URL(url).origin !== host) return;
+      const attempt = owner.attempt();
+      if (attempt !== null && new URL(url).pathname === attempt.page) {
+        owner.committed(attempt.generation);
+      }
       if (!HOST_DOWN_STATUSES.has(httpResponseCode)) {
         retried = false;
         return;
       }
       lastTarget = url;
-      void runPromise(showUnreachable(host));
+      void runPromise(locked(showUnreachable(host)));
     });
     contents.on("render-process-gone", (_event, details) => {
-      if (details.reason !== "clean-exit" && !window.isDestroyed()) contents.reload();
+      if (details.reason === "clean-exit" || window.isDestroyed()) return;
+      void runPromise(
+        Effect.gen(function* () {
+          const next = kinShellCrashReload(crashes, yield* Clock.currentTimeMillis);
+          crashes = next.crashes;
+          if (next.reload) return contents.reload();
+          const host = owner.hostOrigin();
+          const crashed = contents.getURL();
+          if (host !== null && URL.canParse(crashed) && new URL(crashed).origin === host) {
+            lastTarget = crashed;
+          }
+          yield* logWarning("team's Kin kept stopping", { reason: details.reason });
+          yield* locked(
+            showPage({
+              view: "stopped",
+              host: host === null ? null : readableHost(host),
+              problem: null,
+              canGoBack: false,
+            }),
+          );
+        }),
+      );
     });
     installContextMenu(window);
     window.once("ready-to-show", () => void runPromise(electronWindow.reveal(window)));
@@ -407,7 +582,7 @@ const make = Effect.gen(function* () {
     if (settings.mainWindowMaximized) window.maximize();
 
     yield* electronWindow.setMain(window);
-    yield* openStart;
+    void runPromise(openStart);
     return Option.some(window);
   }).pipe(Effect.withSpan("KinShell.createWindow"));
 
@@ -425,17 +600,15 @@ const make = Effect.gen(function* () {
     if (Option.isSome(window)) yield* electronWindow.reveal(window.value);
   }).pipe(Effect.withSpan("KinShell.activate"));
 
+  /** The join page, with the way back to the team; nothing is signed out until a new link works. */
   const useDifferentLink = Effect.gen(function* () {
     yield* activate;
-    if (Option.isSome(remembered)) {
-      const origin = remembered.value.origin;
-      if (!(yield* confirmLeaving(origin, "Use a different link?", "Use a different link"))) {
-        return;
-      }
-      yield* forget(origin);
-    }
-    joining = null;
-    yield* showJoin(null);
+    yield* locked(
+      Effect.gen(function* () {
+        owner.begin();
+        yield* showJoin(null);
+      }),
+    );
   }).pipe(
     Effect.catch((error) => logWarning("could not show the join page", { message: error.message })),
     Effect.withSpan("KinShell.useDifferentLink"),
@@ -521,6 +694,25 @@ const make = Effect.gen(function* () {
     return new Response(null, { status: 404 });
   };
 
+  /** The host's own page redeems the link; this attempt's answer says whether the computer got in. */
+  const redeemAnswer = (
+    details: { readonly url: string; readonly method: string; readonly webContentsId?: number },
+    status: number | null,
+  ) => {
+    const attempt = owner.attempt();
+    if (attempt === null || !attempt.committed || details.method !== "POST") return;
+    if (!URL.canParse(details.url)) return;
+    const url = new URL(details.url);
+    if (url.origin !== attempt.origin || url.pathname !== attempt.redeemRoute) return;
+    void runPromise(
+      Effect.gen(function* () {
+        const window = yield* mainWindow;
+        if (Option.isNone(window) || window.value.webContents.id !== details.webContentsId) return;
+        yield* locked(joinFinished(attempt.generation, status));
+      }),
+    );
+  };
+
   const installSessionRules = Effect.sync(() => {
     const session = Electron.session.defaultSession;
     session.setPermissionRequestHandler((_contents, permission, callback, details) =>
@@ -528,7 +720,7 @@ const make = Effect.gen(function* () {
         kinShellAllowsPermission({
           permission,
           requestingUrl: details.requestingUrl,
-          hostOrigin: currentHostOrigin(),
+          hostOrigin: owner.hostOrigin(),
         }),
       ),
     );
@@ -536,27 +728,24 @@ const make = Effect.gen(function* () {
       kinShellAllowsPermission({
         permission,
         requestingUrl: requestingOrigin,
-        hostOrigin: currentHostOrigin(),
+        hostOrigin: owner.hostOrigin(),
       }),
     );
     session.setDevicePermissionHandler(() => false);
     session.webRequest.onBeforeRequest({ urls: ["*://*/"] }, (details, callback) => {
       const home =
         details.resourceType === "mainFrame"
-          ? kinShellRootRedirect(details.url, currentHostOrigin())
+          ? kinShellRootRedirect(details.url, owner.hostOrigin())
           : null;
       callback(home === null ? {} : { redirectURL: home });
     });
-    // The host's own page redeems the link; its answer says whether this computer got in.
-    session.webRequest.onCompleted(
-      { urls: [`*://*${KIN_INVITE_BROWSER_ACCEPT_ROUTE}`, `*://*${PAIR_SESSION_ROUTE}`] },
-      (details) => {
-        if (joining === null || details.method !== "POST") return;
-        if (!URL.canParse(details.url) || new URL(details.url).origin !== joining.origin) return;
-        if (details.statusCode >= 200 && details.statusCode < 300) joining = null;
-        else void runPromise(linkFailed(details.statusCode));
-      },
+    const redeemRoutes = {
+      urls: [`*://*${KIN_INVITE_BROWSER_ACCEPT_ROUTE}`, `*://*${PAIR_SESSION_ROUTE}`],
+    };
+    session.webRequest.onCompleted(redeemRoutes, (details) =>
+      redeemAnswer(details, details.statusCode),
     );
+    session.webRequest.onErrorOccurred(redeemRoutes, (details) => redeemAnswer(details, null));
   });
 
   const start = Effect.gen(function* () {
@@ -574,7 +763,7 @@ const make = Effect.gen(function* () {
         channel: Channels.KIN_SHELL_STATE_CHANNEL,
         payload: Schema.Void,
         result: Schema.Struct({
-          view: Schema.Literals(["join", "unreachable"]),
+          view: Schema.Literals(["join", "unreachable", "stopped"]),
           host: Schema.NullOr(Schema.String),
           problem: Schema.NullOr(Schema.String),
           canGoBack: Schema.Boolean,
@@ -586,8 +775,8 @@ const make = Effect.gen(function* () {
       DesktopIpc.makeIpcMethod({
         channel: Channels.KIN_SHELL_JOIN_CHANNEL,
         payload: Schema.String,
-        result: Schema.Struct({ problem: Schema.NullOr(Schema.String) }),
-        handler: (text) => joinWith(text).pipe(Effect.map((problem) => ({ problem }))),
+        result: Schema.Struct({ problem: Schema.NullOr(Schema.String), leaving: Schema.Boolean }),
+        handler: (text) => locked(joinWith(text, false)),
       }),
     );
     yield* ipc.handle(
@@ -595,11 +784,15 @@ const make = Effect.gen(function* () {
         channel: Channels.KIN_SHELL_RETRY_CHANNEL,
         payload: Schema.Void,
         result: Schema.Void,
-        handler: Effect.fn("KinShell.retry")(function* () {
-          const host = currentHostOrigin();
-          retried = true;
-          yield* goHost(lastTarget ?? (host === null ? appUrl : hostHome(host)));
-        }),
+        handler: () =>
+          locked(
+            Effect.gen(function* () {
+              const host = owner.hostOrigin();
+              retried = true;
+              crashes = [];
+              yield* goHost(lastTarget ?? (host === null ? appUrl : hostHome(host)));
+            }),
+          ),
       }),
     );
     yield* ipc.handle(
@@ -615,30 +808,41 @@ const make = Effect.gen(function* () {
         channel: Channels.KIN_SHELL_BACK_CHANNEL,
         payload: Schema.Void,
         result: Schema.Void,
-        handler: Effect.fn("KinShell.back")(function* () {
-          if (Option.isSome(remembered)) yield* goHost(hostHome(remembered.value.origin));
-        }),
+        handler: () =>
+          locked(
+            Effect.gen(function* () {
+              owner.begin();
+              const team = owner.remembered();
+              if (team !== null) yield* goHost(hostHome(team));
+            }),
+          ),
       }),
     );
-    yield* logInfo("kin shell ready", { joined: Option.isSome(remembered) });
+    yield* Deferred.succeed(rulesInstalled, undefined);
+    yield* logInfo("kin shell ready", { joined: owner.remembered() !== null });
     return false;
   }).pipe(Effect.withSpan("KinShell.start"));
 
   const shell = KinShell.of({
     start,
-    receiveLink: Effect.fn("KinShell.receiveLink")(function* (url) {
-      const window = yield* mainWindow;
-      if (Option.isNone(window)) {
-        pendingLink = url;
-        return;
-      }
-      yield* electronWindow.reveal(window.value);
-      yield* handleLink(url);
-    }),
-    useDifferentLink,
-    openHostInBrowser: Effect.suspend(() =>
-      Option.isSome(remembered) ? openOutside(hostHome(remembered.value.origin)) : Effect.void,
+    receiveLink: Effect.fn("KinShell.receiveLink")(
+      function* (url) {
+        yield* Deferred.await(rulesInstalled);
+        const window = yield* ensureMain;
+        if (Option.isNone(window)) return;
+        yield* electronWindow.reveal(window.value);
+        const result = yield* locked(joinWith(url, true));
+        if (result.problem !== null) yield* notify(result.problem, "");
+      },
+      Effect.catch((error) => logWarning("could not open a join link", { message: error.message })),
     ),
+    useDifferentLink,
+    openHostInBrowser: Effect.suspend(() => {
+      const team = owner.remembered();
+      return team === null
+        ? Effect.void
+        : electronShell.openExternal(hostHome(team)).pipe(Effect.asVoid);
+    }),
   });
 
   return Context.make(DesktopWindow.DesktopWindow, windowService).pipe(
@@ -649,7 +853,7 @@ const make = Effect.gen(function* () {
 /** Kin's window on the team's host, in place of the T3 Code window. */
 export const layer = Layer.effectContext(make);
 
-/** Join links handed to the app (`open-url`, a second launch) go to the shell. */
+/** Join links the operating system hands over (`open-url`, a second launch) go to the shell. */
 export const layerWebLinks = Layer.effect(
   DesktopWebLinks.DesktopWebLinks,
   Effect.gen(function* () {

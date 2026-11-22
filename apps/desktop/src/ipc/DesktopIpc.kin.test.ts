@@ -13,7 +13,7 @@ import * as DesktopIpc from "./DesktopIpc.ts";
 // Kin's window shows the team's host in the main frame; only the app's own pages get IPC.
 it.effect("refuses the main window's top frame once it shows another origin", () =>
   Effect.gen(function* () {
-    const mainFrame = { url: "" };
+    const mainFrame = { url: "", origin: "" };
     const invoke = new Map<string, DesktopIpc.DesktopIpcHandleListener>();
     const sync = new Map<string, DesktopIpc.DesktopIpcSyncListener>();
     const ipc = yield* DesktopIpc.DesktopIpc.pipe(
@@ -44,18 +44,23 @@ it.effect("refuses the main window's top frame once it shows another origin", ()
     );
     yield* ipc.handleSync({ channel: "token-sync", handler: () => Effect.succeed("secret") });
 
-    const pages = {
-      appPage: `${getDesktopUrl(false)}`,
-      appPageInDevelopment: `${getDesktopUrl(true)}settings`,
-      teamHost: "https://kin.ambermill.example/kin",
-      localHost: "http://127.0.0.1:3773/kin",
-      otherSite: "https://evil.example/",
-      fileUrl: "file:///Users/rhea/index.html",
-      errorPage: "chrome-error://chromewebdata/",
+    // The app's origin as Chromium serializes a frame's; the literals in kin/appPage.ts match it.
+    const appOrigin = (development: boolean) => getDesktopUrl(development).slice(0, -1);
+    const pages: Record<string, readonly [string, string]> = {
+      appPage: [getDesktopUrl(false), appOrigin(false)],
+      appPageInDevelopment: [`${getDesktopUrl(true)}settings`, appOrigin(true)],
+      teamHost: ["https://kin.ambermill.example/kin", "https://kin.ambermill.example"],
+      localHost: ["http://127.0.0.1:3773/kin", "http://127.0.0.1:3773"],
+      otherSite: ["https://evil.example/", "https://evil.example"],
+      fileUrl: ["file:///Users/rhea/index.html", "null"],
+      errorPage: ["chrome-error://chromewebdata/", "null"],
+      appUrlInAnOpaqueDocument: [getDesktopUrl(false), "null"],
+      appUrlCommittedByAnotherOrigin: [getDesktopUrl(false), "https://kin.ambermill.example"],
     };
     const results: Record<string, unknown> = {};
-    for (const [name, url] of Object.entries(pages)) {
+    for (const [name, [url, origin]] of Object.entries(pages)) {
       mainFrame.url = url;
+      mainFrame.origin = origin;
       const sender = { sender: { id: 1 }, senderFrame: mainFrame };
       const event = { ...sender, returnValue: "unset" as unknown };
       sync.get("token-sync")!(event);
@@ -77,6 +82,8 @@ it.effect("refuses the main window's top frame once it shows another origin", ()
       otherSite: [refused, undefined],
       fileUrl: [refused, undefined],
       errorPage: [refused, undefined],
+      appUrlInAnOpaqueDocument: [refused, undefined],
+      appUrlCommittedByAnotherOrigin: [refused, undefined],
     });
   }),
 );

@@ -24,7 +24,7 @@ import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { openClerkTokenStorage } from "./ClerkTokenStore.ts";
 import * as DesktopWebLinks from "./DesktopWebLinks.ts";
 import { KIN_DESKTOP_ONLY } from "../kin/KinDesktopOnly.ts";
-import { readKinDesktopLink } from "../kin/kinDesktopLink.ts";
+import * as KinOsLinks from "../kin/KinOsLinks.ts";
 
 declare const __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: string | undefined;
 
@@ -123,6 +123,8 @@ export const make = Effect.gen(function* () {
     userDataPath,
     electronVersion: process.versions.electron,
   });
+  // Kin's build takes only its own join links, and has no T3 Code sign-in bridge to remove.
+  if (KIN_DESKTOP_ONLY) return DesktopClerk.of(yield* KinOsLinks.make(environment.isDevelopment));
 
   const pendingSecondInstances: Array<readonly string[]> = [];
   let handleSecondInstance = (argv: readonly string[]) => {
@@ -218,9 +220,7 @@ export const make = Effect.gen(function* () {
         return true;
       };
       const openAppLink = (value: string | undefined) => {
-        if (!value) return false;
-        const kinLink = KIN_DESKTOP_ONLY && readKinDesktopLink(value)._tag !== "NotALink";
-        if (!kinLink && promptLinkAppPath(value) === null && readPairingAppLink(value) === null)
+        if (!value || (promptLinkAppPath(value) === null && readPairingAppLink(value) === null))
           return false;
         void runPromise(webLinks.receive(value));
         return true;

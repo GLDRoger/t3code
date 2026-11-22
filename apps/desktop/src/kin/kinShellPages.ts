@@ -2,7 +2,7 @@ import { KIN_DEVICE_LIMIT } from "@t3tools/contracts";
 
 /** What the app's own page shows; the main process owns it, the page only renders it. */
 export interface KinShellView {
-  readonly view: "join" | "unreachable";
+  readonly view: "join" | "unreachable" | "stopped";
   /** The team's host, as a person reads it (`kin.example.com`), or null before joining. */
   readonly host: string | null;
   readonly problem: string | null;
@@ -18,7 +18,66 @@ export const KIN_SHELL_COPY = {
   limit: `You already have ${KIN_DEVICE_LIMIT} devices signed in. Remove one you no longer use under Settings → Your devices, then make a new link.`,
   signedOut: "You've been signed out of your team's Kin. Paste a new join link to sign in again.",
   stillUnreachable: "Still can't reach it.",
+  ambiguous: "That has more than one link in it. Paste just the join link.",
+  redirected:
+    "That link sent Kin somewhere else, so Kin stopped. Ask whoever sent it for a new one.",
+  tryAgain: "Kin couldn't reach your team's Kin just now. Try again.",
+  backOnTeam: (origin: string) => `Kin is back on your team's Kin at ${origin}, still signed in.`,
+  clearFailed: "Kin couldn't finish signing out of your old team's Kin.",
+  clearFailedDetail: (newOrigin: string, oldOrigin: string) =>
+    `Kin is now on ${newOrigin}, but it couldn't remove what ${oldOrigin} stored on this computer.`,
 } as const;
+
+/**
+ * The question before a link signs this computer in somewhere. A link from outside the app always
+ * asks, defaulting to Cancel; a pasted link asks only when it would replace the team.
+ */
+export function kinShellJoinQuestion(input: {
+  readonly origin: string;
+  readonly current: string | null;
+  readonly fromOutside: boolean;
+}): {
+  readonly message: string;
+  readonly detail: string;
+  readonly confirm: string;
+  readonly defaultToCancel: boolean;
+} | null {
+  const { origin, current } = input;
+  const staysUntil = `It stays signed in there until the new link works, then signs out of it.`;
+  if (!input.fromOutside) {
+    if (current === null || current === origin) return null;
+    return {
+      message: "Join a different team's Kin?",
+      detail: `This link is for ${origin}. Kin on this computer is signed in to ${current}. ${staysUntil}`,
+      confirm: "Join",
+      defaultToCancel: false,
+    };
+  }
+  if (current === null) {
+    return {
+      message: `Join the Kin at ${origin}?`,
+      detail:
+        "A link from outside Kin asked to sign this computer in there. Join only if you expected this link.",
+      confirm: "Join",
+      defaultToCancel: true,
+    };
+  }
+  if (current === origin) {
+    return {
+      message: `Sign in to the Kin at ${origin} again?`,
+      detail:
+        "Kin on this computer is already signed in there. A link from outside Kin asked to sign it in again.",
+      confirm: "Sign In Again",
+      defaultToCancel: true,
+    };
+  }
+  return {
+    message: `Switch to the Kin at ${origin}?`,
+    detail: `Kin on this computer is signed in to ${current}. ${staysUntil}`,
+    confirm: "Switch",
+    defaultToCancel: true,
+  };
+}
 
 const KIN_MARK_SVG = `<svg class="mark" viewBox="0 0 1024 1024" aria-hidden="true"><rect width="1024" height="1024" rx="230" fill="#182543"/><g transform="translate(512 512) scale(0.86) translate(-512 -515)"><path d="M173.85 524.36 L479.85 248.36 A48 48 0 0 1 544.15 248.36 L850.15 524.36 A48 48 0 0 1 785.85 595.64 L512 348.64 L238.15 595.64 A48 48 0 0 1 173.85 524.36 Z" fill="#FFF1DC"/><circle cx="512" cy="690" r="104" fill="#FFB238"/></g></svg>`;
 
@@ -83,7 +142,7 @@ button:disabled { opacity: 0.55; cursor: default; }
 </main>
 <main id="unreachable" hidden>
   <div class="brand">${KIN_MARK_SVG}<span class="name">Kin</span></div>
-  <h1>Can't reach your team's Kin.</h1>
+  <h1 id="unreachable-title">Can't reach your team's Kin.</h1>
   <p class="lead" id="unreachable-detail">Check this computer's internet connection, or ask whoever runs your team's Kin whether it's up.</p>
   <p id="unreachable-problem" class="problem" role="status"></p>
   <div class="actions">
@@ -102,9 +161,12 @@ export const KIN_SHELL_PAGE_SCRIPT = `"use strict";
   if (!shell) return;
   const state = await shell.state();
   const $ = (id) => document.getElementById(id);
-  if (state.view === "unreachable") {
+  if (state.view === "unreachable" || state.view === "stopped") {
     $("unreachable").hidden = false;
-    if (state.host) $("unreachable-detail").textContent = "Kin couldn't connect to " + state.host + ". Check this computer's internet connection, or ask whoever runs your team's Kin whether it's up.";
+    if (state.view === "stopped") {
+      $("unreachable-title").textContent = "Your team's Kin stopped working.";
+      $("unreachable-detail").textContent = "Kin reloaded it a few times, but it kept stopping.";
+    } else if (state.host) $("unreachable-detail").textContent = "Kin couldn't connect to " + state.host + ". Check this computer's internet connection, or ask whoever runs your team's Kin whether it's up.";
     $("unreachable-problem").textContent = state.problem || "";
     const retry = $("retry-button");
     retry.focus();
@@ -143,7 +205,7 @@ export const KIN_SHELL_PAGE_SCRIPT = `"use strict";
     input.readOnly = true;
     button.textContent = "Joining…";
     const result = await shell.join(input.value);
-    if (result.problem) {
+    if (!result.leaving) {
       showProblem(result.problem);
       button.textContent = "Join";
       button.disabled = false;
