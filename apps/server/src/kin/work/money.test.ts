@@ -28,6 +28,7 @@ import { KinDocRenderer } from "../gendocs/render.ts";
 import { KinWorkspace } from "../gendocs/workspace.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import { setAsideOverdue } from "../pulse/invoiceAsides.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import {
@@ -1656,6 +1657,49 @@ describe("invoices", () => {
         [section?.owedToUs, section?.byClient[0]?.daysOverdue],
         ["₹60,000.00", 11],
       );
+      // "Don't remind me till the 17th": the agent sets it aside on the owner's word. The money
+      // an agent reads marks it, by whom and until when, and drops the mark once that day comes.
+      const now = yield* Clock.currentTimeMillis;
+      yield* KinPulse.aside({
+        orgId,
+        at: now,
+        viewer: { _tag: "owner" },
+        by: { _tag: "agent", agentId: lead },
+        recordKey: "INV-1",
+        action: "set",
+        until: now + 5 * 86_400_000,
+        note: null,
+        holding: { _tag: "may", forPersonId: null, onWordOf: ownerId },
+      });
+      const parked = (at: number) =>
+        setAsideOverdue({ orgId, now: at, viewer: KIN_OWNER_LEVEL }).pipe(
+          Effect.map((setAside) => moneySection(summary, summary.timeZone, setAside)),
+        );
+      const setAside = (yield* parked(now))?.overdueSetAside;
+      assert.lengthOf(setAside ?? [], 1);
+      assert.deepInclude(setAside?.[0], {
+        invoice: "INV-1",
+        client: "Invented Acme (C-1)",
+        owed: "₹60,000.00",
+        daysOverdue: 11,
+        until: "2026-11-17",
+        by: "Lead lead on Owner's word",
+      });
+      assert.deepNestedInclude(yield* LeadMoney.money(scope, {}), {
+        "summary.overdueSetAside": setAside,
+      });
+      assert.isUndefined((yield* parked(now + 5 * 86_400_000))?.overdueSetAside);
+      yield* KinPulse.aside({
+        orgId,
+        at: now,
+        viewer: { _tag: "owner" },
+        by: { _tag: "person", personId: ownerId },
+        recordKey: "INV-1",
+        action: "lift",
+        until: null,
+        note: null,
+        holding: { _tag: "may", forPersonId: null, onWordOf: null },
+      });
 
       // "Received this month" opens the invoices a payment came in against that month.
       const receivedIn = (paidFrom: string, paidTo: string) =>

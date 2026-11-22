@@ -676,8 +676,26 @@ it.effect.each<{
       "## Needs you\n- One card waits.\n\n## Money\n- Nothing new came in.\n\n## Coming up\n- M-1 on 5 Dec.",
     ],
     stored: [
-      "## Needs you\n- One card waits.\n\n## Money\n- Nothing new came in.\n- Corran Tiles owes €1,200 on INV-1, 14 days overdue.\n\n## Coming up\n- M-1 on 5 Dec.",
+      "## Needs you\n- One card waits.\n\n## Money\n- Nothing new came in.\n- Corran Tiles owes €1,200 on CT/101, 14 days overdue.\n\n## Coming up\n- M-1 on 5 Dec.",
     ],
+  },
+  {
+    name: "its own Money section names the client's debt",
+    scheduleId: "checkin-morning",
+    overdue: true,
+    written: [
+      "## Needs you\n- One card waits.\n\n## Money\n- Corran Tiles: €1,200, 14 days overdue.",
+    ],
+    stored: [
+      "## Needs you\n- One card waits.\n\n## Money\n- Corran Tiles: €1,200, 14 days overdue.",
+    ],
+  },
+  {
+    name: "its own Money section names the invoice by its number",
+    scheduleId: "checkin-morning",
+    overdue: true,
+    written: ["## Needs you\n- One card waits.\n\n## Money\n- CT/101 is still unpaid."],
+    stored: ["## Needs you\n- One card waits.\n\n## Money\n- CT/101 is still unpaid."],
   },
   {
     name: "a quiet morning, and an invoice overdue",
@@ -685,7 +703,7 @@ it.effect.each<{
     overdue: true,
     written: [],
     stored: [
-      `${ReplyBridge.QUIET_PAGE}\n\n## Money\n\n- Corran Tiles owes €1,200 on INV-1, 14 days overdue.`,
+      `${ReplyBridge.QUIET_PAGE}\n\n## Money\n\n- Corran Tiles owes €1,200 on CT/101, 14 days overdue.`,
     ],
   },
   {
@@ -747,10 +765,11 @@ it.effect.each<{
       ] as const)
         yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
             owner_kind, owner_id, party_id, due_at, amount_minor, currency, created_by_kind,
-            origin_key, created_at, updated_at)
+            origin_key, created_at, updated_at, fields_json)
           VALUES (${owner.orgId}, ${id}, ${list}, ${key}, ${title}, ${state}, 'person',
             ${owner.personId}, ${list === "invoices" ? "r-c1" : null}, ${due}, ${minor},
-            ${minor === null ? null : "EUR"}, 'person', ${id}, 0, 0)`;
+            ${minor === null ? null : "EUR"}, 'person', ${id}, 0, 0,
+            ${list === "invoices" ? '{"number":"CT/101"}' : "{}"})`;
     }
     if (row.posted !== undefined) {
       const lead = Option.getOrThrow(

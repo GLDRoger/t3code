@@ -96,6 +96,7 @@ import {
 } from "./registers.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { DAY_MS } from "../durations.ts";
+import { setAsideOverdue } from "../pulse/invoiceAsides.ts";
 
 /** The lead tools for lists and money. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -506,12 +507,13 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
   const now = yield* Clock.currentTimeMillis;
   // In a turn others read: figures of only the money lines they all see, such as their project's.
   const team = yield* viewOf(lead);
-  const summary = yield* moneySummary(
-    lead.orgId,
-    now,
-    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const summary = yield* moneySummary(lead.orgId, now, viewer);
+  const section = moneySection(
+    summary,
+    summary.timeZone,
+    yield* setAsideOverdue({ orgId: lead.orgId, now, viewer }),
   );
-  const section = moneySection(summary, summary.timeZone);
   const toInvoice = team === undefined ? yield* ownerLevelStillToInvoice(lead.orgId) : [];
   return {
     asOf: iso(now),

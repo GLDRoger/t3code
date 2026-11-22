@@ -62,6 +62,7 @@ import {
   checkInIndex,
   PULSE_RULE,
 } from "../pulse/prompt.ts";
+import { setAsideOverdue } from "../pulse/invoiceAsides.ts";
 import { toldBy } from "../pulse/told.ts";
 import {
   buildWeeklySection,
@@ -1448,9 +1449,10 @@ export class KinLeadPrompt extends Context.Service<
             ? yield* Effect.all([
                 moneySummary(orgId, now, KIN_OWNER_LEVEL),
                 budgetFlags(orgId, now),
+                setAsideOverdue({ orgId, now, viewer: KIN_OWNER_LEVEL }),
               ]).pipe(
-                Effect.map(([summary, budgets]) => {
-                  const section = moneySection(summary, summary.timeZone);
+                Effect.map(([summary, budgets, setAside]) => {
+                  const section = moneySection(summary, summary.timeZone, setAside);
                   return budgets === undefined
                     ? section
                     : { ...section, budgetsOverOrNear: budgets };
