@@ -4,7 +4,6 @@
  * lines its cases write as placeholders, and what Kin's bridge shows or asks after a turn. run.ts
  * reaches each through one call. Runs no `./run.ts` code, only its types, so either loads first.
  */
-import * as NodeFS from "node:fs";
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type * as Contracts from "@t3tools/contracts";
@@ -606,34 +605,11 @@ export const kinTurnBlocks = (files: KinTurnFiles | undefined, prompt: string, c
       ];
 
 /** Kin's tools, by bare name. */
-export const KIN_TOOLS = names(...KIN_TOOLKITS);
-/**
- * Each Kin tool's access as its handlers declare it (`McpToolAccess.reads`, `actsAsCaller`, ...).
- * The declarations live inside the handler layers, which build only with the server's services,
- * so they are read from that source.
- */
-export const KIN_TOOL_ACCESS: ReadonlyMap<string, string> = new Map(
-  NodeFS.readdirSync(new URL("apps/server/src/kin/", REPO), { recursive: true, encoding: "utf8" })
-    .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
-    .map((file) => NodeFS.readFileSync(new URL(`apps/server/src/kin/${file}`, REPO), "utf8"))
-    .filter((source) => source.includes("McpToolAccess.toLayer("))
-    .flatMap((source) =>
-      [...source.matchAll(/^\s*"?(\w+)"?:\s*McpToolAccess\.(\w+)\(/gm)].map(
-        (match) => [match[1]!, match[2]!] as const,
-      ),
-    ),
-);
-const READ_ACCESS = new Set(["reads", "readsAsCaller"]);
-
+const KIN_TOOLS = names(...KIN_TOOLKITS);
 const unmocked = (testCase: McpToolUseCase, tool: string) => {
   const mock = testCase.setup.mocks?.[tool];
   return KIN_TOOLS.has(tool) && (mock === undefined || mock === "default");
 };
-/** A Kin read a case has no mock for answers this, as a failed call, never an invented result. */
-export const kinUnmockedRead = (testCase: McpToolUseCase, tool: string) =>
-  unmocked(testCase, tool) && READ_ACCESS.has(KIN_TOOL_ACCESS.get(tool) ?? "")
-    ? `No mock for ${tool} in this case.`
-    : undefined;
 /** The Kin tools a sample called that its case has no mock for, each once. */
 export const kinUnmocked = (
   testCase: McpToolUseCase,
@@ -655,7 +631,7 @@ export const unmockedLines = (
   if (byCase.length === 0) return [];
   return [
     "## Kin tools called with no mock\n",
-    `A read here answered "No mock for <tool> in this case." as a failed call; any other Kin tool answered {"ok":true}. Give the case a mock for each.\n`,
+    `Each answered {"ok":true}, which no Kin tool returns. Give the case a mock for every read its turn depends on.\n`,
     "| Case | Tool: samples |",
     "| --- | --- |",
     ...byCase.map(

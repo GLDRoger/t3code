@@ -14,8 +14,6 @@ import { EVENING_RULE, MORNING_RULE } from "../../apps/server/src/kin/pulse/prom
 import {
   filledEvent,
   JUDGED_CALL_BYTES,
-  KIN_TOOL_ACCESS,
-  KIN_TOOLS,
   kinSessionOf,
   kinTurnBlocks,
   kinTurnFiles,
@@ -528,14 +526,8 @@ const noNetwork = Layer.succeed(
   HttpClient.make(() => Effect.die(new Error("no request expected"))),
 );
 
-it("reads every Kin tool's access from the server's declarations", () => {
-  for (const tool of KIN_TOOLS) assert.isTrue(KIN_TOOL_ACCESS.has(tool), tool);
-  assert.strictEqual(KIN_TOOL_ACCESS.get("record_get"), "reads");
-  assert.strictEqual(KIN_TOOL_ACCESS.get("record_create"), "actsAsCaller");
-});
-
 it.effect(
-  "answers an unmocked Kin read with No mock, and lists unmocked Kin calls in the summary",
+  "lists the Kin tools a sample called with no mock in the summary, and answers them as before",
   () =>
     Effect.gen(function* () {
       const config = {
@@ -555,12 +547,9 @@ it.effect(
           input: {},
         });
       };
+      // An unmocked Kin tool answers as it always did, so a run compares with earlier ones.
       const read = yield* answer(kinCase(), "record_get");
-      assert.isTrue(read.is_error);
-      assert.deepEqual(read.content, "No mock for record_get in this case.");
-      // A write still answers as it did, and a mock still answers a read.
-      assert.isUndefined((yield* answer(kinCase(), "record_create")).is_error);
-      assert.deepEqual((yield* answer(kinCase(), "record_create")).content, '{"ok":true}');
+      assert.deepEqual([read.is_error, read.content], [undefined, '{"ok":true}']);
       const mocked = kinCase({ mocks: { record_get: { key: "EXP-1" } } });
       assert.deepEqual((yield* answer(mocked, "record_get")).content, '{"key":"EXP-1"}');
       // A T3 tool with no mock answers as before.

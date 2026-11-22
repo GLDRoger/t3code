@@ -83,7 +83,6 @@ import {
   type KinTurnFiles,
   kinTurnFiles,
   kinUnmocked,
-  kinUnmockedRead,
   longTurnNote,
   modelCallLines,
   rescuePrompt,
@@ -2196,8 +2195,6 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     );
   }
   if (isT3Name(call.name)) {
-    const noMock = kinUnmockedRead(testCase, name);
-    if (noMock !== undefined) return failed(noMock);
     // T3 refuses a watch from a delegated child.
     if (name === "watch_pull_request" && testCase.setup.role === "delegated-child") {
       return failed(SUBAGENT_WATCH_ERROR);
