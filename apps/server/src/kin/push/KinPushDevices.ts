@@ -7,6 +7,7 @@ import {
   type KinApsEnvironment,
   type KinOrgId,
   type KinPersonId,
+  type KinPushPlatform,
   type KinPushRegisterDeviceInput,
   type KinPushToken,
   type KinPushUnregisterDeviceInput,
@@ -34,6 +35,7 @@ export type KinPushDevice = {
   readonly orgId: KinOrgId;
   readonly token: KinPushToken;
   readonly personId: KinPersonId;
+  readonly platform: KinPushPlatform;
   readonly apsEnvironment: KinApsEnvironment;
   readonly sessionId: AuthSessionId;
 };
@@ -66,7 +68,7 @@ export class KinPushDevices extends Context.Service<
       people: ReadonlyArray<KinPersonId>,
     ) => Effect.Effect<ReadonlyArray<KinPushDevice>, KinPushError>;
     /**
-     * APNs said the token is dead. With `invalidSince` (a 410's timestamp), a row registered
+     * APNs or FCM said the token is dead. With `invalidSince` (a 410's timestamp), a row registered
      * after it survives, because the phone has since handed it to us again.
      */
     readonly forget: (
@@ -190,15 +192,17 @@ const make = Effect.gen(function* () {
       const rows = yield* sql<{
         token: KinPushToken;
         person_id: KinPersonId;
+        platform: KinPushPlatform;
         aps_environment: KinApsEnvironment;
         session_id: AuthSessionId;
-      }>`SELECT token, person_id, aps_environment, session_id FROM kin_push_devices
+      }>`SELECT token, person_id, platform, aps_environment, session_id FROM kin_push_devices
         WHERE org_id = ${orgId} AND person_id IN ${sql.in(people)}
         ORDER BY person_id, token`;
       return rows.map((row): KinPushDevice => ({
         orgId,
         token: row.token,
         personId: row.person_id,
+        platform: row.platform,
         apsEnvironment: row.aps_environment,
         sessionId: row.session_id,
       }));

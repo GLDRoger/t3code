@@ -8,6 +8,8 @@ import {
   kinPushLeaveOrgs,
   kinPushLeaveOutcome,
   kinPushPermissionStep,
+  kinPushRegisterInput,
+  kinPushToken,
 } from "./kinPushRegistration";
 
 const env = EnvironmentId.make("env-1");
@@ -121,5 +123,32 @@ describe("leaving a host", () => {
     // Refused, timed out, or not sent because the host was offline.
     expect(kinPushLeaveOutcome({ orgs: 2, answers: [true, false] })).toBe("unconfirmed");
     expect(kinPushLeaveOutcome({ orgs: 1, answers: null })).toBe("unconfirmed");
+  });
+});
+
+describe("kinPushRegisterInput", () => {
+  it("builds the same registration on Android as on an iPhone, with the platform and its token", () => {
+    const orgId = KinOrgId.make("org-a");
+    const fcm = "dQw4w9WgXcQ:APA91bH-Mixed_Case-Token";
+    expect(kinPushToken("ios", "ABCDEF0123")).toBe("abcdef0123");
+    expect(kinPushToken("android", fcm)).toBe(fcm);
+    const ios = kinPushRegisterInput({ os: "ios", orgId, token: "abcdef0123", sandbox: true });
+    const android = kinPushRegisterInput({ os: "android", orgId, token: fcm, sandbox: true });
+    expect(ios).toEqual({
+      orgId,
+      token: "abcdef0123",
+      platform: "ios",
+      apsEnvironment: "development",
+    });
+    expect(android).toEqual({
+      ...ios,
+      token: fcm,
+      platform: "android",
+      apsEnvironment: "production",
+    });
+    expect(
+      kinPushRegisterInput({ os: "ios", orgId, token: "abcdef0123", sandbox: false })
+        .apsEnvironment,
+    ).toBe("production");
   });
 });

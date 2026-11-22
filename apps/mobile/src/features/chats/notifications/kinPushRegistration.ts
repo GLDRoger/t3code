@@ -4,6 +4,7 @@ import {
   type EnvironmentId,
   type KinOrgId,
   type KinOrgsListResult,
+  type KinPushRegisterDeviceInput,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
@@ -120,4 +121,29 @@ export function kinPushLeaveOutcome(input: {
     input.answers.every((ok) => ok === true)
     ? "confirmed"
     : "unconfirmed";
+}
+
+/** Phones Kin can notify: an iPhone through APNs, an Android phone through FCM. */
+export type KinPushOs = "ios" | "android";
+
+export const kinPushOs = (os: string): KinPushOs | null =>
+  os === "ios" || os === "android" ? os : null;
+
+/** The OS's token as Kin stores it: APNs' hex in lowercase; FCM's is case-sensitive, kept as is. */
+export const kinPushToken = (os: KinPushOs, raw: unknown) =>
+  os === "ios" ? String(raw).toLowerCase() : String(raw);
+
+/** The one registration both phones send; FCM has no sandbox, so Android says `production`. */
+export function kinPushRegisterInput(input: {
+  readonly os: KinPushOs;
+  readonly orgId: KinOrgId;
+  readonly token: string;
+  readonly sandbox: boolean;
+}): KinPushRegisterDeviceInput {
+  return {
+    orgId: input.orgId,
+    token: input.token,
+    platform: input.os,
+    apsEnvironment: input.os === "ios" && input.sandbox ? "development" : "production",
+  };
 }

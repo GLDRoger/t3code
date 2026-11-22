@@ -335,6 +335,7 @@ it.effect("removing a device takes the devices linked from it and the links it l
         KinPushSender,
         KinPushSender.of({
           status: "ready",
+          statusFor: () => "ready",
           notify: (notification) =>
             Effect.sync(() => told.push(notification)).pipe(
               Effect.andThen(
