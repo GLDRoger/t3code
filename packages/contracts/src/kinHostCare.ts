@@ -168,8 +168,8 @@ function wordsByCause(card: TroubleFacts, at: (iso: string) => string): TroubleW
       return {
         what:
           card.using === undefined
-            ? `Kin's computer ran out of space, so ${who} couldn't work. Kin cleared out old temporary files, but that wasn't enough.`
-            : `Kin's computer ran out of space, so ${who} couldn't work. Kin cleared out old temporary files, but that wasn't enough. ${card.using}`,
+            ? `Kin's computer ran out of space, so ${who} couldn't work.`
+            : `Kin's computer ran out of space, so ${who} couldn't work. ${card.using}`,
         doing: `Kin keeps ${turns(card.count)} and runs ${them(card.count)} as soon as there is space.`,
         actions: ["free_space", "retry"],
       };

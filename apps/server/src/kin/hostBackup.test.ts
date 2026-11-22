@@ -416,9 +416,7 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
     // The space message goes on to read this computer's real disk; usingText's own test pins that.
     const [spaceNotice, signinNotice] = (yield* notices).toSorted();
     assert.isTrue(
-      spaceNotice?.startsWith(
-        "Kin's computer ran out of space, so Chief of staff couldn't work. Kin cleared out old temporary files, but that wasn't enough.",
-      ),
+      spaceNotice?.startsWith("Kin's computer ran out of space, so Chief of staff couldn't work."),
     );
     assert.strictEqual(
       signinNotice,
