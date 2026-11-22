@@ -1,4 +1,5 @@
 import {
+  KIN_DOC_CARD,
   KinAgentId,
   KinChatError,
   KinChatId,
@@ -409,7 +410,7 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
     readonly approves?: boolean;
     readonly now: number;
   },
-  chat: Pick<KinChatService["Service"], "notice">,
+  chat: Pick<KinChatService["Service"], "notice" | "setDocCardChangesFirst">,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const moved = yield* sql<{ questionId: string }>`UPDATE kin_questions SET state = 'answered',
@@ -436,6 +437,14 @@ export const answerCard = Effect.fn("KinQuestions.answerCard")(function* (
     queue,
     approved,
   );
+  // Her own card that sent it up may send it again, as it now says.
+  if (!approved && row.draft !== null && input.label === CHANGES_FIRST)
+    for (const widgetId of yield* draftCardsAbout(input.orgId, row.forChatId, row.about, "sent"))
+      yield* chat.setDocCardChangesFirst({
+        orgId: input.orgId,
+        widgetId,
+        changesFirst: { name: yield* personName(input.orgId, row.personId), at: iso(input.now) },
+      });
   return approved
     ? ({
         title: "Approved",
@@ -487,6 +496,32 @@ const approveDraft = Effect.fn("KinQuestions.approveDraft")(function* (
   // Shaped on a turn that read outside text, the draft's turn has read it too.
   yield* stampEvent(orgId, event.eventId, yield* storedStamp(orgId, row.questionId));
   return true;
+});
+
+/**
+ * A teammate's own draft cards in her chat for the docs a sent-up draft is about: those that read
+ * sent, or those the owner's Changes first made sendable again.
+ */
+export const draftCardsAbout = Effect.fn("KinQuestions.draftCardsAbout")(function* (
+  orgId: KinOrgId,
+  chatId: string,
+  about: ReadonlyArray<string>,
+  state: "sent" | "changesFirst",
+) {
+  if (about.length === 0) return [];
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ widgetId: KinWidgetId }>`SELECT widget_id AS "widgetId"
+    FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${chatId} AND type = ${KIN_DOC_CARD}
+      AND json_extract(state_json, '$.key') IN ${sql.in(about)}
+      AND json_extract(state_json, '$.draft.sendTo') IS NOT NULL
+      AND ${
+        state === "sent"
+          ? sql`json_extract(state_json, '$.draft.sent') IS NOT NULL`
+          : sql`json_extract(state_json, '$.draft.sent') IS NULL
+              AND json_extract(state_json, '$.draft.changesFirst') IS NOT NULL`
+      }
+    ORDER BY widget_id`;
+  return rows.map((row) => row.widgetId);
 });
 
 /** Whether a card asks a question for another chat: its tap answers there, not here. */

@@ -208,6 +208,7 @@ export const sendUp = Effect.fn("KinDraftCards.sendUp")(
         personId: person.personId,
         chatId: input.chatId,
         widgetId: input.widgetId,
+        round: draft.changesFirst?.at,
         ...(draft.on === undefined ? {} : { on: KIN_SOCIAL_PLATFORM_LABELS[draft.on] }),
         madeIn: docCardTurn(row.clientMessageId),
       },

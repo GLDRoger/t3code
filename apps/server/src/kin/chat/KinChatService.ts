@@ -345,6 +345,12 @@ export class KinChatService extends Context.Service<
       readonly widgetId: KinWidgetId;
       readonly sent: NonNullable<NonNullable<KinDocCardState["draft"]>["sent"]>;
     }) => Effect.Effect<KinWidget, ServiceError>;
+    /** Server-only: the owner asked for changes first on what a draft's card sent up; it is sendable again. */
+    readonly setDocCardChangesFirst: (input: {
+      readonly orgId: KinOrgId;
+      readonly widgetId: KinWidgetId;
+      readonly changesFirst: NonNullable<NonNullable<KinDocCardState["draft"]>["changesFirst"]>;
+    }) => Effect.Effect<KinWidget, ServiceError>;
     /**
      * Server-only, in the doc write's transaction: its draft cards take the doc's new text, and
      * open chats read each card again, as its viewer may see it now (`docsForViewer`).
@@ -3028,6 +3034,24 @@ const make = Effect.gen(function* () {
         ...existing,
         audience: "chat",
         state: { ...card, draft: { ...card.draft, sent: input.sent } },
+        expectedRevision: existing.revision,
+        updatedAt: yield* now,
+      });
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      return widget;
+    }, transaction),
+    setDocCardChangesFirst: Effect.fn("KinChatService.setDocCardChangesFirst")(function* (input) {
+      const existing = yield* requireRecord(
+        repo.getWidget({ orgId: input.orgId, widgetId: input.widgetId }),
+      );
+      if (existing.type !== KIN_DOC_CARD) return yield* notFound;
+      const card = yield* decodeDocCard(existing.state).pipe(Effect.mapError(() => invalidState));
+      if (card.draft?.sent === undefined) return existing;
+      const { sent: _sent, ...draft } = card.draft;
+      const widget = yield* repo.updateWidget({
+        ...existing,
+        audience: "chat",
+        state: { ...card, draft: { ...draft, changesFirst: input.changesFirst } },
         expectedRevision: existing.revision,
         updatedAt: yield* now,
       });

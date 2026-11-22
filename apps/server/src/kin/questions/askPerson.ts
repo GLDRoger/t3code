@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -55,7 +56,14 @@ import {
   encodeStoredDraft,
   type StoredDraft,
 } from "./approval.ts";
-import { askedBy, encodeHeldCard, openFor, personClock, readQuestion } from "./openQuestions.ts";
+import {
+  askedBy,
+  draftCardsAbout,
+  encodeHeldCard,
+  openFor,
+  personClock,
+  readQuestion,
+} from "./openQuestions.ts";
 import { defaultDue, namedDue, normaliseAbout, normaliseIntent, raiseAt } from "./rules.ts";
 
 /** What an agent asks someone outside the chat: `kin_ask`'s card, with no default or actions. */
@@ -163,7 +171,7 @@ export const sendUpFromCard = Effect.fn("KinQuestions.sendUpFromCard")(function*
 });
 
 type AskDeps = {
-  readonly chat: Pick<KinChatService["Service"], "createDirect" | "notice">;
+  readonly chat: Pick<KinChatService["Service"], "createDirect" | "notice" | "setDocCardSent">;
   readonly gate: Pick<KinLevelGate["Service"], "askTo">;
 };
 type Press = {
@@ -172,6 +180,8 @@ type Press = {
   readonly personId: KinPersonId;
   readonly chatId: KinChatId;
   readonly widgetId: string;
+  /** Since the owner's last Changes first on what it sent, if any: a new round asks anew. */
+  readonly round?: string | undefined;
   /** A post's service, by name, as the draft's card holds it. */
   readonly on?: string;
   /** The turn that wrote the card: what she wrote it from is hers here too (`draftSource`). */
@@ -483,7 +493,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           ? redoId(redone.questionId, redone.wakeupId)
           : `q-${hash(
               press !== null
-                ? `for:card:${press.widgetId}`
+                ? `for:card:${press.widgetId}${press.round === undefined ? "" : `:${press.round}`}`
                 : `for:${lead.wakeupId}:${stableStringify(input)}`,
             ).slice(0, 12)}`;
       const seen = yield* readQuestion(orgId, questionId);
@@ -632,6 +642,18 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
       );
       // Asked after an outside read, its answer wakes a turn that has read outside text too.
       if (turn !== null) yield* stampEvent(orgId, questionId, yield* outsideStamp(turn));
+      // Her card that sent the first one up reads sent again.
+      if (redone !== null)
+        for (const widgetId of yield* draftCardsAbout(orgId, here.chatId, about, "changesFirst"))
+          yield* chat.setDocCardSent({
+            orgId,
+            widgetId,
+            sent: {
+              name: target.name,
+              at: DateTime.formatIso(DateTime.makeUnsafe(now)),
+              ...("_tag" in posted ? { held: true as const } : {}),
+            },
+          });
       const joined = yield* signedIn(orgId, target.id);
       if ("_tag" in posted) {
         if (turn !== null && redone === null)

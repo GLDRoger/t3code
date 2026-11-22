@@ -2641,8 +2641,31 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         chatId: zoyaChat,
         widgetId: KinWidgetId.make(mailCard!.widgetId),
       });
+      const draftOf = Effect.fn("test.draftOf")(function* () {
+        const state = (yield* team.widgetOf(mailCard!.widgetId)).state as {
+          readonly draft: { readonly sent?: { name: string }; readonly changesFirst?: object };
+        };
+        return state.draft;
+      });
       const [mailUp] = (yield* drafts).slice(-1);
       yield* tap(owner, mailUp!.questionId, "option-2", "rhea-changes-mail");
+      // Her card stops saying it went up: it says Rhea asked for changes first, and sends again.
+      assert.notProperty(yield* draftOf(), "sent");
+      assert.deepInclude((yield* draftOf()).changesFirst, { name: "Rhea Rao" });
+      yield* TestClock.adjust("1 minute");
+      assert.deepStrictEqual(
+        yield* DraftCards.sendUp([team.person("zoya")], {
+          orgId,
+          chatId: zoyaChat,
+          widgetId: KinWidgetId.make(mailCard!.widgetId),
+        }),
+        { to: "Rhea Rao", held: false },
+      );
+      const [again] = (yield* drafts).slice(-1);
+      assert.notStrictEqual(again!.questionId, mailUp!.questionId);
+      assert.deepInclude((yield* draftOf()).sent, { name: "Rhea Rao" });
+      yield* tap(owner, again!.questionId, "option-2", "rhea-changes-mail-again");
+      assert.notProperty(yield* draftOf(), "sent");
       const edit = yield* turnOn("rhea", chatOf("chief"), "Say 3 December.");
       const shownBefore = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
         WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'`;
@@ -2662,6 +2685,8 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         forChatId: zoyaChat,
         text: "We launch on 3 December.\n",
       });
+      // Her card reads sent again: the redraft is with Rhea.
+      assert.deepInclude((yield* draftOf()).sent, { name: "Rhea Rao" });
       // Its Approve card carries it: no doc card of it in her chat as well.
       assert.deepStrictEqual(
         yield* sql`SELECT COUNT(*) AS n FROM kin_widgets WHERE org_id = ${orgId}
