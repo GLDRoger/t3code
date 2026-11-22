@@ -1,3 +1,4 @@
+import { KIN_DOCS } from "@t3tools/client-runtime/kin/kinDocs";
 import { useKinOpensClients } from "./state/kinChatOnly";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
@@ -1516,6 +1517,11 @@ export function KinLinkedSection(props: {
                 >
                   {title}
                 </Text>
+                {item.deleted === true ? (
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    {KIN_DOCS.archived}
+                  </Text>
+                ) : null}
               </View>
             );
             return open === null ? (
@@ -1526,7 +1532,11 @@ export function KinLinkedSection(props: {
               <RowPressable
                 key={item.key}
                 accessibilityRole="button"
-                accessibilityLabel={item.kind === "message" ? title : `${item.name}, ${title}`}
+                accessibilityLabel={
+                  item.kind === "message"
+                    ? title
+                    : `${item.name}, ${title}${item.deleted === true ? `, ${KIN_DOCS.archived}` : ""}`
+                }
                 onPress={() => props.onOpen(open)}
                 className="bg-grouped-card"
               >

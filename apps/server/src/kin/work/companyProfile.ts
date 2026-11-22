@@ -20,7 +20,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { accessSql, ownerLevel } from "../people/KinAccess.ts";
 import { countryCurrency } from "./countryCurrency.ts";
 import { iso } from "./recordRows.ts";
-import { localeOf, regionOf } from "./region.ts";
+import { localeOf, regionOf, unregisteredTax } from "./region.ts";
 
 /**
  * The company profile: legal name, address, tax ids, bank details, logo and brand, one sensitive
@@ -243,6 +243,28 @@ export const readProfile = Effect.fn("KinCompanyProfile.read")(function* (orgId:
   } satisfies KinCompanyProfile;
 });
 
+/**
+ * Whether a document may print a client's tax number: never for a company that said it is not
+ * registered for its tax, nor while one whose Company details keep its number has none.
+ */
+export const printsClientTaxNumber = (
+  profile: Pick<KinCompanyProfile, "taxRegistered" | "gstin" | "country">,
+) =>
+  profile.taxRegistered !== false &&
+  (profile.gstin !== null || regionOf(profile.country)?.keepsTaxNumber !== true);
+
+/** What an agent is told of a company its owner said is not registered for its tax; else nothing. */
+export const notRegisteredFact = (
+  profile: Pick<KinCompanyProfile, "taxRegistered" | "country" | "tax">,
+) => {
+  if (profile.taxRegistered !== false) return undefined;
+  const { tax, taxIdLabel } = unregisteredTax(
+    profile.country ?? null,
+    profile.tax?.name ?? undefined,
+  );
+  return `The company is not registered for ${tax}: its invoices charge no ${tax} and never show a client's ${taxIdLabel}. Don't ask for or collect clients' ${taxIdLabel}s for invoices.`;
+};
+
 /** The company's money as it reads; a company that never set one, or can't be read, is the default. */
 export const companyMoney = Effect.fn("KinCompanyProfile.money")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
@@ -313,16 +335,31 @@ export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
           reason: "invalid_state",
           message: `Country: ${patch.country} isn't a country Kin knows. Write its two-letter code, like GB, US or IN.`,
         });
+      if (patch.taxRegistered === false && typeof patch.gstin === "string")
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: "A company with a tax number is registered for its tax: send one or the other.",
+        });
       const { bank, brand, ...rest } = patch;
       const given = <A extends object>(value: A | undefined) =>
         Object.fromEntries(Object.entries(value ?? {}).filter(([, one]) => one !== undefined));
-      const next: KinCompanyProfileData = {
+      const { taxRegistered: _said, ...merged }: KinCompanyProfileData = {
         ...data,
         ...followCountry(data, patch, pending),
         ...given(rest),
         bank: { ...data.bank, ...given(bank) },
         brand: { ...data.brand, ...given(brand) },
       };
+      // A tax number and "not registered" exclude each other: the newer word wins. Another
+      // country's tax is another question, so a new country unsays it.
+      const moved = patch.country !== undefined && patch.country !== moneyOf(data).country;
+      const notRegistered =
+        patch.taxRegistered !== undefined
+          ? patch.taxRegistered === false
+          : data.taxRegistered === false && typeof patch.gstin !== "string" && !moved;
+      const next: KinCompanyProfileData = notRegistered
+        ? { ...merged, gstin: null, taxRegistered: false }
+        : merged;
       // Only a saved country ends the wait; a logo, a name or "no country" keeps it.
       const stillPending = pending && (next.country ?? null) === null;
       const json = yield* encodeProfile(stillPending ? { ...next, countryPending: true } : next);
@@ -376,6 +413,7 @@ const LABELS: Record<
     | "country"
     | "financialYearStartMonth"
     | "tax"
+    | "taxRegistered"
   >,
   string
 > = {

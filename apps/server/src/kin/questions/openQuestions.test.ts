@@ -2577,6 +2577,16 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       assert.strictEqual(stale.reason, "invalid_state");
       yield* sql`UPDATE kin_records SET title = 'Launch day' WHERE org_id = ${orgId}
         AND key = ${posts[1]!.key}`;
+      // Deleted since, the draft can't go up; brought back, it can.
+      yield* sql`UPDATE kin_records SET state = 'dropped' WHERE org_id = ${orgId}
+        AND key = ${posts[1]!.key}`;
+      assert.deepInclude(yield* Effect.flip(press("zoya", cards[1]!.widgetId)), {
+        reason: "invalid_state",
+        message:
+          "This draft was deleted, so it can't go up. Bring it back from Docs › Deleted first.",
+      });
+      yield* sql`UPDATE kin_records SET state = 'open' WHERE org_id = ${orgId}
+        AND key = ${posts[1]!.key}`;
       // In the owner's quiet hours, a while after she last wrote there, it waits, as the agent's
       // own send-up would, and says so.
       yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"11:00","to":"13:00"}'
