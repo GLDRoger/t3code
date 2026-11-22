@@ -367,7 +367,7 @@ const make = Effect.gen(function* () {
         Effect.provideService(SqlClient.SqlClient, sql),
       );
       const [watch] = yield* sql<{ login: string | null }>`SELECT login
-        FROM kin_github_watch WHERE org_id = ${orgId}`;
+        FROM kin_github_watch WHERE org_id = ${orgId}`.pipe(Effect.orElseSucceed(() => []));
       const includeTeams = login !== null && watch?.login?.toLowerCase() === login.toLowerCase();
       for (const repo of repos) {
         const result = yield* readRoutineRepo(repo, login, includeTeams).pipe(Effect.result);
