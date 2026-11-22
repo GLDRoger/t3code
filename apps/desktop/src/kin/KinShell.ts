@@ -552,6 +552,7 @@ const make = Effect.gen(function* () {
     yield* installSessionRules;
     yield* Effect.sync(() => {
       for (const channel of Channels.CLERK_CHANNELS) Electron.ipcMain.removeHandler(channel);
+      Electron.ipcMain.removeAllListeners(Channels.ELECTRON_STORE_CHANNEL);
     });
     yield* ipc.handle(
       DesktopIpc.makeIpcMethod({

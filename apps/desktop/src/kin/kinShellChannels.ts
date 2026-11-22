@@ -18,3 +18,6 @@ export const CLERK_CHANNELS = [
   "clerk:passkeys:get",
   "clerk:passkeys:capabilities",
 ] as const;
+
+/** electron-store's renderer hook, which Clerk's storage installs; it answers with the data folder. */
+export const ELECTRON_STORE_CHANNEL = "electron-store-get-data";

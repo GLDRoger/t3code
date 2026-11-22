@@ -108,6 +108,15 @@ export const GUARDS: ReadonlyArray<Guard> = [
     replace: "displayName: APP_BASE_NAME",
   },
   {
+    file: "apps/desktop/src/app/DesktopAppIdentity.ts",
+    reason:
+      "The app's name labels its macOS menu (About, Hide and Quit Kin), so it is Kin, never " +
+      '"Kin Beta".',
+    pattern:
+      "electronApp.setName(`${environment.branding.baseName} ${environment.branding.stageLabel}`)",
+    replace: "electronApp.setName(environment.branding.baseName)",
+  },
+  {
     file: "apps/web/src/components/chat/TriageDraftHero.tsx",
     reason: "The triage draft's hero suggests `npx t3 triage`; Kin opens no triage drafts.",
     function: "TriageDraftHero",
