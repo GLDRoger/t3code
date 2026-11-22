@@ -14,6 +14,7 @@ import {
   KinOrgId,
   type KinWakeupId,
   KinPersonId,
+  KinRecordKey,
   KinWidgetId,
   ProviderInstanceId,
   ThreadId,
@@ -75,6 +76,8 @@ import * as AskPerson from "./askPerson.ts";
 import * as DraftCards from "../work/draftCards.ts";
 import * as LeadDocs from "../work/leadDocs.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
+import * as OwnerWork from "../work/ownerWork.ts";
+import { DRAFT_OWN_CHAT_ONLY } from "../work/teamView.ts";
 import * as Questions from "./openQuestions.ts";
 import { approvalOf, madeUnderApproval } from "./approval.ts";
 import { APPROVED_TURN_TEXT, approvedTurnText, tellDraftMade } from "./sentUpDraft.ts";
@@ -2253,6 +2256,203 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
       const hers = yield* mail("Retainer", "Our retainer is ₹2,50,000 a month.");
       const others = yield* mail("Setup", "Setup is ₹2,50,000 once, plus ₹40,000 travel.");
 
+      // A task she gives the agent herself is her own ask in her chat too: its turn files her
+      // mail as her card there, with her Send to; given by anyone else's hand, it files nothing.
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'`;
+      yield* OwnerWork.create([person("zoya")], {
+        orgId,
+        title: "Send them what we built for Tidewater",
+        notes: "Mail them now",
+        owner: { _tag: "agent", agentId: KinAgentId.make("chief") },
+        party: "C-7",
+        clientRequestId: "zoya-next-step",
+      });
+      const taskTurn = yield* startAgentWakeup({
+        orgId,
+        agentId: KinAgentId.make("chief"),
+        threadId: ThreadId.make("chief-thread"),
+        queued: true,
+      });
+      const [given] = yield* sql<{ eventId: string; seq: number }>`SELECT event_id AS "eventId",
+          json_extract(json, '$.seq') AS seq FROM kin_events
+        WHERE org_id = ${orgId} AND wakeup_id = ${taskTurn} AND tag = 'record.changed'`;
+      const fromTask = (title: string) =>
+        LeadDocs.create(scopeOf("chief"), {
+          sourceEventId: given!.eventId,
+          title,
+          body: "Here is what we built for Tidewater.",
+          client: "C-7",
+          draft: { kind: "mail" },
+        }).pipe(Effect.provideService(KinIdentity, identity));
+      const taskMail = yield* fromTask("What we built");
+      assert.include(taskMail.note ?? "", "Send to Rhea Rao");
+      const [taskCard] = yield* sql<{ state: string }>`SELECT state_json AS state
+        FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${zoyaChat} AND type = 'doc'
+          AND json_extract(state_json, '$.key') = ${taskMail.key}`;
+      assert.deepInclude(JSON.parse(taskCard!.state).draft, {
+        sendTo: { personId: team.owner.personId, name: "Rhea Rao" },
+      });
+      yield* sql`UPDATE kin_record_changes SET actor_kind = 'agent', actor_id = 'finance'
+        WHERE org_id = ${orgId} AND seq = ${given!.seq}`;
+      assert.strictEqual(
+        (yield* Effect.flip(fromTask("What we built, again"))).message,
+        "A teammate's doc is filed only at their own word in their own chat with you. Nothing was written.",
+      );
+      // Her task is her ask only in her own words, given anew by her: not words someone else
+      // wrote or edited, not a reopen, and not with someone else's task in the same turn.
+      const records = Context.get(services, KinRecords);
+      const zoya = [person("zoya")];
+      const zoyaHeld = { _tag: "person" as const, personId: KinPersonId.make("zoya") };
+      const toChief = { _tag: "agent" as const, agentId: KinAgentId.make("chief") };
+      const settle = sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId}
+        AND state = 'queued'`;
+      const giveToChief = (key: KinRecordKey) =>
+        Effect.flatMap(records.get(orgId, key), (row) =>
+          OwnerWork.assign(zoya, { orgId, key, to: toChief, rev: row!.rev }),
+        );
+      const refusedTurn = Effect.gen(function* () {
+        const turn = yield* startAgentWakeup({
+          orgId,
+          agentId: KinAgentId.make("chief"),
+          threadId: ThreadId.make("chief-thread"),
+          queued: true,
+        });
+        const [woke] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+          FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${turn}
+            AND tag = 'record.changed' ORDER BY rowid LIMIT 1`;
+        return yield* Effect.match(
+          LeadDocs.create(scopeOf("chief"), {
+            sourceEventId: woke!.eventId,
+            title: "From her task",
+            body: "Here is what we built.",
+            client: "C-7",
+            draft: { kind: "mail" },
+          }).pipe(Effect.provideService(KinIdentity, identity)),
+          { onSuccess: () => "filed", onFailure: (error) => error.message },
+        );
+      });
+      const outcomes: Array<[string, string]> = [];
+      // The owner's words, given to her, then by her to the agent.
+      yield* settle;
+      const ownersTask = yield* OwnerWork.create([team.owner], {
+        orgId,
+        title: "Send them the owner's launch note",
+        notes: "The owner's words",
+        owner: zoyaHeld,
+        party: "C-7",
+        clientRequestId: "owners-words",
+      });
+      yield* giveToChief(ownersTask.key);
+      outcomes.push(["the owner's words", yield* refusedTurn]);
+      // An agent's words, on a task she holds.
+      yield* settle;
+      const { row: agentsTask } = yield* records.create(
+        orgId,
+        {
+          actor: { _tag: "agent", agentId: KinAgentId.make("finance") },
+          via: "lead",
+          askedBy: zoyaHeld.personId,
+        },
+        {
+          originKey: "agents-words",
+          title: "Send them the agent's summary",
+          notes: "The agent's words",
+          owner: zoyaHeld,
+          partyId: "rec_harbourline",
+          team: true,
+        },
+      );
+      yield* giveToChief(KinRecordKey.make(agentsTask.key));
+      outcomes.push(["an agent's words", yield* refusedTurn]);
+      // Her own task, whose notes the owner edited before she gave it.
+      yield* settle;
+      const edited = yield* OwnerWork.create(zoya, {
+        orgId,
+        title: "Send them our price list",
+        notes: "Her words",
+        party: "C-7",
+        clientRequestId: "edited-words",
+      });
+      yield* OwnerWork.update([team.owner], {
+        orgId,
+        key: edited.key,
+        rev: edited.rev,
+        notes: "Her words, and the owner's",
+      });
+      yield* giveToChief(edited.key);
+      outcomes.push(["notes the owner edited", yield* refusedTurn]);
+      // Her own task, closed and reopened: nothing is given anew.
+      yield* settle;
+      const reopened = yield* OwnerWork.create(zoya, {
+        orgId,
+        title: "Send them the brochure",
+        notes: "Her words",
+        owner: toChief,
+        party: "C-7",
+        clientRequestId: "reopened",
+      });
+      for (const state of ["done", "open"] as const) {
+        yield* settle;
+        const row = yield* records.get(orgId, reopened.key);
+        yield* OwnerWork.update(zoya, { orgId, key: reopened.key, rev: row!.rev, state });
+      }
+      outcomes.push(["a reopen", yield* refusedTurn]);
+      // Her own words given by her, in a turn another task's change woke too: someone else's,
+      // or one with no ask of hers behind it.
+      for (const [why, origin] of [
+        ["someone else's task too", { personId: "arjun" }],
+        ["a change with no ask of hers too", undefined],
+      ] as const) {
+        yield* settle;
+        const mixed = yield* OwnerWork.create(zoya, {
+          orgId,
+          title: "Send them the case study",
+          notes: "Her words",
+          owner: toChief,
+          party: "C-7",
+          clientRequestId: `mixed-${why}`,
+        });
+        const [last] = yield* sql<{ seq: number }>`SELECT MAX(seq) AS seq FROM kin_record_changes
+          WHERE org_id = ${orgId}`;
+        yield* Context.get(services, KinEventQueue.KinEventQueue).enqueue(
+          decodeEvent({
+            _tag: "record.changed",
+            orgId,
+            agentId: "chief",
+            eventId: `other-task-event-${why}`,
+            receivedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+            dedupeKey: null,
+            provenance: {
+              _tag: "human",
+              personId: origin?.personId ?? "zoya",
+              memberId: "other-member",
+            },
+            recordId: mixed.recordId,
+            key: mixed.key,
+            seq: last!.seq,
+            reason: "assigned",
+            chatId: zoyaChat,
+            ...(origin === undefined
+              ? {}
+              : { origin: { agentId: "chief", chatId: zoyaChat, personId: origin.personId } }),
+          }),
+        );
+        outcomes.push([why, yield* refusedTurn]);
+      }
+      const notHers = DRAFT_OWN_CHAT_ONLY.message;
+      assert.deepStrictEqual(outcomes, [
+        ["the owner's words", notHers],
+        ["an agent's words", notHers],
+        ["notes the owner edited", notHers],
+        ["a reopen", notHers],
+        // Two people behind the turn: refused as a shared turn, before any ask is read.
+        [
+          "someone else's task too",
+          "No client called C-7 that everyone in this chat may see. Leave it off here, or ask the owner in his own chat; don't add it again.",
+        ],
+        ["a change with no ask of hers too", notHers],
+      ]);
+
       // The owner's own drafts, in her own turn, have nothing to send up: Copy text only.
       const own = yield* wakeOn("chief", "rhea", chatOf("chief"), "A post for our own page?");
       const [ownEvent] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
@@ -2711,13 +2911,21 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.strictEqual(of._tag === "approved" ? of.approval.draft.text : undefined, latest!.text);
       const [approvedEvent] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
         FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${approved}`;
-      yield* LeadDocs.create(scopeOf("chief"), {
+      // What his Approve makes shows as its card in his chat, which no message of his woke.
+      const made = yield* LeadDocs.create(scopeOf("chief"), {
         sourceEventId: approvedEvent!.eventId,
         title: "Harbourline proposal",
         body: latest!.text,
         kind: "proposal",
         client: "C-7",
+        draft: { kind: "proposal" },
       }).pipe(Effect.provideService(KinIdentity, identity));
+      assert.notInclude(made.note ?? "", "couldn't be shown");
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")}
+          AND type = 'doc' AND json_extract(state_json, '$.key') = ${made.key}`,
+        1,
+      );
       const [started] = yield* sql<{ at: number }>`SELECT started_at AS at FROM kin_wakeups
         WHERE wakeup_id = ${approved}`;
       yield* tellDraftMade({ ...turn, startedAt: started!.at }, chats);

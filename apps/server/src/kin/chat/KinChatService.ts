@@ -415,6 +415,8 @@ export class KinChatService extends Context.Service<
         readonly clientMessageId: string;
         readonly type: typeof KIN_DOC_CARD;
         readonly state: unknown;
+        /** The turn's own: `evidence` in a turn nobody's message woke, as a chart posts. */
+        readonly intent?: "answer" | "evidence";
       },
     ) => Effect.Effect<KinWidget, ServiceError>;
     /** `kin_chart`'s card: the agent's own message in that chat, limited like any other post. */
@@ -3624,7 +3626,7 @@ const make = Effect.gen(function* () {
           chatId: input.chatId,
           clientMessageId: input.clientMessageId,
           type: input.type,
-          intent: "answer",
+          intent: input.intent ?? "answer",
           state: validateState(input.type, input.state),
         }),
       transaction,
