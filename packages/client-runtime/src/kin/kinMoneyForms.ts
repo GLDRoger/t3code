@@ -8,6 +8,7 @@ import {
   type KinNewExpenseInput,
   type KinNewInvoiceInput,
   type KinOrgId,
+  KinPersonId,
   type KinRecordKey,
 } from "@t3tools/contracts";
 
@@ -75,6 +76,9 @@ export const KIN_MONEY_FORMS = {
     noCategory: "No category",
     paidWith: "Paid with",
     notSaid: "Not said",
+    fundedBy: "Funded by",
+    company: "The company",
+    fundedByHint: "A partner who paid from their own money is owed it back until it's repaid.",
     receipt: "Receipt",
     noReceipt: "No receipt",
     receiptHint:
@@ -277,6 +281,8 @@ export interface KinExpenseDraft {
   /** One of the list's categories as stored, or empty. */
   readonly category: string;
   readonly paidWith: string;
+  /** The partner who paid from their own money, as a person id; empty is the company. */
+  readonly fundedBy: string;
   /** A file's attachment id from the person's chats, or none. */
   readonly receipt: string | null;
 }
@@ -288,6 +294,7 @@ export const kinExpenseDraft = (today: string): KinExpenseDraft => ({
   vendor: "",
   category: "",
   paidWith: "",
+  fundedBy: "",
   receipt: null,
 });
 
@@ -301,14 +308,25 @@ export const kinExpenseTyped = (draft: KinExpenseDraft, opened: KinExpenseDraft)
   draft.paidOn !== opened.paidOn ||
   draft.category !== "" ||
   draft.paidWith !== "" ||
+  draft.fundedBy !== "" ||
   draft.receipt !== null;
 
 /**
- * What the Expenses list offers to pick: its categories and its Paid with choices. With no list
- * yet there are none; the first expense makes the list, and they are set on its page.
+ * What the Expenses list offers to pick: its categories, its Paid with choices, and the people who
+ * may have funded it. With no list yet there are no categories; the first expense makes the list.
  */
-export function kinExpenseChoices(def: KinListDefinition | null | undefined) {
+export function kinExpenseChoices(
+  def: KinListDefinition | null | undefined,
+  people: ReadonlyMap<string, string> = new Map(),
+) {
+  const funded =
+    def == null || def.fields.some((field) => field.key === "fundedBy" && !field.retired);
   return {
+    fundedBy: funded
+      ? [...people]
+          .map(([value, label]) => ({ value, label }))
+          .sort((a, b) => a.label.localeCompare(b.label))
+      : [],
     categories: (def?.categories ?? []).map((value) => ({
       value,
       label: kinCategoryLabel(value, def),
@@ -345,8 +363,16 @@ export function kinExpenseInput(
       ...(vendor === "" ? {} : { vendor }),
       ...(draft.category === "" ? {} : { category: draft.category }),
       ...(draft.paidWith === "" ? {} : { paidWith: draft.paidWith }),
+      ...(draft.fundedBy === "" ? {} : { fundedBy: KinPersonId.make(draft.fundedBy) }),
       ...(draft.receipt === null ? {} : { receipt: [draft.receipt] }),
       clientRequestId: options.clientRequestId,
     },
   };
 }
+
+/** Who a person field offers: Funded by takes only people, since only a person pays themselves. */
+export const kinPersonChoices = <C extends { readonly value: string }>(
+  fieldKey: string,
+  choices: ReadonlyArray<C>,
+): ReadonlyArray<C> =>
+  fieldKey === "fundedBy" ? choices.filter((one) => one.value.startsWith("person:")) : choices;

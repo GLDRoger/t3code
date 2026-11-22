@@ -286,6 +286,8 @@ export const KinNewExpenseInput = Schema.Struct({
   category: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(60))),
   /** One of its "Paid with" choices. */
   paidWith: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(60))),
+  /** The partner who paid from their own money; left out, the company did. */
+  fundedBy: Schema.optional(KinPersonId),
   /** Files already in the person's chats (`kin.work.files`). */
   receipt: Schema.optional(
     Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(128))).check(Schema.isMaxLength(5)),

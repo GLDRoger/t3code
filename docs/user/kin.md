@@ -410,10 +410,13 @@ hosting", "the GST filing is due on the 20th". It records the entry and answers 
 - **Statements.** Send your bank or card statement in a chat to match its rows to invoices and
   expenses. See [Bank and card statements](./kin-statements.md).
 - **Paid by a partner.** When a partner pays a company expense from their own money, set **Funded
-  by** on the expense to that partner. Leave it empty when the company paid. Its **Reimbursement**
+  by** on the expense to that partner, in **Add → Expense** or on the expense itself. Leave it empty when the company paid. Its **Reimbursement**
   reads **owed** until the company pays the partner back. Then set it to **repaid**, with the day
   in **Repaid on**. Choose **not reimbursable** when the partner won't be paid back. Expenses imported
-  with a partner's email address but no Kin person to match show as owed to that address.
+  with a partner's email address but no Kin person to match show as owed to that address. In
+  **Next 30 days**, **Owed to partners** lists each partner. Pick **Who is this?** beside an
+  address to set that teammate as Funded by on all its expenses. The accountant's pack has an
+  **Owed to partners** sheet with what was owed at the month's end and what was repaid in it.
   Ask "what do we owe the partners?" for each partner's total and oldest expenses. The outlook
   counts what partners are owed as going out now. Runway, Money's spent this month and the weekly
   brief's out this week count a partner's expense on the day the company paid them back, not the

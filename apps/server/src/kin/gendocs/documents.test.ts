@@ -734,6 +734,7 @@ describe("recipe documents", () => {
           "November pack · tds-2026-11.csv",
           "November pack · expenses-2026-11.csv",
           "November pack · unpaid-expenses-2026-11.csv",
+          "November pack · owed-to-partners-2026-11.csv",
           "November pack · bank-2026-11.csv",
         ],
       );
@@ -1769,6 +1770,24 @@ describe("the accountant's pack", () => {
           ...(dateAt === undefined ? {} : { dateAt }),
           originKey: key,
         });
+      // Bought by a partner: owed at the month's end, repaid in it, repaid before it, or given.
+      for (const [key, minor, dateAt, fields] of [
+        ["owed", 20_00, day("2026-10-25"), {}],
+        ["repaid", 30_00, day("2026-10-20"), { reimbursement: "repaid", repaidOn: "2026-11-10" }],
+        ["earlier", 40_00, day("2026-10-01"), { reimbursement: "repaid", repaidOn: "2026-10-15" }],
+        ["later", 5_00, day("2026-10-02"), { reimbursement: "repaid", repaidOn: "2026-12-01" }],
+        ["given", 60_00, day("2026-10-03"), { reimbursement: "not reimbursable" }],
+      ] as const)
+        yield* records.create(orgId, system, {
+          list: "expenses",
+          title: `Invented partner ${key}`,
+          owner,
+          state: "done",
+          amount: { minor, currency: "INR" },
+          dateAt,
+          fields: { fundedBy: `person:${ownerId}`, ...fields },
+          originKey: `partner:${key}`,
+        });
       // Money in on a live invoice counts; on one since voided it doesn't.
       yield* LeadWork.create(scope, {
         sourceEventId: work,
@@ -1835,6 +1854,10 @@ describe("the accountant's pack", () => {
       assert.deepStrictEqual(totals("Receipts"), [["Total", "300.00"]]);
       // The voided invoice is listed in the sales register and left out of its total.
       assert.deepStrictEqual(totals("Sales register"), [["Total", "0.00"]]);
+      assert.deepStrictEqual(totals("Owed to partners"), [
+        ["Total owed", "25.00"],
+        ["Total repaid", "30.00"],
+      ]);
     }).pipe(Effect.provide(layer)),
   );
 });

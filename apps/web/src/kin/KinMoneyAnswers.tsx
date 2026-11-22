@@ -17,6 +17,7 @@ import {
   kinBudgetsView,
   kinCashView,
   kinOutlookView,
+  type KinOutlookView,
   kinQuoteRow,
   kinQuotesSummary,
   kinBudgetsSummary,
@@ -26,7 +27,12 @@ import {
   type KinOutlookRowView,
 } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
-import type { KinListDefinition, KinMoneyBudget, KinRecordKey } from "@t3tools/contracts";
+import {
+  type KinListDefinition,
+  type KinMoneyBudget,
+  KinPersonId,
+  type KinRecordKey,
+} from "@t3tools/contracts";
 import { PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { useId, useState } from "react";
 
@@ -58,8 +64,14 @@ import { KinPlaceCombobox } from "./KinPlaceCombobox";
 import { KinWorkSection } from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinListsOf, useKinAskAgent, useKinListEntries, type KinListsHandle } from "./useKinMoney";
-import { useKinBudgets, useKinBudgetSet, useKinCash, useKinOutlook } from "./useKinMoneyAnswers";
-import { useKinWorkChoices, type KinWorkTarget } from "./useKinWork";
+import {
+  useKinBudgets,
+  useKinBudgetSet,
+  useKinCash,
+  useKinMatchPartner,
+  useKinOutlook,
+} from "./useKinMoneyAnswers";
+import { useKinWorkChoices, useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 
 const OPENS =
   "rounded-md outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset";
@@ -305,6 +317,59 @@ function OutlookRows(props: {
   );
 }
 
+/** Who the company owes back; an imported address no one is matched to gets a person picked. */
+function PartnersOwed(props: Section & { readonly rows: KinOutlookView["partners"] }) {
+  const directory = useKinWorkDirectory(
+    props,
+    props.rows.some((one) => one.address !== null),
+  );
+  const matching = useKinMatchPartner(props);
+  const people = [...directory.names.people].toSorted((a, b) => a[1].localeCompare(b[1]));
+  if (props.rows.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="px-2 text-xs text-muted-foreground">{KIN_OUTLOOK.partners}</span>
+      <ul className="flex flex-col">
+        {props.rows.map((row) => (
+          <li key={row.id} className="flex items-center justify-between gap-3 px-2 py-1">
+            <span className="flex min-w-0 flex-col">
+              <span className="truncate text-sm text-foreground">{row.name}</span>
+              <span className="truncate text-xs text-muted-foreground">{row.note}</span>
+            </span>
+            <span className="flex shrink-0 items-center gap-2">
+              {row.address === null ? null : (
+                <Select
+                  value={null}
+                  disabled={matching.busy}
+                  onValueChange={(personId) => {
+                    if (typeof personId === "string")
+                      void matching.match(row.address!, KinPersonId.make(personId));
+                  }}
+                >
+                  <SelectTrigger size="sm" aria-label={`${KIN_OUTLOOK.whoIsThis} ${row.name}`}>
+                    <SelectValue>{KIN_OUTLOOK.whoIsThis}</SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup>
+                    {people.map(([id, name]) => (
+                      <SelectItem key={id} value={id}>
+                        {name}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
+              )}
+              <span className="text-sm font-medium text-foreground tabular-nums">{row.amount}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+      {matching.problem === null ? null : (
+        <p className="px-2 text-xs text-destructive">{matching.problem}</p>
+      )}
+    </div>
+  );
+}
+
 /** What is expected in and out over the next 30 days, by currency, and runway. */
 export function KinOutlookSection(
   props: Section & { readonly onOpenKey: (key: KinRecordKey) => void },
@@ -381,6 +446,7 @@ export function KinOutlookSection(
             more={view.more.outgoing}
             onOpenKey={props.onOpenKey}
           />
+          <PartnersOwed {...props} rows={view.partners} />
           {view.notes.length + view.runway.length === 0 ? null : (
             <p className="px-2 text-xs text-muted-foreground">
               {[...view.notes, ...view.runway.map((one) => one.text)].join(" ")}

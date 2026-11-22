@@ -27,6 +27,7 @@ import {
   sensitiveNow,
 } from "../work/recordRows.ts";
 import { type ListDef, listDef, sensitiveKeys, stateLabel } from "../work/registers.ts";
+import { fundingOf, partnerFunded } from "../work/reimbursement.ts";
 import { findBankList } from "../work/statements/bankList.ts";
 import { issuedNumber } from "./numbering.ts";
 import {
@@ -118,6 +119,59 @@ const MATCHED_AS: Readonly<Record<string, string>> = {
   ignore: "ignored",
 };
 
+/**
+ * Paid expenses a partner funded that the company still owed them at `month`'s end, or paid them
+ * back in it: bought by then, not given, and not repaid before the month began.
+ */
+const reimbursementsIn = Effect.fn("KinDocFacts.reimbursements")(function* (
+  orgId: KinOrgId,
+  month: string,
+  zone: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const after = Date.parse(`${month}-01T00:00:00Z`) + 32 * DAY_MS;
+  const rows = yield* sql<{
+    key: string;
+    title: string;
+    minor: number | null;
+    currency: string | null;
+    dateAt: number;
+    fieldsJson: string;
+  }>`SELECT r.key, r.title, r.amount_minor AS minor, r.currency, ${moneyDay(sql)} AS "dateAt",
+      r.fields_json AS "fieldsJson"
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
+      AND ${countedEntry(sql)} AND ${partnerFunded(sql)} AND ${moneyDay(sql)} < ${after}
+    ORDER BY "dateAt", r.key LIMIT ${MAX_ROWS}`;
+  const names = new Map(
+    (yield* sql<{ id: string; name: string }>`SELECT person_id AS id, display_name AS name
+      FROM kin_people WHERE org_id = ${orgId} ORDER BY person_id`).map((one) => [one.id, one.name]),
+  );
+  return rows.flatMap((row) => {
+    const day = dayIn(row.dateAt, zone);
+    const funding = fundingOf(parseFields(row.fieldsJson));
+    if (day.slice(0, 7) > month || funding.by !== "partner") return [];
+    if (funding.state === "not reimbursable") return [];
+    const repaid = funding.state === "repaid" ? (funding.repaidOn ?? day) : null;
+    if (repaid !== null && repaid.slice(0, 7) < month) return [];
+    const inMonth = repaid !== null && repaid.slice(0, 7) === month;
+    return [
+      {
+        key: row.key,
+        title: row.title,
+        date: day,
+        partner:
+          funding.personId === null
+            ? (funding.unmatched ?? "unmatched partner")
+            : (names.get(funding.personId) ?? "a former teammate"),
+        state: inMonth ? "repaid" : "owed",
+        repaidOn: inMonth ? repaid : null,
+        amount: amountOf(row.minor, row.currency),
+      },
+    ];
+  });
+});
+
 /** An entry's own label, one it inherits, or its list's. */
 export const entrySensitive = (entry: RecordRow, def: ListDef | undefined) =>
   entry.sensitive === 1 || entry.inheritedSensitive === 1 || def?.sensitive === true;
@@ -187,11 +241,20 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       );
       continue;
     }
-    if (source?._tag !== "rows" && source?._tag !== "payments") continue;
+    if (source?._tag !== "rows" && source?._tag !== "payments" && source?._tag !== "reimbursements")
+      continue;
     const month = input.period === undefined ? undefined : given[input.period];
     if (typeof month !== "string" || !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month)) continue;
     const start = Date.parse(`${month}-01T00:00:00Z`) - 2 * DAY_MS;
     const end = start + 35 * DAY_MS;
+    if (source._tag === "reimbursements") {
+      sensitiveTables.add(input.name);
+      tables.set(
+        input.name,
+        (yield* reimbursementsIn(orgId, month, zone)).map((row) => pick(input, row)),
+      );
+      continue;
+    }
     if (source._tag === "payments") {
       sensitiveTables.add(input.name);
       const rows = yield* sql<{
@@ -378,6 +441,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
             : recipe.numbered && number === null;
       case "rows":
       case "payments":
+      case "reimbursements":
       case "entryPayments":
         return tables.get(input.name);
     }
@@ -403,6 +467,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         return SENSITIVE_COMPANY.test(source.key);
       case "rows":
       case "payments":
+      case "reimbursements":
       case "entryPayments":
         return sensitiveTables.has(input.name);
     }

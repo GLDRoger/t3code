@@ -20,6 +20,7 @@ import {
   kinBudgetsView,
   kinCashView,
   kinOutlookView,
+  type KinOutlookView,
   kinQuoteActions,
   kinQuoteInvoice,
   kinQuoteRow,
@@ -35,6 +36,7 @@ import {
   EnvironmentId,
   KinMoneyBudget,
   KinOrgId,
+  KinPersonId,
   type KinListDefinition,
   type KinRecordDetail,
   type KinRecordKey,
@@ -74,10 +76,11 @@ import {
   useKinBudgetSet,
   useKinCash,
   useKinInvoiceFromQuote,
+  useKinMatchPartner,
   useKinOutlook,
 } from "./state/useKinMoneyAnswers";
 import { useKinHostAt } from "./state/useKinHost";
-import { useKinWorkChoices, type KinWorkTarget } from "./state/useKinWork";
+import { useKinWorkChoices, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
@@ -312,6 +315,53 @@ function OutlookRows(props: {
 }
 
 /** What is expected in and out over the next 30 days, by currency, and runway. */
+/** Who the company owes back; an imported address no one is matched to gets a person picked. */
+function PartnersOwed(props: Section & { readonly rows: KinOutlookView["partners"] }) {
+  const directory = useKinWorkDirectory(
+    props,
+    props.rows.some((one) => one.address !== null),
+  );
+  const matching = useKinMatchPartner(props);
+  const people = [...directory.names.people].sort((a, b) => a[1].localeCompare(b[1]));
+  if (props.rows.length === 0) return null;
+  return (
+    <>
+      <Text textRole="footnote" className="bg-grouped-card px-4 pt-2 text-foreground-muted">
+        {KIN_OUTLOOK.partners}
+      </Text>
+      {props.rows.map((row) =>
+        row.address === null ? (
+          <ListRowLayout key={row.id} label={row.name} description={row.note} detail={row.amount} />
+        ) : (
+          <Menu
+            key={row.id}
+            title={KIN_OUTLOOK.whoIsThis}
+            accessibilityRole="button"
+            accessibilityLabel={`${row.name}, ${row.amount}. ${KIN_OUTLOOK.whoIsThis}`}
+            actions={people.map(([id, name]) => ({ id, title: name }))}
+            onPressAction={({ nativeEvent: { event } }) => {
+              if (!matching.busy) void matching.match(row.address!, KinPersonId.make(event));
+            }}
+          >
+            <View pointerEvents="none">
+              <ListRowLayout
+                label={row.name}
+                description={`${row.note} · ${KIN_OUTLOOK.whoIsThis}`}
+                detail={row.amount}
+              />
+            </View>
+          </Menu>
+        ),
+      )}
+      {matching.problem === null ? null : (
+        <Text textRole="footnote" className="bg-grouped-card px-4 py-1 text-destructive">
+          {matching.problem}
+        </Text>
+      )}
+    </>
+  );
+}
+
 export function KinOutlookSection(props: Section) {
   const now = new Date(useNowMinuteMs());
   const open = useOpenEntry(props);
@@ -379,6 +429,7 @@ export function KinOutlookSection(props: Section) {
             more={view.more.outgoing}
             onOpen={open}
           />
+          <PartnersOwed {...props} rows={view.partners} />
           {view.notes.length + view.runway.length === 0 ? null : (
             <Text textRole="footnote" className="bg-grouped-card px-4 py-2 text-foreground-muted">
               {[...view.notes, ...view.runway.map((one) => one.text)].join(" ")}

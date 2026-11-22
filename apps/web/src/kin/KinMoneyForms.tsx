@@ -65,7 +65,7 @@ import {
   useKinWorkFiles,
 } from "./useKinMoney";
 import { useKinNewExpense, useKinNewInvoice } from "./useKinMoneyAnswers";
-import { useKinWorkChoices, type KinWorkTarget } from "./useKinWork";
+import { useKinWorkChoices, useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 
 const NONE = "none";
 
@@ -379,10 +379,12 @@ export function KinNewExpenseDialog(
   const saving = useKinNewExpense(props);
   const currency = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
   const lists = useKinLists(props, { enabled: true });
+  const directory = useKinWorkDirectory(props, true);
   const choices = kinExpenseChoices(
     lists.state._tag === "ready"
       ? kinListsOf(lists).find((one) => one.list === "expenses")
       : undefined,
+    directory.names.people,
   );
   const files = useKinWorkFiles(props, "");
   const held = files.state._tag === "ready" ? files.state.files : [];
@@ -394,6 +396,7 @@ export function KinNewExpenseDialog(
     vendor: useId(),
     category: useId(),
     paidWith: useId(),
+    fundedBy: useId(),
     receipt: useId(),
   };
   const slip = saving.slip(kinExpenseAmountAbout(draft));
@@ -523,6 +526,23 @@ export function KinNewExpenseDialog(
                 choices.paidWith.map((value) => ({ value, label: value })),
                 (paidWith) => set({ paidWith }),
               )}
+        </div>
+      )}
+      {choices.fundedBy.length === 0 ? null : (
+        <div className="flex flex-col gap-1.5">
+          {pick(
+            ids.fundedBy,
+            KIN_MONEY_FORMS.expense.fundedBy,
+            draft.fundedBy,
+            KIN_MONEY_FORMS.expense.company,
+            choices.fundedBy,
+            (fundedBy) => set({ fundedBy }),
+          )}
+          {draft.fundedBy === "" ? null : (
+            <span className="text-xs text-muted-foreground">
+              {KIN_MONEY_FORMS.expense.fundedByHint}
+            </span>
+          )}
         </div>
       )}
       {choices.receipt ? (
