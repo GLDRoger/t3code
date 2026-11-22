@@ -45,7 +45,10 @@ export const PICTURE_LIMITS = {
   stillMs: 500,
   /** Pictures that may wait behind the one being drawn. */
   waiting: 4,
+  /** The scope's limit, where the host has one (Linux with a user scope). */
   memory: "1G",
+  /** The page's JavaScript heap, held by the browser itself on every host. */
+  heapMb: 512,
   pngBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 };
 export type PictureLimits = typeof PICTURE_LIMITS;
@@ -404,6 +407,7 @@ export const makeLayer = (limits: PictureLimits = PICTURE_LIMITS) =>
                       "--disable-gpu",
                       "--disable-dev-shm-usage",
                       "--host-resolver-rules=MAP * ~NOTFOUND",
+                      `--js-flags=--max-old-space-size=${limits.heapMb}`,
                     ],
                     viewport: size,
                     deviceScaleFactor: KIN_PICTURE_SCALE,

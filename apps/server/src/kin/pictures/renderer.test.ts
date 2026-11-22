@@ -264,6 +264,22 @@ it.live("a page that loads from outside is refused, and one that never settles i
   }),
 );
 
+it.live("a page that outgrows its heap stops, on hosts with no memory scope too", (ctx) =>
+  Effect.gen(function* () {
+    const result = yield* withRenderer({ heapMb: 64 }, (render) =>
+      render({
+        html: plain(
+          `<p id="t"></p><script>var a=[];for(var i=0;i<80;i++)a.push(new Array(1e6).fill(i));t.textContent=a.length</script>`,
+        ),
+        size: "square",
+        inputs: none,
+      }),
+    );
+    if (Option.isNone(result)) return ctx.skip(skipped);
+    assert.deepStrictEqual(result.value, { _tag: "refused", reason: PICTURE_SENTENCES.crashed });
+  }),
+);
+
 it.live("a picture over the chat's image limit is refused", (ctx) =>
   Effect.gen(function* () {
     const result = yield* withRenderer({ pngBytes: 1_000 }, (render) =>
