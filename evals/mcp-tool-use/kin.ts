@@ -43,6 +43,8 @@ import { outlineOf, sectionsOf, WHOLE_DOC } from "../../apps/server/src/kin/work
 import { parseRecipe } from "../../apps/server/src/kin/gendocs/recipe.ts";
 import { STARTER_FILES } from "../../apps/server/src/kin/gendocs/starter.ts";
 import { quote } from "../../apps/server/src/kin/lead/quote.ts";
+import { stakeholders } from "../../apps/server/src/kin/team/stakes.ts";
+import { afterSay, opened, sayRefusal, type Said } from "../../apps/server/src/kin/team/turns.ts";
 import { concernsLine, mineLine, totalsLine } from "../../apps/server/src/kin/sales/text.ts";
 import { whenLabel } from "../../apps/server/src/kin/social/rows.ts";
 import { moneySection } from "../../apps/server/src/kin/work/moneyViews.ts";
@@ -608,6 +610,44 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
         ...(ask.includes(tool) ? { asks: "Each call waits for the owner's Confirm." } : {}),
       }),
     };
+  },
+  settledBrochureSay: (input: {
+    text: string;
+    intent: Said["intent"];
+    to: Said["to"] | null;
+    end: Said["end"];
+    outcome: string | null;
+    widen: string | null;
+  }) => {
+    const reject = (message: string) => ({
+      $error: { _tag: "KinChatError", reason: "not_allowed", message },
+    });
+    if (input.end !== null && !input.outcome)
+      return reject("Say the outcome: the one line the owner reads.");
+    const agents = [
+      { agentId: "Finance", domain: "finance" },
+      { agentId: "Growth", domain: "growth" },
+      { agentId: "Social", domain: "social" },
+    ];
+    const discussion = {
+      ...opened({ openedBy: "Social", decider: "Finance", chair: "Chief of staff" }),
+      messages: 6,
+      turn: { agentId: "Finance", kind: "decider" as const },
+      speakers: ["Social", "Finance", "Social", "Growth", "Social", "Growth"],
+    };
+    const said = {
+      agentId: "Finance",
+      text: input.text,
+      intent: input.intent,
+      to: Array.isArray(input.to) ? input.to : [],
+      widen: input.widen !== null,
+      end: input.end,
+      stakes: stakeholders(input.text, agents, []),
+    };
+    const refused = sayRefusal(discussion, said);
+    if (refused !== null) return reject(refused);
+    const next = afterSay(discussion, said);
+    return { discussion: "TD-1", next: next.turn?.agentId ?? null, state: next.state };
   },
   // A connected service's text as kin_connection_call quotes it.
   connectionResult: (input: { label: string; tool: string; text: string }) =>
