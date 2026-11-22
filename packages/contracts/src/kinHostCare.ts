@@ -46,6 +46,8 @@ export const KIN_HOST_TROUBLE_CARD = "host_trouble";
 const KinTroubleAgent = Schema.Struct({
   agentId: KinAgentId,
   name: KinTrimmedText.check(Schema.isMaxLength(200)),
+  /** The AI account it runs on, for Sign in again to open that account's own settings. */
+  instanceId: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(200))),
 });
 
 /**

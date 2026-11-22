@@ -1,6 +1,5 @@
 import {
   KIN_HOST_TROUBLE_CARD,
-  KIN_HOST_USAGE_PARTS,
   KIN_TROUBLE_ACTION_LABELS,
   KinHostTroubleCard,
   formatKinWhen,
@@ -56,6 +55,10 @@ export const KIN_HOST_COPY = {
   version: "Version",
   restarted: "Last restarted",
   nothingFailing: "Nothing is failing.",
+  signInOnComputer: "Sign in again from Kin on a computer: Settings › This computer › AI accounts.",
+  kinData: "Kin's data",
+  temporary: "Temporary files",
+  everythingElse: "Everything else on this computer",
   fixed: "Fixed",
 } as const;
 
@@ -107,6 +110,10 @@ export interface KinHostTroubleCardView {
   readonly actions: ReadonlyArray<KinTroubleActionView>;
   /** The first agent it stopped, for Open agent. */
   readonly agentId: KinAgentId | null;
+  /** Its AI account, for Sign in again to open that account's settings. */
+  readonly instanceId: string | null;
+  /** Where to sign in, for a client that can't open the account's settings itself. */
+  readonly signInElsewhere: string | null;
   readonly closed: boolean;
   readonly accessibilityLabel: string;
 }
@@ -142,6 +149,9 @@ export function kinHostTroubleCardView(
     detail: closed ? null : (card.detail ?? null),
     actions: closed ? [] : actionsOf(words.actions, card.detail),
     agentId: card.agents[0]?.agentId ?? null,
+    instanceId: card.agents.find((agent) => agent.instanceId !== undefined)?.instanceId ?? null,
+    signInElsewhere:
+      !closed && words.actions.includes("sign_in") ? KIN_HOST_COPY.signInOnComputer : null,
     closed,
     accessibilityLabel: kinSentences([title, words.what, line]),
   };
@@ -160,9 +170,9 @@ export interface KinHostSpaceView {
 
 export interface KinHostFailingView {
   readonly key: string;
-  readonly title: string;
-  readonly detail: string;
   readonly cause: KinTroubleCause;
+  /** The trouble's notice, drawn on the page with its own taps. */
+  readonly widget: Pick<KinWidget, "type" | "state">;
 }
 
 export interface KinHostPageView {
@@ -187,36 +197,33 @@ export interface KinHostPageView {
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
-const agentNames = (agents: ReadonlyArray<{ readonly name: string }>) => {
-  const list = [...new Set(agents.map((agent) => agent.name))];
-  return list.length <= 2 ? list.join(" and ") : `${list[0]} and ${list.length - 1} others`;
-};
-
 /** Settings › Kin's computer, from the host's status. */
 export function kinHostPageView(status: KinHostStatus, now: number): KinHostPageView {
   const at = kinHostWhen(now);
   const { space, backup, agents } = status;
   const usage = space?.usage ?? null;
+  // Kin's own (its data, builds and update backups), its temporary files, and the rest of the
+  // disk: on a full disk the third is often what a person can't see anywhere else.
+  const kin = usage === null ? 0 : (usage.data ?? 0) + (usage.builds ?? 0) + (usage.backups ?? 0);
+  const temporary = usage?.temporary ?? 0;
   const parts =
-    usage === null
+    usage === null || space === null
       ? []
-      : KIN_HOST_USAGE_PARTS.flatMap((part) => {
-          const bytes = usage[part.key];
-          return bytes === null ? [] : [{ name: part.name, value: kinBytesText(bytes) }];
-        });
+      : [
+          { name: KIN_HOST_COPY.kinData, value: kinBytesText(kin) },
+          { name: KIN_HOST_COPY.temporary, value: kinBytesText(temporary) },
+          {
+            name: KIN_HOST_COPY.everythingElse,
+            value: kinBytesText(Math.max(0, space.totalBytes - space.freeBytes - kin - temporary)),
+          },
+        ];
   const failing = agents.troubles
     .filter((trouble) => trouble.card.cause !== "backup")
-    .map((trouble) => {
-      const { card } = trouble;
-      const who = agentNames(card.agents);
-      const held = card.count === 0 ? null : plural(card.count, "turn waiting", "turns waiting");
-      return {
-        key: trouble.widgetId,
-        cause: card.cause,
-        title: KIN_TROUBLE_TITLES[card.cause],
-        detail: [who === "" ? null : who, held].filter((part) => part !== null).join(" · "),
-      };
-    });
+    .map((trouble) => ({
+      key: trouble.widgetId,
+      cause: trouble.card.cause,
+      widget: { type: KIN_HOST_TROUBLE_CARD, state: trouble.card },
+    }));
   return {
     space:
       space === null

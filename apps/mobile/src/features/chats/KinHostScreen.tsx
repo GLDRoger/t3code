@@ -27,6 +27,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { KinGateView, KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { kinClient, refreshKinHost } from "./state/kinClient";
+import { KinHostTroubleCard } from "./widgets/KinHostTroubleCard";
 import { useKinGate } from "./state/useKinHost";
 import type { KinWorkTarget } from "./state/useKinWork";
 
@@ -180,6 +181,18 @@ function Host(props: {
   const { space } = view;
   return (
     <>
+      {/* Every open trouble with its own taps, whether or not a notice reached a chat. */}
+      {view.failing.length === 0 ? null : (
+        <View className="gap-2">
+          {view.failing.map((failing) => (
+            <KinHostTroubleCard
+              key={failing.key}
+              widget={{ ...failing.widget, orgId: target.orgId }}
+              environmentId={target.environmentId}
+            />
+          ))}
+        </View>
+      )}
       <ListSection title={KIN_HOST_COPY.space}>
         {space === null ? (
           <Line title={KIN_HOST_COPY.noSpaceReading} />
@@ -270,9 +283,6 @@ function Host(props: {
           title={view.running}
           detail={view.failing.length === 0 ? KIN_HOST_COPY.nothingFailing : null}
         />
-        {view.failing.map((failing) => (
-          <Line key={failing.key} title={failing.title} detail={failing.detail} tone="error" />
-        ))}
         {view.canRetry || again.tap.line !== null ? (
           <View className="gap-3 px-4 py-3">
             <TapLine tap={again.tap} />

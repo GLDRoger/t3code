@@ -76,6 +76,25 @@ describe("kinHostTroubleCardView", () => {
     ).toEqual(["retry"]);
     expect(kinHostTroubleCardView(trouble({ cause: "space" }), at)).toBeNull();
   });
+
+  it("says where a signed-out account is signed in again, and names that account", () => {
+    const signin = {
+      cause: "signin",
+      agents: [chief, { agentId: KinAgentId.make("fin"), name: "Finance", instanceId: "claude" }],
+      count: 1,
+      openedAt: "2026-11-22T09:00:00.000Z",
+      closed: null,
+    };
+    expect(kinHostTroubleCardView(trouble(signin), at)).toMatchObject({
+      instanceId: "claude",
+      signInElsewhere:
+        "Sign in again from Kin on a computer: Settings › This computer › AI accounts.",
+      actions: [{ action: "sign_in" }, { action: "retry" }],
+    });
+    expect(
+      kinHostTroubleCardView(trouble({ ...signin, cause: "space" }), at)?.signInElsewhere,
+    ).toBeNull();
+  });
 });
 
 describe("kinHostPageView", () => {
@@ -86,9 +105,9 @@ describe("kinHostPageView", () => {
       level: "ok",
       used: 0.8,
       parts: [
-        { name: "Kin's data", value: "3.0 GB" },
-        { name: "Backups", value: "12 GB" },
+        { name: "Kin's data", value: "15 GB" },
         { name: "Temporary files", value: "2.0 GB" },
+        { name: "Everything else on this computer", value: "143 GB" },
       ],
     });
     expect(healthy).toMatchObject({ canFreeSpace: true, canRetry: false, failing: [] });
@@ -122,7 +141,13 @@ describe("kinHostPageView", () => {
         partsNote: "Kin is still measuring what uses the space.",
       },
       backup: { title: "No good backup yet", canBackUp: true },
-      failing: [{ title: "Out of space", detail: "Chief of staff and Finance · 4 turns waiting" }],
+      failing: [
+        {
+          key: "kin-trouble:o:space:1",
+          cause: "space",
+          widget: { type: "host_trouble", state: { cause: "space", count: 4 } },
+        },
+      ],
       canRetry: true,
     });
 

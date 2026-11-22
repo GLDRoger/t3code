@@ -18,6 +18,7 @@ import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { KinHostTroubleCard } from "../KinHostTroubleCard";
 import { kinClient, refreshKinHost } from "../kinClient";
 import { useNowMinuteMs } from "../useKinClock";
 import {
@@ -101,6 +102,18 @@ function HostPage(props: { readonly environmentId: EnvironmentId; readonly orgId
   const view = kinHostPageView(status, now);
   return (
     <KinSettingsPage purpose={KIN_HOST_COPY.purpose}>
+      {/* Every open trouble with its own taps, whether or not a notice reached a chat. */}
+      {view.failing.length === 0 ? null : (
+        <div className="flex flex-col gap-2">
+          {view.failing.map((failing) => (
+            <KinHostTroubleCard
+              key={failing.key}
+              widget={{ ...failing.widget, orgId: props.orgId }}
+              environmentId={props.environmentId}
+            />
+          ))}
+        </div>
+      )}
       <KinSettingsSection
         title={KIN_HOST_COPY.space}
         action={
@@ -161,14 +174,6 @@ function HostPage(props: { readonly environmentId: EnvironmentId; readonly orgId
             again.tap.done ?? (view.failing.length === 0 ? KIN_HOST_COPY.nothingFailing : null)
           }
         />
-        {view.failing.map((failing) => (
-          <KinSettingsRow
-            key={failing.key}
-            title={failing.title}
-            detail={failing.detail}
-            status={<KinSettingsStatus tone="error">{KIN_HOST_COPY.failing}</KinSettingsStatus>}
-          />
-        ))}
       </KinSettingsSection>
 
       <KinSettingsSection title={KIN_HOST_COPY.about}>

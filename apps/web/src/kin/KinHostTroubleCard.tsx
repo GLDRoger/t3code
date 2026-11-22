@@ -10,7 +10,13 @@ import {
   type KinTroubleActionView,
 } from "@t3tools/client-runtime/kin/kinHostCare";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, KinOrgId, KinTroubleAction, KinWidget } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  type EnvironmentId,
+  type KinOrgId,
+  type KinTroubleAction,
+  type KinWidget,
+} from "@t3tools/contracts";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { memo, useState } from "react";
@@ -32,7 +38,7 @@ type Done = { readonly line: string; readonly failed: boolean } | null;
  * The message above says what is wrong. Every tap is a fixed operation or a place to open.
  */
 export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
-  readonly widget: KinWidget;
+  readonly widget: Pick<KinWidget, "type" | "state" | "orgId">;
   readonly environmentId: EnvironmentId;
 }) {
   const { widget, environmentId } = props;
@@ -84,7 +90,15 @@ export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
       case "back_up":
         return void run(action, () => backUp(query), kinBackUpLine);
       case "sign_in":
-        return void navigate({ to: "/settings/providers" });
+        return void navigate({
+          to: "/settings/providers",
+          search: {
+            environmentId,
+            ...(view.instanceId === null
+              ? {}
+              : { instanceId: ProviderInstanceId.make(view.instanceId) }),
+          },
+        });
       case "open_agent":
         return view.agentId === null
           ? undefined
@@ -100,10 +114,12 @@ export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
         return view.detail === null ? undefined : copyToClipboard(view.detail, undefined);
     }
   };
-  // Signing in an AI account is the app's own settings, on a session that can open them.
-  const shown = (action: KinTroubleActionView) =>
-    action.action !== "sign_in" || !isChatOnlySession();
+  // Signing in an AI account is the app's own settings, on a session that can open them;
+  // elsewhere the card says where it is done instead.
+  const chatOnly = isChatOnlySession();
+  const shown = (action: KinTroubleActionView) => action.action !== "sign_in" || !chatOnly;
   const actions = canAct ? view.actions.filter(shown) : [];
+  const elsewhere = chatOnly ? view.signInElsewhere : null;
   const busyLabel: Partial<Record<KinTroubleAction, string>> = {
     free_space: KIN_HOST_COPY.freeing,
     retry: KIN_HOST_COPY.retrying,
@@ -118,6 +134,7 @@ export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
           {view.line}
         </p>
       )}
+      {elsewhere === null ? null : <p className="text-foreground">{elsewhere}</p>}
       {view.detail === null ? null : (
         <details className="text-xs text-muted-foreground">
           <summary className="cursor-pointer select-none">{KIN_HOST_COPY.details}</summary>

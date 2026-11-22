@@ -384,7 +384,8 @@ const make = Effect.gen(function* () {
     const agents = yield* sql<{
       agentId: string;
       name: string;
-    }>`SELECT agent_id AS "agentId", name FROM kin_trouble_agents
+      instanceId: string | null;
+    }>`SELECT agent_id AS "agentId", name, instance_id AS "instanceId" FROM kin_trouble_agents
       WHERE org_id = ${orgId} AND trouble_id = ${trouble.troubleId}
         AND (worked_at IS NULL OR ${trouble.closedAt} IS NOT NULL) ORDER BY rowid`;
     const [counts] = yield* sql<{
@@ -406,6 +407,7 @@ const make = Effect.gen(function* () {
       agents: agents.slice(0, 50).map((agent) => ({
         agentId: agent.agentId as KinAgentId,
         name: agent.name,
+        ...(agent.instanceId === null ? {} : { instanceId: agent.instanceId }),
       })),
       count: counts?.held ?? 0,
       openedAt: iso(trouble.openedAt),

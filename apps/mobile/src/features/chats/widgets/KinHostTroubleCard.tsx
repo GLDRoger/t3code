@@ -10,6 +10,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinHostCare";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinTroubleAction, KinWidget } from "@t3tools/contracts";
+import { useNavigation } from "@react-navigation/native";
 import * as Clipboard from "expo-clipboard";
 import { AsyncResult } from "effect/reactivity";
 import { memo, useState } from "react";
@@ -21,22 +22,25 @@ import { useNowMinuteMs } from "../../../lib/clock";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient, refreshKinHost } from "../state/kinClient";
 
-// The phone runs Kin's fixed operations; signing in, limits and connections are set up on the computer.
+// The phone runs Kin's fixed operations and opens the agent; signing in, limits and connections
+// are set up on a computer, and the card says where.
 const ON_PHONE: ReadonlySet<KinTroubleAction> = new Set([
   "free_space",
   "retry",
   "back_up",
+  "open_agent",
   "copy_details",
 ]);
 
 /** One cause's notice in the owner's chat, on the phone: the same words and taps as on web. */
 export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
-  readonly widget: KinWidget;
+  readonly widget: Pick<KinWidget, "type" | "state" | "orgId">;
   readonly environmentId: EnvironmentId;
 }) {
   const { widget, environmentId } = props;
   const now = useNowMinuteMs();
   const view = kinHostTroubleCardView(widget, kinHostWhen(now));
+  const navigation = useNavigation();
   const canAct = useAtomValue(kinClient.hostFreeSpace.permissionAtom(environmentId));
   const freeSpace = useAtomCommand(kinClient.hostFreeSpace, { reportFailure: false });
   const backUp = useAtomCommand(kinClient.hostBackUpNow, { reportFailure: false });
@@ -74,6 +78,12 @@ export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
     if (action === "free_space") void run(action, () => freeSpace(query), kinFreeSpaceLine);
     else if (action === "retry") void run(action, () => retry(query), kinRetryLine);
     else if (action === "back_up") void run(action, () => backUp(query), kinBackUpLine);
+    else if (action === "open_agent" && view.agentId !== null)
+      navigation.navigate("KinLead", {
+        environmentId,
+        orgId: widget.orgId,
+        agentId: view.agentId,
+      });
     else if (action === "copy_details" && view.detail !== null) {
       void Clipboard.setStringAsync(view.detail);
       setDone({ line: KIN_HOST_COPY.copied, failed: false });
@@ -101,6 +111,11 @@ export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
           className={view.closed ? "font-t3-medium text-foreground" : "text-foreground-muted"}
         >
           {view.line}
+        </Text>
+      )}
+      {view.signInElsewhere === null ? null : (
+        <Text textRole="footnote" className="text-foreground">
+          {view.signInElsewhere}
         </Text>
       )}
       {view.detail === null ? null : (
