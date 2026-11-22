@@ -59,6 +59,7 @@ import { workFor } from "./workFor.ts";
 import { recordTextQuestion } from "../questions/openQuestions.ts";
 import { DECLINED_WINDOW_MS, declinedRequests } from "./declinedSection.ts";
 import * as Reach from "./Reach.ts";
+import { KinRecords } from "../work/KinRecords.ts";
 import { forwardEventId, routeShown } from "./routeCard.ts";
 import { type CardDraw, type RoutePlan, sealPlans } from "../widgets/cardPlans.ts";
 
@@ -441,6 +442,45 @@ it.effect.each([true, false])(
 
 // Run 4: the morning check-in told the owner "Finance will send the reminder once you confirm",
 // and could not hand the overdue fact to Finance. From a check-in, a fact goes to the agent who acts.
+// Chief of staff puts Tech lead on the owner's task and then hands it the same brief: being put
+// on it already wakes Tech lead with the task, so the hand-off passes nothing and says why.
+it.effect("a hand-off to an agent this turn put on a task passes nothing more", () =>
+  run(({ ctx, handoff }) =>
+    Effect.gen(function* () {
+      const { sql, orgId, owner } = ctx;
+      const records = Context.get(ctx.services, KinRecords);
+      const { row } = yield* records.create(
+        orgId,
+        { actor: owner, via: "owner" },
+        { originKey: "owner:ci", title: "Invented: fix CI on the app repo", owner: owner },
+      );
+      yield* records.update(
+        orgId,
+        {
+          actor: { _tag: "agent", agentId: chief },
+          via: "lead",
+          askedBy: owner.personId,
+          wakeupId: "chief-wake",
+        },
+        row.key,
+        { fields: { alsoOn: [`agent:${tech}`] } },
+      );
+      const input = {
+        to: "Tech lead",
+        request: "Find why CI is red.",
+        sourceEventId: "ask-event",
+        wantsAnswer: false,
+      };
+      assert.deepStrictEqual(yield* handoff.handOff(scopeFor(chief), input), {
+        passed: false,
+        note: Handoff.alreadyOnIt([row.key]),
+      });
+      assert.lengthOf(yield* passedOn(sql, orgId, tech), 0);
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_handoffs WHERE org_id = ${orgId}`, 0);
+    }),
+  ),
+);
+
 it.effect("a check-in passes a fact to the agent who acts on it, once, in Kin's words", () =>
   run(({ ctx, handoff }) =>
     Effect.gen(function* () {

@@ -73,6 +73,9 @@ export const LeadsResult = Schema.Struct({
     }),
   ),
 });
+/** A hand-off to an agent this turn put on a task: being put on it already woke it with it. */
+export const alreadyOnIt = (keys: ReadonlyArray<string>) =>
+  `Nothing was passed on: you put them on ${keys.join(", ")} in this turn, and that already wakes them with it.`;
 export const HandOffInput = Schema.Struct({
   to: TrimmedNonEmptyString.check(Schema.isMaxLength(80)).annotate({
     description: "The agent to pass it to, by name or domain, as kin_leads lists them.",
@@ -461,6 +464,23 @@ const make = Effect.gen(function* () {
    * message (`Reach`); one they may not is refused. Their stored words only, once per message.
    * Cards an earlier build drew to let them talk keep answering retries until they close.
    */
+  /** The tasks this turn put `agentId` on: their own wake already carries the brief. */
+  const putOnThisTurn = Effect.fn("KinHandoff.putOnThisTurn")(function* (
+    ctx: Lead,
+    agentId: KinAgentId,
+  ) {
+    const rows = yield* sql<{ key: string }>`SELECT DISTINCT json_extract(e.json, '$.key') AS key
+      FROM kin_events e JOIN kin_record_changes c ON c.org_id = e.org_id
+        AND c.record_id = json_extract(e.json, '$.recordId') AND c.seq = json_extract(e.json, '$.seq')
+      WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${agentId} AND e.tag = 'record.changed'
+        AND json_extract(e.json, '$.reason') = 'joined' AND c.actor_kind = 'agent'
+        AND c.actor_id = ${ctx.agentId} AND c.wakeup_id = ${ctx.wakeupId}
+      ORDER BY key`;
+    return rows.length === 0
+      ? undefined
+      : { passed: false as const, note: alreadyOnIt(rows.map((row) => row.key)) };
+  });
+
   const passOn = Effect.fn("KinHandoff.passOn")(function* (
     ctx: Lead,
     ask: TeammateAsk,
@@ -493,6 +513,8 @@ const make = Effect.gen(function* () {
         reason: reached.length > 1 ? "invalid_state" : "not_found",
         message: `${reached.length > 1 ? "Several agents answer to that" : "No agent answers to that"}. ${reachable.length === 0 ? `${ask.personName} may message no other agent.` : `The ones they may message: ${reachable.map((entry) => entry.name).join(", ")}.`} ${NOTHING}`,
       });
+    const onIt = target === undefined ? undefined : yield* putOnThisTurn(ctx, target.agentId);
+    if (onIt !== undefined) return onIt;
     const { messageId } = ask.message;
     const now = yield* Clock.currentTimeMillis;
     const person = ask.personName;
@@ -1422,6 +1444,8 @@ const make = Effect.gen(function* () {
         });
         const before = yield* already();
         if (before !== undefined) return before;
+        const onIt = yield* putOnThisTurn(ctx, target.agentId);
+        if (onIt !== undefined) return onIt;
         const dedupeKey = `handoff:${event.messageId}`;
         const id = NodeCrypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 32);
         // The lead's own words, then the owner's whole, quoted, so neither passes for the other.
