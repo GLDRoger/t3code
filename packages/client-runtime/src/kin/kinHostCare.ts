@@ -20,6 +20,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { kinFailure } from "./kinAnswers.ts";
+import { kinSentences } from "./kinScreenState.ts";
 
 /** Settings › Kin's computer, and the trouble card in the owner's chat: one set of words. */
 export const KIN_HOST_COPY = {
@@ -97,6 +98,8 @@ export interface KinTroubleActionView {
 export interface KinHostTroubleCardView {
   readonly cause: KinTroubleCause;
   readonly title: string;
+  /** What is wrong, with the agents it stopped now: a system message's card stands for its text. */
+  readonly what: string;
   /** What Kin is doing about it while open; when it is fixed and how many held turns ran after. */
   readonly line: string | null;
   /** The error's own short line, folded away, for whoever helps. */
@@ -134,12 +137,13 @@ export function kinHostTroubleCardView(
   return {
     cause: card.cause,
     title: closed ? `${title} · ${KIN_HOST_COPY.fixed}` : title,
+    what: words.what,
     line,
     detail: closed ? null : (card.detail ?? null),
     actions: closed ? [] : actionsOf(words.actions, card.detail),
     agentId: card.agents[0]?.agentId ?? null,
     closed,
-    accessibilityLabel: [title, words.what, line].filter((part) => part !== null).join(". "),
+    accessibilityLabel: kinSentences([title, words.what, line]),
   };
 }
 
@@ -258,9 +262,11 @@ export const kinHostFailed = (cause: unknown) => kinFailure(cause, "Kin couldn't
 
 /** What Free up space now did, in one line. */
 export const kinFreeSpaceLine = (result: KinHostFreeSpaceResult) =>
-  !result.ran || result.removed === 0 || result.freedBytes === 0
+  !result.ran || result.removed === 0
     ? "Nothing old to clear"
-    : `Gave back ${kinBytesText(result.freedBytes)}`;
+    : result.freedBytes < 1024 ** 2
+      ? "Cleared old temporary files"
+      : `Gave back ${kinBytesText(result.freedBytes)}`;
 
 /** What Back up now did, in one line. */
 export const kinBackUpLine = (result: KinHostBackUpResult) =>

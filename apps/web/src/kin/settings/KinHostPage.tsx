@@ -136,13 +136,7 @@ function HostPage(props: { readonly environmentId: EnvironmentId; readonly orgId
             detail={backup.tap.done ?? view.backup.detail}
             wrap={!view.backup.canBackUp}
             status={
-              view.backup.problem === null ? (
-                view.backup.canBackUp && view.backup.title === KIN_HOST_COPY.noBackupYet ? (
-                  <KinSettingsStatus tone="attention">
-                    {KIN_HOST_COPY.noBackupYet}
-                  </KinSettingsStatus>
-                ) : null
-              ) : (
+              view.backup.problem === null ? null : (
                 <KinSettingsStatus tone="attention">{view.backup.problem}</KinSettingsStatus>
               )
             }

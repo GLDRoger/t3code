@@ -65,6 +65,9 @@ describe("kinHostTroubleCardView", () => {
       actions: [],
       closed: true,
     });
+    expect(kinHostTroubleCardView(trouble({ ...open, count: 1 }), at)?.line).toBe(
+      "Kin keeps the held turn and runs it as soon as there is space.",
+    );
     // Copy details only when there is a line to copy; anything else is no card of this kind.
     expect(
       kinHostTroubleCardView(trouble({ ...open, cause: "unknown" }), at)?.actions.map(
@@ -129,7 +132,7 @@ describe("kinHostPageView", () => {
     expect(notHost.space?.partsNote).toBeNull();
   });
 
-  it("says what Free up space now gave back, or that nothing was old enough", () => {
+  it("says what Free up space now gave back, that it cleared something small, or that nothing was old enough", () => {
     expect(kinFreeSpaceLine({ ran: true, removed: 40, freedBytes: 1.2 * GB, failed: 0 })).toBe(
       "Gave back 1.2 GB",
     );
@@ -138,6 +141,10 @@ describe("kinHostPageView", () => {
     );
     expect(kinFreeSpaceLine({ ran: false, removed: 0, freedBytes: 0, failed: 0 })).toBe(
       "Nothing old to clear",
+    );
+    // Something old went, if only empty files: that is not "nothing".
+    expect(kinFreeSpaceLine({ ran: true, removed: 1, freedBytes: 0, failed: 0 })).toBe(
+      "Cleared old temporary files",
     );
   });
 });

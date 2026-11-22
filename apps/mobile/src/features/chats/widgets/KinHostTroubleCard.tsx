@@ -89,10 +89,16 @@ export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
       <Text textRole="caption" className="font-t3-medium text-foreground-muted">
         {view.title}
       </Text>
+      <Text
+        textRole="footnote"
+        className={view.closed ? "text-foreground-muted" : "text-foreground"}
+      >
+        {view.what}
+      </Text>
       {view.line === null ? null : (
         <Text
           textRole="footnote"
-          className={view.closed ? "text-foreground" : "text-foreground-muted"}
+          className={view.closed ? "font-t3-medium text-foreground" : "text-foreground-muted"}
         >
           {view.line}
         </Text>

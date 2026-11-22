@@ -160,8 +160,8 @@ function Line(props: {
 
 const BAR: Record<"ok" | "low" | "out", string> = {
   ok: "bg-primary",
-  low: "bg-warning",
-  out: "bg-danger",
+  low: "bg-warning-foreground",
+  out: "bg-danger-foreground",
 };
 
 function Host(props: {

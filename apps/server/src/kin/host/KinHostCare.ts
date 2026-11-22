@@ -64,6 +64,7 @@ const OUT_BYTES = 64 * 1024 * 1024;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const decodeCard = Schema.decodeUnknownOption(Schema.fromJsonString(KinHostTroubleCard));
 const encodeCard = Schema.encodeSync(KinHostTroubleCard);
+const encodeIds = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
 const decodeDevSpace = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ freeBytes: Schema.Number, totalBytes: Schema.Number })),
 );
@@ -457,7 +458,15 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         for (const open of yield* openCards(orgId)) {
           if (!which(open.card)) continue;
-          const ran = yield* queue.wake(orgId, heldOf(open.card));
+          const held = heldOf(open.card);
+          // Try again may have run some already: they count as run, as do those woken now.
+          const [done] =
+            held.length === 0
+              ? [{ n: 0 }]
+              : yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_events
+                  WHERE org_id = ${orgId} AND state = 'done'
+                    AND event_id IN (SELECT value FROM json_each(${yield* encodeIds(held)}))`;
+          const ran = (done?.n ?? 0) + (yield* queue.wake(orgId, held));
           const widget = yield* widgetOf(orgId, open.widgetId);
           if (widget === undefined) continue;
           const now = yield* Clock.currentTimeMillis;

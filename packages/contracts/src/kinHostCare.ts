@@ -87,6 +87,7 @@ const names = (agents: ReadonlyArray<{ readonly name: string }>) => {
   return `${list[0]} and ${list.length - 1} other agents`;
 };
 const turns = (count: number) => (count === 1 ? "the held turn" : `the ${count} held turns`);
+const them = (count: number) => (count === 1 ? "it" : "them");
 
 /** The table's short form, for the line in the chat where the turn was asked: "<agent> couldn't start: …". */
 export const KIN_TROUBLE_WHY: Readonly<Record<KinTroubleCause, string>> = {
@@ -128,13 +129,13 @@ export function kinTroubleWords(
           card.using === undefined
             ? `Kin's computer ran out of space, so ${who} couldn't work. Kin cleared out old temporary files, but that wasn't enough.`
             : `Kin's computer ran out of space, so ${who} couldn't work. Kin cleared out old temporary files, but that wasn't enough. ${card.using}`,
-        doing: `Kin keeps ${turns(card.count)} and runs them as soon as there is space.`,
+        doing: `Kin keeps ${turns(card.count)} and runs ${them(card.count)} as soon as there is space.`,
         actions: ["free_space", "retry"],
       };
     case "signin":
       return {
         what: `The AI account behind ${who} is signed out, so ${card.agents.length > 1 ? "they" : "it"} couldn't work.`,
-        doing: `Kin keeps ${turns(card.count)} and runs them once the account is signed in again.`,
+        doing: `Kin keeps ${turns(card.count)} and runs ${them(card.count)} once the account is signed in again.`,
         actions: ["sign_in", "retry"],
       };
     case "access":
@@ -152,7 +153,7 @@ export function kinTroubleWords(
     case "program":
       return {
         what: `Kin couldn't run the AI program behind ${who}.`,
-        doing: `Kin keeps ${turns(card.count)} and runs them when the program starts again.`,
+        doing: `Kin keeps ${turns(card.count)} and runs ${them(card.count)} when the program starts again.`,
         actions: ["retry", "copy_details"],
       };
     case "usage_limit":
@@ -161,7 +162,7 @@ export function kinTroubleWords(
           card.resetAt === undefined
             ? `The AI account behind ${who} reached its usage limit.`
             : `The AI account behind ${who} reached its usage limit. It resets at ${at(card.resetAt)}.`,
-        doing: `Kin keeps ${turns(card.count)} and runs them when the limit resets.`,
+        doing: `Kin keeps ${turns(card.count)} and runs ${them(card.count)} when the limit resets.`,
         actions: ["retry"],
       };
     case "daily_limit":

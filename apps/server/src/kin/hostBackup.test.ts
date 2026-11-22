@@ -363,6 +363,13 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
     // Try again runs exactly the held turns; they stay listed until a turn proves the cause gone.
     yield* sql`UPDATE kin_events SET not_before = ${DAY_START + HOUR}`;
     assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 2 });
+    // Try again ran the held turn before a turn proved space back: it still counts as run.
+    yield* sql`UPDATE kin_events SET state = 'done' WHERE event_id = ${first}`;
+    yield* care.succeeded(orgId, chief);
+    assert.deepStrictEqual(
+      (yield* cards).filter((card) => card.cause === "space").map((card) => card.closed?.ran),
+      [2, 1],
+    );
   }).pipe(Effect.provide(services)),
 );
 

@@ -112,8 +112,11 @@ export const KinHostTroubleCard = memo(function KinHostTroubleCard(props: {
 
   return (
     <CardFrame eyebrow={view.title} label={view.accessibilityLabel}>
+      <p className={view.closed ? "text-muted-foreground" : "text-foreground"}>{view.what}</p>
       {view.line === null ? null : (
-        <p className={view.closed ? "text-foreground" : "text-muted-foreground"}>{view.line}</p>
+        <p className={view.closed ? "font-medium text-foreground" : "text-muted-foreground"}>
+          {view.line}
+        </p>
       )}
       {view.detail === null ? null : (
         <details className="text-xs text-muted-foreground">
