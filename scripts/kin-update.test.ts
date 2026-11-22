@@ -13,20 +13,23 @@ const SCRIPT = NodePath.resolve(import.meta.dirname, "../ops/kin/host/update.sh"
 const HARNESS = String.raw`
 set -u
 mkdir -p "$HOME/.t3/userdata" "$HOME/kin-builds"
-build() { # build <name> <kin migration head>
-  local dir="$HOME/kin-builds/$1"
+build() { # build <name> <kin migration head> [its units, else all of them]
+  local dir="$HOME/kin-builds/$1" head="$2" unit
+  shift 2
+  [ $# -gt 0 ] || set -- kin-server.service kin-backup.service kin-backup.timer kin-temp-clean.service kin-temp-clean.timer
   mkdir -p "$dir/apps/server/dist" "$dir/apps/server/src/persistence/Migrations" \
     "$dir/apps/server/src/kin/persistence/migrations" "$dir/ops/kin/host"
   touch "$dir/apps/server/dist/bin.mjs" "$dir/apps/server/src/persistence/Migrations/080_Last.ts" \
-    "$dir/apps/server/src/kin/persistence/migrations/K$2_Last.ts"
-  for unit in kin-server.service kin-backup.service kin-backup.timer; do echo "$unit" >"$dir/ops/kin/host/$unit"; done
+    "$dir/apps/server/src/kin/persistence/migrations/K$head"_Last.ts
+  for unit in "$@"; do echo "$unit" >"$dir/ops/kin/host/$unit"; done
   echo "$dir"
 }
 sqlite3 "$HOME/.t3/userdata/statev2.sqlite" "CREATE TABLE effect_sql_migrations (migration_id INTEGER, name TEXT);
   CREATE TABLE kin_sql_migrations (migration_id INTEGER, name TEXT);
   INSERT INTO effect_sql_migrations VALUES (80, 'Last'); INSERT INTO kin_sql_migrations VALUES (148, 'Last');
   CREATE TABLE notes (body TEXT); INSERT INTO notes VALUES ('before the update');"
-OLD="$(build old 148)"
+# Built before the hourly temp clean existed: a rollback to it must still install its units.
+OLD="$(build old 148 kin-server.service kin-backup.service kin-backup.timer)"
 ln -s "$OLD" "$HOME/kin-current"
 source "$SCRIPT"
 REPO="$HOME/t3code"
@@ -85,6 +88,11 @@ PUBLISHED="$(printf 'b%.0s' {1..40})"
 ${deploy}
 echo "current $(basename "$(readlink "$CURRENT")")"
 echo "env $(grep '^KIN_BUILD_COMMIT=' "$ENV_FILE")"
+echo "env $(grep '^TMPDIR=' "$ENV_FILE" | sed "s|$HOME|~|")"
+echo "units $(ls "$UNIT_DIR" | tr '\\n' ' ')"
+echo "temp clean on $(grep -c 'enable --now kin-temp-clean.timer' "$HOME/calls")"
+printf 'T3CODE_PORT=3999\\nexport TMPDIR="/srv/kin tmp"\\n' >"$SERVICE_ENV"
+echo "host's own temp folder $(kin_tmpdir)"
 echo "builds $(ls "$HOME/kin-builds" | sort | tr '\\n' ' ')"
 echo "backups $(ls "$BACKUP_DIR" | grep -c '^statev2-')"
 ls "$BACKUP_DIR" | grep -q hand-made && echo "hand-made kept"
@@ -96,6 +104,10 @@ echo "database at $(heads)"`);
       "current new",
       // memory-check in the memory repo is pinned to this commit when Kin updates it.
       `env KIN_BUILD_COMMIT=${"b".repeat(40)}`,
+      "env TMPDIR=~/.cache/kin-tmp",
+      "units kin-backup.service kin-backup.timer kin-server.service kin-temp-clean.service kin-temp-clean.timer ",
+      "temp clean on 1",
+      "host's own temp folder /srv/kin tmp",
       "builds new old older3 ",
       "backups 10",
       "hand-made kept",
