@@ -15,6 +15,7 @@ import {
   kinDealWhen,
   kinDealChangeWhen,
 } from "@t3tools/client-runtime/kin/kinDeals";
+import { kinSectionOffLine } from "@t3tools/client-runtime/kin/kinShell";
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
 import { kinWorkAssignees, kinWorkDueText, kinWorkName } from "@t3tools/client-runtime/kin/kinWork";
 import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
@@ -65,6 +66,8 @@ import {
 } from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinDealPage, useKinDealSend } from "./useKinDeals";
+import { useKinOwnerLevel } from "./useKinOwnerLevel";
+import { useKinShell } from "./useKinShell";
 import { useKinInvoiceFromQuote } from "./useKinMoneyAnswers";
 import { useKinHomeCurrency } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
@@ -85,6 +88,12 @@ const focusOnMount = (node: HTMLElement | null) => node?.focus({ preventScroll: 
 /** One deal: its stage and moves, value, next step, details and what happened to it. */
 export function KinDealPage(props: DealPageProps) {
   const { state, refresh } = useKinDealPage(props, props.dealKey);
+  // Deals switched off: the deal still opens by its link, and says so.
+  const offLine = kinSectionOffLine(
+    useKinShell(props.environmentId),
+    "deals",
+    useKinOwnerLevel(props.environmentId),
+  );
   return (
     <div
       ref={focusOnMount}
@@ -113,7 +122,14 @@ export function KinDealPage(props: DealPageProps) {
           className="p-4"
         />
       ) : (
-        <DealBody {...props} page={state.value} />
+        <>
+          {offLine === null ? null : (
+            <p role="note" className="px-4 pt-4 pe-12 text-sm text-muted-foreground">
+              {offLine}
+            </p>
+          )}
+          <DealBody {...props} page={state.value} />
+        </>
       )}
       {props.frame === "page" ? null : (
         <div className="absolute end-2 top-2">

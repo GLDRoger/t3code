@@ -40,6 +40,7 @@ describe("a campaign's results", () => {
     const onOpen = vi.fn();
     await using _screen = await render(
       <KinCampaignResultsSection
+        deals
         results={{
           prospects: 14,
           clients: 2,

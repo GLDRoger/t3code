@@ -30,6 +30,7 @@ import { KIN_PLACE_PATH } from "./kinPlaces";
 import { kinClient } from "./kinClient";
 import { kinHostKeptTarget, useKinHost } from "./useKinHost";
 import { kinPlacesAtom } from "./kinPlacesAtom";
+import { useKinSectionOn } from "./useKinShell";
 
 const PLACE: Record<
   KinDestination,
@@ -77,6 +78,7 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
   const canImport = useAtomValue(
     kinClient.importApply.permissionAtom(target?.environmentId ?? null),
   );
+  const dealsOn = useKinSectionOn(target?.environmentId ?? null, "deals");
   const destinations = shown?.destinations ?? [];
   if (target === null || destinations.length === 0) return [];
   const row = (
@@ -129,7 +131,9 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
       ? [
           row(
             "import",
-            `${KIN_IMPORT.entry}: bring clients, contacts and deals in from a spreadsheet`,
+            dealsOn
+              ? `${KIN_IMPORT.entry}: bring clients, contacts and deals in from a spreadsheet`
+              : `${KIN_IMPORT.entry}: bring clients and contacts in from a spreadsheet`,
             FileUpIcon,
             [
               "import",
@@ -139,7 +143,7 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
               "excel",
               "crm",
               "contacts",
-              "deals",
+              ...(dealsOn ? ["deals"] : []),
               "bring in",
             ],
             async () => {

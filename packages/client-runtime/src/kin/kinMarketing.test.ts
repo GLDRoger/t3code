@@ -57,7 +57,7 @@ describe("a campaign's results", () => {
       won: { count: 1, values: [{ minor: 900_000, currency: "EUR" as const }] },
       audience: 212,
     };
-    const rows = kinCampaignResultRows(results, "harbour");
+    const rows = kinCampaignResultRows(results, "harbour", true);
     expect(rows.map((row) => [row.id, row.value])).toEqual([
       ["prospects", "14"],
       ["clients", "2"],
@@ -65,7 +65,14 @@ describe("a campaign's results", () => {
       ["won", expect.stringMatching(/^1 · €9,000(\.00)?$/)],
       ["audience", "212 contacts"],
     ]);
-    expect(kinCampaignResultRows(results, null).map((row) => row.id)).not.toContain("audience");
+    expect(kinCampaignResultRows(results, null, true).map((row) => row.id)).not.toContain(
+      "audience",
+    );
+    // A company that doesn't run deals counts none.
+    expect(kinCampaignResultRows(results, null, false).map((row) => row.id)).toEqual([
+      "prospects",
+      "clients",
+    ]);
   });
 
   it("reads folded as its counts, zeros left out, or nothing yet", () => {
@@ -83,15 +90,16 @@ describe("a campaign's results", () => {
       won: { count: won, values: won === 0 ? [] : [none] },
       audience: people,
     });
-    expect(kinCampaignResultsSummary(results(0, 1, 2, 1), "harbour")).toBe(
+    expect(kinCampaignResultsSummary(results(0, 1, 2, 1), "harbour", true)).toBe(
       "1 client · 2 deals · 1 won",
     );
-    expect(kinCampaignResultsSummary(results(3, 0, 1, 0, 1), "harbour")).toBe(
+    expect(kinCampaignResultsSummary(results(0, 1, 2, 1), "harbour", false)).toBe("1 client");
+    expect(kinCampaignResultsSummary(results(3, 0, 1, 0, 1), "harbour", true)).toBe(
       "3 prospects · 1 deal · 1 contact",
     );
-    expect(kinCampaignResultsSummary(results(0, 0, 0, 0), null)).toBe("nothing yet");
+    expect(kinCampaignResultsSummary(results(0, 0, 0, 0), null, true)).toBe("nothing yet");
     // People on its list count only with an audience to list them by.
-    expect(kinCampaignResultsSummary(results(0, 0, 0, 0, 4), null)).toBe("nothing yet");
+    expect(kinCampaignResultsSummary(results(0, 0, 0, 0, 4), null, true)).toBe("nothing yet");
   });
 
   it("opens what each count counts: its parties by kind, its open or won deals, its people", () => {

@@ -166,6 +166,7 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
   {
     id: "kin-deals",
     kinOnly: true,
+    kinSection: "deals",
     title: "Deal stages",
     to: "/settings/deals",
     searchTerms: ["kin deals stages pipeline won lost sales prospect"],
