@@ -22,6 +22,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Hub from "./chat/KinChatHub.ts";
 import * as Repository from "./chat/KinChatRepository.ts";
@@ -74,8 +75,14 @@ describe("backupProblem", () => {
 
 const config = (fields: Record<string, unknown>) =>
   ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true, ...fields }));
-const servicesWith = (fields: Record<string, unknown>) =>
-  KinHostCare.layer.pipe(
+const servicesWith = (
+  fields: Record<string, unknown>,
+  runner: Layer.Layer<ProcessRunner.ProcessRunner> = ProcessRunner.layer.pipe(
+    Layer.provide(NodeServices.layer),
+  ),
+) =>
+  KinHostCare.layerWithoutRunner.pipe(
+    Layer.provide(runner),
     Layer.provideMerge(KinEventQueue.layer),
     Layer.provideMerge(Chat.layer),
     Layer.provideMerge(Hub.layer),
@@ -447,6 +454,55 @@ it.effect(
       // Only the turn that finished counts as run.
       assert.strictEqual((yield* cards)[0]!.closed?.ran, 1);
     }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "runs one automatic clean per trouble, recorded on it, however many turns fail for space",
+  () => {
+    let cleans = 0;
+    const runner = Layer.succeed(
+      ProcessRunner.ProcessRunner,
+      ProcessRunner.ProcessRunner.of({
+        run: (input) =>
+          Effect.sync(() => {
+            if (input.command === "bash") cleans += 1;
+            return {
+              stdout: "kin-clean removed=0 freed_kb=0 failed=0\n",
+              stderr: "",
+              code: 0 as never,
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            };
+          }),
+      }),
+    );
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(DAY_START);
+      yield* seed;
+      const care = yield* KinHostCare.KinHostCare;
+      const sql = yield* SqlClient.SqlClient;
+      const chief = KinAgentId.make("chief");
+      const finance = KinAgentId.make("finance");
+      // The first failure spends the trouble's clean; every later one, any agent's, does not.
+      assert.isTrue(yield* care.spaceFailed(orgId, chief));
+      assert.isFalse(yield* care.spaceFailed(orgId, chief));
+      assert.isFalse(yield* care.spaceFailed(orgId, finance));
+      assert.strictEqual(cleans, 1);
+      const spent = yield* sql<{ spent: number }>`SELECT auto_clean_at IS NOT NULL AS spent
+      FROM kin_troubles WHERE org_id = ${orgId} ORDER BY trouble_id`;
+      assert.deepStrictEqual(spent, [{ spent: 1 }]);
+      // A person's tap runs another.
+      yield* care.freeSpace(orgId);
+      assert.strictEqual(cleans, 2);
+      // Space came back; a new trouble later has its own clean.
+      yield* care.succeeded(orgId, chief);
+      assert.isTrue(yield* care.spaceFailed(orgId, finance));
+      assert.strictEqual(cleans, 3);
+    }).pipe(Effect.provide(servicesWith({ KIN_CHECKOUT: "/srv/kin-current" }, runner)));
+  },
 );
 
 const space =

@@ -185,8 +185,6 @@ const ulid = Effect.gen(function* () {
 const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
   const care = yield* Effect.serviceOption(KinHostCare);
-  // Events already retried once after a clean: a second full disk opens the owner's notice.
-  const cleanRetried = new Set<string>();
   const claimedEvents = Effect.fn("WakeupRunner.claimedEvents")(function* (
     row: typeof RunningRow.Type,
   ) {
@@ -223,17 +221,15 @@ const make = Effect.gen(function* () {
     const claimed = cause === undefined ? [] : yield* claimedEvents(row);
     const now = yield* Clock.currentTimeMillis;
     let holdUntil: number | undefined;
-    // A full disk: clear old temporary files at once and try once more, telling nobody.
+    // A full disk: the trouble's one automatic clean, then one more try at once, telling nobody.
     let quiet = false;
-    if (cause === "space" && Option.isSome(care) && care.value.host) {
-      const fresh = claimed.filter((id) => !cleanRetried.has(id));
-      if (fresh.length > 0) {
-        for (const id of fresh) cleanRetried.add(id);
-        if (cleanRetried.size > 10_000) cleanRetried.clear();
-        yield* care.value.clean("out_of_space");
-        holdUntil = yield* Clock.currentTimeMillis;
-        quiet = true;
-      }
+    if (
+      cause === "space" &&
+      Option.isSome(care) &&
+      (yield* care.value.spaceFailed(row.orgId, row.agentId))
+    ) {
+      holdUntil = yield* Clock.currentTimeMillis;
+      quiet = true;
     }
     const resetAt = providerResetAt(failure);
     if (holdUntil === undefined && cause !== undefined && HELD_CAUSES.has(cause))

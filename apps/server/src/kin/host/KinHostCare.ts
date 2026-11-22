@@ -21,6 +21,7 @@ import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -134,10 +135,16 @@ export class KinHostCare extends Context.Service<
   {
     /** A Kin host (`KIN_CHECKOUT`), or a dev server standing in for one (`KIN_DEV_HOST_CARE`). */
     readonly host: boolean;
-    /** Runs the clean now with the low-space rule; a run already going is waited for, not doubled. */
+    /** Runs the clean now; a run already going is shared, never doubled. */
     readonly clean: (
       why: "out_of_space" | "low_on_space" | "asked",
     ) => Effect.Effect<KinHostFreeSpaceResult>;
+    /**
+     * A turn of `agentId` failed for space: records it on the space trouble and, the first time
+     * for that trouble, runs its one automatic clean. True when this was that clean, so the turn
+     * may try once more at once.
+     */
+    readonly spaceFailed: (orgId: KinOrgId, agentId: KinAgentId) => Effect.Effect<boolean>;
     /** Dev stand-in only: fails as a full disk would while `$TMPDIR/kin-dev-disk-full` exists. */
     readonly devFullDisk: Effect.Effect<void, KinHostSpaceFull>;
     /** A turn failed for `cause`: opens that cause's notice, or counts its turns on the open one. */
@@ -253,41 +260,54 @@ const make = Effect.gen(function* () {
     usage = { temporary, data, builds, backups, measuredAt: iso(yield* Clock.currentTimeMillis) };
   });
 
-  const cleanLock = yield* Semaphore.make(1);
   let lastCleanAt = 0;
+  // The one clean running now, if any: a second caller gets its result instead of another run.
+  let running: Deferred.Deferred<KinHostFreeSpaceResult> | undefined;
   const nothing: KinHostFreeSpaceResult = { ran: false, removed: 0, freedBytes: 0, failed: 0 };
-  const clean = Effect.fn("KinHostCare.clean")(
+  const runClean = Effect.fn("KinHostCare.runClean")(
     function* (why: "out_of_space" | "low_on_space" | "asked") {
       const root = checkout ?? devCheckout;
       if (root === undefined) return nothing;
-      return yield* cleanLock.withPermits(1)(
-        Effect.gen(function* () {
-          const now = yield* Clock.currentTimeMillis;
-          if (why === "low_on_space" && now - lastCleanAt < LOW_CLEAN_EVERY_MS) return nothing;
-          lastCleanAt = now;
-          const script = path.join(root, "ops", "kin", "host", "clean-temp.sh");
-          // A fixed script and fixed flags: nothing a person or an agent typed reaches it.
-          const out = yield* runner.run({
-            command: "bash",
-            args: [script, "--now", ...(devCheckout === undefined ? [] : ["--tmpdir-only"])],
-            timeout: "15 minutes",
-            maxOutputBytes: 16_384,
-            outputMode: "truncate",
-          });
-          const summary = parseCleanSummary(out.stdout);
-          yield* Effect.logInfo("Kin cleared temporary files", {
-            why,
-            line: out.stdout.split("\n")[0],
-          });
-          yield* measure().pipe(Effect.forkDetach);
-          return summary === undefined ? nothing : { ran: true, ...summary };
-        }),
-      );
+      const script = path.join(root, "ops", "kin", "host", "clean-temp.sh");
+      // A fixed script and fixed flags: nothing a person or an agent typed reaches it.
+      const out = yield* runner.run({
+        command: "bash",
+        args: [script, "--now", ...(devCheckout === undefined ? [] : ["--tmpdir-only"])],
+        timeout: "15 minutes",
+        maxOutputBytes: 16_384,
+        outputMode: "truncate",
+      });
+      const summary = parseCleanSummary(out.stdout);
+      yield* Effect.logInfo("Kin cleared temporary files", {
+        why,
+        line: out.stdout.split("\n")[0],
+      });
+      yield* measure().pipe(Effect.forkDetach);
+      return summary === undefined ? nothing : { ran: true, ...summary };
     },
     Effect.catchCause((cause) =>
       Effect.logWarning("Kin's temporary clean failed", { cause }).pipe(Effect.as(nothing)),
     ),
   );
+  const clean = Effect.fn("KinHostCare.clean")(function* (
+    why: "out_of_space" | "low_on_space" | "asked",
+  ) {
+    if (running !== undefined) return yield* Deferred.await(running);
+    const now = yield* Clock.currentTimeMillis;
+    if (why === "low_on_space" && now - lastCleanAt < LOW_CLEAN_EVERY_MS) return nothing;
+    lastCleanAt = now;
+    const shared = Deferred.makeUnsafe<KinHostFreeSpaceResult>();
+    running = shared;
+    return yield* runClean(why).pipe(
+      Effect.onExit((exit) =>
+        Effect.sync(() => {
+          running = undefined;
+        }).pipe(
+          Effect.andThen(Deferred.succeed(shared, exit._tag === "Success" ? exit.value : nothing)),
+        ),
+      ),
+    );
+  });
 
   const devFullDisk = Effect.gen(function* () {
     if (devCheckout === undefined) return;
@@ -506,6 +526,38 @@ const make = Effect.gen(function* () {
     return troubleId;
   });
 
+  /** `agentId` is stopped by the trouble (again, if it had worked since). */
+  const stopped = (orgId: KinOrgId, troubleId: string, agentId: KinAgentId) =>
+    sql`INSERT INTO kin_trouble_agents (trouble_id, org_id, agent_id, name, instance_id)
+      SELECT ${troubleId}, l.org_id, l.agent_id, l.name,
+        COALESCE(json_extract(l.models_json, '$.instanceId'), json_extract(l.models_json, '$.provider'))
+      FROM kin_leads l WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}
+      ON CONFLICT (trouble_id, agent_id) DO UPDATE SET worked_at = NULL`;
+
+  const spaceFailed = Effect.fn("KinHostCare.spaceFailed")(
+    function* (orgId: KinOrgId, agentId: KinAgentId) {
+      if (!host) return false;
+      const first = yield* troubleLock.withPermits(1)(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const now = yield* Clock.currentTimeMillis;
+            const troubleId = yield* openOrGet(orgId, "space", now);
+            yield* stopped(orgId, troubleId, agentId);
+            const spent = yield* sql`UPDATE kin_troubles SET auto_clean_at = ${now}
+              WHERE org_id = ${orgId} AND trouble_id = ${troubleId} AND auto_clean_at IS NULL
+              RETURNING trouble_id`;
+            return spent.length > 0;
+          }),
+        ),
+      );
+      if (first) yield* clean("out_of_space");
+      return first;
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin space trouble not recorded", { cause }).pipe(Effect.as(false)),
+    ),
+  );
+
   const failed = Effect.fn("KinHostCare.failed")(
     function* (input: TroubleInput) {
       const { orgId } = input;
@@ -514,12 +566,7 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis;
             const troubleId = yield* openOrGet(orgId, input.cause, now);
-            yield* sql`INSERT INTO kin_trouble_agents (trouble_id, org_id, agent_id, name, instance_id)
-              SELECT ${troubleId}, l.org_id, l.agent_id, l.name,
-                COALESCE(json_extract(l.models_json, '$.instanceId'),
-                  json_extract(l.models_json, '$.provider'))
-              FROM kin_leads l WHERE l.org_id = ${orgId} AND l.agent_id = ${input.agentId}
-              ON CONFLICT (trouble_id, agent_id) DO UPDATE SET worked_at = NULL`;
+            yield* stopped(orgId, troubleId, input.agentId);
             yield* sql`UPDATE kin_troubles SET
                 detail = COALESCE(${input.detail?.slice(0, 600) ?? null}, detail),
                 reset_at = COALESCE(${input.resetAt ?? null}, reset_at)
@@ -768,6 +815,7 @@ const make = Effect.gen(function* () {
   return KinHostCare.of({
     host,
     clean,
+    spaceFailed,
     devFullDisk,
     failed,
     succeeded,
@@ -781,4 +829,5 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(KinHostCare, make).pipe(Layer.provide(ProcessRunner.layer));
+export const layerWithoutRunner = Layer.effect(KinHostCare, make);
+export const layer = layerWithoutRunner.pipe(Layer.provide(ProcessRunner.layer));

@@ -2453,10 +2453,12 @@ describe("WakeupRunner", () => {
           KinHostCare,
           KinHostCare.of({
             host: true,
-            clean: (why) =>
+            clean: () => Effect.die("cleaned through spaceFailed"),
+            spaceFailed: () =>
               Effect.sync(() => {
-                told.push(`clean ${why}`);
-                return { ran: true, removed: 0, freedBytes: 0, failed: 0 };
+                const first = !told.includes("clean out_of_space");
+                if (first) told.push("clean out_of_space");
+                return first;
               }),
             devFullDisk: Effect.void,
             failed: (input) =>
