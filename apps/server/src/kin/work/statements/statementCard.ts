@@ -60,17 +60,19 @@ const target = (candidate: Candidate, option: number, currency: string): KinStat
   kind: candidate.kind,
   key: candidate.key,
   label: clamp(`${candidate.key} · ${candidate.title}`, 200),
-  ...(candidate.fit === "tds" && candidate.tdsMinor !== undefined
-    ? { note: `Paid with ${money(candidate.tdsMinor, currency)} TDS deducted` }
-    : candidate.fit === "part"
-      ? { note: "Part payment" }
-      : candidate.fit === "foreign"
-        ? { note: "Same amount in its own currency" }
-        : candidate.fit === "recorded"
-          ? { note: "Payment already recorded: this links the bank row to it" }
-          : candidate.fit === "open"
-            ? { note: OPEN_INVOICE_NOTE }
-            : {}),
+  ...(candidate.repays !== undefined
+    ? { note: clamp(`Marks ${candidate.repays.map((one) => one.key).join(", ")} repaid`, 200) }
+    : candidate.fit === "tds" && candidate.tdsMinor !== undefined
+      ? { note: `Paid with ${money(candidate.tdsMinor, currency)} TDS deducted` }
+      : candidate.fit === "part"
+        ? { note: "Part payment" }
+        : candidate.fit === "foreign"
+          ? { note: "Same amount in its own currency" }
+          : candidate.fit === "recorded"
+            ? { note: "Payment already recorded: this links the bank row to it" }
+            : candidate.fit === "open"
+              ? { note: OPEN_INVOICE_NOTE }
+              : {}),
 });
 
 /**

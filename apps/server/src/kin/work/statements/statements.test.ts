@@ -2404,6 +2404,69 @@ describe("bank statement safety", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "repays a partner's oldest owed expenses from one debit, links it, and undo makes them owed",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera Rao', ${at})`;
+        const paidBy = (title: string, minor: number, day: string) =>
+          expense(title, minor, day, "Lakeview Cowork").pipe(
+            Effect.flatMap((row) =>
+              records.update(orgId, owner, row.key, {
+                state: "done",
+                fields: { fundedBy: "person:meera" },
+              }),
+            ),
+          );
+        const first = yield* paidBy("Desk deposit", 300_000, "2026-09-05");
+        const second = yield* paidBy("Monitor arm", 200_000, "2026-09-20");
+        const later = yield* paidBy("Cables", 100_000, "2026-10-01");
+        const result = opened(
+          yield* read(
+            1,
+            "repay.csv",
+            csvOf([
+              // The same amount as one of her expenses, from the company's account to the vendor.
+              ["2026-10-02", "UPI-LAKEVIEW COWORK-desk@invbank", 300_000, null],
+              ["2026-10-15", "NEFT DR-UTIB0000001-MEERA RAO-REIMB", 500_000, null],
+            ]),
+          ),
+        );
+        const card = (yield* reviewCardOf(result.statement)).card;
+        // Her expenses left her account, so the vendor line is no match for them.
+        assert.deepStrictEqual(
+          card.matched.map((one) => [one.text.slice(0, 13), one.target.key, one.target.note]),
+          [["NEFT DR-UTIB0", first.key, `Marks ${first.key}, ${second.key} repaid`]],
+        );
+        assert.notInclude(
+          JSON.stringify(card.choose.filter((one) => one.text.startsWith("UPI"))),
+          first.key,
+        );
+        const applied = yield* OwnerStatements.apply(people, yield* confirmAll(card));
+        assert.include(applied.card.result!.join(" "), "Marked 2 partner-paid expenses repaid.");
+        const fieldsOf = (key: string) =>
+          records.get(orgId, key).pipe(Effect.map((row) => JSON.parse(row!.fieldsJson)));
+        for (const key of [first.key, second.key])
+          assert.include(yield* fieldsOf(key), { reimbursement: "repaid", repaidOn: "2026-10-15" });
+        assert.notProperty(yield* fieldsOf(later.key), "reimbursement");
+        const [link] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_record_links
+          WHERE record_id IN (${first.recordId}, ${second.recordId}) AND kind = 'record'
+            AND relation = 'evidence'`;
+        assert.strictEqual(link!.n, 2);
+
+        yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
+        for (const key of [first.key, second.key])
+          assert.notProperty(yield* fieldsOf(key), "reimbursement");
+        const [left] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_record_links
+          WHERE record_id IN (${first.recordId}, ${second.recordId}) AND kind = 'record'`;
+        assert.strictEqual(left!.n, 0);
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("starts with nothing ticked when the rows can't be trusted, and says why", () =>
     Effect.gen(function* () {
       const keys = yield* seed;

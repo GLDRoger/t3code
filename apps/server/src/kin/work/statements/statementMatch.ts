@@ -50,6 +50,16 @@ export type PaymentCandidate = {
   readonly note: string;
   readonly client: string | null;
 };
+/** A partner the company owes, with their owed Paid expenses in one currency, oldest first. */
+export type PartnerCandidate = {
+  readonly name: string;
+  readonly currency: string;
+  readonly owed: ReadonlyArray<{
+    readonly recordId: string;
+    readonly key: string;
+    readonly amountMinor: number;
+  }>;
+};
 /** A past expense, to name a new one the way the owner named the last. */
 export type KnownVendor = { readonly vendor: string; readonly category: string | null };
 
@@ -72,6 +82,8 @@ export type Candidate = {
   readonly seen?: string;
   readonly score: number;
   readonly why: ReadonlyArray<string>;
+  /** A partner's owed expenses this debit pays back, oldest first; `recordId` is the first's. */
+  readonly repays?: ReadonlyArray<{ readonly recordId: string; readonly key: string }>;
 };
 export type Suggestion = {
   readonly action: "expense" | "transfer" | "ignore" | "later";
@@ -303,6 +315,69 @@ const expenseCandidate = (
   };
 };
 
+/** Most owed expenses one repayment is looked for across. */
+const REPAYS_AT_MOST = 50;
+
+/**
+ * Debits that pay a partner back: the partner's oldest owed expenses whose amounts add up to the
+ * row, exactly. Rows are taken in date order, each after what earlier clear ones repaid, so
+ * successive lump sums settle successive expenses.
+ */
+const repayments = (
+  rows: ReadonlyArray<StatementRow>,
+  partners: ReadonlyArray<PartnerCandidate>,
+  currency: string,
+): ReadonlyMap<number, ReadonlyArray<Candidate>> => {
+  const settled = partners.map(() => 0);
+  const found = new Map<number, Array<Candidate>>();
+  const debits = rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => row.direction === "debit")
+    .toSorted((a, b) =>
+      a.row.date === b.row.date ? a.index - b.index : a.row.date < b.row.date ? -1 : 1,
+    );
+  for (const { row, index } of debits)
+    for (const [at, partner] of partners.entries()) {
+      if (partner.currency !== currency) continue;
+      const from = settled[at]!;
+      let sum = 0;
+      for (let end = from; end < Math.min(partner.owed.length, from + REPAYS_AT_MOST); end += 1) {
+        sum += partner.owed[end]!.amountMinor;
+        if (sum > row.amountMinor) break;
+        if (sum !== row.amountMinor) continue;
+        const repays = partner.owed.slice(from, end + 1);
+        const why = [`adds up to ${partner.name}'s oldest owed expenses`];
+        let score = 40;
+        const named = nameIn(partner.name, row.description);
+        if (named >= 0.5) {
+          score += Math.round(30 * named);
+          why.push("partner named");
+        }
+        if (DRAWINGS.test(row.description)) {
+          score += 10;
+          why.push("says reimbursement");
+        }
+        found.set(index, [
+          ...(found.get(index) ?? []),
+          {
+            kind: "expense",
+            recordId: repays[0]!.recordId,
+            key: repays[0]!.key,
+            title: `Repays ${partner.name}: ${repays.length} expense${repays.length === 1 ? "" : "s"}`,
+            fit: "exact",
+            score,
+            why,
+            repays: repays.map((one) => ({ recordId: one.recordId, key: one.key })),
+          },
+        ]);
+        // Only a clear repayment moves past them: an amount alone may be someone else's bill.
+        if (score >= CONFIDENT) settled[at] = end + 1;
+        break;
+      }
+    }
+  return found;
+};
+
 const TRANSFER =
   /\bself\b|own a\/?c|own account|to own|from own|sweep|\bfd\b|fixed deposit|credit card payment|\bcc (payment|pymt)|card payment|payment received|thank you|autopay|bill ?desk.*card/i;
 const CHARGES =
@@ -504,15 +579,19 @@ export const matchRows = (
     readonly invoices: ReadonlyArray<InvoiceCandidate>;
     readonly payments?: ReadonlyArray<PaymentCandidate>;
     readonly expenses: ReadonlyArray<ExpenseCandidate>;
+    /** Partners owed back; a debit to one repays their oldest expenses. */
+    readonly partners?: ReadonlyArray<PartnerCandidate>;
     readonly ownAccounts: ReadonlyArray<string>;
     readonly known: ReadonlyArray<KnownVendor>;
     readonly bank: string | null;
   },
 ): ReadonlyArray<RowMatch> => {
   const taken = new Set<string>();
-  const results = rows.map((row) => {
-    const candidates = (
-      row.direction === "credit"
+  const repaying = repayments(rows, input.partners ?? [], input.currency);
+  const results = rows.map((row, index) => {
+    const candidates = [
+      ...(repaying.get(index) ?? []),
+      ...(row.direction === "credit"
         ? [
             ...input.invoices.map((invoice) =>
               invoiceCandidate(row, invoice, input.currency, input.withholdsAtSource),
@@ -522,8 +601,8 @@ export const matchRows = (
             ),
             ...input.expenses.map((expense) => expenseCandidate(row, expense, input.currency)),
           ]
-        : input.expenses.map((expense) => expenseCandidate(row, expense, input.currency))
-    )
+        : input.expenses.map((expense) => expenseCandidate(row, expense, input.currency))),
+    ]
       .filter((one): one is Candidate => one !== undefined && one.score >= PROPOSED)
       .toSorted((left, right) => right.score - left.score || left.key.localeCompare(right.key))
       .slice(0, 5);
