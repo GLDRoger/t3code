@@ -48,7 +48,12 @@ import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
 import { approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
 import { codingAgentSource, outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
-import { commentsPage, insertComment, requestHashOf as commentHashOf } from "./recordComments.ts";
+import {
+  commentIdFor,
+  commentsPage,
+  insertComment,
+  requestHashOf as commentHashOf,
+} from "./recordComments.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
 import {
@@ -108,6 +113,7 @@ import {
   toDetail,
   toRecord,
   unavailable,
+  wordsOf,
 } from "./recordRows.ts";
 import {
   checkFields,
@@ -1731,18 +1737,19 @@ const make = Effect.gen(function* () {
     );
   });
 
-  /** Whether an entry's notes were last written by a person (a coding agent's write is not). */
+  /**
+   * Whether an entry's notes were last written by a person (a coding agent's write is not), back
+   * through a repeat's earlier occurrences (`wordsOf`).
+   */
   const notesByPerson = Effect.fn("KinRecords.notesByPerson")(function* (
     orgId: KinOrgId,
     recordId: string,
   ) {
-    const [row] = yield* sql<{ byPerson: number | null }>`SELECT COALESCE((SELECT
-          c.actor_kind = 'person' AND c.coding_agent_key IS NULL FROM kin_record_changes c
-        WHERE c.org_id = r.org_id AND c.record_id = r.record_id AND EXISTS (SELECT 1
-          FROM json_each(c.fields_json) f WHERE json_extract(f.value, '$.field') = 'notes')
-        ORDER BY c.seq DESC LIMIT 1), r.created_by_kind = 'person') AS "byPerson"
-      FROM kin_records r WHERE r.org_id = ${orgId} AND r.record_id = ${recordId}`;
-    return row?.byPerson === 1;
+    const { writers, madeBy } = yield* wordsOf(orgId, recordId).pipe(provideSql);
+    const last = writers.find((one) => one.notes === 1);
+    return last === undefined
+      ? madeBy?.kind === "person"
+      : last.actorKind === "person" && last.coding === 0;
   });
 
   const update = Effect.fn("KinRecords.update")(function* (
@@ -2260,15 +2267,33 @@ const make = Effect.gen(function* () {
           ) {
             if (patch.notes.trim() !== "") {
               const requestHash = commentHashOf(patch.notes, []);
+              // Keyed by the one event the turn answers, which a stopped and resumed turn keeps.
+              const events =
+                writer.wakeupId === undefined
+                  ? []
+                  : yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+                      WHERE org_id = ${orgId} AND agent_id = ${writer.actor.agentId}
+                        AND wakeup_id = ${writer.wakeupId}
+                      ORDER BY event_id LIMIT 2`;
+              const source = events.length === 1 ? `${events[0]!.eventId}:` : "";
+              const noter = {
+                _tag: "agent" as const,
+                agentId: writer.actor.agentId,
+                askedBy: writer.askedBy ?? null,
+              };
+              const requestId = `notes:${source}${requestHash}`;
+              // A stale revision writes no new note; a retry of one already written still lands.
+              if (expectedRev !== undefined && expectedRev !== row.rev) {
+                const [noted] = yield* sql`SELECT 1 FROM kin_record_comments
+                  WHERE org_id = ${orgId}
+                    AND comment_id = ${commentIdFor(orgId, row.recordId, noter, requestId)}`;
+                if (noted === undefined) return yield* conflict(row.key, row.rev);
+              }
               yield* insertComment({
                 orgId,
                 key: row.key,
-                author: {
-                  _tag: "agent",
-                  agentId: writer.actor.agentId,
-                  askedBy: writer.askedBy ?? null,
-                },
-                requestId: `notes:${writer.wakeupId ?? "turn"}:${requestHash}`,
+                author: noter,
+                requestId,
                 requestHash,
                 body: patch.notes,
                 files: [],
