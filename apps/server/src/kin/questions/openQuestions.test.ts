@@ -1632,6 +1632,12 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
         "Kin writes this card's buttons, Approve and Changes first: leave out options when you send a draft up.",
       );
       yield* refused(fromZoya({ detail: " " }), "Put the draft itself in detail.");
+      // Her mail or post is filed as her own card, whose Send to is hers to press.
+      for (const kind of ["mail", "post"] as const)
+        yield* refused(
+          fromZoya({ draft: { kind } }),
+          "A mail or post Zoya Sheikh asks for is filed with doc_create and draft: its card lets them send it to Rhea Rao.",
+        );
       yield* refused(
         fromZoya({ draft: { kind: "proposal", for: "P-4" } }),
         "No client or deal P-4 that Zoya Sheikh sees.",
@@ -1868,7 +1874,15 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
         intent: "revised shoot quote",
       });
       assert.strictEqual(revised.state, "posted");
-      yield* sql`UPDATE kin_questions SET state = 'withdrawn' WHERE question_id = ${revised.questionId}`;
+      // So may a redone mail: after Changes first it goes up again whichever way it first went.
+      const redone = yield* askFor("chief", revising, {
+        ...upInput("arjun", "Monsoon shoot mail, revised"),
+        intent: "revised shoot mail",
+        draft: { kind: "mail" },
+      });
+      assert.strictEqual(redone.state, "posted");
+      yield* sql`UPDATE kin_questions SET state = 'withdrawn'
+        WHERE question_id IN (${revised.questionId}, ${redone.questionId})`;
       assert.deepStrictEqual((yield* draftWakes).slice(1), [
         {
           key: `question-answered:${arjun.questionId}`,
@@ -2024,13 +2038,24 @@ it.effect("the owner's Approve on a sent-up draft queues his own turn to make it
       const mailUp = yield* Effect.gen(function* () {
         const chatId = yield* chiefChat("dev");
         const asking = yield* wakeOn("chief", "dev", chatId, "Mail Kabir for me");
+        // A teammate's mail goes up from its card's Send to (`draftCards.sendUp`).
         return {
           chatId,
-          ...(yield* askFor("chief", asking, {
-            ...upInput("dev", "Hi Kabir, the shoot moves to Friday. Dev"),
-            intent: "mail kabir",
-            draft: { kind: "mail" },
-          })),
+          ...(yield* AskPerson.sendUpFromCard(
+            {
+              agent: team.lead("chief", asking),
+              personId: KinPersonId.make("dev"),
+              chatId,
+              widgetId: "w-mail-kabir",
+              madeIn: asking,
+            },
+            {
+              ...upInput("dev", "Hi Kabir, the shoot moves to Friday. Dev"),
+              intent: "mail kabir",
+              draft: { kind: "mail" },
+            },
+            { chat: chats, gate: Context.get(team.services, KinLevelGate) },
+          )),
         };
       });
       yield* drained;
@@ -2271,6 +2296,20 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
         ORDER BY rowid DESC LIMIT 1`;
       assert.notProperty(JSON.parse(laterCard!.state).draft, "noAccount");
 
+      // Her turn can't send a post up itself; her press below does.
+      assert.strictEqual(
+        (yield* Effect.flip(
+          team.askFor("chief", turn, {
+            to: "Rhea",
+            question: "Approve the teaser?",
+            options: undefined,
+            detail: "Soon at Harbourline.",
+            intent: "harbourline teaser",
+            draft: { kind: "post", for: "C-7" },
+          }),
+        )).message,
+        "A mail or post Zoya Sheikh asks for is filed with doc_create and draft: its card lets them send it to Rhea Rao. Nothing was asked.",
+      );
       // She reads the reply and presses later: her turn is over; the owner's own still runs.
       yield* sql`UPDATE kin_wakeups SET status = 'completed', ended_at = 0
         WHERE org_id = ${orgId} AND wakeup_id = ${turn}`;
