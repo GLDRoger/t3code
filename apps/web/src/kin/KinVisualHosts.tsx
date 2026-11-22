@@ -53,6 +53,7 @@ export function KinVisualHosts(props: {
       <KinSettingsSection title={COPY.section}>
         <KinSettingsRow
           title={COPY.title}
+          wrap
           detail={hosts === null ? undefined : COPY.summary(hosts)}
           onOpen={() => {
             setProblem(null);

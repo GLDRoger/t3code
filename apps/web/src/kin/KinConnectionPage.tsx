@@ -168,6 +168,7 @@ export function KinConnectionPage(props: {
       <KinSettingsRow
         key={row.name}
         title={copy.title}
+        wrap
         detail={
           row.change !== null
             ? COPY.changedDetail
@@ -376,6 +377,7 @@ export function KinConnectionPage(props: {
         {mail ? (
           <KinSettingsRow
             title={MAIL.eachTool}
+            wrap
             detail={
               detail === null
                 ? undefined
