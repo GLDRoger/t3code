@@ -43,6 +43,8 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "work/leadWork.ts": 2,
   // A statement's own rows, and the entries and recorded payments one row may match.
   "work/statements/bankList.ts": 1,
+  // The entries one bank alert may already be: one amount matched, nothing summed.
+  "work/statements/bankAlerts.ts": 1,
   "work/statements/statementReview.ts": 4,
   // Whether a figure in a message is the sum on some entry or payment its reader can't see.
   "work/teamView.ts": 3,

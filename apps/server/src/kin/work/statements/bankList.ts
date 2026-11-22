@@ -163,11 +163,11 @@ export const bankStates = (def: ListDef) => {
   };
 };
 
-const last4 = (text: string | null) =>
+export const last4 = (text: string | null) =>
   text === null ? null : (/(\d{4})\D*$/.exec(text)?.[1] ?? null);
 const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "");
 /** A reference as one bank or reader prints it and another drops its leading zeros or spaces. */
-const referenceKey = (text: string) => squash(text).replace(/^0+/, "");
+export const referenceKey = (text: string) => squash(text).replace(/^0+/, "");
 /** How a statement names its account on each row: "HDFC Bank ••4821". */
 export const accountLabel = (statement: Pick<Statement, "bank" | "account" | "kind">) =>
   statement.account === null

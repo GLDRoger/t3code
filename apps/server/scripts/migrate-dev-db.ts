@@ -220,6 +220,8 @@ const UNCOPIED_TABLES: ReadonlyArray<string> = [
   "kin_connection_tools",
   "kin_connection_calls",
   "kin_connection_cursors",
+  // Which mailbox's mail each bank alert came from, and the balance it printed.
+  "kin_bank_alerts",
 ];
 
 const PROVIDER_SESSIONS_TABLE = "orchestration_v2_projection_provider_sessions";
