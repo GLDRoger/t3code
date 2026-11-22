@@ -363,8 +363,10 @@ it.effect(
       yield* dealsOn(0, false);
       for (const who of [owner, agent]) assert.deepStrictEqual(yield* keysOf(who), ["G-1", "G-2"]);
       yield* dealsOn(1, true);
-      for (const who of [owner, agent])
+      for (const who of [owner, agent]) {
         assert.deepStrictEqual(yield* keysOf(who), ["G-1", "G-2", "G-3", "G-4"]);
+        assert.deepStrictEqual((yield* Numbers.values(who, "G-3", day, day)).values, []);
+      }
       yield* stampEvent(orgId, "outside", "Invented connection");
       yield* inheritOutside({ ...agent, eventIds: ["outside"] });
       assert.isTrue(yield* followsOutsideRead(orgId, agent.wakeupId));

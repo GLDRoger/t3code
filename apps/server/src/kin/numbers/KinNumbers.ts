@@ -141,6 +141,20 @@ const computedSections = {
   count: { deals: SectionId };
 };
 
+const shownInShell = Effect.fn("KinNumbers.shownInShell")(function* (
+  orgId: KinOrgId,
+  spec: typeof NumberSpec.Type | undefined,
+) {
+  if (spec === undefined) return true;
+  const section =
+    "builtin" in spec
+      ? computedSections[spec.builtin]
+      : spec.count === "deals"
+        ? computedSections.count.deals
+        : null;
+  return section === null || (yield* sectionOn(orgId, section));
+});
+
 const compute = Effect.fn("KinNumbers.compute")(function* (
   orgId: KinOrgId,
   spec: typeof NumberSpec.Type,
@@ -230,17 +244,7 @@ export const list = Effect.fn("KinNumbers.list")(
         const numbers: Array<KinNumber> = [];
         for (const row of yield* definitions(viewer, keys)) {
           const fields = numberFields(parseFields(row.fields));
-          if (fields === undefined) continue;
-          const spec = fields.spec;
-          const section =
-            spec === undefined
-              ? null
-              : "builtin" in spec
-                ? computedSections[spec.builtin]
-                : spec.count === "deals"
-                  ? computedSections.count.deals
-                  : null;
-          if (section !== null && !(yield* sectionOn(viewer.orgId, section))) continue;
+          if (fields === undefined || !(yield* shownInShell(viewer.orgId, fields.spec))) continue;
           const recorded =
             fields.spec === undefined
               ? yield* latestValue(viewer.orgId, row.recordId, today)
@@ -286,7 +290,8 @@ export const values = Effect.fn("KinNumbers.values")(
       Effect.gen(function* () {
         const viewer = yield* reader(who, "numbers_read", { number, from, to });
         if (from > to) return yield* invalid("The end day comes on or after the start day.");
-        const { row } = yield* definition(viewer, number);
+        const { row, fields } = yield* definition(viewer, number);
+        if (!(yield* shownInShell(viewer.orgId, fields.spec))) return yield* missing;
         const sql = yield* SqlClient.SqlClient;
         const rows = yield* sql<{
           asOf: string;
