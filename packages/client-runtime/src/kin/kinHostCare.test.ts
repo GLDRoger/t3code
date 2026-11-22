@@ -146,5 +146,18 @@ describe("kinHostPageView", () => {
     expect(kinFreeSpaceLine({ ran: true, removed: 1, freedBytes: 0, failed: 0 })).toBe(
       "Cleared old temporary files",
     );
+    expect(
+      kinFreeSpaceLine({
+        ran: true,
+        removed: 4,
+        freedBytes: 3.5 * GB,
+        failed: 0,
+        builds: 3,
+        backups: 2,
+      }),
+    ).toBe("Gave back 3.5 GB: 3 old versions of Kin, 2 old backups, old temporary files");
+    expect(
+      kinFreeSpaceLine({ ran: true, removed: 0, freedBytes: 0, failed: 0, builds: 0, backups: 1 }),
+    ).toBe("Cleared 1 old backup");
   });
 });

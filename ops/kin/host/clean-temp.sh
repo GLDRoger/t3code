@@ -25,6 +25,14 @@ LOW_SPACE_PERCENT=20
 # Seconds since the epoch the ages count back from; empty means the clock.
 NOW=""
 LOCK="${KIN_CLEAN_LOCK:-$HOME/.cache/kin-clean.lock}"
+# Kin's own builds and the database copies update.sh keeps (update.sh names them). With --now the
+# old ones go too: all but the running build and the one before it, and all but the newest
+# KEEP_UPDATE_BACKUPS backups.
+BUILDS="$HOME/kin-builds"
+CURRENT="$HOME/kin-current"
+UPDATE_BACKUPS="${KIN_UPDATE_BACKUPS:-$HOME/kin-update-backups}"
+REPO="${KIN_REPO:-$HOME/t3code}"
+KEEP_UPDATE_BACKUPS=3
 
 # Waits for any other clean to finish; held until this script exits. No flock (macOS): no lock.
 take_lock() {
@@ -89,6 +97,40 @@ recent() {
   [ -n "$(TZ=UTC find "$1" -xdev -newermt "$2" -print -quit 2>/dev/null)" ]
 }
 
+# Removes Kin's old builds and update backups; adds to removed_builds, removed_backups and freed.
+# A build that isn't complete (an update may be writing it), the running one, the newest other
+# complete one, and anything a process is in, stay.
+free_kin_files() {
+  local running="" previous="" dir kb name
+  if [ -d "$BUILDS" ] && [ ! -L "$BUILDS" ]; then
+    running="$(cd -P "$CURRENT" 2>/dev/null && pwd)" || running=""
+    while IFS= read -r dir; do
+      dir="${dir%/}"
+      [ -L "$dir" ] || [ ! -f "$dir/apps/server/dist/bin.mjs" ] && continue
+      [ "$(cd -P "$dir" && pwd)" = "$running" ] && continue
+      if [ -z "$previous" ] && [ ! -e "$dir/.failed" ]; then previous="$dir"; continue; fi
+      in_use "$(cd -P "$dir" && pwd)" "$(held_paths)" && continue
+      kb="$(du -sk "$dir" 2>/dev/null | awk '{ print $1 }')"
+      rm -rf "$dir" 2>/dev/null
+      if [ ! -e "$dir" ]; then
+        removed_builds=$((removed_builds + 1))
+        freed=$((freed + ${kb:-0}))
+      fi
+    done < <(ls -1dt "$BUILDS"/*/ 2>/dev/null)
+    if [ "$removed_builds" -gt 0 ] && [ -d "$REPO/.git" ]; then git -C "$REPO" worktree prune 2>/dev/null; fi
+  fi
+  if [ -d "$UPDATE_BACKUPS" ] && [ ! -L "$UPDATE_BACKUPS" ]; then
+    while IFS= read -r name; do
+      kb="$(du -sk "$UPDATE_BACKUPS/$name" 2>/dev/null | awk '{ print $1 }')"
+      if rm -f "$UPDATE_BACKUPS/$name" 2>/dev/null; then
+        removed_backups=$((removed_backups + 1))
+        freed=$((freed + ${kb:-0}))
+      fi
+    done < <(ls -1 "$UPDATE_BACKUPS" | { grep -E '^statev2-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+\.sqlite$' || true; } |
+      sort -r | tail -n +$((KEEP_UPDATE_BACKUPS + 1)))
+  fi
+}
+
 human() {
   awk -v k="$1" 'BEGIN { split("KB MB GB TB", u); n = k; i = 1
     while (n >= 1024 && i < 4) { n /= 1024; i++ }
@@ -98,13 +140,20 @@ human() {
 main() {
   set -uo pipefail
   local now root age cutoff day_cutoff limit entry held kb removed=0 freed=0 failed=0 low="" asked=""
-  local space_failed=""
+  local space_failed="" removed_builds=0 removed_backups=0 kept_freed
   local arg
   for arg in "$@"; do
     case "$arg" in
       --now) asked=1 ;;
       --space-failed) space_failed=1 ;;
-      --tmpdir-only) ROOTS=("${TMPDIR:-$HOME/.cache/kin-tmp}") ;;
+      --tmpdir-only)
+        ROOTS=("${TMPDIR:-$HOME/.cache/kin-tmp}")
+        # A dev server's stand-in for Kin's own files sits beside its temp folder.
+        BUILDS="$(dirname "${ROOTS[0]}")/kin-dev-host/kin-builds"
+        CURRENT="$(dirname "${ROOTS[0]}")/kin-dev-host/kin-current"
+        UPDATE_BACKUPS="$(dirname "${ROOTS[0]}")/kin-dev-host/kin-update-backups"
+        REPO="$(dirname "${ROOTS[0]}")/kin-dev-host/no-repo"
+        ;;
       *) echo "clean-temp.sh: unknown option $arg" >&2; return 2 ;;
     esac
   done
@@ -143,15 +192,23 @@ main() {
       fi
     done < <(find "$root/" -mindepth 1 -maxdepth 1 -user "$(id -u)" -print0 2>/dev/null)
   done
+  kept_freed="$freed"
+  if [ -n "$asked" ]; then free_kin_files; fi
   if [ "$removed" -eq 0 ]; then
     printf 'Nothing old to clear from the temporary folders.'
   else
-    printf 'Cleared %d old temporary item(s) and gave back %s.' "$removed" "$(human "$freed")"
+    printf 'Cleared %d old temporary item(s) and gave back %s.' "$removed" "$(human "$kept_freed")"
   fi
   if [ -n "$low" ]; then printf ' Space was low, so anything untouched for %d hours counted as old.' $((LOW_SPACE_AGE_MINUTES / 60)); fi
+  if [ $((removed_builds + removed_backups)) -gt 0 ]; then
+    printf ' Removed %d old version(s) of Kin and %d old backup(s).' "$removed_builds" "$removed_backups"
+  fi
   if [ "$failed" -gt 0 ]; then printf " %d item(s) couldn't be removed." "$failed"; fi
   printf '\n'
-  if [ -n "$asked" ]; then printf 'kin-clean removed=%d freed_kb=%d failed=%d\n' "$removed" "$freed" "$failed"; fi
+  if [ -n "$asked" ]; then
+    printf 'kin-clean removed=%d freed_kb=%d failed=%d builds=%d backups=%d\n' \
+      "$removed" "$freed" "$failed" "$removed_builds" "$removed_backups"
+  fi
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi

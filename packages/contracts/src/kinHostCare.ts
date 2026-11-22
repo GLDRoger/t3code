@@ -295,6 +295,9 @@ export const KinHostFreeSpaceResult = Schema.Struct({
   removed: NonNegativeInt,
   freedBytes: NonNegativeInt,
   failed: NonNegativeInt,
+  /** Old versions of Kin and old update backups of its database that went too. */
+  builds: Schema.optionalKey(NonNegativeInt),
+  backups: Schema.optionalKey(NonNegativeInt),
 });
 export type KinHostFreeSpaceResult = typeof KinHostFreeSpaceResult.Type;
 

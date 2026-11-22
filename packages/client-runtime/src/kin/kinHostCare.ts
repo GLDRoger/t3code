@@ -261,12 +261,22 @@ export function kinHostPageView(status: KinHostStatus, now: number): KinHostPage
 export const kinHostFailed = (cause: unknown) => kinFailure(cause, "Kin couldn't do that.").text;
 
 /** What Free up space now did, in one line. */
-export const kinFreeSpaceLine = (result: KinHostFreeSpaceResult) =>
-  !result.ran || result.removed === 0
-    ? "Nothing old to clear"
-    : result.freedBytes < 1024 ** 2
-      ? "Cleared old temporary files"
-      : `Gave back ${kinBytesText(result.freedBytes)}`;
+export const kinFreeSpaceLine = (result: KinHostFreeSpaceResult) => {
+  const builds = result.builds ?? 0;
+  const backups = result.backups ?? 0;
+  if (!result.ran || result.removed + builds + backups === 0) return "Nothing old to clear";
+  // What went, by kind: "3 old versions of Kin, 2 old backups".
+  const what = [
+    ...(builds > 0 ? [plural(builds, "old version of Kin", "old versions of Kin")] : []),
+    ...(backups > 0 ? [plural(backups, "old backup", "old backups")] : []),
+    ...(result.removed > 0 && builds + backups > 0 ? ["old temporary files"] : []),
+  ].join(", ");
+  if (result.freedBytes < 1024 ** 2)
+    return what === "" ? "Cleared old temporary files" : `Cleared ${what}`;
+  return what === ""
+    ? `Gave back ${kinBytesText(result.freedBytes)}`
+    : `Gave back ${kinBytesText(result.freedBytes)}: ${what}`;
+};
 
 /** What Back up now did, in one line. */
 export const kinBackUpLine = (result: KinHostBackUpResult) =>
@@ -276,7 +286,7 @@ export const kinBackUpLine = (result: KinHostBackUpResult) =>
       ? "Backups aren't set up on this computer yet."
       : result.reason === "unit_missing"
         ? "This computer has no backup service. Whoever set up Kin's computer can add it."
-        : "The backup couldn't start. Try again in a minute.";
+        : "The backup couldn't start. Whoever set up Kin's computer can look at its backup service.";
 
 /** What Try again did, in one line. */
 export const kinRetryLine = (result: KinHostRetryResult) =>

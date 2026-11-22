@@ -17,8 +17,10 @@ case "$(cd -P "$FIXTURE" && pwd)" in
   / | "$(cd -P /tmp && pwd)" | "$(cd -P "$TMPDIR" && pwd)" | "$(cd -P "$HOME" && pwd)") echo "fixture is a real folder"; exit 99 ;;
 esac
 source "$SCRIPT"
-# Only folders inside the fixture.
+# Only folders inside the fixture, Kin's builds and update backups included.
 ROOTS=("$FIXTURE/tmp" "$FIXTURE/kin-tmp")
+BUILDS="$FIXTURE/no-builds"; CURRENT="$FIXTURE/no-current"; UPDATE_BACKUPS="$FIXTURE/no-backups"
+REPO="$FIXTURE/no-repo"
 mkdir -p "$FIXTURE/tmp" "$FIXTURE/kin-tmp" "$FIXTURE/outside"
 NOW=1794441600 # 2026-11-12T00:00:00Z
 at() { TZ=UTC touch -h -t "$1" "$2"; } # at <YYYYMMDDhhmm> <path>
@@ -103,7 +105,7 @@ echo "left $(left)"
 main --now --space-failed
 echo "left $(left)"`);
     expect(out[0], said).toMatch(/^Cleared 5 old temporary item\(s\) and gave back [^.]+\.$/);
-    expect(out[1]).toMatch(/^kin-clean removed=5 freed_kb=\d+ failed=0$/);
+    expect(out[1]).toMatch(/^kin-clean removed=5 freed_kb=\d+ failed=0 builds=0 backups=0$/);
     expect(out[3]).toMatch(/^Cleared 1 old temporary item\(s\) and gave back .+\. Space was low/);
     expect(out[5]).toBe(
       "left kin-tmp/fresh outside/keep tmp/busy-work tmp/held tmp/three-hours-checkout tmp/three-hours-nested",
@@ -133,6 +135,32 @@ main
 echo "lock $(ls "$FIXTURE" | grep -c clean.lock)"`);
     expect(out[0], said).toBe("waited for the lock");
     expect(out.at(-1)).toBe("lock 1");
+  });
+
+  it("with --now also gives back Kin's old versions and old update backups, keeping the running and previous ones", () => {
+    const { out, said } = inFixture(`
+percent_left() { echo 50; }
+K="$FIXTURE/home"
+BUILDS="$K/kin-builds"; CURRENT="$K/kin-current"; UPDATE_BACKUPS="$K/kin-update-backups"
+build() { mkdir -p "$BUILDS/$1/apps/server/dist"; echo x >"$BUILDS/$1/apps/server/dist/bin.mjs"; at "$2" "$BUILDS/$1"; }
+build oldest 202611050000; build older 202611060000; build previous 202611080000; build running 202611070000
+# An update writing a new build: not complete yet, so never touched.
+mkdir -p "$BUILDS/writing"
+ln -s "$BUILDS/running" "$CURRENT"
+mkdir -p "$UPDATE_BACKUPS"
+for day in 01 02 03 04 05; do echo db >"$UPDATE_BACKUPS/statev2-202611\${day}T000000Z-abc123.sqlite"; done
+echo mine >"$UPDATE_BACKUPS/notes.txt"
+main --now
+echo "builds $(ls "$BUILDS" | tr '\n' ' ')"
+echo "backups $(ls "$UPDATE_BACKUPS" | tr '\n' ' ')"`);
+    expect(out[0], said).toMatch(
+      /^Cleared 5 old temporary item\(s\) and gave back .+\. Removed 2 old version\(s\) of Kin and 2 old backup\(s\)\.$/,
+    );
+    expect(out[1]).toMatch(/^kin-clean removed=5 freed_kb=\d+ failed=0 builds=2 backups=2$/);
+    expect(out[2]).toBe("builds previous running writing ");
+    expect(out[3]).toBe(
+      "backups notes.txt statev2-20261103T000000Z-abc123.sqlite statev2-20261104T000000Z-abc123.sqlite statev2-20261105T000000Z-abc123.sqlite",
+    );
   });
 
   it("leaves the system temp folder alone with --tmpdir-only", () => {

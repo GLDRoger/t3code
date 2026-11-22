@@ -100,13 +100,17 @@ const usingText = (usage: KinHostUsage | null) => {
 
 /** The clean script's summary line under `--now` (`ops/kin/host/clean-temp.sh`). */
 const parseCleanSummary = (stdout: string) => {
-  const match = /^kin-clean removed=(\d+) freed_kb=(\d+) failed=(\d+)$/m.exec(stdout);
+  const match =
+    /^kin-clean removed=(\d+) freed_kb=(\d+) failed=(\d+)(?: builds=(\d+) backups=(\d+))?$/m.exec(
+      stdout,
+    );
   return match === null
     ? undefined
     : {
         removed: Number(match[1]),
         freedBytes: Number(match[2]) * 1024,
         failed: Number(match[3]),
+        ...(match[4] === undefined ? {} : { builds: Number(match[4]), backups: Number(match[5]) }),
       };
 };
 
@@ -856,12 +860,19 @@ const make = Effect.gen(function* () {
     Effect.mapError(() => unavailable),
   );
 
-  const freeSpace = Effect.fn("KinHostCare.freeSpace")(function* (orgId: KinOrgId) {
-    const result = yield* clean("asked");
-    // Space came back: the held turns try now instead of at their wait's end.
-    if (result.ran && result.removed > 0) yield* retry(orgId);
-    return result;
-  });
+  const freeSpace = Effect.fn("KinHostCare.freeSpace")(
+    function* (orgId: KinOrgId) {
+      const result = yield* clean("asked");
+      // Real room again is the proof: the space trouble closes and its held turns run now.
+      const space = yield* readSpace();
+      if (Option.isSome(space) && levelOf(space.value) !== "out") {
+        const open = (yield* openTroubles(orgId)).find((one) => one.cause === "space");
+        if (open !== undefined) yield* close(orgId, open.troubleId);
+      }
+      return result;
+    },
+    Effect.mapError(() => unavailable),
+  );
 
   /** After a backup ends: every company's backup notice follows what it recorded. */
   const recheckBackup = Effect.gen(function* () {
