@@ -199,6 +199,10 @@ export const SECTIONS = {
     deal_no_next_step: "deals",
     deal_quiet: "deals",
     deal_date_passed: "deals",
+    number_off: null,
+    number_stale: null,
+    entry_late: null,
+    entry_check: null,
   } satisfies Record<KinPulseSense, SectionId | null>,
 };
 

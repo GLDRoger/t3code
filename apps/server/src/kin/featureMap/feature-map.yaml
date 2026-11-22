@@ -890,6 +890,21 @@ features:
       - apps/server/src/kin/work/deals.test.ts
       - apps/web/src/kin/KinDeals.browser.test.tsx
 
+  - id: deals-switch
+    name: We run deals, the switch that hides Deals everywhere
+    tab: settings
+    web: [settings, section:Deals]
+    phone: [SettingsKin, KinDealStages]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      Off hides the Deals tab, deals on client and project pages, New deal, deal search hits,
+      nudges, the Monday pipeline and deal tools for everyone; nothing is deleted, and on restores
+      it. A deal still opens by its link, saying Deals is turned off.
+    proof:
+      - packages/client-runtime/src/kin/kinShell.test.ts
+      - apps/web/src/kin/KinDeals.browser.test.tsx
+      - apps/server/src/kin/shell/KinShell.test.ts
+
   - id: marketing-list
     name: A campaign's results, a tag's list, and Export list
     tab: clients
@@ -1571,7 +1586,6 @@ unlisted:
   "rpc:kin.work.statementPasswords": Served; no client manages statement passwords yet.
   "rpc:kin.work.statementForgetAccount": Served; no client forgets a statement account yet.
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
-  "rpc:kin.shell.set": Server-only until the Deals switch ships in the clients.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
   "rpc:kin.open.read": Served; no client reads the open list (Needs you and Tasks use their own reads).
   "rpc:kin.open.subscribe": Served; no host lists "open" in its streams, so no client follows it.
