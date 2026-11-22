@@ -382,6 +382,14 @@ describe("kinWorkItemView", () => {
             ],
           },
           {
+            seq: 6.5,
+            at,
+            by: priya,
+            via: "owner",
+            kind: "updated",
+            fields: [{ field: "alsoOn", from: null, to: `person:${priya.personId}` }],
+          },
+          {
             seq: 6,
             at,
             by: priya,
@@ -486,6 +494,7 @@ describe("kinWorkItemView", () => {
     expect(view.history.map((line) => line.text)).toEqual([
       "Priya took you off it",
       "Priya left it",
+      "Priya joined it",
       "Priya put Tech lead and you on it",
       "Priya handed it back to Tech lead: “On the release”",
       "Tech lead marked it waiting on Priya",

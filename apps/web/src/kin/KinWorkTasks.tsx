@@ -647,7 +647,9 @@ function KinTaskRow(props: {
       <div className="flex min-w-0 flex-1 flex-col gap-1.5 pb-1">
         <button
           type="button"
-          aria-label={row.accessibilityLabel}
+          aria-label={
+            line.with === null ? row.accessibilityLabel : `${row.accessibilityLabel}, ${line.with}`
+          }
           aria-current={props.selected ? true : undefined}
           // Where focus goes back to when the task it opened closes.
           data-kin-row={row.key}

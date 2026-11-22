@@ -1376,15 +1376,17 @@ export function kinWorkChangeText(
       from: ReadonlyArray<KinWorkPrincipal>,
       held: ReadonlyArray<KinWorkPrincipal>,
     ) => from.filter((who) => !held.some((one) => kinWorkSamePrincipal(one, who)));
+    const self = change.by._tag === "system" ? null : change.by;
+    const isSelf = (who: KinWorkPrincipal) => kinWorkSamePrincipal(who, self);
     const added = missing(after, before);
     // Given the task, they hold it now, which "gave it to" already says.
     const gone = missing(before, after).filter((who) => !kinWorkSamePrincipal(who, to));
     const said = (list: ReadonlyArray<KinWorkPrincipal>) =>
       kinWorkNameList(list.map((who) => kinWorkName(who, names, "you")));
-    if (added.length > 0) clauses.push(`put ${said(added)} on it`);
-    const self = change.by._tag === "system" ? null : change.by;
-    if (added.length === 0 && gone.length === 1 && kinWorkSamePrincipal(gone[0]!, self))
-      clauses.push("left it");
+    if (added.some(isSelf)) clauses.push("joined it");
+    const others = added.filter((who) => !isSelf(who));
+    if (others.length > 0) clauses.push(`put ${said(others)} on it`);
+    if (added.length === 0 && gone.length === 1 && isSelf(gone[0]!)) clauses.push("left it");
     else if (gone.length > 0) clauses.push(`took ${said(gone)} off it`);
   }
   // A held notice: `untold` names the holder not told yet, and clears once they are.
