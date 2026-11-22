@@ -70,6 +70,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { abortChatTurns } from "../lead/Audience.ts";
 import { closeUngranted } from "../lead/directClose.ts";
 import { signedInPeople } from "./signedIn.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
 import { onPersonRemoved } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
@@ -253,6 +254,7 @@ export const make = Effect.gen(function* () {
   const hub = yield* KinChatHub;
   const refresh = yield* KinRefreshObserver;
   const presence = yield* Effect.serviceOption(KinPresence);
+  const care = yield* Effect.serviceOption(KinHostCare);
   const stop = yield* Effect.serviceOption(KinStop);
   const store = yield* Effect.serviceOption(KinAttachmentStore);
   const chats = yield* Effect.serviceOption(KinChatService);
@@ -1184,6 +1186,8 @@ export const make = Effect.gen(function* () {
                   hub.publish({ type: "waiting.updated", orgId: input.orgId, item: closed.value }),
                 );
             }
+          if (Option.isSome(care) && stopped.expired.some((event) => event.heldBy !== null))
+            yield* sql.afterCommit(care.value.refresh(input.orgId));
           if (stopped.expired.length > 0 && Option.isSome(presence)) {
             const line = presence.value;
             yield* sql.afterCommit(

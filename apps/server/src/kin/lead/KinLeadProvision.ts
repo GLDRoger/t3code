@@ -56,6 +56,7 @@ import { KinEventQueue } from "./KinEventQueue.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { KinStop } from "./KinStop.ts";
 import * as Retirement from "./Retirement.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import * as Reach from "./Reach.ts";
 import {
@@ -722,6 +723,7 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
   const chats = yield* ChatService.KinChatService;
   const stop = yield* Effect.serviceOption(KinStop);
   const queue = yield* Effect.serviceOption(KinEventQueue);
+  const care = yield* Effect.serviceOption(KinHostCare);
   const presence = yield* Effect.serviceOption(KinPresence);
   return yield* transaction(
     sql,
@@ -781,6 +783,7 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
           yield* queue.value
             .expireAgent(lead.orgId, lead.agentId)
             .pipe(Effect.catchCause((cause) => Effect.logWarning("Kin retire wake failed", cause)));
+        if (Option.isSome(care)) yield* care.value.refresh(lead.orgId);
         if (Option.isSome(presence))
           yield* syncQueued(presence.value, lead.orgId, lead.agentId).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),

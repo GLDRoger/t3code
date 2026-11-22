@@ -33,7 +33,12 @@ export const check = Effect.fn("KinHostBackup.check")(function* () {
   const orgs = yield* sql<{
     orgId: string;
   }>`SELECT org_id AS "orgId" FROM kin_orgs ORDER BY org_id`;
-  for (const { orgId } of orgs) yield* care.value.checkBackup(KinOrgId.make(orgId), problem);
+  for (const row of orgs) {
+    const orgId = KinOrgId.make(row.orgId);
+    yield* care.value.checkBackup(orgId, problem);
+    // Reconcile cards left open by an offline CLI retirement or an interrupted refresh.
+    yield* care.value.refresh(orgId, { closedOnly: true });
+  }
 });
 
 /** Only on a Kin host (its unit sets `KIN_CHECKOUT`, or a dev stand-in): others have no backup. */

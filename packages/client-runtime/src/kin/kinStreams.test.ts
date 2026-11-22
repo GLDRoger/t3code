@@ -43,6 +43,7 @@ import {
   KinCacheEviction,
   kinInboxStream,
   makeKinChatStream,
+  onKinDirectChatsChange,
   retryKinProbe,
   type KinSynced,
 } from "./kinStreams.ts";
@@ -763,6 +764,31 @@ describe("Kin streams", () => {
       page = message(1);
       yield* Queue.offer(moves, "1");
       expect((yield* Queue.take(views)).value.messages[0]?.links).toBeUndefined();
+    }),
+  );
+
+  it.effect("rereads the leads when a group or the Team room starts or stops working", () =>
+    Effect.gen(function* () {
+      const provide = yield* provider(
+        yield* SubscriptionRef.make<Option.Option<RpcSession>>(Option.none()),
+        new Map(),
+      );
+      const group = (working: boolean) =>
+        ({ ...summary("team-room"), kind: "team_group", working }) as KinChatSummary;
+      const view = (...chats: ReadonlyArray<KinChatSummary>) =>
+        ({ value: { chats } }) as unknown as KinSynced<KinInboxState>;
+      const rereads: Array<ReadonlyArray<string>> = [];
+      yield* Stream.fromIterable([
+        view(summary("d1"), group(false)),
+        view(summary("d1"), group(true)),
+        view(summary("d1"), group(true)),
+        view(summary("d1"), group(false)),
+      ]).pipe(
+        onKinDirectChatsChange((_environmentId, orgIds) => void rereads.push(orgIds)),
+        Stream.runDrain,
+        provide,
+      );
+      expect(rereads).toEqual([["org"], ["org"]]);
     }),
   );
 });

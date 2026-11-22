@@ -110,11 +110,13 @@ export const onPersonRemoved = Effect.fn("KinChatSharing.onPersonRemoved")(funct
         AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id AND ${theirs})
     RETURNING agent_id AS "agentId", wakeup_id AS "wakeupId"`;
   // Claimed by a turn just aborted, too: its finish requeues what it held, and these never run.
-  const expired = yield* sql<{ agentId: KinAgentId }>`UPDATE kin_events AS e SET state = 'expired'
+  const expired = yield* sql<{ agentId: KinAgentId; heldBy: string | null }>`
+    UPDATE kin_events AS e SET state = 'expired'
     WHERE e.org_id = ${input.orgId} AND ${theirs} AND (e.state = 'queued'
+      OR (e.state = 'failed' AND e.held_by IS NOT NULL)
       OR (e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w
         WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)))
-    RETURNING agent_id AS "agentId"`;
+    RETURNING agent_id AS "agentId", held_by AS "heldBy"`;
   const threads = yield* endChatThreads(
     sql,
     input.orgId,
