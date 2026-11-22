@@ -30,6 +30,7 @@ import * as AskPerson from "../../questions/askPerson.ts";
 import { KinChatService } from "../../chat/KinChatService.ts";
 import * as Team from "../../team/KinTeam.ts";
 import * as PeopleRead from "../peopleRead.ts";
+import * as AgentRead from "../../host/agentRead.ts";
 import * as PeopleUpdate from "../peopleUpdate.ts";
 import * as AwaySet from "../awaySet.ts";
 import * as AgentUpdate from "../agentUpdate.ts";
@@ -86,6 +87,13 @@ export const KinLeadToolkit = Toolkit.make(
     description:
       "List the owner's agents, you included: name, domain and what each is for. Check whose domain a request is before you answer or pass it on. When anyone but the owner woke you, names only: the agents everyone in the turn may message. Read-only.",
     success: Handoff.LeadsResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_computer", {
+    ...shared,
+    dependencies: [...shared.dependencies, KinIdentity, SqlClient.SqlClient],
+    description:
+      "Read how Kin's computer is doing: what stops agents' turns now and why (cause, agents, held turns, what Kin is doing, what the owner can tap in the app), space, backups, turns running, version and last restart. When someone asks why you or another agent stopped, failed or went quiet, answer from this, never a guess. Read-only.",
+    success: AgentRead.KinComputerResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("people_read", {
     ...chat,

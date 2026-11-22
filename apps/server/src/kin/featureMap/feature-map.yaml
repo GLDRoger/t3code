@@ -1079,6 +1079,7 @@ features:
     web: [settings, section:Kin's computer]
     phone: [SettingsKin, KinHost]
     roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [kin_computer]
     note: >-
       Space with what uses it, the last good backup, turns running and what fails with its cause,
       the version and the last restart, with Free up space now, Back up now and Try again. The same

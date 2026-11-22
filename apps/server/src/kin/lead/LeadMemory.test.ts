@@ -368,6 +368,7 @@ it.live(
           );
         assert.sameMembers(yield* visible(scope), [
           "kin_leads",
+          "kin_computer",
           "agent_update",
           "people_read",
           "people_update",
