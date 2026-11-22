@@ -45,13 +45,16 @@ export function readKinDesktopLink(text: string): KinDesktopLink {
   return { _tag: "Link", url: url.toString(), origin: url.origin };
 }
 
-/** Where the main window may go: the team's host, the app's own pages, or the system browser. */
+/**
+ * Where a page in the main window may send it: the team's host, or the system browser. Only the
+ * main process opens the app's own pages, so a page asking for one is refused.
+ */
 export function kinShellNavigation(input: {
   readonly url: string;
   readonly hostOrigin: string | null;
   readonly isAppPage: (url: string) => boolean;
 }): "stay" | "outside" | "refuse" {
-  if (input.isAppPage(input.url)) return "stay";
+  if (input.isAppPage(input.url)) return "refuse";
   if (!URL.canParse(input.url)) return "refuse";
   const url = new URL(input.url);
   if (input.hostOrigin !== null && url.origin === input.hostOrigin) return "stay";

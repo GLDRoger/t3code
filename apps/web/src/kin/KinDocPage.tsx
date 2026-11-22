@@ -74,7 +74,7 @@ import {
 import { Skeleton } from "../components/ui/skeleton";
 import { Textarea } from "../components/ui/textarea";
 import { toastManager } from "../components/ui/toast";
-import { isElectron } from "../env";
+import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { useRenderedAppearance } from "../hooks/useTheme";
 import {
   getRenderablePatch,
@@ -217,7 +217,7 @@ export function KinDocPage(
 
   return (
     <>
-      <WorkspacePageHeader electron={isElectron && !inPane} titlebarInset={!inPane}>
+      <WorkspacePageHeader electron={hasDesktopWindowChrome && !inPane} titlebarInset={!inPane}>
         {inPane && comparing === undefined ? null : (
           <Button
             size="icon-sm"

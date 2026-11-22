@@ -120,7 +120,7 @@ import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { Spinner } from "../components/ui/spinner";
-import { isElectron } from "../env";
+import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { cn } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -458,7 +458,7 @@ function KinChatHeader(props: {
     </>
   );
   return (
-    <WorkspacePageHeader electron={isElectron}>
+    <WorkspacePageHeader electron={hasDesktopWindowChrome}>
       <Button
         size="icon-sm"
         variant="ghost"

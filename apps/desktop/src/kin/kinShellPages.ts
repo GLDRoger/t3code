@@ -58,9 +58,11 @@ button.secondary { background: transparent; color: var(--fg); border-color: var(
 button:disabled { opacity: 0.55; cursor: default; }
 .hint { color: var(--muted); font-size: 13.5px; margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--line); }
 .hint p + p { margin-top: 8px; }
+.titlebar { position: fixed; inset: 0 0 auto 0; height: 52px; -webkit-app-region: drag; }
 </style>
 </head>
 <body>
+<div class="titlebar" aria-hidden="true"></div>
 <main id="join" hidden>
   <div class="brand">${KIN_MARK_SVG}<span class="name">Kin</span></div>
   <h1>Paste your join link</h1>
@@ -76,7 +78,7 @@ button:disabled { opacity: 0.55; cursor: default; }
   </form>
   <div class="hint">
     <p>Someone on your team sends you this link.</p>
-    <p>Already use Kin in a browser? Make a link there for this computer: Settings → Your devices → Link a device. If you set up your company's Kin: Settings → Sharing &amp; access → Create link.</p>
+    <p>Already use Kin in a browser? Make a link there for this computer: Settings → Profile → Link a device. If you set up your company's Kin: Settings → Sharing &amp; access → Create link.</p>
   </div>
 </main>
 <main id="unreachable" hidden>

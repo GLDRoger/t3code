@@ -40,6 +40,7 @@ import {
 } from "../panelAnimations";
 import { BackgroundThreadAnnouncer } from "./BackgroundThreadAnnouncer";
 import { HistorySwipeNavigation } from "./HistorySwipeNavigation";
+import { hasDesktopWindowChrome } from "../kin/kinDesktopWindow";
 import { kinListShownAt } from "../kin/kinListSwitch";
 import { KinSidebar } from "../kin/KinSidebar";
 import ThreadSidebar from "./Sidebar";
@@ -438,7 +439,7 @@ export function AppSidebarLayout({
   const kinListOpen = kinListShownAt(pathname) === "kin";
   const panelAnimationsSuppressed = usePanelNavigationSuppression(pathname);
   const routePanelAnimationsActive = panelAnimationsActive && !panelAnimationsSuppressed;
-  const isMacosDesktop = isElectron && isMacPlatform(navigator.platform);
+  const isMacosDesktop = hasDesktopWindowChrome && isMacPlatform(navigator.platform);
   const [sidebarWidth, setSidebarWidth] = useState(readInitialThreadSidebarWidth);
   // A clamped drag may not change width, so viewport changes need a separate subscription.
   const viewportWidth = useSyncExternalStore(subscribeToViewportWidth, readViewportWidth);

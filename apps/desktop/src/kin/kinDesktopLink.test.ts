@@ -59,12 +59,12 @@ describe("readKinDesktopLink", () => {
 });
 
 describe("kinShellNavigation", () => {
-  it("keeps the window on the team's host and the app's own pages", () => {
+  it("keeps the window on the team's host and refuses pages asking for the app's own", () => {
     const isAppPage = (url: string) => url.startsWith("kin://app/");
     const cases: ReadonlyArray<readonly [string, string | null, string]> = [
       [`${HOST}/kin/chats`, HOST, "stay"],
-      ["kin://app/", HOST, "stay"],
-      ["kin://app/", null, "stay"],
+      ["kin://app/", HOST, "refuse"],
+      ["kin://app/", null, "refuse"],
       [`${HOST}/kin`, null, "outside"],
       ["https://kin.ambermill.example:8443/kin", HOST, "outside"],
       ["http://kin.ambermill.example/kin", HOST, "outside"],

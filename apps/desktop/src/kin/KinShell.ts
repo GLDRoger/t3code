@@ -342,6 +342,7 @@ const make = Effect.gen(function* () {
       title: environment.displayName,
       backgroundColor: dark ? "#0c1018" : "#ffffff",
       autoHideMenuBar: true,
+      ...DesktopWindow.getWindowTitleBarOptions(dark, environment.platform),
       ...(Option.isSome(icon) ? { icon: icon.value } : {}),
       webPreferences: {
         preload: preloadPath,
@@ -435,13 +436,15 @@ const make = Effect.gen(function* () {
   const changeZoom = (direction: DesktopWindow.MainWindowZoomDirection) =>
     Effect.map(
       mainWindow,
-      Option.map(({ webContents }) =>
+      Option.map((window) => {
+        const { webContents } = window;
         webContents.setZoomLevel(
           direction === "reset"
             ? 0
             : webContents.getZoomLevel() + (direction === "in" ? 0.5 : -0.5),
-        ),
-      ),
+        );
+        if (environment.platform === "darwin") DesktopWindow.syncMacosWindowButtons(window);
+      }),
     );
 
   const runContentsCommand = (command: DesktopWindow.MainWindowContentsCommand) =>
@@ -482,8 +485,9 @@ const make = Effect.gen(function* () {
     }),
     syncAppearance: Effect.gen(function* () {
       const dark = yield* electronTheme.shouldUseDarkColors;
-      const window = yield* mainWindow;
-      if (Option.isSome(window)) window.value.setBackgroundColor(dark ? "#0c1018" : "#ffffff");
+      yield* electronWindow.syncAllAppearance((window, { titleBarOverlay }) =>
+        DesktopWindow.syncWindowAppearance(window, titleBarOverlay, dark, environment.platform),
+      );
     }),
   });
 
@@ -546,6 +550,9 @@ const make = Effect.gen(function* () {
       () => Effect.sync(() => Electron.protocol.unhandle(appScheme)),
     );
     yield* installSessionRules;
+    yield* Effect.sync(() => {
+      for (const channel of Channels.CLERK_CHANNELS) Electron.ipcMain.removeHandler(channel);
+    });
     yield* ipc.handle(
       DesktopIpc.makeIpcMethod({
         channel: Channels.KIN_SHELL_STATE_CHANNEL,
