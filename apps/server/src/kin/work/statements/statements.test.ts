@@ -2503,7 +2503,7 @@ describe("bank statement safety", () => {
         assert.isTrue((yield* bankRows).every((one) => one.state === "done"));
         for (const key of [first.key, second.key])
           assert.include(yield* fieldsOf(key), { reimbursement: "repaid", repaidOn: "2026-10-15" });
-        assert.notProperty(yield* fieldsOf(later.key), "reimbursement");
+        assert.include(yield* fieldsOf(later.key), { reimbursement: "owed" });
         const [link] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_record_links
           WHERE record_id IN (${first.recordId}, ${second.recordId}) AND kind = 'record'
             AND relation = 'evidence'`;
@@ -2589,8 +2589,8 @@ describe("bank statement safety", () => {
           OwnerStatements.apply(people, yield* confirmAll(net.card)),
         );
         assert.strictEqual(refused.reason, "conflict");
-        assert.notProperty(yield* fieldsOf(domain.key), "reimbursement");
-        assert.notProperty(yield* fieldsOf(refund.key), "reimbursement");
+        assert.include(yield* fieldsOf(domain.key), { reimbursement: "owed" });
+        assert.include(yield* fieldsOf(refund.key), { reimbursement: "owed" });
 
         // Repaid by hand the day before: the line is that repayment, not a new expense.
         for (const key of [domain.key, refund.key])
