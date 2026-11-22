@@ -47,8 +47,8 @@ export const ownerLevel = Effect.fn("KinAccess.ownerLevel")(function* (
 
 /**
  * Whether an owner-level person asked this agent's turn in person: every event that woke it is
- * a message or a card tap by someone owner-level now, none passed on by another agent, or the
- * agent's owner's own act on a task (`OWN_TASK_ACT`). A reaction, a brief, a routine, a handoff,
+ * a message or a card tap by someone owner-level now, none passed on by another agent, or such a
+ * person's own act on a task (`OWN_TASK_ACT`). A reaction, a brief, a routine, a handoff,
  * a teammate's word or anyone's change made through a coding agent among them is no ask. Only
  * this makes what an agent writes kept (`KinRecords`); `askedBy` keeps naming who asked.
  */
@@ -73,15 +73,19 @@ export const ownerLevelAsked = Effect.fn("KinAccess.ownerLevelAsked")(function* 
   return rows.length > 0 && rows.every((row) => row.direct === 1);
 });
 
-/** Who may ask in person through a task event `e` of agent `a`: the agent's owner. */
-const TASK_ASKER = `json_extract(e.json, '$.provenance.personId') = a.owner_person_id`;
+/**
+ * Who may ask in person through a task event `e` of agent `a`: anyone owner-level, as their chat
+ * message does. Only the agent's own owner's event comes with no origin chat.
+ */
+const TASK_ASKER = ownerLevelSql("e.org_id", "json_extract(e.json, '$.provenance.personId')");
 /**
  * A task event that is its giver's own words to this agent, by their own hand (never a coding
  * agent's): their comment on it, or their giving it, when they wrote it and every change to its
  * title and notes up to then was theirs too. From another chat, only their own direct chat with it.
  */
 const OWN_TASK_ACT = `json_extract(e.json, '$.provenance._tag') = 'human' AND ${TASK_ASKER}
-  AND (json_extract(e.json, '$.origin') IS NULL OR (
+  AND ((json_extract(e.json, '$.origin') IS NULL
+      AND json_extract(e.json, '$.provenance.personId') = a.owner_person_id) OR (
     json_extract(e.json, '$.origin.personId') = json_extract(e.json, '$.provenance.personId')
     AND EXISTS (SELECT 1 FROM kin_chats oc WHERE oc.org_id = e.org_id
       AND oc.chat_id = json_extract(e.json, '$.origin.chatId') AND oc.kind = 'direct'

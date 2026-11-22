@@ -1873,6 +1873,66 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "a co-owner's own task from her own chat is her ask in person, as her message is; his words passed on are not",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const coId = KinPersonId.make("co");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+        VALUES (${coId}, ${orgId}, 'co', 'Co', 'co_owner', ${at})`;
+      const madeBy = (personId: KinPersonId, words: "hers" | "the owner's") =>
+        Effect.gen(function* () {
+          // Her own direct chat with the lead, where its turn on her task runs.
+          const chat = `${personId}-lead-chat`;
+          yield* sql`DELETE FROM kin_chat_members WHERE chat_id = ${chat}`;
+          yield* sql`DELETE FROM kin_chats WHERE chat_id = ${chat}`;
+          yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+            VALUES (${chat}, ${orgId}, 'direct', ${`${personId}:${lead}`}, 0, ${at})`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              person_id, role, joined_at)
+            VALUES (${`${chat}-person`}, ${orgId}, ${chat}, 'person', ${personId}, 'member', ${at})`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              agent_id, role, joined_at)
+            VALUES (${`${chat}-lead`}, ${orgId}, ${chat}, 'agent', ${lead}, 'member', ${at})`;
+          const hers = { actor: { _tag: "person" as const, personId }, via: "owner" as const };
+          const title = `Invented: get the brochure built ${words}`;
+          if (words === "hers")
+            yield* records.create(
+              orgId,
+              { ...hers, askedBy: personId },
+              { originKey: title, title, owner: toLead },
+            );
+          else {
+            // His words, given to her; she passes them on with one tap.
+            const his = yield* ownerTask(title, { owner: { _tag: "person", personId } });
+            yield* records.update(orgId, { ...hers, askedBy: personId }, his.key, {
+              owner: toLead,
+            });
+          }
+          const wakeupId = `given-${words}`;
+          yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+          yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+              started_at, status, event_ids, audience)
+            VALUES (${wakeupId}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '[]',
+              'owner_only')`;
+          yield* sql`UPDATE kin_events SET wakeup_id = ${wakeupId}, state = 'claimed'
+            WHERE wakeup_id IS NULL AND agent_id = ${lead}`;
+          const [event] = yield* sql<{ id: string }>`SELECT event_id AS id FROM kin_events
+            WHERE wakeup_id = ${wakeupId} ORDER BY event_id`;
+          assert.isDefined(event, personId);
+          return yield* LeadWork.create(scopeOf(lead), {
+            sourceEventId: event!.id,
+            records: [{ title: `Invented: design the brochure ${words}`, owner: other }],
+          });
+        });
+      assert.notProperty((yield* madeBy(coId, "hers")).records[0], "suggested");
+      assert.include((yield* madeBy(coId, "the owner's")).records[0], { suggested: true });
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("closing a task with work left files that work as a linked follow-up, once", () =>
   Effect.gen(function* () {
     yield* seed;
