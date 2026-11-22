@@ -58,6 +58,7 @@ function CompanyTimeZone(props: KinWorkTarget & { readonly searchId: string }) {
     <KinSettingsRow
       searchId={props.searchId}
       title={KIN_COMPANY.timeZone}
+      wrap
       detail={
         state === "failed" ? (
           <span role="alert" className="text-destructive-foreground">

@@ -379,7 +379,11 @@ export function KinTasksList(
               {within?.header}
               {shown === "rows" && (props.stale || listState.stale) ? (
                 <View className="px-4">
-                  <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
+                  <KinWorkStaleNotice
+                    environmentId={environmentId}
+                    onRetry={refresh}
+                    readAt={listState.readAt}
+                  />
                 </View>
               ) : null}
               {narrowed === null && grouped === null ? null : (

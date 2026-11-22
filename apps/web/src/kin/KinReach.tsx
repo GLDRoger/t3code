@@ -432,6 +432,7 @@ function PersonReachBody(props: Parameters<typeof KinPersonReach>[0]) {
                     />
                   }
                   title={one.name}
+                  wrap
                   detail={
                     (state.input && kinReachShared(state.input, self, one.party)) ??
                     KIN_REACH_COPY.cantMessage
@@ -471,6 +472,7 @@ function AgentRow(props: {
     <KinSettingsRow
       leading={<KinAvatar avatar={kinAgentAvatar(props.agentId)} size="sm" />}
       title={props.name}
+      wrap
       detail={props.detail}
       status={
         props.restricted ? (
@@ -525,6 +527,7 @@ function ReachListBody(props: KinReachTarget) {
           <KinSettingsRow
             key={row.key}
             title={`${row.names[0]} and ${row.names[1]}`}
+            wrap
             detail={row.detail}
             control={
               <LiftButton

@@ -1,7 +1,7 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format change dates for React render, outside an Effect runtime.
 import { kinDomainSlug } from "./kinLeadPresentation.ts";
 import { kinNow } from "./kinNow.ts";
-import { kinWorkAllDay } from "./kinWork.ts";
+import { kinMidSentence, kinWorkAllDay, kinWorkNameOfText } from "./kinWork.ts";
 import {
   type KinAgentPage,
   type KinCharacterSeat,
@@ -82,6 +82,12 @@ export const KIN_AGENT_PAGE = {
   characterRule:
     "A character changes how it sounds and what it cares about. It never changes what it may do or see.",
   characterEmpty: "Kin gives it a character on its next start.",
+  kinPart: "Kin's part",
+  kinPartDetail: "Kin keeps this part up to date.",
+  ownPart: "Your part",
+  ownPartHint:
+    "What this agent should know about your company, and anything you want done differently. Your part wins where the two differ.",
+  ownPartEmpty: "Nothing of your own yet.",
   editCharacter: "Edit",
   characterHistory: "History",
   rewrite: "Ask it to rewrite itself",
@@ -369,9 +375,11 @@ export function kinAgentChangeLine(
   }
   const value = (field: string, shown: string | null) => {
     if (shown === null || shown === "") return "none";
-    const principal = /^(person|agent):(.+)$/.exec(shown);
-    if (principal !== null && (field === "owner" || field === "waitingOn"))
-      return names.get(principal[2]!) ?? (principal[1] === "agent" ? "an agent" : "someone");
+    const who =
+      field === "owner" || field === "waitingOn"
+        ? kinWorkNameOfText(shown, { people: names, agents: names })
+        : null;
+    if (who !== null) return kinMidSentence(who);
     if (field === "party" || field === "project") {
       const title = change.named?.find((one) => one.key === shown)?.title;
       return title === undefined ? shown : short(`${shown} ${title}`);

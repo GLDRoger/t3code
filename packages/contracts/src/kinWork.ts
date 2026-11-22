@@ -474,8 +474,12 @@ export const KIN_RECORDS_PAGE_CAP = 100;
 export const KinListGroupBy = Schema.Literals(["none", "category", "month", "financialYear"]);
 export type KinListGroupBy = typeof KinListGroupBy.Type;
 const KinListSums = {
-  /** Full amounts. */
+  /** Full amounts, whichever way the money went. */
   total: KinMoneyTotals,
+  /** The bank transactions list's money in, money out, and in less out. */
+  moneyIn: Schema.optional(KinMoneyTotals),
+  moneyOut: Schema.optional(KinMoneyTotals),
+  net: Schema.optional(KinMoneyTotals),
   /** In a list whose entries are paid over time: what the open ones still have unpaid. */
   owed: Schema.optional(KinMoneyTotals),
   /** With `paidFrom` or `paidTo`: the payments made in those days, not the entries' amounts. */
@@ -649,7 +653,8 @@ const KinPartyCounts = {
 };
 /**
  * Derived by rule on every read, never stored or typed: `late` once the target date passed,
- * `at_risk` while an entry is late or has waited more than a week, else `on_track`.
+ * `at_risk` while an entry is late or has waited more than a week, an invoice for it is overdue,
+ * or its client has gone past their check-in days without contact, else `on_track`.
  */
 export const KinProjectHealth = Schema.Literals(["on_track", "at_risk", "late"]);
 export type KinProjectHealth = typeof KinProjectHealth.Type;
@@ -834,6 +839,11 @@ export const KinWorkUpdateInput = Schema.Struct({
   sensitive: Schema.optional(Schema.Boolean),
   /** Lists with money and dates. `null` clears; the currency is the amount's own. */
   amount: Schema.optional(Schema.NullOr(KinMoney)),
+  /**
+   * A form that can ask sends false: an amount far above its list is refused with the error's
+   * `farAbove` for the person to confirm, and true saves it. Left out, nothing is asked.
+   */
+  amountConfirmed: Schema.optional(Schema.Boolean),
   dateAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   dateAllDay: Schema.optional(Schema.Boolean),
   repeat: Schema.optional(Schema.NullOr(KinRepeatRule)),
@@ -1201,6 +1211,12 @@ export const KinProjectDetail = Schema.Struct({
     targetPassed: Schema.Boolean,
     late: NonNegativeInt,
     waitingOverAWeek: NonNegativeInt,
+    // Linked to this project only, never guessed from its client. Absent from older hosts.
+    overdueInvoices: Schema.optional(NonNegativeInt),
+    /** Its client past their check-in days: since the last contact, or null when none is recorded. */
+    noContact: Schema.optional(
+      Schema.Struct({ lastContactAt: Schema.NullOr(IsoDateTime), days: NonNegativeInt }),
+    ),
   }),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

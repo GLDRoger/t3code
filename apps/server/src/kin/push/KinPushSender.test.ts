@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   KinAgentId,
   KinChatId,
+  KinChoiceCardState,
   KinEventId,
   KinMemberId,
   KinMessageId,
@@ -289,6 +290,8 @@ const alerts = (sent: ReadonlyArray<KinApnsPush>) =>
     (push) => (push.payload as { aps: { alert?: { title: string; body: string } } }).aps.alert,
   );
 
+const isChoiceCard = Schema.is(KinChoiceCardState);
+
 const categories = (sent: ReadonlyArray<KinApnsPush>) =>
   sent.map((push) => (push.payload as { aps: { category: string } }).aps.category);
 
@@ -456,6 +459,87 @@ describe("KinPushSender", () => {
       ]);
       // It stacks under the chat like its messages do.
       assert.match(apns.sent[0]?.collapseId ?? "", /^kin:/);
+
+      // An agent's open question with two plain answers carries them as the notice's buttons.
+      const question = (labels: ReadonlyArray<string>, extra: object = {}) => ({
+        question: "Is the Harbourline NDA signed?",
+        detail: null,
+        options: labels.map((label, index) => ({ optionId: `option-${index + 1}`, label })),
+        answer: null,
+        ...extra,
+      });
+      const ask = (state: object, open: boolean, draft: string | null = null) =>
+        Effect.gen(function* () {
+          const widgetId = yield* postWidget(sql, "choice", state, [member], "Quick one on W-8.");
+          if (open)
+            yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id,
+                chat_id, kind, widget_id, question, safe, asked_at, due_at, act_at, state,
+                draft_json)
+              VALUES (${`q_${widgetId}`}, 'org_01', 'lead_fin', ${member}, 'chat_team', 'card',
+                ${widgetId}, 'Is it signed?', 0, ${NOW}, ${NOW}, ${NOW}, 'open', ${draft})`;
+          apns.sent.length = 0;
+          yield* notify({ _tag: "widget", orgId, widgetId });
+          return widgetId;
+        });
+      const choice = yield* ask(question(["Signed", "Not yet"]), true);
+      assert.deepStrictEqual(categories(apns.sent), ["kin.choice"]);
+      assert.deepStrictEqual(alerts(apns.sent), [
+        {
+          title: "Payments team",
+          body: "Is the Harbourline NDA signed?\n1 · Signed\n2 · Not yet",
+        },
+      ]);
+      assert.deepStrictEqual(
+        (apns.sent[0]?.payload as { body: { choices: unknown } } | undefined)?.body.choices,
+        ["option-1", "option-2"],
+      );
+      assert.isUndefined(apns.sent[0]?.collapseId, choice);
+      // Three answers, Kin's own Confirm (no open question), an answer that acts or sends, a
+      // sent-up draft (approved where it is read, R12): a plain notice whose tap opens the card.
+      for (const [state, open, draft] of [
+        [question(["Signed", "Not yet", "Lost it"]), true],
+        [question(["Confirm", "Cancel"]), false],
+        [
+          question(["Start W-8", "Not yet"], {
+            options: [
+              { optionId: "option-1", label: "Start W-8", action: { line: "Starts W-8." } },
+              { optionId: "option-2", label: "Not yet" },
+            ],
+          }),
+          true,
+        ],
+        [
+          question(["Confirm", "Cancel"], {
+            send: {
+              service: "Gmail",
+              action: "email",
+              from: "rhea@ambermill.example",
+              to: ["legal@harbourline.example"],
+              cc: [],
+              subject: "NDA",
+              body: "Signed copy attached.",
+              attachments: [],
+              outcome: null,
+            },
+          }),
+          true,
+        ],
+        [
+          question(["Approve", "Changes first"], {
+            draft: "## Harbourline retainer\n\nMonthly fee: ₹2,50,000",
+          }),
+          true,
+          '{"kind":"proposal","text":"## Harbourline retainer"}',
+        ],
+      ] as const) {
+        assert.isTrue(isChoiceCard(state));
+        yield* ask(state, open, draft);
+        assert.deepStrictEqual(categories(apns.sent), ["kin.message"], JSON.stringify(state));
+        assert.deepStrictEqual(alerts(apns.sent), [
+          { title: "Payments team", body: "Quick one on W-8." },
+        ]);
+      }
+
       // Kin's own unprompted card (a recommendation) waits on them without ringing: a badge only.
       apns.sent.length = 0;
       const unprompted = yield* postWidget(
@@ -1283,6 +1367,31 @@ describe("KinPushSender", () => {
           deepLink: "/kin/env_kin/org_01/chats/chat_dm",
         },
       });
+      // A question with answer buttons is held as a plain one is: the badge, and no buttons.
+      const asked = yield* postWidget(
+        sql,
+        "choice",
+        {
+          question: "Renew Orbit on the same terms?",
+          detail: null,
+          options: [
+            { optionId: "option-1", label: "Same terms" },
+            { optionId: "option-2", label: "New terms" },
+          ],
+          answer: null,
+        },
+        [owner],
+      );
+      yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id,
+          kind, widget_id, question, safe, asked_at, due_at, act_at, state)
+        VALUES ('q_renew', 'org_01', 'lead_fin', ${owner}, 'chat_team', 'card', ${asked},
+          'Renew?', 0, ${NOW}, ${NOW}, ${NOW}, 'open')`;
+      apns.sent.length = 0;
+      yield* notify({ _tag: "widget", orgId, widgetId: asked });
+      assert.deepStrictEqual(
+        apns.sent.map((push) => (push.payload as { aps: object }).aps),
+        [{ badge: 2 }, { badge: 2 }],
+      );
 
       // A teammate writing in their chat with you lands at once, unread, but rings only when your
       // quiet hours end (`deliverHeld`).

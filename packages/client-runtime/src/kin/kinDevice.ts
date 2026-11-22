@@ -98,6 +98,34 @@ export function kinReplacedComputers<Id extends string>(
     .map((old) => old.environmentId);
 }
 
+/** A computer This phone lists, as its Sign out sees it. */
+export interface KinExitCandidate<Id extends string = string> {
+  readonly environmentId: Id;
+  readonly label: string;
+  /** The team it answered with, live or last saved; null when it never said. */
+  readonly team: string | null;
+  readonly connected: boolean;
+}
+
+/**
+ * The computers that carry a "Sign out of <team>": one per team, the one Kin opens on first, then
+ * a connected one. A row that isn't connected and never named its team is no team to leave, so
+ * it offers Forget instead.
+ */
+export function kinSignOutExits<Id extends string>(
+  computers: ReadonlyArray<KinExitCandidate<Id>>,
+  host: Id | null,
+): ReadonlyArray<Id> {
+  const rank = (one: KinExitCandidate<Id>) =>
+    one.environmentId === host ? 0 : one.connected ? 1 : 2;
+  const teamOf = (one: KinExitCandidate<Id>) => one.team ?? one.label;
+  return computers
+    .filter((one) => one.environmentId === host || one.team !== null || one.connected)
+    .sort((a, b) => rank(a) - rank(b))
+    .filter((one, index, all) => all.findIndex((other) => teamOf(other) === teamOf(one)) === index)
+    .map((one) => one.environmentId);
+}
+
 /**
  * Who this phone is signed in as on the Kin a join link points at, from that host's directory;
  * null when the host never said, so the question asks without a name rather than guess one.

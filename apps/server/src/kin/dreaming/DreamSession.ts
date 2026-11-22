@@ -20,6 +20,8 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+import { withArticle } from "../article.ts";
+import { bootstrapKinProject } from "../lead/leadProject.ts";
 import { activityAt, waitWhileActive } from "../lead/runSilence.ts";
 import { permissionFlag, threadPrefix } from "./DreamIsolation.ts";
 
@@ -83,7 +85,7 @@ export const layer = Layer.effect(
       const { instanceId } = turn.model;
       const entry = deriveProviderInstanceConfigMap(yield* settings.getSettings)[instanceId];
       if (entry?.driver !== "claudeAgent")
-        return `Dreams run only on Claude, and ${instanceId} is ${entry === undefined ? "not a configured provider" : `a ${entry.driver} instance`}.`;
+        return `Dreams run only on Claude, and ${instanceId} is ${entry === undefined ? "not a configured provider" : `${withArticle(entry.driver)} instance`}.`;
       const config: { readonly launchArgs?: unknown } = entry.config ?? {};
       const flags = Object.keys(
         parseCliArgs(typeof config.launchArgs === "string" ? config.launchArgs : "").flags,
@@ -99,7 +101,7 @@ export const layer = Layer.effect(
           return yield* new DreamRefused({ orgId: turn.orgId, reason: refused });
         const key = `${turn.dreamId}:${turn.turn}`;
         const bootstrap = (suffix: string) =>
-          projects.bootstrap({
+          bootstrapKinProject(projects, {
             commandId: CommandId.make(`kin-dream-project:${turn.orgId}${suffix}`),
             projectId: ProjectId.make(`kin-dream:${turn.orgId}${suffix}`),
             workspaceRoot: turn.workspaceRoot,

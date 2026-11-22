@@ -273,6 +273,14 @@ export const invoiceDue = (sql: SqlClient.SqlClient) => sql`COALESCE(r.due_at,
         (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))`,
   )})`;
 
+/** `owedInvoices`' overdue in SQL, for an invoice `r`: counted, issued, a balance left, past due. */
+export const overdueInvoice = (sql: SqlClient.SqlClient, now: number) => sql`(
+  r.register_id = 'invoices' AND ${countedEntry(sql)} AND r.state = 'waiting'
+  AND r.amount_minor IS NOT NULL AND r.amount_minor > (SELECT COALESCE(SUM(p.amount_minor), 0)
+    FROM kin_record_payments p
+    WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL)
+  AND ${invoiceDue(sql)} < ${now})`;
+
 /**
  * Issued invoices still owed, oldest due first: counted, issued (waiting), with an amount and a
  * balance after payments not taken back. Overdue is past `invoiceDue`. What a client owes, the
@@ -506,7 +514,12 @@ const givenOf = (row: RecordRow): { readonly givenBy?: KinWorkPrincipal } => {
 };
 
 const handedBackOf = (row: RecordRow) => {
-  if (row.registerId !== "work" || row.handedBackAt === null || row.handedBackId === null)
+  if (
+    row.registerId !== "work" ||
+    isClosed(row.state) ||
+    row.handedBackAt === null ||
+    row.handedBackId === null
+  )
     return {};
   const by: KinWorkPrincipal =
     row.handedBackKind === "agent"

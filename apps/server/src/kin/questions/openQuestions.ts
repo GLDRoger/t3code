@@ -39,12 +39,13 @@ import {
   sealedOptions,
   takesAsDefault,
 } from "../widgets/cardPlans.ts";
-import { holdNames, holdOverAbout, refusalText } from "../pulse/holds.ts";
+import { holdOverAbout, refusalText } from "../pulse/holds.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { unreadableBy } from "../work/teamView.ts";
 import { allLists } from "../work/registers.ts";
+import { leadNamer } from "../work/toolNames.ts";
 import {
   dayWord,
   defaultDue,
@@ -292,7 +293,9 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   if (input.ownerLevelAsked !== true) {
     const hold = yield* holdOverAbout({ orgId: input.orgId, at: input.now, keys: about, personId });
     if (hold !== undefined)
-      return yield* refuse(refusalText(hold, yield* holdNames(input.orgId), clock.zone));
+      return yield* refuse(
+        refusalText(hold, yield* leadNamer(input.orgId, input.agentId), clock.zone),
+      );
   }
   const untaken: Untaken | undefined =
     unsafeDefault(label, input.question, {
@@ -330,10 +333,11 @@ const UNTAKEN_WHY: Record<Exclude<Untaken, "none">, string> = {
   money: "the card mentions an amount or a percentage, or is about a money record",
   leaves: "the wording suggests sending something out or moving money",
   action: "only a tap runs that option's action",
-  repeats: "its task repeats",
+  repeats:
+    "its task repeats. It stays as it is until they answer; say so, and set nothing to take it later",
   handed_back: "its task was handed back",
 };
-/** What Kin won't do with the default, and the rule that says so; nothing about later. */
+/** What Kin won't do with the default, and the rule that says so; only a repeating task's says what comes next. */
 const untakenNote = (label: string | null, why: Untaken) =>
   why === "none" || label === null
     ? "Kin won't take any answer on its own: no default was set."
@@ -1209,6 +1213,7 @@ const postHeldCard = Effect.fn("KinQuestions.postHeldCard")(function* (
       question: row.question,
       detail: card.detail,
       ...(card.askedBy === undefined ? {} : { askedBy: card.askedBy }),
+      ...(row.draft === null ? {} : { draft: row.draft.text }),
       options: card.options,
       untilAnswered: true,
       chatId: row.chatId,
@@ -1520,6 +1525,7 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
           ? said
           : `${by}\n${said}`,
     ...(by === undefined ? {} : { askedBy: by }),
+    ...(row.draft === null ? {} : { draft: row.draft.text }),
     options:
       row.draft !== null
         ? DRAFT_OPTIONS.map((one) => ({ ...one }))
@@ -1566,7 +1572,11 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
       options_json = ${yield* encodeOptions(options).pipe(Effect.orDie)}
     WHERE org_id = ${orgId} AND question_id = ${row.questionId}`;
   if (row.widgetId !== null)
-    yield* chat.closeReplaced({ orgId, widgetId: KinWidgetId.make(row.widgetId) });
+    yield* chat.closeReplaced({
+      orgId,
+      widgetId: KinWidgetId.make(row.widgetId),
+      by: card.widgetId,
+    });
   // Keyed on the question, so a reopened one raised again tells the chat that asked nothing more.
   if (row.forChatId !== null) {
     const who = yield* personName(orgId, row.personId);

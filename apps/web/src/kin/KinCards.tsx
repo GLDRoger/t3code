@@ -1,5 +1,6 @@
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_MISSING_CARD_TEXT,
@@ -15,6 +16,12 @@ import {
   kinChoiceCardTaps,
   kinChoiceAccessibilityLabel,
   kinChoiceAnswered,
+  kinChoiceDecidedLine,
+  createKinHeldPress,
+  kinDeviceTimers,
+  kinMailCancels,
+  KIN_MAIL_CANCEL_COPY,
+  KIN_MAIL_CANCEL_UNDO_MS,
   kinChoicePhase,
   kinChoiceUndoneLine,
   kinSendEditControls,
@@ -33,6 +40,10 @@ import {
   kinSendTicked,
   KIN_SEND_CHECKED,
   KIN_SEND_EDIT_COPY,
+  KIN_CHOICE_DRAFT_COPY,
+  KIN_CHOICE_OPEN_LABEL,
+  type KinChoiceDraftView,
+  type KinChoiceOpen,
   type KinSendEditBusy,
   type KinChoiceCardStatus,
   type KinChoiceCardView,
@@ -61,11 +72,19 @@ import {
   type KinMemoryChangeItemView,
   type KinMemoryChangesCardView,
 } from "@t3tools/client-runtime/kin/kinMemoryChangesPresentation";
-import { kinDocCardLine, KIN_DOCS, type KinDocCardView } from "@t3tools/client-runtime/kin/kinDocs";
+import {
+  kinDocCardDraft,
+  kinDocCardLine,
+  kinDocSendUpProblem,
+  KIN_DOCS,
+  type KinDocCardView,
+} from "@t3tools/client-runtime/kin/kinDocs";
 import { kinListedModelName } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinPersonId, KinSendTry, KinWidget } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
+import ChatMarkdown from "../components/ChatMarkdown";
+import type { KinPlaceSearch } from "./kinPlaces";
 import { AsyncResult } from "effect/reactivity";
 import { FileTextIcon } from "lucide-react";
 import {
@@ -91,6 +110,7 @@ import {
 import { useAssetUrls } from "../assets/assetUrls";
 import { AttachmentImage } from "../components/media/AttachmentImage";
 import { environmentCatalog } from "../connection/catalog";
+import { KinConfirm } from "./KinConfirm";
 import { ApproveOnPhone } from "./ApproveOnPhone";
 import { useKinOwnerLevelKnown } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
@@ -107,7 +127,8 @@ import { KinSocialPackCard, KinSocialWeekCard } from "./KinSocialCards";
 import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
 import { KinVisual } from "./KinVisual";
 import { kinClient } from "./kinClient";
-import { useKinHostAt } from "./useKinHost";
+import { kinHostConnected, useKinHostAt } from "./useKinHost";
+import { toastManager } from "../components/ui/toast";
 import { serverEnvironment } from "../state/server";
 
 const CANT_ACT_TEXT = KIN_DEVICE_COPY.cantAct("browser", "answer");
@@ -176,6 +197,8 @@ export const KinCard = memo(function KinCard(props: {
   readonly orgId: string;
   readonly viewerPersonId: KinPersonId | null;
   readonly heldFor: string | null;
+  /** The viewer may only read this chat: a draft's card offers no Send to. */
+  readonly readOnly?: boolean;
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const ownerLevel = useKinOwnerLevelKnown(props.environmentId);
@@ -220,7 +243,15 @@ export const KinCard = memo(function KinCard(props: {
     case "approval":
       return <KinApprovalCard approval={view.approval} />;
     case "doc":
-      return <KinDocCard doc={view.doc} environmentId={props.environmentId} orgId={props.orgId} />;
+      return (
+        <KinDocCard
+          doc={view.doc}
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          ownerLevel={ownerLevel !== false}
+          readOnly={props.readOnly === true}
+        />
+      );
     case "statement_review":
       return <KinStatementReviewCard review={view.review} environmentId={props.environmentId} />;
     case "statement_password":
@@ -311,8 +342,32 @@ function KinDocCard(props: {
   readonly doc: KinDocCardView;
   readonly environmentId: EnvironmentId;
   readonly orgId: string;
+  readonly ownerLevel: boolean;
+  readonly readOnly: boolean;
 }) {
   const { doc } = props;
+  const draft = kinDocCardDraft(doc, props.ownerLevel, props.readOnly);
+  const sendUp = useAtomCommand(kinClient.docSendUp, { reportFailure: false });
+  const [sending, setSending] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const copy = (text: string) => {
+    void navigator.clipboard.writeText(text).then(
+      () => toastManager.add({ type: "success", title: KIN_DOCS.textCopied }),
+      () => undefined,
+    );
+  };
+  const send = async () => {
+    if (sending) return;
+    if (!kinHostConnected(props.environmentId)) return setProblem(KIN_DOCS.sendOffline);
+    setSending(true);
+    setProblem(null);
+    const result = await sendUp({
+      environmentId: props.environmentId,
+      input: { orgId: doc.orgId, chatId: doc.chatId, widgetId: doc.widgetId },
+    });
+    setSending(false);
+    setProblem(kinDocSendUpProblem(result));
+  };
   const nowMs = useNowMinuteMs();
   const host = useKinHostAt(props.environmentId);
   const agents =
@@ -325,11 +380,31 @@ function KinDocCard(props: {
     new Date(nowMs),
   );
   const params = { environmentId: props.environmentId, orgId: props.orgId };
+  const eyebrow = draft === null ? "Doc" : KIN_DOCS.draft;
   return (
-    <CardFrame eyebrow="Doc" label={`Doc: ${doc.title}. ${line.text}`}>
+    <CardFrame eyebrow={eyebrow} label={`${eyebrow}: ${doc.title}. ${line.text}`}>
       <p className="font-medium text-foreground">{doc.title}</p>
       <p className="text-xs text-muted-foreground">{line.text}</p>
+      {draft?.noAccount == null ? null : (
+        <p className="text-xs text-muted-foreground">{draft.noAccount}</p>
+      )}
+      {draft?.sent == null ? null : <p className="text-xs text-foreground">{draft.sent}</p>}
+      {problem === null ? null : (
+        <p role="alert" className="text-xs text-destructive-foreground">
+          {problem}
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-2">
+        {draft === null ? null : (
+          <Button size="xs" variant="outline" onClick={() => copy(draft.copyText)}>
+            {KIN_DOCS.copyText}
+          </Button>
+        )}
+        {draft?.sendTo == null ? null : (
+          <Button size="xs" variant="outline" disabled={sending} onClick={() => void send()}>
+            {sending ? KIN_DOCS.sending : draft.sendTo}
+          </Button>
+        )}
         <Button
           size="xs"
           variant="outline"
@@ -474,9 +549,47 @@ function KinChoiceCard(props: {
     };
   }, [editorOpen]);
   const edited = kinSendEditedLine(choice, props.viewerPersonId);
+  const decided = kinChoiceDecidedLine(choice, props.viewerPersonId);
+  // A mail's Cancel is asked first, then waits a few seconds for Undo before it is sent.
+  const [asking, setAsking] = useState<string | null>(null);
+  const [held, setHeld] = useState<string | null>(null);
+  const sendHeld = useEffectEvent(() => {
+    const optionId = held;
+    setHeld(null);
+    if (optionId !== null) void press(optionId);
+  });
+  const [heldPress] = useState(() =>
+    createKinHeldPress({
+      delayMs: KIN_MAIL_CANCEL_UNDO_MS,
+      send: () => sendHeld(),
+      timers: kinDeviceTimers,
+    }),
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a held Cancel is sent when its card leaves the screen.
+  useEffect(() => () => heldPress.flush(), [heldPress]);
+  const choose = (optionId: string) =>
+    kinMailCancels(choice, optionId) ? setAsking(optionId) : void press(optionId);
 
   return (
     <CardFrame label={kinChoiceAccessibilityLabel(choice, answered?.text ?? null, edited)}>
+      <KinConfirm
+        ask={
+          asking === null
+            ? null
+            : {
+                title: KIN_MAIL_CANCEL_COPY.ask,
+                detail: KIN_MAIL_CANCEL_COPY.detail,
+                action: KIN_MAIL_CANCEL_COPY.yes,
+                cancel: KIN_MAIL_CANCEL_COPY.no,
+                destructive: true,
+              }
+        }
+        onConfirm={() => {
+          setHeld(asking);
+          heldPress.hold();
+        }}
+        onClose={() => setAsking(null)}
+      />
       {choice.askedBy === null ? null : (
         <p className="text-xs text-muted-foreground">{choice.askedBy}</p>
       )}
@@ -510,6 +623,8 @@ function KinChoiceCard(props: {
               : null
           }
         />
+      ) : choice.draft !== null ? (
+        <KinChoiceDraft draft={choice.draft} environmentId={environmentId} />
       ) : choice.detail === null ? null : (
         <p className="whitespace-pre-line text-xs text-muted-foreground">{choice.detail}</p>
       )}
@@ -526,13 +641,38 @@ function KinChoiceCard(props: {
       )}
       {answered !== null ? (
         answered.text === null ? null : (
-          <p className="text-xs font-medium text-muted-foreground">{answered.text}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-xs font-medium text-muted-foreground">{answered.text}</p>
+            {choice.outcome?.open == null ? null : (
+              <KinChoiceOpenLink
+                open={choice.outcome.open}
+                environmentId={environmentId}
+                orgId={choice.orgId}
+              />
+            )}
+          </div>
         )
       ) : phase === "expired" ? (
         <p className="text-xs text-muted-foreground">{choice.closedText}</p>
       ) : !canAct ? (
         <p className="text-xs text-muted-foreground">{CANT_ACT_TEXT}</p>
-      ) : shownEdit !== null ? null : (
+      ) : shownEdit !== null ? null : held !== null ? (
+        <div className="flex items-center gap-2 pt-1">
+          <p role="status" className="min-w-0 flex-1 text-xs font-medium text-muted-foreground">
+            {KIN_MAIL_CANCEL_COPY.held}
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              heldPress.undo();
+              setHeld(null);
+            }}
+          >
+            {KIN_MAIL_CANCEL_COPY.undo}
+          </Button>
+        </div>
+      ) : (
         <>
           <CardNotice notice={status?.notice} />
           <div className="flex flex-col gap-1.5 pt-1">
@@ -545,7 +685,7 @@ function KinChoiceCard(props: {
                   disabled={
                     pending !== null || switching || kinSendCheckPending(choice, ticked, option.id)
                   }
-                  onClick={() => void press(option.id)}
+                  onClick={() => choose(option.id)}
                 >
                   {option.label}
                 </Button>
@@ -569,6 +709,7 @@ function KinChoiceCard(props: {
           </div>
         </>
       )}
+      {decided === null ? null : <p className="text-xs text-muted-foreground">{decided}</p>}
       {undone === null ? null : <p className="text-xs text-muted-foreground">{undone}</p>}
     </CardFrame>
   );
@@ -928,6 +1069,66 @@ function KinSendDetail(props: {
  * The card's picture, such as a logo to confirm, at a bounded size on a mid grey that a white
  * logo and a black one both stand out on. Its bytes load from the viewer's signed asset URL.
  */
+/** Opens what a tap made where it lives: a list in Money, Clients or Docs. */
+function KinChoiceOpenLink(props: {
+  readonly open: KinChoiceOpen;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+}) {
+  const { open } = props;
+  const params = { environmentId: props.environmentId, orgId: props.orgId };
+  const search: KinPlaceSearch =
+    open.subscriptions === true ? { subscriptions: true } : { list: open.list };
+  return (
+    <Button
+      size="xs"
+      variant="outline"
+      render={
+        open.place === "money" ? (
+          <Link to="/kin/$environmentId/$orgId/money" params={params} search={search} />
+        ) : open.place === "clients" ? (
+          <Link to="/kin/$environmentId/$orgId/clients" params={params} search={search} />
+        ) : (
+          <Link to="/kin/$environmentId/$orgId/docs" params={params} search={search} />
+        )
+      }
+    >
+      {KIN_CHOICE_OPEN_LABEL}
+    </Button>
+  );
+}
+
+/** A teammate's sent-up draft, rendered as a doc is; a long one opens under Show all. */
+function KinChoiceDraft(props: {
+  readonly draft: KinChoiceDraftView;
+  readonly environmentId: EnvironmentId;
+}) {
+  const { draft } = props;
+  const [open, setOpen] = useState(false);
+  const line = (text: string | null) =>
+    text === null ? null : (
+      <p className="whitespace-pre-line text-xs text-muted-foreground">{text}</p>
+    );
+  return (
+    <>
+      {line(draft.before)}
+      <div className="rounded-md border border-border px-3 py-2 text-sm">
+        <ChatMarkdown
+          text={kinBodyMarkdown(draft.folds && !open ? draft.preview : draft.markdown)}
+          cwd={undefined}
+          environmentId={props.environmentId}
+        />
+        {draft.folds ? (
+          <Button size="xs" variant="ghost" onClick={() => setOpen(!open)}>
+            {open ? KIN_CHOICE_DRAFT_COPY.showLess : KIN_CHOICE_DRAFT_COPY.showAll}
+          </Button>
+        ) : null}
+      </div>
+      {line(draft.after)}
+    </>
+  );
+}
+
 function KinChoiceImage(props: {
   readonly environmentId: EnvironmentId;
   readonly image: NonNullable<KinChoiceCardView["image"]>;

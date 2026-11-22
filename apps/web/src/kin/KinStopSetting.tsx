@@ -58,6 +58,7 @@ function StopSection(props: KinWorkTarget) {
       ) : (
         <KinSettingsRow
           title={row.lines[0]}
+          wrap
           detail={
             row.lines.length < 2 && row.reason === null ? undefined : (
               <>

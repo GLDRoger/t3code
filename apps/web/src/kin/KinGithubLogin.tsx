@@ -78,6 +78,7 @@ function KinGithubLoginDialog(props: {
         submitLabel={KIN_GITHUB_LOGIN.saveUsername}
         busy={busy}
         problem={problem}
+        typed={typed.trim() !== (props.login ?? "")}
         remove={
           props.login === null ? undefined : (
             <Button

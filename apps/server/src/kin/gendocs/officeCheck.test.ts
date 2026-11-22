@@ -201,13 +201,13 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
           rels(relationship("attachedTemplate", "https://example.invalid/t.dotm", true)),
         ],
       ]),
-      "has a attachedTemplate relationship",
+      "has an attachedTemplate relationship",
     ],
     [
       "an outside image",
       "docx",
       docx([relationship("image", "https://example.invalid/pixel.png", true)]),
-      "links a image from outside the file",
+      "links an image from outside the file",
     ],
     [
       "a file hyperlink",
@@ -225,13 +225,13 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
       "an OLE object",
       "docx",
       docx([relationship("oleObject", "embeddings/x.bin")]),
-      "has a oleObject relationship",
+      "has an oleObject relationship",
     ],
     [
       "an altChunk",
       "docx",
       docx([relationship("aFChunk", "x.html")]),
-      "has a aFChunk relationship",
+      "has an aFChunk relationship",
     ],
     [
       "a frame",
@@ -364,7 +364,7 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
           ),
         ],
       ]),
-      "links a image from outside the file",
+      "links an image from outside the file",
     ],
     [
       "a foreign Target shadowing the real one",
@@ -398,19 +398,19 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
       docx([
         `<r:Relationship xmlns:r="${RELS}" Id="r1" Type="${OFFICE_RELS}/image" Target="https://example.invalid/t.png" TargetMode="External"/>`,
       ]),
-      "links a image from outside the file",
+      "links an image from outside the file",
     ],
     [
       "an internal relationship to a web address",
       "docx",
       docx([relationship("image", "https://example.invalid/t.png")]),
-      "has a image relationship inside the file that points outside it",
+      "has an image relationship inside the file that points outside it",
     ],
     [
       "an internal relationship to a UNC path",
       "docx",
       docx([relationship("image", "\\\\host\\share\\t.png")]),
-      "has a image relationship inside the file that points outside it",
+      "has an image relationship inside the file that points outside it",
     ],
     [
       "a padded TargetMode",
@@ -418,7 +418,7 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
       docx([
         `<Relationship Id="r1" Type="${OFFICE_RELS}/image" Target="https://example.invalid/t.png" TargetMode=" External "/>`,
       ]),
-      "links a image from outside the file",
+      "links an image from outside the file",
     ],
     [
       "a web link with a password",
@@ -698,7 +698,7 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
   for (const [what, kind, bytes, reason] of refused)
     assert.strictEqual(
       await typeMismatch(kind, bytes),
-      `it's a ${kind.toUpperCase()} that ${reason}`,
+      `it's ${kind === "xlsx" ? "an" : "a"} ${kind.toUpperCase()} that ${reason}`,
       what,
     );
 });

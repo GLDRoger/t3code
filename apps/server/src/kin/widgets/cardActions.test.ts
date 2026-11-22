@@ -63,7 +63,7 @@ import { KinRecords } from "../work/KinRecords.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { handlers as documentHandlers, KinDocumentToolkit } from "../gendocs/mcp.ts";
-import { presetDefinition, propose } from "../work/registers.ts";
+import { listPlace, presetDefinition, propose } from "../work/registers.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import * as CardActions from "./cardActions.ts";
 import { plansOf, takesAsDefault } from "./cardPlans.ts";
@@ -1013,6 +1013,34 @@ it.effect("take the default runs the default's own action; a list is made as pro
         made.map((one) => one.name),
         ["Vendors"],
       );
+      // The settled card says where the list lives, and opens it there.
+      const settled = (widgetId: unknown) =>
+        kin.widget(widgetId).pipe(Effect.map((widget) => card(widget).outcome));
+      assert.deepStrictEqual(yield* settled(vendors.value.widgetId), {
+        title: "List created",
+        text: "Created. It's in Docs → Vendors.",
+        open: { place: "docs", list: "vendors" },
+      });
+      const subscriptions = yield* offer(
+        yield* proposal("office_subs", "Office subscriptions", "OSB"),
+      );
+      yield* kin.tap(owner, subscriptions.value.widgetId, "option-1", "office-subs");
+      assert.deepStrictEqual(yield* settled(subscriptions.value.widgetId), {
+        title: "List created",
+        text: "Created. It's in Money → Subscriptions.",
+        open: { place: "money", list: "office_subs", subscriptions: true },
+      });
+      // Kin's own lists, which no card creates, are placed as the clients show them.
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0,
+          ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
+      for (const [list, words] of [
+        ["invoices", "Money → Invoices"],
+        ["clients", "Clients"],
+        ["deals", "Clients → Deals"],
+      ] as const)
+        assert.strictEqual((yield* listPlace(orgId, list)).words, words);
 
       // Only ever creates: an extension of a list isn't offered, nor a name already in use.
       const extension = yield* propose({
@@ -1833,7 +1861,7 @@ it.effect("a default Kin couldn't undo, or on a task changed since, waits for it
       assert.deepStrictEqual(
         asked.map((one) => one.note),
         [
-          "Kin won't take “Mark W-1 done” on its own: its task repeats.",
+          "Kin won't take “Mark W-1 done” on its own: its task repeats. It stays as it is until they answer; say so, and set nothing to take it later.",
           "Kin won't take “Mark W-2 done” on its own: its task was handed back.",
           undefined,
           undefined,

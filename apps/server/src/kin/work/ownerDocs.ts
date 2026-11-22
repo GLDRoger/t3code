@@ -61,7 +61,7 @@ import {
 } from "./recordRows.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { EVERY_RECORD_KIND, search as runSearch } from "./search.ts";
-import { searchIndexed } from "./searchIndex.ts";
+import { docKindWords, searchIndexed } from "./searchIndex.ts";
 import {
   clientMoneySeen,
   KIN_OWNER_LEVEL,
@@ -98,13 +98,36 @@ const readerOf = Effect.fn("KinDocs.reader")(function* (
 const reader = (people: ReadonlyArray<PersonIdentity>, orgId: KinOrgId) =>
   readerOf(people, orgId).pipe(Effect.map(({ team }) => team));
 
-/** A row as people's Docs reads it: What we sell and an agent's character marked by their origin. */
-const docRowOf = (...[row, ...rest]: Parameters<typeof Docs.toDocRow>) => {
-  const doc = withOfferings(Docs.toDocRow(row, ...rest), row);
+/**
+ * A row as people's Docs reads it: What we sell and an agent's character marked by their origin,
+ * and a client the viewer doesn't see (`hidden`) not named.
+ */
+const docRowOf = (
+  ...[row, latest, now, hidden]: [...Parameters<typeof Docs.toDocRow>, hidden?: ReadonlySet<string>]
+) => {
+  const { party, ...whole } = withOfferings(Docs.toDocRow(row, latest, now), row);
+  const unseen = row.partyId !== null && hidden?.has(row.partyId) === true;
+  const doc = { ...whole, ...(party === undefined || unseen ? {} : { party }) };
   return row.originKey.startsWith(Docs.CHARACTER_ORIGIN)
     ? { ...doc, character: true as const }
     : doc;
 };
+
+/** The clients of these docs some person in `viewer` doesn't see. */
+const unseenClients = Effect.fn("KinDocs.unseenClients")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  rows: ReadonlyArray<{ readonly partyId: string | null }>,
+) {
+  const ids = rows.flatMap((row) => (row.partyId === null ? [] : [row.partyId]));
+  const hidden = new Set<string>();
+  if (viewer._tag === "ownerLevel" || ids.length === 0) return hidden;
+  for (const person of viewer.people) {
+    const seen = yield* teamVisible(orgId, person, ids);
+    for (const id of ids) if (!seen.has(id)) hidden.add(id);
+  }
+  return hidden;
+});
 
 const badCursor = new KinChatError({
   reason: "invalid_state",
@@ -145,7 +168,7 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
       linked = new Set([...(linked ?? seen)].filter((id) => seen.has(id)));
     }
   return {
-    ...docRowOf(row, latest, now),
+    ...docRowOf(row, latest, now, yield* unseenClients(orgId, viewer, [row])),
     version: Docs.toVersion(shown),
     body: shown.body,
     outline: [...outlineOf(shown.body)],
@@ -218,7 +241,8 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
     ...(text === ""
       ? []
       : [
-          sql`(instr(lower(r.title), ${text}) > 0 OR EXISTS (SELECT 1 FROM kin_doc_versions v
+          sql`(instr(lower(r.title), ${text}) > 0 OR instr(${docKindWords(sql)}, ${text}) > 0
+            OR EXISTS (SELECT 1 FROM kin_doc_versions v
               WHERE v.org_id = r.org_id AND v.record_id = r.record_id
                 AND v.version = (SELECT MAX(w.version) FROM kin_doc_versions w
                   WHERE w.org_id = r.org_id AND w.record_id = r.record_id)
@@ -255,11 +279,16 @@ export const list = Effect.fn("KinDocs.list")(
     );
     const now = yield* Clock.currentTimeMillis;
     const next = offset + rows.length;
+    const hidden = yield* unseenClients(
+      input.orgId,
+      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+      rows,
+    );
     return {
       docs: rows.flatMap((row) => {
         const version = latest.get(row.recordId);
         if (version === undefined) return [];
-        const doc = docRowOf(row, version, now);
+        const doc = docRowOf(row, version, now, hidden);
         return [input.acceptSlimLatest === true ? kinSlimDocRow(doc) : doc];
       }),
       total: count?.total ?? 0,
@@ -525,7 +554,11 @@ const listedOf = Effect.fn("KinDocs.listedOf")(
       total: count?.total ?? 0,
       ...(row === undefined || version === undefined
         ? { unlisted: true as const }
-        : { row: kinSlimDocRow(docRowOf(row, version, now)) }),
+        : {
+            row: kinSlimDocRow(
+              docRowOf(row, version, now, yield* unseenClients(orgId, viewer, [row])),
+            ),
+          }),
     };
   },
   Effect.catchTags({ SqlError: () => unavailable }),

@@ -1143,6 +1143,9 @@ export const proposalToCreate = Effect.fn("KinRegisters.proposalToCreate")(funct
     : `there is already a list “${taken.name}”`;
 });
 
+/** The list a stored proposal makes, by id. */
+export const proposedList = (json: string) => Option.getOrUndefined(decodeProposal(json))?.id;
+
 /**
  * Creates the list a proposal names from the owner's tap on a card that offered exactly it, in
  * the tap's transaction. The reason nothing was created, or undefined once it is.
@@ -1167,6 +1170,33 @@ export const defineProposed = Effect.fn("KinRegisters.defineProposed")(function*
   yield* sql`UPDATE kin_list_proposals SET defined_at = ${input.now}
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}`;
   return undefined;
+});
+
+/**
+ * Where a list lives among the clients' places, as they place it (`kinPlaceLists`): the
+ * company's Subscriptions list in Money's Subscriptions, Kin's money lists in Money, its client
+ * lists in Clients, every other in Docs.
+ */
+export const listPlace = Effect.fn("KinRegisters.place")(function* (orgId: KinOrgId, id: string) {
+  const live = (yield* definedLists(orgId)).filter((def) => def.archivedAt === null);
+  const subscriptions =
+    live.find((def) => def.id === "subscriptions") ??
+    live.find((def) => /subscription/i.test(def.name));
+  const name = (yield* listDef(orgId, id))?.name ?? id;
+  if (subscriptions?.id === id)
+    return {
+      place: "money",
+      list: id,
+      subscriptions: true,
+      words: "Money → Subscriptions",
+    } as const;
+  const place = ["invoices", "expenses", "quotes"].includes(id)
+    ? ("money" as const)
+    : ["clients", "deals"].includes(id)
+      ? ("clients" as const)
+      : ("docs" as const);
+  const words = { money: "Money", clients: "Clients", docs: "Docs" }[place];
+  return { place, list: id, words: id === "clients" ? words : `${words} → ${name}` };
 });
 
 /** Open entries per list, for the definitions the owner sees. */

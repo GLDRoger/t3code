@@ -62,7 +62,15 @@ import {
   parseFields,
   shownField,
 } from "./lists.ts";
-import { addUp, dayIn, financialYearOf, formatMoney, isCurrency, monthOf } from "./money.ts";
+import {
+  addUp,
+  askSlip,
+  dayIn,
+  financialYearOf,
+  formatMoney,
+  isCurrency,
+  monthOf,
+} from "./money.ts";
 import {
   amountOf,
   byId,
@@ -115,7 +123,10 @@ import {
   verifyRefs,
 } from "./registers.ts";
 import { contactFields } from "./contactDetails.ts";
+import { directionOf, findBankList } from "./statements/bankList.ts";
 import { cleanTags } from "./tags.ts";
+import { notAVendor } from "./vendorName.ts";
+import { withArticle } from "../article.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
   bumpTeamSeqs,
@@ -127,6 +138,7 @@ import {
   ROOM_LISTS,
   teamSeesField,
   teamSeq,
+  teamVisible,
   viewGuard,
   viewReadsWhole,
   viewSees,
@@ -231,6 +243,8 @@ export type Fields = {
   readonly fields?: Readonly<Record<string, FieldValue | null>>;
   /** Integer minor units in an ISO currency; only lists with an amount, and Work. */
   readonly amount?: KinMoney | null;
+  /** A person's form that asks: a new amount far above its list is refused (`askSlip`). */
+  readonly askSlip?: boolean;
   /** When it happened, was issued or starts; only defined lists. */
   readonly dateAt?: number | null;
   readonly dateAllDay?: boolean;
@@ -393,6 +407,10 @@ type Sums = {
   /** Quotes sent and waiting, and accepted. */
   readonly sent?: ReadonlyArray<KinMoney>;
   readonly accepted?: ReadonlyArray<KinMoney>;
+  /** The bank list's money in, money out, and in less out; `total` stays the plain sum. */
+  readonly moneyIn?: ReadonlyArray<KinMoney>;
+  readonly moneyOut?: ReadonlyArray<KinMoney>;
+  readonly net?: ReadonlyArray<KinMoney>;
 };
 export type Totals = Sums & {
   readonly counted: number;
@@ -512,13 +530,16 @@ const checkInput = (
   },
 ): KinChatError | undefined => {
   if (input.steps === true && def.id !== "work")
-    return invalid(`Only a task has steps or an urgent mark; a ${def.noun} has neither.`);
+    return invalid(
+      `Only a task has steps or an urgent mark; ${withArticle(def.noun)} has neither.`,
+    );
   if (input.title !== undefined && mentionsKinMoney(input.title))
     return invalid(
       "A title never holds an amount: give the amount on its own and keep the title to what it was for.",
     );
   if (input.amount !== undefined && input.amount !== null) {
-    if (!def.amount && def.builtIn !== "work") return invalid(`A ${def.noun} has no amount.`);
+    if (!def.amount && def.builtIn !== "work")
+      return invalid(`${withArticle(def.noun, "A")} has no amount.`);
     if (!isCurrency(input.amount.currency))
       return invalid(`${input.amount.currency} is not a currency code.`);
     if (input.amount.minor < 0) return invalid("An amount never goes below zero; give 0 or more.");
@@ -530,14 +551,14 @@ const checkInput = (
     def.builtIn !== null &&
     def.builtIn !== "work"
   )
-    return invalid(`A ${def.noun} has no date of its own; use due.`);
+    return invalid(`${withArticle(def.noun, "A")} has no date of its own; use due.`);
   if (
     input.repeat !== undefined &&
     input.repeat !== null &&
     def.builtIn !== null &&
     def.builtIn !== "work"
   )
-    return invalid(`A ${def.noun} doesn't repeat.`);
+    return invalid(`${withArticle(def.noun, "A")} doesn't repeat.`);
   if (def.builtIn !== null) return checkFor(def.builtIn, input);
   if (input.state !== undefined && !def.states.includes(input.state))
     return invalid(
@@ -553,20 +574,35 @@ const checkInput = (
         ? `${def.name} has no categories.`
         : `${def.name}'s categories are ${def.categories.join(", ")}.`,
     );
+  const vendor = input.fields?.vendor;
+  if (def.id === "expenses" && typeof vendor === "string" && notAVendor(vendor))
+    return invalid(
+      `"${vendor.slice(0, 60)}" is not a vendor: give who was paid, as the receipt or bill names them, or leave vendor off.`,
+    );
   return input.fields === undefined ? undefined : checkFields(def, input.fields);
 };
 
-/** An invoice, or a renewal on Dates, for nothing: it isn't owed, so it isn't kept as owed. */
+/**
+ * An invoice, or a renewal on Dates, for nothing: it isn't owed, so it isn't kept as owed. An
+ * agent's expense for nothing is a free plan's bill or a misread one; only the owner keeps those.
+ */
 const zeroOwed = (
   def: ListDef,
   amount: KinMoney | null | undefined,
   category: string | null | undefined,
+  writer: Writer,
 ) =>
-  amount?.minor === 0 && (def.id === "invoices" || (def.id === "dates" && category === "renewal"))
-    ? invalid(
-        `${def.id === "invoices" ? "An invoice" : "A renewal"} for 0 isn't owed; leave the amount off or drop it.`,
-      )
-    : undefined;
+  amount?.minor !== 0
+    ? undefined
+    : def.id === "invoices" || (def.id === "dates" && category === "renewal")
+      ? invalid(
+          `${def.id === "invoices" ? "An invoice" : "A renewal"} for 0 isn't owed; leave the amount off or drop it.`,
+        )
+      : def.id === "expenses" && writer.actor._tag !== "person"
+        ? invalid(
+            "An expense for 0 cost nothing, so it isn't recorded: skip a receipt or bill for 0, such as a free plan's, and say so. If you couldn't read the amount, leave it off and set suggested true.",
+          )
+        : undefined;
 
 export class KinRecords extends Context.Service<
   KinRecords,
@@ -1205,7 +1241,7 @@ const make = Effect.gen(function* () {
           : list !== "work" && list !== "docs" && list !== "milestones" && projectId !== null
             ? new KinChatError({
                 reason: "invalid_state",
-                message: `A ${LISTS[list].noun} has no project.`,
+                message: `${withArticle(LISTS[list].noun, "A")} has no project.`,
               })
             : undefined;
 
@@ -1237,7 +1273,7 @@ const make = Effect.gen(function* () {
     if (row !== undefined) {
       const error = {
         reason: "conflict" as const,
-        message: `There is already a ${LISTS[list].noun} named ${title.slice(0, 80)}: ${row.key}.`,
+        message: `There is already ${withArticle(LISTS[list].noun)} named ${title.slice(0, 80)}: ${row.key}.`,
       };
       return yield* row.sensitive === 1 ? new SensitiveRefusal(error) : new KinChatError(error);
     }
@@ -1351,10 +1387,17 @@ const make = Effect.gen(function* () {
         changes: false,
         input,
       }).pipe(provideSql);
-    if (writer.view !== undefined)
-      yield* viewGuard(orgId, writer.view, { row: existing, changes: false, input }).pipe(
-        provideSql,
-      );
+    const guarded =
+      writer.view === undefined
+        ? undefined
+        : yield* viewGuard(
+            orgId,
+            writer.view,
+            { row: existing, changes: false, input },
+            writer.actor._tag === "agent" && writer.wakeupId !== undefined
+              ? { agentId: writer.actor.agentId, wakeupId: writer.wakeupId }
+              : undefined,
+          ).pipe(provideSql);
     if (existing !== undefined) {
       const [stored] = yield* sql<{ hash: string | null }>`SELECT request_hash AS hash
         FROM kin_records WHERE org_id = ${orgId} AND record_id = ${recordId}`;
@@ -1396,8 +1439,10 @@ const make = Effect.gen(function* () {
       steps: (input.steps?.length ?? 0) > 0 || input.urgent === true,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
-    const zero = zeroOwed(def, input.amount, input.category);
+    const zero = zeroOwed(def, input.amount, input.category, writer);
     if (zero !== undefined) return yield* zero;
+    if (input.askSlip === true && input.amount != null)
+      yield* askSlip(orgId, def, input.amount).pipe(provideSql);
     if (list === "receipts" && RECEIPT_TIES.some((field) => field in fields))
       return yield* invalid(RECEIPT_TIES_ARE_KINS);
     if (writer.actor._tag !== "person" && numberingOf(def) !== undefined && "number" in fields)
@@ -1405,8 +1450,19 @@ const make = Effect.gen(function* () {
     if (def.builtIn === null) yield* verifyRefs(orgId, def, fields).pipe(provideSql);
     const projectId = input.projectId ?? null;
     const project = projectId === null ? undefined : yield* target(orgId, projectId, "projects");
-    // An entry in a client's project is part of that client's record unless it names another.
-    const partyId = input.partyId !== undefined ? input.partyId : (project?.partyId ?? null);
+    // An entry in a client's project is part of that client's record unless it names another;
+    // a teammate's draft only when they see that client (`draftDoc`).
+    const inherited = project?.partyId ?? null;
+    const partyId =
+      input.partyId !== undefined
+        ? input.partyId
+        : guarded !== undefined &&
+            inherited !== null &&
+            !(yield* teamVisible(orgId, guarded.draftFor, [inherited]).pipe(provideSql)).has(
+              inherited,
+            )
+          ? null
+          : inherited;
     const invalidRefs = checkRefs(def, partyId, projectId);
     if (invalidRefs !== undefined) return yield* invalidRefs;
     const party = partyId === null ? undefined : yield* target(orgId, partyId, "clients");
@@ -1469,7 +1525,8 @@ const make = Effect.gen(function* () {
         ${assignedBy}, ${assignedBy === null ? null : now}, ${input.originKey},
         ${input.createdAt ?? now}, ${now}, ${isClosed(state) ? (input.closedAt ?? now) : null},
         ${partyId}, ${projectId}, ${input.repo ?? null},
-        ${yield* encodeFieldValues(fields)}, ${amount?.minor ?? null}, ${amount?.currency ?? null},
+        ${yield* encodeFieldValues(guarded === undefined ? fields : { ...fields, draftFor: guarded.draftFor })},
+        ${amount?.minor ?? null}, ${amount?.currency ?? null},
         ${input.dateAt ?? null}, ${input.dateAllDay === true ? 1 : 0},
         ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null},
         ${input.team === true || writer.teammate === true || writer.teamShared === true || (writer.view !== undefined && (ROOM_LISTS as ReadonlyArray<string>).includes(list)) ? 1 : 0},
@@ -1700,8 +1757,14 @@ const make = Effect.gen(function* () {
         if (invalidFor !== undefined) return yield* invalidFor;
         if (recordsMoney(patch.amount, patch.fields))
           yield* countryFirst(orgId, { saved: true }).pipe(provideSql);
-        const zero = zeroOwed(def, patch.amount, patch.category ?? row.category);
+        const zero = zeroOwed(def, patch.amount, patch.category ?? row.category, writer);
         if (zero !== undefined) return yield* zero;
+        if (
+          patch.askSlip === true &&
+          patch.amount != null &&
+          (patch.amount.minor !== row.amountMinor || patch.amount.currency !== row.currency)
+        )
+          yield* askSlip(orgId, def, patch.amount, row.recordId).pipe(provideSql);
         if (list === "receipts") {
           if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
             return yield* invalid(RECEIPT_TIES_ARE_KINS);
@@ -1954,11 +2017,6 @@ const make = Effect.gen(function* () {
           set("state", state);
           if (isClosed(state) !== isClosed(row.state))
             set("closed_at", isClosed(state) ? now : null);
-          if (isClosed(state) && row.handedBackAt !== null) {
-            set("handed_back_kind", null);
-            set("handed_back_id", null);
-            set("handed_back_at", null);
-          }
         }
         const waitingOn =
           state !== "waiting"
@@ -2003,7 +2061,7 @@ const make = Effect.gen(function* () {
           set("owner_id", principalId(patch.owner));
           // Reassigning never launders authority: the assigner is whoever asked for this change.
           // Handed back, it keeps the authority it was given with; the holder's words go with it.
-          // Handed back, it says so on the giver's row until it is given again or closed.
+          // Handed back, it says so on the giver's row until it is given again; never while closed.
           set("handed_back_kind", patch.handedBack === undefined ? null : before.owner._tag);
           set("handed_back_id", patch.handedBack === undefined ? null : principalId(before.owner));
           set("handed_back_at", patch.handedBack === undefined ? null : now);
@@ -2619,23 +2677,47 @@ const make = Effect.gen(function* () {
           at: number;
           paid: number;
           received: number;
+          fields: string;
         }>`SELECT r.amount_minor AS minor, r.currency, r.category, r.party_id AS party,
             r.project_id AS project, r.side, r.state, r.owner_kind || ':' || r.owner_id AS owner,
             ${moneyDay(sql)} AS at,
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}) AS paid,
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live} AND p.withheld = 0
               AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
-              AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received
+              AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received,
+            r.fields_json AS fields
           FROM kin_records r WHERE ${filter} AND ${countedEntry(sql, asked)}
           ORDER BY r.record_id`;
         const listDef = yield* resolveList(orgId, input.list ?? "work");
         const paidOverTime = listDef.payments === true;
+        const directed = (yield* findBankList(orgId).pipe(provideSql))?.id === listDef.id;
         const amounts = (members: typeof rows): Sums => {
           const priced = members.flatMap((row) =>
             row.minor === null ? [] : [{ ...row, minor: row.minor }],
           );
+          // Money in and out never add up to one figure; an entry with no direction is in neither.
+          const way = directed ? priced.map((row) => directionOf(parseFields(row.fields))) : [];
+          const side = (direction: "credit" | "debit") =>
+            addUp(
+              priced.filter((_, at) => way[at] === direction),
+              home,
+            );
           return {
             total: addUp(priced, home),
+            ...(directed
+              ? {
+                  moneyIn: side("credit"),
+                  moneyOut: side("debit"),
+                  net: addUp(
+                    priced.flatMap((row, at) =>
+                      way[at] === null
+                        ? []
+                        : [way[at] === "debit" ? { ...row, minor: -row.minor } : row],
+                    ),
+                    home,
+                  ),
+                }
+              : {}),
             ...(paidOverTime
               ? {
                   owed: addUp(
@@ -2812,7 +2894,8 @@ const make = Effect.gen(function* () {
               r.assigned_by_person_id) AS "askedBy",
             r.assigned_by_person_id AS "assignedBy", r.assigned_by_agent_id AS "assignedByAgent",
             r.created_at AS "createdAt", r.updated_at AS "updatedAt",
-            r.handed_back_at AS "handedBackAt", r.urgent
+            CASE WHEN r.state IN ('done', 'dropped') THEN NULL ELSE r.handed_back_at END
+              AS "handedBackAt", r.urgent
           FROM kin_records r WHERE ${filterOf(orgId, input, now)}
           ORDER BY r.record_id LIMIT ${MOVE_ROWS_CAP}`;
       }),

@@ -10,6 +10,7 @@ import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinActionId } from "./kinApprovals.ts";
 import {
   KinChatId,
+  KinChoiceOption,
   KinMessageId,
   KinOrgId,
   KinTrimmedText,
@@ -32,9 +33,14 @@ export type KinPushPlatform = typeof KinPushPlatform.Type;
 export const KinApsEnvironment = Schema.Literals(["development", "production"]);
 export type KinApsEnvironment = typeof KinApsEnvironment.Type;
 
-/** `aps.category`; the phone registers the matching buttons (mobile spec, notifications). */
+/**
+ * `aps.category`; the phone registers the matching buttons (mobile spec, notifications). A build
+ * that doesn't know one shows a plain banner whose tap opens it.
+ */
 export const KinPushCategory = Schema.Literals([
   "kin.approval",
+  // An open question with two plain answers: "answer_1" and "answer_2" pick `choices`' options.
+  "kin.choice",
   "kin.deferral.confirmed",
   "kin.deferral.heads_up",
   "kin.message",
@@ -84,6 +90,10 @@ export const KinPushData = Schema.Struct({
   chatId: Schema.optional(KinChatId),
   widgetId: Schema.optional(KinWidgetId),
   revision: Schema.optional(NonNegativeInt),
+  /** On a `kin.choice` push: the card's two option ids, in the order its buttons show them. */
+  choices: Schema.optional(
+    Schema.Tuple([KinChoiceOption.fields.optionId, KinChoiceOption.fields.optionId]),
+  ),
   pendingActionId: Schema.optional(KinActionId),
   /** On a read's badge push: nothing in `chatId` is unread for this person any more. */
   cleared: Schema.optional(Schema.Literal(true)),

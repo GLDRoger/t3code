@@ -261,11 +261,11 @@ it.effect("record_create makes many entries in one call and a retry makes none",
       state: "open",
       due: "2026-11-20",
       owner: "Lead lead (you)",
-      assignedBy: "owner",
+      assignedBy: "Owner (owner)",
     });
     assert.notProperty(got, "suggested");
     assert.deepInclude(got.links, { kind: "message", relation: "source", target: "ask" });
-    assert.include(yield* LeadWork.get(scopeOf(lead), { key: "W-3" }), { owner: "owner" });
+    assert.include(yield* LeadWork.get(scopeOf(lead), { key: "W-3" }), { owner: "Owner (owner)" });
     // Its own entries, and the owner's, wake nobody.
     assert.lengthOf(yield* assignedEvents, 0);
     // A task's steps are lines on it, never rows of their own, and the rows it reads carry them.
@@ -316,7 +316,7 @@ it.effect('"me" is the one person who asked in the turn, and "you" is the lead i
         tasks: [{ key, to, reason: "Invented: asked" }],
       });
     // K008: the owner's "give it to me" lands on the owner, not on the lead.
-    assert.deepStrictEqual((yield* give("W-1", "me")).tasks, [{ key: "W-1", to: "owner" }]);
+    assert.deepStrictEqual((yield* give("W-1", "me")).tasks, [{ key: "W-1", to: "Owner (owner)" }]);
     const [mine] = yield* sql<{ kind: string; id: string }>`SELECT owner_kind AS kind,
         owner_id AS id FROM kin_records WHERE key = 'W-1'`;
     assert.deepStrictEqual(mine, { kind: "person", id: ownerId });
@@ -341,6 +341,11 @@ it.effect('"me" is the one person who asked in the turn, and "you" is the lead i
     assert.deepStrictEqual((yield* give("W-1", "you")).tasks, [
       { key: "W-1", to: "Lead lead (you)" },
     ]);
+    // Names as the tools show them read back, and a real name with parentheses stays a name.
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('sam', ${orgId}, 'sam', 'Sam (other)', ${at})`;
+    for (const to of ["Owner (owner)", "Lead lead (you)", "Lead other (other)", "Sam (other)"])
+      assert.deepStrictEqual((yield* give("W-2", to)).tasks, [{ key: "W-2", to }]);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -3688,11 +3693,11 @@ it.effect(
       const turnOf = { orgId, agentId: lead, wakeupId: "wake" };
       yield* TestClock.setTime(Date.parse("2026-11-16T00:00:00.000Z"));
       assert.include(
-        (yield* readPeople(turnOf)).quoted,
+        JSON.stringify(yield* readPeople(turnOf)),
         '"load":{"open":3,"late":0,"dueThisWeek":1,"openBySize":{"S":0,"M":1,"L":0,"unsized":2},"overloaded":false}',
       );
       yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
-      assert.notInclude((yield* readPeople(turnOf)).quoted, '"load"');
+      assert.notInclude(JSON.stringify(yield* readPeople(turnOf)), '"load"');
       // Handed back from the app, it goes to the owner who asked for it.
       assert.deepStrictEqual(
         yield* OwnerWork.handBack([mate], { orgId, key: "W-2", note: "I'm on the release" }),
@@ -3769,6 +3774,40 @@ it.effect(
       yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'wake'`;
       const handedBack = yield* LeadWork.get(scope, { key: "W-2" });
       assert.propertyVal(yield* encodeGet(handedBack), "handedBackBy", "Mate");
+      // Ticked done, nothing reads it as handed back; Undo's reopen brings the hand-back back.
+      const heldBack = yield* OwnerWork.get([owner], { orgId, key: "W-2" });
+      const ticked = yield* OwnerWork.update([owner], {
+        orgId,
+        key: "W-2",
+        rev: heldBack.rev,
+        state: "done",
+        waitingOn: null,
+      });
+      assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-2" })).handedBack);
+      assert.notProperty(
+        yield* encodeGet(yield* LeadWork.get(scope, { key: "W-2" })),
+        "handedBackBy",
+      );
+      const closedRow = (yield* KinRecords.KinRecords.pipe(
+        Effect.flatMap((records) => records.moveRows(orgId, { keys: ["W-2"] })),
+      )).find((one) => one.key === "W-2");
+      assert.isNull(closedRow?.handedBackAt);
+      yield* OwnerWork.update([owner], {
+        orgId,
+        key: "W-2",
+        rev: ticked.rev,
+        state: heldBack.state,
+        waitingOn: heldBack.waitingOn ?? null,
+      });
+      assert.deepStrictEqual(
+        (yield* OwnerWork.get([owner], { orgId, key: "W-2" })).handedBack,
+        heldBack.handedBack,
+      );
+      assert.propertyVal(
+        yield* encodeGet(yield* LeadWork.get(scope, { key: "W-2" })),
+        "handedBackBy",
+        "Mate",
+      );
       yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
       // Given on from one teammate to another, each reads who gave it to whom from their side.
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)

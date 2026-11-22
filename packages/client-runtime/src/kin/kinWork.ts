@@ -1,13 +1,14 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
   EnvironmentAuthorizationError,
+  KinAgentId,
   KinChatError,
   type EnvironmentId,
   type KinChatId,
   type KinOrgId,
   type KinOrgsListResult,
   type KinPerson,
-  type KinPersonId,
+  KinPersonId,
   type KinRecord,
   type KinRecordChange,
   type KinRecordCan,
@@ -45,7 +46,12 @@ import type { KinLink } from "./kinHost.ts";
 import { KIN_SCOPE_ALL, kinScopeNote, type KinViewerScope } from "./kinViewerScope.ts";
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { kinLinkLabel } from "./kinLinks.ts";
-import { formatKinTime, kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
+import {
+  formatKinTime,
+  kinAgentAvatar,
+  kinLastUpdated,
+  type KinAvatarView,
+} from "./kinScreenState.ts";
 import { kinPickablePeople } from "./kinTeam.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
 
@@ -62,11 +68,16 @@ export const KIN_WORK_REFRESH_FAILED = "Couldn't refresh. Showing the last updat
  */
 export function kinWorkStaleNotice(
   link: KinLink,
+  /** When the rows shown were last read, as the chat's offline line says it; null unknown. */
+  readAt: number | null = null,
+  formatTime: (date: Date) => string = formatKinTime,
 ): { readonly message: string; readonly retry: boolean } | null {
   if (link === "connecting") return null;
-  return link === "offline"
-    ? { message: KIN_WORK_STALE, retry: false }
-    : { message: KIN_WORK_REFRESH_FAILED, retry: true };
+  if (link !== "offline") return { message: KIN_WORK_REFRESH_FAILED, retry: true };
+  return {
+    message: readAt === null ? KIN_WORK_STALE : `Offline. ${kinLastUpdated(readAt, formatTime)}`,
+    retry: false,
+  };
 }
 /** Kin's work pages, each reached from the sidebar. */
 export type KinWorkPageName = "tasks" | "money" | "clients" | "docs";
@@ -175,17 +186,38 @@ export const kinWorkSamePrincipal = (a: KinWorkPrincipal | null, b: KinWorkPrinc
 const isMe = (who: KinWorkPrincipal, names: KinWorkNames) =>
   who._tag === "person" && who.personId === names.me;
 
+/** The names `kinWorkName` reads; a screen holding one map for everyone passes it as both. */
+export type KinWhoNames = Pick<KinWorkNames, "people"> &
+  Partial<Pick<KinWorkNames, "agents" | "me">>;
+
+/**
+ * The one way a screen names who holds or changed something: "You", a person's or agent's
+ * display name, or a plain stand-in for one the directory no longer lists. Never an id.
+ */
+export function kinWorkName(who: KinWorkPrincipal, names: KinWhoNames, you = "You"): string {
+  if (who._tag === "agent") return names.agents?.get(who.agentId) ?? "An agent";
+  return who.personId === names.me ? you : (names.people.get(who.personId) ?? "A teammate");
+}
+
+/** A stored `person:<id>` or `agent:<id>` by `kinWorkName`; null for text that names nobody. */
+export function kinWorkNameOfText(text: string, names: KinWhoNames, you = "You"): string | null {
+  const shown = /^(person|agent):(.+)$/.exec(text);
+  if (shown === null) return null;
+  const id = shown[2]!;
+  return kinWorkName(
+    shown[1] === "agent"
+      ? { _tag: "agent", agentId: KinAgentId.make(id) }
+      : { _tag: "person", personId: KinPersonId.make(id) },
+    names,
+    you,
+  );
+}
+
 /** "you" to the owner; to anyone else the owner by name, so "you" never means someone else. */
 const ownerWord = (names: Pick<KinWorkNames, "me" | "owner" | "people">) =>
   names.owner == null || names.owner === names.me
     ? null
-    : (names.people.get(names.owner) ?? "the owner");
-
-/** "You", a name, or a plain stand-in for someone the directory no longer lists. */
-export function kinWorkName(who: KinWorkPrincipal, names: KinWorkNames, you = "You"): string {
-  if (who._tag === "agent") return names.agents.get(who.agentId) ?? "An agent";
-  return isMe(who, names) ? you : (names.people.get(who.personId) ?? "A teammate");
-}
+    : kinMidSentence(kinWorkName({ _tag: "person", personId: names.owner }, names));
 
 /** A name inside a sentence: the stand-ins "An agent" and "A teammate" lose their capital. */
 export const kinMidSentence = (name: string) =>
@@ -238,7 +270,8 @@ export const KIN_WORK_DEFAULT_FILTER: KinWorkFilter = {
 const VIEWS: ReadonlyArray<{ readonly id: KinWorkViewId; readonly label: string }> = [
   { id: "open", label: "Open" },
   { id: "doing", label: "In progress" },
-  { id: "waiting", label: "Waiting" },
+  // Its status is Waiting; Tasks' "Waiting on others" is every task in someone else's hands.
+  { id: "waiting", label: "Marked waiting" },
   { id: "late", label: "Late" },
   { id: "week", label: "Due this week" },
   { id: "closed", label: "Closed" },
@@ -1686,7 +1719,7 @@ const markerWord = (
     ? ownerWord(names)
     : markedBy === names.me
       ? null
-      : (names.people.get(markedBy) ?? "a teammate");
+      : kinMidSentence(kinWorkName({ _tag: "person", personId: markedBy }, names));
 
 /** A host from before `can`: it took what its sheet offered then, and checked on the write. */
 const olderHostCan = (

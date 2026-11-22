@@ -77,7 +77,16 @@ import {
   taskSpecChanged,
 } from "./leadSpine.ts";
 import { contactAll, contactFields, contactSensitive } from "./contactDetails.ts";
-import { fieldList, fieldText, isMoney, LISTS, listOf, parseFields, shownField } from "./lists.ts";
+import {
+  fieldList,
+  fieldText,
+  type FieldValues,
+  isMoney,
+  LISTS,
+  listOf,
+  parseFields,
+  shownField,
+} from "./lists.ts";
 import {
   addUp,
   dayIn,
@@ -139,10 +148,12 @@ import {
   viewVisible,
 } from "./teamView.ts";
 import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts";
+import { leadNamer, shownName, type ToolNamer } from "./toolNames.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { DAY_MS } from "../durations.ts";
+import { withArticle } from "../article.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -249,6 +260,10 @@ export const QueryInput = Schema.Struct({
   offset: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(100_000)),
   ).annotate({ description: "Skip this many matches: the next a result gave, for its next page." }),
+  summary: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Only total, totals and groups, with keys for the page's matches instead of rows: for how many or how much.",
+  }),
 });
 /** The entry is sensitive, its own label or inherited; these fields are, whatever the label. */
 const Marks = Schema.Struct({
@@ -338,10 +353,16 @@ export const QueryResult = Schema.Struct({
   asOf: Schema.String,
   total: Schema.Number,
   records: Schema.Array(Row),
+  /** A summary's rows, as keys only. */
+  keys: Schema.optional(Schema.Array(Schema.String)),
   /** The offset of the next page, while matches remain past this one. */
   next: Schema.optional(Schema.Number),
-  /** Every match's amounts added up, one figure per currency. */
+  /** Every match's amounts added up, one figure per currency; absent for bank transactions. */
   totals: Schema.optional(Schema.Array(Schema.String)),
+  /** Bank transactions only, in place of totals: money in, money out, and in less out. */
+  moneyIn: Schema.optional(Schema.Array(Schema.String)),
+  moneyOut: Schema.optional(Schema.Array(Schema.String)),
+  net: Schema.optional(Schema.Array(Schema.String)),
   groups: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -349,11 +370,18 @@ export const QueryResult = Schema.Struct({
         count: Schema.Number,
         late: Schema.optional(Schema.Number),
         totals: Schema.optional(Schema.Array(Schema.String)),
+        moneyIn: Schema.optional(Schema.Array(Schema.String)),
+        moneyOut: Schema.optional(Schema.Array(Schema.String)),
+        net: Schema.optional(Schema.Array(Schema.String)),
         sensitive: Schema.optional(Schema.Literal(true)),
       }),
     ),
   ),
   sensitive: Schema.optional(Schema.Literal(true)),
+  withoutText: Schema.optional(Schema.Number).annotate({
+    description:
+      "Clients or contacts: how many the same query finds without text, which matches only their own words, never what kind of business they are.",
+  }),
 });
 /** An invoice's or quote's issued number, in whatever shape its company's series gives. */
 const IssuedNumber = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(40)).annotate({
@@ -443,6 +471,11 @@ export const GetResult = Schema.Struct({
       late: Schema.Number,
       waitingOverAWeek: Schema.Number,
       targetPassed: Schema.Boolean,
+      overdueInvoices: Schema.optional(Schema.Number),
+      /** The client's last contact, or null when none is recorded; only past their check-in days. */
+      noContact: Schema.optional(
+        Schema.Struct({ lastContactAt: Schema.NullOr(Schema.String), days: Schema.Number }),
+      ),
     }),
   ),
   /** The newest comments still standing, oldest first; `olderComments` counts those before. */
@@ -627,6 +660,16 @@ const Updated = Schema.Struct({
   sameEmail: Schema.optional(Schema.Array(Named)),
   /** A new client took the task off its project, which is another client's. */
   projectLeft: Schema.optional(Schema.String),
+  openSteps: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        key: Schema.String,
+        title: Schema.String,
+        due: Schema.optional(Schema.String),
+        dueDay: Schema.optional(Schema.String),
+      }),
+    ),
+  ).annotate({ description: "A deal's next steps still open after the change, soonest first." }),
 });
 /** One entry's change at the top level; with keys, each entry's in entries. */
 export const UpdateResult = Schema.Struct({
@@ -642,6 +685,7 @@ export const UpdateResult = Schema.Struct({
   ...Marks.fields,
   sameEmail: Updated.fields.sameEmail,
   projectLeft: Updated.fields.projectLeft,
+  openSteps: Updated.fields.openSteps,
   entries: Schema.optional(Schema.Array(Updated)),
 });
 
@@ -752,8 +796,24 @@ export const sourceOf = Effect.fn("KinWorkTools.sourceOf")(function* (lead: Lead
 const NO_ASKER =
   '"me" is the person who asked, and no one person asked in this turn. Use "you" for yourself, or name the person.';
 /** "me" is the one person whose act the turn carries out (`turnAsker`); "you" is the calling lead. */
-export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: Lead, who: string) {
+export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (
+  lead: Lead,
+  shown: string,
+) {
   const sql = yield* SqlClient.SqlClient;
+  // A name as `toolName` shows it reads back: "Rhea (owner)", "Lead (you)", "Finance (a-1)".
+  const read = shownName(shown);
+  const tag = read?.mark;
+  const who = tag === "you" || tag === "owner" ? tag : shown;
+  if (tag !== undefined && who === shown) {
+    // "Finance (a-1)" is that agent, unless a person is called exactly that.
+    const [agent] = yield* sql<{ id: string }>`SELECT agent_id AS id FROM kin_agents
+      WHERE org_id = ${lead.orgId} AND retired_at IS NULL AND agent_id = ${tag}
+        AND NOT EXISTS (SELECT 1 FROM kin_people WHERE org_id = ${lead.orgId}
+          AND removed_at IS NULL AND trim(display_name) = ${shown.trim()})`;
+    if (agent !== undefined)
+      return { _tag: "agent", agentId: KinAgentId.make(agent.id) } satisfies KinWorkPrincipal;
+  }
   if (who === "you") return { _tag: "agent", agentId: lead.agentId } satisfies KinWorkPrincipal;
   if (who === "me") {
     const asker = yield* turnAsker(lead);
@@ -768,8 +828,9 @@ export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: 
   }
   const [agent] = yield* sql<{ id: string }>`SELECT agent_id AS id FROM kin_agents
     WHERE org_id = ${lead.orgId} AND retired_at IS NULL
-      AND (agent_id = ${who} OR lower(display_name) = lower(${who}))
-    ORDER BY agent_id = ${who} DESC, agent_id LIMIT 1`;
+      AND (agent_id = ${who} OR lower(display_name) = lower(${who})
+        OR lower(display_name) = lower(${tag === "agent" ? read!.name : who}))
+    ORDER BY agent_id = ${who} DESC, lower(display_name) = lower(${who}) DESC, agent_id LIMIT 1`;
   if (agent !== undefined && agent.id !== who)
     return { _tag: "agent", agentId: KinAgentId.make(agent.id) } satisfies KinWorkPrincipal;
   if (agent === undefined) {
@@ -815,26 +876,7 @@ const dueOf = Effect.fn("KinWorkTools.dueOf")(function* (orgId: KinOrgId, due: s
   return { dueAt: ms, dueAllDay: false };
 });
 
-/** How a lead reads names: itself by name and "(you)", the owner as "owner", other leads by name. */
-export const namer = Effect.fn("KinWorkTools.namer")(function* (lead: Lead) {
-  const sql = yield* SqlClient.SqlClient;
-  const agents = yield* sql<{ id: string; name: string }>`SELECT agent_id AS id,
-      display_name AS name FROM kin_agents WHERE org_id = ${lead.orgId} ORDER BY agent_id`;
-  const people = yield* sql<{ id: string; name: string; owner: number }>`SELECT p.person_id AS id,
-      p.display_name AS name, p.person_id = a.owner_person_id AS owner
-    FROM kin_people p JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = ${lead.agentId}
-    WHERE p.org_id = ${lead.orgId} ORDER BY p.person_id`;
-  const agentNames = new Map(agents.map((row) => [row.id, row.name]));
-  const personNames = new Map(people.map((row) => [row.id, row.owner === 1 ? "owner" : row.name]));
-  return (who: KinWorkPrincipal | null) =>
-    who === null
-      ? undefined
-      : who._tag === "agent"
-        ? who.agentId === lead.agentId
-          ? `${agentNames.get(who.agentId) ?? "an agent"} (you)`
-          : `${agentNames.get(who.agentId) ?? "an agent"} (${who.agentId})`
-        : (personNames.get(who.personId) ?? "a person");
-});
+export const namer = (lead: Lead) => leadNamer(lead.orgId, lead.agentId);
 
 type Lists = ReadonlyMap<string, ListDef>;
 const defOf = (lists: Lists, row: RecordRow) => lists.get(row.registerId);
@@ -858,7 +900,7 @@ const marksOf = (lists: Lists, row: RecordRow): typeof Marks.Type => {
 const shownFields = (
   def: ListDef | undefined,
   row: RecordRow,
-  name: (who: KinWorkPrincipal | null) => string | undefined,
+  name: ToolNamer,
   keys: ReadonlyMap<string, string>,
 ) => {
   if (def === undefined || def.builtIn !== null) return {};
@@ -937,7 +979,7 @@ const linkKeys = Effect.fn("KinWorkTools.linkKeys")(function* (
 });
 
 type Shown = {
-  readonly name: (who: KinWorkPrincipal | null) => string | undefined;
+  readonly name: ToolNamer;
   /** The campaigns these rows came from that the turn's people see in Clients, by key. */
   readonly campaigns: ReadonlyMap<string, KinRecordRef>;
   readonly lists: Lists;
@@ -1191,6 +1233,40 @@ const withDeal = <R extends { readonly key: string }>(
   row: R,
 ) => ((deal) => (deal === undefined ? row : { ...row, deal }))(deals.get(row.key));
 
+/** A client's record after contact with it: its open deals and its contacts, as the turn sees them. */
+export const ClientOnRecord = Schema.Struct({
+  openDeals: Schema.Array(
+    Schema.Struct({ key: Schema.String, title: Schema.String, ...DealShown.fields }),
+  ),
+  contacts: Schema.Array(Schema.String),
+});
+export const clientOnRecord = Effect.fn("KinWorkTools.clientOnRecord")(function* (
+  lead: Lead,
+  partyId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords;
+  const team = yield* viewOf(lead);
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const of = (list: string) => sql<{ key: string }>`SELECT r.key FROM kin_records r
+    WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list} AND r.party_id = ${partyId}
+      AND r.state NOT IN ('done', 'dropped') AND ${crmSeenBy(sql, viewer)}
+    ORDER BY r.created_at, r.key LIMIT ${REPEATS_SHOWN}`;
+  const rows = (yield* Effect.forEach(yield* of("deals"), (one) =>
+    records.get(lead.orgId, one.key),
+  )).filter((row) => row !== undefined);
+  const deals = yield* dealsShown(lead, team, yield* viewFor(lead, rows), rows);
+  return {
+    openDeals: rows.flatMap((row) => {
+      const deal = deals.get(row.key);
+      return deal === undefined ? [] : [{ key: row.key, title: row.title, ...deal }];
+    }),
+    contacts: (yield* Effect.forEach(yield* of("contacts"), (one) =>
+      records.get(lead.orgId, one.key),
+    )).flatMap((row) => (row === undefined ? [] : [row.title])),
+  } satisfies typeof ClientOnRecord.Type;
+});
+
 /**
  * A client or project the lead named by key, or by name as typed, among the active ones. In a turn
  * others read, one they may not all see answers exactly as one that doesn't exist. `kind` is the
@@ -1436,7 +1512,9 @@ const moneyPatch = Effect.fn("KinWorkTools.moneyPatch")(function* (
     row.fields === undefined
       ? undefined
       : def.builtIn !== null
-        ? yield* invalid(`A ${def.noun}'s details are named fields of their own, not fields.`)
+        ? yield* invalid(
+            `${withArticle(def.noun, "A")}'s details are named fields of their own, not fields.`,
+          )
         : yield* typedFields(def, row.fields, {
             who: (text) => resolveWho(lead, text),
             ref: (text, list) => resolveRef(lead, text, list),
@@ -1738,6 +1816,13 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
   const projectId =
     input.project === undefined ? undefined : yield* resolveRef(lead, input.project, "projects");
   const zone = yield* ownerZone(lead.orgId);
+  // A directory lists what is current, as the owner's screens do; tasks and money keep closed rows.
+  const openOnly =
+    input.states === undefined &&
+    input.open === undefined &&
+    input.keys === undefined &&
+    list !== undefined &&
+    DIRECTORIES.has(list.builtIn);
   const filter = {
     ...(list === undefined ? {} : { list: list.id }),
     ...(partyId === undefined ? {} : { partyId }),
@@ -1747,6 +1832,7 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
     ...(owner === undefined ? {} : { owner }),
     ...(input.states === undefined ? {} : { states: input.states }),
     ...(input.open === undefined ? {} : { open: input.open }),
+    ...(openOnly ? { open: true } : {}),
     ...(input.late === undefined ? {} : { late: input.late }),
     ...(dueBy === undefined ? {} : { dueBy }),
     ...(input.dateFrom === undefined
@@ -1762,12 +1848,26 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
     limit: input.limit ?? 20,
     ...(input.offset === undefined ? {} : { offset: input.offset }),
   });
+  const { text: _text, ...wide } = filter;
+  const unfiltered =
+    input.text === undefined || (list?.id !== "clients" && list?.id !== "contacts")
+      ? undefined
+      : (yield* records.query(lead.orgId, {
+          ...wide,
+          ...(team === undefined ? {} : { view: team.people }),
+          limit: 1,
+        })).total;
+  const withoutText =
+    unfiltered === undefined || unfiltered <= page.total ? {} : { withoutText: unfiltered };
   const shownTo = (input.offset ?? 0) + page.rows.length;
   const next = page.total > shownTo && page.rows.length > 0 ? { next: shownTo } : {};
   const now = yield* Clock.currentTimeMillis;
+  const keys = input.summary === true ? { keys: page.rows.map((row) => row.key) } : undefined;
+  if (team !== undefined && keys !== undefined)
+    return { asOf: iso(now), total: page.total, records: [], ...keys, ...next };
   const view = yield* viewFor(lead, page.rows);
-  const deals = yield* dealsShown(lead, team, view, page.rows);
-  if (team !== undefined) {
+  const deals = keys === undefined ? yield* dealsShown(lead, team, view, page.rows) : undefined;
+  if (team !== undefined && deals !== undefined) {
     const records = [];
     for (const row of page.rows) {
       const shown = rowFor(view, row, now);
@@ -1778,6 +1878,7 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
       total: page.total,
       records,
       ...next,
+      ...withoutText,
     };
     return shown;
   }
@@ -1799,16 +1900,37 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
   return {
     asOf: iso(now),
     total: page.total,
-    records: page.rows.map((row) => withDeal(deals, rowFor(view, row, now))),
+    records:
+      deals === undefined ? [] : page.rows.map((row) => withDeal(deals, rowFor(view, row, now))),
+    ...keys,
     ...next,
+    ...withoutText,
     ...(totals === undefined || totals.total.length === 0
       ? {}
-      : { totals: totals.total.map(formatMoney), sensitive: true as const }),
+      : { ...amountsOf(totals), sensitive: true as const }),
     ...(groups === undefined ? {} : { groups }),
   };
 });
 export const query = leadTool("KinWorkTools.query", runQuery);
 
+/** The bank list's in, out and net replace its plain sum, which counts both ways as one. */
+const amountsOf = (sums: {
+  readonly total?: ReadonlyArray<KinMoney>;
+  readonly moneyIn?: ReadonlyArray<KinMoney>;
+  readonly moneyOut?: ReadonlyArray<KinMoney>;
+  readonly net?: ReadonlyArray<KinMoney>;
+}) =>
+  sums.moneyIn === undefined || sums.moneyOut === undefined || sums.net === undefined
+    ? sums.total === undefined || sums.total.length === 0
+      ? {}
+      : { totals: sums.total.map(formatMoney) }
+    : {
+        moneyIn: sums.moneyIn.map(formatMoney),
+        moneyOut: sums.moneyOut.map(formatMoney),
+        net: sums.net.map(formatMoney),
+      };
+
+const DIRECTORIES = new Set<string | null>(["clients", "contacts", "projects"]);
 const TOTALS_BY: Record<NonNullable<typeof QueryInput.Type.groupBy>, TotalsBy> = {
   client: "party",
   project: "project",
@@ -1831,6 +1953,9 @@ const labelGroups = Effect.fn("KinWorkTools.labelGroups")(function* (
     readonly count: number;
     readonly late?: number;
     readonly total?: ReadonlyArray<KinMoney>;
+    readonly moneyIn?: ReadonlyArray<KinMoney>;
+    readonly moneyOut?: ReadonlyArray<KinMoney>;
+    readonly net?: ReadonlyArray<KinMoney>;
   }>,
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -1861,9 +1986,7 @@ const labelGroups = Effect.fn("KinWorkTools.labelGroups")(function* (
     group: label(row.group),
     count: row.count,
     ...(row.late === undefined ? {} : { late: row.late }),
-    ...(row.total === undefined || row.total.length === 0
-      ? {}
-      : { totals: row.total.map(formatMoney) }),
+    ...amountsOf(row),
     ...((row.group !== null && titles.get(row.group)?.sensitive === 1) || row.total !== undefined
       ? { sensitive: true as const }
       : {}),
@@ -2101,12 +2224,20 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             partyId: row.recordId,
             limit: 50,
           })).rows.map((contact) => rowFor(view, contact, now)),
-          projects: page.projects.map((one) => ({
-            key: one.key,
-            title: one.name,
-            health: one.health,
-            ...(one.sensitive || one.sensitiveInherited ? { sensitive: true as const } : {}),
-          })),
+          projects: page.projects.flatMap((one) =>
+            one.state === "dropped"
+              ? []
+              : [
+                  {
+                    key: one.key,
+                    title: one.name,
+                    health: one.health,
+                    ...(one.sensitive || one.sensitiveInherited
+                      ? { sensitive: true as const }
+                      : {}),
+                  },
+                ],
+          ),
         }),
     ...(project === undefined
       ? {}
@@ -2117,6 +2248,12 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             late: project.late,
             waitingOverAWeek: project.healthBecause.waitingOverAWeek,
             targetPassed: project.healthBecause.targetPassed,
+            ...(project.healthBecause.overdueInvoices
+              ? { overdueInvoices: project.healthBecause.overdueInvoices }
+              : {}),
+            ...(project.healthBecause.noContact === undefined
+              ? {}
+              : { noContact: project.healthBecause.noContact }),
           },
         }),
     ...(detail.payments === undefined
@@ -2329,7 +2466,13 @@ const createRow = Effect.fnUntraced(function* (
         ? `${list}|${partyId ?? ""}|${titleKey(row.title)}`
         : `${list}|${partyId ?? ""}|${titleKey(row.title)}|${row.amount ?? ""}|${row.date ?? ""}|${row.due ?? ""}`;
   const originKey = `lead:${lead.agentId}:${sourceEventId}:${retryKey(rowKey)}`;
-  const alsoOpen =
+  const given: FieldValues = Object.fromEntries(
+    Object.entries(money.fields ?? {}).flatMap(([key, value]) =>
+      value === null ? [] : [[key, value]],
+    ),
+  );
+  const fileKeys = def.fields.filter((one) => one.type === "file").map((one) => one.key);
+  const { pair, alsoOpen } =
     list === "work" || !isBuiltIn(list)
       ? yield* repeatsOf(lead, team, {
           list,
@@ -2340,9 +2483,11 @@ const createRow = Effect.fnUntraced(function* (
           dateAt: "dateAt" in money && typeof money.dateAt === "number" ? money.dateAt : null,
           originKey,
           besides: row.besides ?? [],
+          fields: given,
+          fileKeys,
           vendor: typeof money.fields?.vendor === "string" ? money.fields.vendor : null,
         })
-      : [];
+      : { pair: undefined, alsoOpen: [] };
   const inProject = projectId !== undefined ? projectId : spine.projectId;
   const closedAt = yield* finishedAt(
     lead.orgId,
@@ -2353,40 +2498,53 @@ const createRow = Effect.fnUntraced(function* (
   const keeps = yield* ownerLevelAsked(lead.orgId, lead.agentId, lead.wakeupId);
   // `memberAdds` decided it; names clash only with what they see in Clients, as on their form.
   const { view: _view, ...unguarded } = writer;
-  const { row: stored, created } = yield* records.create(
-    lead.orgId,
-    crmFor === undefined ? writer : { ...unguarded, namesSeenBy: crmFor },
-    {
-      list,
-      originKey,
-      title: row.title,
-      owner,
-      ...(partyId === undefined ? {} : { partyId }),
-      ...(inProject === undefined ? {} : { projectId: inProject }),
-      ...(row.repo === undefined ? {} : { repo: row.repo }),
-      // Private only when asked, or a money goal; never for what the turn happened to read.
-      ...(row.sensitive === undefined && !(row.measure !== undefined && isMoneyMeasure(row.measure))
-        ? {}
-        : { sensitive: true }),
-      ...(Object.keys(fields).length === 0 ? {} : { fields }),
-      ...(row.state === undefined ? {} : { state: row.state }),
-      ...(waitingOn === undefined ? {} : { waitingOn }),
-      ...stepsIn(row.steps),
-      ...(row.urgent === undefined ? {} : { urgent: row.urgent }),
-      ...due,
-      ...(closedAt === undefined ? {} : { closedAt }),
-      ...money,
-      ...spine.at,
-      ...(row.notes === undefined ? {} : { notes: row.notes }),
-      ...categoryOf(list, row),
-      ...(row.side === undefined ? {} : { side: row.side }),
-      // What an owner-level person asked for in person is kept; what a lead inferred waits for
-      // Keep. A shared turn's tasks keep the default; its quotes and invoices `KinRecords` decides.
-      ...(team === undefined ? { confirmed: row.suggested !== true && keeps } : {}),
-      // Where it was first asked stays the owner's to know.
-      ...(source === undefined || team !== undefined ? {} : { source }),
-    },
-  );
+  const { row: stored, created } =
+    pair !== undefined
+      ? {
+          row: yield* keepPairedFiles(lead, writer, pair.key, given, fileKeys, {
+            receipt: pair.receipt,
+            ...("dateAt" in money && typeof money.dateAt === "number"
+              ? { dateAt: money.dateAt, dateAllDay: money.dateAllDay }
+              : {}),
+          }),
+          created: false,
+        }
+      : yield* records.create(
+          lead.orgId,
+          crmFor === undefined ? writer : { ...unguarded, namesSeenBy: crmFor },
+          {
+            list,
+            originKey,
+            title: row.title,
+            owner,
+            ...(partyId === undefined ? {} : { partyId }),
+            ...(inProject === undefined ? {} : { projectId: inProject }),
+            ...(row.repo === undefined ? {} : { repo: row.repo }),
+            // Private only when asked, or a money goal; never for what the turn happened to read.
+            ...(row.sensitive === undefined &&
+            !(row.measure !== undefined && isMoneyMeasure(row.measure))
+              ? {}
+              : { sensitive: true }),
+            ...(Object.keys(fields).length === 0 ? {} : { fields }),
+            ...(row.state === undefined ? {} : { state: row.state }),
+            ...(waitingOn === undefined ? {} : { waitingOn }),
+            ...stepsIn(row.steps),
+            ...(row.urgent === undefined ? {} : { urgent: row.urgent }),
+            ...due,
+            ...(closedAt === undefined ? {} : { closedAt }),
+            ...money,
+            ...spine.at,
+            ...(row.notes === undefined ? {} : { notes: row.notes }),
+            ...categoryOf(list, row),
+            ...(row.side === undefined ? {} : { side: row.side }),
+            // What an owner-level person asked for in person is kept; what a lead inferred waits
+            // for Keep. A shared turn's tasks keep the default; its quotes and invoices
+            // `KinRecords` decides.
+            ...(team === undefined ? { confirmed: row.suggested !== true && keeps } : {}),
+            // Where it was first asked stays the owner's to know.
+            ...(source === undefined || team !== undefined ? {} : { source }),
+          },
+        );
   // A retry finds what the first call stored, answered only while they may still see it.
   if (
     crmFor !== undefined &&
@@ -2477,6 +2635,9 @@ const dealRow = Effect.fnUntraced(function* (
 ) {
   if (row.client === undefined)
     return yield* invalid("A deal needs its client or prospect: give client.");
+  const actor = yield* Deals.agentActor(lead.orgId, writer);
+  // The screen's first answer: with Clients off there are no deals, whatever the client.
+  yield* Deals.switchedOn(actor.orgId, actor.members);
   const party = yield* refRecord(lead, row.client, "clients");
   const fields = yield* dealFields(row.fields);
   if (fields.lostReason !== undefined && fields.lostReason !== null)
@@ -2485,7 +2646,6 @@ const dealRow = Effect.fnUntraced(function* (
     row.owner === undefined ? undefined : yield* resolveWho(lead, row.owner).pipe(asField("owner"));
   const due = row.due === undefined ? {} : yield* dueOf(lead.orgId, row.due);
   const value = yield* dealValue(def, row.amount, row.currency, undefined);
-  const actor = yield* Deals.agentActor(lead.orgId, writer);
   const originKey = `lead:${lead.agentId}:${sourceEventId}:${retryKey(`deals|${party.recordId}|${titleKey(row.title)}`)}`;
   yield* dealsOpenOn(actor, party.recordId, party.name, originKey, row.besides ?? []);
   const made = yield* Deals.createAs(actor, {
@@ -2652,12 +2812,36 @@ const dealUpdate = Effect.fnUntraced(function* (
               .filter((field) => field !== KIN_DEAL_STEP_FIELD),
           ),
         ];
+  const team = yield* viewOf(lead);
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const zone = yield* ownerZone(lead.orgId);
+  const steps = yield* sql<{ key: string; title: string; dueAt: number | null; dueAllDay: number }>`
+    SELECT r.key, r.title, r.due_at AS "dueAt", r.due_all_day AS "dueAllDay"
+    FROM kin_record_links l JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
+    WHERE l.org_id = ${lead.orgId} AND l.kind = 'record' AND l.target = ${after.recordId}
+      AND r.register_id = 'work' AND r.state NOT IN ('done', 'dropped') AND r.side = 'ours'
+      AND ${crmSeenBy(sql, viewer)}
+    GROUP BY r.record_id ORDER BY r.due_at IS NULL, r.due_at, r.created_at, r.key LIMIT ${REPEATS_SHOWN}`;
   const out: typeof Updated.Type & { readonly noLongerSeenBy?: ReadonlyArray<string> } = {
     key: after.key,
     rev: after.rev,
     state: after.state,
     changed: input.next === undefined ? changed : [...changed, "next"],
     ...marksOf(yield* allLists(lead.orgId), after),
+    ...(after.state === "open"
+      ? {
+          openSteps: steps.map((step) => ({
+            key: step.key,
+            title: step.title,
+            ...(step.dueAt === null
+              ? {}
+              : {
+                  due: dayOrTime(iso(step.dueAt), step.dueAllDay === 1, zone),
+                  dueDay: dayWords(step.dueAt, zone),
+                }),
+          })),
+        }
+      : {}),
   };
   return { out, notices };
 });
@@ -2728,7 +2912,8 @@ const REPEATS_SHOWN = 5;
 /**
  * Open entries a new row repeats, among those this turn may see. The same title, client and due
  * day, or the same party, amount and day, is refused unless `besides` names it; ones near it (the
- * same title in other words or on another day, the same amount within days) are returned.
+ * same title in other words or on another day, the same amount within days) are returned, and
+ * the expense a row is the other document of (`pairedEntry`) as `pair`.
  */
 const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
   lead: Lead,
@@ -2742,6 +2927,9 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
     readonly dateAt: number | null;
     readonly originKey: string;
     readonly besides: ReadonlyArray<string>;
+    /** The row's own fields, and which of them hold files. */
+    readonly fields: FieldValues;
+    readonly fileKeys: ReadonlyArray<string>;
     /** The vendor field, which stands in for the party on a paid row with none. */
     readonly vendor: string | null;
   },
@@ -2771,7 +2959,9 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
       AND ${which} AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
     ORDER BY r.key LIMIT ${REPEAT_CANDIDATES}`;
   // The same row from the same event is a retry, which the write itself returns.
-  if (rows.some((one) => one.originKey === row.originKey)) return [];
+  if (rows.some((one) => one.originKey === row.originKey)) return { alsoOpen: [] };
+  const pair = yield* pairedEntry(lead.orgId, team, row);
+  if (pair !== undefined) return { pair, alsoOpen: [] };
   const day = (at: number | null) => (at === null ? null : dayIn(at, zone));
   const title = row.title.trim();
   const vendor = row.partyId === null && row.vendor !== null ? fold(row.vendor) : "";
@@ -2830,15 +3020,157 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
       }. Use ${first.key}, or pass besides: [${keys.map((key) => `"${key}"`).join(", ")}] to add another.`,
     });
   }
-  return matches
-    .filter((one) => !one.exact)
-    .slice(0, REPEATS_SHOWN)
-    .map((one) => ({
-      key: one.key,
-      title: one.title,
-      differs: one.differs,
-      ...(one.sensitive ? { sensitive: true as const } : {}),
-    }));
+  return {
+    alsoOpen: matches
+      .filter((one) => !one.exact)
+      .slice(0, REPEATS_SHOWN)
+      .map((one) => ({
+        key: one.key,
+        title: one.title,
+        differs: one.differs,
+        ...(one.sensitive ? { sensitive: true as const } : {}),
+      })),
+  };
+});
+
+/**
+ * The row's files join the entry it pairs with, which answers for the row as a retry's does. A
+ * receipt also brings its payment: Paid, its day and how it was paid, never back to To pay.
+ */
+const keepPairedFiles = Effect.fn("KinWorkTools.keepPairedFiles")(function* (
+  lead: Lead,
+  writer: Writer,
+  key: string,
+  given: FieldValues,
+  fileKeys: ReadonlyArray<string>,
+  paid: { readonly receipt: boolean; readonly dateAt?: number; readonly dateAllDay?: boolean },
+) {
+  const records = yield* KinRecords;
+  const entry = (yield* records.get(lead.orgId, key))!;
+  const stored = parseFields(entry.fieldsJson);
+  const added = Object.fromEntries(
+    fileKeys.flatMap((field) => {
+      const theirs = fieldList(stored, field);
+      const more = fieldList(given, field).filter((id) => !theirs.includes(id));
+      return more.length === 0 ? [] : [[field, [...theirs, ...more]]];
+    }),
+  );
+  const how = paid.receipt
+    ? Object.fromEntries(
+        PAYMENT_FIELDS.flatMap((field) =>
+          given[field] === undefined || shownField(given[field]) === shownField(stored[field])
+            ? []
+            : [[field, given[field]]],
+        ),
+      )
+    : {};
+  const patch = {
+    ...(Object.keys(added).length + Object.keys(how).length === 0
+      ? {}
+      : { fields: { ...added, ...how } }),
+    ...(paid.receipt && entry.state !== "done" ? { state: "done" as const } : {}),
+    ...(paid.receipt && paid.dateAt !== undefined && paid.dateAt !== entry.dateAt
+      ? { dateAt: paid.dateAt, dateAllDay: paid.dateAllDay ?? true }
+      : {}),
+  };
+  return Object.keys(patch).length === 0
+    ? entry
+    : yield* records.update(lead.orgId, writer, key, patch, entry.rev);
+});
+
+const PAYMENT_FIELDS = ["paidWith", "paidBy"];
+
+/** What a file's name says it is; a name saying both, or neither, says nothing. */
+const documentKind = (name: string | null) => {
+  const words = new Set(fold(name ?? "").split(/[^a-z]+/));
+  const invoice = words.has("invoice");
+  return invoice === words.has("receipt") ? null : invoice ? "invoice" : "receipt";
+};
+
+/**
+ * One charge mailed as an invoice and its receipt: the one open-or-paid expense of the same
+ * amount and vendor (the party, else the vendor field's words) whose files came on the same
+ * message as the row's, where one side's file names say invoice and the other's receipt. Two
+ * receipts, unnamed files, two such entries or one `besides` names stay separate purchases.
+ */
+const pairedEntry = Effect.fn("KinWorkTools.pairedEntry")(function* (
+  orgId: KinOrgId,
+  team: View | undefined,
+  row: {
+    readonly list: string;
+    readonly partyId: string | null;
+    readonly money: KinMoney | undefined;
+    readonly originKey: string;
+    readonly besides: ReadonlyArray<string>;
+    readonly fields: FieldValues;
+    readonly fileKeys: ReadonlyArray<string>;
+  },
+) {
+  const files = row.fileKeys.flatMap((key) => fieldList(row.fields, key));
+  const vendor = (fields: FieldValues) => {
+    const text = fieldText(fields, "vendor");
+    return text === null ? null : fold(text);
+  };
+  const named = vendor(row.fields);
+  if (
+    row.list !== "expenses" ||
+    row.money === undefined ||
+    files.length === 0 ||
+    (row.partyId === null && named === null)
+  )
+    return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const candidates = yield* sql<{
+    key: string;
+    title: string;
+    originKey: string | null;
+    fieldsJson: string;
+  }>`SELECT r.key, r.title, r.origin_key AS "originKey", r.fields_json AS "fieldsJson"
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.party_id IS ${row.partyId}
+      AND r.state != 'dropped' AND r.amount_minor = ${row.money.minor}
+      AND r.currency = ${row.money.currency}
+      AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
+    ORDER BY r.key LIMIT ${REPEAT_CANDIDATES}`;
+  const entries = candidates.flatMap((one) => {
+    const fields = parseFields(one.fieldsJson);
+    const theirs = row.fileKeys.flatMap((key) => fieldList(fields, key));
+    const sameVendor = row.partyId !== null || vendor(fields) === named;
+    return theirs.length > 0 &&
+      sameVendor &&
+      !row.besides.includes(one.key) &&
+      one.originKey !== row.originKey
+      ? [{ ...one, files: theirs }]
+      : [];
+  });
+  if (entries.length === 0) return undefined;
+  const ids = [...new Set([...files, ...entries.flatMap((one) => one.files)])];
+  const placed = new Map(
+    (yield* sql<{ id: string; messageId: string; name: string | null }>`SELECT
+        a.attachment_id AS id, a.message_id AS "messageId",
+        (SELECT json_extract(j.value, '$.name')
+          FROM json_each(COALESCE(m.attachments_json, '[]')) j
+          WHERE json_extract(j.value, '$.id') = a.attachment_id) AS name
+      FROM kin_message_attachments a
+      JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
+      WHERE a.org_id = ${orgId} AND a.attachment_id IN ${sql.in(ids)}`).map((one) => [one.id, one]),
+  );
+  const kindOf = (ids: ReadonlyArray<string>) => {
+    const kinds = new Set(ids.map((id) => documentKind(placed.get(id)?.name ?? null)));
+    return kinds.size === 1 ? [...kinds][0]! : null;
+  };
+  const messages = new Set(files.flatMap((id) => placed.get(id)?.messageId ?? []));
+  const kind = kindOf(files);
+  const found = entries.filter(
+    (one) =>
+      one.files.some((id) => messages.has(placed.get(id)?.messageId ?? "")) &&
+      // Its files already there is this pair again, as a retry.
+      (files.every((id) => one.files.includes(id)) ||
+        (kind !== null && kindOf(one.files) === (kind === "invoice" ? "receipt" : "invoice"))),
+  );
+  return found.length !== 1
+    ? undefined
+    : { key: found[0]!.key, title: found[0]!.title, receipt: kind === "receipt" };
 });
 
 /** Other open contacts this turn may see with the same email: said, never refused. */

@@ -10,6 +10,8 @@ import { KinRecords } from "./KinRecords.ts";
 import {
   askedBy,
   Client,
+  ClientOnRecord,
+  clientOnRecord,
   type Lead,
   leadTool,
   ownerTurn,
@@ -47,7 +49,14 @@ export const Touch = Schema.Struct({
   who: Schema.optional(Schema.String),
   from: Schema.optional(Schema.String),
 });
-export const TouchResult = Schema.Struct({ client: Schema.String, touch: Touch });
+export const TouchResult = Schema.Struct({
+  client: Schema.String,
+  touch: Touch,
+  onRecord: ClientOnRecord.annotate({
+    description:
+      "What the client's record holds now: its open deals (none is no deal yet) and its contacts (none is no one).",
+  }),
+});
 export const ContactInput = Schema.Struct({ key: KinRecordKey });
 export const ContactResult = Schema.Struct({
   lastContact: Schema.NullOr(Schema.Struct({ at: Schema.String, days: Schema.Number })),
@@ -111,7 +120,11 @@ const runLog = Effect.fnUntraced(function* (lead: Lead, input: typeof TouchInput
     now,
   });
   yield* (yield* KinRecords).announce(lead.orgId, [partyId]);
-  return { client: `${client.name} (${client.key})`, touch: toShown(touch) };
+  return {
+    client: `${client.name} (${client.key})`,
+    touch: toShown(touch),
+    onRecord: yield* clientOnRecord(lead, partyId),
+  };
 });
 export const logTouch = leadTool("KinClientTools.logTouch", runLog);
 

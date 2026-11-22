@@ -204,7 +204,8 @@ export function KinSettings(props: {
               {...(hostComputer === null
                 ? {}
                 : {
-                    value: `${hostComputer.label} · ${KIN_CONNECTION_LABEL[hostComputer.connection.phase]}`,
+                    value: hostComputer.label,
+                    valueEnd: ` · ${KIN_CONNECTION_LABEL[hostComputer.connection.phase]}`,
                   })}
               onPress={() => navigation.navigate("KinThisPhone")}
             />

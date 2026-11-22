@@ -55,6 +55,7 @@ function OpenAiAgents(props: KinWorkTarget) {
     <KinSettingsSection title={KIN_OTHER_PROVIDER_AGENTS.section}>
       <KinSettingsRow
         title={KIN_OTHER_PROVIDER_AGENTS.row}
+        wrap
         detail={KIN_OTHER_PROVIDER_AGENTS.rowDetail}
         control={
           <Switch

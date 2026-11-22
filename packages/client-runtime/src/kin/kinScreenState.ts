@@ -104,6 +104,10 @@ export function formatKinTime(date: Date, now: Date = kinNow()): string {
     : kinDayFormat.format(date);
 }
 
+/** "Last updated 9:41.": when what is shown offline was last read. */
+export const kinLastUpdated = (atMs: number, formatTime: (date: Date) => string) =>
+  `Last updated ${formatTime(new Date(atMs))}.`;
+
 /** Where the Reconnect action on the Offline notice is: idle, waiting on the attempt, or failed. */
 export type KinReconnectStatus = "idle" | "pending" | "failed";
 
@@ -128,7 +132,7 @@ export function kinStaleNotice(
 ): KinStaleNotice | null {
   if ((data.connected && data.live) || data.savedAt === null) return null;
   if (!data.connected && !data.offline && reconnect === "idle") return null;
-  const updated = `Last updated ${formatTime(new Date(data.savedAt))}.`;
+  const updated = kinLastUpdated(Date.parse(data.savedAt), formatTime);
   if (data.connected) return { offline: false, message: `Updating. ${updated}` };
   const status =
     reconnect === "pending"
@@ -426,41 +430,81 @@ export function kinChatRowLabel(view: KinChatRowView, formatTime: (date: Date) =
     .join(" ");
 }
 
-const WAITING_REASON_NOUNS: Record<KinWaitingReason, string> = {
-  approval: "approval",
-  decision: "decision",
-  question: "question",
-  suggestion: "suggestion",
-  mention: "mention",
+/** What a waiting card is, in a person's words: a mail or a draft by its card, else its reason. */
+type KinWaitingKind = KinWaitingReason | "mail" | "draft";
+const kinWaitingKind = (item: KinWaitingItem): KinWaitingKind => item.card ?? item.reason;
+
+const WAITING_KIND_NOUNS: Record<KinWaitingKind, readonly [string, string]> = {
+  approval: ["approval", "approvals"],
+  decision: ["decision", "decisions"],
+  question: ["question", "questions"],
+  suggestion: ["suggestion", "suggestions"],
+  mention: ["mention", "mentions"],
+  mail: ["mail to send", "mails to send"],
+  draft: ["draft to approve", "drafts to approve"],
 };
 
+/** What waits on someone else, in a person's words: "Waiting for Rhea Rao", "Waits for Rhea Rao". */
+export const KIN_WAITS_FOR_COPY = {
+  fold: (name: string, count: number) => `Waiting for ${name} · ${count}`,
+  row: (name: string) => `Waits for ${name}`,
+  onlyThey: (name: string) => `Only ${name} can answer this. You can look at it here.`,
+  answers: (labels: ReadonlyArray<string>) => `Answers: ${labels.join(" / ")}`,
+  inBanner: (count: number, name: string) => `${count} waiting for ${name}`,
+  foldLabel: (count: number, name: string) =>
+    `Waiting for ${name}, ${count === 1 ? "1 item" : `${count} items`}`,
+} as const;
+
+/** What a read-only row shows once opened: the draft's first lines, its answers, whose it is. */
+export function kinWaitsForDetail(item: KinWaitingItem): ReadonlyArray<string> {
+  if (item.waitsFor === undefined) return [];
+  const labels = item.ask?.options.map((option) => option.label) ?? [];
+  return [
+    ...(item.excerpt === undefined ? [] : [item.excerpt]),
+    ...(labels.length === 0 ? [] : [KIN_WAITS_FOR_COPY.answers(labels)]),
+    KIN_WAITS_FOR_COPY.onlyThey(item.waitsFor.name),
+  ];
+}
+
 export interface KinWaitingBannerView {
+  /** What waits on the viewer (`kinWaitingCount`); others' are named in `summary` only. */
   readonly count: number;
-  /** Up to two kinds of item, oldest first, then the rest: "1 approval · 2 questions · 1 more". */
+  /** Up to two kinds of item, oldest first, then the rest: "1 mail to send · 2 questions · 1 more". */
   readonly summary: string;
   readonly accessibilityLabel: string;
 }
 
 /**
  * Waiting items carry a reason but no title, so the banner names kinds of item.
- * `waiting` is oldest first, as `selectKinInboxView` returns it. Null when nothing waits.
+ * `waiting` is oldest first, as `selectKinInboxView` returns it; `waitsFor` is what the viewer
+ * may see waiting on others. Null when nothing waits on anyone the viewer sees.
  */
 export function kinWaitingBannerView(
   waiting: ReadonlyArray<KinWaitingItem>,
+  waitsFor: ReadonlyArray<{ readonly name: string; readonly items: ReadonlyArray<unknown> }> = [],
 ): KinWaitingBannerView | null {
-  if (waiting.length === 0) return null;
-  const counts = new Map<KinWaitingReason, number>();
-  for (const item of waiting) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
+  const others = waitsFor.filter((group) => group.items.length > 0);
+  if (waiting.length === 0 && others.length === 0) return null;
+  const counts = new Map<KinWaitingKind, number>();
+  for (const item of waiting) {
+    const kind = kinWaitingKind(item);
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
   const named = [...counts].slice(0, 2);
   const parts = named.map(
-    ([reason, count]) => `${count} ${WAITING_REASON_NOUNS[reason]}${count === 1 ? "" : "s"}`,
+    ([kind, count]) => `${count} ${WAITING_KIND_NOUNS[kind][count === 1 ? 0 : 1]}`,
   );
   const rest = waiting.length - named.reduce((sum, [, count]) => sum + count, 0);
+  const theirs = others.map((group) => KIN_WAITS_FOR_COPY.inBanner(group.items.length, group.name));
   const items = waiting.length === 1 ? "1 item" : `${waiting.length} items`;
+  const mine =
+    waiting.length === 0
+      ? "nothing on you"
+      : `${items}: ${parts.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`;
   return {
     count: waiting.length,
-    summary: [...parts, ...(rest > 0 ? [`${rest} more`] : [])].join(" · "),
-    accessibilityLabel: `Waiting on you, ${items}: ${parts.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`,
+    summary: [...parts, ...(rest > 0 ? [`${rest} more`] : []), ...theirs].join(" · "),
+    accessibilityLabel: [`Waiting on you, ${mine}`, ...theirs].join(". "),
   };
 }
 
@@ -508,12 +552,14 @@ export function kinChatTitle(
   return kinDirectAgentName(chat, agentNames) ?? "Direct chat";
 }
 
-const WAITING_REASON_LABELS: Record<KinWaitingReason, string> = {
+const WAITING_KIND_LABELS: Record<KinWaitingKind, string> = {
   approval: "Approval",
   decision: "Decision",
   question: "Question",
   suggestion: "Suggestion",
   mention: "Mention",
+  mail: "Mail to send",
+  draft: "Draft to approve",
 };
 
 export interface KinWaitingRowView {
@@ -521,6 +567,10 @@ export interface KinWaitingRowView {
   readonly chatTitle: string;
   /** The message that asks, when the inbox carries it; items have no text of their own. */
   readonly text: string | null;
+  /** The first lines of what it asks about, such as a draft; null without them. */
+  readonly excerpt: string | null;
+  /** "Waits for Rhea Rao" on what waits on someone else: shown read-only, never answered here. */
+  readonly waitsFor: string | null;
   readonly createdAt: string;
 }
 
@@ -533,13 +583,17 @@ export function kinWaitingRowView(
   const last = chat?.lastMessage ?? null;
   const message = last !== null && last.messageId === item.messageId ? last : null;
   return {
-    label: WAITING_REASON_LABELS[item.reason],
-    chatTitle: chat === undefined ? "Direct chat" : kinChatTitle(chat, agentNames),
+    label: WAITING_KIND_LABELS[kinWaitingKind(item)],
+    // Someone else's chat isn't in the viewer's list: the agent that asks names it.
+    chatTitle:
+      chat === undefined ? (item.ask?.agent ?? "Direct chat") : kinChatTitle(chat, agentNames),
     text:
       item.question ??
       (message === null || message.status === "deleted" || message.body === ""
         ? null
         : message.body),
+    excerpt: item.excerpt ?? null,
+    waitsFor: item.waitsFor === undefined ? null : KIN_WAITS_FOR_COPY.row(item.waitsFor.name),
     createdAt: item.createdAt,
   };
 }

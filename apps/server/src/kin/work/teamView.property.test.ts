@@ -49,7 +49,13 @@ import * as WorkStream from "./workStream.ts";
 import { search } from "./search.ts";
 import { indexWhere, searchIndexed } from "./searchIndex.ts";
 import { listDef } from "./registers.ts";
-import { personSees, teamCan, unreadableBy, viewerOfPeople } from "./teamView.ts";
+import {
+  personSees,
+  teamCan,
+  unreadableBy,
+  viewerOfPeople,
+  withoutOwnFigures,
+} from "./teamView.ts";
 
 // Invented org, people and entries only.
 const orgId = KinOrgId.make("org");
@@ -670,6 +676,11 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
           "Is it 987654?",
           KinPersonId.make("ben"),
         ),
+      );
+      // Her own figure is lifted out of what is held against her; an entry key's number never is.
+      assert.strictEqual(
+        withoutOwnFigures("INV-3 for 3 seats at 2,50,000", "3 seats at 250000"),
+        "INV-3 for  seats at ",
       );
     }),
   );

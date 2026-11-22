@@ -57,6 +57,7 @@ function DailyLimit(props: KinWorkTarget & { readonly searchId: string }) {
       <KinSettingsRow
         searchId={props.searchId}
         title={KIN_DAILY_LIMIT.title}
+        wrap
         detail={
           failed ? (
             <span role="alert" className="text-destructive-foreground">

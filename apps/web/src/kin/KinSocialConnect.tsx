@@ -143,6 +143,7 @@ function SocialSection(props: { readonly environmentId: EnvironmentId; readonly 
               <KinSettingsRow
                 key={row.groupId}
                 title={row.title}
+                wrap
                 detail={
                   row.tone === "ok" && row.accounts.length > 0
                     ? row.accounts.map((account) => account.line).join(", ")

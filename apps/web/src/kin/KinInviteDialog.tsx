@@ -20,16 +20,7 @@ import * as Option from "effect/Option";
 import { CheckIcon, CopyIcon, ShareIcon } from "lucide-react";
 import { useId, useState } from "react";
 
-import { KIN_FORM_DISCARD } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { Alert, AlertDescription } from "../components/ui/alert";
-import {
-  AlertDialog,
-  AlertDialogClose,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogPopup,
-  AlertDialogTitle,
-} from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
 import {
   Dialog,
@@ -46,6 +37,7 @@ import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { usePreparedConnection } from "../state/session";
+import { useKinFormDiscard } from "./KinFormDiscard";
 import { useKinPublicUrl } from "./useKinOwnerLevel";
 
 /** What the dialog is showing: the name form, or a link the host just made. */
@@ -68,11 +60,7 @@ export function KinInviteDialog(props: {
   const [busy, setBusy] = useState(false);
   // Only the name form asks before closing; once the link is made there is nothing left to lose.
   const [typed, setTyped] = useState(false);
-  const [asking, setAsking] = useState(false);
-  const close = () => {
-    if (props.state.stage === "name" && typed) setAsking(true);
-    else props.onClose();
-  };
+  const { close, ask } = useKinFormDiscard(props.state.stage === "name" && typed, props.onClose);
   return (
     <Dialog
       open
@@ -98,21 +86,7 @@ export function KinInviteDialog(props: {
             onClose={props.onClose}
           />
         )}
-        <AlertDialog open={asking} onOpenChange={setAsking}>
-          <AlertDialogPopup>
-            <AlertDialogHeader>
-              <AlertDialogTitle>{KIN_FORM_DISCARD.title}</AlertDialogTitle>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogClose render={<Button variant="outline" />}>
-                {KIN_FORM_DISCARD.keep}
-              </AlertDialogClose>
-              <Button variant="destructive" onClick={props.onClose}>
-                {KIN_FORM_DISCARD.discard}
-              </Button>
-            </AlertDialogFooter>
-          </AlertDialogPopup>
-        </AlertDialog>
+        {ask}
       </DialogPopup>
     </Dialog>
   );

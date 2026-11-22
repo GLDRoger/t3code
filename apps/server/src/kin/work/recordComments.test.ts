@@ -728,7 +728,7 @@ it.effect("record_get shows the newest comments still standing, for the turn's p
     const read = yield* LeadWork.get(scope, { key: zoyas.key });
     assert.deepStrictEqual(
       read.comments?.map((one) => [one.by, one.text]),
-      [3, 4, 5, 6, 7, 8, 9, 10, 11, 13].map((n) => ["owner", `Invented note ${n}`]),
+      [3, 4, 5, 6, 7, 8, 9, 10, 11, 13].map((n) => ["Rhea (owner)", `Invented note ${n}`]),
     );
     assert.strictEqual(read.olderComments, 2);
     // Zoya now reads this chat with Rhea: her own task's comments show, Rhea's own task not at all.
@@ -1107,7 +1107,7 @@ it.effect(
       assert.deepStrictEqual(
         read.comments?.map((one) => [one.by, one.via, one.text]),
         [
-          ["owner", undefined, "Invented: two rooms"],
+          ["Rhea (owner)", undefined, "Invented: two rooms"],
           ["Zoya", "coding agent “Invented laptop”", ASKED],
         ],
       );

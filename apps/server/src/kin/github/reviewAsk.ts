@@ -71,7 +71,7 @@ export const ASK_REFUSAL = {
     `${name} and ${agent} can't message each other. The owner can lift that. ${NOTHING}`,
   limit: (name: string) =>
     `${name} has reached today's limit. They can ask again later. ${NOTHING}`,
-  disconnected: `GitHub isn't connected. The owner connects it in Settings, Connections. ${NOTHING}`,
+  disconnected: `GitHub isn't connected to Kin. The owner or a co-owner connects it in Settings, Connections, GitHub. ${NOTHING}`,
   unreachable: `Kin couldn't reach GitHub just now. ${NOTHING}`,
   memory: (repo: string) => `${repo} is Kin's memory repo, which Kin never reviews. ${NOTHING}`,
   unwatched: (repo: string) =>

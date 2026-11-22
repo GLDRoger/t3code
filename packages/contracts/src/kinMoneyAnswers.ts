@@ -239,6 +239,11 @@ export const KinNewInvoiceInput = Schema.Struct({
   dueOn: Schema.optional(KinDay),
   notes: Schema.optional(Schema.String.check(Schema.isMaxLength(4_000))),
   project: Schema.optional(KinRecordKey),
+  /**
+   * A form that can ask sends false: an amount far above its list is refused with the error's
+   * `farAbove` for the person to confirm, and true saves it. Left out, nothing is asked.
+   */
+  amountConfirmed: Schema.optional(Schema.Boolean),
   /** The same id with the same details returns what that request made. */
   clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
 });
@@ -260,6 +265,11 @@ export const KinNewExpenseInput = Schema.Struct({
   receipt: Schema.optional(
     Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(128))).check(Schema.isMaxLength(5)),
   ),
+  /**
+   * A form that can ask sends false: an amount far above its list is refused with the error's
+   * `farAbove` for the person to confirm, and true saves it. Left out, nothing is asked.
+   */
+  amountConfirmed: Schema.optional(Schema.Boolean),
   clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
 });
 export type KinNewExpenseInput = typeof KinNewExpenseInput.Type;

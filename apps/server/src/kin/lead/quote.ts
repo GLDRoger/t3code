@@ -2,32 +2,46 @@
 export const messageBodyLimit = 8_000;
 const textFieldLimit = 2_000;
 
+const cut = (field: string, limit: number) => {
+  if (field.length <= limit) return field;
+  const code = field.charCodeAt(limit - 1);
+  const end = code >= 0xd800 && code <= 0xdbff ? limit - 1 : limit;
+  return `${field.slice(0, end)}…[truncated ${field.length - end} chars]`;
+};
+
+// Markup, control, format (bidi, zero-width) and line-separator characters.
+const unsafeCharacter = /[<>&\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+const unicodeEscape = (character: string) =>
+  character
+    .split("")
+    .map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`)
+    .join("");
+// One pass, so JSON's own escapes are read whole and never re-escaped.
+const unsafeOrEscape = new RegExp(
+  `\\\\(?:["\\\\/bfnrt]|u[\\da-fA-F]{4})|${unsafeCharacter.source}`,
+  "gu",
+);
+const controls: Readonly<Record<string, string>> = {
+  "\\b": "\\u0008",
+  "\\f": "\\u000c",
+  "\\n": "\\u000a",
+  "\\r": "\\u000d",
+  "\\t": "\\u0009",
+};
+
+/** A text field as a lead is shown it in a tool result: cut past `limit`, escaped as `quote()` escapes it. */
+export const cappedText = (field: string, limit = textFieldLimit) =>
+  cut(field, limit).replace(unsafeCharacter, unicodeEscape);
+
 export function encoded(value: unknown, capText = false): string {
   const json =
-    JSON.stringify(value, (key, field: unknown) => {
-      if (!capText || typeof field !== "string") return field;
-      const limit = key === "body" ? messageBodyLimit : textFieldLimit;
-      if (field.length <= limit) return field;
-      const code = field.charCodeAt(limit - 1);
-      const cut = code >= 0xd800 && code <= 0xdbff ? limit - 1 : limit;
-      return `${field.slice(0, cut)}…[truncated ${field.length - cut} chars]`;
-    }) ?? "null";
-  return json.replace(
-    /\\(?:["\\/bfnrt]|u[\da-fA-F]{4})|[<>&\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
-    (character) => {
-      const controls: Readonly<Record<string, string>> = {
-        "\\b": "\\u0008",
-        "\\f": "\\u000c",
-        "\\n": "\\u000a",
-        "\\r": "\\u000d",
-        "\\t": "\\u0009",
-      };
-      if (character.startsWith("\\")) return controls[character] ?? character;
-      return character
-        .split("")
-        .map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`)
-        .join("");
-    },
+    JSON.stringify(value, (key, field: unknown) =>
+      !capText || typeof field !== "string"
+        ? field
+        : cut(field, key === "body" ? messageBodyLimit : textFieldLimit),
+    ) ?? "null";
+  return json.replace(unsafeOrEscape, (character) =>
+    character.startsWith("\\") ? (controls[character] ?? character) : unicodeEscape(character),
   );
 }
 

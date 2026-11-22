@@ -72,7 +72,7 @@ import { kinJoinedNameAtom } from "./state/kinJoin";
 import { useKinOpenAgentChat } from "./state/useKinOpenChat";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinProfiles } from "./state/useKinProfiles";
-import { kinTabFoot } from "./components/KinTab";
+import { kinTabFoot, useKinTab } from "./components/KinTab";
 
 const NO_ENVIRONMENT = EnvironmentId.make("kin:none");
 
@@ -125,6 +125,7 @@ export function KinChatsList({
       ? kinChatListAgents(state.inbox.value.chats, leads, kinDirectory(host).me)
       : [];
   const openAgentChat = useKinOpenAgentChat();
+  const docked = useKinTab() !== null;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       {newLeadAt === null ? (
@@ -162,8 +163,9 @@ export function KinChatsList({
                 <KinWhatKinIs environmentId={state.environmentId} personId={myPersonId} />
               ) : null}
               {
-                // Where Kin is the whole app these are Settings pages and a tab, and the list is chats.
-                newLeadAt === null || KIN_ONLY ? null : (
+                // Where Kin is the whole app, or a dock is drawn under the list, these are
+                // Settings pages and tabs, and the list is chats.
+                newLeadAt === null || KIN_ONLY || docked ? null : (
                   <>
                     <KinWorkEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
                     <KinMemoryEntry
@@ -344,7 +346,7 @@ export function KinChatsView(props: {
 }) {
   const { state, onOpenChat } = props;
   const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
-  const banner = view === null ? null : kinWaitingBannerView(view.waiting);
+  const banner = view === null ? null : kinWaitingBannerView(view.waiting, view.waitsFor);
   const agents =
     props.agents === undefined ||
     props.agents.length === 0 ||

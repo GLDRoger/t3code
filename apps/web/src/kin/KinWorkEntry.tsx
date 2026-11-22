@@ -629,10 +629,12 @@ export function KinListEntry(
                   draft={amountEdit.draft}
                   placeholder={KIN_LISTS.entry.amountPlaceholder}
                   disabled={busy}
+                  ask={changes.ask}
                   onSave={async (text) => {
                     const checked = kinAmountCheck(text, amountEdit.currency, amountEdit.received);
                     if (!checked.ok) return checked.problem;
-                    const save = () => changes.edit(item.rev, { amount: checked.value });
+                    const save = () =>
+                      changes.edit(item.rev, { amount: checked.value }, text.trim());
                     const question = kinIssuedAmountQuestion(item, checked.value);
                     if (question === null) return save();
                     return new Promise<string | null>((done) =>

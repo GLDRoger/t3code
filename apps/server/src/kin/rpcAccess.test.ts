@@ -56,6 +56,8 @@ const MEMBER = [
   "kin.docs.get",
   "kin.docs.history",
   "kin.docs.list",
+  // A teammate's own draft card: `sendUp` checks the card, the chat and the doc from stored rows.
+  "kin.docs.sendUp",
   "kin.docs.subscribe",
   "kin.goals.list",
   "kin.leads.list",

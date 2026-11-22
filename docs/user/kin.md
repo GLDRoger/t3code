@@ -123,6 +123,10 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   under it, such as Mark W-4 “Set up the API” done, does exactly that when you tap it, with no
   wait for the agent. If what it names changed since, the card says nothing was done. A reaction
   never does it, and Kin never takes such an answer as a default: it waits for your tap.
+  On an iPhone, the notice of an agent's question with two answers lists them as 1 and 2; press
+  and hold it and tap **Answer 1** or **Answer 2** to answer without finding the chat. The phone
+  unlocks, opens the card and answers it once it reaches your Kin. Something to confirm, and a
+  question with more answers, opens the card instead.
 - **It asks once, and says what it will do.** An agent's question comes with the answer it will go
   with and the day, by default the end of your next working day (until 19:30). If you don't answer
   by then, it goes with that answer and tells you in one line; say "undo it" to reverse. Something
@@ -289,6 +293,17 @@ address and ready-to-paste setup for common coding agents once; copy them before
 can hold three keys at a time, and each works for 30 days. If your coding agent's computer reaches
 Kin at a different address than the app you made the key in, use that address with the same ending.
 
+Each setup keeps the key in the coding agent's own settings, so it works in every session:
+
+- **Claude Code:** run the one line Kin shows in a terminal.
+- **Codex:** add the three lines Kin shows to the end of `~/.codex/config.toml`, then start a new
+  Codex session.
+- **Cursor:** add the block Kin shows to `~/.cursor/mcp.json`, beside any servers already there.
+
+To check it worked, ask your coding agent to list your Kin tasks; the key's row then says when it
+was last used. If you set Codex up before with a `bearer_token_env_var` line, remove that line from
+the `[mcp_servers.kin]` section and add the `http_headers` line Kin shows instead.
+
 Choose **Remove** beside a key to stop it; the coding agent loses access on its next call. The owner
 and co-owners can see and remove a teammate's keys on their profile, and removing someone's access
 ends all of their keys. Removing the device a key was made on ends that key too. A key made before
@@ -302,7 +317,10 @@ On a client, add contacts and **Log contact** after a call or meeting. If nothin
 while, the client shows up under Needs attention.
 
 A project has a lead, a target day, milestones and its tasks. Its page says whether it's on track,
-what's late or stuck, and who's on it. The owner, co-owners and the project's lead add milestones;
+what's late or stuck, and who's on it. An overdue invoice for it, or no contact with its client
+for longer than their check-in days (`client_checkin_days`, 14 by default), puts it at risk. Only
+invoices linked to the project count; Kin never guesses which project an invoice is for. The
+owner, co-owners and the project's lead add milestones;
 everyone on the project sees them. The owner or a co-owner sets the lead under **Project lead**.
 
 **People** on a project's page lists who's on it. The owner, co-owners and the project's lead choose

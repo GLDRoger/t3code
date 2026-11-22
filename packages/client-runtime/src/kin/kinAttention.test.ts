@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Fixtures read days relative to a fixed local date.
 import {
   KinAgentId,
+  KinChatId,
   KinPersonId,
   KinRecordId,
   type KinGoal,
@@ -220,6 +221,35 @@ describe("kinAttention", () => {
       kinTasksBadgeCount({ ownerLevel: true, attention: twoOwed, mineDue: null }),
     );
     expect(onMe?.onMe).toBe(1);
+    // What waits on you is never behind "See all": the sidebar's "Waiting on you" lists it.
+    const waitingRow: KinNeedsYouRow = {
+      id: "waiting:w-1",
+      kind: "waiting",
+      title: "Draft to approve · Chief of staff",
+      detail: "Approve it to go as a proposal?",
+      late: false,
+      open: { type: "chat", chatId: KinChatId.make("chat-1"), messageId: null },
+    };
+    const lateTask: KinNeedsYouRow = {
+      id: "task:W-9",
+      kind: "task",
+      title: "Send the deck",
+      detail: "W-9 · Late",
+      late: true,
+      open: { type: "task", key: "W-9" },
+    };
+    const full = kinTasksBlock({
+      ownerLevel: true,
+      onMe: new Set(),
+      attention: owing.rows,
+      needs: [...(owing.moneyRow === null ? [] : [owing.moneyRow]), lateTask, waitingRow],
+      hidden: 0,
+      handled: 0,
+      expanded: false,
+    });
+    expect(full?.needs.map((row) => row.id)).toEqual(["attention:money", waitingRow.id]);
+    expect(full?.attention).toHaveLength(2);
+    expect(full?.more).toBe(true);
     // A project or client fact does not repeat its own name after its key.
     const own = kinAttention(
       read([

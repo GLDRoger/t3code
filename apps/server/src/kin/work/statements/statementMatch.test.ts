@@ -297,5 +297,21 @@ describe("statement matching", () => {
     assert.strictEqual(vendorOf("UPI DR 412345 CLOUDNEST"), "Cloudnest");
     assert.strictEqual(vendorOf("DR FIGMA INC"), "Figma Inc");
     assert.strictEqual(vendorOf("POS DR THIRD WAVE COFFEE"), "Third Wave Coffee");
+    // A card statement's line is often just the merchant and its city.
+    assert.strictEqual(vendorOf("NETFLIX.COM MUMBAI"), "Netflix");
+    // W-26: a narration no rail or channel word explains names nobody, and a generic word isn't one.
+    assert.strictEqual(vendorOf("BEING AMOUNT PAID TOWARDS MAINTENANCE NOV"), undefined);
+    assert.strictEqual(vendorOf("CHQ PAID 004512 CLEARING"), undefined);
+    assert.strictEqual(vendorOf("BIL/INVOICE 22"), undefined);
+    // An older expense's junk vendor is never offered again, since Kin would refuse it.
+    const junk = suggest(
+      row({ direction: "debit", description: "UPI-INVOICE-PAY", amountMinor: 1 }),
+      {
+        ownAccounts: [],
+        known: [{ vendor: "Invoice", category: "software" }],
+        bank: null,
+      },
+    );
+    assert.strictEqual(junk.vendor, undefined);
   });
 });

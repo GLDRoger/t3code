@@ -55,6 +55,8 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
   readonly onOpenLink: (url: string) => void;
   /** The card's agent by name when it is retired, so its reminders and schedules read as on hold. */
   readonly heldFor?: string | null;
+  /** The viewer may only read this chat: a draft's card offers no Send to. */
+  readonly readOnly?: boolean;
   /** The chat's agents by id, for the doc card's "by Growth". */
   readonly agentNames?: ReadonlyMap<string, string>;
   /** The message's own long press, for a card that takes presses across its whole face. */
@@ -109,6 +111,8 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
           doc={view.doc}
           environmentId={props.environmentId}
           orgId={props.widget.orgId}
+          ownerLevel={access === null || kinOwnerLevel(access)}
+          readOnly={props.readOnly === true}
           {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
           {...(props.onLongPress === undefined ? {} : { onLongPress: props.onLongPress })}
         />

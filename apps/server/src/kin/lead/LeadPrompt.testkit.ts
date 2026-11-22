@@ -20,6 +20,7 @@ import { buildIndex } from "../memory/buildIndex.ts";
 import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 
 export const decodeEvent = Schema.decodeSync(KinEvent);
+export const decodeUnknownEvent = Schema.decodeUnknownSync(KinEvent);
 export const decodeHead = Schema.decodeUnknownSync(MemoryItemHead);
 export const decodeEventEffect = Schema.decodeEffect(KinEvent);
 export const decodeBody = Schema.decodeEffect(

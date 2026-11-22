@@ -1,6 +1,7 @@
 import {
   formatKinMoney,
   KIN_CURRENCY_CODES,
+  KinChatError,
   KinListId,
   KinOrgId,
   KinRecordId,
@@ -16,7 +17,10 @@ import {
   kinListColumns,
   kinListEditDraftOf,
   kinListEditInput,
+  kinAmountAsking,
   kinAmountCheck,
+  kinAmountConfirmed,
+  kinAmountSlipLine,
   kinFieldCheck,
   kinListEntryView,
   kinListFilterParam,
@@ -607,6 +611,38 @@ describe("a list by its definition", () => {
     );
     expect(quotes.totals).toEqual([]);
     expect(quotes.summary).toBe("Sent, waiting: ₹1 · Accepted: ₹2");
+    // Bank rows add money in and out apart, then their net, which may go below zero; `total`
+    // stays the plain sum older phone builds show. A side with nothing in it goes unsaid.
+    const out = { moneyIn: inr(100), moneyOut: inr(300), net: inr(-200), total: inr(400) };
+    const outOnly = { moneyIn: [], moneyOut: inr(300), net: inr(-300), total: inr(300) };
+    const inOnly = { moneyIn: inr(100), moneyOut: [], net: inr(100), total: inr(100) };
+    const bank = kinListHeader(
+      list({ amount: true }),
+      { ...KIN_LIST_DEFAULT_FILTER, groupBy: "month" },
+      {
+        ...out,
+        groups: [
+          { group: "2026-09", count: 1, ...inOnly },
+          { group: "2026-10", count: 1, ...outOnly },
+          { group: "2026-11", count: 2, ...out },
+        ],
+      },
+      4,
+    );
+    expect([bank.figures, bank.totals, bank.summary]).toEqual([
+      [
+        { id: "moneyIn", label: "Money in", lines: ["₹1"] },
+        { id: "moneyOut", label: "Money out", lines: ["₹3"] },
+        { id: "net", label: "Net", lines: ["−₹2"] },
+      ],
+      [],
+      "Money in: ₹1 · Money out: ₹3 · Net: −₹2",
+    ]);
+    expect(bank.groups.map((group) => [group.totals, group.billed])).toEqual([
+      [["−₹2"], "₹1 in · ₹3 out"],
+      [["−₹3"], "₹3 out"],
+      [["₹1"], "₹1 in"],
+    ]);
     expect(kinListFilterParam(JSON.stringify({ noParty: true, noCategory: true }))).toMatchObject({
       noParty: true,
       noCategory: true,
@@ -653,6 +689,33 @@ describe("a list by its definition", () => {
         "₹40,000.00 has already been received, so the amount can't be less. Take a payment back first.",
     });
     expect(kinAmountCheck("40000", "INR", received)).toEqual({ ok: true, value: received });
+    // The host's slip refusal is one line in a person's words; any other error is not one.
+    const slip = (largest: { minor: number; currency: string } | null) =>
+      new KinChatError({
+        reason: "invalid_state",
+        message: "Check the amount.",
+        farAbove: { list: "Expenses", largest },
+      });
+    expect(kinAmountSlipLine(slip({ minor: 4_800_000, currency: "INR" }))).toBe(
+      "That is far above anything in Expenses so far (the largest is ₹48,000). Save it anyway?",
+    );
+    expect(kinAmountSlipLine(slip({ minor: 1_250, currency: "USD" }))).toBe(
+      "That is far above anything in Expenses so far (the largest is $12.50). Save it anyway?",
+    );
+    expect(kinAmountSlipLine(slip(null))).toBe(
+      "That is far above what Expenses holds so far. Save it anyway?",
+    );
+    expect(
+      kinAmountSlipLine(
+        new KinChatError({ reason: "invalid_state", message: "Check the amount." }),
+      ),
+    ).toBeNull();
+    // The first save asks the host to check; the same amount again keeps it; a changed one asks.
+    const asked = { line: "Save it anyway?", about: "4,80,00,000" };
+    expect(kinAmountConfirmed(null, "4,80,00,000")).toEqual({ amountConfirmed: false });
+    expect(kinAmountConfirmed(asked, "4,80,00,000")).toEqual({ amountConfirmed: true });
+    expect(kinAmountConfirmed(asked, "48,000")).toEqual({ amountConfirmed: false });
+    expect(kinAmountAsking(asked, "48,000")).toBeNull();
     // What an edit starts with reads back as the same amount.
     for (const money of [
       { minor: 5_000_050, currency: "INR" },

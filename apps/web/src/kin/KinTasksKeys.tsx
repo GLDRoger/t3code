@@ -151,6 +151,7 @@ export function KinTasksKeysSection(
       {folded ? (
         <KinSettingsRow
           title={KIN_TASKS_KEYS_COPY.foldedTitle}
+          wrap
           detail={KIN_TASKS_KEYS_COPY.foldedDetail}
           control={
             <Button size="xs" variant="outline" onClick={() => setShown(true)}>
@@ -163,6 +164,7 @@ export function KinTasksKeysSection(
           {guide === undefined ? null : (
             <KinSettingsRow
               title={KIN_TASKS_KEYS_COPY.setupHow}
+              wrap
               detail={KIN_TASKS_KEYS_COPY.setupDetail}
               status={
                 guide === null ? (
@@ -449,6 +451,7 @@ function KinTasksKeyGuide(props: {
                   rows={Math.min(10, setup.text.split("\n").length + 1)}
                 />
               ))}
+              <p className="text-sm text-muted-foreground">{KIN_TASKS_KEYS_COPY.check}</p>
             </div>
           )}
         </DialogPanel>

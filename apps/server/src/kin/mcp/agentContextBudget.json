@@ -1,21 +1,21 @@
 {
-  "mcpToolListJsonBytes": 60253,
-  "kinToolListJsonBytes": 2933,
+  "mcpToolListJsonBytes": 60364,
+  "kinToolListJsonBytes": 3044,
   "kinInstructionsBytes": {
-    "owner": 38144,
-    "confined": 38092
+    "owner": 38447,
+    "confined": 38395
   },
-  "kinSharedInstructionsHash": "27d500e05c23223ee2a9747d1d8b836dab933b863bedb4ab2649428f7314d5e1",
+  "kinSharedInstructionsHash": "d718f25cac1a89d9362e30639b8a634ffc91399d765a671ef81eeac43ff1d521",
   "kinLeadToolListJsonBytes": {
-    "engineering": 141320,
-    "finance": 120904,
-    "social": 123977,
-    "support": 120904,
-    "engineeringBesideFinanceAndSales": 128226,
-    "socialBesideFinanceAndSales": 110883,
-    "shared": 74406
+    "engineering": 143664,
+    "finance": 123248,
+    "social": 126321,
+    "support": 123248,
+    "engineeringBesideFinanceAndSales": 130501,
+    "socialBesideFinanceAndSales": 113158,
+    "shared": 76360
   },
-  "kinLeadAlwaysLoadedToolBytes": 64935,
+  "kinLeadAlwaysLoadedToolBytes": 67168,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -30,7 +30,7 @@
       "schema": 520
     },
     "client_read": {
-      "desc": 660,
+      "desc": 728,
       "schema": 75
     },
     "company_profile": {
@@ -38,7 +38,7 @@
       "schema": 993
     },
     "dates_query": {
-      "desc": 248,
+      "desc": 382,
       "schema": 317
     },
     "deal_stages": {
@@ -47,7 +47,7 @@
     },
     "doc_create": {
       "desc": 1494,
-      "schema": 1577
+      "schema": 2093
     },
     "doc_edit": {
       "desc": 1017,
@@ -78,7 +78,7 @@
       "schema": 562
     },
     "docs_search": {
-      "desc": 411,
+      "desc": 426,
       "schema": 490
     },
     "kin_ask": {
@@ -106,8 +106,8 @@
       "schema": 363
     },
     "kin_chat_read": {
-      "desc": 163,
-      "schema": 185
+      "desc": 222,
+      "schema": 237
     },
     "kin_connection_call": {
       "desc": 627,
@@ -126,7 +126,7 @@
       "schema": 120
     },
     "kin_defer": {
-      "desc": 503,
+      "desc": 644,
       "schema": 473
     },
     "kin_document": {
@@ -142,7 +142,7 @@
       "schema": 499
     },
     "kin_github_review_ask": {
-      "desc": 586,
+      "desc": 738,
       "schema": 134
     },
     "kin_github_watch": {
@@ -178,11 +178,11 @@
       "schema": 115
     },
     "kin_recipes": {
-      "desc": 276,
-      "schema": 46
+      "desc": 396,
+      "schema": 199
     },
     "kin_relay": {
-      "desc": 565,
+      "desc": 756,
       "schema": 166
     },
     "kin_schedule": {
@@ -226,7 +226,7 @@
       "schema": 501
     },
     "money_summary": {
-      "desc": 432,
+      "desc": 501,
       "schema": 46
     },
     "payment_record": {
@@ -251,7 +251,7 @@
     },
     "pulse_handle": {
       "desc": 987,
-      "schema": 1021
+      "schema": 1070
     },
     "pulse_nudge": {
       "desc": 283,
@@ -270,11 +270,11 @@
       "schema": 239
     },
     "record_create": {
-      "desc": 4164,
+      "desc": 4444,
       "schema": 7542
     },
     "record_get": {
-      "desc": 1075,
+      "desc": 1143,
       "schema": 212
     },
     "record_hand_back": {
@@ -290,8 +290,8 @@
       "schema": 7211
     },
     "records_query": {
-      "desc": 1053,
-      "schema": 1848
+      "desc": 1324,
+      "schema": 2000
     },
     "social_draft": {
       "desc": 430,
@@ -341,10 +341,10 @@
   "kinLeadPromptBytes": {
     "ownerReply": 1588,
     "checkIn": 2960,
-    "pulse": 3086,
-    "scheduled": 3418,
-    "reminder": 3163,
-    "groupReply": 2908,
-    "teamRoom": 2793
+    "pulse": 2996,
+    "scheduled": 3232,
+    "reminder": 2916,
+    "groupReply": 3023,
+    "teamRoom": 2751
   }
 }

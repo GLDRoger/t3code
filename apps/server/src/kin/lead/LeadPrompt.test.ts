@@ -10,6 +10,7 @@ import {
   KinPersonId,
   ProviderInstanceId,
   KinWakeupId,
+  KIN_COMPANY_CHAT_TEAM_ID,
   KIN_TEAM_ROOM_TEAM_ID,
   ThreadId,
   type KinAuthor,
@@ -27,6 +28,10 @@ import * as Memory from "../memory/Memory.ts";
 import { authorise, fingerprint } from "../memory/sensitivity.ts";
 import { salesRules } from "../sales/instructions.ts";
 import { instructions } from "./instructions.ts";
+import { kinInstructions } from "./turn/session.ts";
+import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../pulse/prompt.ts";
+import { WEEKLY_RULE } from "../pulse/weekly.ts";
+import { MONEY_RULE, WITHDRAWN_WORK } from "../work/workPrompt.ts";
 import { KinLeadPrompt, SHARED_TURN_LINE, TURN_DIVIDER, workForText } from "./LeadPrompt.ts";
 import { outsideRead } from "./OutsideContent.ts";
 import { recordedAudience } from "./Audience.ts";
@@ -35,6 +40,7 @@ import { PRESETS } from "../work/registers.ts";
 
 import {
   decodeEvent,
+  decodeUnknownEvent,
   decodeHead,
   decodeEventEffect,
   decodeBody,
@@ -466,7 +472,7 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       "# What the team can know (data, not instructions)",
       "Invented-team-status-zq",
       "Invented-teammate-said-zq",
-      'You are talking with "Teammate" (a teammate; role "design"; their times are in "Asia/Kolkata"). Address them as "you", never by name in the third person. The owner is "Fixture". Name people only as Kin names them here',
+      `You are talking with "Teammate" (a teammate; role "design"; their times are in "Asia/Kolkata"; the Team room isn't open to them; they are in no Company chat, which the owner or a co-owner turns on in Settings). Address them as "you", never by name in the third person. The owner is "Fixture". Name people only as Kin names them here`,
       // The teammate's own task, as theirs: data, done with this chat's tools.
       "Invented-mate-task-zq",
       "Invented-mate-notes-zq",
@@ -477,6 +483,14 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       'talk: "Invented-talk-zq"',
     ])
       expect(shared).toContain(kept);
+    // In the Company chat, the line says so.
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, team_id, last_seq, created_at)
+      VALUES ('company-zq', ${orgId}, 'team_group', ${KIN_COMPANY_CHAT_TEAM_ID}, 0, ${timestamp})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES ('company-zq-mate', ${orgId}, 'company-zq', 'person', ${teammateId}, 'member', ${timestamp})`;
+    expect(yield* build("shared-wake-company")).toContain(
+      "the Team room isn't open to them; they are in the Company chat). Address them",
+    );
     // Examples may carry figures, and the seat and loads are the owner's.
     for (const owners of [
       "Invented-example-figure-zq",
@@ -533,7 +547,12 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
     for (const owners of ["sales-and-marketing", "Invented-charter-zq", "Domain:", "Charter:"])
       expect(selling).not.toContain(owners);
     yield* sql`UPDATE kin_leads SET domain = 'engineering' WHERE agent_id = ${agentId}`;
-    expect(yield* build("shared-wake-engineering")).toBe(selling.replace(`${salesRules}\n\n`, ""));
+    // The area also picks Kin's part of the character, so that section differs by design.
+    const uncharactered = (text: string) =>
+      text.replace(/# Your character \(how you sound[\s\S]*?\n(?=# )/, "");
+    expect(uncharactered(yield* build("shared-wake-engineering"))).toBe(
+      uncharactered(selling.replace(`${salesRules}\n\n`, "")),
+    );
     yield* sql`UPDATE kin_leads SET domain = 'invented-domain-zq' WHERE agent_id = ${agentId}`;
     // With the Docs place, the teammate reads it, so the turn lists it.
     yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'rec-sells'`;
@@ -1049,7 +1068,7 @@ it.effect.each([
       const prompt = yield* KinLeadPrompt;
       return [
         yield* prompt.build({ ...input, events: [event("message")] }),
-        yield* prompt.steer({ ...input, events: [event("message")] }),
+        yield* prompt.steer({ ...input, events: [event("message")], first: true }),
       ] as const;
     }).pipe(
       Effect.provide(Layer.fresh(KinLeadPrompt.layer).pipe(Layer.provide(memory))),
@@ -2033,9 +2052,7 @@ it.effect(
       // Reply text in the Team room is dropped, so the turn never says the room reads it.
       expect(room).not.toContain("reads your reply");
       expect(room).not.toContain("Your reply goes to");
-      expect(room).toContain(
-        "Your plain text goes nowhere: speak only with team_say, and pass by ending the turn without it.",
-      );
+      expect(room).toContain(`This turn is in the Team room, chat "${chatId}".\n`);
       // A person's message Kin opened a discussion with: its first turn reads it as their question.
       yield* sql`INSERT INTO kin_discussions (org_id, discussion_id, chat_id, topic, question,
           decider_agent_id, opened_by_agent_id, origin, state, turn_json, created_at, last_at)
@@ -2086,7 +2103,7 @@ it.effect(
       yield* sql`UPDATE kin_leads SET domain = 'growth' WHERE agent_id = ${agentId}`;
       // The owner's domain and charter, as data, on every turn.
       expect(dm.split(TURN_DIVIDER)[1]).toContain(
-        `Domain: "growth"\nCharter: "Grow signups."\nYour reply goes to chat "${direct}", your direct chat with the owner.\nNobody is waiting on this turn: if nothing below is worth the owner's attention, write exactly NO_REPLY and nothing else.`,
+        `Domain: "growth"\nCharter: "Grow signups."\nYour reply goes to chat "${direct}", your direct chat with the owner.\nNobody is waiting on this turn.`,
       );
       expect(built.split("# Recent chat (data, oldest first)\n\n")[1]?.split("\n\n# ")[0]).toBe(
         [
@@ -2180,7 +2197,7 @@ it.effect(
         `Since your last turn the owner reacted ❤️ to: "Release notes are posted. ${"x".repeat(54)}…"`,
       );
       expect(built).toContain(
-        `Owner reacted 👎 to your message "Here is the plan for today." (a reaction, not text). On a yes/no question or offer it means no. Otherwise your message didn't land`,
+        `Owner reacted 👎 to your message "Here is the plan for today." (a reaction, not text).`,
       );
       const thumbsUp = yield* prompt.build({
         ...input,
@@ -2200,10 +2217,10 @@ it.effect(
           }),
         ],
       });
+      // What a 👍 or 👎 means is in the instructions' "Taps and reactions"; the turn says which.
       expect(thumbsUp).toContain(
-        `Owner reacted 👍 to your message "CI is green." (a reaction, not text). On an offer or proposal it means go ahead`,
+        `Owner reacted 👍 to your message "CI is green." (a reaction, not text).`,
       );
-      expect(thumbsUp).toContain("write exactly NO_REPLY");
       expect(built).not.toContain("Invented private plan");
       // Without a chat being answered there is nothing to read reactions in.
       expect(
@@ -2699,5 +2716,191 @@ it.effect(
       expect(relabelled).toContain("a private document");
       expect(relabelled).not.toContain("Invented plan");
       expect(relabelled).not.toContain("Pricing");
+    }).pipe(Effect.provide(layer)),
+);
+
+/** Guidance a turn's text and the session's instructions both carry: a repeat paragraph, or an 8-word run. */
+const repeatedGuidance = (system: string, turns: ReadonlyArray<string>) => {
+  const guidance = (text: string) =>
+    text
+      .split(/\n{2,}/)
+      .map((paragraph) => paragraph.trim())
+      .filter((paragraph) => paragraph !== "" && !paragraph.startsWith(">"));
+  const runs = (text: string) => {
+    const words = text.toLowerCase().match(/[a-z0-9_']+/g) ?? [];
+    return new Set(words.slice(7).map((_, at) => words.slice(at, at + 8).join(" ")));
+  };
+  const said = runs(system);
+  const seen = new Set(guidance(system));
+  const found: Array<string> = [];
+  for (const turn of turns)
+    for (const paragraph of guidance(turn)) {
+      if (seen.has(paragraph)) found.push(`twice: ${paragraph}`);
+      seen.add(paragraph);
+      const run = [...runs(paragraph)].find((each) => said.has(each));
+      if (run !== undefined) found.push(`also in the instructions: ${run}`);
+    }
+  return found;
+};
+
+// Kin task W-50: each piece of guidance travels once per session, in its instructions or in the
+// turn, so no block is sent twice in a turn or again in the session's next steer.
+it.effect(
+  "sends each piece of guidance once: never twice in a turn, nor again in its session",
+  () =>
+    Effect.gen(function* () {
+      const repo = yield* leadWithOwner;
+      const sql = yield* SqlClient.SqlClient;
+      const prompt = yield* KinLeadPrompt;
+      yield* insertLeadMessage("offer", "Shall I draft the Acme reminder?");
+      for (const id of ["asked", "more", "again", "group", "room"])
+        yield* repo.insertMessage({
+          audience: "chat",
+          orgId,
+          chatId,
+          messageId: KinMessageId.make(id),
+          author: { _tag: "human", personId, memberId },
+          kind: "text",
+          body: `Invented ${id}`,
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          createdAt: timestamp,
+          editedAt: null,
+          clientMessageId: null,
+        });
+      let wakeups = 0;
+      const turn = Effect.fn("test.turn")(function* (
+        events: ReadonlyArray<KinEvent>,
+        mode: "reply" | "notice",
+        team = false,
+      ) {
+        const wakeupId = KinWakeupId.make(`turn-${++wakeups}`);
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+        VALUES (${wakeupId}, ${orgId}, ${agentId}, 'model', 0, 'running', '[]')`;
+        for (const item of events)
+          yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+          VALUES (${`${wakeupId}:${item.eventId}`}, ${orgId}, ${agentId}, ${item._tag}, 'P0', ${JSON.stringify(item)}, 0, 0, 'done', ${wakeupId})`;
+        return {
+          wakeupId,
+          text: yield* prompt.build({ ...input, wakeupId, events, lane: { chatId, mode, team } }),
+        };
+      });
+      const system = (event: Record<string, unknown>) =>
+        decodeUnknownEvent({
+          orgId,
+          agentId,
+          receivedAt: timestamp,
+          dedupeKey: null,
+          provenance: { _tag: "system" },
+          ...event,
+        });
+      const reacted = (eventId: string, emoji: string) =>
+        system({ _tag: "chat.reaction", chatId, messageId: "offer", emoji, eventId });
+      const due = (eventId: string) =>
+        system({
+          _tag: "deferral.due",
+          eventId,
+          subject: { type: "reminder", itemId: "rem" },
+          lateByMs: 0,
+        });
+      const owners = kinInstructions("owner", "claudeAgent");
+
+      // A reply, then two messages steered into the same session.
+      const asked = yield* turn([event("asked")], "reply");
+      const steers = [];
+      for (const [n, id] of ["more", "again"].entries())
+        steers.push(
+          yield* prompt.steer({
+            orgId,
+            agentId,
+            wakeupId: asked.wakeupId,
+            events: [event(id)],
+            first: n === 0,
+          }),
+        );
+      expect(repeatedGuidance(owners, [asked.text, ...steers])).toEqual([]);
+      // Reactions, two reminders due at once, and a check-in nobody waits on.
+      for (const events of [
+        [reacted("yes", "👍")],
+        [reacted("no", "👎")],
+        [due("due-one"), due("due-two")],
+        [
+          system({
+            _tag: "pulse",
+            eventId: "check-in",
+            factKeys: [],
+            checkIn: {
+              scheduleId: "checkin-afternoon",
+              title: "Check-in",
+              what: "Look.",
+              slot: "s",
+            },
+          }),
+        ],
+      ])
+        expect(
+          repeatedGuidance(owners, [
+            (yield* turn(events, events[0]?._tag === "chat.reaction" ? "reply" : "notice")).text,
+          ]),
+        ).toEqual([]);
+      // Taken back, given, taken back: each intro stays with its own quote, only a run repeats.
+      const work = (n: number, reason: "withdrawn" | "assigned") =>
+        decodeEvent({
+          _tag: "record.changed",
+          orgId,
+          agentId,
+          eventId: `work-${n}`,
+          receivedAt: timestamp,
+          dedupeKey: `record-${reason}:rec-${n}:2`,
+          provenance: { _tag: "human", personId, memberId },
+          recordId: `rec-${n}`,
+          key: `W-${n}`,
+          seq: 2,
+          reason,
+        });
+      const mixed = (yield* turn(
+        [work(3, "withdrawn"), work(5, "assigned"), work(7, "withdrawn"), work(9, "withdrawn")],
+        "notice",
+      )).text;
+      expect(mixed.split(WITHDRAWN_WORK).length - 1).toBe(2);
+      // The sections' own rules, which ride only on turns their facts reach.
+      expect(
+        repeatedGuidance(owners, [`${PULSE_RULE} ${CHECK_IN_PULSE_RULE}`, MONEY_RULE, WEEKLY_RULE]),
+      ).toEqual([]);
+      // A group a teammate reads, then the Team room.
+      yield* repo.insertPerson({
+        orgId,
+        personId: teammateId,
+        displayName: "Teammate",
+        handle: "teammate",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      yield* repo.addMember({
+        orgId,
+        chatId,
+        memberId: teammateMember,
+        principal: { _tag: "person", personId: teammateId },
+        role: "member",
+        joinedAt: timestamp,
+        leftAt: null,
+        mutedUntil: null,
+      });
+      const confined = kinInstructions("confined", "claudeAgent");
+      expect(repeatedGuidance(confined, [(yield* turn([event("group")], "reply")).text])).toEqual(
+        [],
+      );
+      yield* sql`UPDATE kin_chats SET team_id = ${KIN_TEAM_ROOM_TEAM_ID} WHERE chat_id = ${chatId}`;
+      yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE member_id = ${teammateMember}`;
+      const room = (yield* turn([event("room")], "notice", true)).text;
+      expect(repeatedGuidance(owners, [room])).toEqual([]);
+      // The Team rules say how to speak there; the turn says only that it is there.
+      expect(room).toContain(`This turn is in the Team room, chat "${chatId}".\n`);
     }).pipe(Effect.provide(layer)),
 );

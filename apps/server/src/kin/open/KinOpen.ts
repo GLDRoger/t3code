@@ -182,7 +182,10 @@ export const sources = Effect.fn("KinOpen.sources")(function* (input: {
   const facts = screenFacts(pulse.facts, input.acceptSenses);
   // A fact on a record stands for its task, handled or not, as Needs you shows it today.
   const covered = new Set(facts.flatMap((fact) => kinPulseFactRecord(fact) ?? []));
-  const waiting = yield* waitingFor({ _tag: "person", orgId, personId: viewer.personId });
+  const waiting = yield* waitingFor(
+    { _tag: "person", orgId, personId: viewer.personId },
+    { others: true },
+  );
   const dayEnd = yield* dayEndFor(orgId, viewer.personId, at);
   return {
     facts: facts.filter((fact) => fact.handled === null),
@@ -237,11 +240,14 @@ export const rowsOf = (from: OpenSources, at: number, cap = ROW_CAP): KinOpenRea
       row: { id: "money:overdue", late: true, item: { _tag: "money", invoices: from.overdue } },
     });
   let waiting = 0;
+  let others = 0;
   for (const item of from.waiting) {
     if (from.settled.has(item.waitingId)) continue;
-    waiting += 1;
+    // Someone else's, to look at only: listed last, and counted as nobody's need here.
+    if (item.waitsFor === undefined) waiting += 1;
+    else others += 1;
     ranked.push({
-      rank: 5,
+      rank: item.waitsFor === undefined ? 5 : 7,
       at: DateTime.toEpochMillis(DateTime.makeUnsafe(item.createdAt)),
       row: {
         id: `waiting:${item.waitingId}`,
@@ -256,7 +262,7 @@ export const rowsOf = (from: OpenSources, at: number, cap = ROW_CAP): KinOpenRea
   );
   return {
     asOf: iso(at),
-    counts: { needsYou: ranked.length, waiting },
+    counts: { needsYou: ranked.length - others, waiting },
     rows: ranked.slice(0, cap).map((one) => one.row),
   };
 };

@@ -2,6 +2,7 @@ import { currencyDigits } from "../money.ts";
 import { RAILS } from "./statementRegion.ts";
 import type { StatementRow } from "./statementTable.ts";
 import { DAY_MS } from "../../durations.ts";
+import { notAVendor } from "../vendorName.ts";
 
 /**
  * Which invoice a credit pays and which expense a debit is, by plain rules: the exact amount
@@ -358,6 +359,8 @@ const payee = (text: string) => {
   }
   return rest;
 };
+/** The bank's own prose, such as "BEING AMOUNT PAID TOWARDS …": it names nobody. */
+const BANK_PROSE = /^(?:being|towards|chq|cheque)\b/i;
 export const vendorOf = (narration: string): string | undefined => {
   const said = narration.replace(/\s+/g, " ").trim();
   const parts = (text: string) =>
@@ -376,7 +379,9 @@ export const vendorOf = (narration: string): string | undefined => {
   else if (/^ACH\s?D?[-\s]/i.test(said)) found = said.replace(/^ACH\s?D?[-\s]+/i, "").split("-")[0];
   else if (/^POS\b/i.test(said)) found = said.replace(/^POS\s+\S*\d{4}\S*\s+/i, "");
   else found = said;
-  const cleaned = payee(found ?? "")
+  const named = payee(found ?? "");
+  if (BANK_PROSE.test(named)) return undefined;
+  const cleaned = named
     .replace(/\b(USD|EUR|GBP|SGD|AED|AUD|CAD)\s?[\d,.]+/gi, "")
     .replace(/\*.*$/, "")
     .replace(/\.(com|in|io|co)\b.*$/i, "")
@@ -386,7 +391,7 @@ export const vendorOf = (narration: string): string | undefined => {
     .split(/\s+/)
     .slice(0, 3)
     .join(" ");
-  if (cleaned.length < 2) return undefined;
+  if (cleaned.length < 2 || notAVendor(cleaned)) return undefined;
   return cleaned
     .toLowerCase()
     .replace(/\b[a-z]/g, (letter) => letter.toUpperCase())
@@ -438,6 +443,7 @@ export const suggest = (
       why: "A salary",
     };
   const known = input.known
+    .filter((one) => !notAVendor(one.vendor))
     .map((one) => ({ one, fit: nameIn(one.vendor, text) }))
     .filter((one) => one.fit >= 0.5)
     .toSorted((left, right) => right.fit - left.fit)[0]?.one;

@@ -10,6 +10,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { withArticle } from "../article.ts";
 import { formatMoney } from "./money.ts";
 
 /**
@@ -186,7 +187,7 @@ export const checkFor = (
   const def = LISTS[list];
   if (input.state !== undefined && !def.states.includes(input.state))
     return invalid(
-      `A ${def.noun} is ${def.states.join(", ")}; ${input.state} is for Work entries.`,
+      `${withArticle(def.noun, "A")} is ${def.states.join(", ")}; ${input.state} is for Work entries.`,
     );
   if (
     input.category !== undefined &&
@@ -195,10 +196,10 @@ export const checkFor = (
   )
     return invalid(
       def.categories.length === 0
-        ? `A ${def.noun} has no category.`
-        : `A ${def.noun}'s kind is ${def.categories.join(" or ")}.`,
+        ? `${withArticle(def.noun, "A")} has no category.`
+        : `${withArticle(def.noun, "A")}'s kind is ${def.categories.join(" or ")}.`,
     );
   const extra = Object.keys(input.fields ?? {}).filter((key) => !def.fields.includes(key));
-  if (extra.length > 0) return invalid(`A ${def.noun} has no ${extra.join(", ")}.`);
+  if (extra.length > 0) return invalid(`${withArticle(def.noun, "A")} has no ${extra.join(", ")}.`);
   return undefined;
 };

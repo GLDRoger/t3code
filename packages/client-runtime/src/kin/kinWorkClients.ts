@@ -517,14 +517,15 @@ export const kinMineOwner = (me: KinPersonId | null): KinWorkPrincipal | null =>
   me === null ? null : { _tag: "person", personId: me };
 
 /**
- * The side a list opens on: Everyone when that was left last, or when Mine has nothing (so nobody
- * opens on an empty Mine above a full company); else Mine. Null while Mine's count is unread.
+ * The side a list opens on: the side the person last chose, even an empty Mine. Unchosen, Everyone
+ * when Mine has nothing (so nobody lands on an empty Mine above a full company), else Mine; null
+ * while Mine's count is unread.
  */
 export function kinMineOpens(
   remembered: KinMineSide | null,
   mine: KinMineCount | null,
 ): KinMineSide | null {
-  if (remembered === "everyone") return "everyone";
+  if (remembered !== null) return remembered;
   if (mine === null) return null;
   return mine.n > 0 ? "mine" : "everyone";
 }
@@ -1391,6 +1392,7 @@ export function kinProjectPageView(
   const { project, counts } = page;
   const ref = { key: project.key, title: project.name };
   const because = project.healthBecause;
+  const client = project.party?.title ?? "the client";
   const why =
     project.health === null
       ? []
@@ -1402,6 +1404,14 @@ export function kinProjectPageView(
           because.waitingOverAWeek > 0
             ? `${kinCount(because.waitingOverAWeek, "task")} ${because.waitingOverAWeek === 1 ? "has" : "have"} waited more than a week.`
             : null,
+          (because.overdueInvoices ?? 0) > 0
+            ? `${kinCount(because.overdueInvoices!, "invoice")} for this project ${because.overdueInvoices === 1 ? "is" : "are"} overdue.`
+            : null,
+          because.noContact === undefined
+            ? null
+            : because.noContact.lastContactAt === null
+              ? `No contact recorded with ${client}.`
+              : `No contact with ${client} for ${kinCount(because.noContact.days, "day")}.`,
         ].filter((part) => part !== null);
   const target = kinWorkDueText(
     { dueAt: project.targetAt, dueAllDay: project.targetAllDay },

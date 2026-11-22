@@ -16,6 +16,7 @@ import {
   type KinProfileDraft,
   type KinProfileHolding,
 } from "@t3tools/client-runtime/kin/kinProfiles";
+import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { KIN_TIME_ZONE_PLACEHOLDER, kinZoneLabel } from "@t3tools/client-runtime/kin/kinTimeZone";
 import type {
@@ -537,9 +538,8 @@ function KinProfileForm(props: {
 }) {
   const { environmentId, orgId, profile } = props;
   const update = useAtomCommand(kinClient.profileUpdate, { reportFailure: false });
-  const [draft, setDraft] = useState<KinProfileDraft>(() =>
-    kinProfileDraft(profile, props.holding),
-  );
+  const [opened] = useState<KinProfileDraft>(() => kinProfileDraft(profile, props.holding));
+  const [draft, setDraft] = useState(opened);
   const [busy, setBusy] = useState<"saving" | "picture" | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   // Undefined keeps the picture; null takes it away.
@@ -593,6 +593,7 @@ function KinProfileForm(props: {
       openAt={props.focus}
       busy={busy !== null}
       problem={problem}
+      typed={picture !== undefined || kinFormTyped(opened, draft)}
       onSubmit={() => void save()}
       onClose={() => {
         drop(picture);

@@ -3,8 +3,10 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
 import { kinIssuedAmountQuestion } from "@t3tools/client-runtime/kin/kinInvoices";
 import {
+  KIN_AMOUNT_SLIP,
   KIN_FIELD_FILES_MAX,
   KIN_LISTS,
+  kinAmountAsking,
   kinAmountCheck,
   kinFieldCheck,
   kinListEntryView,
@@ -203,6 +205,7 @@ function TypedEdit(
         field === null
           ? { amount: checked.value as never }
           : fieldPatch(field, checked.value as KinFieldValue | null),
+        field === null ? text.trim() : undefined,
       );
       if (saved) props.onClose();
     };
@@ -217,13 +220,14 @@ function TypedEdit(
     });
   };
   const shown = problem ?? changes.problem;
+  const asking = field === null ? kinAmountAsking(changes.ask, text.trim()) : null;
   return (
     <KinWorkFrame
       title={props.label}
       form
       onClose={props.onClose}
       confirm={{
-        label: KIN_LISTS.entry.save,
+        label: asking === null ? KIN_LISTS.entry.save : KIN_AMOUNT_SLIP.save,
         onPress: () => void save(),
         loading: changes.busy,
         disabled: changes.busy || waiting,
@@ -249,6 +253,11 @@ function TypedEdit(
           />
         </KinCountryFirstField>
       </ListSection>
+      {asking === null ? null : (
+        <Text textRole="body" accessibilityLiveRegion="polite" className="px-2 text-foreground">
+          {asking.line}
+        </Text>
+      )}
     </KinWorkFrame>
   );
 }

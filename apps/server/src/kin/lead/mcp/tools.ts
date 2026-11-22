@@ -132,7 +132,7 @@ export const KinLeadToolkit = Toolkit.make(
     ...handoff,
     dependencies: [...handoff.dependencies, KinLevelGate],
     description:
-      "Send one person in the company a message from this chat, in their chat with you: what the person you're answering needs from them, or their answer back. Kin shows who it is from and through whom, so write the message itself, never opening with their name or \"X is asking\". Words only, short; it can't hold amounts or anything they can't see. Whenever you say you'll tell, ask or pass something to someone, call this first; if you don't, Kin tells the asker it didn't reach them. A restricted pair is refused and says so. For a late task in their hours, pulse_nudge.",
+      "Send one person in the company a message from this chat, in their chat with you: what the person you're answering needs from them, or their answer back. A teammate's request to merge, change code or re-run CI goes to the owner this way: their request and what you couldn't check, never a question. Kin shows who it is from and through whom, so write the message itself, never opening with their name or \"X is asking\". Words only, short; it can't hold amounts or anything they can't see. Whenever you say you'll tell or pass something to someone, call this first; if you don't, Kin tells the asker it didn't reach them. A question only they can answer is kin_ask_person. A restricted pair is refused and says so. For a late task in their hours, pulse_nudge.",
     parameters: Handoff.RelayInput,
     success: Handoff.RelayResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -223,7 +223,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_defer", {
     ...shared,
     description:
-      'Set a reminder or one-time follow-up: what, due as a timestamp with offset (from the Owner time line), onDue and chatId. A bare number with sleep, wait or pause is seconds ("sleep for 60" is due 60 s after the message). If a duration is ambiguous in a way that matters, ask in one short line. When the owner corrects a time, pass the old item as replaces so only the new one fires. A step with a client (a call, a mail, a follow-up) is a Work row for that client instead (record_create). Returns itemId.',
+      'Set a reminder or one-time follow-up: what, due as a timestamp with offset (from the Owner time line), onDue and chatId. A bare number with sleep, wait or pause is seconds ("sleep for 60" is due 60 s after the message). If a duration is ambiguous in a way that matters, ask in one short line. When the owner corrects a time, pass the old item as replaces so only the new one fires. A step with a client (a call, a mail, a follow-up) is a Work row for that client instead (record_create), and so is something a person is to do on a day with no time ("remind me to send Meera the link on Thursday"): a task of theirs due that day. Returns itemId.',
     parameters: Lead.DeferInput,
     success: Lead.DeferResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -259,7 +259,7 @@ export const KinLeadToolkit = Toolkit.make(
     ...prCare,
     dependencies: [...prCare.dependencies, KinServer],
     description:
-      "Queue the reviews a person asks for in their own chat with you, on the repos Kin watches that they can read (a private repo needs their GitHub username on file): their open PRs (omit both), those on repo, or one by repo and number. Kin picks the PRs and queues each review as a GitHub review request would; it posts on the PR, and Kin tells them in this chat when it is posted or didn't finish. The result says per PR: queued, under way or already reviewed at this head, or why not. Tell them exactly that. Changing code, merging or re-running CI still goes to the owner with kin_relay.",
+      'Queue the reviews a person asks for in their own chat with you, on the repos Kin watches that they can read (a private repo needs their GitHub username on file). With no PR named ("my PRs", "the latest changes"), call it with nothing: Kin finds their open PRs. Give repo, or repo and number, only as they named them. Kin queues each review as a GitHub review request would; it posts on the PR, and Kin tells them in this chat when it is posted or didn\'t finish. The result says per PR: queued, under way or already reviewed at this head, or why not. Tell them exactly that. Changing code, merging or re-running CI still goes to the owner with kin_relay: their request and what you couldn\'t check, never a question for the owner to answer.',
     parameters: ReviewAsk.AskInput,
     success: ReviewAsk.AskResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
