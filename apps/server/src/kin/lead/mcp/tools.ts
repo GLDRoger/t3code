@@ -231,7 +231,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_defer", {
     ...shared,
     description:
-      'Set a reminder or one-time follow-up: what, due as a timestamp with offset (from the Owner time line), onDue and chatId. A bare number with sleep, wait or pause is seconds ("sleep for 60" is due 60 s after the message). If a duration is ambiguous in a way that matters, ask in one short line. When the owner corrects a time, pass the old item as replaces so only the new one fires. A step with a client (a call, a mail, a follow-up) is a Work row for that client instead (record_create), and so is something a person is to do on a day with no time ("remind me to send Meera the link on Thursday"): a task of theirs due that day. From a chat with other people it sets only onDue remind. Returns itemId.',
+      'Set a reminder or one-time follow-up: what, due as a timestamp with offset (from the Owner time line), onDue and chatId. A bare number with sleep, wait or pause is seconds ("sleep for 60" is due 60 s after the message). If a duration is ambiguous in a way that matters, ask in one short line. When the owner corrects a time, pass the old item as replaces so only the new one fires. A step with a client (a call, a mail, a follow-up) is a Work row for that client instead (record_create), and so is something a person is to do on a day with no time ("remind me to send Meera the link on Thursday"): a task of theirs due that day. In a chat others read, only onDue remind. Returns itemId.',
     parameters: Lead.DeferInput,
     success: Lead.DeferResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -245,7 +245,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_cancel", {
     ...shared,
     description:
-      "Cancel a reminder, follow-up or scheduled task you set up, by itemId; it never fires. To move one, use kin_defer with replaces.",
+      "Cancel a reminder, follow-up or scheduled task you set up, by itemId; the result says whether it stopped. To move one, use kin_defer with replaces.",
     parameters: Lead.CancelInput,
     success: Lead.CancelResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

@@ -145,7 +145,7 @@ export const WriteInput = Schema.Struct({
   besides: Schema.optional(Schema.Array(KinMemoryItemId).check(Schema.isMaxLength(100))),
 });
 const ALONE =
-  'In a chat with other people it fires into that chat; true sends it to the asker\'s own chat with you instead ("remind me").';
+  'In a chat with other people it fires there; true sends it to the asker\'s own chat with you ("remind me").';
 export const DeferInput = Schema.Struct({
   itemId: Schema.optional(itemId),
   what: TrimmedNonEmptyString.check(Schema.isMaxLength(8000)),
