@@ -40,11 +40,14 @@ export const isHolderNotice = Effect.fn("KinPulse.isHolderNotice")(function* (
 /** One fact's line: "W-8 Send the deck, was due yesterday". */
 export const holderLine = (
   ctx: SenseContext,
-  fact: Pick<KinPulseFact, "sense" | "subject">,
+  fact: Pick<KinPulseFact, "sense" | "subject" | "scope">,
   dueAt: number,
 ) => {
   const when = daysAgoText(ctx, dueAt);
-  const state = fact.sense === "task_due_soon" ? "due today" : `was due ${when}`;
+  // What a client owes the holder says whose it is, so it never reads as the holder's own lateness.
+  const client = fact.sense === "theirs_late" ? fact.scope.clientTitle : undefined;
+  const from = client === undefined ? "" : ` from ${client}`;
+  const state = fact.sense === "task_due_soon" ? "due today" : `was due${from} ${when}`;
   return { key: fact.subject.key, title: fact.subject.title, state };
 };
 

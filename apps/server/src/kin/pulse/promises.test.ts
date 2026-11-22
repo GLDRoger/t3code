@@ -219,7 +219,9 @@ describe("promises both ways", () => {
         const late = Date.UTC(2026, 10, 5, 15);
         yield* tickAt(late);
         yield* tickAt(late + HOUR);
-        assert.deepStrictEqual(yield* noticesTo(zoya), ["W-7 Staff list was due yesterday."]);
+        assert.deepStrictEqual(yield* noticesTo(zoya), [
+          "W-7 Staff list was due from Corran Tiles yesterday.",
+        ]);
         // Nobody else hears any of it.
         for (const person of [arjun, dev, rhea]) {
           assert.lengthOf(yield* pagesTo(person), 0, person);
@@ -277,7 +279,9 @@ describe("promises both ways", () => {
         yield* tickAt(late + HOUR);
         yield* tickAt(late + 2 * HOUR);
         assert.deepStrictEqual(keys((yield* asZoya(late + 2 * HOUR)).facts), ["theirs_late"]);
-        assert.deepStrictEqual(yield* noticesTo(zoya), ["W-7 Staff list was due 2 days ago."]);
+        assert.deepStrictEqual(yield* noticesTo(zoya), [
+          "W-7 Staff list was due from Corran Tiles 2 days ago.",
+        ]);
       }).pipe(Effect.provide(chatLayer)),
   );
 
@@ -299,7 +303,9 @@ describe("promises both ways", () => {
         yield* tickAt(late + HOUR);
         const about = (facts: ReadonlyArray<KinPulseFact>) =>
           facts.flatMap((fact) => (fact.sense === "theirs_late" ? [fact.subject.key] : []));
-        assert.deepStrictEqual(yield* noticesTo(zoya), ["W-10 Signed form was due 2 days ago."]);
+        assert.deepStrictEqual(yield* noticesTo(zoya), [
+          "W-10 Signed form was due from Corran Tiles 2 days ago.",
+        ]);
         assert.deepStrictEqual(about((yield* read(late + HOUR)).facts), ["W-10"]);
         assert.deepStrictEqual(about((yield* asZoya(late + HOUR)).facts), ["W-10"]);
         // Deals on again: the promise is back where it was, and what went quiet isn't told late.
@@ -307,7 +313,9 @@ describe("promises both ways", () => {
         yield* tickAt(late + 2 * HOUR);
         assert.sameMembers(about((yield* read(late + 2 * HOUR)).facts), ["W-7", "W-10"]);
         assert.sameMembers(about((yield* asZoya(late + 2 * HOUR)).facts), ["W-7", "W-10"]);
-        assert.deepStrictEqual(yield* noticesTo(zoya), ["W-10 Signed form was due 2 days ago."]);
+        assert.deepStrictEqual(yield* noticesTo(zoya), [
+          "W-10 Signed form was due from Corran Tiles 2 days ago.",
+        ]);
       }).pipe(Effect.provide(shellLayer)),
   );
 
