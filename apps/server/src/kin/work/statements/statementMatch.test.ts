@@ -4,6 +4,7 @@ import {
   type ExpenseCandidate,
   type InvoiceCandidate,
   matchRows,
+  type PartnerCandidate,
   suggest,
   vendorOf,
 } from "./statementMatch.ts";
@@ -312,7 +313,7 @@ describe("statement matching", () => {
       key,
       amountMinor,
     });
-    const partners = [
+    const partners: ReadonlyArray<PartnerCandidate> = [
       {
         name: "Meera Rao",
         currency: "INR",
@@ -513,7 +514,7 @@ describe("statement matching", () => {
     // A line naming a partner is never a new expense: owed nothing here, or already repaid by hand.
     const placed = (
       line: ReturnType<typeof debit>,
-      owing: ReadonlyArray<(typeof partners)[number] & { readonly id?: string }>,
+      owing: ReadonlyArray<PartnerCandidate>,
       payees: ReadonlyArray<{
         name: string;
         repaid: ReadonlyArray<{ currency: string; day: string; amountMinor: number }>;
