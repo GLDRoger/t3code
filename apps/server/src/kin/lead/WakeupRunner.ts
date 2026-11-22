@@ -357,6 +357,8 @@ const make = Effect.gen(function* () {
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
   const chat = yield* Effect.serviceOption(KinChatService);
+  const scope = yield* Effect.scope;
+  const spaceChecks = new Set<KinOrgId>();
   const spaceFolders = Option.map(yield* Effect.serviceOption(ServerConfig), (config) =>
     HostBackup.spaceFolders(config.baseDir),
   );
@@ -379,9 +381,13 @@ const make = Effect.gen(function* () {
         );
   // While the out-of-space notice stands, it is the one word on space.
   const warnIfLowOnSpace = Effect.fn("WakeupRunner.warnIfLowOnSpace")(function* (orgId: KinOrgId) {
-    if (Option.isSome(care) && (yield* care.value.troubleOpen(orgId, "space"))) return;
-    yield* lowOnSpace(orgId);
-  });
+    if (spaceChecks.has(orgId)) return;
+    spaceChecks.add(orgId);
+    yield* Effect.gen(function* () {
+      if (Option.isSome(care) && (yield* care.value.troubleOpen(orgId, "space"))) return;
+      yield* lowOnSpace(orgId);
+    }).pipe(Effect.ensuring(Effect.sync(() => spaceChecks.delete(orgId))), Effect.forkIn(scope));
+  }, Effect.uninterruptible);
   const prompt = yield* KinLeadPrompt;
   const turnContent = yield* KinTurnContent;
   const identity = yield* KinIdentity.KinIdentity;
