@@ -86,6 +86,7 @@ type Definition = {
   readonly key: string;
   readonly name: string;
   readonly fields: string;
+  readonly hasTarget: number;
   readonly ownerKind: string;
   readonly ownerId: string | null;
   readonly createdAt: number;
@@ -94,23 +95,30 @@ type Definition = {
 const definitions = Effect.fn("KinNumbers.definitions")(function* (
   viewer: Reader,
   keys: ReadonlyArray<string> | undefined,
-  targets: boolean,
+  includeTargets = false,
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (keys?.length === 0) return [];
   return yield* sql<Definition>`SELECT r.record_id AS "recordId", r.key, r.title AS name,
-      r.fields_json AS fields, r.owner_kind AS "ownerKind", r.owner_id AS "ownerId",
+      r.fields_json AS fields, NOT (${targetless(sql)}) AS "hasTarget", r.owner_kind AS "ownerKind", r.owner_id AS "ownerId",
       r.created_at AS "createdAt"
     FROM kin_records r WHERE r.org_id = ${viewer.orgId} AND r.register_id = 'goals'
-      AND ${countedEntry(sql)} AND json_extract(r.fields_json, '$.measure') = 'manual'
-      AND ${targets ? sql`1` : targetless(sql)}
+      AND ${countedEntry(sql)}
+      AND (${targetless(sql)} AND json_extract(r.fields_json, '$.measure') = 'manual'
+        ${includeTargets ? sql`OR NOT (${targetless(sql)})` : sql``})
       AND ${keys === undefined ? sql`1` : sql`r.key IN ${sql.in(keys)}`}
       AND ${seen(sql, viewer)}
     ORDER BY LENGTH(r.key), r.key`;
 });
 
-const definition = Effect.fn("KinNumbers.definition")(function* (viewer: Reader, key: string) {
-  const [row] = yield* definitions(viewer, [key], viewer.member === undefined);
+const definition = Effect.fn("KinNumbers.definition")(function* (
+  viewer: Reader,
+  key: string,
+  includeTargets = false,
+) {
+  const [row] = yield* definitions(viewer, [key], includeTargets);
+  if (row?.hasTarget === 1)
+    return yield* invalid("That is a goal with a target. Change its current figure on the goal.");
   const fields = row === undefined ? undefined : numberFields(parseFields(row.fields));
   if (row === undefined || fields === undefined) return yield* missing;
   return { row, fields };
@@ -203,7 +211,7 @@ export const list = Effect.fn("KinNumbers.list")(
         const zone = yield* ownerZone(viewer.orgId);
         const today = dayIn(now, zone);
         const numbers: Array<KinNumber> = [];
-        for (const row of yield* definitions(viewer, keys, false)) {
+        for (const row of yield* definitions(viewer, keys)) {
           const fields = numberFields(parseFields(row.fields));
           if (fields === undefined) continue;
           const recorded =
@@ -322,7 +330,7 @@ export const record = Effect.fn("KinNumbers.record")(
               : stableStringify(["person", by.personId, clientRequestId]);
         let changed = false;
         for (const [index, entry] of entries.entries()) {
-          const { row, fields } = yield* definition(viewer, entry.number);
+          const { row, fields } = yield* definition(viewer, entry.number, true);
           if (fields.kind === "computed")
             return yield* denied("Kin computes that number from its records.");
           if (

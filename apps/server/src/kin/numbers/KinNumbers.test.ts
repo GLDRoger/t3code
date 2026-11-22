@@ -68,7 +68,8 @@ it.effect("keeps watched numbers off Goals and reads both corrections, moving nu
   Effect.gen(function* () {
     yield* setup;
     yield* goal("G-1", { unit: "users", every: "day", below: "10.00000000000000000002" });
-    yield* goal("G-2", { target: "42" });
+    yield* goal("G-2", { target: "100" });
+    yield* goal("G-3", {});
     assert.deepStrictEqual(
       (yield* Goals.list([owner], orgId)).goals.map((row) => row.key),
       ["G-2"],
@@ -77,7 +78,7 @@ it.effect("keeps watched numbers off Goals and reads both corrections, moving nu
     yield* Numbers.record(owner, [
       value("G-1", "90"),
       value("G-1", "10.00000000000000000001"),
-      value("G-2", "3"),
+      value("G-3", "3"),
     ]);
     assert.strictEqual(Option.getOrThrow(yield* Stream.runHead(hub.changes(orgId))).numbers, 1);
     assert.deepStrictEqual(
@@ -86,7 +87,10 @@ it.effect("keeps watched numbers off Goals and reads both corrections, moving nu
         value,
         off,
       })),
-      [{ key: "G-1", value: "10.00000000000000000001", off: true }],
+      [
+        { key: "G-1", value: "10.00000000000000000001", off: true },
+        { key: "G-3", value: "3", off: false },
+      ],
     );
     const rows = (yield* Numbers.values(owner, "G-1", day, day)).values;
     assert.deepStrictEqual(
@@ -97,7 +101,38 @@ it.effect("keeps watched numbers off Goals and reads both corrections, moving nu
       rows.map((row) => row.by.name),
       ["Rhea", "Rhea"],
     );
-    assert.strictEqual((yield* Goals.list([owner], orgId)).goals[0]?.current, 3);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("refuses number records on targeted goals and every role sees their own current", () =>
+  Effect.gen(function* () {
+    const sql = yield* setup;
+    yield* goal("G-1", { target: "100", current: "30" });
+    yield* sql`UPDATE kin_records SET team_shared = 1 WHERE org_id = ${orgId} AND key = 'G-1'`;
+    yield* sql`UPDATE kin_people SET sees_money = 1 WHERE org_id = ${orgId} AND person_id = ${member.personId}`;
+    for (const who of [owner, member]) {
+      assert.include(yield* Effect.flip(Numbers.record(who, [value("G-1", "40")])), {
+        reason: "invalid_state",
+        message: "That is a goal with a target. Change its current figure on the goal.",
+      });
+    }
+    assert.deepStrictEqual(
+      yield* sql`SELECT value FROM kin_number_values
+      WHERE org_id = ${orgId} AND record_id = 'G-1' ORDER BY seq`,
+      [],
+    );
+    assert.strictEqual(
+      (yield* Effect.flip(Numbers.values(owner, "G-1", day, day))).reason,
+      "not_found",
+    );
+    // A legacy observation must not compete with the goal's own current.
+    yield* sql`INSERT INTO kin_number_values (org_id, record_id, as_of, seq, value,
+      person_id, recorder_name, created_at)
+      VALUES (${orgId}, 'G-1', ${day}, 1, '30', ${owner.personId}, 'Rhea', ${now})`;
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.current', '50')
+      WHERE org_id = ${orgId} AND key = 'G-1'`;
+    for (const who of [owner, member])
+      assert.strictEqual((yield* Goals.list([who], orgId)).goals[0]?.current, 50);
   }).pipe(Effect.provide(layer)),
 );
 

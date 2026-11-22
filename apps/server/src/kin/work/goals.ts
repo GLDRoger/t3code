@@ -19,7 +19,7 @@ import * as Schema from "effect/Schema";
 import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { latestValue, NumberSpec, NumberSpecJson } from "../numbers/numberRows.ts";
+import { NumberSpec, NumberSpecJson } from "../numbers/numberRows.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRecords, requestHashOf } from "./KinRecords.ts";
 import { fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
@@ -194,17 +194,13 @@ export const goalsNow = Effect.fn("KinGoals.now")(function* (
           ? Number(targetField)
           : Number.NaN;
     if (!Number.isFinite(target) || target <= 0) continue;
-    const recorded =
-      measure === "manual" && options.money
-        ? yield* latestValue(orgId, row.recordId, dayIn(at, zone))
-        : undefined;
     const current = yield* ownerLevelProgressOf(orgId, measure, {
       start,
       until,
       startsOn,
       untilDay: dayIn(until, zone),
       currency: money?.currency ?? (yield* homeCurrency(orgId)),
-      manual: Number(recorded?.value ?? fieldText(fields, "current") ?? 0) || 0,
+      manual: Number(fieldText(fields, "current") ?? 0) || 0,
     });
     const expected = paceAt(target, start, end, at);
     const unit = fieldText(fields, "unit");
