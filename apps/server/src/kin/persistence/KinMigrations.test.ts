@@ -55,6 +55,7 @@ const tableNames = [
   "kin_auth_key_repairs",
   "kin_auth_paired_sessions",
   "kin_auth_session_keys",
+  "kin_bank_alerts",
   "kin_bank_statement_entries",
   "kin_bank_statements",
   "kin_budget",
@@ -1878,7 +1879,7 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
-    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 203, and runs again",
+    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 204, and runs again",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -1908,7 +1909,7 @@ describe("Kin migrations", () => {
         // Later branches' migrations run after these too; only these three are this test's.
         assert.deepStrictEqual(
           (yield* runKinMigrations()).map(([id]) => id),
-          [196, 197, 198, 199, 200, 201, 202, 203],
+          [196, 197, 198, 199, 200, 201, 202, 203, 204],
         );
         assert.deepStrictEqual(yield* receipts, [
           { trigger_key: "review:ambermill/shop#7", review_url: null },
@@ -1935,7 +1936,7 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("a host on K196 migrates through 197 to 203, and again", () =>
+  it.effect("a host on K196 migrates through 197 to 204, and again", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const added = sql<{ name: string }>`
@@ -1957,7 +1958,7 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* added, []);
       assert.deepStrictEqual(
         (yield* runKinMigrations()).map(([id]) => id),
-        [197, 198, 199, 200, 201, 202, 203],
+        [197, 198, 199, 200, 201, 202, 203, 204],
       );
       const all = [
         "approved_at",
@@ -1973,7 +1974,7 @@ describe("Kin migrations", () => {
         (yield* added).map(({ name }) => name),
         all,
       );
-      for (const from of [197, 198, 199, 200, 201, 202, 203]) {
+      for (const from of [197, 198, 199, 200, 201, 202, 203, 204]) {
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
         assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
         assert.deepStrictEqual(
@@ -2147,6 +2148,25 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect("K204 gives a host on K203 the bank alert log, and runs again harmlessly", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const shape = sql`SELECT name, sql FROM sqlite_master
+        WHERE tbl_name = 'kin_bank_alerts' ORDER BY name`;
+      yield* runKinMigrations();
+      const made = yield* shape;
+      // The table, its key's own index, and the two it reads by.
+      assert.lengthOf(made, 4);
+      yield* sql`DROP TABLE kin_bank_alerts`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 204`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(204));
+      assert.deepStrictEqual(yield* shape, made);
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 204`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(204));
+      assert.deepStrictEqual(yield* shape, made);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -2157,7 +2177,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 203");
+      assert.include(String(exit), "below the latest applied migration 204");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
