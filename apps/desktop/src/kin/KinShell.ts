@@ -582,6 +582,11 @@ const make = Effect.gen(function* () {
         }),
       );
     });
+    const sendFullscreen = (fullscreen: boolean) =>
+      contents.send(Channels.KIN_SHELL_FULLSCREEN_CHANNEL, fullscreen);
+    window.on("enter-full-screen", () => sendFullscreen(true));
+    window.on("leave-full-screen", () => sendFullscreen(false));
+    contents.on("dom-ready", () => sendFullscreen(window.isFullScreen()));
     installContextMenu(window);
     window.once("ready-to-show", () => void runPromise(electronWindow.reveal(window)));
     window.on("close", () => void runPromise(saveBounds(window)));

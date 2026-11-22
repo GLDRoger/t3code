@@ -15,4 +15,21 @@ if (isAppPageUrl(location.href)) {
   });
 } else {
   contextBridge.exposeInMainWorld("kinDesktopWindow", true);
+  // Pushed by the main process, so the page can drop the buttons' space as T3 Code's window does.
+  let fullscreen = false;
+  ipcRenderer.on(Channels.KIN_SHELL_FULLSCREEN_CHANNEL, (_event, value: unknown) => {
+    if (typeof value === "boolean") fullscreen = value;
+  });
+  contextBridge.exposeInMainWorld("kinWindowFullscreen", {
+    getWindowFullscreenState: () => fullscreen,
+    onWindowFullscreenStateChange: (listener: (fullscreen: boolean) => void) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        if (typeof value === "boolean") listener(value);
+      };
+      ipcRenderer.on(Channels.KIN_SHELL_FULLSCREEN_CHANNEL, wrapped);
+      return () => {
+        ipcRenderer.removeListener(Channels.KIN_SHELL_FULLSCREEN_CHANNEL, wrapped);
+      };
+    },
+  });
 }

@@ -40,7 +40,7 @@ import {
 } from "../panelAnimations";
 import { BackgroundThreadAnnouncer } from "./BackgroundThreadAnnouncer";
 import { HistorySwipeNavigation } from "./HistorySwipeNavigation";
-import { hasDesktopWindowChrome } from "../kin/kinDesktopWindow";
+import { hasDesktopWindowChrome, kinWindowFullscreen } from "../kin/kinDesktopWindow";
 import { kinListShownAt } from "../kin/kinListSwitch";
 import { KinSidebar } from "../kin/KinSidebar";
 import ThreadSidebar from "./Sidebar";
@@ -85,8 +85,8 @@ function readViewportWidth(): number {
 let windowFullscreenSnapshot: boolean | null = null;
 
 function macosDesktopBridge() {
-  if (!isElectron || !isMacPlatform(navigator.platform)) return null;
-  return window.desktopBridge ?? null;
+  if (!hasDesktopWindowChrome || !isMacPlatform(navigator.platform)) return null;
+  return window.desktopBridge ?? kinWindowFullscreen;
 }
 
 function subscribeToWindowFullscreen(onChange: () => void): () => void {
