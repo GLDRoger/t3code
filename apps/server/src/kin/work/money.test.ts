@@ -5503,8 +5503,8 @@ describe("money answers", () => {
             fields,
           });
         const partner = "person:meera";
-        yield* spend("company", "2026-11-09", 1_000);
-        yield* spend("owed", "2026-11-10", 2_000, { fundedBy: partner });
+        const company = yield* spend("company", "2026-11-09", 1_000);
+        const owedOne = yield* spend("owed", "2026-11-10", 2_000, { fundedBy: partner });
         yield* spend("repaid in the week", "2026-10-01", 4_000, {
           fundedBy: partner,
           reimbursement: "repaid",
@@ -5542,6 +5542,18 @@ describe("money answers", () => {
         assert.deepStrictEqual(spentIn("2026-10"), []);
         const figures = yield* weeklyFigures({ orgId, now: NOW });
         assert.include(figures, "Out this week: ₹13,000.00");
+
+        // A funder set when it is added or later reads owed, as Money counts it; cleared, nothing.
+        const fieldsOf = (key: string) =>
+          records.get(orgId, key).pipe(Effect.map((row) => JSON.parse(row!.fieldsJson)));
+        assert.include(yield* fieldsOf(owedOne.row.key), { reimbursement: "owed" });
+        yield* records.update(orgId, system, company.row.key, { fields: { fundedBy: partner } });
+        assert.include(yield* fieldsOf(company.row.key), {
+          fundedBy: partner,
+          reimbursement: "owed",
+        });
+        yield* records.update(orgId, system, company.row.key, { fields: { fundedBy: null } });
+        assert.notProperty(yield* fieldsOf(company.row.key), "reimbursement");
       }).pipe(Effect.provide(layer)),
   );
 

@@ -604,6 +604,12 @@ const FIELD_NAMES: Readonly<Record<string, string>> = {
 /** What a refusal may quote of an entry that isn't sensitive; money, notes and a list's own fields it doesn't. */
 const QUOTED = new Set(["title", "state", "owner", "waitingOn", "due", "date", "category", "side"]);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+/** A person named as an expense's funder, on a list that keeps a reimbursement for it. */
+const funds = (def: ListDef, funder: unknown) =>
+  def.id === "expenses" &&
+  typeof funder === "string" &&
+  funder.startsWith("person:") &&
+  def.fields.some((one) => one.key === REIMBURSEMENT);
 /** A repaid day after today in the owner's zone: nothing is paid back before it happens. */
 const repaidAhead = (fields: Readonly<Record<string, unknown>>, today: string) => {
   const day = fields[REPAID_ON];
@@ -1736,6 +1742,9 @@ const make = Effect.gen(function* () {
       steps: (input.steps?.length ?? 0) > 0 || input.urgent === true,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
+    // Money counts a partner's expense as owed: the entry says so too, not "None".
+    if (funds(def, fields[FUNDED_BY]) && fields[REIMBURSEMENT] === undefined)
+      fields[REIMBURSEMENT] = "owed";
     const zero = zeroOwed(def, input.amount, input.category, writer);
     if (zero !== undefined) return yield* zero;
     if (input.askSlip === true && input.amount != null)
@@ -2407,6 +2416,28 @@ const make = Effect.gen(function* () {
           changes.push({ field: "untold", from: shownField(merged.untold), to: null });
           delete merged.untold;
           fieldsChanged = true;
+        }
+        // Who funded it decides what is owed: a partner's reads owed, the company's nothing.
+        if (
+          shownField(stored[FUNDED_BY]) !== shownField(merged[FUNDED_BY]) &&
+          patch.fields?.[REIMBURSEMENT] === undefined &&
+          def.fields.some((one) => one.key === REIMBURSEMENT)
+        ) {
+          const was = shownField(merged[REIMBURSEMENT]);
+          if (funds(def, merged[FUNDED_BY]) && merged[REIMBURSEMENT] === undefined)
+            merged[REIMBURSEMENT] = "owed";
+          else if (merged[FUNDED_BY] === undefined) {
+            delete merged[REIMBURSEMENT];
+            delete merged[REPAID_ON];
+          }
+          if (shownField(merged[REIMBURSEMENT]) !== was) {
+            changes.push({
+              field: REIMBURSEMENT,
+              from: was,
+              to: shownField(merged[REIMBURSEMENT]),
+            });
+            fieldsChanged = true;
+          }
         }
         if (fieldsChanged) set("fields_json", yield* encodeFieldValues(merged));
         const amount = amountOf(row) ?? null;
