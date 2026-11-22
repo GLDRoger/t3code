@@ -245,6 +245,11 @@ export function makeKinClient<R, ER>(
     tag: KIN_CHAT_WS_METHODS.chatMembers,
   });
   const readMembers = kinGuardedRead(membersRead);
+  const workingRead = createKinRpcCommand(runtime, {
+    label: "kin:chat-working:read",
+    tag: KIN_CHAT_WS_METHODS.chatWorking,
+  });
+  const readWorking = kinGuardedRead(workingRead);
   const peopleRead = createKinRpcCommand(runtime, {
     label: "kin:people:read",
     tag: KIN_PEOPLE_WS_METHODS.peopleList,
@@ -512,6 +517,15 @@ export function makeKinClient<R, ER>(
     }),
     staleTimeMs: 30_000,
     refreshTrigger: createKinDirectoryTrigger(runtime, "people"),
+  });
+
+  /** What a chat's messages were handed to other agents for; the screen refreshes it on change. */
+  const chatWorking = createKinQueryAtomFamily(runtime, {
+    label: "kin:chat-working",
+    execute: Effect.fn("KinClient.chatWorking")(function* (input: KinChatMembersInput) {
+      return yield* readWorking(input);
+    }),
+    staleTimeMs: 30_000,
   });
 
   /** Reads a chat's members again whenever its stream says who is in it, its name or lead changed. */
@@ -900,6 +914,7 @@ export function makeKinClient<R, ER>(
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.host}` },
     }),
     chatMembers,
+    chatWorking,
     /** The people of the org, for choosing who joins a group or may message a lead. */
     people: createKinQueryAtomFamily(runtime, {
       label: "kin:people",

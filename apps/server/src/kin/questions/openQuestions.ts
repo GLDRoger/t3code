@@ -80,7 +80,7 @@ export const OPEN_QUESTION_HEADINGS = {
 export const openQuestionsHeading = (who: string) =>
   `# Open questions to ${who} (already asked; don't ask or repeat them)`;
 
-export type QuestionState = "open" | "answered" | "default_taken" | "withdrawn";
+export type QuestionState = "open" | "answered" | "default_taken" | "withdrawn" | "dismissed";
 export type QuestionRow = {
   readonly questionId: string;
   readonly agentId: KinAgentId;
@@ -1829,6 +1829,33 @@ export const undoneTurnText = Effect.fn("KinQuestions.undoneTurnText")(function*
   }
   if (row.state !== "default_taken" || row.defaultLabel === null) return undefined;
   return `Your question to ${yield* personName(orgId, row.personId)}, “${row.question}”, got no answer, so Kin took your default “${row.defaultLabel}”. It has now been undone: what it changed is back as it was. Don't do it again or ask the same again; ask anew only if it still needs deciding.`;
+});
+
+/**
+ * What the asker's turn is told when its person dismissed its question without choosing, or
+ * (`reopened`) undid that after the turn that heard it. Undefined when there is nothing to say.
+ */
+export const dismissedTurnText = Effect.fn("KinQuestions.dismissedTurnText")(function* (
+  orgId: KinOrgId,
+  subject: { readonly questionId: string; readonly reopened?: true | undefined },
+) {
+  const row = yield* readQuestion(orgId, subject.questionId);
+  if (row === undefined) return undefined;
+  const who = yield* personName(orgId, row.personId);
+  const data = {
+    question: row.question,
+    options: row.options.map((option) => option.label),
+    ...(row.about.length === 0 ? {} : { about: row.about }),
+  };
+  if (subject.reopened === true)
+    return {
+      text: `${who} undid dismissing your question “${row.question}”: it is open again on its card, waiting for their answer. Don't ask it again and don't take a default; wait for their answer. Do not reply in chat.`,
+      data,
+    };
+  return {
+    text: `${who} dismissed your question “${row.question}” without choosing. That is not a choice and not approval of your pick: do not ask it again and do not take a default. If the work can go on without that answer, do that work now, in this turn. If it cannot, leave the task open with you: change neither its state nor its notes, and add one comment of one line on it saying what it needs. Do not reply in chat, but not replying is not stopping: do the work first.`,
+    data,
+  };
 });
 
 /**

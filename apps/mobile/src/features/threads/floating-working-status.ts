@@ -22,6 +22,8 @@ export type FloatingWorkingStatus =
       readonly label: string;
       readonly unresponsive: boolean;
       readonly action: FloatingStatusAction | null;
+      /** Opens the label's detail; T3's own thread leaves it unset. */
+      readonly onPress?: () => void;
     }
   | { readonly kind: "goal"; readonly label: string; readonly accessibilityLabel: string }
   | { readonly kind: "extension"; readonly label: string; readonly onPress: () => void }

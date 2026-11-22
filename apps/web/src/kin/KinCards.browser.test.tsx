@@ -522,6 +522,45 @@ describe("an agent's open question", () => {
     await screen.rerender(view(note("zoya", "Zoya Sheikh")));
     await expect.element(page.getByText(/^Undone by Zoya Sheikh at .+\.$/)).toBeVisible();
   });
+
+  it("dismisses without choosing, collapses to Dismissed with Undo, and opens again on Undo", async () => {
+    setup();
+    const question = "Can we close Design the booking flow screens?";
+    const dismissed = (personId: string, name: string) =>
+      asked({
+        revision: 2,
+        awaiting: [],
+        closedAt: "2026-11-19T09:00:30.000Z",
+        state: {
+          ...(asked().state as object),
+          dismissed: { personId, name, at: "2026-11-19T09:00:30.000Z" },
+        },
+      });
+    await using screen = await render(view(asked()));
+    await userEvent.click(
+      page.getByRole("button", { name: "Dismiss this question without choosing" }),
+    );
+    expect(state.acted).toMatchObject([
+      { widgetId: "choice:q1", revision: 1, actionId: "dismiss" },
+    ]);
+    await screen.rerender(view(dismissed("rhea", "Rhea Rao")));
+    await expect.element(page.getByText("Dismissed", { exact: true })).toBeVisible();
+    await expect.element(page.getByText(question, { exact: false })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Keep open" })).not.toBeInTheDocument();
+    await userEvent.click(
+      page.getByRole("button", { name: "Undo dismiss and show the question again" }),
+    );
+    expect(state.acted.at(-1)).toMatchObject({ revision: 2, actionId: "undismiss" });
+    await screen.rerender(view(asked({ revision: 3 })));
+    await expect.element(page.getByRole("button", { name: "Keep open" })).toBeVisible();
+    // Someone else's copy reads who dismissed it, with no Undo; a mail's Confirm has no Dismiss.
+    await screen.rerender(view(dismissed("zoya", "Zoya Sheikh")));
+    await expect.element(page.getByText("Dismissed by Zoya Sheikh")).toBeVisible();
+    await expect.element(page.getByRole("button", { name: /^Undo/ })).not.toBeInTheDocument();
+    await screen.rerender(view(mail()));
+    await expect.element(page.getByRole("button", { name: "Confirm" })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: /^Dismiss/ })).not.toBeInTheDocument();
+  });
 });
 
 // Kin asked Rhea who takes what Zoya looked after when she left; Meera, a co-owner, has a copy.

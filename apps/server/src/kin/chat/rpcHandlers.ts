@@ -285,6 +285,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.catchDefect(defect),
       ),
     "kin.chat.members": (input) => group((groups, people) => groups.members(people, input)),
+    "kin.chat.working": (input) => group((groups, people) => groups.working(people, input)),
     "kin.groups.create": (input) => group((groups, people) => groups.create(people, input)),
     "kin.chats.withPerson": (input) => group((groups, people) => groups.withPerson(people, input)),
     "kin.groups.addMember": (input) => group((groups, people) => groups.addMember(people, input)),

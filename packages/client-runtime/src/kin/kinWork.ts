@@ -29,6 +29,7 @@ import {
   KIN_LEFT_FIELD,
   KIN_WORK_STEP_MAX,
   KIN_WORK_STEPS_MAX,
+  KIN_DISMISSED_FIELD,
   KIN_TAKEN_DEFAULT_FIELD,
   kinWhenFormat,
   kinWhenParts,
@@ -1313,6 +1314,9 @@ export function kinWorkChangeText(
     if (link?.field === "pull_request") return `${who} linked ${link.to ?? "a pull request"}`;
     return `${who} added a link`;
   }
+  // Kin stopped the task waiting on the person a question asked, who dismissed it unanswered.
+  if (field(KIN_DISMISSED_FIELD) !== undefined)
+    return `${who} dismissed the question without choosing`;
   const clauses: Array<string> = [];
   // Access moves leave the task where it is; the line says whose access and who moved it.
   const removed = principalFromText(field("accessRemoved")?.from ?? null);

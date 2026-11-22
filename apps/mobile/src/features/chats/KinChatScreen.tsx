@@ -187,6 +187,20 @@ import {
   kinViewerMemberId,
 } from "@t3tools/client-runtime/kin/kinReactions";
 import { KinChatPushWatch } from "./notifications/KinChatPushWatch";
+import {
+  KIN_WORKING_COPY,
+  kinChatWorkingItems,
+  kinWorkingPillLabel,
+  kinWorkingPillStop,
+  kinWorkingRereadKey,
+  type KinWorkingItem,
+} from "@t3tools/client-runtime/kin/kinChatWorking";
+import {
+  FLOATING_WORKING_CONTROL_COVERAGE,
+  FloatingWorkingControl,
+} from "../threads/floating-working-control";
+import { KinWorkingSheet, useKinWorkingStop } from "./components/KinWorkingSheet";
+import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 
 type KinChatParams = {
   readonly environmentId: string;
@@ -470,6 +484,8 @@ function KinLiveChat(props: {
               )
         }
         onRetry={retry}
+        canInterrupt={canInterrupt}
+        workingChats={chats?.flatMap((chat) => (chat.working === true ? [chat.chatId] : [])) ?? []}
         readHistory={
           state._tag === "ready" && state.connected
             ? (input) => kinClient.readHistoryPage(state.environmentId, input)
@@ -682,6 +698,10 @@ function KinChatPage(props: {
   readonly pair?: { readonly privacy: string; readonly open: () => void } | null;
   /** A group's leads, which the composer offers on `@`. */
   readonly mentionable?: ReadonlyArray<KinMentionCandidate>;
+  /** The host lets this person stop an agent's turn (`kin.lead.interrupt`). */
+  readonly canInterrupt?: boolean;
+  /** The viewer's chats with an agent at work, from the inbox: a hand-off may have moved. */
+  readonly workingChats?: ReadonlyArray<string>;
 }) {
   const navigation = useNavigation();
   const lead = props.lead ?? null;
@@ -752,6 +772,8 @@ function KinChatPage(props: {
             retired={props.retired ?? null}
             groupNotice={props.groupNotice ?? null}
             mentionable={props.mentionable}
+            canInterrupt={props.canInterrupt ?? false}
+            workingChats={props.workingChats ?? NO_CHATS}
           />
         ) : (
           <KinChatStateView
@@ -772,6 +794,8 @@ function KinChatPage(props: {
 }
 
 const ACCESS_ENDED = kinAccessEndedCopy("phone");
+const NO_CHATS: ReadonlyArray<string> = [];
+const NO_PRESENCE: ReadonlyArray<KinPresence> = [];
 
 function KinChatStateView(props: {
   readonly state: Exclude<KinChatScreenState, { readonly _tag: "ready" }>;
@@ -924,6 +948,8 @@ function KinChatFeed(props: {
   /** Said over the composer of a group whose answering agent is retired. */
   readonly groupNotice: string | null;
   readonly mentionable?: ReadonlyArray<KinMentionCandidate>;
+  readonly canInterrupt: boolean;
+  readonly workingChats: ReadonlyArray<string>;
 }) {
   const listRef = useRef<LegendListRef>(null);
   const editorRef = useRef<ComposerEditorHandle>(null);
@@ -1237,6 +1263,90 @@ function KinChatFeed(props: {
     transition({ type: "jump-to-end" });
     pinToEnd(!reduceMotion);
   };
+
+  // What is working for this chat: only while the feed is live, as a stale turn may be over.
+  const turnsHere = props.connected && props.chat.live ? live.presence : NO_PRESENCE;
+  const workingAtom = kinClient.chatWorking({
+    environmentId: props.environmentId,
+    input: { chatId: props.chatId },
+  });
+  const workingRead = useAtomValue(workingAtom);
+  const rereadKey = kinWorkingRereadKey({
+    presence: turnsHere,
+    workingChats: props.workingChats,
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the chat's hand-offs again when a turn here or another chat's work starts or ends; the host pushes those, never a timer
+  useEffect(() => {
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- the atom is keyed by this chat; the key is what moves.
+    appAtomRegistry.refresh(workingAtom);
+  }, [rereadKey]);
+  const presenceNow = useKinPresenceNow(turnsHere.some((presence) => presence.state === "stalled"));
+  const workingItems =
+    props.connected && props.chat.live
+      ? kinChatWorkingItems({
+          presence: turnsHere,
+          widgets: live.widgets,
+          messages,
+          handoffs: Option.getOrNull(AsyncResult.value(workingRead))?.handoffs ?? [],
+          agentNames: props.viewer.agentNames,
+          now: presenceNow,
+        })
+      : [];
+  const workingLabel = kinWorkingPillLabel(workingItems);
+  const workingStop = useKinWorkingStop(props.environmentId, props.orgId);
+  const pillStop = kinWorkingPillStop(workingItems, props.canInterrupt);
+  const [workingOpen, setWorkingOpen] = useState(false);
+  // The sheet closes when the last thing in it finishes.
+  if (workingOpen && workingItems.length === 0) setWorkingOpen(false);
+  const { themeAppearance } = useAppearancePreferences();
+  const openWorking = () => {
+    appAtomRegistry.refresh(workingAtom);
+    setWorkingOpen(true);
+  };
+  const openWorkingItem = (item: KinWorkingItem) => {
+    setWorkingOpen(false);
+    const open = item.open;
+    if (open === null) return;
+    if (open.kind === "end") return jumpToEnd();
+    if (open.kind === "chat")
+      return navigation.navigate("KinChat", {
+        environmentId: props.environmentId,
+        orgId: props.orgId,
+        chatId: open.chatId,
+      });
+    const index = rows.findIndex(
+      (row) =>
+        (row.type === "message" && row.message.messageId === open.messageId) ||
+        (row.type === "cards" &&
+          [row.first, ...row.tasks].some((task) => task.message.messageId === open.messageId)),
+    );
+    if (index < 0) return navigation.setParams({ message: open.messageId });
+    leftEndByHand();
+    void listRef.current?.scrollToIndex({ index, animated: !reduceMotion, viewPosition: 0.3 });
+  };
+  const workingStatus =
+    workingLabel === null
+      ? null
+      : {
+          kind: "stop" as const,
+          label: workingLabel,
+          unresponsive: workingItems.every((item) => item.held),
+          onPress: openWorking,
+          action:
+            pillStop === null
+              ? null
+              : {
+                  label:
+                    workingStop.stopping === null
+                      ? KIN_WORKING_COPY.stop
+                      : KIN_WORKING_COPY.stopping,
+                  accessibilityLabel: `${KIN_WORKING_COPY.stop} ${pillStop.name}`,
+                  disabled: workingStop.stopping !== null,
+                  onPress: () => workingStop.confirmStop(pillStop, "alert"),
+                },
+        };
+  const showScrollToEnd = !followsEnd && rows.length > 0;
+  const floatingShown = workingStatus !== null || showScrollToEnd;
 
   const toggleRun = (runId: string) => {
     setExpandedRuns((current) => {
@@ -1670,6 +1780,7 @@ function KinChatFeed(props: {
             visible={focused && followsEnd}
             stop={stopState}
             onStop={onStop}
+            quiet={workingStatus !== null}
           />
         }
       />
@@ -1680,12 +1791,27 @@ function KinChatFeed(props: {
         offset={{ closed: 0, opened: keyboardOffset }}
       >
         <View onLayout={onComposerLayout} pointerEvents="box-none">
+          <FloatingWorkingControl
+            colorScheme={themeAppearance}
+            status={workingStatus}
+            devicePreview={null}
+            browserPreview={null}
+            showScrollToEnd={showScrollToEnd}
+            onScrollToEnd={jumpToEnd}
+            agents={null}
+            onOpenAgents={openWorking}
+            queuedCount={0}
+            onOpenQueue={openWorking}
+          />
           {unseen > 0 ? (
             // Out of the overlay's measured height, so the pill never moves the feed.
             <View
               pointerEvents="box-none"
               className="absolute inset-x-0 items-center pb-4"
-              style={{ bottom: "100%" }}
+              style={{
+                bottom: "100%",
+                marginBottom: floatingShown ? FLOATING_WORKING_CONTROL_COVERAGE : 0,
+              }}
             >
               <ControlPill
                 variant="pill"
@@ -1708,6 +1834,15 @@ function KinChatFeed(props: {
         </View>
       </KeyboardStickyView>
       <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
+      {workingOpen && workingItems.length > 0 ? (
+        <KinWorkingSheet
+          items={workingItems}
+          canInterrupt={props.canInterrupt}
+          stop={workingStop}
+          onOpen={openWorkingItem}
+          onClose={() => setWorkingOpen(false)}
+        />
+      ) : null}
       {actionsMessage === null ? null : (
         <KinFeedMessageActions
           key={actions.open}
