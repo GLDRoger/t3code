@@ -67,6 +67,8 @@ import {
 } from "../work/workPrompt.ts";
 import { buildStartedSection, STARTED_RULE } from "./startedSection.ts";
 import { DECLINED_RULE, declinedRequests } from "./declinedSection.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { quiet } from "../pulse/KinPulse.ts";
 import {
   buildPulseSection,
   CHECK_IN_PULSE_RULE,
@@ -1451,9 +1453,19 @@ export class KinLeadPrompt extends Context.Service<
             )
           : undefined;
         // Kin's facts on what needs attention, on turns a fact or the morning brief woke; owner-only.
-        const pulseWoke = input.events.flatMap((event) =>
+        const woke = input.events.flatMap((event) =>
           event._tag === "pulse" ? event.factKeys : [],
         );
+        const pulseWoke =
+          woke.length === 0
+            ? woke
+            : yield* KinShell.get(orgId).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.map((shell) =>
+                  woke.filter((key) => !quiet({ sense: key.split(":")[0] ?? "" }, shell)),
+                ),
+                Effect.orElseSucceed(() => []),
+              );
         const checkInEvents = input.events.flatMap((event) =>
           event._tag === "pulse" && event.checkIn !== undefined ? [event.eventId] : [],
         );

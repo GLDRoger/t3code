@@ -1,3 +1,4 @@
+import * as KinShell from "../shell/KinShell.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   KinAgentId,
@@ -21,6 +22,7 @@ import * as CheckIns from "./checkIns.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { morningMoneyLines } from "./morningMoney.ts";
+import { markTold, untold } from "./told.ts";
 import { morningBody, morningDue, morningOf } from "./personMorning.ts";
 
 // Invented company, people, clients and deals only; nothing here reads a real database.
@@ -389,6 +391,80 @@ describe("deal senses", () => {
     }).pipe(Effect.provide(chatLayer)),
   );
 });
+
+it.effect("Deals off keeps three already-told facts and their holds without renotifying", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    for (const id of ["DL-2", "DL-3"])
+      yield* insert({ id, list: "deals", title: id, partyId: "C-1", ownerId: rhea });
+    yield* sql`UPDATE kin_records SET owner_id = ${rhea}
+      WHERE org_id = ${orgId} AND key = 'DL-1'`;
+    const at = B + MINUTE;
+    yield* tickAt(at);
+    const snapshot = read(at);
+    const facts = (yield* snapshot).facts;
+    assert.lengthOf(facts, 3);
+    for (const recordKey of ["DL-1", "DL-2", "DL-3"])
+      yield* KinPulse.aside({
+        orgId,
+        at,
+        viewer: { _tag: "owner" },
+        by: { _tag: "person", personId: rhea },
+        recordKey,
+        action: "set",
+        until: null,
+        note: null,
+        holding: { _tag: "may", forPersonId: null, onWordOf: null },
+      });
+    yield* markTold({ orgId, personId: rhea, facts, eventId: "already-told", at, zone: "UTC" });
+    const before = yield* snapshot;
+    assert.lengthOf(before.setAside ?? [], 3);
+    const told = sql`SELECT * FROM kin_pulse_told WHERE org_id = ${orgId}
+      AND fact_key LIKE 'deal_%' ORDER BY person_id, fact_key, event_id`;
+    const prior = yield* told;
+    assert.lengthOf(prior, 3);
+    const toggle = (rev: number, on: boolean) =>
+      KinShell.KinShell.use((shell) => shell.set(orgId, rhea, rev, [{ id: "deals", on }])).pipe(
+        Effect.provide(KinShell.layer),
+      );
+    yield* toggle(0, false);
+    const off = yield* tickAt(at + MINUTE);
+    assert.deepStrictEqual((yield* read(at + MINUTE)).facts, []);
+    assert.lengthOf(off.woken, 0);
+    assert.lengthOf(off.told, 0);
+    yield* toggle(1, true);
+    const on = yield* tickAt(at + 2 * MINUTE);
+    assert.lengthOf(on.woken, 0);
+    assert.lengthOf(on.told, 0);
+    assert.deepStrictEqual(yield* told, prior);
+    const after = yield* read(at + 2 * MINUTE);
+    assert.deepStrictEqual(
+      after.facts.map((fact) => fact.key),
+      before.facts.map((fact) => fact.key),
+    );
+    assert.deepStrictEqual(after.setAside, before.setAside);
+
+    yield* toggle(2, false);
+    yield* insert({ id: "DL-4", list: "deals", title: "Invented new deal", partyId: "C-1" });
+    const whileOff = at + 3 * MINUTE;
+    assert.deepStrictEqual((yield* tickAt(whileOff)).woken, []);
+    const persisted = yield* sql<{ wokeAt: number }>`SELECT woke_at AS "wokeAt"
+      FROM kin_pulse_facts WHERE org_id = ${orgId} AND fact_key LIKE 'deal_no_next_step:DL-4:%'`;
+    assert.deepStrictEqual(persisted, [{ wokeAt: whileOff }]);
+    yield* toggle(3, true);
+    assert.deepStrictEqual((yield* tickAt(at + 4 * MINUTE)).woken, []);
+    const restored = (yield* read(at + 4 * MINUTE)).facts.filter(
+      (fact) => fact.subject.key === "DL-4",
+    );
+    assert.lengthOf(restored, 1);
+    for (const personId of [rhea, zoya])
+      assert.deepStrictEqual(
+        yield* untold({ orgId, personId, facts: restored, at: at + 4 * MINUTE, zone: "UTC" }),
+        [],
+      );
+  }).pipe(Effect.provide(chatLayer)),
+);
 
 describe("a teammate's morning page", () => {
   it.effect(

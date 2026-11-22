@@ -1,6 +1,9 @@
 // @effect-diagnostics globalDate:off anyUnknownInErrorContext:off -- fixed invented dates; each read fails in its own way and a failure is recorded as a refusal.
 import { expect, layer as withLayer } from "@effect/vitest";
 import {
+  AuthSessionId,
+  AuthStandardClientScopes,
+  KinAccessMeResult,
   KIN_REFRESH_TOPICS,
   KinAgentId,
   KinChatHistoryResult,
@@ -30,6 +33,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import { SessionStore } from "../auth/SessionStore.ts";
+import * as KinPeople from "./people/KinPeople.ts";
+import * as KinShell from "./shell/KinShell.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
@@ -544,6 +550,46 @@ const chatList = () => {
   return measured;
 };
 
+const accessBytes = Effect.fn("KinWireBudget.accessBytes")(function* () {
+  const identity = yield* KinIdentity;
+  const people = yield* KinPeople.make.pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.mock(SessionStore)({ cookieName: "test", legacyCookieName: undefined }),
+        Layer.mock(ChatRepository.KinChatRepository)({}),
+        Layer.mock(ChatHub.KinChatHub)({}),
+        Layer.succeed(KinIdentity, {
+          ...identity,
+          resolve: (session) => Effect.succeed(as(KinPersonId.make(session.subject))),
+        }),
+      ),
+    ),
+  );
+  const shell = yield* KinShell.KinShell;
+  const measured: Record<string, number> = {};
+  for (const [label, on] of [
+    ["accessMe", true],
+    ["accessMeDealsOff", false],
+  ] as const) {
+    if (!on) yield* shell.set(orgId, ownerId, 0, [{ id: "deals", on }]);
+    for (const [name, personId] of VIEWERS) {
+      const result = yield* people.accessMe(
+        {
+          sessionId: AuthSessionId.make(personId),
+          subject: personId,
+          method: "browser-session-cookie",
+          scopes: AuthStandardClientScopes,
+        },
+        { orgId },
+      );
+      expect(result.shell?.sections.find((section) => section.id === "deals")?.on).toBe(on);
+      measured[`${name}.${label}.bytes`] = wireBytes(KinAccessMeResult, result);
+      measured[`${name}.${label}.rows`] = rowsOf(result, undefined);
+    }
+  }
+  return measured;
+});
+
 /** The pinned keys of one test: chat's are `chat.`, every other key is the hot reads'. */
 const pinned = (chat: boolean) =>
   Object.fromEntries(Object.entries(budget).filter(([key]) => key.startsWith("chat.") === chat));
@@ -580,6 +626,7 @@ withLayer(layer)("Kin wire budget", (it) => {
       Object.assign(measured, yield* Effect.scoped(attentionMove()));
       Object.assign(measured, yield* Effect.scoped(moneyChange()));
       Object.assign(measured, chatList());
+      Object.assign(measured, yield* accessBytes().pipe(Effect.provide(KinShell.layer)));
 
       expect(over, `Unpaged Kin reads over ${UNPAGED_CEILING} bytes: page them.`).toEqual([]);
       expect(

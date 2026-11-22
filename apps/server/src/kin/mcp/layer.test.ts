@@ -1,3 +1,4 @@
+import * as KinShell from "../shell/KinShell.ts";
 import { EnvironmentThemeService } from "../../environmentTheme.ts";
 import { IssueService } from "../../issue/IssueService.ts";
 import { ThreadIssueService } from "../../orchestration-v2/ThreadIssueService.ts";
@@ -70,6 +71,7 @@ import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as Kin from "../layer.ts";
 import { ServerActivation } from "../../serverActivation.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as OwnerClients from "../work/ownerClients.ts";
 import { companyMoney } from "../work/companyProfile.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { AssetSigner } from "../../assets/AssetSigner.ts";
@@ -476,6 +478,59 @@ it.effect.each([true, false])(
             { name, arguments: args },
             initialized.headers["mcp-session-id"],
           ).pipe(Effect.flatMap(bodyOf));
+        yield* sql`UPDATE kin_leads SET thread_id = ${threadId}
+          WHERE org_id = ${person.orgId} AND agent_id = ${agentId}`;
+        const client = yield* OwnerClients.createParty([person], {
+          orgId: person.orgId,
+          name: "Invented Shell Client",
+          clientRequestId: "shell-client",
+        }).pipe(Effect.provideContext(kin.services.value));
+        const createDeal = {
+          records: [
+            { list: "deals", title: "Invented Shell Deal", client: client.key, owner: "owner" },
+          ],
+        };
+        const shellArgs = [
+          ["deal_stages", {}],
+          ["pipeline_read", { view: "totals" }],
+          ["record_update", { key: "DL-3" }],
+          ["record_update", { keys: ["W-1", "DL-3"] }],
+          ["record_create", { list: "deals" }],
+          ["record_create", createDeal],
+          ["record_create", { records: [{ title: "Invented call" }, { list: "deals" }] }],
+          ["records_query", { list: "deals" }],
+        ] as const;
+        const dealsRefusal =
+          "Deals is turned off for this company; the owner can turn it on in Settings › Deals.";
+        const leadMcp = yield* open("/kin/mcp", issued.config.authorizationHeader);
+        assert.includeMembers(yield* leadMcp.list, ["deal_stages", "pipeline_read"]);
+        const shell = Context.get(kin.services.value, KinShell.KinShell);
+        const toggle = (rev: number, on: boolean) =>
+          shell.set(person.orgId, person.personId, rev, [{ id: "deals", on }]);
+        yield* toggle(0, false);
+        for (const name of ["deal_stages", "pipeline_read"])
+          assert.notInclude(yield* leadMcp.list, name);
+        for (const [name, args] of shellArgs)
+          assert.include(yield* leadCall(name, args), dealsRefusal, name);
+        assert.notInclude(yield* leadCall("record_update", { key: "W-3" }), dealsRefusal);
+        yield* toggle(1, true);
+        assert.includeMembers(yield* leadMcp.list, ["deal_stages", "pipeline_read"]);
+        for (const [name, args] of shellArgs)
+          if (args !== createDeal)
+            assert.notInclude(yield* leadCall(name, args), dealsRefusal, name);
+        const made = yield* leadCall("record_create", createDeal);
+        const [deal] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE org_id = ${person.orgId} AND register_id = 'deals' AND title = 'Invented Shell Deal'`;
+        assert.isDefined(deal, made);
+        const beforeUpdate = yield* leadCall("record_update", {
+          key: deal!.key,
+          title: "Invented Revised Deal",
+        });
+        const [updated] = yield* sql<{ title: string }>`SELECT title FROM kin_records
+          WHERE org_id = ${person.orgId} AND key = ${deal!.key}`;
+        assert.equal(updated?.title, "Invented Revised Deal", beforeUpdate);
+        yield* sql`UPDATE kin_leads SET thread_id = NULL
+          WHERE org_id = ${person.orgId} AND agent_id = ${agentId}`;
         const elsewhere = [
           ["delegate_task", { task: "Invented: tidy the docs", target: { environmentId: "vps" } }],
           ["t3_thread_send", { environmentId: "vps", threadId: "remote-thread", message: "Go" }],

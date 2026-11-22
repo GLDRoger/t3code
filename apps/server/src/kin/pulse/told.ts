@@ -28,6 +28,8 @@ export const forHolder = (fact: KinPulseFact, at: number, zone: string) =>
   fact.sense === "theirs_late" ||
   (fact.sense === "task_due_soon" && dueToday(fact, at, zone));
 
+export const SHELL_QUIET_EVENT_PREFIX = "shell:quiet:";
+
 /** A told row's party: a person by id, an agent as `agent:<id>`. */
 export const agentParty = (agentId: KinAgentId) => `agent:${agentId}`;
 
@@ -71,7 +73,8 @@ export const untold = Effect.fn("KinPulse.untold")(function* (input: {
       FROM kin_pulse_told t LEFT JOIN kin_events e ON e.org_id = t.org_id AND e.event_id = t.event_id
       WHERE t.org_id = ${input.orgId} AND t.person_id = ${input.personId}
         AND t.fact_key IN ${sql.in(keys.slice(start, start + 500))}
-        AND (${input.anyState === true ? 1 : 0} = 1 OR e.state IN ('queued', 'claimed', 'done'))
+        AND (${input.anyState === true ? 1 : 0} = 1 OR t.event_id LIKE ${`${SHELL_QUIET_EVENT_PREFIX}%`}
+          OR e.state IN ('queued', 'claimed', 'done'))
       ORDER BY t.fact_key, t.told_at`)
       told.set(row.key, (told.get(row.key) ?? new Set()).add(row.sig));
   return input.facts.filter(

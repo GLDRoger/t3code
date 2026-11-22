@@ -1085,6 +1085,10 @@ it.effect(
         });
       yield* alike(raviSession, { money: true, docs: false });
       yield* alike(ownerSession, { money: false, docs: false });
+      assert.deepStrictEqual((yield* service.accessMe(ownerSession, { orgId })).shell, {
+        rev: 0,
+        sections: ["clients", "deals", "money", "invoices", "docs"].map((id) => ({ id, on: true })),
+      });
       const switched = yield* service.setPlaces(ownerSession, {
         orgId,
         personId: ravi.person.personId,

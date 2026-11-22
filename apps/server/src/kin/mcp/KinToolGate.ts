@@ -18,6 +18,8 @@ import { APPROVED_REFUSAL, approvedToolAllowed } from "../lead/approvedDraft.ts"
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfKey, sectionOfList, sectionOfTool } from "../shell/sections.ts";
 import * as ReadTools from "./readTools.ts";
 
 type Check = (
@@ -150,6 +152,39 @@ const besideReview =
     confinedDecides(turn, tool, args).pipe(
       Effect.flatMap((confined) => (confined ? Effect.succeed(true) : check(turn, tool, args))),
     );
+const sectionOfArguments = (args: unknown) => {
+  const get = (key: string) => (Predicate.hasProperty(args, key) ? args[key] : undefined);
+  const list = get("list");
+  if (typeof list === "string" && sectionOfList(list) === "deals") return "deals";
+  const keys = get("keys");
+  if (
+    [get("key"), get("client"), get("project"), ...(Array.isArray(keys) ? keys : [])].some(
+      (key) => typeof key === "string" && sectionOfKey(key) === "deals",
+    )
+  )
+    return "deals";
+  const records = get("records");
+  if (
+    Array.isArray(records) &&
+    records.some(
+      (row: unknown) =>
+        Predicate.hasProperty(row, "list") &&
+        typeof row.list === "string" &&
+        sectionOfList(row.list) === "deals",
+    )
+  )
+    return "deals";
+  return null;
+};
+
+const sectionAdmitted = McpToolPolicy.toolCallGate((name, args) => {
+  const section = sectionOfTool(name) ?? sectionOfArguments(args);
+  return section === null
+    ? Effect.succeed(true)
+    : gate("KinToolGate.section", (turn) =>
+        KinShell.sectionOn(turn.orgId, section).pipe(Effect.orElseSucceed(() => false)),
+      )(name, args);
+}, "Deals is turned off for this company; the owner can turn it on in Settings › Deals.");
 const admitted = besideReview(toolAdmitted);
 const outside = besideReview(outsideToolAllowed);
 
@@ -252,6 +287,7 @@ export const layer = ReadTools.layer.pipe(
       McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", admitted), SHARED_REFUSAL),
       McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outside), OUTSIDE_REFUSAL),
       McpToolPolicy.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
+      sectionAdmitted,
     ),
   ),
 );
