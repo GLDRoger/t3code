@@ -851,6 +851,8 @@ function kinWorkFilterMenu(props: {
     items: [
       {
         id: "quick",
+        // Untitled, the iOS toolbar would head the group with its items' labels run together.
+        title: "",
         inline: true,
         items: kinTaskQuickFilters(filter, overview, props.me).map((one) => ({
           id: `quick:${one.id}`,
