@@ -5,6 +5,7 @@ import { buildKinJoinAppLink, buildPairingAppLink } from "@t3tools/shared/remote
 import {
   kinShellAllowsPermission,
   kinShellNavigation,
+  kinShellRootRedirect,
   readKinDesktopLink,
 } from "./kinDesktopLink.ts";
 
@@ -76,6 +77,20 @@ describe("kinShellNavigation", () => {
     ];
     for (const [url, hostOrigin, expected] of cases) {
       assert.strictEqual(kinShellNavigation({ url, hostOrigin, isAppPage }), expected, url);
+    }
+  });
+
+  it("opens Kin's home, not T3 Code's, at the team host's bare root", () => {
+    const cases: ReadonlyArray<readonly [string, string | null, string | null]> = [
+      [`${HOST}/`, HOST, `${HOST}/kin`],
+      [`${HOST}/?from=pair`, HOST, `${HOST}/kin`],
+      [`${HOST}/kin`, HOST, null],
+      [`${HOST}/settings/access`, HOST, null],
+      ["https://evil.example/", HOST, null],
+      [`${HOST}/`, null, null],
+    ];
+    for (const [url, hostOrigin, expected] of cases) {
+      assert.strictEqual(kinShellRootRedirect(url, hostOrigin), expected, url);
     }
   });
 

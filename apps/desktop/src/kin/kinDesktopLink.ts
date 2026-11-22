@@ -61,6 +61,18 @@ export function kinShellNavigation(input: {
   return url.protocol === "https:" || url.protocol === "http:" ? "outside" : "refuse";
 }
 
+/** Kin's own home on the team's host; the host's bare root is T3 Code's, which an owner can reach. */
+export function kinTeamHome(origin: string): string {
+  return new URL("/kin", origin).toString();
+}
+
+/** A top-level load of the team host's bare root goes to Kin's home instead. */
+export function kinShellRootRedirect(url: string, hostOrigin: string | null): string | null {
+  if (hostOrigin === null || !URL.canParse(url)) return null;
+  const parsed = new URL(url);
+  return parsed.origin === hostOrigin && parsed.pathname === "/" ? kinTeamHome(hostOrigin) : null;
+}
+
 const HOST_PERMISSIONS = new Set(["notifications", "clipboard-sanitized-write"]);
 
 /** Kin's web app asks for alerts and for copying links; nothing else touches this computer. */

@@ -30,6 +30,8 @@ import * as DesktopWindow from "../window/DesktopWindow.ts";
 import {
   kinShellAllowsPermission,
   kinShellNavigation,
+  kinShellRootRedirect,
+  kinTeamHome,
   readKinDesktopLink,
 } from "./kinDesktopLink.ts";
 import { isAppPageUrl } from "./appPage.ts";
@@ -119,7 +121,7 @@ const make = Effect.gen(function* () {
   const readableHost = (origin: string) => new URL(origin).host;
   const currentHostOrigin = () =>
     joining?.origin ?? Option.getOrNull(Option.map(remembered, (settings) => settings.origin));
-  const hostHome = (origin: string) => new URL("/", origin).toString();
+  const hostHome = kinTeamHome;
 
   const remember = Effect.fn("KinShell.remember")(
     function* (next: Option.Option<KinShellSettings>) {
@@ -532,6 +534,13 @@ const make = Effect.gen(function* () {
       }),
     );
     session.setDevicePermissionHandler(() => false);
+    session.webRequest.onBeforeRequest({ urls: ["*://*/"] }, (details, callback) => {
+      const home =
+        details.resourceType === "mainFrame"
+          ? kinShellRootRedirect(details.url, currentHostOrigin())
+          : null;
+      callback(home === null ? {} : { redirectURL: home });
+    });
     // The host's own page redeems the link; its answer says whether this computer got in.
     session.webRequest.onCompleted(
       { urls: [`*://*${KIN_INVITE_BROWSER_ACCEPT_ROUTE}`, `*://*${PAIR_SESSION_ROUTE}`] },
