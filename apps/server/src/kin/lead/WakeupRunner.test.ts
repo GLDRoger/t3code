@@ -1081,6 +1081,69 @@ describe("WakeupRunner", () => {
       }).pipe(provideDeterministicTestRuntime),
   );
   it.effect(
+    "a full disk after visible work keeps the partway line and opens the space trouble, though Kin cleaned",
+    () =>
+      Effect.gen(function* () {
+        const told: Array<string> = [];
+        let db: SqlClient.SqlClient | undefined;
+        const bridge = Layer.mock(KinReplyBridge)({
+          lane: () =>
+            Effect.succeedSome({
+              chatId: KinChatId.make("owner-chat"),
+              mode: "reply" as const,
+              owed: true,
+              leadName: "Lead",
+            }),
+          preparing: () => Effect.void,
+          begin: () => Effect.void,
+          // A tool call ran before the disk filled, so a quiet retry could repeat it.
+          complete: (input) =>
+            db!`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
+              VALUES (${input.orgId}, ${input.wakeupId}, 'item:note', 'hash')`.pipe(
+              Effect.asVoid,
+              Effect.orDie,
+            ),
+          end: () => Effect.void,
+          failed: (input) => Effect.sync(() => void told.push(`line ${input.outcome}`)),
+        });
+        const care = Layer.succeed(
+          KinHostCare,
+          KinHostCare.of({
+            host: true,
+            clean: () => Effect.die("cleaned through spaceFailed"),
+            spaceFailed: () => Effect.sync(() => (told.push("clean"), true)),
+            devFullDisk: Effect.void,
+            failed: (input) =>
+              Effect.sync(() => void told.push(`notice ${input.cause} ${input.eventIds.length}`)),
+            succeeded: () => Effect.void,
+            troubleOpen: () => Effect.succeed(false),
+            causeFor: () => Effect.undefined,
+            checkBackup: () => Effect.void,
+            status: () => Effect.die("not read here"),
+            freeSpace: () => Effect.die("not tapped here"),
+            backUpNow: () => Effect.die("not tapped here"),
+            retry: () => Effect.die("not tapped here"),
+          }),
+        );
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          db = sql;
+          yield* (yield* KinEventQueue.KinEventQueue).enqueue(laneMessage("asked"));
+          yield* Fiber.join(yield* run());
+          assert.deepStrictEqual(told, ["clean", "notice space 1", "line partway"]);
+          assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events`, [{ state: "failed" }]);
+        }).pipe(
+          Effect.provide(
+            harness({ failed: true, failureMessage: "ENOSPC: no space left on device" }).pipe(
+              Layer.provide(bridge),
+              Layer.provide(care),
+            ),
+          ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect(
     "runs two wake-ups on one T3 thread with distinct provider threads and captures only each run's usage",
     () =>
       Effect.gen(function* () {

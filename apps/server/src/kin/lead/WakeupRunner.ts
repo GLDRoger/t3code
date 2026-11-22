@@ -243,6 +243,9 @@ const make = Effect.gen(function* () {
       status,
       ...(holdUntil === undefined ? {} : { holdUntil }),
     });
+    // Quiet only when the turn really went back to wait, untouched: after something visible,
+    // its unanswered events stopped instead, and that is said.
+    if (quiet && (finished.stranded > 0 || finished.replied > 0)) quiet = false;
     if (Option.isSome(care)) {
       if (status === "completed") yield* care.value.succeeded(row.orgId, row.agentId);
       const held = finished.heldEventIds ?? [];
@@ -251,7 +254,7 @@ const make = Effect.gen(function* () {
         cause !== undefined &&
         !quiet &&
         (HELD_CAUSES.has(cause)
-          ? held.length > 0
+          ? held.length > 0 || finished.stranded > 0
           : finished.failedEventIds.length > 0 ||
             finished.retryInMs > KinEventQueue.FIRST_RETRY_MS);
       if (tell)
