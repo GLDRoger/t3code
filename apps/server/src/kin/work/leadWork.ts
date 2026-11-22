@@ -649,7 +649,7 @@ export const UpdateInput = Schema.Struct({
   leftover: Schema.optional(
     KinToolText(
       2_000,
-      "With state done, what is still to do: Kin files it as a follow-up task linked to this one. Never leave it only in a comment.",
+      "Only with state done and work still undone: that work, which Kin files as a new follow-up task linked to this one. When nothing is left, omit this field; any text here, even what you did or that nothing is left, becomes a task. Never leave what is left only in a comment.",
     ),
   ),
   next: Schema.optional(DealNext),
