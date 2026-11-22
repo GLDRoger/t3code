@@ -975,7 +975,9 @@ function kinWorkNothingAll(
             ? "Add a task, or ask an agent in chat to keep track of something. Give one to an agent and it gets on with it."
             : person === null
               ? `Add a task for ${who}, or ask an agent to.`
-              : `Tasks given to ${person} show up here.`,
+              : person === "you"
+                ? "Tasks you have or are on show up here."
+                : `Tasks ${person} has or is on show up here.`,
         offerNew: true,
       };
     case "doing":
@@ -1198,12 +1200,12 @@ export function kinWorkAudience(
     names === undefined || current !== "me" ? null : markerWord(view.markedBy ?? null, names);
   const answer =
     current === "me"
-      ? `Only ${marker ?? "you"}, co-owners and whoever has it`
+      ? `Only ${marker ?? "you"}, co-owners and whoever has it or is with it`
       : current === "team"
         ? "Everyone on the team"
         : view.project === null
-          ? `${owner ?? "You"}, co-owners and whoever has it or gave it`
-          : `${owner ?? "You"}, co-owners, whoever has it or gave it, and the people on ${view.project.title}`;
+          ? `${owner ?? "You"}, co-owners and whoever has it, gave it or is with it`
+          : `${owner ?? "You"}, co-owners, whoever has it, gave it or is with it, and the people on ${view.project.title}`;
   const label = {
     people,
     team: "The whole team",

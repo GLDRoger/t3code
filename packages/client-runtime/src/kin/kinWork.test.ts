@@ -733,7 +733,7 @@ describe("kinWorkItemView", () => {
     const plain = kinWorkAudience({ ...at(false, false), project }, owner);
     expect(plain.current).toBe("people");
     expect(plain.answer).toBe(
-      "You, co-owners, whoever has it or gave it, and the people on Invented app",
+      "You, co-owners, whoever has it, gave it or is with it, and the people on Invented app",
     );
     expect(plain.choices.map((one) => one.id)).toEqual(["people", "team", "me"]);
     // Marked private wins over an old share, so it reads as only you.
@@ -761,20 +761,20 @@ describe("kinWorkItemView", () => {
     const lead = { mark: true, unmark: false, share: false };
     const hers = kinWorkAudience({ ...at(false, false), project }, lead, priyas);
     expect(hers.answer).toBe(
-      "Invented Owner, co-owners, whoever has it or gave it, and the people on Invented app",
+      "Invented Owner, co-owners, whoever has it, gave it or is with it, and the people on Invented app",
     );
     // She may make it private; un-marking and sharing stay the owner's.
     expect(hers.choices.map((one) => one.id)).toEqual(["people", "me"]);
     // Picking it reads "Only me" to her as to the owner.
     expect(hers.choices.find((one) => one.id === "me")?.label).toBe("Only me");
     const marked = kinWorkAudience(at(true, false), lead, priyas);
-    expect(marked.answer).toBe("Only Invented Owner, co-owners and whoever has it");
+    expect(marked.answer).toBe("Only Invented Owner, co-owners and whoever has it or is with it");
     expect(marked.choices).toEqual([]);
     // Her own mark is hers to take off, and reads as hers; to anyone else, as kept to her.
     const own = { ...lead, unmark: true };
     const herMark = { ...at(true, false), markedBy: priya.personId };
     expect(kinWorkAudience(herMark, own, priyas)).toMatchObject({
-      answer: "Only you, co-owners and whoever has it",
+      answer: "Only you, co-owners and whoever has it or is with it",
       choices: [
         { id: "people", label: "People on it" },
         { id: "me", label: "Only me" },
@@ -786,7 +786,7 @@ describe("kinWorkItemView", () => {
       )?.label,
     ).toBe("Only Priya");
     expect(kinWorkAudience(at(true, false), owner, { ...names, owner: me.personId }).answer).toBe(
-      "Only you, co-owners and whoever has it",
+      "Only you, co-owners and whoever has it or is with it",
     );
   });
 });

@@ -742,7 +742,7 @@ function KinTeammateTasks(props: {
     <KinSettingsSection
       title={KIN_PERSON_TASKS.title}
       description={
-        held === null || held.total === 0 ? undefined : KIN_PERSON_TASKS.count(held.total)
+        held === null || held.total === 0 ? undefined : held.count
       }
       action={
         profile === null || (profile.load?.open ?? 0) === 0 ? undefined : (
