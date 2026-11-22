@@ -31,6 +31,7 @@ import {
 } from "../../AgentSession.ts";
 import { SESSION_REFUSAL } from "../../Audience.ts";
 import { KinAgentSessionPolicy } from "../../sessionPolicy.ts";
+import { stampReads } from "../../OutsideContent.ts";
 import { KinServer, type Services as KinServices } from "../../../KinServer.ts";
 import * as KinPersistence from "../../../persistence/KinPersistence.ts";
 import * as Sqlite from "../../../../persistence/Sqlite.ts";
@@ -266,8 +267,8 @@ it.effect(
         KinAgentSessionPolicy.of({
           refusal: (threadId) =>
             fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-          webSearch: (threadId) =>
-            webSearchRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          webSearch: (threadId, host) =>
+            webSearchRefusal(threadId, host).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           delegated: (threadId) =>
             delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
@@ -367,8 +368,20 @@ it.effect(
         audience = 'owner_only' WHERE wakeup_id = 'wake-full'`;
       assert.isTrue(yield* allows("Bash", shell));
       assert.isTrue(yield* allows("Edit", { file_path: "/work/x/README.md" }));
-      assert.isTrue(yield* allows("WebFetch", { url: "https://example.com" }));
       assert.isTrue(yield* allows("Agent", { prompt: "look" }));
+      // Its own page fetch or web search is outside text: the turn is marked before it runs, by
+      // the page's host, and reads on as any outside-read turn does.
+      const read = Effect.gen(function* () {
+        const [row] = yield* sql<{ source: string }>`SELECT source FROM kin_wakeup_outside_reads
+          WHERE wakeup_id = 'wake-full'`;
+        yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-full'`;
+        return row === undefined ? undefined : stampReads(row.source);
+      });
+      assert.isTrue(yield* allows("WebFetch", { url: "https://example.com/pricing?x=1" }));
+      assert.isFalse(yield* allows("Bash", shell));
+      assert.deepStrictEqual(yield* read, [{ k: "web", host: "example.com" }]);
+      assert.isTrue(yield* allows("WebSearch", { query: "invented vendor" }));
+      assert.deepStrictEqual(yield* read, [{ k: "web" }]);
       // Once the turn read a connected service's text, Claude Code's own tools are gone for the
       // rest of it, as on every provider; memory stays open through Kin's memory tools.
       yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
@@ -394,10 +407,9 @@ it.effect(
       assert.isFalse(yield* sharedAllows("WebFetch", { url: "https://example.com" }));
       assert.isFalse(yield* sharedAllows("Bash", shell));
       assert.isTrue(yield* sharedAllows("WebSearch", { query: "tile distributors" }));
-      assert.deepStrictEqual(
-        yield* sql`SELECT source FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-full'`,
-        [{ source: "web search" }],
-      );
+      const [searched] = yield* sql<{ source: string }>`SELECT source
+        FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-full'`;
+      assert.deepStrictEqual(stampReads(searched?.source ?? ""), [{ k: "web" }]);
       // A turn stopped because someone joined searches nothing more.
       yield* sql`UPDATE kin_wakeups SET aborted_at = 1 WHERE wakeup_id = 'wake-full'`;
       assert.isFalse(yield* sharedAllows("WebSearch", { query: "tile distributors" }));
@@ -428,8 +440,8 @@ it.effect(
         KinAgentSessionPolicy.of({
           refusal: (threadId) =>
             fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-          webSearch: (threadId) =>
-            webSearchRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          webSearch: (threadId, host) =>
+            webSearchRefusal(threadId, host).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           delegated: (threadId) =>
             delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
@@ -640,8 +652,8 @@ it.effect(
         KinAgentSessionPolicy.of({
           refusal: (threadId) =>
             fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-          webSearch: (threadId) =>
-            webSearchRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          webSearch: (threadId, host) =>
+            webSearchRefusal(threadId, host).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           delegated: (threadId) =>
             delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
