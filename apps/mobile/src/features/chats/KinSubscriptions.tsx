@@ -1,3 +1,4 @@
+import { KIN_MONEY } from "@t3tools/client-runtime/kin/kinMoney";
 import { KIN_RETRY, KIN_CHECK_CONNECTION } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -321,7 +322,7 @@ function KinSubscriptionsGate(props: KinWorkTarget) {
   if (work._tag === "refused" || lists.state._tag === "refused")
     return (
       <Frame target={props} onBack={back}>
-        <EmptyState variant="plain" title="Not available" detail={KIN_SUBSCRIPTIONS.moneyKept} />
+        <EmptyState variant="plain" {...KIN_MONEY.onlyOwner} />
       </Frame>
     );
   if (!ready || lists.state._tag !== "ready")
