@@ -7,6 +7,7 @@ import { kinParseMoney } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_DEALS } from "@t3tools/client-runtime/kin/kinDeals";
 import {
   KIN_CLIENTS,
+  kinClientPrivateNote,
   KIN_CLIENT_FAILED,
   KIN_CLIENT_GONE,
   KIN_PROJECTS,
@@ -247,6 +248,7 @@ function ClientFormRead(props: KinWorkTarget & { readonly clientKey: KinRecordKe
       editing={state.value.party}
       can={state.value.can ?? null}
       contacts={state.value.contacts}
+      privateHides={state.value.privateHides}
       start="client"
     />
   );
@@ -258,6 +260,8 @@ type ClientFormProps = KinWorkTarget & {
   readonly can: KinPartyPage["can"] | null;
   /** An existing one's contacts, whose emails and phones are edited in their own form. */
   readonly contacts?: ReadonlyArray<KinContact>;
+  /** Who stops seeing it once kept private (`KinPartyPage.privateHides`). */
+  readonly privateHides?: ReadonlyArray<string> | undefined;
   readonly start: KinClientDraftKind;
 };
 
@@ -567,7 +571,11 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
             <KinWorkToggleRow
               icon="lock"
               label={KIN_CLIENTS.privateLabel}
-              description={draft.private ? KIN_CLIENTS.privateOn : KIN_CLIENTS.privateOff}
+              description={kinClientPrivateNote({
+                private: draft.private,
+                wasPrivate: editing?.sensitive ?? false,
+                hides: props.privateHides,
+              })}
               value={draft.private}
               disabled={state.saving}
               onValueChange={(on) => form.edit({ private: on })}

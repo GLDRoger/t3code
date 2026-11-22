@@ -2745,6 +2745,28 @@ it.effect(
         clientRequestId: "plain",
       });
       assert.deepStrictEqual(yield* contactsOf(owner, plain.key), []);
+      // Kept private, it would leave the sight of Mate alone: the co-owner keeps it, "off" never
+      // had it. A teammate isn't told; once private, there is nobody left to name.
+      const plainPage = yield* Clients.party([owner], { orgId, key: plain.key });
+      assert.deepPropertyVal(plainPage, "privateHides", ["Mate"]);
+      assert.notProperty(
+        yield* Clients.party([who("mate")], { orgId, key: plain.key }),
+        "privateHides",
+      );
+      yield* Clients.updateParty([owner], {
+        orgId,
+        key: plain.key,
+        rev: plainPage.party.rev,
+        sensitive: true,
+      });
+      assert.notProperty(yield* Clients.party([owner], { orgId, key: plain.key }), "privateHides");
+      const reopened = yield* Clients.party([owner], { orgId, key: plain.key });
+      yield* Clients.updateParty([owner], {
+        orgId,
+        key: plain.key,
+        rev: reopened.party.rev,
+        sensitive: false,
+      });
 
       // The owner, a co-owner and a teammate with Clients on each add one with the person there.
       const byOwner = yield* Clients.createParty([owner], {

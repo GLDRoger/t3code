@@ -15,6 +15,7 @@ import {
 } from "@t3tools/contracts";
 
 import {
+  kinClientPrivateNote,
   kinProjectPeopleChoices,
   kinNewTaskChoices,
   kinShortFormFold,
@@ -733,5 +734,54 @@ describe("kinProjectPageView", () => {
         now,
       ).why,
     ).toEqual(["Nothing is late."]);
+  });
+});
+
+describe("kinClientPrivateNote", () => {
+  it.each([
+    [
+      "names who stops seeing it",
+      true,
+      false,
+      ["Arjun", "Zoya"],
+      "Arjun and Zoya will no longer see this client.",
+    ],
+    [
+      "names three",
+      true,
+      false,
+      ["Arjun", "Dev Malhotra", "Zoya"],
+      "Arjun, Dev Malhotra and Zoya will no longer see this client.",
+    ],
+    [
+      "says when nobody loses it",
+      true,
+      false,
+      [],
+      "Nobody else sees this client now, so nobody loses it.",
+    ],
+    [
+      "keeps the plain line without the host's list",
+      true,
+      false,
+      undefined,
+      "Private. Only the owner and co-owners see this client, its projects and what's owed.",
+    ],
+    [
+      "keeps the plain line once private",
+      true,
+      true,
+      ["Arjun"],
+      "Private. Only the owner and co-owners see this client, its projects and what's owed.",
+    ],
+    [
+      "says the team sees it when it isn't",
+      false,
+      true,
+      undefined,
+      "Your team will be able to see this client. Terms and contact details stay private.",
+    ],
+  ] as const)("%s", (_name, on, was, hides, text) => {
+    expect(kinClientPrivateNote({ private: on, wasPrivate: was, hides })).toBe(text);
   });
 });

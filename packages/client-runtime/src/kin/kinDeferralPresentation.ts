@@ -162,11 +162,9 @@ export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction
   },
 };
 
-const DECISION_ACTIONS = [
-  KIN_DEFERRAL_ACTIONS.start_now,
-  KIN_DEFERRAL_ACTIONS.monday,
-  KIN_DEFERRAL_ACTIONS.cancel,
-];
+// The host refuses Start now, Monday and Cancel until its owner-tap dispatcher lands, and Undo
+// once the card has moved past confirm, so a decision card offers no buttons yet.
+const DECISION_ACTIONS: ReadonlyArray<KinDeferralAction> = [];
 
 // Whole formatted strings only: Hermes leaves out `hour` and `minute` from `formatToParts`.
 const formatters = new Map<string, { date: Intl.DateTimeFormat; time: Intl.DateTimeFormat }>();
