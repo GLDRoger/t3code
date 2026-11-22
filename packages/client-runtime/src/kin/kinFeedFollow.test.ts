@@ -56,8 +56,16 @@ describe("resolveKinFeedFollow", () => {
     },
     // Opened on a card above the end: the end's re-pin must not take the reader back down.
     { name: "opened on a card", events: [landed], follows: false },
-    { name: "opened on a card; the list still reads the end", events: [landed, reached], follows: false },
-    { name: "opened on a card, then back at the end", events: [landed, left, reached], follows: true },
+    {
+      name: "opened on a card; the list still reads the end",
+      events: [landed, reached],
+      follows: false,
+    },
+    {
+      name: "opened on a card, then back at the end",
+      events: [landed, left, reached],
+      follows: true,
+    },
   ])("$name → follows $follows", ({ events, follows }) => {
     expect(kinFollowsEnd(run(events))).toBe(follows);
   });
