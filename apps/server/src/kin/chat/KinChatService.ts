@@ -80,6 +80,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Struct from "effect/Struct";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import * as Layer from "effect/Layer";
@@ -3373,10 +3374,11 @@ const make = Effect.gen(function* () {
           )
             return yield* invalidState;
           state = {
-            ...next,
+            ...Struct.omit(next, ["failure"]),
             status: previous.status,
             pullRequests: previous.pullRequests,
             lastError: previous.lastError,
+            ...(previous.failure === undefined ? {} : { failure: previous.failure }),
             updatedAt: previous.updatedAt,
           };
           if (

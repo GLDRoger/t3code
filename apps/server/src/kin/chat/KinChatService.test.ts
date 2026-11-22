@@ -1866,7 +1866,7 @@ describe("KinChatService", () => {
         widgetId: widget.widgetId,
         revision: 1,
         type: "task",
-        state: { ...state, status: "done", lastError: "invented" },
+        state: { ...state, status: "done", lastError: "invented", failure: "signed_out" },
         awaiting: [person.personId],
       });
       assert.strictEqual(
@@ -1874,6 +1874,7 @@ describe("KinChatService", () => {
         (yield* decodeTask(widget.state)).status,
       );
       assert.isNull((yield* decodeTask(updated.state)).lastError);
+      assert.notStrictEqual((yield* decodeTask(updated.state)).failure, "signed_out");
       const actionInput = {
         widgetId: widget.widgetId,
         revision: updated.revision,
