@@ -58,6 +58,7 @@ import { presetDefinition } from "./registers.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import * as Touches from "./touches.ts";
 import * as Comments from "./workComments.ts";
+import { readWatched, recordWatched } from "../numbers/mcp.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 
 // Invented org, people, clients and work only; nothing here reads a real database.
@@ -1309,6 +1310,12 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
     yield* issuedByLead("INV-1");
     // One row per tool the lead has: a tool added without one fails to typecheck and here.
     // A definition shows no entry, so proposing one marks nothing.
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+      VALUES (${orgId}, 'goals', 'Goals', 'G', 1, 0) ON CONFLICT DO NOTHING`;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+      owner_id, created_by_kind, origin_key, fields_json, created_at, updated_at)
+      VALUES (${orgId}, 'watch', 'goals', 'G-1', 'DAU', 'agent', ${lead}, 'system',
+        'invented-watch', '{"measure":"manual","source":"Invented report"}', 0, 0)`;
     const calls = {
       records_query: [LeadWork.query(scope, { keys: ["W-2"] }), true],
       record_get: [LeadWork.get(scope, { key: "W-2" }), true],
@@ -1360,6 +1367,13 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
           paidOn: "2026-11-11",
         }),
         true,
+      ],
+      numbers_read: [readWatched(scope, {}), true],
+      number_record: [
+        recordWatched(scope, {
+          values: [{ number: "G-1", value: "4210", asOf: "2026-11-20", source: "Invented report" }],
+        }),
+        false,
       ],
       money_summary: [LeadMoney.money(scope, {}), true],
       money_query: [LeadMoney.moneyQuery(scope, { view: "outlook" }), true],

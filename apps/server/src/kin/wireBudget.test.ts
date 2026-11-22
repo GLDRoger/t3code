@@ -11,6 +11,7 @@ import {
   KinChatSummary,
   KinChatStreamEvent,
   KinMoneyAnswerRpcs,
+  KinNumbersRpcs,
   KIN_MONEY_PARTS,
   type KinMoneyPart,
   KinPersonId,
@@ -60,6 +61,7 @@ import * as KinPulse from "./pulse/KinPulse.ts";
 import * as Pulse from "./pulse/people.ts";
 import budget from "./kinWireBudget.json" with { type: "json" };
 import * as Docs from "./work/docs.ts";
+import * as Numbers from "./numbers/KinNumbers.ts";
 import * as Goals from "./work/goals.ts";
 import * as KinRecords from "./work/KinRecords.ts";
 import * as OwnerDocs from "./work/ownerDocs.ts";
@@ -590,6 +592,36 @@ const accessBytes = Effect.fn("KinWireBudget.accessBytes")(function* () {
   return measured;
 });
 
+const numbersBytes = Effect.fn("KinWireBudget.numbers")(function* () {
+  const owner = as(ownerId)[0]!;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+    VALUES (${orgId}, 'goals', 'Goals', 'G', 1, ${NOW}) ON CONFLICT DO NOTHING`;
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+      owner_id, created_by_kind, origin_key, fields_json, created_at, updated_at)
+    VALUES (${orgId}, 'wire-number', 'goals', 'G-1', 'Daily users', 'person', ${ownerId},
+      'system', 'wire-number', '{"measure":"manual","unit":"users","direction":"up","below":"4000"}',
+      ${NOW}, ${NOW})`;
+  const asOf = day(0);
+  yield* Numbers.record(owner, [
+    { number: "G-1", value: "4210", asOf, source: "Invented daily report" },
+  ]);
+  const list = yield* Numbers.list(owner);
+  const history = yield* Numbers.values(owner, "G-1", asOf, asOf);
+  expect(list.numbers).toHaveLength(1);
+  expect(history.values).toHaveLength(1);
+  expect((yield* Numbers.list(as(memberId)[0]!)).numbers).toEqual([]);
+  return {
+    "owner.numbers.list.bytes": wireBytes(successOf(KinNumbersRpcs, "kin.numbers.list"), list),
+    "owner.numbers.list.rows": list.numbers.length,
+    "owner.numbers.values.bytes": wireBytes(
+      successOf(KinNumbersRpcs, "kin.numbers.values"),
+      history,
+    ),
+    "owner.numbers.values.rows": history.values.length,
+  };
+});
+
 /** The pinned keys of one test: chat's are `chat.`, every other key is the hot reads'. */
 const pinned = (chat: boolean) =>
   Object.fromEntries(Object.entries(budget).filter(([key]) => key.startsWith("chat.") === chat));
@@ -626,6 +658,7 @@ withLayer(layer)("Kin wire budget", (it) => {
       Object.assign(measured, yield* Effect.scoped(attentionMove()));
       Object.assign(measured, yield* Effect.scoped(moneyChange()));
       Object.assign(measured, chatList());
+      Object.assign(measured, yield* numbersBytes());
       Object.assign(measured, yield* accessBytes().pipe(Effect.provide(KinShell.layer)));
 
       expect(over, `Unpaged Kin reads over ${UNPAGED_CEILING} bytes: page them.`).toEqual([]);

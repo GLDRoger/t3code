@@ -20,6 +20,7 @@ import * as Money from "../leadMoney.ts";
 import { PageMarks } from "../pageMarks.ts";
 import * as Work from "../leadWork.ts";
 import * as Comments from "../workComments.ts";
+import { numberRecordTool, numbersReadTool } from "../../numbers/mcp.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
@@ -82,6 +83,8 @@ export const DatesResult = Money.DatesResult.mapFields((fields) => ({
 
 /** Work: the company's entries. The state of work comes from these tools and the Work section only. */
 export const KinWorkToolkit = Toolkit.make(
+  numberRecordTool.annotate(McpSchema.EnabledWhen, enabled),
+  numbersReadTool.annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("records_query", {
     ...shared,
     description: `Find Work entries, for any question about where work stands, what we spent, or what we and a client owe each other (not memory or earlier messages). Filter by owner ("you", "me" for whoever asked, "owner" or an agentId), states, open, late, dueBefore, text, keys, client, project, side (ours: we owe it; theirs: they owe us) or repo; groupBy counts per client, project, side, owner or state. list clients, contacts or projects finds the open ones; done or dropped ones need open false or states. A defined list (expenses, invoices, dates…) returns amounts, dates and fields; filter by dateFrom/dateTo and groupBy category, month or financialYear for exact totals per currency. Quote totals as given (for bank transactions, moneyIn, moneyOut and net); never add amounts yourself. summary true leaves the rows out (keys only), for when the count or totals answer the question. Returns asOf, total and up to limit rows (default 20, at most 50), work under way first, then soonest due; next, while more match, is the offset for the next page. Read-only. ${data} ${marked}`,
