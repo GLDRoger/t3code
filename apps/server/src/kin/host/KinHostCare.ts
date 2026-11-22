@@ -146,6 +146,13 @@ export class KinHostCare extends Context.Service<
      * may try once more at once.
      */
     readonly spaceFailed: (orgId: KinOrgId, agentId: KinAgentId) => Effect.Effect<boolean>;
+    /**
+     * Kin's own storage failed for space before a turn could start (its database could not
+     * write): the clean runs once until writes work again, and the queue is left as it was.
+     */
+    readonly storageFailed: (orgId: KinOrgId) => Effect.Effect<void>;
+    /** Writes work again: a storage failure seen meanwhile becomes the space trouble, told. */
+    readonly storageRecovered: (orgId: KinOrgId) => Effect.Effect<void>;
     /** Dev stand-in only: fails as a full disk would while `$TMPDIR/kin-dev-disk-full` exists. */
     readonly devFullDisk: Effect.Effect<void, KinHostSpaceFull>;
     /**
@@ -562,6 +569,43 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  // Nothing can be written while storage is full, so what it saw waits here until it can be.
+  const storageSeen = new Set<string>();
+  const storageCleaned = new Set<string>();
+  const storageFailed = Effect.fn("KinHostCare.storageFailed")(function* (orgId: KinOrgId) {
+    storageSeen.add(orgId);
+    if (!host || storageCleaned.has(orgId)) return;
+    storageCleaned.add(orgId);
+    yield* clean("out_of_space");
+  });
+  const storageRecovered = Effect.fn("KinHostCare.storageRecovered")(
+    function* (orgId: KinOrgId) {
+      if (!storageSeen.has(orgId)) return;
+      const cleaned = storageCleaned.has(orgId);
+      const troubleId = yield* troubleLock.withPermits(1)(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const now = yield* Clock.currentTimeMillis;
+            const troubleId = yield* openOrGet(orgId, "space", now);
+            if (cleaned)
+              yield* sql`UPDATE kin_troubles SET auto_clean_at = COALESCE(auto_clean_at, ${now})
+                WHERE org_id = ${orgId} AND trouble_id = ${troubleId}`;
+            return troubleId;
+          }),
+        ),
+      );
+      storageSeen.delete(orgId);
+      storageCleaned.delete(orgId);
+      yield* projectQuietly(orgId, troubleId, true);
+      // Room again: the notice says what happened and that it is over.
+      const space = yield* readSpace();
+      if (Option.isSome(space) && levelOf(space.value) !== "out") yield* close(orgId, troubleId);
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin space trouble still can't be written", { cause }),
+    ),
+  );
+
   const failed = Effect.fn("KinHostCare.failed")(
     function* (input: TroubleInput) {
       const { orgId } = input;
@@ -824,6 +868,8 @@ const make = Effect.gen(function* () {
     host,
     clean,
     spaceFailed,
+    storageFailed,
+    storageRecovered,
     devFullDisk,
     failed,
     succeeded,

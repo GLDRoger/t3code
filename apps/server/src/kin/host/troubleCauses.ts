@@ -20,6 +20,7 @@ const NETWORK_CODES: ReadonlySet<unknown> = new Set([
   "ENETUNREACH",
   "EHOSTUNREACH",
 ]);
+const STORAGE_FULL = /\bdatabase or disk is full\b/i;
 // A provider's own text for a full disk, from the program it runs ("os error 28" is Rust's).
 const SPACE_TEXT =
   /\bENOSPC\b|\bEDQUOT\b|no space left on device|disk quota exceeded|os error (?:28|122)\b/i;
@@ -68,6 +69,9 @@ export function troubleCause(failure: unknown): KinTroubleCause {
       );
     if ("errno" in value && SPACE_ERRNOS.has(value.errno)) return true;
     if ("code" in value && SPACE_CODES.has(value.code)) return true;
+    // SQLite's own words when its database or the disk under it is full.
+    if ("message" in value && typeof value.message === "string" && STORAGE_FULL.test(value.message))
+      return true;
     if (isProviderFailure(value)) {
       const cause = ofProvider(value);
       if (cause === "space") return true;

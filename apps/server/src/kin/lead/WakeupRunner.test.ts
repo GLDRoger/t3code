@@ -1081,6 +1081,53 @@ describe("WakeupRunner", () => {
       }).pipe(provideDeterministicTestRuntime),
   );
   it.effect(
+    "a database too full to claim a turn leaves the queue as it was, cleans once, and is told once writes work",
+    () =>
+      Effect.gen(function* () {
+        const told: Array<string> = [];
+        let seen = false;
+        const care = Layer.succeed(
+          KinHostCare,
+          KinHostCare.of({
+            host: true,
+            clean: () => Effect.die("not cleaned here"),
+            spaceFailed: () => Effect.die("no turn ran"),
+            storageFailed: () => Effect.sync(() => ((seen = true), told.push("storage full"))),
+            storageRecovered: () =>
+              Effect.sync(() => {
+                if (seen) told.push("told");
+                seen = false;
+              }),
+            devFullDisk: Effect.void,
+            failed: () => Effect.die("no turn ran"),
+            succeeded: () => Effect.void,
+            troubleOpen: () => Effect.succeed(false),
+            causeFor: () => Effect.undefined,
+            checkBackup: () => Effect.void,
+            status: () => Effect.die("not read here"),
+            freeSpace: () => Effect.die("not tapped here"),
+            backUpNow: () => Effect.die("not tapped here"),
+            retry: () => Effect.die("not tapped here"),
+          }),
+        );
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("full"));
+          yield* sql`CREATE TRIGGER full_disk BEFORE INSERT ON kin_wakeups
+            BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`;
+          assert.strictEqual((yield* Fiber.await(yield* run()))._tag, "Failure");
+          assert.deepStrictEqual(told, ["storage full"]);
+          assert.deepStrictEqual(yield* sql`SELECT state, attempts, wakeup_id FROM kin_events`, [
+            { state: "queued", attempts: 0, wakeup_id: null },
+          ]);
+          yield* sql`DROP TRIGGER full_disk`;
+          yield* Fiber.join(yield* run());
+          assert.deepStrictEqual(told, ["storage full", "told"]);
+        }).pipe(Effect.provide(harness().pipe(Layer.provide(care))));
+      }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect(
     "a full disk after visible work keeps the partway line and opens the space trouble, though Kin cleaned",
     () =>
       Effect.gen(function* () {
@@ -1112,6 +1159,8 @@ describe("WakeupRunner", () => {
             host: true,
             clean: () => Effect.die("cleaned through spaceFailed"),
             spaceFailed: () => Effect.sync(() => (told.push("clean"), true)),
+            storageFailed: () => Effect.void,
+            storageRecovered: () => Effect.void,
             devFullDisk: Effect.void,
             failed: (input) =>
               Effect.sync(
@@ -2525,6 +2574,8 @@ describe("WakeupRunner", () => {
                 if (first) told.push("clean out_of_space");
                 return first;
               }),
+            storageFailed: () => Effect.void,
+            storageRecovered: () => Effect.void,
             devFullDisk: Effect.void,
             failed: (input) =>
               Effect.sync(() => {

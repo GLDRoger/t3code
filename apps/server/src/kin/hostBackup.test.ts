@@ -279,6 +279,8 @@ describe("troubleCause", () => {
       ],
       [wakeupFailure(-61, "ECONNREFUSED"), "unreachable"],
       [wakeupFailure(-13, "EACCES"), "unknown"],
+      // SQLite says so when its database, or the disk under it, is full.
+      [Cause.die(new Error("database or disk is full")), "space"],
       [Cause.die(new Error("provider exited")), "unknown"],
       [
         provider({ class: "provider_error", message: "Something odd", code: "api_error_400" }),
@@ -552,6 +554,49 @@ it.effect(
         ],
       );
     }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "a storage failure before any turn claimed cleans once, and becomes a told space trouble once writes work",
+  () => {
+    let cleans = 0;
+    const runner = Layer.succeed(
+      ProcessRunner.ProcessRunner,
+      ProcessRunner.ProcessRunner.of({
+        run: (input) =>
+          Effect.sync(() => {
+            if (input.command === "bash") cleans += 1;
+            return {
+              stdout: "kin-clean removed=1 freed_kb=4096 failed=0\n",
+              stderr: "",
+              code: 0 as never,
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            };
+          }),
+      }),
+    );
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(DAY_START);
+      yield* seed;
+      const care = yield* KinHostCare.KinHostCare;
+      yield* care.storageFailed(orgId);
+      yield* care.storageFailed(orgId);
+      assert.strictEqual(cleans, 1);
+      yield* care.storageRecovered(orgId);
+      // Told what happened; this test's disk has room, so it says it is over too.
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [card.cause, card.open]),
+        [["space", false]],
+      );
+      assert.lengthOf(yield* notices, 1);
+      yield* care.storageRecovered(orgId);
+      assert.lengthOf(yield* cards, 1);
+    }).pipe(Effect.provide(servicesWith({ KIN_CHECKOUT: "/srv/kin-current" }, runner)));
+  },
 );
 
 const space =

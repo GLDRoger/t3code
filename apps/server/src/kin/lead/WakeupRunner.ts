@@ -1080,6 +1080,7 @@ const make = Effect.gen(function* () {
 
   const runOnce = Effect.fn("WakeupRunner.runOnce")(
     function* (orgId: KinOrgId, agentId: KinAgentId) {
+      if (Option.isSome(care)) yield* care.value.storageRecovered(orgId);
       const record = yield* lead(orgId, agentId);
       if (record.retiredAt !== null) return yield* retire(record);
       if (yield* paused(orgId)) return;
@@ -1108,7 +1109,14 @@ const make = Effect.gen(function* () {
       yield* Effect.scoped(
         Effect.gen(function* () {
           let events = yield* Effect.acquireRelease(
-            queue.claim({ orgId, agentId, wakeupId, model: record.model.model }),
+            queue.claim({ orgId, agentId, wakeupId, model: record.model.model }).pipe(
+              // Storage full before a turn could start: nothing was claimed; clean, once.
+              Effect.tapCause((cause) =>
+                Option.isSome(care) && troubleCause(cause) === "space"
+                  ? care.value.storageFailed(orgId)
+                  : Effect.void,
+              ),
+            ),
             (_, exit) =>
               cleanup(row, Exit.hasInterrupts(exit), Exit.isFailure(exit) ? exit.cause : null).pipe(
                 Effect.catch((error) =>
