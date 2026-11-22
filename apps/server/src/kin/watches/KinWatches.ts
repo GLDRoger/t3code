@@ -210,6 +210,11 @@ export const recordRound = Effect.fn("KinWatches.recordRound")(function* (input:
               closed_by_id = NULL, looked_at = ${at}, last_outcome = 'closed', last_line = ${line},
               asked_look_at = NULL, updated_at = ${at}
             WHERE org_id = ${orgId} AND watch_id = ${watch.watchId} AND state = 'open'`;
+        else if (watch.askedLookAt !== null && watch.nextLookAt > at)
+          // Look now keeps the round's clock: no back-off step, the next look stays when it was.
+          yield* sql`UPDATE kin_watches SET looked_at = ${at}, last_outcome = ${outcome},
+              last_line = ${line}, asked_look_at = NULL, updated_at = ${at}
+            WHERE org_id = ${orgId} AND watch_id = ${watch.watchId} AND state = 'open'`;
         else {
           const next = nextLook(watch, at);
           yield* sql`UPDATE kin_watches SET looked_at = ${at}, last_outcome = ${outcome},
@@ -246,7 +251,10 @@ const seenWatch = Effect.fn("KinWatches.seen")(function* (
   return row;
 });
 
-/** Look now: due at once, why "You asked". Asked again before it ran, nothing more is queued. */
+/**
+ * Look now: due at once, why "You asked", leaving the next routine look where it was. Asked again
+ * before it ran, nothing more is queued.
+ */
 export const look = Effect.fn("KinWatches.look")(function* (
   orgId: KinOrgId,
   reader: WatchReader,
@@ -262,8 +270,7 @@ export const look = Effect.fn("KinWatches.look")(function* (
           reason: "invalid_state",
           message: "Kin isn't watching this now. Watch again first.",
         });
-      const asked = yield* sql`UPDATE kin_watches SET asked_look_at = ${at}, next_look_at = ${at},
-          updated_at = ${at}
+      const asked = yield* sql`UPDATE kin_watches SET asked_look_at = ${at}, updated_at = ${at}
         WHERE org_id = ${orgId} AND watch_id = ${watchId} AND asked_look_at IS NULL
         RETURNING watch_id`;
       if (asked.length > 0) yield* (yield* KinRefreshObserver).touch(orgId, "watches");

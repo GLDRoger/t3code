@@ -406,6 +406,13 @@ describe("Kin watches", () => {
         ["routine", "asked"],
       );
       assert.isFalse((yield* WatchReads.one(orgId, owner, watch!.watchId)).looking);
+      // An asked look that finds nothing leaves the clock as the round set it: no back-off step.
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(
+        yield* sql`SELECT interval_ms AS "intervalMs", next_look_at AS "nextLookAt"
+          FROM kin_watches WHERE org_id = ${orgId} AND watch_id = ${watch!.watchId}`,
+        [{ intervalMs: 90 * MINUTE, nextLookAt: T0 + 45 * MINUTE }],
+      );
 
       yield* TestClock.setTime(T0 + 5 * MINUTE);
       const stopped = yield* KinWatches.stop(orgId, owner, watch!.watchId);

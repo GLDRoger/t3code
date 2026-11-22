@@ -68,7 +68,7 @@ export const round = Effect.fn("KinWatchRounds.round")(function* (
   }
   yield* KinWatches.settleClock({ orgId, at, moved, asleep, watches: before });
   const due = (yield* KinWatches.openWatches(orgId)).filter(
-    (watch) => watch.nextLookAt <= at && (watch.aside === 0 || watch.askedLookAt !== null),
+    (watch) => watch.askedLookAt !== null || (watch.nextLookAt <= at && watch.aside === 0),
   );
   const looks: Array<KinWatches.Look> = [];
   for (const watch of due) {
@@ -120,7 +120,7 @@ const pass = Effect.fnUntraced(
     }>`SELECT o.org_id AS "orgId",
         (SELECT MAX(c.seq) FROM kin_record_changes c WHERE c.org_id = o.org_id) AS seq,
         EXISTS (SELECT 1 FROM kin_watches w WHERE w.org_id = o.org_id AND w.state = 'open'
-          AND w.next_look_at <= ${now}) AS due
+          AND (w.next_look_at <= ${now} OR w.asked_look_at IS NOT NULL)) AS due
       FROM kin_orgs o ORDER BY o.org_id`.pipe(NodeSqliteClient.readOnly);
     for (const { orgId, seq, due } of orgs) {
       const seen = last.get(orgId);
