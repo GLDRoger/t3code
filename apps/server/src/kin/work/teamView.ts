@@ -112,11 +112,12 @@ export const alsoOnIt = (sql: SqlClient.SqlClient, personId: KinPersonId | State
  * with Clients on the deals of clients they see.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
-  sql`((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
+  sql`((r.register_id = 'work' AND NOT ${inheritedSensitive(sql)}
+      AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
       OR ${attends(sql, personId)} OR ${alsoOnIt(sql, personId)} OR r.marked_by_person_id = ${personId}
       OR (r.sensitive = 0 AND ((r.created_by_kind = 'person' AND r.created_by_id = ${personId})
         OR r.assigned_by_person_id = ${personId}))))
-  OR (r.register_id IN ('work', 'milestones') AND r.sensitive = 0
+  OR (r.register_id IN ('work', 'milestones') AND NOT ${sensitiveNow(sql)}
     AND (r.team_shared = 1 OR ${onProject(sql, personId)}))
   OR (${ownLabelOff(sql)} AND r.register_id <> 'bank_transactions'
     AND ${inLedProject(sql, personId)})

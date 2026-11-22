@@ -159,17 +159,42 @@ export const actorOf = (kind: string, id: string | null): Actor =>
 /** Lists whose entries are private only by their own label: a task never inherits one. */
 export const OWN_LABEL_LISTS = ["work", "milestones"] as const;
 
-/** Whether `r`'s client, its project or its project's client is labelled sensitive. */
-const parentLabelled = (sql: SqlClient.SqlClient) => sql`EXISTS (SELECT 1 FROM kin_records s
-    WHERE s.org_id = r.org_id AND s.sensitive = 1 AND s.record_id IN (r.party_id, r.project_id,
-      (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))`;
+/** `r` is a promise (`promises.ts`): an obligation sitting on a deal, `d`. */
+const promiseOn = (
+  sql: SqlClient.SqlClient,
+  deal: Statement.Fragment,
+) => sql`(r.register_id = 'work'
+  AND r.category = 'obligation' AND EXISTS (SELECT 1 FROM kin_record_links dl
+    JOIN kin_records d ON d.org_id = dl.org_id AND d.record_id = dl.target
+    WHERE dl.org_id = r.org_id AND dl.record_id = r.record_id AND dl.kind = 'record'
+      AND d.register_id = 'deals' AND ${deal}))`;
+export const promiseOnDeal = (sql: SqlClient.SqlClient) => promiseOn(sql, sql`1 = 1`);
 
 /**
- * Whether `r` inherits a label from its client or project (design 4.9).
- * Tasks and milestones are private only when marked so themselves.
+ * A promise on a deal kept private, or on any deal while Deals is off (`shell/KinShell.ts`): it
+ * is as hidden as its deal.
+ */
+const promiseOnHiddenDeal = (sql: SqlClient.SqlClient) =>
+  promiseOn(
+    sql,
+    sql`(d.sensitive = 1 OR EXISTS (SELECT 1 FROM kin_company_shell sh, json_each(sh.shell_json) j
+      WHERE sh.org_id = r.org_id AND json_extract(j.value, '$.id') = 'deals'
+        AND json_extract(j.value, '$.on') = 0))`,
+  );
+
+/** Whether `r`'s client, its project or its project's client is labelled sensitive, or its deal. */
+const parentLabelled = (sql: SqlClient.SqlClient) => sql`(EXISTS (SELECT 1 FROM kin_records s
+    WHERE s.org_id = r.org_id AND s.sensitive = 1 AND s.record_id IN (r.party_id, r.project_id,
+      (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))
+  OR ${promiseOnHiddenDeal(sql)})`;
+
+/**
+ * Whether `r` inherits a label from its client or project (design 4.9), or a promise from its deal.
+ * Other tasks and milestones are private only when marked so themselves.
  */
 export const inheritedSensitive = (sql: SqlClient.SqlClient) =>
-  sql`(r.register_id NOT IN ${sql.in(OWN_LABEL_LISTS)} AND ${parentLabelled(sql)})`;
+  sql`((r.register_id NOT IN ${sql.in(OWN_LABEL_LISTS)} AND ${parentLabelled(sql)})
+    OR ${promiseOnHiddenDeal(sql)})`;
 
 /** `r`'s own label or one it inherits: the one check every screen and Kin agent uses. */
 export const sensitiveNow = (sql: SqlClient.SqlClient) =>

@@ -34,7 +34,7 @@ import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/org
 import * as KinShell from "../shell/KinShell.ts";
 import { sectionOfKey, sectionOfSense } from "../shell/sections.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
-import { ownerZone } from "../work/recordRows.ts";
+import { ownerZone, promiseOnDeal } from "../work/recordRows.ts";
 import { matchName } from "../work/nameMatch.ts";
 import { crmVisible, viewSees } from "../work/teamView.ts";
 import { clientSenses } from "./senses/clients.ts";
@@ -245,10 +245,27 @@ const matches = (text: string | undefined, key: string | undefined, wanted: stri
   key?.toLowerCase() === wanted.toLowerCase() ||
   (text !== undefined && matchName(wanted, [{ name: text }])._tag === "found");
 
-export const quiet = (fact: { readonly sense: string }, shell: Shell) => {
+export const quiet = (
+  fact: { readonly sense: string; readonly subject?: { readonly recordId?: string | undefined } },
+  shell: Shell,
+  onDeals: ReadonlySet<string> = new Set(),
+) => {
+  if (fact.subject?.recordId !== undefined && onDeals.has(fact.subject.recordId)) return true;
   const section = sectionOfSense(fact.sense);
   return section !== null && !KinShell.onIn(shell, section);
 };
+
+/** Promises on a deal (`promises.ts`), by record id: quiet with Deals, as the deal's own facts. */
+const promisesOnDeals = Effect.fn("KinPulse.promisesOnDeals")(function* (
+  orgId: KinOrgId,
+  shell: Shell,
+) {
+  if (KinShell.onIn(shell, "deals")) return new Set<string>();
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId" FROM kin_records r
+    WHERE r.org_id = ${orgId} AND ${promiseOnDeal(sql)} ORDER BY r.record_id`;
+  return new Set(rows.map((row) => row.recordId));
+});
 
 /** Only what this viewer may see; for people, Work facts on tasks every one of them sees. */
 const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
@@ -258,7 +275,8 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
   shell?: Shell,
 ) {
   const current = shell ?? (yield* KinShell.get(orgId));
-  const facts = sensed.filter((fact) => !quiet(fact, current));
+  const onDeals = yield* promisesOnDeals(orgId, current);
+  const facts = sensed.filter((fact) => !quiet(fact, current, onDeals));
   if (viewer._tag === "owner") return facts;
   const deals = yield* dealsHeardBy(orgId, viewer, facts);
   // Who holds a task after their access went is the owner's to settle, not a teammate's.
@@ -471,8 +489,9 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
   const { orgId, at, zone } = ctx;
+  const onDeals = yield* promisesOnDeals(orgId, shell);
   const due = facts.flatMap((sensed): Array<KinPulseFact> => {
-    if (quiet(sensed, shell)) return [];
+    if (quiet(sensed, shell, onDeals)) return [];
     const { yours: _yours, quietForMs: _quietForMs, ...fact } = sensed;
     const open = { ...fact, handled: handledOf(stored.get(fact.key), at, sensed) };
     return open.handled === null &&
@@ -540,16 +559,30 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
         (fact) => fact.key,
       ),
     );
+    // Counted unnamed only where their Tasks opens it; one kept from them (a promise on a deal
+    // kept private) isn't theirs to hear of at all, and waits until they may see it.
+    const hidden = tell.filter((fact) => !sees.has(fact.key));
+    const opens = new Set(
+      hidden.length === 0
+        ? []
+        : (yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId" FROM kin_records r
+            WHERE r.org_id = ${orgId}
+              AND r.record_id IN ${sql.in(hidden.flatMap((fact) => fact.subject.recordId ?? []))}
+              AND ${viewSees(sql, [personId])} ORDER BY r.record_id`).map((row) => row.recordId),
+    );
+    const heard = tell.filter(
+      (fact) => sees.has(fact.key) || opens.has(fact.subject.recordId ?? ""),
+    );
     const noticeId = yield* tellHolder({
       ctx,
       personId,
       agentId: entry.agentId,
-      facts: tell.filter((fact) => sees.has(fact.key)),
-      unnamed: tell.filter((fact) => !sees.has(fact.key)),
+      facts: heard.filter((fact) => sees.has(fact.key)),
+      unnamed: heard.filter((fact) => !sees.has(fact.key)),
     });
     if (noticeId === undefined) continue;
-    yield* markTold({ orgId, personId: to, eventId: noticeId, facts: tell, at, zone });
-    for (const fact of tell) told.push({ agentId: entry.agentId, to, key: fact.key });
+    yield* markTold({ orgId, personId: to, eventId: noticeId, facts: heard, at, zone });
+    for (const fact of heard) told.push({ agentId: entry.agentId, to, key: fact.key });
   }
   for (const [agentId, groups] of wakes) {
     // One event carries at most 50 facts: the rest stay untold for the next pass.
@@ -685,11 +718,12 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           asideOf(fact, holds, { _tag: "owner" }) !== undefined,
       );
       const sensedNow = shortHash(`${sensedText}\0${handled.map((fact) => fact.key).join("\n")}`);
-      const muted = facts.filter((fact) => quiet(fact, shell));
+      const onDeals = yield* promisesOnDeals(orgId, shell);
+      const muted = facts.filter((fact) => quiet(fact, shell, onDeals));
       if (muted.length > 0) yield* markQuiet(ctx, muted);
       const woken: Array<string> = [];
       for (const fact of facts) {
-        if (quiet(fact, shell)) continue;
+        if (quiet(fact, shell, onDeals)) continue;
         const row = stored.get(fact.key);
         if (fact.wake !== "now" || fact.actor._tag !== "agent") continue;
         if (row === undefined || row.wokeAt !== null || handledOf(row, at, fact) !== null) continue;

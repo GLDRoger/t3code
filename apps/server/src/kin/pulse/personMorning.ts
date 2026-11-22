@@ -18,7 +18,7 @@ import { ownerLevel } from "../people/KinAccess.ts";
 import { validZone } from "../triggers/quietHold.ts";
 import { storedWorkHours } from "../triggers/quietHours.ts";
 import { dueWhenText, endOfDay, ownerZone, startOfDay } from "../work/recordRows.ts";
-import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
+import { KIN_OWNER_LEVEL, seenBy, viewerOfPeople } from "../work/teamView.ts";
 import { asideOf, type Hold } from "./holds.ts";
 import { holderLine, noticeHolder } from "./holderNotice.ts";
 import { LOOKED_AFTER_SENSES } from "./senses/deals.ts";
@@ -254,6 +254,9 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
         (fact.subject.recordId === undefined || !late.has(fact.subject.recordId)),
     );
     const work = facts.filter((fact) => forHolder(fact, at, ctx.zone));
+    const viewer = (yield* ownerLevel(orgId, personId))
+      ? KIN_OWNER_LEVEL
+      : viewerOfPeople([personId]);
     const to = endOfDay(day, zone);
     const day7 = to + COMING_DAYS * DAY_MS;
     const clock = { zone, locale: KIN_TEXT_LOCALE };
@@ -279,7 +282,7 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
       WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'ours'
         AND r.category = 'obligation' AND r.state IN ('open', 'doing', 'waiting')
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
-        AND r.due_at >= ${from} AND r.due_at <= ${day7}
+        AND r.due_at >= ${from} AND r.due_at <= ${day7} AND ${seenBy(sql, viewer)}
       ORDER BY r.due_at, r.key`;
     const promisedIds = new Set(promised.map((row) => row.recordId));
     // What a client owes them that is late is a line on the client, not their own late task.
@@ -322,7 +325,7 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
     const money = yield* morningMoneyLines({
       orgId,
       now: at,
-      viewer: (yield* ownerLevel(orgId, personId)) ? KIN_OWNER_LEVEL : viewerOfPeople([personId]),
+      viewer,
     });
     // Written from what is true at its minute, and only with something untold: else none that day.
     if ((clients.length === 0 || deals.length + work.length === 0) && money.length === 0) {
@@ -361,7 +364,7 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
       WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'theirs'
         AND r.category = 'obligation' AND r.state IN ('open', 'doing', 'waiting')
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
-        AND r.due_at >= ${at} AND r.due_at <= ${day7}
+        AND r.due_at >= ${at} AND r.due_at <= ${day7} AND ${seenBy(sql, viewer)}
       ORDER BY r.due_at, r.key LIMIT ${SHOWN}`;
     const expected = !input.dealsOn
       ? []
@@ -373,7 +376,7 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
         }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
       FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       WHERE r.org_id = ${orgId} AND r.register_id = 'deals' AND r.state = 'open'
-        AND r.owner_kind = 'person' AND r.owner_id = ${personId}
+        AND r.owner_kind = 'person' AND r.owner_id = ${personId} AND ${seenBy(sql, viewer)}
         AND r.due_at > ${to} AND r.due_at <= ${day7}
       ORDER BY r.due_at, r.key LIMIT ${SHOWN}`;
     const comingUp = [

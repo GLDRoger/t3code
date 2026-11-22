@@ -84,8 +84,13 @@ export const dealFor = Effect.fn("KinPromises.dealFor")(function* (
   seenBy: ReadonlyArray<KinPersonId>,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [deal] = yield* sql<{ recordId: string; key: string; partyId: string | null }>`SELECT
-      r.record_id AS "recordId", r.key, r.party_id AS "partyId" FROM kin_records r
+  const [deal] = yield* sql<{
+    recordId: string;
+    key: string;
+    partyId: string | null;
+    sensitive: number;
+  }>`SELECT r.record_id AS "recordId", r.key, r.party_id AS "partyId", r.sensitive
+    FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.key = ${key.toUpperCase()} AND r.register_id = 'deals'
       AND ${seenBy.length === 0 ? sql`1 = 1` : sql.and(seenBy.map((person) => crmSees(sql, person)))}`;
   if (deal === undefined) return yield* missing(`No deal ${key.slice(0, 40)}.`);
@@ -104,12 +109,14 @@ export const dealLink = (deal: { readonly recordId: string; readonly key: string
 
 /**
  * Who holds what a client owes us: whoever looks after the client while they are still here;
- * for an agent's client, nobody's or a removed person's, the owner.
+ * for an agent's client, nobody's or a removed person's, or on a deal kept private, the owner.
  */
 export const theirsHolder = Effect.fn("KinPromises.theirsHolder")(function* (
   orgId: KinOrgId,
   partyId: string,
+  deal?: { readonly sensitive: number },
 ) {
+  if (deal?.sensitive === 1) return yield* holderFor(orgId, "", "");
   const sql = yield* SqlClient.SqlClient;
   const [client] = yield* sql<{ ownerKind: string; ownerId: string }>`SELECT
       owner_kind AS "ownerKind", owner_id AS "ownerId" FROM kin_records

@@ -915,7 +915,7 @@ export const create = Effect.fn("KinWork.create")(function* (
     input.side === "theirs" &&
     input.category === "obligation" &&
     typeof partyId === "string"
-      ? yield* theirsHolder(input.orgId, partyId).pipe(workFailure)
+      ? yield* theirsHolder(input.orgId, partyId, deal).pipe(workFailure)
       : undefined;
   const owner: KinWorkPrincipal = input.owner ??
     holder ?? { _tag: "person", personId: person.personId };

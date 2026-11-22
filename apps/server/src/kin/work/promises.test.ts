@@ -7,6 +7,7 @@ import {
   KinChatError,
   KinOrgId,
   KinPersonId,
+  KinRecordKey,
   ThreadId,
   type KinPartyPage,
 } from "@t3tools/contracts";
@@ -27,6 +28,8 @@ import * as Deals from "./deals.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as Clients from "./ownerClients.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import * as Search from "./search.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 
 // Invented company, people, clients and deals only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -382,44 +385,149 @@ it.effect(
 );
 
 it.effect(
-  "a promise on a deal kept private: members neither open the deal nor learn it from the promise",
+  "a promise on a deal kept private is private with it: members see it nowhere, the owner level everywhere, and it follows the deal both ways",
   () =>
     Effect.gen(function* () {
-      const { corran } = yield* seed;
-      const kept = yield* Deals.create([rhea], {
+      const { corran, deal } = yield* seed;
+      // Zoya looks after Corran and keeps the deal; the theirs promise is hers to chase.
+      const theirs = yield* OwnerWork.create(
+        [rhea],
+        promise("Invented signed terms", { deal, side: "theirs", from: "At the board lunch" }),
+      );
+      const ours = yield* OwnerWork.create([zoya], promise("Invented terms sheet", { deal }));
+      const keys = [theirs.key, ours.key];
+      const stored = (yield* Deals.page([rhea], { orgId, key: deal })).deal;
+      const keep = (sensitive: boolean, rev: number) =>
+        Deals.update([rhea], { orgId, key: deal, rev, sensitive });
+      const seen = Effect.fn("test.seen")(function* (who: typeof rhea) {
+        const client: KinPartyPage = yield* Clients.party([who], { orgId, key: corran });
+        const tasks = yield* OwnerWork.list([who], { orgId, open: true });
+        const summary = yield* OwnerWork.summary([who], { orgId });
+        const found = yield* Search.search(orgId, {
+          text: "Invented terms",
+          limit: 20,
+          viewer: who === rhea || who === cora ? "owner" : "team",
+          scope: who === rhea || who === cora ? KIN_OWNER_LEVEL : viewerOfPeople([who.personId]),
+        });
+        const opened: Array<string> = [];
+        for (const key of keys)
+          if (
+            (yield* Effect.exit(OwnerWork.get([who], { orgId, key: KinRecordKey.make(key) })))
+              ._tag === "Success"
+          )
+            opened.push(key);
+        return {
+          client: [...client.weOwe.records, ...client.theyOwe.records]
+            .map((one) => one.key)
+            .filter((key) => keys.includes(key)),
+          tasks: tasks.records.map((one) => one.key).filter((key) => keys.includes(key)),
+          open: summary.open,
+          search: found.hits.map((hit) => hit.key).filter((key) => keys.includes(key ?? "")),
+          opened,
+        };
+      });
+      const before = yield* seen(zoya);
+      assert.sameMembers(before.client, keys);
+      assert.sameMembers(before.tasks, keys);
+      assert.sameMembers(before.opened, keys);
+      assert.sameMembers(before.search, keys);
+      const kept = yield* keep(true, stored.rev);
+      for (const who of [zoya, arjun]) {
+        const now = yield* seen(who);
+        assert.deepStrictEqual(
+          { ...now, open: undefined },
+          { client: [], tasks: [], open: undefined, search: [], opened: [] },
+          who.personId,
+        );
+      }
+      assert.strictEqual((yield* seen(zoya)).open, before.open - 2);
+      for (const who of [rhea, cora]) {
+        const now = yield* seen(who);
+        assert.sameMembers(now.client, keys, who.personId);
+        assert.sameMembers(now.search, keys, who.personId);
+        assert.sameMembers(now.opened, keys, who.personId);
+        assert.deepStrictEqual(
+          (yield* Deals.page([who], { orgId, key: deal })).promises
+            ?.map((one) => one.key)
+            .toSorted(),
+          keys.toSorted(),
+        );
+      }
+      // Kept private no more: they show again where they showed.
+      yield* keep(false, kept.deal.rev);
+      const after = yield* seen(zoya);
+      assert.deepStrictEqual(after, before);
+      // A deal kept private from the start: a member can't make a promise on it.
+      const quiet = yield* Deals.create([rhea], {
         orgId,
         party: corran,
         title: "Invented quiet buyout",
         sensitive: true,
         clientRequestId: "kept",
       });
-      const made = yield* OwnerWork.create(
+      // What the client owes on it is the owner's to chase: whoever looks after Corran can't see it.
+      const owed = yield* OwnerWork.create(
         [rhea],
-        promise("Invented terms sheet", { deal: kept.deal.key, from: "At the board lunch" }),
+        promise("Invented signed buyout", { deal: quiet.deal.key, side: "theirs" }),
       );
-      for (const who of [rhea, cora])
-        assert.deepStrictEqual(
-          (yield* Deals.page([who], { orgId, key: kept.deal.key })).promises?.map((one) => one.key),
-          [made.key],
-        );
+      assert.deepStrictEqual(owed.owner, asPrincipal(rheaId));
       for (const who of [zoya, arjun]) {
         assert.include(
           ["not_found", "not_allowed"],
-          yield* refusal(Deals.page([who], { orgId, key: kept.deal.key })),
+          yield* refusal(Deals.page([who], { orgId, key: quiet.deal.key })),
         );
-        const client = JSON.stringify(yield* Clients.party([who], { orgId, key: corran }));
-        assert.notInclude(client, kept.deal.key, who.personId);
-        assert.notInclude(client, "Invented quiet buyout", who.personId);
         assert.strictEqual(
           yield* refusal(
             OwnerWork.create(
               [who],
-              promise(`Invented by ${who.personId}`, { deal: kept.deal.key }),
+              promise(`Invented by ${who.personId}`, { deal: quiet.deal.key }),
             ),
           ),
           "not_found",
         );
       }
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a promise on a deal is hidden from members while Deals is off and back when it is on; one on no deal stays",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { corran, deal } = yield* seed;
+      const onDeal = yield* OwnerWork.create([zoya], promise("Invented plan", { deal }));
+      const plain = yield* OwnerWork.create(
+        [zoya],
+        promise("Invented call notes", { party: corran }),
+      );
+      const shown = Effect.fn("test.shown")(function* () {
+        const tasks = yield* OwnerWork.list([zoya], { orgId, open: true });
+        const client: KinPartyPage = yield* Clients.party([zoya], { orgId, key: corran });
+        const opened = yield* Effect.exit(
+          OwnerWork.get([zoya], { orgId, key: KinRecordKey.make(onDeal.key) }),
+        );
+        return {
+          tasks: tasks.records
+            .map((one) => one.key)
+            .filter((key) => [onDeal.key, plain.key].includes(key)),
+          client: client.weOwe.records.map((one) => one.key),
+          opened: opened._tag,
+        };
+      });
+      const on = yield* shown();
+      assert.sameMembers(on.tasks, [onDeal.key, plain.key]);
+      const turn = (deals: boolean, rev: number) =>
+        sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+          VALUES (${orgId}, ${JSON.stringify([{ id: "deals", on: deals }])}, ${rev}, ${rheaId}, ${NOW})
+          ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json, rev = excluded.rev`;
+      yield* turn(false, 1);
+      assert.deepStrictEqual(yield* shown(), {
+        tasks: [plain.key],
+        client: [plain.key],
+        opened: "Failure",
+      });
+      yield* turn(true, 2);
+      assert.deepStrictEqual(yield* shown(), on);
     }).pipe(Effect.provide(layer)),
 );
 

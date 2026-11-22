@@ -530,6 +530,14 @@ it.effect.each([true, false])(
           ["record_create", createDeal],
           ["record_create", { records: [{ title: "Invented call" }, { list: "deals" }] }],
           ["records_query", { list: "deals" }],
+          [
+            "record_create",
+            {
+              records: [
+                { title: "Invented promise", category: "obligation", client: "C-1", deal: "DL-3" },
+              ],
+            },
+          ],
         ] as const;
         const dealsRefusal =
           "Deals is turned off for this company. An owner can turn it on in Settings › Deals.";

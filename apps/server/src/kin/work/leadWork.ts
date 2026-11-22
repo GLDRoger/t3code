@@ -2624,7 +2624,7 @@ const createRow = Effect.fnUntraced(function* (
     row.side === "theirs" &&
     row.category === "obligation" &&
     partyId !== undefined
-      ? yield* theirsHolder(lead.orgId, partyId)
+      ? yield* theirsHolder(lead.orgId, partyId, deal)
       : undefined;
   const owner = theirs ?? holder.who;
   const from =

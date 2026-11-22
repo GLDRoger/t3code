@@ -7,6 +7,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Chat from "../chat/layer.ts";
+import * as KinShell from "../shell/KinShell.ts";
 import * as KinPulse from "./KinPulse.ts";
 
 // Invented company, people, clients and deals only; nothing here reads a real database.
@@ -224,6 +225,89 @@ describe("promises both ways", () => {
           assert.lengthOf(yield* noticesTo(person), 0, person);
         }
       }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect(
+    "a promise on a deal kept private reaches no member: not on her page, not by notice, not in her pulse; kept private no more, it does",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* stepFarAhead();
+        const sql = yield* SqlClient.SqlClient;
+        const link = (id: string) =>
+          sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation, created_at)
+            VALUES (${orgId}, ${`r-${id}`}, 'record', 'r-DL-1', 'relates', ${B})`;
+        yield* promiseOf("W-6", "Send the plan", "ours", Date.UTC(2026, 10, 2, 15));
+        yield* promiseOf("W-7", "Staff list", "theirs", Date.UTC(2026, 10, 4) - 1);
+        yield* link("W-6");
+        yield* link("W-7");
+        yield* insert({
+          id: "W-9",
+          list: "work",
+          title: "Call Lena",
+          category: "task",
+          partyId: "C-1",
+          dueAt: Date.UTC(2026, 10, 2, 16),
+        });
+        yield* sql`UPDATE kin_records SET sensitive = 1 WHERE record_id = 'r-DL-1'`;
+        yield* tickAt(MONDAY);
+        assert.deepStrictEqual(yield* pagesTo(zoya), [
+          {
+            form: "brief",
+            body: [
+              "Needs you:",
+              "- W-9 Call Lena, due today",
+              "",
+              "Clients:",
+              "- Follow-ups today: 1.",
+            ].join("\n"),
+          },
+        ]);
+        yield* sql`UPDATE kin_records SET state = 'done' WHERE key IN ('W-6', 'W-9')`;
+        const late = Date.UTC(2026, 10, 5, 15);
+        yield* tickAt(late);
+        assert.deepStrictEqual(yield* noticesTo(zoya), []);
+        const keys = (facts: ReadonlyArray<KinPulseFact>) =>
+          facts.flatMap((fact) => (fact.subject.key === "W-7" ? [fact.sense] : []));
+        assert.deepStrictEqual(keys((yield* asZoya(late)).facts), []);
+        assert.deepStrictEqual(keys((yield* read(late)).facts), ["theirs_late"]);
+        // Kept private no more: Zoya hears it once, as the one who holds it.
+        yield* sql`UPDATE kin_records SET sensitive = 0 WHERE record_id = 'r-DL-1'`;
+        yield* tickAt(late + HOUR);
+        yield* tickAt(late + 2 * HOUR);
+        assert.deepStrictEqual(keys((yield* asZoya(late + 2 * HOUR)).facts), ["theirs_late"]);
+        assert.deepStrictEqual(yield* noticesTo(zoya), ["W-7 Staff list was due 2 days ago."]);
+      }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect(
+    "a promise on a deal goes quiet with Deals and is back when Deals is on again; one on no deal is still heard",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* stepFarAhead();
+        const sql = yield* SqlClient.SqlClient;
+        const shell = yield* KinShell.KinShell;
+        yield* promiseOf("W-7", "Staff list", "theirs", Date.UTC(2026, 10, 4) - 1);
+        yield* promiseOf("W-10", "Signed form", "theirs", Date.UTC(2026, 10, 4) - 1);
+        yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation, created_at)
+          VALUES (${orgId}, 'r-W-7', 'record', 'r-DL-1', 'relates', ${B})`;
+        const off = yield* shell.set(orgId, rhea, 0, [{ id: "deals", on: false }]);
+        const late = Date.UTC(2026, 10, 5, 15);
+        yield* tickAt(late);
+        yield* tickAt(late + HOUR);
+        const about = (facts: ReadonlyArray<KinPulseFact>) =>
+          facts.flatMap((fact) => (fact.sense === "theirs_late" ? [fact.subject.key] : []));
+        assert.deepStrictEqual(yield* noticesTo(zoya), ["W-10 Signed form was due 2 days ago."]);
+        assert.deepStrictEqual(about((yield* read(late + HOUR)).facts), ["W-10"]);
+        assert.deepStrictEqual(about((yield* asZoya(late + HOUR)).facts), ["W-10"]);
+        // Deals on again: the promise is back where it was, and what went quiet isn't told late.
+        yield* shell.set(orgId, rhea, off.rev, [{ id: "deals", on: true }]);
+        yield* tickAt(late + 2 * HOUR);
+        assert.sameMembers(about((yield* read(late + 2 * HOUR)).facts), ["W-7", "W-10"]);
+        assert.sameMembers(about((yield* asZoya(late + 2 * HOUR)).facts), ["W-7", "W-10"]);
+        assert.deepStrictEqual(yield* noticesTo(zoya), ["W-10 Signed form was due 2 days ago."]);
+      }).pipe(Effect.provide(KinShell.layer), Effect.provide(chatLayer)),
   );
 
   it.effect(
