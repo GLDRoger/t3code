@@ -1286,6 +1286,113 @@ describe("KinChatService", () => {
   );
 
   it.effect(
+    "puts a picture on the turn's reply as an image with its doc's chip, once per retry, and posts one with no reply alone",
+    () =>
+      Effect.gen(function* () {
+        const { service, agent, chat, person } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const [turn] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+          FROM kin_wakeups WHERE org_id = ${person.orgId} AND status = 'running'`;
+        const inTurn = { ...agent, wakeupId: KinWakeupId.make(turn!.wakeupId) };
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+          VALUES (${person.orgId}, 'docs', 'Docs', 'D', 1, 0)`;
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
+          VALUES (${person.orgId}, 'pic-doc', 'docs', 'D-1', 'Ambermill launch', 'agent', ${agentId},
+            0, 'agent', 'picture:lead:1', 0, 0)`;
+        for (const version of [1, 2])
+          yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind,
+              summary, operations_json, actor_kind, via, origin_key, created_at)
+            VALUES (${person.orgId}, 'pic-doc', ${version}, '', 'Ambermill launch', 'created',
+              'Picture', '[]', 'agent', 'lead', ${`kin-picture:${version}`}, 0)`;
+        const image = (id: string) => ({
+          type: "image" as const,
+          id,
+          name: "ambermill-launch.png",
+          mimeType: "image/png",
+          sizeBytes: 68,
+        });
+        const input = {
+          chatId: chat.chatId,
+          clientMessageId: "kin-picture:one",
+          intent: "answer" as const,
+          attachment: image("kin-chat-picture-1"),
+          doc: { key: "D-1", version: 1 },
+        };
+        const first = { placed: "reply", attachmentId: "kin-chat-picture-1" };
+        assert.deepStrictEqual(yield* service.picture(inTurn, input), first);
+        // Before a batch is made: how many fit, the one on the reply already included.
+        const batch = (count: number) => [
+          "kin-picture:one",
+          ...Array.from({ length: count }, (_, index) => `kin-picture:batch-${index}`),
+        ];
+        const room = (count: number) =>
+          service.pictureRoom(inTurn, { chatId: chat.chatId, clientMessageIds: batch(count) });
+        assert.deepStrictEqual([yield* room(3), yield* room(4)], [4, 4]);
+        // A retry drew its image again; the first one is what the reply carries.
+        assert.deepStrictEqual(
+          yield* service.picture(inTurn, { ...input, attachment: image("kin-chat-picture-2") }),
+          first,
+        );
+        const said = {
+          chatId: chat.chatId,
+          body: "Here is the launch post.",
+          clientMessageId: "picture-reply",
+          placeReplyFigures: true as const,
+          intent: "answer" as const,
+        };
+        const reply = yield* service.send(inTurn, said);
+        assert.deepStrictEqual(
+          reply.attachments?.map((one) => one.id),
+          ["kin-chat-picture-1"],
+        );
+        assert.deepStrictEqual(reply.refs, [
+          {
+            _tag: "doc",
+            key: "D-1",
+            version: 1,
+            section: null,
+            title: "Ambermill launch",
+            sectionTitle: null,
+          },
+        ]);
+        // The reply sent again is the same reply, the picture on it Kin's and not the retry's.
+        assert.strictEqual((yield* service.send(inTurn, said)).messageId, reply.messageId);
+        // Drawn after the turn's last word, it goes out on a message of its own at the turn's end.
+        yield* service.picture(inTurn, {
+          ...input,
+          clientMessageId: "kin-picture:two",
+          attachment: image("kin-chat-picture-3"),
+          doc: { key: "D-1", version: 2 },
+        });
+        yield* service.settleFigures(inTurn, chat.chatId, "answer");
+        // Outside a turn's reply there is no reply to wait for.
+        assert.deepStrictEqual(
+          yield* service.picture(agent, {
+            ...input,
+            clientMessageId: "kin-picture:three",
+            attachment: image("kin-chat-picture-4"),
+          }),
+          { placed: "message", attachmentId: "kin-chat-picture-4" },
+        );
+        const posted = yield* sql<{ attachments: string; refs: string }>`SELECT
+            attachments_json AS attachments, refs_json AS refs FROM kin_messages
+          WHERE org_id = ${person.orgId} AND chat_id = ${chat.chatId} AND body = ''
+            AND attachments_json IS NOT NULL ORDER BY seq`;
+        assert.deepStrictEqual(
+          posted.map((row) => [
+            JSON.parse(row.attachments).map((one: { id: string }) => one.id),
+            JSON.parse(row.refs).map((one: { version: number }) => one.version),
+          ]),
+          [
+            [["kin-chat-picture-3"], [2]],
+            [["kin-chat-picture-4"], [1]],
+          ],
+        );
+      }).pipe(Effect.provide(attachmentLayer)),
+  );
+
+  it.effect(
     "lets only the owner choose where visuals load from, as bare hosts, and serves exactly that list",
     () =>
       Effect.gen(function* () {
