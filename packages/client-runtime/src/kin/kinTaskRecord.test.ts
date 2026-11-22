@@ -26,6 +26,8 @@ import {
   kinTaskActivity,
   kinTaskControls,
   kinTaskPeopleFolded,
+  kinTaskWith,
+  kinTaskWithChoices,
 } from "./kinTaskRecord.ts";
 import { kinWorkItemView, type KinWorkNames } from "./kinWork.ts";
 
@@ -362,6 +364,10 @@ describe("kinNextStep", () => {
     // An agent's suggestion names the agent, who neither asked nor holds it here.
     const suggested = task({ owner: meera, createdBy: finance, confirmed: false });
     expect(kinTaskPeopleFolded(suggested, stepOf(suggested))).toBeNull();
+    // Rhea is on Meera's own task: the folded row says who's on it, for her only.
+    const on = task({ owner: meera, createdBy: meera, alsoOn: [rhea] });
+    expect(kinTaskPeopleFolded(on, stepOf(on), names)?.label).toBe("Who asked and who's on it");
+    expect(kinTaskPeopleFolded(on, stepOf(on), asZoya)?.label).toBe("Who asked and who has it");
   });
 
   it("quotes the words a task came back with", () => {
@@ -376,6 +382,58 @@ describe("kinNextStep", () => {
       line: "handed this back",
       acts: [{ id: "done" }, { id: "give" }],
     });
+  });
+});
+
+describe("kinTaskWith", () => {
+  it("offers x to whoever may change it, Leave to the reader, + until ten, and marks who is gone", () => {
+    const people = (who: ReturnType<typeof kinTaskWith>) =>
+      who.people.map((one) => [one.name, one.status, one.act]);
+    const shown = kinTaskWith({
+      item: { alsoOn: [zoya, rhea, finance] },
+      names: { ...names, retired: new Set([finance.agentId]) },
+      edit: true,
+      change: true,
+      joined: [rhea.personId, meera.personId],
+    });
+    expect(people(shown)).toEqual([
+      ["Zoya", "No access", "remove"],
+      ["You", null, "leave"],
+      ["Finance", "Retired", "remove"],
+    ]);
+    expect([shown.add, shown.full]).toEqual([true, null]);
+    // Someone who may not change the task reads it; Leave is still theirs.
+    const reader = kinTaskWith({
+      item: { alsoOn: [zoya, rhea] },
+      names,
+      edit: false,
+      change: true,
+    });
+    expect(people(reader)).toEqual([
+      ["Zoya", null, null],
+      ["You", null, "leave"],
+    ]);
+    expect([reader.add, reader.full]).toEqual([false, null]);
+    // Ten is all a task takes: + goes and one quiet line says why.
+    const ten = Array.from({ length: 10 }, (_, index) => ({
+      _tag: "person" as const,
+      personId: KinPersonId.make(`ambermill-${index}`),
+    }));
+    const full = kinTaskWith({ item: { alsoOn: ten }, names, edit: true, change: true });
+    expect([full.add, full.full]).toEqual([false, "10 are on it, the most a task takes."]);
+    // The picker leaves out its holder and whoever is on it already.
+    const row = (principal: typeof rhea | typeof meera | typeof chief) => ({
+      key: principal._tag === "agent" ? principal.agentId : principal.personId,
+      principal,
+      name: "",
+      avatar: { kind: "person" as const, seed: "" },
+      current: false,
+    });
+    const choices = kinTaskWithChoices(
+      { leads: [row(chief)], people: [row(rhea), row(meera)] },
+      { owner: meera, alsoOn: [rhea] },
+    );
+    expect([...choices.leads, ...choices.people].map((one) => one.principal)).toEqual([chief]);
   });
 });
 
