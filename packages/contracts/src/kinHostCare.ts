@@ -128,7 +128,7 @@ export function kinTroubleWords(
       ? null
       : expiring === card.count
         ? `${card.count === 1 ? "It has a set time" : "They have set times"} and won't run if this lasts past ${card.count === 1 ? "it" : "them"}.`
-        : `${expiring} of them have a set time and won't run if this lasts past it.`,
+        : `${expiring === 1 ? "One of them has a set time" : `${expiring} of them have set times`} and won't run if this lasts past ${expiring === 1 ? "it" : "them"}.`,
     stopped === 0
       ? null
       : `Kin stopped retrying ${stopped === 1 ? "one turn" : `${stopped} turns`} by itself after too many tries. Try again runs ${them(stopped)}.`,

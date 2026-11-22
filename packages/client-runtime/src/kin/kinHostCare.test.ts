@@ -89,7 +89,12 @@ describe("kinHostTroubleCardView", () => {
     [
       "signin",
       { count: 4, expiring: 2 },
-      "Kin keeps the 4 held turns and runs them once the account is signed in again. If Kin's settings can't sign it in, whoever set up Kin's computer can. 2 of them have a set time and won't run if this lasts past it.",
+      "Kin keeps the 4 held turns and runs them once the account is signed in again. If Kin's settings can't sign it in, whoever set up Kin's computer can. 2 of them have set times and won't run if this lasts past them.",
+    ],
+    [
+      "space",
+      { count: 2, expiring: 1 },
+      "Kin keeps the 2 held turns and runs them as soon as there is space. One of them has a set time and won't run if this lasts past it.",
     ],
     [
       "unreachable",
