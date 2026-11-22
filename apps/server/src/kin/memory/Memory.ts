@@ -1260,6 +1260,13 @@ const make = Effect.gen(function* () {
   ) {
     yield* refuseDuringPurge(orgId, "recover");
     yield* refuseUnfinishedOperation(orgId, writer);
+    // Older Git can replace a dangling symbolic ref even with --no-deref and a zero expected tip.
+    if (yield* git(orgId, writer, ["symbolic-ref", "--quiet", ref]).pipe(Effect.isSuccess))
+      return yield* new MemoryCheckoutInvalid({
+        orgId,
+        operation: "recover",
+        reason: "Default ref is symbolic",
+      });
     yield* readFiles(orgId, writer, head).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(VcsProcess, vcs),
