@@ -252,7 +252,7 @@ describe("helperModelRefusal", () => {
   it("says the exact refusal an agent reads", () => {
     assert.strictEqual(
       refusal({ model: "invented-sparrow" }),
-      `Kin didn't start this task on invented-sparrow: claudeAgent doesn't offer it. Models you may use, as target.model with its target.providerInstanceId: ${ALLOWED}. Or leave target.model and target.providerInstanceId out, and it runs on your own model.`,
+      `Kin didn't start this task on invented-sparrow: claudeAgent doesn't offer it. Nothing started, and no one was told. Models you may use, as target.model with its target.providerInstanceId: ${ALLOWED}. Or leave target.model and target.providerInstanceId out, and it runs on your own model.`,
     );
   });
 

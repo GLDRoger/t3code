@@ -58,7 +58,7 @@ export const leadProviderProblem = (
         : facts.devOnly
           ? "it runs agents only on a dev server"
           : "turn on Agents on other providers in Kin's Settings first"
-  }. Delegated tasks may still use any provider.`;
+  }. Helper tasks follow the same rule.`;
 };
 
 export const findProviderModel = (models: ReadonlyArray<ServerProviderModel>, slug: string) =>
@@ -213,7 +213,7 @@ export const helperModelRefusal = (input: {
           .join(", ")} on ${instanceId}`,
     );
     return [
-      `Kin didn't start this task on ${named}: ${why}.`,
+      `Kin didn't start this task on ${named}: ${why}. Nothing started, and no one was told.`,
       providers === null
         ? ""
         : list.length === 0
