@@ -6,7 +6,7 @@ import {
   type KinAttachment,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   ComposerAttachmentFileList,
@@ -20,6 +20,7 @@ import {
   fileAttachmentStagingLimit,
   normalizeComposerImageFileMimeType,
 } from "../components/chat/composerAttachmentFiles";
+import { serializeComposerImages } from "../components/chat/composerImagePersistence";
 import { openExpandedImagePreview } from "../components/chat/ExpandedImageDialog";
 import {
   addPreparingComposerImages,
@@ -31,7 +32,6 @@ import {
   type ComposerFileAttachment,
   type ComposerImageAttachment,
   composerFileNeedsReattach,
-  DraftId,
   useComposerDraftStore,
   useComposerThreadDraft,
 } from "../composerDraftStore";
@@ -50,9 +50,7 @@ import { inheritComposerImageThumbnail, prepareImageForAttachment } from "../lib
 import { randomUUID } from "../lib/utils";
 import { useServerConfigs } from "../state/entities";
 import { kinClient } from "./kinClient";
-
-/** A Kin chat's files wait in the thread composer's draft store, under a key no thread has. */
-const kinAttachmentTarget = (draftKey: string) => DraftId.make(`kin:${draftKey}`);
+import { kinAttachmentTarget } from "./kinDraft";
 
 /** Where a Kin chat's image previews open; mount `ExpandedImageDialogHost` with the same key. */
 export const kinPreviewKey = (draftKey: string) => `kin:${draftKey}`;
@@ -104,6 +102,27 @@ export function useKinComposerAttachments(input: {
     (failed === undefined ? null : `'${failed.name}' did not upload. Retry it or remove it.`);
 
   const store = () => useComposerDraftStore.getState();
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the draft's images as data URLs into the draft store's persisted copy, as the thread composer does, so a reload keeps them
+  useEffect(() => {
+    let cancelled = false;
+    const images = draft.images;
+    void (async () => {
+      const drafts = useComposerDraftStore.getState();
+      if (images.length === 0) {
+        drafts.clearPersistedAttachments(target);
+        return;
+      }
+      const serialized = await serializeComposerImages(
+        images,
+        drafts.getComposerDraft(target)?.persistedAttachments ?? [],
+      );
+      if (!cancelled) void drafts.syncPersistedAttachments(target, serialized);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [draft.images, target]);
 
   const add = async (files: ReadonlyArray<File>): Promise<boolean> => {
     if (!canPost || files.length === 0) return false;

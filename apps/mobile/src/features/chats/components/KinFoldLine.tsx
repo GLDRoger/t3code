@@ -23,7 +23,7 @@ const firstLine = (markdown: string) =>
 /** Folded agent talk (DESIGN 8.3): one line naming who talked and what they settled. */
 export function KinFoldLine(props: { readonly row: FoldRow; readonly onToggle: () => void }) {
   const { row } = props;
-  const who = `${joinNames(row.authors)} talked it over.`;
+  const who = `${joinNames(row.authors)} ${row.open ? "are still talking it over" : "talked it over"}.`;
   const decision = row.decision === null ? null : firstLine(row.decision);
   const count = `${row.count} messages`;
   return (

@@ -275,6 +275,18 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
       assert.include(sent[0]!.body, "How many brochures do we print for the Kochi expo?");
       assert.deepStrictEqual(JSON.parse(sent[0]!.relay!), { kind: "sent_by", agentId: "social" });
       assert.strictEqual(sent[0]!.silent, 1);
+      // Where Rhea asked, one quiet line says the discussion started and names it.
+      const started = yield* sql<{ body: string; discussion: string; silent: number }>`SELECT body,
+          discussion_id AS discussion, silent FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = ${chatOf("social")} AND discussion_id IS NOT NULL
+          AND relay_json IS NULL ORDER BY seq`;
+      assert.deepStrictEqual(started, [
+        {
+          body: "Started a Team room discussion: Brochure print run",
+          discussion: "TD-1",
+          silent: 1,
+        },
+      ]);
 
       // Not Finance's turn yet for Growth: refused, and nothing posts.
       yield* wake("growth");
@@ -364,6 +376,16 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
         kind: string;
       };
       assert.strictEqual(objector.kind, "object");
+      // Decided but open to its one objection: the room's messages still say it is going.
+      const [roomNow] = yield* sql<{ chatId: KinChatId }>`SELECT chat_id AS "chatId"
+        FROM kin_chats WHERE org_id = ${orgId} AND team_id = 'team-room'`;
+      const going = (yield* chats.history(owner, {
+        chatId: roomNow!.chatId,
+        beforeSeq: 1_000,
+        limit: 100,
+      })).messages.filter((message) => message.discussionId === "TD-1");
+      assert.isNotEmpty(going);
+      assert.isTrue(going.every((message) => message.discussionOpen === true));
       yield* wake(objector.agentId);
       const objected = yield* callAs(objector.agentId, "team_say", {
         text: "Fine on count, but book the printer by Friday or the price goes up.",
@@ -430,6 +452,12 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
         WHERE org_id = ${orgId} AND team_id = 'team-room'`;
       const page = { chatId: room!.chatId, beforeSeq: 1_000, limit: 100 };
       assert.isAbove((yield* chats.history(owner, page)).messages.length, 0);
+      // The room's messages say the discussion has closed, read at the time they are read.
+      assert.isTrue(
+        (yield* chats.history(owner, page)).messages.every(
+          (message) => message.discussionId !== "TD-1" || message.discussionOpen === false,
+        ),
+      );
       assert.isAbove((yield* chats.history(person("meera"), page)).messages.length, 0);
       assert.strictEqual(yield* repo.unreadTotal({ orgId, personId: owner.personId }), 1);
       const ownerList = yield* chats
