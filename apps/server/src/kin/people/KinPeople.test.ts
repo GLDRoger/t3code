@@ -1711,6 +1711,41 @@ it.effect(
         "reason",
         "not_allowed",
       );
+      // Whether a reply to what she asked rings in her quiet hours is hers alone to set and read.
+      assert.propertyVal(
+        yield* service
+          .updateProfile(ownerSession, {
+            orgId,
+            personId: asha.person.personId,
+            answersRing: false,
+          })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+      const ashaAs = (session: Parameters<typeof service.profiles>[0]) =>
+        service
+          .profiles(session, orgId)
+          .pipe(
+            Effect.map((read) =>
+              read.profiles.find((profile) => profile.personId === asha.person.personId),
+            ),
+          );
+      assert.notProperty(yield* ashaAs(asha.session), "answersRing");
+      assert.propertyVal(
+        yield* service.updateProfile(asha.session, {
+          orgId,
+          personId: asha.person.personId,
+          answersRing: false,
+        }),
+        "answersRing",
+        false,
+      );
+      assert.propertyVal(yield* ashaAs(asha.session), "answersRing", false);
+      assert.notProperty(yield* ashaAs(ownerSession), "answersRing");
+      const [switched] = yield* sql<{ ring: number }>`SELECT answers_ring AS ring FROM kin_people
+        WHERE person_id = ${asha.person.personId}`;
+      assert.strictEqual(switched?.ring, 0);
       const renamed = yield* service.updateProfile(ownerSession, {
         orgId,
         personId: asha.person.personId,

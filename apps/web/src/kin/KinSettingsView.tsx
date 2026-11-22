@@ -348,7 +348,7 @@ function KinSettingsPageBody(props: {
     case "profile":
       return <KinProfilePage {...target} />;
     case "notifications":
-      return <KinSettingsNotifications />;
+      return <KinSettingsNotifications {...target} />;
     case "appearance":
       return <KinAppearancePage />;
     case "team":

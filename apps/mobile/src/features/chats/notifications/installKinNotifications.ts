@@ -48,10 +48,16 @@ const isFinalRefusal = Schema.is(Schema.Union([KinChatError, EnvironmentAuthoriz
 // Android shows a push only in a channel the app made; the server names one per kind.
 function createChannels(): void {
   if (Platform.OS !== "android") return;
-  for (const [identifier, channel] of Object.entries(KIN_ANDROID_CHANNELS))
+  for (const [identifier, { name, description, ...channel }] of Object.entries(
+    KIN_ANDROID_CHANNELS,
+  ))
     void Notifications.setNotificationChannelAsync(identifier, {
-      ...channel,
-      importance: Notifications.AndroidImportance.HIGH,
+      name,
+      description,
+      importance:
+        "quiet" in channel
+          ? Notifications.AndroidImportance.LOW
+          : Notifications.AndroidImportance.HIGH,
     }).catch((cause: unknown) => console.warn(`Creating ${identifier} failed`, cause));
 }
 

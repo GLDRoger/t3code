@@ -170,6 +170,8 @@ describe("kinPushRegisterInput", () => {
       token: fcm,
       platform: "android",
       apsEnvironment: "production",
+      // This build has the quiet channel, so quiet hours list pushes there.
+      quietChannel: true,
     });
     expect(
       kinPushRegisterInput({ os: "ios", orgId, token: "abcdef0123", sandbox: false })

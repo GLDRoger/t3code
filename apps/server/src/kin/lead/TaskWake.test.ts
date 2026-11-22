@@ -92,6 +92,8 @@ it.effect("a lead thread's notice becomes one task.finished event for its chat; 
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* ownerOnlyWakeup({ orgId, agentId, wakeupId: "w0" });
+    // The turn whose run handed the task out, so its result answers whoever asked there.
+    yield* sql`UPDATE kin_wakeups SET run_id = 'delegating' WHERE wakeup_id = 'w0'`;
     yield* sql`INSERT INTO kin_agent_threads (thread_id, org_id, agent_id, started_at)
         VALUES (${leadThread}, ${orgId}, ${agentId}, '2026-11-08T00:00:00.000Z')`;
     const enqueued: Array<KinEvent> = [];
@@ -125,10 +127,17 @@ it.effect("a lead thread's notice becomes one task.finished event for its chat; 
     assert.deepStrictEqual(
       enqueued.map((event): ReadonlyArray<unknown> | string =>
         event._tag === "task.finished"
-          ? [event.threadId, event.messageId, event.taskIds, event.chatId, event.provenance._tag]
+          ? [
+              event.threadId,
+              event.messageId,
+              event.taskIds,
+              event.chatId,
+              event.provenance._tag,
+              event.askedIn,
+            ]
           : event._tag,
       ),
-      [[leadThread, notice, ["task-1"], "org:owner-chat", "system"]],
+      [[leadThread, notice, ["task-1"], "org:owner-chat", "system", ["w0"]]],
     );
   }).pipe(Effect.provide(KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
