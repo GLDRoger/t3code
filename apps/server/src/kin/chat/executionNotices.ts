@@ -2,7 +2,9 @@ import {
   KinApprovalError,
   KinChatId,
   KinMessageId,
+  type KinOrgId,
   type KinPendingAction,
+  type KinPersonId,
   formatKinWhen,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -171,6 +173,33 @@ export const keyNoticeBody = (input: KinKeyChange, clock: TextClock) => {
 };
 
 /**
+ * A chat only the owner reads: the chief of staff's with them, another live lead's, else their
+ * first. Undefined when every one is shared.
+ */
+export const ownerPrivateChat = Effect.fnUntraced(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  ownerPersonId: KinPersonId,
+) {
+  const leads = yield* sql<{ chatId: string }>`SELECT l.owner_chat_id AS "chatId"
+    FROM kin_leads l
+    JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+      AND a.role = 'lead' AND a.retired_at IS NULL AND a.owner_person_id = ${ownerPersonId}
+    WHERE l.org_id = ${orgId}
+    ORDER BY CASE WHEN l.domain = ${CHIEF_OF_STAFF_DOMAIN} THEN 0 ELSE 1 END, a.created_at,
+      l.agent_id`;
+  const own = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId" FROM kin_chats c
+    JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+      AND m.principal_kind = 'person' AND m.person_id = ${ownerPersonId}
+      AND m.left_at IS NULL
+    WHERE c.org_id = ${orgId} AND c.archived_at IS NULL
+    ORDER BY c.created_at, c.chat_id`;
+  for (const { chatId } of [...leads, ...own])
+    if (!(yield* chatShared(sql, { orgId, chatId }))) return KinChatId.make(chatId);
+  return undefined;
+});
+
+/**
  * One notice per change (the message id is the key's), written in the key change's transaction.
  * It goes to a chat only the owner reads: the chief of staff's, another live lead's, else the
  * owner's first. With none, Settings' recent activity is the record. Either way the change owes
@@ -181,24 +210,8 @@ export const keyNoticesLayer = Layer.effect(
   Effect.gen(function* () {
     const chat = yield* KinChatService;
     const sql = yield* SqlClient.SqlClient;
-    const ownerChat = Effect.fnUntraced(function* (input: KinKeyChange) {
-      const leads = yield* sql<{ chatId: string }>`SELECT l.owner_chat_id AS "chatId"
-        FROM kin_leads l
-        JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-          AND a.role = 'lead' AND a.retired_at IS NULL AND a.owner_person_id = ${input.ownerPersonId}
-        WHERE l.org_id = ${input.orgId}
-        ORDER BY CASE WHEN l.domain = ${CHIEF_OF_STAFF_DOMAIN} THEN 0 ELSE 1 END, a.created_at,
-          l.agent_id`;
-      const own = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId" FROM kin_chats c
-        JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
-          AND m.principal_kind = 'person' AND m.person_id = ${input.ownerPersonId}
-          AND m.left_at IS NULL
-        WHERE c.org_id = ${input.orgId} AND c.archived_at IS NULL
-        ORDER BY c.created_at, c.chat_id`;
-      for (const { chatId } of [...leads, ...own])
-        if (!(yield* chatShared(sql, { orgId: input.orgId, chatId }))) return chatId;
-      return undefined;
-    });
+    const ownerChat = (input: KinKeyChange) =>
+      ownerPrivateChat(sql, input.orgId, input.ownerPersonId);
     return KinKeyNotices.of({
       changed: Effect.fn("KinKeyNotices.changed")(
         function* (input) {

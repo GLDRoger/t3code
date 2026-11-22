@@ -368,8 +368,9 @@ export const KIN_AGENTS_COPY = {
 
 /**
  * The agents on a live run, from the chat list's live rows, whose `working` follows each run: a
- * direct chat with an agent says it is working. The leads list's own flag is only as fresh as its
- * last read, so the Agents list and an agent's page say "Working" from this instead.
+ * direct chat with an agent says it is working. A group's or the Team room's row names only the
+ * viewer, so while one works the leads list's own flag says which agents are on a run; it is
+ * reread whenever a row's flag flips (`onKinDirectChatsChange`), and trusted only then.
  */
 export function kinWorkingAgents(
   chats: ReadonlyArray<
@@ -377,13 +378,18 @@ export function kinWorkingAgents(
       readonly members: ReadonlyArray<Pick<KinChatSummary["members"][number], "principal">>;
     }
   > | null,
+  leads: ReadonlyArray<Pick<KinLeadProfile, "agentId" | "working">> = [],
 ): ReadonlySet<KinAgentId> {
   const working = new Set<KinAgentId>();
+  let unnamed = false;
   for (const chat of chats ?? []) {
     if (chat.working !== true) continue;
-    for (const member of chat.members) {
-      if (member.principal._tag === "agent") working.add(member.principal.agentId);
-    }
+    const agents = chat.members.flatMap((member) =>
+      member.principal._tag === "agent" ? [member.principal.agentId] : [],
+    );
+    if (agents.length === 0) unnamed = true;
+    for (const agentId of agents) working.add(agentId);
   }
+  if (unnamed) for (const lead of leads) if (lead.working) working.add(lead.agentId);
   return working;
 }

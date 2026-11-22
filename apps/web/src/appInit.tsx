@@ -24,6 +24,7 @@ import { startPermissionUpdateNotices } from "./components/PermissionUpdateNotic
 import { startAgentOpenedPreviews } from "./components/preview/agentOpenedPreviews";
 import { startMainAppLocationTracking } from "./components/sidebar/mainAppLocation";
 import { registerKinListCommands, startKinListTracking } from "./kin/kinListSwitch";
+import { KIN_WEB_ONLY } from "./kin/kinWebOnly";
 import { startDesktopUpdateLaunchNotice } from "./components/sidebar/updateEverythingRun";
 import { startSlowRpcRequestToasts } from "./components/SlowRpcRequestToastCoordinator";
 import { startThreadNotifications } from "./components/ThreadNotificationCoordinator";
@@ -313,7 +314,8 @@ export function startAppServices(): AppRouter {
   startHostFreezeToasts();
   startLegacyThreadMigrationToast();
   startPermissionUpdateNotices(router);
-  startThreadNotifications(appAtomRegistry, router);
+  // The Kin web app has no coding threads to announce or open.
+  if (!KIN_WEB_ONLY) startThreadNotifications(appAtomRegistry, router);
   startGuideRunNotifications(appAtomRegistry, router);
   if (isElectron) startDesktopUpdateLaunchNotice();
 

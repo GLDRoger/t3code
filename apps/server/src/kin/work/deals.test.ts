@@ -1,3 +1,4 @@
+import * as KinShell from "../shell/KinShell.ts";
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
 import { assert, it } from "@effect/vitest";
@@ -1068,6 +1069,12 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+const setShellFixture = Effect.fn("test.setShell")(function* (on: boolean) {
+  const shell = yield* KinShell.KinShell;
+  const { rev } = yield* shell.get(orgId);
+  yield* shell.set(orgId, ownerId, rev, [{ id: "deals", on }]);
+});
+
 it.effect("a deal is found by its key and its title by whoever sees it, and by nobody else", () =>
   Effect.gen(function* () {
     const { corran, hush } = yield* seed;
@@ -1094,6 +1101,17 @@ it.effect("a deal is found by its key and its title by whoever sees it, and by n
       // Docs' own box finds docs alone.
       assert.deepStrictEqual(yield* found(owner, text, { kinds: ["docs"] }), [], `docs: ${text}`);
     }
+    yield* setShellFixture(false).pipe(Effect.provide(KinShell.layer));
+    for (const text of [open.deal.key, "scheduling pilot"]) {
+      assert.deepStrictEqual(yield* found(owner, text), []);
+      assert.deepStrictEqual(yield* found(zoya, text, elsewhere), []);
+    }
+    assert.strictEqual(
+      (yield* OwnerWork.get([owner], { orgId, key: open.deal.key })).key,
+      open.deal.key,
+    );
+    yield* setShellFixture(true).pipe(Effect.provide(KinShell.layer));
+    assert.deepStrictEqual(yield* found(owner, open.deal.key), [shown]);
     // Under a client kept private, the owner level finds it and a teammate doesn't.
     for (const text of [kept.deal.key, "confidential"]) {
       assert.deepStrictEqual(yield* found(owner, text), [
@@ -1348,6 +1366,10 @@ it.effect(
       const on = yield* weeklyFigures({ orgId, now });
       assert.include(on, lines.join("\n"));
       assert.strictEqual(on.replace(`\n\n${lines.join("\n")}`, ""), before);
+      yield* setShellFixture(false).pipe(Effect.provide(KinShell.layer));
+      assert.strictEqual(yield* weeklyFigures({ orgId, now }), before);
+      yield* setShellFixture(true).pipe(Effect.provide(KinShell.layer));
+      assert.strictEqual(yield* weeklyFigures({ orgId, now }), on);
       // Off again: the next Monday is byte for byte what it was.
       yield* setWeeklyPipeline(orgId, false, now);
       assert.strictEqual(yield* weeklyFigures({ orgId, now }), before);

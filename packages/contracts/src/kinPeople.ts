@@ -1,3 +1,4 @@
+import { KinShell } from "./kinShell.ts";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 
@@ -220,6 +221,7 @@ export const KinAccessMeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinAccessMeInput = typeof KinAccessMeInput.Type;
 /** The caller's own kind, which decides their dock and screens. */
 export const KinAccessMeResult = Schema.Struct({
+  shell: Schema.optional(KinShell),
   personId: KinPersonId,
   access: KinPersonAccess,
   // Absent from a host older than places; an owner-level person's are all on.

@@ -65,6 +65,8 @@ import * as KinStop from "./KinStop.ts";
 import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
+import * as PlatformError from "effect/PlatformError";
 import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -1179,6 +1181,122 @@ describe("WakeupRunner", () => {
       }).pipe(provideDeterministicTestRuntime),
   );
   it.effect(
+    "a database too full to claim a turn leaves the queue as it was, cleans once, and is told once writes work",
+    () =>
+      Effect.gen(function* () {
+        const told: Array<string> = [];
+        let seen = false;
+        const care = Layer.succeed(
+          KinHostCare,
+          KinHostCare.of({
+            host: true,
+            clean: () => Effect.die("not cleaned here"),
+            spaceFailed: () => Effect.die("no turn ran"),
+            storageFailed: () => Effect.sync(() => ((seen = true), told.push("storage full"))),
+            storageRecovered: () =>
+              Effect.sync(() => {
+                if (seen) told.push("told");
+                seen = false;
+              }),
+            devFullDisk: Effect.void,
+            failed: () => Effect.die("no turn ran"),
+            succeeded: () => Effect.void,
+            troubleOpen: () => Effect.succeed(false),
+            causeFor: () => Effect.undefined,
+            refresh: () => Effect.void,
+            checkBackup: () => Effect.void,
+            status: () => Effect.die("not read here"),
+            freeSpace: () => Effect.die("not tapped here"),
+            backUpNow: () => Effect.die("not tapped here"),
+            retry: () => Effect.die("not tapped here"),
+          }),
+        );
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("full"));
+          yield* sql`CREATE TRIGGER full_disk BEFORE INSERT ON kin_wakeups
+            BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END`;
+          assert.strictEqual((yield* Fiber.await(yield* run()))._tag, "Failure");
+          assert.deepStrictEqual(told, ["storage full"]);
+          assert.deepStrictEqual(yield* sql`SELECT state, attempts, wakeup_id FROM kin_events`, [
+            { state: "queued", attempts: 0, wakeup_id: null },
+          ]);
+          yield* sql`DROP TRIGGER full_disk`;
+          yield* Fiber.join(yield* run());
+          assert.deepStrictEqual(told, ["storage full", "told"]);
+        }).pipe(Effect.provide(harness().pipe(Layer.provide(care))));
+      }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect(
+    "a full disk after visible work keeps the partway line and opens the space trouble, though Kin cleaned",
+    () =>
+      Effect.gen(function* () {
+        const told: Array<string> = [];
+        let db: SqlClient.SqlClient | undefined;
+        const bridge = Layer.mock(KinReplyBridge)({
+          lane: () =>
+            Effect.succeedSome({
+              chatId: KinChatId.make("owner-chat"),
+              mode: "reply" as const,
+              owed: true,
+              leadName: "Lead",
+            }),
+          preparing: () => Effect.void,
+          begin: () => Effect.void,
+          // A tool call ran before the disk filled, so a quiet retry could repeat it.
+          complete: (input) =>
+            db!`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
+              VALUES (${input.orgId}, ${input.wakeupId}, 'item:note', 'hash')`.pipe(
+              Effect.asVoid,
+              Effect.orDie,
+            ),
+          end: () => Effect.void,
+          failed: (input) => Effect.sync(() => void told.push(`line ${input.outcome}`)),
+        });
+        const care = Layer.succeed(
+          KinHostCare,
+          KinHostCare.of({
+            host: true,
+            clean: () => Effect.die("cleaned through spaceFailed"),
+            spaceFailed: () => Effect.sync(() => (told.push("clean"), true)),
+            storageFailed: () => Effect.void,
+            storageRecovered: () => Effect.void,
+            devFullDisk: Effect.void,
+            failed: (input) =>
+              Effect.sync(
+                () => (told.push(`notice ${input.cause} ${input.eventIds.length}`), true),
+              ),
+            succeeded: () => Effect.void,
+            troubleOpen: () => Effect.succeed(false),
+            causeFor: () => Effect.undefined,
+            refresh: () => Effect.void,
+            checkBackup: () => Effect.void,
+            status: () => Effect.die("not read here"),
+            freeSpace: () => Effect.die("not tapped here"),
+            backUpNow: () => Effect.die("not tapped here"),
+            retry: () => Effect.die("not tapped here"),
+          }),
+        );
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          db = sql;
+          yield* (yield* KinEventQueue.KinEventQueue).enqueue(laneMessage("asked"));
+          yield* Fiber.join(yield* run());
+          assert.deepStrictEqual(told, ["clean", "notice space 1", "line partway"]);
+          assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events`, [{ state: "failed" }]);
+        }).pipe(
+          Effect.provide(
+            harness({ failed: true, failureMessage: "ENOSPC: no space left on device" }).pipe(
+              Layer.provide(bridge),
+              Layer.provide(care),
+            ),
+          ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect(
     "runs two wake-ups on one T3 thread with distinct provider threads and captures only each run's usage",
     () =>
       Effect.gen(function* () {
@@ -1231,9 +1349,13 @@ describe("WakeupRunner", () => {
         ]);
       }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
-  it.effect(
-    "re-arms a lapsed direct-chat grant when the wake-up starts, for that wake-up only",
-    () =>
+  it.effect.each([
+    { kind: "direct", closed: false },
+    { kind: "team_group", closed: false },
+    { kind: "team_group", closed: true },
+  ] as const)(
+    "re-arms a lapsed $kind grant only for an open run (closed=$closed)",
+    ({ kind, closed }) =>
       Effect.gen(function* () {
         const entered = yield* Deferred.make<void>();
         const hold = yield* Deferred.make<void>();
@@ -1244,7 +1366,7 @@ describe("WakeupRunner", () => {
           const floor = yield* Floor.KinFloor;
           const at = "2026-11-08T00:00:00.000Z";
           yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
-            VALUES ('direct', 'org', 'direct', 'owner:lead', 1, ${at})`;
+            VALUES ('direct', 'org', ${kind}, ${kind === "direct" ? "owner:lead" : null}, 1, ${at})`;
           yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
             VALUES ('owner-member', 'org', 'direct', 'person', 'owner', 'owner', ${at})`;
           yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
@@ -1261,6 +1383,13 @@ describe("WakeupRunner", () => {
           yield* floor.open(message, chat);
           // The post-time grant lapses while the server is down, before catch-up enqueues it.
           yield* TestClock.adjust(FLOOR_GRANT_TTL_MS + 60_000);
+          if (closed)
+            yield* sql`UPDATE kin_floor_runs SET state = 'closed'
+              WHERE org_id = ${orgId} AND chat_id = ${scope.chatId}`;
+          const grantExpiry = sql<{ expires_at: number }>`SELECT expires_at FROM kin_floor_grants
+          WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY expires_at`;
+          const expired = yield* grantExpiry;
+          assert.lengthOf(expired, 1);
           yield* (yield* KinEventQueue.KinEventQueue).enqueue(
             decodeEvent({
               _tag: "chat.message",
@@ -1276,6 +1405,12 @@ describe("WakeupRunner", () => {
           );
           const fiber = yield* run();
           yield* Deferred.await(entered);
+          if (closed) {
+            assert.deepStrictEqual(yield* grantExpiry, expired);
+            yield* Deferred.succeed(hold, undefined);
+            yield* Fiber.join(fiber);
+            return;
+          }
           const [lead] = yield* sql<{ thread_id: string }>`SELECT thread_id FROM kin_leads`;
           const identity = yield* resolveAgent(ThreadId.make(lead!.thread_id));
           // The renewed grant lasts as long as the wake-up, so a reply 10 minutes in still lands.
@@ -1285,8 +1420,6 @@ describe("WakeupRunner", () => {
           // The wake-up keeps the grant for its run: its next post is the same agent turn.
           assert.strictEqual((yield* floor.authorize(identity, chat, "evidence")).runId, runId);
           // A used grant is never re-armed, whatever deadline is asked for.
-          const grantExpiry = sql<{ expires_at: number }>`SELECT expires_at FROM kin_floor_grants
-          WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY expires_at`;
           const before = yield* grantExpiry;
           yield* floor.renew({
             orgId,
@@ -2538,6 +2671,84 @@ describe("WakeupRunner", () => {
               ),
             ),
           ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect(
+    "clears temporary files at once when a wake-up fails for space and retries it once, telling the owner only when that fails too",
+    () =>
+      Effect.gen(function* () {
+        const told: Array<string> = [];
+        const full = new Memory.MemoryError({
+          orgId,
+          operation: "prepareWakeup",
+          cause: PlatformError.systemError({
+            _tag: "Unknown",
+            module: "FileSystem",
+            method: "writeFile",
+            pathOrDescriptor: "/tmp/kin-x/config",
+            cause: Object.assign(new Error("ENOSPC"), { errno: -28, code: "ENOSPC" }),
+          }),
+        });
+        const care = Layer.succeed(
+          KinHostCare,
+          KinHostCare.of({
+            host: true,
+            clean: () => Effect.die("cleaned through spaceFailed"),
+            spaceFailed: () =>
+              Effect.sync(() => {
+                const first = !told.includes("clean out_of_space");
+                if (first) told.push("clean out_of_space");
+                return first;
+              }),
+            storageFailed: () => Effect.void,
+            storageRecovered: () => Effect.void,
+            devFullDisk: Effect.void,
+            failed: (input) =>
+              Effect.sync(() => {
+                told.push(`notice ${input.cause} ${input.eventIds.join(",")}`);
+                return true;
+              }),
+            succeeded: () => Effect.void,
+            troubleOpen: () => Effect.succeed(false),
+            causeFor: () => Effect.undefined,
+            refresh: () => Effect.void,
+            checkBackup: () => Effect.void,
+            status: () => Effect.die("not read here"),
+            freeSpace: () => Effect.die("not tapped here"),
+            backUpNow: () => Effect.die("not tapped here"),
+            retry: () => Effect.die("not tapped here"),
+          }),
+        );
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const queue = yield* KinEventQueue.KinEventQueue;
+          const sql = yield* SqlClient.SqlClient;
+          yield* queue.enqueue(event("space"));
+          assert.strictEqual((yield* Fiber.await(yield* run()))._tag, "Failure");
+          // Cleared, back in the queue at once, no attempt spent, nobody told.
+          const firstAt = yield* Clock.currentTimeMillis;
+          assert.deepStrictEqual(told, ["clean out_of_space"]);
+          assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
+            { state: "queued", attempts: 0 },
+          ]);
+          assert.isAtMost(
+            (yield* sql<{
+              notBefore: number;
+            }>`SELECT not_before AS "notBefore" FROM kin_events`)[0]!.notBefore,
+            firstAt,
+          );
+          // Still full: the owner's notice, and the turn held for when there is space.
+          assert.strictEqual((yield* Fiber.await(yield* run()))._tag, "Failure");
+          const heldAt = yield* Clock.currentTimeMillis;
+          assert.deepStrictEqual(told, ["clean out_of_space", "notice space space"]);
+          assert.deepStrictEqual(
+            yield* sql`SELECT state, attempts, not_before > ${heldAt} AS later FROM kin_events`,
+            [{ state: "queued", attempts: 0, later: 1 }],
+          );
+        }).pipe(
+          Effect.provide(harness({ prepare: () => Effect.fail(full) }).pipe(Layer.provide(care))),
         );
       }).pipe(provideDeterministicTestRuntime),
   );

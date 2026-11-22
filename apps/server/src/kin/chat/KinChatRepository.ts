@@ -56,7 +56,7 @@ import { isOrgOwner } from "../lead/orgState.ts";
 import { sectionsOf } from "../work/docBody.ts";
 import { sensitiveNow } from "../work/recordRows.ts";
 import { viewVisible } from "../work/teamView.ts";
-import { encodeNames, nameKeys, withLinks } from "./messageLinks.ts";
+import { encodeNames, nameKeys, nameThreads, withLinks } from "./messageLinks.ts";
 import { messageForViewer } from "./messageView.ts";
 import { chatShared, readableBy, readableFrom, recordJoin } from "./sharing.ts";
 import { accessSql } from "../people/KinAccess.ts";
@@ -765,8 +765,10 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const linked = (...args: Parameters<typeof withLinks>) =>
     withLinks(...args).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+  // People read an agent's helper threads and entries by their names, never a link or a key.
   const named_ = (orgId: KinOrgId, chatId: KinChatId, body: string) =>
-    nameKeys(orgId, chatId, body).pipe(
+    nameThreads(orgId, chatId, body).pipe(
+      Effect.flatMap((worded) => nameKeys(orgId, chatId, worded)),
       Effect.map((named) => ({
         body: named.body,
         json: named.names.length === 0 ? null : encodeNames(named.names),

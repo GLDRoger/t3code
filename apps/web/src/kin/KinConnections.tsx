@@ -7,6 +7,7 @@ import {
   KIN_OWNER_CLIENT_SETUP,
   kinAddableServices,
   kinConnectionDraft,
+  kinConnectionDraftTyped,
   kinConnectionProvider,
   kinConnectionStatus,
   kinIsMailConnection,
@@ -62,6 +63,7 @@ import { KinConnectionPage, type KinMailDiffers } from "./KinConnectionPage";
 import { OwnerClientSetup, openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
 import { KinGitHubConnect, KinGitHubPage } from "./KinGitHubConnect";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
+import { useKinFormDiscard } from "./KinFormDiscard";
 import { KinSocialConnect } from "./KinSocialConnect";
 import { KinPicturesConnect } from "./KinPicturesConnect";
 import { KinVisualHosts } from "./KinVisualHosts";
@@ -454,6 +456,7 @@ function AddDialog(props: {
   const [waiting, setWaiting] = useState<Waiting | null>(null);
   const [changingClient, setChangingClient] = useState(false);
   const [ownClient, setOwnClient] = useState(false);
+  const discard = useKinFormDiscard(kinConnectionDraftTyped(draft), props.onClose);
   const ids = {
     clientId: useId(),
     clientSecret: useId(),
@@ -503,7 +506,7 @@ function AddDialog(props: {
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open && !busy) props.onClose();
+        if (!open && !busy) discard.close();
       }}
     >
       <DialogPopup className="max-w-lg">
@@ -749,7 +752,7 @@ function AddDialog(props: {
             </div>
           </DialogPanel>
           <DialogFooter>
-            <Button type="button" variant="outline" disabled={busy} onClick={props.onClose}>
+            <Button type="button" variant="outline" disabled={busy} onClick={discard.close}>
               {KIN_SETTINGS_COPY.cancel}
             </Button>
             {setup || waiting !== null ? null : (
@@ -759,6 +762,7 @@ function AddDialog(props: {
             )}
           </DialogFooter>
         </form>
+        {discard.ask}
       </DialogPopup>
     </Dialog>
   );

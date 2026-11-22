@@ -94,6 +94,8 @@ export const SHARED_TOOLS = {
   kin_leads: "allowed",
   // An agent's model is the owner's call, made in the owner's own chat.
   agent_update: "refused",
+  // Why agents can't work and the computer's state: no company data, and the asker's answer.
+  kin_computer: "allowed",
   // What everyone in the org sees on profiles; workload only in the owner's own turns.
   people_read: "allowed",
   // Saved only for the one person who asked, with their own rights.

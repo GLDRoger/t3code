@@ -228,6 +228,7 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)memory_\w+$/, "Making a note"],
   [/(?:^|__|\.)kin_defer$/, "Setting a reminder"],
   [/(?:^|__|\.)kin_leads$/, "Checking who handles this"],
+  [/(?:^|__|\.)kin_computer$/, "Checking Kin's computer"],
   [/(?:^|__|\.)people_read$/, "Checking who's on the team"],
   [/(?:^|__|\.)people_update$/, "Updating a profile"],
   [/(?:^|__|\.)away_set$/, "Noting when you're away"],

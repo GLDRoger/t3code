@@ -262,7 +262,7 @@ export type KinNewInvoiceInput = typeof KinNewInvoiceInput.Type;
 export const KinNewExpenseInput = Schema.Struct({
   orgId: KinOrgId,
   title: KinTrimmedText.check(Schema.isMaxLength(280)),
-  amount: KinMoney,
+  amount: KinSignedMoney,
   paidOn: KinDay,
   /** Who was paid, as said. */
   vendor: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(200))),

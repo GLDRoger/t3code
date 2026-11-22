@@ -21,6 +21,7 @@ import {
   type KinDocsListInput,
   type KinDocsSubscribeInput,
   type KinBudgetGetInput,
+  type KinHostInput,
   type KinOrgGetInput,
   type KinGoalsInput,
   type KinBriefsInput,
@@ -296,6 +297,9 @@ export function makeKinClient<R, ER>(
     tag: "kin.budget.get",
   });
   const readBudget = kinGuardedRead(budgetRead);
+  const readHostStatus = kinGuardedRead(
+    createKinRpcCommand(runtime, { label: "kin:host:status:read", tag: "kin.host.status" }),
+  );
   const orgStateRead = createKinRpcCommand(runtime, {
     label: "kin:org:read",
     tag: "kin.org.get",
@@ -1360,6 +1364,32 @@ export function makeKinClient<R, ER>(
       tag: "kin.budget.set",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
     }),
+    /** Settings › Kin's computer: space, backups, what is failing. Owners and co-owners. */
+    hostStatus: createKinQueryAtomFamily(runtime, {
+      label: "kin:host",
+      execute: Effect.fn("KinClient.hostStatus")(function* (input: KinHostInput) {
+        return yield* readHostStatus(input);
+      }),
+      staleTimeMs: 15_000,
+      // Space and failures change on their own; a minute is fresh enough for a glance.
+      refreshIntervalMs: 60_000,
+    }),
+    /** Its `permissionAtom` is whether Settings shows Kin's computer. */
+    hostFreeSpace: createKinRpcCommand(runtime, {
+      label: "kin:host:free-space",
+      tag: "kin.host.freeSpace",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
+    hostBackUpNow: createKinRpcCommand(runtime, {
+      label: "kin:host:back-up",
+      tag: "kin.host.backUpNow",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
+    hostRetry: createKinRpcCommand(runtime, {
+      label: "kin:host:retry",
+      tag: "kin.host.retry",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
     /** The company stop switch, for every member; the reason only reaches owners. */
     orgState: createKinQueryAtomFamily(runtime, {
       label: "kin:org",
@@ -2071,6 +2101,10 @@ export function makeKinClient<R, ER>(
     registry.refresh(kinClient.checkIns({ environmentId, input: { orgId } }));
   };
 
+  /** After a tap on Kin's computer, so the page shows what it changed. */
+  const refreshKinHost = (environmentId: EnvironmentId, orgId: KinOrgId) =>
+    registry.refresh(kinClient.hostStatus({ environmentId, input: { orgId } }));
+
   const retryAccess = (environmentId: EnvironmentId) =>
     retryKinAccess(runtime, registry, environmentId);
 
@@ -2081,6 +2115,7 @@ export function makeKinClient<R, ER>(
     kinClient,
     refreshKinAgents,
     refreshKinBriefs,
+    refreshKinHost,
     markKinHostKnown,
     retryKinWorkLive,
     retryAccess,

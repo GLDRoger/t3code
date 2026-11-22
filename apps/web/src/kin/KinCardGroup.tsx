@@ -1,5 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
-import { kinCardView } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import {
+  kinCardView,
+  kinTaskCardWithoutThread,
+} from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   kinChoiceAnswered,
   kinChoiceCardView,
@@ -16,6 +19,7 @@ import { environmentCatalog } from "../connection/catalog";
 import { cn } from "../lib/utils";
 import { CardFrame, TONE_CLASSES, useKinModelName } from "./KinCards";
 import { useNowMinuteMs } from "./useKinClock";
+import { KIN_WEB_ONLY } from "./kinWebOnly";
 
 /**
  * Cards that read as one (`kinGroupCardRows`): an answered question with the tasks its answer
@@ -98,7 +102,7 @@ const KinTaskRow = memo(function KinTaskRow(props: {
     modelName,
   );
   if (view.kind !== "task") return null;
-  const { task } = view;
+  const task = KIN_WEB_ONLY ? kinTaskCardWithoutThread(view.task) : view.task;
   return (
     <li aria-label={task.accessibilityLabel} className="flex flex-col gap-1 py-2 last:pb-0">
       <div className="flex items-baseline gap-3">

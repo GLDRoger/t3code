@@ -1106,6 +1106,24 @@ features:
       - packages/client-runtime/src/kin/kinBrand.test.ts
       - packages/client-runtime/src/kin/kinTemplates.test.ts
 
+  - id: kins-computer
+    name: Kin's computer, its space and backups, what stops agents now, and the fixes
+    tab: settings
+    web: [settings, section:Kin's computer]
+    phone: [SettingsKin, KinHost]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [kin_computer]
+    note: >-
+      Space with what uses it, the last good backup, turns running and what fails with its cause,
+      the version and the last restart, with Free up space now, Back up now and Try again. The same
+      taps sit on the one notice per cause in the owner's chat with Chief of staff, which closes
+      itself when the cause clears. A server that is not a Kin host hides Free up space now and
+      Backups.
+    proof:
+      - packages/client-runtime/src/kin/kinHostCare.test.ts
+      - apps/server/src/kin/hostBackup.test.ts
+      - apps/server/src/kin/lead/WakeupRunner.test.ts
+
   - id: daily-limit
     name: Time zone and the daily spending limit
     tab: settings
@@ -1600,6 +1618,7 @@ unlisted:
   "rpc:kin.work.statementPasswords": Served; no client manages statement passwords yet.
   "rpc:kin.work.statementForgetAccount": Served; no client forgets a statement account yet.
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
+  "rpc:kin.shell.set": Server-only until the Deals switch ships in the clients.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
   "rpc:kin.open.read": Served; no client reads the open list (Needs you and Tasks use their own reads).
   "rpc:kin.open.subscribe": Served; no host lists "open" in its streams, so no client follows it.
