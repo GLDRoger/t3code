@@ -1,9 +1,9 @@
-import type { KinMoney, KinOrgId } from "@t3tools/contracts";
+import { KinChatError, type KinMoney, type KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRecords, type Writer } from "./KinRecords.ts";
-import { parseFields } from "./lists.ts";
+import { fieldText, parseFields } from "./lists.ts";
 import { addUp, dayIn } from "./money.ts";
 import { countedEntry, moneyDay } from "./recordRows.ts";
 import {
@@ -11,6 +11,8 @@ import {
   fundingOf,
   IMPORTED_PARTNER,
   owedToPartner,
+  partnerAddress,
+  partnerFunded,
   REIMBURSEMENT,
   unsaidImport,
 } from "./reimbursement.ts";
@@ -65,7 +67,7 @@ export const partnersOwed = Effect.fn("KinPartnersOwed.read")(function* (
   for (const row of rows) {
     const funding = fundingOf(parseFields(row.fieldsJson));
     if (funding.by !== "partner") continue;
-    const address = funding.personId === null ? (funding.unmatched?.toLowerCase() ?? "") : null;
+    const address = funding.personId === null ? (funding.unmatched ?? "") : null;
     const id = funding.personId === null ? `address:${address}` : `person:${funding.personId}`;
     const group = groups.get(id) ?? { personId: funding.personId, address, entries: [] };
     group.entries.push({
@@ -103,24 +105,29 @@ export const partnersUnsaid = Effect.fn("KinPartnersOwed.unsaid")(function* (
   home: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ address: string; minor: number; currency: string; at: number }>`
-    SELECT lower(trim(json_extract(r.fields_json, ${`$.${IMPORTED_PARTNER}`}))) AS address,
+  const rows = yield* sql<{ raw: string; minor: number; currency: string; at: number }>`
+    SELECT json_extract(r.fields_json, ${`$.${IMPORTED_PARTNER}`}) AS raw,
       r.amount_minor AS minor, r.currency, ${moneyDay(sql)} AS at
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'done'
       AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${unsaidImport(sql)}
-    ORDER BY address, at, r.key`;
+    ORDER BY at, r.key`;
   const groups = new Map<string, Array<(typeof rows)[number]>>();
-  for (const row of rows) groups.set(row.address, [...(groups.get(row.address) ?? []), row]);
-  return [...groups].map(([address, entries]) => ({
-    address,
-    expenses: entries.length,
-    total: addUp(
-      entries.map((one) => ({ minor: one.minor, currency: one.currency })),
-      home,
-    ),
-    at: entries[0]!.at,
-  }));
+  for (const row of rows) {
+    const address = partnerAddress(row.raw);
+    if (address !== "") groups.set(address, [...(groups.get(address) ?? []), row]);
+  }
+  return [...groups]
+    .map(([address, entries]) => ({
+      address,
+      expenses: entries.length,
+      total: addUp(
+        entries.map((one) => ({ minor: one.minor, currency: one.currency })),
+        home,
+      ),
+      at: entries[0]!.at,
+    }))
+    .toSorted((a, b) => (a.address < b.address ? -1 : 1));
 });
 
 /** The partners owed as an agent quotes them: who, how much, and the oldest entries. */
@@ -159,31 +166,58 @@ export const partnersAnswer = (
 });
 
 /**
- * An owner-level person says who an import's address is, and whether what it paid is still owed:
- * each of its expenses with no funder takes `personId`, and one with no reimbursement yet takes
- * `settled`, each as its own logged change. Already paid back keeps it counted as it was.
+ * The owner or a co-owner says who an import's address is (or, with `address` null, who the owed
+ * expenses naming no partner and no address are): each such expense with no funder takes
+ * `personId`, and one not yet said takes `settled`, each as its own logged change. Addresses
+ * compare as Money groups them (`partnerAddress`). Fails when nothing is left to match.
  */
 export const matchPartner = Effect.fn("KinPartnersOwed.match")(function* (
   orgId: KinOrgId,
   writer: Writer,
-  address: string,
+  address: string | null,
   personId: string,
-  settled: "owed" | "repaid",
+  settled: "owed" | "repaid" | undefined,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
-  const given = address.trim().toLowerCase();
+  const given = address === null ? null : partnerAddress(address);
   const rows = yield* sql<{ key: string; rev: number; fieldsJson: string }>`SELECT r.key, r.rev,
       r.fields_json AS "fieldsJson"
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses'
-      AND json_extract(r.fields_json, ${`$.${FUNDED_BY}`}) IS NULL
-      AND lower(trim(json_extract(r.fields_json, ${`$.${IMPORTED_PARTNER}`}))) = ${given}
-      AND COALESCE(json_extract(r.fields_json, ${`$.${REIMBURSEMENT}`}), 'owed')
-        IN ('owed', 'repaid')
+      AND (json_extract(r.fields_json, ${`$.${IMPORTED_PARTNER}`}) IS NOT NULL
+        OR ${partnerFunded(sql)})
     ORDER BY r.key`;
-  for (const row of rows) {
-    const said = fundingOf(parseFields(row.fieldsJson)).by === "partner";
+  const named = rows.flatMap((row) => {
+    const fields = parseFields(row.fieldsJson);
+    const funding = fundingOf(fields);
+    const unsaid =
+      fieldText(fields, FUNDED_BY) === null && fieldText(fields, REIMBURSEMENT) === null;
+    const same =
+      given === null
+        ? funding.by === "partner" && funding.personId === null && funding.unmatched === null
+        : partnerAddress(fieldText(fields, IMPORTED_PARTNER)) === given;
+    return same ? [{ ...row, funding, unsaid }] : [];
+  });
+  const matching = named.filter(
+    (row) => row.unsaid || (row.funding.by === "partner" && row.funding.personId === null),
+  );
+  if (matching.length === 0)
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message:
+        named.length === 0
+          ? given === null
+            ? "Every expense owed to a partner already says who."
+            : "No expense owed to a partner carries that address."
+          : "Those expenses already say who funded them.",
+    });
+  if (settled === undefined && matching.some((row) => row.unsaid))
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: "Say whether the company still owes them for these, or already paid them back.",
+    });
+  for (const row of matching)
     yield* records.update(
       orgId,
       writer,
@@ -191,11 +225,10 @@ export const matchPartner = Effect.fn("KinPartnersOwed.match")(function* (
       {
         fields: {
           [FUNDED_BY]: `person:${personId}`,
-          ...(said ? {} : { [REIMBURSEMENT]: settled }),
+          ...(row.unsaid && settled !== undefined ? { [REIMBURSEMENT]: settled } : {}),
         },
       },
       row.rev,
     );
-  }
-  return rows.map((row) => row.key);
+  return matching.map((row) => row.key);
 });

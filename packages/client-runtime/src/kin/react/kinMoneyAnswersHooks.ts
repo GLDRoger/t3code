@@ -19,7 +19,7 @@ import {
   kinListSend,
   type KinAmountAsk,
 } from "../kinLists.ts";
-import { KIN_QUOTES } from "../kinMoneyAnswers.ts";
+import { KIN_OUTLOOK, KIN_QUOTES } from "../kinMoneyAnswers.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import { kinWorkReadState } from "../kinWorkForms.ts";
 import type { AtomCommandResult } from "../../state/runtime.ts";
@@ -185,7 +185,10 @@ export function makeKinMoneyAnswersHooks<R, ER>(
     };
   }
 
-  /** The owner names the person an import's partner address is; Money reads again after. */
+  /**
+   * The owner or a co-owner names the person an import's partner address is (null: the owed
+   * expenses with none); Money reads again after, and says so when nothing was left to match.
+   */
   function useKinMatchPartner(target: KinScreenTarget) {
     const send = useAtomCommand(kinClient.workMatchPartner, { reportFailure: false });
     const [busy, setBusy] = useState(false);
@@ -193,7 +196,7 @@ export function makeKinMoneyAnswersHooks<R, ER>(
     return {
       busy,
       problem,
-      match: async (address: string, personId: KinPersonId) => {
+      match: async (address: string | null, personId: KinPersonId) => {
         setBusy(true);
         setProblem(null);
         const outcome = await kinListSend({
@@ -201,12 +204,13 @@ export function makeKinMoneyAnswersHooks<R, ER>(
           send: () =>
             send({
               environmentId: target.environmentId,
-              input: { orgId: target.orgId, address, personId },
+              input: { orgId: target.orgId, personId, ...(address === null ? {} : { address }) },
             }),
         });
         setBusy(false);
         registry.refresh(outlookAtom(target));
         if (!outcome.ok) setProblem(outcome.problem);
+        else if (outcome.value.matched.length === 0) setProblem(KIN_OUTLOOK.nothingMatched);
         return outcome.ok;
       },
     };

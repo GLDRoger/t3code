@@ -346,20 +346,46 @@ describe("statement matching", () => {
         ["unmatched", []],
       ],
     );
-    // An amount alone is offered, never ticked; one that adds up to no oldest run isn't.
-    const alone = matchRows([debit(0, "2026-10-08", "NEFT DR-UTIB0000001-SOMEONE", 120_000)], {
-      currency: "INR",
-      withholdsAtSource: true,
-      invoices: [],
-      expenses: [],
-      partners,
-      ownAccounts: [],
-      known: [],
-      bank: null,
-    });
+    const only = (rows: ReadonlyArray<ReturnType<typeof debit>>, owing = partners) =>
+      matchRows(rows, {
+        currency: "INR",
+        withholdsAtSource: true,
+        invoices: [],
+        expenses: [],
+        partners: owing,
+        ownAccounts: [],
+        known: [],
+        bank: null,
+      }).map((one) => [one.group, one.candidates.map((c) => c.repays?.map((r) => r.key))]);
+    // An amount alone, to someone the narration names instead, is no repayment.
+    assert.deepStrictEqual(only([debit(0, "2026-10-08", "NEFT DR-UTIB0000001-SOMEONE", 120_000)]), [
+      ["unmatched", []],
+    ]);
+    // Two the same day, listed opposite to how they settle: each still finds its run.
     assert.deepStrictEqual(
-      [alone[0]!.group, alone[0]!.candidates[0]?.repays?.map((one) => one.key)],
-      ["choose", ["EXP-4"]],
+      only([
+        debit(0, "2026-10-08", "MEERA RAO", 50_000),
+        debit(1, "2026-10-08", "MEERA RAO", 200_000),
+      ]),
+      [
+        ["matched", [["EXP-9"]]],
+        ["matched", [["EXP-4", "EXP-7"]]],
+      ],
+    );
+    // A repayment that isn't its row's clear match moves nobody past it: no later row skips ahead.
+    const twins = [
+      partners[0]!,
+      { name: "Meera Rao", currency: "INR", owed: [owed("EXP-30", 120_000)] },
+    ];
+    assert.deepStrictEqual(
+      only(
+        [debit(0, "2026-10-08", "MEERA RAO", 120_000), debit(1, "2026-10-09", "MEERA RAO", 80_000)],
+        twins,
+      ),
+      [
+        ["choose", [["EXP-30"], ["EXP-4"]]],
+        ["unmatched", []],
+      ],
     );
     const skips = matchRows([debit(0, "2026-10-08", "MEERA RAO", 80_000)], {
       currency: "INR",

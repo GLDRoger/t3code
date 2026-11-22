@@ -2446,11 +2446,27 @@ describe("bank statement safety", () => {
           JSON.stringify(card.choose.filter((one) => one.text.startsWith("UPI"))),
           first.key,
         );
+        const bankRows = sql<{ key: string; state: string; category: string | null }>`SELECT key,
+            state, category FROM kin_records WHERE org_id = ${orgId}
+            AND register_id = 'bank_transactions' ORDER BY key`;
         const fieldsOf = (key: string) =>
           records.get(orgId, key).pipe(Effect.map((row) => JSON.parse(row!.fieldsJson)));
         const before = [yield* fieldsOf(first.key), yield* fieldsOf(second.key)];
-        const applied = yield* OwnerStatements.apply(people, yield* confirmAll(card));
+        const confirm = yield* confirmAll(card);
+        // Edited since the read, the run no longer adds up to the line: Confirm applies nothing.
+        yield* records.update(orgId, owner, second.key, {
+          amount: { minor: 200_100, currency: "INR" },
+        });
+        assert.strictEqual(
+          (yield* Effect.flip(OwnerStatements.apply(people, confirm))).reason,
+          "conflict",
+        );
+        yield* records.update(orgId, owner, second.key, {
+          amount: { minor: 200_000, currency: "INR" },
+        });
+        const applied = yield* OwnerStatements.apply(people, confirm);
         assert.include(applied.card.result!.join(" "), "Marked 2 partner-paid expenses repaid.");
+        assert.isTrue((yield* bankRows).every((one) => one.state === "done"));
         for (const key of [first.key, second.key])
           assert.include(yield* fieldsOf(key), { reimbursement: "repaid", repaidOn: "2026-10-15" });
         assert.notProperty(yield* fieldsOf(later.key), "reimbursement");
@@ -2462,9 +2478,27 @@ describe("bank statement safety", () => {
         yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
         // Undo puts back every field Confirm changed, the repaid day included.
         assert.deepStrictEqual([yield* fieldsOf(first.key), yield* fieldsOf(second.key)], before);
+        // Each bank row back as Confirm found it.
+        assert.isTrue(
+          (yield* bankRows).every((one) => one.state === "open" && one.category === null),
+        );
         const [left] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_record_links
           WHERE record_id IN (${first.recordId}, ${second.recordId}) AND kind = 'record'`;
         assert.strictEqual(left!.n, 0);
+
+        // A repaid day changed by hand after Confirm is the owner's: Undo keeps that row whole.
+        const again = (yield* reviewCardOf(result.statement)).card;
+        yield* OwnerStatements.apply(people, yield* confirmAll(again));
+        yield* records.update(orgId, owner, first.key, { fields: { repaidOn: "2026-10-16" } });
+        yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
+        assert.include(yield* fieldsOf(first.key), {
+          reimbursement: "repaid",
+          repaidOn: "2026-10-16",
+        });
+        assert.include(yield* fieldsOf(second.key), {
+          reimbursement: "repaid",
+          repaidOn: "2026-10-15",
+        });
       }).pipe(Effect.provide(layer)),
   );
 

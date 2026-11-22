@@ -315,14 +315,15 @@ export const KinNewExpenseResult = Schema.Struct({ expense: KinRecordKey });
 export type KinNewExpenseResult = typeof KinNewExpenseResult.Type;
 
 /**
- * An owner-level person says which person an import's partner address is, and whether what it
- * paid is still owed or was already paid back; its expenses take that funder.
+ * The owner or a co-owner says which person an import's partner address is, and for its expenses
+ * nobody has said yet, whether they are still owed or were already paid back. With no address, the
+ * owed expenses that name no partner at all take them.
  */
 export const KinMatchPartnerInput = Schema.Struct({
   orgId: KinOrgId,
-  address: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  address: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
   personId: KinPersonId,
-  settled: Schema.Literals(["owed", "repaid"]),
+  settled: Schema.optional(Schema.Literals(["owed", "repaid"])),
 });
 export type KinMatchPartnerInput = typeof KinMatchPartnerInput.Type;
 export const KinMatchPartnerResult = Schema.Struct({ matched: Schema.Array(KinRecordKey) });

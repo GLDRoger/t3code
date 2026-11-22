@@ -165,7 +165,8 @@ const reimbursementsIn = Effect.fn("KinDocFacts.reimbursements")(function* (
             ? (funding.unmatched ?? "unmatched partner")
             : (names.get(funding.personId) ?? "a former teammate"),
         state: inMonth ? "repaid" : "owed",
-        repaidOn: inMonth ? repaid : null,
+        // Only a day someone recorded: the accountant gets a blank, never the purchase day.
+        repaidOn: inMonth ? funding.repaidOn : null,
         amount: amountOf(row.minor, row.currency),
       },
     ];

@@ -97,25 +97,33 @@ const Snapshot = Schema.Struct({
   paidWith: Schema.NullOr(Schema.String),
   notes: Schema.String,
   category: Schema.NullOr(Schema.String),
+  // Optional: entries kept before these were snapshotted compare on the rest.
+  reimbursement: Schema.optional(Schema.NullOr(Schema.String)),
+  repaidOn: Schema.optional(Schema.NullOr(Schema.String)),
 });
 const After = Schema.Struct({ bank: Snapshot, target: Schema.optional(Snapshot) });
 const AfterJson = Schema.fromJsonString(After);
 const encodeAfter = Schema.encodeEffect(AfterJson);
 const decodeAfter = Schema.decodeUnknownOption(AfterJson);
 const snapshot = (row: RecordRow): typeof Snapshot.Type => {
-  const paid = parseFields(row.fieldsJson).paidWith;
+  const fields = parseFields(row.fieldsJson);
   return {
     state: row.state,
     dateAt: row.dateAt,
     amountMinor: row.amountMinor,
-    paidWith: typeof paid === "string" ? paid : null,
+    paidWith: fieldText(fields, "paidWith"),
     notes: row.notes,
     category: row.category,
+    reimbursement: fieldText(fields, "reimbursement"),
+    repaidOn: fieldText(fields, "repaidOn"),
   };
 };
-/** Whether an entry is as Kin left it; one from before snapshots were kept counts as unchanged. */
-const asLeft = (row: RecordRow, kept: typeof Snapshot.Type | undefined) =>
-  kept === undefined || JSON.stringify(snapshot(row)) === JSON.stringify(kept);
+/** Whether an entry is as Kin left it, on what was snapshotted; none kept counts as unchanged. */
+const asLeft = (row: RecordRow, kept: typeof Snapshot.Type | undefined) => {
+  if (kept === undefined) return true;
+  const now: Record<string, unknown> = snapshot(row);
+  return Object.entries(kept).every(([key, value]) => now[key] === value);
+};
 
 /** The stored review, read for the owner on the card they act on. */
 const ownersReview = Effect.fn("KinStatements.ownersReview")(function* (
@@ -458,27 +466,26 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           // A suggestion's line applies nothing: not its payment, not its bill, until it is kept.
           if (isSuggestion(targetRow)) return yield* invalid(stillSuggestion(targetRow.key));
           if (candidate.repays !== undefined) {
-            // Each must still be owed and still add up to the line: repaid or edited since the
-            // read, the line would pay back twice or leave a remainder nobody sees.
+            // Each must still be a kept Paid expense owed to a partner at the amount read, and the
+            // run must still add up to the line: otherwise it would be paid back wrong or twice.
             const owed: Array<RecordRow> = [];
             for (const one of candidate.repays) {
               const expense = yield* records.getById(input.orgId, one.recordId);
-              const funding =
-                expense === undefined ? undefined : fundingOf(parseFields(expense.fieldsJson));
-              if (funding?.by !== "partner" || funding.state !== "owed") return yield* changed;
-              owed.push(expense!);
+              if (expense === undefined) return yield* changed;
+              if (isSuggestion(expense)) return yield* invalid(stillSuggestion(expense.key));
+              const funding = fundingOf(parseFields(expense.fieldsJson));
+              if (
+                expense.state !== "done" ||
+                funding.by !== "partner" ||
+                funding.state !== "owed" ||
+                expense.currency !== currency ||
+                expense.amountMinor !== one.amountMinor
+              )
+                return yield* changed;
+              owed.push(expense);
             }
             const signed = row.direction === "debit" ? row.amountMinor : -row.amountMinor;
-            if (
-              owed.some(
-                (one) =>
-                  one.state !== "done" ||
-                  isSuggestion(one) ||
-                  one.currency !== currency ||
-                  one.amountMinor === null,
-              ) ||
-              owed.reduce((sum, one) => sum + (one.amountMinor ?? 0), 0) !== signed
-            )
+            if (owed.reduce((sum, one) => sum + one.amountMinor!, 0) !== signed)
               return yield* changed;
             const prior = yield* settleBank(row, states.explained, "expense");
             for (const expense of owed) {
@@ -839,17 +846,15 @@ export const undoStatement = Effect.fn("KinStatements.undo")(function* (input: {
           if (entry.action === "payment") tally.payments += 1;
         } else if (entry.action.startsWith("expense")) {
           if (target !== undefined) {
-            if (prior?.repaid !== undefined) {
-              // Only while it still reads repaid: a later change by hand is the owner's to keep.
-              const funding = fundingOf(parseFields(target.fieldsJson));
-              if (funding.by === "partner" && funding.state === "repaid")
-                yield* records.update(input.orgId, writer, target.key, {
-                  fields: {
-                    reimbursement: prior.repaid.reimbursement,
-                    repaidOn: prior.repaid.repaidOn,
-                  },
-                });
-            } else if (entry.action === "expense_paid" && prior?.expense !== undefined)
+            // A row whose expense was changed since (`asLeft`) is kept whole, above.
+            if (prior?.repaid !== undefined)
+              yield* records.update(input.orgId, writer, target.key, {
+                fields: {
+                  reimbursement: prior.repaid.reimbursement,
+                  repaidOn: prior.repaid.repaidOn,
+                },
+              });
+            else if (entry.action === "expense_paid" && prior?.expense !== undefined)
               yield* records.update(input.orgId, writer, target.key, {
                 state: prior.expense.state as KinRecordState,
                 dateAt: prior.expense.dateAt,

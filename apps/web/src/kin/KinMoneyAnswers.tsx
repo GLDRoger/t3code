@@ -317,11 +317,11 @@ function OutlookRows(props: {
   );
 }
 
-/** Who the company owes back; an imported address no one is matched to gets a person picked. */
+/** Who the company owes back; one no teammate is matched to yet gets a person picked. */
 function PartnersOwed(props: Section & { readonly rows: KinOutlookView["partners"] }) {
   const directory = useKinWorkDirectory(
     props,
-    props.rows.some((one) => one.address !== null),
+    props.rows.some((one) => one.match !== null),
   );
   const matching = useKinMatchPartner(props);
   const people = [...directory.names.people].toSorted((a, b) => a[1].localeCompare(b[1]));
@@ -337,13 +337,13 @@ function PartnersOwed(props: Section & { readonly rows: KinOutlookView["partners
               <span className="truncate text-xs text-muted-foreground">{row.note}</span>
             </span>
             <span className="flex shrink-0 items-center gap-2">
-              {row.address === null ? null : (
+              {row.match === null ? null : (
                 <Select
                   value={null}
                   disabled={matching.busy}
                   onValueChange={(personId) => {
                     if (typeof personId === "string")
-                      void matching.match(row.address!, KinPersonId.make(personId));
+                      void matching.match(row.match!.address, KinPersonId.make(personId));
                   }}
                 >
                   <SelectTrigger size="sm" aria-label={`${KIN_OUTLOOK.whoIsThis} ${row.name}`}>

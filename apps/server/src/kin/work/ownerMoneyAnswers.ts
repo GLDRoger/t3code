@@ -470,8 +470,9 @@ export const newExpense = Effect.fn("KinMoneyAnswers.rpc.newExpense")(function* 
 }, workFailure);
 
 /**
- * An owner-level person names the Kin person an import's partner address is, and whether it is
- * still owed. Only a current member can fund an expense.
+ * The owner or a co-owner (owner level, as for `newExpense`) names the Kin person an import's
+ * partner address is. Only a current member can fund an expense; the unmatched expenses with that
+ * address take them as funder.
  */
 export const matchPartner = Effect.fn("KinMoneyAnswers.rpc.matchPartner")(function* (
   people: ReadonlyArray<PersonIdentity>,
@@ -483,7 +484,13 @@ export const matchPartner = Effect.fn("KinMoneyAnswers.rpc.matchPartner")(functi
     AND person_id = ${input.personId} AND removed_at IS NULL`;
   if (member === undefined) return yield* invalid("That person isn't on the team.");
   const matched = yield* sql.withTransaction(
-    matchPartnerOf(input.orgId, ownerWriter(person), input.address, input.personId, input.settled),
+    matchPartnerOf(
+      input.orgId,
+      ownerWriter(person),
+      input.address ?? null,
+      input.personId,
+      input.settled,
+    ),
   );
   return { matched };
 }, workFailure);

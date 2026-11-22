@@ -12,6 +12,7 @@ import { weeklyPipelineOf } from "../work/dealStages.ts";
 import { mondayCounts } from "../work/deals.ts";
 import { aboutTotal, addUp, dayIn, formatMoney, formatMoneyPlain } from "../work/money.ts";
 import { playbookThreshold } from "../work/playbooks.ts";
+import { companyCashOut, partnerRepaidDay } from "../work/reimbursement.ts";
 import {
   countedEntry,
   countedPayment,
@@ -147,10 +148,14 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
       AND r.register_id IN ('invoices', 'receipts') AND p.paid_on >= ${dayIn(weekAgo, zone)}
     ORDER BY p.paid_on, p.payment_id`;
+  // Cash out, as runway counts it: a partner's expense on the day it was paid back.
+  const repaid = partnerRepaidDay(sql);
   const spent = yield* sql<KinMoney>`SELECT r.amount_minor AS minor, r.currency
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND ${countedEntry(sql)}
-      AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${weekAgo}
+      AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${companyCashOut(sql)}
+      AND CASE WHEN ${repaid} IS NULL THEN ${moneyDay(sql)} >= ${weekAgo}
+        ELSE ${repaid} >= ${dayIn(weekAgo, zone)} END
     ORDER BY r.key`;
   const owed = (yield* owedInvoices({ orgId, now })).slice(0, CAP);
   const isOverdue = (one: (typeof owed)[number]) => one.overdue;

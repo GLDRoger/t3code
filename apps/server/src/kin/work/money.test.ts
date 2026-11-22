@@ -59,6 +59,7 @@ import {
 } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
+import { weeklyFigures } from "../pulse/weekly.ts";
 import { checkFields, listDef, presetList, proposalFor } from "./registers.ts";
 import { ensureBankList } from "./statements/bankList.ts";
 import { waitLine } from "./statements/passwordBudget.ts";
@@ -3612,9 +3613,11 @@ describe("an expense typed by hand", () => {
           vendor: "Invented Couriers",
           category: "Office",
           paidWith: "UPI",
+          fundedBy: ownerId,
           receipt: ["att-1-0"],
           clientRequestId: "form-1",
         };
+        // No Expenses list yet: the first expense makes it, Funded by and all.
         assert.isUndefined(yield* listDef(orgId, "expenses"));
         const made = yield* OwnerMoneyAnswers.newExpense(people, asked);
         const row = (yield* records.get(orgId, made.expense))!;
@@ -3625,7 +3628,12 @@ describe("an expense typed by hand", () => {
             "done",
             235_000,
             "office",
-            { vendor: "Invented Couriers", paidWith: "upi", receipt: ["att-1-0"] },
+            {
+              vendor: "Invented Couriers",
+              paidWith: "upi",
+              fundedBy: `person:${ownerId}`,
+              receipt: ["att-1-0"],
+            },
           ],
         );
         assert.strictEqual(row.dateAt, endOfDay("2026-11-12", "Asia/Kolkata"));
@@ -5396,6 +5404,127 @@ describe("money answers", () => {
             ],
           },
         });
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "count a partner's expense in the month and the week's out on the day it was repaid",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at})`;
+        yield* defined(3, { template: "expenses" });
+        const records = yield* KinRecords.KinRecords;
+        const spend = (key: string, day: string, rupees: number, fields = {}) =>
+          records.create(orgId, system, {
+            owner,
+            originKey: key,
+            list: "expenses",
+            title: `Invented ${key}`,
+            state: "done",
+            amount: inr(rupees),
+            dateAt: on(day),
+            fields,
+          });
+        const partner = "person:meera";
+        yield* spend("company", "2026-11-09", 1_000);
+        yield* spend("owed", "2026-11-10", 2_000, { fundedBy: partner });
+        yield* spend("repaid in the week", "2026-10-01", 4_000, {
+          fundedBy: partner,
+          reimbursement: "repaid",
+          repaidOn: "2026-11-11",
+        });
+        // Repaid with no day: counted on the day it was bought, as runway does.
+        yield* spend("repaid, no day", "2026-11-07", 8_000, {
+          fundedBy: partner,
+          reimbursement: "repaid",
+        });
+        yield* spend("given", "2026-11-08", 16_000, {
+          fundedBy: partner,
+          reimbursement: "not reimbursable",
+        });
+
+        const { series } = yield* OwnerMoney.money(people, { orgId });
+        const spentIn = (month: string) => series.find((one) => one.month === month)?.spent;
+        assert.deepStrictEqual(spentIn("2026-11"), [inr(13_000)]);
+        assert.deepStrictEqual(spentIn("2026-10"), []);
+        const figures = yield* weeklyFigures({ orgId, now: NOW });
+        assert.include(figures, "Out this week: ₹13,000.00");
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "name an imported address however the import wrote it, and say when nothing is left to name",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at}, 'member'),
+            ('co-owner', ${orgId}, 'co', 'Co', ${at}, 'co_owner')`;
+        yield* defined(3, { template: "expenses" });
+        const records = yield* KinRecords.KinRecords;
+        const spend = (key: string, fields = {}) =>
+          records.create(orgId, system, {
+            owner,
+            originKey: key,
+            list: "expenses",
+            title: `Invented ${key}`,
+            state: "done",
+            amount: inr(1_000),
+            dateAt: on("2026-10-05"),
+            fields,
+          });
+        // A CSV's tab, CR and NBSP and a non-ASCII capital, which SQLite's trim and lower keep.
+        const { row: imported } = yield* spend("imported");
+        const raw = "\tPARTNÉR@Invented.example\u00a0\r";
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.paidPersonallyBy',
+            ${raw}) WHERE record_id = ${imported.recordId}`;
+        assert.deepStrictEqual(
+          (yield* OwnerMoneyAnswers.outlook(people, { orgId })).partnersUnsaid?.map(
+            (one) => one.address,
+          ),
+          ["partnér@invented.example"],
+        );
+        const as = (personId: string) => [
+          { _tag: "person" as const, orgId, personId: KinPersonId.make(personId) },
+        ];
+        // As the picker sends it: the address as Money grouped it.
+        const match = {
+          orgId,
+          address: "partnér@invented.example",
+          personId: KinPersonId.make("meera"),
+        };
+        const refused = (who: typeof people, input: typeof match) =>
+          Effect.map(Effect.flip(OwnerMoneyAnswers.matchPartner(who, input)), (e) => e.message);
+        assert.match(yield* refused(as("meera"), match), /owner|co-owner/i);
+        assert.match(
+          yield* refused(people, { ...match, address: "other@invented.example" }),
+          /No expense owed to a partner carries that address/,
+        );
+        assert.match(yield* refused(people, match), /still owes them for these/);
+        // Owner level: a co-owner may say who it was, and that it is still owed.
+        assert.deepStrictEqual(
+          yield* OwnerMoneyAnswers.matchPartner(as("co-owner"), { ...match, settled: "owed" }),
+          { matched: [imported.key] },
+        );
+        assert.match(yield* refused(people, match), /already say who funded them/);
+
+        // Marked owed by hand with no partner and no address: a person can still be named for it.
+        const { row: nameless } = yield* spend("nameless", { reimbursement: "owed" });
+        const unnamed = (yield* OwnerMoneyAnswers.outlook(people, { orgId })).owedToPartners?.find(
+          (one) => one.personId === null,
+        );
+        assert.deepInclude(unnamed, { address: null, expenses: 1 });
+        assert.deepStrictEqual(
+          yield* OwnerMoneyAnswers.matchPartner(people, {
+            orgId,
+            personId: KinPersonId.make("meera"),
+          }),
+          { matched: [nameless.key] },
+        );
       }).pipe(Effect.provide(layer)),
   );
 
