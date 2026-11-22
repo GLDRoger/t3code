@@ -5138,6 +5138,99 @@ describe("money answers", () => {
   );
 
   it.effect(
+    "count what partners are owed as going out, and their expenses in runway only once repaid",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at})`;
+        yield* defined(3, { template: "expenses" });
+        const records = yield* KinRecords.KinRecords;
+        const spend = (key: string, day: string, rupees: number, fields = {}) =>
+          records.create(orgId, system, {
+            owner,
+            originKey: key,
+            list: "expenses",
+            title: `Invented ${key}`,
+            state: "done",
+            amount: inr(rupees),
+            dateAt: on(day),
+            fields,
+          });
+        for (const day of ["2026-08-01", "2026-09-10", "2026-10-10"])
+          yield* spend(`payroll ${day}`, day, 100_000);
+        yield* spend("repaid", "2026-09-12", 20_000, {
+          fundedBy: "person:meera",
+          reimbursement: "repaid",
+          repaidOn: "2026-10-20",
+        });
+        yield* spend("owed", "2026-10-02", 5_000, { fundedBy: "person:meera" });
+        yield* spend("given", "2026-08-03", 7_000, {
+          fundedBy: "person:meera",
+          reimbursement: "not reimbursable",
+        });
+        const { row: imported } = yield* spend("imported", "2026-09-01", 3_000, {
+          reimbursement: "owed",
+        });
+        // As K207 left an import's row: its partner's address, and no Kin person for it.
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.paidPersonallyBy',
+            'partner@invented.example') WHERE key = ${imported.key}`;
+
+        const view = outlookAnswer(yield* outlook(orgId, NOW));
+        assert.deepStrictEqual(
+          view.windows.map((one) => one.expectedOut),
+          ["₹8,000.00", "₹8,000.00", "₹8,000.00"],
+        );
+        assert.deepStrictEqual(view.owedToPartnersCountedAsGoingOut, [
+          { partner: "Meera", owed: "₹5,000.00", expenses: 1 },
+          { partner: "partner@invented.example (unmatched)", owed: "₹3,000.00", expenses: 1 },
+        ]);
+        // Repaid in October, so not September's; owed and given never left the company.
+        assert.deepStrictEqual(
+          view.runway[0]?.lastThreeMonths.map((one) => [one.month, one.out]),
+          [
+            ["2026-08", "₹1,00,000.00"],
+            ["2026-09", "₹1,00,000.00"],
+            ["2026-10", "₹1,20,000.00"],
+          ],
+        );
+
+        const teammate = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("meera") }];
+        const match = {
+          orgId,
+          address: " Partner@Invented.example",
+          personId: KinPersonId.make("meera"),
+        };
+        assert.strictEqual(
+          (yield* Effect.flip(OwnerMoneyAnswers.matchPartner(teammate, match)))._tag,
+          "KinChatError",
+        );
+        assert.deepStrictEqual(yield* OwnerMoneyAnswers.matchPartner(people, match), {
+          matched: [imported.key],
+        });
+        const owed = (yield* OwnerMoneyAnswers.outlook(people, { orgId })).owedToPartners;
+        assert.deepStrictEqual(owed, [
+          {
+            personId: KinPersonId.make("meera"),
+            name: "Meera",
+            address: null,
+            owed: [inr(8_000)],
+            expenses: 2,
+            oldest: "2026-09-01",
+          },
+        ]);
+        const asked = yield* LeadMoney.moneyQuery(scope, { view: "partners" });
+        assert.deepStrictEqual(
+          (
+            asked.answer as { partners: ReadonlyArray<{ oldest: ReadonlyArray<{ key: string }> }> }
+          ).partners[0]?.oldest.map((one) => one.key),
+          [imported.key, "EXP-5"],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
     "expect issued invoices in and what we owe out, never overdue or void invoices, with runway",
     () =>
       Effect.gen(function* () {

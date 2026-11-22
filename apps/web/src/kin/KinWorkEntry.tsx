@@ -1,5 +1,6 @@
 import { KinAsideNote } from "./KinAttention";
 import { KinWatchLine } from "./KinWatchLine";
+import { kinPersonChoices } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { useKinOpensClients } from "./useKinOwnerLevel";
 import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
@@ -429,7 +430,7 @@ function FieldEdit(
           disabled={busy}
           choices={
             field.type === "person"
-              ? props.people
+              ? kinPersonChoices(field.key, props.people)
               : field.choices.map((choice) => ({ value: choice, label: choice }))
           }
           onPick={(value) => void props.onSet(value)}
