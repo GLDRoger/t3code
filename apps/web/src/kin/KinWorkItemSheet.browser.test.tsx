@@ -15,14 +15,20 @@ const host = vi.hoisted(() => ({
   updates: [] as Array<Record<string, unknown>>,
   ticks: [] as Array<Record<string, unknown>>,
   refuse: null as string | null,
+  /** Who Work can name, beyond the reader; set by a test that puts people on a task. */
+  people: [] as Array<{ readonly personId: string; readonly displayName: string }>,
 }));
 
 vi.mock(import("./useKinWork"), async (importOriginal) => ({
   ...(await importOriginal()),
   useKinWork: (() => ({ _tag: "ready", live: { seq: 1, summary: null }, stale: false })) as never,
   useKinWorkDirectory: (() => ({
+    people: host.people.length === 0 ? null : host.people,
     names: {
-      people: new Map([["rhea", "Rhea"]]),
+      people: new Map([
+        ["rhea", "Rhea"],
+        ...host.people.map((one) => [one.personId, one.displayName] as const),
+      ]),
       agents: new Map(),
       me: KinPersonId.make("rhea"),
       zone: null,
@@ -140,10 +146,11 @@ function setup(key: string, refuse: string | null, extra: Partial<KinRecordDetai
   host.updates = [];
   host.ticks = [];
   host.refuse = refuse;
+  host.people = [];
   return item;
 }
 
-const screen = (key: string) =>
+const screen = (key: string, onOpenKey: (key: KinRecordKey | null) => void = () => {}) =>
   render(
     <AppAtomRegistryProvider>
       <KinPlaceView
@@ -155,7 +162,7 @@ const screen = (key: string) =>
         record={null}
         onGo={() => {}}
         openKey={KinRecordKey.make(key)}
-        onOpenKey={() => {}}
+        onOpenKey={onOpenKey}
         dialog={null}
         onDialog={() => {}}
         docLink={() => ""}
@@ -238,5 +245,52 @@ describe("changing a task from its sheet", () => {
     await userEvent.click(page.getByRole("switch", { name: "Urgent" }));
     await expect.element(page.getByRole("switch", { name: "Urgent" })).toBeChecked();
     expect(host.updates).toEqual([{ orgId, key: "T-43", rev: 5, urgent: true }]);
+  });
+
+  it("puts someone on a task beside its holder, takes them off, and the reader leaves it", async () => {
+    await page.viewport(1440, 900);
+    const dev = { _tag: "person", personId: KinPersonId.make("dev") } as const;
+    const meera = { _tag: "person", personId: KinPersonId.make("meera") } as const;
+    setup("T-44", null, {
+      owner: dev,
+      alsoOn: [rhea],
+      can: {
+        states: ["done"],
+        edit: true,
+        party: true,
+        project: true,
+        clearProject: true,
+        give: true,
+        takeBack: false,
+        mark: true,
+        unmark: true,
+        share: false,
+        confirm: false,
+      },
+    });
+    host.people = [
+      { personId: "dev", displayName: "Dev Malhotra" },
+      { personId: "meera", displayName: "Meera Rao" },
+    ];
+    const opened = vi.fn();
+    await using _screen = await screen("T-44", opened);
+
+    // The holder isn't offered, nor whoever is already on it.
+    await userEvent.click(page.getByRole("button", { name: "Put someone on it" }));
+    await expect
+      .element(page.getByRole("menuitem", { name: "Dev Malhotra" }))
+      .not.toBeInTheDocument();
+    await userEvent.click(page.getByRole("menuitem", { name: "Meera Rao" }));
+    await expect.element(page.getByText("Meera Rao is on it.")).toBeVisible();
+    expect(host.updates).toEqual([{ orgId, key: "T-44", rev: 4, alsoOn: [rhea, meera] }]);
+
+    await userEvent.click(page.getByRole("button", { name: "Take Meera off it" }));
+    await expect.element(page.getByText("Meera Rao is off it.")).toBeVisible();
+    expect(host.updates.slice(1)).toEqual([{ orgId, key: "T-44", rev: 5, alsoOn: [rhea] }]);
+
+    // Leaving may hide the task from the reader, so the sheet closes and the list says so.
+    await userEvent.click(page.getByRole("button", { name: "Leave this task" }));
+    await vi.waitFor(() => expect(opened.mock.calls.at(-1)?.[0]).toBeNull());
+    expect(host.updates.slice(2)).toEqual([{ orgId, key: "T-44", rev: 6, alsoOn: [] }]);
   });
 });
