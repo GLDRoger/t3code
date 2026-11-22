@@ -283,7 +283,7 @@ export const carriesEntry = (sql: SqlClient.SqlClient, ask: string) =>
 
 /**
  * In the caller's transaction: every ask still waiting on its Confirm that carries a file of this
- * record goes stale with `reason`. The ids of their cards, for the caller to close.
+ * record, or this doc itself, goes stale with `reason`. The ids of their cards, for the caller to close.
  */
 export const staleAsksAbout = Effect.fn("KinConnectionRows.staleAsksAbout")(function* (
   orgId: KinOrgId,
@@ -294,8 +294,10 @@ export const staleAsksAbout = Effect.fn("KinConnectionRows.staleAsksAbout")(func
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ widgetId: string | null }>`UPDATE kin_connection_asks
     SET state = 'stale', reason = ${reason}, decided_at = ${now}
-    WHERE org_id = ${orgId} AND entry_record_id = ${recordId} AND state = 'open'
-      AND ${carriesEntry(sql, "kin_connection_asks")}
+    WHERE org_id = ${orgId} AND state = 'open'
+      AND ((entry_record_id = ${recordId} AND ${carriesEntry(sql, "kin_connection_asks")})
+        OR EXISTS (SELECT 1 FROM json_each(payload_json, '$.attachments') f
+          WHERE json_extract(f.value, '$.recordId') = ${recordId}))
     RETURNING widget_id AS "widgetId"`;
   return rows.flatMap((row) => (row.widgetId === null ? [] : [row.widgetId])).toSorted();
 });

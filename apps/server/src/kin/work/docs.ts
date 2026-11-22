@@ -857,6 +857,132 @@ export const move = Effect.fn("KinDocs.move")(function* (
   );
 });
 
+const notDeleter = new KinChatError({
+  reason: "not_allowed",
+  message:
+    "Only the owner, a co-owner or the project's lead can delete this doc or bring it back. Nothing was changed.",
+});
+const notDeletable = (row: Pick<RecordRow, "originKey">) =>
+  new KinChatError({
+    reason: "invalid_state",
+    message: row.originKey.startsWith(CHARACTER_ORIGIN)
+      ? "This is an agent's character. Change it on the agent's page; nothing was changed."
+      : "What we sell stays in Docs. Change what it says instead; nothing was changed.",
+  });
+
+type Deletable = Pick<RecordRow, "originKey" | "projectId" | "category">;
+const special = (row: Pick<RecordRow, "originKey">) =>
+  row.originKey.startsWith(CHARACTER_ORIGIN) || row.originKey === OFFERINGS_ORIGIN;
+/** As `handRefusal`: the owner level, or the lead of the doc's project for any but a playbook. */
+const deletableBy = (row: Deletable, ownerLevel: boolean, leads: ReadonlySet<string>) =>
+  !special(row) &&
+  (ownerLevel ||
+    (row.projectId !== null && kindOf(row) !== "playbook" && leads.has(row.projectId)));
+
+/** The projects this person leads now. */
+export const ledProjects = Effect.fn("KinDocs.ledProjects")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ recordId: string }>`SELECT record_id AS "recordId" FROM kin_records
+    WHERE org_id = ${orgId} AND register_id = 'projects' AND owner_kind = 'person'
+      AND owner_id = ${personId} ORDER BY record_id`;
+  return new Set(rows.map((row) => row.recordId));
+});
+
+/** Which of these docs this viewer may delete or bring back (`deleteRefusal`'s rule). */
+export const deletableDocs = Effect.fn("KinDocs.deletableDocs")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  rows: ReadonlyArray<Deletable & { readonly recordId: string }>,
+) {
+  const ownerLevel = viewer._tag === "ownerLevel";
+  const [one, ...more] = ownerLevel ? [] : viewer.people;
+  if (!ownerLevel && (one === undefined || more.length > 0)) return new Set<string>();
+  const leads = one === undefined ? new Set<string>() : yield* ledProjects(orgId, one);
+  return new Set(
+    rows.filter((row) => deletableBy(row, ownerLevel, leads)).map((row) => row.recordId),
+  );
+});
+
+/**
+ * Why this person may not delete this doc or bring it back, from stored rows; undefined when they
+ * may. Whoever may change its text by hand may (a generated file too); an agent's character and
+ * What we sell are not deleted this way, by anyone.
+ */
+export const deleteRefusal = Effect.fn("KinDocs.deleteRefusal")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  ownerLevel: boolean,
+  row: Deletable,
+) {
+  if (special(row)) return notDeletable(row);
+  const leads = ownerLevel ? new Set<string>() : yield* ledProjects(orgId, personId);
+  return deletableBy(row, ownerLevel, leads) ? undefined : notDeleter;
+});
+
+/**
+ * A person deletes a doc (`deleted`) or brings one back, through `move`'s archive as an agent's
+ * does. Who may is read here, in the write's transaction; a second delete or restore changes nothing.
+ */
+export const deleteByHand = Effect.fn("KinDocs.deleteByHand")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  /** The host's own owner (`KinIdentity`), never the caller's word. */
+  owner: { readonly personId: string },
+  ref: { readonly key: string },
+  deleted: boolean,
+) {
+  return yield* transaction(
+    Effect.gen(function* () {
+      const ownerLevel = yield* mayActAsOwner(orgId, personId, owner);
+      const row = yield* docRow(
+        orgId,
+        ref,
+        ownerLevel ? KIN_OWNER_LEVEL : viewerOfPeople([personId]),
+      );
+      const refused = yield* deleteRefusal(orgId, personId, ownerLevel, row);
+      if (refused !== undefined) return yield* refused;
+      if ((row.state === "dropped") === deleted) return yield* settle(orgId, row.recordId);
+      const writer: Writer = {
+        actor: { _tag: "person", personId },
+        via: "owner",
+        askedBy: personId,
+        ...(ownerLevel ? {} : { teammate: true }),
+      };
+      return yield* move(orgId, writer, { key: row.key }, { archived: deleted });
+    }),
+  );
+});
+
+/** Who deleted each of these docs and when: the latest change that moved it to `dropped`. */
+export const deletedOf = Effect.fn("KinDocs.deletedOf")(function* (
+  orgId: KinOrgId,
+  recordIds: ReadonlyArray<string>,
+) {
+  const found = new Map<string, { readonly at: string; readonly by: ReturnType<typeof actorOf> }>();
+  if (recordIds.length === 0) return found;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    recordId: string;
+    at: number;
+    actorKind: string;
+    actorId: string | null;
+  }>`SELECT c.record_id AS "recordId", c.at, c.actor_kind AS "actorKind", c.actor_id AS "actorId"
+    FROM kin_record_changes c JOIN kin_records r ON r.org_id = c.org_id
+      AND r.record_id = c.record_id AND r.state = 'dropped'
+    WHERE c.org_id = ${orgId} AND c.record_id IN ${sql.in(recordIds)}
+      AND EXISTS (SELECT 1 FROM json_each(c.fields_json) f
+        WHERE json_extract(f.value, '$.field') = 'state'
+          AND json_extract(f.value, '$.to') = 'dropped')
+    ORDER BY c.seq DESC`;
+  for (const row of rows)
+    if (!found.has(row.recordId))
+      found.set(row.recordId, { at: iso(row.at), by: actorOf(row.actorKind, row.actorId) });
+  return found;
+});
+
 /** Links a doc and entries or other docs both ways, so each shows the other. */
 export const link = Effect.fn("KinDocs.link")(function* (
   orgId: KinOrgId,

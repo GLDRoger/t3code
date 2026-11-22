@@ -183,11 +183,21 @@ export const sendUp = Effect.fn("KinDraftCards.sendUp")(
         reason: "not_allowed",
         message: "Only a teammate's own draft goes up from its card.",
       });
-    const [doc] = yield* sql<{ key: string; title: string; partyId: string | null }>`SELECT r.key,
-      r.title, r.party_id AS "partyId"
+    const [doc] = yield* sql<{
+      key: string;
+      title: string;
+      partyId: string | null;
+      state: string;
+    }>`SELECT r.key, r.title, r.party_id AS "partyId", r.state
     FROM kin_records r WHERE r.org_id = ${input.orgId} AND r.record_id = ${card.recordId}
       AND r.register_id = 'docs' AND ${personSees(sql, person.personId)}`;
     if (doc === undefined) return yield* gone;
+    if (doc.state === "dropped")
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message:
+          "This draft was deleted, so it can't go up. Bring it back from Docs › Deleted first.",
+      });
     // What goes up is what the card holds: once its title or client moved, it is another draft.
     if (doc.title !== card.title || doc.partyId !== (draft.client?.recordId ?? null))
       return yield* new KinChatError({

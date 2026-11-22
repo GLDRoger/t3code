@@ -26,6 +26,8 @@ import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinChatService } from "../chat/KinChatService.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
+import { mayActAsOwner } from "../people/KinAccess.ts";
 import { madeUnderApproval } from "../questions/approval.ts";
 import { redo, redoOf, redoRaised, redoRefused } from "../questions/askPerson.ts";
 import { effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
@@ -51,7 +53,7 @@ import {
   Who,
   writerFor,
 } from "./leadWork.ts";
-import { iso, type RecordRow } from "./recordRows.ts";
+import { iso, type RecordRow, unavailable } from "./recordRows.ts";
 import { DRAFT_TEXT_MAX, docCardId, draftCardOf } from "./draftCards.ts";
 import { search } from "./search.ts";
 import { DRAFT_OWN_CHAT_ONLY, KIN_OWNER_LEVEL, viewSees, viewerOfPeople } from "./teamView.ts";
@@ -851,8 +853,34 @@ const runRewrite = Effect.fnUntraced(function* (lead: Lead, input: typeof Rewrit
 });
 export const rewrite = leadTool("KinDocTools.rewrite", runRewrite);
 
+/**
+ * An agent deletes a doc a person wrote part of only when the message its call answers is from
+ * one of those people or the owner level; any other doc as before.
+ */
+const mayDelete = Effect.fn("KinDocTools.mayDelete")(
+  function* (lead: Lead, key: string, answered: { readonly author: KinWorkPrincipal } | undefined) {
+    const sql = yield* SqlClient.SqlClient;
+    const writers = yield* sql<{ personId: string }>`SELECT DISTINCT v.actor_id AS "personId"
+    FROM kin_doc_versions v JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
+    WHERE v.org_id = ${lead.orgId} AND r.key = ${key} AND r.register_id = 'docs'
+      AND v.actor_kind = 'person' AND v.actor_id IS NOT NULL
+    ORDER BY v.actor_id`;
+    if (writers.length === 0) return;
+    const asker = answered?.author._tag === "person" ? answered.author.personId : undefined;
+    if (asker !== undefined && writers.some((one) => one.personId === asker)) return;
+    const { owner } = yield* KinIdentity;
+    if (asker !== undefined && (yield* mayActAsOwner(lead.orgId, asker, owner))) return;
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: `A person wrote part of ${key}, so it is deleted only when they or the owner ask for it in this turn. Nothing was deleted.`,
+    });
+  },
+  Effect.mapError((error) => (isChatError(error) ? error : unavailable)),
+);
+
 const runMove = Effect.fnUntraced(function* (lead: Lead, input: typeof MoveInput.Type) {
   const context = yield* writeContext(lead, "doc_move", input);
+  if (input.archived === true) yield* mayDelete(lead, input.key, context.answered);
   const partyId = yield* refOrNull(lead, input.client, "clients");
   const projectId = yield* refOrNull(lead, input.project, "projects");
   const owner = input.owner === undefined ? undefined : yield* resolveWho(lead, input.owner);
