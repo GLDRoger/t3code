@@ -35,6 +35,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
+import { describeOutside, outsideStamp } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { fromConnections, poll } from "../pulse/outside.ts";
 import * as KinRecords from "../work/KinRecords.ts";
@@ -721,7 +722,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const connections = yield* KinConnections;
           yield* connect(fake, "google", ACCOUNTS);
           yield* connect(fake, "microsoft", HELLO);
-          fake.deliver({
+          const billing = fake.deliver({
             to: ACCOUNTS,
             from: CLIENT,
             subject: "Billing contact",
@@ -745,6 +746,17 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           });
           assert.include(found.quoted ?? "", String.raw`\"account\":\"${ACCOUNTS}\"`);
           assert.include(found.quoted ?? "", "Billing contact");
+          // Each read is named for a person once: the mailboxes listed, then the mail's sender.
+          yield* callTool(ACCOUNTS, "mail_read_thread", { threadId: billing.threadId });
+          yield* callTool(ACCOUNTS, "mail_read_thread", { threadId: billing.threadId });
+          const read = describeOutside(
+            (yield* outsideStamp({ orgId, wakeupId: `wake-${wakes}` })) ?? "",
+          ).split("; ");
+          assert.sameMembers(read, [
+            `mail in ${ACCOUNTS}`,
+            `mail in ${HELLO}`,
+            `mail from ${CLIENT}: Billing contact`,
+          ]);
 
           // An open Tasks list reads again once a mail for an entry is drawn (`KinRecords.announce`).
           const taken = sql<{ seq: number }>`SELECT seq FROM sqlite_sequence

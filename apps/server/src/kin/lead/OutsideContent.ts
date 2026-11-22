@@ -146,6 +146,27 @@ export const OUTSIDE_TOOLS = {
   >),
 } satisfies Record<string, OutsideToolPolicy>;
 
+// A stamp is its key (what cards and checks read), then a tab and what a person reads for it.
+const READABLE = "\t";
+const READABLE_MAX = 300;
+
+/** A stamp's key: a connection id, `web:<host>`, `social:@<name>`, `check-in`, `github`, …. */
+export const stampKey = (stamp: string) => stamp.split(READABLE, 1)[0]!;
+
+/** What a person reads for a stamp: the reads' own words, or its key's. */
+export const describeOutside = (stamp: string) => {
+  const tab = stamp.indexOf(READABLE);
+  if (tab >= 0) return stamp.slice(tab + 1);
+  if (stamp === "check-in") return "outside text in a check-in";
+  if (stamp === "github") return "text from GitHub";
+  if (stamp === "web search") return "a web search";
+  if (stamp.startsWith("web:")) return `the web page ${stamp.slice("web:".length)}`;
+  if (stamp.startsWith("social:")) return `posts by ${stamp.slice("social:".length)}`;
+  if (stamp.startsWith(CODING_AGENT_SOURCE))
+    return `${stamp.slice(CODING_AGENT_SOURCE.length)}, a coding agent`;
+  return "text from a connected service";
+};
+
 /**
  * Where the turn's outside text came from, or `undefined` while it has read none. Sticky: once
  * read, it stays read until the turn ends. Events the turn makes carry it as their stamp.
@@ -169,13 +190,22 @@ export const outsideRead = (turn: Pick<Turn, "orgId" | "wakeupId">) =>
  */
 export const markOutside = Effect.fn("KinOutsideContent.mark")(function* (
   turn: Pick<Turn, "orgId" | "wakeupId">,
-  source: string,
+  key: string,
+  /** What a person reads for this read; its key's words when left out. */
+  readable?: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const at = yield* Clock.currentTimeMillis;
+  const words = (readable ?? describeOutside(key)).replaceAll(READABLE, " ").slice(0, 240);
+  const source = `${stampKey(key)}${READABLE}${words}`;
+  // Every later read is named once more, while the line stays short.
   yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
     VALUES (${turn.orgId}, ${turn.wakeupId}, ${at}, ${source})
-    ON CONFLICT (org_id, wakeup_id) DO NOTHING`;
+    ON CONFLICT (org_id, wakeup_id) DO UPDATE SET source = source
+      || CASE WHEN instr(source, ${READABLE}) = 0 THEN ${READABLE} ELSE '; ' END || ${words}
+    WHERE instr(source || ';', ${`${READABLE}${words};`}) = 0
+      AND instr(source || ';', ${`; ${words};`}) = 0
+      AND length(source) + length(${words}) + 2 <= ${READABLE_MAX}`;
   yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
     SELECT org_id, event_id, ${source} FROM kin_events
     WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}
@@ -233,8 +263,10 @@ export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (
   readonly eventIds: ReadonlyArray<string>;
   /** The prompt itself shows outside text, such as a check-in's mail lines, from here. */
   readonly shows?: string | undefined;
+  /** What a person reads for what it shows, such as the first mail's sender and subject. */
+  readonly showsReadable?: string | undefined;
 }) {
-  if (input.shows !== undefined) return yield* markOutside(input, input.shows);
+  if (input.shows !== undefined) return yield* markOutside(input, input.shows, input.showsReadable);
   const sql = yield* SqlClient.SqlClient;
   const events =
     input.eventIds.length === 0

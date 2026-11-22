@@ -74,7 +74,13 @@ import { chatShared } from "../chat/sharing.ts";
 import { effectiveAudience, turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
-import { markOutside, outsideRead, outsideStamp, OUTSIDE_REFUSAL } from "../lead/OutsideContent.ts";
+import {
+  markOutside,
+  outsideRead,
+  outsideStamp,
+  OUTSIDE_REFUSAL,
+  stampKey,
+} from "../lead/OutsideContent.ts";
 import { sensitiveShown } from "../work/sensitiveReads.ts";
 import { quote } from "../lead/quote.ts";
 import {
@@ -121,7 +127,7 @@ import {
   SERVICES,
   SIGN_IN_PRESETS,
 } from "./presets.ts";
-import { resultText } from "./ResultText.ts";
+import { resultSource, resultText } from "./ResultText.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import {
   attachmentOf,
@@ -456,10 +462,11 @@ const askClosed = (ask: {
 };
 /** The outside text a turn read, as its card names it. */
 const outsideLabel = Effect.fnUntraced(function* (orgId: KinOrgId, source: string) {
-  if (source === "check-in") return "outside text in a check-in";
-  if (source === "github") return "text from GitHub";
-  if (source.startsWith("social:")) return `text from ${source.slice("social:".length)}`;
-  const connection = yield* connectionEverById(orgId, source);
+  const key = stampKey(source);
+  if (key === "check-in") return "outside text in a check-in";
+  if (key === "github") return "text from GitHub";
+  if (key.startsWith("social:")) return `text from ${key.slice("social:".length)}`;
+  const connection = yield* connectionEverById(orgId, key);
   return connection === undefined ? "outside text" : `text from ${connection.label}`;
 });
 /** Whether the connection is still signed in as the account the card showed. */
@@ -1998,7 +2005,7 @@ const make = Effect.gen(function* () {
       // Instructions, names, descriptions and schemas are the server's words: the turn is
       // outside-read before any of them reaches it, even a listing with nothing to read.
       const connectionId = row.connectionId;
-      const mark = sql.withTransaction(shown(turn, connectionId));
+      const mark = sql.withTransaction(shown(turn, connectionId, `${row.label}'s tools`));
       const waiting = all.filter(changed).length;
       const label = `${row.label} tools`;
       const note = [
@@ -2059,10 +2066,10 @@ const make = Effect.gen(function* () {
   );
 
   /** The turn now carries outside text: it is outside-read, and what it writes is the owner's. */
-  const shown = (turn: Turn, connectionId: string) =>
-    Effect.all([markOutside(turn, connectionId), sensitiveShown(turn)], { discard: true }).pipe(
-      provideSql,
-    );
+  const shown = (turn: Turn, connectionId: string, readable: string) =>
+    Effect.all([markOutside(turn, connectionId, readable), sensitiveShown(turn)], {
+      discard: true,
+    }).pipe(provideSql);
 
   /**
    * Takes one call and up to one result's characters from the turn's allowance in one statement,
@@ -2194,7 +2201,11 @@ const make = Effect.gen(function* () {
           resultBytes: text.bytes,
           durationMs,
         });
-        yield* shown(turn, row.connectionId);
+        yield* shown(
+          turn,
+          row.connectionId,
+          resultSource({ label: row.label, tool: definition.name, result: result.success }),
+        );
         yield* release(turn, allowance.chars - text.chars);
         yield* sql`UPDATE kin_connections SET last_ok_at = ${started}
           WHERE org_id = ${turn.orgId} AND connection_id = ${row.connectionId}`;
@@ -2612,7 +2623,8 @@ const make = Effect.gen(function* () {
     // read here too, so outside text read since the call began marks this ask, in either order.
     const { outside, askId, closed } = yield* sql.withTransaction(
       Effect.gen(function* () {
-        const outside = yield* outsideStamp(turn).pipe(provideSql);
+        const stamp = yield* outsideStamp(turn).pipe(provideSql);
+        const outside = stamp === undefined ? undefined : stampKey(stamp);
         const askId = outside === undefined ? twinId : idOf([...key, "outside"]);
         const done = (closed: { readonly note: string; readonly quoted?: string } | undefined) => ({
           outside,

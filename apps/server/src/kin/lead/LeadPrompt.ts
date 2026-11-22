@@ -775,10 +775,19 @@ export class KinLeadPrompt extends Context.Service<
         );
         // What an outside-read turn set up or passed on starts this one outside-read too.
         // Not a warning: an unmarked turn could start a task from what it shows.
+        const mailShown = input.events
+          .flatMap((event) => (event._tag === "pulse" ? (event.outside ?? []) : []))
+          .filter((line) => line.source === "mail");
         yield* inheritOutside({
           orgId,
           wakeupId: input.wakeupId,
           eventIds: [...input.events.map((event) => event.eventId), ...askedIn],
+          showsReadable:
+            mailShown[0] === undefined
+              ? undefined
+              : `mail from ${mailShown[0].who}: ${mailShown[0].subject}${
+                  mailShown.length > 1 ? `, and ${mailShown.length - 1} more` : ""
+                }`,
           // One rule with the check-in's: text from someone who can't write to the repo is outside.
           // A review someone asked for in Kin runs as one too: their ask never gets a shell.
           shows: input.events.some(

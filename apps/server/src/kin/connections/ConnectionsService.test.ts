@@ -42,6 +42,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import {
+  describeOutside,
   inheritOutside,
   markOutside,
   outsideRead,
@@ -49,6 +50,7 @@ import {
   outsideToolAllowed,
   OUTSIDE_REFUSAL,
   stampEvent,
+  stampKey,
 } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { readProfile } from "../work/companyProfile.ts";
@@ -565,6 +567,28 @@ describe("KinConnections", () => {
           WHERE org_id = ${orgId} ORDER BY created_at, status DESC`;
         assert.deepStrictEqual(rows.map((row) => row.status).toSorted(), ["ok", "refused"]);
         assert.isTrue(yield* outsideRead(turn));
+      }),
+    ),
+  );
+
+  it.effect("names each outside read of a turn once, for a person, after its key", () =>
+    withFake(BASE, () =>
+      Effect.gen(function* () {
+        const reading = { orgId, wakeupId: "wake-reads" };
+        yield* markOutside(reading, "web:example.org");
+        yield* markOutside(reading, "web search");
+        yield* markOutside(reading, "social:@studio");
+        yield* markOutside(reading, "web:example.org");
+        yield* markOutside(reading, "conn-1", "mail from Ravi Menon <ravi@lumen.example>: Launch");
+        const stamp = (yield* outsideStamp(reading)) ?? "";
+        assert.strictEqual(stampKey(stamp), "web:example.org");
+        assert.strictEqual(
+          describeOutside(stamp),
+          "the web page example.org; a web search; posts by @studio; mail from Ravi Menon <ravi@lumen.example>: Launch",
+        );
+        // A stamp stored before reads were named still reads as its key says.
+        assert.strictEqual(describeOutside("check-in"), "outside text in a check-in");
+        assert.strictEqual(describeOutside("conn-1"), "text from a connected service");
       }),
     ),
   );
@@ -1237,7 +1261,10 @@ describe("KinConnections", () => {
         assert.isTrue(yield* outsideRead({ orgId, wakeupId: "retried" }));
         assert.isTrue(yield* outsideRead({ orgId, wakeupId: "handed" }));
         assert.isFalse(yield* outsideRead({ orgId, wakeupId: "clean" }));
-        assert.strictEqual(yield* outsideStamp({ orgId, wakeupId: "handed" }), id);
+        // What it read travels with it: the key cards name, and what a person reads.
+        const handed = (yield* outsideStamp({ orgId, wakeupId: "handed" })) ?? "";
+        assert.strictEqual(stampKey(handed), id);
+        assert.strictEqual(describeOutside(handed), "PostHog (query)");
       }),
     ),
   );
