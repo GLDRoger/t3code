@@ -2489,6 +2489,8 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
           FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} ORDER BY rowid`;
         return { wakeupId, eventId: event!.eventId };
       });
+      // Rhea's redraft: a total the agent worked out, her price in lakh, and travel at INV-4's sum.
+      const REDRAFT = "Harbourline proposal: four shoots, 3 lakh a month, ₹12,00,000 in all, travel 45000";
       const proposal = (
         at: { readonly eventId: string },
         input: Partial<typeof LeadDocs.CreateInput.Type> = {},
@@ -2496,7 +2498,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         LeadDocs.create(scopeOf("chief"), {
           sourceEventId: at.eventId,
           title: "Harbourline proposal",
-          body: "Harbourline proposal: four shoots, ₹300000 a month",
+          body: REDRAFT,
           kind: "proposal",
           client: "C-7",
           draft: { kind: "proposal" },
@@ -2578,7 +2580,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.notInclude(unasked.note ?? "", "Changes first");
       assert.lengthOf(yield* drafts, 1);
       yield* TestClock.adjust("1 minute");
-      const words = yield* turnOn("rhea", chatOf("chief"), "Make it four shoots, 300000 a month.");
+      const words = yield* turnOn("rhea", chatOf("chief"), "Make it four shoots, 3 lakh a month.");
       // Another client's proposal is another draft: today's plain card, nothing raised.
       const other = yield* proposal(words, {
         title: "Tidewater proposal",
@@ -2593,58 +2595,8 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.notInclude(secret.note ?? "", "Changes first");
       assert.lengthOf(yield* drafts, 1);
       assert.lengthOf(yield* shownUp(zoyaChat), 1);
-      // Rhea's own 300000 never hides what holds it: a private entry's title or a client's terms
-      // with that number in it is refused; the number alone goes up (below).
-      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
-          owner_id, created_by_kind, origin_key, created_at, updated_at, sensitive)
-        VALUES (${orgId}, 'rec_exit', 'invoices', 'INV-9', 'Pinecrest exit 300000', 'person',
-          ${owner.personId}, 'person', 'rec_exit', 0, 0, 1)`;
-      yield* sql`UPDATE kin_records SET fields_json = json_set(COALESCE(fields_json, '{}'),
-          '$.terms', 'Retainer 300000, net 30 days')
-        WHERE org_id = ${orgId} AND key = 'C-8'`;
-      for (const [title, tail] of [
-        ["Exit note", "Pinecrest exit 300000"],
-        ["Terms note", "Retainer 300000, net 30 days"],
-      ] as const) {
-        const held = yield* proposal(words, {
-          title,
-          body: `Harbourline proposal: four shoots, ₹300000 a month. ${tail}`,
-        });
-        assert.notStrictEqual(held.key, "");
-        assert.include(
-          held.note,
-          "Kin couldn't put it to Rhea Rao again: Not for Zoya Sheikh: it repeats a private entry or a client's terms they can't see.",
-        );
-      }
-      assert.lengthOf(yield* drafts, 1);
-      // A figure Rhea didn't write that Zoya may not read can't go to her chat: filed as today,
-      // and the agent hears why. So with the sum of an invoice Zoya doesn't see.
-      const priced = yield* proposal(words, {
-        title: "All in price",
-        body: "All in for ₹40,000",
-      });
-      assert.notStrictEqual(priced.key, "");
-      assert.include(
-        priced.note,
-        "This is Zoya Sheikh's proposal back from Rhea Rao's Changes first, but Kin couldn't put it to Rhea Rao again: Not for Zoya Sheikh: “₹40,000” reads as an amount of money, which they may not see. Nothing was asked.",
-      );
-      const hidden = yield* proposal(words, {
-        title: "With travel",
-        body: "Harbourline proposal: four shoots, ₹300000 a month, travel 45000",
-      });
-      assert.notStrictEqual(hidden.key, "");
-      assert.include(
-        hidden.note,
-        "Kin couldn't put it to Rhea Rao again: Not for Zoya Sheikh: it carries a figure that is a sum they may not see.",
-      );
-      // Rhea keeps her redraft as its own card in her chat.
-      assert.lengthOf(
-        yield* sql`SELECT 1 FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")}
-          AND type = 'doc' AND json_extract(state_json, '$.key') = ${hidden.key}`,
-        1,
-      );
-      assert.lengthOf(yield* drafts, 1);
-      // The redraft at Rhea's own new price goes back to her: nothing filed, one new card asked for Zoya's chat.
+      // The redraft goes back to her with every figure in it, Zoya's read check or not: nothing
+      // filed, one new card asked for Zoya's chat, which holds the redraft only on Rhea's card.
       const filed = yield* docCount;
       const back = yield* proposal(words);
       const told =
@@ -2658,12 +2610,11 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
         forChatId: zoyaChat,
         forPersonId: "zoya",
         intent: "harbourline proposal",
-        text: "Harbourline proposal: four shoots, ₹300000 a month",
+        text: REDRAFT,
       });
       const card = yield* team.cardOf(redone!.questionId);
       assert.include((yield* team.widgetOf(card.widgetId!)).state, {
-        detail:
-          "Zoya Sheikh asks, through Chief of staff.\n\nHarbourline proposal: four shoots, ₹300000 a month\n\nProposal for Harbourline Hotels",
+        detail: `Zoya Sheikh asks, through Chief of staff.\n\n${REDRAFT}\n\nProposal for Harbourline Hotels`,
       });
       // Her waiting list shows it again as a draft to approve, and Meera's read-only row returns.
       for (const who of [owner, team.person("meera")])
@@ -2675,17 +2626,27 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       // The same call again in this turn finds that card; another text here is refused, so filed.
       assert.deepInclude(yield* proposal(words), { key: "", note: told });
       assert.lengthOf(yield* drafts, 2);
-      // Kin showed Zoya each draft that went up, once, the retry included, as the agent's bubble.
+      // Kin showed Zoya her own draft as it went up; of Rhea's, once, the retry included, only
+      // Kin's line that it changed. Nothing in her chat holds the redraft or a figure of it.
       assert.deepStrictEqual(yield* shownUp(zoyaChat), [
         {
           body: "With Rhea Rao to approve:\n\nProposal: three shoots, price: ____",
           author: "agent",
         },
         {
-          body: "With Rhea Rao to approve:\n\nHarbourline proposal: four shoots, ₹300000 a month",
-          author: "agent",
+          body: "Rhea Rao changed the proposal; the new one is with Rhea Rao to approve.",
+          author: "system",
         },
       ]);
+      const herChat = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = ${zoyaChat} ORDER BY seq`;
+      const redrafted = ["four shoots", "lakh", "12,00,000", "45000"];
+      for (const { body } of herChat) for (const bit of redrafted) assert.notInclude(body, bit);
+      // Nor does her agent's next turn there read any of it.
+      const asksZoya = yield* turnOn("zoya", zoyaChat, "Any news on Harbourline?");
+      const herPrompt = yield* team.promptOf(asksZoya.wakeupId, zoyaChat);
+      assert.include(herPrompt, "Approve the proposal?");
+      for (const bit of redrafted) assert.notInclude(herPrompt, bit);
       // A redraft in a later turn, while that one waits, matches nothing: today's plain card.
       const later = yield* turnOn("rhea", chatOf("chief"), "And add a reel.");
       const plain = yield* proposal(later, {
@@ -2852,7 +2813,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       assert.deepStrictEqual(yield* herMessages, herBefore);
       yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.draftFor', 'zoya')
         WHERE org_id = ${orgId} AND key = ${mail.key}`;
-      // Her new fee, written her way in the edit ("₹3,00,000" for her 300000), goes up as hers.
+      // Her edit of Zoya's own mail, a doc Zoya opens, goes up with it.
       const cardsBefore = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
         WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'doc'`;
       const edited = yield* LeadDocs.edit(scopeOf("chief"), {
@@ -2924,6 +2885,50 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       );
       assert.lengthOf(yield* drafts, roundsLeft);
       assert.deepStrictEqual(yield* herMessages, leftWith);
+
+      // Rhea answers Arjun's redraft in words: the turn in his chat may send up a new draft, but
+      // no figure of hers is his, since it never was held to him.
+      const arjunUp = yield* sendUp("arjun", "C-7", "harbourline proposal for arjun");
+      yield* tap(owner, arjunUp.questionId, "option-2", "rhea-changes-arjun-7");
+      const priced = yield* turnOn("rhea", chatOf("chief"), "Make it 3 lakh a month.");
+      assert.deepInclude(yield* proposal(priced), { key: "" });
+      const [arjunRedo] = (yield* drafts).slice(-1);
+      const holds = yield* turnOn("rhea", chatOf("chief"), "Hold it until January.");
+      yield* Questions.closeQuestion(
+        {
+          orgId: org,
+          agentId: chief,
+          wakeupId: holds.wakeupId,
+          questionId: arjunRedo!.questionId,
+          outcome: "answered",
+          answer: "Hold it until January",
+          now: yield* Clock.currentTimeMillis,
+        },
+        chats,
+        Context.get(services, KinEventQueue.KinEventQueue),
+      );
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND state = 'queued'
+        AND dedupe_key IS NOT ${`question-answered:${arjunRedo!.questionId}`}`;
+      const inArjuns = yield* startAgentWakeup({
+        orgId,
+        agentId: chief,
+        threadId: ThreadId.make("chief-thread"),
+        queued: true,
+      });
+      const refused = yield* Effect.flip(
+        askFor("chief", inArjuns, {
+          to: "Rhea",
+          question: "Approve the proposal?",
+          options: undefined,
+          detail: "Proposal: four shoots from January, ₹12,00,000 in all",
+          intent: "harbourline proposal for arjun",
+          draft: { kind: "proposal", for: "C-7" },
+        }),
+      );
+      assert.strictEqual(
+        refused.message,
+        "Not for Arjun Nair: “₹12,00,000” reads as an amount of money, which they may not see. Nothing was asked.",
+      );
     }).pipe(Effect.provide(layer)),
   ),
 );

@@ -251,8 +251,6 @@ type TurnLead = AgentIdentity & { readonly wakeupId: KinWakeupId };
 /** A draft still waiting on the owner's Changes first, as `redoOf` found it. */
 export type Redraft = {
   readonly questionId: string;
-  /** The owner's chat the redraft is made in. */
-  readonly chatId: KinChatId;
   readonly question: string;
   readonly about: ReadonlyArray<string>;
   readonly intent: string;
@@ -355,7 +353,7 @@ export const redoOf = Effect.fn("KinQuestions.redoOf")(function* (
         "docKey" in redraft
           ? about.includes(redraft.docKey)
           : draft.kind === redraft.kind && (draft.for?.partyId ?? null) === redraft.partyId;
-      return same ? [{ ...row, chatId: lane.value.chatId, about, draft }] : [];
+      return same ? [{ ...row, about, draft }] : [];
     }),
   );
   return found.length === 1 ? found[0] : undefined;
@@ -467,20 +465,13 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           return yield* refuse(
             "Kin writes this card's buttons, Approve and Changes first: leave out options when you send a draft up.",
           );
-        // A redraft's source is the draft she sent up, held to her then, and the owner's own words
-        // this turn answers: a figure she gave is hers to put in it.
         const source =
           redone !== null
             ? null
             : (turn ??
               (press?.madeIn === undefined ? null : { orgId, agentId, wakeupId: press.madeIn }));
-        hers =
-          from._tag === "redo"
-            ? [from.of.draft.text, ...(yield* ownMessages(from.lead, from.of.chatId, self.owner))]
-            : source === null
-              ? undefined
-              : yield* draftSource(source, here.chatId, asker);
-        if (turn !== null && hers === undefined)
+        hers = source === null ? undefined : yield* draftSource(source, here.chatId, asker);
+        if (turn !== null && redone === null && hers === undefined)
           return yield* refuse(
             `A draft goes up only from ${askerName ?? "the teammate"}'s own message here, or after the owner answers one of theirs in words.`,
           );
@@ -530,6 +521,7 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
           text: input.detail,
           line: draftLine(input.draft.kind, on, party?.title),
           ...(on === undefined ? {} : { on }),
+          ...(redone === null ? {} : { redo: true as const }),
           names: {
             owner: owner?.name ?? "the owner",
             asker: askerName ?? "them",
@@ -656,7 +648,8 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
             `Not for ${target.name}: ${why}. Ask without that, or ask the owner to share it with ${target.name}.`,
           );
       }
-      if (!ownerTurn && asker !== null) {
+      // A redraft is the owner's to read: its body goes only on her card, never to the teammate.
+      if (!ownerTurn && asker !== null && redone === null) {
         // A figure she wrote herself is no secret from her: only the company's others are held.
         const why = yield* unreadableBy(orgId, asker, words, undefined, hers?.join("\n"));
         if (why !== undefined) return yield* refuse(`Not for ${askerName ?? "the asker"}: ${why}.`);
@@ -733,8 +726,8 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
             ...("_tag" in posted ? { held: true as const } : {}),
           },
         });
-      // Kin shows her the draft that went up, unless her own card already holds that text: as
-      // the agent's own bubble, which draws its markdown, as Kin's one-line notices don't.
+      // Kin shows her the draft she sent up, unless her own card already holds that text, as the
+      // agent's own bubble, which draws its markdown; of a redraft, only Kin's line that it changed.
       if (
         turn !== null &&
         sentUp !== undefined &&
@@ -746,9 +739,15 @@ const ask = Effect.fn("KinQuestions.ask")(function* (
             chatId: here.chatId,
             messageId: KinMessageId.make(`kin-draft-up:${questionId}`),
             audience: "chat",
-            from: agentId,
-            body: `With ${target.name} to approve:\n\n${sentUp.text}`,
-            ...(redone === null ? { silent: true } : {}),
+            ...(redone === null
+              ? {
+                  from: agentId,
+                  body: `With ${target.name} to approve:\n\n${sentUp.text}`,
+                  silent: true,
+                }
+              : {
+                  body: `${target.name} changed the ${DRAFT_WORDS[sentUp.kind]}; the new one is with ${target.name} to approve.`,
+                }),
           })
           .pipe(
             Effect.catchCause((cause) =>
@@ -856,9 +855,12 @@ const draftSource = Effect.fn("KinQuestions.draftSource")(function* (
     (one) => one.eventId === answeredEventId(turn.orgId, one.questionId),
   );
   if (own.length === 0 && earlier.length === 0) return undefined;
+  // The owner's redraft was never held to her, so none of it is hers.
   return own.length > 0
     ? own
-    : earlier.flatMap((one) => Option.toArray(decodeStoredDraft(one.draft)).map((d) => d.text));
+    : earlier.flatMap((one) =>
+        Option.toArray(decodeStoredDraft(one.draft)).flatMap((d) => (d.redo ? [] : [d.text])),
+      );
 });
 
 /** What this person wrote themselves in that chat, in the messages this turn answers. */

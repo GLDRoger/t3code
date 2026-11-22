@@ -48,6 +48,8 @@ const StoredDraftJson = Schema.fromJsonString(
     line: Schema.String,
     /** A post's service, by name, as the card's line said it. */
     on: Schema.optional(Schema.String),
+    /** The owner's redraft (`redo`): on her card only, never held to the teammate. */
+    redo: Schema.optional(Schema.Literal(true)),
     names: Schema.Struct({ owner: Schema.String, asker: Schema.String, agent: Schema.String }),
   }),
 );
