@@ -32,7 +32,7 @@ import { createKinWorkItemWatch } from "../kinWorkChanges.ts";
 import { kinWorkReadState } from "../kinWorkForms.ts";
 import { createKinPagedList, mapPage } from "../kinWorkList.ts";
 import type { KinHookApp, KinUseOpenChat } from "./kinHookApp.ts";
-import { kinPagedKeeper, kinSchedule, type KinWorkHooks } from "./kinWorkHooks.ts";
+import { kinPagedKeeper, kinSchedule, useKinViewer, type KinWorkHooks } from "./kinWorkHooks.ts";
 
 /** The app's own hooks Docs' hooks read through. */
 export interface KinDocsUses {
@@ -130,7 +130,11 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
         });
       },
       seq,
-      { keeper: docLists, key: JSON.stringify([environmentId, orgId, text]) },
+      {
+        keeper: docLists,
+        key: JSON.stringify([environmentId, orgId, text]),
+        viewer: useKinViewer(app.runtime, environmentId),
+      },
     );
   }
 

@@ -685,7 +685,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         <View className="flex-row items-center gap-3">
           <Text
             textRole="footnote"
-            numberOfLines={1}
+            numberOfLines={2}
             accessibilityLabel={`${dismissed.text}. ${choice.question}`}
             className="min-w-0 flex-1 text-foreground-muted"
           >
