@@ -136,6 +136,33 @@ it.effect("refuses number records on targeted goals and every role sees their ow
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("allows tomorrow in the company's zone and rejects a future value atomically", () =>
+  Effect.gen(function* () {
+    const sql = yield* setup;
+    yield* goal("G-1", {});
+    yield* TestClock.setTime(Date.UTC(2026, 10, 20, 23, 30));
+    yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+      dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+      VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')`;
+    const tomorrow = { ...value("G-1", "30"), asOf: "2026-11-22" };
+    assert.include(
+      yield* Effect.flip(
+        Numbers.record(owner, [tomorrow, { ...value("G-1", "999"), asOf: "2099-01-01" }]),
+      ),
+      {
+        reason: "invalid_state",
+        message: "A value can't be dated in the future.",
+      },
+    );
+    assert.deepStrictEqual((yield* Numbers.values(owner, "G-1", day, "2099-01-01")).values, []);
+    yield* Numbers.record(owner, [tomorrow]);
+    assert.strictEqual(
+      (yield* Numbers.values(owner, "G-1", day, tomorrow.asOf)).values[0]?.value,
+      "30",
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("keeps private numbers absent and only lets members type a shared number they see", () =>
   Effect.gen(function* () {
     const sql = yield* setup;

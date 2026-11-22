@@ -309,6 +309,12 @@ export const record = Effect.fn("KinNumbers.record")(
       Effect.gen(function* () {
         const viewer = yield* reader(by, "number_record", { values: entries });
         const orgId = viewer.orgId;
+        const today = dayIn(now, yield* ownerZone(orgId));
+        const tomorrow = DateTime.formatIsoDateUtc(
+          DateTime.add(DateTime.makeUnsafe(today), { days: 1 }),
+        );
+        if (entries.some((entry) => entry.asOf > tomorrow))
+          return yield* invalid("A value can't be dated in the future.");
         const [author] =
           by._tag === "person"
             ? yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
