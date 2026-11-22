@@ -72,6 +72,7 @@ export const SECTIONS = {
     budget_set: null,
     dates_query: null,
     company_profile: null,
+    shell_propose: null,
     statement_read: null,
     statement_rows: null,
     kin_document: null,

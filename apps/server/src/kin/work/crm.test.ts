@@ -37,6 +37,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadClients from "./leadClients.ts";
+import * as ShellMcp from "../shell/mcp.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
 import { handlers as workHandlers } from "./mcp/handlers.ts";
@@ -1371,6 +1372,11 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
       // Stage names only: nothing of a deal.
       deal_stages: [LeadWork.dealStages(scope, {}), false],
       company_profile: [LeadMoney.profile(scope, {}), true],
+      // Section switches and names: nothing of an entry. No chat here, so no card either.
+      shell_propose: [
+        Effect.flip(ShellMcp.propose(scope, { sections: [{ id: "deals", on: false }] })),
+        false,
+      ],
       // Its record part is record_get's; contact and memory show no entry of their own.
       client_read: [LeadClients.contact(scope, { key: "C-1" }), false],
       touch_log: [

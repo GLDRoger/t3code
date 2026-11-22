@@ -21,6 +21,7 @@ import { PageMarks } from "../pageMarks.ts";
 import * as Work from "../leadWork.ts";
 import * as Comments from "../workComments.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
+import { shellPropose } from "../../shell/mcp.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
 const enabled = McpToolAccess.threadBoundGate(() => {
@@ -202,4 +203,5 @@ export const KinWorkToolkit = Toolkit.make(
     parameters: Money.ProfileInput,
     success: Money.ProfileResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
+  shellPropose,
 );

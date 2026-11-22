@@ -10,6 +10,7 @@ import * as Money from "../leadMoney.ts";
 import * as Work from "../leadWork.ts";
 import * as Comments from "../workComments.ts";
 import { liftMarks } from "../pageMarks.ts";
+import { proposeHandler } from "../../shell/mcp.ts";
 import { KinWorkToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -138,4 +139,5 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
       return yield* Money.profile(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
+  shell_propose: proposeHandler,
 });

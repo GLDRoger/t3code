@@ -84,6 +84,7 @@ import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -102,6 +103,7 @@ import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as SocialCards from "../social/cards.ts";
 import { answerChange } from "../work/companyProfile.ts";
+import { answerShellChange } from "../shell/changes.ts";
 import { KinRefreshHub, KinRefreshObserver } from "./KinRefreshHub.ts";
 import { docsForViewer } from "./privateDocs.ts";
 import { previewRow } from "./chatRowPreview.ts";
@@ -1298,18 +1300,23 @@ const make = Effect.gen(function* () {
             now: yield* Clock.currentTimeMillis,
             emoji: reaction?.emoji ?? null,
           });
-    // A profile change a lead asked for lands only here, from the owner's own answer on its card.
-    const changed =
+    // A profile or shell change a lead asked for lands only here, from the owner's own answer on its card.
+    const asked =
       choice === null
         ? undefined
-        : yield* answerChange({
+        : {
             orgId: identity.orgId,
             widgetId: widget.widgetId,
             personId: identity.personId,
             confirmed: choice.option.kind === "yes",
-            via: reaction === null ? "tap" : "reaction",
+            via: reaction === null ? ("tap" as const) : ("reaction" as const),
             now: yield* Clock.currentTimeMillis,
-          }).pipe(
+          };
+    const changed =
+      asked === undefined
+        ? undefined
+        : yield* answerShellChange(asked).pipe(
+            Effect.filterOrElse(Predicate.isNotUndefined, () => answerChange(asked)),
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.provideService(KinRefreshObserver, refresh),
             Effect.mapError(cardTapError),

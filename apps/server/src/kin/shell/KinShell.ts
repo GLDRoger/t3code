@@ -101,7 +101,7 @@ const conflict = new KinChatError({
   reason: "conflict",
   message: "Someone changed this since you opened it. Nothing was saved; open it again.",
 });
-const set = Effect.fn("KinShell.set")(function* (
+export const set = Effect.fn("KinShell.set")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   rev: number,
