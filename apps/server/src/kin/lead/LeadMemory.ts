@@ -138,6 +138,8 @@ export const WriteInput = Schema.Struct({
   supersedes: Schema.optional(KinMemoryItemId),
   besides: Schema.optional(Schema.Array(KinMemoryItemId).check(Schema.isMaxLength(100))),
 });
+const ALONE =
+  'In a chat with other people it fires into that chat; true sends it to the asker\'s own chat with you instead ("remind me").';
 export const DeferInput = Schema.Struct({
   itemId: Schema.optional(itemId),
   what: TrimmedNonEmptyString.check(Schema.isMaxLength(8000)),
@@ -148,6 +150,7 @@ export const DeferInput = Schema.Struct({
       "With onDue ask or chase: the person you will ask or chase when it comes due, by name; omit it when that is whoever asked you.",
   }),
   chatId: KinChatId,
+  alone: Schema.optional(Schema.Boolean).annotate({ description: ALONE }),
   sourceEventId: TurnEvent,
   replaces: Schema.optional(KinMemoryItemId),
 });
@@ -158,6 +161,7 @@ export const ScheduleInput = Schema.Struct({
   at: MemoryItemEvery.fields.at,
   days: MemoryItemEvery.fields.days,
   chatId: KinChatId,
+  alone: Schema.optional(Schema.Boolean).annotate({ description: ALONE }),
   sourceEventId: TurnEvent,
   replaces: Schema.optional(KinMemoryItemId),
   around: Schema.optional(Schema.Boolean).annotate({
@@ -644,7 +648,7 @@ const make = Effect.gen(function* () {
     )
       return true;
     return yield* invalid(
-      `Only ${setter?.name ?? "the person"} who asked for it, the owner or a co-owner can change it.`,
+      `Only ${setter === undefined ? "whoever asked for it" : `${setter.name} (who asked for it)`}, the owner or a co-owner can change it.`,
     );
   });
   /** The handle of the person a deferral will ask or chase, as the deferral flow reads it. */

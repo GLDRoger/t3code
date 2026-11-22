@@ -733,6 +733,8 @@ it.effect(
         }).pipe(Effect.flatMap((input) => service.defer(scopeOf(leads.a), input)));
       assert.isString((yield* defer()).itemId);
       assert.include(staged[0], "chat: group-chat");
+      assert.isString((yield* defer({ what: "Invented: mine alone", alone: true })).itemId);
+      assert.include(staged[1], "chat: member-direct");
       // Only a reminder: a start from a chat others read stays refused.
       assert.strictEqual(
         (yield* defer({ what: "Invented: start it", onDue: "start" }).pipe(Effect.flip)).message,
@@ -783,7 +785,7 @@ it.effect(
       assert.strictEqual((yield* cancel("def-hers")).outcome, "stopped");
       assert.strictEqual(
         (yield* Effect.flip(cancel("def-others"))).message,
-        "Only Other who asked for it, the owner or a co-owner can change it.",
+        "Only Other (who asked for it), the owner or a co-owner can change it.",
       );
 
       // After an outside read it didn't make, a turn sets nothing for the group.
