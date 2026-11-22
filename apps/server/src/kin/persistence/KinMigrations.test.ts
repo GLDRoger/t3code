@@ -128,6 +128,7 @@ const tableNames = [
   "kin_ping_items",
   "kin_ping_ledger",
   "kin_pr_review_posts",
+  "kin_private_turns",
   "kin_profile_changes",
   "kin_pull_requests",
   "kin_pulse_facts",
@@ -2264,23 +2265,45 @@ describe("Kin migrations", () => {
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("K208 keeps every connection the company's and runs again harmlessly", () =>
+  it.effect("K208 keeps every connection the company's, keys live addresses once, and reruns", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
-      yield* sql`DROP INDEX kin_connections_person`;
-      yield* sql`ALTER TABLE kin_connections DROP COLUMN person_id`;
+      for (const index of [
+        "kin_connections_person",
+        "kin_connections_live_account",
+        "kin_connections_live_person",
+      ])
+        yield* sql.unsafe(`DROP INDEX ${index}`);
+      for (const [table, column] of [
+        ["kin_connections", "person_id"],
+        ["kin_connections", "account_key"],
+        ["kin_connection_calls", "private_to"],
+        ["kin_connection_asks", "left_at"],
+      ])
+        yield* sql.unsafe(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+      yield* sql`DROP TABLE kin_private_turns`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 208`;
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Ambermill', 1)
         ON CONFLICT DO NOTHING`;
+      // Two live rows of one address (an older host's), and a removed one.
       yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
-          url_host, auth, reach, state, created_at, updated_at)
-        VALUES ('org', 'c-1', 'google', 'Mail', 'builtin', NULL, 'gmail.googleapis.com', 'oauth',
-          'closed', 'active', 1, 1)`;
+          url_host, auth, reach, state, account_label, created_at, updated_at, removed_at)
+        VALUES ('org', 'c-1', 'google', 'Mail', 'builtin', NULL, 'g', 'oauth', 'closed',
+            'active', 'Rhea@Ambermill.example', 1, 1, NULL),
+          ('org', 'c-2', 'microsoft', 'Mail', 'builtin', NULL, 'm', 'oauth', 'closed',
+            'active', 'rhea@ambermill.example', 2, 2, NULL),
+          ('org', 'c-3', 'google', 'Old', 'builtin', NULL, 'g', 'oauth', 'closed',
+            'active', 'rhea@ambermill.example', 0, 0, 1)`;
       assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(208));
-      const rows = yield* sql<{ personId: string | null }>`SELECT person_id AS "personId"
+      const rows = yield* sql<{ id: string; personId: string | null; key: string | null }>`SELECT
+          connection_id AS id, person_id AS "personId", account_key AS key
         FROM kin_connections ORDER BY connection_id`;
-      assert.deepStrictEqual(rows, [{ personId: null }]);
+      assert.deepStrictEqual(rows, [
+        { id: "c-1", personId: null, key: "rhea@ambermill.example" },
+        { id: "c-2", personId: null, key: null },
+        { id: "c-3", personId: null, key: null },
+      ]);
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 208`;
       assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(208));
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

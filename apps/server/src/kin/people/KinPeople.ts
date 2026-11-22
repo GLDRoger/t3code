@@ -89,7 +89,7 @@ import { closeHeldQuestions } from "../questions/openQuestions.ts";
 import { live as liveKey } from "../tasksKey/TasksKeys.ts";
 import { staleAsksStranded } from "../connections/strandedAsks.ts";
 import { leaverBack, leaverCards } from "./leaver.ts";
-import { revokeMailboxes } from "../connections/ConnectionRows.ts";
+import { personConnections, revokeMailboxes } from "../connections/ConnectionRows.ts";
 import { KinConnections, MAILBOX_GONE } from "../connections/ConnectionsService.ts";
 
 const isKinError = Schema.is(KinChatError);
@@ -1061,6 +1061,21 @@ export const make = Effect.gen(function* () {
    * A new link for the same person (`accept`) brings back exactly what they had.
    */
   const removeAccess = Effect.fn("KinPeople.removeAccess")(function* (
+    session: AuthenticatedSession,
+    input: KinPeopleRemoveAccessInput,
+  ) {
+    // Their own mailboxes are revoked inside, under the fence a send's hand-off takes.
+    const mailboxIds = (yield* personConnections(input.orgId, input.personId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError(sqlError("KinPeople.removeAccessMailboxes")),
+    )).map((row) => row.connectionId);
+    const removed = yield* Option.isSome(connections)
+      ? connections.value.fenced(mailboxIds, removeAccessIn(session, input))
+      : removeAccessIn(session, input);
+    if (Option.isSome(connections)) yield* connections.value.forgetSignIns(input.personId);
+    return removed;
+  });
+  const removeAccessIn = Effect.fnUntraced(function* (
     session: AuthenticatedSession,
     input: KinPeopleRemoveAccessInput,
   ) {

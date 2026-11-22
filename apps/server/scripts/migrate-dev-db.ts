@@ -233,6 +233,25 @@ const rootIsVisible = (sql: SqlClient.SqlClient) => sql`
   AND json_extract(root.payload_json, '$.deletedAt') IS NULL
   AND json_extract(root.payload_json, '$.archivedAt') IS NULL`;
 
+// A person's own mailbox's send cards hold their mail: the copy keeps none of them, nor what
+// waits on them. Sources from before own mailboxes have no `person_id` and nothing to drop.
+const dropPersonalSendCards = Effect.fn("dropPersonalSendCards")(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const [ready] = yield* sql<{ n: number }>`SELECT
+      (SELECT COUNT(*) FROM pragma_table_info('kin_connections', 'src') WHERE name = 'person_id')
+      + (SELECT COUNT(*) FROM src.sqlite_master WHERE type = 'table'
+          AND name IN ('kin_connection_asks', 'kin_widgets')) AS n`;
+  if ((ready?.n ?? 0) < 3) return;
+  const cards = sql`SELECT k.widget_id FROM src.kin_connection_asks k
+    JOIN src.kin_connections c ON c.org_id = k.org_id AND c.connection_id = k.connection_id
+    WHERE c.person_id IS NOT NULL AND k.widget_id IS NOT NULL`;
+  const [waiting] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM main.sqlite_master
+    WHERE type = 'table' AND name = 'kin_waiting'`;
+  if ((waiting?.n ?? 0) > 0) yield* sql`DELETE FROM main.kin_waiting WHERE widget_id IN (${cards})`;
+  yield* sql`DELETE FROM main.kin_widgets WHERE widget_id IN (${cards})`;
+});
+
 // One read transaction keeps the copy, and its legacy-thread guard, consistent with concurrent
 // server writes. The server imports V1 threads at boot, and the copy keeps only threads with V2
 // rows, so unimported ones would vanish silently (see LegacyV1ThreadImporter.pendingThreadCount).
@@ -322,6 +341,7 @@ const copySourceSlice = Effect.fn("copyDevDbSourceSlice")(function* (sourcePath:
         yield* sql.unsafe(`INSERT INTO main."${name}" SELECT * FROM src."${name}" ${filter}`)
           .unprepared;
       }
+      yield* dropPersonalSendCards(sql);
       yield* sql`DELETE FROM main.sqlite_sequence`;
       yield* sql`INSERT INTO main.sqlite_sequence SELECT name, seq FROM src.sqlite_sequence`;
       for (const entry of schema) {

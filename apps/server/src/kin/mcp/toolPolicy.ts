@@ -46,6 +46,11 @@ export const toolCallGate = <R>(
     { global: true },
   );
 
+/** As `toolCallGate`, when the refusal's words depend on the call: undefined admits it. */
+export const toolCallRefusal = <R>(
+  refusal: (name: string, args: unknown) => Effect.Effect<string | undefined, never, R>,
+) => McpServer.middleware()(toolCallGateFn(refusal), { global: true });
+
 /**
  * Which tools the server this joins lists and lets a request call; a hidden one answers as if it
  * weren't registered. `visible` sees the tool name and the request's services.

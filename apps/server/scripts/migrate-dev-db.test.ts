@@ -144,8 +144,18 @@ const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(functio
         VALUES ('session-1', 'user', '[]', 'pairing', '2026-08-01', '2027-08-01')`;
       if (toMigrationInclusive === undefined) yield* insertPeerLink(sql);
       // Kin's own track adds this table; a connection names one of the owner's outside accounts.
-      yield* sql`CREATE TABLE kin_connections (org_id TEXT, connection_id TEXT, label TEXT)`;
-      yield* sql`INSERT INTO kin_connections VALUES ('org', 'conn-1', 'PostHog')`;
+      yield* sql`CREATE TABLE kin_connections (org_id TEXT, connection_id TEXT, label TEXT,
+        person_id TEXT)`;
+      yield* sql`INSERT INTO kin_connections VALUES ('org', 'conn-1', 'PostHog', NULL),
+        ('org', 'conn-own', 'mate@invented.example', 'mate')`;
+      // A send card from someone's own mailbox, and one from the company's.
+      yield* sql`CREATE TABLE kin_widgets (widget_id TEXT PRIMARY KEY, state_json TEXT)`;
+      yield* sql`INSERT INTO kin_widgets VALUES ('card-own', '{"subject":"private"}'),
+        ('card-company', '{"subject":"company"}')`;
+      yield* sql`CREATE TABLE kin_connection_asks (org_id TEXT, ask_id TEXT, connection_id TEXT,
+        widget_id TEXT)`;
+      yield* sql`INSERT INTO kin_connection_asks VALUES ('org', 'ask-own', 'conn-own', 'card-own'),
+        ('org', 'ask-company', 'conn-1', 'card-company')`;
     }),
   );
   return databasePath;
@@ -199,12 +209,19 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
               (SELECT COUNT(*) FROM orchestration_v2_projection_context_transfers) AS transfers,
               (SELECT COUNT(*) FROM peer_environment_links) AS links,
               (SELECT COUNT(*) FROM kin_connections) AS connections`;
-          return { threads, events, sessions, pullRequest, project, leftovers };
+          const cards = yield* sql<{ widget_id: string }>`SELECT widget_id FROM kin_widgets
+            ORDER BY widget_id`;
+          return { threads, events, sessions, pullRequest, project, leftovers, cards };
         }),
       );
       assert.deepStrictEqual(
         kept.threads.map((row) => row.thread_id),
         ["fork-thread", "settled-thread", "stopped-thread"],
+      );
+      // A person's own mailbox's send card stays behind; the company's is copied as before.
+      assert.deepStrictEqual(
+        kept.cards.map((row) => row.widget_id),
+        ["card-company"],
       );
       assert.deepStrictEqual(
         kept.events.map((row) => row.stream_id),

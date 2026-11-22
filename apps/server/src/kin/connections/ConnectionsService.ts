@@ -89,6 +89,7 @@ import {
   pausedRefusal as paused,
   peopleMailboxes,
   personConnections,
+  canonicalAddress,
   resolveAmong,
   resolveConnection,
   sendAsOf,
@@ -106,6 +107,7 @@ import {
 import { urlRefusal } from "./EgressGuard.ts";
 import { DAY_MS, WEEK_MS } from "../durations.ts";
 import { ownDirectChat, turnMailboxes } from "./turnMailbox.ts";
+import { callPrivacy, markPrivate } from "./privateTurn.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
 import { KinGatewayError, KinMcpGateway, type GatewayTarget } from "./McpGateway.ts";
 import { credentialForms } from "./Inbound.ts";
@@ -133,6 +135,7 @@ import {
 } from "./presets.ts";
 import { resultText } from "./ResultText.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
+import { viewVisible } from "../work/teamView.ts";
 import {
   attachmentOf,
   namedTask,
@@ -525,6 +528,27 @@ const carriesMoney = Effect.fnUntraced(function* (orgId: KinOrgId, prepared: Pre
 });
 
 /**
+ * Whether `personId` may read every file a mail from their own mailbox carries: each document and
+ * the entry it hangs on, as their own screens show them. The owner level reads everything.
+ */
+const filesReadable = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: string,
+  prepared: Prepared | undefined,
+) {
+  if (prepared?._tag !== "email" || prepared.attachments.length === 0) return true;
+  if (yield* ownerLevel(orgId, KinPersonId.make(personId))) return true;
+  for (const one of prepared.attachments)
+    for (const recordId of one.entryRecordId === null
+      ? [one.recordId]
+      : [one.recordId, one.entryRecordId])
+      if (!(yield* viewVisible(orgId, [KinPersonId.make(personId)], recordId))) return false;
+  return true;
+});
+export const UNREADABLE_FILE =
+  "A file on this mail isn't one they may read, so it can't go from their own mailbox. Nothing was sent.";
+
+/**
  * Why `personId` may not Confirm a send on `connection`, or null when they may. A person's own
  * mailbox: that person alone, while they are on the team, and owner level as well for a quote or
  * invoice. The company's: the owner level, as always.
@@ -662,6 +686,13 @@ export class KinConnections extends Context.Service<
     ) => Effect.Effect<KinMyMailbox, KinChatError>;
     /** After a removal elsewhere commits (`revokeMailboxes`): those connections' keys go. */
     readonly dropKeys: (connectionIds: ReadonlyArray<string>) => Effect.Effect<void>;
+    /** Runs `effect` holding these mailboxes' fences, which a send's hand-off also takes. */
+    readonly fenced: <A, E, R>(
+      connectionIds: ReadonlyArray<string>,
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E, R>;
+    /** The person's sign-ins still open stop counting: they can't finish now. */
+    readonly forgetSignIns: (personId: string) => Effect.Effect<void>;
     readonly calls: Owner<KinConnectionCallsInput, KinConnectionCalls>;
     readonly signInStart: Owner<KinConnectionSignInStartInput, KinConnectionSignInStart>;
     readonly signInFinish: Owner<KinConnectionSignInFinishInput, KinConnectionDetail>;
@@ -1204,11 +1235,15 @@ const make = Effect.gen(function* () {
     sql.withTransaction(
       Effect.gen(function* () {
         const now = row.createdAt;
+        const key =
+          row.kind === "builtin" && row.accountLabel !== null && row.accountLabel.trim() !== ""
+            ? canonicalAddress(row.accountLabel)
+            : null;
         yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
             url_host, auth, auth_header, reach, state, account_label, send_as_json, issuer,
             resource, protocol_version, instructions_text, instructions_digest,
             instructions_accepted_text, instructions_accepted_digest, created_at, updated_at,
-            listed_at, last_ok_at, person_id)
+            listed_at, last_ok_at, person_id, account_key)
           SELECT ${orgId}, ${row.connectionId}, ${row.preset}, ${row.label}, ${row.kind},
             ${row.url}, ${row.urlHost}, ${row.auth}, ${row.authHeader}, ${row.reach}, 'active',
             ${row.accountLabel}, ${row.sendAsJson}, ${signIn?.issuer ?? null},
@@ -1216,13 +1251,33 @@ const make = Effect.gen(function* () {
             ${listed.protocolVersion}, ${listed.instructions ?? null},
             ${instructionsDigest(listed.instructions)}, ${listed.instructions ?? null},
             ${instructionsDigest(listed.instructions)}, ${now}, ${now}, ${now}, ${now},
-            ${row.personId ?? null}
-          -- A person's own mailbox is checked against the org's people in this transaction.
-          WHERE ${row.personId ?? null} IS NULL OR EXISTS (SELECT 1 FROM kin_people
-            WHERE org_id = ${orgId} AND person_id = ${row.personId ?? null} AND removed_at IS NULL)
+            ${row.personId ?? null}, ${key}
+          -- In this statement: a person's own mailbox needs them on the team and none live yet,
+          -- and a mail address is one live connection in the company, whoever's and wherever.
+          WHERE (${row.personId ?? null} IS NULL OR (EXISTS (SELECT 1 FROM kin_people
+              WHERE org_id = ${orgId} AND person_id = ${row.personId ?? null} AND removed_at IS NULL)
+            AND NOT EXISTS (SELECT 1 FROM kin_connections WHERE org_id = ${orgId}
+              AND person_id = ${row.personId ?? null} AND removed_at IS NULL)))
+            AND (${key} IS NULL OR NOT EXISTS (SELECT 1 FROM kin_connections WHERE org_id = ${orgId}
+              AND account_key = ${key} AND removed_at IS NULL))
           ON CONFLICT (org_id, connection_id) DO NOTHING RETURNING connection_id`.pipe(
           Effect.flatMap((made) =>
-            row.personId != null && made.length === 0 ? Effect.fail(notFound) : Effect.void,
+            made.length > 0
+              ? Effect.void
+              : sql`SELECT 1 FROM kin_connections WHERE org_id = ${orgId}
+                  AND connection_id = ${row.connectionId}`.pipe(
+                  // A retry of this same insert finds its row; anything else was refused.
+                  Effect.flatMap((again) =>
+                    again.length > 0
+                      ? Effect.void
+                      : Effect.fail(
+                          fail(
+                            "invalid_state",
+                            `${row.accountLabel ?? "That account"} is already connected in Kin, or this mailbox already is. Nothing changed.`,
+                          ),
+                        ),
+                  ),
+                ),
           ),
         );
         // Kin's own mail tools on a person's own mailbox are on as Kin marks them: its reads read,
@@ -1547,28 +1602,60 @@ const make = Effect.gen(function* () {
     }),
   );
 
+  // One at a time per mailbox: a send handed to its provider, or a revocation. A revocation that
+  // commits first is seen by the send inside its fence; a send inside first finishes before it.
+  const fences = new Map<string, Semaphore.Semaphore>();
+  const fenced = <A, E, R>(
+    connectionIds: ReadonlyArray<string>,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, R> =>
+    [...new Set(connectionIds)].toSorted().reduceRight((inner, connectionId) => {
+      let fence = fences.get(connectionId);
+      if (fence === undefined) {
+        fence = Semaphore.makeUnsafe(1);
+        fences.set(connectionId, fence);
+      }
+      return fence.withPermits(1)(inner);
+    }, effect);
+  /** A person's sign-ins still open go with their mailbox or their access. */
+  const forgetSignIns = (personId: string) =>
+    Effect.sync(() => {
+      for (const [state, entry] of pending) if (entry.personId === personId) pending.delete(state);
+    });
   /**
-   * Removes a connection: agents stop at once, its open cards close with `reason`, and its key
-   * goes after; a failure there leaves nothing callable.
+   * Removes a person's own mailbox under its fence, in one transaction: the row is revoked, its
+   * open asks and the sends not yet handed to the provider go stale with `reason`, and their
+   * cards close (`close`). Its key and open sign-ins go after commit; the key sweep finishes a
+   * key whose deletion failed.
    */
   const removeRow = Effect.fn("KinConnections.removeRow")(function* (
     orgId: KinOrgId,
     connectionId: string,
     reason: string,
+    close: CloseCards,
   ) {
     const now = yield* Clock.currentTimeMillis;
-    const cards = yield* sql.withTransaction(
-      Effect.gen(function* () {
-        yield* sql`UPDATE kin_connections SET removed_at = ${now}, updated_at = ${now}
-          WHERE org_id = ${orgId} AND connection_id = ${connectionId} AND removed_at IS NULL`;
-        yield* sql`DELETE FROM kin_connection_cursors
-          WHERE org_id = ${orgId} AND connection_id = ${connectionId}`;
-        return yield* staleAsksOn(orgId, [connectionId], reason, now).pipe(provideSql);
-      }),
+    const personId = yield* fenced(
+      [connectionId],
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const [gone] = yield* sql<{ personId: string | null }>`UPDATE kin_connections
+            SET removed_at = ${now}, updated_at = ${now}
+            WHERE org_id = ${orgId} AND connection_id = ${connectionId} AND removed_at IS NULL
+            RETURNING person_id AS "personId"`;
+          yield* sql`DELETE FROM kin_connection_cursors
+            WHERE org_id = ${orgId} AND connection_id = ${connectionId}`;
+          yield* close(
+            yield* staleAsksOn(orgId, [connectionId], reason, now).pipe(provideSql),
+            reason,
+          );
+          return gone?.personId ?? null;
+        }),
+      ),
     );
     yield* touched(orgId);
+    if (personId !== null) yield* forgetSignIns(personId);
     yield* dropKeys([connectionId]);
-    return cards;
   });
   /** After a removal commits: the removed connections' keys go. */
   const dropKeys = (connectionIds: ReadonlyArray<string>) =>
@@ -1594,7 +1681,7 @@ const make = Effect.gen(function* () {
       if (row === undefined) return yield* notFound;
       // A person's own mailbox the owner level disconnects: its waiting cards can't send now.
       if (row.personId != null)
-        yield* close(yield* removeRow(input.orgId, input.connectionId, MAILBOX_GONE), MAILBOX_GONE);
+        yield* removeRow(input.orgId, input.connectionId, MAILBOX_GONE, close);
       else {
         const now = yield* Clock.currentTimeMillis;
         // Agents stop at once; the key goes after, and a failure there leaves nothing callable.
@@ -1685,12 +1772,18 @@ const make = Effect.gen(function* () {
   ) {
     const personId = yield* self(people, input.orgId);
     for (const row of yield* personConnections(input.orgId, personId).pipe(provideSql))
-      yield* close(yield* removeRow(input.orgId, row.connectionId, MAILBOX_GONE), MAILBOX_GONE);
+      yield* removeRow(input.orgId, row.connectionId, MAILBOX_GONE, close);
+    yield* forgetSignIns(personId);
     return yield* myMailbox(input.orgId, personId);
   }, settle);
 
-  const calls = ownerOp("calls", (input: KinConnectionCallsInput) =>
-    Effect.gen(function* () {
+  const calls = Effect.fn("KinConnections.calls")(function* (
+    people: People,
+    input: KinConnectionCallsInput,
+  ) {
+    yield* owner(people, input.orgId);
+    const caller = people.find((person) => person.orgId === input.orgId)?.personId;
+    return yield* Effect.gen(function* () {
       const limit = input.limit ?? 50;
       const [beforeAt, beforeId] = (input.before ?? "").split(":");
       const after =
@@ -1708,9 +1801,11 @@ const make = Effect.gen(function* () {
         WHERE c.org_id = ${input.orgId}
           AND ${input.connectionId === undefined ? sql`1 = 1` : sql`c.connection_id = ${input.connectionId}`}
           AND ${after}
-          -- A person's own mailbox is theirs: what was asked of it is no one else's to read.
+          -- A person's own mailbox is theirs: what was asked of it, or in a turn that is theirs,
+          -- is no one else's to read.
           AND NOT EXISTS (SELECT 1 FROM kin_connections k WHERE k.org_id = c.org_id
             AND k.connection_id = c.connection_id AND k.person_id IS NOT NULL)
+          AND (c.private_to IS NULL OR c.private_to = ${caller ?? ""})
         ORDER BY c.created_at DESC, c.call_id DESC LIMIT ${limit + 1}`;
       const page = rows.slice(0, limit);
       const last = page.at(-1);
@@ -1718,8 +1813,8 @@ const make = Effect.gen(function* () {
         calls: page,
         next: rows.length > limit && last !== undefined ? `${last.createdAt}:${last.callId}` : null,
       } satisfies KinConnectionCalls;
-    }),
-  );
+    });
+  }, settle);
 
   // Pending sign-ins live only here: the PKCE verifier never leaves memory, and a restart
   // drops every unfinished sign-in.
@@ -1969,6 +2064,12 @@ const make = Effect.gen(function* () {
     const connectionId = newConnectionId();
     const provider = mailProviderOf({ kind: preset.kind, preset: target.service });
     const account = yield* accountOf(provider, tokens.accessToken);
+    // A person's own mailbox is only ever one Kin could name: an unnamed one could be anyone's.
+    if (personId !== null && (account === null || canonicalAddress(account) === ""))
+      return yield* fail(
+        "invalid_state",
+        "Couldn't confirm which account that was, so it wasn't connected. Try again.",
+      );
     // An address is one connection, the company's or one person's: never both.
     if (
       account !== null &&
@@ -1978,7 +2079,7 @@ const make = Effect.gen(function* () {
       ].some(
         (row) =>
           row.preset === target.service &&
-          row.accountLabel?.toLowerCase() === account.toLowerCase(),
+          canonicalAddress(row.accountLabel ?? "") === canonicalAddress(account),
       )
     )
       return yield* fail(
@@ -2311,14 +2412,16 @@ const make = Effect.gen(function* () {
     },
   ) {
     const now = yield* Clock.currentTimeMillis;
+    // Whose the call is decides who reads it in the log: by its turn, refusals included.
+    const privateTo = yield* callPrivacy(turn).pipe(provideSql);
     yield* sql`INSERT INTO kin_connection_calls (org_id, call_id, connection_id, tool_name,
         agent_id, wakeup_id, mode, args_json, reason, status, refused_reason, result_chars,
-        result_bytes, duration_ms, created_at)
+        result_bytes, duration_ms, created_at, private_to)
       VALUES (${turn.orgId}, ${`call_${NodeCrypto.randomUUID()}`}, ${entry.connectionId},
         ${entry.toolName}, ${turn.agentId}, ${turn.wakeupId}, ${entry.mode},
         ${entry.args === undefined ? null : keptArgs(entry.args)}, ${entry.reason ?? null},
         ${entry.status}, ${entry.refusedReason ?? null}, ${entry.resultChars ?? null},
-        ${entry.resultBytes ?? null}, ${entry.durationMs ?? null}, ${now})`;
+        ${entry.resultBytes ?? null}, ${entry.durationMs ?? null}, ${now}, ${privateTo})`;
     yield* touched(turn.orgId);
   });
   const refuse = (
@@ -2525,9 +2628,19 @@ const make = Effect.gen(function* () {
 
   /** The turn now carries outside text: it is outside-read, and what it writes is the owner's. */
   const shown = (turn: Turn, connectionId: string) =>
-    Effect.all([markOutside(turn, connectionId), sensitiveShown(turn)], { discard: true }).pipe(
-      provideSql,
-    );
+    Effect.all(
+      [
+        markOutside(turn, connectionId),
+        sensitiveShown(turn),
+        // What a person's own mailbox shows is theirs: the turn is, before it reads it.
+        connectionEverById(turn.orgId, connectionId).pipe(
+          Effect.flatMap((row) =>
+            row?.personId == null ? Effect.void : markPrivate(turn, row.personId),
+          ),
+        ),
+      ],
+      { discard: true },
+    ).pipe(provideSql);
 
   /**
    * Takes one call and up to one result's characters from the turn's allowance in one statement,
@@ -2793,10 +2906,27 @@ const make = Effect.gen(function* () {
       );
     return samePeople && one.threadId !== null && one.threadId === other.threadId;
   };
-  /** Narrows to asks that could be the same mail, so no page limit can hide the one that is. */
-  const maybeSameMail = (ask: { readonly payload: string; readonly entry: string | null }) =>
-    sql`(entry_record_id = ${ask.entry}
-      OR json_extract(payload_json, '$.threadId') = json_extract(${ask.payload}, '$.threadId'))`;
+  /**
+   * Narrows to asks that could be the same mail, so no page limit can hide the one that is; only
+   * on mailboxes of the same authority (`mailbox`: a person's own, or null for the company's), so
+   * a card never replaces, or warns from, another person's.
+   */
+  const maybeSameMail = (
+    ask: { readonly payload: string; readonly entry: string | null },
+    mailbox: string | null,
+  ) =>
+    sql`((entry_record_id = ${ask.entry}
+      OR json_extract(payload_json, '$.threadId') = json_extract(${ask.payload}, '$.threadId'))
+      AND connection_id IN (SELECT m.connection_id FROM kin_connections m
+        WHERE m.org_id = ${identity.owner.orgId} AND m.person_id IS ${mailbox}))`;
+  /** Whose mailbox an ask is on: a person's id, or null for the company's. */
+  const mailboxOfAsk = Effect.fnUntraced(function* (orgId: KinOrgId, askId: string) {
+    const [row] = yield* sql<{ personId: string | null }>`SELECT c.person_id AS "personId"
+      FROM kin_connection_asks k JOIN kin_connections c ON c.org_id = k.org_id
+        AND c.connection_id = k.connection_id
+      WHERE k.org_id = ${orgId} AND k.ask_id = ${askId}`;
+    return row?.personId ?? null;
+  });
   /** Whether the agent asked for the same mail again after this ask: then that card stands. */
   const superseded = Effect.fnUntraced(function* (orgId: KinOrgId, askId: string) {
     const [ask] = yield* sql<{ payload: string; entry: string | null; at: number }>`SELECT
@@ -2805,7 +2935,8 @@ const make = Effect.gen(function* () {
     if (ask === undefined) return false;
     const later = yield* sql<{ payload: string; entry: string | null }>`SELECT
         payload_json AS payload, entry_record_id AS entry FROM kin_connection_asks
-      WHERE org_id = ${orgId} AND rowid > ${ask.at} AND ${maybeSameMail(ask)}`;
+      WHERE org_id = ${orgId} AND rowid > ${ask.at}
+        AND ${maybeSameMail(ask, yield* mailboxOfAsk(orgId, askId))}`;
     return later.some((one) => sameMail(ask, one));
   });
   /** Who a mail goes to: To and Cc together, in any letter case, each once. */
@@ -2849,7 +2980,8 @@ const make = Effect.gen(function* () {
         result_json AS result, reason, done_at AS "doneAt"
       FROM kin_connection_asks
       WHERE org_id = ${orgId} AND ask_id <> ${ask.askId} AND state IN ('sent', 'failed')
-        AND done_at IS NOT NULL AND (ask_id = ${ask.after} OR ${maybeSameMail(ask)})
+        AND done_at IS NOT NULL
+        AND (ask_id = ${ask.after} OR ${maybeSameMail(ask, yield* mailboxOfAsk(orgId, ask.askId))})
       ORDER BY done_at DESC, rowid DESC`;
     const last = tries.find((one) => {
       const went = Option.map(decodePrepared(one.payload), (prepared) =>
@@ -2939,6 +3071,12 @@ const make = Effect.gen(function* () {
       (yield* confirmRefusal(turn.orgId, row, row.personId, prepared).pipe(provideSql)) !== null
     )
       return yield* refuse(turn, entry, fail("not_allowed", MONEY_CONFIRM));
+    // A card from their own mailbox shows only files they may read: checked before it is drawn.
+    if (
+      row.personId != null &&
+      !(yield* filesReadable(turn.orgId, row.personId, prepared).pipe(provideSql))
+    )
+      return yield* refuse(turn, entry, fail("not_allowed", UNREADABLE_FILE));
     if (prepared._tag === "call" && toJson(args).length > MAX_CARD_ARGS)
       return yield* refuse(
         turn,
@@ -3142,7 +3280,8 @@ const make = Effect.gen(function* () {
           entry_record_id AS entry, agent_id AS "agentId", chat_id AS "chatId"
         FROM kin_connection_asks
         WHERE org_id = ${turn.orgId} AND ask_id <> ${askId} AND state = 'open'
-          AND widget_id IS NOT NULL AND ${maybeSameMail({ payload, entry: entryRecordId })}
+          AND widget_id IS NOT NULL
+          AND ${maybeSameMail({ payload, entry: entryRecordId }, row.personId ?? null)}
         ORDER BY proposed_at`).filter((row) => sameMail({ payload, entry: entryRecordId }, row));
       yield* replace(older);
     });
@@ -3771,8 +3910,12 @@ const make = Effect.gen(function* () {
     stale: StaleAsk,
     now: number,
   ) {
+    // A person's own mailbox that was disconnected never brings a card back.
+    const disconnected =
+      (yield* connectionById(orgId, stale.row.connectionId).pipe(provideSql)) === undefined &&
+      (yield* connectionEverById(orgId, stale.row.connectionId).pipe(provideSql))?.personId != null;
     // A correction the agent made meanwhile stands; the older mail does not come back beside it.
-    if (yield* superseded(orgId, stale.row.askId)) {
+    if (disconnected || (yield* superseded(orgId, stale.row.askId))) {
       yield* settled(orgId, stale.row.askId);
       return undefined;
     }
@@ -3960,6 +4103,11 @@ const make = Effect.gen(function* () {
               : "Only the owner or a co-owner confirms what Kin sends, so nothing was sent.",
             false,
           );
+        if (
+          mailbox?.personId != null &&
+          !(yield* filesReadable(orgId, mailbox.personId, prepared).pipe(provideSql))
+        )
+          return yield* stop(UNREADABLE_FILE, false);
         if (connection?.state === "needs_sign_in") {
           const email = prepared?._tag === "email";
           return yield* stop(
@@ -4045,12 +4193,32 @@ const make = Effect.gen(function* () {
       const provider = mailProviderOf(connection);
       if (provider === undefined)
         return yield* fail("unavailable", `${connection.label} can't send mail.`);
+      // Last, inside the mailbox's fence: still confirmed, still connected; then it leaves.
+      const handOff = <A, E>(request: Effect.Effect<A, E>) =>
+        fenced(
+          [row.connectionId],
+          Effect.gen(function* () {
+            const now = yield* Clock.currentTimeMillis;
+            const left = yield* sql`UPDATE kin_connection_asks SET left_at = ${now}
+              WHERE org_id = ${orgId} AND ask_id = ${askId} AND state = 'sending'
+                AND EXISTS (SELECT 1 FROM kin_connections c WHERE c.org_id = ${orgId}
+                  AND c.connection_id = ${row.connectionId} AND c.removed_at IS NULL)
+              RETURNING 1`;
+            if (left.length === 0)
+              return yield* fail(
+                "unavailable",
+                "The mailbox is disconnected, so nothing was sent.",
+              );
+            yield* leaving;
+            return yield* request;
+          }),
+        );
       return yield* withSignIn(orgId, connection, (force) =>
         attempt(
           tokenOf(orgId, connection, force).pipe(
             Effect.tap(() => asShown),
             Effect.flatMap((token) =>
-              sendMail(provider, http, token, prepared, leaving).pipe(
+              sendMail(provider, http, token, prepared, handOff).pipe(
                 provideSql,
                 Effect.provide(files),
               ),
@@ -4139,6 +4307,13 @@ const make = Effect.gen(function* () {
     const done = yield* sql.withTransaction(
       finish(true, "sent", null, sent.success, false, quotesSent),
     );
+    const ownTask =
+      connection.personId == null || row.entryRecordId === null
+        ? []
+        : yield* sql<{ key: string }>`SELECT key FROM kin_records
+            WHERE org_id = ${orgId} AND record_id = ${row.entryRecordId}`.pipe(
+            Effect.orElseSucceed(() => []),
+          );
     if (prepared._tag === "email")
       yield* sentToClient({
         orgId,
@@ -4148,6 +4323,9 @@ const make = Effect.gen(function* () {
         to: [...prepared.to, ...prepared.cc],
         subject: prepared.subject,
         now: yield* Clock.currentTimeMillis,
+        ...(connection.personId == null
+          ? {}
+          : { own: { personId: connection.personId, task: ownTask[0]?.key ?? null } }),
       }).pipe(
         provideSql,
         Effect.catchCause((cause) =>
@@ -4209,7 +4387,7 @@ const make = Effect.gen(function* () {
     const open = yield* openCards(
       orgId,
       sql`(CASE WHEN json_valid(k.result_json) THEN json_extract(k.result_json, '$.after') END
-            = ${tried.askId} OR ${maybeSameMail(tried)})`,
+            = ${tried.askId} OR ${maybeSameMail(tried, yield* mailboxOfAsk(orgId, tried.askId))})`,
     );
     const redrawn: Array<NonNullable<Effect.Success<ReturnType<typeof warned>>>> = [];
     for (const one of open) {
@@ -4437,22 +4615,22 @@ const make = Effect.gen(function* () {
     }),
   );
 
-  // A key whose add never committed, or whose removal failed half way, has no row: it goes.
-  yield* Effect.forkScoped(
-    Effect.gen(function* () {
-      // A bootstrap scan over every org: secrets aren't kept per org.
-      const live = new Set(
-        (yield* sql<{ connectionId: string }>`SELECT connection_id AS "connectionId"
-          FROM kin_connections WHERE removed_at IS NULL ORDER BY connection_id`).map(
-          (row) => row.connectionId,
-        ),
-      );
-      for (const connectionId of yield* secrets.stored())
-        if (!live.has(connectionId)) yield* secrets.remove(connectionId);
-    }).pipe(
-      Effect.catchCause((cause) => Effect.logWarning("Kin connection key sweep failed", { cause })),
-    ),
+  // A key whose add never committed, or whose removal failed half way, has no row: it goes. The
+  // removed row is the durable record; this sweep, at start and daily, finishes what it says.
+  const sweepKeys = Effect.gen(function* () {
+    // A scan over every org: secrets aren't kept per org.
+    const live = new Set(
+      (yield* sql<{ connectionId: string }>`SELECT connection_id AS "connectionId"
+        FROM kin_connections WHERE removed_at IS NULL ORDER BY connection_id`).map(
+        (row) => row.connectionId,
+      ),
+    );
+    for (const connectionId of yield* secrets.stored())
+      if (!live.has(connectionId)) yield* secrets.remove(connectionId);
+  }).pipe(
+    Effect.catchCause((cause) => Effect.logWarning("Kin connection key sweep failed", { cause })),
   );
+  yield* Effect.forkScoped(sweepKeys.pipe(Effect.repeat(Schedule.spaced(Duration.days(1)))));
 
   // The call log is kept 90 days: pruned at start and daily, a bounded batch at a time.
   const prune = Effect.gen(function* () {
@@ -4513,6 +4691,8 @@ const make = Effect.gen(function* () {
     mineSignInFinish,
     mineRemove,
     dropKeys,
+    fenced,
+    forgetSignIns,
     calls,
     signInStart,
     signInFinish,

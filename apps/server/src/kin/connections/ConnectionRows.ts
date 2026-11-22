@@ -332,7 +332,10 @@ export const staleAsksAbout = Effect.fn("KinConnectionRows.staleAsksAbout")(func
   return rows.flatMap((row) => (row.widgetId === null ? [] : [row.widgetId])).toSorted();
 });
 
-/** In the caller's transaction: open asks on these connections go stale with `reason`; their cards. */
+/**
+ * In the caller's transaction: open asks on these connections, and sends confirmed but not yet
+ * handed to the provider (`left_at`), go stale with `reason`; their cards.
+ */
 export const staleAsksOn = Effect.fn("KinConnectionRows.staleAsksOn")(function* (
   orgId: KinOrgId,
   connectionIds: ReadonlyArray<string>,
@@ -343,7 +346,8 @@ export const staleAsksOn = Effect.fn("KinConnectionRows.staleAsksOn")(function* 
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ widgetId: string | null }>`UPDATE kin_connection_asks
     SET state = 'stale', reason = ${reason}, decided_at = ${now}
-    WHERE org_id = ${orgId} AND state = 'open' AND connection_id IN ${sql.in(connectionIds)}
+    WHERE org_id = ${orgId} AND connection_id IN ${sql.in(connectionIds)}
+      AND (state = 'open' OR (state = 'sending' AND left_at IS NULL))
     RETURNING widget_id AS "widgetId"`;
   return rows.flatMap((row) => (row.widgetId === null ? [] : [row.widgetId])).toSorted();
 });
@@ -370,3 +374,6 @@ export const revokeMailboxes = Effect.fn("KinConnectionRows.revokeMailboxes")(fu
       WHERE org_id = ${orgId} AND connection_id IN ${sql.in(connectionIds)}`;
   return { connectionIds, cards: yield* staleAsksOn(orgId, connectionIds, reason, now) };
 });
+
+/** A mail address as Kin keys it: one live connection per address in a company. */
+export const canonicalAddress = (address: string) => address.trim().toLowerCase();

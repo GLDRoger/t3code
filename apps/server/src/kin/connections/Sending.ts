@@ -17,6 +17,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as HttpClient from "effect/http/HttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 
 import { chatReaders, keysIn } from "../chat/messageLinks.ts";
 import { readStoredFile } from "../gendocs/brand.ts";
@@ -825,27 +826,30 @@ const filesOf = Effect.fn("KinSending.files")(function* (attachments: ReadonlyAr
 });
 
 /**
- * Sends exactly what was prepared, once, through the account's provider. `starting` runs right
- * before the request leaves, after every file is read and checked.
+ * Sends exactly what was prepared, once, through the account's provider. `handOff` wraps the
+ * request as it leaves, after every file is read and checked: the caller's last check runs there.
  */
 export const sendMail = Effect.fn("KinSending.sendMail")(function* (
   provider: MailProvider,
   http: HttpClient.HttpClient,
   token: string,
   prepared: Exclude<Prepared, { _tag: "call" }>,
-  starting: Effect.Effect<void>,
+  handOff: <A, E>(
+    request: Effect.Effect<A, E>,
+  ) => Effect.Effect<A, E | KinChatError | SqlError.SqlError>,
 ) {
-  if (prepared._tag === "event")
-    return yield* starting.pipe(Effect.andThen(provider.saveEvent(http, token, prepared)));
+  if (prepared._tag === "event") return yield* handOff(provider.saveEvent(http, token, prepared));
   const raw = mime(prepared, yield* filesOf(prepared.attachments));
-  yield* starting;
-  return yield* provider.sendMessage(http, token, { raw, threadId: prepared.threadId });
+  return yield* handOff(provider.sendMessage(http, token, { raw, threadId: prepared.threadId }));
 });
 
 /**
  * A sent mail is a contact with each client whose contact it went to: one email touch per client,
- * by the owner who confirmed it, with the subject as its note. A retry finds the same touch.
+ * by the owner who confirmed it, with the subject as its note. A retry finds the same touch. From
+ * a person's own mailbox (`own`) the touch is theirs and bare: that a mail went, and its task.
  */
+/** The note a send from a person's own mailbox leaves on its client: no subject, no address. */
+export const OWN_MAIL_TOUCH = "Mail sent";
 export const sentToClient = Effect.fn("KinSending.sentToClient")(function* (sent: {
   readonly orgId: KinOrgId;
   readonly askId: string;
@@ -854,6 +858,7 @@ export const sentToClient = Effect.fn("KinSending.sentToClient")(function* (sent
   readonly to: ReadonlyArray<string>;
   readonly subject: string;
   readonly now: number;
+  readonly own?: { readonly personId: string; readonly task: string | null };
 }) {
   const sql = yield* SqlClient.SqlClient;
   const addresses = [...new Set(sent.to.map((one) => one.toLowerCase()))];
@@ -871,9 +876,17 @@ export const sentToClient = Effect.fn("KinSending.sentToClient")(function* (sent
       partyId,
       kind: "email",
       at: sent.now,
-      note: sent.subject.slice(0, 300),
-      personId: sent.personId,
-      by: { kind: "agent", id: sent.agentId },
+      note:
+        sent.own === undefined
+          ? sent.subject.slice(0, 300)
+          : sent.own.task === null
+            ? OWN_MAIL_TOUCH
+            : `${OWN_MAIL_TOUCH} (${sent.own.task})`,
+      personId: sent.own?.personId ?? sent.personId,
+      by:
+        sent.own === undefined
+          ? { kind: "agent", id: sent.agentId }
+          : { kind: "person", id: sent.own.personId },
       originKey: `mail:${sent.askId}:${partyId}`,
       now: sent.now,
     });
@@ -966,7 +979,8 @@ export type SentMail = typeof SentMailView.Type;
 
 /**
  * Mail that went out on a Confirm, newest first: all of it, or only mail carrying one of
- * `recordIds` (an invoice, quote or receipt) or sent or copied to one of `addresses`.
+ * `recordIds` (an invoice, quote or receipt) or sent or copied to one of `addresses`. Never mail
+ * from a person's own mailbox: the company keeps only its bare touch (`sentToClient`).
  */
 export const sentMail = Effect.fn("KinSending.sentMail")(function* (input: {
   readonly orgId: KinOrgId;
@@ -996,6 +1010,7 @@ export const sentMail = Effect.fn("KinSending.sentMail")(function* (input: {
     LEFT JOIN kin_people p ON p.org_id = k.org_id AND p.person_id = k.decided_by
     LEFT JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
     WHERE k.org_id = ${input.orgId} AND k.state = 'sent' AND k.done_at IS NOT NULL
+      AND c.person_id IS NULL
       AND k.tool_name IN ${sql.in([MAIL_TOOL.send, MAIL_TOOL.reply])}
     ORDER BY k.done_at DESC, k.rowid DESC
     LIMIT ${SENT_SCAN}`;

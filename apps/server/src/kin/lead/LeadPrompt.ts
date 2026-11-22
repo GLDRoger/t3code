@@ -77,7 +77,8 @@ import {
 } from "../pulse/prompt.ts";
 import { setAsideOverdue } from "../pulse/invoiceAsides.ts";
 import { toldBy } from "../pulse/told.ts";
-import { draftWakeText } from "../pulse/draftWake.ts";
+import { DRAFT_NOTHING_NOW, draftWakeText } from "../pulse/draftWake.ts";
+import { inheritPrivacy } from "../connections/privateTurn.ts";
 import {
   buildWeeklySection,
   isEveningCheckIn,
@@ -750,9 +751,7 @@ export class KinLeadPrompt extends Context.Service<
             );
             const eventQuote = quote(QUOTE_LABELS.eventData, { event: event.eventId });
             if (made === undefined) {
-              events.push(
-                `${eventQuote}\n\nThat follow-up was closed before this turn. Write exactly ${SILENT_REPLY}.`,
-              );
+              events.push(`${eventQuote}\n\n${DRAFT_NOTHING_NOW} Write exactly ${SILENT_REPLY}.`);
               continue;
             }
             replyDue = true;
@@ -1155,6 +1154,27 @@ export class KinLeadPrompt extends Context.Service<
         const { lane: _ownerChat, ...laneless } = given;
         const input: KinLeadPromptInput = review === undefined ? given : laneless;
         const { orgId, agentId, memoryHead } = input;
+        // A reminder or schedule set in a turn that read someone's own mailbox runs private to
+        // them too (`privateTurn.ts`), marked before anything of it is read.
+        const sources: Array<string> = [];
+        for (const event of input.events) {
+          if (event._tag !== "deferral.due" || event.subject.type === "question") continue;
+          if (event.subject.type === "scheduled_task") {
+            const run = yield* nativeRun(orgId, event.subject.itemId).pipe(Effect.option);
+            const source = Option.getOrUndefined(run)?.sourceEvent;
+            if (source !== undefined) sources.push(source);
+            continue;
+          }
+          const item = yield* dueItem(orgId, event.subject.itemId);
+          if (Option.isSome(item) && item.value.head.source_event !== undefined)
+            sources.push(item.value.head.source_event);
+        }
+        yield* inheritPrivacy(input, sources).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(
+            (cause) => new KinLeadPromptError({ orgId, reason: "Could not read the turn", cause }),
+          ),
+        );
         // A shared turn gets none of the owner's private context: no other chats, and of memory
         // only what the team can know.
         yield* recordAudience(

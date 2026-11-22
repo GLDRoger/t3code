@@ -13,6 +13,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { SHARED_REFUSAL } from "../lead/Audience.ts";
 import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
+import { PRIVATE_WRITE, privateRefusal } from "../connections/privateTurn.ts";
 import { REVIEW_REFUSAL, reviewToolAllowed } from "../lead/outsideReview.ts";
 import { APPROVED_REFUSAL, approvedToolAllowed } from "../lead/approvedDraft.ts";
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
@@ -193,6 +194,38 @@ const sectionAdmitted = McpToolPolicy.toolCallGate((name, args) => {
       )(name, args);
 }, dealRefusal);
 const admitted = besideReview(toolAdmitted);
+
+/** A turn that read someone's own mailbox writes only where `privateRefusal` lets it. */
+const privateGate = Effect.fn("KinToolGate.private")(
+  function* (tool: string, args: unknown) {
+    const kin = yield* Effect.serviceOption(KinServer);
+    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return undefined;
+    const identity = Context.get(kin.value.services.value, KinIdentity);
+    const sql = Context.get(kin.value.services.value, SqlClient.SqlClient);
+    const agent = yield* identity.resolveAgent(yield* McpInvocationContext).pipe(Effect.option);
+    if (Option.isNone(agent)) return undefined;
+    const { orgId, agentId, threadId } = agent.value;
+    const [row] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+      WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${threadId}
+        AND status = 'running'
+      ORDER BY started_at, wakeup_id LIMIT 1`;
+    if (row === undefined) return undefined;
+    return yield* privateRefusal({ orgId, agentId, wakeupId: row.wakeupId }, tool, args).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin private-turn gate failed; refusing", { cause }).pipe(
+      Effect.as<string | undefined>(PRIVATE_FAILED),
+    ),
+  ),
+);
+const PRIVATE_FAILED = "Kin couldn't check this turn's mailbox privacy, so nothing was done.";
+const privateAdmitted: Check = (turn, tool, args) =>
+  privateRefusal(turn, tool, args).pipe(
+    Effect.map((refused) => refused === undefined),
+    Effect.orElseSucceed(() => false),
+  );
 const outside = besideReview(outsideToolAllowed);
 
 const kinChecks = [
@@ -200,6 +233,7 @@ const kinChecks = [
   [approvedOnly, APPROVED_REFUSAL],
   [toolAdmitted, SHARED_REFUSAL],
   [outsideToolAllowed, OUTSIDE_REFUSAL],
+  [privateAdmitted, PRIVATE_WRITE("this person")],
   [taskAdmitted, TASK_LIMIT_REFUSAL],
 ] as const;
 
@@ -293,6 +327,7 @@ export const layer = ReadTools.layer.pipe(
       McpToolPolicy.toolCallGate(gate("KinToolGate.approved", approvedOnly), APPROVED_REFUSAL),
       McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", admitted), SHARED_REFUSAL),
       McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outside), OUTSIDE_REFUSAL),
+      McpToolPolicy.toolCallRefusal(privateGate),
       McpToolPolicy.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
       sectionAdmitted,
     ),

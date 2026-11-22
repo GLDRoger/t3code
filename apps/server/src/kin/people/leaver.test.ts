@@ -588,6 +588,8 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_ping_items: "person",
   kin_ping_ledger: "person",
   kin_pr_review_posts: "agent_id",
+  // Whose own mailbox a turn read: a mark that keeps that turn's writes in their chat.
+  kin_private_turns: "person_id",
   kin_profile_changes: "agent_id",
   kin_pull_requests: "author",
   kin_pulse_facts: "handled_by_id",
