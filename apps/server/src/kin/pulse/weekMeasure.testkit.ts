@@ -2,6 +2,7 @@ import { KinChatId, KinOrgId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -17,6 +18,7 @@ export const until = Date.parse("2026-11-02T05:00:00Z");
 export const mondayMorning = Date.parse("2026-11-02T13:00:00Z");
 const hour = 3_600_000;
 const iso = (at: number) => DateTime.formatIso(DateTime.makeUnsafe(at));
+const encodeFixture = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const seedAt = iso(from - 8 * 24 * hour);
 
 export const seedCompany = Effect.gen(function* () {
@@ -79,11 +81,11 @@ export const seedMeasuredWeek = Effect.gen(function* () {
     yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, thread_id, model,
         started_at, ended_at, status, event_ids)
       VALUES (${orgId}, ${id}, 'chief', 'chief-thread', 'replay', ${at}, ${at + 100}, 'completed',
-        ${JSON.stringify([eventId])})`;
+        ${yield* encodeFixture([eventId])})`;
     yield* sql`INSERT INTO kin_events (org_id, event_id, agent_id, tag, priority, json,
         received_at, queued_at, state, wakeup_id)
       VALUES (${orgId}, ${eventId}, 'chief', ${tag}, 'P1',
-        ${JSON.stringify({ _tag: tag, chatId: ownerChat, messageId: `ask-${id}` })},
+        ${yield* encodeFixture({ _tag: tag, chatId: ownerChat, messageId: `ask-${id}` })},
         ${at}, ${at}, 'done', ${id})`;
 
     if (card === "approval") {
@@ -139,7 +141,7 @@ export const seedMeasuredWeek = Effect.gen(function* () {
     yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type,
         revision, state_json, awaiting_json, closed_at, updated_at)
       VALUES (${widgetId}, ${orgId}, ${ownerChat}, ${messageId}, 'native',
-        ${card === "approval" ? "approval" : "choice"}, ${settled ? 2 : 1}, ${JSON.stringify(state)},
+        ${card === "approval" ? "approval" : "choice"}, ${settled ? 2 : 1}, ${yield* encodeFixture(state)},
         ${settled || card === "notice" ? "[]" : '["rhea"]'}, ${settled ? iso(settledAt) : null},
         ${iso(settled ? settledAt : postedAt)})`;
     if (card !== "notice") {
