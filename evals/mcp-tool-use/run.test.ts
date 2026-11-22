@@ -317,6 +317,13 @@ it("accepts any tool listed as an alternative", () => {
     "maxCalls preview_status|preview_open <= 1",
   ]);
   assert.deepEqual(failed({ maxCalls: { "preview_status|preview_open": 2 } }, both), []);
+  // A cap on calls with these args leaves the tool's other calls free.
+  const atMostOnce = { callsAtMostOnce: [{ tool: "preview_open|preview_status", args: {} }] };
+  assert.deepEqual(failed(atMostOnce, both), ["callsAtMostOnce preview_open|preview_status {}"]);
+  assert.deepEqual(
+    failed({ callsAtMostOnce: [{ tool: "preview_open", args: { url: "~a" } }] }, both),
+    [],
+  );
   // With browser access off, any second preview-capability call counts, closing a tab included.
   const offTwice: SampleRun = {
     calls: ["preview_open", "t3_preview_close"].map((tool) => ({ step: 0, tool, input: {} })),
