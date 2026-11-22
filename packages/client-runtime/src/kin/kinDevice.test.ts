@@ -152,9 +152,9 @@ describe("kinSignOutExits", () => {
     ];
     expect(kinSignOutGroup(rows, "live")).toEqual(["live", "old-1", "old-2"]);
     // A computer that never named its team leaves with the computers of its name.
-    expect(kinSignOutGroup([row("live", { team: null }), row("old", { team: null })], "live")).toEqual(
-      ["live", "old"],
-    );
+    expect(
+      kinSignOutGroup([row("live", { team: null }), row("old", { team: null })], "live"),
+    ).toEqual(["live", "old"]);
     expect(kinSignOutGroup(rows, "gone")).toEqual([]);
   });
 });
