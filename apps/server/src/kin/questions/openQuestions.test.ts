@@ -4107,6 +4107,35 @@ it.effect(
           built,
           "Rhea Rao dismissed your question “Which way should I build the client portal?” without choosing. That is not a choice and not approval of your pick: do not ask it again and do not take a default. If the work can go on without that answer, go on; if it cannot, set the task aside and say why in one line on the task. Do not reply in chat. End your turn with exactly NO_REPLY.",
         );
+        // In that turn Finance may not put what the dismissal released back to waiting on her.
+        const records = Context.get(services, KinRecords);
+        const rewait = (entry: string, wakeupId: string) =>
+          records.update(
+            orgId,
+            { actor: { _tag: "agent", agentId: finance }, via: "lead", wakeupId },
+            entry,
+            { state: "waiting", waitingOn: { _tag: "person", personId: owner.personId } },
+          );
+        const refused = yield* Effect.flip(rewait("W-7", turn));
+        assert.deepInclude(refused, {
+          reason: "invalid_state",
+          message: "Rhea Rao dismissed that question, so W-7 does not wait on them.",
+        });
+        assert.deepStrictEqual(yield* task, { state: "open", waitingOn: null });
+        // Her own word in the turn lifts it.
+        const told = yield* wake(
+          "finance",
+          yield* chats.send(owner, {
+            chatId: chatOf("finance"),
+            body: "Wait for me on W-8 after all.",
+            clientMessageId: "m2",
+          }),
+        );
+        yield* rewait("W-8", told);
+        assert.deepStrictEqual(yield* taskOf("rec_w8"), {
+          state: "waiting",
+          waitingOn: owner.personId,
+        });
         yield* press(owner, "undismiss", "undo-2");
         const reopenedText = yield* Questions.dismissedTurnText(KinOrgId.make(orgId), {
           questionId,
@@ -4114,7 +4143,7 @@ it.effect(
         });
         assert.include(reopenedText!.text, "Rhea Rao undid dismissing your question");
         assert.deepStrictEqual((yield* events).slice(1), [
-          { key: `question-dismissed:${questionId}:${again}`, state: "claimed" },
+          { key: `question-dismissed:${questionId}:${again}`, state: "done" },
           { key: `question-reopened:${questionId}:${again}`, state: "queued" },
         ]);
 
