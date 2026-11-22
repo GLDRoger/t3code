@@ -1432,6 +1432,7 @@ it.effect("closing a task closes what hangs off it, and reopening brings none ba
       const done = yield* callAs("finance", "record_update", { key: signage.key, state: "done" });
       assert.isTrue(done.ok, JSON.stringify(done.value));
       assert.include(done.value, { state: "waiting" });
+      assert.property(done.value, "waitsOnCard");
       assert.deepInclude(yield* kin.records.get(orgId, signage.key), {
         waitingOnKind: "person",
         waitingOnId: owner.personId,

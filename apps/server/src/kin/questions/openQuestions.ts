@@ -1886,7 +1886,7 @@ export const openQuestionsSection = Effect.fn("KinQuestions.section")(function* 
   return {
     heading: `# Open questions to ${who} (already asked; don't ask or repeat them)`,
     body: [
-      "Like a fact already told, each is with them once: never put one to them again, on a card or in words; at most say it is open and what happens at its day. When they answer one of yours in words in its chat, kin_ask_close it as answered; withdraw yours when it no longer stands. Another agent's is that agent's to close.",
+      "Like a fact already told, each is with them once: never put one to them again, on a card or in words; at most say it is open and what happens at its day. When they answer one of yours in words in its chat, kin_ask_close it as answered; withdraw yours when it no longer stands. Another agent's is that agent's to close. A task one of yours is about waits on its answer: never set it done.",
       ...(forWhom.size === 0
         ? []
         : [
