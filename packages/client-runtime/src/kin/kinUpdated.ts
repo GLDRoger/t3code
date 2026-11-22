@@ -1,5 +1,7 @@
 export const KIN_UPDATED_LINE = "Kin was updated. Reload to get the latest.";
 export const KIN_UPDATED_RELOAD = "Reload";
+/** In place of a page whose code the update replaced, once the one automatic reload is spent. */
+export const KIN_UPDATED_CONTINUE = { title: "Kin was updated.", detail: "Reload to continue." };
 
 export type KinUpdatedAction = "none" | "reload" | "notice";
 

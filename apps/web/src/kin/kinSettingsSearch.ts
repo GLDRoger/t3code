@@ -1,6 +1,7 @@
 import type { KinSettingsPage } from "@t3tools/client-runtime/kin/kinNavigation";
 
 import { KIN_APPROVER_PHONES_TITLE } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
+import { KIN_MESSAGE_ALERTS } from "@t3tools/client-runtime/kin/kinMessageAlerts";
 import { msg } from "gt-react";
 import {
   Building2Icon,
@@ -164,6 +165,15 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
   },
   ...KIN_PROFILE_SETTINGS_SEARCH_ITEMS,
   {
+    id: "kin-notifications",
+    // Kin's message alerts are the same setting as T3's thread notifications, under that anchor.
+    targetId: "thread-notifications",
+    title: KIN_MESSAGE_ALERTS.title,
+    to: "/settings/kin-profile",
+    searchTerms: ["kin message alerts notifications sound desktop browser"],
+    kinOnly: true,
+  },
+  {
     id: "kin-deals",
     kinOnly: true,
     kinSection: "deals",
@@ -177,6 +187,7 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
 const KIN_SETTING_ELSEWHERE: Readonly<Record<string, KinSettingsPage>> = {
   "kin-agents": "agents",
   "kin-who-can-message": "team",
+  "thread-notifications": "notifications",
 };
 
 /** The page of Kin's Settings that holds the setting `target`, reached from an address for `page`. */

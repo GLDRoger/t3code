@@ -3,6 +3,7 @@ import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contract
 import { KIN_INVITE_LINK_PATH } from "@t3tools/shared/remote";
 import { redirect } from "@tanstack/react-router";
 
+import { isElectron } from "../env";
 import { GUEST_PAGE_PATH } from "../guestPage";
 import { KIN_WEB_ONLY } from "./kinWebOnly";
 
@@ -43,12 +44,97 @@ export const KIN_CODING_SETTINGS: ReadonlySet<string> = new Set([
   "/settings/archived",
 ]);
 
+/**
+ * Rows and sections on the Settings pages Kin keeps that only serve coding threads, by their
+ * search anchor. Search leaves them out and the pages don't draw them; a section is named here
+ * when nothing Kin keeps is left in it.
+ */
+export const KIN_CODING_SETTING_ROWS: ReadonlySet<string> = new Set([
+  // General
+  "notifications",
+  "thread-notifications",
+  "in-app-notifications",
+  "sidebar",
+  "project-grouping",
+  "project-order",
+  "working-shelf",
+  "unpin-confirmation",
+  "archive-confirmation",
+  "delete-confirmation",
+  "terminal-close-confirmation",
+  // Appearance
+  "chat-width",
+  "thread-details-items",
+  "effort-display",
+  "composer-context",
+  "prompt-font",
+  "terminal-font",
+  "separate-fonts",
+  // Providers
+  "text-generators",
+  // Environments
+  "load-balancing",
+  "pull-request-routing",
+  // Maintenance
+  "git-fetch-interval",
+  // Labs
+  "boring-sidebar",
+  "boring-sidebar-multiline",
+  "guest-links",
+  "prompt-suggestions-beta",
+  "simlock-hosts",
+  "worktree-fast-checkout",
+  // About: T3 Code's CLI, and T3 Code's phone app in the stores
+  "cli-command",
+  "mobile-app",
+]);
+
+/** Keys that work over Kin's own pages; Keybindings lists no other command in the Kin web app. */
+const KIN_APP_KEYS: ReadonlySet<string> = new Set([
+  "commandPalette.toggle",
+  "kin.switchList",
+  "sidebar.toggle",
+  "navigation.back",
+  "navigation.forward",
+  "workspace.focusNext",
+  "workspace.focusPrevious",
+  "theme.select",
+  "appearance.cycle",
+  "themeEditor.toggle",
+  "usage.open",
+  "usage.cost",
+  "usage.tokens",
+  "usage.limits",
+  "usage.period.day",
+  "usage.period.week",
+  "usage.period.month",
+  "usage.period.quarter",
+]);
+
+const KEYBINDING_ANCHOR = "keybinding-";
+
+/** Whether the Kin web app leaves out the Settings row or section with this anchor. */
+export function kinSettingHidden(id: string | undefined, kinOnly = KIN_WEB_ONLY): boolean {
+  if (!kinOnly || id === undefined) return false;
+  // Desktop keeps its quit shortcut there; on the web nothing in Confirmations is left.
+  if (id === "confirmations") return !isElectron;
+  if (id.startsWith(KEYBINDING_ANCHOR))
+    return !KIN_APP_KEYS.has(id.slice(KEYBINDING_ANCHOR.length));
+  return KIN_CODING_SETTING_ROWS.has(id);
+}
+
+/** Whether Keybindings lists this command in the app; the Kin web app lists only `KIN_APP_KEYS`. */
+export const kinKeyShown = (command: string, kinOnly = KIN_WEB_ONLY): boolean =>
+  !kinSettingHidden(`${KEYBINDING_ANCHOR}${command}`, kinOnly);
+
 /** The settings pages and search rows the app offers, less the coding ones in the Kin web app. */
-export function kinSettingsShown<Item extends { readonly to: string }>(
+export function kinSettingsShown<Item extends { readonly id?: string; readonly to: string }>(
   items: ReadonlyArray<Item>,
   kinOnly = KIN_WEB_ONLY,
 ): ReadonlyArray<Item> {
-  return kinOnly ? items.filter((item) => !KIN_CODING_SETTINGS.has(item.to)) : items;
+  return kinOnly
+    ? items.filter((item) => !KIN_CODING_SETTINGS.has(item.to) && !kinSettingHidden(item.id, true))
+    : items;
 }
 
 // T3 Code's two-part addresses that aren't a thread's `/<environmentId>/<threadId>`.

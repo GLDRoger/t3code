@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  KIN_UPDATED_CONTINUE,
   KIN_UPDATED_LINE,
   KIN_UPDATED_RELOAD,
   kinUpdatedAction,
@@ -7,8 +8,9 @@ import {
 import { useEffect, useState } from "react";
 
 import { Button } from "../components/ui/button";
+import { StandalonePage, StandalonePageHeader } from "../components/ui/standalone-page";
 import { useAttachmentUploadStore } from "../lib/attachmentUploadQueue";
-import { carryKinDraftsAcrossReload, hasUnsentKinDraft } from "./kinDraft";
+import { carryKinDraftsAcrossReload, hasUnsentKinDraft, reloadKeepingKinDrafts } from "./kinDraft";
 import { devBundle, pageBuild, reloadPage, serverBuildAtom } from "./kinPageBuild";
 
 /** Marks a form whose contents a reload would lose. */
@@ -105,5 +107,22 @@ export function KinUpdatedLine() {
         {KIN_UPDATED_RELOAD}
       </Button>
     </p>
+  );
+}
+
+/** A page whose code an update replaced, after the one automatic reload didn't bring it back. */
+export function KinUpdatedPage() {
+  return (
+    <StandalonePage>
+      <StandalonePageHeader
+        title={KIN_UPDATED_CONTINUE.title}
+        description={KIN_UPDATED_CONTINUE.detail}
+      />
+      <div className="mt-5">
+        <Button size="sm" onClick={reloadKeepingKinDrafts}>
+          {KIN_UPDATED_RELOAD}
+        </Button>
+      </div>
+    </StandalonePage>
   );
 }

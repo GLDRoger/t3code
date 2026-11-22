@@ -160,6 +160,7 @@ export const projectSheet = Effect.fn("KinYouProjection.projectSheet")(function*
 ) {
   const { name } = yield* namer(connection);
   const zone = yield* ownerZone(connection.orgId);
+  const names = yield* toolNamesOf(connection.orgId, yield* orgOwner(connection.orgId));
   const { project } = page;
   return {
     key: project.key,
@@ -172,7 +173,7 @@ export const projectSheet = Effect.fn("KinYouProjection.projectSheet")(function*
     notes: project.notes,
     pinned: page.note?.body ?? null,
     material: MATERIAL,
-    myOpenTasks: yield* Effect.forEach(tasks.tasks, (task) => row(connection, task, zone)),
+    myOpenTasks: yield* Effect.forEach(tasks.tasks, (task) => row(connection, task, zone, names)),
     moreTasks: tasks.more,
     docs: docs === null ? null : docs.rows.map((doc) => ({ key: doc.key, title: doc.title })),
     moreDocs: docs?.more ?? false,
