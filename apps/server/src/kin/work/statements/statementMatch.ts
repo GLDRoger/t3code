@@ -370,11 +370,12 @@ const repayments = (
   partners: ReadonlyArray<PartnerCandidate>,
   currency: string,
   others: (index: number) => ReadonlyArray<Candidate>,
+  transfer: (index: number) => boolean,
 ): ReadonlyMap<number, ReadonlyArray<Candidate>> => {
   const settled = partners.map(() => 0);
   const offers = (index: number) =>
     partners.flatMap((partner, at) => {
-      if (partner.currency !== currency) return [];
+      if (partner.currency !== currency || transfer(index)) return [];
       const offer = repayment(rows[index]!, partner, settled[at]!);
       return offer === undefined ? [] : [{ at, ...offer }];
     });
@@ -644,11 +645,14 @@ export const matchRows = (
       : input.expenses.map((expense) => expenseCandidate(row, expense, input.currency))
     ).filter((one): one is Candidate => one !== undefined && one.score >= PROPOSED),
   );
+  // A move between the company's own accounts that names a partner repays nobody.
+  const transfers = rows.map((row) => suggest(row, input).action === "transfer");
   const repaying = repayments(
     rows,
     input.partners ?? [],
     input.currency,
     (index) => others[index]!,
+    (index) => transfers[index]!,
   );
   const results = rows.map((row, index) => {
     const candidates = [...(repaying.get(index) ?? []), ...others[index]!]
@@ -667,13 +671,15 @@ export const matchRows = (
     .toSorted((left, right) => right.score - left.score || left.index - right.index);
   // A line naming a partner it settles nothing for is the owner's to place, never a new expense.
   const suggestFor = (row: StatementRow): Suggestion => {
+    const plain = suggest(row, input);
+    if (plain.action === "transfer") return plain;
     const partner = (input.partners ?? []).find(
       (one) =>
         one.currency === input.currency &&
         one.owed.length > 0 &&
         nameIn(one.name, row.description) >= 0.5,
     );
-    if (partner === undefined) return suggest(row, input);
+    if (partner === undefined) return plain;
     const owed = partner.owed.reduce((sum, one) => sum + BigInt(one.amountMinor), 0n);
     const count = partner.owed.length;
     return {

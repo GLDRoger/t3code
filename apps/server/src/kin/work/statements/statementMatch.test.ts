@@ -470,6 +470,24 @@ describe("statement matching", () => {
     assert.deepStrictEqual(only([debit(0, "2026-10-08", "MEERA RAO", 1)], huge), [
       ["unmatched", []],
     ]);
+    // A move to the company's own account that names her repays nothing and stays a transfer.
+    const own = matchRows(
+      [debit(0, "2026-10-08", "SELF TRANSFER TO OWN ACCOUNT XX7710 MEERA RAO", 120_000)],
+      {
+        currency: "INR",
+        withholdsAtSource: true,
+        invoices: [],
+        expenses: [],
+        partners,
+        ownAccounts: ["7710"],
+        known: [],
+        bank: null,
+      },
+    );
+    assert.deepStrictEqual(
+      own.map((one) => [one.group, one.candidates.length, one.suggestion.action]),
+      [["unmatched", 0, "transfer"]],
+    );
     assert.deepStrictEqual(only([debit(0, "2026-10-08", "MEERA RAO", 2)], huge), [
       ["matched", [["EXP-11", "EXP-12", "EXP-13"]]],
     ]);
