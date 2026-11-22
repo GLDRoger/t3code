@@ -577,9 +577,12 @@ export class KinLeadPrompt extends Context.Service<
           }
           if (event._tag === "record.changed") {
             fromOwner = false;
-            const text = yield* workEventText({ orgId, event, ownerOnly }).pipe(
-              Effect.provideService(SqlClient.SqlClient, sql),
-            );
+            const text = yield* workEventText({
+              orgId,
+              event,
+              ownerOnly,
+              wakeupId: input.wakeupId,
+            }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
             if (text === undefined) continue;
             replyDue ||= event.reason !== "withdrawn";
             events.push(text);
@@ -1916,6 +1919,8 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
   readonly orgId: KinOrgId;
   readonly event: WorkEvent;
   readonly ownerOnly: boolean;
+  /** The turn it is told in: a shared turn reads its facts as everyone behind it may. */
+  readonly wakeupId: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, event, ownerOnly } = input;
@@ -1968,14 +1973,22 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
     Effect.orElseSucceed(() => []),
   );
   if (!ownerOnly && entry === undefined) return undefined;
+  const viewer = ownerOnly
+    ? KIN_OWNER_LEVEL
+    : yield* turnPeople({ orgId, agentId: event.agentId, wakeupId: input.wakeupId }).pipe(
+        Effect.map((behind) =>
+          behind === undefined || behind.people.length === 0
+            ? undefined
+            : viewerOfPeople(behind.people),
+        ),
+        Effect.orElseSucceed(() => undefined),
+      );
   const about =
-    entry === undefined || withdrawn
+    entry === undefined || withdrawn || viewer === undefined
       ? undefined
-      : (yield* taskFacts(
-          orgId,
-          [event.recordId],
-          ownerOnly || teammate === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([teammate]),
-        ).pipe(Effect.orElseSucceed(() => new Map<string, TaskFacts>()))).get(event.recordId);
+      : (yield* taskFacts(orgId, [event.recordId], viewer).pipe(
+          Effect.orElseSucceed(() => new Map<string, TaskFacts>()),
+        )).get(event.recordId);
   const attributed = ownerOnly && !withdrawn;
   const titleBy = attributed ? (entry?.titleBy ?? null) : null;
   const notesBy = attributed && entry?.notes !== "" ? (entry?.notesBy ?? null) : null;

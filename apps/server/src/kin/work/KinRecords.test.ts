@@ -2872,7 +2872,12 @@ it.effect("a task a teammate holds and gives an agent wakes it in their chat, at
     assert.strictEqual(yield* KinLevels.originCap(woken), "L1");
     // Its client is named only while they may read Clients.
     const given = Effect.gen(function* () {
-      const text = yield* workEventText({ orgId, event: (yield* lastGiven)!, ownerOnly: false });
+      const text = yield* workEventText({
+        orgId,
+        event: (yield* lastGiven)!,
+        ownerOnly: false,
+        wakeupId: "mate-wake",
+      });
       return JSON.parse(quotesIn(text!).get("work given to you (data)")!);
     });
     assert.notProperty(yield* given, "client");
@@ -2882,9 +2887,19 @@ it.effect("a task a teammate holds and gives an agent wakes it in their chat, at
       contacts: "none recorded",
       clientNextStep: true,
     });
+    // Read with someone else in the chat who can't see Clients, it names no client.
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES ('other-mate', ${orgId}, 'other-mate', 'Other mate', ${at}, 'member')`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+        role, joined_at)
+      VALUES ('mate-chat-other', ${orgId}, 'mate-chat', 'person', 'other-mate', 'member', ${at})`;
+    assert.notProperty(yield* given, "client");
+    yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'mate-chat-other'`;
     // It names who gave it and what they are here, and it goes back to them, not the owner.
     const leadIn = (ownerOnly: boolean) =>
-      Effect.flatMap(lastGiven, (event) => workEventText({ orgId, event: event!, ownerOnly }));
+      Effect.flatMap(lastGiven, (event) =>
+        workEventText({ orgId, event: event!, ownerOnly, wakeupId: "mate-wake" }),
+      );
     const mates = (yield* leadIn(false))!;
     assert.match(mates, /^"Mate", a teammate, gave you this task/);
     assert.include(mates, 'set it waiting on "Mate" and give it back to them');
@@ -2948,7 +2963,7 @@ it.effect(
         const event = (yield* lastGiven)!;
         assert.deepInclude(event.provenance, { _tag: "human", personId: ownerId });
         assert.notProperty(event, "chatId");
-        return yield* workEventText({ orgId, event, ownerOnly: true });
+        return yield* workEventText({ orgId, event, ownerOnly: true, wakeupId: "owner-wake" });
       });
       const first = (yield* told)!;
       assert.include(first, "The owner gave you this Work entry");
