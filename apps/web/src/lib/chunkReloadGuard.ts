@@ -2,10 +2,15 @@
 // Keyed by build and kept across boots: a chunk loaded after boot can fail on every visit.
 const CHUNK_RELOAD_GUARD_KEY = "t3code:chunk-load-reloaded";
 
+// The hashed entry script names the build; deploys of one version share APP_VERSION.
+const pageEntryBuild = () =>
+  globalThis.document?.querySelector<HTMLScriptElement>('script[type="module"][src]')?.src ??
+  import.meta.env.APP_VERSION;
+
 export function reloadOnceForChunkLoadError(
   getStorage: () => Storage = () => window.sessionStorage,
   reload: () => void = () => window.location.reload(),
-  build = import.meta.env.APP_VERSION,
+  build = pageEntryBuild(),
 ): boolean {
   let alreadyReloaded: boolean;
   try {
