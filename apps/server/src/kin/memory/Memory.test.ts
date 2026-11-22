@@ -971,23 +971,54 @@ it.live("gives each lead its own read checkout, swapped in whole on prepare", ()
   ),
 );
 
-it.effect(
-  "restores a missing default ref from the verified anchor without touching local work",
-  () =>
+it.effect.each(["missing", "dangling", "unfinished"] as const)(
+  "prepares or holds a $0 default ref without touching local work",
+  (scenario) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const { root, source, git } = yield* fixtureRepository();
+      const { root, source, git, commit } = yield* fixtureRepository();
       const base = `${root}/state`;
       yield* Effect.gen(function* () {
         const memory = yield* Memory.Memory;
         const { writer } = yield* memory.ensureCheckouts(orgA);
         const head = yield* memory.anchor(orgA, "main");
         yield* git(writer, ["branch", "local", head]);
-        yield* git(writer, ["update-ref", "-d", "refs/heads/main", head]);
-        yield* fs.writeFileString(`${writer}/uncommitted.md`, "Only present in this checkout");
-        expect((yield* memory.prepareWakeup(orgA)).head).toBe(head);
+        yield* fs.writeFileString(`${writer}/local.md`, "Only present in this checkout");
+        if (scenario === "unfinished") {
+          yield* memory.prepareWakeup(orgA);
+          const moved = yield* commit(writer);
+          yield* fs.writeFileString(
+            `${writer}/.git/MERGE_HEAD`,
+            `${head}
+`,
+          );
+          expect(yield* memory.prepareWakeup(orgA).pipe(Effect.result)).toMatchObject({
+            _tag: "Failure",
+            failure: { _tag: "MemoryCheckoutInvalid", reason: "Unfinished Git operation" },
+          });
+          expect(yield* git(writer, ["rev-parse", "refs/heads/main"])).toBe(moved);
+          expect(yield* memory.syncCheckout(orgA).pipe(Effect.result)).toMatchObject({
+            _tag: "Failure",
+            failure: { _tag: "MemoryCheckoutInvalid", reason: "Unfinished Git operation" },
+          });
+          expect(yield* git(writer, ["rev-parse", "refs/heads/main"])).toBe(moved);
+        } else {
+          yield* git(writer, ["update-ref", "-d", "refs/heads/main", head]);
+          if (scenario === "dangling") {
+            yield* git(writer, ["symbolic-ref", "refs/heads/main", "refs/heads/not-main"]);
+            expect(yield* memory.prepareWakeup(orgA).pipe(Effect.result)).toMatchObject({
+              _tag: "Failure",
+              failure: { _tag: "MemoryCheckoutInvalid" },
+            });
+            expect(
+              yield* git(writer, ["for-each-ref", "--format=%(refname)", "refs/heads"]),
+            ).not.toContain("refs/heads/not-main");
+          } else {
+            expect((yield* memory.prepareWakeup(orgA)).head).toBe(head);
+          }
+        }
         expect(yield* git(writer, ["rev-parse", "refs/heads/local"])).toBe(head);
-        expect(yield* fs.readFileString(`${writer}/uncommitted.md`)).toBe(
+        expect(yield* fs.readFileString(`${writer}/local.md`)).toBe(
           "Only present in this checkout",
         );
       }).pipe(Effect.provide(memoryLayer(base, source)));

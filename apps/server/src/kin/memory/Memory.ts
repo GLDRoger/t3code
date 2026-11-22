@@ -1265,7 +1265,7 @@ const make = Effect.gen(function* () {
       Effect.provideService(VcsProcess, vcs),
     );
     // A zero expected tip can only recreate an absent ref. Existing refs and the worktree stay put.
-    yield* git(orgId, writer, ["update-ref", ref, head, "0".repeat(head.length)]);
+    yield* git(orgId, writer, ["update-ref", "--no-deref", ref, head, "0".repeat(head.length)]);
     yield* Effect.logInfo("Kin restored missing memory ref from its SQLite anchor", {
       orgId,
       branch: mainBranch,
@@ -1565,6 +1565,7 @@ const make = Effect.gen(function* () {
   ) {
     const { wakeupId } = options;
     const paths = yield* pathsFor(orgId);
+    yield* refuseUnfinishedOperation(orgId, paths.writer);
     yield* validateWriter(orgId, paths);
     if (options.fsck)
       yield* git(orgId, paths.writer, [
@@ -1574,7 +1575,6 @@ const make = Effect.gen(function* () {
         "--no-reflogs",
         yield* anchor(orgId, config.defaultBranch ?? "main"),
       ]);
-    yield* refuseUnfinishedOperation(orgId, paths.writer);
     const { repo } = yield* pathsFor(orgId);
     const branch = config.defaultBranch ?? "main";
     let head = yield* anchor(orgId, branch);
@@ -1868,8 +1868,8 @@ const make = Effect.gen(function* () {
   ) {
     const paths = yield* ensureCheckouts(orgId, false, true);
     if (synced.get(orgId) === true) {
-      yield* validateWriter(orgId, yield* pathsFor(orgId));
       yield* refuseUnfinishedOperation(orgId, paths.writer);
+      yield* validateWriter(orgId, yield* pathsFor(orgId));
     } else
       yield* checkedSync(orgId, prefetched, {
         fsck: true,
