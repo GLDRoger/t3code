@@ -29,7 +29,7 @@ export const KinStatementStanding = Schema.Literals([
 export type KinStatementStanding = typeof KinStatementStanding.Type;
 
 const AccountKind = Schema.Literals(["account", "card"]);
-/** The "Avl bal" an HDFC alert mail printed, and when it was sent: the bank's figure then. */
+/** The available balance a bank alert mail printed, and when it was sent: the bank's figure then. */
 export const KinCashAlert = Schema.Struct({ balance: KinSignedMoney, at: IsoDateTime });
 export type KinCashAlert = typeof KinCashAlert.Type;
 export const KinCashAccount = Schema.Struct({

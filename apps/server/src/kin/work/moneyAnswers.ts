@@ -279,7 +279,7 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
     notOfRecord,
     byCurrency,
     bank: yield* bankKnown(orgId, now),
-    /** HDFC alert balances of accounts no confirmed statement has. */
+    /** Bank alert balances of accounts no confirmed statement has. */
     alertAccounts: alerts.alone,
   };
 });

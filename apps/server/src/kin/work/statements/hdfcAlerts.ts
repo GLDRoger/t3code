@@ -1,5 +1,7 @@
 import * as DateTime from "effect/DateTime";
 
+import type { AlertMail, AlertReading, AlertRejection, BankAlertFormat } from "./bankAlerts.ts";
+
 /**
  * HDFC Bank's transaction alert mails, read by code alone. A mail's text is untrusted: it counts
  * only from HDFC's alert address, with the receiving server's DMARC pass for that domain on its
@@ -13,48 +15,8 @@ const HDFC_ALERT_SENDERS: ReadonlySet<string> = new Set([
   "alerts@hdfcbank.bank.in",
 ]);
 
-export const isHdfcAlertSender = (address: string | null | undefined) =>
+const isHdfcAlertSender = (address: string | null | undefined) =>
   address !== null && address !== undefined && HDFC_ALERT_SENDERS.has(address.toLowerCase());
-
-/** The parts of one message the parser reads. */
-export interface AlertMail {
-  readonly fromAddress: string | null;
-  readonly subject: string;
-  /** The mail's `Date` header. */
-  readonly date: string | null;
-  readonly authResults: ReadonlyArray<string>;
-  readonly text: string;
-}
-
-export interface HdfcAlert {
-  readonly direction: "debit" | "credit";
-  readonly amountMinor: number;
-  /** An HDFC alert prints rupees. */
-  readonly currency: string;
-  /** The account's last four digits, as the alert prints them. */
-  readonly account: string;
-  /** `YYYY-MM-DD`, the day the alert says the money moved. */
-  readonly date: string;
-  readonly reference: string;
-  /** Who the money went to or came from, as printed; null when the alert names no one. */
-  readonly counterparty: string | null;
-  /** The "Avl bal" the alert prints, when it prints one. */
-  readonly balanceMinor: number | null;
-  /** When the mail was sent: the balance is as of this instant. */
-  readonly sentAt: number;
-}
-
-export type AlertRejection =
-  /** Not from HDFC's alert address, or a reply or forward of one. */
-  | "sender"
-  /** From the address, but the receiving server didn't vouch for it. */
-  | "unverified"
-  /** From HDFC, verified, but not one transaction read one way. */
-  | "unparsed";
-
-export type AlertReading =
-  | { readonly _tag: "alert"; readonly alert: HdfcAlert }
-  | { readonly _tag: "rejected"; readonly reason: AlertRejection };
 
 const rejected = (reason: AlertRejection): AlertReading => ({ _tag: "rejected", reason });
 
@@ -168,4 +130,12 @@ export const readHdfcAlert = (mail: AlertMail): AlertReading => {
       sentAt,
     },
   };
+};
+
+export const hdfcAlerts: BankAlertFormat = {
+  key: "hdfc",
+  bank: "HDFC Bank",
+  sends: isHdfcAlertSender,
+  names: (bank) => /\bhdfc\b/i.test(bank),
+  read: readHdfcAlert,
 };

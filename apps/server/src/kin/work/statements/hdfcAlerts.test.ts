@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { type AlertMail, type AlertRejection, readHdfcAlert } from "./hdfcAlerts.ts";
+import type { AlertMail, AlertRejection } from "./bankAlerts.ts";
+import { readHdfcAlert } from "./hdfcAlerts.ts";
 
 // Synthetic alerts, written for these tests in the shape of HDFC's InstaAlerts. Every account,
 // name, reference and amount is invented.

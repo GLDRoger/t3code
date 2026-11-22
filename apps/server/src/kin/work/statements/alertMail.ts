@@ -11,12 +11,11 @@ import type {
 import { addressesIn } from "../../connections/MailProvider.ts";
 import type { OnMail } from "../../pulse/outside.ts";
 import type { KinRecords } from "../KinRecords.ts";
-import { takeAlerts, threadSeen } from "./bankAlerts.ts";
-import { isHdfcAlertSender } from "./hdfcAlerts.ts";
+import { isBankAlertSender, takeAlerts, threadSeen } from "./bankAlerts.ts";
 
 /**
- * A connection's new mail, as the pulse reads it, checked for HDFC alerts: a thread whose sender
- * line is HDFC's alert address, and that Kin hasn't read to its newest mail, is read through the
+ * A connection's new mail, as the pulse reads it, checked for bank alerts: a thread whose sender
+ * line is a bank's alert address, and that Kin hasn't read to its newest mail, is read through the
  * connection's own sign-in and taken message by message. Only counts are logged. The activity
  * read is already bounded, and its cursor moves only as far as it read.
  */
@@ -29,7 +28,7 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
   const now = yield* Clock.currentTimeMillis;
   const tally = { threads: 0, recorded: 0, duplicate: 0, rejected: 0 };
   for (const mail of activity.mail) {
-    if (!isHdfcAlertSender(addressesIn(mail.from)[0])) continue;
+    if (!isBankAlertSender(addressesIn(mail.from)[0])) continue;
     const newest = mail.date === null ? Number.NaN : Date.parse(mail.date);
     if (
       Number.isFinite(newest) &&

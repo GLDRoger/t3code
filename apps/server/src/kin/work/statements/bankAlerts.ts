@@ -19,17 +19,74 @@ import {
   rowFields,
   rowTitle,
 } from "./bankList.ts";
-import { type AlertMail, type HdfcAlert, readHdfcAlert } from "./hdfcAlerts.ts";
+import { hdfcAlerts } from "./hdfcAlerts.ts";
 import type { Statement, StatementRow } from "./statementTable.ts";
 import { DAY_MS } from "../../durations.ts";
 
 /**
  * Bank alert mails into Bank transactions, one entry per bank reference, whichever mailbox or
  * statement saw it first. Each mail Kin looked at is kept once in `kin_bank_alerts` with what
- * came of it, never its text; the newest "Avl bal" an alert printed is that account's.
+ * came of it, never its text; the newest available balance an alert printed is that account's.
+ * Each bank's own mail is one format module behind `BankAlertFormat`.
  */
 
-const BANK = "HDFC Bank";
+/** The parts of one message a format reads. */
+export interface AlertMail {
+  readonly fromAddress: string | null;
+  readonly subject: string;
+  /** The mail's `Date` header. */
+  readonly date: string | null;
+  readonly authResults: ReadonlyArray<string>;
+  readonly text: string;
+}
+
+export interface BankAlert {
+  readonly direction: "debit" | "credit";
+  readonly amountMinor: number;
+  readonly currency: string;
+  /** The account's last four digits, as the alert prints them. */
+  readonly account: string;
+  /** `YYYY-MM-DD`, the day the alert says the money moved. */
+  readonly date: string;
+  readonly reference: string;
+  /** Who the money went to or came from, as printed; null when the alert names no one. */
+  readonly counterparty: string | null;
+  /** The available balance the alert prints, when it prints one. */
+  readonly balanceMinor: number | null;
+  /** When the mail was sent: the balance is as of this instant. */
+  readonly sentAt: number;
+}
+
+export type AlertRejection =
+  /** Not from the bank's alert address, or a reply or forward of one. */
+  | "sender"
+  /** From the address, but the receiving server didn't vouch for it. */
+  | "unverified"
+  /** From the bank, verified, but not one transaction read one way. */
+  | "unparsed";
+
+export type AlertReading =
+  | { readonly _tag: "alert"; readonly alert: BankAlert }
+  | { readonly _tag: "rejected"; readonly reason: AlertRejection };
+
+/** One bank's alert mail: who sends it, how it reads, and how a statement names the bank. */
+export interface BankAlertFormat {
+  /** Short and stable: part of each entry's origin key. */
+  readonly key: string;
+  readonly bank: string;
+  readonly sends: (address: string | null | undefined) => boolean;
+  readonly names: (bank: string) => boolean;
+  readonly read: (mail: AlertMail) => AlertReading;
+}
+
+const FORMATS: ReadonlyArray<BankAlertFormat> = [hdfcAlerts];
+
+const formatSending = (address: string | null | undefined) =>
+  FORMATS.find((format) => format.sends(address));
+
+export const isBankAlertSender = (address: string | null | undefined) =>
+  formatSending(address) !== undefined;
+
 const writer: Writer = { actor: { _tag: "system" }, via: "import" };
 
 export interface AlertMessage extends AlertMail {
@@ -40,7 +97,7 @@ export interface AlertMessage extends AlertMail {
 export interface AlertTally {
   readonly recorded: number;
   readonly duplicate: number;
-  /** Mail from HDFC's address that the receiving server didn't vouch for, or that didn't read. */
+  /** Mail from a bank's alert address that the receiving server didn't vouch for, or didn't read. */
   readonly rejected: number;
 }
 
@@ -55,12 +112,16 @@ const alertIdOf = (connectionId: string, threadId: string, message: AlertMessage
       : `${connectionId}\0${message.messageId}`,
   );
 
+const keyPrefix = (format: BankAlertFormat, account: string) => `alert:${format.key}:${account}:`;
 /** A reversal quotes its debit's reference, so the way the money moved is part of the key. */
-const alertOriginKey = (alert: Pick<HdfcAlert, "account" | "reference" | "direction">) =>
-  `alert:hdfc:${alert.account}:${alert.direction}:${referenceKey(alert.reference)}`;
+const alertOriginKey = (format: BankAlertFormat, alert: BankAlert) =>
+  `${keyPrefix(format, alert.account)}${alert.direction}:${referenceKey(alert.reference)}`;
 
 /** An alert as the one statement row it is, so its entry reads as a statement's would. */
-const asStatement = (alert: HdfcAlert): { statement: Statement; row: StatementRow } => {
+const asStatement = (
+  format: BankAlertFormat,
+  alert: BankAlert,
+): { statement: Statement; row: StatementRow } => {
   const row: StatementRow = {
     index: 0,
     date: alert.date,
@@ -77,7 +138,7 @@ const asStatement = (alert: HdfcAlert): { statement: Statement; row: StatementRo
     row,
     statement: {
       kind: "account",
-      bank: BANK,
+      bank: format.bank,
       account: alert.account,
       currency: alert.currency,
       from: alert.date,
@@ -96,13 +157,14 @@ const asStatement = (alert: HdfcAlert): { statement: Statement; row: StatementRo
  */
 const existingEntry = Effect.fn("KinBankAlerts.existing")(function* (
   orgId: KinOrgId,
-  alert: HdfcAlert,
+  format: BankAlertFormat,
+  alert: BankAlert,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const def = yield* findBankList(orgId);
   if (def === undefined) return undefined;
   const [own] = yield* sql<{ recordId: string }>`SELECT record_id AS "recordId" FROM kin_records
-    WHERE org_id = ${orgId} AND register_id = ${def.id} AND origin_key = ${alertOriginKey(alert)}`;
+    WHERE org_id = ${orgId} AND register_id = ${def.id} AND origin_key = ${alertOriginKey(format, alert)}`;
   if (own !== undefined) return own.recordId;
   const zone = yield* ownerZone(orgId);
   const day = Date.parse(`${alert.date}T00:00:00Z`);
@@ -135,18 +197,19 @@ const existingEntry = Effect.fn("KinBankAlerts.existing")(function* (
 const recordAlert = Effect.fn("KinBankAlerts.record")(function* (
   orgId: KinOrgId,
   owner: KinPersonId,
-  alert: HdfcAlert,
+  format: BankAlertFormat,
+  alert: BankAlert,
   now: number,
 ) {
-  const found = yield* existingEntry(orgId, alert);
+  const found = yield* existingEntry(orgId, format, alert);
   if (found !== undefined) return { outcome: "duplicate" as const, recordId: found };
   const records = yield* KinRecords;
   const def = yield* ensureBankList(orgId, now);
-  const { statement, row } = asStatement(alert);
+  const { statement, row } = asStatement(format, alert);
   const title = rowTitle(row);
   const { row: made } = yield* records.create(orgId, writer, {
     list: def.id,
-    originKey: alertOriginKey(alert),
+    originKey: alertOriginKey(format, alert),
     title,
     owner: { _tag: "person", personId: owner },
     state: bankStates(def).open,
@@ -156,8 +219,8 @@ const recordAlert = Effect.fn("KinBankAlerts.record")(function* (
     fields: rowFields(def, statement, row),
     notes:
       title === row.description
-        ? "From an HDFC Bank alert mail."
-        : `${row.description}\nFrom an HDFC Bank alert mail.`,
+        ? `From an alert mail from ${format.bank}.`
+        : `${row.description}\nFrom an alert mail from ${format.bank}.`,
     sensitive: true,
   });
   return { outcome: "recorded" as const, recordId: made.recordId };
@@ -199,7 +262,8 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
     const [seen] = yield* sql`SELECT 1 AS seen FROM kin_bank_alerts
       WHERE org_id = ${orgId} AND alert_id = ${alertId}`;
     if (seen !== undefined) continue;
-    const reading = readHdfcAlert(message);
+    const format = formatSending(message.fromAddress);
+    const reading = format?.read(message);
     const sentAt = message.date === null ? Number.NaN : Date.parse(message.date);
     const base = {
       org_id: orgId,
@@ -209,20 +273,21 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
       sent_at: Number.isFinite(sentAt) ? sentAt : null,
       seen_at: input.now,
     };
-    if (reading._tag === "rejected") {
-      yield* sql`INSERT INTO kin_bank_alerts ${sql.insert({ ...base, outcome: reading.reason })}`;
+    if (format === undefined || reading === undefined || reading._tag === "rejected") {
+      const outcome = reading?._tag === "rejected" ? reading.reason : "sender";
+      yield* sql`INSERT INTO kin_bank_alerts ${sql.insert({ ...base, outcome })}`;
       // Another sender's mail in the thread isn't an alert to count.
-      if (reading.reason !== "sender") tally.rejected++;
+      if (outcome !== "sender") tally.rejected++;
       continue;
     }
     const { alert } = reading;
     yield* sql.withTransaction(
       Effect.gen(function* () {
-        const done = yield* recordAlert(orgId, KinPersonId.make(owner), alert, input.now);
+        const done = yield* recordAlert(orgId, KinPersonId.make(owner), format, alert, input.now);
         yield* sql`INSERT INTO kin_bank_alerts ${sql.insert({
           ...base,
           outcome: done.outcome,
-          bank: BANK,
+          bank: format.bank,
           account: alert.account,
           reference: alert.reference,
           record_id: done.recordId,
@@ -244,7 +309,7 @@ export interface AlertBalance {
   readonly sentAt: number;
 }
 
-/** Per account, the "Avl bal" of the newest alert that printed one. */
+/** Per account, the available balance of the newest alert that printed one. */
 export const alertBalances = Effect.fn("KinBankAlerts.balances")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   return yield* sql<AlertBalance>`SELECT a.bank, a.account, a.currency,
@@ -285,9 +350,9 @@ interface CashAccount {
 }
 
 /**
- * Each alert balance beside the one statement account it is (same digits and currency, a bank
- * named HDFC or not named), when it is from that balance's day or later; else on its own. One
- * that could be two accounts' is on its own, so it is never shown as either's.
+ * Each alert balance beside the one statement account it is (same digits and currency, the same
+ * bank or none named), when it is from that balance's day or later; else on its own. One that
+ * could be two accounts' is on its own, so it is never shown as either's.
  */
 export const alertsBeside = Effect.fn("KinBankAlerts.beside")(function* <A extends CashAccount>(
   orgId: KinOrgId,
@@ -297,12 +362,13 @@ export const alertsBeside = Effect.fn("KinBankAlerts.beside")(function* <A exten
   const beside = new Map<A, AlertBalance>();
   const alone: Array<AlertBalance> = [];
   for (const balance of yield* alertBalances(orgId)) {
+    const format = FORMATS.find((one) => one.bank === balance.bank);
     const fits = accounts.filter(
       (one) =>
         one.kind === "account" &&
         one.currency === balance.currency &&
         one.digits === balance.account &&
-        (one.bank === null || /\bhdfc\b/i.test(one.bank)),
+        (one.bank === null || format?.names(one.bank) === true),
     );
     if (fits.length !== 1) alone.push(balance);
     else if (dayIn(balance.sentAt, zone) >= fits[0]!.on) beside.set(fits[0]!, balance);
@@ -329,9 +395,9 @@ export interface AlertCheck {
 }
 
 /**
- * The alerts of an HDFC statement's account against its rows: which rows are alerts' entries,
- * which alerts of its days it doesn't have, and which of its rows since alerts began no alert
- * has. None for another bank's statement, a card's, or one without its last four digits.
+ * The alerts of a statement's account against its rows: which rows are alerts' entries, which
+ * alerts of its days it doesn't have, and which of its rows since alerts began no alert has. None
+ * for a bank Kin reads no alerts of, a card's statement, or one without its last four digits.
  */
 export const alertCheck = Effect.fn("KinBankAlerts.check")(function* (
   orgId: KinOrgId,
@@ -339,31 +405,39 @@ export const alertCheck = Effect.fn("KinBankAlerts.check")(function* (
   statement: Statement,
   known: ReadonlyMap<number, { readonly recordId: string }>,
 ) {
+  const { bank, account } = statement;
+  const formats = FORMATS.filter((one) => bank === null || one.names(bank));
   if (
     listId === undefined ||
     statement.kind !== "account" ||
-    statement.account === null ||
-    !/^\d{4}$/.test(statement.account) ||
-    (statement.bank !== null && !/\bhdfc\b/i.test(statement.bank)) ||
+    account === null ||
+    !/^\d{4}$/.test(account) ||
+    formats.length === 0 ||
     statement.rows.length === 0
   )
     return undefined;
+  const prefixes = formats.map((one) => keyPrefix(one, account));
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
   const entries = yield* sql<{
     recordId: string;
+    originKey: string;
     key: string;
     amountMinor: number;
     currency: string | null;
     dateAt: number;
     fieldsJson: string;
-  }>`SELECT record_id AS "recordId", key, amount_minor AS "amountMinor", currency,
-      date_at AS "dateAt", fields_json AS "fieldsJson"
+  }>`SELECT record_id AS "recordId", origin_key AS "originKey", key,
+      amount_minor AS "amountMinor", currency, date_at AS "dateAt", fields_json AS "fieldsJson"
     FROM kin_records WHERE org_id = ${orgId} AND register_id = ${listId}
-      AND origin_key LIKE ${`alert:hdfc:${statement.account}:%`} AND date_at IS NOT NULL
+      AND origin_key LIKE 'alert:%' AND date_at IS NOT NULL
     ORDER BY date_at, key`;
   const mine = entries
-    .filter((one) => (one.currency ?? statement.currency) === statement.currency)
+    .filter(
+      (one) =>
+        prefixes.some((prefix) => one.originKey.startsWith(prefix)) &&
+        (one.currency ?? statement.currency) === statement.currency,
+    )
     .map((one) => ({ ...one, date: dayIn(one.dateAt, zone) }));
   if (mine.length === 0) return undefined;
   const days = statement.rows.map((row) => row.date).toSorted();

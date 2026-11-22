@@ -47,7 +47,7 @@ export const KIN_CASH = {
   newerOff: (on: string) =>
     `A newer statement (${on}) doesn't add up, so it isn't counted. Ask an agent to read it again.`,
   newerUndone: (on: string) => `A newer statement (${on}) was confirmed, then undone.`,
-  /** The balance shown is an HDFC alert's "Avl bal": the bank's own figure when it mailed. */
+  /** The balance shown is a bank alert's available balance: the bank's own figure when it mailed. */
   fromAlert: (at: string) => `From a bank alert · ${at}`,
   alertNote: (on: string, amount: string) =>
     `This is the available balance in the newest bank alert mail, not a confirmed statement. The last confirmed statement closed at ${amount} on ${on}.`,
