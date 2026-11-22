@@ -20,11 +20,14 @@ import {
   KinRoleTags,
   type ModelSelection,
   type ProjectId,
+  type ServerSettings,
   type TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Runtime from "effect/Runtime";
@@ -59,10 +62,16 @@ import {
   companyDefaultModel,
   encodeLeadModel,
   isDevServer,
-  leadModelProblem,
+  driverOf,
+  findProviderModel,
   leadProviderProblem,
 } from "./leadModels.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
+import { ServerConfig } from "../../config.ts";
+import {
+  readProviderStatusCache,
+  resolveProviderStatusCachePath,
+} from "../../provider/providerStatusCache.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 
 // `create`, `retire` and `restore` have two callers: the host's `kin lead` CLI and the owner's
@@ -253,12 +262,7 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
   const { owner } = yield* KinIdentity;
   const { orgId } = person;
   const model = input.model ?? (yield* defaultModel(orgId));
-  const wrongProvider = leadProviderProblem(
-    yield* (yield* ServerSettingsService).getSettings,
-    model,
-    yield* isDevServer,
-  );
-  if (wrongProvider !== undefined) return yield* refuse("not_claude", wrongProvider);
+  yield* checkModel(model);
   return yield* transaction(
     sql,
     "KinLeadProvision.create",
@@ -393,18 +397,48 @@ const change = Effect.fn("KinLeadProvision.change")(function* (
   };
 });
 
-/** Refuses a model a turn here couldn't run on: not Claude, switched off, or not offered. */
-export const checkModel = Effect.fn("KinLeadProvision.checkModel")(function* (
+const providerFor = Effect.fn("KinLeadProvision.providerFor")(function* (
   model: ModelSelection,
+  settings: ServerSettings,
 ) {
   const registry = yield* Effect.serviceOption(ProviderRegistry);
-  const problem = leadModelProblem(
-    yield* (yield* ServerSettingsService).getSettings,
-    Option.isSome(registry) ? yield* registry.value.getProviders : null,
-    model,
-    yield* isDevServer,
+  if (Option.isSome(registry))
+    return (yield* registry.value.getProviders).find((one) => one.instanceId === model.instanceId);
+
+  // The standalone CLI has no live provider registry. Read the picker catalog last saved by it.
+  const config = yield* Effect.serviceOption(ServerConfig);
+  const fs = yield* Effect.serviceOption(FileSystem.FileSystem);
+  const path = yield* Effect.serviceOption(Path.Path);
+  if (Option.isNone(config) || Option.isNone(fs) || Option.isNone(path)) return undefined;
+  const file = yield* resolveProviderStatusCachePath({
+    cacheDir: config.value.providerStatusCacheDir,
+    instanceId: model.instanceId,
+  }).pipe(Effect.provideService(Path.Path, path.value));
+  const provider = yield* readProviderStatusCache(file).pipe(
+    Effect.provideService(FileSystem.FileSystem, fs.value),
   );
+  return provider?.instanceId === model.instanceId && provider.driver === driverOf(settings, model)
+    ? provider
+    : undefined;
+});
+
+const checkModel = Effect.fn("KinLeadProvision.checkModel")(function* (model: ModelSelection) {
+  const settings = yield* (yield* ServerSettingsService).getSettings;
+  const problem = leadProviderProblem(settings, model, yield* isDevServer);
   if (problem !== undefined) return yield* refuse("not_claude", problem);
+  const provider = yield* providerFor(model, settings);
+  if (
+    provider?.enabled === true &&
+    provider.installed &&
+    provider.status !== "error" &&
+    provider.availability !== "unavailable" &&
+    provider.models.length > 0 &&
+    findProviderModel(provider.models, model.model) === undefined
+  )
+    return yield* refuse(
+      "not_claude",
+      `Model "${model.model}" is not listed for provider instance "${model.instanceId}". Open Kin Settings and use the agent model picker to see its models.`,
+    );
 });
 
 /** Replaces a live lead's domain or charter, from the host's CLI. */

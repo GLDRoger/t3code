@@ -1,4 +1,5 @@
 import {
+  calendarTimeMillis,
   KIN_SOCIAL_WEEK_CARD,
   KinChatError,
   type KinAgentId,
@@ -766,7 +767,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
   });
 
   const atOf = (text: string | undefined) => {
-    const ms = text === undefined ? Number.NaN : Date.parse(text);
+    const ms = text === undefined ? Number.NaN : calendarTimeMillis(text);
     return Number.isFinite(ms) && /[zZ]|[+-]\d{2}:?\d{2}$/.test(text ?? "") ? ms : undefined;
   };
 

@@ -43,6 +43,7 @@ import { HistorySwipeNavigation } from "./HistorySwipeNavigation";
 import { hasDesktopWindowChrome, kinWindowFullscreen } from "../kin/kinDesktopWindow";
 import { kinListShownAt } from "../kin/kinListSwitch";
 import { KinSidebar } from "../kin/KinSidebar";
+import { KIN_WEB_ONLY } from "../kin/kinWebOnly";
 import ThreadSidebar from "./Sidebar";
 import { SidebarBrandWidthProbe } from "./sidebar/SidebarChrome";
 import { isAppModalPage } from "./sidebar/mainAppLocation";
@@ -427,6 +428,7 @@ export function AppSidebarLayout({
   /** A teammate's session: Kin's list is the only one, and no thread is ever loaded. */
   chatOnly?: boolean;
 }) {
+  const kinOnly = chatOnly || KIN_WEB_ONLY;
   const gt = useGT();
   const sidebarArea = workspaceAreaProps("sidebar", 0, gt("Threads"));
   const [sidebarRouteReveal] = useState<SidebarRouteReveal>(() => ({
@@ -500,18 +502,18 @@ export function AppSidebarLayout({
               style={windowControlsInsetStyle}
             >
               {/* Threads stay mounted under Kin's list, so switching back keeps their scroll and search. */}
-              {chatOnly ? null : (
+              {kinOnly ? null : (
                 <div className={kinListOpen ? "hidden" : "contents"}>
                   <ThreadSidebar routeReveal={sidebarRouteReveal} />
                 </div>
               )}
-              {kinListOpen || chatOnly ? <KinSidebar /> : null}
+              {kinListOpen || kinOnly ? <KinSidebar /> : null}
               <SidebarRail onDoubleClick={resetSidebarWidth} />
             </Sidebar>
           </>
         ) : null}
         {children}
-        {chatOnly ? null : <BackgroundThreadAnnouncer />}
+        {kinOnly ? null : <BackgroundThreadAnnouncer />}
         <SidebarControl showSidebar={showSidebar} />
         {isElectron ? <HistorySwipeNavigation /> : null}
       </SidebarProvider>

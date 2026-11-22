@@ -57,7 +57,7 @@ import {
 } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
-import { checkFields, listDef, proposalFor } from "./registers.ts";
+import { checkFields, listDef, presetList, proposalFor } from "./registers.ts";
 import { ensureBankList } from "./statements/bankList.ts";
 import { waitLine } from "./statements/passwordBudget.ts";
 import * as OwnerMoneyAnswers from "./ownerMoneyAnswers.ts";
@@ -3729,6 +3729,11 @@ describe("an expense typed by hand", () => {
         yield* edit(huge, true);
         yield* edit(huge, false);
         assert.strictEqual((yield* records.get(orgId, later.expense))!.amountMinor, huge.minor);
+        yield* edit({ ...huge, minor: -huge.minor * 2_000 }, false);
+        assert.strictEqual(
+          (yield* records.get(orgId, later.expense))!.amountMinor,
+          -huge.minor * 2_000,
+        );
         assert.isDefined(yield* records.get(orgId, kept.expense));
       }).pipe(Effect.provide(layer)),
   );
@@ -5348,8 +5353,18 @@ describe("money answers", () => {
           dueAllDay: true,
           repeat: { every: "days", days: 1 },
         });
+        yield* create("credit", {
+          list: "expenses",
+          title: "Invented recurring credit",
+          state: "open",
+          amount: inr(-500),
+          dueAt: dueOn("2026-11-13"),
+          dueAllDay: true,
+          repeat: { every: "days", days: 1 },
+        });
         const daily = (yield* LeadMoney.moneyQuery(scope, { view: "outlook", days: 7 }))
           .answer as ReturnType<typeof outlookAnswer>;
+        assert.isFalse(daily.goingOut.some((one) => one.title === "Invented recurring credit"));
         assert.deepStrictEqual(
           [
             daily.goingOut.filter((one) => one.title === "Invented coffee").map((one) => one.on),
@@ -5379,6 +5394,7 @@ describe("money answers", () => {
         yield* seed;
         const sql = yield* SqlClient.SqlClient;
         yield* defined(1, { template: "expenses" });
+        yield* presetList(orgId, "invoices", yield* Clock.currentTimeMillis);
         const records = yield* KinRecords.KinRecords;
         const { row: launch } = yield* records.create(orgId, system, {
           list: "projects",
@@ -5405,12 +5421,7 @@ describe("money answers", () => {
             originKey: key,
           });
         // 20:00 UTC on 31 October is already 1 November in India; 19:00 UTC on 30 November is December.
-        const { row: flight } = yield* spend(
-          "flight",
-          "travel",
-          12_000,
-          Date.parse("2026-10-31T20:00:00.000Z"),
-        );
+        yield* spend("flight", "travel", 12_000, Date.parse("2026-10-31T20:00:00.000Z"));
         yield* spend("train", "travel", 3_000, Date.parse("2026-11-30T19:00:00.000Z"));
         yield* spend("hosting", "software", 5_000, on("2026-11-10"));
         yield* spend("dinner", "meals", 20_000, on("2026-11-11"), launch.recordId);
@@ -5419,41 +5430,51 @@ describe("money answers", () => {
           3,
           "Budget 10k a month for travel, 5k for software, 1 lakh for the launch",
         );
-        // An expense below zero, a refund, is refused on every path until phones read one.
-        const refund = {
-          list: "expenses",
-          title: "Invented refund",
-          category: "travel",
-          amount: "-1,500",
-          date: "2026-11-05",
-        };
-        const below = "amount: -1,500 is below zero; Kin records an amount of 0 or more.";
-        assert.strictEqual(
-          (yield* LeadWork.create(scope, { sourceEventId: asked, records: [refund] }).pipe(
-            Effect.flip,
-          )).message,
-          below,
-        );
-        assert.strictEqual(
-          (yield* LeadWork.update(scope, {
+        const made = yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            {
+              list: "expenses",
+              title: "Invented refund",
+              category: "travel",
+              amount: "-500",
+              date: "2026-11-05",
+            },
+          ],
+        });
+        assert.strictEqual((yield* records.get(orgId, made.records[0]!.key))?.amountMinor, -50_000);
+        const { row: invoice } = yield* records.create(orgId, system, {
+          list: "invoices",
+          title: "Invented invoice",
+          owner,
+          amount: inr(100),
+          originKey: "invoice",
+        });
+        assert.include(
+          yield* LeadWork.update(scope, {
             sourceEventId: asked,
-            key: flight.key,
-            amount: "-1,500",
-          }).pipe(Effect.flip)).message,
-          below,
+            key: invoice.key,
+            amount: "-500",
+          }).pipe(Effect.flip),
+          { reason: "invalid_state" },
         );
-        assert.strictEqual(
-          (yield* OwnerWork.update(people, {
-            orgId,
-            key: flight.key,
-            rev: flight.rev,
-            amount: { minor: -150_000, currency: "INR" },
-          }).pipe(Effect.flip)).message,
-          "An amount never goes below zero; give 0 or more.",
+        assert.include(
+          yield* records
+            .pay(orgId, system, invoice.key, {
+              amount: inr(-500),
+              paidOn: "2026-11-05",
+              originKey: "negative-payment",
+            })
+            .pipe(Effect.flip),
+          { message: "A payment is more than nothing." },
         );
-        assert.strictEqual(
-          (yield* Effect.flip(spend("refund", "travel", -1_500, on("2026-11-05")))).message,
-          "An amount never goes below zero; give 0 or more.",
+        assert.include(
+          yield* LeadMoney.budget(scope, {
+            sourceEventId: asked,
+            category: "travel",
+            limit: "-500",
+          }).pipe(Effect.flip),
+          { reason: "invalid_state" },
         );
         for (const input of [
           { category: "Travel", limit: "10k" },
@@ -5481,9 +5502,9 @@ describe("money answers", () => {
           {
             for: "travel",
             limit: "₹10,000.00",
-            spent: "₹12,000.00",
-            over: "₹2,000.00",
-            expenses: 1,
+            spent: "₹11,500.00",
+            over: "₹1,500.00",
+            expenses: 2,
             status: "over",
           },
           {
@@ -5502,6 +5523,8 @@ describe("money answers", () => {
             ["travel", "over"],
           ],
         );
+        const spent = (yield* OwnerMoney.money(people, { orgId })).spent.thisMonth;
+        assert.deepStrictEqual(spent.total, [{ minor: 3_650_000, currency: "INR" }]);
         const december = yield* LeadMoney.moneyQuery(scope, { view: "budgets", month: "2026-12" });
         assert.strictEqual(
           (december.answer as ReturnType<typeof budgetsAnswer>).budgets[1]?.spent,

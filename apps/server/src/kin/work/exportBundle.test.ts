@@ -149,7 +149,7 @@ const cheque = [
       title: "Printer paper",
       state: "done",
       date: "2026-05-04",
-      amount: "840",
+      amount: "-0.05",
       fields: { vendor: "Invented Paper Co", paidWith: "cheque" },
     },
   },
@@ -355,6 +355,7 @@ describe("Download everything", () => {
 
       // Restore is kin import, into a company that has nothing yet.
       const lines = zip.get("kin.jsonl")!.toString().trimEnd().split("\n");
+      assert.isTrue(lines.some((line) => line.includes('"amount":"-0.05"')));
       const restored = yield* imports.apply(into, ownerInto, Stream.fromIterable(lines));
       assert.deepStrictEqual(restored.problems, []);
       assert.deepStrictEqual(

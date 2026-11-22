@@ -602,7 +602,8 @@ const checkInput = (
       return invalid(`${withArticle(def.noun, "A")} has no amount.`);
     if (!isCurrency(input.amount.currency))
       return invalid(`${input.amount.currency} is not a currency code.`);
-    if (input.amount.minor < 0) return invalid("An amount never goes below zero; give 0 or more.");
+    if (input.amount.minor < 0 && def.id !== "expenses")
+      return invalid("Only an expense's amount goes below zero, as a refund or credit.");
   }
   // A Work meeting's start is its date; due stays what someone owes by when.
   if (

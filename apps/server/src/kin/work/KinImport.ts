@@ -363,12 +363,12 @@ const make = Effect.gen(function* () {
       amount: KinMoney | undefined,
     ) {
       if (spec.confirmed === true) return undefined;
-      if (amount !== undefined) {
+      if (amount !== undefined && amount.minor >= 0) {
         const slot = `${def.id}|${amount.currency}`;
         const most = largest.get(slot) ?? (yield* largestIn(orgId, def.id, amount.currency));
         const far = farAbove(def.name, amount, most, home);
         if (far !== undefined) return far;
-        const size = BigInt(Math.abs(amount.minor));
+        const size = BigInt(amount.minor);
         largest.set(slot, size > most ? size : most);
       }
       return def.id === "invoices" && spec.date !== undefined && spec.due !== undefined
@@ -934,7 +934,10 @@ const make = Effect.gen(function* () {
       // Before any amount is read, so no line shows one in the placeholder currency.
       if (company.pending && withMoney(spec, def)) return fail(COUNTRY_FIRST);
       const currency = spec.currency ?? def.currency;
-      const parsed = spec.amount === undefined ? undefined : parseAmount(spec.amount, currency);
+      const parsed =
+        spec.amount === undefined
+          ? undefined
+          : parseAmount(spec.amount, currency, def.id === "expenses");
       if (parsed !== undefined && "error" in parsed) return fail(parsed.error.message);
       const amount = parsed?.money;
       const open =
