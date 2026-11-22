@@ -3254,7 +3254,7 @@ const keepPairedFiles = Effect.fn("KinWorkTools.keepPairedFiles")(function* (
     : yield* records.update(lead.orgId, writer, key, patch, entry.rev);
 });
 
-const PAYMENT_FIELDS = ["paidWith", "paidBy"];
+const PAYMENT_FIELDS = ["paidWith", "paidBy", "fundedBy"];
 
 /** What a file's name says it is; a name saying both, or neither, says nothing. */
 const documentKind = (name: string | null) => {

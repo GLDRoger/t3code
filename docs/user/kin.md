@@ -409,6 +409,11 @@ hosting", "the GST filing is due on the 20th". It records the entry and answers 
   **Add → New receipt**, then **Set against** an invoice of the same client when it's issued.
 - **Statements.** Send your bank or card statement in a chat to match its rows to invoices and
   expenses. See [Bank and card statements](./kin-statements.md).
+- **Paid by a partner.** When a partner pays a company expense from their own money, set **Funded
+  by** on the expense to that partner. Leave it empty when the company paid. Its **Reimbursement**
+  reads **owed** until the company pays the partner back. Then set it to **repaid**, with the day
+  in **Repaid on**. Choose **not reimbursable** when the partner won't be paid back. Expenses imported
+  with a partner's email address but no Kin person to match show as owed to that address.
 - **Subscriptions.** Tell an agent what you pay for each month or year, with a screenshot or the
   bill, and it keeps them under Subscriptions with what renews next.
 - **Budgets and goals.** **Add → Set a budget** or **Add goal**. Goals show to the whole team.
