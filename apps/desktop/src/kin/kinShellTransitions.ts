@@ -58,6 +58,14 @@ export function makeKinShellTransitions(remembered: string | null) {
       generation++;
       return { origin, previous };
     },
+    /** The person signed out here: no team, and anything still pending is dropped. */
+    forget: () => {
+      const was = team;
+      attempt = null;
+      team = null;
+      generation++;
+      return was;
+    },
     /** The host said this computer is signed out, at launch. */
     signedOut: (seen: number, origin: string) => {
       if (seen !== generation || team !== origin) return false;

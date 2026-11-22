@@ -42,6 +42,16 @@ describe("makeKinShellTransitions", () => {
     assert.strictEqual(owner.remembered(), null);
   });
 
+  it("forgets the team when the person signs out, and drops what was pending", () => {
+    const owner = makeKinShellTransitions(ARJUN);
+    const pending = owner.startJoin(OTHER, "/kin/invite", INVITE_ROUTE);
+    assert.strictEqual(owner.forget(), ARJUN);
+    assert.strictEqual(owner.remembered(), null);
+    assert.strictEqual(owner.hostOrigin(), null);
+    assert.isNull(owner.joined(pending.generation));
+    assert.strictEqual(makeKinShellTransitions(null).forget(), null);
+  });
+
   it("signs out only the team the launch check asked about", () => {
     const owner = makeKinShellTransitions(ARJUN);
     const launch = owner.begin();

@@ -23,6 +23,12 @@ export const KIN_SHELL_COPY = {
     "That link sent Kin somewhere else, so Kin stopped. Ask whoever sent it for a new one.",
   tryAgain: "Kin couldn't reach your team's Kin just now. Try again.",
   backOnTeam: (origin: string) => `Kin is back on your team's Kin at ${origin}, still signed in.`,
+  signOutQuestion: "Sign out of your team's Kin?",
+  signOutDetail: (host: string) =>
+    `Kin on this computer signs out of ${host}. To come back, you'll need a new join link.`,
+  signOutConfirm: "Sign Out",
+  signOutClearFailed: (host: string) =>
+    `Kin signed out, but it couldn't remove what ${host} stored on this computer.`,
   clearFailed: "Kin couldn't finish signing out of your old team's Kin.",
   clearFailedDetail: (newOrigin: string, oldOrigin: string) =>
     `Kin is now on ${newOrigin}, but it couldn't remove what ${oldOrigin} stored on this computer.`,

@@ -21,6 +21,10 @@ export const layer = Layer.effect(
       label: "Use a Different Link…",
       click: run(shell.useDifferentLink),
     };
+    const signOut: Electron.MenuItemConstructorOptions = {
+      label: "Sign Out…",
+      click: run(shell.signOut),
+    };
 
     return DesktopApplicationMenu.DesktopApplicationMenu.of({
       configure: Effect.gen(function* () {
@@ -32,6 +36,7 @@ export const layer = Layer.effect(
               { role: "about" },
               { type: "separator" },
               differentLink,
+              signOut,
               { type: "separator" },
               { role: "services" },
               { type: "separator" },
@@ -45,7 +50,7 @@ export const layer = Layer.effect(
         } else {
           template.push({
             label: "File",
-            submenu: [differentLink, { type: "separator" }, { role: "quit" }],
+            submenu: [differentLink, signOut, { type: "separator" }, { role: "quit" }],
           });
         }
         template.push(

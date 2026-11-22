@@ -94,6 +94,8 @@ export class KinShell extends Context.Service<
     /** A join link the operating system handed over: `kin://kin/join?link=…` or `kin://pair?…`. */
     readonly receiveLink: (url: string) => Effect.Effect<void>;
     readonly useDifferentLink: Effect.Effect<void>;
+    /** Asks first, then leaves the team on this computer: the way out that needs no new link. */
+    readonly signOut: Effect.Effect<void>;
     readonly openHostInBrowser: Effect.Effect<void>;
   }
 >()("@t3tools/desktop/kin/KinShell") {}
@@ -619,6 +621,35 @@ const make = Effect.gen(function* () {
     Effect.withSpan("KinShell.useDifferentLink"),
   );
 
+  const signOut = Effect.gen(function* () {
+    const team = owner.remembered();
+    if (team === null) return;
+    yield* activate;
+    const host = readableHost(team);
+    const sure = yield* ask({
+      message: KIN_SHELL_COPY.signOutQuestion,
+      detail: KIN_SHELL_COPY.signOutDetail(host),
+      confirm: KIN_SHELL_COPY.signOutConfirm,
+      defaultToCancel: true,
+    });
+    if (!sure) return;
+    const cleared = yield* locked(
+      Effect.gen(function* () {
+        // The team may have changed while the question was up.
+        if (owner.remembered() !== team) return true;
+        owner.forget();
+        // The join page first, so the team's page is gone before its storage is.
+        yield* showJoin(null);
+        yield* persist(null);
+        return yield* clearOrigin(team);
+      }),
+    );
+    if (!cleared) yield* notify(KIN_SHELL_COPY.signOutClearFailed(host), "");
+  }).pipe(
+    Effect.catch((error) => logWarning("could not sign out", { message: error.message })),
+    Effect.withSpan("KinShell.signOut"),
+  );
+
   const changeZoom = (direction: DesktopWindow.MainWindowZoomDirection) =>
     Effect.map(
       mainWindow,
@@ -842,6 +873,7 @@ const make = Effect.gen(function* () {
       Effect.catch((error) => logWarning("could not open a join link", { message: error.message })),
     ),
     useDifferentLink,
+    signOut,
     openHostInBrowser: Effect.suspend(() => {
       const team = owner.remembered();
       return team === null
